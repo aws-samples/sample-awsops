@@ -38,8 +38,8 @@ data/
 !infra-cdk/data/
 !infra-cdk/data/**
 # v2 foundation schema/seed files (ADR-030) — source-controlled, same as infra-cdk/data/
-!terraform/v2/foundation/data/
-!terraform/v2/foundation/data/**
+!terraform/foundation/data/
+!terraform/foundation/data/**
 
 # logs
 npm-debug.log*
@@ -103,15 +103,15 @@ data/memory/
 reports/
 .superpowers/
 .worktrees/
-terraform/v2/**/.terraform/*
-terraform/v2/**/terraform.tfvars
-terraform/v2/**/staging.tfvars
-terraform/v2/**/backend.hcl
-terraform/v2/**/*.tfplan
-terraform/v2/**/*.tfstate
-terraform/v2/**/*.tfstate.backup
-terraform/v2/**/tfplan
-terraform/v2/**/.build/
+terraform/**/.terraform/*
+terraform/**/terraform.tfvars
+terraform/**/staging.tfvars
+terraform/**/backend.hcl
+terraform/**/*.tfplan
+terraform/**/*.tfstate
+terraform/**/*.tfstate.backup
+terraform/**/tfplan
+terraform/**/.build/
 
 # graphify knowledge-graph output (generated artifact — regenerate with /graphify)
 graphify-out/
@@ -131,4 +131,4 @@ graphify-out/
 # Kiro CLI local machine settings (co-agent panel artifact); .kiro/AGENT.md, rules.md, docs/, steering/ stay tracked
 .kiro/settings/
 tfplan*
-terraform/v2/foundation/tfplan*
+terraform/foundation/tfplan*

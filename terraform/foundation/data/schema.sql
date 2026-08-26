@@ -756,7 +756,7 @@ VALUES (9, 'chat thread persistence: chat_threads + chat_messages (new-chat no l
 ON CONFLICT (version) DO NOTHING;
 
 -- ============================================================
--- NEW migrations go in terraform/v2/foundation/migrations/<ULID>_<name>.sql (applied by
+-- NEW migrations go in terraform/foundation/migrations/<ULID>_<name>.sql (applied by
 -- `make migrate`, run automatically before `make deploy`), NOT here. This file is the
 -- one-time baseline. The ULID runner replaces the old sequential-integer scheme — concurrent
 -- branches kept colliding on the same version integer (e.g. opencost_config vs prevention_insights
