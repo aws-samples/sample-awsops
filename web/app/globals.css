@@ -1,0 +1,158 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* UA hint: native form-field backgrounds, scrollbars, etc. follow the theme.
+     Without this, dark theme gets white UA <select>/<input> fields under
+     Tailwind preflight's color:inherit → light-on-white text. */
+  color-scheme: light;
+  /* ===== shared cool neutrals (replaces warm ink/paper) ===== */
+  --ink-50:#F4F6F8; --ink-100:#E7ECEF; --ink-200:#D3DAE0; --ink-300:#AFBAC3;
+  --ink-400:#7D8A96; --ink-500:#5A6873; --ink-600:#3D4852; --ink-700:#2A333B;
+  --ink-800:#16202A; --ink-900:#0C141C;
+  --paper:#F4F6F8; --paper-muted:#EBEFF2; --white:#FFFFFF;
+
+  /* ===== brand ramp — teal (default; official Bedrock #01A88D) ===== */
+  --brand-50:#E6F6F2; --brand-100:#C4EBE3; --brand-200:#8FD9CC; --brand-300:#54C3B0;
+  --brand-400:#1FB199; --brand-500:#01A88D; --brand-600:#00876F; --brand-700:#0A6B5A;
+  --brand-800:#0C5447; --brand-900:#0A3D34;
+  /* accessible action color for buttons/primary — AA on white */
+  --brand-action:#0A6B5A; --brand-action-hover:#0C5447;
+
+  /* ===== chrome (sidebar/header) — light ===== */
+  --surface-chrome:#FFFFFF; --surface-chrome-muted:#F4F6F8;
+  --chrome-fg:var(--ink-800); --chrome-fg-muted:var(--ink-500); --chrome-border:var(--ink-100);
+  --chrome-active-bg:var(--brand-50); --chrome-active-fg:var(--brand-700); --chrome-active-border:var(--brand-500);
+
+  /* ===== semantic (shared across themes) ===== */
+  --positive:#01A88D; --positive-surface:#E6F6F2; --positive-text:#00715D; --positive-border:#8FD9CC;
+  --negative:#D13212; --negative-surface:#FDECE8; --negative-text:#A32A0F; --negative-border:#F5C3B5;
+  --warning:#F59E0B; --warning-surface:#FEF3E2; --warning-text:#B26B05; --warning-border:#FAD9A0;
+
+  /* ===== chart palette (read at runtime by useChartColors → recharts SVG).
+     Must be concrete hex: getComputedStyle does NOT resolve var() in custom props.
+     8 unique hues (design handoff 개선안 ②-B: 5-color cycling repeated on 8+ slices) —
+     4/5 reuse the warning/negative semantic hues so "기타" rollup + Top-N stays legible. ===== */
+  --chart-1:#01A88D; --chart-2:#528DF8; --chart-3:#7B26FF; --chart-4:#F59E0B; --chart-5:#D13212;
+  --chart-6:#C925D1; --chart-7:#39C2B0; --chart-8:#5A6873; --chart-etc:#AFBAC3;
+  --chart-grid:#E7ECEF; --chart-axis:#7D8A96;
+  --chart-tooltip-bg:#16202A; --chart-tooltip-fg:#F4F6F8;
+
+  /* categorical section accents (chat/assistant) — dark theme lifts these for
+     legibility on dark surfaces; consumers use var() so a theme switch reflows
+     without re-render. Alpha tints via color-mix, NOT hex-suffix concat. */
+  --sec-network:#2F6F8F; --sec-container:#1F7A48; --sec-data:#7C5CBF;
+  --sec-security:#BE123C; --sec-cost:#8A5A12; --sec-monitoring:#2563EB;
+  --sec-iac:#8E4830; --sec-ops:#5F5A4D; --sec-observability:#0E7490;
+  --sec-awsdata:#9C2F7F; /* magenta/plum — the only unused hue family in the section palette */
+  /* v1 auto-collect collectors: idle-scan(olive-lime), eks-optimize(indigo),
+     db-optimize(pine teal), msk-optimize(burgundy), trace-analyze(slate blue), incident(vermilion) */
+  --sec-idlescan:#6B7F2C; --sec-eksoptimize:#4653A8;
+  --sec-dboptimize:#0F766E; --sec-mskoptimize:#8E2F4A;
+  --sec-traceanalyze:#3F5E8C; --sec-incident:#C2410C;
+  /* near-black brand marks that must invert on dark (icon accents) */
+  --integration-notion:#0F172A;
+
+  /* ===== aliases — reach for these ===== */
+  --surface-page:var(--paper); --surface-sunken:var(--paper-muted); --surface-card:var(--white);
+  --text-primary:var(--ink-800); --text-secondary:var(--ink-500);
+  --text-muted:var(--ink-400); --text-faint:var(--ink-300); --text-brand:var(--brand-700);
+  --border-subtle:var(--ink-100); --border-default:var(--ink-200); --border-brand:var(--brand-200);
+  --brand:var(--brand-500); --brand-hover:var(--brand-600); --brand-subtle:var(--brand-50);
+  --brand-subtle-border:var(--brand-200); --on-brand:var(--white);
+  --positive-alias:var(--positive); --negative-alias:var(--negative);
+
+  /* ===== elevation (cool shadows) ===== */
+  --shadow-card:0 1px 2px rgba(16,32,42,.04), 0 4px 16px rgba(16,32,42,.06);
+  --shadow-sm:0 1px 2px rgba(16,32,42,.06);
+  --shadow-pop:0 6px 24px rgba(16,32,42,.18);
+  --shadow-focus:0 0 0 3px rgba(1,168,141,.26);
+}
+
+/* ===== cobalt theme: brand ramp + chart lead + focus ring ===== */
+[data-theme="cobalt"] {
+  --brand-50:#EAF1FE; --brand-100:#D2E2FD; --brand-200:#A9C7FB; --brand-300:#7FA9F9;
+  --brand-400:#5E96F8; --brand-500:#528DF8; --brand-600:#2E6BE6; --brand-700:#1F54C2;
+  --brand-800:#1B4196; --brand-900:#15306B;
+  --brand-action:#2E6BE6; --brand-action-hover:#1F54C2;
+  --chart-1:#528DF8; --chart-2:#01A88D; --chart-3:#7B26FF; --chart-4:#F59E0B; --chart-5:#D13212;
+  --chart-6:#C925D1; --chart-7:#39C2B0; --chart-8:#5A6873; --chart-etc:#AFBAC3;
+  --shadow-focus:0 0 0 3px rgba(82,141,248,.26);
+}
+
+/* ===== dark theme: full VSCode-style dark, cobalt accent =====
+   Neutral ramp is re-tuned so low indices read as dark *surfaces* and high
+   indices as light *text* (bg-ink-50 → near-bg, text-ink-800 → primary text).
+   ink-900 stays near-black: it is used only as modal scrim (bg-ink-900/20-40).
+   bg-ink-800 inverse chips (avatar/badge/code) flip to a light surface; their
+   text-paper companion goes dark → still a readable inverse. */
+[data-theme="dark"] {
+  color-scheme: dark;
+  /* section accents lifted for dark surfaces (same hues, higher luminance) */
+  --sec-network:#6FAECB; --sec-container:#4FBE82; --sec-data:#A98FE3;
+  --sec-security:#F0708F; --sec-cost:#D9A15A; --sec-monitoring:#7DA4F5;
+  --sec-iac:#CE8A6E; --sec-ops:#A8A190; --sec-observability:#4FB3CF;
+  --sec-awsdata:#E08BC7; /* magenta/plum lifted for dark surfaces (same hue as light) */
+  --sec-idlescan:#B4C266; --sec-eksoptimize:#96A0EE; /* collectors lifted for dark (same hues) */
+  --sec-dboptimize:#4FC2B8; --sec-mskoptimize:#E087A3;
+  --sec-traceanalyze:#8FAEDC; --sec-incident:#F0925C;
+  --integration-notion:#CBD5E1;
+  /* neutrals — surfaces dark (low) → text light (high); 900 pinned for scrims */
+  --ink-50:#1F262D; --ink-100:#29333B; --ink-200:#38444E; --ink-300:#586773;
+  --ink-400:#8696A3; --ink-500:#9FAEBA; --ink-600:#B6C2CC; --ink-700:#CCD5DD;
+  --ink-800:#E3E9EE; --ink-900:#05080B;
+  --paper:#1A2026; --paper-muted:#141A1F; --white:#FFFFFF;
+
+  /* brand ramp — cobalt re-tuned for dark: subtle surfaces dark, text light,
+     solids stay saturated so white labels keep contrast */
+  --brand-50:#0F2747; --brand-100:#143459; --brand-200:#245A9E; --brand-300:#3D78D4;
+  --brand-400:#4A85EE; --brand-500:#528DF8; --brand-600:#2E6BE6; --brand-700:#93BBFA;
+  --brand-800:#1B4196; --brand-900:#15306B;
+  --brand-action:#2E6BE6; --brand-action-hover:#1F54C2;
+
+  /* card / page surfaces — card sits elevated above the page */
+  --surface-card:#232C34;
+
+  /* chrome (sidebar/header) — slightly elevated, cobalt-tinted active */
+  --surface-chrome:#20272E; --surface-chrome-muted:#1A2026; --chrome-fg:#E3E9EE;
+  --chrome-fg-muted:#8696A3; --chrome-border:#29333B;
+  --chrome-active-bg:#16335C; --chrome-active-fg:#FFFFFF; --chrome-active-border:var(--brand-500);
+
+  /* semantic — dark tinted surfaces, lifted text/accent for dark legibility */
+  --positive:#2CC9AE; --positive-surface:#0E2E2A; --positive-text:#5FE3CE; --positive-border:#1C5249;
+  --negative:#F26B4D; --negative-surface:#3A1712; --negative-text:#F5A593; --negative-border:#6E2A1B;
+  --warning:#F5B53C; --warning-surface:#3A2A0E; --warning-text:#F8CE7E; --warning-border:#6E4E12;
+
+  /* charts — cobalt lead, brighter series + tooltip flips to elevated dark */
+  --chart-1:#528DF8; --chart-2:#2CC9AE; --chart-3:#9D5BFF; --chart-4:#F5B53C; --chart-5:#F26B4D;
+  --chart-6:#D964E0; --chart-7:#39C2B0; --chart-8:#9FAEBA; --chart-etc:#586773;
+  --chart-grid:#29333B; --chart-axis:#8696A3;
+  --chart-tooltip-bg:#2B3640; --chart-tooltip-fg:#E3E9EE;
+
+  /* elevation — shadows barely register on dark, so deepen them */
+  --shadow-card:0 1px 2px rgba(0,0,0,.40), 0 4px 16px rgba(0,0,0,.50);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.50);
+  --shadow-pop:0 6px 24px rgba(0,0,0,.60);
+  --shadow-focus:0 0 0 3px rgba(82,141,248,.45);
+}
+
+body {
+  background: var(--surface-page);
+  color: var(--text-primary);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'Pretendard',
+               'Helvetica Neue', Arial, sans-serif;
+  font-feature-settings: 'cv11','ss01','ss02';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* tabular numerals — apply wherever numbers are compared/animated */
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* page-enter (route change) — keep subtle */
+@keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+.animate-fade-in { animation: fadeIn .2s cubic-bezier(.16,1,.3,1); }
+
+::-webkit-scrollbar { width:10px; height:10px; }
+::-webkit-scrollbar-thumb { background:var(--ink-200); border-radius:999px; border:2px solid var(--paper); }
+::-webkit-scrollbar-track { background:transparent; }

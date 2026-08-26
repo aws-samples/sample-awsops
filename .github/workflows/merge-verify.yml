@@ -1,0 +1,41 @@
+name: Merge Verify
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  merge-verify:
+    name: Merge Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install pytest
+          python -m pip install \
+            -r agent/requirements.txt \
+            -r scripts/v2/incident/requirements.txt \
+            -r scripts/v2/remediation/requirements.txt \
+            -r scripts/v2/steampipe/requirements.txt \
+            -r scripts/v2/workers/requirements.txt
+
+      - name: Run merge verification
+        run: bash scripts/v2/merge-verify.sh

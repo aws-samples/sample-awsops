@@ -1,0 +1,31 @@
+# scripts/v2/remediation/runbooks/ec2-create-tags.yaml
+schemaVersion: '0.3'
+description: 'AWSops remediation: add tags to ONE EC2 instance (Change-Manager 4-eyes; dry-run via DescribeTags; onFailure delete-tags rollback).'
+assumeRole: '{{ AutomationAssumeRole }}'
+parameters:
+  AutomationAssumeRole: { type: String }
+  ResourceId:          { type: String, allowedPattern: '^i-[0-9a-f]{8,17}$' }
+  Tags:                { type: StringMap }
+  DryRun:              { type: String, default: 'true', allowedValues: ['true', 'false'] }
+mainSteps:
+  - name: PreflightDescribe          # dry-run: read current tags, never mutate
+    action: 'aws:executeAwsApi'
+    inputs: { Service: ec2, Api: DescribeTags, Filters: [{ Name: resource-id, Values: ['{{ ResourceId }}'] }] }
+  - name: GateDryRun                 # if DryRun=true, stop here cleanly (no mutation)
+    action: 'aws:branch'
+    inputs:
+      Choices: [{ NextStep: ApplyTags, Variable: '{{ DryRun }}', StringEquals: 'false' }]
+      Default: DoneDryRun
+  - name: ApplyTags
+    action: 'aws:executeAwsApi'
+    onFailure: 'step:RollbackDeleteTags'
+    inputs: { Service: ec2, Api: CreateTags, Resources: ['{{ ResourceId }}'], Tags: '{{ Tags }}' }
+    isEnd: true
+  - name: RollbackDeleteTags         # paired rollback (ADR-029 #5); terminal if it fails → MANUAL
+    action: 'aws:executeAwsApi'
+    inputs: { Service: ec2, Api: DeleteTags, Resources: ['{{ ResourceId }}'], Tags: '{{ Tags }}' }
+    isEnd: true
+  - name: DoneDryRun
+    action: 'aws:sleep'
+    inputs: { Duration: 'PT0S' }
+    isEnd: true

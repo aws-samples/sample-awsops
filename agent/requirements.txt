@@ -1,0 +1,11 @@
+# NOTE: the runtime image installs deps from agent/Dockerfile's inline pip list (NOT this file).
+# Keep the strands-agents pin in sync in BOTH places when bumping.
+strands-agents==1.41.0
+strands-agents-tools
+boto3
+# Dark-path chat loop (ANTHROPIC_AGENT_LOOP_ENABLED, default OFF) — Bedrock client, no API key.
+# Keep the pin in sync with agent/Dockerfile. Validate at `make agentcore` build/smoke.
+anthropic[bedrock]==0.111.0
+bedrock-agentcore<=0.1.5
+bedrock-agentcore-starter-toolkit==0.1.14
+psycopg2-binary

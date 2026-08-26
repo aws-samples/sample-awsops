@@ -1,0 +1,66 @@
+name: Deploy Guide to GitHub Pages
+
+# DISABLED for upstream: runs-on the fork's self-hosted runner
+# 'awsops-claude-arm' which does not exist on whchoi98/awsops, and upstream
+# already publishes its guide from web/ via its own Pages workflow. Left as
+# workflow_dispatch only so a main push to docs-site/** does not queue forever
+# on a missing runner (and does not compete with upstream's Pages deploy).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: awsops-claude-arm
+    defaults:
+      run:
+        working-directory: docs-site
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run build
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          SITE_URL: ${{ vars.SITE_URL || 'https://www.atomai.click' }}
+          BASE_URL: ${{ vars.BASE_URL || '/awsops/' }}
+
+      # Canary: fail loudly if the customer overview page is missing from the
+      # build, so we never silently deploy an incomplete docs site again.
+      - name: Verify build completeness
+        run: |
+          test -f build/sitemap.xml || { echo "::error::sitemap.xml missing"; exit 1; }
+          if ! grep -q "overview/why-awsops" build/sitemap.xml; then
+            echo "::error::overview/why-awsops missing from sitemap — build is incomplete"
+            exit 1
+          fi
+          echo "Build verified: overview/why-awsops present in sitemap."
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site/build
+
+  deploy:
+    needs: build
+    runs-on: awsops-claude-arm
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

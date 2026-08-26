@@ -1,0 +1,5 @@
+bucket       = "awsops-v2-tfstate"
+key          = "foundation/terraform.tfstate"
+region       = "ap-northeast-2"
+encrypt      = true
+use_lockfile = true

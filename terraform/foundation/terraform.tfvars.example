@@ -1,0 +1,3 @@
+domain_name      = "v2.example.com"
+hosted_zone_name = "example.com"
+# vpc_cidr       = "10.20.0.0/16"   # uncomment to override

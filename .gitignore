@@ -1,0 +1,134 @@
+# sample files
+*.pptx
+
+# dependencies
+node_modules/
+/.pnp
+.pnp.js
+.yarn/install-state.gz
+.sensitive/
+# next.js
+/.next/
+/out/
+/build
+next-env.d.ts
+*.tsbuildinfo
+
+# env & secrets
+.env
+.env.*
+.env*.local
+!.env.example
+*.pem
+.sensitive/
+
+# steampipe / powerpipe
+powerpipe/.powerpipe/
+powerpipe/.mod.cache.json
+
+# co-agent harness eval output (generated, not source-controlled)
+.harness-eval/
+
+# python test cache
+.pytest_cache/
+
+# data (config, inventory, cost, memory, stats — all local/auto-generated)
+data/
+# CDK schema/seed files (ADR-030) live under infra-cdk/data/ and are source-controlled
+!infra-cdk/data/
+!infra-cdk/data/**
+# v2 foundation schema/seed files (ADR-030) — source-controlled, same as infra-cdk/data/
+!terraform/v2/foundation/data/
+!terraform/v2/foundation/data/**
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# os & editor
+.DS_Store
+.vercel
+*.JPG
+*.jpg
+
+# oh-my-claudecode state
+.omc/
+
+# playwright mcp
+.playwright-mcp/
+
+# claude code sessions
+.claude/
+
+# cdk output
+infra-cdk/node_modules/
+infra-cdk/cdk.out/
+infra-cdk/*.js
+infra-cdk/*.d.ts
+!infra-cdk/cdk.json
+
+# python
+agent/__pycache__/
+*.pyc
+
+# temp & backups / 임시 및 백업 파일
+/tmp/
+*.bak
+*.orig
+*.tmp
+*.swp
+*~
+
+# claude code: include skills/hooks, exclude sessions
+!.claude/
+.claude/projects/
+.claude/todos/
+docs/COMPARISON_VS_FAST.md
+
+# 로컬 설정 (세션 데이터, 공유 불필요) / local settings
+.claude/settings.local.json
+.claude/co-agent.local.json
+
+# CDK 컨텍스트 (계정 종속, 자동 생성) / CDK context (account-specific)
+infra-cdk/cdk.context.json
+powerpipe/.mod.cache.json
+.gitignore
+data/config.json
+data/agentcore-stats.json
+data/memory/
+
+# reports (auto-generated)
+reports/
+.superpowers/
+.worktrees/
+terraform/v2/**/.terraform/*
+terraform/v2/**/terraform.tfvars
+terraform/v2/**/staging.tfvars
+terraform/v2/**/backend.hcl
+terraform/v2/**/*.tfplan
+terraform/v2/**/*.tfstate
+terraform/v2/**/*.tfstate.backup
+terraform/v2/**/tfplan
+terraform/v2/**/.build/
+
+# graphify knowledge-graph output (generated artifact — regenerate with /graphify)
+graphify-out/
+
+# Confidential reference material (Amazon Confidential PDFs) — never commit
+.reference/
+# co-agent consensus pipeline state (skill-managed, local)
+.claude/co-agent-consensus/
+# Claude Code harness-local artifacts (scheduler lock, agent worktrees)
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+# Public RDS CA trust bundle — NOT a key (PR #36: verified TLS for the auto-register write-path)
+!scripts/v2/eks/rds-ca-bundle.pem
+# AI dev tool scratch dirs / MCP tooling local stores
+.serena/
+.headroom/
+# Kiro CLI local machine settings (co-agent panel artifact); .kiro/AGENT.md, rules.md, docs/, steering/ stay tracked
+.kiro/settings/
+tfplan*
+terraform/v2/foundation/tfplan*

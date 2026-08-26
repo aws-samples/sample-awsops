@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>AWSops | 흩어진 AWS 운영을 하나의 화면에</title>
+  <meta name="description" content="AWS 운영 현황, 리소스 관계, 비용과 보안을 한 화면에서 보고 Amazon Bedrock AgentCore로 근거 기반 진단을 수행하는 읽기 전용 운영 대시보드입니다.">
+  <meta property="og:title" content="AWSops | AWS 운영의 단일 화면">
+  <meta property="og:description" content="통합 가시성, 라이브 데이터 기반 AI 답변, Well-Architected 진단을 하나의 운영 흐름으로 연결합니다.">
+  <meta property="og:type" content="website">
+  <style>
+    :root {
+      --paper: #f7f8fa;
+      --surface: #fff;
+      --ink: #18212d;
+      --muted: #526173;
+      --line: #d9e0e8;
+      --graphite: #111827;
+      --cobalt: #2563eb;
+      --cobalt-dark: #174bb8;
+      --coral: #c95032;
+      --teal: #0f766e;
+      --maxw: 1180px;
+      --shadow: 0 14px 36px rgba(24, 33, 45, .12);
+      --sans: Pretendard, "Noto Sans KR", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      overflow-x: hidden;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.65;
+      letter-spacing: 0;
+    }
+    img { display: block; max-width: 100%; }
+    a { color: inherit; text-decoration: none; }
+    :focus-visible { outline: 3px solid var(--coral); outline-offset: 3px; }
+    .skip-link {
+      position: absolute;
+      left: 12px;
+      top: -60px;
+      z-index: 100;
+      border-radius: 4px;
+      background: var(--graphite);
+      color: #fff;
+      padding: 10px 14px;
+    }
+    .skip-link:focus { top: 12px; }
+    .wrap { width: min(100% - 48px, var(--maxw)); margin: 0 auto; }
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      border-bottom: 1px solid var(--line);
+      background: rgba(247, 248, 250, .96);
+    }
+    .nav-in { height: 62px; display: flex; align-items: center; gap: 24px; }
+    .brand { font-size: 19px; font-weight: 800; }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .button {
+      display: inline-flex;
+      min-height: 42px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      background: var(--cobalt);
+      color: #fff;
+      padding: 0 18px;
+      font-weight: 750;
+    }
+    .button:hover { background: var(--cobalt-dark); }
+    .hero {
+      position: relative;
+      height: calc(100svh - 132px);
+      min-height: 580px;
+      max-height: 760px;
+      overflow: hidden;
+      background: var(--graphite);
+    }
+    .hero-media {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center top;
+    }
+    .hero-scrim {
+      position: absolute;
+      inset: 0 52% 0 0;
+      background: rgba(17, 24, 39, .9);
+    }
+    .hero-content {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      height: 100%;
+      flex-direction: column;
+      align-items: flex-start;
+      justify-content: center;
+      color: #fff;
+    }
+    .eyebrow, .kicker {
+      font-family: var(--mono);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+    .eyebrow { color: #a8c3ff; }
+    .kicker { color: var(--cobalt); }
+    h1 {
+      margin: 10px 0 0;
+      font-size: 64px;
+      line-height: 1;
+      font-weight: 850;
+      letter-spacing: 0;
+    }
+    .hero-line {
+      max-width: 12ch;
+      margin: 20px 0 0;
+      font-size: 34px;
+      line-height: 1.16;
+      font-weight: 750;
+    }
+    .hero-copy { max-width: 42ch; margin: 18px 0 26px; color: #d7dfeb; }
+    .band, .section { padding: 82px 0; }
+    .band { border-bottom: 1px solid var(--line); background: #fff; }
+    .section-head { max-width: 720px; margin-bottom: 34px; }
+    h2 {
+      margin: 8px 0 12px;
+      font-size: 38px;
+      line-height: 1.16;
+      letter-spacing: 0;
+    }
+    .lead { margin: 0; color: var(--muted); font-size: 18px; }
+    .proofs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-block: 1px solid var(--line);
+    }
+    .proof { padding: 22px 0; }
+    .proof + .proof { border-left: 1px solid var(--line); padding-left: 24px; }
+    .proof b { display: block; color: var(--graphite); font-size: 32px; }
+    .proof span { color: var(--muted); }
+    .story {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(260px, .8fr);
+      align-items: center;
+      gap: 48px;
+    }
+    .story.reverse { grid-template-columns: minmax(260px, .8fr) minmax(0, 1.2fr); }
+    .frame {
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #edf1f5;
+      box-shadow: var(--shadow);
+    }
+    .frame img { width: 100%; object-fit: cover; }
+    .frame.wide img { aspect-ratio: 16 / 9; }
+    .frame.tall img { aspect-ratio: 4 / 5; }
+    .frame figcaption {
+      background: #fff;
+      color: var(--muted);
+      padding: 10px 14px;
+      font-size: 13px;
+    }
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }
+    .trust-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--line);
+    }
+    .trust-item { background: #fff; padding: 24px; }
+    .trust-item h3 { margin: 0 0 8px; font-size: 17px; }
+    .trust-item p { margin: 0; color: var(--muted); font-size: 14px; }
+    .architecture { border-block: 1px solid var(--line); background: #eef2f6; }
+    .arch-figure {
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 14px;
+    }
+    .arch-figure img { width: 100%; height: auto; }
+    .arch-hint { display: none; color: var(--muted); font-size: 13px; text-align: center; }
+    .closing { background: var(--graphite); color: #fff; text-align: center; }
+    .closing h2 { max-width: 18ch; margin: 0 auto 14px; }
+    .closing p { max-width: 52ch; margin: 0 auto 26px; color: #cbd5e1; }
+    footer { border-top: 1px solid var(--line); padding: 32px 0; color: var(--muted); font-size: 13px; }
+    .footer-in { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 18px; }
+    @media (max-width: 1024px) {
+      h1 { font-size: 52px; }
+      .hero-line { font-size: 30px; }
+      .hero-scrim { inset: 0 38% 0 0; }
+      .story, .story.reverse { grid-template-columns: 1fr; }
+      .story.reverse .story-copy { order: -1; }
+      .trust-grid { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 640px) {
+      .wrap { width: min(100% - 36px, var(--maxw)); }
+      .nav-links a:not(.button) { display: none; }
+      .hero { height: calc(100svh - 120px); min-height: 540px; }
+      .hero-scrim { inset: 0; background: rgba(17, 24, 39, .8); }
+      h1 { font-size: 42px; }
+      .hero-line { font-size: 27px; }
+      .band, .section { padding: 62px 0; }
+      h2 { font-size: 30px; }
+      .proofs { grid-template-columns: 1fr; }
+      .proof + .proof { border-top: 1px solid var(--line); border-left: 0; padding-left: 0; }
+      .pair, .trust-grid { grid-template-columns: 1fr; }
+      .hero .button, .closing .button { width: 100%; }
+      .arch-figure { position: relative; aspect-ratio: 871 / 1411; padding: 0; }
+      .arch-figure img {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: calc((100vw - 36px) * 1411 / 871);
+        max-width: none;
+        height: auto;
+        transform: translate(-50%, -50%) rotate(90deg);
+      }
+      .arch-hint { display: block; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      * { transition: none !important; animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">본문으로 건너뛰기</a>
+  <nav class="nav" aria-label="주요 탐색">
+    <div class="wrap nav-in">
+      <a class="brand" href="#top">AWSops</a>
+      <div class="nav-links">
+        <a href="#product">제품</a>
+        <a href="#ai">AI 진단</a>
+        <a href="#architecture">아키텍처</a>
+        <a href="#trust">신뢰</a>
+        <a class="button" href="https://awsops.atomai.click/" target="_blank" rel="noopener noreferrer">제품 데모 보기</a>
+      </div>
+    </div>
+  </nav>
+  <header class="hero" id="top">
+    <img class="hero-media" src="media/dashboard.webp" alt="AWSops 통합 운영 대시보드" fetchpriority="high">
+    <div class="hero-scrim" aria-hidden="true"></div>
+    <div class="wrap hero-content">
+      <span class="eyebrow">AWS + Kubernetes operations</span>
+      <h1>AWSops</h1>
+      <p class="hero-line">흩어진 AWS 운영을 하나의 화면에.</p>
+      <p class="hero-copy">운영 현황을 보고, 라이브 데이터에 질문하고, Well-Architected 관점의 진단까지 한 흐름으로 이어갑니다.</p>
+      <a class="button" href="https://awsops.atomai.click/" target="_blank" rel="noopener noreferrer">제품 데모 보기</a>
+    </div>
+  </header>
+  <main id="main">
+    <section class="band" id="product">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="kicker">See</span>
+          <h2>먼저, 운영 전체를 봅니다.</h2>
+          <p class="lead">AWS 리소스, Kubernetes, 비용, 보안 신호를 하나의 대시보드에서 비교합니다.</p>
+        </div>
+        <div class="proofs">
+          <div class="proof"><b>9</b><span>AI 라우팅 섹션</span></div>
+          <div class="proof"><b>6</b><span>Well-Architected 필러</span></div>
+          <div class="proof"><b>3</b><span>리포트 내보내기 형식</span></div>
+        </div>
+      </div>
+    </section>
+    <section class="section" id="ai">
+      <div class="wrap story">
+        <figure class="frame tall">
+          <img src="media/assistant-answer.webp" loading="lazy" alt="비용 질문에 근거를 제시하는 AWSops AI 어시스턴트">
+          <figcaption>도메인별 읽기 전용 도구가 수집한 근거를 하나의 답변으로 합성합니다.</figcaption>
+        </figure>
+        <div class="story-copy">
+          <span class="kicker">Ask</span>
+          <h2>운영 데이터에 바로 질문합니다.</h2>
+          <p class="lead">질문 의도를 전문 라우트로 분류하고 라이브 데이터를 조회합니다. 여러 도메인의 결과는 한 번에 읽을 수 있는 답변으로 돌아옵니다.</p>
+        </div>
+      </div>
+    </section>
+    <section class="band" id="explore">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="kicker">Explore</span>
+          <h2>관계, 비용, 통제를 같은 맥락에서.</h2>
+          <p class="lead">리소스 흐름을 따라가고, 비용 추이와 보안 통제를 함께 확인합니다.</p>
+        </div>
+        <figure class="frame wide">
+          <img src="media/topology.webp" loading="lazy" alt="DNS에서 타깃까지 이어지는 AWS 리소스 토폴로지">
+          <figcaption>요청 경로와 리소스 관계를 시각적으로 탐색합니다.</figcaption>
+        </figure>
+        <div class="pair">
+          <figure class="frame wide">
+            <img src="media/cost-explorer.webp" loading="lazy" alt="월별 및 일별 AWS 비용 추이">
+            <figcaption>서비스별 비용과 변화를 비교합니다.</figcaption>
+          </figure>
+          <figure class="frame wide">
+            <img src="media/compliance.webp" loading="lazy" alt="보안 이슈와 CIS 컴플라이언스 요약">
+            <figcaption>위험 신호와 컴플라이언스 상태를 빠르게 확인합니다.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+    <section class="section" id="diagnosis">
+      <div class="wrap story reverse">
+        <div class="story-copy">
+          <span class="kicker">Diagnose</span>
+          <h2>관찰을 의사결정 자료로 바꿉니다.</h2>
+          <p class="lead">무거운 진단은 비동기 워커에서 처리하고, Well-Architected 관점의 결과를 MD, DOCX, PDF로 내보냅니다.</p>
+        </div>
+        <figure class="frame wide">
+          <img src="media/ai-diagnosis.webp" loading="lazy" alt="AWSops AI 진단 보고서와 목차">
+          <figcaption>진단 결과와 개선 제안을 구조화된 보고서로 제공합니다.</figcaption>
+        </figure>
+      </div>
+    </section>
+    <section class="section architecture" id="architecture">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="kicker">Architecture</span>
+          <h2>제품 경험을 지탱하는 전체 v2 구조.</h2>
+          <p class="lead">비공개 엣지, thin BFF, Aurora, AgentCore 전문 라우팅, 비동기 워커가 역할별로 분리됩니다.</p>
+        </div>
+        <figure class="arch-figure">
+          <img src="awsops-architecture.svg" loading="lazy" alt="CloudFront VPC Origin부터 Fargate, Aurora, AgentCore 9개 라우트와 비동기 워커까지 이어지는 AWSops v2 아키텍처">
+        </figure>
+        <p class="arch-hint">모바일에서는 다이어그램을 세로 방향으로 표시합니다.</p>
+      </div>
+    </section>
+    <section class="section" id="trust">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="kicker">Trust</span>
+          <h2>변경보다 근거를 우선합니다.</h2>
+          <p class="lead">AWSops는 운영 상태를 관찰하고 진단과 개선 제안을 제공합니다. 진단 결과로 고객 AWS 리소스를 자동 변경하거나 자율 복구하지 않습니다.</p>
+        </div>
+        <div class="trust-grid">
+          <article class="trust-item"><h3>Private edge</h3><p>CloudFront VPC Origin 뒤의 내부 ALB로 애플리케이션을 보호합니다.</p></article>
+          <article class="trust-item"><h3>Verified identity</h3><p>Cognito와 Lambda@Edge의 RS256 검증으로 접근을 통제합니다.</p></article>
+          <article class="trust-item"><h3>Least privilege</h3><p>라이브 조회는 AgentCore MCP 도구 경계 안에서 읽기 전용으로 수행합니다.</p></article>
+          <article class="trust-item"><h3>Encrypted state</h3><p>Aurora와 관리형 시크릿으로 상태와 자격 증명을 분리합니다.</p></article>
+        </div>
+      </div>
+    </section>
+    <section class="section closing" id="start">
+      <div class="wrap">
+        <h2>운영을 하나의 화면으로 옮겨보세요.</h2>
+        <p>실제 대시보드에서 통합 가시성과 AI 진단 흐름을 확인할 수 있습니다.</p>
+        <a class="button" href="https://awsops.atomai.click/" target="_blank" rel="noopener noreferrer">제품 데모 보기</a>
+      </div>
+    </section>
+  </main>
+  <footer>
+    <div class="wrap footer-in">
+      <span>AWSops · Terraform · ECS Fargate · Aurora · Bedrock AgentCore</span>
+      <span><a href="https://github.com/Atom-oh/awsops">GitHub</a> · <a href="../brochure/">Architecture brochure</a></span>
+    </div>
+  </footer>
+</body>
+</html>

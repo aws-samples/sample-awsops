@@ -1,0 +1,94 @@
+{
+  "Comment": "AWSops v2 ADR-029+036 remediation SM. Reuses the P2 ledger (worker_jobs) + idempotency (execution name == job_id). Flow: mandatory dry-run -> 4-eyes approval Task-Token (fail-closed on timeout) -> route by $.runtime (ssm via startAutomationExecution + .waitForTaskToken/EventBridge, OR lambda/fargate code executor) -> Catch -> rollback -> terminal MANUAL_INTERVENTION_REQUIRED on rollback failure (never infinite retry). status_updater (P2) records terminal failures (SFN cannot write VPC Aurora).",
+  "StartAt": "DryRunFirst",
+  "States": {
+    "DryRunFirst": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 120,
+      "Parameters": { "FunctionName": "${executor_fn_arn}", "Payload": { "job_id.$": "$.job_id", "plan_id.$": "$.plan_id", "action.$": "$.action", "payload.$": "$.payload", "phase": "dry_run", "dry_run": true } },
+      "ResultPath": "$.dryRunResult",
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "MarkFailed" } ],
+      "Next": "ApprovalWait"
+    },
+    "ApprovalWait": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "TimeoutSeconds": 86400,
+      "Comment": "4-eyes approval. The approval-notifier Lambda records 'awaiting_approval' + persists the token; an operator approves via /api/actions/[id] execute (P2-path) which SendTaskSuccess. Timeout fails CLOSED (no execution).",
+      "Parameters": { "FunctionName": "${approval_fn_arn}", "Payload": { "job_id.$": "$.job_id", "plan_id.$": "$.plan_id", "action.$": "$.action", "taskToken.$": "$$.Task.Token" } },
+      "Catch": [ { "ErrorEquals": ["States.Timeout"], "ResultPath": "$.errorInfo", "Next": "MarkFailed" }, { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "MarkFailed" } ],
+      "Next": "Route"
+    },
+    "Route": {
+      "Type": "Choice",
+      "Choices": [
+        { "Variable": "$.runtime", "StringEquals": "ssm", "Next": "RunSsm" },
+        { "Variable": "$.runtime", "StringEquals": "lambda", "Next": "RunCodeLambda" },
+        { "Variable": "$.runtime", "StringEquals": "fargate", "Next": "RunCodeFargate" }
+      ],
+      "Default": "UnknownRuntime"
+    },
+    "RunSsm": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "TimeoutSeconds": 3600,
+      "Comment": "SSM Automation is NOT a SFN .sync integration. record_ssm_start starts the automation (request-response), persists AutomationExecutionId + this task token, returns. The EventBridge status-change rule -> status_resume SendTaskSuccess/Failure resumes us.",
+      "Parameters": { "FunctionName": "${record_ssm_fn_arn}", "Payload": { "job_id.$": "$.job_id", "action.$": "$.action", "payload.$": "$.payload", "dry_run": false, "taskToken.$": "$$.Task.Token" } },
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "Rollback" } ],
+      "End": true
+    },
+    "RunCodeLambda": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 900,
+      "Parameters": { "FunctionName": "${executor_fn_arn}", "Payload": { "job_id.$": "$.job_id", "plan_id.$": "$.plan_id", "action.$": "$.action", "payload.$": "$.payload", "phase": "execute" } },
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "Rollback" } ],
+      "End": true
+    },
+    "RunCodeFargate": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "TimeoutSeconds": 3600,
+      "Parameters": {
+        "Cluster": "${cluster_arn}", "TaskDefinition": "${task_def_arn}", "LaunchType": "FARGATE",
+        "NetworkConfiguration": { "AwsvpcConfiguration": { "Subnets": ${subnets_json}, "SecurityGroups": ["${sg_id}"], "AssignPublicIp": "DISABLED" } },
+        "Overrides": { "ContainerOverrides": [ { "Name": "${container_name}", "Command.$": "States.Array('python', 'remediation_executor_cli.py', '--job-id', $.job_id, '--action', $.action)" } ] }
+      },
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "Rollback" } ],
+      "End": true
+    },
+    "UnknownRuntime": {
+      "Type": "Pass", "Result": { "Error": "UnknownRuntime", "Cause": "runtime is not ssm|lambda|fargate" }, "ResultPath": "$.errorInfo", "Next": "MarkFailed"
+    },
+    "Rollback": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 900,
+      "Comment": "Paired rollback (ADR-029 #5): a separately-validated artifact captured at plan time. On rollback SUCCESS -> MarkFailed (forward failed but state restored). On rollback FAILURE -> ManualIntervention (NEVER infinite retry).",
+      "Parameters": { "FunctionName": "${executor_fn_arn}", "Payload": { "job_id.$": "$.job_id", "plan_id.$": "$.plan_id", "action.$": "$.action", "phase": "rollback", "rollback_plan.$": "$.payload.rollback_plan" } },
+      "Retry": [ { "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"], "IntervalSeconds": 2, "MaxAttempts": 2, "BackoffRate": 2.0 } ],
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.rollbackError", "Next": "ManualIntervention" } ],
+      "Next": "MarkFailed"
+    },
+    "ManualIntervention": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 60,
+      "Comment": "Terminal: rollback failed. Set worker_jobs.status='manual_intervention' (NOT 'failed') so the reaper never touches it and an operator must resolve. status_updater handles the write with a manual flag.",
+      "Parameters": { "FunctionName": "${status_fn_arn}", "Payload": { "job_id.$": "$.job_id", "error.$": "$.rollbackError.Cause", "manual_intervention": true } },
+      "Retry": [ { "ErrorEquals": ["States.ALL"], "IntervalSeconds": 2, "MaxAttempts": 6, "BackoffRate": 2.0 } ],
+      "Next": "JobManual"
+    },
+    "MarkFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 60,
+      "Parameters": { "FunctionName": "${status_fn_arn}", "Payload": { "job_id.$": "$.job_id", "error.$": "$.errorInfo.Cause" } },
+      "Retry": [ { "ErrorEquals": ["States.ALL"], "IntervalSeconds": 2, "MaxAttempts": 6, "BackoffRate": 2.0 } ],
+      "Next": "JobFailed"
+    },
+    "JobFailed":  { "Type": "Fail", "Error": "RemediationFailed", "Cause": "Forward failed; rollback (if any) succeeded; status_updater set failed." },
+    "JobManual":  { "Type": "Fail", "Error": "ManualInterventionRequired", "Cause": "Rollback failed; operator must resolve. status='manual_intervention'." }
+  }
+}

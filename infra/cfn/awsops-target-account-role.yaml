@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWSops cross-account read-only role. Deploy this in each TARGET account you want AWSops to read
+  (cost, Bedrock metrics, inventory, etc.). The host AWSops web task role assumes this role via STS.
+  ExternalId is OPTIONAL (ADR-011 amended 2026-06-26): omit it for 1st-party accounts — trust is
+  pinned to the exact host web task-role ARN; supply it for 3rd-party/shared accounts. Read-only only
+  (ReadOnlyAccess) — AWSops never mutates target-account resources.
+
+Parameters:
+  HostTaskRoleArn:
+    Type: String
+    Description: ARN of the AWSops host WEB task role (registration/verify + read), e.g. arn:aws:iam::<host>:role/awsops-v2-task
+    AllowedPattern: '^arn:aws:iam::\d{12}:role/.+$'
+  ExternalId:
+    Type: String
+    Default: ''
+    # empty (1st-party, ARN-pinned trust) OR ≥8 chars (3rd-party) — never a weak 1-7 char value.
+    AllowedPattern: '^$|^.{8,}$'
+    Description: >
+      OPTIONAL shared ExternalId (confused-deputy guard). Leave EMPTY for 1st-party accounts — trust
+      is already pinned to the host web task-role ARN above. REQUIRED (≥8 chars) for 3rd-party/shared
+      accounts: set the same value you register in AWSops /accounts.
+    NoEcho: true
+  RoleName:
+    Type: String
+    Default: AWSopsReadOnlyRole
+    Description: Role name AWSops expects (keep the default unless you override role_name in /accounts).
+
+Conditions:
+  HasExternalId: !Not [!Equals [!Ref ExternalId, '']]
+
+Resources:
+  AWSopsReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: AWSops cross-account read-only access (assumed by the host web task role).
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              # ONLY the host web task role, ARN-validated — NOT account root (least privilege).
+              # (The steampipe task role is added by the multi-account inventory fan-out PR, which
+              # also grants it the source-side sts:AssumeRole — kept together there for consistency.)
+              AWS: !Ref HostTaskRoleArn
+            Action: 'sts:AssumeRole'
+            # 1st-party (no ExternalId): the exact-ARN principal pin IS the confused-deputy guard.
+            # 3rd-party: add the ExternalId StringEquals condition.
+            Condition: !If
+              - HasExternalId
+              - StringEquals:
+                  'sts:ExternalId': !Ref ExternalId
+              - !Ref 'AWS::NoValue'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+
+Outputs:
+  RoleArn:
+    Description: Register this account in AWSops /accounts (the role name must match).
+    Value: !GetAtt AWSopsReadOnlyRole.Arn

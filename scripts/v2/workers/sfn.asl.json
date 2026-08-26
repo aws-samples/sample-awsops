@@ -1,0 +1,149 @@
+{
+  "Comment": "AWSops v2 P2 async worker backbone. Route by $.runtime; the web enqueues 'queued', the worker claims running and sets succeeded itself; on any Catch the status_updater Lambda sets failed (SFN cannot write VPC Aurora). Idempotent: execution name == job_id (set by the dispatcher). Task TimeoutSeconds bound runaway/wedged runs so .sync stops the ECS task and Catch records failed (the reaper is only the slow backstop).",
+  "StartAt": "Route",
+  "States": {
+    "Route": {
+      "Type": "Choice",
+      "Choices": [
+        { "Variable": "$.runtime", "StringEquals": "lambda", "Next": "RunLambda" },
+        { "Variable": "$.runtime", "StringEquals": "fargate", "Next": "FargateRoute" }
+      ],
+      "Default": "UnknownRuntime"
+    },
+    "RunLambda": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 960,
+      "Parameters": {
+        "FunctionName": "${worker_fn_arn}",
+        "Payload.$": "$"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.Timeout"],
+          "IntervalSeconds": 5, "MaxAttempts": 1, "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "MarkFailed" }
+      ],
+      "End": true
+    },
+    "FargateRoute": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            { "Variable": "$.payload.oom", "IsPresent": true },
+            { "Variable": "$.payload.oom", "BooleanEquals": true }
+          ],
+          "Next": "RunFargateOOM"
+        }
+      ],
+      "Default": "RunFargate"
+    },
+    "RunFargate": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "TimeoutSeconds": 3600,
+      "Parameters": {
+        "Cluster": "${cluster_arn}",
+        "TaskDefinition": "${task_def_arn}",
+        "LaunchType": "FARGATE",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": ${subnets_json},
+            "SecurityGroups": ["${sg_id}"],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "EnableECSManagedTags": true,
+        "PropagateTags": "TASK_DEFINITION",
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "${container_name}",
+              "Command.$": "States.Array('python', 'fargate_worker.py', '--job-id', $.job_id)"
+            }
+          ]
+        }
+      },
+      "Retry": [
+        { "ErrorEquals": ["ECS.AmazonECSException", "ECS.ServerException"], "IntervalSeconds": 5, "MaxAttempts": 2, "BackoffRate": 2.0 }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "MarkFailed" }
+      ],
+      "End": true
+    },
+    "RunFargateOOM": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "TimeoutSeconds": 3600,
+      "Parameters": {
+        "Cluster": "${cluster_arn}",
+        "TaskDefinition": "${task_def_arn}",
+        "LaunchType": "FARGATE",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": ${subnets_json},
+            "SecurityGroups": ["${sg_id}"],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "EnableECSManagedTags": true,
+        "PropagateTags": "TASK_DEFINITION",
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "${container_name}",
+              "Command.$": "States.Array('python', 'fargate_worker.py', '--job-id', $.job_id, '--oom')"
+            }
+          ]
+        }
+      },
+      "Retry": [
+        { "ErrorEquals": ["ECS.AmazonECSException", "ECS.ServerException"], "IntervalSeconds": 5, "MaxAttempts": 2, "BackoffRate": 2.0 }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "MarkFailed" }
+      ],
+      "End": true
+    },
+    "UnknownRuntime": {
+      "Type": "Pass",
+      "Result": { "Error": "UnknownRuntime", "Cause": "runtime is not lambda|fargate" },
+      "ResultPath": "$.errorInfo",
+      "Next": "MarkFailed"
+    },
+    "MarkFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 60,
+      "Comment": "Last chance to record failure in Aurora; retry hard (6x) and wide so a transient Lambda blip does not leave the job stuck 'running' until the reaper. No Catch by design — if even this fails, the reaper is the backstop.",
+      "Parameters": {
+        "FunctionName": "${status_fn_arn}",
+        "Payload": {
+          "job_id.$": "$.job_id",
+          "error.$": "$.errorInfo.Cause"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException", "States.Timeout"],
+          "IntervalSeconds": 2, "MaxAttempts": 6, "BackoffRate": 2.0
+        }
+      ],
+      "Next": "JobFailed"
+    },
+    "JobFailed": {
+      "Type": "Fail",
+      "Error": "WorkerFailed",
+      "Cause": "Worker failed; status_updater set the job to failed."
+    }
+  }
+}

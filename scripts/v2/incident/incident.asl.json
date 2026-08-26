@@ -1,0 +1,183 @@
+{
+  "Comment": "AWSops v2 ADR-032 sibling incident state machine. Autonomous incident LIFECYCLE — ships flag-OFF; nothing starts an execution unless incident_lifecycle_enabled provisions the dispatcher INCIDENT_STATE_MACHINE_ARN. Stage progression: Triage -> (Choice on $.decision: Skipped/Linked -> Done; New -> Lead) -> Investigation (Map over $.roster, MaxConcurrency.$ = the Lead-resolved fan-out cap; each item a read-only Sub-agent consult; per-item Catch continues) -> RootCause -> MitigationPlan -> Prevention -> Done. SAFETY: the Lead DELEGATES ONLY and the Sub-agents are recommendation-only — NO state in this SM performs an AWS mutation / runTask / remediation call. Idempotent: execution name == job_id (set by the dispatcher). Every stage Task Catches States.ALL -> StageFailed, which marks the running stage failed (incident_stage_failed) then terminalizes the worker_jobs row via the reused P2 status_updater (SFN cannot write VPC Aurora) -> Fail. job_id + incident_id are preserved across stages via ResultPath so the failure path always has them.",
+  "StartAt": "Triage",
+  "States": {
+    "Triage": {
+      "Type": "Task",
+      "Resource": "${triage_fn_arn}",
+      "TimeoutSeconds": 600,
+      "Comment": "Severity gate + correlation dedup. Returns {job_id, incident_id, decision, maxConcurrency?}. Output replaces input (carries job_id + incident_id forward).",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "StageFailed" }
+      ],
+      "Next": "TriageDecision"
+    },
+    "TriageDecision": {
+      "Type": "Choice",
+      "Comment": "Skipped (below min-severity) and Linked (deduped into an existing incident) terminate cleanly — no roster, no investigation. Only a New incident proceeds to the Lead.",
+      "Choices": [
+        { "Variable": "$.decision", "StringEquals": "Skipped", "Next": "Done" },
+        { "Variable": "$.decision", "StringEquals": "Linked", "Next": "Done" }
+      ],
+      "Default": "Lead"
+    },
+    "Lead": {
+      "Type": "Task",
+      "Resource": "${lead_fn_arn}",
+      "TimeoutSeconds": 600,
+      "Comment": "DELEGATES ONLY. Returns {job_id, incident_id, roster:[...], maxConcurrency}. No agent invoke, no mutation. Output replaces input (still carries job_id + incident_id).",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "StageFailed" }
+      ],
+      "Next": "Investigation"
+    },
+    "Investigation": {
+      "Type": "Map",
+      "Comment": "Fan-out to the Lead-resolved read-only Sub-agents. MaxConcurrency.$ == the Lead's maxConcurrency (already capped by the configurable subagent-fanout-max). Each item is a recommendation-only consult that writes ONE incident_findings row. Per-item Catch continues so one Sub-agent failure never stalls the incident. ResultPath isolates the Map output so the top-level job_id + incident_id survive for RootCause and the failure path.",
+      "ItemsPath": "$.roster",
+      "MaxConcurrency.$": "$.maxConcurrency",
+      "ResultPath": "$.investigation",
+      "ItemProcessor": {
+        "ProcessorConfig": { "Mode": "INLINE" },
+        "StartAt": "SubAgent",
+        "States": {
+          "SubAgent": {
+            "Type": "Task",
+            "Resource": "${subagent_fn_arn}",
+            "TimeoutSeconds": 600,
+            "Comment": "One roster item -> one read-only section consult -> one compacted incident_findings row. Idempotent on the stage idempotency key. Recommendation-only (no mutation).",
+            "Retry": [
+              {
+                "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+                "IntervalSeconds": 2, "MaxAttempts": 2, "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              { "ErrorEquals": ["States.ALL"], "ResultPath": "$.itemError", "Next": "SubAgentSkipped" }
+            ],
+            "End": true
+          },
+          "SubAgentSkipped": {
+            "Type": "Pass",
+            "Comment": "A single Sub-agent failing is non-fatal (its findings row is simply absent). Continue the Map.",
+            "End": true
+          }
+        }
+      },
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "StageFailed" }
+      ],
+      "Next": "RootCause"
+    },
+    "RootCause": {
+      "Type": "Task",
+      "Resource": "${rootcause_fn_arn}",
+      "TimeoutSeconds": 600,
+      "Comment": "Reads the recorded findings from Aurora and persists incidents.rca. ResultPath preserves the top-level job_id + incident_id (this Lambda's return omits job_id).",
+      "ResultPath": "$.rootcause",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "StageFailed" }
+      ],
+      "Next": "MitigationPlan"
+    },
+    "MitigationPlan": {
+      "Type": "Task",
+      "Resource": "${mitigation_fn_arn}",
+      "TimeoutSeconds": 600,
+      "Comment": "RECOMMENDATION-ONLY mitigation plan (names known catalog actions; never executes them). ResultPath preserves job_id + incident_id.",
+      "ResultPath": "$.mitigation",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "StageFailed" }
+      ],
+      "Next": "Prevention"
+    },
+    "Prevention": {
+      "Type": "Task",
+      "Resource": "${prevention_fn_arn}",
+      "TimeoutSeconds": 600,
+      "Comment": "Records preventive recommendations. ResultPath preserves job_id + incident_id.",
+      "ResultPath": "$.prevention",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "StageFailed" }
+      ],
+      "Next": "Done"
+    },
+    "Done": {
+      "Type": "Succeed"
+    },
+    "StageFailed": {
+      "Type": "Task",
+      "Resource": "${incident_stage_failed_fn_arn}",
+      "TimeoutSeconds": 60,
+      "Comment": "Marks the running incident_stages row failed (terminal-immutable) + rolls incidents.status='stalled'. Input carries {job_id, incident_id, errorInfo}; ResultPath isolates the marker so job_id survives for the status_updater. NO mutation of AWS resources.",
+      "Parameters": {
+        "job_id.$": "$.job_id",
+        "incident_id.$": "$.incident_id",
+        "error.$": "$.errorInfo.Cause"
+      },
+      "ResultPath": "$.stageFailed",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2.0
+        }
+      ],
+      "Next": "MarkJobFailed"
+    },
+    "MarkJobFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "TimeoutSeconds": 60,
+      "Comment": "Reused P2 status_updater terminalizes the worker_jobs row (SFN cannot write VPC Aurora). Retry hard so a transient blip does not leave the job stuck 'running' until the reaper. No Catch by design.",
+      "Parameters": {
+        "FunctionName": "${status_fn_arn}",
+        "Payload": {
+          "job_id.$": "$.job_id",
+          "error.$": "$.errorInfo.Cause"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException", "States.Timeout"],
+          "IntervalSeconds": 2, "MaxAttempts": 6, "BackoffRate": 2.0
+        }
+      ],
+      "Next": "IncidentFailed"
+    },
+    "IncidentFailed": {
+      "Type": "Fail",
+      "Error": "IncidentStageFailed",
+      "Cause": "Incident stage failed; incident_stage_failed marked the stage and status_updater terminalized the job."
+    }
+  }
+}

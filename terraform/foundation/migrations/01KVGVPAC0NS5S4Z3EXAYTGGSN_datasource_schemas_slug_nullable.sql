@@ -1,0 +1,11 @@
+-- Make datasource_schemas.slug nullable.
+--
+-- The cache PK was swapped from (account_id, slug) to (account_id, integration_id) by the
+-- datasource-instances migration, but the legacy `slug` column was left NOT NULL with no default.
+-- upsertSchema() (web/lib/datasource-schema.ts) writes (account_id, integration_id, kind, schema,
+-- fetched_at) and never sets `slug`, so EVERY cache write failed with a NOT NULL violation and
+-- `datasource_schemas` stayed empty (0 rows) — silently defeating the connect-time, scheduled, and
+-- on-demand schema caches (chat/Explore then ground on nothing). `slug` is dead: nothing reads it from
+-- this table (the read paths select integration_id/kind/schema/fetched_at). Dropping NOT NULL lets the
+-- cache populate. Read-only posture: never mutates an AWS resource.
+ALTER TABLE datasource_schemas ALTER COLUMN slug DROP NOT NULL;

@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Architecture Deep Dive</title>
+  <meta name="generator" content="remarp">
+  <meta name="remarp-version" content="1">
+  <meta name="remarp-source" content="02-architecture.md">
+  <meta name="remarp-block" content="default">
+  <link rel="stylesheet" href="./common/theme.css">
+  <link rel="stylesheet" href="./common/pptx-theme/theme-override.css">
+  <style>:root { --slide-ratio-w: 16; --slide-ratio-h: 9; } :root { --slide-width: 960px; --slide-height: 540px; }</style>
+  
+  <script>window.__remarpTheme = {"colors": {}, "footer": "\u00a9 2026, Amazon Web Services, Inc. or its affiliates. All rights reserved. Amazon Confidential and Trademark.", "pagination": true, "fonts": {}};</script>
+</head>
+<body>
+<div class="slide-deck">
+<div class="slide theme-dark" data-remarp-id="s0" style="background:linear-gradient(135deg, #1a1f35 0%, #0d1117 50%, #161b2e 100%); padding:0; overflow:hidden;">
+  <div style="position:absolute; top:-20%; right:-10%; width:60%; height:80%; background:radial-gradient(ellipse, rgba(108,92,231,0.15) 0%, transparent 70%); pointer-events:none;"></div>
+  <div style="position:absolute; left:5%; top:42%; width:80px; height:3px; background:linear-gradient(90deg, #6c5ce7, #a29bfe); border-radius:2px;"></div>
+  <h1 style="position:absolute; left:5%; top:45%; font-size:2.8rem; color:#fff; font-weight:300; line-height:1.2; width:60%; margin:0;">Architecture Deep Dive</h1>
+  <p style="position:absolute; left:5%; top:60%; font-size:1.3rem; color:rgba(255,255,255,0.7); width:60%; margin:0;">AWSops 기술 아키텍처</p>
+  <div style="position:absolute; left:5%; top:75%;">
+    <p style="font-size:1.05rem; color:#fff; font-weight:600; margin:0;">Terraform 기반 MSA · 비공개 엣지 · 읽기 전용 운영 태세</p>
+    <p style="font-size:0.9rem; color:rgba(255,255,255,0.6); margin:6px 0 0 0;"></p>
+    <p style="font-size:0.9rem; color:rgba(255,255,255,0.6); margin:2px 0 0 0;"></p>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s1" style="transition: transform var(--transition-normal), opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s1-header"><h2>Overall Architecture — 4-Layer Private Edge</h2></div>
+  <div class="slide-body" data-remarp-id="s1-body">
+    <p><!-- Slide 2: Overall Architecture --></p>
+<div style="display:flex;flex-direction:column;gap:10px;margin-top:16px;">
+  <div style="background:rgba(0,212,255,0.12);border:1px solid rgba(0,212,255,0.4);border-radius:8px;padding:14px 18px;text-align:center;">
+    <span style="color:#00d4ff;font-weight:bold;font-size:18px;">Browser</span>
+    <span style="color:#8b95a5;font-size:13px;margin-left:10px;">awsops-v2.example.com</span>
+  </div>
+  <div style="text-align:center;color:#666;font-size:20px;">↓ TLS</div>
+  <div style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);border-radius:8px;padding:14px 18px;text-align:center;">
+    <span style="color:#f59e0b;font-weight:bold;font-size:18px;">CloudFront</span>
+    <span style="color:#8b95a5;font-size:13px;margin-left:10px;">VPC Origin · https-only:443 · SNI = public FQDN</span>
+  </div>
+  <div style="text-align:center;color:#666;font-size:20px;">↓ HTTPS:443 (regional ACM)</div>
+  <div style="background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.4);border-radius:8px;padding:14px 18px;text-align:center;">
+    <span style="color:#a855f7;font-weight:bold;font-size:18px;">Internal ALB</span>
+    <span style="color:#8b95a5;font-size:13px;margin-left:10px;">SG: 443 ONLY from <code style="color:#a855f7;">CloudFront-VPCOrigins-Service-SG</code></span>
+  </div>
+  <div style="text-align:center;color:#666;font-size:20px;">↓ HTTP</div>
+  <div style="background:rgba(0,255,136,0.12);border:1px solid rgba(0,255,136,0.4);border-radius:8px;padding:14px 18px;text-align:center;">
+    <span style="color:#00ff88;font-weight:bold;font-size:18px;">ECS Fargate</span>
+    <span style="color:#8b95a5;font-size:13px;margin-left:10px;"><code style="color:#00ff88;">awsops-v2-web:3000</code> (thin-BFF, arm64)</span>
+  </div>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:16px;">
+  <div style="background:rgba(15,22,41,0.6);border-radius:8px;padding:12px;text-align:center;">
+    <div style="color:#00d4ff;font-weight:bold;">No Public ALB</div>
+    <div style="color:#8b95a5;font-size:12px;">진입점은 CloudFront 한 곳</div>
+  </div>
+  <div style="background:rgba(15,22,41,0.6);border-radius:8px;padding:12px;text-align:center;">
+    <div style="color:#00ff88;font-weight:bold;">Aurora</div>
+    <div style="color:#8b95a5;font-size:12px;">영속 상태</div>
+  </div>
+  <div style="background:rgba(15,22,41,0.6);border-radius:8px;padding:12px;text-align:center;">
+    <div style="color:#f59e0b;font-weight:bold;">AgentCore MCP</div>
+    <div style="color:#8b95a5;font-size:12px;">라이브 AWS 읽기</div>
+  </div>
+</div>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s2" style="transition: transform var(--transition-normal), opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s2-header"><h2>Terraform IaC — Single Root + Feature Flags</h2></div>
+  <div class="slide-body" data-remarp-id="s2-body">
+    <div class="columns">
+<div class="col">
+<h3>Foundation</h3>
+<ul><li><strong>단일 루트</strong> <code>terraform/foundation/</code></li><li><strong>Partial S3 backend</strong> — <code>awsops-v2-tfstate</code>, <code>use_lockfile</code> (DynamoDB 없음)</li><li>TF ≥ <strong>1.15</strong>, provider <strong>~>6.0</strong>, <strong>arm64</strong></li><li><strong>Saved-tfplan 규율</strong> — 공유 인프라는 <code>apply tfplan</code> (no <code>-auto-approve</code>)</li></ul>
+<h3>Feature Flags (default-off = $0)</h3>
+<ul><li><code>agentcore_enabled</code> · <code>workers_enabled</code></li><li><code>steampipe_enabled</code> · <code>hybrid_routing_enabled</code></li></ul>
+</div><div class="col">
+<h3>Key <code>.tf</code> Files</h3>
+<table><thead><tr><th>파일</th><th>역할</th></tr></thead><tbody><tr><td><code>network.tf</code></td><td>VPC 신규/재사용</td></tr><tr><td><code>edge.tf</code></td><td>CloudFront + VPC Origin + ALB</td></tr><tr><td><code>auth.tf</code></td><td>Cognito + Lambda@Edge</td></tr><tr><td><code>data.tf</code></td><td>Aurora + schema</td></tr><tr><td><code>workload.tf</code></td><td>ECS web service</td></tr><tr><td><code>ecr.tf</code></td><td>dual-tier ECR</td></tr><tr><td><code>ai.tf</code></td><td>AgentCore + SSM</td></tr><tr><td><code>workers.tf</code></td><td>SQS + SFN + Lambda</td></tr><tr><td><code>eks.tf</code></td><td>Access Entry + View</td></tr></tbody></table>
+</div>
+</div>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s3" style="transition: transform var(--transition-normal), opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s3-header"><h2>Compute & Web — Thin-BFF on Fargate</h2></div>
+  <div class="slide-body" data-remarp-id="s3-body">
+    <div class="columns">
+<div class="col">
+<h3>Next.js 14 Standalone (arm64)</h3>
+<ul><li><strong>루트 경로 서빙</strong> — basePath 없음, fetch는 <code>/api/*</code></li><li><strong>Thin-BFF 원칙</strong> — 무겁고·길고·OOM 위험 작업은 직접 실행 금지</li><li>무거운 작업은 <strong><code>POST /api/jobs</code>로 enqueue</strong></li></ul>
+<h3>Routes</h3>
+<ul><li><code>/api/health</code> — 공개 헬스체크</li><li><code>/api/stream</code> — SSE 스트리밍</li><li><code>/api/db</code> — Aurora ping</li><li><code>/api/jobs</code> (+<code>/[id]</code>) — 비동기 작업</li></ul>
+</div><div class="col">
+<p><div style="display:flex;flex-direction:column;gap:14px;margin-top:8px;"></p>
+<p>  <div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.35);border-radius:10px;padding:16px;"></p>
+<p>    <div style="color:#ef4444;font-weight:bold;font-size:16px;margin-bottom:6px;">⚠ HOSTNAME=0.0.0.0</div></p>
+<p>    <div style="color:#8b95a5;font-size:13px;line-height:1.5;">런타임 env로 명시. 이미지 ENV로는 부족 — ECS가 ENI IP로 덮어써 healthCheck UNHEALTHY.</div></p>
+<p>  </div></p>
+<p>  <div style="background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.35);border-radius:10px;padding:16px;"></p>
+<p>    <div style="color:#00d4ff;font-weight:bold;font-size:16px;margin-bottom:6px;">✓ Health Path Match</div></p>
+<p>    <div style="color:#8b95a5;font-size:13px;line-height:1.5;">컨테이너 + target group 헬스 경로 = <code style="color:#00d4ff;">/api/health</code>. 불일치 시 circuit breaker 루프.</div></p>
+<p>  </div></p>
+<p></div></p>
+</div>
+</div>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s4" style="transition: transform var(--transition-normal), opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s4-header"><h2>Data Layer — Aurora Serverless v2</h2></div>
+  <div class="slide-body" data-remarp-id="s4-body">
+    <div class="columns">
+<div class="col">
+<h3>Aurora (PostgreSQL 17.9)</h3>
+<ul><li><strong>0.5–4 ACU</strong>, KMS CMK, RDS-관리 master secret</li><li>앱 접근 = <strong>node-pg</strong> (<code>web/lib/db.ts</code>)</li><li>ADR-030 스키마 (v9 baseline) + <code>worker_jobs</code> · chat threads · diagnosis</li><li>새 테이블 = <strong>ULID 마이그레이션</strong> (<code>migrations/<ULID>_*.sql</code>)</li></ul>
+</div><div class="col">
+<h3>Steampipe = 인벤토리 sync ONLY</h3>
+<p><div style="background:rgba(0,255,136,0.08);border:1px solid rgba(0,255,136,0.3);border-radius:10px;padding:16px;margin-top:8px;"></p>
+<p>  <div style="color:#00ff88;font-weight:bold;font-size:15px;margin-bottom:8px;">warm Fargate → Aurora → /inventory/[type]</div></p>
+<p>  <div style="color:#8b95a5;font-size:13px;line-height:1.6;"></p>
+<p>    flag-gated (<code style="color:#00ff88;">steampipe_enabled</code>)<br></p>
+<p>    약 <b style="color:#00ff88;">22종</b> 리소스 타입 동기화<br></p>
+<p>    fan-out sync · registry-driven nav</p>
+<p>  </div></p>
+<p>  <div style="color:#ef4444;font-size:12px;margin-top:10px;border-top:1px solid rgba(239,68,68,0.3);padding-top:8px;"></p>
+<p>    NOT a live query engine — pg Pool / 라이브 조회 아님</p>
+<p>  </div></p>
+<p></div></p>
+</div>
+</div>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s5" style="transition: transform var(--transition-normal), opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s5-header"><h2>AI Engine — Bedrock AgentCore</h2></div>
+  <div class="slide-body" data-remarp-id="s5-body">
+    <p><!-- Slide 6: AI Engine --></p>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:12px;">
+  <div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.35);border-radius:10px;padding:18px;">
+    <div style="color:#f59e0b;font-weight:bold;font-size:17px;margin-bottom:8px;">Models + Runtime</div>
+    <div style="color:#b0b0b0;font-size:13px;line-height:1.7;">
+      Claude <b>Opus 4.8</b> / <b>Sonnet 4.6</b> / <b>Haiku 4.5</b><br>
+      AgentCore Runtime (Strands, <code style="color:#f59e0b;">agent/agent.py</code>)<br>
+      + Memory + Code Interpreter
+    </div>
+  </div>
+  <div style="background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.35);border-radius:10px;padding:18px;">
+    <div style="color:#00d4ff;font-weight:bold;font-size:17px;margin-bottom:8px;">Config Source of Truth</div>
+    <div style="color:#b0b0b0;font-size:13px;line-height:1.7;">
+      <b>SSM</b> = source of truth<br>
+      <code style="color:#00d4ff;">/ops/awsops-v2/agentcore/*</code><br>
+      provision.py 기록 → BFF 런타임 read
+    </div>
+  </div>
+</div>
+<div style="background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.3);border-radius:10px;padding:16px;margin-top:16px;">
+  <div style="color:#a855f7;font-weight:bold;font-size:15px;margin-bottom:10px;">8 Section Gateways &nbsp;·&nbsp; ~120 read-only tools</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <span style="background:rgba(168,85,247,0.18);color:#c4a0f7;border-radius:6px;padding:5px 12px;font-size:13px;">network</span>
+    <span style="background:rgba(168,85,247,0.18);color:#c4a0f7;border-radius:6px;padding:5px 12px;font-size:13px;">container</span>
+    <span style="background:rgba(168,85,247,0.18);color:#c4a0f7;border-radius:6px;padding:5px 12px;font-size:13px;">data</span>
+    <span style="background:rgba(168,85,247,0.18);color:#c4a0f7;border-radius:6px;padding:5px 12px;font-size:13px;">security</span>
+    <span style="background:rgba(168,85,247,0.18);color:#c4a0f7;border-radius:6px;padding:5px 12px;font-size:13px;">cost</span>
+    <span style="background:rgba(168,85,247,0.18);color:#c4a0f7;border-radius:6px;padding:5px 12px;font-size:13px;">monitoring</span>
+    <span style="background:rgba(168,85,247,0.18);color:#c4a0f7;border-radius:6px;padding:5px 12px;font-size:13px;">iac</span>
+    <span style="background:rgba(168,85,247,0.18);color:#c4a0f7;border-radius:6px;padding:5px 12px;font-size:13px;">ops</span>
+  </div>
+  <div style="color:#8b95a5;font-size:12px;margin-top:10px;">외부 관측성 = Integrations 축 (ADR-039) — 9번째 게이트웨이가 아님</div>
+</div>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s6" style="transition: transform var(--transition-normal), opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s6-header"><h2>Hybrid Routing & Streaming Chat — ADR-038</h2></div>
+  <div class="slide-body" data-remarp-id="s6-body">
+    <div class="columns">
+<div class="col">
+<h3>Routing Pipeline</h3>
+<ol><li><strong>Regex fast-path</strong> — 명백한 질의는 즉시 라우팅</li><li><strong>Haiku 4.5 classifier</strong> — 애매하면 분류</li><li><strong>Prompt caching</strong> — 약 <strong>59%</strong> 캐시 히트</li><li>→ 섹션 라우팅 → SSE 스트리밍 + 도구 표시</li></ol>
+<h3>Gate Result</h3>
+<ul><li><strong>69.2% → 96.9%</strong> (+27.7pp)</li><li><strong>LIVE</strong> 2026-06-10</li></ul>
+</div><div class="col">
+<h3>Chat UX</h3>
+<p><div style="background:rgba(0,212,255,0.08);border:1px solid rgba(0,212,255,0.3);border-radius:10px;padding:16px;margin-top:8px;"></p>
+<p>  <div style="color:#00d4ff;font-size:14px;line-height:1.9;"></p>
+<p>    🪟 resizable / maximizable drawer<br></p>
+<p>    📄 <code style="color:#00d4ff;">/assistant</code> full page<br></p>
+<p>    📝 react-markdown 렌더링<br></p>
+<p>    💾 Aurora-backed thread 영속<br></p>
+<p>    📚 Claude-app 스타일 사이드바</p>
+<p>  </div></p>
+<p></div></p>
+</div>
+</div>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s7" style="transition: transform var(--transition-normal), opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s7-header"><h2>AI Diagnosis — Flagship, Read-Only</h2></div>
+  <div class="slide-body" data-remarp-id="s7-body">
+    <p><!-- Slide 8: AI Diagnosis --></p>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:12px;">
+  <div style="background:rgba(168,85,247,0.1);border:1px solid rgba(168,85,247,0.35);border-radius:10px;padding:18px;">
+    <div style="color:#a855f7;font-weight:bold;font-size:18px;margin-bottom:8px;">Base Tier</div>
+    <div style="color:#a855f7;font-size:36px;font-weight:bold;">8</div>
+    <div style="color:#8b95a5;font-size:13px;">섹션 · 기본 진단</div>
+  </div>
+  <div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.35);border-radius:10px;padding:18px;">
+    <div style="color:#f59e0b;font-weight:bold;font-size:18px;margin-bottom:8px;">Deep Tier</div>
+    <div style="color:#f59e0b;font-size:36px;font-weight:bold;">15</div>
+    <div style="color:#8b95a5;font-size:13px;">섹션 · Sonnet 기본 / Opus 선택 (cost-gate)</div>
+  </div>
+</div>
+<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;">
+  <span style="background:rgba(0,212,255,0.12);color:#00d4ff;border-radius:6px;padding:8px 14px;font-size:13px;">Well-Architected 매핑</span>
+  <span style="background:rgba(0,212,255,0.12);color:#00d4ff;border-radius:6px;padding:8px 14px;font-size:13px;">SSE 진행률</span>
+  <span style="background:rgba(0,212,255,0.12);color:#00d4ff;border-radius:6px;padding:8px 14px;font-size:13px;">auto-title + tags</span>
+  <span style="background:rgba(0,212,255,0.12);color:#00d4ff;border-radius:6px;padding:8px 14px;font-size:13px;">soft-delete</span>
+  <span style="background:rgba(0,255,136,0.12);color:#00ff88;border-radius:6px;padding:8px 14px;font-size:13px;">DOCX / PDF export</span>
+</div>
+<div style="background:rgba(0,255,136,0.06);border:1px solid rgba(0,255,136,0.3);border-radius:8px;padding:12px;margin-top:16px;text-align:center;">
+  <span style="color:#00ff88;font-weight:bold;">Strictly Read-Only</span>
+  <span style="color:#8b95a5;font-size:13px;margin-left:8px;">진단·권고만 — auto-remediation 없음. 생성은 비동기 워커 (python-docx + chromium)</span>
+</div>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s8" style="transition: transform var(--transition-normal), opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s8-header"><h2>Async Worker Tier — OOM-Safe Backbone</h2></div>
+  <div class="slide-body" data-remarp-id="s8-body">
+    <p><!-- Slide 9: Async Worker Tier --></p>
+<div style="display:flex;flex-direction:column;gap:8px;margin-top:14px;font-size:13px;">
+  <div style="background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.35);border-radius:8px;padding:12px 16px;">
+    <span style="color:#00d4ff;font-weight:bold;">web POST /api/jobs</span>
+    <span style="color:#8b95a5;"> → <code style="color:#00d4ff;">worker_jobs</code> (queued) + SQS</span>
+  </div>
+  <div style="text-align:center;color:#666;">↓ ESM (kill-switch)</div>
+  <div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.35);border-radius:8px;padding:12px 16px;">
+    <span style="color:#f59e0b;font-weight:bold;">dispatcher Lambda</span>
+    <span style="color:#8b95a5;"> — 멱등 (idempotent on job_id)</span>
+  </div>
+  <div style="text-align:center;color:#666;">↓ Step Functions Standard · Choice on <code style="color:#a855f7;">$.runtime</code></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+    <div style="background:rgba(168,85,247,0.1);border:1px solid rgba(168,85,247,0.35);border-radius:8px;padding:12px 16px;text-align:center;">
+      <span style="color:#a855f7;font-weight:bold;">RunLambda</span><br><span style="color:#8b95a5;">짧은 작업</span>
+    </div>
+    <div style="background:rgba(0,255,136,0.1);border:1px solid rgba(0,255,136,0.35);border-radius:8px;padding:12px 16px;text-align:center;">
+      <span style="color:#00ff88;font-weight:bold;">ecs:runTask.sync (Fargate)</span><br><span style="color:#8b95a5;">긴 작업 / OOM</span>
+    </div>
+  </div>
+  <div style="text-align:center;color:#666;">↓</div>
+  <div style="background:rgba(15,22,41,0.6);border-radius:8px;padding:12px 16px;color:#8b95a5;">
+    worker가 직접 <b style="color:#00ff88;">running/succeeded</b> 기록 · Catch 시 <b style="color:#f59e0b;">status_updater</b>가 failed · <b style="color:#00d4ff;">reaper</b>(EventBridge 5분)가 stale 정합화
+  </div>
+</div>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s9" style="transition: transform var(--transition-normal), opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s9-header"><h2>Datasources & Topology</h2></div>
+  <div class="slide-body" data-remarp-id="s9-body">
+    <div class="columns">
+<div class="col">
+<h3>Datasource Platform (read-only)</h3>
+<ul><li>커넥터: <strong>ClickHouse · Prometheus · Loki · Tempo · Mimir</strong></li><li>connector Lambda + <strong>Aurora schema cache</strong></li><li>chat injection — AI가 데이터소스 교차 조회</li><li><strong><code>/datasources</code> Explore</strong> 페이지 + NL→query</li></ul>
+</div><div class="col">
+<h3>Topology</h3>
+<p><div style="background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.3);border-radius:10px;padding:16px;margin-top:8px;"></p>
+<p>  <div style="display:flex;align-items:center;gap:8px;justify-content:center;flex-wrap:wrap;font-size:13px;color:#c4a0f7;font-weight:bold;"></p>
+<p>    <span>CF</span><span style="color:#666;">→</span></p>
+<p>    <span>LB</span><span style="color:#666;">→</span></p>
+<p>    <span>TG</span><span style="color:#666;">→</span></p>
+<p>    <span>DB</span></p>
+<p>  </div></p>
+<p>  <div style="color:#8b95a5;font-size:13px;line-height:1.7;margin-top:12px;"></p>
+<p>    flow + infra 리소스 그래프<br></p>
+<p>    <code style="color:#a855f7;">/topology/resource/[id]</code> 상세 패널</p>
+<p>  </div></p>
+<p></div></p>
+</div>
+</div>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s10" style="transition: transform var(--transition-normal), opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s10-header"><h2>EKS — Read-Only In-Cluster</h2></div>
+  <div class="slide-body" data-remarp-id="s10-body">
+    <div class="columns">
+<div class="col">
+<h3>Onboarding</h3>
+<ul><li><code>configure.mjs</code> <strong>멀티선택</strong> → <code>eks.tf</code></li><li>web task role에 <strong>Access Entry</strong> 부여</li><li><strong>AmazonEKSViewPolicy</strong> (클러스터 스코프)</li></ul>
+<h3>Read-Only Query</h3>
+<ul><li>nodes / pods / deployments / services</li><li>task-role Access-Entry <strong>presigned-STS token</strong></li><li><strong>BFF-direct</strong> (워커 거치지 않음)</li></ul>
+</div><div class="col">
+<p><div style="background:rgba(0,255,136,0.08);border:1px solid rgba(0,255,136,0.3);border-radius:10px;padding:18px;margin-top:8px;"></p>
+<p>  <div style="color:#00ff88;font-weight:bold;font-size:16px;margin-bottom:10px;">EKS Page</div></p>
+<p>  <div style="color:#8b95a5;font-size:13px;line-height:1.8;"></p>
+<p>    ✓ access badges<br></p>
+<p>    ✓ CLI guide<br></p>
+<p>    ✓ 클러스터별 워크로드 뷰</p>
+<p>  </div></p>
+<p>  <div style="color:#666;font-size:12px;margin-top:12px;border-top:1px solid rgba(0,255,136,0.2);padding-top:8px;"></p>
+<p>    View policy = 읽기 전용 RBAC — 변경 권한 없음</p>
+<p>  </div></p>
+<p></div></p>
+</div>
+</div>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s11" style="transition: transform var(--transition-normal), opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s11-header"><h2>Auth & Security</h2></div>
+  <div class="slide-body" data-remarp-id="s11-body">
+    <div class="columns">
+<div class="col">
+<h3>Cognito + Lambda@Edge</h3>
+<ul><li><strong>us-east-1</strong>, py3.12, viewer-request</li><li><strong>RS256 JWKS</strong> 서명 검증 (iss/aud/token_use)</li><li>OAuth <code>state</code> + <strong>PKCE public client</strong></li></ul>
+<h3>Login (ADR-042)</h3>
+<ul><li><strong>Primary</strong> = 자체 <code>/login</code> 폼</li><li>BFF <code>POST /api/auth/login</code> → 무서명 공개 <code>InitiateAuth(USER_PASSWORD_AUTH)</code> → <code>awsops_token</code> (id_token 12h)</li><li>Hosted UI PKCE = <strong>dark fallback</strong>, signout = 쿠키 삭제</li></ul>
+</div><div class="col">
+<p><div style="display:flex;flex-direction:column;gap:12px;margin-top:8px;"></p>
+<p>  <div style="background:rgba(0,255,136,0.1);border:1px solid rgba(0,255,136,0.35);border-radius:10px;padding:14px;"></p>
+<p>    <div style="color:#00ff88;font-weight:bold;font-size:15px;">🔒 Private Edge</div></p>
+<p>    <div style="color:#8b95a5;font-size:13px;">공개 ALB 없음 — 진입점은 CloudFront 하나</div></p>
+<p>  </div></p>
+<p>  <div style="background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.35);border-radius:10px;padding:14px;"></p>
+<p>    <div style="color:#00d4ff;font-weight:bold;font-size:15px;">🔑 ECS Secrets</div></p>
+<p>    <div style="color:#8b95a5;font-size:13px;">execution role 권한 (task role 아님)</div></p>
+<p>  </div></p>
+<p>  <div style="background:rgba(168,85,247,0.1);border:1px solid rgba(168,85,247,0.35);border-radius:10px;padding:14px;"></p>
+<p>    <div style="color:#a855f7;font-weight:bold;font-size:15px;">👤 Admin</div></p>
+<p>    <div style="color:#8b95a5;font-size:13px;">SSM + Cognito group (fail-closed)</div></p>
+<p>  </div></p>
+<p></div></p>
+</div>
+</div>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s12" style="transition: transform var(--transition-normal), opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s12-header"><h2>Deployment — Makefile Flow</h2></div>
+  <div class="slide-body" data-remarp-id="s12-body">
+    <p><!-- Slide 13: Deployment --></p>
+<div style="display:flex;flex-direction:column;gap:8px;margin-top:14px;">
+  <div style="background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.35);border-radius:8px;padding:12px 16px;">
+    <code style="color:#00d4ff;font-weight:bold;">make configure</code>
+    <span style="color:#8b95a5;font-size:13px;"> — TUI → terraform.tfvars + backend.hcl</span>
+  </div>
+  <div style="text-align:center;color:#666;">↓</div>
+  <div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.35);border-radius:8px;padding:12px 16px;">
+    <code style="color:#f59e0b;font-weight:bold;">terraform init / plan -out tfplan</code>
+    <span style="color:#8b95a5;font-size:13px;"> → 컨트롤러가 <code style="color:#f59e0b;">apply tfplan</code> (공유 인프라)</span>
+  </div>
+  <div style="text-align:center;color:#666;">↓</div>
+  <div style="background:rgba(0,255,136,0.1);border:1px solid rgba(0,255,136,0.35);border-radius:8px;padding:12px 16px;">
+    <code style="color:#00ff88;font-weight:bold;">make deploy</code>
+    <span style="color:#8b95a5;font-size:13px;"> — migrate-first → arm64 build → ECR → ECS rolling → wait stable → smoke <code style="color:#00ff88;">/api/health</code></span>
+  </div>
+  <div style="text-align:center;color:#666;">↓ (flag-gated)</div>
+  <div style="background:rgba(168,85,247,0.1);border:1px solid rgba(168,85,247,0.35);border-radius:8px;padding:12px 16px;">
+    <code style="color:#a855f7;font-weight:bold;">make agentcore</code> / <code style="color:#a855f7;font-weight:bold;">make workers</code>
+    <span style="color:#8b95a5;font-size:13px;"> — 각 flag로 apply 후 실행</span>
+  </div>
+</div>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s13" style="transition: opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s13-header"><h2>Posture & Differentiators</h2></div>
+  <div class="slide-body" data-remarp-id="s13-body">
+    <p><!-- Slide 14: Posture & Differentiators --></p>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px;">
+  <div style="background:rgba(0,255,136,0.1);border:1px solid rgba(0,255,136,0.4);border-radius:12px;padding:22px;">
+    <div style="font-size:40px;margin-bottom:10px;">🔒</div>
+    <div style="color:#00ff88;font-weight:bold;font-size:17px;margin-bottom:8px;">영구 동결 (do-not-enable)</div>
+    <div style="color:#8b95a5;font-size:13px;line-height:1.6;">ADR-041 / 2026-06-11 reversal<br>AWS-리소스 <b>변경 + 자율</b>은 영구 동결</div>
+  </div>
+  <div style="background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.4);border-radius:12px;padding:22px;">
+    <div style="font-size:40px;margin-bottom:10px;">📥</div>
+    <div style="color:#00d4ff;font-weight:bold;font-size:17px;margin-bottom:8px;">거버넌스된 External</div>
+    <div style="color:#8b95a5;font-size:13px;line-height:1.6;">외부 DATA read + 기록/티켓/메시지 <b>write</b> 허용<br>SSRF · Secrets · DLP · human-gate 하</div>
+  </div>
+</div>
+<div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.35);border-radius:12px;padding:18px;margin-top:18px;text-align:center;">
+  <span style="font-size:24px;">🧠</span>
+  <span style="color:#f59e0b;font-weight:bold;font-size:16px;margin-left:8px;">In-Account Bedrock</span>
+  <span style="color:#8b95a5;font-size:13px;margin-left:8px;">— 계정 안에서 추론, 외부 AI SaaS API 없음</span>
+</div>
+  </div>
+</div>
+
+<div class="slide" data-remarp-id="s14" style="transition: opacity var(--transition-normal)">
+  <div class="slide-header" data-remarp-id="s14-header"><h2>Key Takeaways — Architecture</h2></div>
+  <div class="slide-body" data-remarp-id="s14-body">
+    <p><!-- Slide 15: Key Takeaways --></p>
+<ul><li><strong>Terraform MSA on private edge</strong> — CloudFront VPC Origin → 내부 ALB → Fargate, 공개 ALB 없음</li><li><strong>Aurora 영속 상태</strong> — PostgreSQL 17.9 (Steampipe = flag-gated 인벤토리 sync일 뿐)</li><li><strong>AgentCore 섹션 에이전트</strong> — 8 게이트웨이 · ~120 read-only 도구로 라이브 AWS 읽기</li><li><strong>ADR-038 하이브리드 라우팅</strong> — regex + Haiku 분류기 + caching, SSE 스트리밍 챗</li><li><strong>OOM-safe 비동기 워커 티어</strong> — SQS + SFN + Lambda/Fargate, 진단·내보내기 처리</li><li><strong>읽기 전용 동결 태세</strong> — AWS 변경·자율 영구 동결, in-account Bedrock</li></ul>
+  </div>
+</div>
+
+<div class="slide theme-dark" data-remarp-id="s15" style="background:linear-gradient(135deg, #1a1f35 0%, #0d1117 50%, #161b2e 100%); padding:0; overflow:hidden;">
+  <div style="position:absolute; top:-20%; right:-10%; width:60%; height:80%; background:radial-gradient(ellipse, rgba(108,92,231,0.15) 0%, transparent 70%); pointer-events:none;"></div>
+  <div style="position:absolute; left:5%; top:42%; width:80px; height:3px; background:linear-gradient(90deg, #6c5ce7, #a29bfe); border-radius:2px;"></div>
+  <h1 style="position:absolute; left:5%; top:45%; font-size:2.8rem; color:#fff; font-weight:300; line-height:1.2; width:60%; margin:0;">AWSops</h1>
+  <p style="position:absolute; left:5%; top:60%; font-size:1.3rem; color:rgba(255,255,255,0.7); width:60%; margin:0;">AI-Powered AWS Operations Dashboard</p>
+  <div style="position:absolute; left:5%; top:75%;">
+    <p style="font-size:1.05rem; color:#fff; font-weight:600; margin:0;">감사합니다 · Questions?</p>
+    <p style="font-size:0.9rem; color:rgba(255,255,255,0.6); margin:6px 0 0 0;"></p>
+    <p style="font-size:0.9rem; color:rgba(255,255,255,0.6); margin:2px 0 0 0;"></p>
+  </div>
+</div>
+</div>
+<script src="./common/animation-utils.js"></script>
+<script src="./common/slide-framework.js"></script>
+<script src="./common/quiz-component.js"></script>
+<script src="./common/presenter-view.js"></script>
+
+<script>
+  
+  const presenterNotes = {
+    1: "[1min] 두 번째 파트, 아키텍처 딥다이브입니다.\nAWSops가 어떻게 만들어졌는지 레이어별로 자세히 보겠습니다.\n핵심은 세 가지입니다. 첫째, Terraform 기반 MSA로 재구축했다는 점. 둘째, 공개 진입점이 없는 비공개 엣지 구조라는 점. 셋째, 읽기 전용 운영 태세 위에 모든 것이 설계되었다는 점입니다.\n\n전체 그림부터 보겠습니다.",
+    2: "⏸️ [3min] 전체 구조는 4개 레이어의 비공개 엣지입니다.\n브라우저는 전용 도메인으로 들어오고, CloudFront가 TLS로 받습니다. 여기서 VPC Origin을 https-only 443으로 설정해 내부 ALB까지 TLS가 끊기지 않게 합니다. origin 도메인을 public FQDN으로 지정해 SNI가 맞아야 합니다.\n\n핵심은 공개 ALB가 없다는 점입니다. 내부 ALB의 보안 그룹은 CloudFront 관리형 SG에서 오는 443만 허용합니다. VPC CIDR만 열면 504가 납니다. ALB는 HTTP로 Fargate의 web 컨테이너 3000번 포트로 전달합니다.\n영속 상태는 Aurora에 두고, 라이브 AWS 조회는 AgentCore MCP 도구가, 무거운 작업은 비동기 워커가 처리합니다.\n\n이 인프라를 어떻게 코드로 관리하는지 보겠습니다.",
+    3: "⏸️ [3min] 인프라는 전부 Terraform입니다.\n단일 루트 `terraform/foundation/` 아래 모든 리소스를 정의하고, 상태는 partial S3 backend로 관리합니다. `use_lockfile`을 써서 DynamoDB 락 테이블 없이도 동시성 안전을 확보했습니다. Terraform 1.15 이상, provider 6 계열, 이미지는 모두 arm64입니다.\n\n큰 모듈은 전부 feature flag로 게이트합니다. agentcore, workers, steampipe, hybrid_routing 모두 기본값이 false라서 plan을 돌리면 No changes, 비용은 0입니다. 토글로 켜는 방식이라 안전합니다.\n공유 인프라는 절대 auto-approve를 쓰지 않고, 저장된 tfplan을 apply하는 규율을 지킵니다. CloudFront나 SG 같은 긴 apply는 컨트롤러가 직접 실행합니다.\n오른쪽이 파일별 역할입니다. 네트워크, 엣지, 인증, 데이터, 워크로드, ECR, AI, 워커, EKS로 깔끔하게 분리되어 있습니다.\n\n이제 컴퓨트와 웹 레이어입니다.",
+    4: "⏸️ [3min] 웹 레이어는 Next.js 14 standalone 빌드이고 arm64입니다.\n전용 도메인을 쓰므로 basePath 없이 루트 경로에서 서빙하고, fetch는 그냥 `/api/*`를 호출합니다.\n\n가장 중요한 설계 원칙은 thin-BFF입니다. 무겁거나, 오래 걸리거나, OOM 위험이 있는 작업은 절대 인라인으로 돌리지 않습니다. 대신 `POST /api/jobs`로 워커 큐에 넣습니다. 라우트는 공개 헬스체크, SSE 스트림, Aurora ping, 비동기 작업 정도로 얇게 유지합니다.\n오른쪽은 실전에서 꼭 챙겨야 하는 두 가지입니다. 첫째, HOSTNAME을 0.0.0.0으로 런타임 env에 명시해야 합니다. 이미지 ENV만으로는 ECS가 ENI IP로 덮어써서 헬스체크가 UNHEALTHY가 됩니다. 둘째, 컨테이너와 타깃 그룹의 헬스 경로가 앱의 `/api/health`와 정확히 일치해야 circuit breaker 루프를 피합니다.\n\n영속 상태를 담는 데이터 레이어로 갑니다.",
+    5: "⏸️ [3min] 영속 상태는 Aurora Serverless v2가 담당합니다.\nPostgreSQL 17.9, 0.5에서 4 ACU로 오토스케일하고, KMS CMK로 암호화하며 master secret은 RDS가 관리합니다. 앱은 node-pg 공유 풀로 접근합니다. 스키마는 ADR-030 기반 v9 baseline에 worker_jobs, chat 스레드, 진단 리포트 테이블이 더해진 형태이고, 새 테이블은 schema.sql에 덧붙이지 않고 ULID 마이그레이션 파일로 추가하는 규칙입니다.\n\n여기서 꼭 짚어야 할 점이 있습니다. Steampipe는 라이브 쿼리 엔진이 아닙니다. flag로 켜는 인벤토리 sync일 뿐입니다. warm Fargate가 약 22종 리소스 타입을 Aurora로 동기화하고, 이걸 generic `/inventory/[type]` 페이지가 보여줍니다. 라이브 AWS 조회는 어디까지나 AgentCore MCP 도구가 합니다. 예전의 임베디드 pg Pool 방식이 아니라는 점을 강조합니다.\n\n이제 핵심인 AI 엔진입니다.",
+    6: "⏸️ [4min] AI 엔진은 Bedrock AgentCore입니다.\n모델은 Opus 4.8, Sonnet 4.6, Haiku 4.5를 상황에 맞게 쓰고, AgentCore Runtime이 Strands 기반 `agent/agent.py`를 실행합니다. Memory와 Code Interpreter도 함께 붙어 있습니다.\n\n설정의 source of truth는 SSM입니다. provision.py가 runtime ARN, interpreter ID, memory ID를 `/ops/awsops-v2/agentcore/` 경로에 기록하고, 웹 BFF가 런타임에 읽습니다. valueFrom 레이스를 피하려는 의도적 설계입니다.\n도구는 8개 섹션 게이트웨이로 묶입니다. network, container, data, security, cost, monitoring, iac, ops입니다. 여기에 약 120개의 읽기 전용 도구가 분산되어 있습니다. 이 숫자는 진화하는 근사치라는 점을 기억해 주세요. 고정된 카운트가 아닙니다.\n한 가지 더, 외부 관측성은 Integrations 축, ADR-039로 다룹니다. 9번째 게이트웨이가 아닙니다. 게이트웨이 수는 8로 유지합니다.\n\n그럼 이 8개 게이트웨이 중 어디로 보낼지는 어떻게 정할까요?",
+    7: "⏸️ [3min] 8개 게이트웨이 중 어디로 보낼지는 ADR-038 하이브리드 라우팅이 정합니다.\n파이프라인은 3단계입니다. 먼저 regex fast-path가 명백한 질의를 즉시 라우팅합니다. 애매하면 Haiku 4.5 분류기가 판단합니다. 그리고 prompt caching으로 약 59% 캐시 히트를 내서 비용과 지연을 줄입니다. 결정된 섹션으로 라우팅한 뒤 SSE로 응답을 스트리밍하면서 어떤 도구를 호출하는지도 함께 보여줍니다.\n\n게이트 정확도는 69.2%에서 96.9%로 27.7 포인트 올랐고, 2026년 6월 10일에 라이브입니다.\n오른쪽은 챗 UX입니다. 크기 조절과 최대화가 되는 드로어, `/assistant` 풀페이지, react-markdown 렌더링, 그리고 Aurora에 저장되는 스레드 영속까지. 사이드바는 Claude 앱 스타일이라 익숙합니다.\n\n이 챗 위에 얹힌 대표 기능이 AI 진단입니다.",
+    8: "❓ ⏸️ [4min] AWSops의 대표 기능은 AI 종합진단입니다.\n진단은 워커가 생성하는 종합 리포트입니다. base 티어는 8섹션, deep 티어는 15섹션입니다. deep은 기본 Sonnet으로 돌고, cost-gate를 거쳐 Opus를 선택할 수도 있습니다. 모든 섹션은 Well-Architected 6대 기둥에 매핑됩니다.\n\n생성 중에는 SSE로 진행률이 흐르고, 끝나면 워커 LLM이 자동으로 제목을 붙이고 태그를 제안합니다. 제목 수정, 태그 수동 추가, soft-delete도 됩니다. 그리고 DOCX와 PDF로 내보낼 수 있는데, 워커가 python-docx와 chromium으로 생성합니다.\n가장 중요한 건 이 모든 게 철저히 읽기 전용이라는 점입니다. 진단하고 권고할 뿐 자동으로 고치지 않습니다. auto-remediation은 없습니다. 그래서 안심하고 운영 환경에 붙일 수 있습니다.\n\nWell-Architected Review를 수동으로 며칠씩 만들어 보신 분 계시죠? 이게 그 작업을 대신합니다.\n\n이 무거운 생성 작업을 안전하게 받쳐주는 워커 티어를 보겠습니다.",
+    9: "⏸️ [3min] 무거운 작업은 모두 비동기 워커 티어가 받습니다.\n흐름은 이렇습니다. 웹이 `POST /api/jobs`로 들어오면 worker_jobs 테이블에 queued 상태로 기록하고 SQS에 넣습니다. ESM이 킬스위치 역할을 하면서 dispatcher Lambda를 호출하는데, dispatcher는 job_id 기준으로 멱등하게 동작합니다.\n\n그다음 Step Functions Standard가 `$.runtime` 값을 보고 분기합니다. 짧은 작업은 RunLambda로, 길거나 OOM 위험이 있는 작업은 ecs:runTask.sync로 Fargate 워커에 넘깁니다. 진단 리포트나 DOCX·PDF 생성 같은 무거운 작업이 여기로 갑니다.\n워커는 스스로 running과 succeeded를 Aurora에 기록합니다. 실패해서 Catch로 빠지면 status_updater Lambda가 failed로 표시하는데, 이건 SFN이 VPC 안 Aurora에 직접 쓸 수 없기 때문입니다. 마지막으로 reaper가 5분마다 stale 작업을 정합화합니다. 그래서 OOM에 안전한 백본입니다. 참고로 Fargate 워커는 ENTRYPOINT가 아니라 CMD를 써야 SFN command override가 정상 동작합니다.\n\n관측성과 토폴로지로 넘어갑니다.",
+    10: "⏸️ [3min] 관측성 데이터는 읽기 전용 데이터소스 플랫폼으로 통합합니다.\nClickHouse, Prometheus, Loki, Tempo, Mimir 커넥터를 지원합니다. 각 커넥터는 Lambda로 구현되고, 스키마는 Aurora에 캐시합니다. 이 데이터를 챗에 주입하면 AI가 여러 데이터소스를 교차 조회할 수 있습니다. `/datasources` Explore 페이지에서는 자연어를 쿼리로 변환해 직접 탐색할 수도 있습니다. 모두 읽기 전용입니다.\n\n토폴로지는 리소스 간 관계를 그래프로 보여줍니다. flow 그래프와 infra 리소스 그래프 두 가지가 있고, CloudFront에서 로드밸런서, 타깃 그룹, DB로 이어지는 경로를 시각화합니다. `/topology/resource/[id]`로 들어가면 개별 리소스의 상세 패널을 볼 수 있습니다.\n\n컨테이너 운영자를 위한 EKS 통합을 보겠습니다.",
+    11: "⏸️ [3min] EKS도 읽기 전용으로 통합됩니다.\n온보딩은 configure.mjs의 멀티선택으로 시작합니다. 선택한 클러스터에 대해 eks.tf가 웹 task role에 Access Entry를 부여하고, AmazonEKSViewPolicy를 클러스터 스코프로 붙입니다. 이건 AWS가 관리하는 읽기 전용 RBAC 정책이라 변경 권한이 없습니다.\n\n조회는 nodes, pods, deployments, services 같은 핵심 리소스를 봅니다. task role의 Access Entry로 presigned STS 토큰을 만들어 클러스터에 접근하고, 이건 BFF가 직접 처리합니다. 워커를 거치지 않습니다.\nEKS 페이지에는 접근 권한 배지와 CLI 가이드, 클러스터별 워크로드 뷰가 있습니다.\n\n이 모든 걸 떠받치는 인증과 보안 레이어입니다.",
+    12: "⏸️ [3min] 인증은 Cognito와 Lambda@Edge가 함께 처리합니다.\nLambda@Edge는 us-east-1에서 viewer-request로 동작하며 RS256 JWKS로 토큰 서명을 검증합니다. iss, aud, token_use를 모두 확인하고, OAuth state와 PKCE public client를 씁니다. 시크릿이 없는 공개 클라이언트입니다.\n\n로그인의 기본 경로는 ADR-042에 따라 자체 `/login` 폼입니다. BFF의 `POST /api/auth/login`이 무서명 공개 InitiateAuth를 USER_PASSWORD_AUTH 방식으로 호출해 awsops_token을 발급합니다. id_token은 12시간 유효합니다. 미인증 요청은 엣지가 `/login`으로 보냅니다. Hosted UI PKCE 플로우는 다크 폴백으로 남겨두고, signout은 쿠키만 삭제합니다.\n오른쪽 세 가지가 보안 기둥입니다. 공개 ALB가 없는 비공개 엣지, ECS 시크릿은 task role이 아니라 execution role 권한이어야 한다는 점, 그리고 admin 모델은 SSM과 Cognito group 기반으로 fail-closed입니다.\n\n이걸 실제로 배포하는 흐름을 보겠습니다.",
+    13: "⏸️ [3min] 배포는 Makefile로 단계가 깔끔하게 나뉩니다.\n먼저 `make configure`로 대화형 TUI를 돌립니다. VPC, 도메인, 버킷, EKS를 고르면 terraform.tfvars와 backend.hcl이 생성됩니다. 그다음 terraform init과 plan으로 tfplan을 저장하고, 공유 인프라는 컨트롤러가 직접 apply tfplan으로 적용합니다. 에이전트가 공유 프로덕션 인프라를 임의로 apply하지 않도록 막혀 있습니다.\n\n앱은 `make deploy`로 배포합니다. 중요한 건 migrate가 먼저 돌고 그다음 웹 이미지를 배포한다는 순서입니다. ULID 마이그레이션을 먼저 적용한 뒤 arm64로 빌드해서 ECR에 푸시하고, ECS 롤링 배포 후 stable을 기다린 다음 `/api/health`로 smoke 테스트를 합니다. 여기서 terraform apply는 하지 않습니다.\nAgentCore와 워커는 각각의 flag로 apply한 뒤 `make agentcore`, `make workers`로 이미지와 provisioner를 실행합니다.\n\n마지막으로 이 아키텍처가 가진 태세와 차별점을 정리하겠습니다.",
+    14: "⏸️ [3min] 이 아키텍처의 태세를 정확히 정의하겠습니다.\nAWSops는 읽기 전용 AWS 운영 대시보드에 AI 진단을 더한 것입니다. ADR-041과 2026년 6월 11일 reversal 합의에 따라 AWS 리소스 변경과 자율 실행은 영구 동결입니다. do-not-enable, 켜지 않는다는 뜻입니다. 코드는 dark로 보존하되 활성화하지 않습니다.\n\n다만 외부 데이터에 대해서는 다릅니다. 외부 관측성 데이터 읽기, 그리고 외부 기록·티켓·메시지 write는 거버넌스 하에 허용됩니다. SSRF 방어, Secrets 관리, DLP와 redaction, human-gate를 모두 거칩니다. 즉 AWS 리소스는 안 건드리지만, 외부 시스템에 리포트를 보내거나 티켓을 끊는 건 통제된 형태로 가능합니다.\n그리고 핵심 차별점, AI 추론은 고객 계정 안 Bedrock에서 돌립니다. 외부 AI SaaS API가 없으므로 운영 데이터가 계정 밖으로 나가지 않습니다.\n\n전체를 한 장으로 정리하겠습니다.",
+    15: "⏸️ [2min] 아키텍처 파트를 한 장으로 정리합니다.\n첫째, 비공개 엣지 위의 Terraform MSA입니다. CloudFront VPC Origin에서 내부 ALB를 거쳐 Fargate로 가고, 공개 ALB는 없습니다. 둘째, 영속 상태는 Aurora PostgreSQL 17.9입니다. Steampipe는 라이브 엔진이 아니라 flag로 켜는 인벤토리 sync일 뿐입니다.\n\n셋째, 라이브 AWS 읽기는 AgentCore 섹션 에이전트가, 8개 게이트웨이에 약 120개 읽기 전용 도구로 처리합니다. 넷째, 라우팅은 ADR-038 하이브리드, 챗은 SSE 스트리밍입니다. 다섯째, 무거운 작업은 OOM에 안전한 비동기 워커 티어가 받습니다. 여섯째, 그리고 그 위에 읽기 전용 동결 태세와 in-account Bedrock이 있습니다.\n\n세 번째 파트, 실제 데모와 진단 리포트로 이어가겠습니다.",
+    16: "❓ [1min] 두 번째 파트를 마칩니다.\n지금까지 AWSops의 기술 아키텍처를 레이어별로 살펴봤습니다. Terraform 기반 MSA, 비공개 엣지, Aurora 영속 상태, AgentCore 섹션 에이전트, 하이브리드 라우팅, OOM에 안전한 워커 티어, 그리고 읽기 전용 동결 태세까지 모두 하나의 일관된 설계로 묶여 있습니다.\n\n질문 있으시면 편하게 주세요.\n\n잠시 쉬고 마지막 파트, 실전 데모와 진단 리포트로 이어가겠습니다."
+  };
+  const deck = new SlideFramework({
+    logoSrc: '../common/pptx-theme/images/logo_1.png',
+    
+    footer: '© 2026, Amazon Web Services, Inc. or its affiliates. All rights reserved. Amazon Confidential and Trademark.',
+    
+    pagination: true,
+    sidebar: true,
+    presenterNotes: presenterNotes,
+    onSlideChange: (index, slide) => {}
+  });
+</script>
+</body>
+</html>

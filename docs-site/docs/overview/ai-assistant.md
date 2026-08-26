@@ -1,0 +1,316 @@
+---
+sidebar_position: 2
+title: AI 어시스턴트
+description: AWSops AI 어시스턴트 상세 가이드 - 11단계 라우팅 및 고급 기능
+---
+
+import Screenshot from '@site/src/components/Screenshot';
+import AIStreamingFlow from '@site/src/components/diagrams/AIStreamingFlow';
+
+# AI 어시스턴트
+
+AI 어시스턴트는 Amazon Bedrock AgentCore를 기반으로 자연어로 AWS 인프라를 분석하고 관리할 수 있는 기능입니다.
+
+<Screenshot src="/screenshots/overview/ai-assistant.png" alt="AI 어시스턴트" />
+
+## 아키텍처
+
+![AI 의도 분류 흐름](/diagrams/ai-routing.png)
+
+## 11단계 라우팅
+
+AI 어시스턴트는 질문을 분석하여 가장 적합한 라우트로 자동 분류합니다. 우선순위: `code` → `network` → `container` → `iac` → `data` → `security` → `monitoring` → `cost` → `datasource` → `aws-data` → `general`.
+
+내부적으로 추가 분류 라우트도 존재합니다:
+- `datasource-diag` — 데이터소스 연결 진단 (6단계 자동 진단)
+- `incident` — 알림 기반 부분 진단 (alert-correlation에서 호출)
+
+### 라우팅 테이블
+
+| 우선순위 | 라우트 | Gateway | 도구 수 | 설명 |
+|---------|--------|---------|--------|------|
+| 1 | **code** | - | - | Python 코드 실행, 계산, 시각화 |
+| 2 | **network** | Network | 17 | VPC, TGW, VPN, Flow Logs, Reachability |
+| 3 | **container** | Container | 24 | EKS, ECS, Istio 트러블슈팅 |
+| 4 | **iac** | IaC | 12 | CDK, CloudFormation, Terraform |
+| 5 | **data** | Data | 24 | DynamoDB, RDS, ElastiCache, MSK |
+| 6 | **security** | Security | 14 | IAM, 정책 시뮬레이션, 보안 요약 |
+| 7 | **monitoring** | Monitoring | 16 | CloudWatch, CloudTrail |
+| 8 | **cost** | Cost | 9 | 비용 분석, 예측, 예산 |
+| 9 | **datasource** | - | 7 DS | 외부 관측성 (Prometheus/Loki/Tempo/ClickHouse/Jaeger/Dynatrace/Datadog) — 자연어 → 쿼리 |
+| 10 | **aws-data** | Ops | SQL | 리소스 목록/현황 (Steampipe SQL) |
+| 11 | **general** | Ops | 9 | 일반 AWS 질문, 문서 검색 |
+
+### 라우트별 상세
+
+#### 1. code - Code Interpreter
+
+Python 코드 실행이 필요한 경우 사용됩니다.
+
+**예시 질문:**
+- "AWS 비용 데이터를 차트로 시각화해줘"
+- "랜덤 숫자 통계를 계산해줘"
+- "JSON 데이터를 파싱하는 코드를 만들어줘"
+
+#### 2. network - Network Gateway
+
+VPC 네트워킹, Transit Gateway, VPN, 트래픽 분석에 사용됩니다.
+
+**주요 도구:**
+- `list_vpcs`, `get_vpc_network_details`, `describe_network`
+- `list_transit_gateways`, `get_tgw_routes`, `get_all_tgw_routes`
+- `list_vpn_connections`, `list_network_firewalls`
+- `analyze_reachability`, `query_flow_logs`
+
+**예시 질문:**
+- "TGW 라우트 분석해줘"
+- "VPN 연결 상태 진단해줘"
+- "EC2 간 통신 가능한지 확인해줘"
+- "VPC Flow Logs에서 거부된 트래픽 조회해줘"
+
+#### 3. container - Container Gateway
+
+EKS, ECS, Istio 서비스 메시 관련 트러블슈팅에 사용됩니다.
+
+**주요 도구:**
+- `list_eks_clusters`, `get_eks_vpc_config`, `get_eks_insights`
+- `ecs_resource_management`, `ecs_troubleshooting_tool`
+- `istio_overview`, `list_virtual_services`, `check_sidecar_injection`
+
+**예시 질문:**
+- "EKS 클러스터 상태 진단해줘"
+- "ECS 서비스가 정상인지 확인해줘"
+- "Istio sidecar injection 상태 확인해줘"
+
+#### 4. iac - IaC Gateway
+
+Infrastructure as Code 관련 작업에 사용됩니다.
+
+**주요 도구:**
+- `validate_cloudformation_template`, `check_cloudformation_template_compliance`
+- `search_cdk_documentation`, `cdk_best_practices`
+- `SearchAwsProviderDocs`, `terraform_best_practices`
+
+**예시 질문:**
+- "CDK 모범사례 알려줘"
+- "CloudFormation 스택 오류 원인 분석해줘"
+- "Terraform VPC 모듈 검색해줘"
+
+#### 5. data - Data Gateway
+
+AWS 데이터베이스 및 스트리밍 서비스에 사용됩니다.
+
+**주요 도구:**
+- `list_tables`, `describe_table`, `query_table`, `dynamodb_data_modeling`
+- `list_db_instances`, `describe_db_instance`, `execute_sql`
+- `list_cache_clusters`, `elasticache_best_practices`
+- `list_clusters` (MSK), `msk_best_practices`
+
+**예시 질문:**
+- "DynamoDB 테이블 상세 정보 보여줘"
+- "RDS 인스턴스 상태 확인해줘"
+- "ElastiCache 모범사례 알려줘"
+
+#### 6. security - Security Gateway
+
+IAM 및 보안 관련 분석에 사용됩니다.
+
+**주요 도구:**
+- `list_users`, `list_roles`, `list_policies`
+- `list_access_keys`, `simulate_principal_policy`
+- `get_account_security_summary`
+
+**예시 질문:**
+- "IAM 사용자 목록과 Access Key 상태 보여줘"
+- "이 역할이 S3에 접근할 수 있는지 시뮬레이션해줘"
+- "계정 보안 요약 알려줘"
+
+#### 7. monitoring - Monitoring Gateway
+
+CloudWatch 및 CloudTrail 분석에 사용됩니다.
+
+**주요 도구:**
+- `get_metric_data`, `analyze_metric`, `get_active_alarms`
+- `describe_log_groups`, `execute_log_insights_query`
+- `lookup_events`, `lake_query`
+
+**예시 질문:**
+- "EC2 CPU 사용량 추세 보여줘"
+- "CloudTrail에서 최근 IAM 이벤트 조회해줘"
+- "활성화된 알람 목록 보여줘"
+
+#### 8. cost - Cost Gateway
+
+비용 분석 및 최적화에 사용됩니다.
+
+**주요 도구:**
+- `get_cost_and_usage`, `get_cost_and_usage_comparisons`
+- `get_cost_forecast`, `get_pricing`
+- `list_budgets`
+
+**예시 질문:**
+- "이번 달 비용 분석해줘"
+- "서비스별 비용 비교해줘"
+- "다음 달 비용 예측해줘"
+
+#### 9. datasource - 외부 관측성 (자연어 → 쿼리)
+
+연동된 외부 관측성 플랫폼(Prometheus/Loki/Tempo/ClickHouse/Jaeger/Dynatrace/Datadog)에 대한 질문에 사용됩니다.
+
+**처리 방식:**
+1. Claude가 자연어 질문을 해당 플랫폼 쿼리 언어(PromQL/LogQL/TraceQL/SQL)로 변환
+2. SSRF allowlist를 통과한 데이터소스에 쿼리 실행
+3. 결과를 분석하여 응답
+
+**예시 질문:**
+- "결제 서비스 5xx 추이 보여줘" (Prometheus)
+- "최근 1시간 에러 로그 찾아줘" (Loki)
+- "느린 트레이스 분석해줘" (Tempo/Jaeger)
+
+#### 10. aws-data - Bedrock + Steampipe SQL
+
+리소스 목록, 현황, 개수 조회에 사용됩니다.
+
+**처리 방식:**
+1. Claude Sonnet이 질문에서 SQL 생성
+2. Steampipe pg Pool에서 직접 쿼리 실행
+3. 결과를 Bedrock이 분석하여 응답
+
+**예시 질문:**
+- "EC2 인스턴스 목록 보여줘"
+- "S3 버킷이 몇 개 있는지 확인해줘"
+- "VPC 네트워크 구성을 분석해줘"
+- "전체 리소스 요약해줘"
+
+#### 11. general - Ops Gateway
+
+일반적인 AWS 질문, 문서 검색, 모범사례에 사용됩니다.
+
+**주요 도구:**
+- `search_documentation`, `read_documentation`
+- `recommend`, `list_regions`, `get_regional_availability`
+
+**예시 질문:**
+- "이 서비스가 서울 리전에서 사용 가능한지 확인해줘"
+- "ECS와 EKS 차이점 알려줘"
+- "서버리스 아키텍처 추천해줘"
+
+## 멀티 라우트
+
+하나의 질문이 여러 도메인에 걸쳐 있을 때 최대 3개의 라우트로 분류되어 병렬 처리됩니다.
+
+**예시:**
+```
+"VPC 보안그룹과 비용을 분석해줘"
+→ ["network", "cost"]
+
+"보안 점검하고 IAM 사용자도 확인해줘"
+→ ["security"]
+```
+
+:::info 멀티 라우트 응답
+멀티 라우트 처리 시 각 Gateway의 응답이 합성되어 하나의 통합된 답변으로 제공됩니다.
+:::
+
+## SSE 스트리밍
+
+응답은 Server-Sent Events(SSE)로 스트리밍됩니다.
+
+### 진행 상태 표시
+
+```
+질문 분석 중...
+→ Network Gateway 호출 중...
+→ 응답 생성 중...
+```
+
+### 스트리밍 이벤트
+
+| 이벤트 | 설명 | 데이터 |
+|--------|------|--------|
+| `status` | 진행 상태 메시지 | `{ step, message }` |
+| `chunk` | 실시간 텍스트 스트리밍 | `{ delta: string }` |
+| `done` | 완료된 응답 데이터 | `{ content, route, usedTools, ... }` |
+| `error` | 오류 메시지 | `{ message }` |
+
+### 스트리밍 모드
+
+응답 경로에 따라 3가지 스트리밍 모드가 자동으로 선택됩니다:
+
+<AIStreamingFlow />
+
+| 모드 | 적용 경로 | 방식 |
+|------|----------|------|
+| **Real Streaming** | 멀티 라우트 합성 | Bedrock Converse API — 토큰 단위 즉시 전송 |
+| **Simulated Streaming** | 단일 Gateway 응답 | 50자 청크 + 15ms 딜레이 — 타이핑 효과 |
+| **Direct Streaming** | aws-data (Steampipe+Bedrock) | Bedrock 네이티브 스트리밍 |
+
+:::info 멀티 라우트 합성 스트리밍
+2-3개 라우트의 병렬 실행 결과를 합성할 때, Bedrock Converse Stream API(`ConverseStreamCommand`)를 사용하여 합성 과정을 실시간으로 스트리밍합니다. 사용자는 합성 결과가 생성되는 즉시 화면에서 확인할 수 있습니다.
+:::
+
+## 도구 사용 표시
+
+응답 하단에 사용된 MCP 도구가 표시됩니다.
+
+```
+Tools: list_vpcs, get_vpc_network_details, analyze_reachability
+Queried: aws_vpc, aws_vpc_subnet, aws_vpc_security_group
+```
+
+## 대화 이력
+
+### 세션 내 컨텍스트
+
+현재 세션의 대화가 유지되어 후속 질문이 가능합니다.
+
+```
+사용자: "VPC 목록 보여줘"
+AI: (VPC 목록 응답)
+
+사용자: "그중에서 default VPC 상세 정보 알려줘"
+AI: (이전 컨텍스트를 참조하여 default VPC 상세 응답)
+```
+
+### 저장된 이력 (AgentCore Memory)
+
+대화 이력은 AgentCore Memory Store에 사용자별로 저장됩니다. 화면 우측 패널에서 확인하고 클릭으로 복원할 수 있습니다.
+
+| 기능 | API |
+|------|-----|
+| 세션 목록 (최근 30개) | `GET /awsops/api/agentcore?action=sessions&limit=30` |
+| 단일 세션 로드 | `GET /awsops/api/agentcore?action=session&id={sessionId}` |
+
+- **저장 정보**: 질문, 응답, 라우트, 토큰 사용량, 타임스탬프
+- **세션 ID**: 클라이언트에서 페이지 진입 시 `s_{timestamp}_{rand}` 형태로 생성, 응답에 포함되어 서버에 기록
+- **보관 기간**: 365일 (`agentcore-memory.ts` `eventExpiryDuration` 상한)
+- **복원 동작**: 세션 클릭 시 해당 세션의 메시지 배열로 현재 대화창을 덮어쓰고, 후속 질문은 같은 `sessionId`로 연속 호출 — Bedrock 컨텍스트 유지
+
+## 세션 통계
+
+화면 하단에 현재 세션의 통계가 표시됩니다.
+
+```
+5 queries  │  avg 3.2s  │  100%  │  aws-data:3  security:1  network:1
+```
+
+- **queries**: 총 질문 수
+- **avg**: 평균 응답 시간
+- **성공률**: 성공한 응답 비율
+- **라우트 분포**: 라우트별 호출 횟수
+
+## 연관 질문 추천
+
+응답 후 관련된 후속 질문이 라우트별로 추천됩니다.
+
+| 라우트 | 추천 질문 예시 |
+|--------|--------------|
+| security | "IAM 사용자 목록과 Access Key 상태를 보여줘" |
+| network | "VPC 서브넷과 라우트 테이블을 보여줘" |
+| container | "EKS 노드의 CPU/메모리 사용률을 확인해줘" |
+| cost | "서비스별 비용을 비교해줘" |
+
+## 다음 단계
+
+- [AgentCore 상세](../overview/agentcore) - Gateway 및 도구 상세 정보
+- [대시보드](../overview/dashboard) - 대시보드로 돌아가기
