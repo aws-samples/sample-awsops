@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 
+### Fixed
+
+- AI Code Review CI never ran on this repo — the workflow's trigger was `branches: [v2]`, but this repo only has `main`. Fixed the trigger and adapted the panel/auth for this repo's actual runner (self-hosted-runner platform: `sample-awsops` ARC scale set, OIDC → `sample-awsops-ci-review`, Codex + Claude panel).
+
 ## [0.9.0] - 2026-08-22
 
 ### Added
@@ -513,6 +517,10 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 
 ### Added
 
+
+### Fixed
+
+- AI Code Review CI가 이 리포에서 한 번도 실행되지 않았음 — 워크플로 트리거가 `branches: [v2]`였는데 이 리포에는 `main`뿐. 트리거를 고치고 실제 러너(self-hosted-runner 플랫폼: `sample-awsops` ARC 스케일셋, OIDC → `sample-awsops-ci-review`, Codex + Claude 패널)에 맞게 패널/인증을 조정.
 
 ## [0.9.0] - 2026-08-22
 
