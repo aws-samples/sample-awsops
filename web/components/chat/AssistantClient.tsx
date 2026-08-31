@@ -9,6 +9,7 @@ import ThreadList from './ThreadList';
 import SessionStatsBar from './SessionStatsBar';
 import { sectionByKey } from '@/lib/sections';
 import { useChat } from './useChat';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 /**
  * Full-page assistant (/assistant). Same useChat engine + the same Aurora-backed
@@ -17,6 +18,7 @@ import { useChat } from './useChat';
  * button) restores that conversation on entry.
  */
 export default function AssistantClient() {
+  const { tt } = useI18n();
   const chat = useChat();
   const params = useSearchParams();
   const wantedThread = params.get('thread');
@@ -38,7 +40,7 @@ export default function AssistantClient() {
   const activeSec = chat.threadId && chat.msgs.length
     ? sectionByKey(chat.msgs.filter((m) => m.gateway).slice(-1)[0]?.gateway ?? '')
     : null;
-  const title = chat.threads.find((t) => t.id === chat.threadId)?.title ?? '새 대화';
+  const title = chat.threads.find((t) => t.id === chat.threadId)?.title ?? tt('새 대화');
 
   return (
     <div className="flex h-full">
@@ -53,10 +55,10 @@ export default function AssistantClient() {
           <div className="absolute inset-0 bg-ink-900/30" onClick={() => setMobileThreads(false)} aria-hidden />
           <div className="absolute inset-y-0 left-0 flex w-72 max-w-[80vw] flex-col border-r border-ink-100 bg-paper shadow-pop">
             <div className="flex items-center justify-between border-b border-ink-100 px-3 py-2.5">
-              <span className="text-[13px] font-semibold text-ink-800">대화 목록</span>
+              <span className="text-[13px] font-semibold text-ink-800">{tt('대화 목록')}</span>
               <button
                 onClick={() => setMobileThreads(false)}
-                aria-label="대화 목록 닫기"
+                aria-label={tt('대화 목록 닫기')}
                 className="flex h-7 w-7 items-center justify-center rounded-md text-ink-400 transition-colors hover:bg-ink-100 hover:text-ink-800"
               >
                 <X size={16} />
@@ -82,7 +84,7 @@ export default function AssistantClient() {
           <div className="flex min-w-0 items-center gap-2 text-[15px] font-semibold text-ink-800">
             <button
               onClick={() => setMobileThreads(true)}
-              aria-label="대화 목록 열기"
+              aria-label={tt('대화 목록 열기')}
               className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-400 transition-colors hover:bg-ink-100 hover:text-ink-800 lg:hidden"
             >
               <PanelLeft size={17} />

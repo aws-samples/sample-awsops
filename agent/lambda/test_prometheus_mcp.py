@@ -42,6 +42,24 @@ class TestQuery(_Base):
         self.assertIn("time", _qs(u))
         self.assertEqual(cap["headers"]["Authorization"], "Bearer tok")
 
+    def test_execution_timeout_is_passed_and_clamped(self):
+        # the connector bounded response SIZE only; the diag-signal dry run now asks for an execution bound
+        # because this path runs model-written PromQL against a user's backend.
+        def fake(method, url, headers=None, body=None, timeout=None):
+            cap.update(url=url)
+            return 200, {"status": "success", "data": {"resultType": "vector", "result": []}}
+
+        for given, expect in (("5s", "5s"), (5, "5s"), ("999", "60s"), ("3600s", "60s"), ("0", "1s"), (0, "1s")):
+            cap = {}
+            with mock.patch.object(pm, "http_json", side_effect=fake):
+                pm.lambda_handler({"tool_name": "prometheus_query",
+                                   "arguments": {"query": "up", "timeout": given}}, None)
+            self.assertEqual(_qs(cap["url"])["timeout"][0], expect, given)
+        cap = {}
+        with mock.patch.object(pm, "http_json", side_effect=fake):
+            pm.lambda_handler({"tool_name": "prometheus_query", "arguments": {"query": "up"}}, None)
+        self.assertNotIn("timeout", _qs(cap["url"]))   # unchanged for callers that ask for no bound
+
     def test_range_defaults(self):
         cap = {}
         with mock.patch.object(pm, "http_json",

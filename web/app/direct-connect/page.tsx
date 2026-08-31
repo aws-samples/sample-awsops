@@ -13,7 +13,7 @@ import DxTopology from '@/components/dx/DxTopology';
 import HBarList from '@/components/charts/HBarList';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import type { DxAnalysis, DxConnectionRow, DxVifRow, DxGatewayRow, DxRoute } from '@/lib/dx';
-import { assessResiliency, type DxSlaTier } from '@/lib/dx-topology';
+import { assessResiliency, type DxSlaTier, type DxResiliency, type DxNoneReason } from '@/lib/dx-topology';
 import type { InvType } from '@/lib/inventory-types';
 
 // /direct-connect — Direct Connect 리스트+분석 (Network 메뉴). 커넥션/VIF를 리전 fan-out으로
@@ -158,11 +158,37 @@ const TIER_LABEL: Record<DxSlaTier, string> = {
 const TIER_TONE: Record<DxSlaTier, 'positive' | 'neutral' | 'negative'> = {
   maximum: 'positive', high: 'neutral', single: 'negative', none: 'negative',
 };
+// 리뷰(Codex stop-hook, 3라운드): tier==='none'은 서로 다른 라벨이 필요한 세 상황을
+// 뭉뚱그린다 — assessResiliency()가 계산한 noneReason(단일 소스)으로 그대로 분기한다.
+// 이전 두 라운드는 각각 hostedConnections(배포 상태 한정)·allConnectionsHosted(상태
+// 무관이지만 이분법)라는 단일 축만 봐서, owned+호스티드가 혼재하는데 배포된 owned가
+// 0개인 "혼재" 케이스를 매번 "커넥션 없음"으로 오분류했다 — noneReason이 그 세 번째
+// 경우를 별도 값으로 이미 구분해 반환하므로 여기서 재조합할 필요가 없다.
+const NONE_REASON_LABEL: Record<DxNoneReason, string> = {
+  'no-connections': '커넥션 없음',
+  'all-hosted': 'AWS SLA 해당 없음 (전량 호스티드)',
+  'no-deployed-owned': 'AWS SLA 미확정 (배포된 owned 커넥션 없음)',
+};
+function tierLabel(r: DxResiliency): string {
+  if (r.tier === 'none' && r.noneReason) return NONE_REASON_LABEL[r.noneReason];
+  return TIER_LABEL[r.tier];
+}
 
 type Selected =
   | { kind: 'conn'; row: DxConnectionRow }
   | { kind: 'vif'; row: DxVifRow }
   | { kind: 'gw'; row: DxGatewayRow };
+
+type Variant = 'default' | 'danger' | 'warn';
+
+/** KPI 배지 판정 — 확인된 위험(danger)은 절대 저하(degraded)로 강등하지 않는다.
+ *  degraded는 "더 나쁠 수도 있다"는 뜻일 뿐, 이미 확인된 위험을 무효화하는 근거가
+ *  아니다. danger가 아닐 때만 degraded가 warn으로 격상된다. */
+function kpiVariant(hasRealDanger: boolean, degraded: boolean): Variant {
+  if (hasRealDanger) return 'danger';
+  if (degraded) return 'warn';
+  return 'default';
+}
 
 export default function DirectConnectPage() {
   const { tt } = useI18n();
@@ -361,8 +387,12 @@ export default function DirectConnectPage() {
     {
       key: 'assoc', label: tt('연결 대상'),
       value: (r) => (r.associations.length ? r.associations.map((a) => a.id).join(' ') : null),
-      render: (r) => r.associations.length === 0
-        ? <Badge tone="negative" variant="soft">{tt('미연결')}</Badge>
+      // 조회 실패(associationsAvailable=false)는 "미할당"이 아니라 "판정 불가" — 붉은 배지로
+      // 위험을 발명하지 않는다 (PR #210 리뷰 MAJOR #2와 같은 결함의 렌더 레이어).
+      render: (r) => !r.associationsAvailable
+        ? <Badge variant="soft">{tt('조회 실패 — 확인 불가')}</Badge>
+        : r.associations.length === 0
+        ? <Badge tone="negative" variant="soft">{tt('미할당')}</Badge>
         : (
           <span className="inline-flex flex-wrap gap-1">
             {r.associations.map((a) => (
@@ -390,48 +420,85 @@ export default function DirectConnectPage() {
         )}
         {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
 
-        {data && t && (
+        {data && (data.degradedRegions.length > 0 || data.metricsDegradedRegions.length > 0 || data.gatewaysDegraded || data.totals.gatewaysAssociationsUnknown > 0) && (
+          <div className="flex items-start gap-2 rounded-md border border-warning-border bg-warning-surface px-3 py-2 text-[12px] text-warning-text">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <span>
+              {data.degradedRegions.length > 0 && (
+                <>{tt('일부 리전 조회 실패')} ({data.degradedRegions.join(', ')}) — {tt('해당 리전의 커넥션·VIF가 누락되어 이중화·다운·대역폭 집계가 실제보다 낙관적일 수 있습니다.')} </>
+              )}
+              {data.metricsDegradedRegions.length > 0 && (
+                <>{tt('일부 리전 메트릭 조회 실패')} ({data.metricsDegradedRegions.join(', ')}) — {tt('해당 리전은 API 현재 상태로만 판정되어 기간 내 과거 다운이 누락될 수 있습니다.')} </>
+              )}
+              {data.gatewaysDegraded && tt('DX Gateway 조회 실패 — 미연결 게이트웨이 집계를 신뢰할 수 없습니다.')}
+              {!data.gatewaysDegraded && data.totals.gatewaysAssociationsUnknown > 0 && (
+                <>{tt('일부 DX Gateway의 연결(association) 조회 실패')} ({data.totals.gatewaysAssociationsUnknown}) — {tt('미할당 집계가 실제보다 적을 수 있습니다.')}</>
+              )}
+            </span>
+          </div>
+        )}
+
+        {data && t && (() => {
+          // 각 KPI/판정이 실제로 의존하는 리전 실패에만 반응 — 배너와 별개로, 그 지표
+          // 자체가 낙관적일 수 있으면 "정상/0건"을 확신 있는 색으로 보여주지 않는다.
+          const resourcesDegraded = data.degradedRegions.length > 0;
+          const anyMetricsDegraded = resourcesDegraded || data.metricsDegradedRegions.length > 0;
+          const downTileVariant = kpiVariant(t.connectionsDown + t.vifsDown > 0, anyMetricsDegraded);
+          const downHint = downTileVariant !== 'danger' && anyMetricsDegraded
+            ? tt('일부 리전 조회 실패 — 실제보다 적게 집계될 수 있음')
+            // danger 라도 degraded 면 확정 수치가 아니라 하한 — 커넥션/VIF 타일의 `+` 관행 일치 (리뷰 L2-3)
+            : `${tt('커넥션')} ${t.connectionsDown}${anyMetricsDegraded ? '+' : ''} · VIF ${t.vifsDown}${anyMetricsDegraded ? '+' : ''}`;
+          const gwTileVariant = kpiVariant(false, data.gatewaysDegraded || t.gatewaysUnassociated > 0 || t.gatewaysAssociationsUnknown > 0);
+          const gwHint = data.gatewaysDegraded
+            ? tt('DX Gateway 조회 실패 — 확인 불가')
+            : t.gatewaysAssociationsUnknown > 0
+            ? `${tt('미할당')} ${t.gatewaysUnassociated}+ · ${tt('판정 불가')} ${t.gatewaysAssociationsUnknown}`
+            : `${tt('미할당')} ${t.gatewaysUnassociated}`;
+          const utilTileVariant = kpiVariant((t.maxUtilizationPct ?? 0) >= 80, anyMetricsDegraded);
+          return (
           <>
             {/* ① KPI — 다운(danger) + 단일 로케이션/미연결 DXGW(warn) + 피크 사용률 */}
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
               <StatTile
                 label="커넥션"
-                value={t.connections}
-                hint={`${tt('로케이션')} ${t.locations}`}
+                value={resourcesDegraded ? `${t.connections}+` : t.connections}
+                hint={resourcesDegraded ? tt('일부 리전 조회 실패 — 실제보다 적을 수 있음') : `${tt('로케이션')} ${t.locations}`}
+                variant={resourcesDegraded ? 'warn' : 'default'}
                 icon={<Cable size={16} />}
               />
               <StatTile
                 label="가상 인터페이스"
-                value={t.vifs}
+                value={resourcesDegraded ? `${t.vifs}+` : t.vifs}
                 hint={`BGP down ${t.bgpPeersDown}`}
-                variant={t.vifsDown > 0 ? 'danger' : 'default'}
+                variant={kpiVariant(t.vifsDown > 0, resourcesDegraded)}
                 icon={<Network size={16} />}
               />
               <StatTile
                 label="DX Gateway"
                 value={t.gateways}
-                hint={`${tt('미연결')} ${t.gatewaysUnassociated}`}
-                variant={t.gatewaysUnassociated > 0 ? 'warn' : 'default'}
+                hint={gwHint}
+                variant={gwTileVariant}
                 icon={<Waypoints size={16} />}
               />
               <StatTile
                 label="총 대역폭"
-                value={fmtBps(t.totalBandwidthBps) ?? '—'}
-                hint="커넥션 대역폭 합계"
+                value={resourcesDegraded ? `≥ ${fmtBps(t.totalBandwidthBps) ?? '—'}` : (fmtBps(t.totalBandwidthBps) ?? '—')}
+                hint={resourcesDegraded ? tt('일부 리전 조회 실패 — 실제보다 적을 수 있음') : "커넥션 대역폭 합계"}
+                variant={resourcesDegraded ? 'warn' : 'default'}
                 icon={<Gauge size={16} />}
               />
               <StatTile
                 label="다운 감지"
                 value={t.connectionsDown + t.vifsDown}
-                variant={t.connectionsDown + t.vifsDown > 0 ? 'danger' : 'default'}
-                hint={`${tt('커넥션')} ${t.connectionsDown} · VIF ${t.vifsDown}`}
+                variant={downTileVariant}
+                hint={downHint}
                 icon={<Unplug size={16} />}
               />
               <StatTile
                 label="피크 사용률"
                 value={t.maxUtilizationPct == null ? '—' : `${t.maxUtilizationPct}%`}
-                variant={(t.maxUtilizationPct ?? 0) >= 80 ? 'danger' : 'default'}
-                hint="기간 내 피크 bps ÷ 대역폭"
+                variant={utilTileVariant}
+                hint={utilTileVariant !== 'danger' && anyMetricsDegraded ? tt('일부 리전 조회 실패 — 확인 불가') : "기간 내 피크 bps ÷ 대역폭"}
                 icon={<Activity size={16} />}
               />
             </div>
@@ -468,7 +535,7 @@ export default function DirectConnectPage() {
                 {resiliency && (
                   <>
                     <div className="flex flex-wrap items-center gap-2 px-4 py-3">
-                      <Badge tone={TIER_TONE[resiliency.tier]} variant="soft">{tt(TIER_LABEL[resiliency.tier])}</Badge>
+                      <Badge tone={TIER_TONE[resiliency.tier]} variant="soft">{tt(tierLabel(resiliency))}</Badge>
                       {resiliency.slaPct && <span className="text-[13px] font-semibold">SLA {resiliency.slaPct}</span>}
                       <span className="text-[12px] text-ink-500">
                         {tt('로케이션')} {resiliency.locations} · {tt('디바이스 2개 이상 로케이션')} {resiliency.dualConnLocations}
@@ -505,7 +572,14 @@ export default function DirectConnectPage() {
               subtitle="Direct Connect 로케이션별 커넥션 분포 — 위치 단일 장애점 분석"
               padded={false}
             >
-              {t.singleLocation ? (
+              {resourcesDegraded ? (
+                // 일부 리전이 통째로 빠진 상태에서는 "이상 없음"이든 "단일 로케이션"이든
+                // 신뢰할 수 없다 — 누락된 리전이 유일한 이중화 지점이었거나, 반대로
+                // 누락된 리전이 유일한 위험 지점이었을 수 있다. 확신 있는 판정을 내지 않는다.
+                <div className="px-4 py-3 text-[13px] text-warning-text">
+                  {tt('일부 리전 조회 실패로 로케이션 이중화 여부를 판단할 수 없습니다')} ({data.degradedRegions.join(', ')})
+                </div>
+              ) : t.singleLocation ? (
                 <div className="px-4 pt-3 text-[12px] text-warning-text">
                   {tt('모든 커넥션이 단일 로케이션에 있습니다 — 이 로케이션 장애 시 전체 DX 경로가 끊깁니다. AWS Resiliency Toolkit은 2개 이상 로케이션을 권장합니다')}
                 </div>
@@ -611,7 +685,8 @@ export default function DirectConnectPage() {
               />
             </Card>
           </>
-        )}
+          );
+        })()}
       </div>
 
       <DetailPanel

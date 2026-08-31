@@ -1,5 +1,7 @@
 # sample files
 *.pptx
+# exception: docs-site presentation deck served as a download asset
+!docs-site/static/presentation/awsops-intro/awsops-intro.pptx
 
 # dependencies
 node_modules/
@@ -38,8 +40,8 @@ data/
 !infra-cdk/data/
 !infra-cdk/data/**
 # v2 foundation schema/seed files (ADR-030) — source-controlled, same as infra-cdk/data/
-!terraform/v2/foundation/data/
-!terraform/v2/foundation/data/**
+!terraform/foundation/data/
+!terraform/foundation/data/**
 
 # logs
 npm-debug.log*
@@ -90,6 +92,7 @@ docs/COMPARISON_VS_FAST.md
 # 로컬 설정 (세션 데이터, 공유 불필요) / local settings
 .claude/settings.local.json
 .claude/co-agent.local.json
+.claude/kiro.local.json
 
 # CDK 컨텍스트 (계정 종속, 자동 생성) / CDK context (account-specific)
 infra-cdk/cdk.context.json
@@ -103,15 +106,15 @@ data/memory/
 reports/
 .superpowers/
 .worktrees/
-terraform/v2/**/.terraform/*
-terraform/v2/**/terraform.tfvars
-terraform/v2/**/staging.tfvars
-terraform/v2/**/backend.hcl
-terraform/v2/**/*.tfplan
-terraform/v2/**/*.tfstate
-terraform/v2/**/*.tfstate.backup
-terraform/v2/**/tfplan
-terraform/v2/**/.build/
+terraform/**/.terraform/*
+terraform/**/terraform.tfvars
+terraform/**/staging.tfvars
+terraform/**/backend.hcl
+terraform/**/*.tfplan
+terraform/**/*.tfstate
+terraform/**/*.tfstate.backup
+terraform/**/tfplan
+terraform/**/.build/
 
 # graphify knowledge-graph output (generated artifact — regenerate with /graphify)
 graphify-out/
@@ -131,4 +134,13 @@ graphify-out/
 # Kiro CLI local machine settings (co-agent panel artifact); .kiro/AGENT.md, rules.md, docs/, steering/ stay tracked
 .kiro/settings/
 tfplan*
-terraform/v2/foundation/tfplan*
+terraform/foundation/tfplan*
+
+# ADR-009 Amendment step 2 artifacts: the plan carries every user email -> Cognito sub mapping and
+# the affected row ids; the journal carries the same. Never commit either.
+# One glob, matching the script's own requireIgnoredArtifactName() check exactly. Two narrower
+# patterns let `backfill-owner-sub-review.json` (and any --apply-derived journal) slip through.
+backfill-owner-sub-*.json
+
+# hyperframes render artifacts
+docs-site/hyperframes/*/renders/

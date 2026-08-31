@@ -17,7 +17,7 @@ AWSops is a **real-time, read-only operations dashboard + AI diagnosis** tool fo
 - **Security analysis**: IAM permission analysis, compliance, vulnerability checks
 - **Cost management**: Cost Explorer-based cost analysis and dashboards
 - **AI assistant**: natural-language queries for AWS resource analysis and troubleshooting (streaming + domain routing + persistent conversations)
-- **AI Diagnosis**: worker-generated, read-only diagnosis reports (base 8 sections / deep 15 sections, with DOCX/PDF export)
+- **AI Diagnosis**: worker-generated, read-only diagnosis reports (Light·Mid 8+1 sections (9 total) / Deep 15+1 sections (16 total), with DOCX/PDF export)
 
 The platform is a **Terraform-based MSA** — live AWS queries go through **Amazon Bedrock AgentCore MCP tools**, and app state is persisted in **Aurora Serverless v2 (PostgreSQL 17)**.
 
@@ -27,7 +27,7 @@ AWSops is a **read-only** operations tool. It queries, visualizes, and diagnoses
 
 ## How is it deployed and how does it work?
 
-AWSops is a microservice architecture provisioned with **Terraform** (`terraform/v2/foundation/`, partial S3 backend). The core layers are:
+AWSops is a microservice architecture provisioned with **Terraform** (`terraform/foundation/`, partial S3 backend). The core layers are:
 
 | Layer | Composition |
 |-------|-------------|
@@ -35,7 +35,7 @@ AWSops is a microservice architecture provisioned with **Terraform** (`terraform
 | **Edge** | CloudFront (TLS) → VPC Origin (`https-only:443`) → internal ALB HTTPS:443 (regional ACM) → Fargate. **No public ALB** |
 | **Compute** | ECS Fargate (arm64). web is a Next.js 14 thin-BFF served at the **root path (`/`)** |
 | **Data** | Aurora Serverless v2 (PostgreSQL 17), accessed via node-pg |
-| **AI** | AgentCore Runtime + MCP Lambda tools across 8 section gateways (live query) |
+| **AI** | AgentCore Runtime + MCP Lambda tools across 9 section gateways (live query) |
 | **Async workers** | SQS → ESM (kill-switch) → dispatcher Lambda → Step Functions → Lambda or Fargate |
 
 Heavy, long, or OOM-risk work is never run inline by web — it is sent to the **async worker tier**: `POST /api/jobs` → enqueue into `worker_jobs` → SQS → idempotent dispatcher Lambda → Step Functions routes short jobs to RunLambda and long/OOM-risk jobs to `ecs:runTask.sync` Fargate. Failures are recorded by a status_updater Lambda, and a reaper (EventBridge, every 5 min) reconciles stale jobs.
@@ -48,7 +48,7 @@ The edge is **end-to-end TLS**. CloudFront connects to the internal ALB over TLS
 
 **No.** AWSops is a **read-only operations dashboard + AI diagnosis** tool. **AWS-resource mutation and autonomy are permanently frozen (do-not-enable).** No screen and no AI feature will stop an EC2 instance, modify a security group, or alter your infrastructure.
 
-The AI assistant and diagnosis **query** live data to analyze and diagnose it — they perform no mutation. All ~120 AgentCore MCP tools are read-only.
+The AI assistant and diagnosis **query** live data to analyze and diagnose it — they perform no mutation. All ~160 AgentCore MCP Lambda tools are read-only.
 
 The only "write" permitted, under governance, is **external data records** — for example, leaving a report, ticket, or message in an external system. This works only under the following guards:
 
@@ -93,10 +93,10 @@ The app accesses Aurora via **node-pg** (the shared pool in `web/lib/db.ts`). Th
 
 ## How does AWSops query live AWS data?
 
-Live AWS / Kubernetes data is queried through **AgentCore MCP Lambda tools**. About 120 read-only tools are distributed across **8 section gateways** (network · container · data · security · cost · monitoring · iac · ops).
+Live AWS / Kubernetes data is queried through **AgentCore MCP Lambda tools**. About 160 read-only tools are distributed across **9 section gateways** (network · container · data · security · cost · monitoring · iac · ops · external-obs).
 
 - All tools are read-only.
-- The gateway count stays at **8** (ADR-004). External observability is a separate "Integrations axis," not a 9th gateway.
+- The gateway count is **9** (ADR-004 as amended 2026-06-24) — external-obs, hosting the Prometheus·ClickHouse connectors, is provisioned and routed as the ninth.
 - It no longer relies on a local Steampipe service (127.0.0.1:9193) or direct access to 380 tables.
 
 ## Can it query external observability data (Prometheus / Loki / Tempo / ClickHouse / Datadog)?

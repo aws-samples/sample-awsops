@@ -48,6 +48,7 @@ export default function MobileNav({ open, onClose }: { open: boolean; onClose: (
       <div
         className={cn(
           'absolute inset-y-0 left-0 w-64 max-w-[85%] bg-chrome-muted shadow-pop transition-transform duration-200 ease-out',
+          'pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]',
           open ? 'translate-x-0' : '-translate-x-full',
         )}
         role="dialog"

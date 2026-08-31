@@ -9,7 +9,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
-TF_DIR = os.path.join(ROOT, "terraform", "v2", "foundation")
+TF_DIR = os.path.join(ROOT, "terraform", "foundation")
 
 import merge_invariants as mi  # noqa: E402
 

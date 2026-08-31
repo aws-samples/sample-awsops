@@ -1,5 +1,6 @@
 import {
-  Flame, Database, ScrollText, Waypoints, LineChart, NotebookPen, Plug, Radar, Gauge, PawPrint, type LucideIcon,
+  Flame, Database, ScrollText, Waypoints, LineChart, NotebookPen, Plug, Radar, Gauge, PawPrint,
+  LayoutDashboard, Search, Activity, type LucideIcon,
 } from 'lucide-react';
 
 // Per-kind brand icon so datasources/connectors are visually distinguishable across the Integrations
@@ -21,6 +22,10 @@ const KINDS: Record<string, KindStyle> = {
   jaeger: { Icon: Radar, color: '#60A5FA', title: 'Jaeger' },
   dynatrace: { Icon: Gauge, color: '#1496FF', title: 'Dynatrace' },
   datadog: { Icon: PawPrint, color: '#632CA6', title: 'Datadog' },
+  // ADR-017 curated official-MCP presets added to the Connectors tab.
+  grafana: { Icon: LayoutDashboard, color: '#F46800', title: 'Grafana' },
+  splunk: { Icon: Search, color: '#000000', title: 'Splunk' },
+  newrelic: { Icon: Activity, color: '#008C99', title: 'New Relic' },
 };
 
 const FALLBACK: KindStyle = { Icon: Plug, color: '#64748b', title: 'Integration' };

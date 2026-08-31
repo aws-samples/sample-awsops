@@ -18,3 +18,8 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# HyperFrames composition projects (source is committed; local caches/output are not)
+hyperframes/*/node_modules/
+hyperframes/*/snapshots/
+hyperframes/*/.hyperframes/

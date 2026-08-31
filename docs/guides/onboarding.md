@@ -80,5 +80,5 @@ Quick deploy: `bash scripts/03-build-deploy.sh`
 
 - **Architecture**: `docs/architecture.md`
 - **Troubleshooting**: `docs/TROUBLESHOOTING.md`
-- **ADRs**: `docs/decisions/` (8 architecture decisions documented)
+- **ADRs**: maintained in the private upstream repository (cited here by number only)
 - **Runbooks**: `docs/runbooks/` (start-services, add-new-page)

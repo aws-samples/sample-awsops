@@ -43,14 +43,28 @@
     .export-toolbar .btn:hover {
       border-color: var(--accent); background: var(--bg-elevated);
     }
+    .deck-download {
+      display: flex; flex-direction: column; align-items: center; gap: 0.35rem;
+    }
+    .deck-download .btn-primary {
+      display: inline-block; padding: 0.65rem 1.4rem; font-size: 0.95rem; font-weight: 700;
+      background: var(--accent); color: #0e101c; border: 1px solid var(--accent);
+      border-radius: 0.3rem; text-decoration: none; transition: all var(--transition-fast);
+    }
+    .deck-download .btn-primary:hover { filter: brightness(1.12); box-shadow: 0 0 20px var(--accent-glow); }
+    .deck-download .hint { font-size: 0.75rem; color: var(--text-secondary); }
   </style>
 </head>
 <body>
 <div class="toc-container">
   <h1 class="toc-title">AWSops — AI-Powered AWS Operations Dashboard</h1>
+  <div class="deck-download">
+    <a class="btn-primary" href="./awsops-intro.pptx" download>📥 발표용 PPTX 다운로드 (별도 제작 정식 덱 · 23장)</a>
+    <span class="hint">16:9 · 한국어 스피커 노트 포함 · Pretendard 폰트 사용(미설치 시 대체 폰트) — 웹 슬라이드(53장)와 별개로 제작된 덱이며, 아래 버튼들은 웹 슬라이드의 스크린샷 기반 내보내기입니다</span>
+  </div>
   <div class="block-grid">
         <div class="block-card">
-      <a href="01-why-awsops.html" class="block-link"><h3>01-why-awsops</h3></a>
+      <a href="01-why-awsops.html" class="block-link"><h3>Why AWSops · 23 min</h3></a>
       <div class="block-export-row">
         <button class="btn-sm" onclick="ExportUtils.exportPDF({title:'01-why-awsops',blocks:['01-why-awsops.html']})">PDF</button>
         <button class="btn-sm" onclick="ExportUtils.downloadZIP({blocks:['01-why-awsops.html']})">ZIP</button>
@@ -58,7 +72,7 @@
       </div>
     </div>
     <div class="block-card">
-      <a href="02-architecture.html" class="block-link"><h3>02-architecture</h3></a>
+      <a href="02-architecture.html" class="block-link"><h3>Architecture Deep Dive · 20 min</h3></a>
       <div class="block-export-row">
         <button class="btn-sm" onclick="ExportUtils.exportPDF({title:'02-architecture',blocks:['02-architecture.html']})">PDF</button>
         <button class="btn-sm" onclick="ExportUtils.downloadZIP({blocks:['02-architecture.html']})">ZIP</button>
@@ -66,7 +80,7 @@
       </div>
     </div>
     <div class="block-card">
-      <a href="03-demo-scenarios.html" class="block-link"><h3>03-demo-scenarios</h3></a>
+      <a href="03-demo-scenarios.html" class="block-link"><h3>Demo &amp; Diagnosis Report · 25 min</h3></a>
       <div class="block-export-row">
         <button class="btn-sm" onclick="ExportUtils.exportPDF({title:'03-demo-scenarios',blocks:['03-demo-scenarios.html']})">PDF</button>
         <button class="btn-sm" onclick="ExportUtils.downloadZIP({blocks:['03-demo-scenarios.html']})">ZIP</button>

@@ -21,7 +21,7 @@
   },
   "link.item.label.Dashboard": {
     "message": "Dashboard",
-    "description": "The label of footer link with label=Dashboard linking to https://awsops.whchoi.net/awsops/"
+    "description": "The label of footer link with label=Dashboard linking to https://awsops.atomai.click/"
   },
   "link.item.label.Amazon Bedrock": {
     "message": "Amazon Bedrock",

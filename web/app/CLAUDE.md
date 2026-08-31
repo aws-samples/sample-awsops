@@ -1,19 +1,16 @@
-# 앱 라우트 모듈 / App Routes Module
+# App Routes Module
 
-## 역할 / Role
-Next.js App Router — 페이지 34개 + API 라우트 83개(`app/api/`). API는 thin-BFF: Aurora 조회, AWS SDK read, AgentCore 호출까지만. 장기/OOM 위험 작업은 `POST /api/jobs`로 enqueue.
-(34 pages + 83 API routes. Thin-BFF: DB reads, AWS SDK reads, AgentCore calls only; long jobs are enqueued.)
+## Role
+Next.js App Router — 39 pages + 94 API routes (`app/api/`). APIs are thin-BFF: Aurora reads, AWS SDK reads, and AgentCore calls only. Long/OOM-risk work is enqueued — but only through allowlisted (`noop`-family) types on the generic `POST /api/jobs`; domain jobs (`report`, `compliance`, etc.) go through their own ownership-checked dedicated routes (ADR-009), never the generic one.
 
-## 구조 / Structure
-- 페이지 (pages): 개요 `page.tsx`, `inventory/[type]`·`inventory/g/[group]`, `eks/`(개요·nodes·pods·deployments·services·explorer·cost·`[cluster]`), `topology/`(개요·infra·services·`resource/[id]`), `monitoring`, `network-flow`, `dns-query`, `ip-addresses`, `vpc-endpoints`, `direct-connect`, `network-firewall`, `security`, `compliance`, `cost`, `bedrock`, `agentcore`, `ai-diagnosis`, `assistant`, `datasources`, `integrations`(+`datasources/[id]`), `accounts`, `customization`, `jobs`, `login`
-- API (`app/api/`): accounts, actions, agentcore, ai-usage, anfw, auth(login/signout), bedrock-metrics, changelog, chat(+threads/stats), compliance, cost, customization, datasources, db, diagnosis, dns-logs, dx, eks, graph, health, incidents, insights, integrations, inventory, ip-inventory, jobs, me, monitoring, nfm, opencost, overview, security, stream, tgw, vpce
+## Structure
+- Pages: overview `page.tsx`, `inventory/[type]` · `inventory/g/[group]`, `eks/` (overview · nodes · pods · deployments · services · explorer · cost · `[cluster]`), `topology/` (overview · infra · services · `resource/[id]`), `monitoring`, `network-flow`, `dns-query`, `ip-addresses`, `vpc-endpoints`, `direct-connect`, `network-firewall`, `sg/usage` · `sg/rules` (SG Rules & Usage, ADR-019), `network-paths` (+`[id]`, Network Path Check saved definitions/runs), `security`, `compliance`, `cost` (+FinOps baseline-recommendations card, ADR-020), `bedrock`, `agentcore`, `ai-diagnosis`, `assistant`, `datasources`, `integrations` (+`datasources/[id]`), `accounts`, `customization`, `jobs`, `login`.
+- API (`app/api/`): accounts, actions, agentcore, ai-usage, anfw, auth(login/signout), bedrock-metrics, changelog, chat(+threads/stats), compliance, cost, customization, datasources, db, diagnosis, dns-logs, dx, eks, finops, graph, health, incidents, insights, integrations, inventory, ip-inventory, jobs, me, monitoring, network-path-runs, network-paths (+`[id]`, `[id]/runs`), nfm, opencost, overview, security, sg (flow-sources, rules, usage), stream, tgw, vpce.
 
-## 규칙 / Rules
-- 인증: 비공개 API는 `verifyUser(request.headers.get('cookie'))` (`lib/auth.ts`, `awsops_token` 쿠키 RS256 JWKS 재검증) → null이면 401. 관리자 전용은 추가로 `isAdmin()` (`lib/admin.ts`). `/api/health`만 공개.
-  (Private APIs: `verifyUser()` re-verifies the edge-set cookie; admin routes add `isAdmin()`. Only `/api/health` is public.)
-- 라우트 핸들러는 `export const dynamic = 'force-dynamic'` 선언 (기존 88개 파일 일관 패턴).
-- `api/chat`의 `aws-data`(Steampipe SQL, `lib/aws-data.ts`)와 auto-collect 콜렉터 6종(`lib/collectors/`)은 **로컬 핸들러** — AgentCore 게이트웨이가 없으므로 ADR-044 멀티 라우트 팬아웃에서 제외 (fan-out은 게이트웨이 보유 built-in만).
-  (aws-data and the 6 collectors are local handlers with no AgentCore gateway behind them — excluded from multi-route fan-out.)
-- 요청 바디는 `readJsonBounded` (`lib/http-body.ts`)로 파싱 — 스트림 상한; `middleware.ts` 2MB belt와 이중 방어.
-- fetch 경로는 `/api/*` — v1의 `/awsops` 접두사 금지 (basePath 없음).
-- 페이지 신설 시 `components/shell/Sidebar.tsx` 등록 + `lib/i18n.ts` nav 키를 함께 추가.
+## Rules
+- Auth: private APIs call `verifyUser(request.headers.get('cookie'))` (`lib/auth.ts`, re-verifies the `awsops_token` cookie via RS256 JWKS) → 401 if null. Admin-only routes additionally check `isAdmin()` (`lib/admin.ts`). This is BFF-level authorization, distinct from the edge's authentication allowlist (root CLAUDE.md's public-path list — `/api/health`, `/api/auth/signout`, `/login`, `/api/auth/login`, `/icon.svg`, `/_next/static/*`, the ADR-013 `/api/incidents/webhook` carve-out, and 5 PWA static assets [`/manifest.webmanifest`, `/apple-touch-icon.png`, `/icon-192.png`, `/icon-512.png`, `/icon-512-maskable.png`]): a route being edge-public does not mean it skips `verifyUser()`. Exactly **three** ADR-002 §2-4 carve-outs skip `verifyUser()` by design and are not bugs: `/api/db` (leaks only a table count + db name), `/api/stream` (leaks only a tick counter), and `/api/incidents/webhook` (machine ingress, HMAC-SHA256/SNS-verified per ADR-013, never a Cognito session path). Every other data-returning or billable route must call `verifyUser()` regardless of the edge allowlist — do not "fix" the three enumerated carve-outs by adding `verifyUser()` to them.
+- Route handlers declare `export const dynamic = 'force-dynamic'` (consistent across the existing 91 files).
+- `api/chat`'s `aws-data` (Steampipe SQL, `lib/aws-data.ts`) and the 6 auto-collect collectors (`lib/collectors/`) are **local handlers** — they have no AgentCore gateway behind them, so they're excluded from ADR-003[legacy 044]'s multi-route fan-out (fan-out covers only gateway-backed built-ins).
+- Request bodies are parsed via `readJsonBounded` (`lib/http-body.ts`) — a streaming cap, doubled up with `middleware.ts`'s 2MB belt.
+- Fetch paths are `/api/*` — the v1 `/awsops` prefix is banned (no basePath).
+- When adding a new page, also register it in `components/shell/Sidebar.tsx` and add its nav key to `lib/i18n.ts`.

@@ -6,6 +6,14 @@ description: CloudWatch / Alertmanager / Grafana webhook ingestion, correlation,
 
 # Alert Pipeline
 
+:::caution Legacy page (v1-era)
+This page was written for the v1 alerting pipeline (alert-triggered diagnosis selecting from
+the fixed 15-section catalog, `src/` paths). Current v2 diagnosis uses the **Light / Mid /
+Deep (15+1 sections, 16 rendered)** tier structure — see
+[FAQ · AI Assistant](../faq/ai-assistant.md) for current behavior.
+:::
+
+
 Ingest alerts from external systems into AWSops and chain **correlation → automatic AI diagnosis → Slack notification** in a single pipeline.
 
 ## Supported Sources

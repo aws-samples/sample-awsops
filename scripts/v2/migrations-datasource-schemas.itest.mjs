@@ -6,7 +6,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 
-const MIG = 'terraform/v2/foundation/migrations/01KV9GHENRHPGTX4KFMEH0ZFYT_datasource_schemas.sql';
+const MIG = 'terraform/foundation/migrations/01KV9GHENRHPGTX4KFMEH0ZFYT_datasource_schemas.sql';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failures = 0;
 const check = (name, cond) => { console.log(`  ${cond ? '✓' : '✗'} ${name}`); if (!cond) failures++; };

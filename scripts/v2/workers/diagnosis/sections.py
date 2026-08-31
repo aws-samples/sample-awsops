@@ -130,8 +130,8 @@ INTENDED_VS_ACTUAL_SECTION = {
         "데이터(verdict)에만 근거하라 — 추측/날조 금지. AWS 리소스 변경·자동 실행을 제안하지 마라(읽기 전용 진단 — 권고만)."),
 }
 
-# Deep-tier catalog: the 8 base SECTIONS + 6 deep-only sections (14; report.generate appends
-# INTENDED_VS_ACTUAL_SECTION → 15 total). Every deep section consumes ALREADY-COLLECTED sources
+# Deep-tier catalog: the 8 base SECTIONS + 7 deep-only sections (15; report.generate appends
+# INTENDED_VS_ACTUAL_SECTION → 16 total). Every deep section consumes ALREADY-COLLECTED sources
 # (inventory/cw_metrics/cost/service_map/posture/what_changed) — no new collectors, no new IAM.
 _DEEP_ONLY = [
     {"key": "identity_access", "title": "IAM & 자격 증명 심층",

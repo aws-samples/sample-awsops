@@ -10,25 +10,31 @@ import Screenshot from '@site/src/components/Screenshot';
 
 A page for monitoring the real-time status of EC2 instances and viewing detailed information.
 
+:::info How this is served in v2
+This screen isn't a dedicated page — it's served through v2's shared inventory view (`/inventory/ec2`, under the "Compute" group in the sidebar). The content below reflects the actual v2 inventory view configuration (`HIGHLIGHTS.ec2`/`INVENTORY_TYPES.ec2` in `web/lib/inventory-types.ts`), not v1's dedicated EC2 page.
+:::
+
 <Screenshot src="/screenshots/compute/ec2.png" alt="EC2 Instances" />
 
 ## Key Features
 
-### Stats Cards
-Four StatsCards at the top of the page display key metrics:
-- **Running**: Number of running instances (green)
-- **Stopped**: Number of stopped instances (red)
-- **Total vCPUs**: Total vCPU count (cyan)
-- **Instance Types**: Number of instance types in use (purple)
+### Highlight Cards
+Four highlight cards at the top of the page display key metrics:
+- **Running**: Instances where `instance_state` is running
+- **Stopped**: Instances where `instance_state` is stopped
+- **Public IP**: Instances with a public IP assigned
+- **Instance types**: Distinct count of `instance_type` in use
+
+There is no card showing total vCPU count — that metric existed in v1 only.
 
 ### Visualization Charts
-- **Instance Type Distribution**: Pie chart showing distribution by instance type
-- **Instance Status**: Bar chart showing instance count by status
+- Distribution donuts by instance type (`instance_type`) and instance state (`instance_state`)
+- Top-N bar chart ranking instances by memory (MiB)
 
 ### Instance List Table
 Displays all EC2 instances in a table format:
-- Instance ID, Name, Type, State, Public/Private IP, VPC, Launch Time
-- StatusBadge with different colors based on state (running=green, stopped=red)
+- Name, Type, State, Pricing, Private/Public IP, Subnet, VPC, Launch Time
+- Color-coded status badge based on state (running/stopped, etc.)
 
 ### Filters and Search
 - **Search box**: Text search across all fields including ID, Name, IP
@@ -49,7 +55,7 @@ Click an instance row in the table to open the detail panel on the right:
 ## How to Use
 
 1. Click **Compute > EC2** in the sidebar
-2. Review the overall status from the stats cards at the top
+2. Review the overall status from the highlight cards at the top
 3. Use filters to find specific instances
 4. Click an instance in the table to view detailed information
 5. Use the refresh button to load the latest data

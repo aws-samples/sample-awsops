@@ -11,7 +11,7 @@ Questions and answers about the AWSops AI assistant.
 <details>
 <summary>What questions can I ask?</summary>
 
-The AI assistant answers AWS/Kubernetes operations questions across **8 section domains**. Which domain it needs is determined automatically (see "routing" below) — just ask in natural language.
+The AI assistant answers AWS/Kubernetes operations questions across **9 section domains** (plus local specialist sections). Which domain it needs is determined automatically (see "routing" below) — just ask in natural language.
 
 | Domain | Example questions |
 |--------|-------------------|
@@ -22,6 +22,7 @@ The AI assistant answers AWS/Kubernetes operations questions across **8 section 
 | **Monitoring** | "How to set up CloudWatch alarms", "Find a specific event in CloudTrail", "Analyze EC2 CPU trends" |
 | **Cost** | "Analyze this month's costs", "What caused the cost spike?", "Recommend cost optimizations" |
 | **IaC** | "Review this Terraform", "Why did the CloudFormation stack creation fail?" |
+| **Observability** | "Show service p99 latency (Prometheus)", "Find slow calls in ClickHouse traces" |
 | **Ops** | General AWS operations questions that don't fit the above |
 
 If you've connected datasources (external observability), you can also query them by translating natural language directly into PromQL/LogQL and the like — see "external observability" below and the [Datasource Development FAQ](./datasource-development).
@@ -50,8 +51,8 @@ Want to pick a domain explicitly? Type a slash (`/`) in the input box. See the "
 
 Live AWS queries go through **AgentCore MCP (Model Context Protocol) Lambda tools**. The assistant queries exactly the data it needs to answer, then analyzes it.
 
-- **~120 read-only tools** are spread across **8 section gateways** (Network / Container / Data / Security / Monitoring / Cost / IaC / Ops). The tool count is approximate and evolving.
-- External observability is the separate **Integrations axis** (ADR-039), not a 9th gateway — the gateway count stays at 8 (ADR-004).
+- **~160 read-only tools** are spread across **9 section gateways** (Network / Container / Data / Security / Monitoring / Cost / IaC / Ops / External-Obs — per amended ADR-004). The tool count is approximate and evolving.
+- The external-observability connectors (Prometheus·ClickHouse) are promoted to the **external-obs gateway**, routed as the ninth (ADR-004 as amended 2026-06-24, 9 provisioned / 9 routed). Other external integrations (vendor-hosted, etc.) remain the separate **Integrations axis** (ADR-007/017).
 - Steampipe exists only as a **flag-gated inventory sync** (`steampipe_enabled`, default OFF). It is not the live query engine, and not an always-on local service.
 
 :::info Technical Details
@@ -107,8 +108,9 @@ A mutation request like "assistant, restart this instance" will not be executed.
 
 | Tier | Sections | Default model |
 |------|----------|---------------|
-| **Base** | 8 sections | Sonnet |
-| **Deep** | 15 sections (base 8 + 6 deep-only + synthesis) | Sonnet by default, **Opus selectable** (deep-only, behind a cost gate) |
+| **Light** | 8+1 sections (9 rendered — currently identical catalog/token budget to Mid) | Sonnet |
+| **Mid** | 8+1 sections (9 rendered) | Sonnet |
+| **Deep** | 15+1 sections (base 8 + 7 deep-only + intended-vs-actual) | Sonnet by default, **Opus selectable** (deep-only, behind a cost gate) |
 
 **Features**
 

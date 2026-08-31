@@ -21,7 +21,7 @@ One-time, **idempotent** load of v1's four high-value history stores into v2's A
 - 자격증명 / Credentials — 아래 순서로 해석되며 **DSN/비밀번호는 절대 로그에 남지 않는다** / resolved in this order, and **the DSN/password is never logged**:
   1. `--dsn <url>` 또는 `BACKFILL_DSN`
   2. `AURORA_SECRET_ARN` + `AURORA_ENDPOINT` (Secrets Manager)
-  3. `terraform -chdir=terraform/v2/foundation output -raw aurora_secret_arn|aurora_endpoint` (= `migrate.mjs` 경로)
+  3. `terraform -chdir=terraform/foundation output -raw aurora_secret_arn|aurora_endpoint` (= `migrate.mjs` 경로)
 - 운영 환경에서는 **2번(Secrets Manager) 경로를 우선** 사용하라. `--dsn`은 테스트/고급용이다.
   Prefer the Secrets Manager path in production; `--dsn` is for tests/advanced use.
 
@@ -111,5 +111,5 @@ node scripts/v2/backfill-v1.itest.mjs           # PG17 컨테이너 E2E(멱등�
 
 ## 관련 / Related
 
-- 파일 / Files: `scripts/v2/backfill-v1.mjs`, `scripts/v2/backfill-core.mjs`, `scripts/v2/backfill-v1.itest.mjs`, `terraform/v2/foundation/data/schema.sql`, `src/lib/db/*-writer.ts`
+- 파일 / Files: `scripts/v2/backfill-v1.mjs`, `scripts/v2/backfill-core.mjs`, `scripts/v2/backfill-v1.itest.mjs`, `terraform/foundation/data/schema.sql`, `src/lib/db/*-writer.ts`
 - ADR: **001**(v2 파운데이션 — ECS Fargate + Aurora 앱상태 7테이블). 스펙 = `docs/superpowers/specs/2026-06-12-v1-to-v2-aurora-backfill-design.md`.

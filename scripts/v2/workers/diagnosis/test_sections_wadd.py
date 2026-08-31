@@ -6,7 +6,7 @@ from diagnosis import sections
 # must declare ONLY these — no new collectors / AWS APIs (the concurrent data branch owns the collectors).
 VALID_SOURCES = {"inventory", "cw_metrics", "cost", "service_map", "datasources_obs", "posture",
                  "what_changed", "idle", "commitment"}
-WADD = sections.DEEP_SECTIONS  # 8 base + 6 deep-only
+WADD = sections.DEEP_SECTIONS  # 8 base + 7 deep-only (report.generate appends intended-vs-actual → 16 rendered)
 
 
 def test_catalog_shape_stable():

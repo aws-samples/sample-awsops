@@ -436,6 +436,43 @@ def _filter_tools(tools, allowlist):
     return [t for t in tools if getattr(t, "tool_name", None) in allow]
 
 
+# ADR-017 (amended 2026-08-05) — fail-closed runtime allowlist for the vendor-hosted official-MCP
+# presets. An AgentCore gateway advertises a target's tools as '<target-name>___<tool-name>'
+# (see agent/lambda/cross_account.resolve_tool_name), and every catalog.MCP_SERVER_TARGETS name
+# ends in '-mcp-server-target' — that marker identifies "tool served by a remote vendor MCP server".
+# provision.py writes the transcribed catalog allowlist to OFFICIAL_MCP_TOOL_ALLOWLIST_JSON on
+# every run; anything a vendor adds later (write tools included) is outside the map and dropped.
+_MCP_SERVER_TARGET_MARKER = "-mcp-server-target___"
+
+
+def _official_mcp_allowlist():
+    """Parse OFFICIAL_MCP_TOOL_ALLOWLIST_JSON → {target_name: set(tool_names)}. Unparseable/absent
+    ⇒ {} (which filter_official_mcp_tools treats as deny-all for preset tools — fail-closed)."""
+    try:
+        parsed = json.loads(os.environ.get("OFFICIAL_MCP_TOOL_ALLOWLIST_JSON") or "{}")
+        return {k: set(v) for k, v in parsed.items() if isinstance(v, (list, tuple))}
+    except (ValueError, AttributeError, TypeError):
+        return {}
+
+
+def filter_official_mcp_tools(tools, allowlist_by_target=None):
+    """Keep a '<x>-mcp-server-target___<tool>' gateway tool only when <tool> is in its preset's
+    transcribed allowlist (ADR-017 §Decision 2). FAIL-CLOSED at every layer: env map missing or
+    unparseable, target absent from the map, or an empty per-target list all yield ZERO tools for
+    that target. Non-preset tools pass through untouched."""
+    allow = _official_mcp_allowlist() if allowlist_by_target is None else allowlist_by_target
+    out = []
+    for t in tools:
+        name = getattr(t, "tool_name", "") or ""
+        if _MCP_SERVER_TARGET_MARKER in name:
+            target, _, tool = name.partition("___")
+            if tool not in (allow.get(target) or set()):
+                logging.info(f"[Agent] official-MCP tool dropped by allowlist: {name}")
+                continue
+        out.append(t)
+    return out
+
+
 class SsrfBlocked(Exception):
     """Raised when an integration endpoint is blocked by SSRF guard."""
     pass
@@ -656,6 +693,119 @@ def _connect_integration(spec, stack):
     logging.info(f"[Agent] integration '{spec.get('name')}' [{transport}] tools "
                  f"({len(selected)}/{len(live)}): {[t.tool_name for t in selected]}")
     return selected
+
+
+# ── ADR-017 (amended 2026-08-05): official mcp-clickhouse embedded via stdio ────────────────────
+# The vendor's own MCP server runs as a subprocess INSIDE this runtime container (the runtime is
+# VPC-attached, so an in-VPC ClickHouse is reachable — the remote-target model never was), fed from
+# the SAME Datasources registration the in-house lambda uses. No extra server, token, or terraform.
+CLICKHOUSE_OFFICIAL_MCP = os.environ.get("CLICKHOUSE_OFFICIAL_MCP", "false").strip().lower() == "true"
+
+
+def _clickhouse_stdio_env(creds):
+    """Map the Datasources kind-mirror credential blob (endpoint/username/password — the shape
+    agent/lambda/datasource_http.py reads) onto mcp-clickhouse's env contract; only basic/none
+    auth is mappable — any other authType raises ValueError (fail closed). READ-ONLY IS PINNED
+    IN CODE: ALLOW_WRITE_ACCESS/ALLOW_DROP are hardcoded false and not operator-overridable."""
+    u = urllib.parse.urlparse(creds.get("endpoint") or "")
+    if u.scheme not in ("http", "https") or not u.hostname:
+        raise ValueError("clickhouse endpoint must be http(s)://host[:port]")
+    # mcp-clickhouse's env contract has no URL-path slot (host/port only). A path-prefixed
+    # endpoint (e.g. https://proxy.internal/clickhouse — valid in Datasources; the lambda path
+    # preserves it) would silently connect to the proxy ROOT here — fail closed instead, same
+    # policy as the authType check below (review MINOR, PR #207).
+    if (u.path or "").strip("/"):
+        raise ValueError("clickhouse endpoint has a URL path — mcp-clickhouse env supports host[:port] only; the in-house lambda path keeps serving this datasource")
+    secure = u.scheme == "https"
+    # (MAJOR-A) mcp-clickhouse's env contract expresses HTTP basic ONLY (user/password). The
+    # Datasources blob may carry an authType the in-house lambda path handles correctly
+    # (agent/lambda/datasource_http.py auth_headers: none/basic/bearer/custom_header) but that
+    # this env contract CANNOT express. Fail CLOSED — the caller's isolated try/except turns
+    # this into "stdio tools unavailable, in-house lambda clickhouse tools keep working" —
+    # rather than spawning a server with silently-empty credentials (tool list succeeds, every
+    # query fails). Do NOT try to bolt bearer/custom_header onto mcp-clickhouse's env contract.
+    auth_type = (creds.get("authType") or "").strip().lower()
+    if auth_type not in ("", "basic", "none"):
+        raise ValueError(f"clickhouse authType '{auth_type}' is not expressible in "
+                         "mcp-clickhouse's username/password env contract")
+    if not auth_type and not creds.get("username") and creds.get("token"):
+        # Legacy no-authType shape: a filled `token` INFERS bearer in the lambda path.
+        raise ValueError("clickhouse credential infers bearer auth (token, no username) — "
+                         "not expressible in mcp-clickhouse's username/password env contract")
+    return {
+        "CLICKHOUSE_HOST": u.hostname,
+        # URL-standard default, matching agent/lambda/datasource_http.py
+        # (`parsed.port or (443 if scheme == "https" else 80)`) so a reverse proxy on standard
+        # ports works — ClickHouse's own 8443/8123 are NOT assumed.
+        "CLICKHOUSE_PORT": str(u.port or (443 if secure else 80)),
+        "CLICKHOUSE_USER": creds.get("username") or "default",
+        "CLICKHOUSE_PASSWORD": creds.get("password") or "",
+        "CLICKHOUSE_SECURE": "true" if secure else "false",
+        "CLICKHOUSE_MCP_SERVER_TRANSPORT": "stdio",
+        "CLICKHOUSE_ALLOW_WRITE_ACCESS": "false",  # ADR-017: non-negotiable read-only pin
+        "CLICKHOUSE_ALLOW_DROP": "false",
+    }
+
+
+def _connect_clickhouse_stdio(stack):
+    """Spawn the official mcp-clickhouse as a stdio subprocess (kept live via ``stack``) and return
+    its tools. Raises on any failure — the caller isolates it exactly like a dropped integration
+    (gateway tools always survive). Credentials come from the shared integrations secret's
+    `clickhouse` kind-mirror (= the default Datasources instance); non-default instances are a
+    documented follow-up (ADR-017 §Trade-offs)."""
+    secret_name = os.environ.get("INTEGRATIONS_SECRET_NAME", "ops/awsops-v2/integrations/credentials")
+    secret_map = json.loads(_get_secret(secret_name) or "{}")
+    creds = secret_map.get("clickhouse")
+    if not (isinstance(creds, dict) and creds.get("endpoint")):
+        raise ValueError("clickhouse datasource not connected (no kind-mirror credential in the integrations secret)")
+    from mcp import StdioServerParameters, stdio_client
+    params = StdioServerParameters(
+        command="python",
+        args=["-m", "mcp_clickhouse.main"],
+        # env is used AS-IS by the child (no inherit) — pass PATH so the interpreter resolves, and
+        # never anything else from our environment (credential hygiene: the child needs only these).
+        env={**_clickhouse_stdio_env(creds), "PATH": os.environ.get("PATH", "")},
+    )
+    client = MCPClient(lambda: stdio_client(params))
+    stack.enter_context(client)
+    tools = get_all_tools(client)
+    logging.info(f"[Agent] official mcp-clickhouse (stdio) tools ({len(tools)}): {[t.tool_name for t in tools]}")
+    return client, tools
+
+
+def apply_official_mcp_gates(gateway_tools, gateway_key, stack):
+    """ADR-017 tool gating shared by BOTH chat paths — the Strands handler in this file AND
+    `anthropic_loop.run_anthropic_loop`. The fail-closed vendor-MCP allowlist runs on the RAW
+    gateway list, BEFORE any union with stdio or integration tools. A stdio-connect failure is
+    isolated exactly like a dropped integration (gateway tools always survive; the request
+    continues). Callers union the returned `clickhouse_stdio_tools` BEFORE the dedup +
+    allowlist step.
+
+    Returns ``(gateway_tools, clickhouse_stdio_tools, stdio_client)``. The third element is the
+    MCPClient that OWNS the stdio tools (None when none were connected) — a caller that
+    dispatches tool calls by hand MUST route stdio tool names to it instead of the gateway
+    client. Advertising stdio tools while executing them on the gateway was a review MAJOR
+    (every call failed, and the mutual exclusion had already dropped the lambda fallback)."""
+    # ADR-017 (amended): fail-closed allowlist over remote vendor-MCP preset tools — runs on
+    # the RAW gateway list, before any union, so a vendor-added tool can never slip through.
+    gateway_tools = filter_official_mcp_tools(gateway_tools)
+    # ADR-017 (amended): official mcp-clickhouse stdio subprocess on the external-obs route.
+    # Failure is isolated exactly like a dropped integration — gateway tools always survive.
+    clickhouse_stdio_tools = []
+    stdio_client = None
+    if CLICKHOUSE_OFFICIAL_MCP and (gateway_key or "").endswith("external-obs"):
+        try:
+            stdio_client, clickhouse_stdio_tools = _connect_clickhouse_stdio(stack)
+        except Exception as e:
+            logging.warning(f"[Agent] official mcp-clickhouse (stdio) dropped: {type(e).__name__}: {e}")
+        if clickhouse_stdio_tools:
+            # Tool-layer mutual exclusion (ADR-017): the embedded official server replaces the
+            # in-house lambda's clickhouse tools for this run — never both.
+            gateway_tools = [t for t in gateway_tools
+                             if not (getattr(t, "tool_name", "") or "").startswith("clickhouse-mcp-target___")]
+        else:
+            stdio_client = None
+    return gateway_tools, clickhouse_stdio_tools, stdio_client
 
 
 def get_aws_credentials():
@@ -1001,6 +1151,11 @@ async def handler(payload):
         with ExitStack() as stack:
             stack.enter_context(mcp_client)
             gateway_tools = get_all_tools(mcp_client)
+            # ADR-017 (amended): gates shared with the dark anthropic_loop path — ONE implementation.
+            # (Strands owns dispatch via the tool objects themselves, so the stdio client the
+            # helper returns is only needed by the hand-rolled dispatch in anthropic_loop.)
+            gateway_tools, clickhouse_stdio_tools, _ = apply_official_mcp_gates(
+                gateway_tools, gateway_key, stack)
             # ADR-039: live-connect each enabled egress-READ integration. Per-integration failures are
             # ISOLATED here (gateway tools always survive) — NOT escalated to the Bedrock-direct fallback.
             integration_tools = gather_integration_tools(
@@ -1008,9 +1163,9 @@ async def handler(payload):
             # ADR-031/039: enforce the resolver-computed allowlist OUTSIDE the model over BOTH gateway +
             # integration tools BEFORE the prompt tool-list and Agent(tools=) are built (cap is the ceiling).
             # Dedup first (gateway precedence) so a name collision never hands Agent two same-named tools.
-            tools = _filter_tools(_dedup_by_tool_name(gateway_tools + integration_tools), tool_allowlist)
+            tools = _filter_tools(_dedup_by_tool_name(gateway_tools + clickhouse_stdio_tools + integration_tools), tool_allowlist)
             tool_names = [t.tool_name for t in tools]
-            logging.info(f"Gateway [{gateway_role}] tools ({len(tools)} = {len(gateway_tools)} gw + {len(integration_tools)} integ, allowlist={'on' if tool_allowlist else 'off'}): {tool_names}")
+            logging.info(f"Gateway [{gateway_role}] tools ({len(tools)} = {len(gateway_tools)} gw + {len(clickhouse_stdio_tools)} stdio + {len(integration_tools)} integ, allowlist={'on' if tool_allowlist else 'off'}): {tool_names}")
 
             # ADR-031: resolver override (custom agent) OR built-in SKILL_BASE; + dynamic tools + account directive
             if system_prompt_override:

@@ -19,12 +19,12 @@ git clone <repo> && cd awsops-v2
 npm ci --prefix web            # web 의존성 (configurator deps는 make configure가 자동 설치)
 
 make configure                 # 대화형 TUI → terraform.tfvars + backend.hcl 생성
-terraform -chdir=terraform/v2/foundation init -backend-config=backend.hcl
-terraform -chdir=terraform/v2/foundation plan -out tfplan
-terraform -chdir=terraform/v2/foundation apply tfplan   # 공유 인프라에 -auto-approve 금지
+terraform -chdir=terraform/foundation init -backend-config=backend.hcl
+terraform -chdir=terraform/foundation plan -out tfplan
+terraform -chdir=terraform/foundation apply tfplan   # 공유 인프라에 -auto-approve 금지
 make deploy                    # migrate → arm64 빌드 → ECR push → ECS 롤링 → smoke /api/health
 ```
-- `terraform.tfvars`·`backend.hcl`은 **gitignore 대상 — 비밀번호/시크릿 값 커밋 금지.** 예시는 `terraform/v2/foundation/terraform.tfvars.example` / `backend.hcl.example`. 스테이징 값 파일(예: `staging.tfvars`)도 untracked로 유지한다. 시크릿은 env/tfvars가 아닌 SSM/Secrets Manager 경유.
+- `terraform.tfvars`·`backend.hcl`은 **gitignore 대상 — 비밀번호/시크릿 값 커밋 금지.** 예시는 `terraform/foundation/terraform.tfvars.example` / `backend.hcl.example`. 스테이징 값 파일(예: `staging.tfvars`)도 untracked로 유지한다. 시크릿은 env/tfvars가 아닌 SSM/Secrets Manager 경유.
 - 신규 대형 기능 플래그(`agentcore_enabled`, `workers_enabled`, `steampipe_enabled` 등)는 전부 기본 false — 켜기 전 `plan` = No changes, $0.
 
 ## 로컬 개발 / Local Development
@@ -59,4 +59,4 @@ make deploy                    # = migrate 후 scripts/v2/deploy.mjs
 - `DESIGN.md` — v2 설계
 - `docs/reference/01-edge-network.md` ~ `07-eks.md` — 레이어별 구현 레퍼런스
 - `docs/runbooks/deploy-new-version.md` — 릴리스 배포 런북
-- `docs/decisions/BASELINE.md` — 결정(ADR)의 현행 진실 (FROZEN 항목 포함 — 여기부터 읽기)
+- 결정(ADR) 본문과 BASELINE 레지스터는 비공개 upstream 리포지토리에서 관리됩니다 (이 트리에는 없음 — 문서의 ADR 번호는 추적용 인용)

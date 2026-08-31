@@ -151,7 +151,7 @@ export default function DataTable({
   if (rows.length === 0) {
     return (
       <Card padded={false}>
-        <div className="py-6 px-3 text-center text-[14px] text-ink-400">데이터 없음</div>
+        <div className="py-6 px-3 text-center text-[14px] text-ink-400">{tt('데이터 없음')}</div>
       </Card>
     );
   }

@@ -1,0 +1,30 @@
+{
+  "version.label": {
+    "message": "Next",
+    "description": "The label for version current"
+  },
+  "sidebar.guideSidebar.category.시작하기": {
+    "message": "はじめに",
+    "description": "The label for category '시작하기' in sidebar 'guideSidebar'"
+  },
+  "sidebar.guideSidebar.category.개요": {
+    "message": "概要",
+    "description": "The label for category '개요' in sidebar 'guideSidebar'"
+  },
+  "sidebar.guideSidebar.category.AI 운영": {
+    "message": "AI 運用",
+    "description": "The label for category 'AI 운영' in sidebar 'guideSidebar'"
+  },
+  "sidebar.guideSidebar.category.리소스": {
+    "message": "リソース",
+    "description": "The label for category '리소스' in sidebar 'guideSidebar'"
+  },
+  "sidebar.guideSidebar.category.비용": {
+    "message": "コスト",
+    "description": "The label for category '비용' in sidebar 'guideSidebar'"
+  },
+  "sidebar.guideSidebar.category.관측성": {
+    "message": "可観測性",
+    "description": "The label for category '관측성' in sidebar 'guideSidebar'"
+  }
+}

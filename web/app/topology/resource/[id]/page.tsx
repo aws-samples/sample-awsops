@@ -8,6 +8,7 @@ import { Background, Controls, Position, type Node, type Edge } from '@xyflow/re
 import '@xyflow/react/dist/style.css';
 import PageHeader from '@/components/ui/PageHeader';
 import { layoutFlow } from '@/lib/flow-layout';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 // ReactFlow touches the DOM on mount — client-only.
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
@@ -29,6 +30,7 @@ const relLabel: Record<string, string> = {
 };
 
 export default function ResourceTopologyPage({ params }: { params: { id: string } }) {
+  const { tt } = useI18n();
   const fromId = decodeURIComponent(params.id);
   const [activeAccount] = useActiveAccount();
   const [depth, setDepth] = useState(2);
@@ -95,16 +97,16 @@ export default function ResourceTopologyPage({ params }: { params: { id: string 
                 <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
               </select>
             </label>
-            <Link href="/topology" className="rounded-md border border-ink-200 bg-card px-2 py-1 hover:bg-ink-50">← 트래픽 흐름</Link>
+            <Link href="/topology" className="rounded-md border border-ink-200 bg-card px-2 py-1 hover:bg-ink-50">{tt('← 트래픽 흐름')}</Link>
           </div>
         }
       />
       <div className="flex items-center gap-3 px-4 py-1 text-[11px] text-ink-500">
-        {busy && <span>불러오는 중…</span>}
-        {err && <span className="text-red-600">조회 실패: {err}</span>}
-        {graph?.captured_at && <span>그래프 시점: {new Date(graph.captured_at).toLocaleString()}</span>}
-        {graph?.capped && <span className="text-amber-600">일부 허브는 이웃이 많아 상위 일부만 표시됩니다 (cap).</span>}
-        {graph && graph.nodes.length === 0 && !busy && <span>이 리소스의 관계 그래프가 비어 있습니다 (materializer 미실행이거나 네트워크 배치 없음).</span>}
+        {busy && <span>{tt('불러오는 중…')}</span>}
+        {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
+        {graph?.captured_at && <span>{tt('그래프 시점:')} {new Date(graph.captured_at).toLocaleString()}</span>}
+        {graph?.capped && <span className="text-amber-600">{tt('일부 허브는 이웃이 많아 상위 일부만 표시됩니다 (cap).')}</span>}
+        {graph && graph.nodes.length === 0 && !busy && <span>{tt('이 리소스의 관계 그래프가 비어 있습니다 (materializer 미실행이거나 네트워크 배치 없음).')}</span>}
       </div>
       <div className="min-h-0 flex-1">
         <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.2 }} proOptions={{ hideAttribution: true }}>

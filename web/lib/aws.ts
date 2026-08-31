@@ -40,7 +40,7 @@ export async function listClusters(accountId?: string): Promise<ClusterInfo[]> {
 export interface CostBreakdown { total: number; currency: string; byService: { service: string; amount: number }[] }
 
 // Cost Explorer has no cluster dimension — this relies on the AWS-generated tag
-// `aws:ecs:clusterName` (activated as a cost-allocation tag; see terraform/v2/foundation
+// `aws:ecs:clusterName` (activated as a cost-allocation tag; see terraform/foundation
 // variable `ecs_cost_tag_active`). Untagged usage groups under the empty-value bucket
 // (key `aws:ecs:clusterName$`, no `$name` suffix) — dropped, not a real cluster.
 // Cluster names are only unique per-region, and inventory_resources keys ecs_cluster rows

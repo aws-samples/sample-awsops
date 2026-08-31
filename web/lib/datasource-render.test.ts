@@ -61,6 +61,27 @@ describe('normalizeResult', () => {
     expect(r.columns!.map((c) => c.key)).toEqual(['timestamp', 'line', 'labels']);
   });
 
+  it('loki metric LogQL (matrix) → series, not garbled log lines', () => {
+    // The diag-signal chips this repo adds for loki are aggregates — `sum by(job)(count_over_time(…))` —
+    // which Loki answers with resultType 'matrix' and {metric, values:[[ts, "n"]]}. The stream path read
+    // the numeric sample as a log line (review MAJOR).
+    const body = {
+      resultType: 'matrix',
+      result: [{ metric: { job: 'varlogs' }, values: [[1700000000, '3'], [1700000060, '5']] }],
+    };
+    const r = normalizeResult('loki', 'loki_query_range', body);
+    expect(r.shape).toBe('series');
+    expect(r.seriesKeys).toEqual(['{job="varlogs"}']);
+    expect(r.series).toHaveLength(2);
+  });
+
+  it('loki instant metric (vector) → table', () => {
+    const body = { resultType: 'vector', result: [{ metric: { job: 'varlogs' }, value: [1700000000, '7'] }] };
+    const r = normalizeResult('loki', 'loki_query_range', body);
+    expect(r.shape).toBe('table');
+    expect(r.rows![0].value).toBe(7);
+  });
+
   it('tempo {traces} → traces table', () => {
     const body = { truncated: false, traces: [{ traceID: 'abc', rootServiceName: 'api', rootTraceName: 'GET /', durationMs: 12 }] };
     const r = normalizeResult('tempo', 'tempo_search', body);

@@ -3,6 +3,7 @@ import { useState } from 'react';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import IntegrationIcon from '@/components/datasources/IntegrationIcon';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 // v1-parity Add/Edit form: multiple instances per type, a name, an explicit auth method (optional auth),
 // and a Test-before-save probe. POSTs (create) / PATCHes (update) /api/datasources/manage.
@@ -42,6 +43,7 @@ export interface DatasourceFormValue {
 export default function DatasourceForm({
   initial, onSaved, onCancel,
 }: { initial?: DatasourceFormValue; onSaved: () => void; onCancel: () => void }) {
+  const { tt } = useI18n();
   const editing = Boolean(initial?.id);
   const [kind, setKind] = useState(initial?.kind ?? 'prometheus');
   const [name, setName] = useState(initial?.name ?? '');
@@ -71,9 +73,9 @@ export default function DatasourceForm({
         body: JSON.stringify({ kind, endpoint, authType, creds: credPayload() }),
       });
       const b = await r.json();
-      if (!r.ok) { setErr(b.error || `오류 ${r.status}`); return; }
+      if (!r.ok) { setErr(b.error || tt(`오류 ${r.status}`)); return; }
       setTest({ ok: Boolean(b.ok), ms: b.latencyMs, error: b.error });
-    } catch (e) { setErr(e instanceof Error ? e.message : '테스트 실패'); }
+    } catch (e) { setErr(e instanceof Error ? e.message : tt('테스트 실패')); }
     finally { setTesting(false); }
   };
 
@@ -88,15 +90,15 @@ export default function DatasourceForm({
         body: JSON.stringify(body),
       });
       const b = await r.json().catch(() => ({}));
-      if (!r.ok) { setErr(b.error || `저장 실패 (${r.status})`); return; }
+      if (!r.ok) { setErr(b.error || tt(`저장 실패 (${r.status})`)); return; }
       onSaved();
-    } catch (e) { setErr(e instanceof Error ? e.message : '저장 실패'); }
+    } catch (e) { setErr(e instanceof Error ? e.message : tt('저장 실패')); }
     finally { setSaving(false); }
   };
 
   return (
-    <div className="space-y-3" role="dialog" aria-label={editing ? '데이터소스 편집' : '데이터소스 추가'}>
-      <h3 className="text-sm font-semibold text-ink-800">{editing ? '데이터소스 편집' : '데이터소스 추가'}</h3>
+    <div className="space-y-3" role="dialog" aria-label={editing ? tt('데이터소스 편집') : tt('데이터소스 추가')}>
+      <h3 className="text-sm font-semibold text-ink-800">{editing ? tt('데이터소스 편집') : tt('데이터소스 추가')}</h3>
 
       <div>
         <label className={labelCls}>Type</label>
@@ -110,7 +112,7 @@ export default function DatasourceForm({
 
       <div>
         <label className={labelCls}>Name</label>
-        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="예: prod-prometheus" />
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={tt('예: prod-prometheus')} />
       </div>
 
       <div>
@@ -121,14 +123,14 @@ export default function DatasourceForm({
       <div>
         <label className={labelCls}>Auth method</label>
         <select className={selectCls} value={authType} onChange={(e) => { setAuthType(e.target.value); setTest(null); }} aria-label="Auth method">
-          {AUTH_TYPES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
+          {AUTH_TYPES.map((a) => <option key={a.value} value={a.value}>{tt(a.label)}</option>)}
         </select>
       </div>
 
       {authType === 'basic' && (
         <div className="grid grid-cols-2 gap-2">
           <div><label className={labelCls}>Username</label><Input value={creds.username ?? ''} onChange={(e) => setCred('username', e.target.value)} /></div>
-          <div><label className={labelCls}>Password (선택)</label><Input type="password" value={creds.password ?? ''} onChange={(e) => setCred('password', e.target.value)} /></div>
+          <div><label className={labelCls}>{tt('Password (선택)')}</label><Input type="password" value={creds.password ?? ''} onChange={(e) => setCred('password', e.target.value)} /></div>
         </div>
       )}
       {authType === 'bearer' && (
@@ -142,23 +144,23 @@ export default function DatasourceForm({
           </div>
           {/* Optional SECOND header — Datadog auth is a DD-API-KEY + DD-APPLICATION-KEY pair. */}
           <div className="grid grid-cols-2 gap-2">
-            <div><label className={labelCls}>Header name 2 (선택)</label><Input value={creds.headerName2 ?? ''} onChange={(e) => setCred('headerName2', e.target.value)} placeholder={kind === 'datadog' ? 'DD-APPLICATION-KEY' : ''} /></div>
-            <div><label className={labelCls}>Header value 2 (선택)</label><Input type="password" value={creds.headerValue2 ?? ''} onChange={(e) => setCred('headerValue2', e.target.value)} /></div>
+            <div><label className={labelCls}>{tt('Header name 2 (선택)')}</label><Input value={creds.headerName2 ?? ''} onChange={(e) => setCred('headerName2', e.target.value)} placeholder={kind === 'datadog' ? 'DD-APPLICATION-KEY' : ''} /></div>
+            <div><label className={labelCls}>{tt('Header value 2 (선택)')}</label><Input type="password" value={creds.headerValue2 ?? ''} onChange={(e) => setCred('headerValue2', e.target.value)} /></div>
           </div>
         </>
       )}
-      {AUTH_HINT[kind] && <p className="text-[12px] text-ink-400">{AUTH_HINT[kind]}</p>}
+      {AUTH_HINT[kind] && <p className="text-[12px] text-ink-400">{tt(AUTH_HINT[kind])}</p>}
       {ORG_ID_KINDS.has(kind) && (
-        <div><label className={labelCls}>Org ID (X-Scope-OrgID, 선택)</label><Input value={creds.org_id ?? ''} onChange={(e) => setCred('org_id', e.target.value)} /></div>
+        <div><label className={labelCls}>{tt('Org ID (X-Scope-OrgID, 선택)')}</label><Input value={creds.org_id ?? ''} onChange={(e) => setCred('org_id', e.target.value)} /></div>
       )}
 
       <div className="flex items-center gap-2 pt-1">
         <Button variant="secondary" onClick={runTest} disabled={testing || !endpoint.trim()}>
-          {testing ? '테스트 중…' : '🧪 Test connection'}
+          {testing ? tt('테스트 중…') : '🧪 Test connection'}
         </Button>
         {test && (
           <span className={`text-[13px] ${test.ok ? 'text-emerald-600' : 'text-rose-600'}`}>
-            {test.ok ? `✓ 연결 성공${test.ms != null ? ` (${test.ms}ms)` : ''}` : `✗ 연결 실패: ${test.error ?? '오류'}`}
+            {test.ok ? `${tt('✓ 연결 성공')}${test.ms != null ? ` (${test.ms}ms)` : ''}` : `${tt('✗ 연결 실패:')} ${test.error ?? tt('오류')}`}
           </span>
         )}
       </div>
@@ -166,8 +168,8 @@ export default function DatasourceForm({
       {err && <p className="text-[13px] text-rose-600">{err}</p>}
 
       <div className="flex gap-2 pt-1">
-        <Button onClick={save} disabled={saving || !name.trim() || !endpoint.trim()}>{saving ? '저장 중…' : '저장'}</Button>
-        <Button variant="secondary" onClick={onCancel}>취소</Button>
+        <Button onClick={save} disabled={saving || !name.trim() || !endpoint.trim()}>{saving ? tt('저장 중…') : tt('저장')}</Button>
+        <Button variant="secondary" onClick={onCancel}>{tt('취소')}</Button>
       </div>
     </div>
   );

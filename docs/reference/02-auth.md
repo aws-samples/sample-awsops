@@ -2,9 +2,9 @@
 
 ## Purpose / 목적
 
-v2 puts **Cognito Hosted-UI authentication in front of the CloudFront edge** so unauthenticated requests never reach the ECS Fargate web tier (or consume ALB capacity). Authentication terminates at the edge and a verified Cognito ID token cookie (`awsops_token`) flows downstream. v2 hardens the v1 model from an expiry-only check to **cryptographic RS256 signature verification** at the edge — only then is the downstream "decode-only, trust the edge" model genuinely sound.
+v2 puts **Cognito authentication in front of the CloudFront edge** so unauthenticated requests to any route outside the public-path allowlist (§ below) never reach the ECS Fargate web tier (or consume ALB capacity) — the allowlisted paths (health check, login, PWA static assets, etc.) are deliberately served origin-side. The **primary login is the self-hosted `/login` form** (ADR-002): the BFF `POST /api/auth/login` calls the unsigned public `InitiateAuth(USER_PASSWORD_AUTH)` and mints the `awsops_token` cookie; the **Hosted-UI PKCE flow (`/_callback`) is retained only as a dark fallback**. Authentication terminates at the edge and the verified Cognito ID token cookie flows downstream. v2 hardens the v1 model from an expiry-only check to **cryptographic RS256 signature verification** at the edge — only then is the downstream "decode-only, trust the edge" model genuinely sound.
 
-v2는 **Cognito Hosted-UI 인증을 CloudFront 엣지 앞단에 배치**하여 인증되지 않은 요청이 ECS Fargate 웹 티어에 도달하지 않게 한다(ALB 용량도 소비하지 않음). 인증은 엣지에서 종료되고, 검증된 Cognito ID 토큰 쿠키(`awsops_token`)가 하위로 전파된다. v2는 v1의 만료(exp) 전용 검사를 **RS256 서명 검증**으로 강화했다 — 이로써 하위 앱의 "디코드만 하고 엣지를 신뢰" 모델이 비로소 타당해진다.
+v2는 **Cognito 인증을 CloudFront 엣지 앞단에 배치**하여 공개 경로 허용목록(아래 §) 밖의 요청은 ECS Fargate 웹 티어에 도달하지 않게 한다(ALB 용량도 소비하지 않음) — 허용목록 경로(헬스체크·로그인·PWA 정적 자산 등)는 의도적으로 origin에서 그대로 서빙된다. **주 로그인은 자체 `/login` 폼**(ADR-002) — BFF `POST /api/auth/login`이 무서명 공개 `InitiateAuth(USER_PASSWORD_AUTH)`를 호출해 `awsops_token` 쿠키를 발급하고, **Hosted UI PKCE 플로우(`/_callback`)는 다크 폴백으로만 보존**된다. 인증은 엣지에서 종료되고, 검증된 Cognito ID 토큰 쿠키가 하위로 전파된다. v2는 v1의 만료(exp) 전용 검사를 **RS256 서명 검증**으로 강화했다 — 이로써 하위 앱의 "디코드만 하고 엣지를 신뢰" 모델이 비로소 타당해진다.
 
 ## Current design / 현행 설계
 
@@ -15,10 +15,10 @@ v2는 **Cognito Hosted-UI 인증을 CloudFront 엣지 앞단에 배치**하여 �
   - Verifies the ID token via **pure-python RS256** (RSASSA-PKCS1-v1_5 + SHA-256) against Cognito's **JWKS** (`/.well-known/jwks.json`, cached in a module global) — no extra deps, stays under the 1 MB viewer-request limit.
   - Validates claims: `iss`, `aud` (= client id), `token_use == 'id'`, `exp`/`iat`/`nbf`.
   - Enforces OAuth **`state`** + **PKCE** (S256 challenge; verifier stored in a short-lived HMAC-signed `awsops_flow` cookie) — CSRF defense, and no client secret is compiled into the edge code (HMAC `state_key` injected via `random_password` at apply).
-  - **Public-path bypass**: `/_next/static/*` (immutable assets), `/api/health` (smoke target), `/api/auth/signout` (expired-token escape hatch), `/login` + `/api/auth/login` (self-hosted login), `/icon.svg`, `/api/incidents/webhook` (HMAC/SNS-verified ingress carve-out), and the PWA assets (`/manifest.webmanifest`, `/apple-touch-icon.png`, `/icon-{192,512}.png`, `/icon-512-maskable.png` — iOS fetches these without the auth cookie) skip auth.
-- **Served at root path `/`** — v2 dropped the v1 `/awsops` basePath; callback is `/_callback`, post-login redirect is `/`.
+  - **Public-path bypass** (`cognito_edge.py.tftpl:28-32`): a `/_next/static/*` prefix plus 11 exact paths — `/api/health`, `/api/auth/signout`, `/login`, `/api/auth/login`, `/icon.svg`, `/api/incidents/webhook` (ADR-013 machine-ingress carve-out, HMAC-SHA256/SNS-verified downstream, not a Cognito session path), and the PWA assets `/manifest.webmanifest`, `/apple-touch-icon.png`, `/icon-192.png`, `/icon-512.png`, `/icon-512-maskable.png` (iOS fetches these without the auth cookie — unpublished, a `/login` HTML 302 breaks the install silently; lockstep-verified by `web/app/manifest.test.ts`).
+- **Served at root path `/`** — v2 dropped the v1 `/awsops` basePath; callback is `/_callback` (dark Hosted-UI fallback only), post-login redirect is `/`.
 - **Admin user** `admin@awsops.local`, created from gitignored `terraform.tfvars` (`admin_email` / `admin_password`).
-- Cookie flags: `awsops_token=<id_token>; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=43200`.
+- Cookie flags (`web/lib/login.ts` `sessionCookie()`): `awsops_token=<id_token>; Path=/; Secure; HttpOnly; SameSite=Lax`, plus `Max-Age={expiresIn}` (12h / 43200s) only when the user checks "remember me" — unchecked, it's a session cookie with no `Max-Age` (dies with the browser session), not a fixed 1-hour cookie.
 
 ## Decisions (ADRs) / 결정
 
@@ -27,15 +27,16 @@ v2는 **Cognito Hosted-UI 인증을 CloudFront 엣지 앞단에 배치**하여 �
 
 ## Key files / 핵심 파일
 
-- `terraform/v2/foundation/auth.tf` — Cognito user pool + public client (PKCE) + Hosted-UI domain + admin user + Lambda@Edge function/role + `random_password.edge_state_key` + `templatefile` injection.
-- `terraform/v2/foundation/edge-lambda/cognito_edge.py.tftpl` — Python Lambda@Edge source (templated): JWKS RS256 verify, claim checks, `state`/PKCE flow, public-path bypass.
+- `terraform/foundation/auth.tf` — Cognito user pool + public client (PKCE) + Hosted-UI domain + admin user + Lambda@Edge function/role + `random_password.edge_state_key` + `templatefile` injection.
+- `terraform/foundation/edge-lambda/cognito_edge.py.tftpl` — Python Lambda@Edge source (templated): JWKS RS256 verify, claim checks, `state`/PKCE flow, public-path bypass.
 
 ## Status / 상태
 
-- **P1b + P1d ✅** — browser login e2e verified.
-  - P1b shipped Cognito + the edge function (initially exp-only, ported from v1 for parity) and the unauthenticated `302 → Cognito /login` redirect through CloudFront.
+- **P1b + P1d ✅** (historical milestone record) — browser login e2e verified.
+  - P1b shipped Cognito + the edge function (initially exp-only, ported from v1 for parity) and, **at the time**, an unauthenticated `302 → Cognito /login` (Hosted UI) redirect through CloudFront.
   - P1d hardened the edge to RS256 + `state` + PKCE (public client replacing the secret client) and cut the web tier over to the real Next.js image.
-- e2e checks: Cognito → web via `state`/PKCE login succeeds; root without cookie → `302` to Cognito; a **forged token → `302`** (rejected), confirming signature verification works (a pre-hardening build would have returned `200`).
+  - ADR-002's later self-hosted-`/login` decision superseded the Hosted-UI redirect above: unauthenticated requests today redirect to the **self-hosted `/login`** page (see Purpose), with the Hosted-UI PKCE flow (`/_callback`) kept only as a dark fallback.
+- e2e checks at the time: Cognito → web via `state`/PKCE login succeeds; root without cookie → `302`; a **forged token → `302`** (rejected), confirming signature verification works (a pre-hardening build would have returned `200`).
 
 ## Learnings & gotchas / 학습·함정
 
@@ -49,7 +50,7 @@ v2는 **Cognito Hosted-UI 인증을 CloudFront 엣지 앞단에 배치**하여 �
 
 ## Source / 출처
 
-- Plans (to be archived under `docs/superpowers/archive/`): `2026-05-31-awsops-v2-p1b-cognito-edge-auth.md` (primary), `2026-05-31-awsops-v2-p1d-web-cicd-auth.md` (RS256 / PKCE auth-hardening, Task D4).
+- Plans (archived under `docs/history/archive/`): `2026-05-31-awsops-v2-p1b-cognito-edge-auth.md` (primary), `2026-05-31-awsops-v2-p1d-web-cicd-auth.md` (RS256 / PKCE auth-hardening, Task D4).
 - Decision: `docs/decisions/020-cognito-lambda-edge-auth.md` (esp. the 2026-06-03 post-acceptance RS256 note).
 - Review: `docs/reviews/v2-p1d-readiness-architecture-review.md` (3-AI cross review — CRITICAL JWKS / HIGH state+PKCE drivers).
-- Code: `terraform/v2/foundation/auth.tf`, `terraform/v2/foundation/edge-lambda/cognito_edge.py.tftpl`.
+- Code: `terraform/foundation/auth.tf`, `terraform/foundation/edge-lambda/cognito_edge.py.tftpl`.

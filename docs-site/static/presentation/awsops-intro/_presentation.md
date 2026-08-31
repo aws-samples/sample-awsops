@@ -4,7 +4,7 @@ slug: awsops-intro
 language: ko
 ratio: "16:9"
 level: 300
-duration: 60
+duration: 68
 quiz: false
 speaker:
   name: "Junseok Oh"
@@ -18,11 +18,11 @@ theme:
 blocks:
   - file: 01-why-awsops.md
     title: "Why AWSops"
-    duration: 20
+    duration: 23
   - file: 02-architecture.md
     title: "Architecture Deep Dive"
     duration: 20
   - file: 03-demo-scenarios.md
     title: "Demo & Diagnosis Report"
-    duration: 20
+    duration: 25
 ---

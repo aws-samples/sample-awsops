@@ -18,6 +18,7 @@ import { podStatusCounts, deploymentHealth, serviceTypeCounts } from '@/lib/eks-
 import OpencostPanel from './OpencostPanel';
 import CostPanel from './CostPanel';
 import NodeEniSection from '@/components/eks/NodeEniSection';
+import { useI18n } from '@/components/shell/LanguageProvider';
 import NodeCapacityCards from '@/components/eks/NodeCapacityCards';
 import NodePodsSection from '@/components/eks/NodePodsSection';
 import EksDiagnosis from '@/components/eks/EksDiagnosis';
@@ -116,6 +117,7 @@ const DIAGNOSIS_COLUMNS: Column[] = [
 const NAMESPACED: Set<Tab> = new Set(['pods', 'deployments', 'services']);
 
 export default function EksClusterPage() {
+  const { tt } = useI18n();
   const params = useParams();
   const cluster = String(params.cluster);
 
@@ -306,7 +308,7 @@ export default function EksClusterPage() {
             installed, auto-opens the guide when not). Shown on every tab. */}
         <OpencostPanel cluster={cluster} />
 
-        {err && <div className="text-[13px] text-rose-600">로드 실패: {err}</div>}
+        {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
 
         {tab === 'cost' ? (
           <CostPanel cluster={cluster} />
@@ -315,7 +317,7 @@ export default function EksClusterPage() {
             {/* Metric diagnosis tier (owner 가이드): control plane / nodes / workload / addons.
                 Self-fetching — independent of the K8sGPT analyzer block below. */}
             <EksDiagnosis cluster={cluster} />
-            {!diag && !err && <div className="text-ink-400">로딩 중…</div>}
+            {!diag && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
             {diag && !err && (
               <>
                 {/* Rule 9: stale (operator down/slow, last scan > threshold) banner. */}
@@ -326,7 +328,7 @@ export default function EksClusterPage() {
                 )}
                 {diagDisabled ? (
                   <div className="rounded-md border border-ink-100 bg-ink-50 px-3 py-3 text-[13px] text-ink-400">
-                    진단 비활성 또는 K8sGPT operator 미감지 (read-only)
+                    {tt('진단 비활성 또는 K8sGPT operator 미감지 (read-only)')}
                   </div>
                 ) : (
                   <DataTable
@@ -340,14 +342,14 @@ export default function EksClusterPage() {
           </>
         ) : (
           <>
-            {!rows && !err && <div className="text-ink-400">로딩 중…</div>}
+            {!rows && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
             {rows && !err && (
               <>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="w-full max-w-[280px]">
                     <Input
                       inputSize="sm"
-                      placeholder="검색…"
+                      placeholder={tt('검색…')}
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                       icon={<Search className="h-3.5 w-3.5" />}
@@ -509,6 +511,7 @@ function DiagnosisDetailPanel({
   finding: DiagnosisFinding;
   onClose: () => void;
 }) {
+  const { tt } = useI18n();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -536,17 +539,17 @@ function DiagnosisDetailPanel({
       <aside
         role="dialog"
         aria-modal="true"
-        aria-label={r.resourceName || '진단 상세'}
+        aria-label={r.resourceName || tt('진단 상세')}
         className="fixed right-0 top-0 z-50 flex h-full w-[420px] max-w-full flex-col border-l border-ink-100 bg-card shadow-pop"
       >
         <header className="flex items-start justify-between gap-2 border-b border-ink-100 px-4 py-3">
           <h2 className="min-w-0 break-words font-mono text-[13px] font-semibold text-ink-800">
-            {r.resourceName || '진단 상세'}
+            {r.resourceName || tt('진단 상세')}
           </h2>
           <button
             type="button"
             onClick={onClose}
-            aria-label="닫기"
+            aria-label={tt('닫기')}
             className="-mr-1 shrink-0 rounded p-1 text-ink-400 hover:bg-ink-50 hover:text-ink-700"
           >
             <X size={16} />
@@ -582,7 +585,7 @@ function DiagnosisDetailPanel({
               </Badge>
             </div>
             <p className="text-[13px] leading-snug text-ink-700 whitespace-pre-wrap break-words select-text">
-              {finding.llm_explanation ?? '가설 없음 (deterministic finding only)'}
+              {finding.llm_explanation ?? tt('가설 없음 (deterministic finding only)')}
             </p>
           </div>
         </div>

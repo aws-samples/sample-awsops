@@ -12,6 +12,7 @@ import Card from '@/components/ui/Card';
 import Meter from '@/components/ui/Meter';
 import DonutBreakdown from '@/components/charts/DonutBreakdown';
 import BarDistribution from '@/components/charts/BarDistribution';
+import { useI18n } from '@/components/shell/LanguageProvider';
 import DetailPanel from '@/components/ui/DetailPanel';
 import NodeDrilldownPanel from '@/components/eks/NodeDrilldownPanel';
 import NodePodsSection from '@/components/eks/NodePodsSection';
@@ -59,6 +60,7 @@ interface FleetCluster {
 const fmtMib = (mib: number): string => (mib >= 1024 ? `${(mib / 1024).toFixed(1)}G` : `${Math.round(mib)}M`);
 
 export default function EksPage() {
+  const { tt } = useI18n();
   const [activeAccount] = useActiveAccount();
   const [rows, setRows] = useState<Cluster[] | null>(null);
   const [admin, setAdmin] = useState(false);
@@ -136,12 +138,12 @@ export default function EksPage() {
     setBusyCluster(cluster); setNotice(''); setGuide(null);
     try {
       const res = await fetch(`/api/eks/${encodeURIComponent(cluster)}/register`, { method: 'POST' });
-      if (res.status === 200) { setNotice(`${cluster} 등록 완료 — 바로 조회할 수 있습니다.`); setRegOpen(false); load(); loadFleet(); }
+      if (res.status === 200) { setNotice(tt(`${cluster} 등록 완료 — 바로 조회할 수 있습니다.`)); setRegOpen(false); load(); loadFleet(); }
       else if (res.status === 409) { const d = await res.json(); setGuide({ cluster, data: d.guide }); }
-      else if (res.status === 403) setNotice('관리자 전용 기능입니다.');
-      else if (res.status === 503) setNotice('등록 저장소(Aurora)가 설정되지 않았습니다.');
-      else setNotice(`등록 실패 (${res.status})`);
-    } catch { setNotice('등록 요청 실패'); }
+      else if (res.status === 403) setNotice(tt('관리자 전용 기능입니다.'));
+      else if (res.status === 503) setNotice(tt('등록 저장소(Aurora)가 설정되지 않았습니다.'));
+      else setNotice(tt(`등록 실패 (${res.status})`));
+    } catch { setNotice(tt('등록 요청 실패')); }
     setBusyCluster('');
   }
 
@@ -157,14 +159,14 @@ export default function EksPage() {
         body: JSON.stringify({ auth }),
       });
       if (res.status === 200) {
-        setNotice(`${cluster} 인증 저장 완료 — 바로 조회할 수 있습니다.`);
+        setNotice(tt(`${cluster} 인증 저장 완료 — 바로 조회할 수 있습니다.`));
         setAuthFor(null); setRegOpen(false); setAuthToken(''); setAuthRole(''); setAuthExtId('');
         load(); loadFleet();
       } else {
         const d = await res.json().catch(() => null);
-        setNotice(`인증 저장 실패 (${res.status}${d?.message ? `: ${d.message}` : ''})`);
+        setNotice(tt(`인증 저장 실패 (${res.status}${d?.message ? `: ${d.message}` : ''})`));
       }
-    } catch { setNotice('인증 저장 요청 실패'); }
+    } catch { setNotice(tt('인증 저장 요청 실패')); }
     finally { setBusyCluster(''); }
   }
 
@@ -172,9 +174,9 @@ export default function EksPage() {
     setBusyCluster(cluster); setNotice('');
     try {
       const res = await fetch(`/api/eks/${encodeURIComponent(cluster)}/register`, { method: 'DELETE' });
-      setNotice(res.ok ? `${cluster} 등록 해제됨.` : `해제 실패 (${res.status})`);
+      setNotice(res.ok ? tt(`${cluster} 등록 해제됨.`) : tt(`해제 실패 (${res.status})`));
       load(); loadFleet();
-    } catch { setNotice('해제 요청 실패'); }
+    } catch { setNotice(tt('해제 요청 실패')); }
     setBusyCluster('');
   }
 
@@ -265,7 +267,7 @@ export default function EksPage() {
                   if (first) setRegCluster(first.name);
                 }}
               >
-                <span className="mr-1">+</span>클러스터 등록
+                <span className="mr-1">+</span>{tt('클러스터 등록')}
               </button>
             )}
             <RefreshButton busy={busy} onClick={refresh} capturedAt={capturedAt} />
@@ -282,15 +284,15 @@ export default function EksPage() {
         <StatCard label="Services" value={totals.services} icon={<Network size={16} />} href="/eks/services" />
       </div>
 
-      {err && <div className="text-[13px] text-rose-600">로드 실패: {err}</div>}
+      {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
       {notice && <div className="text-[13px] text-brand-700">{notice}</div>}
-      {!rows && !err && <div className="text-ink-400">로딩 중…</div>}
+      {!rows && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
 
       {admin && regOpen && (
         <Card title="클러스터 등록" subtitle="클러스터를 선택하고 연결 방식을 지정하세요 — 인증은 Aurora에 저장되며 조회 전용입니다 (v1 kubeconfig 등록 대응).">
           <div className="flex flex-col gap-3 text-[12px]">
             <label className="flex flex-col gap-1">
-              <span className="text-ink-500">클러스터</span>
+              <span className="text-ink-500">{tt('클러스터')}</span>
               <select
                 value={regCluster}
                 onChange={(e) => setRegCluster(e.target.value)}
@@ -298,7 +300,7 @@ export default function EksPage() {
               >
                 {(rows ?? []).map((r) => (
                   <option key={r.name} value={r.name}>
-                    {r.name} {r.access === 'connected' ? '· 연결됨' : '· 미연결'}{r.authMode ? ` (${r.authMode})` : ''}
+                    {r.name} {r.access === 'connected' ? tt('· 연결됨') : tt('· 미연결')}{r.authMode ? ` (${r.authMode})` : ''}
                   </option>
                 ))}
               </select>
@@ -306,15 +308,15 @@ export default function EksPage() {
             <div className="flex flex-wrap items-center gap-4">
               <label className="flex items-center gap-1.5">
                 <input type="radio" checked={regMode === 'sa-token'} onChange={() => setRegMode('sa-token')} />
-                ServiceAccount 토큰
+                {tt('ServiceAccount 토큰')}
               </label>
               <label className="flex items-center gap-1.5">
                 <input type="radio" checked={regMode === 'assume-role'} onChange={() => setRegMode('assume-role')} />
-                AssumeRole (Role ARN)
+                {tt('AssumeRole (Role ARN)')}
               </label>
               <label className="flex items-center gap-1.5">
                 <input type="radio" checked={regMode === 'entry'} onChange={() => setRegMode('entry')} />
-                Access Entry 조회 등록
+                {tt('Access Entry 조회 등록')}
               </label>
             </div>
             {regMode === 'sa-token' && (
@@ -322,12 +324,12 @@ export default function EksPage() {
                 <textarea
                   value={authToken}
                   onChange={(e) => setAuthToken(e.target.value)}
-                  placeholder="kubectl create token <sa> --duration=8760h 결과 또는 SA Secret의 token"
+                  placeholder={tt('kubectl create token <sa> --duration=8760h 결과 또는 SA Secret의 token')}
                   rows={3}
                   className="w-full rounded-md border border-ink-200 bg-card px-2 py-1.5 font-mono text-[11px]"
                 />
                 <p className="text-ink-400">
-                  클러스터에 읽기 전용 ServiceAccount(nodes/pods/deployments/services/namespaces/events get·list·watch)를 만들고 토큰을 붙여넣으세요 — AWS 쪽 설정(Access Entry)이 필요 없습니다.
+                  {tt('클러스터에 읽기 전용 ServiceAccount(nodes/pods/deployments/services/namespaces/events get·list·watch)를 만들고 토큰을 붙여넣으세요 — AWS 쪽 설정(Access Entry)이 필요 없습니다.')}
                 </p>
               </>
             )}
@@ -336,21 +338,21 @@ export default function EksPage() {
                 <input
                   value={authRole}
                   onChange={(e) => setAuthRole(e.target.value)}
-                  placeholder="arn:aws:iam::123456789012:role/eks-read (클러스터에 Access Entry 보유)"
+                  placeholder={tt('arn:aws:iam::123456789012:role/eks-read (클러스터에 Access Entry 보유)')}
                   className="w-full max-w-xl rounded-md border border-ink-200 bg-card px-2 py-1.5 font-mono text-[11px]"
                 />
                 <input
                   value={authExtId}
                   onChange={(e) => setAuthExtId(e.target.value)}
-                  placeholder="External ID (선택)"
+                  placeholder={tt('External ID (선택)')}
                   className="w-full max-w-xl rounded-md border border-ink-200 bg-card px-2 py-1.5 font-mono text-[11px]"
                 />
-                <p className="text-ink-400">해당 클러스터에 Access Entry가 있는 IAM Role을 AssumeRole 해서 조회합니다.</p>
+                <p className="text-ink-400">{tt('해당 클러스터에 Access Entry가 있는 IAM Role을 AssumeRole 해서 조회합니다.')}</p>
               </div>
             )}
             {regMode === 'entry' && (
               <p className="text-ink-400">
-                웹 task role의 Access Entry가 이미 있는 클러스터를 바로 조회 등록합니다 — 없으면 온보딩 스크립트를 안내합니다.
+                {tt('웹 task role의 Access Entry가 이미 있는 클러스터를 바로 조회 등록합니다 — 없으면 온보딩 스크립트를 안내합니다.')}
               </p>
             )}
             <div className="flex items-center gap-2">
@@ -363,9 +365,9 @@ export default function EksPage() {
                 }
                 onClick={() => (regMode === 'entry' ? register(regCluster) : saveAuth(regCluster, regMode))}
               >
-                등록
+                {tt('등록')}
               </button>
-              <button className={btn} onClick={() => setRegOpen(false)}>취소</button>
+              <button className={btn} onClick={() => setRegOpen(false)}>{tt('취소')}</button>
             </div>
           </div>
         </Card>
@@ -373,7 +375,7 @@ export default function EksPage() {
 
       {guide && (
         <div className="rounded-lg border border-ink-200 bg-paper-muted p-4 flex flex-col gap-3">
-          <div className="text-[13px] font-semibold text-ink-800">🔧 {guide.cluster} 온보딩 가이드</div>
+          <div className="text-[13px] font-semibold text-ink-800">🔧 {tt(`${guide.cluster} 온보딩 가이드`)}</div>
           {guide.data.commands.map((cmd) => (
             <div key={cmd} className="flex items-start gap-2">
               <code className="flex-1 rounded bg-ink-800 text-paper text-[11px] p-2 overflow-x-auto whitespace-pre">{cmd}</code>
@@ -386,12 +388,12 @@ export default function EksPage() {
                   });
                 }}
               >
-                {copied === cmd ? 'Copied!' : '복사'}
+                {copied === cmd ? 'Copied!' : tt('복사')}
               </button>
             </div>
           ))}
           <div className="text-[12px] text-ink-500">{guide.data.note}</div>
-          <button className={`${btn} self-start`} onClick={() => setGuide(null)}>닫기</button>
+          <button className={`${btn} self-start`} onClick={() => setGuide(null)}>{tt('닫기')}</button>
         </div>
       )}
 
@@ -421,9 +423,9 @@ export default function EksPage() {
                     <span className="font-mono text-[13px] font-semibold text-ink-700">{c.name}</span>
                   )}
                   {c.access === 'connected' && <Badge tone="positive" dot>Connected</Badge>}
-                  {c.access === 'entry-only' && <Badge tone="brand" dot>Entry 있음</Badge>}
-                  {c.access === 'no-entry' && <Badge tone="neutral">미연결</Badge>}
-                  {c.access === 'unknown' && <Badge tone="neutral">확인 불가</Badge>}
+                  {c.access === 'entry-only' && <Badge tone="brand" dot>{tt('Entry 있음')}</Badge>}
+                  {c.access === 'no-entry' && <Badge tone="neutral">{tt('미연결')}</Badge>}
+                  {c.access === 'unknown' && <Badge tone="neutral">{tt('확인 불가')}</Badge>}
                 </div>
 
                 <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-[12px]">
@@ -440,7 +442,7 @@ export default function EksPage() {
                   </div>
                 )}
                 {c.access === 'connected' && f && !f.reachable && (
-                  <div className="mt-2"><Badge tone="negative" variant="soft">조회 불가</Badge></div>
+                  <div className="mt-2"><Badge tone="negative" variant="soft">{tt('조회 불가')}</Badge></div>
                 )}
 
                 {(
@@ -450,41 +452,41 @@ export default function EksPage() {
                 ) && (
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     {admin && (c.access === 'entry-only' || c.access === 'unknown') && (
-                      <button className={btn} disabled={busyCluster === c.name} onClick={() => register(c.name)}>조회 등록</button>
+                      <button className={btn} disabled={busyCluster === c.name} onClick={() => register(c.name)}>{tt('조회 등록')}</button>
                     )}
                     {c.access !== 'connected' && c.guide && (
-                      <button className={btn} onClick={() => setGuide({ cluster: c.name, data: c.guide! })}>스크립트</button>
+                      <button className={btn} onClick={() => setGuide({ cluster: c.name, data: c.guide! })}>{tt('스크립트')}</button>
                     )}
                     {admin && (
                       <button className={btn} onClick={() => { setAuthFor(authFor === c.name ? null : c.name); setAuthMode('sa-token'); setRegOpen(false); }}>
-                        {c.authMode ? `인증 변경 (${c.authMode})` : '인증 등록'}
+                        {c.authMode ? tt(`인증 변경 (${c.authMode})`) : tt('인증 등록')}
                       </button>
                     )}
                     {admin && c.runtime && (
-                      <button className={btn} disabled={busyCluster === c.name} onClick={() => unregister(c.name)}>해제</button>
+                      <button className={btn} disabled={busyCluster === c.name} onClick={() => unregister(c.name)}>{tt('해제')}</button>
                     )}
                   </div>
                 )}
                 {admin && authFor === c.name && (
                   <div className="mt-3 rounded-lg border border-ink-100 bg-paper-muted/60 p-3 text-[12px]">
                     <p className="mb-2 text-ink-600">
-                      클러스터 인증을 Aurora에 저장합니다 — Access Entry 없이 조회할 수 있습니다 (v1 kubeconfig 등록 대응).
+                      {tt('클러스터 인증을 Aurora에 저장합니다 — Access Entry 없이 조회할 수 있습니다 (v1 kubeconfig 등록 대응).')}
                     </p>
                     <div className="mb-2 flex items-center gap-3">
                       <label className="flex items-center gap-1.5">
                         <input type="radio" checked={authMode === 'sa-token'} onChange={() => setAuthMode('sa-token')} />
-                        ServiceAccount 토큰
+                        {tt('ServiceAccount 토큰')}
                       </label>
                       <label className="flex items-center gap-1.5">
                         <input type="radio" checked={authMode === 'assume-role'} onChange={() => setAuthMode('assume-role')} />
-                        AssumeRole (Role ARN)
+                        {tt('AssumeRole (Role ARN)')}
                       </label>
                     </div>
                     {authMode === 'sa-token' ? (
                       <textarea
                         value={authToken}
                         onChange={(e) => setAuthToken(e.target.value)}
-                        placeholder="kubectl create token <sa> --duration=8760h 결과 또는 SA Secret의 token"
+                        placeholder={tt('kubectl create token <sa> --duration=8760h 결과 또는 SA Secret의 token')}
                         rows={3}
                         className="w-full rounded-md border border-ink-200 bg-card px-2 py-1.5 font-mono text-[11px]"
                       />
@@ -493,13 +495,13 @@ export default function EksPage() {
                         <input
                           value={authRole}
                           onChange={(e) => setAuthRole(e.target.value)}
-                          placeholder="arn:aws:iam::123456789012:role/eks-read (클러스터에 Access Entry 보유)"
+                          placeholder={tt('arn:aws:iam::123456789012:role/eks-read (클러스터에 Access Entry 보유)')}
                           className="w-full rounded-md border border-ink-200 bg-card px-2 py-1.5 font-mono text-[11px]"
                         />
                         <input
                           value={authExtId}
                           onChange={(e) => setAuthExtId(e.target.value)}
-                          placeholder="External ID (선택)"
+                          placeholder={tt('External ID (선택)')}
                           className="w-full rounded-md border border-ink-200 bg-card px-2 py-1.5 font-mono text-[11px]"
                         />
                       </div>
@@ -510,9 +512,9 @@ export default function EksPage() {
                         disabled={busyCluster === c.name || (authMode === 'sa-token' ? !authToken.trim() : !authRole.trim())}
                         onClick={() => saveAuth(c.name, authMode)}
                       >
-                        저장
+                        {tt('저장')}
                       </button>
-                      <button className={btn} onClick={() => setAuthFor(null)}>취소</button>
+                      <button className={btn} onClick={() => setAuthFor(null)}>{tt('취소')}</button>
                     </div>
                   </div>
                 )}
@@ -595,7 +597,7 @@ export default function EksPage() {
             />
           </Card>
         ) : (
-          <div className="text-[12px] text-ink-400">경고 이벤트 없음</div>
+          <div className="text-[12px] text-ink-400">{tt('경고 이벤트 없음')}</div>
         )
       )}
       </div>

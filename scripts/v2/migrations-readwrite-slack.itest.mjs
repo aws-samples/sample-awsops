@@ -12,8 +12,8 @@ import { execFileSync, execSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 
-const SCHEMA = 'terraform/v2/foundation/data/schema.sql';
-const MIGRATION = 'terraform/v2/foundation/migrations/01KV2FMC1AJN72SBHY8QV7P5AB_integrations_write_slack.sql';
+const SCHEMA = 'terraform/foundation/data/schema.sql';
+const MIGRATION = 'terraform/foundation/migrations/01KV2FMC1AJN72SBHY8QV7P5AB_integrations_write_slack.sql';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let failures = 0;

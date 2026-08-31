@@ -2,6 +2,7 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { sectionByKey } from '@/lib/sections';
 import Markdown from './Markdown';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 // 스트리밍 중에도 마크다운을 렌더하되(owner: "렌더링이 늦게 됩니다"), 토큰마다 전체
 // 재파싱하는 O(n²)를 피하기 위해 파싱 입력을 ~180ms로 스로틀한다. 미완성 코드펜스는
@@ -58,17 +59,17 @@ function fmtCost(usd: number): string {
   return `$${usd.toFixed(3)}`;
 }
 
-function statusLabel(s: { phase: string; elapsedMs?: number }): string {
-  const secs = s.elapsedMs !== undefined ? ` ${Math.floor(s.elapsedMs / 1000)}초` : '';
+function statusLabel(s: { phase: string; elapsedMs?: number }, tt: (s: string) => string): string {
+  const secs = s.elapsedMs !== undefined ? ` ${Math.floor(s.elapsedMs / 1000)}${tt('초')}` : '';
   switch (s.phase) {
-    case 'code-generating': return `💻 코드 생성 중…${secs}`;
-    case 'code-executing': return `⚡ 코드 실행 중…${secs}`;
-    case 'querying': return `🔎 쿼리 실행 중…${secs}`;
-    case 'sql-unavailable': return '🗃️ 라이브 SQL 미가용 — 일반 라우팅으로 전환…';
-    case 'sql-fallback': return `🗃️ SQL 실행 실패 — 일반 지식으로 답변 중…${secs}`;
-    case 'collect-fallback': return `📡 데이터 수집 실패 — 일반 지식으로 답변 중…${secs}`;
-    case 'working': return `🔎 분석 중…${secs}`;
-    default: return '🔎 분석 중…';
+    case 'code-generating': return `💻 ${tt('코드 생성 중…')}${secs}`;
+    case 'code-executing': return `⚡ ${tt('코드 실행 중…')}${secs}`;
+    case 'querying': return `🔎 ${tt('쿼리 실행 중…')}${secs}`;
+    case 'sql-unavailable': return `🗃️ ${tt('라이브 SQL 미가용 — 일반 라우팅으로 전환…')}`;
+    case 'sql-fallback': return `🗃️ ${tt('SQL 실행 실패 — 일반 지식으로 답변 중…')}${secs}`;
+    case 'collect-fallback': return `${tt('📡 데이터 수집 실패 — 일반 지식으로 답변 중…')}${secs}`;
+    case 'working': return `🔎 ${tt('분석 중…')}${secs}`;
+    default: return `🔎 ${tt('분석 중…')}`;
   }
 }
 
@@ -77,6 +78,7 @@ function statusLabel(s: { phase: string; elapsedMs?: number }): string {
 const FALLBACK_MODEL_LABEL = 'Claude Sonnet 4.6';
 
 export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[]; onSwitch?: (key: string) => void; onFollowUp?: (q: string) => void }) {
+  const { tt } = useI18n();
   return (
     <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
       {msgs.map((m, i) => {
@@ -101,7 +103,7 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
             }
           >
             {viaKeys && viaKeys.length > 1 ? (
-              <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold text-ink-500" aria-label="통합 분석">
+              <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold text-ink-500" aria-label={tt('통합 분석')}>
                 {viaKeys.map((k, idx) => {
                   const s = sectionByKey(k);
                   return s ? (
@@ -112,7 +114,7 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
                     </span>
                   ) : null;
                 })}
-                <span className="ml-1 font-normal text-ink-400">· 통합 분석</span>
+                <span className="ml-1 font-normal text-ink-400">{tt('· 통합 분석')}</span>
               </div>
             ) : sec && (
               <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-ink-500">
@@ -128,7 +130,7 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
               : m.streaming && !m.content
                 ? (m.status
                   ? <div className="text-[13px] leading-relaxed text-ink-500">
-                      <div className="whitespace-pre-wrap">{statusLabel(m.status)}</div>
+                      <div className="whitespace-pre-wrap">{statusLabel(m.status, tt)}</div>
                       {/* v1-parity: show the generated query (SQL/PromQL/...) as it runs */}
                       {m.status.query && (
                         <pre className="mt-1.5 max-h-32 overflow-auto rounded border border-ink-100 bg-paper-muted px-2 py-1 font-mono text-[11px] text-ink-600">{m.status.query}</pre>
@@ -158,10 +160,10 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
                   )}
                   <button
                     onClick={() => void navigator.clipboard?.writeText(m.content)}
-                    aria-label="답변 복사"
+                    aria-label={tt('답변 복사')}
                     className="ml-auto text-ink-400 hover:text-ink-800"
                   >
-                    ⧉ 복사
+                    {tt('⧉ 복사')}
                   </button>
                 </div>
                 {m.tools && m.tools.length > 0 && (
@@ -180,7 +182,7 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
             {/* v1-parity followUpMap: post-answer deepening suggestions for the answered section. */}
             {!me && !m.streaming && sec?.followUps && sec.followUps.length > 0 && onFollowUp && (
               <div className="mt-2">
-                <div className="mb-1 text-[10px] text-ink-400">이어서 물어보기</div>
+                <div className="mb-1 text-[10px] text-ink-400">{tt('이어서 물어보기')}</div>
                 <div className="flex flex-wrap gap-1.5">
                   {sec.followUps.slice(0, 3).map((q) => (
                     <button
@@ -197,7 +199,7 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
             {alts.length > 0 && (
               <div className="mt-2">
                 {/* ADR-044: chips are a SECONDARY manual aid (cross-domain is auto-synthesized). */}
-                <div className="mb-1 text-[10px] text-ink-400">다른 도메인으로 더 보기</div>
+                <div className="mb-1 text-[10px] text-ink-400">{tt('다른 도메인으로 더 보기')}</div>
                 <div className="flex flex-wrap gap-1.5">
                 {alts.map((r) => {
                   const s = sectionByKey(r.key);
@@ -206,7 +208,7 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
                     <button
                       key={r.key}
                       onClick={() => onSwitch?.(r.key)}
-                      aria-label={`${s.label}로 다시`}
+                      aria-label={tt(`${s.label}로 다시`)}
                       className="rounded-md border px-2 py-1 text-[11px] font-medium transition-colors"
                       style={{
                         // s.color is a CSS var — alpha via color-mix, not hex-suffix concat
@@ -215,7 +217,7 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
                         color: s.color,
                       }}
                     >
-                      → {s.label}로 다시
+                      → {tt(`${s.label}로 다시`)}
                     </button>
                   );
                 })}

@@ -28,8 +28,10 @@ GATEWAY_DESCRIPTIONS = {
     "cost": "Cost Explorer, forecast, budgets, container cost",
     "monitoring": "CloudWatch, CloudTrail (AWS native only)",
     "iac": "CloudFormation, CDK, Terraform",
-    "ops": "Steampipe SQL listing/status/docs/inventory",
-    "external-obs": "External Observability & Integrations — routed (Prometheus + ClickHouse + Notion; Loki/Tempo/Mimir next)",
+    # No live Steampipe in v2 (ADR-001/010) — inventory-read over synced Aurora replaced
+    # v1's run_steampipe_query. Keep this in sync with the three ops targets below.
+    "ops": "AWS docs/knowledge, CLI suggestions, Aurora-backed inventory/topology & unused-resource reader",
+    "external-obs": "External Observability & Integrations — routed (Prometheus + ClickHouse + Notion lambdas; Loki/Tempo/Mimir; + ADR-017 curated official-vendor MCP servers when official_mcp_enabled)",
 }
 
 
@@ -175,7 +177,7 @@ TARGETS = {
             {"name": "list_db_clusters", "description": "List Aurora clusters", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "describe_db_instance", "description": "Describe instance", "inputSchema": {"type": "object", "properties": {"db_instance_identifier": _p("string", "ID")}, "required": ["db_instance_identifier"]}},
             {"name": "describe_db_cluster", "description": "Describe cluster", "inputSchema": {"type": "object", "properties": {"db_cluster_identifier": _p("string", "ID")}, "required": ["db_cluster_identifier"]}},
-            {"name": "execute_sql", "description": "SQL via Data API (SELECT only)", "inputSchema": {"type": "object", "properties": {"sql": _p("string", "SQL"), "resource_arn": _p("string", "ARN"), "secret_arn": _p("string", "Secret")}, "required": ["sql", "resource_arn", "secret_arn"]}},
+            {"name": "execute_sql", "description": "SQL via Data API (SELECT only; the host's own foundation Aurora PostgreSQL cluster only — MySQL/MariaDB and cross-account unsupported)", "inputSchema": {"type": "object", "properties": {"sql": _p("string", "SQL"), "resource_arn": _p("string", "Foundation Aurora cluster ARN or bare identifier (the discovery tools return identifiers)")}, "required": ["sql", "resource_arn"]}},
             {"name": "list_snapshots", "description": "List snapshots", "inputSchema": {"type": "object", "properties": {}}},
         ],
     },
@@ -363,7 +365,7 @@ TARGETS = {
     "clickhouse-mcp-target": {
         "gateway": "external-obs",
         "lambda_key": "clickhouse-mcp",
-        "description": "ClickHouse read-only — SQL query, list tables, describe (3 tools)",
+        "description": "ClickHouse read-only — schema introspect, SQL query, list tables, describe (4 tools)",
         "tools": [
             {"name": "clickhouse_schema", "description": "Introspect tables + columns (cached for query generation)", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "clickhouse_query", "description": "Run a read-only SQL query (SELECT/SHOW/DESCRIBE) against the connected ClickHouse", "inputSchema": {"type": "object", "properties": {"sql": _p("string", "Read-only SQL"), "max_rows": _p("string", "Max rows (<=1000)")}, "required": ["sql"]}},
@@ -428,3 +430,160 @@ TARGETS = {
         ],
     },
 }
+
+# ADR-017 (amended 2026-08-05) — curated official-vendor MCP servers, registered as remote
+# `mcpServer` gateway targets (NOT `mcp.lambda` — the vendor's own hosted MCP server is the tool
+# provider). VENDOR-HOSTED ONLY: a preset exists here only when the vendor runs the remote endpoint
+# themselves AND supports single-header token auth. Self-hosted official MCP servers
+# (clickhouse/tempo/jaeger/grafana/splunk) were removed from this model — no vendor-side token
+# issuance existed for them and AgentCore-managed egress can't be verified to reach in-VPC hosts;
+# ClickHouse's official MCP is instead stdio-embedded in the agent runtime (agent.py,
+# CLICKHOUSE_OFFICIAL_MCP); tempo keeps its in-house lambda target; jaeger has NO chat path (its lambda is deployed but was never a TARGETS entry); grafana/splunk are unsupported.
+# Endpoint stays deployment-specific data (terraform var.official_mcp_endpoints — Datadog varies by
+# site, Dynatrace by environment); provision.py SKIPs any preset whose key is absent there.
+#
+# auth.mode:
+#   "api_key"  -> AgentCore Identity API-key credential provider. credential_location/parameter_name/
+#                 prefix describe WHERE the secret is injected (a single header or query param — the
+#                 API only supports one slot, see the datadog note below).
+#
+# capability is always read (ADR-017 Decision) — no write preset exists. Enforcement is TWO-fold:
+# the operator's per-preset read_only_ack (vendor-side control attestation) PLUS the runtime
+# fail-closed `tool_allowlist` below — provision.py writes it to the runtime as
+# OFFICIAL_MCP_TOOL_ALLOWLIST_JSON and agent.py intersects `<target>___<tool>` names against it.
+# tool_allowlist entries must be TRANSCRIBED from vendor docs (URL + date in the comment), never
+# guessed; an empty tuple is valid and means "provision the target but expose zero tools yet".
+MCP_SERVER_TARGETS = {
+    "datadog-mcp-server-target": {
+        "gateway": "external-obs",
+        "preset_key": "datadog",
+        # Vendor-hosted: pin the host. Datadog's MCP is mcp.datadoghq.com with regional siblings
+        # (EU / us3 / us5 / ap1 all live under datadoghq.com or datadoghq.eu; GovCloud is ddog-gov.com).
+        "allowed_host_suffixes": (".datadoghq.com", ".datadoghq.eu", ".ddog-gov.com"),
+        "description": "Datadog official MCP (mcp.datadoghq.com) — GA, vendor-hosted, read (RBAC mcp_read)",
+        # Datadog's own docs offer 3 auth shapes: OAuth2.1+PKCE (browser, unusable headless), a
+        # DD_API_KEY+DD_APPLICATION_KEY header PAIR (needs 2 header slots — NOT expressible by one
+        # apiKeyCredentialProvider), or a single bearer PAT/service token. Use the single-bearer form.
+        "auth": {"mode": "api_key", "credential_location": "HEADER", "credential_parameter_name": "Authorization", "credential_prefix": "Bearer "},
+        "read_only_note": "RBAC-scoped (mcp_read); no local flag",
+        # Transcribed 2026-08-05 from https://docs.datadoghq.com/mcp_server/tools/ — the read-only
+        # core/alerting subset useful for diagnosis. Write tools (create_datadog_monitor,
+        # upsert_datadog_dashboard, notebook create/edit, case/security mutations, ...) are
+        # deliberately absent; anything not listed here is dropped by the runtime (fail-closed).
+        "tool_allowlist": (
+            "search_datadog_events", "search_datadog_incidents", "get_datadog_incident",
+            "get_datadog_metric", "get_datadog_metric_context", "search_datadog_metrics",
+            "search_datadog_monitors", "get_datadog_trace", "search_datadog_spans",
+            "search_datadog_logs", "analyze_datadog_logs",
+            "search_datadog_dashboards", "get_datadog_dashboard",
+            "search_datadog_hosts", "search_datadog_services", "search_datadog_service_dependencies",
+            "search_datadog_slos",
+        ),
+    },
+    # clickhouse/tempo/jaeger/grafana/splunk presets removed (ADR-017 amendment 2026-08-05):
+    # self-hosted / in-binary official MCP servers don't fit the remote-target + token model.
+    # ClickHouse official MCP is stdio-embedded in the agent runtime instead (CLICKHOUSE_OFFICIAL_MCP);
+    # tempo keeps its in-house lambda target; jaeger has NO chat path (lambda deployed, never a
+    # TARGETS entry); grafana/splunk are unsupported.
+    "dynatrace-mcp-server-target": {
+        "gateway": "external-obs",
+        "preset_key": "dynatrace",
+        # Vendor-hosted SaaS: <env>.live.dynatrace.com / .apps.dynatrace.com. NOTE this pin excludes
+        # Dynatrace *Managed*, which customers self-host on their own domain — a Managed deployment
+        # must not reuse this preset key; it needs an operator-asserted entry of its own.
+        "allowed_host_suffixes": (".dynatrace.com",),
+        "description": "Dynatrace official hosted MCP gateway (per-environment) — read, scope-based",
+        "auth": {"mode": "api_key", "credential_location": "HEADER", "credential_parameter_name": "Authorization", "credential_prefix": "Bearer "},
+        "read_only_note": "no local flag; least-privilege via Platform Token scopes",
+        # EMPTY on purpose (fail-closed ⇒ zero tools): docs.dynatrace.com does not publish the hosted
+        # mcp-gateway tool names (checked 2026-08-05). Transcribe from a live listing / vendor docs
+        # before adding entries — never guess (ADR-017 §Decision 2).
+        "tool_allowlist": (),
+    },
+    "newrelic-mcp-server-target": {
+        "gateway": "external-obs",
+        "preset_key": "newrelic",
+        # Vendor-hosted: mcp.newrelic.com (EU accounts stay under newrelic.com).
+        "allowed_host_suffixes": (".newrelic.com",),
+        "description": "New Relic official MCP (mcp.newrelic.com) — PREVIEW (enable under Previews & Trials), read",
+        "auth": {"mode": "api_key", "credential_location": "HEADER", "credential_parameter_name": "Api-Key", "credential_prefix": ""},
+        "read_only_note": "preview — no documented read-only flag; use a read-scoped User API key",
+        # Transcribed 2026-08-05 from https://docs.newrelic.com/docs/agentic-ai/mcp/tool-reference/
+        # (all documented tools are read-only; still enumerated explicitly so a future vendor write
+        # tool is NOT absorbed — fail-closed). Preview: names may change; re-transcribe on breakage.
+        "tool_allowlist": (
+            "execute_nrql_query", "natural_language_to_nrql_query",
+            "get_entity", "list_related_entities", "search_entity_with_tag",
+            "list_available_new_relic_accounts", "get_dashboard", "list_dashboards",
+            "convert_time_period_to_epoch_ms",
+            "list_alert_conditions", "list_alert_policies", "search_incident",
+            "list_recent_issues", "list_synthetic_monitors",
+            "analyze_deployment_impact", "generate_alert_insights_report",
+            "generate_user_impact_report", "list_entity_error_groups", "list_change_events",
+            "analyze_entity_logs", "analyze_golden_metrics", "analyze_kafka_metrics",
+            "analyze_threads", "analyze_transactions", "list_garbage_collection_metrics",
+            "list_recent_logs", "list_entity_performance_risk_groups",
+        ),
+    },
+}
+
+# ADR-017 (amended 2026-08-05) tombstones: mcpServer targets this catalog USED to declare and no
+# longer does. `MCP_SERVER_TARGETS` alone can't retire them — provision.py's "no endpoint → retire"
+# kill-switch only iterates the CURRENT catalog, and prune_moved_targets() deliberately KEEPs any
+# target it doesn't recognize ("manual?"). Without this list a deployment that once provisioned the
+# self-hosted presets keeps their remote targets AND their vendor-token credential providers
+# forever, so the control plane never converges on the declared catalog (review MAJOR, PR #207).
+# Entries are (target_name, preset_key); preset_key derives the provider name exactly as the live
+# path does. Delete an entry only once no deployment can still be carrying it.
+RETIRED_MCP_SERVER_TARGETS = (
+    ("clickhouse-mcp-server-target", "clickhouse"),  # → embedded stdio instead (ADR-017 §Decision 3)
+    ("tempo-mcp-server-target", "tempo"),            # self-hosted: no vendor token issuance exists
+    ("jaeger-mcp-server-target", "jaeger"),
+    ("grafana-mcp-server-target", "grafana"),
+    ("splunk-mcp-server-target", "splunk"),
+)
+
+# ADR-017 mutual-exclusion guard: a preset_key's kind must not be live as BOTH a lambda TARGETS
+# entry and an MCP_SERVER_TARGETS entry at once — the gateway exposes tools as
+# '<target>___<tool>' (qualified per target, so names never literally collide), but two live
+# targets for the same KIND would still surface near-duplicate tools whose selection by the
+# model is arbitrary (review 2026-08-06: the earlier 'non-deterministic _dedup_by_tool_name'
+# wording was imprecise under qualified naming and misled a review cell).
+# Enabling a preset's endpoint is treated as the operator's cutover signal: provision.py DELETES the
+# live legacy lambda target (found via legacy_target_name, below) before creating the mcp-server
+# target, so the two can never coexist after a run completes — checking `lambda_arns` (whether the
+# Lambda is still IN THE TF CONFIG) is not enough on its own, because a config change removing the
+# lambda_key does not, by itself, delete the gateway target object a PRIOR run already created
+# (ensure_targets only SKIPs creating/updating when the lambda is gone; it never deletes the
+# leftover target) — that gap is exactly what the live-target check + delete-before-create closes.
+_LAMBDA_KEY_BY_PRESET = {
+    "dynatrace": "dynatrace-mcp",
+    "datadog": "datadog-mcp",
+    # clickhouse/tempo/jaeger presets were removed (ADR-017 amendment 2026-08-05 — their lambdas are
+    # the CURRENT path, not legacy); prometheus/mimir/notion/loki never had a preset.
+}
+
+
+def conflicting_lambda_key(preset_key, lambda_arns):
+    """Return the lambda_key still deployed (per tf config) for this preset's kind, or None.
+    INFORMATIONAL only — provision.py logs this as a WARNING (dead-code reminder to clean up
+    ai.tf), it does NOT gate the mcp-server target's creation; the live-target delete-before-create
+    (legacy_target_name) is what actually prevents duplicate tool registration, since this check
+    can't see a leftover gateway target object from a prior run."""
+    lambda_key = _LAMBDA_KEY_BY_PRESET.get(preset_key)
+    if lambda_key and lambda_key in lambda_arns:
+        return lambda_key
+    return None
+
+
+def legacy_target_name(preset_key):
+    """Return the catalog.TARGETS name (e.g. 'clickhouse-mcp-target') for the lambda target this
+    preset's kind used to run as, or None if this preset never had one (datadog/jaeger/dynatrace
+    were never registered as a lambda target in TARGETS — no legacy object can exist for them)."""
+    lambda_key = _LAMBDA_KEY_BY_PRESET.get(preset_key)
+    if not lambda_key:
+        return None
+    for tname, spec in TARGETS.items():
+        if spec.get("lambda_key") == lambda_key:
+            return tname
+    return None

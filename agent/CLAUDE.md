@@ -1,55 +1,47 @@
-# 에이전트 모듈 / Agent Module
+# Agent Module
 
-## 역할 / Role
-AgentCore 런타임용 Strands 에이전트. MCP 프로토콜을 통해 8개 역할 기반 게이트웨이에 연결.
-(Strands Agent for AgentCore Runtime. Connects to 8 role-based Gateways via MCP protocol.)
+## Role
+Strands Agent for AgentCore Runtime. Connects to 9 domain gateways via MCP protocol.
 
-## 주요 파일 / Key Files
-- `agent.py` — 메인 진입점: `payload.gateway` 파라미터를 통한 동적 게이트웨이 선택 (Main entrypoint: dynamic Gateway selection via `payload.gateway` parameter)
-- `streamable_http_sigv4.py` — AWS SigV4 서명을 사용한 MCP StreamableHTTP (MCP StreamableHTTP with AWS SigV4 signing)
+## Key Files
+- `agent.py` — Main entrypoint: dynamic Gateway selection via the `payload.gateway` parameter;
+  `_resolve_gateway_key`/`_GATEWAY_ALIAS` handle the `observability`→`external-obs` chat-key
+  alias and the canonical-vs-`v2-`-prefixed key coexistence shim (see the do-not-"fix" note in
+  root `AGENTS.md`).
+- `streamable_http_sigv4.py` — MCP StreamableHTTP with AWS SigV4 signing
 - `Dockerfile` — Python 3.11-slim, arm64, port 8080
 - `requirements.txt` — strands-agents, boto3, bedrock-agentcore, psycopg2-binary
-- `lambda/` — 19개 Lambda 소스 파일 + 타겟 생성 스크립트 (19 Lambda source files + `create_targets.py`)
+- `lambda/` — Lambda source files (see `agent/lambda/CLAUDE.md` for the current provisioner and
+  tool-inventory sources)
 
-## 8 Gateways / 8개 게이트웨이
+## Gateways and routes — don't hand-count them here
+The gateway count, per-gateway tool counts, and the chat routing-key list have drifted stale in
+this file before (9 domain gateways incl. `external-obs`; 16 chat-section keys). Rather than
+re-introduce a hand-maintained table that goes stale again, read the actual source:
+- Gateway/tool inventory: `scripts/v2/agentcore/catalog.py` (the live v2 provisioner catalog)
+  and `ai.tf`'s `local.agent_lambdas`.
+- Chat routing keys: `web/lib/route.ts`'s `RULES` (regex fast-path, first-match-wins) — the
+  `observability` key aliases to the `external-obs` gateway per ADR-004.
+- Root `CLAUDE.md`'s "AI (AgentCore)" bullet has the current-truth summary of both.
 
-| Gateway | Tools | Description / 설명 |
-|---------|-------|---------------------|
-| **Network** | 17 | VPC, TGW, VPN, ENI, Reachability, Flow Logs |
-| **Container** | 24 | EKS, ECS, ECR, Istio service mesh |
-| **IaC** | 12 | CloudFormation, CDK, Terraform |
-| **Data** | 24 | DynamoDB, RDS, ElastiCache, MSK |
-| **Security** | 14 | IAM users/roles/policies, simulation |
-| **Monitoring** | 16 | CloudWatch metrics/alarms/logs, CloudTrail, Datasource diagnostics |
-| **Cost** | 9 | Cost Explorer, Pricing, Budgets, FinOps (Compute Optimizer, RI/SP, Trusted Advisor) |
-| **Ops** | 9 | AWS docs, CLI, Steampipe SQL |
-| **Total** | **125** | Across 19 Lambda functions |
+## Multi-Route Support
+- The classifier can return 1–3 candidate routes, but actually fanning out to multiple
+  gateways and synthesizing their answers requires **two independent Terraform flags, both
+  default false, ANDed at runtime** (`web/app/api/chat/route.ts`'s
+  `doFanout = synthOn && hybridOn && ...`) — both governed by the same consolidated
+  **ADR-003** (current numbering; the two flags trace to different legacy pre-consolidation
+  ADRs, `[legacy 038]` for hybrid classifier routing and `[legacy 044]` for the cross-domain
+  merge step, but neither is a separate live ADR today): `hybrid_routing_enabled` (sets
+  `HYBRID_ROUTING_ENABLED`) and `multi_route_synthesis_enabled` (the cross-domain merge step,
+  its own IAM `bedrock:InvokeModel` grant; sets `MULTI_ROUTE_SYNTHESIS_ENABLED`). Neither flag
+  implies the other — don't assume parallel gateway calls + synthesis run unconditionally, and
+  don't collapse these into a single flag.
+- Real-time response delivery via SSE streaming.
 
-## 11 Routes (route.ts) / 11개 라우트
-
-1. `code` — Code Interpreter (Python sandbox)
-2. `network` — Network Gateway (VPC, TGW, VPN, ENI, Flow Logs)
-3. `container` — Container Gateway (EKS, ECS, Istio)
-4. `iac` — IaC Gateway (CloudFormation, CDK, Terraform)
-5. `data` — Data Gateway (DynamoDB, RDS, ElastiCache, MSK)
-6. `security` — Security Gateway (IAM, policies, simulation)
-7. `monitoring` — Monitoring Gateway (CloudWatch, CloudTrail)
-8. `cost` — Cost Gateway (Cost Explorer, Pricing, Budgets, FinOps)
-9. `datasource` — External datasources (Prometheus, Loki, Tempo, ClickHouse, Jaeger, Dynatrace, Datadog)
-10. `aws-data` — Steampipe SQL + Bedrock (리소스 인벤토리 조회 / resource inventory)
-11. `general` — Ops Gateway + Bedrock 폴백 (fallback)
-
-## Multi-Route Support / 멀티 라우트 지원
-- 분류기(classifier)가 1~3개 라우트를 반환 (Classifier returns 1-3 routes)
-- 복수 게이트웨이 병렬 호출 + 결과 통합(synthesis) (Parallel gateway calls + synthesis)
-- SSE 스트리밍으로 실시간 응답 전달 (Real-time response via SSE streaming)
-
-## 규칙 / Rules
-- Docker 이미지는 arm64 필수 (`docker buildx --platform linux/arm64`)
-  (Docker image must be arm64)
-- 게이트웨이 URL은 payload 기반으로 `GATEWAYS` 딕셔너리에서 동적 선택
-  (Gateway URL selected dynamically from `GATEWAYS` dict based on payload)
-- 시스템 프롬프트는 역할별로 다름: network/container/iac/data/security/monitoring/cost/ops
-  (System prompt is role-specific)
-- 폴백: MCP 연결 실패 시 도구 없이 실행 — Bedrock 직접 호출
-  (Fallback: if MCP connection fails, run without tools — Bedrock direct)
+## Rules
+- Docker image must be arm64 (`docker buildx --platform linux/arm64`).
+- Gateway URL is selected dynamically from the `GATEWAYS` dict based on the payload.
+- The system prompt is role-specific, one per domain gateway.
+- Fallback: if the MCP connection fails, run without tools — direct Bedrock call.
+- Never embed secrets, AWS account IDs, ARNs, or live domains in source — they belong in
+  SSM/Secrets Manager and runtime env.

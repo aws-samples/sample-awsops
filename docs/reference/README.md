@@ -1,6 +1,6 @@
 # AWSops — System Overview & Component Reference / 시스템 개요 · 컴포넌트 레퍼런스
 
-> Branch `feat/v2-architecture-design`. Current decisions live in
+> v2 is live on `main`. Current decisions live in
 > [`../decisions/BASELINE.md`](../decisions/BASELINE.md) (single current-truth). ADRs hold detail.
 
 **EN** — AWSops is a **read-only AWS / Kubernetes operations dashboard + AI diagnosis**, organized
@@ -26,8 +26,8 @@ BASELINE §2 참조).
 per component (current design, decisions, key files, status, gotchas). The current cross-cutting
 decision baseline is [`../decisions/BASELINE.md`](../decisions/BASELINE.md); ADRs under
 [`../decisions/`](../decisions/) hold the detail (the *why*); per-phase execution history lives in
-[`../archive/`](../archive/). 이 레퍼런스 문서들이 컴포넌트별 **현행 단일 출처**, 현행 결정 기준선은
-`../decisions/BASELINE.md`, ADR은 상세 결정 출처, 실행 이력은 `../archive/`다.
+[`../history/archive/`](../history/archive/). 이 레퍼런스 문서들이 컴포넌트별 **현행 단일 출처**, 현행 결정 기준선은
+`../decisions/BASELINE.md`, ADR은 상세 결정 출처, 실행 이력은 `../history/archive/`다.
 
 ## Request flow / 요청 흐름
 
@@ -63,17 +63,21 @@ is `data/schema.sql` + ULID migrations tracked in `schema_migrations`. App state
 not `data/*.json`. node-pg로 접근하는 Aurora 영속 상태.
 
 **Web thin-BFF — [`04-web-bff.md`](04-web-bff.md).** **Next.js 14 thin-BFF** (`web/`, standalone
-**arm64**, served at the **root path** — no basePath). Heavy/long/OOM-risk work is enqueued via
-`POST /api/jobs` rather than run inline. The BFF backs the dashboard pages and per-domain API
+**arm64**, served at the **root path** — no basePath). Heavy/long/OOM-risk work is enqueued rather
+than run inline — the generic `POST /api/jobs` accepts `noop` types ONLY; domain work goes through its
+own ownership-scoped route (`POST /api/diagnosis`, `POST /api/compliance/run`) and the rest is
+internal-only (ADR-009). The BFF backs the dashboard pages and per-domain API
 routes. 무거운 작업은 워커 큐로 enqueue하는 thin-BFF.
 
 **AgentCore Agents — [`05-agentcore.md`](05-agentcore.md).** Strands agent on **AgentCore Runtime**
 fronted by domain gateways exposing **read-only MCP tools**, plus Memory + Code Interpreter, all
 provisioned by an idempotent boto3 provisioner with config delivered through SSM. **9 gateways are
-provisioned; `agent.py` routes across the 8 section gateways** (external observability is the
-ADR-039 Integrations axis, not a routed section). 9개 프로비저닝 / 8 섹션 에이전트 라우트.
+provisioned and `agent.py` routes across all 9** — external-obs was promoted to a routed section by
+the ADR-004 amendment (2026-06-24); the chat key `observability` aliases to it. 9개 프로비저닝 / 9
+섹션 에이전트 라우트 (external-obs는 2026-06-24 ADR-004 개정으로 라우팅 섹션 승격).
 
-**Async Worker Backbone — [`06-workers.md`](06-workers.md).** `POST /api/jobs` → `worker_jobs` +
+**Async Worker Backbone — [`06-workers.md`](06-workers.md).** an enqueue (generic `POST /api/jobs`
+for `noop`; ownership-scoped `/api/diagnosis` · `/api/compliance/run` for domain work) → `worker_jobs` +
 SQS → ESM (kill-switch) → idempotent dispatcher Lambda → **Step Functions** `$.runtime` Choice →
 RunLambda (short) **or** `ecs:runTask.sync` Fargate (long/OOM). A reaper reconciles stale jobs.
 OOM-안전 비동기 워커 티어.
@@ -85,13 +89,13 @@ view 정책(읽기 전용).
 
 | Component | Reference | Key files |
 |---|---|---|
-| Edge & Networking | [01-edge-network.md](01-edge-network.md) | `terraform/v2/foundation/edge.tf` (+ `network.tf`, `workload.tf`) |
-| Auth & Identity | [02-auth.md](02-auth.md) | `terraform/v2/foundation/auth.tf` (+ `edge-lambda/cognito_edge.py.tftpl`), `web/app/login/`, `web/app/api/auth/login/` |
-| Data / Aurora | [03-data-aurora.md](03-data-aurora.md) | `terraform/v2/foundation/data.tf` (+ `data/schema.sql`), `web/lib/db.ts` |
-| Web thin-BFF | [04-web-bff.md](04-web-bff.md) | `web/` (Next.js 14 BFF; `terraform/v2/foundation/workload.tf`, `scripts/v2/deploy.mjs`) |
-| AgentCore Agents | [05-agentcore.md](05-agentcore.md) | `scripts/v2/agentcore/` (`catalog.py`, `provision.py`; `terraform/v2/foundation/ai.tf`) |
-| Async Worker Backbone | [06-workers.md](06-workers.md) | `terraform/v2/foundation/workers.tf` (+ `scripts/v2/workers/`) |
-| EKS Onboarding | [07-eks.md](07-eks.md) | `terraform/v2/foundation/eks.tf` (+ `scripts/v2/configure.mjs`) |
+| Edge & Networking | [01-edge-network.md](01-edge-network.md) | `terraform/foundation/edge.tf` (+ `network.tf`, `workload.tf`) |
+| Auth & Identity | [02-auth.md](02-auth.md) | `terraform/foundation/auth.tf` (+ `edge-lambda/cognito_edge.py.tftpl`), `web/app/login/`, `web/app/api/auth/login/` |
+| Data / Aurora | [03-data-aurora.md](03-data-aurora.md) | `terraform/foundation/data.tf` (+ `data/schema.sql`), `web/lib/db.ts` |
+| Web thin-BFF | [04-web-bff.md](04-web-bff.md) | `web/` (Next.js 14 BFF; `terraform/foundation/workload.tf`, `scripts/v2/deploy.mjs`) |
+| AgentCore Agents | [05-agentcore.md](05-agentcore.md) | `scripts/v2/agentcore/` (`catalog.py`, `provision.py`; `terraform/foundation/ai.tf`) |
+| Async Worker Backbone | [06-workers.md](06-workers.md) | `terraform/foundation/workers.tf` (+ `scripts/v2/workers/`) |
+| EKS Onboarding | [07-eks.md](07-eks.md) | `terraform/foundation/eks.tf` (+ `scripts/v2/configure.mjs`) |
 
 ## Status / 상태
 
@@ -104,4 +108,4 @@ register) is in [`../decisions/BASELINE.md`](../decisions/BASELINE.md). 단계�
 ## Execution history / 실행 이력
 
 Per-phase execution history (plans, verification logs, design notes) lives under
-[`../archive/`](../archive/) — see its README. 각 단계의 실행 이력은 `../archive/`를 참조한다.
+[`../history/archive/`](../history/archive/) — see its README. 각 단계의 실행 이력은 `../history/archive/`를 참조한다.

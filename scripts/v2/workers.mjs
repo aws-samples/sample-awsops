@@ -8,7 +8,7 @@ import { execSync } from 'node:child_process';
 import { existsSync, copyFileSync } from 'node:fs';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
-const CHDIR = 'terraform/v2/foundation';
+const CHDIR = 'terraform/foundation';
 const TAG = process.env.WORKER_IMAGE_TAG || 'worker-latest';
 const DOCKER = process.env.DOCKER || 'sudo docker';
 

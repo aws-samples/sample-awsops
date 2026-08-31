@@ -1,0 +1,415 @@
+/**
+ * AWSops landing page — light editorial theme.
+ * Ported from static/showcase/index.html. Scoped entirely under .page so the
+ * site-wide dark navy theme (src/css/custom.css) never touches this page,
+ * and this page never leaks into doc pages. Every selector below starts
+ * with a local (hashed) class — no bare element or attribute selectors.
+ */
+
+.page {
+  --paper: #f7f8fa;
+  --surface: #fff;
+  --ink: #18212d;
+  --muted: #526173;
+  --line: #d9e0e8;
+  --graphite: #111827;
+  --cobalt: #2563eb;
+  --cobalt-dark: #174bb8;
+  --coral: #c95032;
+
+  background: var(--paper);
+  color: var(--ink);
+  font-family: Pretendard, 'Noto Sans KR', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  line-height: 1.65;
+}
+
+.page a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.page a:focus-visible {
+  outline: 3px solid var(--coral);
+  outline-offset: 3px;
+}
+
+.wrap {
+  width: min(100% - 48px, 1180px);
+  margin-inline: auto;
+}
+
+.button {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--cobalt);
+  color: #fff;
+  padding: 0 18px;
+  font-weight: 750;
+}
+
+.button:hover {
+  background: var(--cobalt-dark);
+}
+
+.buttonGhost {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  color: #fff;
+}
+
+.buttonGhost:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.ctaRow {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+/* Hero — text + stats + abstract graphic, no photo (brochure-style). */
+.hero {
+  background: var(--graphite);
+  padding: 96px 0 76px;
+  overflow: hidden;
+}
+
+.heroGrid {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  align-items: center;
+  gap: 48px;
+  color: #fff;
+}
+
+.eyebrow,
+.kicker {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.eyebrow {
+  color: #a8c3ff;
+}
+
+.kicker {
+  color: var(--cobalt);
+}
+
+.heroGrid h1 {
+  margin: 10px 0 0;
+  font-size: 64px;
+  line-height: 1;
+  font-weight: 850;
+  color: #fff;
+}
+
+.heroLine {
+  max-width: 12ch;
+  margin: 20px 0 0;
+  font-size: 34px;
+  line-height: 1.16;
+  font-weight: 750;
+}
+
+.heroCopy {
+  max-width: 42ch;
+  margin: 18px 0 26px;
+  color: #d7dfeb;
+}
+
+.metrics {
+  display: flex;
+  gap: 28px;
+  margin-top: 34px;
+  padding-top: 26px;
+  border-top: 1px solid #232f47;
+}
+
+.metricValue {
+  font-size: 28px;
+  font-weight: 800;
+  color: #fff;
+}
+
+.metricLabel {
+  margin-top: 2px;
+  color: #9fb0c9;
+  font-size: 13px;
+}
+
+.heroFig {
+  position: relative;
+  background: #0f1629;
+  border: 1px solid #232f47;
+  border-radius: 24px;
+  padding: 28px;
+  overflow: hidden;
+}
+
+.heroFigCap {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #7d8fae;
+  margin-bottom: 6px;
+}
+
+.heroFigCap2 {
+  font-size: 14.5px;
+  color: #c3cee2;
+  margin-bottom: 18px;
+}
+
+.heroGlyph {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Bands / sections */
+.band,
+.section {
+  padding: 82px 0;
+}
+
+.band {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.sectionHead {
+  max-width: 720px;
+  margin-bottom: 34px;
+}
+
+.sectionHead h2,
+.storyCopy h2 {
+  margin: 8px 0 12px;
+  font-size: 38px;
+  line-height: 1.16;
+  color: var(--ink);
+}
+
+.lead {
+  margin: 0;
+  color: var(--muted);
+  font-size: 18px;
+}
+
+/* Story (alternating image/copy) */
+.story {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
+  align-items: center;
+  gap: 48px;
+}
+
+.storyReverse {
+  grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.2fr);
+}
+
+.storyCopy .lead {
+  margin-top: 0;
+}
+
+.frame {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #edf1f5;
+  box-shadow: 0 14px 36px rgba(24, 33, 45, 0.12);
+}
+
+.frame img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  object-fit: cover;
+}
+
+.frameWide img {
+  aspect-ratio: 16 / 9;
+}
+
+.frameTall img {
+  aspect-ratio: 4 / 5;
+}
+
+.tourFrame {
+  background: #060911;
+}
+
+.tourVideo {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+
+.frame figcaption {
+  background: var(--surface);
+  color: var(--muted);
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+.pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+/* Trust grid */
+.trustGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--line);
+}
+
+.trustItem {
+  background: var(--surface);
+  padding: 24px;
+}
+
+.trustItem h3 {
+  margin: 0 0 8px;
+  font-size: 17px;
+  color: var(--ink);
+}
+
+.trustItem p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* Closing */
+.closing {
+  background: var(--graphite);
+  color: #fff;
+  text-align: center;
+}
+
+.closing h2 {
+  max-width: 18ch;
+  margin: 0 auto 14px;
+  color: #fff;
+}
+
+.closing p {
+  max-width: 52ch;
+  margin: 0 auto 26px;
+  color: #cbd5e1;
+}
+
+.closing .ctaRow {
+  justify-content: center;
+}
+
+/* Scroll-reveal — progressive enhancement only; content is visible by
+   default and only opts into the hidden state once JS decides to animate. */
+.page [data-reveal] {
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+
+.page [data-reveal='pending'] {
+  opacity: 0;
+  transform: translateY(14px);
+}
+
+@media (max-width: 1024px) {
+  .heroGrid h1 {
+    font-size: 52px;
+  }
+
+  .heroLine {
+    font-size: 30px;
+  }
+
+  .heroGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .heroFig {
+    max-width: 420px;
+  }
+
+  .story,
+  .storyReverse {
+    grid-template-columns: 1fr;
+  }
+
+  .storyReverse .storyCopy {
+    order: -1;
+  }
+
+  .trustGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .wrap {
+    width: min(100% - 36px, 1180px);
+  }
+
+  .hero {
+    padding: 56px 0 48px;
+  }
+
+  .heroGrid h1 {
+    font-size: 42px;
+  }
+
+  .heroLine {
+    font-size: 27px;
+  }
+
+  .metrics {
+    flex-wrap: wrap;
+    gap: 20px;
+  }
+
+  .band,
+  .section {
+    padding: 62px 0;
+  }
+
+  .sectionHead h2,
+  .storyCopy h2 {
+    font-size: 30px;
+  }
+
+  .pair,
+  .trustGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .ctaRow {
+    flex-direction: column;
+  }
+
+  .ctaRow .button {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page *,
+  .page *::before {
+    transition: none !important;
+    animation: none !important;
+  }
+}

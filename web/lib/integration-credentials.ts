@@ -18,9 +18,14 @@ const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 const SECRET_NAME =
   process.env.INTEGRATIONS_SECRET_NAME || 'ops/awsops-v2/integrations/credentials';
 
-// Kinds that have a connector Lambda reading this secret (INTEGRATION_SLUG = kind). Extend as
-// connectors are added. An arbitrary key is rejected (no arbitrary secret-key injection).
-export const KNOWN_CONNECTOR_SLUGS = ['notion', 'clickhouse', 'prometheus', 'loki', 'tempo', 'mimir'] as const;
+// Kinds that have a connector Lambda (or, per ADR-017, an official MCP preset) reading this
+// secret (INTEGRATION_SLUG = kind, or preset_key for ADR-017 presets). Extend as connectors are
+// added. An arbitrary key is rejected (no arbitrary secret-key injection).
+// Kept in lockstep with web/lib/mcp-lambda-invoke.ts KNOWN_MCP_LAMBDA_KINDS (jaeger/dynatrace/
+// datadog were invokable there but couldn't have their kind-mirror credential stored here until
+// this fix) and, for the ADR-017 presets, with scripts/v2/agentcore/catalog.py MCP_SERVER_TARGETS
+// preset_key values (datadog/clickhouse/tempo/jaeger/grafana/dynatrace/splunk/newrelic).
+export const KNOWN_CONNECTOR_SLUGS = ['notion', 'clickhouse', 'prometheus', 'loki', 'tempo', 'mimir', 'jaeger', 'dynatrace', 'datadog', 'grafana', 'splunk', 'newrelic'] as const;
 
 const MAX_SECRET_PAYLOAD_BYTES = 65000; // Secrets Manager limit is 64 KB/version
 const LOCK_KEY = 729153866; // fixed advisory-lock key for the single credentials secret
@@ -83,6 +88,43 @@ export async function setIntegrationCredential(
   await mutateCredentialMap((map) => {
     map[slug] = secretObj;
   });
+}
+
+// ── ADR-017 official-vendor MCP preset credentials ─────────────────────────────────────────
+// 5 of the 8 preset slugs (clickhouse/tempo/jaeger/dynatrace/datadog) are ALSO DATASOURCE_KINDS
+// members (web/lib/integrations-category.ts) whose kind-mirror lives at the PLAIN slug key
+// (mirrorDefaultCredential, above) — saving the MCP token there would clobber the datasource
+// connector's {endpoint, authType, ...} shape and vice versa. Namespace the MCP credential under
+// "mcp:<slug>" instead so the two never collide. scripts/v2/agentcore/provision.py's
+// _load_official_mcp_secret reads this same "mcp:<preset_key>" key.
+const mcpPresetKey = (slug: string) => `mcp:${slug}`;
+
+/** Store an ADR-017 official-vendor MCP preset's credential under its namespaced key. */
+export async function setMcpPresetCredential(
+  slug: string,
+  secretObj: Record<string, unknown>,
+): Promise<void> {
+  assertKnownSlug(slug);
+  await mutateCredentialMap((map) => {
+    map[mcpPresetKey(slug)] = secretObj;
+  });
+}
+
+/** Preset slugs (namespace-stripped) that currently have an ADR-017 MCP credential stored —
+ *  KEYS ONLY. Best-effort: degrades to [] on a Secrets Manager read failure, same as
+ *  getConfiguredSlugs (the gated/off state must not 500 the Connectors tab). */
+export async function getConfiguredMcpPresetSlugs(): Promise<string[]> {
+  try {
+    return Object.keys(await readMap())
+      .filter((k) => k.startsWith('mcp:'))
+      .map((k) => k.slice(4));
+  } catch (e) {
+    console.warn(
+      '[integration-credentials] getConfiguredMcpPresetSlugs read failed; treating as none configured:',
+      (e as { name?: string })?.name || 'unknown error',
+    );
+    return [];
+  }
 }
 
 // ── Multi-instance datasources (ADR-039 hub) ────────────────────────────────────────────────

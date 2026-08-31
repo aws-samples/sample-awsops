@@ -9,8 +9,8 @@ fail() { echo "not ok - $1"; FAILS=$((FAILS+1)); }
 
 echo "# Steampipe fan-out terraform wiring"
 
-SP=terraform/v2/foundation/steampipe.tf
-DT=terraform/v2/foundation/data.tf
+SP=terraform/foundation/steampipe.tf
+DT=terraform/foundation/data.tf
 
 grep -q 'AURORA_ENDPOINT' "$SP" && grep -q 'AURORA_DATABASE' "$SP" \
   && pass "steampipe task gets AURORA_ENDPOINT + AURORA_DATABASE env" \
@@ -33,10 +33,11 @@ grep -Eq 'AURORA_USER' "$SP" \
   && pass "steampipe task gets AURORA_USER env (non-secret role name)" \
   || fail "steampipe task gets AURORA_USER env (non-secret role name)"
 
-# Gated on steampipe_enabled (not a bare `true`) so steampipe_enabled=false stays plan-clean.
-grep -Eq 'iam_database_authentication_enabled\s*=\s*var\.steampipe_enabled' "$DT" \
-  && pass "Aurora cluster IAM database authentication is gated on steampipe_enabled" \
-  || fail "Aurora cluster IAM database authentication is gated on steampipe_enabled"
+# Unconditional since the web BFF also authenticates via IAM DB auth (awsops_web, PR #123 —
+# the rotation-outage fix): gating it on steampipe_enabled would break web when steampipe is off.
+grep -Eq 'iam_database_authentication_enabled\s*=\s*true' "$DT" \
+  && pass "Aurora cluster IAM database authentication is unconditionally enabled (web + steampipe depend on it)" \
+  || fail "Aurora cluster IAM database authentication is unconditionally enabled (web + steampipe depend on it)"
 
 # task-role AssumeRole scoped to the read-only role name (not a wildcard role)
 grep -Eq 'sts:AssumeRole' "$SP" && grep -Eq 'role/AWSopsReadOnlyRole' "$SP" \

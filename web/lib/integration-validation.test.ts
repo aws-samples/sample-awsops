@@ -56,7 +56,7 @@ describe('integration-validation', () => {
 // API accepts (or vice versa).
 describe('datasource-kind lockstep (category ↔ validation ↔ migration CHECK)', () => {
   const MIGRATION = new URL(
-    '../../terraform/v2/foundation/migrations/01KY1S49Q20DY16RM99Q1S73WR_datasource_kinds_jaeger_dynatrace.sql',
+    '../../terraform/foundation/migrations/01KY1S49Q20DY16RM99Q1S73WR_datasource_kinds_jaeger_dynatrace.sql',
     import.meta.url,
   );
   const sql = readFileSync(MIGRATION, 'utf8');

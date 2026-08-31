@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { Plus, Trash2, Search } from 'lucide-react';
 import type { ThreadSummary } from '@/lib/chat-store';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 // Claude-app-style left sidebar: "+ new chat" on top, a v1-parity history SEARCH box, thread list
 // below, active thread highlighted, switching is a single click and keeps the panel open.
@@ -11,6 +12,7 @@ export default function ThreadList({ threads, activeId, onSelect, onDelete, onDe
   onDeleteAll?: () => void; onNew: () => void;
   onSearch?: (q: string) => void;
 }) {
+  const { tt } = useI18n();
   const [q, setQ] = useState('');
   const [confirmAll, setConfirmAll] = useState(false);
   return (
@@ -18,10 +20,10 @@ export default function ThreadList({ threads, activeId, onSelect, onDelete, onDe
       <div className="p-2">
         <button
           onClick={onNew}
-          aria-label="새 대화"
+          aria-label={tt('새 대화')}
           className="flex w-full items-center gap-1.5 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-left text-[13px] font-medium text-brand-700 transition-colors hover:bg-brand-100"
         >
-          <Plus size={15} /> 새 대화
+          <Plus size={15} /> {tt('새 대화')}
         </button>
       </div>
       {onSearch && (
@@ -31,8 +33,8 @@ export default function ThreadList({ threads, activeId, onSelect, onDelete, onDe
             <input
               value={q}
               onChange={(e) => { setQ(e.target.value); onSearch(e.target.value); }}
-              placeholder="대화 내용 검색"
-              aria-label="대화 내용 검색"
+              placeholder={tt('대화 내용 검색')}
+              aria-label={tt('대화 내용 검색')}
               className="min-w-0 flex-1 bg-transparent text-[12px] text-ink-800 placeholder:text-ink-400 focus:outline-none"
             />
           </div>
@@ -60,7 +62,7 @@ export default function ThreadList({ threads, activeId, onSelect, onDelete, onDe
       )}
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         {threads.length === 0 && (
-          <div className="px-1.5 py-2 text-[12px] text-ink-400">{q.trim() ? '검색 결과가 없습니다.' : '저장된 대화가 없습니다.'}</div>
+          <div className="px-1.5 py-2 text-[12px] text-ink-400">{q.trim() ? tt('검색 결과가 없습니다.') : tt('저장된 대화가 없습니다.')}</div>
         )}
         {threads.map((t) => {
           const active = t.id === activeId;
@@ -81,7 +83,7 @@ export default function ThreadList({ threads, activeId, onSelect, onDelete, onDe
               </div>
               <button
                 onClick={(e) => { e.stopPropagation(); onDelete(t.id); }}
-                aria-label={`${t.title} 삭제`}
+                aria-label={`${t.title} ${tt('삭제')}`}
                 className="shrink-0 rounded p-1 text-ink-300 opacity-60 transition-colors hover:bg-rose-50 hover:text-rose-500 group-hover:opacity-100"
               >
                 <Trash2 size={14} />

@@ -2,7 +2,7 @@
 // autonomous / external-write capability. These flags are permanently frozen (2026-06-11 reversal,
 // ADR-005). A default-value assertion fails CI if someone flips a default to true.
 //
-// Reads terraform/v2/foundation/variables.tf (committed, always present in CI) — NOT
+// Reads terraform/foundation/variables.tf (committed, always present in CI) — NOT
 // terraform.tfvars (gitignored, per-environment, never present on a CI runner; the original
 // version of this test read tfvars directly and had never actually run in CI before the
 // merge-verify gate existed, silently checking flag names — remediation_execute_enabled,
@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { variableDefault } from '../tf-frozen-flags';
 
-const VARIABLES_TF = new URL('../../../terraform/v2/foundation/variables.tf', import.meta.url);
+const VARIABLES_TF = new URL('../../../terraform/foundation/variables.tf', import.meta.url);
 
 describe('AWS-resource-mutation / external-write freeze (ADR-005)', () => {
   const tf = readFileSync(VARIABLES_TF, 'utf8');

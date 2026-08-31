@@ -14,7 +14,7 @@ AgentCore handles tool execution for the [AI Assistant](../overview/assistant), 
 <Screenshot src="/screenshots/overview/agentcore-routing.png" alt="AI Assistant routing badges" />
 
 :::tip Customer-session point
-**8 AWS-domain Gateways + external-obs (external observability) = 9 routed sections** · **144 MCP tools** across the full catalog · **23 Lambda slices** (17 gated on `agentcore_enabled`, 6 on `integrations_enabled`, both off by default) run serverless. The classifier routes each question to 1-3 routes and **calls them in parallel, then synthesizes**. → [Why AWSops](./why-awsops)
+**8 AWS-domain Gateways + external-obs (external observability) = 9 routed sections** · **160 MCP tools** across the full catalog (the 27 Lambda targets — vendor-hosted mcpServer targets excluded) · **30 Lambda slices** (21 gated on `agentcore_enabled`, 9 on `integrations_enabled`, both off by default) run serverless. The classifier routes each question to 1-3 routes and **calls them in parallel, then synthesizes**. → [Why AWSops](./why-awsops)
 :::
 
 ## Architecture
@@ -56,23 +56,25 @@ AgentCore handles tool execution for the [AI Assistant](../overview/assistant), 
 
 ## Gateway Details
 
-v2 has 8 AWS-domain Gateways (`awsops-v2-{network,container,data,security,cost,monitoring,iac,ops}-gateway`) plus **external-obs** — a routed section hosting external-observability/integration connectors, chat-aliased to the `observability` routing key. Tool counts below are from the full catalog (`scripts/v2/agentcore/catalog.py`); actual activation is staged behind the `agentcore_enabled`/`integrations_enabled` flags (P3 — currently only a subset is deployed read-only).
+v2 has 8 AWS-domain Gateways (`awsops-v2-{network,container,data,security,cost,monitoring,iac,ops}-gateway`) plus **external-obs** — a routed section hosting external-observability/integration connectors, chat-aliased to the `observability` routing key. Tool counts below are from the full catalog (`scripts/v2/agentcore/catalog.py`); activation is gated behind the `agentcore_enabled`/`integrations_enabled` flags (off by default on new installs). The live environment has the fleet fully deployed — all 9 gateways hold READY MCP targets and all 16 chat section keys are active (2026-08-02).
 
-### Network Gateway (16 tools)
+### Network Gateway (17 tools)
 
 Provides VPC, ENI, Reachability, Flow Logs, TGW, VPN, and Network Firewall tools.
 
 | Category | Tools |
 |----------|-------|
 | **flow-monitor** | `query_flow_logs` |
+| **reachability-read** | `check_reachability` |
 | **network-mcp** | `get_path_trace_methodology`, `find_ip_address`, `get_eni_details`, `list_vpcs`, `get_vpc_network_details`, `get_vpc_flow_logs`, `describe_network`, `list_transit_gateways`, `get_tgw_details`, `get_tgw_routes`, `get_all_tgw_routes`, `list_tgw_peerings`, `list_vpn_connections`, `list_network_firewalls`, `get_firewall_rules` |
 
-### Container Gateway (12 tools)
+### Container Gateway (19 tools)
 
-Provides EKS and ECS tools.
+Provides EKS, ECS, and Istio service-mesh tools.
 
 | Category | Tools |
 |----------|-------|
+| **istio-read** | `mesh_overview`, `list_virtual_services`, `list_destination_rules`, `list_istio_gateways`, `list_service_entries`, `list_authorization_policies`, `list_peer_authentications` |
 | **eks-mcp** | `list_eks_clusters`, `get_eks_vpc_config`, `get_eks_insights`, `get_cloudwatch_logs`, `get_cloudwatch_metrics`, `get_eks_metrics_guidance`, `get_policies_for_role`, `search_eks_troubleshoot_guide`, `generate_app_manifest` |
 | **ecs-mcp** | `ecs_resource_management`, `ecs_troubleshooting_tool`, `wait_for_service_ready` |
 
@@ -85,7 +87,7 @@ Provides Infrastructure as Code tools.
 | **iac-mcp** | `validate_cloudformation_template`, `check_cloudformation_template_compliance`, `troubleshoot_cloudformation_deployment`, `search_cdk_documentation`, `search_cloudformation_documentation`, `cdk_best_practices`, `read_iac_documentation_page` |
 | **terraform-mcp** | `SearchAwsProviderDocs`, `SearchAwsccProviderDocs`, `SearchSpecificAwsIaModules`, `SearchUserProvidedModule`, `terraform_best_practices` |
 
-### Data Gateway (28 tools)
+### Data Gateway (24 tools)
 
 Provides AWS database and streaming service tools.
 
@@ -95,7 +97,6 @@ Provides AWS database and streaming service tools.
 | **dynamodb-mcp** | `list_tables`, `describe_table`, `query_table`, `get_item`, `dynamodb_data_modeling`, `compute_performances_and_costs` |
 | **msk-mcp** | `list_clusters`, `get_cluster_info`, `get_configuration_info`, `get_bootstrap_brokers`, `list_nodes`, `msk_best_practices` |
 | **valkey-mcp** | `list_cache_clusters`, `describe_cache_cluster`, `list_replication_groups`, `describe_replication_group`, `list_serverless_caches`, `elasticache_best_practices` |
-| **clickhouse-mcp** (`integrations_enabled`) | 4 ClickHouse query tools |
 
 ### Security Gateway (14 tools)
 
@@ -113,16 +114,16 @@ Provides IAM and security analysis tools. (Deployed in P1f.)
 | `simulate_principal_policy` | Policy simulation |
 | `get_account_security_summary` | Account security summary |
 
-### Monitoring Gateway (40 tools)
+### Monitoring Gateway (36 tools)
 
-Provides CloudWatch and CloudTrail (AWS-native), plus OpenSearch and the Prometheus/Loki/Tempo/Mimir observability stack.
+Provides CloudWatch and CloudTrail (AWS-native), plus OpenSearch and the Loki/Tempo/Mimir observability stack (Prometheus and ClickHouse are owned by External-Obs — ADR-004).
 
 | Category | Tools |
 |----------|-------|
 | **cloudwatch-mcp** (11) | Metrics/alarms/log-insights queries |
 | **cloudtrail-mcp** (5) | `lookup_events`, `list_event_data_stores`, `lake_query`, `get_query_status`, `get_query_results` |
 | **opensearch-mcp** (4) | OpenSearch domain/index queries |
-| **prometheus-mcp / loki-mcp / tempo-mcp / mimir-mcp** (5 each, `integrations_enabled`) | PromQL/LogQL/TraceQL queries — Loki/Tempo/Mimir stay on this Gateway (ADR-004) |
+| **loki-mcp / tempo-mcp / mimir-mcp** (loki 5 · tempo 5 · mimir 6, `integrations_enabled`) | LogQL/TraceQL queries — Loki/Tempo/Mimir stay on this Gateway (ADR-004; Prometheus·ClickHouse moved to External-Obs) |
 
 ### Cost Gateway (14 tools)
 
@@ -133,13 +134,19 @@ Provides cost analysis, forecasting, and FinOps tools.
 | **cost-mcp** (9) | `get_today_date`, `get_cost_and_usage`, `get_cost_and_usage_comparisons`, `get_cost_comparison_drivers`, `get_cost_forecast`, `get_dimension_values`, `get_tag_values`, `get_pricing`, `list_budgets` |
 | **finops-mcp** (5) | Compute Optimizer rightsizing, RI/SP recommendations, Cost Optimization Hub, Trusted Advisor |
 
-### Ops Gateway (5 tools)
+### Ops Gateway (11 tools)
 
-Provides AWS documentation / general operations tools (`aws-knowledge`).
+Provides AWS documentation search, operations helpers, and inventory query tools.
 
-### External-Obs (3 tools, routing key: `observability`)
+| Category | Tools |
+|----------|-------|
+| **core-helpers** | `prompt_understanding`, `suggest_aws_commands` |
+| **inventory-read** | `find_unused_resources`, `get_topology`, `query_inventory`, `inventory_summary` |
+| **aws-knowledge** | `search_documentation`, `read_documentation`, `recommend`, `list_regions`, `get_regional_availability` |
 
-The 9th routed section, hosting external-observability/integration connectors (ADR-004, amended 2026-06-24). The catalog defines `notion-mcp` (3 tools) here, gated on `integrations_enabled` (off by default). Prometheus/ClickHouse live on the Monitoring/Data Gateways instead (see Gateway Details above), not on this section.
+### External-Obs (13 tools, routing key: `observability`)
+
+The 9th routed section, hosting external-observability/integration connectors (ADR-004, amended 2026-06-24). The catalog defines `notion-mcp` (3 tools) here, gated on `integrations_enabled` (off by default). The Prometheus (6 tools) and ClickHouse (4 tools) connector targets also live on this section (`catalog.py` — `prometheus-mcp-target`/`clickhouse-mcp-target` with gateway=external-obs).
 
 ## Code Interpreter
 
@@ -178,7 +185,8 @@ The AgentCore Runtime ARN, Memory ID, and similar config values live **only in S
 | **Code Interpreter / Memory name** | No hyphens, underscores only |
 | **Conversation history retention** | Maximum 365 days |
 | **AgentCore response** | Returns final text only (tool inference streamed with a typing effect) |
-| **Fleet not fully deployed** | Only a subset of the catalog's 23 slices is deployed read-only in P1f (full activation is P3) |
+| **Tool activation flags** | The 30 slices are gated on `agentcore_enabled` (21) / `integrations_enabled` (9) — the live environment has the fleet fully deployed (2026-08-02); new installs default to off |
+| **Vendor mcpServer targets** | For external-obs's vendor-hosted mcpServer targets (Datadog · Dynatrace · New Relic), `capability=read` is not enforced at the protocol level (ADR-017) — the read-only guarantee applies to Lambda targets; unset endpoints SKIP. At runtime a fail-closed tool allowlist (`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — only catalog-transcribed read tools pass, `agent/agent.py`) compensates |
 
 ## Next Steps
 
