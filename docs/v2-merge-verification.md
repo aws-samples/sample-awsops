@@ -3,7 +3,7 @@
 이 게이트는 설계-대비-구현 감사에서 나온 v2 머지 불변식을 `feat/v2-architecture-design` →
 `main` 머지 전에 실행 가능한 검증으로 고정한다.
 
-- **S1**: `terraform/v2/foundation/`의 frozen/gated 리소스가 여전히 default-off이고
+- **S1**: `terraform/foundation/`의 frozen/gated 리소스가 여전히 default-off이고
   `count`/`for_each`로 게이트되어 있는지, 추적된 tfvars가 게이트된 flag를 활성화하지
   않는지 확인 (`scripts/v2/merge_invariants.py`).
 - **S2**: AgentCore catalog·web sections·route rules 9개 섹션 키가 정합하는지,
@@ -58,8 +58,8 @@ MERGE_VERIFY_PY_ROOT=/tmp/merge-fixtures MERGE_VERIFY_SKIP_WEB=1 bash scripts/v2
 Set `MERGE_VERIFY_SKIP_WEB=1` only for local fixture or runner development. The CI workflow runs the
 web vitest stage.
 
-The Terraform stage runs `terraform -chdir=terraform/v2/foundation fmt -check` when the binary is
-available, and also runs `validate` when `terraform/v2/foundation/.terraform` exists. Missing
+The Terraform stage runs `terraform -chdir=terraform/foundation fmt -check` when the binary is
+available, and also runs `validate` when `terraform/foundation/.terraform` exists. Missing
 Terraform tooling is reported as `SKIP`; Terraform diagnostics are non-blocking in this runner.
 
 ## Pytest Isolation

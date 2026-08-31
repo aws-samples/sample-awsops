@@ -8,6 +8,13 @@ import Screenshot from '@site/src/components/Screenshot';
 
 # Why AWSops
 
+:::note Parts of this page are v1-era
+Some descriptions here (embedded Steampipe data engine, diagnosis PPTX export, etc.) date from
+v1 and are being updated incrementally. For the current v2 architecture, refer to the
+[AgentCore overview](./agentcore.md) and the [FAQ](../faq/general.md).
+:::
+
+
 > **In one line** — AWSops is a **fully open-source AWS + Kubernetes operations dashboard built entirely on AWS managed services**. It pulls AWS APIs fast through Steampipe and caches them locally, and adds **Well-Architected AI diagnosis** through Amazon Bedrock AgentCore — all in a single pane.
 
 <Screenshot src="/screenshots/overview/dashboard.png" alt="AWSops dashboard — single-pane operations view" />
@@ -61,7 +68,7 @@ The data engine is [Steampipe](https://steampipe.io/) (embedded PostgreSQL, port
 `/ai-diagnosis` is a tool where Amazon Bedrock **Claude Opus 4.8** automatically analyzes the whole infrastructure into a formal report.
 
 - **6-pillar Well-Architected scorecard** — the Executive Summary scores all of Operational Excellence, Security, Reliability, Performance Efficiency, Cost Optimization, and Sustainability.
-- **3-pillar deep dive (15 sections)** — Cost Optimization, Security, and Reliability are analyzed in depth (cost overview/compute/network/storage, idle resources, security posture, network/compute/EKS/DB/MSK/storage analysis, etc.).
+- **3-pillar deep dive (15+1 sections)** — Cost Optimization, Security, and Reliability are analyzed in depth (cost overview/compute/network/storage, idle resources, security posture, network/compute/EKS/DB/MSK/storage analysis, etc.).
 - **DOCX / Markdown / PDF / PPTX** export + **weekly/biweekly/monthly** schedule + email on completion.
 
 :::note Honest scope

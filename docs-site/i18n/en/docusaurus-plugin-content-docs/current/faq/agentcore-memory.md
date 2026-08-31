@@ -24,7 +24,7 @@ flowchart LR
 
 | Item | Detail |
 |------|--------|
-| **Live queries** | AgentCore MCP Lambda tools (~120, read-only) call AWS APIs directly via boto3 |
+| **Live queries** | AgentCore MCP Lambda tools (~160, read-only) call AWS APIs directly via boto3 |
 | **Steampipe's role** | **Not** the live query engine. It is only a flag-gated **inventory sync** (`steampipe_enabled`, default OFF) — no local 9193 service, no pg Pool |
 | **Gating** | All of AgentCore is gated by the `agentcore_enabled` Terraform flag (default OFF → `plan` = No changes, $0) |
 | **Read-only** | All tools are read-only (ADR-041 / 2026-06-11 reversal: AWS-resource mutation + autonomy are permanently frozen) |
@@ -51,8 +51,8 @@ flowchart TD
 
   ECR -->|"Image reference"| RT
 
-  AGENT -->|"MCP + SigV4"| GW["8 section gateways<br/>(~120 read-only tools)"]
-  AGENT -->|"Bedrock API"| MODEL["Claude Sonnet 4.6 / Opus 4.8 / Haiku 4.5"]
+  AGENT -->|"MCP + SigV4"| GW["9 section gateways<br/>(~160 read-only tools)"]
+  AGENT -->|"Bedrock API"| MODEL["Claude Sonnet 5 / Opus 4.8 / Haiku 4.5"]
 ```
 
 ### AgentCore Runtime
@@ -90,15 +90,15 @@ flowchart LR
   GW -->|"mcp.lambda"| L3["Lambda 3<br/>TGW route queries"]
 ```
 
-### There are 8 section gateways (ADR-004)
+### There are 9 section gateways (ADR-004 as amended)
 
-`network · container · data · security · cost · monitoring · iac · ops` — **8 total**.
+`network · container · data · security · cost · monitoring · iac · ops · external-obs` — **9 total** (9 provisioned / 9 routed; external-obs promoted 2026-06-24).
 
 | Item | Detail |
 |------|--------|
-| **Gateway count** | **Fixed at 8** per ADR-004 |
-| **Tool count** | About **120**, all read-only — evolves as the fleet grows (not a fixed number) |
-| **External observability** | **Not** a 9th gateway — split out as the separate **Integrations axis** (ADR-039) |
+| **Gateway count** | **9** per ADR-004 as amended (2026-06-24) |
+| **Tool count** | About **160**, all read-only — evolves as the fleet grows (not a fixed number) |
+| **External observability** | The Prometheus·ClickHouse connectors ride the **external-obs gateway** (the ninth, per amended ADR-004); other external integrations are the separate **Integrations axis** (ADR-007/017) |
 | **Protocol** | MCP (Model Context Protocol) standard |
 
 - The Agent calls `list_tools` to discover available tools

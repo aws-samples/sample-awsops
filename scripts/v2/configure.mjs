@@ -4,8 +4,8 @@
  *
  * Interactive configurator that asks the operator which VPC to deploy into
  * (new or existing) and writes Terraform inputs for the v2 `foundation` module:
- *   - terraform/v2/foundation/terraform.tfvars
- *   - terraform/v2/foundation/backend.hcl
+ *   - terraform/foundation/terraform.tfvars
+ *   - terraform/foundation/backend.hcl
  *
  * Mirrors the VPC-selection UX of the v1 script scripts/00-deploy-infra.sh.
  *
@@ -27,7 +27,7 @@ const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 // so the repo root is two directories up.
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
-const FOUNDATION_DIR = join(REPO_ROOT, 'terraform', 'v2', 'foundation');
+const FOUNDATION_DIR = join(REPO_ROOT, 'terraform', 'foundation');
 const TFVARS_PATH = join(FOUNDATION_DIR, 'terraform.tfvars');
 const BACKEND_PATH = join(FOUNDATION_DIR, 'backend.hcl');
 
@@ -475,7 +475,7 @@ async function main() {
   console.log('');
   console.log('Next steps:');
   console.log(
-    '  cd terraform/v2/foundation && terraform init -backend-config=backend.hcl && terraform plan',
+    '  cd terraform/foundation && terraform init -backend-config=backend.hcl && terraform plan',
   );
   console.log('');
 }

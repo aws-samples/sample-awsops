@@ -14,7 +14,7 @@ export interface OpencostCuratedValues {
 export interface OpencostConfig {
   chartVersion?: string; // empty/undefined → latest (no --version), pin for reproducible bundles
   values: OpencostCuratedValues;
-  override?: Record<string, unknown>; // free-form, deep-merged over the curated tree
+  override?: Record<string, unknown>; // free-form, deep-merged over the curated tree. Keys: [A-Za-z0-9._/-]+, no leading '-', no __proto__/constructor/prototype (see assertSafeYamlKeys)
 }
 
 export const OPENCOST_REPO_NAME = 'opencost';
@@ -38,6 +38,32 @@ export function assertSafeName(label: string, v: string): string {
   return v;
 }
 
+// pentest-remediation P1-2 (Finding 4): toYaml() interpolated object keys with NO validation —
+// only scalar() quotes *values*. A key containing '\n' (e.g. "key\nmalicious_key: injected_value")
+// re-writes YAML structure once rendered, letting an authenticated user inject arbitrary Helm chart
+// values (global.imageRegistry, extraEnv, nodeSelector, ...) into the downloadable install bundle.
+// Deliberately a SEPARATE charset from assertSafeName (which stays shell-argument-strict for
+// install.sh). Real Helm/K8s keys routinely contain '/' (IRSA annotations like
+// "eks.amazonaws.com/role-arn", nodeSelector "kubernetes.io/os", podAnnotations
+// "prometheus.io/scrape") — '/' does not break bare-scalar YAML key syntax, so it's allowed here.
+// Matches the charset scalar() already trusts for VALUES. Also rejects a leading '-' (sequence
+// indicator) even though '-' is otherwise allowed mid-string.
+const SAFE_YAML_KEY = /^[A-Za-z0-9._/-]+$/;
+function assertSafeYamlKey(k: string): void {
+  if (k.startsWith('-') || !SAFE_YAML_KEY.test(k)) throw new Error(`unsafe config key: ${JSON.stringify(k)}`);
+}
+export function assertSafeYamlKeys(node: Json): void {
+  if (Array.isArray(node)) {
+    for (const v of node) assertSafeYamlKeys(v);
+  } else if (isPlainObject(node)) {
+    for (const k of Object.keys(node)) {
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') throw new Error(`unsafe config key: ${JSON.stringify(k)}`);
+      assertSafeYamlKey(k);
+      assertSafeYamlKeys(node[k]);
+    }
+  }
+}
+
 type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 
 function isPlainObject(v: unknown): v is { [k: string]: Json } {
@@ -48,6 +74,7 @@ function isPlainObject(v: unknown): v is { [k: string]: Json } {
 function deepMerge(a: { [k: string]: Json }, b: { [k: string]: Json }): { [k: string]: Json } {
   const out: { [k: string]: Json } = { ...a };
   for (const k of Object.keys(b)) {
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue; // ponytail: bracket-assign to these keys relinks the object's prototype instead of setting a plain property
     const av = out[k];
     const bv = b[k];
     out[k] = isPlainObject(av) && isPlainObject(bv) ? deepMerge(av, bv) : bv;
@@ -93,6 +120,7 @@ export function renderValuesYaml(cfg: OpencostConfig): string {
   if (v.awsRegion) exporter.aws = { service_account_region: v.awsRegion };
   let tree: { [k: string]: Json } = { opencost: { exporter, prometheus: { internal } } };
   if (cfg.override && isPlainObject(cfg.override as Json)) tree = deepMerge(tree, cfg.override as { [k: string]: Json });
+  assertSafeYamlKeys(tree); // fail loud rather than silently emit structurally-broken YAML
   return toYaml(tree);
 }
 

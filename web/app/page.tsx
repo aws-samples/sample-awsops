@@ -20,6 +20,7 @@ import SegmentedControl from '@/components/ui/SegmentedControl';
 import AiOps from '@/components/overview/AiOps';
 import { useActiveScope, scopeParams } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { localeOf } from '@/lib/i18n';
 
 interface Overview {
   jobs: { queued: number; running: number; succeeded: number; failed: number };
@@ -66,7 +67,7 @@ function typeIcon(type: string): ReactNode {
 }
 
 export default function Home() {
-  const { tt } = useI18n();
+  const { tt, lang } = useI18n();
   const [ov, setOv] = useState<Overview | null>(null);
   const [ovErr, setOvErr] = useState('');
   const [sum, setSum] = useState<Summary | null>(null);
@@ -239,10 +240,10 @@ export default function Home() {
         right={<RefreshButton busy={busy} onClick={loadAll} capturedAt={capturedAt} />}
       />
       <div className="px-4 lg:px-8 py-8 flex flex-col gap-6">
-        {loading && <div className="text-ink-400">로딩 중…</div>}
+        {loading && <div className="text-ink-400">{tt('로딩 중…')}</div>}
         {ovErr && (
           <div className="text-[13px] text-rose-600">
-            운영 요약 로드 실패: {ovErr} (세션 만료면 새로고침)
+            {tt('운영 요약 로드 실패:')} {ovErr} {tt('(세션 만료면 새로고침)')}
           </div>
         )}
 
@@ -321,7 +322,7 @@ export default function Home() {
               hint={
                 compliancePassRate != null
                   ? `Alarm ${ov?.compliance?.alarm ?? 0}건 · 완료 ${
-                      ov?.compliance?.finished_at ? new Date(ov.compliance.finished_at).toLocaleString('ko-KR') : DASH
+                      ov?.compliance?.finished_at ? new Date(ov.compliance.finished_at).toLocaleString(localeOf(lang)) : DASH
                     }`
                   : '벤치마크 실행 →'
               }
@@ -380,7 +381,7 @@ export default function Home() {
         {/* ---- Tier 3: RESOURCES — quiet compact tiles, no hints (all-clear by default) ---- */}
         <section className="flex flex-col gap-3">
           <SectionLabel dot="var(--positive)" right={secIssues === 0 && (
-            <span className="rounded-full bg-positive-surface px-2 py-0.5 text-[10px] font-semibold text-positive-text">모두 정상</span>
+            <span className="rounded-full bg-positive-surface px-2 py-0.5 text-[10px] font-semibold text-positive-text">{tt('모두 정상')}</span>
           )}>
             리소스 현황
           </SectionLabel>
@@ -435,14 +436,14 @@ export default function Home() {
               />
             ) : (
               <Card title={`리소스 추세 (${trendDays}d)`}>
-                <div className="text-[13px] text-ink-400">이력 수집 중 — sync 주기마다 축적됩니다</div>
+                <div className="text-[13px] text-ink-400">{tt('이력 수집 중 — sync 주기마다 축적됩니다')}</div>
               </Card>
             )}
             {sum ? (
               <DonutBreakdown title="카테고리별 리소스" data={sum.byCategory} nameKey="group" valueKey="count" />
             ) : (
               <Card title="카테고리별 리소스">
-                <div className="text-[13px] text-ink-400">{sumErr || '로딩 중…'}</div>
+                <div className="text-[13px] text-ink-400">{sumErr || tt('로딩 중…')}</div>
               </Card>
             )}
           </div>
@@ -493,7 +494,7 @@ export default function Home() {
         {/* ---- Charts row 1: distribution bar (full-width) ---- */}
         {sumErr ? (
           <div className="text-[13px] text-ink-400">
-            리소스 분포 데이터를 불러오지 못했습니다: {sumErr}
+            {tt('리소스 분포 데이터를 불러오지 못했습니다:')} {sumErr}
           </div>
         ) : sum ? (
           <>
@@ -505,14 +506,14 @@ export default function Home() {
                 <DonutBreakdown title="EC2 인스턴스 유형" data={ec2Types} nameKey="name" valueKey="count" />
               ) : (
                 <Card title="EC2 인스턴스 유형">
-                  <div className="text-[13px] text-ink-400">EC2 데이터 없음</div>
+                  <div className="text-[13px] text-ink-400">{tt('EC2 데이터 없음')}</div>
                 </Card>
               )}
               {podStatusDonut.length > 0 ? (
                 <DonutBreakdown title="K8s 파드 상태" data={podStatusDonut} nameKey="name" valueKey="value" />
               ) : (
                 <Card title="K8s 파드 상태">
-                  <div className="text-[13px] text-ink-400">{hasFleet ? '파드 없음' : 'EKS 데이터 없음'}</div>
+                  <div className="text-[13px] text-ink-400">{tt(hasFleet ? '파드 없음' : 'EKS 데이터 없음')}</div>
                 </Card>
               )}
             </div>
@@ -529,7 +530,7 @@ export default function Home() {
                 />
               ) : (
                 <Card title="일별 비용 추이">
-                  <div className="text-[13px] text-ink-400">비용 데이터 없음</div>
+                  <div className="text-[13px] text-ink-400">{tt('비용 데이터 없음')}</div>
                 </Card>
               )}
               <Card title="최근 K8s 이벤트">
@@ -550,7 +551,7 @@ export default function Home() {
                     ))}
                   </ul>
                 ) : (
-                  <div className="text-[13px] text-ink-400">{hasFleet ? '최근 이벤트 없음' : 'EKS 데이터 없음'}</div>
+                  <div className="text-[13px] text-ink-400">{tt(hasFleet ? '최근 이벤트 없음' : 'EKS 데이터 없음')}</div>
                 )}
               </Card>
             </div>

@@ -5,7 +5,7 @@
 //   node scripts/v2/backfill-v1.itest.mjs
 //
 // Spins postgres:17 (sudo docker, random port bound 127.0.0.1, runtime-random
-// password), loads terraform/v2/foundation/data/schema.sql, builds a fixture
+// password), loads terraform/foundation/data/schema.sql, builds a fixture
 // data/ tree, runs the real backfill via --dsn, and asserts counts / fan-out /
 // payload / idempotency / corrupt-handling / --only. Skips cleanly if docker is
 // unreachable. Tears the container down on EXIT/SIGINT/SIGTERM.
@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 
-const SCHEMA = 'terraform/v2/foundation/data/schema.sql';
+const SCHEMA = 'terraform/foundation/data/schema.sql';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let failures = 0;

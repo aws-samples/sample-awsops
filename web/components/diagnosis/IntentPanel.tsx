@@ -1,5 +1,6 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 // Plan-2 "propose & confirm" admin panel (§4.0). Lists DRAFT candidate invariants ordered
 // drift-risk-first (critical / public-ingress kinds first), each with per-item Accept / Edit /
@@ -44,6 +45,7 @@ const SEV_CLASS: Record<string, string> = {
 };
 
 export default function IntentPanel() {
+  const { tt } = useI18n();
   const [drafts, setDrafts] = useState<Intent[]>([]);
   const [busy, setBusy] = useState<number | 'propose' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +67,7 @@ export default function IntentPanel() {
       body: JSON.stringify(payload),
     });
     if (!r.ok) {
-      setError(r.status === 403 ? '관리자 권한이 필요합니다.' : `요청 실패 (${r.status})`);
+      setError(r.status === 403 ? tt('관리자 권한이 필요합니다.') : tt(`요청 실패 (${r.status})`));
       return false;
     }
     return true;
@@ -120,13 +122,13 @@ export default function IntentPanel() {
   return (
     <section className="rounded-lg border border-ink-200 bg-paper p-4">
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-ink-800">의도된 불변식 후보 (Intent · admin)</h2>
+        <h2 className="text-sm font-semibold text-ink-800">{tt('의도된 불변식 후보 (Intent · admin)')}</h2>
         <button
           onClick={propose}
           disabled={busy === 'propose'}
           className="rounded-md border border-ink-200 px-2.5 py-1 text-[12px] hover:bg-ink-100 disabled:opacity-50"
         >
-          {busy === 'propose' ? '제안 중…' : '후보 제안 (Propose)'}
+          {busy === 'propose' ? tt('제안 중…') : tt('후보 제안 (Propose)')}
         </button>
       </div>
 
@@ -137,7 +139,7 @@ export default function IntentPanel() {
       )}
 
       {drafts.length === 0 ? (
-        <p className="text-[13px] text-ink-400">대기 중인 후보가 없습니다. “후보 제안”으로 자동 토폴로지에서 생성하세요.</p>
+        <p className="text-[13px] text-ink-400">{tt('대기 중인 후보가 없습니다. “후보 제안”으로 자동 토폴로지에서 생성하세요.')}</p>
       ) : (
         <ul className="space-y-2">
           {drafts.map((i) => (
@@ -150,10 +152,10 @@ export default function IntentPanel() {
                 {i.target && <span className="text-[12px] text-ink-500">→ {i.target}</span>}
                 {hasHeuristicRisk(i) && (
                   <span
-                    title="현재 위반 중 — 의도된 경우에만 승인하세요"
+                    title={tt('현재 위반 중 — 의도된 경우에만 승인하세요')}
                     className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-800"
                   >
-                    ⚠ Heuristic Risk — 현재 위반 중, 의도된 경우에만 승인
+                    {tt('⚠ Heuristic Risk — 현재 위반 중, 의도된 경우에만 승인')}
                   </span>
                 )}
                 <div className="ml-auto flex gap-1.5">

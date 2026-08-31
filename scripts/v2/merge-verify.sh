@@ -59,14 +59,14 @@ echo "== Stage 3: terraform checks =="
 terraform_status="SKIP terraform binary not found"
 if command -v terraform >/dev/null 2>&1; then
   terraform_fmt_status="PASS fmt -check"
-  if ! terraform -chdir=terraform/v2/foundation fmt -check; then
+  if ! terraform -chdir=terraform/foundation fmt -check; then
     terraform_fmt_status="WARN fmt -check failed (non-blocking)"
   fi
 
   terraform_validate_status="SKIP validate (.terraform missing)"
-  if [[ -d terraform/v2/foundation/.terraform ]]; then
+  if [[ -d terraform/foundation/.terraform ]]; then
     terraform_validate_status="PASS validate"
-    if ! terraform -chdir=terraform/v2/foundation validate; then
+    if ! terraform -chdir=terraform/foundation validate; then
       terraform_validate_status="WARN validate failed (non-blocking)"
     fi
   fi

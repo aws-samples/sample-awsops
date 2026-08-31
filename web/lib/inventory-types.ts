@@ -497,7 +497,7 @@ const GROUPS: Record<string, GroupMeta> = {
   },
   'Network': {
     slug: 'network', labelKey: 'group.network', splitKeys: ['sgOpenIngress'],
-    order: ['vpc', 'subnet', 'route_table', 'nat_gateway', 'internet_gateway', 'transit_gateway', 'security_group', 'route53', 'cloudfront', 'cloudfront_vpc_origin'],
+    order: ['vpc', 'subnet', 'route_table', 'nat_gateway', 'internet_gateway', 'transit_gateway', 'route53', 'cloudfront', 'cloudfront_vpc_origin'],
     // Network Flow Monitor (nfm-dashboard 이식): NFM 온보딩(모니터) 시 플로우 top-contributors 조회.
     injected: [
       { key: 'network-flow', href: '/network-flow', labelKey: 'nav.networkFlow' },
@@ -511,10 +511,27 @@ const GROUPS: Record<string, GroupMeta> = {
       { key: 'direct-connect', href: '/direct-connect', labelKey: 'nav.directConnect' },
       // Network Firewall 리스트+분석 (보호/로깅/전량 통과 기본 액션/룰 용량, 트래픽·드롭)
       { key: 'network-firewall', href: '/network-firewall', labelKey: 'nav.networkFirewall' },
+      // Network Path Check (async, read-only policy checklist — docs/superpowers/specs/
+      // 2026-08-13-network-path-check-design.md) — dedicated top-level Network entry per spec,
+      // not nested under Security Group.
+      { key: 'network-paths', href: '/network-paths', labelKey: 'nav.networkPathCheck' },
     ],
     subgroups: [
       { key: 'loadBalancing', labelKey: 'group.network.loadBalancing', types: ['alb', 'nlb', 'target_group', 'alb_listener_rule'] },
       { key: 'apiGateway', labelKey: 'group.network.apiGateway', types: ['apigatewayv2_api', 'apigatewayv2_integration', 'apigatewayv2_route'] },
+      // Security Group family: the existing inventory list (as a real `types` member, so it
+      // keeps its normal TYPE_ICON + `kind: 'inventory'` leaf shape and is excluded from Network's
+      // direct items via subMembers) + the new Rules/Usage screens as `links`
+      // (docs/superpowers/specs/2026-08-13-security-group-rules-usage-design.md) — navTree()
+      // renders a subgroup's `types` before its `links`, so the order here is exactly
+      // Security Groups -> Rules -> Usage.
+      {
+        key: 'securityGroup', labelKey: 'group.network.securityGroup', types: ['security_group'],
+        links: [
+          { key: 'sg-rules', href: '/network/security-groups/rules', labelKey: 'nav.sgRules' },
+          { key: 'sg-usage', href: '/network/security-groups/usage', labelKey: 'nav.sgUsage' },
+        ],
+      },
     ],
   },
   'Security': {
@@ -574,9 +591,13 @@ export function navTree(): NavGroupNode[] {
       .map((s) => ({
         key: s.key,
         labelKey: s.labelKey,
+        // types before links: no existing subgroup mixes both (eks is links-only, ecs is
+        // types-only) — this order lets the new securityGroup subgroup put the existing
+        // /inventory/security_group route first, followed by the Rules/Usage feature links, per
+        // docs/superpowers/specs/2026-08-13-security-group-rules-usage-design.md's nav order.
         items: [
-          ...(s.links ?? []).map((f): NavLeaf => ({ key: f.key, kind: 'feature', href: f.href, labelKey: f.labelKey })),
           ...ordered(types.filter((t) => s.types.includes(t)), s.types).map(invLeaf),
+          ...(s.links ?? []).map((f): NavLeaf => ({ key: f.key, kind: 'feature', href: f.href, labelKey: f.labelKey })),
         ],
       }))
       .filter((s) => s.items.length > 0);

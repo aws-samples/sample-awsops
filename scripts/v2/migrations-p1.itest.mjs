@@ -5,7 +5,7 @@
 //   node scripts/v2/migrations-p1.itest.mjs
 //
 // Spins postgres:17 (sudo docker, random port bound 127.0.0.1, runtime-random password), loads the baseline
-// terraform/v2/foundation/data/schema.sql, then applies the P1 migration TWICE and asserts: the 5 ADR-031
+// terraform/foundation/data/schema.sql, then applies the P1 migration TWICE and asserts: the 5 ADR-031
 // catalog tables + integrations exist; the new columns exist; the agent_type CHECK is enforced; gateways[]
 // is backfilled; devops/security/finops are seeded (builtin, enabled, agent_type='generic'); and the second
 // apply is a clean no-op (identical agent count, no error). Skips cleanly if docker is unreachable. Tears the
@@ -14,8 +14,8 @@ import { execFileSync, execSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 
-const SCHEMA = 'terraform/v2/foundation/data/schema.sql';
-const MIGRATION = 'terraform/v2/foundation/migrations/01KTY39P4SV1SQES36KCS8BESY_custom_agent_platform_p1.sql';
+const SCHEMA = 'terraform/foundation/data/schema.sql';
+const MIGRATION = 'terraform/foundation/migrations/01KTY39P4SV1SQES36KCS8BESY_custom_agent_platform_p1.sql';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let failures = 0;

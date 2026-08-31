@@ -13,6 +13,7 @@ import { buildFlowGraph, filterFromEntry, type FlowInput, type FlowKind, type Fl
 import { layoutFlow } from '@/lib/flow-layout';
 import { useTheme } from '@/lib/use-theme';
 import { useActiveAccount } from '@/lib/account-context';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 // ReactFlow touches the DOM on mount — load it client-only to avoid SSR mismatch.
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
@@ -220,6 +221,7 @@ function networkNames(row: Record<string, unknown>, nm: NetMaps): Record<string,
 }
 
 export default function TopologyPage() {
+  const { tt } = useI18n();
   const [activeAccount] = useActiveAccount();
   const [data, setData] = useState<FlowInput | null>(null);
   const [syncedAt, setSyncedAt] = useState<string | null>(null);
@@ -474,16 +476,16 @@ export default function TopologyPage() {
       <div className="flex items-center gap-2">
         <button type="button" onClick={copyArn}
           className="inline-flex items-center gap-1 rounded-md border border-ink-200 bg-card px-2 py-1 text-[11px] text-ink-600 hover:bg-ink-50">
-          <Copy size={12} /> ARN 복사
+          <Copy size={12} /> {tt('ARN 복사')}
         </button>
         <button type="button" onClick={() => askAI('')}
           className="inline-flex items-center gap-1 rounded-md bg-brand-action px-2.5 py-1 text-[11px] font-medium text-white hover:bg-brand-action-hover">
-          <Sparkles size={12} /> AI에 질문
+          <Sparkles size={12} /> {tt('AI에 질문')}
         </button>
         {rgId && (
           <a href={`/topology/resource/${encodeURIComponent(rgId)}`}
             className="inline-flex items-center gap-1 rounded-md border border-ink-200 bg-card px-2 py-1 text-[11px] text-ink-600 hover:bg-ink-50">
-            <Network size={12} /> 관계 그래프
+            <Network size={12} /> {tt('관계 그래프')}
           </a>
         )}
       </div>
@@ -491,7 +493,7 @@ export default function TopologyPage() {
         {chipsFor(selected).map((c) => (
           <button type="button" key={c.q} onClick={() => askAI(c.q, c.section)}
             className="rounded-full border border-brand-200 bg-brand-50 px-2.5 py-1 text-[11px] text-brand-700 hover:bg-brand-100">
-            {c.q}
+            {tt(c.q)}
           </button>
         ))}
       </div>
@@ -515,7 +517,7 @@ export default function TopologyPage() {
                     if (e.key === 'Enter' && searchMatches[0]) { setSelected(searchMatches[0]); setQuery(''); }
                     if (e.key === 'Escape') setQuery('');
                   }}
-                  placeholder="리소스 이름 검색…"
+                  placeholder={tt('리소스 이름 검색…')}
                   className="w-44 bg-transparent text-[12px] text-ink-700 outline-none placeholder:text-ink-300"
                 />
               </div>
@@ -537,45 +539,44 @@ export default function TopologyPage() {
               )}
             </div>
             <select className={selectCls} value={entryOptions.cf.some((n) => n.id === entryId) ? entryId : ''} onChange={onEntry}>
-              <option value="">CloudFront: 전체</option>
+              <option value="">{tt('CloudFront: 전체')}</option>
               {entryOptions.cf.map((n) => <option key={n.id} value={n.id}>{n.label}</option>)}
             </select>
             <select className={selectCls} value={entryOptions.lb.some((n) => n.id === entryId) ? entryId : ''} onChange={onEntry}>
-              <option value="">LB: 전체</option>
+              <option value="">{tt('LB: 전체')}</option>
               {entryOptions.lb.map((n) => <option key={n.id} value={n.id}>{n.label}</option>)}
             </select>
             <select className={selectCls} value={clusterFilter} onChange={onCluster}>
-              <option value="">Cluster: 전체</option>
+              <option value="">{tt('Cluster: 전체')}</option>
               {clusterOptions.map((c) => (
                 <option key={c.key} value={c.key}>{c.resolved ? `${c.resolved.toUpperCase()} · ${c.cluster}` : c.cluster}</option>
               ))}
             </select>
             <RefreshButton busy={busy} onClick={load} capturedAt={capturedAt} />
             <Link href="/topology/infra" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
-              인프라 배치 →
+              {tt('인프라 배치 →')}
             </Link>
             <Link href="/topology/services" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
-              서비스 맵 →
+              {tt('서비스 맵 →')}
             </Link>
           </div>
         }
       />
       <div className="flex-1 min-h-0 flex flex-col gap-4 px-8 py-6">
-        {err && <div className="text-[13px] text-rose-600">로드 실패: {err}</div>}
-        {!data && !err && <div className="text-ink-400">로딩 중…</div>}
+        {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
+        {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
         {data && !err && (
           full.nodes.length === 0 ? (
             <div className="rounded-md border border-ink-100 bg-ink-50 px-3 py-3 text-[13px] text-ink-400">
-              그래프로 그릴 리소스가 없습니다. (cloudfront/alb/nlb/target_group sync 확인 — target_group은
-              steampipe 동기화 후 채워집니다.)
+              {tt('그래프로 그릴 리소스가 없습니다. (cloudfront/alb/nlb/target_group sync 확인 — target_group은 steampipe 동기화 후 채워집니다.)')}
             </div>
           ) : (
             <>
               <div className="flex items-center gap-3 text-[12px] text-ink-400">
-                <span>노드 {nodes.length} · 엣지 {edges.length}</span>
-                {syncedAt && <span>인벤토리 동기화: {new Date(syncedAt).toLocaleString()}</span>}
+                <span>{tt(`노드 ${nodes.length} · 엣지 ${edges.length}`)}</span>
+                {syncedAt && <span>{tt('인벤토리 동기화:')} {new Date(syncedAt).toLocaleString()}</span>}
                 {cappedTypes.length > 0 && (
-                  <span className="text-warning">⚠ {cappedTypes.join(', ')} {ROW_CAP}개 초과 — 일부만 표시</span>
+                  <span className="text-warning">{tt(`⚠ ${cappedTypes.join(', ')} ${ROW_CAP}개 초과 — 일부만 표시`)}</span>
                 )}
               </div>
               <div className="flex-1 min-h-0 w-full rounded-lg border border-ink-100 bg-card">

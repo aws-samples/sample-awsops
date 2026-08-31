@@ -120,7 +120,24 @@ describe('navTree (sidebar IA hierarchy)', () => {
     expect(n.subgroups.find((s) => s.key === 'apiGateway')!.items.map((l) => l.type))
       .toEqual(['apigatewayv2_api', 'apigatewayv2_integration', 'apigatewayv2_route']);
     const direct = n.items.filter((l) => l.kind === 'inventory').map((l) => l.type);
-    expect(direct).toEqual(['vpc', 'subnet', 'route_table', 'nat_gateway', 'internet_gateway', 'transit_gateway', 'security_group', 'route53', 'cloudfront', 'cloudfront_vpc_origin']);
+    // security_group moved into the securityGroup subgroup (see below) — no longer a direct item.
+    expect(direct).toEqual(['vpc', 'subnet', 'route_table', 'nat_gateway', 'internet_gateway', 'transit_gateway', 'route53', 'cloudfront', 'cloudfront_vpc_origin']);
+  });
+
+  it('Network nests a Security Group subgroup (existing inventory route + the new Rules/Usage links, in that order)', () => {
+    const n = find('network');
+    const sg = n.subgroups.find((s) => s.key === 'securityGroup')!;
+    expect(sg.items.map((l) => l.href)).toEqual([
+      '/inventory/security_group', '/network/security-groups/rules', '/network/security-groups/usage',
+    ]);
+    expect(sg.items[0].kind).toBe('inventory');
+    expect(sg.items[0].type).toBe('security_group');
+    expect(sg.items.slice(1).every((l) => l.kind === 'feature')).toBe(true);
+  });
+
+  it('Network injects a top-level Path Check entry (not nested under Security Group)', () => {
+    const n = find('network');
+    expect(n.items.some((l) => l.kind === 'feature' && l.href === '/network-paths')).toBe(true);
   });
 
   it('Monitoring is a singleton (flat, no overview href)', () => {

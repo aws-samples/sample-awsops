@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderValuesYaml, renderInstallSh, assertSafeName, DEFAULT_CHART_VERSION, type OpencostConfig } from './opencost';
+import { renderValuesYaml, renderInstallSh, assertSafeName, assertSafeYamlKeys, DEFAULT_CHART_VERSION, type OpencostConfig } from './opencost';
 
 const baseCfg: OpencostConfig = {
   chartVersion: '',
@@ -31,6 +31,68 @@ describe('renderValuesYaml', () => {
     expect(y).toContain('enabled: false');
     expect(y).toContain('a: 1');
     expect(y).toContain('defaultClusterId: fsi-demo-cluster'); // curated preserved
+  });
+
+  // pentest-remediation P1-2 (Finding 4): a literal newline in an override KEY used to rewrite YAML
+  // structure — toYaml() interpolated keys raw, and scalar() only quotes *values*. These reproduce
+  // the exact pentest repro steps and must now throw instead of silently emitting injected YAML.
+  it('rejects a newline-injected top-level key (Finding 4 Step 2)', () => {
+    expect(() =>
+      renderValuesYaml({ ...baseCfg, override: { 'key\nmalicious_key: injected_value': 'test' } }),
+    ).toThrow(/unsafe config key/);
+  });
+  it('rejects the escalated multi-block injection (Finding 4 Step 4: imageRegistry/extraEnv/nodeSelector)', () => {
+    const evilKey = "global:\n  imageRegistry: 'attacker.registry.io'\nopencost:\n  exporter:\n    extraEnv:\n      - name: MALICIOUS_INJECTION\n        value: 'CONFIRMED'\n    nodeSelector:\n      compromised: 'true'\n# ";
+    expect(() => renderValuesYaml({ ...baseCfg, override: { [evilKey]: 'end' } })).toThrow(/unsafe config key/);
+  });
+  it('rejects a colon-injected nested key, not just top-level', () => {
+    expect(() =>
+      renderValuesYaml({ ...baseCfg, override: { opencost: { 'ui\nglobal': { imageRegistry: 'evil' } } } }),
+    ).toThrow(/unsafe config key/);
+  });
+  it('still accepts a normal override with dots/underscores/hyphens in keys', () => {
+    expect(() =>
+      renderValuesYaml({ ...baseCfg, override: { 'my-key.v2_ok': 'fine' } }),
+    ).not.toThrow();
+  });
+  // real Helm/K8s keys routinely contain '/' (IRSA annotations, nodeSelector, podAnnotations) —
+  // '/' doesn't break bare-scalar YAML key syntax, so the key validator must accept it (was
+  // wrongly reusing the shell-safety assertSafeName charset, which rejects '/').
+  it('accepts IRSA-style annotation keys containing a slash', () => {
+    expect(() =>
+      renderValuesYaml({
+        ...baseCfg,
+        override: {
+          serviceAccount: { annotations: { 'eks.amazonaws.com/role-arn': 'arn:aws:iam::123:role/x' } },
+          nodeSelector: { 'kubernetes.io/os': 'linux' },
+          podAnnotations: { 'prometheus.io/scrape': 'true' },
+        },
+      }),
+    ).not.toThrow();
+  });
+  it('still rejects the original Finding 4 newline/colon injection payloads', () => {
+    expect(() =>
+      renderValuesYaml({ ...baseCfg, override: { 'key\nmalicious_key: injected_value': 'test' } }),
+    ).toThrow(/unsafe config key/);
+  });
+  it('rejects __proto__/constructor/prototype override keys at validation time', () => {
+    // computed key forces a real own property (a literal `{ __proto__: ... }` sets the prototype instead)
+    expect(() => assertSafeYamlKeys({ ['__proto__']: { polluted: true } } as any)).toThrow(/unsafe config key/);
+  });
+});
+
+describe('assertSafeYamlKeys', () => {
+  it('passes a clean nested tree (objects + arrays)', () => {
+    expect(() => assertSafeYamlKeys({ a: { b: [{ c: 1 }, { d: 'ok' }] } } as any)).not.toThrow();
+  });
+  it('throws on an unsafe key at any depth', () => {
+    expect(() => assertSafeYamlKeys({ a: { 'b\nc': 1 } } as any)).toThrow(/unsafe config key/);
+  });
+  it('accepts a slash in keys (IRSA/K8s annotation style)', () => {
+    expect(() => assertSafeYamlKeys({ 'eks.amazonaws.com/role-arn': 'x' } as any)).not.toThrow();
+  });
+  it('rejects a leading dash (YAML sequence indicator)', () => {
+    expect(() => assertSafeYamlKeys({ '-foo': 1 } as any)).toThrow(/unsafe config key/);
   });
 });
 

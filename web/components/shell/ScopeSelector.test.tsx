@@ -32,21 +32,21 @@ describe('ScopeSelector', () => {
   it('renders account and region scope controls from APIs', async () => {
     render(<ScopeSelector />);
 
-    expect(await screen.findByText(/Accounts:/)).toBeTruthy();
-    expect(screen.getByText(/Regions:/)).toBeTruthy();
-    expect(screen.getByLabelText('Include global services')).toBeTruthy();
+    expect(await screen.findByLabelText('모든 계정')).toBeTruthy();
+    expect(screen.getByLabelText('활성화된 모든 리전')).toBeTruthy();
+    expect(screen.getByLabelText('글로벌 서비스 포함')).toBeTruthy();
   });
 
   it('stores all accounts and multiple selected regions', async () => {
     render(<ScopeSelector />);
-    await screen.findByText(/Accounts:/);
+    await screen.findByLabelText('모든 계정');
 
-    fireEvent.click(screen.getByLabelText('All accounts'));
+    fireEvent.click(screen.getByLabelText('모든 계정'));
     await screen.findByLabelText('eu-west-1');
     // Uncheck the "All enabled regions" toggle first to get a clean single-region baseline,
     // then add regions one at a time — once out of ALL_REGIONS mode, per-region checkboxes
     // are a plain add/remove toggle.
-    fireEvent.click(screen.getByLabelText('All enabled regions'));
+    fireEvent.click(screen.getByLabelText('활성화된 모든 리전'));
     fireEvent.click(screen.getByLabelText('us-east-1'));
     fireEvent.click(screen.getByLabelText('eu-west-1'));
 
@@ -59,8 +59,8 @@ describe('ScopeSelector', () => {
 
   it('unchecking one region while "all" is active excludes it, not narrows to only it', async () => {
     render(<ScopeSelector />);
-    await screen.findByText(/Accounts:/);
-    fireEvent.click(screen.getByLabelText('All accounts')); // bring us-east-1/eu-west-1 into scope
+    await screen.findByLabelText('모든 계정');
+    fireEvent.click(screen.getByLabelText('모든 계정')); // bring us-east-1/eu-west-1 into scope
     await screen.findByLabelText('eu-west-1');
 
     // Default scope.regions === ALL_REGIONS, so every per-region box renders checked=true.
@@ -74,8 +74,8 @@ describe('ScopeSelector', () => {
 
   it('unchecking a second region narrows down to exactly the ones left checked', async () => {
     render(<ScopeSelector />);
-    await screen.findByText(/Accounts:/);
-    fireEvent.click(screen.getByLabelText('All accounts'));
+    await screen.findByLabelText('모든 계정');
+    fireEvent.click(screen.getByLabelText('모든 계정'));
     await screen.findByLabelText('eu-west-1');
 
     // Real-world report: 3 regions all checked by default; user unchecks the two they
@@ -88,9 +88,9 @@ describe('ScopeSelector', () => {
 
   it('can exclude global services from the active scope', async () => {
     render(<ScopeSelector />);
-    await screen.findByText(/Accounts:/);
+    await screen.findByLabelText('모든 계정');
 
-    fireEvent.click(screen.getByLabelText('Include global services'));
+    fireEvent.click(screen.getByLabelText('글로벌 서비스 포함'));
 
     await waitFor(() => expect(getActiveScope().includeGlobal).toBe(false));
   });

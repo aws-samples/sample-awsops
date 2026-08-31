@@ -1,17 +1,36 @@
 """
-Shared datasource-connector helper for the v1 datasource family (ClickHouse/Prometheus/Loki/Tempo/
-Mimir). Each is a user-supplied HTTP endpoint + credential queried in a query language. This module
+Shared datasource-connector helper for the v2 external-observability datasource family
+(ClickHouse/Prometheus/Loki/Tempo/Mimir/Jaeger/Dynatrace/Datadog). Each is a user-supplied HTTP
+endpoint + credential queried in a query language. This module
 centralizes: reading the per-slug credential from the single integrations secret, SSRF host guarding
 (always-block metadata/loopback/...; private allowed — in-cluster datasources are the target),
 auth headers (Basic/Bearer), and a no-redirect HTTP fetch. Stdlib + boto3 only.
 
 SECURITY: never log credential material. The endpoint is user-supplied → assert_host_allowed before
 every request; redirects are NOT auto-followed (a malicious endpoint can't 30x to metadata/internal).
-KNOWN LIMITATION (accepted, matches agent.py inc2 + ADR-011): resolve-and-recheck, not IP-pinning —
-a DNS-rebinding host could resolve safe here and blocked at connect; layered defenses = always-block
-+ no-redirect + (for SQL) read-only/table-function guards. IP-pinning deferred.
+
+pentest-remediation P1-3 (Finding 2/7): assert_host_allowed() used to only resolve-and-recheck — the
+IP it validated was thrown away, and http_json()'s urllib re-resolved the hostname independently at
+connect time. A DNS-rebinding host (safe IP on the first lookup, 169.254.169.254/internal on a later
+one with a short TTL) could pass the guard here and land on the blocked target at actual connect.
+Fixed via IP-pinning: assert_host_allowed() now caches ALL validated IPs for that host
+(_PINNED_IP_CACHE), and http_json() connects the TCP socket to the first one, falling back to the
+next cached IP on connect failure (same fallback-through-the-address-list behavior as stdlib
+socket.create_connection — needed for dual-stack/multi-A-record endpoints where the first resolved
+address may be unreachable) — while keeping the original hostname for the Host header and TLS
+SNI/cert validation (_PinnedHTTPConnection / _PinnedHTTPSConnection override only the socket target,
+not self.host). Trying any/all of the cached IPs is security-equivalent to pinning one, since every
+IP in the list already passed assert_host_allowed's checks. Every real call site already
+calls assert_host_allowed(endpoint) immediately before http_json(same endpoint) — that invariant is
+what makes the cache safe; it is reset every invocation by set_request_conn() (called at the top of
+every lambda_handler) so a warm container never reuses a stale pinned IP across invocations.
+(A structurally identical resolve-and-recheck gap exists in agent/agent.py's `_assert_host_allowed`
+for the separate egress-integrations transport — untouched here; that's a different call path not
+exercised by the pentest's datasource/schema-fetch findings, and needs its own fix.)
 """
 import base64
+import functools
+import http.client
 import ipaddress
 import json
 import os
@@ -27,6 +46,12 @@ _SM = None
 _SECRET_CACHE = None
 _SECRET_CACHE_AT = 0.0
 _SECRET_TTL = 60.0  # bound stale creds in a warm (long-lived worker) container
+
+# host -> the ordered list of IPs assert_host_allowed most recently validated it to (deduped, in
+# getaddrinfo order). Populated only after every resolved IP passed the always-blocked check;
+# consumed (not required) by http_json for pinning, which tries them in order until one connects.
+# Reset every invocation by set_request_conn — see module docstring.
+_PINNED_IP_CACHE = {}
 
 
 class NotConnected(Exception):
@@ -79,10 +104,18 @@ def assert_host_allowed(endpoint, resolver=socket.getaddrinfo):
         raise SsrfBlocked(f"endpoint blocked: cannot resolve host {host}: {e}")
     if not addr_info:
         raise SsrfBlocked(f"endpoint blocked: cannot resolve host {host}")
+    pinned_ips = []
     for entry in addr_info:
         ip_str = entry[4][0]
         if _ip_always_blocked(ip_str):
             raise SsrfBlocked(f"endpoint blocked: {host} resolved to blocked IP {ip_str}")
+        if ip_str not in pinned_ips:
+            pinned_ips.append(ip_str)
+    # every resolved IP passed — pin the full (deduped) list for the immediate subsequent
+    # http_json() call, which tries each in order until one connects (IP-pinning; see module
+    # docstring). Preserves the pre-existing multi-address fallback behavior of
+    # socket.create_connection for dual-stack/multi-A-record endpoints.
+    _PINNED_IP_CACHE[host] = pinned_ips
 
 
 _HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
@@ -131,9 +164,12 @@ _REQUEST_CONN = None
 
 
 def set_request_conn(conn):
-    """Stash (or clear) the request's inline conn-config. Call at the top of every lambda_handler."""
-    global _REQUEST_CONN
+    """Stash (or clear) the request's inline conn-config. Call at the top of every lambda_handler.
+    Also resets _PINNED_IP_CACHE — a warm container must never reuse a pinned IP validated for a
+    previous, unrelated invocation."""
+    global _REQUEST_CONN, _PINNED_IP_CACHE
     _REQUEST_CONN = conn if isinstance(conn, dict) and conn.get("endpoint") else None
+    _PINNED_IP_CACHE = {}
 
 
 def health(creds, path):
@@ -207,7 +243,87 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise SsrfBlocked(f"endpoint blocked: redirect to {newurl} not followed")
 
 
-_opener = urllib.request.build_opener(_NoRedirect)
+# ProxyHandler({}) disables HTTP_PROXY/HTTPS_PROXY env-var routing — pinning implies a direct
+# connection to the validated IP; honoring a proxy would route the request elsewhere and defeat
+# the point of pinning (and break it, since the socket wouldn't reach the pinned IP at all).
+_opener = urllib.request.build_opener(_NoRedirect, urllib.request.ProxyHandler({}))
+
+
+def _pin_create_connection(base_create, pinned_ips):
+    """Wrap an HTTPConnection's `_create_connection` (normally `socket.create_connection`) so the TCP
+    socket lands on one of `pinned_ips` regardless of what `address[0]` (the hostname) is — while
+    leaving `self.host` (used for the default Host header and, for HTTPS, SNI/cert
+    `server_hostname`) untouched. This is IP-pinning: it uses the IPs assert_host_allowed already
+    validated instead of letting the connection re-resolve the hostname (the DNS-rebinding gap).
+    Tries each IP in order and returns on the first that connects, matching stdlib
+    socket.create_connection's multi-address fallback (needed for dual-stack/multi-A-record
+    endpoints where the first address may be unreachable) — every IP here already passed
+    assert_host_allowed, so trying any/all of them is security-equivalent to pinning one."""
+    def _create(address, *args, **kwargs):
+        _, port = address
+        last_err = None
+        for ip in pinned_ips:
+            try:
+                return base_create((ip, port), *args, **kwargs)
+            except OSError as e:
+                last_err = e
+        raise last_err
+    return _create
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host, pinned_ips=None, **kwargs):
+        super().__init__(host, **kwargs)
+        if pinned_ips:
+            self._create_connection = _pin_create_connection(self._create_connection, pinned_ips)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host, pinned_ips=None, **kwargs):
+        super().__init__(host, **kwargs)
+        if pinned_ips:
+            self._create_connection = _pin_create_connection(self._create_connection, pinned_ips)
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, pinned_ips):
+        super().__init__()
+        self._pinned_ips = pinned_ips
+
+    def http_open(self, req):
+        return self.do_open(functools.partial(_PinnedHTTPConnection, pinned_ips=self._pinned_ips), req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, pinned_ips):
+        super().__init__()
+        self._pinned_ips = pinned_ips
+
+    def https_open(self, req):
+        # ponytail: no check_hostname= kwarg here — stdlib HTTPSHandler._check_hostname is always
+        # None on py3.11 (a no-op) and the parameter was REMOVED from http.client.HTTPSConnection /
+        # ssl on py3.12+ (upgrade landmine fixed in review round 2). TLS verification for the pinned
+        # connection still happens: self._context defaults to ssl._create_default_https_context()
+        # inside HTTPSConnection, and self.host (unchanged — only the socket target is pinned) is
+        # passed as server_hostname for SNI + the default context's built-in hostname/cert check.
+        return self.do_open(
+            functools.partial(_PinnedHTTPSConnection, pinned_ips=self._pinned_ips),
+            req,
+            context=self._context,
+        )
+
+
+def _opener_for(host):
+    """The shared no-redirect opener, or — when assert_host_allowed already validated `host` this
+    invocation — a fresh one-off opener pinned to those validated IPs (tried in order, with
+    fallback on connect failure)."""
+    pinned_ips = _PINNED_IP_CACHE.get(host)
+    if not pinned_ips:
+        return _opener
+    return urllib.request.build_opener(
+        _NoRedirect, urllib.request.ProxyHandler({}),
+        _PinnedHTTPHandler(pinned_ips), _PinnedHTTPSHandler(pinned_ips),
+    )
 
 
 def _parse(raw):
@@ -220,11 +336,13 @@ def _parse(raw):
 
 
 def http_json(method, url, headers=None, body=None, timeout=HTTP_TIMEOUT):
-    """Send a request (no auto-redirect). Returns (status, parsed_dict). Non-2xx → (status, body)."""
+    """Send a request (no auto-redirect). Returns (status, parsed_dict). Non-2xx → (status, body).
+    Pinned to the IPs assert_host_allowed(url) most recently validated for this host, if any (tried
+    in order with fallback) — see module docstring (IP-pinning)."""
     data = body if isinstance(body, (bytes, bytearray)) else (body.encode() if isinstance(body, str) else None)
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
     try:
-        resp = _opener.open(req, timeout=timeout)
+        resp = _opener_for(urlparse(url).hostname).open(req, timeout=timeout)
         return resp.getcode(), _parse(resp.read())
     except urllib.error.HTTPError as e:
         try:

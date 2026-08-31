@@ -12,6 +12,12 @@ RUN pip install --no-cache-dir \
     "bedrock-agentcore<=0.1.5" \
     "anthropic[bedrock]==0.111.0" \
     mcp \
+    # ADR-017 (amended): official ClickHouse MCP server, stdio-embedded by agent.py when the
+    # CLICKHOUSE_OFFICIAL_MCP runtime env is true (default off). EXACT pin (not "pinned by image
+    # build") — an unpinned rebuild can silently change the `mcp_clickhouse.main` module path, the
+    # CLICKHOUSE_* env contract, or the exposed tool surface with no review signal.
+    # Keep in sync with agent/requirements.txt.
+    "mcp-clickhouse==0.4.1" \
     httpx \
     httpx-sse \
     aws-requests-auth

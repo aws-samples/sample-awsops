@@ -16,9 +16,9 @@ A page for generating and reading comprehensive diagnostic reports that analyze 
 
 ### Run a diagnosis
 - **Diagnosis depth (Tier)**: choose the scope of analysis.
-  - **Light**: a fast check of core items only
+  - **Light**: a fast check of core items only (currently identical catalog/token budget to Mid)
   - **Mid**: a balanced standard diagnosis (default)
-  - **Deep**: a broad analysis covering about 15 sections. Only **Deep** lets you additionally pick a model (**Sonnet** / **Opus**), and choosing **Opus** shows an accompanying cost note.
+  - **Deep**: a broad analysis covering 15+1 sections (16 rendered). Only **Deep** lets you additionally pick a model (**Sonnet** / **Opus**), and choosing **Opus** shows an accompanying cost note.
 - Press the **진단 실행 (Run diagnosis)** button and the report is produced asynchronously by a background worker.
 
 ### Progress indicator

@@ -9,7 +9,7 @@ fail() { echo "not ok - $1"; FAILS=$((FAILS+1)); }
 
 echo "# externalId-optional structure"
 
-MIG=terraform/v2/foundation/migrations
+MIG=terraform/foundation/migrations
 
 # Task 2 — a migration drops the blanket external_id NOT-NULL constraint
 if grep -rqlE "DROP CONSTRAINT IF EXISTS external_id_required_for_target" "$MIG"/*.sql 2>/dev/null; then

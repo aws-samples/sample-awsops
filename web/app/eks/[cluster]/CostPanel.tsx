@@ -5,6 +5,7 @@ import StatTile from '@/components/ui/StatTile';
 import Card from '@/components/ui/Card';
 import DataTable, { type Column } from '@/components/ui/DataTable';
 import DonutBreakdown from '@/components/charts/DonutBreakdown';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 interface PodCost {
   namespace: string; pod: string; node: string;
@@ -23,6 +24,7 @@ const usd = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigi
 
 /** EKS 컨테이너 비용 (v1 eks-container-cost parity) — OpenCost 1d allocation 기반 KPI/도넛/Pod 테이블. */
 export default function CostPanel({ cluster }: { cluster: string }) {
+  const { tt } = useI18n();
   const [d, setD] = useState<AllocationResult | null>(null);
   const [err, setErr] = useState('');
 
@@ -36,13 +38,13 @@ export default function CostPanel({ cluster }: { cluster: string }) {
     return () => { alive = false; };
   }, [cluster]);
 
-  if (err) return <div className="text-[13px] text-rose-600">비용 조회 실패: {err}</div>;
-  if (!d) return <div className="text-ink-400">OpenCost allocation 조회 중…</div>;
+  if (err) return <div className="text-[13px] text-rose-600">{tt('비용 조회 실패:')} {err}</div>;
+  if (!d) return <div className="text-ink-400">{tt('OpenCost allocation 조회 중…')}</div>;
   if (!d.available) {
     return (
       <Card>
         <p className="text-[13px] text-ink-600">
-          OpenCost 비용 데이터를 읽을 수 없습니다 — 위의 OpenCost 패널에서 설치 상태를 확인하세요.
+          {tt('OpenCost 비용 데이터를 읽을 수 없습니다 — 위의 OpenCost 패널에서 설치 상태를 확인하세요.')}
         </p>
         {d.message && <p className="mt-1 font-mono text-[11px] text-ink-400">{d.message}</p>}
       </Card>
@@ -72,11 +74,11 @@ export default function CostPanel({ cluster }: { cluster: string }) {
       {/* v1 parity: make the data source explicit — measured vs estimated. */}
       {d.source === 'request-estimate' ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-[12px] text-amber-700">
-          OpenCost 미가용 — Pod 리소스 <b>요청(request) 기반 추정</b>입니다 (요청 × 단가, 실측 아님). 정확한 비용은 OpenCost 설치 후 표시됩니다.
+          {tt('OpenCost 미가용 — Pod 리소스 요청(request) 기반 추정입니다 (요청 × 단가, 실측 아님). 정확한 비용은 OpenCost 설치 후 표시됩니다.')}
         </div>
       ) : (
         <div className="rounded-lg border border-ink-100 bg-paper-muted px-4 py-2 text-[12px] text-ink-500">
-          데이터 소스: OpenCost 실측 allocation (최근 1일)
+          {tt('데이터 소스: OpenCost 실측 allocation (최근 1일)')}
         </div>
       )}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

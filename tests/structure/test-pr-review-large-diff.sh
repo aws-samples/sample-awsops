@@ -59,4 +59,29 @@ else
   fail "diff step still filters out lockfiles/binaries"
 fi
 
+# Path classification must come from an authoritative --name-status -z map, not from
+# field-splitting the `diff --git a/... b/...` header text — git does not quote plain spaces
+# (only control/non-ASCII/quote/backslash bytes), so `substr($3, 3)`-style parsing silently
+# misclassifies any path containing a space (PR #170 review finding).
+if echo "$DIFF_CMDS" | grep -qE "diff .*--name-status .*-z|diff -z .*--name-status"; then
+  pass "path classification sources an authoritative --name-status -z map"
+else
+  fail "path classification sources an authoritative --name-status -z map"
+fi
+
+if echo "$DIFF_STEP" | grep -qE 'substr\(\$[0-9]+, ?3\)'; then
+  fail "diff header text is not field-split for path extraction (space-in-filename bypass)"
+else
+  pass "diff header text is not field-split for path extraction (space-in-filename bypass)"
+fi
+
+# The banner-only "generated" bucket must not trust .min.js/.min.css by extension alone —
+# "minified" is a filename convention the PR author chooses, not a property git can verify,
+# so it must not exempt a file in a non-served (executable) tree from the fail-closed sidecar.
+if echo "$DIFF_STEP" | grep -qE 'generated = .*min\\\.(js|css)'; then
+  fail "generated-blob bucket does not trust .min.js/.min.css by extension"
+else
+  pass "generated-blob bucket does not trust .min.js/.min.css by extension"
+fi
+
 [ "$FAILED" -eq 0 ] || exit 1

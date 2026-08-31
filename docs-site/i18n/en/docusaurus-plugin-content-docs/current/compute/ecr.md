@@ -10,36 +10,42 @@ import Screenshot from '@site/src/components/Screenshot';
 
 A page for viewing ECR repository and image information.
 
+:::info How this is served in v2
+This screen isn't a dedicated page — it's served through v2's shared inventory view (`/inventory/ecr`, under the "Compute" group in the sidebar). The content below reflects the actual v2 inventory view configuration (`HIGHLIGHTS.ecr`/`INVENTORY_TYPES.ecr` in `web/lib/inventory-types.ts`), not v1's dedicated ECR page.
+:::
+
 <Screenshot src="/screenshots/compute/ecr.png" alt="ECR" />
 
 ## Key Features
 
-### Stats Cards
-- **Repositories**: Total number of repositories (cyan)
-- **Scan on Push**: Number of repositories with automatic scan on image push enabled (green)
-- **Immutable Tags**: Number of repositories with tag immutability enabled (purple)
+### Highlight Cards
+- **Scan on Push**: Number of repositories with automatic scan on image push enabled
+- **Immutable tags**: Number of repositories with tag immutability (IMMUTABLE) set
+- **Mutable tags**: Number of repositories with tag mutability (MUTABLE) set
+
+There is no card showing total repository count (check the table row count instead).
 
 ### Repository Table
 | Column | Description |
 |--------|-------------|
-| Repository | Repository name |
 | URI | Repository URI (image push/pull address) |
-| Tag Mutability | Tag mutability (MUTABLE/IMMUTABLE) |
-| Scan | Scan on push enabled status |
-| Encryption | Encryption type (AES256/KMS) |
+| Tag mutability | Tag mutability (MUTABLE/IMMUTABLE) |
 | Created | Creation date |
+
+Scan-on-push status and encryption type are **not table columns** — scan-on-push is shown on the highlight cards above, and encryption is in the detail panel below.
 
 ### Detail Panel
 Click a repository to view detailed information:
-- **Repository section**: Name, URI, ARN, Registry ID, Tag Mutability, Created, Region
+- **Identity section**: Name, Account, Region, ARN, Registry ID, URI, Created
+- **Config section**: Tag Mutability, Image Scanning Configuration (includes scan-on-push), Lifecycle Policy
+- **Security section**: Encryption Configuration (AES256/KMS)
 - **Tags section**: Tags configured on the repository
 
 ## How to Use
 
 1. Click **Compute > ECR** in the sidebar
-2. Review the overall repository status from the stats at the top
-3. Identify repositories with Scan on Push disabled
-4. Click a repository to view detailed URI and settings
+2. Review Scan on Push / immutable-tag status from the highlight cards at the top
+3. Click a repository to view its URI, Scan on Push, and Encryption settings
 
 ## Security Configuration Guide
 
@@ -60,7 +66,7 @@ Click a repository to view detailed information:
 ## Tips
 
 :::tip Enable Scan on Push
-Repositories with "No" in the Scan column have vulnerability scanning disabled. We recommend enabling it for security.
+If the Scan on Push count on the highlight card is lower than the total repository count, some repositories have scanning disabled. Check each one in the Config section of its detail panel.
 :::
 
 :::tip Copy Image URI

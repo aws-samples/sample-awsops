@@ -3,8 +3,10 @@ import { useCallback, useEffect, useState } from 'react';
 import PageHeader from '@/components/ui/PageHeader';
 import RefreshButton from '@/components/ui/RefreshButton';
 import DataTable from '@/components/ui/DataTable';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 export default function JobsPage() {
+  const { tt } = useI18n();
   const [rows, setRows] = useState<Record<string, unknown>[] | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -35,8 +37,8 @@ export default function JobsPage() {
         right={<RefreshButton busy={busy} onClick={load} capturedAt={capturedAt} />}
       />
       <div className="px-8 py-8 flex flex-col gap-4">
-        {err && <div className="text-[13px] text-rose-600">로드 실패: {err}</div>}
-        {!rows && !err && <div className="text-ink-400">로딩 중…</div>}
+        {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
+        {!rows && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
         {rows && (
           <DataTable
             columns={[

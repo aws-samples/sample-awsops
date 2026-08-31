@@ -117,7 +117,10 @@ export interface DxGatewayRow {
   /** 연결(association) 대상 — TGW/VGW id + 상태 + 허용 프리픽스. */
   associations: { id: string; type: string; state: string; region: string | null; cidrs: string[] }[];
   vifCount: number;
-  /** association 0건 — 어느 게이트웨이에도 연결 안 된 DXGW. */
+  /** association 조회 실패 시 false — routesAvailable 패턴 미러링. false 면 unassociated 는
+   *  판정 불가라 false 로 남고(위험 발명 금지), 집계에서도 제외된다. */
+  associationsAvailable: boolean;
+  /** association 0건 — 어느 게이트웨이에도 연결 안 된 DXGW. associationsAvailable 전제. */
   unassociated: boolean;
 }
 
@@ -127,10 +130,22 @@ export interface DxAnalysis {
   gateways: DxGatewayRow[];
   /** 로케이션별 커넥션 집계 (이중화 분석용). */
   locations: { location: string; region: string; connections: number; bandwidthBps: number }[];
+  /** 리소스 목록(Describe*) 자체가 실패해 그 리전의 커넥션/VIF가 전부 빠진 리전 —
+   *  singleLocation·다운 카운트·총 대역폭이 실제보다 낙관적일 수 있다(누락된 리전에
+   *  이중화용 두 번째 로케이션이나 다운 리소스가 있었을 수 있음). UI가 반드시 경고해야 함. */
+  degradedRegions: string[];
+  /** 리소스 목록은 받았지만 CloudWatch 메트릭 호출이 실패한 리전 — 그 리전 커넥션/VIF의
+   *  다운 감지는 API 현재 상태로만 강등되고, 기간 내 과거 다운/사용률은 놓칠 수 있다. */
+  metricsDegradedRegions: string[];
+  /** DX Gateway(글로벌) 조회 자체가 실패 — gatewaysUnassociated/vifCount 등이 0으로 강등됨. */
+  gatewaysDegraded: boolean;
   totals: {
     connections: number; connectionsDown: number;
     vifs: number; vifsDown: number; bgpPeersDown: number;
     gateways: number; gatewaysUnassociated: number;
+    /** association 조회 실패로 미할당 여부를 판정할 수 없는 게이트웨이 수 — >0 이면
+     *  gatewaysUnassociated 는 하한(실제보다 적을 수 있음)이다. UI 타일/배너가 노출. */
+    gatewaysAssociationsUnknown: number;
     totalBandwidthBps: number; locations: number;
     /** VIF 피크 사용률 최댓값 (%). */
     maxUtilizationPct: number | null;
@@ -193,6 +208,9 @@ interface RegionMetrics {
   /** vifId → BgpPrefixes{Accepted,Advertised} 최신값 (패밀리 합산). */
   pfxAcc: Record<string, number | null>;
   pfxAdv: Record<string, number | null>;
+  /** false = CloudWatch 호출 자체가 실패해 이 리전은 메트릭 없이(null) 나감 — 기간 내
+   *  다운 감지는 API 현재 상태로만 강등되어 과거 다운을 놓칠 수 있다. 호출자가 노출. */
+  ok: boolean;
 }
 
 // Utilization*은 퍼센트로 발행 (실측: bps 1,672 ÷ 50Mbps = 0.0033% ↔ 메트릭 0.00334 일치).
@@ -225,9 +243,13 @@ async function dxMetrics(
   region: string, rangeSec: number,
   conns: { id: string }[], vifs: { id: string; connectionId: string; families: Set<string> }[],
 ): Promise<RegionMetrics> {
-  const out: RegionMetrics = { connState: {}, vif: {}, bgpMin: {}, pfxAcc: {}, pfxAdv: {} };
+  const out: RegionMetrics = { connState: {}, vif: {}, bgpMin: {}, pfxAcc: {}, pfxAdv: {}, ok: true };
   const connIds = conns.map((c) => c.id).slice(0, 100);
   const vifList = vifs.slice(0, 100);
+  // 캡이 실제로 물면 잘린 커넥션/VIF 의 connState/bgpMin/pfx* 가 조용히 null 강등된다 —
+  // 새 degrade 계약(metricsDegradedRegions)이 정상이라고 보증한 채로. 무신호 금지 (리뷰 MAJOR:
+  // 캡은 API 제약이 아니라 우리 상한이므로, 무는 순간만 degrade 로 표기).
+  if (conns.length > connIds.length || vifs.length > vifList.length) out.ok = false;
   try {
     const queries: { Id: string; ReturnData: boolean; MetricStat: { Metric: { Namespace: string; MetricName: string; Dimensions: { Name: string; Value: string }[] }; Period: number; Stat: string } }[] = [];
     connIds.forEach((id, i) => {
@@ -259,20 +281,33 @@ async function dxMetrics(
     // 메트릭이 상시 0으로 발행되어(실측) 무차별 최소값이면 영구 다운 오탐이 된다.
     const bgpTuples: { vifId: string; dims: { Name: string; Value: string }[] }[] = [];
     try {
-      const lm = await cw(region).send(new ListMetricsCommand({ Namespace: 'AWS/DX', MetricName: 'VirtualInterfaceBgpStatus' }));
-      for (const m of lm.Metrics ?? []) {
-        const vifId = m.Dimensions?.find((d) => d.Name === 'VirtualInterfaceId')?.Value;
-        const fam = (m.Dimensions?.find((d) => d.Name === 'IpAddressFamily')?.Value ?? '').toLowerCase();
-        const vif = vifId ? vifList.find((v) => v.id === vifId) : undefined;
-        if (vif && (vif.families.size === 0 || vif.families.has(fam))) {
-          bgpTuples.push({ vifId: vif.id, dims: (m.Dimensions ?? []).map((d) => ({ Name: d.Name ?? '', Value: d.Value ?? '' })) });
+      // NextToken 순회 — 응답은 페이지당 500 metric 캡이라 미순회면 튜플이 조용히 누락돼
+      // ok=true 인 채 bgpMin null 강등 (리뷰 MAJOR L2-1과 같은 클래스).
+      let nextToken: string | undefined;
+      do {
+        const lm = await cw(region).send(new ListMetricsCommand({ Namespace: 'AWS/DX', MetricName: 'VirtualInterfaceBgpStatus', NextToken: nextToken }));
+        for (const m of lm.Metrics ?? []) {
+          const vifId = m.Dimensions?.find((d) => d.Name === 'VirtualInterfaceId')?.Value;
+          const fam = (m.Dimensions?.find((d) => d.Name === 'IpAddressFamily')?.Value ?? '').toLowerCase();
+          const vif = vifId ? vifList.find((v) => v.id === vifId) : undefined;
+          if (vif && (vif.families.size === 0 || vif.families.has(fam))) {
+            bgpTuples.push({ vifId: vif.id, dims: (m.Dimensions ?? []).map((d) => ({ Name: d.Name ?? '', Value: d.Value ?? '' })) });
+          }
         }
-      }
-    } catch { /* 발견 실패 시 BGP 메트릭만 생략 */ }
+        nextToken = lm.NextToken;
+      } while (nextToken);
+    } catch {
+      // BGP 튜플 발견(ListMetrics)만 실패 — GetMetricData 가 성공해도 이 리전 전체 VIF 의
+      // bgpMin/pfx* 가 null 로 강등된다. ok JSDoc 이 문서화한 바로 그 상황(기간 내 과거 다운
+      // 누락)이므로 무신호로 두지 않고 리전을 metricsDegraded 로 표시한다 (PR #210 리뷰 MAJOR:
+      // outer catch 만 ok=false 였음 — ListMetrics-only 실패(throttling 이 전형)가 무신호였다).
+      out.ok = false;
+    }
     // 프리픽스 수는 "현재 값"이 의미 — 별도 1h 윈도우 호출 (range 전체를 Period 300으로
     // 훑으면 7d × 다수 튜플에서 MaxDatapoints 100,800 초과로 결과가 잘릴 수 있음).
     // Period 300 + 기본 내림차순 스캔에서 Values[0]=최신.
     const latestQueries: typeof queries = [];
+    if (bgpTuples.length > 100) out.ok = false; // 캡이 물면 잘린 튜플의 bgpMin/pfx* 무신호 금지 (위와 동일)
     bgpTuples.slice(0, 100).forEach((t, i) => {
       queries.push({
         Id: `bgp_i${i}`, ReturnData: true,
@@ -289,14 +324,20 @@ async function dxMetrics(
 
     // GetMetricData 한도: 호출당 500 MetricDataQueries — 청크 분할 (Id에 계열·인덱스가
     // 인코딩되어 있어 청크 간 병합에 추가 로직 불필요).
-    const results: { Id?: string; Values?: number[] }[] = [];
+    const results: { Id?: string; Values?: number[]; StatusCode?: string }[] = [];
     const runChunked = async (qs: typeof queries, windowSec: number) => {
       for (let i = 0; i < qs.length; i += 500) {
         const r = await cw(region).send(new GetMetricDataCommand({
           StartTime: new Date(Date.now() - windowSec * 1000), EndTime: new Date(),
           MetricDataQueries: qs.slice(i, i + 500),
         }));
-        results.push(...(r.MetricDataResults ?? []));
+        for (const res of r.MetricDataResults ?? []) {
+          // CloudWatch 는 HTTP 성공 응답에 쿼리 단위 실패(PartialData/InternalError/Forbidden)를
+          // 실을 수 있다 — 예외가 없으므로 무검사면 그 쿼리만 조용히 null 강등되면서 ok=true 로
+          // 남는다(리뷰 MAJOR: metricsDegradedRegions 계약을 신설 지점에서 우회). Complete 외는 degrade.
+          if (res.StatusCode && res.StatusCode !== 'Complete') out.ok = false;
+          results.push(res);
+        }
       }
     };
     await runChunked(queries, rangeSec);
@@ -330,7 +371,7 @@ async function dxMetrics(
       const adv = pfxByTuple.pfxadv[i];
       if (adv != null) out.pfxAdv[t.vifId] = (out.pfxAdv[t.vifId] ?? 0) + adv;
     });
-  } catch { /* region degrade — 메트릭 없이 리스트만 */ }
+  } catch { out.ok = false; /* region degrade — 메트릭 없이 리스트만, 호출자에 노출 */ }
   return out;
 }
 
@@ -375,8 +416,9 @@ async function vifRoutes(region: string, vifId: string): Promise<{ routes: DxRou
   }
 }
 
-/** DX Gateway(글로벌) + association — 홈 리전에서 1회, 페이지네이션 수용. */
-async function fetchGateways(vifs: DxVifRow[]): Promise<DxGatewayRow[]> {
+/** DX Gateway(글로벌) + association — 홈 리전에서 1회, 페이지네이션 수용.
+ *  실패 시 [] + ok=false — 호출자가 "게이트웨이 0건"과 "조회 실패"를 구분해 경고할 수 있게. */
+async function fetchGateways(vifs: DxVifRow[]): Promise<{ gateways: DxGatewayRow[]; ok: boolean }> {
   const raw: RawGw[] = [];
   try {
     let nextToken: string | undefined;
@@ -386,11 +428,12 @@ async function fetchGateways(vifs: DxVifRow[]): Promise<DxGatewayRow[]> {
       raw.push(...(r.directConnectGateways ?? []));
       nextToken = r.nextToken;
     } while (nextToken);
-  } catch { return []; }
+  } catch { return { gateways: [], ok: false }; }
 
-  return Promise.all(raw.map(async (g): Promise<DxGatewayRow> => {
+  const gateways = await Promise.all(raw.map(async (g): Promise<DxGatewayRow> => {
     const id = g.directConnectGatewayId ?? '';
     let associations: DxGatewayRow['associations'] = [];
+    let associationsAvailable = true;
     try {
       const assocs: RawAssoc[] = [];
       let nextToken: string | undefined;
@@ -407,15 +450,20 @@ async function fetchGateways(vifs: DxVifRow[]): Promise<DxGatewayRow[]> {
         region: a.associatedGateway?.region ?? null,
         cidrs: (a.allowedPrefixesToDirectConnectGateway ?? []).map((p) => p.cidr ?? '').filter(Boolean),
       }));
-    } catch { /* association 조회 실패 시 목록만 */ }
+    } catch {
+      // association-only 실패는 "미할당"이 아니라 "판정 불가" — [] 그대로 두면
+      // unassociated=true 가 위험을 발명한다(PR #210 리뷰 MAJOR). 행 단위로 정직 강등.
+      associationsAvailable = false;
+    }
     return {
       id, name: g.directConnectGatewayName ?? id, state: g.directConnectGatewayState ?? '?',
       amazonSideAsn: g.amazonSideAsn ?? null, ownerAccount: g.ownerAccount ?? null,
-      associations,
+      associations, associationsAvailable,
       vifCount: vifs.filter((v) => v.attachedTo === id).length,
-      unassociated: associations.length === 0,
+      unassociated: associationsAvailable && associations.length === 0,
     };
   }));
+  return { gateways, ok: true };
 }
 
 /** 전 리전 DX 커넥션/VIF + 글로벌 DX Gateway + 메트릭 분석. */
@@ -433,7 +481,7 @@ export async function dxAnalysis(rangeSec: number): Promise<DxAnalysis> {
         ]);
         const rawConns = cr.connections ?? [];
         const rawVifs = vr.virtualInterfaces ?? [];
-        if (rawConns.length === 0 && rawVifs.length === 0) return { connections: [], vifs: [] };
+        if (rawConns.length === 0 && rawVifs.length === 0) return { region, connections: [], vifs: [], degraded: false, metricsDegraded: false };
 
         const vifIds = rawVifs.map((v) => v.virtualInterfaceId ?? '').filter(Boolean);
         const [metrics, routesById] = await Promise.all([
@@ -515,13 +563,15 @@ export async function dxAnalysis(rangeSec: number): Promise<DxAnalysis> {
             down: !['available', 'ordering', 'requested', 'pending'].includes(state) || stateMin === 0,
           };
         });
-        return { connections, vifs };
-      } catch { return { connections: [] as DxConnectionRow[], vifs: [] as DxVifRow[] }; }
+        return { region, connections, vifs, degraded: false, metricsDegraded: !metrics.ok };
+      } catch { return { region, connections: [] as DxConnectionRow[], vifs: [] as DxVifRow[], degraded: true, metricsDegraded: false }; }
     }));
 
     const connections = perRegion.flatMap((r) => r.connections);
     const vifs = perRegion.flatMap((r) => r.vifs);
-    const gateways = await fetchGateways(vifs);
+    const degradedRegions = perRegion.filter((r) => r.degraded).map((r) => r.region);
+    const metricsDegradedRegions = perRegion.filter((r) => r.metricsDegraded).map((r) => r.region);
+    const { gateways, ok: gatewaysOk } = await fetchGateways(vifs);
 
     const locMap = new Map<string, { location: string; region: string; connections: number; bandwidthBps: number }>();
     for (const c of connections) {
@@ -542,11 +592,15 @@ export async function dxAnalysis(rangeSec: number): Promise<DxAnalysis> {
       bgpPeersDown: vifs.reduce((s, v) => s + (v.bgpPeersTotal - v.bgpPeersUp), 0),
       gateways: gateways.length,
       gatewaysUnassociated: gateways.filter((g) => g.unassociated).length,
+      gatewaysAssociationsUnknown: gateways.filter((g) => !g.associationsAvailable).length,
       totalBandwidthBps: connections.reduce((s, c) => s + c.bandwidthBps, 0),
       locations: locations.length,
       maxUtilizationPct: utils.length ? Math.max(...utils) : null,
       singleLocation: connections.length > 0 && new Set(connections.map((c) => c.location)).size === 1,
     };
-    return { connections, vifs, gateways, locations, totals, rangeSec };
+    return {
+      connections, vifs, gateways, locations, totals, rangeSec,
+      degradedRegions, metricsDegradedRegions, gatewaysDegraded: !gatewaysOk,
+    };
   });
 }

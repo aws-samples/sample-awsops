@@ -23,7 +23,7 @@ AWSops's most important principle is **read-only**. But that constraint is bound
 A mutating-action framework (ADR-029) and an execution substrate (SSM Automation + Change Manager × P2-worker hybrid, ADR-036) were designed, but **both were REVERSED by 3-AI consensus on 2026-06-11**. The code is retained in a dark state, but the flags are permanently OFF — it is never enabled.
 
 - **AWS-resource changes** — stopping an EC2 instance, modifying an SG, scaling, deploying — are performed by no screen and no AI feature.
-- All ~120 AgentCore MCP tools are read-only.
+- All ~160 AgentCore MCP Lambda tools are read-only.
 
 :::info
 The scope of the "freeze" is **AWS-resources only** (ADR-029/036 scope clarification 2026-06-16; ADR-041 keystone). The controls layer and the worker execution branch may be reused for non-AWS external data writes, but the AWS-resource automation substrate itself stays frozen.
@@ -116,14 +116,14 @@ The gate score was validated at hybrid 69.2% → **96.9% (+27.7pp) PASSED**. Rat
 **It's optimized with prompt caching and model-by-depth selection** (ADR-038, ADR-033).
 
 - **Prompt caching** — about a 59% hit rate, reducing recomputation of repeated context (ADR-038).
-- **Model by task depth** — AI Diagnosis uses Sonnet by default for base (8 sections), and Sonnet default / Opus selectable (cost-gate) for deep (15 sections). Classification and routing use the cheaper Haiku 4.5 (ADR-033).
+- **Model by task depth** — AI Diagnosis uses Sonnet by default for Light·Mid (8+1 sections), and Sonnet default / Opus selectable (cost-gate) for Deep (15+1 sections). Classification and routing use the cheaper Haiku 4.5 (ADR-033).
 - ADR-033 defined an Aurora durable token budget (implemented in v1; wiring it into the current web chat path is a pending follow-up).
 
 ### Did the gateways grow to 9?
 
-**No — it stays at 8** (ADR-004).
+**Yes — it is 9** (ADR-004 as amended, 2026-06-24).
 
-The **8 section gateways** — network · container · data · security · cost · monitoring · iac · ops — are maintained, and external observability is a separate **"Integrations axis"** (ADR-039), not a 9th gateway.
+In addition to the 8 AWS-domain gateways — network · container · data · security · cost · monitoring · iac · ops — an **external-obs gateway** hosting the external-observability connectors (Prometheus·ClickHouse) is provisioned and routed as the ninth (9 provisioned / 9 routed). The chat key `observability` aliases to external-obs.
 
 ### Can I add my own agents or tools?
 

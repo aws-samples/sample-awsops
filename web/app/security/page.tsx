@@ -12,6 +12,7 @@ import SegmentedControl from '@/components/ui/SegmentedControl';
 import RefreshButton from '@/components/ui/RefreshButton';
 import { CHECK_META, type CheckKey, type Finding } from '@/lib/security-findings';
 import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 const CHECKS = Object.keys(CHECK_META) as CheckKey[];
 
@@ -79,6 +80,7 @@ const columnsFor = (k: CheckKey, multiAccount: boolean) => [
 ];
 
 export default function SecurityPage() {
+  const { tt } = useI18n();
   const [scope] = useActiveScope();
   const [data, setData] = useState<ApiResp | null>(null);
   const [active, setActive] = useState<CheckKey>(CHECKS[0]);
@@ -93,7 +95,7 @@ export default function SecurityPage() {
       const body = (await res.json()) as ApiResp;
       setData(body);
     } catch {
-      setErr('보안 점검 데이터를 불러오지 못했습니다.');
+      setErr(tt('보안 점검 데이터를 불러오지 못했습니다.'));
     }
   }, [scope]);
 

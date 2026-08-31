@@ -78,25 +78,10 @@ _BEDROCK_CONFIG = Config(
 )
 
 # [GATE-FIX CRITICAL] PII/secret redaction BEFORE any Bedrock call (spec §9 mandatory).
-# The account-id pattern uses negative lookarounds so it only matches a STANDALONE 12-digit
-# run (an account id), not a slice of a longer/embedded number.
-_REDACTORS = [
-    (re.compile(r"arn:aws:[^\s\"']+"), "<arn>"),
-    # [PR#37 review MINOR] email BEFORE acct: an email local-part with 12+ digits would otherwise
-    # be partially clobbered by the acct rule first.
-    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "<email>"),
-    (re.compile(r"(?<!\d)\d{12}(?!\d)"), "<acct>"),
-    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<ip>"),
-    (re.compile(r"\b(AKIA|ASIA)[A-Z0-9]{16}\b"), "<akid>"),
-]
-
-
-def _redact(text):
-    """Deterministic scrub of ARNs/account-ids/emails/IPs/access-keys before the LLM sees data.
-    CloudTrail Username and other identity fields are stripped at the collector (sources.py)."""
-    for pat, repl in _REDACTORS:
-        text = pat.sub(repl, text)
-    return text
+# Patterns live in the top-level redact.py so every LLM caller in this worker tier (finops/llm.py
+# included, after a PR review caught it skipping this entirely) shares the exact same scrub
+# instead of each re-deriving a slightly different regex set.
+from redact import redact as _redact  # noqa: E402
 
 
 _SYSTEM = (
@@ -262,7 +247,7 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     """Collect → evaluate active invariants → render each section → markdown + summary.
     Returns (markdown, summary, sources_used). Read-only throughout; the LLM sees verdict-only
     drift, never raw untrusted edge text. `report_id` (optional) enables the parent-report diff.
-    `tier` picks the catalog (mid/light=9, deep=15) and `model` ('sonnet'|'opus', deep-only) the
+    `tier` picks the catalog (mid/light=8, deep=15; +intended-vs-actual appended → 9/16 rendered) and `model` ('sonnet'|'opus', deep-only) the
     Bedrock model + token budget. `on_progress(current, total, section, phase)` (optional, A3 / V1
     parity) is called as work advances — best-effort (a callback error never aborts the report)."""
     base_catalog, model_id, max_tokens = _resolve_tier(tier, model)

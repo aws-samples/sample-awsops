@@ -78,11 +78,11 @@ YAML
 
 **Read-only RBAC + bind to the AWSops task principal (Rules 1/9 — out-of-band):**
 - The operator runs with a **read-only ClusterRole**: `get/list/watch` only; `create/update/patch/delete` explicitly absent. (`--fix`/auto-remediation disabled at the config level.)
-- Bind a **read-only ClusterRole for the `results.result.core.k8sgpt.ai` CRD** to the IAM principal that the **P1e Access Entry** maps for `awsops-v2-task`, so the AWSops BFF's presigned-STS token can `get/list` `Result` objects. The AWSops `awsops-v2-task` role is registered as a STANDARD Access Entry with the AWS-managed `AmazonEKSViewPolicy` at cluster scope (see `terraform/v2/foundation/eks.tf`); this binding grants the additional Result-CRD read. Example (the operator applies it):
+- Bind a **read-only ClusterRole for the `results.result.core.k8sgpt.ai` CRD** to the IAM principal that the **P1e Access Entry** maps for `awsops-v2-task`, so the AWSops BFF's presigned-STS token can `get/list` `Result` objects. The AWSops `awsops-v2-task` role is registered as a STANDARD Access Entry with the AWS-managed `AmazonEKSViewPolicy` at cluster scope (see `terraform/foundation/eks.tf`); this binding grants the additional Result-CRD read. Example (the operator applies it):
 
 **읽기 전용 RBAC + AWSops 태스크 principal 바인딩 (Rule 1/9 — 아웃-오브-밴드):**
 - 오퍼레이터는 **읽기 전용 ClusterRole**(`get/list/watch`만; `create/update/patch/delete` 명시적 부재)로 동작합니다. (`--fix`/자동 remediation은 설정 레벨에서 비활성.)
-- **`results.result.core.k8sgpt.ai` CRD에 대한 읽기 전용 ClusterRole**을 **P1e Access Entry**가 `awsops-v2-task`에 매핑하는 IAM principal에 바인딩하면, AWSops BFF의 presigned-STS 토큰이 `Result` 객체를 `get/list`할 수 있습니다. AWSops의 `awsops-v2-task` 역할은 STANDARD Access Entry로 등록되어 클러스터 스코프에서 AWS 관리형 `AmazonEKSViewPolicy`를 받습니다(`terraform/v2/foundation/eks.tf` 참조). 이 바인딩은 추가로 Result-CRD 읽기 권한을 부여합니다. 예시(오퍼레이터가 적용):
+- **`results.result.core.k8sgpt.ai` CRD에 대한 읽기 전용 ClusterRole**을 **P1e Access Entry**가 `awsops-v2-task`에 매핑하는 IAM principal에 바인딩하면, AWSops BFF의 presigned-STS 토큰이 `Result` 객체를 `get/list`할 수 있습니다. AWSops의 `awsops-v2-task` 역할은 STANDARD Access Entry로 등록되어 클러스터 스코프에서 AWS 관리형 `AmazonEKSViewPolicy`를 받습니다(`terraform/foundation/eks.tf` 참조). 이 바인딩은 추가로 Result-CRD 읽기 권한을 부여합니다. 예시(오퍼레이터가 적용):
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -145,7 +145,7 @@ ADR-005 remediation PROPOSAL   (action_catalog — EVERY row enabled=false by de
                                      + kill-switch + 4-eyes approval)  →  PROPOSAL ONLY, never auto-applied
 ```
 
-The seam carries **only deterministic facts** across the boundary (ADR-006): the incident `message` is the analyzer error text and `resources` is the `eks:<cluster>/<resource>` cross-boundary anchor (ADR-006). The LLM hypothesis (`llm_explanation`) is structurally excluded from the incident record. K8sGPT itself stays deterministic-only throughout. See ADR-006, `web/lib/k8sgpt.ts` (`raiseIncidentFromFinding`), `web/lib/incident.ts`, and `terraform/v2/foundation/{incidents,writeback,remediation}.tf`.
+The seam carries **only deterministic facts** across the boundary (ADR-006): the incident `message` is the analyzer error text and `resources` is the `eks:<cluster>/<resource>` cross-boundary anchor (ADR-006). The LLM hypothesis (`llm_explanation`) is structurally excluded from the incident record. K8sGPT itself stays deterministic-only throughout. See ADR-006, `web/lib/k8sgpt.ts` (`raiseIncidentFromFinding`), `web/lib/incident.ts`, and `terraform/foundation/{incidents,writeback,remediation}.tf`.
 
 H3a 경로는 결정론적 K8sGPT 발견이 하위 인시던트/remediation 기계를 **선택적으로** 트리거할 수 있게 합니다 — 단 **이중 게이트, 관리자 수동 개시, PROPOSAL만 생성**(ADR-006: 자동 적용 없음; **클러스터 쓰기 절대 없음**). 라우트(`/api/eks/[cluster]/k8sgpt`)는 이 심을 **호출하지 않습니다**. 심(`web/lib/k8sgpt.ts`의 `raiseIncidentFromFinding`)은 관리자가 명시적으로 개시하는 "raise incident" 액션(향후 H3a UI)에서만 호출되므로, 발견이 스스로 작업을 만들지 않습니다.
 
@@ -166,5 +166,5 @@ H3a 경로는 결정론적 K8sGPT 발견이 하위 인시던트/remediation 기�
 - `web/lib/k8sgpt-adapter.ts` — `ADAPTER_K8SGPT_VERSION` (must match the pinned version above)
 - `web/lib/k8sgpt.ts` — gate / read / dedup / narrate (fact vs hypothesis split)
 - `web/lib/eks-incluster.ts` — the read-only `eksToken`/`clusterConn`/`k8sGet` path AWSops reuses (GET only)
-- `terraform/v2/foundation/eks.tf` — P1e Access Entry + `AmazonEKSViewPolicy` for `awsops-v2-task`
-- `terraform/v2/foundation/variables.tf` — `k8sgpt_enabled` flag (default false → route dark, $0)
+- `terraform/foundation/eks.tf` — P1e Access Entry + `AmazonEKSViewPolicy` for `awsops-v2-task`
+- `terraform/foundation/variables.tf` — `k8sgpt_enabled` flag (default false → route dark, $0)

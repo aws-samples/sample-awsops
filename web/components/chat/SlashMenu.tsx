@@ -1,5 +1,6 @@
 'use client';
 import type { SlashCommand } from '@/lib/slash';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 // Presentational only — Composer owns the query, active index, and all keyboard handling (so an
 // Enter that picks a command can't also submit the message). We render the list + highlight.
@@ -12,12 +13,13 @@ export default function SlashMenu({
   onSelect: (c: SlashCommand) => void;
   onHover: (i: number) => void;
 }) {
+  const { tt } = useI18n();
   if (commands.length === 0) return null;
   return (
     <ul
       id={id}
       role="listbox"
-      aria-label="섹션 명령"
+      aria-label={tt('섹션 명령')}
       className="absolute bottom-full left-3 right-3 mb-1 max-h-60 overflow-y-auto rounded-lg border border-ink-200 bg-card py-1 shadow-lg"
     >
       {commands.map((c, i) => (
@@ -37,7 +39,7 @@ export default function SlashMenu({
         >
           <span className="w-4 text-center">{c.icon}</span>
           <span className="font-medium text-brand-600">/{c.key}</span>
-          <span className="text-ink-500">{c.label}{c.active ? '' : ' · 준비중'}</span>
+          <span className="text-ink-500">{tt(c.label)}{c.active ? '' : tt('· 준비중')}</span>
         </li>
       ))}
     </ul>

@@ -7,6 +7,7 @@ import Composer from './Composer';
 import MessageList from './MessageList';
 import ThreadList from './ThreadList';
 import { useChat } from './useChat';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 const THREADS_W = 240;
 const DEFAULT_W = 420;
@@ -21,6 +22,7 @@ function detailPanelW(): number {
 }
 
 export default function ChatDrawer() {
+  const { tt } = useI18n();
   const chat = useChat();
   const router = useRouter();
   const path = usePathname();
@@ -114,7 +116,7 @@ export default function ChatDrawer() {
       // Opens the chat drawer (fullscreen below lg).
       <button
         onClick={() => setOpen(true)}
-        aria-label="AI 어시스턴트 열기"
+        aria-label={tt('AI 어시스턴트 열기')}
         // lg: shift left of any open right-docked DetailPanel (--detail-panel-w, 0 when none)
         // so the FAB never sits on top of the panel. Mobile keeps right-5 (panel is fullscreen there).
         className="fixed bottom-20 right-5 z-50 flex h-12 w-12 items-center justify-center rounded-full bg-brand-500 text-white shadow-pop transition-colors hover:bg-brand-600 lg:bottom-5 lg:right-[calc(1.25rem+var(--detail-panel-w,0px))]"
@@ -138,15 +140,15 @@ export default function ChatDrawer() {
       // edge with the persisted/maximized width applied as an inline style.
       // lg: dock immediately left of any open right-docked DetailPanel (--detail-panel-w,
       // 0 when none → flush right edge) so the two panels sit side-by-side instead of overlapping.
-      className="fixed inset-0 z-50 flex flex-col border-ink-100 bg-paper shadow-pop lg:inset-y-0 lg:left-auto lg:right-[var(--detail-panel-w,0px)] lg:h-screen lg:border-l"
+      className="fixed inset-0 z-50 flex flex-col border-ink-100 bg-paper shadow-pop pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] lg:inset-y-0 lg:left-auto lg:right-[var(--detail-panel-w,0px)] lg:h-screen lg:border-l lg:p-0"
       style={isDesktop ? { width: totalWidth } : undefined}
     >
       {/* resize grip — desktop only, and hidden while maximized */}
       {!maximized && (
         <div
           onMouseDown={startResize}
-          title="드래그하여 폭 조절"
-          aria-label="패널 폭 조절"
+          title={tt('드래그하여 폭 조절')}
+          aria-label={tt('패널 폭 조절')}
           role="separator"
           className="group absolute left-0 top-0 z-10 hidden h-full w-1.5 cursor-col-resize lg:block"
         >
@@ -157,18 +159,18 @@ export default function ChatDrawer() {
       {/* header */}
       <div className="flex items-center justify-between border-b border-ink-100 px-3 py-2.5">
         <div className="flex items-center gap-2">
-          <IconBtn onClick={chat.toggleThreads} title="대화 목록" label="대화 목록" active={chat.showThreads}><Menu size={16} /></IconBtn>
+          <IconBtn onClick={chat.toggleThreads} title={tt('대화 목록')} label={tt('대화 목록')} active={chat.showThreads}><Menu size={16} /></IconBtn>
           <span className="flex items-center gap-1.5 text-[13px] font-semibold text-ink-800">
             <span aria-hidden className="text-[15px] leading-none">🤖</span> AWSops Assistant
           </span>
         </div>
         <div className="flex items-center gap-0.5">
-          <IconBtn onClick={popOut} title="전체화면으로 열기" label="전체화면으로 열기"><ExternalLink size={15} /></IconBtn>
-          <IconBtn onClick={toggleMax} title={maximized ? '복원' : '최대화'} label={maximized ? '복원' : '최대화'}>
+          <IconBtn onClick={popOut} title={tt('전체화면으로 열기')} label={tt('전체화면으로 열기')}><ExternalLink size={15} /></IconBtn>
+          <IconBtn onClick={toggleMax} title={tt(maximized ? '복원' : '최대화')} label={tt(maximized ? '복원' : '최대화')}>
             {maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
           </IconBtn>
-          <IconBtn onClick={chat.newChat} title="새 대화" label="새 대화"><Plus size={16} /></IconBtn>
-          <IconBtn onClick={() => { chat.abort(); setOpen(false); }} title="닫기" label="닫기"><X size={16} /></IconBtn>
+          <IconBtn onClick={chat.newChat} title={tt('새 대화')} label={tt('새 대화')}><Plus size={16} /></IconBtn>
+          <IconBtn onClick={() => { chat.abort(); setOpen(false); }} title={tt('닫기')} label={tt('닫기')}><X size={16} /></IconBtn>
         </div>
       </div>
 

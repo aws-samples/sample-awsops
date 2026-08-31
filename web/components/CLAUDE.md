@@ -1,24 +1,23 @@
-# 컴포넌트 모듈 / Components Module
+# Components Module
 
-## 역할 / Role
-클라이언트 컴포넌트 90개, 12개 서브디렉토리: `ui`(공용 프리미티브), `shell`(AppShell·Sidebar·LanguageProvider·AccountSelector 등), `charts`, `chat`, `inventory`(+`metrics/`), `eks`, `diagnosis`, `datasources`, `insights`, `dx`(DX 구성도), `nfm`, `overview`.
-(88 client components across 11 subdirs: shared primitives in `ui/`, app shell, and domain components.)
+## Role
+90 client components across 12 subdirectories: `ui` (shared primitives), `shell` (AppShell, Sidebar, LanguageProvider, AccountSelector, etc.), `charts`, `chat`, `inventory` (+`metrics/`), `eks`, `diagnosis`, `datasources`, `dx`, `insights`, `nfm`, `overview`.
 
-## 주요 파일 / Key Files
-- `ui/DataTable.tsx` + `ui/DetailPanel.tsx` — 목록+상세 기본 조합. DetailPanel은 행이 이미 들고 있는 전체 데이터를 추가 fetch 없이 렌더 — `spec`(`InvType`)에 `sections`가 있으면 섹션 그룹 렌더, 없으면 flat key 목록(하위호환). 신규 인벤토리 타입은 `sections` 정의 필수 (renders the full row; grouped sections when the spec provides them)
-- `inventory/metrics/MetricTable.tsx` — 선언적 `MetricCol` 모델(`{value, render?, danger?, facet?, facetValues?, type}`)만 정의하면 정렬·전역 검색·facet 필터·'문제만' 토글이 무료 제공. 서비스별 테이블(Ec2/Rds/Alb/...)은 컬럼 정의로만 작성. opt-in prop: `facetValues`(다중값 facet — joined 표시값 exact-match는 복합값 행 누락), `maxRender`+`capKeep`(렌더 단계 행 상한 — 데이터 단계 컷은 정확 검색을 조용히 0건으로 만듦), `rowClass`(행 단위 클래스 훅) (declarative column model — sort/search/facet/danger-only for free; opt-in multi-value facets, render-stage cap, per-row class)
-- `inventory/metrics/guides.tsx` + `guides.{en,zh,ja}.tsx` — 진단 가이드 언어별 본문. i18n lockstep — 4개 파일 동시 갱신 (per-language guide bodies, update all four together)
-- `dx/DxTopology.tsx` — Direct Connect 구성도 (React Flow + dagre, topology 페이지 관례 준수 — dynamic ssr:false, colorMode, light/dark 색 쌍, imperative fitView). 그래프/SLA 판정은 `lib/dx-topology.ts` 순수 함수 (DX topology diagram; graph/SLA logic lives in the pure lib)
-- `nfm/FlowHopPath.tsx` — End-to-End 홉 스텝퍼 (로컬 엔드포인트 → traversedConstructs → 원격 엔드포인트). kind별 고유 글리프 + 색 — color-only 식별 금지 (E2E hop stepper; a glyph per kind, never color-only)
-- `eks/NodeDrilldownPanel.tsx` — 노드 드릴다운 (용량 카드 + Pod/ENI 섹션, nodes+pods 자체 라이브 조회). EKS 개요와 `/eks/nodes` 플릿 페이지(`FleetKindPage`)가 공유 (node drilldown shared by the EKS overview and the fleet page)
-- `chat/MessageList.tsx` + `chat/useChat.ts` — 스트리밍 스무딩: 마크다운 파싱 입력을 ~180ms `useThrottled`로 스로틀(토큰마다 전체 재파싱 O(n²) 회피) + 미완성 코드펜스 균형(MessageList); 타자기 버퍼 — 델타를 모아 24ms마다 백로그 비례(최소 3자) 방출, 종결 시 즉시 flush(useChat) (throttled markdown parse + typewriter buffer)
-- `shell/LanguageProvider.tsx` — `useI18n()` 훅 (`t`/`tt`/lang 컨텍스트) (i18n context hook)
-- `shell/Sidebar.tsx` — 내비게이션. 새 페이지 등록 지점 (navigation; where new pages register)
-- `shell/ChangelogVersion.tsx` — 사이드바 풋터 버전 칩 + 변경 이력 모달 (`/api/changelog`). **사이드바의 transform이 fixed 자손의 containing block이 됨** — 사이드바 내부 모달류는 `createPortal`(body)로 렌더 필수 (the sidebar transform traps fixed descendants; portal modals to body)
-- `ui/StatCard.tsx` — `StatTile`의 alias re-export. 새 코드는 `StatTile` 직접 import
+## Key Files
+- `ui/DataTable.tsx` + `ui/DetailPanel.tsx` — the default list+detail combo. DetailPanel renders the full data the row already holds, with no extra fetch — if the spec (`InvType`) has `sections`, it renders grouped sections; otherwise a flat key list (backward-compat). New inventory types must define `sections`.
+- `inventory/metrics/MetricTable.tsx` — a declarative `MetricCol` model (`{value, render?, danger?, facet?, facetValues?, type}`) gets you sort, global search, facet filters, and a "problems only" toggle for free. Per-service tables (Ec2/Rds/Alb/...) are written purely as column definitions. Opt-in props: `facetValues` (multi-value facet — an exact-match on the joined display string drops multi-value rows), `maxRender`+`capKeep` (render-stage row cap — a data-stage cut silently zeroes an exact search), `rowClass` (per-row class hook).
+- `inventory/metrics/guides.tsx` + `guides.{en,zh,ja}.tsx` — per-language diagnosis-guide bodies. i18n lockstep — update all four files together.
+- `dx/DxTopology.tsx` — Direct Connect topology diagram (React Flow + dagre; follows the topology-page conventions — dynamic ssr:false, colorMode, light/dark color pairs, imperative fitView). Graph/SLA logic lives in the pure `lib/dx-topology.ts`.
+- `nfm/FlowHopPath.tsx` — end-to-end hop stepper (local endpoint → traversedConstructs → remote endpoint). Each kind has its own glyph and color — never rely on color alone to identify a kind.
+- `eks/NodeDrilldownPanel.tsx` — node drilldown (capacity cards + Pod/ENI sections, with its own live nodes+pods query). Shared by the EKS overview and the `/eks/nodes` fleet page (`FleetKindPage`).
+- `chat/MessageList.tsx` + `chat/useChat.ts` — streaming smoothing: throttles markdown-parse input at ~180ms via `useThrottled` (avoids O(n²) full reparse per token) and balances incomplete code fences (MessageList); a typewriter buffer batches deltas and emits proportionally to backlog every 24ms (min 3 chars), flushing immediately on completion (useChat).
+- `shell/LanguageProvider.tsx` — the `useI18n()` hook (`t`/`tt`/lang context).
+- `shell/Sidebar.tsx` — navigation; where new pages register.
+- `shell/ChangelogVersion.tsx` — sidebar footer version chip + changelog modal (`/api/changelog`). **The sidebar's transform becomes the containing block for fixed descendants** — modals rendered inside the sidebar must portal to `body` via `createPortal`.
+- `ui/StatCard.tsx` — an alias re-export of `StatTile`. New code should import `StatTile` directly.
 
-## 규칙 / Rules
-- 페이지에서 소비하는 컴포넌트는 `export default`. 단, 공유 유틸 모듈(`metrics/shared.tsx`, `guides.*.tsx`, `LanguageProvider.tsx` 등)은 named export가 기존 패턴 — 임의 변경 금지.
-- 새 UI는 `ui/` 프리미티브(Badge, StatePill, Card, PageHeader, StatTile 등) 재사용 우선 — 프리미티브 신설 남발 금지.
-- 사용자 표시 문자열은 한국어 리터럴 + `tt()` 경유 (미등록 문자열은 통과되므로 안전).
-- 테스트는 컴포넌트 옆 `*.test.tsx` colocate (vitest).
+## Rules
+- Components consumed by pages use `export default`. Shared utility modules (`metrics/shared.tsx`, `guides.*.tsx`, `LanguageProvider.tsx`, etc.) use named exports as an established pattern — do not change this arbitrarily.
+- Prefer reusing `ui/` primitives (Badge, StatePill, Card, PageHeader, StatTile, etc.) over adding new ones — don't proliferate primitives.
+- User-facing display strings are Korean literals passed through `tt()` (unregistered strings pass through safely, so this is zero-risk).
+- Tests are colocated with components as `*.test.tsx` (vitest).

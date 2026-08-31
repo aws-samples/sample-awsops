@@ -1,12 +1,19 @@
 ---
 sidebar_position: 8
 title: AI Comprehensive Diagnosis
-description: 15-section Bedrock Opus diagnosis report, DOCX/MD/PDF export, scheduling, email notifications
+description: (v1 legacy page) 15-section diagnosis report — current v2 uses Light/Mid/Deep (15+1) tiers, see FAQ
 ---
 
 import Screenshot from '@site/src/components/Screenshot';
 
 # AI Comprehensive Diagnosis
+
+:::caution Legacy page (v1-era)
+This page was written for the v1 diagnosis screen (fixed 15-section catalog, `src/` paths).
+Current v2 uses the **Light / Mid / Deep (15+1 sections, 16 rendered)** tier structure — see
+[FAQ · AI Assistant](../faq/ai-assistant.md) for current behavior.
+:::
+
 
 The `/ai-diagnosis` page generates a 15-section infrastructure analysis report using Amazon Bedrock **Claude Opus 4.8**.
 

@@ -1,12 +1,19 @@
 ---
 sidebar_position: 8
 title: AI 종합 진단
-description: 15섹션 Bedrock Opus 진단 리포트, DOCX/MD/PDF 내보내기, 스케줄링, 이메일 알림
+description: (v1 레거시 문서) 15섹션 진단 리포트 — 현행 v2는 Light/Mid/Deep(15+1) 티어, FAQ 참조
 ---
 
 import Screenshot from '@site/src/components/Screenshot';
 
 # AI 종합 진단
+
+:::caution 레거시 문서 (v1 기준)
+이 문서는 v1 시절 AI 진단 화면 기준으로 작성되었습니다(15섹션 고정 카탈로그 · `src/` 경로).
+현행 v2는 **Light / Mid / Deep(15+1섹션, 총 16 렌더)** 티어 구조입니다 — 최신 동작은
+[FAQ · AI 어시스턴트](../faq/ai-assistant.md)를 참조하세요.
+:::
+
 
 `/ai-diagnosis` 페이지는 Amazon Bedrock **Claude Opus 4.8**가 15섹션으로 AWS 인프라 전반을 자동 분석하는 종합 리포트 도구입니다.
 

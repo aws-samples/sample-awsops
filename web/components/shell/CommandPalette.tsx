@@ -9,26 +9,27 @@ import { cn } from '@/lib/cn';
 import { THEMES, THEME_LABELS, setStoredTheme, applyTheme, type Theme } from '@/lib/theme';
 
 interface Cmd { label: string; hint: string; href?: string; theme?: Theme }
+type T = (key: string, params?: Record<string, string | number>) => string;
 
-// All navigable destinations: fixed pages + the 22 inventory types + theme actions.
-function buildCommands(): Cmd[] {
+// All navigable destinations: fixed pages + the inventory types + theme actions.
+function buildCommands(t: T): Cmd[] {
   const fixed: Cmd[] = [
-    { href: '/', label: 'Overview', hint: '대시보드' },
-    { href: '/eks', label: 'EKS', hint: '파드' },
-    { href: '/jobs', label: 'Jobs', hint: '비동기 작업' },
-    { href: '/cost', label: 'Cost', hint: 'Cost Explorer' },
-    { href: '/bedrock', label: 'Bedrock', hint: '토큰 비용' },
-    { href: '/integrations', label: 'Integrations', hint: '데이터소스 · 커넥터 · 스킬' },
-    { href: '/security', label: 'Security', hint: '보안 점검' },
-    { href: '/compliance', label: 'Compliance', hint: 'CIS 벤치마크' },
+    { href: '/', label: t('nav.overview'), hint: t('palette.dashboard') },
+    { href: '/eks', label: t('nav.eks'), hint: t('palette.pods') },
+    { href: '/jobs', label: t('nav.jobs'), hint: t('palette.asyncJobs') },
+    { href: '/cost', label: t('nav.cost'), hint: 'Cost Explorer' },
+    { href: '/bedrock', label: t('nav.bedrock'), hint: t('palette.tokenCost') },
+    { href: '/integrations', label: t('nav.integrations'), hint: t('palette.integrationHint') },
+    { href: '/security', label: t('nav.security'), hint: t('palette.securityReview') },
+    { href: '/compliance', label: t('nav.compliance'), hint: t('palette.cisBenchmark') },
   ];
   // Group overview destinations (non-singleton groups). Unique labels so they don't
   // collide with the fixed feature links' React keys (`key={c.label}`).
-  const overviews: Cmd[] = overviewGroups().map((g) => ({ href: g.href!, label: `${g.group} — overview`, hint: 'Group overview' }));
+  const overviews: Cmd[] = overviewGroups().map((g) => ({ href: g.href!, label: `${t(g.labelKey)} — ${t('palette.groupOverview')}`, hint: t('palette.groupOverview') }));
   const inv: Cmd[] = inventoryGroups().flatMap((g) =>
-    g.types.map((t) => ({ href: `/inventory/${t}`, label: INVENTORY_TYPES[t].label, hint: g.group })),
+    g.types.map((type) => ({ href: `/inventory/${type}`, label: INVENTORY_TYPES[type].label, hint: g.group })),
   );
-  const themes: Cmd[] = THEMES.map((t) => ({ label: `Theme: ${THEME_LABELS[t]}`, hint: '테마', theme: t }));
+  const themes: Cmd[] = THEMES.map((theme) => ({ label: `${t('palette.theme')}: ${THEME_LABELS[theme]}`, hint: t('palette.theme'), theme }));
   return [...fixed, ...overviews, ...inv, ...themes];
 }
 
@@ -37,8 +38,8 @@ export default function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
-  const commands = useMemo(buildCommands, []);
   const { t } = useI18n();
+  const commands = useMemo(() => buildCommands(t), [t]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -105,7 +106,7 @@ export default function CommandPalette() {
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-start justify-center bg-ink-900/30 px-4 pt-[18vh]"
+      className="fixed inset-0 z-[100] flex items-start justify-center bg-ink-900/30 pb-[env(safe-area-inset-bottom)] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[calc(18vh+env(safe-area-inset-top))]"
       onMouseDown={close}
       role="presentation"
     >

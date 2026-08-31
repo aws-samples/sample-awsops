@@ -62,7 +62,7 @@ def tracked_tfvars_enabling(root):
         [
             "git",
             "ls-files",
-            "terraform/v2/",
+            "terraform/",
         ],
         cwd=root,
         text=True,

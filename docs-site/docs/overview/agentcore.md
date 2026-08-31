@@ -14,7 +14,7 @@ AgentCore는 Amazon Bedrock AgentCore Runtime과 Gateway를 기반으로 AI 어�
 <Screenshot src="/screenshots/overview/agentcore-routing.png" alt="AI 어시스턴트의 라우팅 배지" />
 
 :::tip 고객 세션 포인트
-**8개 AWS 도메인 Gateway + external-obs(외부 관측성) = 9개 라우팅 섹션** · 전체 카탈로그 기준 **144개 MCP 도구** · **23개 Lambda 슬라이스**(17개는 `agentcore_enabled`, 6개는 `integrations_enabled` 게이트, 둘 다 기본 off)를 서버리스로 운영하고, 분류기가 질문을 1~3개 라우트로 분류해 **병렬 호출 후 합성**합니다. → [왜 AWSops인가](./why-awsops)
+**8개 AWS 도메인 Gateway + external-obs(외부 관측성) = 9개 라우팅 섹션** · 전체 카탈로그 기준 **160개 MCP 도구**(Lambda 타깃 27개 정의분 — 벤더 호스팅 mcpServer 타깃 제외) · **30개 Lambda 슬라이스**(21개는 `agentcore_enabled`, 9개는 `integrations_enabled` 게이트, 둘 다 기본 off)를 서버리스로 운영하고, 분류기가 질문을 1~3개 라우트로 분류해 **병렬 호출 후 합성**합니다. → [왜 AWSops인가](./why-awsops)
 :::
 
 ## 아키텍처
@@ -56,23 +56,25 @@ AgentCore는 Amazon Bedrock AgentCore Runtime과 Gateway를 기반으로 AI 어�
 
 ## Gateway 상세
 
-v2는 8개 AWS 도메인 Gateway(`awsops-v2-{network,container,data,security,cost,monitoring,iac,ops}-gateway`) + **external-obs**(외부 관측성·연동 커넥터를 호스팅하는 라우팅 섹션, 챗 라우팅 키는 `observability`로 별칭)로 구성됩니다. 도구 수는 전체 카탈로그(`scripts/v2/agentcore/catalog.py`) 기준이며, 실제 활성화는 `agentcore_enabled`/`integrations_enabled` 플래그에 따라 단계적으로 진행됩니다(P3, 현재 일부만 read-only 배포).
+v2는 8개 AWS 도메인 Gateway(`awsops-v2-{network,container,data,security,cost,monitoring,iac,ops}-gateway`) + **external-obs**(외부 관측성·연동 커넥터를 호스팅하는 라우팅 섹션, 챗 라우팅 키는 `observability`로 별칭)로 구성됩니다. 도구 수는 전체 카탈로그(`scripts/v2/agentcore/catalog.py`) 기준이며, 활성화는 `agentcore_enabled`/`integrations_enabled` 플래그로 게이트됩니다(신규 설치 기본 off). 라이브 환경은 함대 배포 완료 — 9개 게이트웨이 전부 READY MCP 타깃 보유, 챗 섹션 16키 활성(2026-08-02).
 
-### Network Gateway (16 tools)
+### Network Gateway (17 tools)
 
 VPC, ENI, Reachability, Flow Logs, TGW, VPN, Network Firewall 도구를 제공합니다.
 
 | 카테고리 | 도구 |
 |---------|------|
 | **flow-monitor** | `query_flow_logs` |
+| **reachability-read** | `check_reachability` |
 | **network-mcp** | `get_path_trace_methodology`, `find_ip_address`, `get_eni_details`, `list_vpcs`, `get_vpc_network_details`, `get_vpc_flow_logs`, `describe_network`, `list_transit_gateways`, `get_tgw_details`, `get_tgw_routes`, `get_all_tgw_routes`, `list_tgw_peerings`, `list_vpn_connections`, `list_network_firewalls`, `get_firewall_rules` |
 
-### Container Gateway (12 tools)
+### Container Gateway (19 tools)
 
-EKS, ECS 관련 도구를 제공합니다.
+EKS, ECS, Istio 서비스 메시 관련 도구를 제공합니다.
 
 | 카테고리 | 도구 |
 |---------|------|
+| **istio-read** | `mesh_overview`, `list_virtual_services`, `list_destination_rules`, `list_istio_gateways`, `list_service_entries`, `list_authorization_policies`, `list_peer_authentications` |
 | **eks-mcp** | `list_eks_clusters`, `get_eks_vpc_config`, `get_eks_insights`, `get_cloudwatch_logs`, `get_cloudwatch_metrics`, `get_eks_metrics_guidance`, `get_policies_for_role`, `search_eks_troubleshoot_guide`, `generate_app_manifest` |
 | **ecs-mcp** | `ecs_resource_management`, `ecs_troubleshooting_tool`, `wait_for_service_ready` |
 
@@ -85,7 +87,7 @@ Infrastructure as Code 관련 도구를 제공합니다.
 | **iac-mcp** | `validate_cloudformation_template`, `check_cloudformation_template_compliance`, `troubleshoot_cloudformation_deployment`, `search_cdk_documentation`, `search_cloudformation_documentation`, `cdk_best_practices`, `read_iac_documentation_page` |
 | **terraform-mcp** | `SearchAwsProviderDocs`, `SearchAwsccProviderDocs`, `SearchSpecificAwsIaModules`, `SearchUserProvidedModule`, `terraform_best_practices` |
 
-### Data Gateway (28 tools)
+### Data Gateway (24 tools)
 
 AWS 데이터베이스 및 스트리밍 서비스 도구를 제공합니다.
 
@@ -95,7 +97,6 @@ AWS 데이터베이스 및 스트리밍 서비스 도구를 제공합니다.
 | **dynamodb-mcp** | `list_tables`, `describe_table`, `query_table`, `get_item`, `dynamodb_data_modeling`, `compute_performances_and_costs` |
 | **msk-mcp** | `list_clusters`, `get_cluster_info`, `get_configuration_info`, `get_bootstrap_brokers`, `list_nodes`, `msk_best_practices` |
 | **valkey-mcp** | `list_cache_clusters`, `describe_cache_cluster`, `list_replication_groups`, `describe_replication_group`, `list_serverless_caches`, `elasticache_best_practices` |
-| **clickhouse-mcp**(`integrations_enabled`) | ClickHouse 조회 도구 4종 |
 
 ### Security Gateway (14 tools)
 
@@ -113,16 +114,16 @@ IAM 및 보안 분석 도구를 제공합니다. (P1f에 배포된 슬라이스)
 | `simulate_principal_policy` | 정책 시뮬레이션 |
 | `get_account_security_summary` | 계정 보안 요약 |
 
-### Monitoring Gateway (40 tools)
+### Monitoring Gateway (36 tools)
 
-CloudWatch, CloudTrail(AWS 네이티브)에 더해 OpenSearch, Prometheus/Loki/Tempo/Mimir(관측성 스택) 도구를 제공합니다.
+CloudWatch, CloudTrail(AWS 네이티브)에 더해 OpenSearch, Loki/Tempo/Mimir(관측성 스택) 도구를 제공합니다(Prometheus·ClickHouse는 External-Obs 담당 — ADR-004).
 
 | 카테고리 | 도구 |
 |---------|------|
 | **cloudwatch-mcp** (11) | 메트릭/알람/로그 인사이트 조회 |
 | **cloudtrail-mcp** (5) | `lookup_events`, `list_event_data_stores`, `lake_query`, `get_query_status`, `get_query_results` |
 | **opensearch-mcp** (4) | OpenSearch 도메인/인덱스 조회 |
-| **prometheus-mcp / loki-mcp / tempo-mcp / mimir-mcp** (각 5, `integrations_enabled`) | PromQL/LogQL/TraceQL 조회 — Loki/Tempo/Mimir는 이 Gateway에 잔류(ADR-004) |
+| **loki-mcp / tempo-mcp / mimir-mcp** (loki 5 · tempo 5 · mimir 6, `integrations_enabled`) | LogQL/TraceQL 조회 — Loki/Tempo/Mimir는 이 Gateway에 잔류(ADR-004; Prometheus·ClickHouse는 External-Obs로 이동) |
 
 ### Cost Gateway (14 tools)
 
@@ -133,13 +134,19 @@ CloudWatch, CloudTrail(AWS 네이티브)에 더해 OpenSearch, Prometheus/Loki/T
 | **cost-mcp** (9) | `get_today_date`, `get_cost_and_usage`, `get_cost_and_usage_comparisons`, `get_cost_comparison_drivers`, `get_cost_forecast`, `get_dimension_values`, `get_tag_values`, `get_pricing`, `list_budgets` |
 | **finops-mcp** (5) | Compute Optimizer 리사이징, RI/SP 추천, Cost Optimization Hub, Trusted Advisor |
 
-### Ops Gateway (5 tools)
+### Ops Gateway (11 tools)
 
-AWS 문서·일반 운영 도구를 제공합니다(`aws-knowledge`).
+AWS 문서 검색·운영 도우미·인벤토리 조회 도구를 제공합니다.
 
-### External-Obs (3 tools, 라우팅 키: `observability`)
+| 카테고리 | 도구 |
+|---------|------|
+| **core-helpers** | `prompt_understanding`, `suggest_aws_commands` |
+| **inventory-read** | `find_unused_resources`, `get_topology`, `query_inventory`, `inventory_summary` |
+| **aws-knowledge** | `search_documentation`, `read_documentation`, `recommend`, `list_regions`, `get_regional_availability` |
 
-외부 관측성·연동 커넥터를 호스팅하는 9번째 라우팅 섹션(ADR-004 개정 2026-06-24). 카탈로그에는 `notion-mcp`(3 tools)가 정의되어 있습니다(`integrations_enabled` 게이트, 기본 off). Prometheus/ClickHouse는 이 섹션이 아니라 각각 Monitoring/Data Gateway에 배치되어 있습니다(위 Gateway 상세 참고).
+### External-Obs (13 tools, 라우팅 키: `observability`)
+
+외부 관측성·연동 커넥터를 호스팅하는 9번째 라우팅 섹션(ADR-004 개정 2026-06-24). 카탈로그에는 `notion-mcp`(3 tools)가 정의되어 있습니다(`integrations_enabled` 게이트, 기본 off). Prometheus(6 tools)·ClickHouse(4 tools) 커넥터 타깃도 이 섹션에 배치됩니다(`catalog.py` — `prometheus-mcp-target`/`clickhouse-mcp-target`의 gateway=external-obs).
 
 ## Code Interpreter
 
@@ -178,7 +185,8 @@ AgentCore Runtime ARN·Memory ID 등 설정 값은 **SSM에만** 존재하며 UI
 | **Code Interpreter / Memory 이름** | 하이픈 불가, 언더스코어만 |
 | **대화 이력 보관** | 최대 365일 |
 | **AgentCore 응답** | 최종 텍스트만 반환(도구 추론은 타이핑 효과로 스트리밍) |
-| **전체 함대 미배포** | 카탈로그의 23개 슬라이스 중 일부만 P1f에서 read-only로 배포됨(전체 활성화는 P3) |
+| **도구 활성화 플래그** | 30개 슬라이스는 `agentcore_enabled`(21)·`integrations_enabled`(9) 게이트 — 라이브 환경은 함대 배포 완료(2026-08-02), 신규 설치 기본값은 off |
+| **벤더 mcpServer 타깃** | external-obs의 벤더 호스팅 mcpServer 타깃(Datadog·Dynatrace·New Relic)은 `capability=read`가 프로토콜 수준에서 강제되지 않음(ADR-017) — read-only 보장은 Lambda 타깃 기준이며, 엔드포인트 미설정 시 SKIP. 런타임에서는 fail-closed 도구 allowlist(`OFFICIAL_MCP_TOOL_ALLOWLIST_JSON` — 카탈로그에 전사된 read 도구만 통과, `agent/agent.py`)가 보완 |
 
 ## 다음 단계
 

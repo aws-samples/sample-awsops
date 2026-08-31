@@ -9,7 +9,7 @@ describe('PWA manifest lockstep', () => {
   const m = manifest();
   const pub = path.join(__dirname, '..', 'public');
   const edgeSrc = fs.readFileSync(
-    path.join(__dirname, '..', '..', 'terraform', 'v2', 'foundation', 'edge-lambda', 'cognito_edge.py.tftpl'),
+    path.join(__dirname, '..', '..', 'terraform', 'foundation', 'edge-lambda', 'cognito_edge.py.tftpl'),
     'utf8',
   );
 

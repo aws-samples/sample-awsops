@@ -10,6 +10,8 @@ import DataTable from '@/components/ui/DataTable';
 import AreaTrend from '@/components/charts/AreaTrend';
 import HBarList from '@/components/charts/HBarList';
 import DonutBreakdown from '@/components/charts/DonutBreakdown';
+import { useI18n } from '@/components/shell/LanguageProvider';
+import { localeOf } from '@/lib/i18n';
 import {
   momChangePctDaily, projectMonthEnd, trendPill,
   PERIOD_MONTHS, PERIOD_OPTIONS, allServiceNames, filterMonthlyTotals, filterDailyTotals,
@@ -17,6 +19,7 @@ import {
   type MonthlyServiceCostPoint, type DailyServiceCostPoint,
 } from '@/lib/cost';
 import { useActiveAccount, accountParam, ALL_ACCOUNTS } from '@/lib/account-context';
+import FinopsBaselineCard from '@/components/finops/FinopsBaselineCard';
 
 interface TrendPoint { date: string; amount: number; [k: string]: unknown }
 // Client model: only `forecast` is read directly off the API response — the monthly/daily TOTALS
@@ -73,6 +76,7 @@ async function loadAllAccountsCost(months: number): Promise<Cost> {
 }
 
 export default function CostPage() {
+  const { tt, lang } = useI18n();
   const [d, setD] = useState<Cost | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -194,7 +198,7 @@ export default function CostPage() {
     if (changeRows.length <= 6) return changeRows.map((s) => ({ service: s.service, amount: s.current }));
     const head = changeRows.slice(0, 6).map((s) => ({ service: s.service, amount: s.current }));
     const rest = changeRows.slice(6).reduce((acc, s) => acc + s.current, 0);
-    return rest > 0 ? [...head, { service: '기타', amount: rest }] : head;
+    return rest > 0 ? [...head, { service: tt('기타'), amount: rest }] : head;
   })();
   const hbarData = changeRows.map((s) => ({ service: s.service, amount: s.current }));
 
@@ -225,27 +229,29 @@ export default function CostPage() {
       <div className="px-4 lg:px-8 py-8 flex flex-col gap-6">
         {err && (
           <div className="rounded-lg border border-rose-200 bg-negative-surface px-4 py-3">
-            <p className="text-[13px] font-semibold text-negative-text">비용 데이터를 불러올 수 없습니다</p>
+            <p className="text-[13px] font-semibold text-negative-text">{tt('비용 데이터를 불러올 수 없습니다')}</p>
             <p className="mt-1 text-[12px] text-ink-600">
-              {avail?.reason === 'access_denied' && 'Cost Explorer 접근 권한이 없습니다 (ce:GetCostAndUsage) — MSP/멤버 계정에서 흔한 구성입니다.'}
-              {avail?.reason === 'not_enabled' && 'Cost Explorer가 아직 활성화되지 않았습니다 (콘솔에서 최초 활성화 후 최대 24시간 소요).'}
-              {(!avail || avail.reason === 'error' || avail.reason === 'ok') && `일시적 오류일 수 있습니다: ${err}`}
+              {avail?.reason === 'access_denied' && tt('Cost Explorer 접근 권한이 없습니다 (ce:GetCostAndUsage) — MSP/멤버 계정에서 흔한 구성입니다.')}
+              {avail?.reason === 'not_enabled' && tt('Cost Explorer가 아직 활성화되지 않았습니다 (콘솔에서 최초 활성화 후 최대 24시간 소요).')}
+              {(!avail || avail.reason === 'error' || avail.reason === 'ok') && tt(`일시적 오류일 수 있습니다: ${err}`)}
             </p>
             <div className="mt-2 flex items-center gap-3 text-[12px]">
               <button onClick={recheck} disabled={rechecking} className="rounded-md border border-ink-200 bg-card px-2.5 py-1 font-medium text-ink-700 hover:bg-ink-50 disabled:opacity-50">
-                {rechecking ? '확인 중…' : '가용성 재확인'}
+                {tt(rechecking ? '확인 중…' : '가용성 재확인')}
               </button>
-              <a href="/inventory/ec2" className="text-brand-600 hover:underline">리소스 인벤토리로 이동 →</a>
+              <a href="/inventory/ec2" className="text-brand-600 hover:underline">{tt('리소스 인벤토리로 이동 →')}</a>
             </div>
           </div>
         )}
         {d?.cached && (
           <div className="flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-[12px] text-amber-700">
-            <span>캐시된 데이터 표시 중 — Cost Explorer 호출 실패로 마지막 성공 응답({d.cachedAt ? new Date(d.cachedAt).toLocaleString('ko-KR') : ''})을 보여줍니다.</span>
-            <button onClick={load} className="rounded-md border border-amber-300 bg-card px-2 py-0.5 font-medium hover:bg-amber-100">라이브 재시도</button>
+            <span>{tt(`캐시된 데이터 표시 중 — Cost Explorer 호출 실패로 마지막 성공 응답(${d.cachedAt ? new Date(d.cachedAt).toLocaleString(localeOf(lang)) : ''})을 보여줍니다.`)}</span>
+            <button onClick={load} className="rounded-md border border-amber-300 bg-card px-2 py-0.5 font-medium hover:bg-amber-100">{tt('라이브 재시도')}</button>
           </div>
         )}
-        {!d && !err && <div className="text-ink-400">로딩 중…</div>}
+        <FinopsBaselineCard />
+
+        {!d && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
 
         {d && (
           <>
@@ -278,23 +284,23 @@ export default function CostPage() {
                 }
               >
                 <Filter size={12} />
-                서비스 필터
+                {tt('서비스 필터')}
                 {selectedServices.size > 0 && (
                   <span className="rounded-full bg-brand-100 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">{selectedServices.size}</span>
                 )}
               </button>
               {selectedServices.size > 0 && (
                 <button onClick={() => setSelectedServices(new Set())} className="text-[12px] text-ink-400 hover:text-ink-800">
-                  초기화
+                  {tt('초기화')}
                 </button>
               )}
             </div>
 
             {showServiceFilter && (
               <div className="rounded-lg border border-ink-100 bg-card p-4">
-                <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-ink-400">서비스로 필터링 ({allServices.length})</p>
+                <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-ink-400">{tt(`서비스로 필터링 (${allServices.length})`)}</p>
                 {allServices.length === 0 ? (
-                  <div className="text-[12px] text-ink-400">선택된 기간에 서비스 데이터가 없습니다.</div>
+                  <div className="text-[12px] text-ink-400">{tt('선택된 기간에 서비스 데이터가 없습니다.')}</div>
                 ) : (
                   <div className="flex max-h-48 flex-wrap gap-2 overflow-y-auto">
                     {allServices.map((svc) => (
@@ -358,7 +364,7 @@ export default function CostPage() {
               <AreaTrend title="일별 비용 추이 (최근 30일)" data={trend} xKey="date" yKey="amount" valuePrefix="$" />
             ) : (
               <Card title="일별 비용 추이 (최근 30일)">
-                <div className="text-[13px] text-ink-400">비용 추이 데이터 없음</div>
+                <div className="text-[13px] text-ink-400">{tt('비용 추이 데이터 없음')}</div>
               </Card>
             )}
 
@@ -384,7 +390,7 @@ export default function CostPage() {
 
             {/* ---- Detail table: service / 이번 달 / 전월 / 변화율 / 점유율 ---- */}
             <section className="flex flex-col gap-3">
-              <h2 className="text-[13px] font-semibold text-ink-800">서비스 상세</h2>
+              <h2 className="text-[13px] font-semibold text-ink-800">{tt('서비스 상세')}</h2>
               <DataTable
                 columns={[
                   { key: 'service', label: '서비스' },
@@ -396,7 +402,7 @@ export default function CostPage() {
                 rows={tableRows}
                 onRowClick={(row) => openDetail(String(row.service))}
               />
-              <p className="text-[12px] text-ink-400">행을 클릭하면 서비스별 일별 추이·사용 유형 분해를 볼 수 있습니다.</p>
+              <p className="text-[12px] text-ink-400">{tt('행을 클릭하면 서비스별 일별 추이·사용 유형 분해를 볼 수 있습니다.')}</p>
             </section>
           </>
         )}
@@ -409,11 +415,11 @@ export default function CostPage() {
           <aside
             role="dialog"
             aria-modal="true"
-            aria-label={`${picked} 비용 상세`}
+            aria-label={tt(`${picked} 비용 상세`)}
             className="fixed right-0 top-0 z-50 flex h-full max-w-full flex-col border-l border-ink-100 bg-card shadow-pop"
             style={{ width: detailWidth }}
           >
-            <div onMouseDown={startDetailResize} title="드래그하여 폭 조절" aria-label="패널 폭 조절" role="separator" className={RESIZE_GRIP_CLASS}>
+            <div onMouseDown={startDetailResize} title={tt('드래그하여 폭 조절')} aria-label={tt('패널 폭 조절')} role="separator" className={RESIZE_GRIP_CLASS}>
               <div className={RESIZE_GRIP_BAR_CLASS} />
             </div>
             <header className="flex items-start justify-between gap-2 border-b border-ink-100 px-4 py-3">
@@ -421,31 +427,31 @@ export default function CostPage() {
               <button
                 type="button"
                 onClick={closeDetail}
-                aria-label="닫기"
+                aria-label={tt('닫기')}
                 className="-mr-1 shrink-0 rounded p-1 text-ink-400 hover:bg-ink-50 hover:text-ink-700"
               >
                 <X size={16} />
               </button>
             </header>
             <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
-              {detailBusy && <div className="text-[13px] text-ink-400">로딩 중…</div>}
+              {detailBusy && <div className="text-[13px] text-ink-400">{tt('로딩 중…')}</div>}
               {!detailBusy && (
                 <>
                   {detail?.trend == null ? (
                     <Card title="일별 비용 추이 (30일)">
-                      <div className="text-[13px] text-ink-400">추이 호출 실패 — 잠시 후 재시도</div>
+                      <div className="text-[13px] text-ink-400">{tt('추이 호출 실패 — 잠시 후 재시도')}</div>
                     </Card>
                   ) : detail.trend.length > 0 ? (
                     <AreaTrend title="일별 비용 추이 (30일)" data={detail.trend} xKey="date" yKey="amount" valuePrefix="$" />
                   ) : (
                     <Card title="일별 비용 추이 (30일)">
-                      <div className="text-[13px] text-ink-400">데이터 없음</div>
+                      <div className="text-[13px] text-ink-400">{tt('데이터 없음')}</div>
                     </Card>
                   )}
 
                   {detail?.monthly == null ? (
                     <Card title="월별 비용 추이 (6개월)">
-                      <div className="text-[13px] text-ink-400">월별 호출 실패 — 잠시 후 재시도</div>
+                      <div className="text-[13px] text-ink-400">{tt('월별 호출 실패 — 잠시 후 재시도')}</div>
                     </Card>
                   ) : detail.monthly.length > 0 ? (
                     <>
@@ -458,11 +464,11 @@ export default function CostPage() {
                         return (
                           <Card title="Cost Summary">
                             <dl className="grid grid-cols-3 gap-3">
-                              <div><dt className="text-[11px] uppercase text-ink-400">이번 달</dt>
+                              <div><dt className="text-[11px] uppercase text-ink-400">{tt('이번 달')}</dt>
                                 <dd className="tabular mt-0.5 text-[16px] font-semibold text-ink-800">{usd(cur)}</dd></div>
-                              <div><dt className="text-[11px] uppercase text-ink-400">지난 달</dt>
+                              <div><dt className="text-[11px] uppercase text-ink-400">{tt('지난 달')}</dt>
                                 <dd className="tabular mt-0.5 text-[16px] text-ink-700">{usd(prev)}</dd></div>
-                              <div><dt className="text-[11px] uppercase text-ink-400">변화</dt>
+                              <div><dt className="text-[11px] uppercase text-ink-400">{tt('변화')}</dt>
                                 <dd className={`tabular mt-0.5 text-[16px] font-semibold ${pct != null && pct > 0 ? 'text-brand-700' : 'text-positive-text'}`}>
                                   {pct == null ? DASH : `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`}
                                 </dd></div>
@@ -483,7 +489,7 @@ export default function CostPage() {
 
                   {detail?.byUsageType == null ? (
                     <Card title="사용 유형별 비용 (최근 3개월)">
-                      <div className="text-[13px] text-ink-400">사용 유형 호출 실패 — 잠시 후 재시도</div>
+                      <div className="text-[13px] text-ink-400">{tt('사용 유형 호출 실패 — 잠시 후 재시도')}</div>
                     </Card>
                   ) : detail.byUsageType.length > 0 ? (
                     <HBarList
@@ -495,7 +501,7 @@ export default function CostPage() {
                     />
                   ) : (
                     <Card title="사용 유형별 비용 (최근 3개월)">
-                      <div className="text-[13px] text-ink-400">데이터 없음</div>
+                      <div className="text-[13px] text-ink-400">{tt('데이터 없음')}</div>
                     </Card>
                   )}
                 </>

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { rebuildGraph, rebuildInfraGraph } from './graph-store';
 
 // ADR-043 Step 1 — Task 1: the topology_graph migration exists and declares the expected shape.
-const MIG_DIR = join(process.cwd(), '..', 'terraform', 'v2', 'foundation', 'migrations');
+const MIG_DIR = join(process.cwd(), '..', 'terraform', 'foundation', 'migrations');
 
 describe('topology_graph migration', () => {
   const file = readdirSync(MIG_DIR).find((f) => f.endsWith('_topology_graph.sql'));

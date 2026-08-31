@@ -49,9 +49,11 @@ describe('keyset parity (regression guard)', () => {
     }
   });
 
-  it('nav.datasources exists in both ko and en (Explore page)', () => {
+  it('nav.datasources exists in every locale (Explore page)', () => {
     expect(translate('ko', 'nav.datasources')).toBe('데이터소스');
     expect(translate('en', 'nav.datasources')).toBe('Datasources');
+    expect(translate('zh', 'nav.datasources')).toBe('数据源');
+    expect(translate('ja', 'nav.datasources')).toBe('データソース');
   });
 
 });

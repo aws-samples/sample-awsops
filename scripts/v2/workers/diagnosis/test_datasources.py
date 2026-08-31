@@ -199,6 +199,34 @@ def _unavail_row(key, missing):
     return [key, key, "unavailable", None, _json.dumps(missing), _json.dumps({"pillar": "reliability"})]
 
 
+def test_signal_plan_uses_the_connectors_own_arg_key():
+    """ClickHouse's connector takes `sql`, everyone else `query`. The plan builder hardcoded `query`,
+    which is invisible while only prom/mimir reach it but breaks the moment that gate widens — and the
+    clickhouse signal rows already exist (review MAJOR)."""
+    rows = [["ch_spans", "스팬 수", "ready",
+             _json.dumps({"tool": "clickhouse_query", "queries": [{"label": "g", "expr": "SELECT count() FROM spans"}]}),
+             None, _json.dumps({"kind": "clickhouse", "pillar": "reliability"})]]
+    conn = SignalConn([(9, "ch", "clickhouse", True)], rows)
+    plan, _unavail, _version, _meta = src._signal_plan(conn, 9)
+    assert plan and plan[0][0] == "clickhouse_query"
+    assert plan[0][1] == {"sql": "SELECT count() FROM spans"}   # not {"query": …}
+
+
+def test_generated_signals_are_kept_out_of_the_report_plan():
+    """LLM-generated rows are Explore chips only: they carry no pillar/threshold, and the
+    external_obs_signals prompt judges severity from those fields — a threshold-less row makes the model
+    rate a signal against nothing (review MAJOR, L4-M1). Non-K8s Prometheus is exactly the widened case."""
+    gen = ["gen", "AI 생성 신호", "ready",
+           _json.dumps({"tool": "prometheus_query", "queries": [{"label": "g", "expr": "count(up)"}]}),
+           None, _json.dumps({"kind": "prometheus", "provenance": "generated"})]
+    det = _ready_row("network_pps", ["rate(node_network_receive_packets_total[5m])"])
+    conn = SignalConn([(5, "prom", "prometheus", True)], [gen, det])
+    plan, _unavail, _version, meta = src._signal_plan(conn, 5)
+    assert [p[0:2] for p in plan] == [("prometheus_query",
+                                       {"query": "rate(node_network_receive_packets_total[5m])"})]
+    assert [m["key"] for m in meta] == ["network_pps"]
+
+
 def test_prebuilt_signals_executed_when_present(monkeypatch):
     fake = _patch_lambda(monkeypatch, FakeLambda())
     conn = SignalConn([(5, "prod-prom", "prometheus", True)],

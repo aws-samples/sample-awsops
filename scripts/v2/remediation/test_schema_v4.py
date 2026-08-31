@@ -1,6 +1,6 @@
 # scripts/v2/remediation/test_schema_v4.py
 import re, pathlib
-SQL = pathlib.Path(__file__).parents[3].joinpath("terraform/v2/foundation/data/schema.sql").read_text()
+SQL = pathlib.Path(__file__).parents[3].joinpath("terraform/foundation/data/schema.sql").read_text()
 def test_migration_v4_present():
     assert re.search(r"VALUES \(4,\s*'ADR-029\+036", SQL)
 def test_all_seeds_disabled():

@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import Card from '@/components/ui/Card';
 import SegmentedControl from '@/components/ui/SegmentedControl';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 interface TrailEvent {
   time: string; name: string; source: string; user: string;
@@ -10,6 +11,7 @@ interface TrailEvent {
 
 /** 최근 CloudTrail 이벤트 (v1 parity: 최근 20건 라이브 조회, 전체/Write 탭). */
 export default function CloudTrailEvents() {
+  const { tt } = useI18n();
   const [mode, setMode] = useState<'all' | 'write'>('all');
   const [events, setEvents] = useState<TrailEvent[] | null>(null);
   const [err, setErr] = useState('');
@@ -39,9 +41,9 @@ export default function CloudTrailEvents() {
       }
       padded={false}
     >
-      {err && <p className="px-4 py-3 text-[12px] text-rose-600">이벤트 조회 실패: {err}</p>}
-      {!events && !err && <p className="px-4 py-3 text-[12px] text-ink-400">이벤트 조회 중… (LookupEvents)</p>}
-      {events && events.length === 0 && !err && <p className="px-4 py-3 text-[12px] text-ink-400">이벤트 없음</p>}
+      {err && <p className="px-4 py-3 text-[12px] text-rose-600">{tt('이벤트 조회 실패:')} {err}</p>}
+      {!events && !err && <p className="px-4 py-3 text-[12px] text-ink-400">{tt('이벤트 조회 중… (LookupEvents)')}</p>}
+      {events && events.length === 0 && !err && <p className="px-4 py-3 text-[12px] text-ink-400">{tt('이벤트 없음')}</p>}
       {events && events.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full">

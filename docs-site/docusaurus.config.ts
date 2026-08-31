@@ -19,6 +19,18 @@ const config: Config = {
   url: process.env.SITE_URL || 'https://www.atomai.click',
   baseUrl: process.env.BASE_URL || '/awsops/',
 
+  stylesheets: [
+    {
+      // Pinned to the immutable /npm/ path (not /gh/@tag, which is a
+      // re-assignable git ref) and locked with SRI, since GitHub Pages
+      // can't send a CSP to backstop a compromised or re-tagged asset.
+      href: 'https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/static/pretendard.min.css',
+      type: 'text/css',
+      integrity: 'sha384-1WPwPzrT39Q3uXVY1qOrNSiFcW7oxY0Xf5CZYw4D3j1EuApQlY8DzzfQw0tySMyG',
+      crossorigin: 'anonymous',
+    },
+  ],
+
   organizationName: 'Atom-oh',
   projectName: 'awsops',
   deploymentBranch: 'gh-pages',
@@ -30,10 +42,12 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'ko',
-    locales: ['ko', 'en'],
+    locales: ['ko', 'en', 'ja', 'zh'],
     localeConfigs: {
       ko: { label: '한국어', direction: 'ltr' },
       en: { label: 'English', direction: 'ltr' },
+      ja: { label: '日本語', direction: 'ltr' },
+      zh: { label: '简体中文', direction: 'ltr', htmlLang: 'zh-Hans' },
     },
   },
 
@@ -101,7 +115,7 @@ const config: Config = {
           position: 'left',
         },
         {
-          href: 'https://awsops.whchoi.net/awsops/',
+          href: 'https://awsops.atomai.click/',
           label: '대시보드',
           position: 'right',
         },
@@ -121,7 +135,7 @@ const config: Config = {
         {
           title: '리소스',
           items: [
-            { label: 'Dashboard', href: 'https://awsops.whchoi.net/awsops/' },
+            { label: 'Dashboard', href: 'https://awsops.atomai.click/' },
           ],
         },
         {

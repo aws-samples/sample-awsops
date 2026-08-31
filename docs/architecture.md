@@ -13,7 +13,7 @@ AWSops v2 is a read-only AWS/Kubernetes operations dashboard with AI diagnosis, 
 
 | Layer | Component | Role | Key files |
 |---|---|---|---|
-| Edge | CloudFront (TLS) → VPC Origin `https-only:443` → internal ALB HTTPS:443 (regional ACM) | Private request path; no public ALB. ALB SG allows 443 only from `CloudFront-VPCOrigins-Service-SG` | `terraform/v2/foundation/edge.tf`, `network.tf` |
+| Edge | CloudFront (TLS) → VPC Origin `https-only:443` → internal ALB HTTPS:443 (regional ACM) | Private request path; no public ALB. ALB SG allows 443 only from `CloudFront-VPCOrigins-Service-SG` | `terraform/foundation/edge.tf`, `network.tf` |
 | Auth | Cognito User Pool (PKCE public client) + Lambda@Edge (`us-east-1`, python3.12, viewer-request) | RS256 JWKS verification + iss/aud/token_use at the edge; self-hosted `/login` form (BFF `InitiateAuth`) mints `awsops_token`; Hosted UI PKCE kept as dark fallback | `auth.tf`, `edge-lambda/cognito_edge.py.tftpl`, `web/app/login/` |
 | Presentation (web BFF) | Next.js 14 thin-BFF on ECS Fargate `awsops-v2-web:3000` (standalone arm64, root path — no basePath) | Serves UI + light `/api/*` (`health`, `stream`, `db`, `jobs`, security/compliance); 6 Network menus (`/network-flow` live NFM top-contributors + E2E hop path, `/dns-query` Resolver/CoreDNS Logs Insights aggregation, `/ip-addresses` ENI-based IP inventory, `/vpc-endpoints` idle/policy/coverage analysis, `/direct-connect` connection/VIF down-detection + BGP route visibility, `/network-firewall` protection/logging/capacity + traffic-drop analysis) and the EKS drill-down (`/eks` cluster list → `[cluster]` tabs + nodes/pods/deployments/services/explorer/cost); heavy work is enqueued via `POST /api/jobs`, never run inline | `web/`, `workload.tf`, `scripts/v2/deploy.mjs` |
 | Data | Aurora Serverless v2 (`awsops-v2-aurora`, PG 17.9, 0.5–4 ACU, KMS CMK, RDS-managed secret) via node-pg; flag-gated Steampipe inventory sync (`steampipe_enabled`) | Durable app state (`data/schema.sql` + `schema_migrations`, ULID migrations) — replaces v1 `data/*.json`, not live Steampipe | `data.tf`, `data/schema.sql`, `web/lib/db.ts`, `steampipe.tf` |
@@ -112,7 +112,7 @@ flowchart LR
 
 ## Infrastructure
 
-Single Terraform root `terraform/v2/foundation/` — partial S3 backend (`backend.hcl`, bucket `awsops-v2-tfstate`, `use_lockfile`, no DynamoDB), TF >= 1.15, provider `~>6.0`. Large features are count/flag-gated (default false → `plan` = No changes, $0).
+Single Terraform root `terraform/foundation/` — partial S3 backend (`backend.hcl`, bucket `awsops-v2-tfstate`, `use_lockfile`, no DynamoDB), TF >= 1.15, provider `~>6.0`. Large features are count/flag-gated (default false → `plan` = No changes, $0).
 
 | File | Owns |
 |---|---|
@@ -182,7 +182,7 @@ AWSops v2는 읽기 전용 AWS/Kubernetes 운영 대시보드 + AI 진단으로,
 
 | 레이어 | 컴포넌트 | 역할 | 주요 파일 |
 |---|---|---|---|
-| Edge | CloudFront(TLS) → VPC Origin `https-only:443` → 내부 ALB HTTPS:443(리전 ACM) | 비공개 요청 경로 — 공개 ALB 없음. ALB SG는 `CloudFront-VPCOrigins-Service-SG`에서만 443 허용 | `terraform/v2/foundation/edge.tf`, `network.tf` |
+| Edge | CloudFront(TLS) → VPC Origin `https-only:443` → 내부 ALB HTTPS:443(리전 ACM) | 비공개 요청 경로 — 공개 ALB 없음. ALB SG는 `CloudFront-VPCOrigins-Service-SG`에서만 443 허용 | `terraform/foundation/edge.tf`, `network.tf` |
 | Auth | Cognito User Pool(PKCE public client) + Lambda@Edge(`us-east-1`, python3.12, viewer-request) | 엣지에서 RS256 JWKS 검증 + iss/aud/token_use; 자체 `/login` 폼(BFF `InitiateAuth`)이 `awsops_token` 발급, Hosted UI PKCE는 다크 폴백 | `auth.tf`, `edge-lambda/cognito_edge.py.tftpl`, `web/app/login/` |
 | Presentation (web BFF) | ECS Fargate `awsops-v2-web:3000`의 Next.js 14 thin-BFF(standalone arm64, 루트 경로 — basePath 없음) | UI + 가벼운 `/api/*`(`health`, `stream`, `db`, `jobs`, security/compliance)만 담당; 네트워크 메뉴 6종(`/network-flow` 라이브 NFM top-contributor + E2E 홉 경로, `/dns-query` Resolver/CoreDNS Logs Insights 집계, `/ip-addresses` ENI 기반 IP 인벤토리, `/vpc-endpoints` 유휴/정책/커버리지 분석, `/direct-connect` 커넥션/VIF 다운 감지 + BGP 라우트 가시성, `/network-firewall` 보호/로깅/용량 + 트래픽·드롭 분석)과 EKS 드릴다운(`/eks` 클러스터 목록 → `[cluster]` 탭 + nodes/pods/deployments/services/explorer/cost); 무거운 작업은 `POST /api/jobs`로 큐잉, 인라인 실행 금지 | `web/`, `workload.tf`, `scripts/v2/deploy.mjs` |
 | Data | Aurora Serverless v2(`awsops-v2-aurora`, PG 17.9, 0.5–4 ACU, KMS CMK, RDS-관리 시크릿) — node-pg 접근; flag-gated Steampipe 인벤토리 sync(`steampipe_enabled`) | 영속 앱 상태(`data/schema.sql` + `schema_migrations`, ULID 마이그레이션) — v1 `data/*.json`의 대체이지 라이브 Steampipe 대체가 아님 | `data.tf`, `data/schema.sql`, `web/lib/db.ts`, `steampipe.tf` |
@@ -281,7 +281,7 @@ flowchart LR
 
 ## Infrastructure
 
-단일 Terraform 루트 `terraform/v2/foundation/` — partial S3 backend(`backend.hcl`, 버킷 `awsops-v2-tfstate`, `use_lockfile`, DynamoDB 없음), TF >= 1.15, provider `~>6.0`. 대형 기능은 count/flag 게이트(기본 false → `plan` = No changes, $0).
+단일 Terraform 루트 `terraform/foundation/` — partial S3 backend(`backend.hcl`, 버킷 `awsops-v2-tfstate`, `use_lockfile`, DynamoDB 없음), TF >= 1.15, provider `~>6.0`. 대형 기능은 count/flag 게이트(기본 false → `plan` = No changes, $0).
 
 | 파일 | 담당 |
 |---|---|

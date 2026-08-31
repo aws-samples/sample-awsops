@@ -46,14 +46,14 @@ test('showcase asset outputs are unique WebP files', () => {
     const asset = cloneAsset(ASSETS[0]);
     asset.output = output;
     assert.throws(
-      () => validateAssetSpecs(1920, 1080, [asset]),
+      () => validateAssetSpecs([asset]),
       /invalid WebP output basename/,
     );
   }
 });
 
 test('all crops and privacy overlays are valid', () => {
-  assert.doesNotThrow(() => validateAssetSpecs(1920, 1080));
+  assert.doesNotThrow(() => validateAssetSpecs());
   for (const asset of ASSETS) {
     assert.ok(asset.outputWidth <= 1600);
     for (const overlay of asset.overlays) {
@@ -75,21 +75,21 @@ test('output width and crop dimensions are positive finite integers', () => {
     const invalidOutput = cloneAsset(ASSETS[0]);
     invalidOutput.outputWidth = invalid;
     assert.throws(
-      () => validateAssetSpecs(1920, 1080, [invalidOutput]),
+      () => validateAssetSpecs([invalidOutput]),
       /outputWidth must be a positive finite integer/,
     );
 
     const invalidCropWidth = cloneAsset(ASSETS[0]);
     invalidCropWidth.crop.width = invalid;
     assert.throws(
-      () => validateAssetSpecs(1920, 1080, [invalidCropWidth]),
+      () => validateAssetSpecs([invalidCropWidth]),
       /crop width must be a positive finite integer/,
     );
 
     const invalidCropHeight = cloneAsset(ASSETS[0]);
     invalidCropHeight.crop.height = invalid;
     assert.throws(
-      () => validateAssetSpecs(1920, 1080, [invalidCropHeight]),
+      () => validateAssetSpecs([invalidCropHeight]),
       /crop height must be a positive finite integer/,
     );
   }
@@ -98,7 +98,9 @@ test('output width and crop dimensions are positive finite integers', () => {
 test('source dimensions and SHA-256 match the approved PNGs', () => {
   for (const asset of ASSETS) {
     assert.equal(asset.sourceWidth, 1920);
-    assert.equal(asset.sourceHeight, 1080);
+    // Heights are per-asset since PR #247 (ai-diagnosis recaptured at 1040); the declared value
+    // is verified against the actual PNG IHDR below, so no fixed constant here.
+    assert.ok(Number.isInteger(asset.sourceHeight) && asset.sourceHeight > 0);
     assert.match(asset.sourceSha256, /^[a-f0-9]{64}$/);
     const source = fs.readFileSync(path.join(siteRoot, asset.source));
     assert.doesNotThrow(() => assertSourceMatchesSpec(asset, source));
@@ -126,17 +128,32 @@ test('source identity mismatches fail closed', () => {
 test('topology and diagnosis have baked-in identifier replacements', () => {
   const topology = ASSETS.find((asset) => asset.output === 'topology.webp');
   const diagnosis = ASSETS.find((asset) => asset.output === 'ai-diagnosis.webp');
+  // The topology mock-up gained a second branch (two target groups, two healthy-target boxes)
+  // in the product-tour rework — this list rotted because the suite isn't wired into CI.
   assert.deepEqual(
     topology?.overlays.map((overlay) => overlay.label),
-    ['DNS endpoint', 'CloudFront', 'Load balancer', 'Target group', 'Healthy targets'],
+    ['DNS endpoint', 'CloudFront', 'Load balancer',
+      'Target group', 'Target group', 'Healthy targets', 'Healthy targets'],
   );
-  assert.equal(diagnosis?.overlays[0]?.label, '호스트 계정 (mid)');
+  // PR #247's recapture shows no account identifier inside the diagnosis crop (verified against
+  // the new pixels), so the old '호스트 계정 (mid)' identifier mask is gone by design. Assert
+  // only that the left-sliver panel cover is still present — deliberately NOT an exact list, so
+  // re-adding an identifier mask for a future capture can never fail this test (an exact
+  // no-mask lock would be backwards for a privacy guard).
+  assert.ok(diagnosis && diagnosis.overlays.length >= 1);
+  assert.ok(diagnosis.overlays.some((overlay) =>
+    overlay.left === 0 && overlay.width === 44 && overlay.height === diagnosis.crop.height));
 });
 
 test('topology overlays cover the complete resource label area', () => {
   const topology = ASSETS.find((asset) => asset.output === 'topology.webp');
   assert.ok(topology);
-  assert.ok(topology.overlays.every((overlay) => overlay.left + overlay.width >= 932));
+  // The old invariant (right edge >= x932) came from the single-column layout where every node
+  // label ended at the same x — the current two-branch layout scatters nodes, so the durable
+  // invariant is that each replacement box is at least node-label sized (270x42, the smallest
+  // node box in the mock-up). Whether each box actually lands on its node is verified by the
+  // generator test's source-sample-differs-from-fill check.
+  assert.ok(topology.overlays.every((overlay) => overlay.width >= 270 && overlay.height >= 42));
 });
 
 test('privacy overlay samples are source-relative points inside their overlays', () => {
@@ -158,7 +175,7 @@ test('privacy overlay samples are source-relative points inside their overlays',
     top: invalid.overlays[0].top,
   };
   assert.throws(
-    () => validateAssetSpecs(1920, 1080, [invalid]),
+    () => validateAssetSpecs([invalid]),
     /overlay sample outside overlay/,
   );
 });

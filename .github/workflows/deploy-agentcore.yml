@@ -1,0 +1,61 @@
+name: Deploy AgentCore
+
+# workflow_dispatch-only, gated by aws-samples-deploy (human reviewer) — this
+# runs `make migrate` then `make agentcore`, in that order, per the platform's
+# DESIGN.md ("make migrate -> make agentcore, order preserved"). Never
+# reversed: AgentCore's Data API auth assumes migrations are already applied.
+
+on:
+  workflow_dispatch:
+    inputs:
+      smoke:
+        description: "Invoke the deployed agent once as a smoke test (--smoke)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: migrate + agentcore
+    runs-on: sample-awsops
+    environment: aws-samples-deploy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC -> ci-deployer)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_DEPLOYER_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      - name: Restore terraform.foundation backend
+        # scripts/v2/migrate.mjs and agentcore.mjs both read terraform outputs
+        # from terraform/foundation — see terraform.yml's header comment.
+        working-directory: terraform/foundation
+        run: |
+          if [ -z "${{ secrets.TF_BACKEND_HCL }}" ]; then
+            echo "::error::TF_BACKEND_HCL repo secret not set — run 'make configure' once, see terraform.yml's header comment."
+            exit 1
+          fi
+          echo "${{ secrets.TF_BACKEND_HCL }}" | base64 -d > backend.hcl
+          echo "${{ secrets.TF_TFVARS }}" | base64 -d > terraform.tfvars
+          terraform init -backend-config=backend.hcl -input=false
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - run: npm ci --prefix scripts/v2
+
+      - name: make migrate
+        run: make migrate
+
+      - name: make agentcore
+        # SMOKE just needs to be non-empty to enable Makefile's `$(if $(SMOKE),...)`
+        # — "false" is non-empty too, so only export it when actually true.
+        run: make agentcore ${{ inputs.smoke && 'SMOKE=1' || '' }}

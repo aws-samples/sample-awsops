@@ -11,7 +11,7 @@ AWSops AI 어시스턴트에 대한 질문과 답변입니다.
 <details>
 <summary>어떤 질문을 할 수 있나요?</summary>
 
-AI 어시스턴트는 **8개 섹션 도메인**에 걸쳐 AWS/Kubernetes 운영 질문에 답합니다. 어떤 도메인이 필요한지는 자동으로 판별되며(아래 "라우팅" 참고), 자연어로 물어보면 됩니다.
+AI 어시스턴트는 **9개 섹션 도메인**(+로컬 전문 섹션)에 걸쳐 AWS/Kubernetes 운영 질문에 답합니다. 어떤 도메인이 필요한지는 자동으로 판별되며(아래 "라우팅" 참고), 자연어로 물어보면 됩니다.
 
 | 도메인 | 예시 질문 |
 |--------|-----------|
@@ -22,6 +22,7 @@ AI 어시스턴트는 **8개 섹션 도메인**에 걸쳐 AWS/Kubernetes 운영 
 | **Monitoring** | "CloudWatch 경보 설정 방법", "CloudTrail에서 특정 이벤트 찾기", "EC2 CPU 추세 분석" |
 | **Cost** | "이번 달 비용 분석", "비용 급증 원인은?", "비용 최적화 추천" |
 | **IaC** | "이 Terraform 검토해줘", "CloudFormation 스택 생성 실패 원인은?" |
+| **Observability** | "서비스 p99 지연시간 보여줘 (Prometheus)", "ClickHouse 트레이스에서 느린 호출 찾아줘" |
 | **Ops** | 위 분류에 딱 맞지 않는 일반 AWS 운영 질문 |
 
 데이터소스(외부 관측성)를 연결해 두었다면, 자연어를 그대로 PromQL/LogQL 등으로 변환해 질의할 수도 있습니다 — 자세한 내용은 아래 "외부 관측성"과 [데이터소스 개발 FAQ](./datasource-development)를 참고하세요.
@@ -50,8 +51,8 @@ AI 어시스턴트는 **하이브리드 라우팅**(ADR-038, LIVE)을 사용합�
 
 실시간 AWS 조회는 **AgentCore MCP(Model Context Protocol) Lambda 도구**를 통해 이루어집니다. 어시스턴트가 질문에 답하는 데 필요한 데이터를 도구로 직접 조회한 뒤 분석합니다.
 
-- **약 120개의 읽기 전용 도구**가 **8개 섹션 게이트웨이**(Network / Container / Data / Security / Monitoring / Cost / IaC / Ops)에 나뉘어 있습니다. 도구 수는 대략적이며 계속 진화 중입니다.
-- 외부 관측성은 별도의 **Integrations 축**(ADR-039)이며 9번째 게이트웨이가 아닙니다 — 게이트웨이 수는 8개로 유지됩니다(ADR-004).
+- **약 160개의 읽기 전용 도구**가 **9개 섹션 게이트웨이**(Network / Container / Data / Security / Monitoring / Cost / IaC / Ops / External-Obs — ADR-004 개정)에 나뉘어 있습니다. 도구 수는 대략적이며 계속 진화 중입니다.
+- 외부 관측성 커넥터(Prometheus·ClickHouse)는 **external-obs 게이트웨이**로 승격되어 아홉 번째로 라우팅됩니다(ADR-004 개정 2026-06-24, 9 프로비저닝/9 라우트). 벤더 호스팅 통합 등 나머지 외부 연동은 별도의 **Integrations 축**(ADR-007/017)입니다.
 - Steampipe는 **플래그로 게이트된 인벤토리 동기화**(`steampipe_enabled`, 기본 OFF) 용도로만 존재합니다. 실시간 질의 엔진이 아니며, 상시 떠 있는 로컬 서비스도 아닙니다.
 
 :::info 기술 상세
@@ -107,8 +108,9 @@ AI 어시스턴트는 **하이브리드 라우팅**(ADR-038, LIVE)을 사용합�
 
 | Tier | 섹션 수 | 기본 모델 |
 |------|---------|-----------|
-| **Base** | 8개 섹션 | Sonnet |
-| **Deep** | 15개 섹션(base 8 + deep 전용 6 + 종합) | Sonnet 기본, **Opus 선택 가능**(deep 전용, cost-gate 적용) |
+| **Light** | 8+1개 섹션(총 9 렌더 — 현재 Mid와 동일 카탈로그·토큰 예산) | Sonnet |
+| **Mid** | 8+1개 섹션(총 9 렌더) | Sonnet |
+| **Deep** | 15+1개 섹션(base 8 + deep 전용 7 + 의도 대비 실제, 총 16 렌더) | Sonnet 기본, **Opus 선택 가능**(deep 전용, cost-gate 적용) |
 
 **기능**
 

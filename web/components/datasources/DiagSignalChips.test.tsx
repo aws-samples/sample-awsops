@@ -10,6 +10,12 @@ const SIGNALS = {
                   missingMetrics: ['node_filesystem_avail_bytes'] }],
 };
 
+const LOKI_SIGNALS = {
+  ready: [{ signalKey: 'loki_error_count', title: '에러 로그 수(5분)',
+            query: { tool: 'loki_query_range', queries: [{ label: 'error_rate', expr: 'sum by(job) (count_over_time({job=~".+"} |~ "(?i)error|exception|fatal" [5m]))' }] } }],
+  unavailable: [],
+};
+
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => SIGNALS })));
 });
@@ -29,10 +35,27 @@ describe('DiagSignalChips', () => {
     expect(un.getAttribute('title')).toMatch(/node_filesystem_avail_bytes/);
   });
 
-  it('renders nothing for a non-prom/mimir kind (no fetch)', async () => {
-    render(<DiagSignalChips instanceId={7} kind="loki" onPick={vi.fn()} />);
+  it('renders chips for a non-prom/mimir kind (loki) now that it has its own catalog', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => LOKI_SIGNALS })));
+    const onPick = vi.fn();
+    render(<DiagSignalChips instanceId={7} kind="loki" onPick={onPick} />);
+    await waitFor(() => screen.getByText('에러 로그 수(5분)'));
+    expect((global.fetch as any)).toHaveBeenCalledWith('/api/datasources/7/diag-signals');
+    fireEvent.click(screen.getByText('에러 로그 수(5분)'));
+    expect(onPick).toHaveBeenCalledWith('sum by(job) (count_over_time({job=~".+"} |~ "(?i)error|exception|fatal" [5m]))');
+  });
+
+  it('clears the previous instance chips when the switch fetch fails', async () => {
+    // Before the kind gate was removed, switching to a non-prom kind hit `!enabled` and cleared. Now
+    // `enabled = !!instanceId`, so a failed fetch after a switch used to leave the OLD instance's chips
+    // on screen — and clicking a loki chip while a clickhouse instance is selected sends LogQL to the
+    // clickhouse connector (review MAJOR).
+    const { rerender } = render(<DiagSignalChips instanceId={7} kind="loki" onPick={vi.fn()} />);
+    await waitFor(() => screen.getByText('OOM Kill'));
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, json: async () => ({}) })));
+    rerender(<DiagSignalChips instanceId={8} kind="clickhouse" onPick={vi.fn()} />);
+    await waitFor(() => expect(screen.queryByText('OOM Kill')).toBeNull());
     expect(screen.queryByTestId('diag-signal-chips')).toBeNull();
-    expect((global.fetch as any)).not.toHaveBeenCalled();
   });
 
   it('renders nothing without an instanceId', async () => {

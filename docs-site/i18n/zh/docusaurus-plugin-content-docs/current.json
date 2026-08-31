@@ -1,0 +1,30 @@
+{
+  "version.label": {
+    "message": "Next",
+    "description": "The label for version current"
+  },
+  "sidebar.guideSidebar.category.시작하기": {
+    "message": "快速开始",
+    "description": "The label for category '시작하기' in sidebar 'guideSidebar'"
+  },
+  "sidebar.guideSidebar.category.개요": {
+    "message": "概览",
+    "description": "The label for category '개요' in sidebar 'guideSidebar'"
+  },
+  "sidebar.guideSidebar.category.AI 운영": {
+    "message": "AI 运维",
+    "description": "The label for category 'AI 운영' in sidebar 'guideSidebar'"
+  },
+  "sidebar.guideSidebar.category.리소스": {
+    "message": "资源",
+    "description": "The label for category '리소스' in sidebar 'guideSidebar'"
+  },
+  "sidebar.guideSidebar.category.비용": {
+    "message": "成本",
+    "description": "The label for category '비용' in sidebar 'guideSidebar'"
+  },
+  "sidebar.guideSidebar.category.관측성": {
+    "message": "可观测性",
+    "description": "The label for category '관측성' in sidebar 'guideSidebar'"
+  }
+}

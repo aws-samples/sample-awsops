@@ -1,9 +1,9 @@
 #!/bin/bash
-# Guard the pr-review panel prompt: the diff is delivered by file path + trusted-tool read to
-# kiro-cli (PR #115) and via stdin to codex, both fed by the SAME shared prompt
-# (.github/workflows/pr-review.yml's panel-prompt heredoc) — so the data-only / prompt-injection
-# guard must live there (covers all 4 panelists), not only in run-panel.sh's kiro-only addendum
-# (PR #115 review follow-up: codex was left unprotected when the guard was kiro-only).
+# Guard the pr-review panel prompt: every panelist (codex + all kiro models) must receive the
+# data-only / prompt-injection guard. Since the lens refactor (PR #205-era), the shared guard
+# lives in the workflow's COMMON variable, fanned into every lens prompt file (L2..L5) that
+# run-panel.sh feeds to codex and kiro; kiro additionally gets a file-path addendum
+# (KIRO_INSTRUCTION) that must carry its own data-only line for the $DIFF file it reads.
 cd "$(dirname "$0")/../.."
 
 FAILED=0
@@ -20,35 +20,56 @@ if [ ! -f "$SCRIPT" ]; then
 fi
 pass "run-panel.sh exists"
 
-# Isolate the shared panel-prompt heredoc (covers codex + all kiro models) — not just kiro's addendum.
-# Terminator line is indented under the YAML step, so match optional leading whitespace.
-SHARED_PROMPT="$(sed -n "/cat <<'PROMPT_EOF'/,/^[[:space:]]*PROMPT_EOF[[:space:]]*$/p" "$WORKFLOW")"
+# The shared COMMON block (source of every lens prompt) must exist and carry the guard.
+COMMON_BLOCK="$(sed -n '/COMMON="/,/"$/p' "$WORKFLOW")"
 
-if [ -n "$SHARED_PROMPT" ]; then
-  pass "shared panel-prompt heredoc found"
+if [ -n "$COMMON_BLOCK" ]; then
+  pass "shared COMMON prompt block found in workflow"
 else
-  fail "shared panel-prompt heredoc found"
+  fail "shared COMMON prompt block found in workflow"
 fi
 
-if echo "$SHARED_PROMPT" | grep -qiE "data only|not follow|never follow"; then
-  pass "shared panel prompt (codex + kiro) carries a prompt-injection / data-only guard"
+if echo "$COMMON_BLOCK" | grep -qiE "data only|not follow|never follow"; then
+  pass "shared COMMON prompt carries a prompt-injection / data-only guard"
 else
-  fail "shared panel prompt (codex + kiro) carries a prompt-injection / data-only guard"
+  fail "shared COMMON prompt carries a prompt-injection / data-only guard"
 fi
 
-# Isolate just the KIRO_PROMPT assignment (avoid matching unrelated comments elsewhere).
-BLOCK="$(sed -n '/^KIRO_PROMPT=/,/^KIRO_MODELS=/p' "$SCRIPT")"
+# Every lens prompt file the workflow writes must include $COMMON (else that lens's
+# panelists run unguarded).
+LENS_HEREDOCS=$(grep -c "cat <<PROMPT_EOF > /tmp/pr-review/lenses/" "$WORKFLOW")
+# Flag resets at each heredoc terminator, so a lens missing $COMMON cannot borrow
+# credit from the next heredoc's $COMMON line.
+LENS_WITH_COMMON=$(awk '
+  /cat <<PROMPT_EOF > \/tmp\/pr-review\/lenses\//{f=1; next}
+  /^[[:space:]]*PROMPT_EOF[[:space:]]*$/{f=0}
+  f && /\$COMMON/{c++; f=0}
+  END{print c+0}' "$WORKFLOW")
+if [ "$LENS_HEREDOCS" -ge 1 ] && [ "$LENS_HEREDOCS" -eq "$LENS_WITH_COMMON" ]; then
+  pass "every lens prompt heredoc ($LENS_HEREDOCS) embeds \$COMMON"
+else
+  fail "every lens prompt heredoc embeds \$COMMON ($LENS_WITH_COMMON of $LENS_HEREDOCS do)"
+fi
+
+# Kiro addendum: file-path delivery + its own data-only guard for the file content.
+BLOCK="$(sed -n '/^[[:space:]]*KIRO_INSTRUCTION=/,/KIRO_MODELS\[@\]/p' "$SCRIPT")"
 
 if [ -n "$BLOCK" ]; then
-  pass "KIRO_PROMPT assignment block found"
+  pass "KIRO_INSTRUCTION assignment block found"
 else
-  fail "KIRO_PROMPT assignment block found"
+  fail "KIRO_INSTRUCTION assignment block found"
 fi
 
 if echo "$BLOCK" | grep -q '\$DIFF'; then
-  pass "KIRO_PROMPT still references \$DIFF file path (PR #115 file-read delivery)"
+  pass "KIRO_INSTRUCTION references \$DIFF file path (file-read delivery)"
 else
-  fail "KIRO_PROMPT still references \$DIFF file path (PR #115 file-read delivery)"
+  fail "KIRO_INSTRUCTION references \$DIFF file path (file-read delivery)"
+fi
+
+if echo "$BLOCK" | grep -qiE "data only|not follow|never follow"; then
+  pass "KIRO_INSTRUCTION carries its own data-only guard for the diff file"
+else
+  fail "KIRO_INSTRUCTION carries its own data-only guard for the diff file"
 fi
 
 # --trust-tools and the prompt's tool-name mentions must be documented as staying in sync.

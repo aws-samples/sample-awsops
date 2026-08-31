@@ -2,6 +2,35 @@ import { sectionByKey, activeSections } from './sections';
 
 // MVP keyword heuristics per section (KO + EN). First match wins, in this order.
 const RULES: { key: string; re: RegExp }[] = [
+  // observability = external-obs. FIRST rule on purpose (round-4 review MAJOR, 2026-07-31): an
+  // explicit VENDOR NAME is the strongest routing signal there is, so it must be checked before
+  // EVERY generic domain rule — not just before 'monitoring' (the round-2/3 fix, which left
+  // "ClickHouse 쿼리 느려" and "Datadog database latency" being stolen by the generic 'data' rule's
+  // 쿼리/database keywords, since that rule sat above this one). Only a real vendor identifier is
+  // listed here; ambiguous generic terms (metric/latency/p99/쿼리) stay on their domain rules so
+  // this rule can sit at the top without hijacking anything.
+  // Covers the connectors that live here (Prometheus/ClickHouse lambda targets) PLUS the ADR-017
+  // (amended 2026-08-05) vendor-hosted official-MCP presets (catalog.py MCP_SERVER_TARGETS —
+  // datadog/dynatrace/newrelic, all 'external-obs'): those three have no lambda target anywhere,
+  // so this is their ONLY chat path. Grafana/Splunk keywords were REMOVED by the amendment (the
+  // kinds are unsupported — no preset, no lambda: FORCING a vendor route for them is a dead end by
+  // definition). Jaeger likewise has no chat path today (its lambda is deployed but was never a
+  // gateway TARGETS entry) — keyword removed with it; add it back only when a jaeger target
+  // actually exists. What removal means precisely: the vendor NAME stops being a routing signal —
+  // it does NOT force 'general'. Remaining domain keywords still route by domain (e.g. 'jaeger
+  // 트레이스…' hits monitoring's 트레이스 rule, where the tempo tools live), and a query with no
+  // matching keyword lands on the ops catch-all (or the LLM classifier on the hybrid path).
+  // Tempo/트레이스/trace are DELIBERATELY EXCLUDED here (round-3 review MAJOR, 2026-07-31): round-2
+  // put them on this rule to fix the POST-cutover dead-end (tempo-mcp-target retired, tools only
+  // live on external-obs), but official_mcp_enabled defaults to false — that made the dead-end the
+  // DEFAULT state for every deployment that never opts into ADR-017 presets, not just a brief
+  // migration window. There's no runtime signal here (route.ts is a pure prompt->key function; the
+  // official_mcp_enabled/ack/endpoint state lives in terraform vars + provision.py, not something
+  // this request handler reads) to route dynamically per deployment, so this picks the one static
+  // answer that matches the DEFAULT/most-common state: legacy tempo-mcp-target on 'monitoring'.
+  // REQUIRED cutover step: when actually flipping official_mcp_enabled=true for the tempo preset,
+  // move `tempo|트레이스|\btrace\b` from the monitoring rule below to this rule (see ADR-017 §Trade-offs).
+  { key: 'observability', re: /promql|prometheus|프로메테우스|clickhouse|클릭하우스|datadog|데이터독|dynatrace|다이나트레이스|newrelic|new relic|뉴렐릭/i },
   { key: 'cost', re: /비용|요금|예산|절감|billing|cost|budget|forecast|spend/i },
   { key: 'security', re: /보안|권한|역할|정책|iam|policy|role|denied|permission|public|노출/i },
   { key: 'network', re: /통신|연결|네트워크|포트|라우트|reachab|network|connectivity|security ?group|\bsg\b|nacl|tgw|vpn|peering|flow ?log/i },
@@ -9,16 +38,16 @@ const RULES: { key: string; re: RegExp }[] = [
   { key: 'data', re: /쿼리|데이터베이스|rds|aurora|dynamo|elasticache|redis|msk|kafka|database|slow query|throttl/i },
   { key: 'cost', re: /\$\d/i },
   // monitoring owns CloudWatch/CloudTrail AND the still-here datasource connectors (Loki logs,
-  // Tempo traces, Mimir long-term metrics, OpenSearch) — route those keywords here, where the tools are.
-  { key: 'monitoring', re: /알람|지표|로그변경|cloudwatch|cloudtrail|alarm|metric|who changed|audit|loki|tempo|mimir|opensearch|trace|트레이스|grafana/i },
+  // Mimir long-term metrics, OpenSearch) — route those keywords here, where the tools are.
+  // Ambiguous generic terms (metric/alarm/audit) are matched here but only reached when no
+  // vendor-specific observability keyword matched first (see the FIRST rule above). tempo/트레이스/
+  // trace stay here too (see that rule's comment) — tempo-mcp-target is the legacy lambda target
+  // and lives on this gateway in the DEFAULT (official_mcp_enabled=false) state most deployments run in.
+  { key: 'monitoring', re: /알람|지표|로그변경|cloudwatch|cloudtrail|alarm|metric|who changed|audit|loki|mimir|opensearch|tempo|트레이스|\btrace\b/i },
   { key: 'iac', re: /드리프트|스택|terraform|cloudformation|\bcdk\b|drift|stack|iac/i },
   // ops = inventory_read MCP home: topology, unused/orphan resources, and the load-balancer /
   // target-group / CloudFront *listing* tools live here (network only does connectivity).
   { key: 'ops', re: /미사용|안 ?쓰는|놀고 ?있는|orphan|고아|unused|인벤토리|inventory|리소스 ?(현황|목록|정리)|정리하|leftover|미연결|unattached|미할당|토폴로지|topology|origin|\btg\b|로드 ?밸런서|load ?balancer|\belb\b|\balb\b|\bnlb\b|타겟 ?그룹|대상 ?그룹|target ?group|cloudfront|클라우드프론트|리스너|listener/i },
-  // observability = the connectors actually moved here: Prometheus (PromQL) + ClickHouse (SQL/otel).
-  // Match only EXPLICIT datasource identifiers; ambiguous generic terms (metric/latency/p99) are left to
-  // the LLM classifier so they don't steal CloudWatch's 'metric'. Loki/Tempo/Mimir stay on monitoring.
-  { key: 'observability', re: /promql|prometheus|프로메테우스|clickhouse|클릭하우스/i },
   // v1 auto-collect collectors — dedicated STRONG keywords only, near-last on purpose: generic
   // 미사용/unused listings stay with ops and 비용/절감 stays with cost. A prompt matching BOTH
   // (e.g. '미사용 리소스 찾아줘' hits ops+idle-scan) goes ambiguous → the LLM classifier (which
@@ -117,6 +146,23 @@ export async function classifyRoute(prompt: string, pinned?: string, opts: Class
   const loneCatchAll = matched.length === 1 && matched[0] === 'ops' && !!(opts.llmEnabled && opts.classify);
   if (matched.length === 1 && !loneCatchAll) {
     return single(matched[0], [entry(matched[0], 1)], 'regex');
+  }
+  // PR #194 review MAJOR (L2 + L4): an explicit VENDOR NAME is the strongest routing signal there
+  // is — that is why the observability rule sits first in RULES — but the fast-path above only fires
+  // on EXACTLY ONE match, so "Datadog metric 확인" (observability + monitoring) fell through to the
+  // LLM classifier and the vendor-first ordering that rounds 2-4 established was silently discarded
+  // on the hybrid path. pickGateway() kept it (first-match-wins); classifyRoute() did not.
+  //
+  // Keeping the OTHER matched sections is the second half of the fix. Routing a mixed-intent query
+  // like "grafana 대시보드에서 본 trace 이상해" to observability ALONE drops `monitoring`, which is
+  // where the tempo tools actually live in the default (official_mcp_enabled=false) deployment — a
+  // dead end. Vendor first, then the rest, so the fan-out still reaches the section holding tools.
+  if (matched[0] === 'observability') {
+    const ranked = matched.map((k, i) => entry(k, i === 0 ? 1 : 0.5));
+    const selected = selectMultiRoute(ranked, opts.minScore);
+    const multiDomain = selected.length >= 2;
+    return { primary: 'observability', ranked, method: 'regex', multiDomain,
+             selected: multiDomain ? selected : [ranked[0]] };
   }
   if (opts.llmEnabled && opts.classify) {
     try {

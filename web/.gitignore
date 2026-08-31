@@ -26,3 +26,9 @@ next-env.d.ts
 
 # deploy.mjs가 빌드 직전 저장소 루트에서 복사 (원본은 ../CHANGELOG.md)
 CHANGELOG.md
+
+# ad-hoc Playwright screenshot verification (web/playwright.config.ts) — not committed
+/e2e/.screenshots/
+/playwright-report/
+/test-results/
+/blob-report/

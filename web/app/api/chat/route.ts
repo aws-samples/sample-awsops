@@ -27,7 +27,7 @@ import { listConfiguredSchemas, renderSchemaForPrompt } from '@/lib/datasource-s
 import { listDatasources } from '@/lib/datasources';
 import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
 import { getAgentSpace } from '@/lib/agent-space';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180; // 콜드 Steampipe(≤35s) + 자기수정 + 장문 분석 스트림이 60s를 넘던 실측(2026-08-02) // long agent calls
@@ -306,7 +306,46 @@ export async function POST(request: Request) {
   // UI language (not question-language guessing). Absent/invalid ⇒ 'ko' (legacy behavior).
   const lang = normalizeChatLang(body.lang);
 
-  const sessionId = (body.sessionId && body.sessionId.length >= 33) ? body.sessionId : `awsops-${user.sub}-000000000000000000000000`;
+  // pentest-remediation P3-1: the client-supplied sessionId used to flow straight into the AgentCore
+  // Memory runtimeSessionId with only a length check — a client that knew (or guessed) another
+  // user's sub could attach to that user's memory session. (Finding 6 itself, which reasoned from
+  // this same code path, was a false positive: chat_threads/chat_messages are correctly scoped by
+  // user_sub everywhere in web/lib/chat-store.ts, so no thread/message data crossed principals — but
+  // the underlying sessionId-trust gap was real.) Namespace under the CALLER's own sub — the
+  // client-supplied value only ever picks which of THIS user's sessions to use (preserves the
+  // per-browser session isolation from useChat.ts's crypto.randomUUID()), it can never name another
+  // user's, since a forged `awsops-<other-sub>-...` simply fails the OWN_PREFIX check below and gets
+  // re-derived under the caller's real sub instead.
+  //
+  // MUST be idempotent (PR #200 review, confirmed against base): recordExchange() persists this same
+  // `sessionId` into chat_threads.session_id (below), and useChat.ts's selectThread() echoes
+  // data.thread.sessionId straight back as the next request's body.sessionId. A naive "always
+  // re-prefix" derivation therefore double-prefixes on every thread resume and, after enough
+  // resumes, collapses every thread for a user onto one fixed runtimeSessionId — losing per-thread
+  // AgentCore Memory isolation. Detect our own prefix and reuse verbatim; only derive a fresh
+  // composite for a value that isn't already ours.
+  // PR #200 review MAJOR-1 (2nd round): OWN_PREFIX is `awsops-<sub>-`, and a real Cognito sub is
+  // a 36-char UUID -> 44 chars, longer than the old `slice(0, 32)`. Any input that starts with
+  // "awsops-" but fails the fast path (foreign-sub prefix, malformed own-prefix, stale legacy
+  // localStorage value) got sliced on the RAW string, not the remainder — so its "entropy" was
+  // just a truncated chunk of the literal prefix text, collapsing distinct inputs that share the
+  // same first 32 characters onto one runtimeSessionId (the exact per-thread isolation loss this
+  // PR exists to close). Hash the full raw value instead: fixed-length, full-avalanche output, so
+  // two different inputs (even sharing a prefix) never collide, and it's always charset/length-safe.
+  // PR #200 review MAJOR-1 (1st round): the own-prefix fast path used to accept ANY value starting
+  // with OWN_PREFIX verbatim — no length/charset check — contradicting agentcore.ts's own "never
+  // pass a raw client-supplied value through untouched" contract. The remainder must match exactly
+  // what derivation produces (32 lowercase hex chars) — nothing else passes through verbatim.
+  const OWN_PREFIX = `awsops-${user.sub}-`;
+  const OWN_REMAINDER_RE = /^[a-f0-9]{32}$/;
+  let sessionId: string;
+  if (typeof body.sessionId === 'string' && body.sessionId.startsWith(OWN_PREFIX) && OWN_REMAINDER_RE.test(body.sessionId.slice(OWN_PREFIX.length))) {
+    sessionId = body.sessionId;
+  } else {
+    const clientRaw = typeof body.sessionId === 'string' ? body.sessionId : '';
+    const clientEntropy = createHash('sha256').update(clientRaw).digest('hex').slice(0, 32);
+    sessionId = `${OWN_PREFIX}${clientEntropy}`;
+  }
 
   // v1 priority-1 Code Interpreter route (ADR-004 §5 Accepted; v1 route.ts:1000-1035): explicit
   // code/calculation intents generate Python via Bedrock, run it in the provisioned AgentCore

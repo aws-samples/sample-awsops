@@ -3,7 +3,7 @@
 import { execSync } from 'node:child_process';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
-const CHDIR = 'terraform/v2/foundation';
+const CHDIR = 'terraform/foundation';
 const TAG = process.env.IMAGE_TAG || 'web-latest';
 const DOCKER = process.env.DOCKER || 'sudo docker';
 

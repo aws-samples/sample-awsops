@@ -15,7 +15,7 @@ const defaultOutputDir = path.join(siteRoot, 'static', 'showcase', 'media');
 export async function buildShowcaseMedia(
   outputDir: string = defaultOutputDir,
 ): Promise<void> {
-  validateAssetSpecs(1920, 1080);
+  validateAssetSpecs();
 
   const sources = ASSETS.map((asset) => {
     const sourcePath = path.join(siteRoot, asset.source);

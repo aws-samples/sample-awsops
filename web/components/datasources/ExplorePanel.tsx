@@ -12,6 +12,7 @@ import SegmentedControl from '@/components/ui/SegmentedControl';
 import HBarList from '@/components/charts/HBarList';
 import type { NormalizedResult } from '@/lib/datasource-render';
 import { cn } from '@/lib/cn';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 // A datasource INSTANCE (the hub model): identified by bigint id, with a user-given name.
 export interface DatasourceInstance {
@@ -45,6 +46,7 @@ const autoStep = (w: number) => Math.max(1, Math.round(w / 250));
 /** Query console for a datasource instance (PromQL/LogQL/TraceQL/SQL) + an AI NL→query assist.
  *  Read-only. When `instanceId` is given (the per-instance route) the picker is hidden. */
 export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
+  const { tt } = useI18n();
   const [list, setList] = useState<DatasourceInstance[]>([]);
   const [selId, setSelId] = useState<number | ''>(instanceId ?? '');
   const [query, setQuery] = useState('');
@@ -89,13 +91,13 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
         body: JSON.stringify({ id: selId, query: q, range }),
       });
       const b = await r.json();
-      if (!r.ok) throw new Error(b.error || `오류 ${r.status}`);
+      if (!r.ok) throw new Error(b.error || tt(`오류 ${r.status}`));
       setResultKind(queriedKind);
       setResult(b.result as NormalizedResult);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : '쿼리 실패');
+      setErr(e instanceof Error ? e.message : tt('쿼리 실패'));
     } finally { setBusy(false); }
-  }, [selId, query, rangeWindow, canRange, list]);
+  }, [selId, query, rangeWindow, canRange, list, tt]);
 
   // NL → query (AI drafts, user reviews, then runs). Never auto-runs.
   const generate = useCallback(async () => {
@@ -107,12 +109,12 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
         body: JSON.stringify({ id: selId, nl }),
       });
       const b = await r.json();
-      if (!r.ok) throw new Error(b.error || `오류 ${r.status}`);
+      if (!r.ok) throw new Error(b.error || tt(`오류 ${r.status}`));
       if (b.query) setQuery(b.query);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'AI 생성 실패');
+      setErr(e instanceof Error ? e.message : tt('AI 생성 실패'));
     } finally { setGenBusy(false); }
-  }, [selId, nl]);
+  }, [selId, nl, tt]);
 
   return (
     <div className="space-y-4">
@@ -121,22 +123,22 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
             scoped id isn't in the list yet. */}
         {(
           <div className="flex flex-wrap items-center gap-2">
-            <select aria-label="데이터소스" className={selectCls} value={selId} disabled={busy} onChange={(e) => { setSelId(e.target.value ? Number(e.target.value) : ''); setResult(null); setErr(''); }}>
-              <option value="">데이터소스 선택…</option>
+            <select aria-label={tt('데이터소스')} className={selectCls} value={selId} disabled={busy} onChange={(e) => { setSelId(e.target.value ? Number(e.target.value) : ''); setResult(null); setErr(''); }}>
+              <option value="">{tt('데이터소스 선택…')}</option>
               {list.map((d) => (
-                <option key={d.id} value={d.id}>{d.name} ({d.kind}){d.isDefault ? ' · 기본' : ''}</option>
+                <option key={d.id} value={d.id}>{d.name} ({d.kind}){d.isDefault ? ` ${tt('· 기본')}` : ''}</option>
               ))}
             </select>
             {canRange && (
               <select
-                aria-label="범위"
+                aria-label={tt('범위')}
                 className={selectCls}
                 value={String(rangeWindow)}
                 disabled={busy}
                 onChange={(e) => { const w = Number(e.target.value); setRangeWindow(w); run(w); }}
               >
                 {RANGE_PRESETS.map(([label, sec]) => (
-                  <option key={sec} value={sec}>{label}</option>
+                  <option key={sec} value={sec}>{tt(label)}</option>
                 ))}
               </select>
             )}
@@ -146,12 +148,12 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
           <Input
             value={nl}
             onChange={(e) => setNl(e.target.value)}
-            placeholder={ds ? '자연어로 설명… 예: "모든 노드의 CPU 사용률"' : '먼저 데이터소스를 선택하세요'}
+            placeholder={ds ? tt('자연어로 설명… 예: "모든 노드의 CPU 사용률"') : tt('먼저 데이터소스를 선택하세요')}
             onKeyDown={(e) => { if (e.key === 'Enter') generate(); }}
             disabled={!ds}
           />
           <Button variant="secondary" onClick={generate} disabled={genBusy || !ds || !nl.trim()}>
-            {genBusy ? '생성 중…' : 'AI로 생성'}
+            {genBusy ? tt('생성 중…') : tt('AI로 생성')}
           </Button>
         </div>
         <div className="relative w-full">
@@ -161,7 +163,7 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
           <textarea
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={ds ? PH[ds.kind] ?? '쿼리를 입력하세요' : '먼저 데이터소스를 선택하세요'}
+            placeholder={ds ? tt(PH[ds.kind] ?? '쿼리를 입력하세요') : tt('먼저 데이터소스를 선택하세요')}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                 e.preventDefault();
@@ -189,9 +191,9 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
           onPick={(expr) => { setQuery(expr); run(undefined, expr); }}
         />
         <div className="flex items-center gap-2">
-          <Button onClick={() => run()} disabled={busy || !ds || !query.trim()}>{busy ? '실행 중…' : '실행'}</Button>
+          <Button onClick={() => run()} disabled={busy || !ds || !query.trim()}>{busy ? tt('실행 중…') : tt('실행')}</Button>
           {list.length === 0 && (
-            <span className="text-[12px] text-ink-400">설정된 데이터소스가 없습니다 — Datasources 탭에서 추가하세요.</span>
+            <span className="text-[12px] text-ink-400">{tt('설정된 데이터소스가 없습니다 — Datasources 탭에서 추가하세요.')}</span>
           )}
         </div>
         {err && <p className="text-[13px] text-rose-600">{err}</p>}
@@ -202,6 +204,7 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
 }
 
 function ResultView({ result, kind }: { result: NormalizedResult; kind?: string }) {
+  const { tt } = useI18n();
   // Line/Bar toggle for multi-series range results (v1 parity).
   const [chartType, setChartType] = useState<'line' | 'bar'>('line');
   // Instant prom/mimir vector (metric/value rows) → a ranked bar above the table. Gated by kind so
@@ -218,15 +221,15 @@ function ResultView({ result, kind }: { result: NormalizedResult; kind?: string 
   return (
     <div className="space-y-3">
       {result.truncated && (
-        <p className="text-[12px] text-amber-700">결과가 잘렸습니다(상한 도달) — 쿼리를 좁혀 다시 시도하세요.</p>
+        <p className="text-[12px] text-amber-700">{tt('결과가 잘렸습니다(상한 도달) — 쿼리를 좁혀 다시 시도하세요.')}</p>
       )}
       {result.shape === 'empty' && (
-        <Card className="p-6 text-center text-[13px] text-ink-400">{result.note || '결과 없음'}</Card>
+        <Card className="p-6 text-center text-[13px] text-ink-400">{result.note || tt('결과 없음')}</Card>
       )}
       {result.shape === 'series' && result.series && (
         result.seriesKeys && result.seriesKeys.length > 0 ? (
           <MultiLineTrend
-            title={`시계열 (${result.seriesKeys.length}개 시리즈)`}
+            title={tt(`시계열 (${result.seriesKeys.length}개 시리즈)`)}
             right={
               <SegmentedControl
                 options={[{ value: 'line', label: 'Line' }, { value: 'bar', label: 'Bar' }]}
@@ -240,7 +243,7 @@ function ResultView({ result, kind }: { result: NormalizedResult; kind?: string 
             variant={chartType}
           />
         ) : (
-          <AreaTrend title="시계열" data={result.series} xKey={result.seriesXKey || 't'} yKey={result.seriesYKey || 'value'} />
+          <AreaTrend title={tt('시계열')} data={result.series} xKey={result.seriesXKey || 't'} yKey={result.seriesYKey || 'value'} />
         )
       )}
       {result.shape === 'series' && result.note && (
@@ -250,7 +253,7 @@ function ResultView({ result, kind }: { result: NormalizedResult; kind?: string 
         <DataTable columns={result.columns} rows={result.rows} />
       )}
       {barRows && (
-        <HBarList title="상위 결과" data={barRows} labelKey="metric" valueKey="value" />
+        <HBarList title={tt('상위 결과')} data={barRows} labelKey="metric" valueKey="value" />
       )}
       {(result.shape === 'table' || result.shape === 'logs' || result.shape === 'traces') && result.columns && result.rows && (
         <DataTable columns={result.columns} rows={result.rows} />

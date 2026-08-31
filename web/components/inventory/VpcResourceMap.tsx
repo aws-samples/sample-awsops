@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { X, Search } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 // VPC Resource Map (v1 parity) — a fullscreen 4-column routing map for ONE VPC:
 // VPC → subnets grouped by AZ (public via map_public_ip_on_launch, free IPs, associated RT)
@@ -68,6 +69,7 @@ const KIND_BORDER: Record<TargetKind, string> = {
 export default function VpcResourceMap({
   vpcId, vpcName, cidr, onClose,
 }: { vpcId: string; vpcName?: string; cidr?: string; onClose: () => void }) {
+  const { tt } = useI18n();
   const [scope] = useActiveScope();
   const [subnets, setSubnets] = useState<SubnetRow[]>([]);
   const [rts, setRts] = useState<RtRow[]>([]);
@@ -185,7 +187,7 @@ export default function VpcResourceMap({
   const rtName = (rtId: string) => rts.find((r) => r.route_table_id === rtId)?.name || rtId;
 
   return (
-    <div className="fixed inset-0 z-[60] flex flex-col bg-ink-900/50 p-4 lg:p-8" role="dialog" aria-modal="true" aria-label="VPC Resource Map">
+    <div className="fixed inset-0 z-[60] flex flex-col bg-ink-900/50 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] lg:p-8" role="dialog" aria-modal="true" aria-label="VPC Resource Map">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-ink-200 bg-paper shadow-pop">
         <header className="flex flex-wrap items-center gap-3 border-b border-ink-100 px-5 py-3">
           <div className="min-w-0">
@@ -198,21 +200,21 @@ export default function VpcResourceMap({
               <input
                 value={q}
                 onChange={(e) => { setQ(e.target.value); setSel(null); }}
-                placeholder="서브넷 / 라우트 테이블 / 연결 검색"
+                placeholder={tt('서브넷 / 라우트 테이블 / 연결 검색')}
                 className="w-64 rounded-md border border-ink-200 bg-card py-1.5 pl-7 pr-2 text-[12px]"
               />
             </div>
-            {q && <button className="text-[12px] text-ink-500 hover:text-ink-700" onClick={() => setQ('')}>검색 지우기</button>}
-            {sel && !q && <button className="text-[12px] text-ink-500 hover:text-ink-700" onClick={() => setSel(null)}>선택 해제</button>}
-            <button aria-label="닫기" onClick={onClose} className="rounded p-1.5 text-ink-400 hover:bg-ink-50 hover:text-ink-700"><X size={16} /></button>
+            {q && <button className="text-[12px] text-ink-500 hover:text-ink-700" onClick={() => setQ('')}>{tt('검색 지우기')}</button>}
+            {sel && !q && <button className="text-[12px] text-ink-500 hover:text-ink-700" onClick={() => setSel(null)}>{tt('선택 해제')}</button>}
+            <button aria-label={tt('닫기')} onClick={onClose} className="rounded p-1.5 text-ink-400 hover:bg-ink-50 hover:text-ink-700"><X size={16} /></button>
           </div>
         </header>
 
         <div className="min-h-0 flex-1 overflow-auto p-5">
           {loading ? (
-            <div className="text-[13px] text-ink-400">서브넷 · 라우트 테이블 로딩 중…</div>
+            <div className="text-[13px] text-ink-400">{tt('서브넷 · 라우트 테이블 로딩 중…')}</div>
           ) : err ? (
-            <div className="text-[13px] text-rose-600">로드 실패: {err}</div>
+            <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>
           ) : (
             <div className="grid min-h-[400px] grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
               {/* 1 — VPC */}
@@ -255,7 +257,7 @@ export default function VpcResourceMap({
                       </div>
                     </div>
                   ))}
-                  {subnets.length === 0 && <div className="text-[12px] text-ink-300">서브넷 없음</div>}
+                  {subnets.length === 0 && <div className="text-[12px] text-ink-300">{tt('서브넷 없음')}</div>}
                 </div>
               </div>
 
@@ -284,7 +286,7 @@ export default function VpcResourceMap({
                       </button>
                     );
                   })}
-                  {rts.length === 0 && <div className="text-[12px] text-ink-300">라우트 테이블 없음</div>}
+                  {rts.length === 0 && <div className="text-[12px] text-ink-300">{tt('라우트 테이블 없음')}</div>}
                 </div>
               </div>
 
@@ -299,7 +301,7 @@ export default function VpcResourceMap({
                       <div className="truncate font-mono text-[11px] text-ink-500">{id}</div>
                     </button>
                   ))}
-                  {model.targets.size === 0 && <div className="text-[12px] text-ink-300">외부 연결 없음 (isolated VPC)</div>}
+                  {model.targets.size === 0 && <div className="text-[12px] text-ink-300">{tt('외부 연결 없음 (isolated VPC)')}</div>}
                 </div>
               </div>
             </div>

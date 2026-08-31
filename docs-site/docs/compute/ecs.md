@@ -10,54 +10,57 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ECS 클러스터, 서비스, 태스크의 상태를 모니터링할 수 있는 페이지입니다.
 
+:::info v2 조회 방식
+v1은 클러스터/서비스/태스크를 한 페이지에서 통합 조회했지만, **v2는 이를 3개의 독립된 인벤토리 라우트로 분리**합니다 — `/inventory/ecs_cluster`, `/inventory/ecs_service`, `/inventory/ecs_task`. 사이드바에서는 "컴퓨트" 그룹 아래 세 항목으로 함께 묶여 있을 뿐, 각각 별도 테이블/필터/상세 패널을 가진 별개 페이지입니다. 아래 내용은 v1의 통합 페이지가 아니라 이 3-라우트 구조를 기준으로 작성되었습니다.
+:::
+
 <Screenshot src="/screenshots/compute/ecs.png" alt="ECS" />
 
 ## 주요 기능
 
-### 통계 카드
-- **Clusters**: 전체 ECS 클러스터 수 (시안)
-- **Services**: 전체 서비스 수 (보라색)
-- **Tasks**: 실행 중인 태스크 수 (녹색)
-- **Container Instances**: EC2 컨테이너 인스턴스 수 (주황색)
+### ECS Clusters (`/inventory/ecs_cluster`)
+하이라이트 카드는 상태(`status`)와 리전 분포, 실행 중 태스크 수 기준 Top-N 바 차트를 보여줍니다.
 
-### 시각화 차트
-- **Running Tasks per Cluster**: 클러스터별 실행 중인 태스크 수 파이 차트
-
-### 클러스터 테이블
+테이블 컬럼:
 | 컬럼 | 설명 |
 |------|------|
-| Cluster Name | 클러스터 이름 |
 | Status | 상태 (ACTIVE, INACTIVE) |
-| Running Tasks | 실행 중인 태스크 수 |
-| Pending Tasks | 대기 중인 태스크 수 |
-| Active Services | 활성 서비스 수 |
-| Container Instances | 컨테이너 인스턴스 수 |
-| Region | 리전 |
+| Running | 실행 중인 태스크 수 |
+| Pending | 대기 중인 태스크 수 |
+| Services | 활성 서비스 수 |
+| Instances | 등록된 컨테이너 인스턴스 수 |
+| MTD Cost ($) | 월간 누적 비용 |
 
-### 서비스 테이블
+상세 패널: Identity(Name, Account, Region, ARN) / Tasks & Services / Config(Settings, Container Insights 등) / Tags 섹션.
+
+### ECS Services (`/inventory/ecs_service`)
+하이라이트 카드는 Desired/Running/Pending 합계와 클러스터 distinct 수를 보여줍니다.
+
+테이블 컬럼:
 | 컬럼 | 설명 |
 |------|------|
-| Service Name | 서비스 이름 |
+| Service | 서비스 이름 |
 | Status | 상태 (ACTIVE, DRAINING) |
 | Desired | 원하는 태스크 수 |
 | Running | 실행 중인 태스크 수 |
 | Pending | 대기 중인 태스크 수 |
-| Launch Type | 실행 타입 (FARGATE, EC2) |
+| Launch | 실행 타입 (FARGATE, EC2) |
 | Strategy | 스케줄링 전략 |
+| Cluster | 소속 클러스터 |
+| Task def | 태스크 정의 |
+| Created | 생성일 |
 
-### 클러스터 상세 패널
-클러스터를 클릭하면 상세 정보를 확인할 수 있습니다:
-- **Cluster 섹션**: Name, ARN, Status, Tasks, Services, Container Instances
-- **Settings 섹션**: 클러스터 설정 (Container Insights 등)
-- **Tags 섹션**: 클러스터 태그
+### ECS Tasks (`/inventory/ecs_task`)
+하이라이트 카드는 RUNNING 수, Fargate 태스크 수, 일일 비용 합(추정치), 클러스터 distinct 수를 보여줍니다. 비용은 태스크 정의의 cpu/memory로 계산한 정적 추정치이며 자세한 계산 방식은 [ECS Container Cost](../compute/ecs-container-cost)를 참고하세요.
+
+테이블 컬럼: Task, Cluster, Group, Status, Launch, CPU, Memory, Cost/Day, Cost/Mo, AZ, Started.
 
 ## 사용 방법
 
-1. 사이드바에서 **Compute > ECS**를 클릭합니다
-2. 상단 통계 카드에서 전체 ECS 현황을 파악합니다
-3. Clusters 테이블에서 클러스터별 상태를 확인합니다
-4. Services 테이블에서 서비스별 Desired vs Running 태스크를 비교합니다
-5. 클러스터를 클릭하여 상세 설정을 확인합니다
+1. 사이드바에서 **Compute > ECS Clusters / Services / Tasks** 중 원하는 라우트를 클릭합니다
+2. 상단 하이라이트 카드에서 해당 리소스의 전체 현황을 파악합니다
+3. Services 페이지에서 Desired vs Running을 비교하고, Clusters 페이지에서 클러스터별 상태를 확인합니다
+4. 행을 클릭하여 상세 패널에서 세부 설정을 확인합니다
 
 ## Fargate vs EC2 Launch Type
 
@@ -66,7 +69,7 @@ ECS 클러스터, 서비스, 태스크의 상태를 모니터링할 수 있는 �
 | 인프라 관리 | 서버리스 (AWS 관리) | 직접 관리 필요 |
 | 비용 | vCPU/Memory 기반 | EC2 인스턴스 비용 |
 | 스케일링 | 자동 | Auto Scaling 설정 필요 |
-| 비용 분석 | Container Cost 페이지 지원 | Phase 2 예정 |
+| 비용 분석 | ECS Tasks 뷰의 Cost/Day, Cost/Mo 컬럼(정적 추정치) | 미지원 |
 
 ## 사용 팁
 

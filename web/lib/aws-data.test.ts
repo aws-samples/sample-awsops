@@ -135,15 +135,10 @@ describe('runSteampipeQuery — guard + row cap (pg mocked)', () => {
   });
 });
 
-describe('steampipeAvailable — probe + cache', () => {
-  it('true when SELECT 1 succeeds, cached (no second probe)', async () => {
-    queryMock.mockResolvedValue({ rows: [{ '?column?': 1 }] });
-    expect(await steampipeAvailable()).toBe(true);
-    expect(await steampipeAvailable()).toBe(true);
-    expect(queryMock).toHaveBeenCalledTimes(1);
-  });
-  it('false (not a throw) when the probe fails', async () => {
-    queryMock.mockRejectedValue(new Error('ENOTFOUND steampipe.awsops-v2-stg.internal'));
+describe('steampipeAvailable — hard-disabled (ADR-001/010: no live Steampipe path in v2)', () => {
+  it('always false, unconditionally, without touching the network', async () => {
+    queryMock.mockResolvedValue({ rows: [{ '?column?': 1 }] }); // even a "healthy" probe would say so
     expect(await steampipeAvailable()).toBe(false);
+    expect(queryMock).not.toHaveBeenCalled();
   });
 });

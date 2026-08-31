@@ -16,27 +16,17 @@ echo "TAP version 13"
 echo "# AWSops Project Structure Tests"
 echo ""
 
-# ── Hook Tests ──
-echo "# Hook tests"
-for f in tests/hooks/test-*.sh; do
-  [ -f "$f" ] && bash "$f"
-done
-
 # ── Structure Tests ──
 echo "# Structure tests"
 for f in tests/structure/test-*.sh; do
-  [ -f "$f" ] && bash "$f"
+  [ -f "$f" ] || continue
+  bash "$f" && pass "$(basename "$f") clean" || fail "$(basename "$f") reported failures"
 done
 
 # ── Core Structure Assertions ──
 echo "# Core structure"
 
 [ -f "CLAUDE.md" ] && pass "CLAUDE.md exists" || fail "CLAUDE.md missing"
-[ -f ".claude/settings.json" ] && pass ".claude/settings.json exists" || fail ".claude/settings.json missing"
-
-# Check ADR count
-ADR_COUNT=$(find docs/decisions -name '*.md' -not -name '.template.md' 2>/dev/null | wc -l)
-[ "$ADR_COUNT" -ge 1 ] && pass "ADRs exist ($ADR_COUNT found)" || fail "No ADRs found"
 
 # ── Agent Python Tests ──
 # Run the AgentCore agent unittests (pure helpers, the Anthropic dark-path loop, account logic,

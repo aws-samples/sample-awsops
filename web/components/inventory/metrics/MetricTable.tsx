@@ -61,7 +61,11 @@ export default function MetricTable<T>({
   const facetValues = useMemo(() => {
     const out: Record<string, string[]> = {};
     for (const c of facetCols) {
-      out[c.key] = [...new Set(items.flatMap((it) => c.facetValues ? c.facetValues(it) : [String(c.value(it) ?? '—')]))].sort();
+      out[c.key] = [...new Set(items.flatMap((it) => {
+        if (!c.facetValues) return [String(c.value(it) ?? '—')];
+        const vs = c.facetValues(it);
+        return vs.length ? vs : ['—']; // empty array must stay selectable, or the row can never match any facet value
+      }))].sort();
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -77,7 +81,11 @@ export default function MetricTable<T>({
     for (const [k, v] of Object.entries(facets)) {
       if (!v) continue;
       const col = columns.find((c) => c.key === k);
-      if (col) rows = rows.filter((it) => col.facetValues ? col.facetValues(it).includes(v) : String(col.value(it) ?? '—') === v);
+      if (col) rows = rows.filter((it) => {
+        if (!col.facetValues) return String(col.value(it) ?? '—') === v;
+        const vs = col.facetValues(it);
+        return (vs.length ? vs : ['—']).includes(v);
+      });
     }
     if (dangerOnly && hasDanger) {
       rows = rows.filter((it) => columns.some((c) => c.danger?.(it)));

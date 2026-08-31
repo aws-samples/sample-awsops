@@ -10,6 +10,8 @@ import DataTable from '@/components/ui/DataTable';
 import DetailPanel from '@/components/ui/DetailPanel';
 import DonutBreakdown from '@/components/charts/DonutBreakdown';
 import { useActiveAccount } from '@/lib/account-context';
+import { useI18n } from '@/components/shell/LanguageProvider';
+import { localeOf } from '@/lib/i18n';
 
 interface Benchmark { id: string; name: string; description: string }
 interface Run {
@@ -32,6 +34,7 @@ const RESULT_COLS = [
 ];
 
 export default function CompliancePage() {
+  const { tt, lang } = useI18n();
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
   const [benchmark, setBenchmark] = useState('cis_v300');
   const [run, setRun] = useState<Run | null>(null);
@@ -85,11 +88,11 @@ export default function CompliancePage() {
     try {
       r = await fetch(`/api/compliance/runs/${id}`);
     } catch {
-      if (id === latestRunIdRef.current) setErr('run 조회 중 오류가 발생했습니다.');
+      if (id === latestRunIdRef.current) setErr(tt('run 조회 중 오류가 발생했습니다.'));
       return { ok: false, run: null };
     }
     if (!r.ok) {
-      if (id === latestRunIdRef.current) setErr(`run 조회 실패 (${r.status})`);
+      if (id === latestRunIdRef.current) setErr(tt(`run 조회 실패 (${r.status})`));
       return { ok: false, run: null };
     }
     const body = (await r.json().catch(() => ({}))) as { run?: Run; results?: Result[] };
@@ -108,7 +111,7 @@ export default function CompliancePage() {
     if (id !== activeJobIdRef.current) return; // a newer job started — this loop is obsolete
     if (!ok) {
       if (errs >= 3) { // give up after repeated failures; surface it, stop tracking
-        if (id === latestRunIdRef.current) setErr('실행 상태 조회에 반복 실패했습니다.'); // only for the shown run
+        if (id === latestRunIdRef.current) setErr(tt('실행 상태 조회에 반복 실패했습니다.')); // only for the shown run
         setBusy(false);
         activeJobIdRef.current = null;
         return;
@@ -187,7 +190,7 @@ export default function CompliancePage() {
       latestRunIdRef.current = run_id; // and the displayed run
       void pollActive(run_id);
     } catch {
-      setErr('벤치마크 실행을 시작하지 못했습니다.');
+      setErr(tt('벤치마크 실행을 시작하지 못했습니다.'));
       setBusy(false);
     }
   }, [benchmark, pollActive, activeAccount]);
@@ -249,7 +252,7 @@ export default function CompliancePage() {
               ))}
             </select>
             <Button variant="primary" size="sm" onClick={runBenchmark} disabled={busy}>
-              {busy ? '실행 중…' : 'Run Benchmark'}
+              {busy ? tt('실행 중…') : 'Run Benchmark'}
             </Button>
           </div>
         }
@@ -265,7 +268,7 @@ export default function CompliancePage() {
           </Card>
         )}
 
-        {busy && !run && <Card className="text-[14px] text-ink-500">벤치마크 실행 중… (수 분 소요될 수 있습니다)</Card>}
+        {busy && !run && <Card className="text-[14px] text-ink-500">{tt('벤치마크 실행 중… (수 분 소요될 수 있습니다)')}</Card>}
 
         {runs.length > 0 && (
           <Card className="mb-4">
@@ -284,7 +287,7 @@ export default function CompliancePage() {
                       <span className="rounded bg-ink-100 px-1.5 py-0.5 font-mono text-[10.5px] text-ink-500">{h.account}</span>
                     )}
                     {/* execution time distinguishes repeated runs of the same benchmark (v1 parity) */}
-                    <span className="tabular-nums truncate text-ink-400">{h.started_at ? new Date(h.started_at).toLocaleString('ko-KR') : ''}</span>
+                    <span className="tabular-nums truncate text-ink-400">{h.started_at ? new Date(h.started_at).toLocaleString(localeOf(lang)) : ''}</span>
                   </span>
                   <span className="flex items-center gap-3 text-ink-500">
                     <span>{h.status}</span>
@@ -304,8 +307,8 @@ export default function CompliancePage() {
               <span className="font-semibold text-ink-800">{run.benchmark}</span>
               {run.started_at && (
                 <span className="tabular-nums text-ink-500">
-                  실행 {new Date(run.started_at).toLocaleString('ko-KR')}
-                  {run.finished_at ? ` · 완료 ${new Date(run.finished_at).toLocaleString('ko-KR')}` : ''}
+                  {tt('실행')} {new Date(run.started_at).toLocaleString(localeOf(lang))}
+                  {run.finished_at ? ` · ${tt('완료')} ${new Date(run.finished_at).toLocaleString(localeOf(lang))}` : ''}
                 </span>
               )}
               <span className="text-ink-400">#{run.id}</span>
@@ -335,7 +338,7 @@ export default function CompliancePage() {
               <Card>
                 <div className="mb-3 text-[13px] font-semibold text-ink-700">Pass rate by section</div>
                 <div className="flex flex-col gap-2">
-                  {sections.length === 0 && <div className="text-[13px] text-ink-400">데이터 없음</div>}
+                  {sections.length === 0 && <div className="text-[13px] text-ink-400">{tt('데이터 없음')}</div>}
                   {sections.map((s) => (
                     <button
                       key={s.section}

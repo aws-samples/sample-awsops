@@ -1,8 +1,13 @@
 // v1 priority-10 'aws-data' route port (v1 src/app/api/ai/route.ts:450-541, 1167-1216, 1403-1433):
-// listing/status/count questions are answered by LLM-generated Steampipe SQL executed LIVE against
-// the Steampipe Fargate service, with one self-correction retry on SQL error, then a streamed
-// Bedrock analysis grounded in the returned rows. v2 hardening over v1: a SELECT-only statement
-// guard (v1 only checked startsWith('select')), a hard row cap, and a dedicated small pg Pool.
+// listing/status/count questions would be answered by LLM-generated Steampipe SQL executed LIVE
+// against the Steampipe Fargate service, with one self-correction retry on SQL error, then a
+// streamed Bedrock analysis grounded in the returned rows — v1 hardening over v1: a SELECT-only
+// statement guard (v1 only checked startsWith('select')), a hard row cap, a dedicated small pg
+// Pool. HARD-DISABLED in v2 (see steampipeAvailable() below): ADR-001/010 prohibit any live
+// Steampipe query path in v2, unconditionally — live AWS queries go through AgentCore MCP Lambda
+// tools only. Every caller here fail-opens on steampipeAvailable()===false to normal chat
+// routing, so the rest of this file (SQL generation, the guard, the pool plumbing) is kept as
+// dead-but-documented v1-parity infrastructure, not a live path.
 import { Pool } from 'pg';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { BedrockRuntimeClient, InvokeModelCommand, ConverseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
@@ -17,14 +22,11 @@ export const AWS_DATA_ANALYSIS_MODEL =
 
 const SECRET_TTL_MS = 10 * 60 * 1000; // password cache — Steampipe secret is static plaintext
 const MAX_ROWS = 200;                 // hard row cap: bounds both memory and the analysis context
-const AVAIL_OK_TTL_MS = 5 * 60 * 1000;
-const AVAIL_FAIL_TTL_MS = 60 * 1000;  // a down probe can block up to connectionTimeout — don't re-pay per request
 
 let pool: Pool | null = null;
 let sm: SecretsManagerClient | null = null;
 let br: BedrockRuntimeClient | null = null;
 let secretCache: { value: string; at: number } | null = null;
-let availCache: { ok: boolean; at: number } | null = null;
 
 /** Steampipe DB password from Secrets Manager (`${PROJECT}-steampipe-db`, SecretString = plaintext),
  *  cached 10 min. Called by pg per NEW physical connection (password-as-function, db.ts pattern). */
@@ -67,7 +69,6 @@ export function _resetForTests(): void {
   sm = null;
   br = null;
   secretCache = null;
-  availCache = null;
 }
 
 // Anything that can mutate state, run a second statement, or smuggle instructions past the guard.
@@ -105,18 +106,18 @@ export async function runSteampipeQuery(sql: string): Promise<SteampipeResult> {
 }
 
 /** Availability probe (SELECT 1) with a short cache. Covers 'secret missing' and 'service down'
- *  BEFORE the chat handler commits to the aws-data stream — the code-route fail-open pattern. */
+ *  BEFORE the chat handler commits to the aws-data stream — the code-route fail-open pattern.
+ *
+ *  HARD-DISABLED, unconditionally, regardless of steampipe_enabled: ADR-001/010 prohibit a live
+ *  Steampipe query path in v2 outright ("v1's live Steampipe ... is not a live-query path in v2;
+ *  live AWS queries go through AgentCore MCP Lambda tools") — steampipe_enabled only toggles the
+ *  BATCH inventory-sync Fargate worker (steampipe.tf), never a live-query permission. Gating this
+ *  on that flag (as an earlier fix here did) re-opened the exact prohibited path for every deploy
+ *  that enables inventory sync. Every caller (the aws-data chat route + all 6 auto-collect
+ *  collectors) already fail-opens on `false` to normal routing, so this closes the whole surface
+ *  at the single choke point without touching call sites. */
 export async function steampipeAvailable(): Promise<boolean> {
-  if (availCache && Date.now() - availCache.at < (availCache.ok ? AVAIL_OK_TTL_MS : AVAIL_FAIL_TTL_MS)) {
-    return availCache.ok;
-  }
-  try {
-    await getSteampipePool().query('SELECT 1');
-    availCache = { ok: true, at: Date.now() };
-  } catch {
-    availCache = { ok: false, at: Date.now() };
-  }
-  return availCache.ok;
+  return false;
 }
 
 // ── SQL generation ──────────────────────────────────────────────────────────

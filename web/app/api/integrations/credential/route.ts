@@ -3,7 +3,13 @@
 // GET returns which slugs are configured (keys only). SECURITY: never log/echo the credential value.
 import { verifyUser } from '@/lib/auth';
 import { isAdmin } from '@/lib/admin';
-import { setIntegrationCredential, getConfiguredSlugs, getConfiguredIds } from '@/lib/integration-credentials';
+import {
+  setIntegrationCredential,
+  setMcpPresetCredential,
+  getConfiguredSlugs,
+  getConfiguredMcpPresetSlugs,
+  getConfiguredIds,
+} from '@/lib/integration-credentials';
 import { assertDatasourceEndpointAllowed } from '@/lib/ssrf-guard';
 import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
 
@@ -28,12 +34,23 @@ export async function GET(request: Request) {
   // has no access) degrades to an empty configured list so the read-only status panel doesn't 500.
   // Any OTHER failure (PG, malformed secret, …) surfaces as 500 — masking it would hide real breakage.
   try {
-    const [configured, configuredIds] = await Promise.all([getConfiguredSlugs(), getConfiguredIds()]);
-    return json({ configured, configuredIds }, 200);
+    // Keep the plain connector-mirror slugs and the ADR-017 namespaced ("mcp:<slug>") MCP-preset
+    // slugs as TWO DISTINCT sets (round-2 review MAJOR, 2026-07-31: merging them into one
+    // `configured` set let the UI claim a preset was "configured" from a plain datasource-mirror
+    // credential while the namespaced "mcp:" key — the ONLY one provision.py reads — was actually
+    // empty, or vice versa). `configured` also strips any stray "mcp:"/numeric-id keys that
+    // getConfiguredSlugs' unfiltered Object.keys() would otherwise leak in.
+    const [rawSlugs, mcpConfigured, configuredIds] = await Promise.all([
+      getConfiguredSlugs(),
+      getConfiguredMcpPresetSlugs(),
+      getConfiguredIds(),
+    ]);
+    const configured = rawSlugs.filter((k) => !k.startsWith('mcp:') && !/^\d+$/.test(k));
+    return json({ configured, mcpConfigured, configuredIds }, 200);
   } catch (e) {
     const name = (e as { name?: string })?.name || '';
     if (/AccessDenied|ResourceNotFound|NotFound/i.test(name)) {
-      return json({ configured: [], configuredIds: [] }, 200);
+      return json({ configured: [], mcpConfigured: [], configuredIds: [] }, 200);
     }
     console.error('[credential GET] unexpected error reading configured integrations:', name);
     return json({ error: 'failed to read configured integrations' }, 500);
@@ -43,7 +60,7 @@ export async function GET(request: Request) {
 export async function PUT(request: Request) {
   const g = await gate(request);
   if (g.resp) return g.resp;
-  let body: { slug?: unknown; secret?: unknown };
+  let body: { slug?: unknown; secret?: unknown; official?: unknown };
   try {
     body = (await readJsonBounded(request)) as typeof body; // bound BEFORE parse (OOM guard) — small creds payload
   } catch (e) {
@@ -64,7 +81,16 @@ export async function PUT(request: Request) {
   }
   try {
     // SECURITY: do not log or echo the credential value — sensitive.
-    await setIntegrationCredential(slug, secret as Record<string, unknown>);
+    // official=true (ADR-017 ConnectorsTab MCP presets) writes to the namespaced "mcp:<slug>" key
+    // so it never collides with the plain-slug datasource-connector kind-mirror for the 5 slugs
+    // that are members of BOTH catalogs (clickhouse/tempo/jaeger/dynatrace/datadog) — see
+    // integration-credentials.ts. Absent/false = unchanged legacy behavior (Notion, datasource
+    // connector saves).
+    if (body?.official === true) {
+      await setMcpPresetCredential(slug, secret as Record<string, unknown>);
+    } else {
+      await setIntegrationCredential(slug, secret as Record<string, unknown>);
+    }
     return json({ ok: true }, 200);
   } catch (e) {
     // Bad slug / size / store failure. The message never contains the credential value.

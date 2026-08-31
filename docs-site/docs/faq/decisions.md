@@ -23,7 +23,7 @@ AWSops의 가장 중요한 원칙은 **읽기 전용(read-only)**입니다. 단,
 원래 변경 작업 프레임워크(ADR-029)와 실행 substrate(SSM Automation + Change Manager × P2 워커 하이브리드, ADR-036)가 설계되었으나, **2026-06-11 3-AI 합의로 둘 다 번복(REVERSED)**되었습니다. 코드는 다크(dark) 상태로 보존되지만 플래그는 영구 OFF이며, 활성화하지 않습니다.
 
 - EC2 종료, SG 수정, 스케일링, 배포 같은 **AWS 리소스 변경은 어떤 화면·AI 기능으로도 수행되지 않습니다.**
-- 약 120개의 AgentCore MCP 도구는 모두 read-only입니다.
+- 약 160개의 AgentCore MCP Lambda 도구는 모두 read-only입니다.
 
 :::info
 "동결"의 범위는 **AWS 리소스 한정**입니다 (ADR-029/036 2026-06-16 스코프 정정, ADR-041 keystone). 통제 층과 워커 실행 분기는 비-AWS 외부 데이터 쓰기에 재사용될 수 있으나, AWS 리소스 자동화 substrate 자체는 동결을 유지합니다.
@@ -116,14 +116,14 @@ OpsCenter / Incident Manager 양방향 라이트백으로 기록하도록 설계
 **프롬프트 캐싱과 작업 깊이별 모델 선택으로 최적화**됩니다 (ADR-038, ADR-033).
 
 - **프롬프트 캐싱** — 약 59% 히트율로 반복 컨텍스트 재계산을 줄입니다 (ADR-038).
-- **작업 깊이별 모델** — AI 진단은 base(8섹션)는 Sonnet 기본, deep(15섹션)은 Sonnet 기본·Opus 선택(cost-gate). 분류·라우팅에는 저렴한 Haiku 4.5를 사용합니다 (ADR-033).
+- **작업 깊이별 모델** — AI 진단은 Light·Mid(8+1섹션)는 Sonnet 기본, Deep(15+1섹션)은 Sonnet 기본·Opus 선택(cost-gate). 분류·라우팅에는 저렴한 Haiku 4.5를 사용합니다 (ADR-033).
 - ADR-033은 Aurora durable token budget(예산 영속)을 정의했습니다 — v1에 구현돼 있고, 현재 웹 챗 경로 연동은 후속 과제입니다.
 
 ### 게이트웨이가 9개로 늘었나요?
 
-**아니요 — 8개로 유지됩니다** (ADR-004).
+**예 — 9개입니다** (ADR-004 개정, 2026-06-24).
 
-network · container · data · security · cost · monitoring · iac · ops의 **8개 섹션 게이트웨이**가 유지되며, 외부 관측성은 별도의 **"Integrations 축"**(ADR-039)이지 9번째 게이트웨이가 아닙니다.
+network · container · data · security · cost · monitoring · iac · ops의 8개 AWS 도메인 게이트웨이에 더해, 외부 관측성 커넥터(Prometheus·ClickHouse)를 호스팅하는 **external-obs 게이트웨이**가 아홉 번째로 프로비저닝·라우팅됩니다(9 프로비저닝 / 9 라우트). 챗 키 `observability`는 external-obs로 별칭됩니다.
 
 ### 내가 직접 에이전트나 도구를 추가 구성할 수 있나요?
 

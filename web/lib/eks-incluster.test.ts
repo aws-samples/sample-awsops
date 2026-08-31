@@ -18,6 +18,7 @@ import {
   normalizeNamespace,
   normalizeEvent,
   normalizeEndpoint,
+  normalizeIngress,
 } from './eks-incluster';
 
 describe('normalizeEndpoint', () => {
@@ -26,10 +27,29 @@ describe('normalizeEndpoint', () => {
       metadata: { name: 'argocd-server', namespace: 'argocd' },
       subsets: [{ addresses: [{ ip: '10.2.37.47' }, { ip: '10.2.37.48' }] }, { addresses: [{ ip: '10.2.40.9' }] }],
     });
-    expect(r).toEqual({ name: 'argocd-server', namespace: 'argocd', ips: ['10.2.37.47', '10.2.37.48', '10.2.40.9'] });
+    expect(r).toEqual({
+      name: 'argocd-server', namespace: 'argocd', ips: ['10.2.37.47', '10.2.37.48', '10.2.40.9'],
+      targets: [
+        { ip: '10.2.37.47', pod: undefined },
+        { ip: '10.2.37.48', pod: undefined },
+        { ip: '10.2.40.9', pod: undefined },
+      ],
+    });
   });
   it('handles a headless/empty Endpoints object', () => {
-    expect(normalizeEndpoint({ metadata: { name: 'svc', namespace: 'ns' } })).toEqual({ name: 'svc', namespace: 'ns', ips: [] });
+    expect(normalizeEndpoint({ metadata: { name: 'svc', namespace: 'ns' } })).toEqual({ name: 'svc', namespace: 'ns', ips: [], targets: [] });
+  });
+  it('endpoint carries per-address pod targetRef', () => {
+    const row = normalizeEndpoint({
+      metadata: { name: 's', namespace: 'ns' },
+      subsets: [{ addresses: [
+        { ip: '10.0.0.1', targetRef: { kind: 'Pod', name: 'p1' } },
+        { ip: '10.0.0.2' },
+        { targetRef: { kind: 'Pod', name: 'no-ip' } },
+      ] }],
+    } as never);
+    expect(row.targets).toEqual([{ ip: '10.0.0.1', pod: 'p1' }, { ip: '10.0.0.2', pod: undefined }]);
+    expect(row.ips).toEqual(['10.0.0.1', '10.0.0.2']);
   });
 });
 
@@ -65,7 +85,7 @@ describe('isKind', () => {
   // an allowed EXPLORER kind 2026-07-21 — METADATA-ONLY: the normalizer emits a key COUNT, never values)
   // intentionally — any new kind must extend this test + the eks.tf comment in the same PR.
   it('accepts the read-only kinds and rejects others', () => {
-    for (const k of ['nodes', 'pods', 'deployments', 'services', 'namespaces']) expect(isKind(k)).toBe(true);
+    for (const k of ['nodes', 'pods', 'deployments', 'services', 'namespaces', 'ingresses']) expect(isKind(k)).toBe(true);
     for (const k of ['secrets', '', 'NODES', 'pods/exec']) expect(isKind(k)).toBe(false);
   });
 });
@@ -258,4 +278,50 @@ describe('normalizeEvent', () => {
     expect(row.lastSeenTs).toBe(Date.parse('2026-06-11T00:00:00Z'));
   });
   it('events is a valid kind', () => { expect(isKind('events')).toBe(true); });
+});
+
+describe('ingresses kind (K8s map)', () => {
+  it('is an allowed kind', () => {
+    expect(isKind('ingresses')).toBe(true);
+  });
+
+  it('normalizeIngress carries class, LB hostname, and deduped backends (rules + defaultBackend)', () => {
+    const row = normalizeIngress({
+      metadata: { name: 'web', namespace: 'prod', creationTimestamp: new Date(Date.now() - 3600_000).toISOString() },
+      spec: {
+        ingressClassName: 'alb',
+        defaultBackend: { service: { name: 'fallback', port: { number: 80 } } },
+        rules: [
+          { http: { paths: [
+            { backend: { service: { name: 'web-svc', port: { number: 8080 } } } },
+            { backend: { service: { name: 'web-svc', port: { number: 8080 } } } }, // dup → 1
+          ] } },
+        ],
+      },
+      status: { loadBalancer: { ingress: [{ hostname: 'k8s-abc.elb.amazonaws.com' }] } },
+    } as never);
+    expect(row.name).toBe('web');
+    expect(row.namespace).toBe('prod');
+    expect(row.className).toBe('alb');
+    expect(row.lbHostname).toBe('k8s-abc.elb.amazonaws.com');
+    expect(row.backends).toEqual([
+      { service: 'fallback', port: '80' },
+      { service: 'web-svc', port: '8080' },
+    ]);
+  });
+
+  it('normalizeIngress picks the first LB entry with a value', () => {
+    const row = normalizeIngress({
+      metadata: { name: 'w', namespace: 'ns' },
+      status: { loadBalancer: { ingress: [{}, { ip: '10.1.2.3' }] } },
+    } as never);
+    expect(row.lbHostname).toBe('10.1.2.3');
+  });
+
+  it('normalizeIngress tolerates missing spec/status', () => {
+    const row = normalizeIngress({ metadata: { name: 'bare', namespace: 'ns' } } as never);
+    expect(row.backends).toEqual([]);
+    expect(row.lbHostname).toBe('');
+    expect(row.className).toBe('');
+  });
 });

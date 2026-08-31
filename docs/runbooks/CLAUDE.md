@@ -1,31 +1,40 @@
 # Runbooks
 
-운영 시나리오별 대응 가이드. 각 런북은 증상 → 확인 → 조치 순서로 구성.
 Operational playbooks organized by scenario. Each follows symptoms → diagnosis → action.
 
-## 목록 / Index
+## Index
 
-| 런북 / Runbook | 주제 / Topic |
+| Runbook | Topic |
 |---|---|
-| [start-services.md](start-services.md) | 전체 서비스 시작 (Steampipe + Next.js) |
-| [deploy-new-version.md](deploy-new-version.md) | 새 버전 배포 (앱 / 에이전트 / Lambda / CDK) |
-| [add-new-page.md](add-new-page.md) | 새 대시보드 페이지 추가 |
-| [multi-account-setup.md](multi-account-setup.md) | 신규 AWS 계정 추가 (Steampipe Aggregator) |
-| [alert-pipeline-troubleshoot.md](alert-pipeline-troubleshoot.md) | 알림 파이프라인 장애 대응 (ADR-008/013) |
-| [cache-warmer-issues.md](cache-warmer-issues.md) | 캐시 워머 stale / 에러 대응 |
-| [cognito-auth-issues.md](cognito-auth-issues.md) | 로그인 실패, Lambda@Edge 검증 오류 |
-| [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora 이력 백필 |
-| [v1-decommission.md](v1-decommission.md) | v1 레거시 폐기 5단계 절차 (ADR-016) |
+| [start-services.md](start-services.md) | **⚠️ v1 (legacy)** — start all services (Steampipe + Next.js on EC2); v2 runs ECS always-on |
+| [deploy-new-version.md](deploy-new-version.md) | **⚠️ v1 (legacy)** — deploy a new version (CDK); v2 uses `make deploy` |
+| [add-new-page.md](add-new-page.md) | Adding a new dashboard page |
+| [multi-account-setup.md](multi-account-setup.md) | **⚠️ v1 (legacy)** — onboard a new AWS account (Steampipe Aggregator); v2 uses `onboard-target-account.md` |
+| [onboard-target-account.md](onboard-target-account.md) | v2 target-account onboarding (`AWSopsReadOnlyRole` + ExternalId) |
+| [istio-agent-eks-access.md](istio-agent-eks-access.md) | Granting `istio-read` MCP access to an EKS cluster (agent Lambda role Access Entry) |
+| [network-path-eks-access.md](network-path-eks-access.md) | Granting Network Path Check live-identity verification access to an EKS cluster's Nodes/Pods (worker task role / `AWSopsReadOnlyRole` Access Entry, AdminView) |
+| [k8sgpt-operator-install.md](k8sgpt-operator-install.md) | Out-of-band K8sGPT operator install (manual operator work, ADR-005 precedent) |
+| [alert-pipeline-troubleshoot.md](alert-pipeline-troubleshoot.md) | Alert pipeline failure response (ADR-008/013) |
+| [cache-warmer-issues.md](cache-warmer-issues.md) | Cache warmer staleness / error response |
+| [cognito-auth-issues.md](cognito-auth-issues.md) | Login failures, Lambda@Edge verification errors |
+| [user-offboarding.md](user-offboarding.md) | Offboarding a departing employee's Cognito account — closing the account-takeover path (ADR-002/009) |
+| [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
+| [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
+| [agent-sql-reader.md](agent-sql-reader.md) | `execute_sql`/`inventory-read` Data API auth failures — `awsops_sql_reader` role/password sync (`apply → make migrate → make agentcore`) |
 
-## 규칙 / Conventions
-- 파일명: `kebab-case.md`, 도메인-주제 순서
-- 구조: **증상 → 원인 후보 → 검증 명령 → 조치 → 관련 파일/ADR**
-- 한국어/영어 병기
-- 명령어는 복사-붙여넣기 가능한 형태로
-- 관련 ADR 번호를 하단에 명시
+## Conventions
+- Filename: `kebab-case.md`, domain-then-topic order.
+- Structure: **symptoms → candidate causes → verification commands → action → related files/ADRs**.
+- Runbook *bodies* (the linked `*.md` files above) must be bilingual Korean/English (a small
+  number of existing runbooks are English-only and should be brought into line, not treated as
+  precedent) — this index file itself follows the repo's CLAUDE.md-is-English-only rule
+  (`docs/CLAUDE.md`).
+- Commands should be copy-paste ready.
+- Cite the related ADR number(s) at the bottom.
+- Do not let a runbook embed secrets, AWS account IDs, ARNs, or live domains.
 
-## 새 런북 추가 / Adding a Runbook
-1. 이 파일 목록에 추가
-2. 기존 런북의 구조(start-services.md, deploy-new-version.md)를 템플릿으로 사용
-3. 증상 → 진단 → 조치 순서 엄수
-4. 관련 파일 경로를 반드시 포함
+## Adding a Runbook
+1. Add it to this index.
+2. Use an existing runbook's structure as a template (`start-services.md`, `deploy-new-version.md`).
+3. Follow the symptoms → diagnosis → action order strictly.
+4. Always include the related file paths.

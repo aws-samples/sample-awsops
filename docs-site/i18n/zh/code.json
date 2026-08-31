@@ -1,0 +1,553 @@
+{
+  "theme.ErrorPageContent.title": {
+    "message": "页面崩溃了。",
+    "description": "The title of the fallback page when the page crashed"
+  },
+  "theme.BackToTopButton.buttonAriaLabel": {
+    "message": "回到顶部",
+    "description": "The ARIA label for the back to top button"
+  },
+  "theme.blog.archive.title": {
+    "message": "归档",
+    "description": "The page & hero title of the blog archive page"
+  },
+  "theme.blog.archive.description": {
+    "message": "归档",
+    "description": "The page & hero description of the blog archive page"
+  },
+  "theme.blog.paginator.navAriaLabel": {
+    "message": "博客列表分页导航",
+    "description": "The ARIA label for the blog pagination"
+  },
+  "theme.blog.paginator.newerEntries": {
+    "message": "较新的文章",
+    "description": "The label used to navigate to the newer blog posts page (previous page)"
+  },
+  "theme.blog.paginator.olderEntries": {
+    "message": "较早的文章",
+    "description": "The label used to navigate to the older blog posts page (next page)"
+  },
+  "theme.blog.post.paginator.navAriaLabel": {
+    "message": "博客文章分页导航",
+    "description": "The ARIA label for the blog posts pagination"
+  },
+  "theme.blog.post.paginator.newerPost": {
+    "message": "较新的文章",
+    "description": "The blog post button label to navigate to the newer/previous post"
+  },
+  "theme.blog.post.paginator.olderPost": {
+    "message": "较早的文章",
+    "description": "The blog post button label to navigate to the older/next post"
+  },
+  "theme.tags.tagsPageLink": {
+    "message": "查看所有标签",
+    "description": "The label of the link targeting the tag list page"
+  },
+  "theme.colorToggle.ariaLabel.mode.system": {
+    "message": "跟随系统",
+    "description": "The name for the system color mode"
+  },
+  "theme.colorToggle.ariaLabel.mode.light": {
+    "message": "浅色模式",
+    "description": "The name for the light color mode"
+  },
+  "theme.colorToggle.ariaLabel.mode.dark": {
+    "message": "深色模式",
+    "description": "The name for the dark color mode"
+  },
+  "theme.colorToggle.ariaLabel": {
+    "message": "在深色和浅色模式之间切换（当前为{mode}）",
+    "description": "The ARIA label for the color mode toggle"
+  },
+  "theme.docs.breadcrumbs.navAriaLabel": {
+    "message": "页面路径",
+    "description": "The ARIA label for the breadcrumbs"
+  },
+  "theme.docs.DocCard.categoryDescription.plurals": {
+    "message": "{count} 个项目",
+    "description": "The default description for a category card in the generated index about how many items this category includes"
+  },
+  "theme.docs.paginator.navAriaLabel": {
+    "message": "文档分页导航",
+    "description": "The ARIA label for the docs pagination"
+  },
+  "theme.docs.paginator.previous": {
+    "message": "上一页",
+    "description": "The label used to navigate to the previous doc"
+  },
+  "theme.docs.paginator.next": {
+    "message": "下一页",
+    "description": "The label used to navigate to the next doc"
+  },
+  "theme.docs.tagDocListPageTitle.nDocsTagged": {
+    "message": "{count} 篇文档带有标签",
+    "description": "Pluralized label for \"{count} docs tagged\". Use as much plural forms (separated by \"|\") as your language support (see https://www.unicode.org/cldr/cldr-aux/charts/34/supplemental/language_plural_rules.html)"
+  },
+  "theme.docs.tagDocListPageTitle": {
+    "message": "{nDocsTagged}「{tagName}」",
+    "description": "The title of the page for a docs tag"
+  },
+  "theme.docs.versionBadge.label": {
+    "message": "版本：{versionLabel}"
+  },
+  "theme.docs.versions.unreleasedVersionLabel": {
+    "message": "这是 {siteTitle} {versionLabel} 版本的未发布文档。",
+    "description": "The label used to tell the user that he's browsing an unreleased doc version"
+  },
+  "theme.docs.versions.unmaintainedVersionLabel": {
+    "message": "这是 {siteTitle} {versionLabel} 的文档，该版本已不再积极维护。",
+    "description": "The label used to tell the user that he's browsing an unmaintained doc version"
+  },
+  "theme.docs.versions.latestVersionSuggestionLabel": {
+    "message": "如需查看最新文档，请参阅 {latestVersionLink}（{versionLabel}）。",
+    "description": "The label used to tell the user to check the latest version"
+  },
+  "theme.docs.versions.latestVersionLinkLabel": {
+    "message": "最新版本",
+    "description": "The label used for the latest version suggestion link label"
+  },
+  "theme.common.editThisPage": {
+    "message": "编辑此页",
+    "description": "The link label to edit the current page"
+  },
+  "theme.common.headingLinkTitle": {
+    "message": "{heading}的直接链接",
+    "description": "Title for link to heading"
+  },
+  "theme.lastUpdated.atDate": {
+    "message": "于 {date} ",
+    "description": "The words used to describe on which date a page has been last updated"
+  },
+  "theme.lastUpdated.byUser": {
+    "message": "由 {user} ",
+    "description": "The words used to describe by who the page has been last updated"
+  },
+  "theme.lastUpdated.lastUpdatedAtBy": {
+    "message": "最后{byUser}{atDate}更新",
+    "description": "The sentence used to display when a page has been last updated, and by who"
+  },
+  "theme.NotFound.title": {
+    "message": "找不到页面",
+    "description": "The title of the 404 page"
+  },
+  "theme.navbar.mobileVersionsDropdown.label": {
+    "message": "版本",
+    "description": "The label for the navbar versions dropdown on mobile view"
+  },
+  "theme.tags.tagsListLabel": {
+    "message": "标签：",
+    "description": "The label alongside a tag list"
+  },
+  "theme.admonition.caution": {
+    "message": "警告",
+    "description": "The default label used for the Caution admonition (:::caution)"
+  },
+  "theme.admonition.danger": {
+    "message": "危险",
+    "description": "The default label used for the Danger admonition (:::danger)"
+  },
+  "theme.admonition.info": {
+    "message": "信息",
+    "description": "The default label used for the Info admonition (:::info)"
+  },
+  "theme.admonition.note": {
+    "message": "备注",
+    "description": "The default label used for the Note admonition (:::note)"
+  },
+  "theme.admonition.tip": {
+    "message": "提示",
+    "description": "The default label used for the Tip admonition (:::tip)"
+  },
+  "theme.admonition.warning": {
+    "message": "注意",
+    "description": "The default label used for the Warning admonition (:::warning)"
+  },
+  "theme.AnnouncementBar.closeButtonAriaLabel": {
+    "message": "关闭",
+    "description": "The ARIA label for close button of announcement bar"
+  },
+  "theme.blog.sidebar.navAriaLabel": {
+    "message": "最近博客文章导航",
+    "description": "The ARIA label for recent posts in the blog sidebar"
+  },
+  "theme.DocSidebarItem.expandCategoryAriaLabel": {
+    "message": "展开侧边栏分类「{label}」",
+    "description": "The ARIA label to expand the sidebar category"
+  },
+  "theme.DocSidebarItem.collapseCategoryAriaLabel": {
+    "message": "收起侧边栏分类「{label}」",
+    "description": "The ARIA label to collapse the sidebar category"
+  },
+  "theme.IconExternalLink.ariaLabel": {
+    "message": "（在新标签页中打开）",
+    "description": "The ARIA label for the external link icon"
+  },
+  "theme.NavBar.navAriaLabel": {
+    "message": "主导航",
+    "description": "The ARIA label for the main navigation"
+  },
+  "theme.NotFound.p1": {
+    "message": "我们找不到您要访问的内容。",
+    "description": "The first paragraph of the 404 page"
+  },
+  "theme.NotFound.p2": {
+    "message": "请联系将您链接到原始 URL 的网站所有者，告知其链接已失效。",
+    "description": "The 2nd paragraph of the 404 page"
+  },
+  "theme.navbar.mobileLanguageDropdown.label": {
+    "message": "语言",
+    "description": "The label for the mobile language switcher dropdown"
+  },
+  "theme.TOCCollapsible.toggleButtonLabel": {
+    "message": "本页目录",
+    "description": "The label used by the button on the collapsible TOC component"
+  },
+  "theme.blog.post.readMore": {
+    "message": "阅读更多",
+    "description": "The label used in blog post item excerpts to link to full blog posts"
+  },
+  "theme.blog.post.readMoreLabel": {
+    "message": "阅读{title}的更多内容",
+    "description": "The ARIA label for the link to full blog posts from excerpts"
+  },
+  "theme.blog.post.readingTime.plurals": {
+    "message": "阅读需 {readingTime} 分钟",
+    "description": "Pluralized label for \"{readingTime} min read\". Use as much plural forms (separated by \"|\") as your language support (see https://www.unicode.org/cldr/cldr-aux/charts/34/supplemental/language_plural_rules.html)"
+  },
+  "theme.CodeBlock.copy": {
+    "message": "复制",
+    "description": "The copy button label on code blocks"
+  },
+  "theme.CodeBlock.copied": {
+    "message": "已复制",
+    "description": "The copied button label on code blocks"
+  },
+  "theme.CodeBlock.copyButtonAriaLabel": {
+    "message": "复制代码到剪贴板",
+    "description": "The ARIA label for copy code blocks button"
+  },
+  "theme.CodeBlock.wordWrapToggle": {
+    "message": "切换自动换行",
+    "description": "The title attribute for toggle word wrapping button of code block lines"
+  },
+  "theme.docs.breadcrumbs.home": {
+    "message": "首页",
+    "description": "The ARIA label for the home page in the breadcrumbs"
+  },
+  "theme.docs.sidebar.collapseButtonTitle": {
+    "message": "收起侧边栏",
+    "description": "The title attribute for collapse button of doc sidebar"
+  },
+  "theme.docs.sidebar.collapseButtonAriaLabel": {
+    "message": "收起侧边栏",
+    "description": "The title attribute for collapse button of doc sidebar"
+  },
+  "theme.docs.sidebar.navAriaLabel": {
+    "message": "文档侧边栏",
+    "description": "The ARIA label for the sidebar navigation"
+  },
+  "theme.docs.sidebar.closeSidebarButtonAriaLabel": {
+    "message": "关闭导航栏",
+    "description": "The ARIA label for close button of mobile sidebar"
+  },
+  "theme.navbar.mobileSidebarSecondaryMenu.backButtonLabel": {
+    "message": "← 返回主菜单",
+    "description": "The label of the back button to return to main menu, inside the mobile navbar sidebar secondary menu (notably used to display the docs sidebar)"
+  },
+  "theme.docs.sidebar.toggleSidebarButtonAriaLabel": {
+    "message": "切换导航栏",
+    "description": "The ARIA label for hamburger menu button of mobile navigation"
+  },
+  "theme.navbar.mobileDropdown.collapseButton.expandAriaLabel": {
+    "message": "展开下拉菜单",
+    "description": "The ARIA label of the button to expand the mobile dropdown navbar item"
+  },
+  "theme.navbar.mobileDropdown.collapseButton.collapseAriaLabel": {
+    "message": "收起下拉菜单",
+    "description": "The ARIA label of the button to collapse the mobile dropdown navbar item"
+  },
+  "theme.docs.sidebar.expandButtonTitle": {
+    "message": "展开侧边栏",
+    "description": "The ARIA label and title attribute for expand button of doc sidebar"
+  },
+  "theme.docs.sidebar.expandButtonAriaLabel": {
+    "message": "展开侧边栏",
+    "description": "The ARIA label and title attribute for expand button of doc sidebar"
+  },
+  "theme.blog.post.plurals": {
+    "message": "{count} 篇文章",
+    "description": "Pluralized label for \"{count} posts\". Use as much plural forms (separated by \"|\") as your language support (see https://www.unicode.org/cldr/cldr-aux/charts/34/supplemental/language_plural_rules.html)"
+  },
+  "theme.blog.tagTitle": {
+    "message": "{nPosts}带有标签「{tagName}」",
+    "description": "The title of the page for a blog tag"
+  },
+  "theme.blog.author.pageTitle": {
+    "message": "{authorName} - {nPosts}",
+    "description": "The title of the page for a blog author"
+  },
+  "theme.blog.authorsList.pageTitle": {
+    "message": "作者",
+    "description": "The title of the authors page"
+  },
+  "theme.blog.authorsList.viewAll": {
+    "message": "查看所有作者",
+    "description": "The label of the link targeting the blog authors page"
+  },
+  "theme.blog.author.noPosts": {
+    "message": "该作者尚未发布任何文章。",
+    "description": "The text for authors with 0 blog post"
+  },
+  "theme.contentVisibility.unlistedBanner.title": {
+    "message": "未公开列出的页面",
+    "description": "The unlisted content banner title"
+  },
+  "theme.contentVisibility.unlistedBanner.message": {
+    "message": "此页面未公开列出。搜索引擎不会索引它，只有拥有直接链接的用户才能访问。",
+    "description": "The unlisted content banner message"
+  },
+  "theme.contentVisibility.draftBanner.title": {
+    "message": "草稿页面",
+    "description": "The draft content banner title"
+  },
+  "theme.contentVisibility.draftBanner.message": {
+    "message": "此页面为草稿。它仅在开发环境中可见，并会从生产构建中排除。",
+    "description": "The draft content banner message"
+  },
+  "theme.ErrorPageContent.tryAgain": {
+    "message": "重试",
+    "description": "The label of the button to try again rendering when the React error boundary captures an error"
+  },
+  "theme.common.skipToMainContent": {
+    "message": "跳到主要内容",
+    "description": "The skip to content label used for accessibility, allowing to rapidly navigate to main content with keyboard tab/enter navigation"
+  },
+  "theme.tags.tagsPageTitle": {
+    "message": "标签",
+    "description": "The title of the tag list page"
+  },
+  "home.meta.title": {
+    "message": "AWSops | 一屏掌握 AWS 运维",
+    "description": "Landing page <title>"
+  },
+  "home.meta.description": {
+    "message": "一款只读运维仪表板，在一个屏幕上展示 AWS 运行状态、资源关系、成本与安全，通过 Amazon Bedrock AgentCore 回答实时数据问题，并在只读异步 Worker 上运行综合诊断。",
+    "description": "Landing page meta description"
+  },
+  "home.hero.eyebrow": {
+    "message": "AWS + Kubernetes 运维",
+    "description": "Hero eyebrow label"
+  },
+  "home.hero.line": {
+    "message": "分散的 AWS 运维，汇聚在一个屏幕。",
+    "description": "Hero headline"
+  },
+  "home.hero.copy": {
+    "message": "在一个流程中查看运行状态、询问实时数据，并运行 Well-Architected 诊断。",
+    "description": "Hero supporting copy"
+  },
+  "home.hero.alt": {
+    "message": "AWSops 统一运维仪表板",
+    "description": "Hero image alt text"
+  },
+  "home.hero.glyph.network": {
+    "message": "网络",
+    "description": "Hero glyph label: network"
+  },
+  "home.hero.glyph.cost": {
+    "message": "成本",
+    "description": "Hero glyph label: cost"
+  },
+  "home.hero.glyph.security": {
+    "message": "安全",
+    "description": "Hero glyph label: security"
+  },
+  "home.hero.ctaPrimary": {
+    "message": "开始阅读指南",
+    "description": "Hero primary CTA"
+  },
+  "home.hero.ctaSecondary": {
+    "message": "查看仪表板",
+    "description": "Hero secondary CTA"
+  },
+  "home.hero.svgAria": {
+    "message": "相互连接的运维节点图",
+    "description": "Hero abstract graphic aria-label"
+  },
+  "home.hero.figCap2": {
+    "message": "跨账户、区域与集群的一张运维神经网络。",
+    "description": "Hero figure caption under SINGLE PANE OF GLASS"
+  },
+  "home.watch.heading": {
+    "message": "30 秒了解 AWSops",
+    "description": "Watch section heading"
+  },
+  "home.watch.lead": {
+    "message": "通过真实界面的简短导览，在继续阅读之前先了解它能做什么。",
+    "description": "Watch section lead"
+  },
+  "home.watch.alt": {
+    "message": "AWSops 产品导览预览",
+    "description": "Product tour poster alt text (reduced-motion fallback)"
+  },
+  "home.watch.caption": {
+    "message": "30 秒纵览 8 个界面，从仪表板到安全、合规、EKS 与 AI 诊断。",
+    "description": "Product tour figure caption"
+  },
+  "home.proof.heading": {
+    "message": "首先，纵览整个运维全貌。",
+    "description": "Proof section heading"
+  },
+  "home.proof.lead": {
+    "message": "在一个仪表板中比较 AWS 资源、Kubernetes、成本与安全信号。",
+    "description": "Proof section lead"
+  },
+  "home.proof.routes": {
+    "message": "AI 路由分区",
+    "description": "Proof stat label"
+  },
+  "home.proof.pillars": {
+    "message": "Well-Architected 支柱",
+    "description": "Proof stat label"
+  },
+  "home.proof.exports": {
+    "message": "报告导出格式",
+    "description": "Proof stat label"
+  },
+  "home.see.alt": {
+    "message": "AWSops 统一运维仪表板",
+    "description": "See section image alt text"
+  },
+  "home.see.caption": {
+    "message": "计算、存储、网络、安全与成本 KPI 汇集在一个主界面上。",
+    "description": "See section figure caption"
+  },
+  "home.see.heading": {
+    "message": "在仪表板上一目了然地查看全部内容。",
+    "description": "See section heading"
+  },
+  "home.see.lead": {
+    "message": "分散的资源状态被整理为一屏的 KPI 与分布图表。",
+    "description": "See section lead"
+  },
+  "home.ask.alt": {
+    "message": "AWSops AI 助手为成本问题引用证据",
+    "description": "Ask section image alt text"
+  },
+  "home.ask.caption": {
+    "message": "由只读、按领域划分的工具收集的证据被综合为一个答案。",
+    "description": "Ask section figure caption"
+  },
+  "home.ask.heading": {
+    "message": "直接询问运维数据。",
+    "description": "Ask section heading"
+  },
+  "home.ask.lead": {
+    "message": "问题意图被分类到专门的路由并查询实时数据。跨领域的结果汇总为一个易读的答案返回。",
+    "description": "Ask section lead"
+  },
+  "home.explore.heading": {
+    "message": "在同一上下文中查看关系、成本与控制。",
+    "description": "Explore section heading"
+  },
+  "home.explore.lead": {
+    "message": "跟踪资源流向，并一并检查成本趋势与安全控制。",
+    "description": "Explore section lead"
+  },
+  "home.explore.topologyAlt": {
+    "message": "从 DNS 到目标的 AWS 资源拓扑",
+    "description": "Topology figure alt text"
+  },
+  "home.explore.topologyCaption": {
+    "message": "可视化探索请求路径与资源关系。",
+    "description": "Topology figure caption"
+  },
+  "home.explore.costAlt": {
+    "message": "AWS 月度与每日成本趋势",
+    "description": "Cost figure alt text"
+  },
+  "home.explore.costCaption": {
+    "message": "按服务比较成本与变化。",
+    "description": "Cost figure caption"
+  },
+  "home.explore.complianceAlt": {
+    "message": "安全问题与 CIS 合规摘要",
+    "description": "Compliance figure alt text"
+  },
+  "home.explore.complianceCaption": {
+    "message": "快速检查风险信号与合规状态。",
+    "description": "Compliance figure caption"
+  },
+  "home.diagnose.heading": {
+    "message": "把观察转化为决策依据。",
+    "description": "Diagnose section heading"
+  },
+  "home.diagnose.lead": {
+    "message": "重量级诊断在异步 Worker 上运行，Well-Architected 结果可导出为 MD、DOCX 和 PDF。",
+    "description": "Diagnose section lead"
+  },
+  "home.diagnose.alt": {
+    "message": "AWSops AI 诊断报告与目录",
+    "description": "Diagnose figure alt text"
+  },
+  "home.diagnose.caption": {
+    "message": "诊断结果与改进建议以结构化报告呈现。",
+    "description": "Diagnose figure caption"
+  },
+  "home.trust.heading": {
+    "message": "以证据为先，而非变更。",
+    "description": "Trust section heading"
+  },
+  "home.trust.lead": {
+    "message": "AWSops 观察运行状态并提供诊断与改进建议。它绝不会基于诊断结果自动修改或自我修复客户的 AWS 资源。",
+    "description": "Trust section lead"
+  },
+  "home.trust.edge.title": {
+    "message": "私有边缘",
+    "description": "Trust item title"
+  },
+  "home.trust.edge.body": {
+    "message": "应用程序由 CloudFront VPC Origin 之后的内部 ALB 保护。",
+    "description": "Trust item body"
+  },
+  "home.trust.identity.title": {
+    "message": "经过验证的身份",
+    "description": "Trust item title"
+  },
+  "home.trust.identity.body": {
+    "message": "访问由 Cognito 与 Lambda@Edge RS256 验证控制。",
+    "description": "Trust item body"
+  },
+  "home.trust.privilege.title": {
+    "message": "最小权限",
+    "description": "Trust item title"
+  },
+  "home.trust.privilege.body": {
+    "message": "聊天的实时查询在 AgentCore MCP 工具边界内运行；综合诊断在只读异步 Worker 上运行。",
+    "description": "Trust item body"
+  },
+  "home.trust.encrypted.title": {
+    "message": "加密的状态",
+    "description": "Trust item title"
+  },
+  "home.trust.encrypted.body": {
+    "message": "Aurora 与托管密钥将状态和凭证分离。",
+    "description": "Trust item body"
+  },
+  "home.cta.heading": {
+    "message": "把运维搬到一个屏幕上。",
+    "description": "Closing CTA heading"
+  },
+  "home.cta.lead": {
+    "message": "在真实的仪表板上体验统一可见性与 AI 诊断流程。",
+    "description": "Closing CTA lead"
+  },
+  "home.cta.ctaGuide": {
+    "message": "开始阅读指南",
+    "description": "Closing CTA guide button"
+  },
+  "home.cta.ctaDemo": {
+    "message": "查看在线演示",
+    "description": "Closing CTA demo button"
+  }
+}

@@ -1,0 +1,125 @@
+name: Deploy Web
+
+# Split per the platform's mutation gate: the `build` job runs on every push to
+# main and only publishes an image (ci-build, ECR push only) — it never
+# touches the running ECS service. `deploy` is workflow_dispatch-only, gated
+# by the aws-samples-deploy environment (human reviewer), and does the actual
+# `ecs update-service --force-new-deployment` (ci-deployer). Mirrors
+# scripts/v2/deploy.mjs's build+push+roll+wait+smoke steps, split across the
+# two jobs/roles instead of one script invocation.
+#
+# terraform/foundation's outputs (ecr_web_uri, ecs_cluster_name,
+# ecs_service_name, public_url) are needed by both jobs — see terraform.yml's
+# header comment for how backend.hcl/terraform.tfvars are restored from repo
+# secrets in CI.
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", "CHANGELOG.md"]
+  workflow_dispatch: {}
+    # Rolls whatever the ECS task definition's image tag currently resolves to
+    # (:web-latest, mutable) — build always pushes to that same tag, so this
+    # just force-redeploys the most recently built image.
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    name: Build & push (arm64)
+    if: github.event_name == 'push'
+    runs-on: sample-awsops
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC -> ci-build)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_BUILD_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      - name: Restore terraform.foundation backend (read-only — just need `output`)
+        working-directory: terraform/foundation
+        run: |
+          if [ -z "${{ secrets.TF_BACKEND_HCL }}" ]; then
+            echo "::error::TF_BACKEND_HCL repo secret not set — run 'make configure' once, see terraform.yml's header comment."
+            exit 1
+          fi
+          echo "${{ secrets.TF_BACKEND_HCL }}" | base64 -d > backend.hcl
+          echo "${{ secrets.TF_TFVARS }}" | base64 -d > terraform.tfvars
+          terraform init -backend-config=backend.hcl -input=false
+
+      - name: Resolve ECR repo URI
+        id: tf
+        working-directory: terraform/foundation
+        run: echo "ecr_web_uri=$(terraform output -raw ecr_web_uri)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Copy CHANGELOG into build context
+        # web/ is the build context but CHANGELOG.md lives at repo root and is
+        # gitignored inside web/ — same reasoning as scripts/v2/deploy.mjs.
+        run: cp CHANGELOG.md web/CHANGELOG.md
+
+      - name: Build and push (arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: web
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ steps.tf.outputs.ecr_web_uri }}:web-latest
+            ${{ steps.tf.outputs.ecr_web_uri }}:web-${{ github.sha }}
+
+  deploy:
+    name: Roll ECS service
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: sample-awsops
+    environment: aws-samples-deploy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC -> ci-deployer)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_DEPLOYER_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      - name: Restore terraform.foundation backend
+        working-directory: terraform/foundation
+        run: |
+          echo "${{ secrets.TF_BACKEND_HCL }}" | base64 -d > backend.hcl
+          echo "${{ secrets.TF_TFVARS }}" | base64 -d > terraform.tfvars
+          terraform init -backend-config=backend.hcl -input=false
+
+      - name: Resolve ECS cluster/service/URL
+        id: tf
+        working-directory: terraform/foundation
+        run: |
+          echo "cluster=$(terraform output -raw ecs_cluster_name)" >> "$GITHUB_OUTPUT"
+          echo "service=$(terraform output -raw ecs_service_name)" >> "$GITHUB_OUTPUT"
+          echo "url=$(terraform output -raw public_url)" >> "$GITHUB_OUTPUT"
+
+      - name: ECS force-new-deployment
+        run: |
+          aws ecs update-service \
+            --cluster "${{ steps.tf.outputs.cluster }}" \
+            --service "${{ steps.tf.outputs.service }}" \
+            --force-new-deployment \
+            --region ap-northeast-2 >/dev/null
+
+      - name: Wait for services-stable
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${{ steps.tf.outputs.cluster }}" \
+            --services "${{ steps.tf.outputs.service }}" \
+            --region ap-northeast-2
+
+      - name: Smoke test
+        run: curl -fsS --max-time 15 "${{ steps.tf.outputs.url }}/api/health" && echo
