@@ -86,7 +86,7 @@
           <mxGeometry x="20" y="150" width="480" height="40" as="geometry" />
         </mxCell>
 
-        <mxCell id="legend" value="&#8212; solid = sync call/query &amp;nbsp;&amp;nbsp;&amp;nbsp; - - - dashed = async event/queue&lt;br&gt;IaC: Terraform (terraform/v2/foundation) &#8212; not CDK. No public ALB: CloudFront reaches the ALB only via VPC Origin." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;fontSize=11;fontStyle=0;fontColor=#5A6C86;fontFamily=Amazon Ember;whiteSpace=wrap;" vertex="1" parent="1">
+        <mxCell id="legend" value="&#8212; solid = sync call/query &amp;nbsp;&amp;nbsp;&amp;nbsp; - - - dashed = async event/queue&lt;br&gt;IaC: Terraform (terraform/foundation) &#8212; not CDK. No public ALB: CloudFront reaches the ALB only via VPC Origin." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;fontSize=11;fontStyle=0;fontColor=#5A6C86;fontFamily=Amazon Ember;whiteSpace=wrap;" vertex="1" parent="1">
           <mxGeometry x="40" y="820" width="900" height="50" as="geometry" />
         </mxCell>
 

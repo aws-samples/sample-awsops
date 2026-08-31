@@ -516,5 +516,141 @@ class StreamTextTest(unittest.TestCase):
         self.assertEqual(out, [{"model": agent.MODEL_ID}])
 
 
+class TestFilterOfficialMcpTools(unittest.TestCase):
+    """ADR-017 (amended 2026-08-05): fail-closed allowlist over `*-mcp-server-target___*` tools."""
+
+    TOOLS = [
+        FakeTool('datadog-mcp-server-target___search_datadog_logs'),
+        FakeTool('datadog-mcp-server-target___create_datadog_monitor'),   # vendor write tool
+        FakeTool('dynatrace-mcp-server-target___execute_dql'),            # target with empty allowlist
+        FakeTool('clickhouse-mcp-target___clickhouse_query'),             # lambda target — not a preset
+        FakeTool('plain_tool'),
+    ]
+
+    def test_allowlisted_tool_survives_and_rest_of_preset_tools_drop(self):
+        allow = {'datadog-mcp-server-target': {'search_datadog_logs'}, 'dynatrace-mcp-server-target': set()}
+        self.assertEqual(
+            names(agent.filter_official_mcp_tools(self.TOOLS, allow)),
+            ['datadog-mcp-server-target___search_datadog_logs',
+             'clickhouse-mcp-target___clickhouse_query', 'plain_tool'])
+
+    def test_missing_map_is_deny_all_for_preset_tools_only(self):
+        self.assertEqual(
+            names(agent.filter_official_mcp_tools(self.TOOLS, {})),
+            ['clickhouse-mcp-target___clickhouse_query', 'plain_tool'])
+
+    def test_env_parse_failure_fails_closed(self):
+        import os
+        os.environ['OFFICIAL_MCP_TOOL_ALLOWLIST_JSON'] = 'not-json'
+        try:
+            self.assertEqual(agent._official_mcp_allowlist(), {})
+        finally:
+            del os.environ['OFFICIAL_MCP_TOOL_ALLOWLIST_JSON']
+
+
+class TestClickhouseStdioEnv(unittest.TestCase):
+    """ADR-017 (amended): datasource kind-mirror blob → mcp-clickhouse env, read-only pinned."""
+
+    def test_https_endpoint_maps_with_url_standard_port_and_readonly_pins(self):
+        env = agent._clickhouse_stdio_env({'endpoint': 'https://ch.internal', 'username': 'ro', 'password': 'pw'})
+        self.assertEqual(env['CLICKHOUSE_HOST'], 'ch.internal')
+        self.assertEqual(env['CLICKHOUSE_PORT'], '443')
+        self.assertEqual(env['CLICKHOUSE_SECURE'], 'true')
+        self.assertEqual(env['CLICKHOUSE_USER'], 'ro')
+        self.assertEqual(env['CLICKHOUSE_ALLOW_WRITE_ACCESS'], 'false')
+        self.assertEqual(env['CLICKHOUSE_ALLOW_DROP'], 'false')
+
+    def test_http_endpoint_with_port(self):
+        env = agent._clickhouse_stdio_env({'endpoint': 'http://10.0.3.7:8123'})
+        self.assertEqual((env['CLICKHOUSE_HOST'], env['CLICKHOUSE_PORT'], env['CLICKHOUSE_SECURE']),
+                         ('10.0.3.7', '8123', 'false'))
+        self.assertEqual(env['CLICKHOUSE_USER'], 'default')
+
+    def test_non_http_endpoint_rejected(self):
+        for ep in ('clickhouse://x', '', 'https://'):
+            with self.assertRaises(ValueError):
+                agent._clickhouse_stdio_env({'endpoint': ep})
+
+    def test_http_endpoint_without_port_defaults_to_80(self):
+        self.assertEqual(agent._clickhouse_stdio_env({'endpoint': 'http://ch.internal'})['CLICKHOUSE_PORT'], '80')
+
+    def test_unmappable_auth_types_fail_closed(self):
+        for creds in ({'endpoint': 'https://ch', 'authType': 'bearer', 'token': 't'},
+                      {'endpoint': 'https://ch', 'authType': 'custom_header', 'headerName': 'X-K', 'headerValue': 'v'},
+                      {'endpoint': 'https://ch', 'token': 't'}):  # legacy inferred-bearer shape
+            with self.assertRaises(ValueError):
+                agent._clickhouse_stdio_env(creds)
+
+    def test_basic_and_none_auth_types_are_mappable(self):
+        for creds in ({'endpoint': 'https://ch', 'authType': 'basic', 'username': 'u', 'password': 'p'},
+                      {'endpoint': 'https://ch', 'authType': 'none'},
+                      {'endpoint': 'https://ch', 'username': 'u'}):  # absent authType with a username
+            env = agent._clickhouse_stdio_env(creds)
+            self.assertEqual(env['CLICKHOUSE_HOST'], 'ch')
+
+
+class TestApplyOfficialMcpGates(unittest.TestCase):
+    """ADR-017 gates shared by BOTH chat paths (Strands handler + anthropic_loop dark path)."""
+
+    def setUp(self):
+        self._saved_flag = agent.CLICKHOUSE_OFFICIAL_MCP
+        self._saved_connect = agent._connect_clickhouse_stdio
+
+    def tearDown(self):
+        agent.CLICKHOUSE_OFFICIAL_MCP = self._saved_flag
+        agent._connect_clickhouse_stdio = self._saved_connect
+
+    def test_vendor_allowlist_applied_on_raw_gateway_list(self):
+        # flag off + OFFICIAL_MCP_TOOL_ALLOWLIST_JSON unset (deny-all): preset tools drop.
+        agent.CLICKHOUSE_OFFICIAL_MCP = False
+        raw = [FakeTool('datadog-mcp-server-target___create_datadog_monitor'), FakeTool('plain_tool')]
+        gw, stdio, client = agent.apply_official_mcp_gates(raw, 'v2-external-obs', None)
+        self.assertEqual(names(gw), ['plain_tool'])
+        self.assertEqual(stdio, [])
+        self.assertIsNone(client)
+
+    def test_non_external_obs_gateway_never_connects_stdio(self):
+        agent.CLICKHOUSE_OFFICIAL_MCP = True
+        connected = []
+
+        def fake_connect(stack):
+            connected.append(stack)
+            return object(), [FakeTool('ch')]
+        agent._connect_clickhouse_stdio = fake_connect
+        raw = [FakeTool('clickhouse-mcp-target___clickhouse_query'), FakeTool('plain_tool')]
+        gw, stdio, client = agent.apply_official_mcp_gates(raw, 'v2-data', None)
+        self.assertEqual(connected, [])
+        self.assertEqual(stdio, [])
+        self.assertIsNone(client)
+        self.assertEqual(names(gw), ['clickhouse-mcp-target___clickhouse_query', 'plain_tool'])
+
+    def test_external_obs_stdio_replaces_lambda_clickhouse_tools(self):
+        agent.CLICKHOUSE_OFFICIAL_MCP = True
+        sentinel = object()  # stands in for the MCPClient that OWNS the stdio tools
+        agent._connect_clickhouse_stdio = lambda stack: (sentinel, [FakeTool('run_select_query')])
+        raw = [FakeTool('clickhouse-mcp-target___clickhouse_query'), FakeTool('plain_tool')]
+        gw, stdio, client = agent.apply_official_mcp_gates(raw, 'v2-external-obs', None)
+        self.assertNotIn('clickhouse-mcp-target___clickhouse_query', names(gw))
+        self.assertIn('plain_tool', names(gw))
+        self.assertEqual(names(stdio), ['run_select_query'])
+        # the dark path dispatches stdio tools by name, so it MUST get the owning client back
+        self.assertIs(client, sentinel)
+
+    def test_stdio_connect_failure_is_isolated(self):
+        agent.CLICKHOUSE_OFFICIAL_MCP = True
+
+        def boom(stack):
+            raise RuntimeError('boom')
+        agent._connect_clickhouse_stdio = boom
+        raw = [FakeTool('clickhouse-mcp-target___clickhouse_query'), FakeTool('plain_tool')]
+        gw, stdio, client = agent.apply_official_mcp_gates(raw, 'v2-external-obs', None)  # must NOT raise
+        self.assertEqual(stdio, [])
+        # no stdio tools => no client to route to; a stale client here would make the dark path
+        # send gateway tool calls into a dead subprocess.
+        self.assertIsNone(client)
+        # mutual exclusion must NOT fire when the stdio connect failed — both survive.
+        self.assertEqual(names(gw), ['clickhouse-mcp-target___clickhouse_query', 'plain_tool'])
+
+
 if __name__ == '__main__':
     unittest.main()

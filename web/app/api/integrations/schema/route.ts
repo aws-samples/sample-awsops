@@ -62,7 +62,7 @@ export async function POST(request: Request) {
   try {
     const schema = await invokeMcpLambdaTool({ kind: ds.kind, tool: `${ds.kind}_schema`, connConfig });
     await upsertSchema(accountId, id, ds.kind, schema);
-    await enqueueDatasourceIndex(id, ds.kind);  // rebuild pre-built diagnostic signals (prom/mimir; best-effort)
+    await enqueueDatasourceIndex(id, ds.kind);  // rebuild pre-built diagnostic signals (5 wired kinds; best-effort)
     return json({ ok: true, id, kind: ds.kind, summary: summarize(schema) }, 200);
   } catch (e) {
     return json({ error: (e as Error).message }, 400);

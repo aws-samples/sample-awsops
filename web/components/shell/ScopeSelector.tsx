@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Globe2 } from 'lucide-react';
 import { ALL_ACCOUNTS, ALL_REGIONS, type ScopeSelection, useActiveScope } from '@/lib/account-context';
+import { useI18n } from '@/components/shell/LanguageProvider';
 import { cn } from '@/lib/cn';
 
 interface AccountRow { accountId: string; alias: string; isHost: boolean }
@@ -17,21 +18,24 @@ function toggleValue(values: string[], value: string): string[] {
   return values.includes(value) ? values.filter((v) => v !== value) : [...values, value];
 }
 
-function accountLabel(scope: ScopeSelection, accounts: AccountRow[]): string {
-  if (scope.accounts === ALL_ACCOUNTS) return 'All accounts';
-  if (scope.accounts.length > 1) return `${scope.accounts.length} accounts`;
+type T = (key: string, params?: Record<string, string | number>) => string;
+
+function accountLabel(scope: ScopeSelection, accounts: AccountRow[], t: T): string {
+  if (scope.accounts === ALL_ACCOUNTS) return t('scope.allAccounts');
+  if (scope.accounts.length > 1) return t('scope.accountCount', { n: scope.accounts.length });
   const active = scope.accounts[0] || 'self';
   const row = accounts.find((a) => accountValue(a) === active);
-  return row ? `${row.alias}${row.isHost ? ' (host)' : ''}` : active;
+  return row ? `${row.alias}${row.isHost ? ` (${t('scope.host')})` : ''}` : active;
 }
 
-function regionLabel(scope: ScopeSelection): string {
-  if (scope.regions === ALL_REGIONS) return 'All enabled regions';
-  if (scope.regions.length > 1) return `${scope.regions.length} regions`;
-  return scope.regions[0] || 'No regions';
+function regionLabel(scope: ScopeSelection, t: T): string {
+  if (scope.regions === ALL_REGIONS) return t('scope.allEnabledRegions');
+  if (scope.regions.length > 1) return t('scope.regionCount', { n: scope.regions.length });
+  return scope.regions[0] || t('scope.noRegions');
 }
 
 export default function ScopeSelector({ className = '' }: { className?: string }) {
+  const { t } = useI18n();
   const [scope, setScope] = useActiveScope();
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [regions, setRegions] = useState<RegionRow[]>([]);
@@ -69,7 +73,7 @@ export default function ScopeSelector({ className = '' }: { className?: string }
     <div className={cn('space-y-1 text-[11px] text-chrome-fg', className)}>
       <details className="rounded-md border border-chrome-border">
         <summary className="cursor-pointer list-none px-2 py-1.5 font-medium">
-          Accounts: <span className="text-chrome-fg-muted">{accountLabel(scope, accounts)}</span>
+          {t('scope.accounts')}: <span className="text-chrome-fg-muted">{accountLabel(scope, accounts, t)}</span>
         </summary>
         <div className="space-y-1 border-t border-chrome-border p-2">
           {accounts.length > 1 && (
@@ -79,7 +83,7 @@ export default function ScopeSelector({ className = '' }: { className?: string }
                 checked={scope.accounts === ALL_ACCOUNTS}
                 onChange={(e) => setAccountsValue(e.target.checked ? ALL_ACCOUNTS : ['self'])}
               />
-              <span>All accounts</span>
+              <span>{t('scope.allAccounts')}</span>
             </label>
           )}
           {accounts.map((a) => {
@@ -96,7 +100,7 @@ export default function ScopeSelector({ className = '' }: { className?: string }
                     setAccountsValue(next.length ? next : ['self']);
                   }}
                 />
-                <span>{a.alias}{a.isHost ? ' (host)' : ''}</span>
+                <span>{a.alias}{a.isHost ? ` (${t('scope.host')})` : ''}</span>
               </label>
             );
           })}
@@ -105,7 +109,7 @@ export default function ScopeSelector({ className = '' }: { className?: string }
 
       <details className="rounded-md border border-chrome-border">
         <summary className="cursor-pointer list-none px-2 py-1.5 font-medium">
-          Regions: <span className="text-chrome-fg-muted">{regionLabel(scope)}</span>
+          {t('scope.regions')}: <span className="text-chrome-fg-muted">{regionLabel(scope, t)}</span>
         </summary>
         <div className="space-y-1 border-t border-chrome-border p-2">
           <label className="flex items-center gap-2">
@@ -114,7 +118,7 @@ export default function ScopeSelector({ className = '' }: { className?: string }
               checked={scope.regions === ALL_REGIONS}
               onChange={(e) => setRegionsValue(e.target.checked ? ALL_REGIONS : availableRegions.slice(0, 1))}
             />
-            <span>All enabled regions</span>
+            <span>{t('scope.allEnabledRegions')}</span>
           </label>
           {availableRegions.map((region) => {
             const checked = scope.regions === ALL_REGIONS || regionValues.includes(region);
@@ -148,7 +152,7 @@ export default function ScopeSelector({ className = '' }: { className?: string }
           onChange={(e) => setScope({ ...scope, includeGlobal: e.target.checked })}
         />
         <Globe2 size={13} strokeWidth={1.8} className="text-chrome-fg-muted" />
-        <span>Include global services</span>
+        <span>{t('scope.includeGlobal')}</span>
       </label>
     </div>
   );

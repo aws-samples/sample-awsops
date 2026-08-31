@@ -18,7 +18,7 @@ A page for getting familiar with the AWSops layout — sidebar navigation, the c
 
 A fixed area on the left of the screen — the primary way to reach every page.
 
-- **Header**: the **AWSops** mark and a **한/EN** language toggle
+- **Header**: the **AWSops** mark and a **한국어/English/中文/日本語** language selector
 - **Pinned top items**: **Overview**, **AI Diagnosis**, **Assistant**, **Jobs**, **Cost**, **Bedrock**, **Topology**, **Custom Agents**, **Datasources**
 - **Resource inventory groups**: below those come the **Compute** (EKS, EC2, Lambda, ECS Clusters, ECS Tasks, ECR), **Storage & DB**, **Network**, **Security**, and **Monitoring** groups
 - **Footer**: your signed-in identity and **Sign out**, the region/connection status, and the theme picker

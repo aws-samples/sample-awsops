@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createHash } from 'crypto';
 
 const verifyUser = vi.fn();
 const invokeAgent = vi.fn();
@@ -965,6 +966,135 @@ describe('typewriter delay and progressive status events', () => {
     const deltaFrames = frames.filter(f => f.includes('data: {"delta":'));
     expect(deltaFrames.length).toBeGreaterThan(0);
     expect(body).toContain('[DONE]');
+  });
+});
+
+// pentest-remediation P3-1: the client-supplied sessionId used to flow straight into the AgentCore
+// Memory runtimeSessionId with only a length check — a client that knew (or guessed) another user's
+// sub could attach to that user's memory session. (Finding 6 itself was a false positive — see
+// web/lib/chat-store.test.ts / lib/chat-store.ts, correctly scoped by user_sub everywhere — but this
+// sessionId-trust gap was real and separate.) The runtimeSessionId actually used must always be
+// namespaced under the CALLER's own sub, never the raw client value.
+describe('chat sessionId — bound to the caller, never client-trusted', () => {
+  beforeEach(() => {
+    pickGateway.mockReturnValue('ops');
+    resolveAgent.mockReturnValue({ tier: 'builtin', gateway: 'ops', skill: 'ops', agentName: 'ops', skillHashes: [] });
+    invokeAgent.mockResolvedValue('ok');
+  });
+
+  it('never forwards the raw client-supplied sessionId as the runtime session id', async () => {
+    verifyUser.mockResolvedValue({ sub: 'victim-sub' });
+    const { POST } = await import('./route');
+    // An attacker who somehow obtained another principal's sessionId string cannot make the
+    // server use it verbatim — it must always be re-namespaced under the CALLER's own sub.
+    const smuggled = 'awsops-someone-elses-sub-000000000000000000000000';
+    await readStream(await POST(req({ prompt: 'hi', sessionId: smuggled })));
+    const used = invokeAgent.mock.calls.at(-1)?.[0]?.sessionId as string;
+    expect(used).not.toBe(smuggled);
+    expect(used.startsWith('awsops-victim-sub-')).toBe(true);
+  });
+
+  it('is deterministic per client value (session continuity across turns for the same tab)', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u-1' });
+    const { POST } = await import('./route');
+    const clientSid = 'abc123-def456-tab-uuid-0000000000000000';
+    await readStream(await POST(req({ prompt: 'turn 1', sessionId: clientSid })));
+    const first = invokeAgent.mock.calls.at(-1)?.[0]?.sessionId;
+    await readStream(await POST(req({ prompt: 'turn 2', sessionId: clientSid })));
+    const second = invokeAgent.mock.calls.at(-1)?.[0]?.sessionId;
+    expect(first).toBe(second);
+  });
+
+  it('two different users supplying the SAME client sessionId never collide', async () => {
+    const { POST } = await import('./route');
+    const sharedClientSid = 'guessable-or-leaked-session-id-000000000';
+    verifyUser.mockResolvedValue({ sub: 'user-a' });
+    await readStream(await POST(req({ prompt: 'hi', sessionId: sharedClientSid })));
+    const a = invokeAgent.mock.calls.at(-1)?.[0]?.sessionId;
+    verifyUser.mockResolvedValue({ sub: 'user-b' });
+    await readStream(await POST(req({ prompt: 'hi', sessionId: sharedClientSid })));
+    const b = invokeAgent.mock.calls.at(-1)?.[0]?.sessionId;
+    expect(a).not.toBe(b);
+  });
+
+  it('falls back to the deterministic per-user default when sessionId is absent', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u-2' });
+    const { POST } = await import('./route');
+    await readStream(await POST(req({ prompt: 'hi' })));
+    const used = invokeAgent.mock.calls.at(-1)?.[0]?.sessionId as string;
+    const expectedEntropy = createHash('sha256').update('').digest('hex').slice(0, 32);
+    expect(used).toBe(`awsops-u-2-${expectedEntropy}`);
+  });
+
+  // PR #200 review MAJOR-1 (2nd round, confirmed against a real-length sub): the old derivation
+  // sliced the first 32 chars of the RAW input string rather than hashing it. A real Cognito sub
+  // is a 36-char UUID, so OWN_PREFIX alone is 44 chars — longer than that slice — meaning any
+  // "awsops-"-prefixed-but-invalid input collapsed onto a constant made only of prefix text,
+  // regardless of what came after character 32. A hash-based derivation must never do this: two
+  // inputs sharing a long common prefix but differing later must still derive different sessions.
+  it('does not collapse distinct inputs that share a long common prefix (realistic 36-char sub)', async () => {
+    const realSub = 'a1b2c3d4-e5f6-47a8-9b0c-1d2e3f4a5b6c'; // 36 chars, like a real Cognito sub
+    verifyUser.mockResolvedValue({ sub: realSub });
+    const { POST } = await import('./route');
+    const prefix = `awsops-${realSub}-`; // 44 chars — longer than the old slice(0, 32)
+    await readStream(await POST(req({ prompt: 'hi', sessionId: `${prefix}thread-one-distinguishing-tail` })));
+    const first = invokeAgent.mock.calls.at(-1)?.[0]?.sessionId as string;
+    await readStream(await POST(req({ prompt: 'hi', sessionId: `${prefix}thread-two-distinguishing-tail` })));
+    const second = invokeAgent.mock.calls.at(-1)?.[0]?.sessionId as string;
+    expect(first).not.toBe(second);
+  });
+
+  // PR #200 review (confirmed against base): recordExchange() persists the derived sessionId into
+  // chat_threads.session_id, and useChat.ts's selectThread() echoes data.thread.sessionId straight
+  // back as the NEXT request's body.sessionId — not the original raw client UUID. A naive
+  // "always re-prefix" derivation double-prefixes on that round-trip and, after enough thread
+  // resumes, collapses every thread for a user onto one fixed runtimeSessionId. This simulates the
+  // real round-trip (server output → next input), not just resending the same raw client value.
+  it('is idempotent across a thread-resume round-trip: feeding the SERVER-DERIVED id back as the next sessionId must not re-prefix it', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u-3' });
+    const { POST } = await import('./route');
+    await readStream(await POST(req({ prompt: 'turn 1', sessionId: 'fresh-client-uuid-0000000000000' })));
+    const derived = invokeAgent.mock.calls.at(-1)?.[0]?.sessionId as string;
+    // This is exactly what selectThread() + the next send() does: the stored/returned composite
+    // comes back as body.sessionId verbatim.
+    await readStream(await POST(req({ prompt: 'turn 2 (thread resumed)', sessionId: derived })));
+    const afterResume = invokeAgent.mock.calls.at(-1)?.[0]?.sessionId as string;
+    expect(afterResume).toBe(derived);
+    // And it stays stable across many resumes (no convergence toward a per-user fixed point).
+    await readStream(await POST(req({ prompt: 'turn 3 (resumed again)', sessionId: afterResume })));
+    expect(invokeAgent.mock.calls.at(-1)?.[0]?.sessionId).toBe(derived);
+  });
+
+  it('reuses a client-supplied own-prefix value verbatim when its entropy is a valid 32-hex derivation shape (still scoped to the caller)', async () => {
+    // Belt-and-suspenders: even a client that HAND-CRAFTS a string starting with its own
+    // `awsops-<own-sub>-` prefix only ever reuses ITS OWN namespace — never another user's.
+    verifyUser.mockResolvedValue({ sub: 'u-4' });
+    const { POST } = await import('./route');
+    const handCrafted = `awsops-u-4-${'ab12'.repeat(8)}`; // 32 lowercase hex chars
+    await readStream(await POST(req({ prompt: 'hi', sessionId: handCrafted })));
+    expect(invokeAgent.mock.calls.at(-1)?.[0]?.sessionId).toBe(handCrafted);
+  });
+
+  // PR #200 review MAJOR-1 (confirmed against base): the own-prefix fast path used to accept ANY
+  // value starting with OWN_PREFIX verbatim, with zero length/charset validation — contradicting
+  // agentcore.ts's own "never pass a raw client-supplied value through untouched" contract. An
+  // authenticated caller could suffix its own prefix with megabytes/newlines/unicode straight into
+  // InvokeAgentRuntime + the Aurora session_id column (self-DoS + row bloat).
+  it('rejects an own-prefixed value whose remainder is not charset/length-safe, re-deriving instead', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u-5' });
+    const { POST } = await import('./route');
+    const tooLong = `awsops-u-5-${'a'.repeat(500)}`;
+    await readStream(await POST(req({ prompt: 'hi', sessionId: tooLong })));
+    const used = invokeAgent.mock.calls.at(-1)?.[0]?.sessionId as string;
+    expect(used).not.toBe(tooLong);
+    expect(used.startsWith('awsops-u-5-')).toBe(true);
+    expect(used.length).toBeLessThan(tooLong.length);
+
+    const badCharset = 'awsops-u-5-has spaces and\nnewlines';
+    await readStream(await POST(req({ prompt: 'hi', sessionId: badCharset })));
+    const used2 = invokeAgent.mock.calls.at(-1)?.[0]?.sessionId as string;
+    expect(used2).not.toBe(badCharset);
+    expect(used2.startsWith('awsops-u-5-')).toBe(true);
   });
 });
 

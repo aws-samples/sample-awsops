@@ -6,6 +6,10 @@ description: Guide for authenticating AWSops EC2 instance to EKS clusters
 
 # EKS Authentication Setup
 
+:::caution v1 archive — not applicable to v2
+This page describes the v1 (EC2 instance + Steampipe) authentication procedure. v2 runs on ECS Fargate, and EKS authentication is instead handled by `terraform/foundation/eks.tf` granting the **web task role an Access Entry + `AmazonEKSAdminViewPolicy`**. Do not apply this page's commands (SSH, `AmazonEKSClusterAdminPolicy`, `data/config.json`, etc.) to a v2 environment.
+:::
+
 The AWSops Kubernetes dashboard (`/k8s/*`) queries EKS cluster data through Steampipe's `kubernetes` plugin. For this to work, the **AWSops EC2 instance role must be authenticated to the EKS cluster**.
 
 ## Authentication Architecture

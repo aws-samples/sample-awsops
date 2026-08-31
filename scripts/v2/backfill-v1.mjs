@@ -13,7 +13,7 @@
 //   scaling    data/event-scaling/<id>.json                 → event_scaling_plans
 //
 // Credentials (live runs): --dsn / BACKFILL_DSN → AURORA_SECRET_ARN+AURORA_ENDPOINT
-//   → `terraform -chdir=terraform/v2/foundation output -raw …` (mirrors migrate.mjs).
+//   → `terraform -chdir=terraform/foundation output -raw …` (mirrors migrate.mjs).
 // The DSN/credentials are NEVER printed. --dry-run parses + counts with NO DB connection.
 //
 // Spec:  docs/superpowers/specs/2026-06-12-v1-to-v2-aurora-backfill-design.md
@@ -183,7 +183,7 @@ export function connConfig(args, env = process.env) {
   if (args.dsn) return { config: { connectionString: args.dsn }, display: redactDsn(args.dsn) };
   const region = env.AWS_REGION || 'ap-northeast-2';
   // execFileSync with arg arrays (no shell) — env/terraform values can't inject a command.
-  const tf = (o) => execFileSync('terraform', ['-chdir=terraform/v2/foundation', 'output', '-raw', o], { encoding: 'utf8' }).trim();
+  const tf = (o) => execFileSync('terraform', ['-chdir=terraform/foundation', 'output', '-raw', o], { encoding: 'utf8' }).trim();
   const secretArn = env.AURORA_SECRET_ARN || tf('aurora_secret_arn');
   const endpoint = env.AURORA_ENDPOINT || tf('aurora_endpoint');
   const database = env.AURORA_DATABASE || 'awsops';

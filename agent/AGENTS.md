@@ -1,26 +1,54 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 15e2078b4d9e · generated-at: 2026-06-18 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9c99f308ab36 · generated-at: 2026-08-26 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
-> You are Codex, an external reviewer — project context below.
+> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
-# Agent Module (`agent/`)
+# Agent Module — Reviewer Context
 
-## What this is
-A Strands Agent for AgentCore Runtime. It connects to role-based **section gateways** over the MCP protocol and is a v2 asset (reused by `web/` + `terraform/v2/`, not the v1 `src/` monolith). This is a **read-only diagnostic** module: tools query AWS/observability state; no AWS-resource mutation or autonomous action belongs here.
+Strands Agent (Python) for AgentCore Runtime. Connects to 9 domain gateways (network,
+container, iac, data, security, monitoring, cost, ops, external-obs) via MCP protocol.
+`agent.py` is the entrypoint; Gateway selection is dynamic via the `payload.gateway`
+parameter.
 
-## Layout / boundaries
-- `agent.py` — main entrypoint. Picks the gateway dynamically from the `payload.gateway` parameter against a `GATEWAYS` dict. Role-specific system prompts (network/container/iac/data/security/monitoring/cost/ops).
-- `streamable_http_sigv4.py` — MCP StreamableHTTP transport with AWS SigV4 signing. Keep signing concerns here, not in `agent.py`.
-- `lambda/` — MCP tool Lambda sources (one function per logical tool group) plus the target-creation script. Tool logic lives in the Lambda sources; the agent only routes/orchestrates.
-- `Dockerfile` / `requirements.txt` — Python 3.11-slim, **arm64**, strands-agents + boto3 + bedrock-agentcore + psycopg2-binary.
+## Build · Test
+```bash
+cd agent && python3 -m pytest test_agent.py -q
+```
+Docker image must be arm64 (`docker buildx --platform linux/arm64`), Python 3.11-slim,
+port 8080.
 
-## Gateways & routing (what a reviewer should sanity-check)
-- 8 section gateways: network, container, iac, data, security, monitoring, cost, ops. Tool counts per gateway are documented in CLAUDE.md; flag drift between the table and the actual Lambda set.
-- The router classifier returns 1–3 routes; multiple gateways may be called in parallel and their results synthesized. Responses stream via SSE. Routes also cover Code Interpreter (`code`), external datasources (`datasource`), Steampipe inventory (`aws-data`), and a Bedrock `general` fallback.
+## Architectural boundaries
+- Live AWS queries always go through the AgentCore MCP Lambda tools (`agent/lambda/*.py`),
+  never inline in `agent.py` or the web BFF.
+- The gateway/tool inventory and the chat routing-key list are **not** hand-maintained in this
+  module's docs (they've drifted stale there before) — the actual sources are
+  `scripts/v2/agentcore/catalog.py` (provisioner catalog), `ai.tf`'s `local.agent_lambdas`, and
+  `web/lib/route.ts`'s `RULES`.
+- The system prompt is role-specific, one per domain gateway.
+- Fallback: if the MCP connection fails, run without tools — direct Bedrock call, never a hard
+  failure.
 
-## Conventions / banned patterns to enforce in review
-- **arm64 is mandatory** for the image (`docker buildx --platform linux/arm64`). Reject x86 builds.
-- Gateway URLs must be selected dynamically from the `GATEWAYS` dict via payload — no hardcoded per-call URLs.
-- System prompts are role-specific; a change to one role's prompt should not silently affect others.
-- **Fallback contract:** if the MCP connection fails, the agent runs without tools (direct Bedrock call). Don't let a tool/connection failure hard-error the whole invocation.
-- Never embed secrets, AWS account IDs, ARNs, or live domains in source — they belong in SSM/Secrets Manager and runtime env.
-- Keep cross-account assume logic correct: targeting the host account must not force a target-account-only role self-assume (that path mis-reports as a cross-account block).
+## Do-not-"fix" traps
+- **Gateway key-derivation mismatch** (`_resolve_gateway_key`): key discovery can yield a
+  `v2-<x>` prefixed variant while the env-based fallback and the `observability`→`external-obs`
+  alias use the canonical unprefixed key. `_resolve_gateway_key` deliberately tries both — don't
+  collapse it to one lookup, that reopens a silent-fallback-to-`ops` bug.
+- **Cross-account self-assume trap**: when the chat target account is the host account, do not
+  "fix" credential resolution back to self-assuming a role on the host — that role only exists
+  in v1 *target* accounts and causes an `AccessDenied` misdiagnosed as "cross-account blocked."
+  The exec role is used directly for the host case by design.
+
+## Review checklist
+1. No new AWS-mutating call, IAM change, or hardcoded secret/account-ID/ARN/domain (ADR-005
+   FROZEN boundary — flag any new tool performing create/update/delete/run-arbitrary-command).
+2. Any new gateway/tool wiring goes through the v2 provisioner
+   (`scripts/v2/agentcore/{catalog,provision}.py`), not the older `create_targets.py` (v1/dark —
+   only 8 gateways, missing `external-obs`). Do not promote a dark v1 tool into v2 wiring.
+3. New routing keys or gateway aliases must be reflected in `web/lib/route.ts`'s `RULES`, not
+   just in `agent.py`.
+4. Docker/Lambda images stay arm64.
+
+## Known false-positives
+- `create_targets.py` existing in the tree is fine — it's retained as dark v1 code, not dead
+  code to delete. Flag only if something re-wires it live.
+- A gateway lookup trying both a canonical and a `v2-`-prefixed key is intentional (see
+  do-not-"fix" traps above), not redundant code.

@@ -325,5 +325,229 @@
   "theme.tags.tagsPageTitle": {
     "message": "Tags",
     "description": "The title of the tag list page"
+  },
+  "home.meta.title": {
+    "message": "AWSops | AWS operations on one screen",
+    "description": "Landing page <title>"
+  },
+  "home.meta.description": {
+    "message": "A read-only operations dashboard that shows AWS operating status, resource relationships, cost, and security in one screen, answers live-data questions via Amazon Bedrock AgentCore, and runs comprehensive diagnosis on a read-only async worker.",
+    "description": "Landing page meta description"
+  },
+  "home.hero.eyebrow": {
+    "message": "AWS + Kubernetes operations",
+    "description": "Hero eyebrow label"
+  },
+  "home.hero.line": {
+    "message": "Scattered AWS operations, one screen.",
+    "description": "Hero headline"
+  },
+  "home.hero.copy": {
+    "message": "See operating status, ask live data questions, and run Well-Architected diagnosis in one flow.",
+    "description": "Hero supporting copy"
+  },
+  "home.hero.alt": {
+    "message": "AWSops unified operations dashboard",
+    "description": "Hero image alt text"
+  },
+  "home.hero.glyph.network": {
+    "message": "network",
+    "description": "Hero glyph label: network"
+  },
+  "home.hero.glyph.cost": {
+    "message": "cost",
+    "description": "Hero glyph label: cost"
+  },
+  "home.hero.glyph.security": {
+    "message": "security",
+    "description": "Hero glyph label: security"
+  },
+  "home.hero.ctaPrimary": {
+    "message": "Start the guide",
+    "description": "Hero primary CTA"
+  },
+  "home.hero.ctaSecondary": {
+    "message": "See the dashboard",
+    "description": "Hero secondary CTA"
+  },
+  "home.hero.svgAria": {
+    "message": "Connected operations node graph",
+    "description": "Hero abstract graphic aria-label"
+  },
+  "home.hero.figCap2": {
+    "message": "One operations neural net across accounts, regions, and clusters.",
+    "description": "Hero figure caption under SINGLE PANE OF GLASS"
+  },
+  "home.watch.heading": {
+    "message": "AWSops in 30 seconds",
+    "description": "Watch section heading"
+  },
+  "home.watch.lead": {
+    "message": "A short tour of real screens, so you can see what it does before reading further.",
+    "description": "Watch section lead"
+  },
+  "home.watch.alt": {
+    "message": "AWSops product tour preview",
+    "description": "Product tour poster alt text (reduced-motion fallback)"
+  },
+  "home.watch.caption": {
+    "message": "A 30-second tour across 8 screens, from the dashboard to security, compliance, EKS, and AI diagnosis.",
+    "description": "Product tour figure caption"
+  },
+  "home.proof.heading": {
+    "message": "First, see the whole operation.",
+    "description": "Proof section heading"
+  },
+  "home.proof.lead": {
+    "message": "Compare AWS resources, Kubernetes, cost, and security signals in one dashboard.",
+    "description": "Proof section lead"
+  },
+  "home.proof.routes": {
+    "message": "AI routing sections",
+    "description": "Proof stat label"
+  },
+  "home.proof.pillars": {
+    "message": "Well-Architected pillars",
+    "description": "Proof stat label"
+  },
+  "home.proof.exports": {
+    "message": "report export formats",
+    "description": "Proof stat label"
+  },
+  "home.see.alt": {
+    "message": "AWSops unified operations dashboard",
+    "description": "See section image alt text"
+  },
+  "home.see.caption": {
+    "message": "Compute, storage, network, security, and cost KPIs collected on one main screen.",
+    "description": "See section figure caption"
+  },
+  "home.see.heading": {
+    "message": "See everything at a glance on the dashboard.",
+    "description": "See section heading"
+  },
+  "home.see.lead": {
+    "message": "Distributed resource status is organized into one screen of KPIs and distribution charts.",
+    "description": "See section lead"
+  },
+  "home.ask.alt": {
+    "message": "AWSops AI assistant citing evidence for a cost question",
+    "description": "Ask section image alt text"
+  },
+  "home.ask.caption": {
+    "message": "Evidence gathered by read-only, domain-specific tools is synthesized into one answer.",
+    "description": "Ask section figure caption"
+  },
+  "home.ask.heading": {
+    "message": "Ask operating data directly.",
+    "description": "Ask section heading"
+  },
+  "home.ask.lead": {
+    "message": "Question intent is classified to a specialized route and live data is queried. Results across domains come back as one readable answer.",
+    "description": "Ask section lead"
+  },
+  "home.explore.heading": {
+    "message": "Relationships, cost, and controls in the same context.",
+    "description": "Explore section heading"
+  },
+  "home.explore.lead": {
+    "message": "Follow resource flows and check cost trends and security controls together.",
+    "description": "Explore section lead"
+  },
+  "home.explore.topologyAlt": {
+    "message": "AWS resource topology from DNS to target",
+    "description": "Topology figure alt text"
+  },
+  "home.explore.topologyCaption": {
+    "message": "Visually explore request paths and resource relationships.",
+    "description": "Topology figure caption"
+  },
+  "home.explore.costAlt": {
+    "message": "Monthly and daily AWS cost trends",
+    "description": "Cost figure alt text"
+  },
+  "home.explore.costCaption": {
+    "message": "Compare cost and change by service.",
+    "description": "Cost figure caption"
+  },
+  "home.explore.complianceAlt": {
+    "message": "Security issues and CIS compliance summary",
+    "description": "Compliance figure alt text"
+  },
+  "home.explore.complianceCaption": {
+    "message": "Quickly check risk signals and compliance status.",
+    "description": "Compliance figure caption"
+  },
+  "home.diagnose.heading": {
+    "message": "Turn observation into decision material.",
+    "description": "Diagnose section heading"
+  },
+  "home.diagnose.lead": {
+    "message": "Heavy diagnosis runs on an async worker, and Well-Architected results export as MD, DOCX, and PDF.",
+    "description": "Diagnose section lead"
+  },
+  "home.diagnose.alt": {
+    "message": "AWSops AI diagnosis report and table of contents",
+    "description": "Diagnose figure alt text"
+  },
+  "home.diagnose.caption": {
+    "message": "Diagnosis results and improvement suggestions as a structured report.",
+    "description": "Diagnose figure caption"
+  },
+  "home.trust.heading": {
+    "message": "Evidence over mutation.",
+    "description": "Trust section heading"
+  },
+  "home.trust.lead": {
+    "message": "AWSops observes operating status and provides diagnosis and improvement suggestions. It never auto-modifies or self-heals customer AWS resources based on diagnosis results.",
+    "description": "Trust section lead"
+  },
+  "home.trust.edge.title": {
+    "message": "Private edge",
+    "description": "Trust item title"
+  },
+  "home.trust.edge.body": {
+    "message": "The application is protected by an internal ALB behind CloudFront VPC Origin.",
+    "description": "Trust item body"
+  },
+  "home.trust.identity.title": {
+    "message": "Verified identity",
+    "description": "Trust item title"
+  },
+  "home.trust.identity.body": {
+    "message": "Access is controlled by Cognito and Lambda@Edge RS256 verification.",
+    "description": "Trust item body"
+  },
+  "home.trust.privilege.title": {
+    "message": "Least privilege",
+    "description": "Trust item title"
+  },
+  "home.trust.privilege.body": {
+    "message": "Chat's live queries run inside the AgentCore MCP tool boundary; comprehensive diagnosis runs on a read-only async worker.",
+    "description": "Trust item body"
+  },
+  "home.trust.encrypted.title": {
+    "message": "Encrypted state",
+    "description": "Trust item title"
+  },
+  "home.trust.encrypted.body": {
+    "message": "Aurora and managed secrets separate state from credentials.",
+    "description": "Trust item body"
+  },
+  "home.cta.heading": {
+    "message": "Move operations to one screen.",
+    "description": "Closing CTA heading"
+  },
+  "home.cta.lead": {
+    "message": "See unified visibility and the AI diagnosis flow on the real dashboard.",
+    "description": "Closing CTA lead"
+  },
+  "home.cta.ctaGuide": {
+    "message": "Start the guide",
+    "description": "Closing CTA guide button"
+  },
+  "home.cta.ctaDemo": {
+    "message": "See the live demo",
+    "description": "Closing CTA demo button"
   }
 }

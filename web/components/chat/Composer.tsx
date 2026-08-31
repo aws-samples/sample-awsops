@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { ArrowUp, X } from 'lucide-react';
 import { parseSlash, matchCommands, SLASH_COMMANDS, type SlashCommand } from '@/lib/slash';
+import { useI18n } from '@/components/shell/LanguageProvider';
 import SlashMenu from './SlashMenu';
 
 const MENU_ID = 'slash-menu';
@@ -18,6 +19,7 @@ export default function Composer({
   // the user to review/edit before sending. `n` bumps to re-seed the same text.
   seed?: { text: string; n: number };
 }) {
+  const { t } = useI18n();
   const [text, setText] = useState('');
   const [target, setTarget] = useState<SlashCommand | null>(null);
   const [active, setActive] = useState(0);
@@ -85,7 +87,7 @@ export default function Composer({
             <span>{target.icon}</span>{target.label}
             <button
               type="button"
-              aria-label="섹션 지정 해제"
+              aria-label={t('chat.untarget')}
               onClick={() => setTarget(null)}
               className="ml-0.5 text-brand-500 hover:text-brand-700"
             >
@@ -99,7 +101,7 @@ export default function Composer({
           rows={1}
           onChange={(e) => { setText(e.target.value); setActive(0); }}
           onKeyDown={onKeyDown}
-          placeholder={target ? `${target.label} 영역에 질문…` : '메시지를 입력하세요…  ( / 로 특정 영역 지정 · Shift+Enter 줄바꿈 )'}
+          placeholder={target ? t('chat.targetPlaceholder', { target: target.label }) : t('chat.placeholder')}
           disabled={disabled}
           role="combobox"
           aria-expanded={menuOpen}
@@ -111,7 +113,7 @@ export default function Composer({
         <button
           onClick={submit}
           disabled={disabled}
-          aria-label="보내기"
+          aria-label={t('chat.send')}
           className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-500 text-white transition-colors hover:bg-brand-600 disabled:opacity-40"
         >
           <ArrowUp size={17} strokeWidth={2.4} />

@@ -15,7 +15,7 @@
 # NOT Secrets, NOT cluster-scoped) — k8s_events only LISTs core/v1 Events, so `view` suffices.
 set -euo pipefail
 
-CHDIR="$(cd "$(dirname "$0")/../../../terraform/v2/foundation" && pwd)"
+CHDIR="$(cd "$(dirname "$0")/../../../terraform/foundation" && pwd)"
 POLICY="arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
 
 ROLE_ARN="${ROLE_ARN:-$(terraform -chdir="$CHDIR" output -raw worker_lambda_role_arn 2>/dev/null || true)}"

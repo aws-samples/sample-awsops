@@ -9,6 +9,14 @@ guard) is **optional for 1st-party accounts** and **required for 3rd-party/share
 - Admin access to AWSops (`/accounts` is gated by Cognito `ADMIN_GROUP` or the SSM email allowlist).
 - The **host web task role ARN** — full ARN `arn:aws:iam::<host>:role/awsops-v2-task` (Terraform output `web_task_role_arn`).
   (When the multi-account inventory fan-out ships, the steampipe task role is added then.)
+- **Optional** — the **host worker task role ARN**, `arn:aws:iam::<host>:role/awsops-v2-worker-task`
+  (Terraform output `worker_task_role_arn`): only needed if this target account will be read by a
+  WORKER-driven member-account job against it — the sg-rules Athena scan (`sg_rule_scan.py`) or a
+  Network Path Check's live-identity resolution (`network_path.py`'s `resolve_live_identity()`/
+  `fetch_live_topology()`, see `docs/runbooks/network-path-eks-access.md`). Neither worker's task
+  role is trusted by this account until `WorkerTaskRoleArn` below is set — omitting it leaves those
+  two features correctly failing closed (AccessDenied) against this account, exactly as if it were
+  never onboarded for worker-driven reads at all.
 - **3rd-party only**: a chosen **ExternalId** string (≥8 chars), same value in the CFN and `/accounts`.
   1st-party (same-org) accounts can omit it.
 
@@ -21,9 +29,13 @@ guard) is **optional for 1st-party accounts** and **required for 3rd-party/share
      --capabilities CAPABILITY_NAMED_IAM \
      --parameter-overrides \
        HostTaskRoleArn=arn:aws:iam::<host>:role/awsops-v2-task \
+       WorkerTaskRoleArn=arn:aws:iam::<host>:role/awsops-v2-worker-task \  # OMIT unless a worker job needs this account
        ExternalId=<YOUR_EXTERNAL_ID>   # OMIT this line for 1st-party (no-ExternalId) onboarding
    ```
-   The stack outputs `RoleArn` (`arn:aws:iam::<target>:role/AWSopsReadOnlyRole`).
+   The stack outputs `RoleArn` (`arn:aws:iam::<target>:role/AWSopsReadOnlyRole`). Re-running
+   `aws cloudformation deploy` with the SAME `--stack-name` against an already-onboarded account is
+   an in-place update — adding `WorkerTaskRoleArn` to an existing stack is additive and does not
+   revoke the existing web-task-role trust.
 2. In AWSops, open **계정 관리 (`/accounts`)** as an admin → **계정 추가** → enter the target Account ID,
    an Alias, the Region, and the ExternalId. **For 1st-party (no-ExternalId) onboarding: leave
    ExternalId blank AND tick the "1st-party 계정 (ExternalId 생략)" checkbox** — registration is

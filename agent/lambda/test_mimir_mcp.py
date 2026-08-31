@@ -21,6 +21,20 @@ class TestQuery(_Base):
         self.assertIn("/prometheus/api/v1/query", cap["url"]); self.assertNotIn("query_range", cap["url"])
         self.assertEqual(_qs(cap["url"])["query"][0],"up")
         self.assertEqual(cap["h"]["X-Scope-OrgID"],"t1")
+    def test_execution_timeout_is_passed_and_clamped(self):
+        # the connector bounded response SIZE only; a caller can now run model-written PromQL through it,
+        # so the diag-signal dry run asks for an execution bound (review: it was applied to prometheus but
+        # silently ignored here).
+        for given, expect in (("5s", "5s"), (5, "5s"), ("999", "60s"), ("3600s", "60s"), ("0", "1s"), (0, "1s")):
+            cap={}
+            with mock.patch.object(mm,"http_json",side_effect=lambda m,u,headers=None,body=None,timeout=None:(cap.update(url=u) or (200,{"status":"success","data":{"resultType":"vector","result":[]}}))):
+                mm.lambda_handler({"tool_name":"mimir_query","arguments":{"query":"up","timeout":given}},None)
+            self.assertEqual(_qs(cap["url"])["timeout"][0], expect, given)
+        cap={}
+        with mock.patch.object(mm,"http_json",side_effect=lambda m,u,headers=None,body=None,timeout=None:(cap.update(url=u) or (200,{"status":"success","data":{"resultType":"vector","result":[]}}))):
+            mm.lambda_handler({"tool_name":"mimir_query","arguments":{"query":"up"}},None)
+        self.assertNotIn("timeout", _qs(cap["url"]))   # unchanged for callers that ask for no bound
+
     def test_range_seconds_window(self):
         cap={}
         with mock.patch.object(mm,"http_json",side_effect=lambda m,u,headers=None,body=None,timeout=None:(cap.update(url=u) or (200,{"status":"success","data":{"resultType":"matrix","result":[]}}))):

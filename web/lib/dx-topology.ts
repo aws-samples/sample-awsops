@@ -4,8 +4,11 @@ import type { DxAnalysis, DxConnectionRow, DxVifRow, DxGatewayRow } from './dx';
 // Direct Connect 구성도 + 복원력(SLA 티어) 평가 — 순수 함수 (React 비의존).
 // 참조: aws-samples/sample-network-resilience-agent — 온프레미스 → DX 로케이션 →
 // 커넥션/LAG → VIF → DXGW → TGW/VGW 계층 그래프와 DX SLA 티어 판정
-// (Maximum 99.99% = 2개 이상 로케이션 × 로케이션당 2개 이상 커넥션,
-//  High 99.9% = 2개 이상 로케이션, Single 95% = 커넥션 1개 이상).
+// (Maximum 99.99% = 2개 이상 로케이션 × 로케이션당 검증된 고유 디바이스 2개 이상,
+//  High 99.9% = 2개 이상 로케이션, Single 95% = 커넥션 1개 이상 — 모두 owned(비-호스티드)
+//  커넥션 기준: 호스티드 커넥션은 파트너 SLA 소관이라 AWS 티어 산정에서 제외되고,
+//  awsDevice가 없는 커넥션은 "검증된 고유 디바이스"로 세지 않는다 — 그래야 자격 없거나
+//  검증 불가능한 설계에 확정 인증(예: "Maximum 99.99%")을 내주지 않는다).
 // dxAnalysis()가 이미 가진 데이터만 사용 — 추가 AWS 호출 없음.
 
 export type DxNodeKind =
@@ -142,15 +145,30 @@ export interface DxResiliencyCheck {
   detail?: string;
 }
 
+/**
+ * tier==='none'일 때 '왜' none인지 — 이 세 가지는 화면에 서로 다른 문구가 필요하다:
+ * - 'no-connections': 커넥션이 정말 하나도 없음 (상태 무관).
+ * - 'all-hosted': 커넥션은 있지만 전부(상태 무관) 호스티드 — AWS SLA 산정 대상 자체가 없음.
+ * - 'no-deployed-owned': owned 커넥션이 존재하긴 하지만 전부 미배포(pending/ordering 등)
+ *   상태이거나, owned+호스티드가 혼재하는데 배포된 owned가 0개 — "전량 호스티드"도
+ *   "커넥션 없음"도 아니다("일부는 호스티드고 일부는 아직 배포 전"일 수도 있음).
+ * tier !== 'none'이면 null.
+ */
+export type DxNoneReason = 'no-connections' | 'all-hosted' | 'no-deployed-owned';
+
 export interface DxResiliency {
   tier: DxSlaTier;
   /** AWS Direct Connect SLA 공표 수치. */
   slaPct: string | null;
-  /** 로케이션 수 / 로케이션당 고유 디바이스 2개 이상인 로케이션 수. */
+  /** 로케이션 수 / 로케이션당 '검증된' 고유 디바이스 2개 이상인 로케이션 수 (owned 커넥션 기준). */
   locations: number;
   dualConnLocations: number;
-  /** 호스티드(파트너 경유) 커넥션 수 — AWS DX SLA 적용 제외 대상. */
+  /** 호스티드(파트너 경유) 커넥션 수 — AWS DX SLA 적용 제외 대상 (배포 상태 커넥션 기준). */
   hostedConnections: number;
+  /** tier==='none'일 때만 non-null — 위 DxNoneReason 참고. */
+  noneReason: DxNoneReason | null;
+  /** 일부 로케이션에서 awsDevice 정보가 없어 디바이스 이중화 여부를 확정할 수 없음. */
+  deviceRedundancyUnverifiable: boolean;
   checks: DxResiliencyCheck[];
 }
 
@@ -158,19 +176,35 @@ export function assessResiliency(a: Pick<DxAnalysis, 'connections' | 'vifs' | 'g
   // SLA 티어는 '배포된 아키텍처'의 속성 — 삭제/거절/개통 전 커넥션은 산정에서 제외한다
   // (잔존 deleted 행이 티어를 부풀리는 것 방지). 현재 헬스는 체크리스트가 별도 표기.
   const NOT_DEPLOYED = new Set(['deleted', 'rejected', 'ordering', 'requested', 'pending']);
-  const deployed = a.connections.filter((c) => !NOT_DEPLOYED.has(c.state));
+  const deployedAll = a.connections.filter((c) => !NOT_DEPLOYED.has(c.state));
+  // AWS Direct Connect SLA(99.99%/99.9%/95%)는 owned(AWS 소유) 커넥션에만 적용된다 — 호스티드
+  // (파트너 경유) 커넥션은 파트너 자신의 SLA 소관이라 AWS 티어 산정에서 완전히 제외해야 한다.
+  // 이전 버전은 호스티드 커넥션도 locations/dualConnLocations에 포함시켜, 전부 호스티드인
+  // 배포도 "Maximum 99.99%" 배지를 달면서 동시에 "호스티드는 SLA 적용 제외"라고 고지하는
+  // 자기 모순을 냈다 — 자격 없는 설계에 인증을 내준 셈이라 아예 owned만으로 산정한다.
+  const isHosted = (c: DxConnectionRow) => c.partnerName != null && c.partnerName !== '';
+  const deployed = deployedAll.filter((c) => !isHosted(c));
+  const hostedConnections = deployedAll.filter(isHosted).length;
+
   // 이중화는 로케이션당 '고유 AWS 디바이스' 수 기준 (sample sla-gating.ts와 동일 —
-  // 같은 디바이스의 커넥션 2개는 디바이스 장애에 함께 죽는다). awsDevice 미노출 시 커넥션 id 폴백.
-  const byLoc = new Map<string, Set<string>>();
+  // 같은 디바이스의 커넥션 2개는 디바이스 장애에 함께 죽는다). awsDevice가 없는 커넥션은
+  // 커넥션 id로 폴백하지 않는다 — 폴백하면 "디바이스 정보 없음"을 "커넥션마다 별개 디바이스
+  // 확인됨"으로 조작해, 실제로는 검증 불가능한 이중화를 확정 인증해버린다(미검증 설계에
+  // 인증을 내주는 두 번째 경로). 대신 awsDevice가 있는 커넥션만으로 검증된 고유 디바이스
+  // 집합을 만들고, 그 집합이 2개 미만인 로케이션 중 awsDevice 미노출 커넥션이 있으면
+  // "확인 불가"로 별도 표시한다 — 이중화가 '없다'가 아니라 '모른다'로 정직하게 남긴다.
+  const byLoc = new Map<string, { devices: Set<string>; deviceUnknown: boolean }>();
   for (const c of deployed) {
     const loc = c.location || 'unknown';
-    if (!byLoc.has(loc)) byLoc.set(loc, new Set());
-    byLoc.get(loc)!.add(c.awsDevice || c.id);
+    if (!byLoc.has(loc)) byLoc.set(loc, { devices: new Set(), deviceUnknown: false });
+    const entry = byLoc.get(loc)!;
+    if (c.awsDevice) entry.devices.add(c.awsDevice);
+    else entry.deviceUnknown = true;
   }
   const locations = byLoc.size;
-  const dualConnLocations = [...byLoc.values()].filter((s) => s.size >= 2).length;
+  const dualConnLocations = [...byLoc.values()].filter((v) => v.devices.size >= 2).length;
+  const deviceRedundancyUnverifiable = [...byLoc.values()].some((v) => v.deviceUnknown && v.devices.size < 2);
   const total = deployed.length;
-  const hostedConnections = deployed.filter((c) => c.partnerName != null && c.partnerName !== '').length;
 
   const tier: DxSlaTier = total === 0 ? 'none'
     : locations >= 2 && dualConnLocations >= 2 ? 'maximum'
@@ -180,6 +214,14 @@ export function assessResiliency(a: Pick<DxAnalysis, 'connections' | 'vifs' | 'g
 
   const connsDown = a.connections.filter((c) => c.down).length;
   const totalAll = a.connections.length;
+  // tier==='none'인 '이유' — 화면 라벨이 세 경우를 구분해야 한다(리뷰, 라운드 3: hostedConnections/
+  // allConnectionsHosted 둘 다 '배포 상태'나 '상태 무관 전체'라는 단일 축만 봐서 owned+호스티드가
+  // 혼재하는데 배포된 owned가 0인 경우를 여전히 오분류했다). totalAll(상태 무관 전체 커넥션 수)과
+  // 상태 무관 전체가 전부 호스티드인지를 함께 봐야 세 경우가 정확히 갈린다.
+  const noneReason: DxNoneReason | null = tier !== 'none' ? null
+    : totalAll === 0 ? 'no-connections'
+      : a.connections.every(isHosted) ? 'all-hosted'
+        : 'no-deployed-owned';
   const vifsDown = a.vifs.filter((v) => v.down).length;
   const unassociated = a.gateways.filter((g) => g.unassociated).length;
   const unattachedVifs = a.vifs.filter((v) => v.type !== 'public' && !v.attachedTo).length;
@@ -187,13 +229,14 @@ export function assessResiliency(a: Pick<DxAnalysis, 'connections' | 'vifs' | 'g
   const checks: DxResiliencyCheck[] = [
     { label: '모든 커넥션 정상 (기간 내 다운 없음)', ok: connsDown === 0, severity: 'critical', detail: connsDown > 0 ? `${connsDown}/${totalAll}` : undefined },
     { label: '모든 VIF·BGP 정상', ok: vifsDown === 0, severity: 'critical', detail: vifsDown > 0 ? `${vifsDown}/${a.vifs.length}` : undefined },
-    { label: '로케이션 이중화 — 99.9% SLA 요건 (2개 이상 로케이션)', ok: locations >= 2, severity: 'critical', detail: `${locations}` },
-    { label: '로케이션당 디바이스 이중화 — 99.99% SLA 요건 (2개 로케이션 × 각 고유 디바이스 2개 이상)', ok: locations >= 2 && dualConnLocations >= 2, severity: 'warn', detail: `${dualConnLocations}/${locations}` },
+    { label: '로케이션 이중화 — 99.9% SLA 요건 (2개 이상 로케이션, 호스티드 제외)', ok: locations >= 2, severity: 'critical', detail: `${locations}` },
+    { label: '로케이션당 디바이스 이중화 — 99.99% SLA 요건 (2개 로케이션 × 각 검증된 고유 디바이스 2개 이상)', ok: locations >= 2 && dualConnLocations >= 2, severity: 'warn', detail: `${dualConnLocations}/${locations}` },
+    { label: '디바이스 정보로 이중화 확인 가능 (일부 로케이션에 awsDevice 미노출)', ok: !deviceRedundancyUnverifiable, severity: 'warn' },
     { label: '미연결 DX Gateway 없음', ok: unassociated === 0, severity: 'warn', detail: unassociated > 0 ? `${unassociated}` : undefined },
     { label: '미연결 VIF 없음 (게이트웨이 attachment)', ok: unattachedVifs === 0, severity: 'warn', detail: unattachedVifs > 0 ? `${unattachedVifs}` : undefined },
   ];
 
-  return { tier, slaPct, locations, dualConnLocations, hostedConnections, checks };
+  return { tier, slaPct, locations, dualConnLocations, hostedConnections, noneReason, deviceRedundancyUnverifiable, checks };
 }
 
 // ── dagre 레이아웃 (flow-layout.ts와 동일 기법 — LR 계층 배치, 중심→좌상단 변환) ──

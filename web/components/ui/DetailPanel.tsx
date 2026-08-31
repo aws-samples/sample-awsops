@@ -10,6 +10,7 @@ import StatePill from './StatePill';
 import { buildDetailGroups, type DetailValue } from '@/lib/inventory-detail';
 import type { InvType } from '@/lib/inventory-types';
 import type { RdsInstanceMetrics } from '@/lib/metrics';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 // v1-parity: each detail section is a titled card with a leading icon. Section labels are a small
 // shared vocabulary across inventory types (Identity/Compute/Network/Security/Storage/Tags/…), so
@@ -117,13 +118,15 @@ function copyText(fmt: DetailValue): string | null {
 
 // Per-value copy affordance — subtle until hovered, flips to a ✓ for a moment after copying.
 // Always rendered (not hover-gated) so it stays tappable on the mobile fullscreen sheet.
-function CopyButton({ text, label = '값 복사' }: { text: string; label?: string }) {
+function CopyButton({ text, label }: { text: string; label?: string }) {
+  const { tt } = useI18n();
   const [ok, setOk] = useState(false);
+  const resolvedLabel = label ? tt(label) : tt('값 복사');
   return (
     <button
       type="button"
-      aria-label={label}
-      title={label}
+      aria-label={resolvedLabel}
+      title={resolvedLabel}
       onClick={() => {
         void navigator.clipboard.writeText(text).then(() => {
           setOk(true);
@@ -151,6 +154,7 @@ const RDS_METRIC_ROWS: { key: keyof RdsInstanceMetrics; label: string; fmt: (v: 
 ];
 
 function RdsMetricsSection({ instanceId }: { instanceId: string }) {
+  const { tt } = useI18n();
   const [s, setS] = useState<{ loading: boolean; metrics: RdsInstanceMetrics | null; error: boolean }>({
     loading: true, metrics: null, error: false,
   });
@@ -168,19 +172,19 @@ function RdsMetricsSection({ instanceId }: { instanceId: string }) {
     <div>
       <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-ink-700">
         <span className="flex h-5 w-5 items-center justify-center rounded-md bg-brand-50 text-brand-600"><Activity size={12} /></span>
-        인스턴스 메트릭 (CloudWatch)
+        {tt('인스턴스 메트릭 (CloudWatch)')}
       </h3>
       {s.loading ? (
-        <p className="text-[12px] text-ink-400">메트릭 로딩 중…</p>
+        <p className="text-[12px] text-ink-400">{tt('메트릭 로딩 중…')}</p>
       ) : s.error || !s.metrics ? (
-        <p className="text-[12px] text-ink-300">메트릭 불가</p>
+        <p className="text-[12px] text-ink-300">{tt('메트릭 불가')}</p>
       ) : (
         <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5">
           {RDS_METRIC_ROWS.map((row) => {
             const v = s.metrics![row.key];
             return (
               <div key={row.key} className="flex flex-col gap-0.5">
-                <dt className="font-mono text-[11px] text-ink-500">{row.label}</dt>
+                <dt className="font-mono text-[11px] text-ink-500">{tt(row.label)}</dt>
                 <dd className="text-[13px] text-ink-800">
                   {typeof v === 'number' ? row.fmt(v) : <span className="text-ink-300">—</span>}
                 </dd>
@@ -198,6 +202,7 @@ function RdsMetricsSection({ instanceId }: { instanceId: string }) {
 const LIVE_METRIC_TYPES = new Set(['elasticache', 'opensearch', 'msk']);
 
 function LiveMetricsSection({ type, id }: { type: string; id: string }) {
+  const { tt } = useI18n();
   const [s, setS] = useState<{ loading: boolean; rows: { label: string; value: string }[]; error: boolean }>({
     loading: true, rows: [], error: false,
   });
@@ -215,12 +220,12 @@ function LiveMetricsSection({ type, id }: { type: string; id: string }) {
     <div>
       <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-ink-700">
         <span className="flex h-5 w-5 items-center justify-center rounded-md bg-brand-50 text-brand-600"><Activity size={12} /></span>
-        라이브 메트릭 (CloudWatch)
+        {tt('라이브 메트릭 (CloudWatch)')}
       </h3>
       {s.loading ? (
-        <p className="text-[12px] text-ink-400">메트릭 로딩 중…</p>
+        <p className="text-[12px] text-ink-400">{tt('메트릭 로딩 중…')}</p>
       ) : s.error || s.rows.length === 0 ? (
-        <p className="text-[12px] text-ink-300">메트릭 불가</p>
+        <p className="text-[12px] text-ink-300">{tt('메트릭 불가')}</p>
       ) : (
         <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5">
           {s.rows.map((row) => (
@@ -259,6 +264,7 @@ export default function DetailPanel({
   // lg) is always a fullscreen sheet, so it stays modal there regardless.
   modal?: boolean;
 }) {
+  const { tt } = useI18n();
   useEffect(() => {
     if (!data) return;
     const onKey = (e: KeyboardEvent) => {
@@ -287,7 +293,7 @@ export default function DetailPanel({
   const name = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : null;
   const resourceId = typeof data.resource_id === 'string' ? data.resource_id : (title ?? '');
   // Prominent title = friendly Name when we have one; else the caller's title / resource id.
-  const bigTitle = name ?? title ?? resourceId ?? '리소스 상세';
+  const bigTitle = name ?? title ?? resourceId ?? tt('리소스 상세');
   // Mono subtitle = the resource id, shown only when it adds info beyond the title.
   const subId = resourceId && resourceId !== bigTitle ? resourceId : null;
   const stateVal = spec?.stateKey ? data[spec.stateKey] : undefined;
@@ -309,11 +315,11 @@ export default function DetailPanel({
       <aside
         role="dialog"
         aria-modal={modal}
-        aria-label={title ?? '리소스 상세'}
-        className="fixed inset-0 z-50 flex h-full w-full max-w-full flex-col bg-card shadow-pop lg:inset-y-0 lg:left-auto lg:right-0 lg:w-[var(--panel-w)] lg:border-l lg:border-ink-100"
+        aria-label={title ?? tt('리소스 상세')}
+        className="fixed inset-0 z-50 flex h-full w-full max-w-full flex-col bg-card shadow-pop pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] lg:inset-y-0 lg:left-auto lg:right-0 lg:w-[var(--panel-w)] lg:border-l lg:border-ink-100 lg:p-0"
         style={{ ['--panel-w' as string]: `${width}px` } as CSSProperties}
       >
-        <div onMouseDown={startResize} title="드래그하여 폭 조절" aria-label="패널 폭 조절" role="separator" className={`${RESIZE_GRIP_CLASS} hidden lg:block`}>
+        <div onMouseDown={startResize} title={tt('드래그하여 폭 조절')} aria-label={tt('패널 폭 조절')} role="separator" className={`${RESIZE_GRIP_CLASS} hidden lg:block`}>
           <div className={RESIZE_GRIP_BAR_CLASS} />
         </div>
         <header className="flex items-start justify-between gap-2 border-b border-ink-100 px-4 py-3">
@@ -332,7 +338,7 @@ export default function DetailPanel({
           <button
             type="button"
             onClick={onClose}
-            aria-label="닫기"
+            aria-label={tt('닫기')}
             className="-mr-1 shrink-0 rounded p-1 text-ink-400 hover:bg-ink-50 hover:text-ink-700"
           >
             <X size={16} />
@@ -369,7 +375,7 @@ export default function DetailPanel({
                         {!soloList && <dt className="font-mono text-[11px] text-ink-500">{it.label}</dt>}
                         <dd className="flex items-start gap-1 text-[13px] text-ink-800">
                           <div className="min-w-0 flex-1">{renderValue(it.fmt)}</div>
-                          {copy && <CopyButton text={copy} label={`${it.label} 복사`} />}
+                          {copy && <CopyButton text={copy} label={`${it.label} ${tt('복사')}`} />}
                         </dd>
                       </div>
                     );

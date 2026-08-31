@@ -52,7 +52,12 @@ export interface TgwRouteTable {
   /** SearchTransitGatewayRoutes 상한 도달 여부 (routes가 전량이 아닐 수 있음). */
   truncated: boolean;
 }
-export interface TgwDetails { attachments: TgwAttachment[]; routeTables: TgwRouteTable[] }
+export interface TgwDetails {
+  attachments: TgwAttachment[];
+  routeTables: TgwRouteTable[];
+  // regions whose describe failed — their attachments/routeTables are MISSING, not empty (honest-degrade)
+  degradedRegions?: string[];
+}
 
 const ROUTE_CAP = 100;
 
@@ -71,6 +76,7 @@ export async function tgwDetails(tgws: { id: string; region?: string }[]): Promi
     return {
       attachments: parts.flatMap((p) => p.attachments),
       routeTables: parts.flatMap((p) => p.routeTables),
+      degradedRegions: parts.flatMap((p) => p.degradedRegions ?? []),
     };
   });
 }
@@ -118,6 +124,6 @@ async function tgwRegionDetails(region: string, ids: string[]): Promise<TgwDetai
     );
     return { attachments, routeTables };
   } catch {
-    return { attachments: [], routeTables: [] }; // per-region degrade
+    return { attachments: [], routeTables: [], degradedRegions: [region] }; // per-region degrade
   }
 }

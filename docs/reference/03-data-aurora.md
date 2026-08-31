@@ -54,7 +54,7 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
 | `agentcore_stats` | `data/agentcore-stats.json` | append-only event log; token columns |
 | `alert_diagnosis` | `data/alert-diagnosis/*.json` | GIN indexes on `services`/`resources` arrays |
 | `event_scaling_plans` | `data/event-scaling/*.json` | `status` CHECK mirrors `EventStatus` (ADR-010) |
-| `report_schedules` | `data/report-schedule.json` | singleton per `(user, schedule_type)` |
+| `report_schedules` | `data/report-schedule.json` | unique per `(user_sub, schedule_type)`, **and at most one ENABLED row per user** — `uq_schedule_one_active`, a partial unique index `(user_sub) WHERE enabled` (migration 01KZ3C7Q). The dispatcher fires every enabled row, so two would double the diagnosis; `upsertSchedule()` disables the other frequencies in the same transaction |
 | `worker_jobs` (P2) | — | async worker job ledger; orthogonal to the 7 app-state tables |
 
 `updated_at` auto-touch triggers cover `cost_snapshots`, `event_scaling_plans`,
@@ -68,11 +68,11 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
 
 ## Key files / 핵심 파일
 
-- `terraform/v2/foundation/data.tf` — KMS key + alias, DB subnet group, SG,
+- `terraform/foundation/data.tf` — KMS key + alias, DB subnet group, SG,
   Aurora cluster + writer instance, RDS-managed master secret.
-- `terraform/v2/foundation/data/schema.sql` — ADR-001 7-table schema + `schema_migrations`
+- `terraform/foundation/data/schema.sql` — ADR-001 7-table schema + `schema_migrations`
   + P2 `worker_jobs` (idempotent).
-- The root `.gitignore` `data/` rule has a `!terraform/v2/foundation/data/` carve-out,
+- The root `.gitignore` `data/` rule has a `!terraform/foundation/data/` carve-out,
   so `schema.sql` is source-controlled (same pattern as `infra-cdk/data/`).
 - `web/lib/db.ts` — node-pg connection (consumed in P1d, not P1c).
 
@@ -109,7 +109,7 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
 
 ## Source / 출처
 
-- `docs/superpowers/archive/2026-05-31-awsops-v2-p1c-aurora.md` (archived P1c plan).
-- Verified against `terraform/v2/foundation/data.tf`,
-  `terraform/v2/foundation/data/schema.sql`, and the root `CLAUDE.md` Aurora-upgrade
+- `docs/history/archive/2026-05-31-awsops-v2-p1c-aurora.md` (archived P1c plan).
+- Verified against `terraform/foundation/data.tf`,
+  `terraform/foundation/data/schema.sql`, and the root `CLAUDE.md` Aurora-upgrade
   gotcha ("알려진 이슈" / known issues).

@@ -14,6 +14,7 @@ import BarDistribution from '@/components/charts/BarDistribution';
 import DonutBreakdown from '@/components/charts/DonutBreakdown';
 import { useActiveAccount, accountParam, ALL_ACCOUNTS } from '@/lib/account-context';
 import ChatOpsStatsCard from '@/components/chat/ChatOpsStatsCard';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 interface CostBreakdown { inputCost: number; outputCost: number; cacheReadCost: number; cacheWriteCost: number; total: number; cacheSavings: number }
 interface ModelMetric {
@@ -83,6 +84,7 @@ async function loadAllAccounts(range: string): Promise<BedrockData> {
 }
 
 export default function BedrockPage() {
+  const { tt } = useI18n();
   const [range, setRange] = useState('24h');
   const [d, setD] = useState<BedrockData | null>(null);
   const [err, setErr] = useState('');
@@ -151,25 +153,25 @@ export default function BedrockPage() {
         return {
           resource_id: pickedModel.modelId,
           name: pickedModel.label,
-          '호출 수': pickedModel.invocations.toLocaleString(),
-          '평균 지연': pickedModel.avgLatencyMs ? `${pickedModel.avgLatencyMs} ms` : DASH,
-          '4xx 에러': pickedModel.clientErrors,
-          '5xx 에러': pickedModel.serverErrors,
-          '입력 토큰': pickedModel.inputTokens.toLocaleString(),
-          '출력 토큰': pickedModel.outputTokens.toLocaleString(),
-          '캐시 읽기 토큰': pickedModel.cacheReadTokens.toLocaleString(),
-          '캐시 쓰기 토큰': pickedModel.cacheWriteTokens.toLocaleString(),
-          '캐시 적중률': `${hit.toFixed(1)}%`,
-          '입력 비용': usd(pickedModel.cost.inputCost),
-          '출력 비용': usd(pickedModel.cost.outputCost),
-          '캐시 읽기 비용': usd(pickedModel.cost.cacheReadCost),
-          '캐시 쓰기 비용': usd(pickedModel.cost.cacheWriteCost),
-          '총 비용': usd(pickedModel.cost.total),
-          '캐시 절감': usd(pickedModel.cost.cacheSavings),
-          '단가 (입력/1M)': usd(pr.input),
-          '단가 (출력/1M)': usd(pr.output),
-          '단가 (캐시읽기/1M)': usd(pr.cacheRead),
-          '단가 (캐시쓰기/1M)': usd(pr.cacheWrite),
+          [tt('호출 수')]: pickedModel.invocations.toLocaleString(),
+          [tt('평균 지연')]: pickedModel.avgLatencyMs ? `${pickedModel.avgLatencyMs} ms` : DASH,
+          [tt('4xx 에러')]: pickedModel.clientErrors,
+          [tt('5xx 에러')]: pickedModel.serverErrors,
+          [tt('입력 토큰')]: pickedModel.inputTokens.toLocaleString(),
+          [tt('출력 토큰')]: pickedModel.outputTokens.toLocaleString(),
+          [tt('캐시 읽기 토큰')]: pickedModel.cacheReadTokens.toLocaleString(),
+          [tt('캐시 쓰기 토큰')]: pickedModel.cacheWriteTokens.toLocaleString(),
+          [tt('캐시 적중률')]: `${hit.toFixed(1)}%`,
+          [tt('입력 비용')]: usd(pickedModel.cost.inputCost),
+          [tt('출력 비용')]: usd(pickedModel.cost.outputCost),
+          [tt('캐시 읽기 비용')]: usd(pickedModel.cost.cacheReadCost),
+          [tt('캐시 쓰기 비용')]: usd(pickedModel.cost.cacheWriteCost),
+          [tt('총 비용')]: usd(pickedModel.cost.total),
+          [tt('캐시 절감')]: usd(pickedModel.cost.cacheSavings),
+          [tt('단가 (입력/1M)')]: usd(pr.input),
+          [tt('단가 (출력/1M)')]: usd(pr.output),
+          [tt('단가 (캐시읽기/1M)')]: usd(pr.cacheRead),
+          [tt('단가 (캐시쓰기/1M)')]: usd(pr.cacheWrite),
         } as Record<string, unknown>;
       })()
     : null;
@@ -199,13 +201,13 @@ export default function BedrockPage() {
           <SegmentedControl options={RANGES} value={range} onChange={setRange} />
         </div>
 
-        {err && <div className="text-[13px] text-rose-600">로드 실패: {err} (CloudWatch 권한 또는 세션 만료 확인)</div>}
-        {!d && !err && <div className="text-ink-400">로딩 중…</div>}
+        {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err} {tt('(CloudWatch 권한 또는 세션 만료 확인)')}</div>}
+        {!d && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
 
         {d && !err && (
           models.length === 0 ? (
             <div className="rounded-md border border-ink-100 bg-ink-50 px-3 py-3 text-[13px] text-ink-400">
-              이 기간에 Bedrock 모델 호출 메트릭이 없습니다.
+              {tt('이 기간에 Bedrock 모델 호출 메트릭이 없습니다.')}
             </div>
           ) : (
             <>
@@ -232,35 +234,35 @@ export default function BedrockPage() {
                 {/* v1 parity: prompt-caching rollup — hit rate + read/write volumes + savings */}
                 <Card title="Prompt Caching 요약">
                   <dl className="grid grid-cols-2 gap-x-6 gap-y-3">
-                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">캐시 적중률</dt>
+                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">{tt('캐시 적중률')}</dt>
                       <dd className={`tabular mt-0.5 text-[22px] font-semibold ${cacheHitRate >= 50 ? 'text-positive-text' : 'text-ink-800'}`}>{cacheHitRate.toFixed(1)}%</dd></div>
-                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">캐시 절감</dt>
+                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">{tt('캐시 절감')}</dt>
                       <dd className="tabular mt-0.5 text-[22px] font-semibold text-ink-800">{usd(totalSavings)}</dd></div>
-                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">캐시 읽기 토큰</dt>
+                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">{tt('캐시 읽기 토큰')}</dt>
                       <dd className="tabular mt-0.5 text-[15px] text-ink-700">{compact(totalCacheRead)}</dd></div>
-                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">캐시 쓰기 토큰</dt>
+                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">{tt('캐시 쓰기 토큰')}</dt>
                       <dd className="tabular mt-0.5 text-[15px] text-ink-700">{compact(totalCacheWrite)}</dd></div>
                   </dl>
-                  <p className="mt-3 text-[11px] text-ink-400">적중률 = 캐시 읽기 ÷ (입력 + 캐시 읽기). 읽기 단가는 입력의 10%.</p>
+                  <p className="mt-3 text-[11px] text-ink-400">{tt('적중률 = 캐시 읽기 ÷ (입력 + 캐시 읽기). 읽기 단가는 입력의 10%.')}</p>
                 </Card>
                 {/* v1 parity: account-wide CloudWatch totals vs AWSops app-recorded usage */}
                 <Card title="계정 전체 vs AWSops 앱 사용량">
                   <dl className="grid grid-cols-2 gap-x-6 gap-y-3">
-                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">계정 전체 호출 ({range})</dt>
+                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">{tt(`계정 전체 호출 (${range})`)}</dt>
                       <dd className="tabular mt-0.5 text-[22px] font-semibold text-ink-800">{totalInvocations.toLocaleString()}</dd></div>
-                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">AWSops 앱 호출 (기록 누계)</dt>
+                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">{tt('AWSops 앱 호출 (기록 누계)')}</dt>
                       <dd className="tabular mt-0.5 text-[22px] font-semibold text-ink-800">{appStats ? appStats.totalCalls.toLocaleString() : DASH}</dd></div>
-                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">앱 성공률</dt>
+                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">{tt('앱 성공률')}</dt>
                       <dd className="tabular mt-0.5 text-[15px] text-ink-700">{appStats ? `${(appStats.successRate * 100).toFixed(0)}%` : DASH}</dd></div>
-                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">앱 평균 응답</dt>
+                    <div><dt className="text-[11px] uppercase tracking-[0.04em] text-ink-400">{tt('앱 평균 응답')}</dt>
                       <dd className="tabular mt-0.5 text-[15px] text-ink-700">{appStats ? `${(appStats.avgElapsedMs / 1000).toFixed(1)}s` : DASH}</dd></div>
                   </dl>
-                  <p className="mt-3 text-[11px] text-ink-400">계정 전체는 CloudWatch(선택 기간), 앱은 어시스턴트 호출 기록 — 집계 창이 다릅니다.</p>
+                  <p className="mt-3 text-[11px] text-ink-400">{tt('계정 전체는 CloudWatch(선택 기간), 앱은 어시스턴트 호출 기록 — 집계 창이 다릅니다.')}</p>
                 </Card>
               </div>
 
               <section className="flex flex-col gap-3">
-                <h2 className="text-[13px] font-semibold text-ink-800">모델 상세</h2>
+                <h2 className="text-[13px] font-semibold text-ink-800">{tt('모델 상세')}</h2>
                 <DataTable
                   columns={[
                     { key: 'model', label: '모델' },

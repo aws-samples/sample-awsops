@@ -18,10 +18,22 @@ export async function recordExchange(x: ExchangeInput): Promise<void> {
   try {
     const pool = getPool();
     // Upsert the thread; the WHERE guard means a foreign threadId updates nothing → no RETURNING row.
+    // One-time legacy migration only (PR #200 review M1 → M2 → M2-followup): a pre-P3-1 thread's
+    // raw-UUID session_id re-derives deterministically under the caller's sub on every resume
+    // (same input -> same composite), so no rewrite is needed for correctness. But leaving the
+    // legacy raw value in place forever means it never hits route.ts's OWN_PREFIX fast path. Migrate
+    // it to the composite exactly once — only while the stored value isn't already namespaced under
+    // THIS OWNER's sub (starts_with, not a bare 'awsops-%' — a row wrongly holding some other
+    // sub's namespaced string must still be healed, not frozen as "already migrated") — then
+    // freeze: once migrated, later exchanges never touch session_id again, so a thread visited from
+    // a different client-supplied session value can't flip an already-migrated row (last-writer-wins
+    // across the client's single per-browser session — see review M2).
     const up = await pool.query(
       `INSERT INTO chat_threads (id, user_sub, title, session_id)
        VALUES ($1, $2, $3, $4)
-       ON CONFLICT (id) DO UPDATE SET updated_at = now()
+       ON CONFLICT (id) DO UPDATE SET
+         updated_at = now(),
+         session_id = CASE WHEN starts_with(chat_threads.session_id, 'awsops-' || EXCLUDED.user_sub || '-') THEN chat_threads.session_id ELSE EXCLUDED.session_id END
        WHERE chat_threads.user_sub = EXCLUDED.user_sub
        RETURNING id`,
       [x.threadId, x.userSub, x.promptTitle, x.sessionId],

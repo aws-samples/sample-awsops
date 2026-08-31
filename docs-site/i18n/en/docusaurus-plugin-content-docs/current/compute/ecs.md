@@ -10,54 +10,57 @@ import Screenshot from '@site/src/components/Screenshot';
 
 A page for monitoring the status of ECS clusters, services, and tasks.
 
+:::info How this is served in v2
+v1 monitored clusters/services/tasks together on one page, but **v2 splits this into 3 separate inventory routes** — `/inventory/ecs_cluster`, `/inventory/ecs_service`, `/inventory/ecs_task`. The sidebar just groups the three under "Compute" — each is its own page with its own table, filters, and detail panel. The content below reflects this 3-route structure, not v1's unified page.
+:::
+
 <Screenshot src="/screenshots/compute/ecs.png" alt="ECS" />
 
 ## Key Features
 
-### Stats Cards
-- **Clusters**: Total number of ECS clusters (cyan)
-- **Services**: Total number of services (purple)
-- **Tasks**: Number of running tasks (green)
-- **Container Instances**: Number of EC2 container instances (orange)
+### ECS Clusters (`/inventory/ecs_cluster`)
+Highlight cards show status and region distribution, plus a Top-N bar chart ranked by running task count.
 
-### Visualization Charts
-- **Running Tasks per Cluster**: Pie chart showing running tasks per cluster
-
-### Cluster Table
+Table columns:
 | Column | Description |
 |--------|-------------|
-| Cluster Name | Cluster name |
 | Status | Status (ACTIVE, INACTIVE) |
-| Running Tasks | Number of running tasks |
-| Pending Tasks | Number of pending tasks |
-| Active Services | Number of active services |
-| Container Instances | Number of container instances |
-| Region | Region |
+| Running | Number of running tasks |
+| Pending | Number of pending tasks |
+| Services | Number of active services |
+| Instances | Number of registered container instances |
+| MTD Cost ($) | Month-to-date cost |
 
-### Service Table
+Detail panel: Identity (Name, Account, Region, ARN) / Tasks & Services / Config (Settings, Container Insights, etc.) / Tags sections.
+
+### ECS Services (`/inventory/ecs_service`)
+Highlight cards show Desired/Running/Pending totals and the distinct cluster count.
+
+Table columns:
 | Column | Description |
 |--------|-------------|
-| Service Name | Service name |
+| Service | Service name |
 | Status | Status (ACTIVE, DRAINING) |
 | Desired | Desired task count |
 | Running | Running task count |
 | Pending | Pending task count |
-| Launch Type | Launch type (FARGATE, EC2) |
+| Launch | Launch type (FARGATE, EC2) |
 | Strategy | Scheduling strategy |
+| Cluster | Owning cluster |
+| Task def | Task definition |
+| Created | Creation date |
 
-### Cluster Detail Panel
-Click a cluster to view detailed information:
-- **Cluster section**: Name, ARN, Status, Tasks, Services, Container Instances
-- **Settings section**: Cluster settings (Container Insights, etc.)
-- **Tags section**: Cluster tags
+### ECS Tasks (`/inventory/ecs_task`)
+Highlight cards show the RUNNING count, Fargate task count, total daily cost (estimate), and distinct cluster count. Cost is a static estimate derived from the task definition's cpu/memory — see [ECS Container Cost](../compute/ecs-container-cost) for the calculation details.
+
+Table columns: Task, Cluster, Group, Status, Launch, CPU, Memory, Cost/Day, Cost/Mo, AZ, Started.
 
 ## How to Use
 
-1. Click **Compute > ECS** in the sidebar
-2. Review the overall ECS status from the stats cards at the top
-3. Check cluster status in the Clusters table
-4. Compare Desired vs Running tasks for each service in the Services table
-5. Click a cluster to view detailed settings
+1. Click **Compute > ECS Clusters / Services / Tasks** in the sidebar for the route you need
+2. Review the overall status of that resource from the highlight cards at the top
+3. On the Services page, compare Desired vs Running; on the Clusters page, check per-cluster status
+4. Click a row to view detailed settings in the detail panel
 
 ## Fargate vs EC2 Launch Type
 
@@ -66,7 +69,7 @@ Click a cluster to view detailed information:
 | Infrastructure Management | Serverless (AWS managed) | Self-managed |
 | Cost | vCPU/Memory based | EC2 instance cost |
 | Scaling | Automatic | Auto Scaling configuration required |
-| Cost Analysis | Container Cost page supported | Phase 2 planned |
+| Cost Analysis | Cost/Day, Cost/Mo columns on the ECS Tasks view (static estimate) | Not supported |
 
 ## Tips
 

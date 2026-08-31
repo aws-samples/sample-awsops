@@ -17,7 +17,7 @@ AWSops는 AWS와 Kubernetes 환경을 위한 **실시간 읽기 전용(read-only
 - **보안 분석**: IAM 권한 분석, 컴플라이언스, 취약점 점검
 - **비용 관리**: Cost Explorer 기반 비용 분석 및 대시보드
 - **AI 어시스턴트**: 자연어 질의로 AWS 리소스 분석 및 문제 해결 (스트리밍 + 도메인 라우팅 + 대화 영속화)
-- **AI 진단(Diagnosis)**: 워커가 생성하는 읽기 전용 진단 리포트 (base 8섹션 / deep 15섹션, DOCX·PDF 내보내기)
+- **AI 진단(Diagnosis)**: 워커가 생성하는 읽기 전용 진단 리포트 (Light·Mid 8+1섹션(총 9) / Deep 15+1섹션(총 16), DOCX·PDF 내보내기)
 
 플랫폼은 **Terraform 기반 MSA**입니다 — 라이브 AWS 조회는 **Amazon Bedrock AgentCore MCP 도구**가 담당하고, 앱 상태는 **Aurora Serverless v2(PostgreSQL 17)**에 영속화됩니다.
 
@@ -27,7 +27,7 @@ AWSops는 **읽기 전용** 운영 도구입니다. 인프라 현황을 조회·
 
 ## 어떻게 배포되고 어떤 구조로 동작하나요?
 
-AWSops는 **Terraform**(`terraform/v2/foundation/`, 부분 S3 backend)으로 프로비저닝되는 마이크로서비스 아키텍처입니다. 핵심 구성은 다음과 같습니다:
+AWSops는 **Terraform**(`terraform/foundation/`, 부분 S3 backend)으로 프로비저닝되는 마이크로서비스 아키텍처입니다. 핵심 구성은 다음과 같습니다:
 
 | 계층 | 구성 |
 |------|------|
@@ -35,7 +35,7 @@ AWSops는 **Terraform**(`terraform/v2/foundation/`, 부분 S3 backend)으로 프
 | **엣지** | CloudFront(TLS) → VPC Origin(`https-only:443`) → 내부 ALB HTTPS:443(리전 ACM) → Fargate. **공개 ALB 없음** |
 | **컴퓨트** | ECS Fargate(arm64). web은 Next.js 14 thin-BFF, **루트 경로(`/`)** 서빙 |
 | **데이터** | Aurora Serverless v2 (PostgreSQL 17), node-pg로 접근 |
-| **AI** | AgentCore Runtime + 8개 섹션 게이트웨이의 MCP Lambda 도구(라이브 조회) |
+| **AI** | AgentCore Runtime + 9개 섹션 게이트웨이의 MCP Lambda 도구(라이브 조회) |
 | **비동기 워커** | SQS → ESM(킬스위치) → dispatcher Lambda → Step Functions → Lambda 또는 Fargate |
 
 무겁거나 길거나 메모리(OOM) 위험이 있는 작업은 web이 직접 처리하지 않고 **비동기 워커 티어**로 보냅니다: `POST /api/jobs` → `worker_jobs` 큐 적재 → SQS → 멱등 dispatcher Lambda → Step Functions가 작업 길이에 따라 짧은 작업은 RunLambda, 긴/OOM 위험 작업은 `ecs:runTask.sync` Fargate로 라우팅합니다. 실패는 status_updater Lambda가 기록하고, reaper(EventBridge 5분)가 stale 작업을 정합화합니다.
@@ -48,7 +48,7 @@ AWSops는 **Terraform**(`terraform/v2/foundation/`, 부분 S3 backend)으로 프
 
 **아니요.** AWSops는 **읽기 전용 운영 대시보드 + AI 진단** 도구입니다. **AWS 리소스 변경과 자율 실행(autonomy)은 영구적으로 동결(do-not-enable)**되어 있습니다. 어떤 화면이나 AI 기능도 EC2를 종료하거나, SG를 수정하거나, 인프라를 변경하지 않습니다.
 
-AI 어시스턴트와 진단은 라이브 데이터를 **조회**하여 분석·진단할 뿐, 변경(mutation)을 수행하지 않습니다. 약 120개의 AgentCore MCP 도구는 모두 read-only입니다.
+AI 어시스턴트와 진단은 라이브 데이터를 **조회**하여 분석·진단할 뿐, 변경(mutation)을 수행하지 않습니다. 약 160개의 AgentCore MCP Lambda 도구는 모두 read-only입니다.
 
 거버넌스 하에 허용되는 유일한 "쓰기"는 **외부 데이터 기록**입니다 — 예를 들어 외부 시스템에 리포트·티켓·메시지를 남기는 것입니다. 이는 다음 가드 하에서만 동작합니다:
 
@@ -93,10 +93,10 @@ AWSops는 EC2 인스턴스 내 JSON 파일이 아니라 **관리형 AWS 서비�
 
 ## 라이브 AWS 데이터는 어떻게 조회하나요?
 
-라이브 AWS / Kubernetes 데이터는 **AgentCore MCP Lambda 도구**를 통해 조회합니다. 약 120개의 읽기 전용 도구가 **8개 섹션 게이트웨이**(network · container · data · security · cost · monitoring · iac · ops)에 걸쳐 배치되어 있습니다.
+라이브 AWS / Kubernetes 데이터는 **AgentCore MCP Lambda 도구**를 통해 조회합니다. 약 160개의 읽기 전용 도구가 **9개 섹션 게이트웨이**(network · container · data · security · cost · monitoring · iac · ops · external-obs)에 걸쳐 배치되어 있습니다.
 
 - 모든 도구는 read-only입니다.
-- 게이트웨이 수는 **8개**로 유지됩니다 (ADR-004). 외부 관측성은 별도의 "Integrations 축"이며 9번째 게이트웨이가 아닙니다.
+- 게이트웨이 수는 **9개**입니다 (ADR-004 개정 2026-06-24) — 외부 관측성 커넥터(Prometheus·ClickHouse)를 호스팅하는 external-obs가 아홉 번째로 프로비저닝·라우팅됩니다.
 - 더 이상 로컬 Steampipe(127.0.0.1:9193) 서비스나 380개 테이블 직접 접근에 의존하지 않습니다.
 
 ## 외부 관측성 데이터(Prometheus / Loki / Tempo / ClickHouse / Datadog)도 조회할 수 있나요?

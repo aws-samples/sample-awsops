@@ -28,6 +28,28 @@ describe('isBlockedHost (ADR-011 blocklist)', () => {
     expect(isBlockedHost('grafana.example.com')).toBe(false);
     expect(isBlockedHost('api.datadoghq.com')).toBe(false);
   });
+
+  // 2026-07-21 pentest: `localhost` isn't a literal IP, so the checks above let it fall through as
+  // a "non-literal hostname" — 337 integrations/datasources rows got registered with
+  // `http://localhost:...` endpoints before this was fixed. `0.0.0.0` was a parallel gap: it's a
+  // literal IPv4, but ipv4Blocked() never checked for it (only isAlwaysBlockedHost did).
+  it('blocks the localhost hostname aliases and 0.0.0.0/8', () => {
+    for (const host of ['localhost', 'LOCALHOST', 'localhost.localdomain', 'ip6-localhost', 'ip6-loopback']) {
+      expect(isBlockedHost(host)).toBe(true);
+    }
+    expect(isBlockedHost('0.0.0.0')).toBe(true);
+    expect(isBlockedHost('0.1.2.3')).toBe(true);
+  });
+
+  // PR #192 review: new URL(...).hostname preserves a trailing dot and RFC 6761 reserves the whole
+  // `*.localhost` suffix — an exact Set match on the alias list missed both, a one-character bypass
+  // of the fix above.
+  it('blocks a trailing-dot FQDN and any *.localhost subdomain', () => {
+    for (const host of ['localhost.', 'localhost..', 'foo.localhost', 'foo.localhost.', 'localhost.localdomain.']) {
+      expect(isBlockedHost(host)).toBe(true);
+    }
+    expect(() => assertEgressEndpointAllowed('https://localhost.:9090')).toThrow(/always blocked/);
+  });
 });
 
 describe('assertEgressEndpointAllowed', () => {
@@ -38,10 +60,25 @@ describe('assertEgressEndpointAllowed', () => {
     expect(() => assertEgressEndpointAllowed('not a url')).toThrow(/valid URL/);
   });
   it('throws on a private/metadata literal host unless allowPrivate', () => {
-    expect(() => assertEgressEndpointAllowed('https://169.254.169.254/latest/meta-data')).toThrow(/private\/metadata/);
+    expect(() => assertEgressEndpointAllowed('https://169.254.169.254/latest/meta-data')).toThrow(/always blocked/);
     expect(() => assertEgressEndpointAllowed('https://10.0.0.5:3000')).toThrow(/private/);
-    // opt-in permits it (the legitimate private-datasource case)
+    // opt-in permits RFC1918 private (the legitimate private-datasource case)
     expect(() => assertEgressEndpointAllowed('https://10.0.0.5:3000', { allowPrivate: true })).not.toThrow();
+  });
+  // PR #192 review M1: `isBlockedHost(...) && !opts.allowPrivate` alone let an opt-in account
+  // register the exact loopback/0.0.0.0 endpoints this guard exists to block. Loopback/metadata is
+  // never a legitimate "private datasource" opt-in target — allowPrivate must not open it.
+  it('allowPrivate does NOT bypass loopback/metadata/0.0.0.0 (always-blocked, not opt-in-able)', () => {
+    for (const u of [
+      'https://localhost:9090',
+      'https://localhost.:9090',
+      'https://foo.localhost:9090',
+      'https://0.0.0.0:9090',
+      'https://127.0.0.1:9090',
+      'https://169.254.169.254/latest/meta-data',
+    ]) {
+      expect(() => assertEgressEndpointAllowed(u, { allowPrivate: true })).toThrow(/always blocked/);
+    }
   });
   it('allows a public https endpoint', () => {
     expect(() => assertEgressEndpointAllowed('https://api.datadoghq.com/api/v1')).not.toThrow();
@@ -100,5 +137,20 @@ describe('assertDatasourceEndpointAllowed (datasource — private allowed, alway
     }
     expect(isAlwaysBlockedHost('0.0.0.0')).toBe(true);
     expect(isAlwaysBlockedHost('::')).toBe(true);
+  });
+
+  it('blocks the localhost hostname aliases (registration-time, not just literal IPs)', () => {
+    for (const host of ['localhost', 'LOCALHOST', 'localhost.localdomain', 'ip6-localhost', 'ip6-loopback']) {
+      expect(isAlwaysBlockedHost(host)).toBe(true);
+    }
+    expect(() => assertDatasourceEndpointAllowed('http://localhost:9090')).toThrow();
+  });
+
+  it('blocks a trailing-dot FQDN and any *.localhost subdomain (datasource path)', () => {
+    for (const host of ['localhost.', 'foo.localhost']) {
+      expect(isAlwaysBlockedHost(host)).toBe(true);
+    }
+    expect(() => assertDatasourceEndpointAllowed('http://localhost.:9090')).toThrow();
+    expect(() => assertDatasourceEndpointAllowed('http://foo.localhost:9090')).toThrow();
   });
 });

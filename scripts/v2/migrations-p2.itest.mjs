@@ -13,9 +13,9 @@ import { execFileSync, execSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 
-const SCHEMA = 'terraform/v2/foundation/data/schema.sql';
-const MIG_P1 = 'terraform/v2/foundation/migrations/01KTY39P4SV1SQES36KCS8BESY_custom_agent_platform_p1.sql';
-const MIG_P2 = 'terraform/v2/foundation/migrations/01KV0JKFF7Q28CMKQ2JGM2D1NK_integrations_p2.sql';
+const SCHEMA = 'terraform/foundation/data/schema.sql';
+const MIG_P1 = 'terraform/foundation/migrations/01KTY39P4SV1SQES36KCS8BESY_custom_agent_platform_p1.sql';
+const MIG_P2 = 'terraform/foundation/migrations/01KV0JKFF7Q28CMKQ2JGM2D1NK_integrations_p2.sql';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let failures = 0;

@@ -514,6 +514,17 @@ def _summarize_result(body):
     return out
 
 
+def _expr_arg_for_tool(tool):
+    """The connector's own argument name for the expression, from the map that sits beside _KIND_TOOL —
+    a name-prefix test silently sends the wrong key if a tool is renamed (review MINOR). Import is dual
+    (package under fargate/tests, flat in the lambda zip) exactly as datasource_index.py does it."""
+    try:
+        from diagnosis import signal_catalog as _sigcat
+    except ImportError:
+        import signal_catalog as _sigcat
+    return _sigcat.expr_arg_for_tool(tool)
+
+
 def _signal_plan(conn, iid):
     """Pre-built diagnostic-signal plan for a prom/mimir instance from datasource_diag_signals.
 
@@ -531,12 +542,26 @@ def _signal_plan(conn, iid):
         return None  # signals not materialized yet → generic fallback
     plan, unavail, sig_meta = [], [], []
     for r in rows:
+        # LLM-GENERATED rows are for the Explore chips only, never the report. They carry no
+        # pillar/threshold (the deterministic catalog's do), and `external_obs_signals` prompts the model
+        # with signals[].pillar/threshold to justify a verdict — feeding it a threshold-less row makes it
+        # judge severity with nothing to judge against. Non-K8s Prometheus is exactly the case this PR
+        # widens, so the row really would arrive here (review MAJOR, L4-M1). The comment claiming chips-only
+        # was true for loki/tempo/clickhouse and wrong for prom/mimir; this makes it true for all of them.
+        if (r.get("meta") or {}).get("provenance") == "generated":
+            continue
         if r.get("status") == "ready" and isinstance(r.get("query"), dict):
             tool = r["query"].get("tool")
             for q in (r["query"].get("queries") or []):
                 expr = q.get("expr")
                 if tool and expr:
-                    plan.append((tool, {"query": expr}, f"{r['signal_key']}:{q.get('label', 'q')}"))
+                    # The arg key is per-connector: ClickHouse's takes `sql`, everything else `query`.
+                    # This was hardcoded to `query`, which is invisible today because the caller only
+                    # reaches here for prom/mimir — but it is a landmine for the PR that widens that gate,
+                    # and the signal rows for clickhouse already exist (review MAJOR). The map lives beside
+                    # _KIND_TOOL so renaming a tool cannot silently change the key (review MINOR).
+                    arg = _expr_arg_for_tool(tool)
+                    plan.append((tool, {arg: expr}, f"{r['signal_key']}:{q.get('label', 'q')}"))
             m = r.get("meta") or {}
             sig_meta.append({"key": r["signal_key"], "title": r.get("title"),
                              "pillar": m.get("pillar"), "threshold": m.get("threshold")})
@@ -586,6 +611,12 @@ def collect_datasources(conn):
             break
         # Prom/Mimir: PREFER pre-built diagnostic signals (datasource_index); fall back to the generic
         # schema-driven planner when signals aren't materialized yet (decouples from the index pipeline).
+        #
+        # DELIBERATELY still prom/mimir only. datasource_index now materializes signal rows for loki and
+        # tempo too (and clickhouse via the flag-gated fallback), but those are consumed by the Explore
+        # CHIPS, not by this report — so they are chip-only, not dead code, and widening this gate is a
+        # separate decision that needs the per-kind thresholds/pillars the sig_meta path assumes
+        # (review MAJOR: worth stating, since the rows exist and the asymmetry is invisible otherwise).
         sig = _signal_plan(conn, iid) if kind in ("prometheus", "mimir") else None
         if sig is not None:
             plan, unavail, version, sig_meta = sig

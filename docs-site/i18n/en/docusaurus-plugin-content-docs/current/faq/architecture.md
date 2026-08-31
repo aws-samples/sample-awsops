@@ -109,15 +109,15 @@ AWSops does not use the v1 Steampipe pg Pool (port 9193, node-cache, cache-warme
 
 ## How are live AWS queries served? (AgentCore vs Steampipe)
 
-Live AWS data is served by **AgentCore MCP Lambda tools** — roughly **120 read-only tools** spread across **8 section gateways** (network / container / data / security / cost / monitoring / iac / ops).
+Live AWS data is served by **AgentCore MCP Lambda tools** — roughly **160 read-only tools** spread across **9 section gateways** (network / container / data / security / cost / monitoring / iac / ops / external-obs).
 
 | Component | Role |
 |-----------|------|
 | **AgentCore MCP tools (live)** | Real-time AWS API queries — the live data source for chat, diagnosis, and pages |
 | **Steampipe (flag-gated)** | The `steampipe_enabled` (default OFF) inventory **sync only**. Not a live query engine, not a local 9193 service |
 
-:::info The gateway count is 8 (ADR-004)
-External observability is the separate **Integrations axis** (ADR-039), not a 9th gateway. Per ADR-004, the gateway count stays at **8**.
+:::info The gateway count is 9 (ADR-004 as amended, 2026-06-24)
+The external-observability connectors (Prometheus·ClickHouse) are promoted to the **external-obs gateway**, provisioned and routed as the ninth (ADR-004 as amended 2026-06-24 — 9 provisioned / 9 routed). Other external integrations remain the separate **Integrations axis** (ADR-007/017).
 :::
 
 ## How does AI routing work? (ADR-038 hybrid)

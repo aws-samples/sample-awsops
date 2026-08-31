@@ -91,6 +91,15 @@ function prom(body: Record<string, unknown>): NormalizedResult {
 function loki(body: Record<string, unknown>): NormalizedResult {
   const result = Array.isArray(body.result) ? body.result : [];
   const truncated = body.truncated === true;
+  // Metric LogQL (`sum by(job)(count_over_time(…))`) comes back as resultType 'matrix'/'vector' with
+  // {metric, values|value} — NOT {stream, values:[[ns, line]]}. The diag-signal chips added in this PR are
+  // exactly those aggregate queries, and the stream path would have read a numeric sample as a log line
+  // (review MAJOR). Prometheus' renderer already handles both matrix and vector, and Loki's metric
+  // response has the same shape, so reuse it.
+  if (body.resultType === 'matrix' || body.resultType === 'vector'
+      || result.some((r) => r && typeof r === 'object' && 'metric' in (r as object))) {
+    return prom(body);
+  }
   const rows: Record<string, unknown>[] = [];
   for (const stream of result) {
     const so = stream as Record<string, unknown>;

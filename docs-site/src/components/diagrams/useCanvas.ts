@@ -49,23 +49,29 @@ export function useCanvas(draw: DrawFn, height = 500) {
 
     const dpr = window.devicePixelRatio || 1;
 
+    // Reassigning canvas.width/height clears the bitmap even when the value
+    // is unchanged, so skip when the size didn't actually change — otherwise
+    // every ResizeObserver firing (mount, sidebar toggle, orientation change)
+    // wipes the canvas with nothing scheduled to redraw it under
+    // reduced-motion (no rAF loop running).
     function resize() {
       const parent = canvas.parentElement;
-      if (!parent) return;
+      if (!parent) return false;
       const w = parent.clientWidth;
       const h = height;
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
+      const targetW = w * dpr;
+      const targetH = h * dpr;
+      if (canvas.width === targetW && canvas.height === targetH) return false;
+      canvas.width = targetW;
+      canvas.height = targetH;
       canvas.style.width = `${w}px`;
       canvas.style.height = `${h}px`;
+      return true;
     }
 
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(canvas.parentElement!);
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    let animId: number;
-    function animate() {
+    function drawFrame() {
       const w = canvas.width;
       const h = canvas.height;
       ctx.clearRect(0, 0, w, h);
@@ -77,18 +83,43 @@ export function useCanvas(draw: DrawFn, height = 500) {
         mouse: mouseRef.current,
         dpr,
       });
-      animId = requestAnimationFrame(animate);
     }
+
+    resize();
+
+    const ro = new ResizeObserver(() => {
+      if (resize() && reduceMotion) drawFrame();
+    });
+    ro.observe(canvas.parentElement!);
+
+    let animId: number;
+    function animate() {
+      drawFrame();
+      if (!reduceMotion) {
+        animId = requestAnimationFrame(animate);
+      }
+    }
+    // Reduced motion: draw exactly one static frame instead of a permanent rAF loop.
     animId = requestAnimationFrame(animate);
 
     canvas.addEventListener('mousemove', handleMouseMove);
     canvas.addEventListener('mouseleave', handleMouseLeave);
+
+    // With no rAF loop running under reduced-motion, hover state would
+    // otherwise never repaint — redraw once per pointer event instead.
+    function redrawOnPointerActivity() {
+      if (reduceMotion) drawFrame();
+    }
+    canvas.addEventListener('mousemove', redrawOnPointerActivity);
+    canvas.addEventListener('mouseleave', redrawOnPointerActivity);
 
     return () => {
       cancelAnimationFrame(animId);
       ro.disconnect();
       canvas.removeEventListener('mousemove', handleMouseMove);
       canvas.removeEventListener('mouseleave', handleMouseLeave);
+      canvas.removeEventListener('mousemove', redrawOnPointerActivity);
+      canvas.removeEventListener('mouseleave', redrawOnPointerActivity);
     };
   }, [draw, height, handleMouseMove, handleMouseLeave]);
 

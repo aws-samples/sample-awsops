@@ -115,7 +115,7 @@ const ROUTES = [
 function mockDc(opts: {
   conns?: Record<string, unknown[]>; vifs?: Record<string, unknown[]>;
   gws?: unknown[]; assocs?: unknown[]; failRegions?: string[];
-  lags?: unknown[]; routes?: Record<string, unknown[]>; routesFail?: boolean;
+  lags?: unknown[]; routes?: Record<string, unknown[]>; routesFail?: boolean; assocsFail?: boolean;
 } = {}) {
   dcSend.mockImplementation(async (cmd: Cmd, region: string) => {
     if (opts.failRegions?.includes(region)) throw new Error(`boom ${region}`);
@@ -123,7 +123,10 @@ function mockDc(opts: {
       case 'DescribeConnectionsCommand': return { connections: opts.conns?.[region] ?? [] };
       case 'DescribeVirtualInterfacesCommand': return { virtualInterfaces: opts.vifs?.[region] ?? [] };
       case 'DescribeDirectConnectGatewaysCommand': return { directConnectGateways: opts.gws ?? [] };
-      case 'DescribeDirectConnectGatewayAssociationsCommand': return { directConnectGatewayAssociations: opts.assocs ?? [] };
+      case 'DescribeDirectConnectGatewayAssociationsCommand': {
+        if (opts.assocsFail) throw new Error('AccessDenied');
+        return { directConnectGatewayAssociations: opts.assocs ?? [] };
+      }
       case 'DescribeLagsCommand': return { lags: opts.lags ?? [] };
       case 'ListVirtualInterfaceRoutesCommand': {
         if (opts.routesFail) throw new Error('UnknownOperationException');
@@ -234,6 +237,9 @@ describe('dxAnalysis', () => {
     expect(a.locations).toEqual([
       { location: 'TLS10', region: 'ap-northeast-2', connections: 2, bandwidthBps: 100_000_000 },
     ]);
+    expect(a.degradedRegions).toEqual([]);
+    expect(a.metricsDegradedRegions).toEqual([]);
+    expect(a.gatewaysDegraded).toBe(false);
   });
 
   it('민감정보(authKey/customerRouterConfig)는 어떤 형태로도 응답에 실리지 않음', async () => {
@@ -282,7 +288,7 @@ describe('dxAnalysis', () => {
     expect(a.totals.connectionsDown).toBe(1);
   });
 
-  it('리전 degrade: 실패 리전은 건너뛰고 나머지 리전+게이트웨이 유지', async () => {
+  it('리전 degrade: 실패 리전은 건너뛰고 나머지 리전+게이트웨이 유지, degradedRegions에 노출', async () => {
     mockDb(['us-west-2']);
     mockDc({
       conns: { 'ap-northeast-2': [CONNS[0]] },
@@ -296,6 +302,45 @@ describe('dxAnalysis', () => {
     expect(a.connections).toHaveLength(1);
     expect(a.vifs).toHaveLength(1);
     expect(a.gateways).toHaveLength(1);
+    // 실패 리전을 조용히 삼키지 않고 노출 — UI가 singleLocation/다운/대역폭 집계가
+    // 낙관적일 수 있음을 경고할 근거.
+    expect(a.degradedRegions).toEqual(['us-west-2']);
+    expect(a.metricsDegradedRegions).toEqual([]);
+    expect(a.gatewaysDegraded).toBe(false);
+  });
+
+  it('메트릭 degrade: CloudWatch 호출 자체 실패 → metricsDegradedRegions에 노출, 리소스 목록은 유지', async () => {
+    mockDb([]);
+    mockDc({ conns: { 'ap-northeast-2': [CONNS[0]] }, vifs: { 'ap-northeast-2': [VIFS[0]] }, gws: [GW], assocs: [ASSOC] });
+    cwSend.mockImplementation(async () => { throw new Error('boom cw'); });
+    const { dxAnalysis } = await import('./dx');
+    const a = await dxAnalysis(3600);
+    expect(a.connections).toHaveLength(1);
+    expect(a.vifs).toHaveLength(1);
+    expect(a.degradedRegions).toEqual([]);
+    expect(a.metricsDegradedRegions).toEqual(['ap-northeast-2']);
+    expect(a.gatewaysDegraded).toBe(false);
+  });
+
+  it('DX Gateway degrade: DescribeDirectConnectGateways 실패 → gatewaysDegraded true, 나머지 데이터 유지', async () => {
+    mockDb([]);
+    mockDc({ conns: { 'ap-northeast-2': [CONNS[0]] }, vifs: { 'ap-northeast-2': [VIFS[0]] } });
+    dcSend.mockImplementation(async (cmd: Cmd, region: string) => {
+      if (cmd.constructor.name === 'DescribeDirectConnectGatewaysCommand') throw new Error('boom gw');
+      switch (cmd.constructor.name) {
+        case 'DescribeConnectionsCommand': return { connections: region === 'ap-northeast-2' ? [CONNS[0]] : [] };
+        case 'DescribeVirtualInterfacesCommand': return { virtualInterfaces: region === 'ap-northeast-2' ? [VIFS[0]] : [] };
+        case 'DescribeLagsCommand': return { lags: [] };
+        case 'ListVirtualInterfaceRoutesCommand': return { routes: [] };
+        default: return {};
+      }
+    });
+    mockCw([], {});
+    const { dxAnalysis } = await import('./dx');
+    const a = await dxAnalysis(3600);
+    expect(a.connections).toHaveLength(1);
+    expect(a.gateways).toEqual([]);
+    expect(a.gatewaysDegraded).toBe(true);
   });
 
   it('메트릭 전무(CW 미발행) → 트래픽/사용률 null, API 상태만으로 판정', async () => {
@@ -404,6 +449,53 @@ describe('dxAnalysis', () => {
     const { dxAnalysis } = await import('./dx');
     const a = await dxAnalysis(3600);
     expect(a.vifs[0].peakUtilizationPct).toBe(50);
+  });
+
+  it('ListMetrics만 실패(BGP 튜플 발견 불가, 스로틀링 전형) → metricsDegradedRegions 표기', async () => {
+    // PR #210 리뷰 MAJOR: 기존 테스트는 CW 명령 전체를 throw시켜 outer catch만 커버했다 —
+    // ListMetrics-only 실패는 bgpMin/pfx*가 전부 null로 강등되는데 무신호였다.
+    mockDb([]);
+    mockDc({ conns: { 'ap-northeast-2': [CONNS[0]] }, vifs: { 'ap-northeast-2': [VIFS[0]] }, gws: [] });
+    cwSend.mockImplementation(async (cmd: Cmd) => {
+      if (cmd.constructor.name === 'ListMetricsCommand') throw new Error('Throttling');
+      return { MetricDataResults: [] };
+    });
+    const { dxAnalysis } = await import('./dx');
+    const a = await dxAnalysis(3600);
+    expect(a.metricsDegradedRegions).toContain('ap-northeast-2');
+    expect(a.connections).toHaveLength(1); // 리소스 목록은 정상 유지
+  });
+
+  it('커넥션 100건 캡 초과 → 잘린 리소스 무신호 금지, metricsDegradedRegions 표기', async () => {
+    // 리뷰 라운드3 MAJOR L2-1: slice(0,100) 캡이 물면 잘린 커넥션의 connState가 조용히
+    // null 강등되는데 ok=true로 남아 새 degrade 계약을 우회했다.
+    mockDb([]);
+    const many = Array.from({ length: 101 }, (_, i) => ({ ...CONNS[0], connectionId: `dxcon-${i}` }));
+    mockDc({ conns: { 'ap-northeast-2': many }, vifs: { 'ap-northeast-2': [] }, gws: [] });
+    mockCw([], {});
+    const { dxAnalysis } = await import('./dx');
+    const a = await dxAnalysis(3600);
+    expect(a.metricsDegradedRegions).toContain('ap-northeast-2');
+    expect(a.connections).toHaveLength(101); // 리소스 목록 자체는 전량 유지 (메트릭만 캡)
+  });
+
+  it('association 조회만 실패 → associationsAvailable false, unassociated 오탐/집계 없음', async () => {
+    // PR #210 리뷰 MAJOR: inner catch가 associations:[]를 남겨 unassociated=true가
+    // "위험을 발명"했다 — 판정 불가는 미할당이 아니다.
+    mockDb([]);
+    mockDc({
+      conns: {}, vifs: {},
+      gws: [{ directConnectGatewayId: 'dxgw-1', directConnectGatewayName: 'gw', directConnectGatewayState: 'available' }],
+      assocsFail: true,
+    });
+    mockCw([], {});
+    const { dxAnalysis } = await import('./dx');
+    const a = await dxAnalysis(3600);
+    expect(a.gateways[0].associationsAvailable).toBe(false);
+    expect(a.gateways[0].unassociated).toBe(false);
+    expect(a.totals.gatewaysUnassociated).toBe(0);
+    expect(a.totals.gatewaysAssociationsUnknown).toBe(1); // 집계·배너 신호 (리뷰 MAJOR: 행에서만 멈추면 안 됨)
+    expect(a.gatewaysDegraded).toBe(false); // 게이트웨이 목록 자체는 성공
   });
 
   it('라우트 API 실패(미지원 리전 등) → routesAvailable false, 나머지 데이터 유지', async () => {

@@ -2,6 +2,7 @@
 import { Suspense, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import AwsopsMark from '@/components/ui/AwsopsMark';
+import LanguageToggle from '@/components/shell/LanguageToggle';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { safeNext } from '@/lib/login';
 
@@ -51,6 +52,9 @@ function LoginForm() {
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-paper px-4">
+      <div className="absolute right-4 top-4 z-10 rounded-md bg-chrome-muted p-1">
+        <LanguageToggle />
+      </div>
       {/* teal · cobalt radial glows */}
       <div
         aria-hidden

@@ -23,6 +23,45 @@ describe('pickGateway', () => {
   it('ignores a pin that is not a known section', () => {
     expect(pickGateway('이번 달 비용', 'bogus')).toBe('cost');
   });
+  // ADR-017 amendment 2026-08-05: the observability vendor rule carries EXACTLY the kinds with a
+  // live external-obs path — the 3 vendor-hosted presets (datadog/dynatrace/newrelic) + the
+  // prometheus/clickhouse lambda targets. Grafana/Splunk are unsupported and Jaeger has no
+  // gateway target (lambda deployed, never a TARGETS entry) — their NAMES stop being a routing
+  // signal. EXACT expectations (not just "not observability" — that masked the real routes,
+  // codex round-5): remaining domain keywords still route by domain ('트레이스' → monitoring,
+  // tempo's home), and keyword-less vendor queries land on the ops catch-all.
+  it('routes only kinds with a live external-obs path to observability; dropped names are no longer a signal', () => {
+    expect(pickGateway('check the datadog dashboard')).toBe('observability');
+    expect(pickGateway('dynatrace 확인해줘')).toBe('observability'); // avoid Korean '지표' which is monitoring's own keyword
+    expect(pickGateway('newrelic 상태 봐줘')).toBe('observability');
+    expect(pickGateway('grafana 대시보드 좀 보여줘')).toBe('ops');       // no signal left → catch-all
+    expect(pickGateway('splunk 로그 검색')).toBe('ops');                // no signal left → catch-all
+    expect(pickGateway('jaeger 트레이스 이상한지 봐줘')).toBe('monitoring'); // 트레이스 routes by domain
+  });
+  // Regression (2026-07-31 round-3 review MAJOR): round-2 moved tempo/trace to observability to
+  // avoid a POST-cutover dead-end, but official_mcp_enabled defaults to false, so that just made
+  // the dead-end the DEFAULT state for every deployment that never opts into ADR-017 presets.
+  // route.ts has no runtime signal to pick dynamically, so it routes to the legacy target's home
+  // (monitoring) — the actual default/most-common state — and the cutover playbook (ADR-017) must
+  // move this keyword when official_mcp_enabled is actually flipped for tempo.
+  it('routes tempo/trace to monitoring (matches the default/pre-cutover state; legacy tempo-mcp-target lives there)', () => {
+    expect(pickGateway('tempo trace 조회')).toBe('monitoring');
+    expect(pickGateway('트레이스 검색')).toBe('monitoring');
+  });
+  // Regression (2026-07-31 round-2 review MAJOR): rule ORDER previously let monitoring's generic
+  // 'metric'/'지표' keyword steal a vendor-named query before the vendor-aware observability rule
+  // got a chance. Vendor names must win regardless of RULES array position of generic keywords.
+  it('routes vendor-named queries to observability, not generic monitoring', () => {
+    expect(pickGateway('Datadog metric 확인')).toBe('observability');
+    expect(pickGateway('New Relic 지표 좀 보여줘')).toBe('observability');
+  });
+  // Regression (2026-07-31 round-4 review MAJOR): the round-2 fix only moved the vendor rule above
+  // 'monitoring'; the generic 'data' rule (쿼리|database|...) still sat ABOVE it and kept stealing
+  // vendor-named queries. Vendor names now win over EVERY generic domain rule (rule index 0).
+  it('routes vendor-named queries to observability, not generic data', () => {
+    expect(pickGateway('ClickHouse 쿼리 느려')).toBe('observability');
+    expect(pickGateway('Datadog database latency')).toBe('observability');
+  });
 });
 
 describe('matchedSections', () => {
@@ -289,7 +328,7 @@ describe('auto-collect collector rules — dedicated strong keywords only (v1 au
     expect(matchedSections('지연시간 병목 찾아줘')).toContain('trace-analyze');
   });
   it("a bare 'trace/트레이스' noun stays with monitoring; '트레이스 분석' is ambiguous → classifier", async () => {
-    expect(matchedSections('grafana 대시보드에서 본 trace 이상해')).toEqual(['monitoring']);
+    expect(matchedSections('대시보드에서 본 trace 이상해')).toEqual(['monitoring']);
     const keys = matchedSections('트레이스 분석해줘');
     expect(keys).toContain('monitoring');
     expect(keys).toContain('trace-analyze');

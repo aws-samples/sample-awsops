@@ -644,7 +644,7 @@ export const GUIDES_EN: Record<string, GuideSpec> = {
   ANFW: {
     service: 'ANFW',
     intro: (
-      <>Network Firewall monitoring looks at three layers together â <b>CloudWatch metrics, firewall logs
+      <>Network Firewall monitoring looks at three layers together — <b>CloudWatch metrics, firewall logs
       (Alert/Flow/TLS), and complementary sources (VPC Flow Logs, CloudTrail, routing)</b>: metrics give
       volume and trends, logs give the &ldquo;which rule caught what&rdquo; context, and the complementary
       sources catch bypasses and changes.</>

@@ -46,16 +46,16 @@ export default function AiOps() {
         <Card className="p-4 flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <div className="text-[13px] font-semibold text-ink-800">✦ AI Assistant</div>
-            <Badge tone="brand" variant="soft">{active}/{SECTIONS.length} 에이전트</Badge>
+            <Badge tone="brand" variant="soft">{tt(`${active}/${SECTIONS.length} 에이전트`)}</Badge>
           </div>
           <p className="text-[12px] text-ink-500">
-            섹션 전문 에이전트가 질문을 자동 분류해 라이브 AWS 데이터로 답합니다.
+            {tt('섹션 전문 에이전트가 질문을 자동 분류해 라이브 AWS 데이터로 답합니다.')}
           </p>
           <button
             onClick={() => openChat()}
             className="self-start rounded-md bg-brand-500 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-brand-600"
           >
-            대화 시작
+            {tt('대화 시작')}
           </button>
         </Card>
 
@@ -80,27 +80,27 @@ export default function AiOps() {
 
         {/* AI analysis surfaces — every row navigates (v1 parity), honest about live vs gated */}
         <Card className="p-4 flex flex-col gap-2">
-          <div className="text-[13px] font-semibold text-ink-800">AI 분석</div>
+          <div className="text-[13px] font-semibold text-ink-800">{tt('AI 분석')}</div>
           <a href="/eks" className="flex items-center justify-between text-[12px] text-ink-600 hover:text-brand-700">
-            <span>EKS 진단 (K8sGPT)</span><Badge tone="neutral" variant="soft">{tt('게이트 OFF')}</Badge>
+            <span>{tt('EKS 진단 (K8sGPT)')}</span><Badge tone="neutral" variant="soft">{tt('게이트 OFF')}</Badge>
           </a>
           <a href="/ai-diagnosis" className="flex items-center justify-between text-[12px] text-ink-600 hover:text-brand-700">
             <span>{tt('인시던트 자동 분석')}</span><Badge tone="neutral" variant="soft">{tt('분석-전용 대기')}</Badge>
           </a>
           <a
             href="/bedrock"
-            title="ADR-038 게이트 벤치마크 — 라이브 측정은 후속(Bedrock invocation-log 텔레메트리)"
+            title={tt('ADR-038 게이트 벤치마크 — 라이브 측정은 후속(Bedrock invocation-log 텔레메트리)')}
             className="flex items-center justify-between text-[12px] text-ink-600 hover:text-brand-700"
           >
-            <span>{tt('하이브리드 라우팅')}</span><Badge tone="neutral" variant="soft">게이트 96.9%</Badge>
+            <span>{tt('하이브리드 라우팅')}</span><Badge tone="neutral" variant="soft">{tt('게이트 96.9%')}</Badge>
           </a>
           <a
             href="/bedrock"
-            title="awsops가 사용한 Bedrock 토큰 비용 (최근 30일, invocation-log 기준)"
+            title={tt('awsops가 사용한 Bedrock 토큰 비용 (최근 30일, invocation-log 기준)')}
             className="flex items-center justify-between text-[12px] text-ink-600 hover:text-brand-700"
           >
-            <span>Bedrock 토큰 비용 (30d)</span>
-            <Badge tone="brand" variant="soft">{cost != null ? `$${cost.toFixed(2)}` : '보기 →'}</Badge>
+            <span>{tt('Bedrock 토큰 비용 (30d)')}</span>
+            <Badge tone="brand" variant="soft">{cost != null ? `$${cost.toFixed(2)}` : tt('보기 →')}</Badge>
           </a>
         </Card>
       </div>

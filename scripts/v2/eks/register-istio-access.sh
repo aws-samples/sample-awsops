@@ -22,7 +22,7 @@
 # do NOT widen to AdminView (that would grant cluster-wide Secret read to an automated agent).
 set -euo pipefail
 
-CHDIR="$(cd "$(dirname "$0")/../../../terraform/v2/foundation" && pwd)"
+CHDIR="$(cd "$(dirname "$0")/../../../terraform/foundation" && pwd)"
 POLICY="arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
 
 ROLE_ARN="${ROLE_ARN:-$(terraform -chdir="$CHDIR" output -raw agent_lambda_role_arn 2>/dev/null || true)}"

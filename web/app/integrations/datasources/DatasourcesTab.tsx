@@ -5,6 +5,7 @@ import Card from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
 import IntegrationIcon from '@/components/datasources/IntegrationIcon';
 import DatasourceForm, { type DatasourceFormValue } from './DatasourceForm';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 interface Instance {
   id: number; name: string; kind: string; endpoint?: string | null; authType?: string | null; isDefault?: boolean; connected?: boolean;
@@ -13,6 +14,7 @@ interface Instance {
 // The Datasources tab: manage instances (multi-per-type, named) + drill into Explore. Read-visible to
 // all authenticated users; mutating actions are admin-only (canManage).
 export default function DatasourcesTab({ canManage = false }: { canManage?: boolean }) {
+  const { tt } = useI18n();
   const [list, setList] = useState<Instance[]>([]);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState<null | { mode: 'add' } | { mode: 'edit'; value: DatasourceFormValue }>(null);
@@ -29,7 +31,7 @@ export default function DatasourcesTab({ canManage = false }: { canManage?: bool
   useEffect(() => { load(); }, [load]);
 
   const onDelete = async (i: Instance) => {
-    if (typeof window !== 'undefined' && !window.confirm(`"${i.name}" 데이터소스를 삭제할까요?`)) return;
+    if (typeof window !== 'undefined' && !window.confirm(tt(`"${i.name}" 데이터소스를 삭제할까요?`))) return;
     setBusyId(i.id);
     try { await fetch(`/api/datasources/${i.id}`, { method: 'DELETE' }); await load(); }
     finally { setBusyId(null); }
@@ -55,7 +57,7 @@ export default function DatasourcesTab({ canManage = false }: { canManage?: bool
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-[13px] text-ink-500">관측성 데이터소스 (Prometheus·Mimir·Loki·Tempo·ClickHouse). 같은 타입 여러 개 등록 가능.</p>
+        <p className="text-[13px] text-ink-500">{tt('관측성 데이터소스 (Prometheus·Mimir·Loki·Tempo·ClickHouse). 같은 타입 여러 개 등록 가능.')}</p>
         {canManage && <Button onClick={() => setForm({ mode: 'add' })}>＋ Add datasource</Button>}
       </div>
 
@@ -68,9 +70,9 @@ export default function DatasourcesTab({ canManage = false }: { canManage?: bool
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={7} className="px-3 py-6 text-center text-ink-400">불러오는 중…</td></tr>}
+            {loading && <tr><td colSpan={7} className="px-3 py-6 text-center text-ink-400">{tt('불러오는 중…')}</td></tr>}
             {!loading && list.length === 0 && (
-              <tr><td colSpan={7} className="px-3 py-6 text-center text-ink-400">등록된 데이터소스가 없습니다.</td></tr>
+              <tr><td colSpan={7} className="px-3 py-6 text-center text-ink-400">{tt('등록된 데이터소스가 없습니다.')}</td></tr>
             )}
             {list.map((i) => (
               <tr key={i.id} className="border-b border-ink-50">

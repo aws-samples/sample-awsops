@@ -37,7 +37,7 @@ export default function PageHeader({
           <h1 className="text-[24px] font-semibold tracking-[-0.01em] text-chrome-fg leading-tight">{tTitle}</h1>
           {live && (
             <Badge tone="positive" variant="soft" dot>
-              실시간
+              {tt('실시간')}
             </Badge>
           )}
         </div>

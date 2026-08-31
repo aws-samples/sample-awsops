@@ -84,11 +84,29 @@ def _bound(data):
     return {"resultType": data.get("resultType"), "result": out}, truncated
 
 
+def _timeout_param(v):
+    """Optional Prometheus-API `timeout` (e.g. "5s"), clamped to 1..60s. Same knob prometheus_mcp.py grew:
+    the connector bounds response SIZE but had no execution bound, which matters now that a caller can run
+    model-written PromQL through it (review — the diag-signal dry run passes 5s for mimir too)."""
+    # No digit cap: `\d{1,3}` made "1000" or "3600s" fall through to None, i.e. NO bound — a clamp that
+    # fails open for exactly the values that need clamping (review MINOR). Only non-numeric input is None.
+    # `v or ""` turns numeric 0 into "" (falsy), which then fails the match and returns None —
+    # i.e. NO bound for exactly the value that most needs clamping. Only skip on a true absence.
+    if v is None or v == "":
+        return None
+    m = re.fullmatch(r"\s*(\d+)s?\s*", str(v))
+    return f"{max(1, min(60, int(m.group(1))))}s" if m else None
+
+
 def mimir_query(args):
     query = (args.get("query") or "").strip()
     if not query:
         return err("query (PromQL) required")
-    data = _get(_ds(), f"{BASE}/query", {"query": query, "time": _parse_time(args.get("time"))})
+    params = {"query": query, "time": _parse_time(args.get("time"))}
+    timeout = _timeout_param(args.get("timeout"))
+    if timeout:
+        params["timeout"] = timeout
+    data = _get(_ds(), f"{BASE}/query", params)
     bounded, tr = _bound(data)
     return ok({"truncated": tr, **(bounded if isinstance(bounded, dict) else {"result": bounded})})
 

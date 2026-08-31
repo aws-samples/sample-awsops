@@ -8,6 +8,7 @@ import { Background, Controls, Position, type Node, type Edge } from '@xyflow/re
 import '@xyflow/react/dist/style.css';
 import PageHeader from '@/components/ui/PageHeader';
 import { layoutFlow } from '@/lib/flow-layout';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 // ReactFlow touches the DOM on mount — client-only.
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
@@ -37,6 +38,7 @@ const clusterOf = (meta?: Record<string, unknown>): string | undefined =>
   typeof meta?.cluster === 'string' && meta.cluster ? meta.cluster : undefined;
 
 export default function ServiceMapPage() {
+  const { tt } = useI18n();
   const router = useRouter();
   const [graph, setGraph] = useState<Graph | null>(null);
   const [err, setErr] = useState('');
@@ -107,16 +109,16 @@ export default function ServiceMapPage() {
         subtitle="분산 트레이스에서 파생된 서비스 호출 그래프 (service → service → db). ClickHouse otel_traces 기반."
         right={
           <Link href="/topology" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
-            ← 트래픽 흐름
+            {tt('← 트래픽 흐름')}
           </Link>
         }
       />
       <div className="flex items-center gap-3 px-4 py-1 text-[11px] text-ink-500">
-        {busy && <span>불러오는 중…</span>}
-        {err && <span className="text-red-600">조회 실패: {err}</span>}
-        {graph?.captured_at && <span>그래프 시점: {new Date(graph.captured_at).toLocaleString()}</span>}
+        {busy && <span>{tt('불러오는 중…')}</span>}
+        {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
+        {graph?.captured_at && <span>{tt('그래프 시점:')} {new Date(graph.captured_at).toLocaleString()}</span>}
         {graph && graph.nodes.length === 0 && !busy && (
-          <span>trace 데이터 없음 — ClickHouse 데이터소스 등록 여부와 최근 60분 내 span 존재 여부를 확인하세요.</span>
+          <span>{tt('trace 데이터 없음 — ClickHouse 데이터소스 등록 여부와 최근 60분 내 span 존재 여부를 확인하세요.')}</span>
         )}
       </div>
       <div className="min-h-0 flex-1">

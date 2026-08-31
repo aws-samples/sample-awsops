@@ -1,0 +1,14 @@
+-- SG Rules & Usage gap 5: sg_rule_inventory has no VPC id, so the Rules page's "VPC" column and a
+-- VPC filter could not be wired honestly (see the now-removed header comment in
+-- web/app/network/security-groups/rules/page.tsx and docs/superpowers/specs/
+-- 2026-08-13-security-group-rules-usage-design.md's Data model section).
+--
+-- The daily worker (scripts/v2/workers/sg_rule_scan.py) already snapshots each ENI's vpc_id via
+-- DescribeNetworkInterfaces into sg_eni_membership_snapshots — that data is wired through the
+-- worker's own upsert (a group_id -> vpc_id map built from the SAME membership snapshot fetched
+-- for step 2 of the daily pipeline, no extra AWS call) rather than added as a fully independent,
+-- re-derived value. A nullable column is still required here because sg_rule_inventory itself
+-- carries no VPC field at all today. Nullable/additive: existing rows stay NULL ("unknown VPC")
+-- until their next scan cycle populates it; a rule whose SG currently has no ENI in the snapshot
+-- (e.g. an unattached SG) can also legitimately stay NULL.
+ALTER TABLE sg_rule_inventory ADD COLUMN vpc_id text;

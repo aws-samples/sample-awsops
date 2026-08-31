@@ -5,7 +5,7 @@
 // Spec:    docs/superpowers/specs/2026-06-12-v1-to-v2-aurora-backfill-design.md
 // Mapping: derived verbatim from src/lib/db/*-writer.ts (zero parity drift with the
 //          v1 runtime dual-write layer) and the DDL in
-//          terraform/v2/foundation/data/schema.sql.
+//          terraform/foundation/data/schema.sql.
 
 const DATE_FILE_RE = /^\d{4}-\d{2}-\d{2}\.json$/;
 const MONTH_DIR_RE = /^\d{4}-\d{2}$/;

@@ -18,7 +18,7 @@
 set -euo pipefail
 
 REGION="${AWS_REGION:-ap-northeast-2}"
-TF=terraform/v2/foundation
+TF=terraform/foundation
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"   # scripts/v2 → repo root
 cd "$ROOT"
 

@@ -21,7 +21,7 @@ const vif = (o: Partial<DxVifRow>): DxVifRow => ({
 });
 const gw = (o: Partial<DxGatewayRow>): DxGatewayRow => ({
   id: 'dxgw-1', name: 'gw1', state: 'available', amazonSideAsn: 64512, ownerAccount: '1',
-  associations: [], vifCount: 0, unassociated: false, ...o,
+  associations: [], vifCount: 0, associationsAvailable: true, unassociated: false, ...o,
 });
 
 describe('buildDxTopology', () => {
@@ -112,6 +112,7 @@ describe('assessResiliency (DX SLA 티어 — sample-network-resilience-agent �
     const r = assessResiliency({ connections: [], vifs: [], gateways: [] });
     expect(r.tier).toBe('none');
     expect(r.slaPct).toBeNull();
+    expect(r.noneReason).toBe('no-connections');
   });
   it('single 95%: 로케이션 1곳', () => {
     const r = assessResiliency({ connections: [conn({}), conn({ id: 'dxcon-2' })], vifs: [], gateways: [] });
@@ -123,14 +124,28 @@ describe('assessResiliency (DX SLA 티어 — sample-network-resilience-agent �
     expect(r.tier).toBe('high');
     expect(r.slaPct).toBe('99.9%');
   });
-  it('maximum 99.99%: 2개 로케이션 × 각 2개 이상', () => {
+  it('maximum 99.99%: 2개 로케이션 × 각 검증된 고유 디바이스 2개 이상', () => {
     const r = assessResiliency({
-      connections: [conn({}), conn({ id: 'c2' }), conn({ id: 'c3', location: 'SEL2' }), conn({ id: 'c4', location: 'SEL2' })],
+      connections: [
+        conn({ id: 'c1', awsDevice: 'devA' }), conn({ id: 'c2', awsDevice: 'devB' }),
+        conn({ id: 'c3', location: 'SEL2', awsDevice: 'devC' }), conn({ id: 'c4', location: 'SEL2', awsDevice: 'devD' }),
+      ],
       vifs: [], gateways: [],
     });
     expect(r.tier).toBe('maximum');
     expect(r.slaPct).toBe('99.99%');
     expect(r.dualConnLocations).toBe(2);
+    expect(r.deviceRedundancyUnverifiable).toBe(false);
+  });
+
+  it('리뷰(Codex stop-hook): awsDevice가 없으면 커넥션 id로 폴백해 이중화를 확정하지 않는다 — 검증 불가는 unverifiable로 표시, maximum 인증 안 함', () => {
+    const r = assessResiliency({
+      connections: [conn({}), conn({ id: 'c2' }), conn({ id: 'c3', location: 'SEL2' }), conn({ id: 'c4', location: 'SEL2' })],
+      vifs: [], gateways: [],
+    });
+    expect(r.tier).toBe('high'); // 디바이스 정보가 전혀 없어 maximum을 확정 인증할 수 없음
+    expect(r.dualConnLocations).toBe(0);
+    expect(r.deviceRedundancyUnverifiable).toBe(true);
   });
   it('deleted/rejected/개통 전 커넥션은 티어 산정에서 제외 (아키텍처 부풀림 방지)', () => {
     const r = assessResiliency({
@@ -158,12 +173,46 @@ describe('assessResiliency (DX SLA 티어 — sample-network-resilience-agent �
     expect(r.dualConnLocations).toBe(1);
   });
 
-  it('호스티드(파트너) 커넥션 수를 노출 — SLA 적용 제외 고지용', () => {
+  it('호스티드(파트너) 커넥션 수를 노출 — SLA 적용 제외 고지용, 티어 산정에는 포함 안 함', () => {
     const r = assessResiliency({
       connections: [conn({ partnerName: 'SomePartner' }), conn({ id: 'c2', location: 'SEL2' })],
       vifs: [], gateways: [],
     });
     expect(r.hostedConnections).toBe(1);
+    expect(r.locations).toBe(1); // 호스티드(SEL1)는 제외 — owned인 SEL2만 계상
+    expect(r.tier).toBe('single');
+  });
+
+  it('리뷰(Codex stop-hook): 전부 호스티드면 로케이션이 여러 곳이라도 none(자격 없음) — "Maximum" 배지 오인증 방지', () => {
+    const r = assessResiliency({
+      connections: [
+        conn({ id: 'c1', partnerName: 'PartnerA' }), conn({ id: 'c2', partnerName: 'PartnerA' }),
+        conn({ id: 'c3', location: 'SEL2', partnerName: 'PartnerB' }), conn({ id: 'c4', location: 'SEL2', partnerName: 'PartnerB' }),
+      ],
+      vifs: [], gateways: [],
+    });
+    expect(r.hostedConnections).toBe(4);
+    expect(r.tier).toBe('none');
+    expect(r.slaPct).toBeNull();
+    expect(r.locations).toBe(0);
+    expect(r.noneReason).toBe('all-hosted');
+  });
+
+  it('리뷰(Codex stop-hook, 3라운드): pending 상태의 owned 커넥션 + 배포된 호스티드 커넥션이 혼재하면 "전량 호스티드"도 "커넥션 없음"도 아닌 별도 사유(no-deployed-owned)로 구분된다', () => {
+    const r = assessResiliency({
+      connections: [
+        // owned지만 아직 미배포(pending) — deployedAll/total/hostedConnections 어디에도 안 잡힘.
+        conn({ id: 'c1', state: 'pending' }),
+        // 호스티드 & 배포됨 — hostedConnections에 잡혀 tier==='none'이 되는 원인.
+        conn({ id: 'c2', location: 'SEL2', partnerName: 'PartnerA' }),
+      ],
+      vifs: [], gateways: [],
+    });
+    expect(r.tier).toBe('none'); // 배포된 owned 커넥션이 0개라 SLA 티어 산정 대상이 없음
+    expect(r.hostedConnections).toBe(1);
+    // pending owned 커넥션이 존재하므로 "전량 호스티드"(all-hosted)도, 커넥션이 실제로 있으므로
+    // "커넥션 없음"(no-connections)도 아니다 — 세 번째 사유로 정확히 구분돼야 한다.
+    expect(r.noneReason).toBe('no-deployed-owned');
   });
 
   it('체크: 다운 커넥션·미연결 DXGW·미연결 VIF가 실패로 표시', () => {

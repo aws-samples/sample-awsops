@@ -302,9 +302,21 @@ async def run_anthropic_loop(payload):
         with ExitStack() as stack:
             stack.enter_context(mcp_client)
             gateway_tools = agent.get_all_tools(mcp_client)
+            # ADR-017 (amended): the SAME shared gates the Strands handler applies — fail-closed
+            # vendor-MCP allowlist on the RAW gateway list + the embedded official ClickHouse stdio
+            # server and its tool-layer mutual exclusion. This path skipping them was a review
+            # CRITICAL (raw vendor write tools reached the model); never inline a second copy here.
+            gateway_tools, clickhouse_stdio_tools, stdio_client = agent.apply_official_mcp_gates(
+                gateway_tools, gateway_key, stack)
+            # Unlike Strands (which dispatches through the tool objects), THIS path calls tools by
+            # name, so stdio tools must be routed to the client that owns them. Advertising them
+            # while executing on the gateway was a review MAJOR: every call failed, and the mutual
+            # exclusion had already dropped the in-house clickhouse lambda fallback.
+            stdio_tool_names = {getattr(t, "tool_name", "") for t in clickhouse_stdio_tools}
             # Same ceiling/order as the Strands path: dedup (gateway precedence) THEN allowlist,
             # applied to the MCP tool objects BEFORE schema conversion.
-            tools = agent._filter_tools(agent._dedup_by_tool_name(gateway_tools), tool_allowlist)
+            tools = agent._filter_tools(
+                agent._dedup_by_tool_name(gateway_tools + clickhouse_stdio_tools), tool_allowlist)
 
             if system_prompt_override:
                 tool_lines = []
@@ -331,8 +343,9 @@ async def run_anthropic_loop(payload):
                     # Strands MCPClient.call_tool_sync(tool_use_id, name, arguments=...): the FIRST
                     # positional is tool_use_id, NOT name (verified live — agent/rca/tools.py wraps a
                     # DIFFERENT client whose signature is (name, arguments=), which misled an earlier fix).
+                    client = stdio_client if name in stdio_tool_names else mcp_client
                     return _normalize_tool_result(
-                        mcp_client.call_tool_sync(tool_use_id, name, arguments=inp or {}))
+                        client.call_tool_sync(tool_use_id, name, arguments=inp or {}))
 
                 messages = build_anthropic_messages(history, user_input)
                 allowed_tool_names = {t["name"] for t in anthropic_tools}  # execution-time ceiling

@@ -10,25 +10,31 @@ import Screenshot from '@site/src/components/Screenshot';
 
 EC2 인스턴스의 실시간 상태를 모니터링하고 상세 정보를 확인할 수 있는 페이지입니다.
 
+:::info v2 조회 방식
+이 화면은 별도의 전용 페이지가 아니라 v2의 공용 인벤토리 뷰(`/inventory/ec2`, 사이드바 "컴퓨트" 그룹)를 통해 제공됩니다. 아래 내용은 v1의 전용 EC2 페이지가 아니라 v2 인벤토리 뷰의 실제 구성(`web/lib/inventory-types.ts`의 `HIGHLIGHTS.ec2`/`INVENTORY_TYPES.ec2`)을 기준으로 작성되었습니다.
+:::
+
 <Screenshot src="/screenshots/compute/ec2.png" alt="EC2 인스턴스" />
 
 ## 주요 기능
 
-### 통계 카드
-페이지 상단에 4개의 StatsCard가 핵심 지표를 표시합니다:
-- **Running**: 실행 중인 인스턴스 수 (녹색)
-- **Stopped**: 중지된 인스턴스 수 (빨간색)
-- **Total vCPUs**: 전체 vCPU 합계 (시안)
-- **Instance Types**: 사용 중인 인스턴스 타입 종류 수 (보라색)
+### 하이라이트 카드
+페이지 상단에 4개의 하이라이트 카드가 핵심 지표를 표시합니다:
+- **실행 중**: `instance_state`가 running인 인스턴스 수
+- **중지됨**: `instance_state`가 stopped인 인스턴스 수
+- **퍼블릭 IP**: 퍼블릭 IP가 할당된 인스턴스 수
+- **타입 종류**: 사용 중인 인스턴스 타입(`instance_type`)의 distinct 개수
+
+전체 vCPU 합계를 보여주는 카드는 없습니다(v1에만 있던 지표).
 
 ### 시각화 차트
-- **Instance Type Distribution**: 인스턴스 타입별 분포를 파이 차트로 표시
-- **Instance Status**: 상태별 인스턴스 수를 바 차트로 표시
+- 인스턴스 타입(`instance_type`)과 상태(`instance_state`) 기준 분포 도넛 차트
+- Top-N 바 차트: 메모리(MiB) 기준 인스턴스 순위
 
 ### 인스턴스 목록 테이블
 모든 EC2 인스턴스를 테이블 형태로 표시합니다:
-- Instance ID, Name, Type, State, Public/Private IP, VPC, Launch Time
-- 상태에 따라 색상이 다른 StatusBadge 표시 (running=녹색, stopped=빨간색)
+- Name, Type, State, Pricing, Private/Public IP, Subnet, VPC, Launch Time
+- 상태(running/stopped 등)에 따라 색상이 다른 배지 표시
 
 ### 필터 및 검색
 - **검색창**: ID, Name, IP 등 모든 필드에서 텍스트 검색
@@ -49,7 +55,7 @@ EC2 인스턴스의 실시간 상태를 모니터링하고 상세 정보를 확�
 ## 사용 방법
 
 1. 사이드바에서 **Compute > EC2**를 클릭합니다
-2. 상단 통계 카드에서 전체 현황을 파악합니다
+2. 상단 하이라이트 카드에서 전체 현황을 파악합니다
 3. 필터를 사용하여 원하는 인스턴스를 찾습니다
 4. 테이블에서 인스턴스를 클릭하여 상세 정보를 확인합니다
 5. 새로고침 버튼으로 최신 데이터를 불러올 수 있습니다

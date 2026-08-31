@@ -46,7 +46,7 @@
     { "q": "prometheus 타겟이 down이야", "expect": ["observability"] },
     { "q": "promql로 5xx 에러율 추세 보여줘", "expect": ["observability"] },
     { "q": "clickhouse에서 가장 느린 응답 구간 분석", "expect": ["observability"] },
-    { "q": "grafana 대시보드에서 본 trace 이상해", "expect": ["monitoring"] },
+    { "q": "grafana 대시보드에서 본 trace 이상해", "expect": ["observability", "monitoring"] },
     { "q": "요청 추적 tempo에서 끊김", "expect": ["monitoring"] },
     { "q": "loki에서 최근 에러 로그 검색", "expect": ["monitoring"] },
     { "q": "EKS 파드가 RDS에 연결이 안 돼요", "expect": ["network", "data", "container"] },

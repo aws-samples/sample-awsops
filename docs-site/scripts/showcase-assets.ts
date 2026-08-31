@@ -36,20 +36,25 @@ export const ASSETS: AssetSpec[] = [
     source: path.join(SCREENSHOTS, 'overview', 'dashboard.png'),
     sourceWidth: 1920,
     sourceHeight: 1080,
-    sourceSha256: '46d9804a7220e073ab90dcce0567a0a9dbf9ba22f8ed934f88c2c3e799f70d10',
+    sourceSha256: '2fbc6fbd1c37a3ca0bc7bb8586be48e0737dc7637d0a9aab2cd345a2b5bf030e',
     output: 'dashboard.webp',
     crop: {left: 0, top: 0, width: 1920, height: 1080},
     outputWidth: 1600,
     overlays: [
       {
-        left: 42, top: 958, width: 180, height: 58,
+        left: 8, top: 976, width: 230, height: 48,
         fill: '#f4f6f8', text: '#526173', label: 'Demo operator',
-        sample: {left: 58, top: 971},
+        sample: {left: 17, top: 1015},
       },
       {
-        left: 846, top: 210, width: 448, height: 112,
-        fill: '#fff', text: '#526173', label: 'Recent AI operations',
-        sample: {left: 1108, top: 225},
+        left: 828, top: 167, width: 534, height: 201,
+        fill: '#fff', text: '#526173', label: 'Recent AI conversation',
+        sample: {left: 920, top: 201},
+      },
+      {
+        left: 1378, top: 167, width: 504, height: 201,
+        fill: '#fff', text: '#526173', label: 'AI analysis',
+        sample: {left: 1436, top: 201},
       },
     ],
   },
@@ -57,9 +62,9 @@ export const ASSETS: AssetSpec[] = [
     source: path.join(SCREENSHOTS, 'overview', 'assistant-answer.png'),
     sourceWidth: 1920,
     sourceHeight: 1080,
-    sourceSha256: '0e0024c0fef4880884fecda732af69a4e1cc44a2458d62fd6b200272551218c5',
+    sourceSha256: '8ec351e94e76e42ee8ea5515fa49a15509864a7648a1faf6fe8e74eb9b30bc0c',
     output: 'assistant-answer.webp',
-    crop: {left: 590, top: 112, width: 720, height: 890},
+    crop: {left: 606, top: 114, width: 904, height: 894},
     outputWidth: 1200,
     overlays: [],
   },
@@ -67,35 +72,45 @@ export const ASSETS: AssetSpec[] = [
     source: path.join(SCREENSHOTS, 'resources', 'topology-detail.png'),
     sourceWidth: 1920,
     sourceHeight: 1080,
-    sourceSha256: '69dbf8060f0f10dcc34e7bd718e2e27bbb689d73af09545334c490d5199de2dd',
+    sourceSha256: 'f57282d1fdc738072988830baa8ccaec2ed4641c6030ad5ce5c805c4c54688e1',
     output: 'topology.webp',
-    crop: {left: 288, top: 160, width: 1150, height: 860},
+    crop: {left: 400, top: 250, width: 1055, height: 720},
     outputWidth: 1400,
     overlays: [
       {
-        left: 700, top: 108, width: 232, height: 38,
+        left: 330, top: 26, width: 278, height: 44,
         fill: '#e8f8ee', text: '#17362b', label: 'DNS endpoint',
-        sample: {left: 813, top: 124},
+        sample: {left: 468, top: 30},
       },
       {
-        left: 700, top: 270, width: 232, height: 38,
+        left: 185, top: 186, width: 276, height: 46,
         fill: '#eaf1ff', text: '#1f3763', label: 'CloudFront',
-        sample: {left: 801, top: 285},
+        sample: {left: 321, top: 192},
       },
       {
-        left: 700, top: 429, width: 232, height: 38,
+        left: 620, top: 349, width: 282, height: 44,
         fill: '#fff0dc', text: '#523819', label: 'Load balancer',
-        sample: {left: 863, top: 444},
+        sample: {left: 700, top: 368},
       },
       {
-        left: 700, top: 591, width: 232, height: 38,
+        left: 480, top: 510, width: 270, height: 42,
         fill: '#f2e9ff', text: '#3e2a5c', label: 'Target group',
-        sample: {left: 912, top: 607},
+        sample: {left: 613, top: 511},
       },
       {
-        left: 700, top: 752, width: 232, height: 38,
+        left: 773, top: 510, width: 270, height: 42,
+        fill: '#f2e9ff', text: '#3e2a5c', label: 'Target group',
+        sample: {left: 906, top: 511},
+      },
+      {
+        left: 480, top: 670, width: 270, height: 42,
         fill: '#e5f8f5', text: '#173d38', label: 'Healthy targets',
-        sample: {left: 897, top: 765},
+        sample: {left: 490, top: 673},
+      },
+      {
+        left: 773, top: 670, width: 270, height: 42,
+        fill: '#e5f8f5', text: '#173d38', label: 'Healthy targets',
+        sample: {left: 1031, top: 673},
       },
     ],
   },
@@ -103,7 +118,7 @@ export const ASSETS: AssetSpec[] = [
     source: path.join(SCREENSHOTS, 'cost', 'cost-explorer.png'),
     sourceWidth: 1920,
     sourceHeight: 1080,
-    sourceSha256: '3b2d9ab68bc405fc0bb9e8df295c4ccccbd45d895e60ff682248494ad3ee139b',
+    sourceSha256: '61168cb98800b80dc2a9d0b2124f7b2ac0bd3801cebd880ae11d548402032f13',
     output: 'cost-explorer.webp',
     crop: {left: 288, top: 104, width: 1600, height: 900},
     outputWidth: 1600,
@@ -113,27 +128,63 @@ export const ASSETS: AssetSpec[] = [
     source: path.join(SCREENSHOTS, 'overview', 'dashboard.png'),
     sourceWidth: 1920,
     sourceHeight: 1080,
-    sourceSha256: '46d9804a7220e073ab90dcce0567a0a9dbf9ba22f8ed934f88c2c3e799f70d10',
+    sourceSha256: '2fbc6fbd1c37a3ca0bc7bb8586be48e0737dc7637d0a9aab2cd345a2b5bf030e',
     output: 'compliance.webp',
-    crop: {left: 288, top: 386, width: 1600, height: 190},
+    crop: {left: 288, top: 408, width: 1600, height: 190},
     outputWidth: 1600,
     overlays: [],
   },
   {
     source: path.join(SCREENSHOTS, 'operations', 'ai-diagnosis.png'),
     sourceWidth: 1920,
-    sourceHeight: 1080,
-    sourceSha256: 'aa2aea36c7a008d2171aebcb06bb50e0450bb71abb09ece6560ef58e60664705',
+    // Recaptured 2026-08-28 (PR #247) at 1920x1040 — 40px shorter than the other sources, hence
+    // per-asset dimensions in validateAssetSpecs. Crop bottom 128+900=1028 stays inside 1040.
+    // NOTE: capture-screenshots.ts uses a fixed 1920x1080 viewport, so this capture came from a
+    // different window state — the next scripted re-capture will emit 1080-high and must re-pin
+    // BOTH this hash and this height (and re-verify the overlays) like any other recapture.
+    sourceHeight: 1040,
+    sourceSha256: '0d683739e0c1c3feec568965d75af2e5678e6e8909a1642b5822016e2cd9db6c',
     output: 'ai-diagnosis.webp',
-    crop: {left: 568, top: 128, width: 1320, height: 900},
+    // left shifted 40px earlier (was 568) so the video's Ken Burns zoom-in has a margin to eat
+    // into before it reaches the "AWS 진단 리포트" heading, which otherwise sits flush against
+    // the old crop's left edge — right edge (568+1320=1888) kept identical.
+    crop: {left: 528, top: 128, width: 1360, height: 900},
     outputWidth: 1600,
     overlays: [
+      // The recaptured report (cost diagnosis) shows no account identifier anywhere inside the
+      // crop (verified pixel-by-pixel against the new source) — the old '호스트 계정 (mid)'
+      // mask covered an account ID the previous capture's report header displayed; it has no
+      // pixels to cover now and re-adding it would blank real report text.
       {
-        left: 190, top: 214, width: 275, height: 42,
-        fill: '#f4f6f8', text: '#18212d', label: '호스트 계정 (mid)',
-        sample: {left: 378, top: 235},
+        // Hides the sliver of the page's secondary settings panel (mailing-list "제거" button
+        // fragment) exposed by the wider crop. Sample sits on the dark button text at
+        // crop-rel (42,120) — the old (10,10) point is plain page background in the new
+        // capture, which the generator test rejects as "source sample unexpectedly matches fill".
+        left: 0, top: 0, width: 44, height: 900,
+        fill: '#f7f8fa', text: '#f7f8fa',
+        sample: {left: 42, top: 120},
       },
     ],
+  },
+  {
+    source: path.join(SCREENSHOTS, 'security', 'security.png'),
+    sourceWidth: 1920,
+    sourceHeight: 1080,
+    sourceSha256: '17d6518904efec2aaee4685070ec994f045c8c842bdc40b1ab60ee2dd703f554',
+    output: 'security.webp',
+    crop: {left: 288, top: 0, width: 1600, height: 900},
+    outputWidth: 1600,
+    overlays: [],
+  },
+  {
+    source: path.join(SCREENSHOTS, 'resources', 'eks.png'),
+    sourceWidth: 1920,
+    sourceHeight: 1080,
+    sourceSha256: 'fbf69350f2d7adaba49c19e7cb5691ac38ba29367a20e428b07383243ebfda7e',
+    output: 'eks.webp',
+    crop: {left: 288, top: 0, width: 1600, height: 900},
+    outputWidth: 1600,
+    overlays: [],
   },
 ];
 
@@ -169,11 +220,11 @@ export function assertSourceMatchesSpec(asset: AssetSpec, source: Buffer): void 
   }
 }
 
-export function validateAssetSpecs(
-  sourceWidth: number,
-  sourceHeight: number,
-  assets: AssetSpec[] = ASSETS,
-): void {
+// Validates each spec against ITS OWN declared source dimensions (per-asset since PR #247's
+// 1920x1040 ai-diagnosis recapture — the fleet is no longer uniformly 1080p). Whether the
+// declared dimensions match the actual on-disk PNG is enforced separately, fail-closed, by
+// assertSourceMatchesSpec (hash + IHDR dims).
+export function validateAssetSpecs(assets: AssetSpec[] = ASSETS): void {
   const outputs = new Set<string>();
   for (const asset of assets) {
     if (outputs.has(asset.output)) {
@@ -192,18 +243,12 @@ export function validateAssetSpecs(
     if (!/^[a-f0-9]{64}$/.test(asset.sourceSha256)) {
       throw new Error(`invalid source SHA-256: ${asset.output}`);
     }
-    if (asset.sourceWidth !== sourceWidth || asset.sourceHeight !== sourceHeight) {
-      throw new Error(
-        `unexpected source dimensions for ${asset.output}: expected ${sourceWidth}x${sourceHeight}`,
-      );
-    }
-
     const {crop} = asset;
     if (
       crop.left < 0 ||
       crop.top < 0 ||
-      crop.left + crop.width > sourceWidth ||
-      crop.top + crop.height > sourceHeight
+      crop.left + crop.width > asset.sourceWidth ||
+      crop.top + crop.height > asset.sourceHeight
     ) {
       throw new Error(`crop outside source: ${asset.output}`);
     }

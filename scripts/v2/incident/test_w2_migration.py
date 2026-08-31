@@ -4,7 +4,7 @@ import glob
 import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-_MIG = glob.glob(os.path.join(HERE, "..", "..", "..", "terraform", "v2", "foundation",
+_MIG = glob.glob(os.path.join(HERE, "..", "..", "..", "terraform", "foundation",
                               "migrations", "*_incident_validation_stage.sql"))
 
 

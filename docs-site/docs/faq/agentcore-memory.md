@@ -24,7 +24,7 @@ flowchart LR
 
 | 항목 | 내용 |
 |------|------|
-| **라이브 조회** | AgentCore MCP Lambda 도구(약 120개, 읽기 전용)가 boto3로 AWS API를 직접 호출 |
+| **라이브 조회** | AgentCore MCP Lambda 도구(약 160개, 읽기 전용)가 boto3로 AWS API를 직접 호출 |
 | **Steampipe의 역할** | 라이브 쿼리 엔진이 **아님**. `steampipe_enabled` 플래그로만 켜지는 **인벤토리 sync**(기본 OFF)일 뿐 — 로컬 9193 서비스/pg Pool 없음 |
 | **게이트** | AgentCore 전체는 `agentcore_enabled` Terraform 플래그로 게이트(기본 OFF → `plan` = No changes, $0) |
 | **읽기 전용** | 모든 도구는 read-only (ADR-041 / 2026-06-11 번복: AWS-리소스 변경+자율은 영구 동결) |
@@ -51,8 +51,8 @@ flowchart TD
 
   ECR -->|"이미지 참조"| RT
 
-  AGENT -->|"MCP + SigV4"| GW["8 섹션 게이트웨이<br/>(~120 읽기 전용 도구)"]
-  AGENT -->|"Bedrock API"| MODEL["Claude Sonnet 4.6 / Opus 4.8 / Haiku 4.5"]
+  AGENT -->|"MCP + SigV4"| GW["9 섹션 게이트웨이<br/>(~160 읽기 전용 도구)"]
+  AGENT -->|"Bedrock API"| MODEL["Claude Sonnet 5 / Opus 4.8 / Haiku 4.5"]
 ```
 
 ### AgentCore Runtime
@@ -90,15 +90,15 @@ flowchart LR
   GW -->|"mcp.lambda"| L3["Lambda 3<br/>TGW 라우트 조회"]
 ```
 
-### 섹션 게이트웨이는 8개입니다 (ADR-004)
+### 섹션 게이트웨이는 9개입니다 (ADR-004 개정)
 
-`network · container · data · security · cost · monitoring · iac · ops` — 총 **8개**입니다.
+`network · container · data · security · cost · monitoring · iac · ops · external-obs` — 총 **9개**입니다(9 프로비저닝 / 9 라우트, external-obs 승격 2026-06-24).
 
 | 항목 | 내용 |
 |------|------|
-| **게이트웨이 수** | ADR-004에 따라 **8개로 고정** |
-| **도구 수** | 약 **120개**, 전부 읽기 전용 — 함대가 확장되면 변동(고정 수치 아님) |
-| **외부 관측성** | 9번째 게이트웨이가 **아님** — 별도의 **Integrations 축**(ADR-039)으로 분리 |
+| **게이트웨이 수** | ADR-004에 따라 **9개(ADR-004 개정)** |
+| **도구 수** | 약 **160개**, 전부 읽기 전용 — 함대가 확장되면 변동(고정 수치 아님) |
+| **외부 관측성** | Prometheus·ClickHouse 커넥터가 **external-obs 게이트웨이**(아홉 번째)로 라우팅됨(ADR-004 개정) — 그 외 외부 연동은 별도의 **Integrations 축**(ADR-007/017) |
 | **프로토콜** | MCP(Model Context Protocol) 표준 |
 
 - Agent가 `list_tools`로 사용 가능한 도구 목록을 조회
@@ -188,7 +188,7 @@ docker push $ECR_URI:latest
 
 ## agent.py를 수정하면 어떻게 재배포하나요?
 
-`make agentcore`가 arm64 이미지를 빌드/푸시하고 멱등 provisioner를 실행합니다.
+`make agentcore`가 arm64 이미지를 빌드/푸시하고 멱등 provisioner를 실행합니다. **`make migrate` 를 먼저 실행해야 합니다** — `awsops_sql_reader` 롤 생성 + 비밀번호 동기화는 migrate 가 하고 agentcore 는 하지 않으므로, 생략하면 `execute_sql`·`inventory-read` 가 Data API auth 실패로 떨어집니다(`docs/runbooks/agent-sql-reader.md`).
 
 ```mermaid
 flowchart LR

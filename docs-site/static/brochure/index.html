@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>AWSops — AWS · Kubernetes 운영을 하나의 화면에서</title>
+<title id="pageTitle">AWSops — AWS · Kubernetes 운영을 하나의 화면에서</title>
 <meta name="description" content="AWSops는 AWS와 Kubernetes 운영을 단일 화면에서 실시간 모니터링하고, Amazon Bedrock AgentCore로 AI 진단하는 read-only 운영 대시보드입니다." />
 <meta property="og:title" content="AWSops — Cloud Operations, one calm screen" />
 <meta property="og:description" content="실시간 가시성 · AI 진단 · FinOps · CIS 컴플라이언스. Terraform · ECS Fargate · Aurora · Bedrock AgentCore 기반." />
@@ -137,6 +137,16 @@
   h2{font-family:var(--sans); font-weight:800; font-size:clamp(26px,3.4vw,38px); letter-spacing:-.03em; line-height:1.1; margin:0 0 16px}
   h2 em{font-family:var(--serif); font-style:italic; font-weight:500; color:var(--brand-ink)}
   .sec-head p{font-size:17px; color:var(--text-2); margin:0}
+
+  /* ---------- screens ---------- */
+  .screens{display:grid; gap:18px}
+  .frame{margin:0; overflow:hidden; background:var(--surface); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow-card); transition:transform .3s, box-shadow .3s}
+  .frame:hover{transform:translateY(-4px); box-shadow:var(--shadow-pop)}
+  .frame img{width:100%; height:auto; object-fit:cover; background:var(--sunken)}
+  .frame figcaption{padding:14px 18px; font-size:13.5px; color:var(--text-2); border-top:1px solid var(--line)}
+  .screens-pair{display:grid; grid-template-columns:repeat(2,1fr); gap:18px}
+  .frame.wide img{aspect-ratio:16/9}
+  .frame.pair-img img{aspect-ratio:4/3}
 
   /* ---------- pillars ---------- */
   .pillars{display:grid; grid-template-columns:repeat(3,1fr); gap:20px}
@@ -281,6 +291,7 @@
     .pillars{grid-template-columns:1fr}
     .pillars .pillar:nth-child(3){grid-column:auto}
     .feat-grid{grid-template-columns:1fr}
+    .screens-pair{grid-template-columns:1fr}
     .diagram{grid-template-columns:1fr; gap:12px}
     .diagram .lane:last-child{grid-column:auto}
     .lane{flex-direction:column}
@@ -299,10 +310,17 @@
     .cta-box{border-radius:20px}
   }
   @media (max-width:380px){ .metric{flex:1 1 100%} }
+
+  /* ---------- language switch ---------- */
+  .lang-switch{display:flex; gap:4px; margin-left:12px; flex:none}
+  .lang-switch button{font-family:var(--mono); font-size:11px; font-weight:600; color:var(--text-3); background:transparent; border:1px solid var(--line-2); border-radius:99px; padding:5px 9px; cursor:pointer; transition:color .2s, border-color .2s, background .2s; line-height:1}
+  .lang-switch button:hover{color:var(--brand-ink); border-color:var(--brand)}
+  .lang-switch button.active{color:var(--white); background:var(--ink-800); border-color:var(--ink-800)}
+  @media (max-width:480px){ .lang-switch{margin-left:8px; gap:3px} .lang-switch button{padding:4px 7px; font-size:10px} }
 </style>
 </head>
 <body>
-<a href="#value" class="skip-link">본문으로 건너뛰기</a>
+<a href="#value" class="skip-link" data-i18n="skip.toContent">본문으로 건너뛰기</a>
 
 <!-- ===================== NAV ===================== -->
 <nav class="nav">
@@ -319,12 +337,19 @@
       <b>AWSops</b><span class="mono">ops dashboard</span>
     </a>
     <div class="nav-links">
-      <a href="#value">핵심 가치</a>
-      <a href="#features">기능</a>
-      <a href="#ai">AI 게이트웨이</a>
-      <a href="#architecture">아키텍처</a>
-      <a href="#trust">보안</a>
-      <a href="#start" class="nav-cta">데모 보기</a>
+      <a href="#value" data-i18n="nav.value">핵심 가치</a>
+      <a href="#features" data-i18n="nav.features">기능</a>
+      <a href="#screens" data-i18n="nav.screens">화면</a>
+      <a href="#ai" data-i18n="nav.ai">AI 게이트웨이</a>
+      <a href="#architecture" data-i18n="nav.architecture">아키텍처</a>
+      <a href="#trust" data-i18n="nav.trust">보안</a>
+      <a href="#start" class="nav-cta" data-i18n="nav.cta">데모 보기</a>
+    </div>
+    <div class="lang-switch" role="group" aria-label="Language">
+      <button type="button" data-lang="ko">KO</button>
+      <button type="button" data-lang="en">EN</button>
+      <button type="button" data-lang="zh">中</button>
+      <button type="button" data-lang="ja">日</button>
     </div>
   </div>
 </nav>
@@ -334,25 +359,25 @@
   <div class="wrap hero-grid">
     <div>
       <span class="eyebrow reveal"><span class="dot"></span> READ-ONLY OPS · AI DIAGNOSIS</span>
-      <h1 class="hero-title reveal">클라우드 운영을<br>하나의 <em>차분한 화면</em>에서.</h1>
-      <p class="hero-sub reveal">AWS와 Kubernetes를 실시간으로 모니터링하고, Amazon Bedrock AgentCore가 라이브 데이터를 근거로 진단합니다. 43개 운영 화면, 125개 AI 도구 — 변경 없는 안전한 관측.</p>
+      <h1 class="hero-title reveal" data-i18n="hero.title">클라우드 운영을<br>하나의 <em>차분한 화면</em>에서.</h1>
+      <p class="hero-sub reveal" data-i18n="hero.sub">AWS와 Kubernetes를 실시간으로 모니터링하고, Amazon Bedrock AgentCore가 라이브 데이터를 근거로 진단합니다. 20개+ 운영 화면, 160개 AI 도구 — 변경 없는 안전한 관측.</p>
       <div class="hero-actions reveal">
-        <a href="#start" class="btn btn-primary">라이브 데모 살펴보기</a>
-        <a href="#architecture" class="btn btn-ghost">아키텍처 보기 →</a>
+        <a href="#start" class="btn btn-primary" data-i18n="hero.ctaPrimary">라이브 데모 살펴보기</a>
+        <a href="#architecture" class="btn btn-ghost" data-i18n="hero.ctaGhost">아키텍처 보기 →</a>
       </div>
       <div class="metrics reveal">
-        <div class="metric"><div class="v num">43</div><div class="l">운영 화면 (pages)</div></div>
-        <div class="metric"><div class="v num">125</div><div class="l">AI MCP 도구</div></div>
-        <div class="metric"><div class="v num">8<small> live</small></div><div class="l">AI 게이트웨이 (+ 설계 확장)</div></div>
-        <div class="metric"><div class="v num">400<small>+</small></div><div class="l">CIS 컴플라이언스 제어</div></div>
+        <div class="metric"><div class="v num">20<small>+</small></div><div class="l" data-i18n="hero.metric1">운영 화면 (pages)</div></div>
+        <div class="metric"><div class="v num">160</div><div class="l" data-i18n="hero.metric2">AI MCP 도구</div></div>
+        <div class="metric"><div class="v num">9</div><div class="l" data-i18n="hero.metric3">AI 섹션 게이트웨이</div></div>
+        <div class="metric"><div class="v num">431</div><div class="l" data-i18n="hero.metric4">CIS 컴플라이언스 제어</div></div>
       </div>
     </div>
 
     <!-- neural graph figure -->
-    <aside class="hero-fig reveal" aria-label="AWSops 신경망 모티프">
+    <aside class="hero-fig reveal" data-i18n-aria="hero.figAria" aria-label="AWSops 신경망 모티프">
       <div class="cap">SINGLE PANE OF GLASS</div>
-      <div class="cap2">계정 · 리전 · 클러스터를 가로질러 하나의 운영 신경망으로.</div>
-      <svg class="glyph" viewBox="0 0 420 300" role="img" aria-label="연결된 운영 노드 그래프">
+      <div class="cap2" data-i18n="hero.figCap2">계정 · 리전 · 클러스터를 가로질러 하나의 운영 신경망으로.</div>
+      <svg class="glyph" viewBox="0 0 420 300" role="img" data-i18n-aria="hero.svgAria" aria-label="연결된 운영 노드 그래프">
         <defs>
           <radialGradient id="halo" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stop-color="#D97757" stop-opacity=".35"/>
@@ -388,9 +413,9 @@
         <!-- labels -->
         <g font-family="JetBrains Mono, monospace" font-size="11" fill="#5F5A4D">
           <text x="60" y="246" text-anchor="middle">EC2 · EKS</text>
-          <text x="150" y="52" text-anchor="middle">VPC · 네트워크</text>
-          <text x="360" y="72" text-anchor="middle">비용 · FinOps</text>
-          <text x="350" y="246" text-anchor="middle">보안 · CIS</text>
+          <text x="150" y="52" text-anchor="middle" data-i18n="hero.svgNetwork">VPC · 네트워크</text>
+          <text x="360" y="72" text-anchor="middle" data-i18n="hero.svgCost">비용 · FinOps</text>
+          <text x="350" y="246" text-anchor="middle" data-i18n="hero.svgSecurity">보안 · CIS</text>
           <text x="210" y="207" text-anchor="middle" fill="#8E4830" font-weight="600">AgentCore</text>
         </g>
       </svg>
@@ -402,9 +427,9 @@
 <section class="sec" id="value">
   <div class="wrap">
     <div class="sec-head reveal">
-      <div class="kicker">왜 AWSops인가</div>
-      <h2>흩어진 콘솔 대신, <em>운영의 단일 화면</em>.</h2>
-      <p>장애 하나에 EC2·EKS·CloudWatch·Cost Explorer 콘솔을 넘나들고, 컨텍스트 전환에 초동 대응 시간을 흘려보냅니다. AWSops는 이 흩어진 화면들을 하나로 모으고, AI가 라이브 데이터를 근거로 먼저 짚어 줍니다 — 실시간 가시성 · AI 진단 · 비용·컴플라이언스 세 축으로.</p>
+      <div class="kicker" data-i18n="value.kicker">왜 AWSops인가</div>
+      <h2 data-i18n="value.h2">흩어진 콘솔 대신, <em>운영의 단일 화면</em>.</h2>
+      <p data-i18n="value.p">장애 하나에 EC2·EKS·CloudWatch·Cost Explorer 콘솔을 넘나들고, 컨텍스트 전환에 초동 대응 시간을 흘려보냅니다. AWSops는 이 흩어진 화면들을 하나로 모으고, AI가 라이브 데이터를 근거로 먼저 짚어 줍니다 — 실시간 가시성 · AI 진단 · 비용·컴플라이언스 세 축으로.</p>
     </div>
     <div class="pillars">
       <article class="pillar reveal">
@@ -412,24 +437,24 @@
         <div class="ic">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
         </div>
-        <h3>실시간 단일 가시성</h3>
-        <p>EC2 · Lambda · ECS · EKS · VPC · RDS … 43개 화면과 React Flow 토폴로지 맵. 멀티 계정을 합쳐 보거나 전환하며 라이브 차트로 본다.</p>
+        <h3 data-i18n="pillar1.title">실시간 단일 가시성</h3>
+        <p data-i18n="pillar1.p">EC2 · Lambda · ECS · EKS · VPC · RDS … 20개+ 화면과 React Flow 토폴로지 맵. 멀티 계정을 합쳐 보거나 전환하며 라이브 차트로 본다.</p>
       </article>
       <article class="pillar reveal">
         <div class="pn">02</div>
         <div class="ic">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>
         </div>
-        <h3>AI 진단 &amp; 어시스턴트</h3>
-        <p>질문을 분류기가 1~3개 게이트웨이로 병렬 라우팅해 종합. SSE 스트리밍, Python Code Interpreter, 대화 기록, 15개 섹션 Bedrock 리포트.</p>
+        <h3 data-i18n="pillar2.title">AI 진단 &amp; 어시스턴트</h3>
+        <p data-i18n="pillar2.p">질문을 분류기가 1~3개 게이트웨이로 병렬 라우팅해 종합. SSE 스트리밍, Python Code Interpreter, 대화 기록, 15개 섹션 Bedrock 리포트.</p>
       </article>
       <article class="pillar reveal">
         <div class="pn">03</div>
         <div class="ic">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 5-7"/></svg>
         </div>
-        <h3>FinOps &amp; 컴플라이언스</h3>
-        <p>Cost Explorer · 컨테이너 비용(Fargate·EKS OpenCost) · 인벤토리 추세. CIS v1.5–v4.0 400+ 제어를 Powerpipe로 점검.</p>
+        <h3 data-i18n="pillar3.title">FinOps &amp; 컴플라이언스</h3>
+        <p data-i18n="pillar3.p">Cost Explorer · 컨테이너 비용(Fargate·EKS OpenCost) · 인벤토리 추세. CIS v1.5–v4.0 431개 제어를 Powerpipe로 점검.</p>
       </article>
     </div>
   </div>
@@ -439,65 +464,104 @@
 <section class="sec" id="features" style="padding-top:0">
   <div class="wrap">
     <div class="sec-head reveal">
-      <div class="kicker">기능</div>
-      <h2>운영에 필요한 것을 <em>빠짐없이</em>.</h2>
-      <p>모니터링부터 트러블슈팅, 비용, 컴플라이언스, 외부 관측성, AI 진단까지 — 하나의 BFF 위에서 동작합니다.</p>
+      <div class="kicker" data-i18n="features.kicker">기능</div>
+      <h2 data-i18n="features.h2">운영에 필요한 것을 <em>빠짐없이</em>.</h2>
+      <p data-i18n="features.p">모니터링부터 트러블슈팅, 비용, 컴플라이언스, 외부 관측성, AI 진단까지 — 하나의 BFF 위에서 동작합니다.</p>
     </div>
     <div class="feat-grid">
       <div class="feat reveal">
         <div class="fic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18M8 13h3"/></svg></div>
-        <h3>리소스 모니터링</h3>
-        <p>EC2·Lambda·ECS/ECR·EKS(파드/노드/디플로이/서비스)·VPC·CloudFront·WAF·EBS·S3·RDS·DynamoDB·MSK·OpenSearch를 라이브 차트로.</p>
-        <span class="tag">43 pages · React Flow 토폴로지</span>
+        <h3 data-i18n="feat1.title">리소스 모니터링</h3>
+        <p data-i18n="feat1.p">EC2·Lambda·ECS/ECR·EKS(파드/노드/디플로이/서비스)·VPC·CloudFront·WAF·EBS·S3·RDS·DynamoDB·MSK·OpenSearch를 라이브 차트로.</p>
+        <span class="tag" data-i18n="feat1.tag">20+ pages · React Flow 토폴로지</span>
       </div>
       <div class="feat reveal">
         <div class="fic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><circle cx="12" cy="10" r="1"/><circle cx="8" cy="10" r="1"/><circle cx="16" cy="10" r="1"/></svg></div>
-        <h3>AI 어시스턴트 (멀티 라우트)</h3>
-        <p>하이브리드 라우팅(정규식 fast-path + Haiku 분류기 + 프롬프트 캐싱)으로 적합한 게이트웨이에 병렬 질의 후 답을 합성.</p>
-        <span class="tag">SSE · Code Interpreter · 스레드 영속</span>
+        <h3 data-i18n="feat2.title">AI 어시스턴트 (멀티 라우트)</h3>
+        <p data-i18n="feat2.p">하이브리드 라우팅(정규식 fast-path + Haiku 분류기 + 프롬프트 캐싱)으로 적합한 게이트웨이에 병렬 질의 후 답을 합성.</p>
+        <span class="tag" data-i18n="feat2.tag">SSE · Code Interpreter · 스레드 영속</span>
       </div>
       <div class="feat reveal">
         <div class="fic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 17H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v4"/><rect x="9" y="9" width="12" height="12" rx="2"/></svg></div>
-        <h3>멀티 계정</h3>
-        <p>여러 계정을 전환하거나 통합해 조회. 인벤토리는 플래그 게이트형 동기화로 Aurora에 적재 — 설정만 바꾸면 코드 변경 없이 확장.</p>
-        <span class="tag">계정 전환 · 통합 뷰</span>
+        <h3 data-i18n="feat3.title">멀티 계정</h3>
+        <p data-i18n="feat3.p">여러 계정을 전환하거나 통합해 조회. 인벤토리는 플래그 게이트형 동기화로 Aurora에 적재 — 설정만 바꾸면 코드 변경 없이 확장.</p>
+        <span class="tag" data-i18n="feat3.tag">계정 전환 · 통합 뷰</span>
       </div>
       <div class="feat reveal">
         <div class="fic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg></div>
-        <h3>CIS 컴플라이언스</h3>
-        <p>Powerpipe 벤치마크로 CIS v1.5–v4.0, 400+ 제어를 점검하고 위반 항목을 한눈에 추적.</p>
+        <h3 data-i18n="feat4.title">CIS 컴플라이언스</h3>
+        <p data-i18n="feat4.p">Powerpipe 벤치마크로 CIS v1.5–v4.0, 431개 제어를 점검하고 위반 항목을 한눈에 추적.</p>
         <span class="tag">CIS v1.5 – v4.0</span>
       </div>
       <div class="feat reveal">
         <div class="fic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
-        <h3>비용 &amp; FinOps</h3>
-        <p>Cost Explorer, 컨테이너 비용(Fargate 가격·EKS OpenCost), 리소스 인벤토리 추세 — 서비스별 드릴다운까지.</p>
+        <h3 data-i18n="feat5.title">비용 &amp; FinOps</h3>
+        <p data-i18n="feat5.p">Cost Explorer, 컨테이너 비용(Fargate 가격·EKS OpenCost), 리소스 인벤토리 추세 — 서비스별 드릴다운까지.</p>
         <span class="tag">Cost Explorer · OpenCost</span>
       </div>
       <div class="feat reveal">
         <div class="fic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4h16v12H4z"/><path d="M2 20h20M9 8l2 2 4-4"/></svg></div>
-        <h3>외부 관측성 통합</h3>
-        <p>Prometheus · Loki · Tempo · ClickHouse · Jaeger · Dynatrace · Datadog 연동. SSRF 차단 allowlist로 안전하게.</p>
+        <h3 data-i18n="feat6.title">외부 관측성 통합</h3>
+        <p data-i18n="feat6.p">Prometheus · Loki · Tempo · ClickHouse · Jaeger · Dynatrace · Datadog 연동. SSRF 차단 allowlist로 안전하게.</p>
         <span class="tag">SSRF-protected allowlist</span>
       </div>
       <div class="feat reveal">
         <div class="fic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 2l2.4 7.4H22l-6 4.4 2.3 7.2L12 16.8 5.7 21l2.3-7.2-6-4.4h7.6z"/></svg></div>
-        <h3>AI 진단 &amp; 알림</h3>
-        <p>15개 섹션 Bedrock 리포트(DOCX/MD/PDF), 알림 트리거 자동 진단, Slack 통지, 이벤트 대비 read-only 용량 분석. 변경은 운영자 몫.</p>
-        <span class="tag">자동 진단 · Slack · 리포트</span>
+        <h3 data-i18n="feat7.title">AI 진단 &amp; 알림</h3>
+        <p data-i18n="feat7.p">15개 섹션 Bedrock 리포트(DOCX/MD/PDF), 알림 트리거 자동 진단, Slack 통지, 이벤트 대비 read-only 용량 분석. 변경은 운영자 몫.</p>
+        <span class="tag" data-i18n="feat7.tag">자동 진단 · Slack · 리포트</span>
       </div>
       <div class="feat reveal">
         <div class="fic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="9"/></svg></div>
-        <h3>비동기 워커 티어</h3>
-        <p>무겁거나 OOM 위험이 있는 작업은 SQS→Step Functions→Lambda/Fargate로 비동기 처리. 웹은 가볍게 유지.</p>
-        <span class="tag">SQS · Step Functions · 멱등</span>
+        <h3 data-i18n="feat8.title">비동기 워커 티어</h3>
+        <p data-i18n="feat8.p">무겁거나 OOM 위험이 있는 작업은 SQS→Step Functions→Lambda/Fargate로 비동기 처리. 웹은 가볍게 유지.</p>
+        <span class="tag" data-i18n="feat8.tag">SQS · Step Functions · 멱등</span>
       </div>
       <div class="feat reveal">
         <div class="fic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.3 7L12 12l8.7-5M12 22V12"/></svg></div>
-        <h3>EKS 온보딩</h3>
-        <p>Access Entry + AmazonEKSViewPolicy(읽기 전용)로 클러스터 등록. 노드·파드·디플로이·서비스를 BFF에서 직접 조회.</p>
-        <span class="tag">read-only · Access Entry</span>
+        <h3 data-i18n="feat9.title">EKS 온보딩</h3>
+        <p data-i18n="feat9.p">Access Entry + AmazonEKSViewPolicy(읽기 전용)로 클러스터 등록. 노드·파드·디플로이·서비스를 BFF에서 직접 조회.</p>
+        <span class="tag" data-i18n="feat9.tag">read-only · Access Entry</span>
       </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== SCREENS ===================== -->
+<section class="sec" id="screens" style="padding-top:0">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="kicker" data-i18n="screens.kicker">화면 미리보기</div>
+      <h2 data-i18n="screens.h2">실제 운영 화면, <em>그대로</em>.</h2>
+      <p data-i18n="screens.p">대시보드, AI 어시스턴트, 토폴로지, 비용, 컴플라이언스, AI 진단 — 여섯 화면으로 보는 AWSops v2.</p>
+    </div>
+    <div class="screens">
+      <figure class="frame wide reveal">
+        <img src="media/dashboard.webp" loading="lazy" width="1200" height="675" data-i18n-alt="screens.dashboardAlt" alt="AWSops 통합 운영 대시보드 — AWS 리소스, Kubernetes, 비용, 보안 신호를 한 화면에서" />
+        <figcaption data-i18n="screens.dashboardCap">통합 운영 대시보드 — 흩어진 신호를 하나의 화면으로.</figcaption>
+      </figure>
+      <div class="screens-pair">
+        <figure class="frame pair-img reveal">
+          <img src="media/assistant-answer.webp" loading="lazy" width="800" height="600" data-i18n-alt="screens.assistantAlt" alt="비용 질문에 근거를 제시하는 AWSops AI 어시스턴트 답변" />
+          <figcaption data-i18n="screens.assistantCap">AI 어시스턴트 — 라이브 데이터를 근거로 합성한 답변.</figcaption>
+        </figure>
+        <figure class="frame pair-img reveal">
+          <img src="media/topology.webp" loading="lazy" width="800" height="600" data-i18n-alt="screens.topologyAlt" alt="요청 경로와 AWS 리소스 관계를 보여주는 토폴로지 맵" />
+          <figcaption data-i18n="screens.topologyCap">토폴로지 — 리소스 관계와 요청 흐름을 시각적으로 탐색.</figcaption>
+        </figure>
+        <figure class="frame pair-img reveal">
+          <img src="media/cost-explorer.webp" loading="lazy" width="800" height="600" data-i18n-alt="screens.costAlt" alt="월별·일별 AWS 비용 추이를 보여주는 Cost Explorer 화면" />
+          <figcaption data-i18n="screens.costCap">Cost Explorer — 서비스별 비용과 변화를 비교.</figcaption>
+        </figure>
+        <figure class="frame pair-img reveal">
+          <img src="media/compliance.webp" loading="lazy" width="800" height="600" style="object-fit:contain" data-i18n-alt="screens.complianceAlt" alt="CIS 컴플라이언스 벤치마크 실행 결과 — Pass Rate 82.7%, 컨트롤 상태, 섹션별 통과율" />
+          <figcaption data-i18n="screens.complianceCap">보안 &amp; 컴플라이언스 — 위험 신호와 CIS 통과율을 한눈에.</figcaption>
+        </figure>
+      </div>
+      <figure class="frame wide reveal">
+        <img src="media/ai-diagnosis.webp" loading="lazy" width="1200" height="675" data-i18n-alt="screens.diagAlt" alt="Well-Architected 관점의 AWSops AI 진단 보고서와 목차" />
+        <figcaption data-i18n="screens.diagCap">AI 진단 리포트 — Well-Architected 관점 진단을 MD/DOCX/PDF로 내보내기.</figcaption>
+      </figure>
     </div>
   </div>
 </section>
@@ -507,29 +571,29 @@
   <div class="wrap">
     <div class="sec-head reveal">
       <div class="kicker">Amazon Bedrock AgentCore</div>
-      <h2>섹션별 전문 <em>에이전트 함대</em>.</h2>
-      <p>하나의 AgentCore Runtime(Strands) 위에서 섹션 게이트웨이들이 라이브 AWS를 조회합니다. 분류기가 질문을 적합한 게이트웨이로 라우팅하고 결과를 합성합니다.</p>
+      <h2 data-i18n="ai.h2">섹션별 전문 <em>에이전트 함대</em>.</h2>
+      <p data-i18n="ai.p">하나의 AgentCore Runtime(Strands) 위에서 섹션 게이트웨이들이 라이브 AWS를 조회합니다. 분류기가 질문을 적합한 게이트웨이로 라우팅하고 결과를 합성합니다.</p>
     </div>
     <div class="gw-wrap reveal">
       <table class="gw">
-        <caption class="sr-only">AWSops AI 섹션 게이트웨이와 도구 수</caption>
-        <thead><tr><th>게이트웨이</th><th class="gcap">대표 역량</th><th class="gtools">도구</th></tr></thead>
+        <caption class="sr-only" data-i18n="ai.caption">AWSops AI 섹션 게이트웨이와 도구 수</caption>
+        <thead><tr><th data-i18n="ai.thGateway">게이트웨이</th><th class="gcap" data-i18n="ai.thCap">대표 역량</th><th class="gtools" data-i18n="ai.thTools">도구</th></tr></thead>
         <tbody>
-          <tr><td class="gname">Network</td><td class="gcap">VPC · TGW · VPN · ENI · Reachability Analyzer · Flow Logs</td><td class="gtools num">17</td></tr>
-          <tr><td class="gname">Container</td><td class="gcap">EKS 클러스터/노드/파드 · ECS 서비스/태스크 · Istio 메시</td><td class="gtools num">24</td></tr>
-          <tr><td class="gname">Data</td><td class="gcap">DynamoDB · RDS Data API · ElastiCache · MSK</td><td class="gtools num">24</td></tr>
-          <tr><td class="gname">Monitoring</td><td class="gcap">CloudWatch 지표/알람 · Log Insights · CloudTrail</td><td class="gtools num">16</td></tr>
-          <tr><td class="gname">Security</td><td class="gcap">IAM 사용자/역할/정책 · 정책 시뮬레이션</td><td class="gtools num">14</td></tr>
-          <tr><td class="gname">IaC</td><td class="gcap">CloudFormation 검증 · CDK 문서 · Terraform 모듈</td><td class="gtools num">12</td></tr>
-          <tr><td class="gname">Cost</td><td class="gcap">Cost Explorer · Pricing · Budgets · 예측</td><td class="gtools num">9</td></tr>
-          <tr><td class="gname">Ops</td><td class="gcap">AWS 문서 · CLI 실행 · Steampipe SQL</td><td class="gtools num">9</td></tr>
-          <tr><td class="gname">External-Obs <span class="badge ro" style="font-size:9px">설계</span></td><td class="gcap">Prometheus · Loki · Tempo 등 외부 관측성 (read-only)</td><td class="gtools" style="color:var(--text-3)">설계</td></tr>
+          <tr><td class="gname">Network</td><td class="gcap" data-i18n="ai.gwNetwork">VPC · TGW · VPN · ENI · Reachability Analyzer · Flow Logs</td><td class="gtools num">17</td></tr>
+          <tr><td class="gname">Container</td><td class="gcap" data-i18n="ai.gwContainer">EKS 클러스터/노드/파드 · ECS 서비스/태스크 · Istio 메시</td><td class="gtools num">19</td></tr>
+          <tr><td class="gname">Data</td><td class="gcap" data-i18n="ai.gwData">DynamoDB · RDS Data API · ElastiCache · MSK</td><td class="gtools num">24</td></tr>
+          <tr><td class="gname">Monitoring</td><td class="gcap" data-i18n="ai.gwMonitoring">CloudWatch 지표/알람 · Log Insights · CloudTrail</td><td class="gtools num">36</td></tr>
+          <tr><td class="gname">Security</td><td class="gcap" data-i18n="ai.gwSecurity">IAM 사용자/역할/정책 · 정책 시뮬레이션</td><td class="gtools num">14</td></tr>
+          <tr><td class="gname">IaC</td><td class="gcap" data-i18n="ai.gwIac">CloudFormation 검증 · CDK 문서 · Terraform 모듈</td><td class="gtools num">12</td></tr>
+          <tr><td class="gname">Cost</td><td class="gcap" data-i18n="ai.gwCost">Cost Explorer · Pricing · Budgets · 예측</td><td class="gtools num">14</td></tr>
+          <tr><td class="gname">Ops</td><td class="gcap" data-i18n="ai.gwOps">AWS 문서 · CLI 실행 · Steampipe SQL</td><td class="gtools num">11</td></tr>
+          <tr><td class="gname">External-Obs</td><td class="gcap" data-i18n="ai.gwObs">Prometheus · ClickHouse · Loki/Tempo/Mimir 등 외부 관측성 (read-only)</td><td class="gtools num">13</td></tr>
         </tbody>
       </table>
       <div class="gw-foot">
-        <span class="pill orange">합계 125 MCP 도구 · 8 라이브 게이트웨이</span>
-        <span class="pill">로드맵 — 9 섹션 에이전트 + 1 인시던트 오케스트레이터</span>
-        <span class="pill">Sonnet 4.6 · Opus 4.8 · Haiku 4.5</span>
+        <span class="pill orange" data-i18n="ai.pill1">합계 160 MCP 도구 · 9 게이트웨이 · 27 도구 슬라이스</span>
+        <span class="pill" data-i18n="ai.pill2">로드맵 — 9 섹션 에이전트 + 1 인시던트 오케스트레이터</span>
+        <span class="pill">Sonnet 5 · Opus 4.8 · Haiku 4.5</span>
         <span class="pill">Memory · Code Interpreter</span>
       </div>
     </div>
@@ -540,22 +604,22 @@
 <section class="sec arch" id="architecture">
   <div class="wrap">
     <div class="sec-head reveal">
-      <div class="kicker">아키텍처 (Terraform · ECS Fargate · Aurora)</div>
-      <h2>비공개 엣지에서 <em>비동기 워커</em>까지.</h2>
-      <p>CloudFront VPC Origin → 내부 ALB → Fargate thin-BFF. 공개 ALB가 없습니다. 무거운 작업은 워커 티어로 흘러가고, AI는 AgentCore가 라이브로 조회합니다.</p>
+      <div class="kicker" data-i18n="arch.kicker">아키텍처 (Terraform · ECS Fargate · Aurora)</div>
+      <h2 data-i18n="arch.h2">비공개 엣지에서 <em>비동기 워커</em>까지.</h2>
+      <p data-i18n="arch.p">CloudFront VPC Origin → 내부 ALB → Fargate thin-BFF. 공개 ALB가 없습니다. 무거운 작업은 워커 티어로 흘러가고, AI는 AgentCore가 라이브로 조회합니다.</p>
     </div>
 
-    <figure class="arch-figure reveal" aria-label="AWSops 아키텍처 다이어그램">
-      <img src="awsops-arch.svg" loading="lazy" alt="AWSops 아키텍처 — CloudFront·Lambda@Edge·Cognito 엣지 → VPC Origin → 내부 ALB → Fargate web → Aurora·AgentCore(9 Gateway·MCP)·비동기 워커, 관측 대상은 read-only" />
+    <figure class="arch-figure reveal" data-i18n-aria="arch.figAria" aria-label="AWSops 아키텍처 다이어그램">
+      <img src="awsops-arch.svg" loading="lazy" data-i18n-alt="arch.imgAlt" alt="AWSops 아키텍처 — CloudFront·Lambda@Edge·Cognito 엣지 → VPC Origin → 내부 ALB → Fargate web → Aurora·AgentCore(9 Gateway·MCP)·비동기 워커, 관측 대상은 read-only" />
     </figure>
-    <p class="arch-rot-hint reveal">모바일에서는 가로 다이어그램을 세로로 회전해 보여드립니다.</p>
+    <p class="arch-rot-hint reveal" data-i18n="arch.rotHint">모바일에서는 가로 다이어그램을 세로로 회전해 보여드립니다.</p>
 
     <div class="arch-note reveal">
-      <span><b>흐름</b> 사용자 → CloudFront → VPC Origin → 내부 ALB → Fargate web → (Aurora · AgentCore · 워커)</span>
-      <span><b>포지셔닝</b> read-only 운영 대시보드 + AI 진단 — 인프라 변경은 운영자의 SSM/IaC가 담당</span>
+      <span data-i18n="arch.note1"><b>흐름</b> 사용자 → CloudFront → VPC Origin → 내부 ALB → Fargate web → (Aurora · AgentCore · 워커)</span>
+      <span data-i18n="arch.note2"><b>포지셔닝</b> read-only 운영 대시보드 + AI 진단 — 인프라 변경은 운영자의 SSM/IaC가 담당</span>
     </div>
     <div class="arch-dl reveal">
-      <a href="awsops-arch.drawio" class="btn btn-ghost" download>고해상도 다이어그램 (draw.io) 내려받기 ↓</a>
+      <a href="awsops-arch.drawio" class="btn btn-ghost" download data-i18n="arch.dl">고해상도 다이어그램 (draw.io) 내려받기 ↓</a>
     </div>
   </div>
 </section>
@@ -565,21 +629,21 @@
   <div class="wrap split">
     <div>
       <div class="sec-head reveal" style="margin-bottom:28px">
-        <div class="kicker">보안 자세</div>
-        <h2>변경하지 않기에 <em>안전한</em> 관측.</h2>
-        <p>AWSops는 read-only 운영 대시보드 + AI 진단입니다. mutating·자율 제어 티어는 비활성 플래그 뒤에서 프로토타이핑된 뒤 번복되었습니다 — 인프라 변경 권한은 보유하지 않습니다.</p>
+        <div class="kicker" data-i18n="trust.kicker">보안 자세</div>
+        <h2 data-i18n="trust.h2">변경하지 않기에 <em>안전한</em> 관측.</h2>
+        <p data-i18n="trust.p">AWSops는 read-only 운영 대시보드 + AI 진단입니다. mutating·자율 제어 티어는 비활성 플래그 뒤에서 프로토타이핑된 뒤 번복되었습니다 — 인프라 변경 권한은 보유하지 않습니다.</p>
       </div>
       <ul class="checklist">
-        <li class="reveal"><span class="ci"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6L9 17l-5-5"/></svg></span><div><h4>비공개 엣지</h4><p>공개 ALB 없음. CloudFront VPC Origin → 내부 ALB(HTTPS) → Fargate, end-to-end TLS.</p></div></li>
-        <li class="reveal"><span class="ci"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6L9 17l-5-5"/></svg></span><div><h4>강한 인증</h4><p>Cognito + Lambda@Edge. RS256 JWKS 서명 검증 + iss/aud/token_use + OAuth state + PKCE public client.</p></div></li>
-        <li class="reveal"><span class="ci"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6L9 17l-5-5"/></svg></span><div><h4>최소 권한</h4><p>EKS는 AmazonEKSViewPolicy(읽기 전용). 외부 데이터소스는 SSRF allowlist로 차단.</p></div></li>
-        <li class="reveal"><span class="ci"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6L9 17l-5-5"/></svg></span><div><h4>저장 데이터 암호화</h4><p>Aurora는 KMS CMK. 마스터 시크릿은 RDS 관리. 설정은 SSM Parameter Store가 단일 진실 원천.</p></div></li>
+        <li class="reveal"><span class="ci"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6L9 17l-5-5"/></svg></span><div><h4 data-i18n="trust.item1.h">비공개 엣지</h4><p data-i18n="trust.item1.p">공개 ALB 없음. CloudFront VPC Origin → 내부 ALB(HTTPS) → Fargate, end-to-end TLS.</p></div></li>
+        <li class="reveal"><span class="ci"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6L9 17l-5-5"/></svg></span><div><h4 data-i18n="trust.item2.h">강한 인증</h4><p data-i18n="trust.item2.p">Cognito + Lambda@Edge. RS256 JWKS 서명 검증 + iss/aud/token_use + OAuth state + PKCE public client.</p></div></li>
+        <li class="reveal"><span class="ci"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6L9 17l-5-5"/></svg></span><div><h4 data-i18n="trust.item3.h">최소 권한</h4><p data-i18n="trust.item3.p">EKS는 AmazonEKSViewPolicy(읽기 전용). 외부 데이터소스는 SSRF allowlist로 차단.</p></div></li>
+        <li class="reveal"><span class="ci"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 6L9 17l-5-5"/></svg></span><div><h4 data-i18n="trust.item4.h">저장 데이터 암호화</h4><p data-i18n="trust.item4.p">Aurora는 KMS CMK. 마스터 시크릿은 RDS 관리. 설정은 SSM Parameter Store가 단일 진실 원천.</p></div></li>
       </ul>
     </div>
 
     <div class="stack-card reveal">
-      <div class="kicker">기술 스택</div>
-      <h2 style="font-size:22px; margin-bottom:20px">검증된 AWS 매니지드 위에서.</h2>
+      <div class="kicker" data-i18n="stack.kicker">기술 스택</div>
+      <h2 style="font-size:22px; margin-bottom:20px" data-i18n="stack.h2">검증된 AWS 매니지드 위에서.</h2>
       <div class="stack">
         <span class="s"><b>IaC</b> Terraform</span>
         <span class="s"><b>Edge</b> CloudFront VPC Origin</span>
@@ -593,9 +657,9 @@
         <span class="s"><b>Compliance</b> Powerpipe</span>
       </div>
       <div style="margin-top:26px; padding-top:22px; border-top:1px solid var(--line); display:flex; gap:24px; flex-wrap:wrap">
-        <div><div class="metric"><div class="v num" style="font-size:26px">0.5–4<small> ACU</small></div><div class="l">Aurora 오토스케일</div></div></div>
-        <div><div class="metric"><div class="v num" style="font-size:26px">end-to-end</div><div class="l">TLS 엣지</div></div></div>
-        <div><div class="metric"><div class="v num" style="font-size:26px">$0</div><div class="l">플래그 OFF 시 비용</div></div></div>
+        <div><div class="metric"><div class="v num" style="font-size:26px">0.5–4<small> ACU</small></div><div class="l" data-i18n="stack.metric1">Aurora 오토스케일</div></div></div>
+        <div><div class="metric"><div class="v num" style="font-size:26px">end-to-end</div><div class="l" data-i18n="stack.metric2">TLS 엣지</div></div></div>
+        <div><div class="metric"><div class="v num" style="font-size:26px">$0</div><div class="l" data-i18n="stack.metric3">플래그 OFF 시 비용</div></div></div>
       </div>
     </div>
   </div>
@@ -604,11 +668,11 @@
 <!-- ===================== CLOSING CTA ===================== -->
 <section class="wrap cta" id="start">
   <div class="cta-box reveal">
-    <h2>운영을 <em>하나의 화면</em>으로 옮길 준비가 되셨나요?</h2>
-    <p>AWSops를 직접 둘러보거나, 우리 환경에 맞춘 데모를 받아보세요. 설치는 Terraform 한 번, 운영은 한 화면에서.</p>
+    <h2 data-i18n="cta.h2">운영을 <em>하나의 화면</em>으로 옮길 준비가 되셨나요?</h2>
+    <p data-i18n="cta.p">AWSops를 직접 둘러보거나, 우리 환경에 맞춘 데모를 받아보세요. 설치는 Terraform 한 번, 운영은 한 화면에서.</p>
     <div class="hero-actions" style="justify-content:center">
-      <a href="https://github.com/Atom-oh/awsops" class="btn btn-primary">GitHub 저장소 →</a>
-      <a href="#architecture" class="btn btn-ghost">아키텍처 다시 보기</a>
+      <a href="https://github.com/Atom-oh/awsops" class="btn btn-primary" data-i18n="cta.ctaPrimary">GitHub 저장소 →</a>
+      <a href="#architecture" class="btn btn-ghost" data-i18n="cta.ctaGhost">아키텍처 다시 보기</a>
     </div>
   </div>
 </section>
@@ -623,13 +687,57 @@
         <circle cx="9" cy="23" r="3.2" fill="#FAF9F5"/><circle cx="24" cy="20" r="3.2" fill="#FAF9F5"/>
         <circle cx="16" cy="12" r="5.4" fill="#D9775733"/><circle cx="16" cy="12" r="3.6" fill="#D97757"/>
       </svg>
-      <span>AWSops — AWS · Kubernetes 운영 대시보드</span>
+      <span data-i18n="footer.brand">AWSops — AWS · Kubernetes 운영 대시보드</span>
     </div>
     <div class="mono">Terraform · ECS Fargate · Aurora · Bedrock AgentCore · read-only ops + AI diagnosis</div>
   </div>
 </footer>
 
+<script src="i18n-data.js"></script>
 <script>
+  // ---------- language switch ----------
+  // ponytail: all-languages-loaded-client-side, single small dict — no lazy import, no i18n lib.
+  (function(){
+    var LANG_KEY = 'awsops-brochure-lang';
+    var LANGS = ['ko','en','zh','ja'];
+    var I18N = window.AWSOPS_I18N || { en:{}, zh:{}, ja:{} };
+    var koTitle = document.title;
+
+    document.querySelectorAll('[data-i18n]').forEach(function(el){ el.dataset.koHtml = el.innerHTML; });
+    document.querySelectorAll('[data-i18n-alt]').forEach(function(el){ el.dataset.koAlt = el.getAttribute('alt') || ''; });
+    document.querySelectorAll('[data-i18n-aria]').forEach(function(el){ el.dataset.koAria = el.getAttribute('aria-label') || ''; });
+
+    function apply(lang){
+      var dict = I18N[lang] || {};
+      document.documentElement.lang = lang;
+      document.title = lang === 'ko' ? koTitle : (dict['meta.title'] || koTitle);
+      document.querySelectorAll('[data-i18n]').forEach(function(el){
+        var key = el.getAttribute('data-i18n');
+        el.innerHTML = lang === 'ko' ? el.dataset.koHtml : (dict[key] != null ? dict[key] : el.dataset.koHtml);
+      });
+      document.querySelectorAll('[data-i18n-alt]').forEach(function(el){
+        var key = el.getAttribute('data-i18n-alt');
+        el.setAttribute('alt', lang === 'ko' ? el.dataset.koAlt : (dict[key] != null ? dict[key] : el.dataset.koAlt));
+      });
+      document.querySelectorAll('[data-i18n-aria]').forEach(function(el){
+        var key = el.getAttribute('data-i18n-aria');
+        el.setAttribute('aria-label', lang === 'ko' ? el.dataset.koAria : (dict[key] != null ? dict[key] : el.dataset.koAria));
+      });
+      document.querySelectorAll('.lang-switch button').forEach(function(b){
+        b.classList.toggle('active', b.getAttribute('data-lang') === lang);
+      });
+      try { localStorage.setItem(LANG_KEY, lang); } catch (e) {}
+    }
+
+    document.querySelectorAll('.lang-switch button').forEach(function(b){
+      b.addEventListener('click', function(){ apply(b.getAttribute('data-lang')); });
+    });
+
+    var saved = null;
+    try { saved = localStorage.getItem(LANG_KEY); } catch (e) {}
+    apply(LANGS.indexOf(saved) >= 0 ? saved : 'ko');
+  })();
+
   // respect reduced-motion for SVG SMIL (CSS can't disable <animate>)
   if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) {
     document.querySelectorAll('svg animate, svg animateTransform').forEach(a=>a.remove());

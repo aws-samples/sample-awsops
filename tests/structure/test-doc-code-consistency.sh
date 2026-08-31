@@ -2,7 +2,7 @@
 # Doc↔code consistency: CLAUDE.md must name the EKS access-entry policy the code actually binds.
 #
 # The web task role's EKS Access Entry is associated with AmazonEKSAdminViewPolicy
-# (terraform/v2/foundation/eks.tf:34) — NOT AmazonEKSViewPolicy. Plain View has no cluster-scoped
+# (terraform/foundation/eks.tf:34) — NOT AmazonEKSViewPolicy. Plain View has no cluster-scoped
 # resources, so it can't list nodes (see the eks.tf comment); AmazonEKSViewPolicy is used ONLY for
 # the separate, out-of-band istio-read role (eks.tf:46), which CLAUDE.md does not document.
 #
@@ -15,7 +15,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
-EKS_TF="terraform/v2/foundation/eks.tf"
+EKS_TF="terraform/foundation/eks.tf"
 DOC="CLAUDE.md"
 PASS=0; FAIL=0; N=0
 ok()    { N=$((N+1)); PASS=$((PASS+1)); echo "ok $N - $1"; }

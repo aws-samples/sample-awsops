@@ -6,6 +6,8 @@ Asserts the invariants for scripts/v2/agentcore/catalog.py:
   - every tool has a non-empty `name` and `description`;
   - every tool `inputSchema` is a dict with type == 'object';
   - NO tool carries `target_account_id` (provision.py injects it);
+  - (ADR-017) every MCP_SERVER_TARGETS `gateway` is a known GATEWAYS short-key, `preset_key` is
+    unique, and `auth.mode` is one of "api_key"/"none" with the fields that mode requires;
   - prints `OK` + the sorted set of lambda_keys (for cross-checking ai.tf agent_lambdas).
 
 Exit non-zero on any failure.
@@ -64,6 +66,52 @@ for lk in lambda_keys:
     if lk in seen:
         errors.append(f"duplicate lambda_key '{lk}' across TARGETS")
     seen.add(lk)
+
+# ADR-017 — MCP_SERVER_TARGETS invariants.
+MCP_SERVER_TARGETS = catalog.MCP_SERVER_TARGETS
+seen_preset_keys = set()
+for target_name, entry in MCP_SERVER_TARGETS.items():
+    # review MAJOR L3-2: agent.py's fail-closed allowlist gate (_MCP_SERVER_TARGET_MARKER =
+    # "-mcp-server-target___") is a substring match on the target NAME, not on catalog membership —
+    # it's the ONLY thing that stops a vendor's raw gateway tools from reaching the model unfiltered.
+    # A future preset added under a differently-suffixed key would still get a tool_allowlist entry
+    # written to OFFICIAL_MCP_TOOL_ALLOWLIST_JSON, but agent.py's runtime filter would never even
+    # look at its tools — reopening exactly the CRITICAL this PR closed, via a naming typo instead of
+    # a missing allowlist. Enforce the convention the runtime gate depends on.
+    if not target_name.endswith("-mcp-server-target"):
+        errors.append(f"{target_name}: MCP_SERVER_TARGETS key must end with '-mcp-server-target' — "
+                       "agent.py's runtime allowlist gate matches gateway tool names on that exact "
+                       "suffix (+ '___<tool>'); any other naming silently escapes the filter")
+
+    gw = entry.get("gateway")
+    if gw not in GATEWAYS:
+        errors.append(f"{target_name}: gateway '{gw}' not in GATEWAYS {sorted(GATEWAYS)}")
+
+    preset_key = entry.get("preset_key")
+    if not preset_key:
+        errors.append(f"{target_name}: missing/empty preset_key")
+    elif preset_key in seen_preset_keys:
+        errors.append(f"duplicate preset_key '{preset_key}' across MCP_SERVER_TARGETS")
+    else:
+        seen_preset_keys.add(preset_key)
+
+    if not entry.get("description"):
+        errors.append(f"{target_name}: missing/empty description")
+
+    auth = entry.get("auth")
+    if not isinstance(auth, dict) or auth.get("mode") not in ("api_key", "none"):
+        errors.append(f"{target_name}: auth.mode must be 'api_key' or 'none'")
+    elif auth["mode"] == "api_key":
+        for field in ("credential_location", "credential_parameter_name"):
+            if not auth.get(field):
+                errors.append(f"{target_name}: auth.mode=api_key requires '{field}'")
+
+    # ADR-017 amendment 2026-08-05: every preset MUST declare tool_allowlist (tuple/list of str;
+    # empty = provision the target but expose zero tools). Absence would silently fail-closed at
+    # the runtime anyway, but here it's a catalog bug — the field is the documented contract.
+    ta = entry.get("tool_allowlist")
+    if not isinstance(ta, (tuple, list)) or any(not isinstance(x, str) or not x for x in ta):
+        errors.append(f"{target_name}: tool_allowlist must be a tuple/list of non-empty strings (empty tuple allowed)")
 
 if errors:
     print("FAIL")

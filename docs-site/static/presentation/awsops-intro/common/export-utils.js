@@ -53,9 +53,20 @@ const ExportUtils = {
 
   /** Discover block HTML files from .block-card anchor links on the current page */
   getBlockFiles: function() {
-    return Array.from(document.querySelectorAll('a.block-card'))
-      .map(function(a) { return a.getAttribute('href'); })
-      .filter(Boolean);
+    // Set-dedupe: a page using both markup forms must not double-count a block
+    return Array.from(new Set(
+      Array.from(document.querySelectorAll('a.block-card, .block-card a.block-link'))
+        .map(function(a) { return a.getAttribute('href'); })
+        .filter(Boolean)
+    ));
+  },
+
+  /** Remove the PPTX deck-download badge (and its style) from HTML destined
+   *  for offline ZIP export — the binary is not bundled, so the link would be dead. */
+  _stripDeckBadge: function(html) {
+    return html
+      .replace(/<a[^>]*class="[^"]*pptx-download-badge[^"]*"[^>]*>[\s\S]*?<\/a>\s*/g, '')
+      .replace(/<style[^>]*>(?:(?!<\/style>)[\s\S])*?\.pptx-download-badge[\s\S]*?<\/style>\s*/g, '');
   },
 
   /** Get presentation slug from current URL path */
@@ -216,7 +227,7 @@ const ExportUtils = {
       var tocResp = await fetch('index.html');
       var tocHTML = '';
       if (tocResp.ok) {
-        tocHTML = await tocResp.text();
+        tocHTML = this._stripDeckBadge(await tocResp.text());
         slugFolder.file('index.html', tocHTML);
       }
       fetched++;

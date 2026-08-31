@@ -8,6 +8,7 @@ import Card from '@/components/ui/Card';
 import Meter from '@/components/ui/Meter';
 import SegmentedControl from '@/components/ui/SegmentedControl';
 import MultiLineTrend from '@/components/charts/MultiLineTrend';
+import { useI18n } from '@/components/shell/LanguageProvider';
 
 type TabKey = 'ec2' | 'rds';
 interface Ec2Row { id: string; name: string | null; itype: string | null; az: string | null; cpu: number | null; netIn: number | null; netOut: number | null }
@@ -39,6 +40,7 @@ function cpuTone(v: number | null | undefined): string {
 
 /** 통합 모니터링 허브 (v1 /monitoring parity): 플릿 라이브 메트릭 테이블 + 드릴다운 시계열. */
 export default function MonitoringPage() {
+  const { tt } = useI18n();
   const [tab, setTab] = useState<TabKey>('ec2');
   const [rows, setRows] = useState<(Ec2Row | RdsRow)[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -103,8 +105,8 @@ export default function MonitoringPage() {
           value={tab}
           onChange={(v) => setTab(v as TabKey)}
         />
-        {err && <div className="text-[13px] text-rose-600">로드 실패: {err}</div>}
-        {!rows && !err && <div className="text-ink-400">라이브 메트릭 조회 중…</div>}
+        {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
+        {!rows && !err && <div className="text-ink-400">{tt('라이브 메트릭 조회 중…')}</div>}
 
         {rows && (
           <>
@@ -125,7 +127,7 @@ export default function MonitoringPage() {
               />
             )}
             {picked && series && series.length === 0 && (
-              <div className="text-[12px] text-ink-400">이 리소스의 데이터포인트가 없습니다 (기간을 늘려 보세요).</div>
+              <div className="text-[12px] text-ink-400">{tt('이 리소스의 데이터포인트가 없습니다 (기간을 늘려 보세요).')}</div>
             )}
 
             <Card padded={false}>
@@ -157,7 +159,7 @@ export default function MonitoringPage() {
                           <td className={`${td} tabular text-ink-600`}>{mb(r.netOut)}</td>
                         </tr>
                       ))}
-                      {ec2Rows.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-[13px] text-ink-400">실행 중 인스턴스 없음</td></tr>}
+                      {ec2Rows.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-[13px] text-ink-400">{tt('실행 중 인스턴스 없음')}</td></tr>}
                     </tbody>
                   </table>
                 ) : (
@@ -189,7 +191,7 @@ export default function MonitoringPage() {
                           <td className={`${td} tabular text-ink-600`}>{r.readIops ?? DASH} / {r.writeIops ?? DASH}</td>
                         </tr>
                       ))}
-                      {rdsRows.length === 0 && <tr><td colSpan={8} className="px-3 py-6 text-center text-[13px] text-ink-400">RDS 인스턴스 없음</td></tr>}
+                      {rdsRows.length === 0 && <tr><td colSpan={8} className="px-3 py-6 text-center text-[13px] text-ink-400">{tt('RDS 인스턴스 없음')}</td></tr>}
                     </tbody>
                   </table>
                 )}

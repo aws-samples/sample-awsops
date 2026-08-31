@@ -1,0 +1,39 @@
+# Minimal RBAC for the Network Path Check's live-identity confirmation
+# (scripts/v2/workers/network_path.py's resolve_live_identity(), which only ever GETs a single
+# named Node or a single named Pod — never lists/watches, never touches Secrets).
+#
+# Bound to the Kubernetes group `awsops-network-path-reader` (CI-review MINOR fix, round 24:
+# prefixed like the ClusterRole/Binding themselves — an unprefixed generic name could collide
+# with a group a cluster already maps some other principal into), which
+# register-network-path-access.sh maps the AWSops worker task role onto via an EKS Access Entry's
+# `--kubernetes-groups` (NOT an AWS managed access policy — the closest managed policy,
+# AmazonEKSAdminViewPolicy, also grants cluster-wide Secret read, which this feature does not
+# need; see the round-19 CI-review finding in CHANGELOG.md and
+# docs/runbooks/network-path-eks-access.md).
+#
+# Apply once per cluster as an operator with cluster-admin (or equivalent RBAC-write) access:
+#   kubectl apply -f scripts/v2/eks/network-path-reader-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: awsops-network-path-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: awsops-network-path-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: awsops-network-path-reader
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: awsops-network-path-reader

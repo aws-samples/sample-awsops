@@ -87,7 +87,8 @@ const FEATURE_ICON: Record<string, LucideIcon> = {
   'eks-nodes': Server, 'eks-pods': Boxes, 'eks-deployments': Layers,
   'eks-services': Network, 'eks-explorer': Terminal, 'eks-cost': DollarSign,
   'network-flow': Activity, 'dns-query': FileSearch, 'ip-addresses': Locate, 'vpc-endpoints': Cable,
-  'direct-connect': Router, 'network-firewall': Flame,
+  'direct-connect': Router, 'network-firewall': Flame, 'network-paths': Waypoints,
+  'sg-rules': ListFilter, 'sg-usage': Activity,
 };
 
 const STORAGE_KEY = 'awsops:nav:expanded';
@@ -302,7 +303,7 @@ export default function Sidebar({ onNavigate, className, persist = true }: { onN
       {/* Active account/region scope selector + admin link */}
       <div className="mb-4 space-y-1">
         <ScopeSelector />
-        <Link href="/accounts" className="block px-0.5 text-[10px] text-chrome-fg-muted hover:text-chrome-fg">계정 관리 →</Link>
+        <Link href="/accounts" className="block px-0.5 text-[10px] text-chrome-fg-muted hover:text-chrome-fg">{t('sidebar.manageAccounts')}</Link>
       </div>
 
       {/* Nav */}
