@@ -34,11 +34,14 @@ permissions:
   contents: read
   id-token: write
 
-# One pipeline per branch at a time, newest push wins — prevents an older run
-# from rolling a stale image after a newer one (out-of-order dev CD).
+# One pipeline per branch at a time. On dev the newest push wins
+# (cancel-in-progress) so an older run can never roll a stale image after a
+# newer one. On main, runs QUEUE instead — a main push (build-only) must never
+# cancel a dispatched production rollout that is mid-roll or waiting on the
+# environment's reviewer approval.
 concurrency:
   group: deploy-web-${{ github.ref_name }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref_name != 'main' }}
 
 jobs:
   build:
