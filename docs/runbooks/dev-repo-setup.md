@@ -35,32 +35,40 @@ too, from the runner platform that hosts it.
 (워크플로가 쓰는 `sample-awsops` 라벨 러너는 공개 리포에만 등록돼 있으므로 이
 리포에도 등록해야 합니다. 미등록이 "영원히 대기" 증상의 원인.)
 
-### 2. Extend the CI roles' GitHub OIDC trust / OIDC 신뢰 정책 확장
+### 2. Create DEV-scoped CI roles + GitHub OIDC trust / dev 전용 CI 역할
 
-The four CI roles (`sample-awsops-ci-{build,deployer,terraform-plan,review}`,
-in the samples deployment account) trust the GitHub OIDC provider with a
-`sub` condition that matches only the public repo today. Add the private dev
-repo's sub pattern to each role's trust policy condition:
+Create four DEV-scoped roles — `sample-awsops-dev-ci-{build,deployer,
+terraform-plan,review}` — mirroring the production roles' permission shapes
+but **scoped to the dev stack's resources only** (its ECR repo, its ECS
+cluster/service, its tfstate key), each trusting the GitHub OIDC provider
+with a `sub` condition that matches **only the private dev repo**:
 
 ```json
 "Condition": {
   "StringLike": {
-    "token.actions.githubusercontent.com:sub": [
-      "repo:aws-samples/sample-awsops:*",
-      "repo:Atom-oh/sample-awsops-dev:*"
-    ]
+    "token.actions.githubusercontent.com:sub": "repo:Atom-oh/sample-awsops-dev:*"
   }
 }
 ```
 
-The `AWS_CI_*_ROLE_ARN` repo variables are already present in the dev repo.
-If the dev stack should live in a **different account** than production,
-create equivalent roles there and point the dev repo's variables at those
-instead — that also isolates dev/prod blast radius.
-(CI 역할 4종의 신뢰 정책 `sub` 조건에 비공개 dev 리포 패턴을 추가합니다. 역할
-ARN 변수는 dev 리포에 이미 복사돼 있습니다. dev 스택을 별도 계정에 둘 경우 그
-계정에 동일 역할을 만들고 변수를 교체하면 되며, dev/prod 폭발반경 분리 효과도
-있습니다.)
+⚠️ Do **NOT** instead add the dev repo to the production roles' trust policy.
+This repo's pipeline is deliberately ungated (no environment reviewer —
+see below), so reusing the production roles here would open two unapproved
+paths into production: an `ecs update-service` / `ecr put-image` against the
+production service and `:web-latest` tag, and a `terraform apply` against
+production state. Role separation closes both structurally — the production
+roles never need to trust this repo at all.
+
+This repo's `AWS_CI_*_ROLE_ARN` variables already point at the dev-scoped
+role names above; creating the roles makes them live. If the dev stack lives
+in a **different account**, create the roles there and update the variables'
+account — that adds full blast-radius isolation on top.
+(dev 전용 역할 4종을 dev 스택 리소스 스코프로 새로 만들고, 신뢰는 비공개 dev
+리포 sub만 허용합니다. **production 역할 신뢰에 dev 리포를 추가하면 안 됩니다**
+— 이 리포 파이프라인은 승인 게이트가 없어, prod 역할을 재사용하면 prod ECS
+롤링/`web-latest` 재태깅과 prod terraform apply라는 무승인 경로 2개가 열립니다.
+이 리포의 역할 ARN 변수는 이미 dev 전용 역할명을 가리키고 있으므로 역할 생성만
+하면 됩니다.)
 
 ### 3. Provision the dev stack + set its TF secrets / dev 스택과 시크릿
 
