@@ -86,9 +86,9 @@ jobs:
           push: true
           # ONLY the immutable per-commit tag. :web-latest (what the ECS task
           # definition pulls) is promoted exclusively by the deploy job's pin
-          # step, inside the environment gate — so the tag ECS resolves on any
-          # task start (rollout, scale-out, ADR-015 self-healing restart) can
-          # only ever be an image a deploy was approved for.
+          # step — so the tag ECS resolves on any task start (rollout,
+          # scale-out, ADR-015 self-healing restart) can only ever be an image
+          # this pipeline actually deployed.
           tags: ${{ steps.tf.outputs.ecr_web_uri }}:web-${{ github.sha }}
 
   deploy:

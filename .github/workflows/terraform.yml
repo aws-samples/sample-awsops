@@ -8,10 +8,12 @@ name: Terraform
 # warning. REQUIREMENT: register the `sample-awsops` runner to this repo.
 #
 # Mutation gate: `plan` is automatic (PR/push) and read-only (ci-terraform-plan,
-# ReadOnlyAccess). `apply` is workflow_dispatch-only, gated by the target
-# environment (protection rules live on `production`), and applies the EXACT
+# ReadOnlyAccess). `apply` is workflow_dispatch-only and applies the EXACT
 # plan artifact from the run given in `plan_run_id` — never a fresh plan —
 # matching terraform/CLAUDE.md's "no -auto-approve; saved-plan apply" rule.
+# NOTE: no environment reviewer gate here (GitHub environments are not
+# available on private Free-plan repos) — the controls are the saved-plan
+# pinning plus the deliberate dispatch; production adds reviewer approval.
 
 on:
   pull_request:
@@ -39,9 +41,7 @@ jobs:
     name: Plan
     if: github.event_name != 'workflow_dispatch'
     runs-on: sample-awsops
-    # No `environment:` here — plan is automatic and read-only; a gated
-    # environment would pause it (required reviewer) and reject PR merge refs
-    # (environment branch policy).
+    # plan is automatic and read-only — it must never sit behind any gate.
     env:
       TF_BACKEND_HCL_B64: ${{ secrets.TF_BACKEND_HCL }}
       TF_TFVARS_B64: ${{ secrets.TF_TFVARS }}
@@ -58,7 +58,7 @@ jobs:
         id: restore
         run: |
           if [ -z "$TF_BACKEND_HCL_B64" ]; then
-            echo "::warning::This environment's TF backend secrets are not set yet — run 'make configure' locally once against the target account/stack, then store its backend.hcl and terraform.tfvars as base64 in this environment's secrets (see the header comment). Skipping plan until then."
+            echo "::warning::This repo's TF backend secrets are not set yet — run 'make configure' once for the dev stack, then store its backend.hcl and terraform.tfvars as base64 in the TF_BACKEND_HCL / TF_TFVARS repo secrets (see docs/runbooks/dev-repo-setup.md). Skipping plan until then."
             echo "skip=1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -100,7 +100,7 @@ jobs:
       - name: Restore backend.hcl / terraform.tfvars
         run: |
           if [ -z "$TF_BACKEND_HCL_B64" ]; then
-            echo "::error::This environment's TF backend secrets are not set — see the header comment."
+            echo "::error::This repo's TF backend secrets are not set — see docs/runbooks/dev-repo-setup.md."
             exit 1
           fi
           echo "$TF_BACKEND_HCL_B64" | base64 -d > backend.hcl

@@ -40,7 +40,7 @@ jobs:
         working-directory: terraform/foundation
         run: |
           if [ -z "$TF_BACKEND_HCL_B64" ]; then
-            echo "::error::This environment's TF backend secrets are not set — run 'make configure' once for this stack, see terraform.yml's header comment."
+            echo "::error::This repo's TF backend secrets are not set — see docs/runbooks/dev-repo-setup.md."
             exit 1
           fi
           echo "$TF_BACKEND_HCL_B64" | base64 -d > backend.hcl
