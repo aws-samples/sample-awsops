@@ -3,10 +3,12 @@ name: Deploy Web
 # Branch-split CI/CD:
 #   main -> environment `production`  (awsops.samples.whchoi.net stack)
 #   dev  -> environment `development` (awsops.dev.whchoi.net stack)
-# Each environment restores its own terraform backend from its own secrets —
-#   production:  TF_BACKEND_HCL     / TF_TFVARS
-#   development: TF_BACKEND_HCL_DEV / TF_TFVARS_DEV
-# (distinct names on purpose: a dev job can never fall back to prod secrets).
+# Each branch restores its stack's terraform backend from repo-level secrets
+# with distinct names (a dev job can never fall back to prod secrets):
+#   main: TF_BACKEND_HCL     / TF_TFVARS
+#   dev:  TF_BACKEND_HCL_DEV / TF_TFVARS_DEV
+# The environments gate ONLY the `deploy` (mutation) job — `build` must stay
+# automatic, so it carries no `environment:` (a gated one would pause it).
 # The stack's own terraform outputs (ecr_web_uri, ecs_cluster_name,
 # ecs_service_name, public_url) provide the per-environment ECR repo, service
 # and smoke-test domain, so nothing environment-specific is hardcoded here.
@@ -32,12 +34,17 @@ permissions:
   contents: read
   id-token: write
 
+# One pipeline per branch at a time, newest push wins — prevents an older run
+# from rolling a stale image after a newer one (out-of-order dev CD).
+concurrency:
+  group: deploy-web-${{ github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build & push (arm64)
     if: github.event_name == 'push'
     runs-on: sample-awsops
-    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
       TF_BACKEND_HCL_B64: ${{ github.ref_name == 'main' && secrets.TF_BACKEND_HCL || secrets.TF_BACKEND_HCL_DEV }}
       TF_TFVARS_B64: ${{ github.ref_name == 'main' && secrets.TF_TFVARS || secrets.TF_TFVARS_DEV }}
