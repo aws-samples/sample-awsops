@@ -1,21 +1,27 @@
 name: Deploy Web
 
-# Split per the platform's mutation gate: the `build` job runs on every push to
-# main and only publishes an image (ci-build, ECR push only) — it never
-# touches the running ECS service. `deploy` is workflow_dispatch-only, gated
-# by the aws-samples-deploy environment (human reviewer), and does the actual
-# `ecs update-service --force-new-deployment` (ci-deployer). Mirrors
-# scripts/v2/deploy.mjs's build+push+roll+wait+smoke steps, split across the
-# two jobs/roles instead of one script invocation.
+# Branch-split CI/CD:
+#   main -> environment `production`  (awsops.samples.whchoi.net stack)
+#   dev  -> environment `development` (awsops.dev.whchoi.net stack)
+# Each environment restores its own terraform backend from its own secrets —
+#   production:  TF_BACKEND_HCL     / TF_TFVARS
+#   development: TF_BACKEND_HCL_DEV / TF_TFVARS_DEV
+# (distinct names on purpose: a dev job can never fall back to prod secrets).
+# The stack's own terraform outputs (ecr_web_uri, ecs_cluster_name,
+# ecs_service_name, public_url) provide the per-environment ECR repo, service
+# and smoke-test domain, so nothing environment-specific is hardcoded here.
 #
-# terraform/foundation's outputs (ecr_web_uri, ecs_cluster_name,
-# ecs_service_name, public_url) are needed by both jobs — see terraform.yml's
-# header comment for how backend.hcl/terraform.tfvars are restored from repo
-# secrets in CI.
+# Mutation gate: `build` runs on every push and only publishes an image
+# (ci-build, ECR push only) — it never touches the running ECS service.
+# `deploy` (the actual `ecs update-service --force-new-deployment`, ci-deployer)
+# runs automatically after a dev-branch build (continuous deploy on dev), but
+# for main it stays workflow_dispatch-only behind the `production` environment
+# and its protection rules. Mirrors scripts/v2/deploy.mjs's
+# build+push+roll+wait+smoke steps, split across the two jobs/roles.
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths: ["web/**", "CHANGELOG.md"]
   workflow_dispatch: {}
     # Rolls whatever the ECS task definition's image tag currently resolves to
@@ -31,6 +37,10 @@ jobs:
     name: Build & push (arm64)
     if: github.event_name == 'push'
     runs-on: sample-awsops
+    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    env:
+      TF_BACKEND_HCL_B64: ${{ github.ref_name == 'main' && secrets.TF_BACKEND_HCL || secrets.TF_BACKEND_HCL_DEV }}
+      TF_TFVARS_B64: ${{ github.ref_name == 'main' && secrets.TF_TFVARS || secrets.TF_TFVARS_DEV }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,12 +53,12 @@ jobs:
       - name: Restore terraform.foundation backend (read-only — just need `output`)
         working-directory: terraform/foundation
         run: |
-          if [ -z "${{ secrets.TF_BACKEND_HCL }}" ]; then
-            echo "::error::TF_BACKEND_HCL repo secret not set — run 'make configure' once, see terraform.yml's header comment."
+          if [ -z "$TF_BACKEND_HCL_B64" ]; then
+            echo "::error::This environment's TF backend secrets are not set — run 'make configure' once for this stack, see terraform.yml's header comment."
             exit 1
           fi
-          echo "${{ secrets.TF_BACKEND_HCL }}" | base64 -d > backend.hcl
-          echo "${{ secrets.TF_TFVARS }}" | base64 -d > terraform.tfvars
+          echo "$TF_BACKEND_HCL_B64" | base64 -d > backend.hcl
+          echo "$TF_TFVARS_B64" | base64 -d > terraform.tfvars
           terraform init -backend-config=backend.hcl -input=false
 
       - name: Resolve ECR repo URI
@@ -79,9 +89,18 @@ jobs:
 
   deploy:
     name: Roll ECS service
-    if: github.event_name == 'workflow_dispatch'
+    # dev: continuous deploy right after a successful build.
+    # main: workflow_dispatch only (production environment gates it).
+    needs: [build]
+    if: >-
+      !cancelled() &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped') &&
+      (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev')
     runs-on: sample-awsops
-    environment: aws-samples-deploy
+    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    env:
+      TF_BACKEND_HCL_B64: ${{ github.ref_name == 'main' && secrets.TF_BACKEND_HCL || secrets.TF_BACKEND_HCL_DEV }}
+      TF_TFVARS_B64: ${{ github.ref_name == 'main' && secrets.TF_TFVARS || secrets.TF_TFVARS_DEV }}
     steps:
       - uses: actions/checkout@v4
 
@@ -94,8 +113,12 @@ jobs:
       - name: Restore terraform.foundation backend
         working-directory: terraform/foundation
         run: |
-          echo "${{ secrets.TF_BACKEND_HCL }}" | base64 -d > backend.hcl
-          echo "${{ secrets.TF_TFVARS }}" | base64 -d > terraform.tfvars
+          if [ -z "$TF_BACKEND_HCL_B64" ]; then
+            echo "::error::This environment's TF backend secrets are not set — see terraform.yml's header comment."
+            exit 1
+          fi
+          echo "$TF_BACKEND_HCL_B64" | base64 -d > backend.hcl
+          echo "$TF_TFVARS_B64" | base64 -d > terraform.tfvars
           terraform init -backend-config=backend.hcl -input=false
 
       - name: Resolve ECS cluster/service/URL
