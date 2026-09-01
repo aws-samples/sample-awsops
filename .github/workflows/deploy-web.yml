@@ -1,34 +1,33 @@
 name: Deploy Web
 
-# Branch-split CI/CD:
-#   main -> environment `production`  (awsops.samples.whchoi.net stack)
-#   dev  -> environment `development` (awsops.dev.whchoi.net stack)
-# Each branch restores its stack's terraform backend from repo-level secrets
-# with distinct names (a dev job can never fall back to prod secrets):
-#   main: TF_BACKEND_HCL     / TF_TFVARS
-#   dev:  TF_BACKEND_HCL_DEV / TF_TFVARS_DEV
-# The environments gate ONLY the `deploy` (mutation) job — `build` must stay
-# automatic, so it carries no `environment:` (a gated one would pause it).
-# The stack's own terraform outputs (ecr_web_uri, ecs_cluster_name,
-# ecs_service_name, public_url) provide the per-environment ECR repo, service
-# and smoke-test domain, so nothing environment-specific is hardcoded here.
+# PUBLIC-REPO (production-only) pipeline. This repo intentionally carries only
+# the `main` branch — day-to-day development happens in the private dev repo
+# (sample-awsops-dev), which runs its own development pipeline against the
+# awsops.dev.whchoi.net stack and promotes here via short-lived release/*
+# branches PR'd into main.
 #
-# Mutation gate: `build` runs on every push and only publishes an image
-# (ci-build, ECR push only) — it never touches the running ECS service.
-# `deploy` (the actual `ecs update-service --force-new-deployment`, ci-deployer)
-# runs automatically after a dev-branch build (continuous deploy on dev), but
-# for main it stays workflow_dispatch-only behind the `production` environment
+# The production stack's terraform backend is restored from the repo-level
+# TF_BACKEND_HCL / TF_TFVARS secrets (base64 of the files `make configure`
+# produced locally). The stack's own terraform outputs (ecr_web_uri,
+# ecs_cluster_name, ecs_service_name, public_url) provide the ECR repo,
+# service and smoke-test domain — nothing environment-specific is hardcoded.
+#
+# Mutation gate: `build` runs on every push to main and only publishes an
+# image (ci-build, ECR push only) — it never touches the running ECS service.
+# `deploy` (the actual `ecs update-service --force-new-deployment`,
+# ci-deployer) is workflow_dispatch-only behind the `production` environment
 # and its protection rules. The approval is bound to a concrete image by tag
 # discipline: build pushes ONLY the immutable web-<sha> tag and never touches
 # :web-latest — the deploy job's pin step (inside the environment gate) is the
 # ONLY writer of :web-latest. A build landing mid-approval can't swap the
 # payload, and later ECS task churn (scale-out, ADR-015 restarts) re-resolves
-# :web-latest to the last APPROVED image, never to an unapproved build. Mirrors scripts/v2/deploy.mjs's
-# build+push+roll+wait+smoke steps, split across the two jobs/roles.
+# :web-latest to the last APPROVED image, never to an unapproved build.
+# Mirrors scripts/v2/deploy.mjs's build+push+roll+wait+smoke steps, split
+# across the two jobs/roles.
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     paths: ["web/**", "CHANGELOG.md"]
   workflow_dispatch:
     inputs:
@@ -45,9 +44,8 @@ permissions:
 # cancel-in-progress:false, so a workflow-level group would let a main push
 # (build-only run) cancel a dispatched production rollout waiting on the
 # environment's reviewer approval. With per-job groups, a push's skipped
-# deploy job never enters the rollout group at all. Within each group: dev is
-# newest-wins (an older run can never roll a stale image after a newer one);
-# main queues, and only another production dispatch can replace a pending one.
+# deploy job never enters the rollout group at all. Runs QUEUE (never cancel)
+# — only another production dispatch can replace a pending one.
 
 jobs:
   build:
@@ -55,11 +53,11 @@ jobs:
     if: github.event_name == 'push'
     runs-on: sample-awsops
     concurrency:
-      group: deploy-web-build-${{ github.ref_name }}
-      cancel-in-progress: ${{ github.ref_name != 'main' }}
+      group: deploy-web-build
+      cancel-in-progress: false
     env:
-      TF_BACKEND_HCL_B64: ${{ github.ref_name == 'main' && secrets.TF_BACKEND_HCL || secrets.TF_BACKEND_HCL_DEV }}
-      TF_TFVARS_B64: ${{ github.ref_name == 'main' && secrets.TF_TFVARS || secrets.TF_TFVARS_DEV }}
+      TF_BACKEND_HCL_B64: ${{ secrets.TF_BACKEND_HCL }}
+      TF_TFVARS_B64: ${{ secrets.TF_TFVARS }}
     steps:
       - uses: actions/checkout@v4
 
@@ -73,7 +71,7 @@ jobs:
         working-directory: terraform/foundation
         run: |
           if [ -z "$TF_BACKEND_HCL_B64" ]; then
-            echo "::error::This environment's TF backend secrets are not set — run 'make configure' once for this stack, see terraform.yml's header comment."
+            echo "::error::TF_BACKEND_HCL repo secret not set — run 'make configure' once, see terraform.yml's header comment."
             exit 1
           fi
           echo "$TF_BACKEND_HCL_B64" | base64 -d > backend.hcl
@@ -111,21 +109,15 @@ jobs:
 
   deploy:
     name: Roll ECS service
-    # dev: continuous deploy right after a successful build.
-    # main: workflow_dispatch only (production environment gates it).
-    needs: [build]
-    if: >-
-      !cancelled() &&
-      (needs.build.result == 'success' || needs.build.result == 'skipped') &&
-      (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev')
+    if: github.event_name == 'workflow_dispatch'
     runs-on: sample-awsops
-    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    environment: production
     concurrency:
-      group: deploy-web-rollout-${{ github.ref_name }}
-      cancel-in-progress: ${{ github.ref_name != 'main' }}
+      group: deploy-web-rollout
+      cancel-in-progress: false
     env:
-      TF_BACKEND_HCL_B64: ${{ github.ref_name == 'main' && secrets.TF_BACKEND_HCL || secrets.TF_BACKEND_HCL_DEV }}
-      TF_TFVARS_B64: ${{ github.ref_name == 'main' && secrets.TF_TFVARS || secrets.TF_TFVARS_DEV }}
+      TF_BACKEND_HCL_B64: ${{ secrets.TF_BACKEND_HCL }}
+      TF_TFVARS_B64: ${{ secrets.TF_TFVARS }}
     steps:
       - uses: actions/checkout@v4
 
@@ -139,7 +131,7 @@ jobs:
         working-directory: terraform/foundation
         run: |
           if [ -z "$TF_BACKEND_HCL_B64" ]; then
-            echo "::error::This environment's TF backend secrets are not set — see terraform.yml's header comment."
+            echo "::error::TF_BACKEND_HCL repo secret not set — see terraform.yml's header comment."
             exit 1
           fi
           echo "$TF_BACKEND_HCL_B64" | base64 -d > backend.hcl
@@ -159,8 +151,7 @@ jobs:
         # The task definition references :web-latest, and this step is that
         # tag's ONLY writer (build never touches it). Point it at the EXACT
         # web-<sha> image this run was approved for (dispatch input,
-        # defaulting to the dispatched ref's HEAD; the run's own commit on
-        # dev pushes) before rolling.
+        # defaulting to the dispatched ref's HEAD) before rolling.
         env:
           PIN_SHA: ${{ inputs.image_sha || github.sha }}
         run: |

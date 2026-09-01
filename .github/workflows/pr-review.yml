@@ -20,7 +20,7 @@ name: AI Code Review
 on:
   pull_request_target:
     types: [opened, synchronize]
-    branches: [main, dev] # PRs land on dev (integration) and main (promotion)
+    branches: [main] # this public repo carries only main; PRs arrive as release/* promotions
 
 jobs:
   review:
