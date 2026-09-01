@@ -47,15 +47,17 @@ this repo (including an experiment branch with an edited workflow file)
 assume the mutation roles:
 
 ```json
-// dev-ci-deployer, dev-ci-terraform-plan(apply 사용 시): dev 브랜치 런만
+// MUTATION roles — dev-ci-deployer (used by the ECS roll, the web-latest
+// pin, terraform APPLY, and agentcore) and dev-ci-build (pushes images):
+// dev-branch runs only.
 "Condition": {
   "StringEquals": {
     "token.actions.githubusercontent.com:sub": "repo:Atom-oh/sample-awsops-dev:ref:refs/heads/dev"
   }
 }
 
-// dev-ci-build: dev 브랜치 push 빌드만 — 위와 동일한 dev-branch sub
-// dev-ci-terraform-plan(plan은 PR에서도 돌게 하려면), dev-ci-review:
+// READ-ONLY roles — dev-ci-terraform-plan (plan runs on PRs and dev pushes)
+// and dev-ci-review: dev-branch runs plus pull_request runs.
 "Condition": {
   "StringLike": {
     "token.actions.githubusercontent.com:sub": [
@@ -66,10 +68,11 @@ assume the mutation roles:
 }
 ```
 
-(mutation 능력이 있는 역할(deployer, apply에 쓰는 plan 역할)은
-`ref:refs/heads/dev` 단일 sub로 고정 — 임의 브랜치의 수정된 워크플로가
-역할을 assume하는 경로를 차단합니다. read-only 역할만 PR sub를 추가로
-허용합니다.)
+(역할↔워크플로 매핑: `terraform.yml`의 apply 잡은 **deployer** 역할을 쓰고,
+plan 역할은 읽기 전용 plan 잡 전용입니다. 그래서 mutation 그룹 =
+deployer·build 두 역할뿐이며 `ref:refs/heads/dev` 단일 sub로 고정 — 임의
+브랜치의 수정된 워크플로가 mutation 역할을 assume하는 경로를 차단합니다.
+read-only 그룹(plan·review)만 PR sub를 추가로 허용합니다.)
 
 ⚠️ Do **NOT** instead add the dev repo to the production roles' trust policy.
 This repo's pipeline is deliberately ungated (no environment reviewer —
