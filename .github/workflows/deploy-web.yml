@@ -18,17 +18,20 @@ name: Deploy Web
 # `deploy` (the actual `ecs update-service --force-new-deployment`, ci-deployer)
 # runs automatically after a dev-branch build (continuous deploy on dev), but
 # for main it stays workflow_dispatch-only behind the `production` environment
-# and its protection rules. Mirrors scripts/v2/deploy.mjs's
+# and its protection rules. The approval is tied to a concrete image: deploy
+# re-points the mutable :web-latest at the exact web-<sha> it was approved
+# for before rolling, so a build landing mid-approval can't swap the payload. Mirrors scripts/v2/deploy.mjs's
 # build+push+roll+wait+smoke steps, split across the two jobs/roles.
 
 on:
   push:
     branches: [main, dev]
     paths: ["web/**", "CHANGELOG.md"]
-  workflow_dispatch: {}
-    # Rolls whatever the ECS task definition's image tag currently resolves to
-    # (:web-latest, mutable) — build always pushes to that same tag, so this
-    # just force-redeploys the most recently built image.
+  workflow_dispatch:
+    inputs:
+      image_sha:
+        description: "Full commit SHA whose web-<sha> image to promote and roll (default: the dispatched ref's HEAD)"
+        required: false
 
 permissions:
   contents: read
@@ -137,13 +140,44 @@ jobs:
           echo "$TF_TFVARS_B64" | base64 -d > terraform.tfvars
           terraform init -backend-config=backend.hcl -input=false
 
-      - name: Resolve ECS cluster/service/URL
+      - name: Resolve ECS cluster/service/URL + ECR repo
         id: tf
         working-directory: terraform/foundation
         run: |
           echo "cluster=$(terraform output -raw ecs_cluster_name)" >> "$GITHUB_OUTPUT"
           echo "service=$(terraform output -raw ecs_service_name)" >> "$GITHUB_OUTPUT"
           echo "url=$(terraform output -raw public_url)" >> "$GITHUB_OUTPUT"
+          echo "ecr_repo=$(terraform output -raw ecr_web_uri | sed 's|^[^/]*/||')" >> "$GITHUB_OUTPUT"
+
+      - name: Pin web-latest to the approved image
+        # The task definition references the mutable :web-latest, so between a
+        # dispatch and its environment approval a newer build could move that
+        # tag — the approver would then roll an image they never looked at.
+        # Re-point web-latest at the EXACT web-<sha> image this run was
+        # approved for (dispatch input, defaulting to the dispatched ref's
+        # HEAD; the run's own commit on dev pushes) before rolling.
+        env:
+          PIN_SHA: ${{ inputs.image_sha || github.sha }}
+        run: |
+          MANIFEST=$(aws ecr batch-get-image \
+            --repository-name "${{ steps.tf.outputs.ecr_repo }}" \
+            --image-ids imageTag="web-${PIN_SHA}" \
+            --region ap-northeast-2 \
+            --query 'images[0].imageManifest' --output text)
+          if [ -z "$MANIFEST" ] || [ "$MANIFEST" = "None" ]; then
+            echo "::error::No image tagged web-${PIN_SHA} in ${{ steps.tf.outputs.ecr_repo }} — build it first (push, or dispatch with a built SHA)."
+            exit 1
+          fi
+          # put-image errors with ImageAlreadyExistsException when web-latest
+          # already points at this manifest — that's success for our purposes.
+          OUT=$(aws ecr put-image \
+            --repository-name "${{ steps.tf.outputs.ecr_repo }}" \
+            --image-tag web-latest \
+            --image-manifest "$MANIFEST" \
+            --region ap-northeast-2 2>&1) || {
+              echo "$OUT" | grep -q ImageAlreadyExistsException || { echo "$OUT" >&2; exit 1; }
+            }
+          echo "web-latest -> web-${PIN_SHA}"
 
       - name: ECS force-new-deployment
         run: |
