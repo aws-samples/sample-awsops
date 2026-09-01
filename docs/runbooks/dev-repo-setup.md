@@ -84,8 +84,18 @@ gh secret set TF_TFVARS -R Atom-oh/sample-awsops-dev \
 ```
 
 (From then on, terraform changes for the dev stack go through this repo's
-`terraform.yml` — automatic plan on PR/push, saved-plan apply via dispatch —
-the same control as production.)
+`terraform.yml` — automatic plan on PR/push, and apply only via a manual
+workflow_dispatch that takes a `plan_run_id` and applies EXACTLY that saved
+plan. Note the difference from production: this private repo has no
+environment reviewer gate (GitHub environments aren't available on private
+Free-plan repos), so the dev apply's controls are the saved-plan pinning plus
+the deliberate dispatch itself — production additionally requires the
+`production` environment's reviewer approval.)
+(이후 dev 스택 변경은 이 리포의 `terraform.yml`로 — PR/push 시 자동 plan,
+apply는 `plan_run_id`로 지정한 저장 plan만 dispatch로 실행. production과의
+차이: 비공개 Free 플랜 리포는 environment를 쓸 수 없어 리뷰어 승인 게이트가
+없고, dev apply의 통제는 저장-plan 고정 + 수동 dispatch 두 가지입니다.
+production은 여기에 `production` environment 승인이 추가됩니다.)
 
 These must be the DEV stack's files — never the production pair, which lives
 only in the public repo's secrets.
