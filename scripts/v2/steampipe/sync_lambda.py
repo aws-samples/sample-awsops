@@ -219,7 +219,11 @@ QUERIES = {
     "opensearch": (
         "SELECT domain_name, region, account_id, arn, domain_id, engine_type, engine_version, processing, "
         "created, deleted, endpoint, node_to_node_encryption_options_enabled, encryption_at_rest_options, "
-        "cluster_config, vpc_options, ebs_options, endpoints, cognito_options, advanced_security_options, tags "
+        "cluster_config, vpc_options, ebs_options, endpoints, cognito_options, advanced_security_options, "
+        # L153 detail-panel fields (all verified present in the pinned plugin aws@0.142.0;
+        # v1's off_peak_window_options does NOT exist in 0.142.0 and is deliberately excluded)
+        "service_software_options, log_publishing_options, domain_endpoint_options, auto_tune_options, "
+        "snapshot_options, advanced_options, access_policies, upgrade_processing, tags "
         "FROM aws_opensearch_domain ORDER BY domain_name",
         "domain_name",
         "region",

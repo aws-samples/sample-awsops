@@ -11,6 +11,8 @@ export interface HBarListProps {
   valueKey: string;
   /** Prefix the right-aligned amount (e.g. "$"). */
   valuePrefix?: string;
+  /** Fraction digits for the right-aligned amount (non-$ values; default 0). */
+  decimals?: number;
   /** Give the row(s) at the max value a stronger fill (brand-700) — mirrors the
    *  BarDistribution "max bar" highlight rule (design handoff 개선안 ②-A). */
   highlightMax?: boolean;
@@ -29,6 +31,7 @@ export default function HBarList({
   labelKey,
   valueKey,
   valuePrefix = '',
+  decimals = 0,
   highlightMax = false,
   className,
 }: HBarListProps) {
@@ -40,10 +43,11 @@ export default function HBarList({
   const fmt = (v: unknown) => {
     const n = Number(v);
     if (!Number.isFinite(n)) return String(v);
-    const rounded = valuePrefix === '$' ? Math.round(n * 100) / 100 : n;
+    const digits = valuePrefix === '$' ? 2 : decimals;
+    const rounded = Math.round(n * 10 ** digits) / 10 ** digits;
     return `${valuePrefix}${rounded.toLocaleString(undefined, {
-      minimumFractionDigits: valuePrefix === '$' ? 2 : 0,
-      maximumFractionDigits: valuePrefix === '$' ? 2 : 0,
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
     })}`;
   };
 

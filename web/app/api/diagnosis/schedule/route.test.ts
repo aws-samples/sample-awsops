@@ -66,6 +66,27 @@ describe('PUT /api/diagnosis/schedule', () => {
     expect((await res.json()).schedule.scheduleType).toBe('monthly');
   });
 
+  // Detail fields (gap L51) + report lang (gap L50).
+  it('400 on out-of-range or cadence-mismatched detail fields; never silently coerces', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u1' });
+    expect((await PUT(req({ scheduleType: 'weekly', enabled: true, dayOfWeek: 7 }))).status).toBe(400);
+    expect((await PUT(req({ scheduleType: 'weekly', enabled: true, dayOfMonth: 5 }))).status).toBe(400); // monthly-only field
+    expect((await PUT(req({ scheduleType: 'monthly', enabled: true, dayOfWeek: 1 }))).status).toBe(400); // weekly-only field
+    expect((await PUT(req({ scheduleType: 'monthly', enabled: true, dayOfMonth: 29 }))).status).toBe(400);
+    expect((await PUT(req({ scheduleType: 'weekly', enabled: true, hour: 24 }))).status).toBe(400);
+    expect((await PUT(req({ scheduleType: 'weekly', enabled: true, hour: 9.5 }))).status).toBe(400);
+    expect((await PUT(req({ scheduleType: 'weekly', enabled: true, lang: 'fr' }))).status).toBe(400);
+    expect(upsertSchedule).not.toHaveBeenCalled();
+  });
+  it('passes valid detail fields + lang through to upsertSchedule', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u1' });
+    upsertSchedule.mockResolvedValue({ scheduleType: 'weekly', enabled: true, tier: 'mid', model: null, nextRunAt: 'n', lastRunAt: null });
+    const res = await PUT(req({ scheduleType: 'weekly', enabled: true, dayOfWeek: 1, hour: 9, lang: 'en' }));
+    expect(res.status).toBe(200);
+    expect(upsertSchedule).toHaveBeenCalledWith('u1',
+      expect.objectContaining({ dayOfWeek: 1, hour: 9, lang: 'en' }));
+  });
+
   it('ignores a body-supplied sub (no cross-user write)', async () => {
     verifyUser.mockResolvedValue({ sub: 'u1' });
     upsertSchedule.mockResolvedValue({ scheduleType: 'weekly', enabled: false, tier: 'mid', model: null, nextRunAt: 'n', lastRunAt: null });

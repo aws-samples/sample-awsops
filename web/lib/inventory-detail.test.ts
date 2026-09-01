@@ -92,4 +92,18 @@ describe('buildDetailGroups', () => {
     const keys = g.flatMap((x) => x.items.map((i) => i.key)).sort();
     expect(keys).toEqual(['region', 'resource_id']);
   });
+
+  it('hideKeys suppress raw keys from sections AND the Other group (gap L150)', () => {
+    const osRow = {
+      resource_id: 'dom-1', region: 'ap-northeast-2',
+      cluster_config: { InstanceType: 'r6g.large.search' }, // raw blob — replaced by derived fields
+      instance_type_h: 'r6g.large.search',
+      some_unknown_field: 'x', // still lands in Other
+    };
+    const g = buildDetailGroups(osRow, INVENTORY_TYPES.opensearch);
+    const keys = g.flatMap((x) => x.items.map((i) => i.key));
+    expect(keys).not.toContain('cluster_config');
+    expect(keys).toContain('instance_type_h');
+    expect(g.find((x) => x.label === 'Other')?.items.map((i) => i.key)).toEqual(['some_unknown_field']);
+  });
 });

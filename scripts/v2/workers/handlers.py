@@ -66,6 +66,11 @@ def _report(payload, dry_run):
     account = str(payload.get("account", ""))
     tier = payload.get("tier", "mid")
     model = payload.get("model", "sonnet")  # deep-tier may select 'opus'; resolver pins others to sonnet
+    # Report output language (gap L50). Allowlist fail-closed to 'ko' — a bad value must never
+    # reach the prompt (the BFF validates too; this is worker-side defense).
+    lang = payload.get("lang", "ko")
+    if lang not in ("ko", "en", "zh", "ja"):
+        lang = "ko"
     requested_by = payload.get("requested_by", "unknown")
     report_id = payload.get("report_id")
     if dry_run:
@@ -81,16 +86,16 @@ def _report(payload, dry_run):
             report_id = ddb.create_report(conn, worker_job_id=None, tier=tier, requested_by=requested_by)
         try:
             # A4 (V1 parity): stream per-section progress to diagnosis_reports as generate() advances.
-            on_progress = (lambda c, t, s, p: ddb.update_progress(
-                conn, report_id, current=c, total=t, section=s, phase=p))
+            on_progress = (lambda c, t, s, p, done=None: ddb.update_progress(
+                conn, report_id, current=c, total=t, section=s, phase=p, completed=done))
             scope = payload.get("scope") or "self"
             md, summary, sources_used = rpt.generate(
                 conn, account, tier, report_id=report_id, on_progress=on_progress, model=model,
-                scope=scope)
+                scope=scope, lang=lang)
             artifact_uri = _upload_markdown(md, report_id)
             _export_artifacts(md, report_id)  # best-effort DOCX+PDF; never fails the report
             try:  # auto title + suggested tags — best-effort, never fails the report
-                meta = rpt.make_title_and_tags(md)
+                meta = rpt.make_title_and_tags(md, lang)
             except Exception:  # noqa: BLE001 — defensive (make_title_and_tags already swallows)
                 meta = {"title": None, "tags": []}
             status = "partial" if summary.get("degraded") else "succeeded"

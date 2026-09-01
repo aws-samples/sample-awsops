@@ -45,6 +45,12 @@ export async function POST(req: Request) {
   const tier = ['light', 'mid', 'deep'].includes(body?.tier) ? body.tier : 'mid';
   // Only the deep tier may select Opus; every other tier is pinned to Sonnet (cost guard).
   const model: DiagnosisModel = tier === 'deep' && body?.model === 'opus' ? 'opus' : 'sonnet';
+  // Report output language (gap L50). Explicit-but-invalid → 400 (never silently swap the
+  // requested language); absent → 'ko' (today's behavior).
+  if (body?.lang !== undefined && !['ko', 'en', 'zh', 'ja'].includes(body.lang)) {
+    return NextResponse.json({ message: 'invalid lang (ko|en|zh|ja)' }, { status: 400 });
+  }
+  const lang: string = body?.lang ?? 'ko';
   const hostAccount = process.env.AWS_ACCOUNT_ID || '';
   // [PR#37 review MAJOR] fail fast — an empty account would silently reach the LLM context.
   if (!hostAccount) {
@@ -79,9 +85,19 @@ export async function POST(req: Request) {
   // `report:<sub>:…` is invisible to an old pod that only knows `report:<email>:…`, so the same user
   // gets a SECOND Bedrock run. A fallback lookup only covered one direction, which is why the
   // key itself is left alone (PR #195 review MAJOR). requested_by below is the immutable sub.
-  const key = `report:${identity(user)}:${tier}:${model}:${scope}:${hour}`;
+  // `lang` is part of the key — otherwise a language switch within the hour would be silently
+  // deduped onto the previous language's report. Changing the key format re-creates the exact
+  // rolling-deploy discontinuity the note above warns about, so default-ko requests ALSO check
+  // the pre-lang legacy format on the read side (an old pod's same-hour run stays deduped
+  // during the deploy window). Writes use only the new format; drop the fallback after one
+  // release. NOTE: this key is also the route's per-hour Bedrock spend guard — adding lang
+  // raises the per-(user,tier,model,scope) dedup ceiling 4× by design (a language switch is a
+  // genuinely different report).
+  const key = `report:${identity(user)}:${tier}:${model}:${scope}:${lang}:${hour}`;
+  const legacyKey = lang === 'ko' ? `report:${identity(user)}:${tier}:${model}:${scope}:${hour}` : null;
 
-  const existing = await reportForIdempotencyKey(key);
+  const existing = (await reportForIdempotencyKey(key))
+    ?? (legacyKey ? await reportForIdempotencyKey(legacyKey) : null);
   if (existing) {
     return NextResponse.json({ report_id: existing, tier, model, deduped: true }, { status: 202 });
   }
@@ -95,7 +111,7 @@ export async function POST(req: Request) {
   try {
     job = await enqueueJob(
       'report',
-      { account, scope, tier, model, requested_by: owner, report_id: reportId },
+      { account, scope, tier, model, lang, requested_by: owner, report_id: reportId },
       { idempotencyKey: key, requestedBy: owner },
     );
   } catch (e) {

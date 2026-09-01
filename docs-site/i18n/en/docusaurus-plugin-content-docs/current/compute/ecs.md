@@ -19,7 +19,7 @@ v1 monitored clusters/services/tasks together on one page, but **v2 splits this 
 ## Key Features
 
 ### ECS Clusters (`/inventory/ecs_cluster`)
-Highlight cards show status and region distribution, plus a Top-N bar chart ranked by running task count.
+Highlight cards show a dedicated KPI band — ACTIVE cluster count, total running tasks, total active services, total container instances — plus a Top-N bar chart ranked by running task count.
 
 Table columns:
 | Column | Description |

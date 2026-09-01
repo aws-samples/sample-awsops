@@ -4,12 +4,22 @@ import Link from 'next/link';
 import Card from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
 import IntegrationIcon from '@/components/datasources/IntegrationIcon';
+import StatTile from '@/components/ui/StatTile';
+import { RefreshCw } from 'lucide-react';
 import DatasourceForm, { type DatasourceFormValue } from './DatasourceForm';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
 interface Instance {
   id: number; name: string; kind: string; endpoint?: string | null; authType?: string | null; isDefault?: boolean; connected?: boolean;
 }
+
+// Chat section per datasource kind (the deep-link prompt pins it with a leading /section —
+// free-text routing would misroute: '연결' matches the network rule, and jaeger/datadog/dynatrace
+// have no default-enabled connector target, so those kinds get no link at all).
+const DIAGNOSE_SECTION: Record<string, string> = {
+  prometheus: 'observability', clickhouse: 'observability',
+  loki: 'monitoring', mimir: 'monitoring', tempo: 'monitoring',
+};
 
 // The Datasources tab: manage instances (multi-per-type, named) + drill into Explore. Read-visible to
 // all authenticated users; mutating actions are admin-only (canManage).
@@ -54,11 +64,42 @@ export default function DatasourcesTab({ canManage = false }: { canManage?: bool
     );
   }
 
+  // gap-audit L201: KPI roll-up from the already-fetched list — no extra API call.
+  const connectedN = list.filter((i) => i.connected).length;
+  const kindN = new Set(list.map((i) => i.kind)).size;
+  // Defaults are PER KIND — one arbitrary name would misrepresent the set, so show the count
+  // (with every kind: name pair in a tooltip) once there's more than one.
+  const defaults = list.filter((i) => i.isDefault);
+  const defaultVal = defaults.length === 0 ? '—'
+    : defaults.length === 1 ? `★ ${defaults[0].name}` : `★ ${defaults.length}`;
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-[13px] text-ink-500">{tt('관측성 데이터소스 (Prometheus·Mimir·Loki·Tempo·ClickHouse). 같은 타입 여러 개 등록 가능.')}</p>
-        {canManage && <Button onClick={() => setForm({ mode: 'add' })}>＋ Add datasource</Button>}
+        <div className="flex items-center gap-2">
+          {/* gap-audit L202: re-fetch without a full page reload. */}
+          <button
+            type="button"
+            aria-label={tt('새로고침')}
+            title={tt('새로고침')}
+            onClick={() => load()}
+            disabled={loading}
+            className="rounded-md border border-ink-200 bg-card p-1.5 text-ink-500 hover:bg-ink-50 disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={loading ? 'animate-spin' : undefined} />
+          </button>
+          {canManage && <Button onClick={() => setForm({ mode: 'add' })}>＋ Add datasource</Button>}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <StatTile label={tt('총 데이터소스')} value={list.length} />
+        <StatTile label={tt('연결됨')} value={connectedN} />
+        <StatTile label={tt('타입 종류')} value={kindN} />
+        <div title={defaults.map((d) => `${d.kind}: ${d.name}`).join(', ')}>
+          <StatTile label={tt('기본 데이터소스')} value={defaultVal} />
+        </div>
       </div>
 
       <Card className="overflow-hidden">
@@ -91,6 +132,18 @@ export default function DatasourcesTab({ canManage = false }: { canManage?: bool
                 </td>
                 <td className="px-3 py-2">{i.isDefault ? <span className="text-amber-600">★ default</span> : (canManage && <button className="text-[12px] text-brand-600 hover:underline" onClick={() => onSetDefault(i)} disabled={busyId === i.id}>set default</button>)}</td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">
+                  {/* The chat gateway path resolves each kind's DEFAULT instance (kind-mirror
+                      credential) — a non-default row's diagnosis would confidently describe the
+                      WRONG datasource under this row's name. Scope the link to defaults until
+                      the tool path is instance-aware. */}
+                  {i.isDefault && DIAGNOSE_SECTION[i.kind] && (
+                    <Link
+                      href={`/assistant?q=${encodeURIComponent(`/${DIAGNOSE_SECTION[i.kind]} ${i.name} (${i.kind}) 데이터소스 상태를 진단해줘`)}`}
+                      className="text-[12px] text-purple-600 hover:underline mr-3"
+                    >
+                      {tt('AI로 진단')}
+                    </Link>
+                  )}
                   <Link href={`/integrations/datasources/${i.id}`} className="text-[12px] text-brand-600 hover:underline mr-3">Explore →</Link>
                   {canManage && <button className="text-[12px] text-ink-600 hover:underline mr-3" onClick={() => setForm({ mode: 'edit', value: { id: i.id, name: i.name, kind: i.kind, endpoint: i.endpoint ?? '', authType: i.authType ?? 'none' } })}>Edit</button>}
                   {canManage && <button className="text-[12px] text-rose-600 hover:underline" onClick={() => onDelete(i)} disabled={busyId === i.id}>Delete</button>}

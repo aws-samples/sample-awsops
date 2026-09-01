@@ -266,32 +266,22 @@ AI 助手可以利用已注册的数据源执行分析。
 出于性能考虑，Prometheus 多序列图表限制为最多 8 个序列。超过 8 个的结果仅显示前 8 个。
 :::
 
-## 数据源诊断
+## AI 诊断
 
-当数据源连接出现问题时，点击 **Diagnose** 按钮（听诊器图标）会自动执行 8 步诊断。
+在 Datasources 管理页中,每个 kind 的**默认(default)**数据源行会显示 **AI 诊断** 链接
+(支持的 kind: Prometheus、ClickHouse、Loki、Mimir、Tempo)。点击后会跳转到 AI 助手,
+输入框中会预填一条已固定分区的诊断提示(Prometheus/ClickHouse → `/observability`,
+Loki/Mimir/Tempo → `/monitoring`)。**不会自动发送** — 请确认内容后自行发送,并会以新会话开始。
+代理会使用该连接器的查询/模式工具检查数据源的响应状态。
 
-:::info 仅限管理员
-Diagnose 功能需要管理员角色。
-:::
+## Explore 功能摘要
 
-### datasource-diag AI 路由
+- 按 kind 提供**示例查询·自然语言提示词标签**(共 8 种 kind)
+- **7d/30d 时间范围预设**(Prometheus/Mimir 最长 30d,Loki 7d — 按 kind 设上限)
+- 结果**元数据栏**(行/序列数 · 往返 ms · 查询语言 · 形态)
+- **Loki 专用日志查看器**(最新优先、标签徽章),Tempo/Jaeger **耗时条**
+- AI 生成查询**来源横幅**;管理页 **KPI 卡片与刷新按钮**
 
-诊断请求会传递到 `datasource-diag` AI 路由。为系统性地分析数据源连接问题，该路由会依次执行 8 个专业诊断工具。
-
-### 8 步自动诊断
-
-| 步骤 | 工具 | 说明 |
-|------|------|------|
-| 1 | **URL Validation** | 验证 URL 格式、协议、Allowed Networks 列表 |
-| 2 | **DNS Resolution** | 将主机名解析为 IP 并确认可达性 |
-| 3 | **NLB Health** | 检查 Network Load Balancer 目标组状态 |
-| 4 | **SG Chain** | 验证 Security Group 入站/出站规则链 |
-| 5 | **Network Path** | 追踪 VPC 路由、子网、NACL 路径 |
-| 6 | **HTTP Test** | 发送 HTTP 请求并验证响应码/正文 |
-| 7 | **K8s Endpoint** | 确认 Kubernetes Service 及 Pod 端点状态 |
-| 8 | **Full Report** | 汇总所有结果生成诊断报告 |
-
-诊断开始后会自动跳转到 AI 助手界面，可实时查看诊断过程。
 
 ## Allowed Networks
 

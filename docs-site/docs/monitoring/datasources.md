@@ -266,32 +266,18 @@ Prometheus 데이터소스에서 최대 **8개 시리즈**를 동시에 시각�
 성능을 위해 Prometheus 멀티 시리즈 차트는 최대 8개 시리즈로 제한됩니다. 8개를 초과하는 결과는 상위 8개만 표시됩니다.
 :::
 
-## 데이터소스 진단
+## 데이터소스 진단 (AI로 진단)
 
-데이터소스 연결에 문제가 있을 때 **Diagnose** 버튼(청진기 아이콘)을 클릭하면 자동으로 8단계 진단을 수행합니다.
+Datasources 관리 탭에서 각 kind의 **default** 데이터소스 행에는 **AI로 진단** 링크가 표시됩니다
+(지원 kind: Prometheus·ClickHouse·Loki·Mimir·Tempo — 챗 도구 경로가 kind별 default 인스턴스를
+해석하므로 default 행에만 제공됩니다).
 
-:::info 관리자 전용
-Diagnose 기능은 관리자 역할이 필요합니다.
-:::
+링크를 클릭하면 AI 어시스턴트로 이동하며, 해당 데이터소스에 대한 진단 프롬프트가 **섹션이
+고정된 상태로 입력창에 미리 채워집니다**(Prometheus/ClickHouse → `/observability`,
+Loki/Mimir/Tempo → `/monitoring`). 프롬프트는 자동으로 전송되지 않습니다 — 내용을 검토한 뒤
+직접 전송하세요. 전송 시 새 대화로 시작되어 이전 대화 맥락이 진단에 섞이지 않습니다.
 
-### datasource-diag AI 라우트
-
-진단 요청은 `datasource-diag` AI 라우트로 전달됩니다. 이 라우트는 데이터소스 연결 문제를 체계적으로 분석하기 위해 8개의 전문 진단 도구를 순차적으로 실행합니다.
-
-### 8단계 자동 진단
-
-| 단계 | 도구 | 설명 |
-|------|------|------|
-| 1 | **URL Validation** | URL 형식, 프로토콜, Allowed Networks 목록 검증 |
-| 2 | **DNS Resolution** | 호스트명을 IP로 변환하고 도달 가능성 확인 |
-| 3 | **NLB Health** | Network Load Balancer 대상 그룹 상태 점검 |
-| 4 | **SG Chain** | Security Group 인바운드/아웃바운드 규칙 체인 검증 |
-| 5 | **Network Path** | VPC 라우팅, 서브넷, NACL 경로 추적 |
-| 6 | **HTTP Test** | HTTP 요청 전송 및 응답 코드/본문 검증 |
-| 7 | **K8s Endpoint** | Kubernetes Service 및 Pod 엔드포인트 상태 확인 |
-| 8 | **Full Report** | 모든 결과를 종합한 진단 리포트 생성 |
-
-진단이 시작되면 자동으로 AI 어시스턴트 화면으로 이동하여 실시간으로 진단 과정을 확인할 수 있습니다.
+에이전트는 해당 커넥터의 쿼리/스키마 도구로 데이터소스의 응답 상태를 점검합니다.
 
 ## Allowed Networks
 

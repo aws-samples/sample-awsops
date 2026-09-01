@@ -247,7 +247,9 @@ describe('POST /api/diagnosis — idempotency conflict must not strand the secon
     // payload carries no id, so the arbiter has nothing to compare and the link is the only signal
     (enqueueJob as any).mockResolvedValue({ job_id: 'j1', status: 'queued', payload: {} });
     (linkReportJob as any).mockRejectedValueOnce(new ReportJobAlreadyLinkedError('j1'));
-    (reportForIdempotencyKey as any).mockResolvedValueOnce(null).mockResolvedValueOnce(9);
+    // Call order for a ko request: new-format key → legacy-key fallback → post-race re-lookup.
+    (reportForIdempotencyKey as any)
+      .mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValueOnce(9);
     const { POST } = await import('./route');
     const res = await POST(req({ tier: 'mid' }) as any);
     expect(res.status).toBe(202);
@@ -285,6 +287,43 @@ describe('POST /api/diagnosis — idempotency conflict must not strand the secon
     await POST(req({ tier: 'mid' }) as any);
     // Switching this to the sub created a rolling-deploy discontinuity for no benefit.
     expect((reportForIdempotencyKey as any).mock.calls[0][0]).toContain('report:u@x.io:');
+  });
+
+  // Report output language (gap L50).
+  it('400s an explicit invalid lang instead of silently swapping the language', async () => {
+    const { POST } = await import('./route');
+    const res = await POST(req({ tier: 'mid', lang: 'fr' }) as any);
+    expect(res.status).toBe(400);
+    expect(enqueueJob as any).not.toHaveBeenCalled();
+  });
+  it('defaults lang to ko and threads a valid lang into the payload + idempotency key', async () => {
+    const { POST } = await import('./route');
+    await POST(req({ tier: 'mid' }) as any);
+    expect((enqueueJob as any).mock.calls[0][1]).toMatchObject({ lang: 'ko' });
+    expect((reportForIdempotencyKey as any).mock.calls[0][0]).toContain(':ko:');
+    vi.clearAllMocks();
+    (createReport as any).mockResolvedValue(42);
+    (reportForIdempotencyKey as any).mockResolvedValue(null);
+    (enqueueJob as any).mockResolvedValue({ job_id: 'j1', status: 'queued' });
+    await POST(req({ tier: 'mid', lang: 'en' }) as any);
+    expect((enqueueJob as any).mock.calls[0][1]).toMatchObject({ lang: 'en' });
+    // lang is part of the key — a same-hour language switch must NOT dedupe onto the ko report,
+    // and a non-ko request must NOT consult the legacy (pre-lang) key.
+    expect((reportForIdempotencyKey as any).mock.calls).toHaveLength(1);
+    expect((reportForIdempotencyKey as any).mock.calls[0][0]).toContain(':en:');
+  });
+  it('default-ko falls back to the legacy (pre-lang) key so a rolling deploy keeps same-hour dedup', async () => {
+    (reportForIdempotencyKey as any)
+      .mockResolvedValueOnce(null)  // new-format key miss (this pod's format)
+      .mockResolvedValueOnce(42);   // legacy-format key hit (old pod's same-hour run)
+    const { POST } = await import('./route');
+    const res = await POST(req({ tier: 'mid' }) as any);
+    expect(res.status).toBe(202);
+    expect(await res.json()).toMatchObject({ report_id: 42, deduped: true });
+    expect(enqueueJob as any).not.toHaveBeenCalled();
+    const [newKey, legacyKey] = (reportForIdempotencyKey as any).mock.calls.map((c: any[]) => c[0]);
+    expect(newKey).toContain(':ko:');
+    expect(legacyKey).not.toContain(':ko:');
   });
 });
 

@@ -11,7 +11,7 @@ Project documentation organized by purpose. Each subdirectory has its own CLAUDE
 | [reference/](reference/) | Current v2 design, one file per component (single source per component) |
 | [runbooks/](runbooks/) | Operational playbooks by scenario |
 | [guides/](guides/) | AI test question sets (`ai-test-questions.md`, `ai-testing.md`), test coverage plan (`test-coverage-plan.md`), install/onboarding/troubleshooting guides |
-| [api-reference.md](api-reference.md) | Full API route index (root `CLAUDE.md` calls this the 94-route index) |
+| [api-reference.md](api-reference.md) | Full API route index (root `CLAUDE.md` calls this the 99-route index) |
 
 ## Conventions
 - All new documents are **bilingual Korean/English** — exception: **all `CLAUDE.md`-type

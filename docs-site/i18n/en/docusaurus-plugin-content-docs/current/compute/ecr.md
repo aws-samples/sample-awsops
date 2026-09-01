@@ -30,9 +30,10 @@ There is no card showing total repository count (check the table row count inste
 |--------|-------------|
 | URI | Repository URI (image push/pull address) |
 | Tag mutability | Tag mutability (MUTABLE/IMMUTABLE) |
+| Scan on Push (Basic) | Repository-level basic scan-on-push setting (Yes/No) |
 | Created | Creation date |
 
-Scan-on-push status and encryption type are **not table columns** — scan-on-push is shown on the highlight cards above, and encryption is in the detail panel below.
+The encryption type is **not a table column** — check the detail panel below. The Scan on Push (Basic) column reflects the repository-level basic scanning setting only; registry-level Inspector enhanced scanning is not represented.
 
 ### Detail Panel
 Click a repository to view detailed information:

@@ -92,5 +92,5 @@ Architecture decision records (ADRs 001–020 + the BASELINE invariant register)
 ## Implementation References
 <!-- AUTO-MANAGED:references — managed by the /project-init sync; do not hand-edit inside the markers. -->
 Per-layer implementation references live under `docs/reference/` (index: [README](docs/reference/README.md)) — [01 Edge Network](docs/reference/01-edge-network.md) · [02 Auth](docs/reference/02-auth.md) · [03 Aurora Data](docs/reference/03-data-aurora.md) · [04 Web BFF](docs/reference/04-web-bff.md) · [05 AgentCore](docs/reference/05-agentcore.md) · [06 Workers](docs/reference/06-workers.md) · [07 EKS](docs/reference/07-eks.md).
-Full overview: [docs/architecture.md](docs/architecture.md) (bilingual + mermaid) · New joiners: [docs/onboarding.md](docs/onboarding.md) · Full API index (94 routes): [docs/api-reference.md](docs/api-reference.md) · Operations: [docs/runbooks/](docs/runbooks/).
+Full overview: [docs/architecture.md](docs/architecture.md) (bilingual + mermaid) · New joiners: [docs/onboarding.md](docs/onboarding.md) · Full API index (99 routes): [docs/api-reference.md](docs/api-reference.md) · Operations: [docs/runbooks/](docs/runbooks/).
 <!-- /AUTO-MANAGED:references -->

@@ -17,13 +17,46 @@ Pillar → section map (6 Well-Architected pillars):
                             score marks it a data gap rather than fabricating a number)
 """
 
-# Shared rules appended to every section prompt: language, evidence discipline, read-only, finding shape.
+# Shared rules appended to every section prompt: evidence discipline, read-only, finding shape.
+# The OUTPUT language is appended separately per render via LANG_RULES (report lang, gap L50).
 _RULES = (
-    "마크다운 ### 소제목 + | 표 | + 불릿으로 구성하고 한국어로 답하라. "
+    "마크다운 ### 소제목 + | 표 | + 불릿으로 구성하라. "
     "제공된 데이터에만 근거하라 — 신호가 없으면 '데이터 불가'로 명시하고 추측/날조 금지. "
     "각 발견에 심각도 [Critical]/[Warning]/[Info], 우선순위 P1/P2/P3, 공수 Low/Med/High, 근거(소스)를 붙여라. "
     "AWS 리소스 변경·자동 실행을 제안하지 마라(읽기 전용 진단 — 권고만)."
 )
+# Report output language (gap L50) — appended to every section prompt at render time. The prompt
+# BODIES stay Korean; this instruction governs the output language only. The [Critical]/[Warning]/
+# [Info] and P1/P2/P3 markers must stay verbatim (the UI/severity heuristics key on them).
+# NOTE: a manual i18n lockstep site — alongside agent/agent.py's language map and
+# bedrock-direct.ts (see web/lib/CLAUDE.md); adding a language starts at web SUPPORTED_LANGS.
+LANG_RULES = {
+    "ko": "모든 출력은 한국어로 작성하라.",
+    "en": "Write ALL output in English (keep the [Critical]/[Warning]/[Info] and P1/P2/P3 markers verbatim).",
+    "zh": "全部输出使用简体中文（[Critical]/[Warning]/[Info] 与 P1/P2/P3 标记保持原样）。",
+    "ja": "出力全体を日本語で書け（[Critical]/[Warning]/[Info] と P1/P2/P3 の表記はそのまま維持すること）。",
+}
+
+# Localized titles for the sections whose catalog titles are Korean literals (the 7 deep-only
+# sections) — without this, a non-ko deep report ships localized bodies under Korean `##`
+# headings/TOC entries. Section KEYS stay stable (the UI/report contract); only the rendered
+# title localizes. Missing (key, lang) → the catalog title unchanged (ko and the English base
+# titles need no entry). Same lockstep caveat as LANG_RULES above.
+TITLES_I18N = {
+    "identity_access": {"en": "IAM & Identity Deep-Dive", "zh": "IAM 与身份深度分析", "ja": "IAM・アイデンティティ詳細"},
+    "data_protection": {"en": "Data Protection & Encryption", "zh": "数据保护与加密", "ja": "データ保護と暗号化"},
+    "network_exposure": {"en": "Network Security / Exposure", "zh": "网络安全 / 暴露面", "ja": "ネットワークセキュリティ / 露出"},
+    "reliability_ha": {"en": "Reliability & High Availability", "zh": "可靠性与高可用", "ja": "信頼性と高可用性"},
+    "observability_coverage": {"en": "Observability & Alarm Coverage", "zh": "可观测性与告警覆盖", "ja": "可観測性とアラームカバレッジ"},
+    "external_obs_signals": {"en": "External Observability Signals (Prometheus/Mimir)", "zh": "外部可观测性信号 (Prometheus/Mimir)", "ja": "外部可観測性シグナル (Prometheus/Mimir)"},
+    "cost_optimization": {"en": "Cost Optimization Deep-Dive", "zh": "成本优化深度分析", "ja": "コスト最適化詳細"},
+}
+
+
+def localized_title(section, lang="ko"):
+    """The section's rendered title for a report language (catalog title when no mapping)."""
+    return TITLES_I18N.get(section.get("key"), {}).get(lang, section["title"])
+
 # Pricing heuristics for the cost-bearing sections (rough guidance only; exact $ from the cost data).
 _PRICING = (
     "참고 가격 휴리스틱(ap-northeast-2 개략치 — 정확 절감액은 제공된 cost 데이터(서비스별·usage-type·월추이)를 "

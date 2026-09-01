@@ -38,11 +38,36 @@ export async function PUT(req: Request) {
   const enabled = body?.enabled === true;
   const tier = ['light', 'mid', 'deep'].includes(body?.tier as string) ? (body.tier as string) : 'mid';
   const model = typeof body?.model === 'string' ? (body.model as string) : null;
+  // Report output language (gap L50) — explicit-but-invalid → 400, matching POST /api/diagnosis.
+  if (body?.lang !== undefined && !['ko', 'en', 'zh', 'ja'].includes(body.lang as string)) {
+    return NextResponse.json({ message: 'invalid lang (ko|en|zh|ja)' }, { status: 400 });
+  }
+  const lang = body?.lang as string | undefined;
+  // Detail fields (gap L51, all optional): integer + in-range + cadence-appropriate, else 400 —
+  // never silently coerce an explicit out-of-range value.
+  const intIn = (v: unknown, lo: number, hi: number) =>
+    typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi;
+  if (body?.dayOfWeek !== undefined
+      && !(intIn(body.dayOfWeek, 0, 6) && scheduleType !== 'monthly')) {
+    return NextResponse.json({ message: 'invalid dayOfWeek (0-6, weekly/biweekly only)' }, { status: 400 });
+  }
+  if (body?.dayOfMonth !== undefined
+      && !(intIn(body.dayOfMonth, 1, 28) && scheduleType === 'monthly')) {
+    return NextResponse.json({ message: 'invalid dayOfMonth (1-28, monthly only)' }, { status: 400 });
+  }
+  if (body?.hour !== undefined && !intIn(body.hour, 0, 23)) {
+    return NextResponse.json({ message: 'invalid hour (0-23, KST)' }, { status: 400 });
+  }
 
   // Persist only — the dispatcher (not this route) enqueues runs.
   let schedule;
   try {
-    schedule = await upsertSchedule(user.sub, { scheduleType, enabled, tier, model });
+    schedule = await upsertSchedule(user.sub, {
+      scheduleType, enabled, tier, model, lang,
+      dayOfWeek: body?.dayOfWeek as number | undefined,
+      dayOfMonth: body?.dayOfMonth as number | undefined,
+      hour: body?.hour as number | undefined,
+    });
   } catch (e) {
     if (e instanceof ScheduleSlotTakenError) {
       return NextResponse.json({ status: 'error', message: e.message }, { status: 409 });

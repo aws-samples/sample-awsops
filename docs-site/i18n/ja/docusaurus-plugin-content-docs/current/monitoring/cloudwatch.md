@@ -17,10 +17,11 @@ AWS CloudWatch アラームの状態を一目で把握し、詳細設定を確�
 ### アラーム状態サマリー
 - **OK**: 正常状態のアラーム数 (緑)
 - **ALARM**: トリガーされたアラーム数 (赤)
-- **INSUFFICIENT_DATA**: データ不足のアラーム数 (オレンジ)
+- **INSUFFICIENT_DATA**: データ不足のアラーム数 (グレー)
 
 ### 可視化
-- **Alarm State Distribution**: 状態別アラーム比率の円グラフ
+- **Alarm State Distribution**: 状態別アラーム比率の円グラフ (セマンティックカラー: OK 緑 · ALARM 赤 · INSUFFICIENT_DATA グレー)
+- アラームテーブルはデフォルトで **worst-first**（ALARM → INSUFFICIENT_DATA → OK、最新の状態変更を優先）に並び、列ヘッダーのソートが優先されます
 - **Alarms by Namespace**: ネームスペース別アラーム数の棒グラフ
 
 ### アラーム一覧

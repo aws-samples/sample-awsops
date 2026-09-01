@@ -30,9 +30,10 @@ import Screenshot from '@site/src/components/Screenshot';
 |------|------|
 | URI | 存储库 URI（镜像推送/拉取地址） |
 | Tag mutability | 标签是否可更改（MUTABLE/IMMUTABLE） |
+| Scan on Push (Basic) | 仓库级基础推送扫描设置（Yes/No） |
 | Created | 创建日期 |
 
-Scan on Push 状态和加密类型**并非表格列** —— Scan on Push 显示在上方的高亮卡片中，加密信息在下方的详情面板中查看。
+加密类型**并非表格列** —— 请在下方详情面板中查看。Scan on Push (Basic) 列仅反映仓库级基础扫描设置，不反映注册表级 Inspector 增强扫描。
 
 ### 详情面板
 点击存储库可以查看详细信息：

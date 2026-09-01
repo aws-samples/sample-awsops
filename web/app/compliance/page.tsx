@@ -23,6 +23,7 @@ interface Run {
 interface Result {
   control_id: string; title: string; section: string; status: string;
   reason: string; resource: string; region: string; severity: string;
+  description?: string; // gap L70 — recommendation rationale ('' on pre-migration rows → '—')
 }
 
 const RESULT_COLS = [

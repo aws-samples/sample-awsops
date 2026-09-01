@@ -45,9 +45,9 @@ Events 和 Write Events 选项卡仅在点击时才加载数据（`eventsLoaded`
 
 ### 事件详细信息
 点击事件行后可查看：
-- **Event**: ID、名称、来源、时间、用户、Access Key
+- **Event**: ID、名称、来源、时间、用户（Access Key 仅管理员可见）
 - **Resource**: 资源类型及名称
-- **Raw Event**: JSON 格式的完整事件数据
+- **Raw Event**（仅管理员）: JSON 格式的投影事件数据 —— userIdentity 仅保留选定的身份属性，凭证类键通过 deny-list 掩码（属于纵深防御而非完整性保证 —— 复制前请先核对内容）
 
 ## 使用方法
 
@@ -72,7 +72,7 @@ Events 和 Write Events 选项卡仅在点击时才加载数据（`eventsLoaded`
 ### 检测可疑活动
 在 Write Events 选项卡中检查以下内容：
 - 非正常时间段的 API 调用
-- 未知的用户名或 Access Key
+- 未知的用户名（管理员还可核对 Access Key）
 - 大量删除（Delete*）事件
 - IAM 相关变更事件
 

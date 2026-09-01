@@ -35,7 +35,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       return NextResponse.json({ message: 'forbidden' }, { status: 403 });
     }
     const resR = await pool.query(
-      `SELECT control_id, title, section, status, reason, resource, region, severity
+      `SELECT control_id, title, section, status, reason, resource, region, severity, description
        FROM compliance_results WHERE run_id = $1
        ORDER BY section, control_id, status`,
       [id],

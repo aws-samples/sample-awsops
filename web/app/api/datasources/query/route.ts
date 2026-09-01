@@ -58,6 +58,12 @@ export async function POST(request: Request) {
 
   const args: Record<string, unknown> = { [spec.arg]: query, ...(spec.extra ?? {}) };
 
+  // Upstream execution bound (review hardening): prometheus/mimir accept a `timeout` API param
+  // (connector clamps 1..60s) — pass one under the connector's own 12s HTTP timeout so the
+  // upstream engine stops evaluating when the client gives up. Scoped strictly to the kinds
+  // whose connector reads it, so no other kind sees an unknown arg.
+  if (kind === 'prometheus' || kind === 'mimir') args.timeout = '10s';
+
   // Range mode: absent/false = instant; true = legacy 1h range (connector default);
   // { window, step } = explicit time range. An object range is validated regardless of kind (so a bad
   // window/step is a 400, not a silent instant); start/end are computed from the request clock.
@@ -66,8 +72,17 @@ export async function POST(request: Request) {
   if (r && typeof r === 'object') {
     const window = Number((r as { window?: unknown }).window);
     const step = Number((r as { step?: unknown }).step);
-    if (!Number.isInteger(window) || window < 60 || window > 86400) {
-      return json({ error: 'range.window must be an integer in [60, 86400] seconds' }, 400);
+    // Upper bound widened to 30d (gap-audit L86, v1 parity) — the point-density cap below still
+    // bounds RETURNED points; upstream evaluation is bounded by the forwarded prometheus/mimir
+    // `timeout` param (range + instant) and, for Loki, by the tighter 7d window below (Loki accepts
+    // no per-request timeout).
+    // A 30d window at the UI's ~250-point autoStep is ~10368s steps.
+    // Per-kind upper bound (review): prometheus/mimir get 30d WITH a forwarded upstream `timeout`
+    // (their connectors clamp it 1..60s on BOTH instant and range paths); Loki has no per-request
+    // upstream timeout, so its widened bound stays at 7d.
+    const maxWindow = kind === 'loki' ? 604800 : 2592000;
+    if (!Number.isInteger(window) || window < 60 || window > maxWindow) {
+      return json({ error: `range.window must be an integer in [60, ${maxWindow}] seconds` }, 400);
     }
     if (!Number.isInteger(step) || step < 1 || step > 86400) {
       return json({ error: 'range.step must be an integer in [1, 86400] seconds' }, 400);
@@ -90,8 +105,10 @@ export async function POST(request: Request) {
   }
 
   try {
+    const t0 = Date.now();
     const result = await invokeMcpLambdaTool({ kind, tool, args, connConfig });
-    return json({ result: normalizeResult(kind, tool, result) }, 200);
+    // Additive metadata for the Explore result bar (gap-audit L88) — existing consumers read only `result`.
+    return json({ result: normalizeResult(kind, tool, result), metadata: { executionTimeMs: Date.now() - t0, tool } }, 200);
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : 'query failed' }, 502);
   }

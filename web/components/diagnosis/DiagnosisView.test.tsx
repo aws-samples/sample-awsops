@@ -37,7 +37,8 @@ function mockList(reports: Array<Record<string, unknown>>) {
     if (method === 'GET' && path.startsWith('/api/diagnosis/')) {
       const id = Number(path.split('/').pop());
       const r = reports.find((x) => (x as { id: number }).id === id) ?? reports[0];
-      return resp({ report: r, markdown: (r as { status: string }).status === 'succeeded' ? '# ok' : null });
+      // empty-list renders (idle-state tests) still hit /api/diagnosis/intent → r is undefined
+      return resp({ report: r ?? null, markdown: r && (r as { status: string }).status === 'succeeded' ? '# ok' : null });
     }
     return resp({}, 404);
   }));
@@ -65,11 +66,71 @@ describe('DiagnosisView — live progress & never-stuck UI (A6)', () => {
   });
 });
 
+describe('DiagnosisView — generation quick wins (L176/L177/L180/L181)', () => {
+  it('running: shows an mm:ss elapsed timer and the completed/pending checklist grid', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-08-31T00:01:30Z'));
+    // Mirrors the worker's payload shape: `section` is the most recently COMPLETED section and
+    // is always a member of `completed` (render is concurrent — no in-flight telemetry exists).
+    mockList([{ id: 5, tier: 'mid', status: 'running', created_at: '2026-08-31T00:00:00Z',
+                progress: { current: 2, total: 9, section: 'Cost Overview', phase: 'render',
+                            completed: ['Executive Summary', 'Cost Overview'] } }]);
+    render(<DiagnosisView />);
+    const bar = await screen.findByRole('progressbar');
+    const panel = bar.parentElement!.parentElement as HTMLElement;
+    expect(within(panel).getByText('01:30')).toBeTruthy();          // L176 timer
+    expect(within(panel).getByText('Executive Summary')).toBeTruthy(); // L177 grid: completed
+    expect(within(panel).getByText('Recommendations')).toBeTruthy();   // pending entry listed
+    expect(within(panel).getByText(/최근 완료 섹션/)).toBeTruthy();      // honest label (no spinner claim)
+    vi.useRealTimers();
+  });
+  it('grid falls back to bar-only when the static mirror disagrees with progress.total (drift guard)', async () => {
+    mockList([{ id: 5, tier: 'mid', status: 'running', created_at: 't',
+                progress: { current: 2, total: 99, section: 'Cost Overview', phase: 'render',
+                            completed: ['Cost Overview'] } }]);
+    render(<DiagnosisView />);
+    await screen.findByRole('progressbar');
+    expect(screen.queryByText('Recommendations')).toBeNull();
+  });
+  it('running without progress.completed (legacy rows) keeps the bar-only view', async () => {
+    mockList([{ id: 5, tier: 'mid', status: 'running', created_at: 't',
+                progress: { current: 3, total: 9, section: '네트워크', phase: 'render' } }]);
+    render(<DiagnosisView />);
+    await screen.findByRole('progressbar');
+    expect(screen.queryByText('Recommendations')).toBeNull();
+  });
+  it('completed report shows the stats bar; 소요 omitted without finished_at', async () => {
+    mockList([{ id: 12, tier: 'mid', status: 'succeeded', created_at: '2026-08-31T00:00:00Z',
+                finished_at: '2026-08-31T00:03:05Z', summary: { sections: 9 }, progress: {} }]);
+    render(<DiagnosisView />);
+    fireEvent.click(await screen.findByRole('button', { name: /#12/ }));
+    expect(await screen.findByText(/섹션 9개 · 소요 03:05 · 리포트 #12/)).toBeTruthy();
+  });
+  it('idle empty state previews the section scope with Deep tags', async () => {
+    mockList([]);
+    render(<DiagnosisView />);
+    expect(await screen.findByText(/진단은 계정 전반을 아래 섹션으로 분석합니다/)).toBeTruthy();
+    expect(screen.getByText('Executive Summary')).toBeTruthy();
+    expect(screen.getByText('비용 최적화 심층')).toBeTruthy();
+    expect(screen.getAllByText('Deep').length).toBe(7);
+  });
+  it('completed list rows carry inline md/docx links that do not open the row', async () => {
+    mockList([{ id: 12, tier: 'mid', status: 'succeeded', created_at: 't', progress: {} },
+              { id: 13, tier: 'mid', status: 'running', created_at: 't', progress: {} }]);
+    render(<DiagnosisView />);
+    const md = (await screen.findAllByRole('link', { name: /^md$/i }))[0];
+    expect(md.getAttribute('href')).toBe('/api/diagnosis/12/download?format=md');
+    // the running row (#13) gets no inline links (the opened report's own bar also has DOCX)
+    const hrefs = screen.getAllByRole('link').map((a) => a.getAttribute('href'));
+    expect(hrefs.some((h) => h?.includes('/13/'))).toBe(false);
+  });
+});
+
 describe('DiagnosisView — deep tier + model selection', () => {
   it('offers a Deep tier option and a model radio (default Sonnet) only for deep', async () => {
     mockCapture();
     render(<DiagnosisView />);
-    const select = (await screen.findByRole('combobox')) as HTMLSelectElement;
+    const select = (await screen.findByLabelText('진단 티어')) as HTMLSelectElement;
     expect(within(select).getByRole('option', { name: /deep/i })).toBeTruthy();
     expect(screen.queryByRole('radio')).toBeNull(); // mid → no model radio
     fireEvent.change(select, { target: { value: 'deep' } });
@@ -80,21 +141,21 @@ describe('DiagnosisView — deep tier + model selection', () => {
   it('omits model in the POST body for mid', async () => {
     const posts = mockCapture();
     render(<DiagnosisView />);
-    await screen.findByRole('combobox');
+    await screen.findByLabelText('진단 티어');
     fireEvent.click(screen.getByRole('button', { name: /진단 실행/ }));
     await waitFor(() => expect(posts).toHaveLength(1));
-    expect(posts[0]).toEqual({ tier: 'mid' });
+    expect(posts[0]).toEqual({ tier: 'mid', lang: 'ko' }); // lang rides on every run (gap L50)
   });
 
   it('posts the selected model for deep (opus)', async () => {
     const posts = mockCapture();
     render(<DiagnosisView />);
-    const select = (await screen.findByRole('combobox')) as HTMLSelectElement;
+    const select = (await screen.findByLabelText('진단 티어')) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: 'deep' } });
     fireEvent.click(screen.getByRole('radio', { name: /opus/i }));
     fireEvent.click(screen.getByRole('button', { name: /진단 실행/ }));
     await waitFor(() => expect(posts).toHaveLength(1));
-    expect(posts[0]).toEqual({ tier: 'deep', model: 'opus' });
+    expect(posts[0]).toEqual({ tier: 'deep', model: 'opus', lang: 'ko' });
   });
 
   it('shows the model in the report list for a deep report', async () => {

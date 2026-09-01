@@ -19,13 +19,12 @@ This screen isn't a dedicated page — it's served through v2's shared inventory
 ## Key Features
 
 ### Highlight Cards
-Four highlight cards at the top of the page display key metrics:
+Five highlight cards at the top of the page display key metrics:
 - **Running**: Instances where `instance_state` is running
 - **Stopped**: Instances where `instance_state` is stopped
 - **Public IP**: Instances with a public IP assigned
 - **Instance types**: Distinct count of `instance_type` in use
-
-There is no card showing total vCPU count — that metric existed in v1 only.
+- **Running total vCPUs**: sum of actual vCPUs across running instances (`cpu_options` cores × threads — the per-instance actual value, not the type default)
 
 ### Visualization Charts
 - Distribution donuts by instance type (`instance_type`) and instance state (`instance_state`)

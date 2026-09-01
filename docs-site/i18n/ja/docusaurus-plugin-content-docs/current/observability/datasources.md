@@ -68,6 +68,22 @@ import Screenshot from '@site/src/components/Screenshot';
 - 「500ms 以上かかったトレース」 → TraceQL クエリとして生成
 - 「テーブルごとの行数」 → 読み取り専用 SQL として生成
 
+## AIで診断
+
+Datasources管理タブでは、各kindの**default**データソース行に**AIで診断**リンクが表示されます
+(対応kind: Prometheus・ClickHouse・Loki・Mimir・Tempo)。クリックするとAIアシスタントに移動し、
+セクション固定の診断プロンプトが入力欄に事前入力されます(Prometheus/ClickHouse → `/observability`、
+Loki/Mimir/Tempo → `/monitoring`)。**自動送信はされません** — 内容を確認して送信すると新しい会話として
+開始されます。エージェントは該当コネクタのクエリ/スキーマツールでデータソースの応答状態を確認します。
+
+## Explore 機能まとめ
+
+- kindごとの**サンプルクエリ・自然言語プロンプトチップ**(8 kind)
+- **7d/30d 期間プリセット**(Prometheus/Mimir は30d、Lokiは7d — kind別上限)
+- 結果**メタデータバー**(行/シリーズ数・往復ms・クエリ言語・形態)
+- **Loki専用ログビューア**(新しい順・ラベルバッジ)、Tempo/Jaeger **durationバー**
+- AI生成クエリの**出所バナー**、管理タブの**KPIタイル・更新ボタン**
+
 ## 関連ページ
 - [カスタムエージェント](../operations/custom-agents) - エージェント・スキルの構成(データソース/コネクタは連携ハブへ移動)
 - [AI アシスタント](../overview/assistant) - 対話型 AI 運用アシスタント

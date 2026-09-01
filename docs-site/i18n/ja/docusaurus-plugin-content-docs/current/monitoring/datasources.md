@@ -266,32 +266,22 @@ Prometheus データソースで最大 **8 個のシリーズ**を同時に可�
 パフォーマンスのため、Prometheus のマルチシリーズチャートは最大 8 シリーズに制限されます。8 個を超える結果は上位 8 個のみ表示されます。
 :::
 
-## データソース診断
+## AIで診断
 
-データソースの接続に問題があるとき、**Diagnose** ボタン（聴診器アイコン）をクリックすると、自動的に 8 段階の診断を実行します。
+Datasources管理タブでは、各kindの**default**データソース行に**AIで診断**リンクが表示されます
+(対応kind: Prometheus・ClickHouse・Loki・Mimir・Tempo)。クリックするとAIアシスタントに移動し、
+セクション固定の診断プロンプトが入力欄に事前入力されます(Prometheus/ClickHouse → `/observability`、
+Loki/Mimir/Tempo → `/monitoring`)。**自動送信はされません** — 内容を確認して送信すると新しい会話として
+開始されます。エージェントは該当コネクタのクエリ/スキーマツールでデータソースの応答状態を確認します。
 
-:::info 管理者専用
-Diagnose 機能には管理者ロールが必要です。
-:::
+## Explore 機能まとめ
 
-### datasource-diag AI ルート
+- kindごとの**サンプルクエリ・自然言語プロンプトチップ**(8 kind)
+- **7d/30d 期間プリセット**(Prometheus/Mimir は30d、Lokiは7d — kind別上限)
+- 結果**メタデータバー**(行/シリーズ数・往復ms・クエリ言語・形態)
+- **Loki専用ログビューア**(新しい順・ラベルバッジ)、Tempo/Jaeger **durationバー**
+- AI生成クエリの**出所バナー**、管理タブの**KPIタイル・更新ボタン**
 
-診断リクエストは `datasource-diag` AI ルートに渡されます。このルートは、データソースの接続問題を体系的に分析するために、8 個の専門診断ツールを順次実行します。
-
-### 8 段階の自動診断
-
-| 段階 | ツール | 説明 |
-|------|------|------|
-| 1 | **URL Validation** | URL 形式、プロトコル、Allowed Networks リストの検証 |
-| 2 | **DNS Resolution** | ホスト名を IP に変換し、到達可能性を確認 |
-| 3 | **NLB Health** | Network Load Balancer ターゲットグループの状態点検 |
-| 4 | **SG Chain** | Security Group のインバウンド/アウトバウンドルールチェーンの検証 |
-| 5 | **Network Path** | VPC ルーティング、サブネット、NACL の経路追跡 |
-| 6 | **HTTP Test** | HTTP リクエストの送信とレスポンスコード/本文の検証 |
-| 7 | **K8s Endpoint** | Kubernetes Service および Pod エンドポイントの状態確認 |
-| 8 | **Full Report** | すべての結果を総合した診断レポートの生成 |
-
-診断が開始されると、自動的に AI アシスタント画面に移動し、リアルタイムで診断の過程を確認できます。
 
 ## Allowed Networks
 

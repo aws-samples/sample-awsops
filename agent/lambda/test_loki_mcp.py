@@ -106,6 +106,15 @@ class TestSchema(_Base):
             out=lm.lambda_handler({"tool_name":"loki_schema","arguments":{}},None)
         import json as _j; self.assertEqual(_j.loads(out["body"])["labels"],["app","job"])
 
+    def test_schema_failed_label_fetch_degrades_to_truncated(self):
+        # A transient Loki outage must NOT look like an empty (label-less) schema — truncated=true
+        # keeps card absence UNDETERMINED ("unknown"), never a confident "unavailable" that sweeps
+        # previously-ready rows when the index job persists the bad schema over a good cache.
+        seq=[(200,{"status":"success","data":{"version":"3.0.0"}}),(500,{"raw":"labels down"})]
+        with mock.patch.object(lm,"http_json",side_effect=lambda *a,**k: seq.pop(0)):
+            out=lm.lambda_handler({"tool_name":"loki_schema","arguments":{}},None)
+        b=json.loads(out["body"]); self.assertEqual(b["labels"],[]); self.assertTrue(b["truncated"])
+
 
 class TestSchemaVersion(_Base):
     def test_schema_version_and_instance_id(self):

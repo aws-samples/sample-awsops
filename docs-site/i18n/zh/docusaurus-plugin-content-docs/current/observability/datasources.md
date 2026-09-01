@@ -68,6 +68,22 @@ import Screenshot from '@site/src/components/Screenshot';
 - "耗时超过 500ms 的跟踪" → 生成 TraceQL 查询
 - "各表的行数" → 生成只读 SQL
 
+## AI 诊断
+
+在 Datasources 管理页中,每个 kind 的**默认(default)**数据源行会显示 **AI 诊断** 链接
+(支持的 kind: Prometheus、ClickHouse、Loki、Mimir、Tempo)。点击后会跳转到 AI 助手,
+输入框中会预填一条已固定分区的诊断提示(Prometheus/ClickHouse → `/observability`,
+Loki/Mimir/Tempo → `/monitoring`)。**不会自动发送** — 请确认内容后自行发送,并会以新会话开始。
+代理会使用该连接器的查询/模式工具检查数据源的响应状态。
+
+## Explore 功能摘要
+
+- 按 kind 提供**示例查询·自然语言提示词标签**(共 8 种 kind)
+- **7d/30d 时间范围预设**(Prometheus/Mimir 最长 30d,Loki 7d — 按 kind 设上限)
+- 结果**元数据栏**(行/序列数 · 往返 ms · 查询语言 · 形态)
+- **Loki 专用日志查看器**(最新优先、标签徽章),Tempo/Jaeger **耗时条**
+- AI 生成查询**来源横幅**;管理页 **KPI 卡片与刷新按钮**
+
 ## 相关页面
 - [自定义智能体](../operations/custom-agents) - 智能体·技能配置（数据源/连接器已移至集成中心）
 - [AI 助手](../overview/assistant) - 对话式 AI 运维助手

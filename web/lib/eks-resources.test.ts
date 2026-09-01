@@ -92,6 +92,19 @@ describe('aggregateNodeResources', () => {
     expect(agg[0].cpuPct).toBe(0);
     expect(agg[0].memPct).toBe(0);
   });
+
+  it('terminal pods (Succeeded/Failed) hold no reservation — excluded from Requested and podCount', () => {
+    const nodes = [{ name: 'n1', instanceType: 't', cpuAllocatable: 4, memAllocatable: 8192, diskAllocatable: 0 }] as never;
+    const pods = [
+      { node: 'n1', status: 'Running', cpuRequest: 1, memRequest: 1024, diskRequest: 0 },
+      { node: 'n1', status: 'Succeeded', cpuRequest: 99, memRequest: 99999, diskRequest: 0 },
+      { node: 'n1', status: 'Failed', cpuRequest: 99, memRequest: 99999, diskRequest: 0 },
+    ] as never;
+    const agg = aggregateNodeResources(nodes, pods)[0];
+    expect(agg.cpuRequest).toBe(1);
+    expect(agg.memRequest).toBe(1024);
+    expect(agg.podCount).toBe(1);
+  });
 });
 
 describe('instanceTypeDistribution', () => {

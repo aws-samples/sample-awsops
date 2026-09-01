@@ -22,6 +22,13 @@ export default function AssistantClient() {
   const chat = useChat();
   const params = useSearchParams();
   const wantedThread = params.get('thread');
+  // gap-audit L204: deep-link prefill (e.g. the Datasources tab's "AI로 진단" row action) —
+  // fills the composer for review only; never auto-sends.
+  // First URL-controlled composer seed: accept ONLY the shape this feature emits — a single-line
+  // section-pinned prompt (`/<section> …`, ≤500 chars). Anything else is ignored, closing the
+  // crafted-link freeform-prefill vector while keeping the diagnose deep links working.
+  const rawQ = (params.get('q') ?? '').slice(0, 500);
+  const prefill = /^\/[a-z][a-z-]* [^\r\n]+$/.test(rawQ) ? rawQ : null;
   const inited = useRef(false);
   // Below lg the thread rail is a slide-in overlay (toggled from the header),
   // so the chat area is full-width on a phone. At lg+ the rail is always visible
@@ -32,8 +39,15 @@ export default function AssistantClient() {
     if (inited.current) return;
     inited.current = true;
     chat.toggleThreads(); // page always shows the thread column → load list + keep it fresh post-send
-    const tid = wantedThread ?? localStorage.getItem('awsops_chat_thread');
-    if (tid) void chat.selectThread(tid);
+    if (prefill) {
+      // A ?q= deep link is a genuinely FRESH conversation: newChat() rotates the persisted
+      // AgentCore session id (server-side memory) and clears the thread — and it wins over a
+      // crafted ?thread= in the same URL, which would otherwise seed an existing conversation.
+      chat.newChat();
+    } else {
+      const tid = wantedThread ?? localStorage.getItem('awsops_chat_thread');
+      if (tid) void chat.selectThread(tid);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -105,7 +119,7 @@ export default function AssistantClient() {
               ? <PresetChips onPick={chat.send} />
               : <MessageList msgs={chat.msgs} onSwitch={chat.resendWith} onFollowUp={chat.followUp} />}
             <SessionStatsBar stats={chat.sessionStats()} />
-            <Composer disabled={chat.busy} onSend={chat.send} />
+            <Composer disabled={chat.busy} onSend={chat.send} seed={prefill ? { text: prefill, n: 1 } : undefined} />
           </div>
         </div>
       </div>

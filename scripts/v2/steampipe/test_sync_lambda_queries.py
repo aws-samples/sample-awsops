@@ -156,3 +156,17 @@ def test_account_reachable_closes_connection_even_on_failure(monkeypatch):
     monkeypatch.setattr(mod, "_steampipe", lambda: FakeConn())
     mod._account_reachable("210987654321")
     assert closed == [True]
+
+
+def test_opensearch_query_carries_the_l153_detail_columns():
+    """Gap L153: the 8 detail-panel columns must stay in the opensearch SELECT (all present in
+    the pinned plugin aws@0.142.0; off_peak_window_options is NOT in 0.142.0 — excluded)."""
+    mod = load_sync_lambda()
+    sql = mod.QUERIES["opensearch"][0]
+    for col in (
+        "service_software_options", "log_publishing_options", "domain_endpoint_options",
+        "auto_tune_options", "snapshot_options", "advanced_options", "access_policies",
+        "upgrade_processing",
+    ):
+        assert col in sql, col
+    assert "off_peak_window_options" not in sql
