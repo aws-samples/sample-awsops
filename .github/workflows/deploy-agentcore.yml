@@ -1,8 +1,7 @@
 name: Deploy AgentCore
 
-# workflow_dispatch-only, gated by the `production` environment (this public
-# repo carries only `main`; the development stack's pipeline lives in the
-# private dev repo). This runs `make migrate` then
+# workflow_dispatch-only. In THIS private dev repo it targets the
+# DEVELOPMENT stack (repo secrets = dev backend). Runs `make migrate` then
 # `make agentcore`, in that order, per the platform's DESIGN.md
 # ("make migrate -> make agentcore, order preserved"). Never reversed:
 # AgentCore's Data API auth assumes migrations are already applied.
@@ -23,7 +22,6 @@ jobs:
   deploy:
     name: migrate + agentcore
     runs-on: sample-awsops
-    environment: production
     env:
       TF_BACKEND_HCL_B64: ${{ secrets.TF_BACKEND_HCL }}
       TF_TFVARS_B64: ${{ secrets.TF_TFVARS }}

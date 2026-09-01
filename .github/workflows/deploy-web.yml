@@ -1,33 +1,22 @@
 name: Deploy Web
 
-# PUBLIC-REPO (production-only) pipeline. This repo intentionally carries only
-# the `main` branch — day-to-day development happens in the private dev repo
-# (sample-awsops-dev), which runs its own development pipeline against the
-# awsops.dev.whchoi.net stack and promotes here via short-lived release/*
-# branches PR'd into main.
+# PRIVATE DEV REPO pipeline (sample-awsops-dev) — continuous deploy of the
+# `dev` branch to the DEVELOPMENT stack (awsops.dev.whchoi.net). The public
+# repo (aws-samples/sample-awsops) carries only `main` and its production
+# pipeline; work is promoted there via short-lived release/* branches.
 #
-# The production stack's terraform backend is restored from the repo-level
-# TF_BACKEND_HCL / TF_TFVARS secrets (base64 of the files `make configure`
-# produced locally). The stack's own terraform outputs (ecr_web_uri,
-# ecs_cluster_name, ecs_service_name, public_url) provide the ECR repo,
-# service and smoke-test domain — nothing environment-specific is hardcoded.
+# REQUIREMENT: register the self-hosted runner (label `sample-awsops`) to
+# this repo too — jobs queue forever otherwise.
 #
-# Mutation gate: `build` runs on every push to main and only publishes an
-# image (ci-build, ECR push only) — it never touches the running ECS service.
-# `deploy` (the actual `ecs update-service --force-new-deployment`,
-# ci-deployer) is workflow_dispatch-only behind the `production` environment
-# and its protection rules. The approval is bound to a concrete image by tag
-# discipline: build pushes ONLY the immutable web-<sha> tag and never touches
-# :web-latest — the deploy job's pin step (inside the environment gate) is the
-# ONLY writer of :web-latest. A build landing mid-approval can't swap the
-# payload, and later ECS task churn (scale-out, ADR-015 restarts) re-resolves
-# :web-latest to the last APPROVED image, never to an unapproved build.
-# Mirrors scripts/v2/deploy.mjs's build+push+roll+wait+smoke steps, split
-# across the two jobs/roles.
+# This repo's TF_BACKEND_HCL / TF_TFVARS secrets hold the DEV stack's
+# backend.hcl / terraform.tfvars (base64) — never the production ones.
+# Tag discipline matches production: build pushes only the immutable
+# web-<sha>; the deploy job's pin step is the only writer of :web-latest, so
+# ECS task churn always resolves to the last deployed-by-pipeline image.
 
 on:
   push:
-    branches: [main]
+    branches: [dev]
     paths: ["web/**", "CHANGELOG.md"]
   workflow_dispatch:
     inputs:
@@ -39,13 +28,8 @@ permissions:
   contents: read
   id-token: write
 
-# Concurrency is declared PER JOB, not per workflow, on purpose: GitHub
-# replaces (cancels) a PENDING run in a group even with
-# cancel-in-progress:false, so a workflow-level group would let a main push
-# (build-only run) cancel a dispatched production rollout waiting on the
-# environment's reviewer approval. With per-job groups, a push's skipped
-# deploy job never enters the rollout group at all. Runs QUEUE (never cancel)
-# — only another production dispatch can replace a pending one.
+# Per-job concurrency, newest-wins: an older run can never roll a stale
+# image after a newer one (out-of-order dev CD).
 
 jobs:
   build:
@@ -54,7 +38,7 @@ jobs:
     runs-on: sample-awsops
     concurrency:
       group: deploy-web-build
-      cancel-in-progress: false
+      cancel-in-progress: true
     env:
       TF_BACKEND_HCL_B64: ${{ secrets.TF_BACKEND_HCL }}
       TF_TFVARS_B64: ${{ secrets.TF_TFVARS }}
@@ -109,12 +93,16 @@ jobs:
 
   deploy:
     name: Roll ECS service
-    if: github.event_name == 'workflow_dispatch'
+    # Continuous deploy: rolls right after its own build on dev pushes;
+    # dispatch redeploys (optionally a specific built SHA).
+    needs: [build]
+    if: >-
+      !cancelled() &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
     runs-on: sample-awsops
-    environment: production
     concurrency:
       group: deploy-web-rollout
-      cancel-in-progress: false
+      cancel-in-progress: true
     env:
       TF_BACKEND_HCL_B64: ${{ secrets.TF_BACKEND_HCL }}
       TF_TFVARS_B64: ${{ secrets.TF_TFVARS }}
@@ -150,8 +138,8 @@ jobs:
       - name: Pin web-latest to the approved image
         # The task definition references :web-latest, and this step is that
         # tag's ONLY writer (build never touches it). Point it at the EXACT
-        # web-<sha> image this run was approved for (dispatch input,
-        # defaulting to the dispatched ref's HEAD) before rolling.
+        # web-<sha> image this run built (or the dispatch input) before
+        # rolling — deterministic even under racing pushes.
         env:
           PIN_SHA: ${{ inputs.image_sha || github.sha }}
         run: |
