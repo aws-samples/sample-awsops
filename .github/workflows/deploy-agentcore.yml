@@ -1,9 +1,12 @@
 name: Deploy AgentCore
 
-# workflow_dispatch-only, gated by aws-samples-deploy (human reviewer) — this
-# runs `make migrate` then `make agentcore`, in that order, per the platform's
-# DESIGN.md ("make migrate -> make agentcore, order preserved"). Never
-# reversed: AgentCore's Data API auth assumes migrations are already applied.
+# workflow_dispatch-only, gated by the target environment — dispatch it from
+# the `main` branch to hit `production`, or from `dev` to hit `development`
+# (each environment restores its own terraform backend; see terraform.yml's
+# header comment for the secret naming). This runs `make migrate` then
+# `make agentcore`, in that order, per the platform's DESIGN.md
+# ("make migrate -> make agentcore, order preserved"). Never reversed:
+# AgentCore's Data API auth assumes migrations are already applied.
 
 on:
   workflow_dispatch:
@@ -21,7 +24,10 @@ jobs:
   deploy:
     name: migrate + agentcore
     runs-on: sample-awsops
-    environment: aws-samples-deploy
+    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    env:
+      TF_BACKEND_HCL_B64: ${{ github.ref_name == 'main' && secrets.TF_BACKEND_HCL || secrets.TF_BACKEND_HCL_DEV }}
+      TF_TFVARS_B64: ${{ github.ref_name == 'main' && secrets.TF_TFVARS || secrets.TF_TFVARS_DEV }}
     steps:
       - uses: actions/checkout@v4
 
@@ -36,12 +42,12 @@ jobs:
         # from terraform/foundation — see terraform.yml's header comment.
         working-directory: terraform/foundation
         run: |
-          if [ -z "${{ secrets.TF_BACKEND_HCL }}" ]; then
-            echo "::error::TF_BACKEND_HCL repo secret not set — run 'make configure' once, see terraform.yml's header comment."
+          if [ -z "$TF_BACKEND_HCL_B64" ]; then
+            echo "::error::This environment's TF backend secrets are not set — run 'make configure' once for this stack, see terraform.yml's header comment."
             exit 1
           fi
-          echo "${{ secrets.TF_BACKEND_HCL }}" | base64 -d > backend.hcl
-          echo "${{ secrets.TF_TFVARS }}" | base64 -d > terraform.tfvars
+          echo "$TF_BACKEND_HCL_B64" | base64 -d > backend.hcl
+          echo "$TF_TFVARS_B64" | base64 -d > terraform.tfvars
           terraform init -backend-config=backend.hcl -input=false
 
       - uses: docker/setup-qemu-action@v3
