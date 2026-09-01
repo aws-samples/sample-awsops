@@ -34,20 +34,23 @@ permissions:
   contents: read
   id-token: write
 
-# One pipeline per branch at a time. On dev the newest push wins
-# (cancel-in-progress) so an older run can never roll a stale image after a
-# newer one. On main, runs QUEUE instead — a main push (build-only) must never
-# cancel a dispatched production rollout that is mid-roll or waiting on the
-# environment's reviewer approval.
-concurrency:
-  group: deploy-web-${{ github.ref_name }}
-  cancel-in-progress: ${{ github.ref_name != 'main' }}
+# Concurrency is declared PER JOB, not per workflow, on purpose: GitHub
+# replaces (cancels) a PENDING run in a group even with
+# cancel-in-progress:false, so a workflow-level group would let a main push
+# (build-only run) cancel a dispatched production rollout waiting on the
+# environment's reviewer approval. With per-job groups, a push's skipped
+# deploy job never enters the rollout group at all. Within each group: dev is
+# newest-wins (an older run can never roll a stale image after a newer one);
+# main queues, and only another production dispatch can replace a pending one.
 
 jobs:
   build:
     name: Build & push (arm64)
     if: github.event_name == 'push'
     runs-on: sample-awsops
+    concurrency:
+      group: deploy-web-build-${{ github.ref_name }}
+      cancel-in-progress: ${{ github.ref_name != 'main' }}
     env:
       TF_BACKEND_HCL_B64: ${{ github.ref_name == 'main' && secrets.TF_BACKEND_HCL || secrets.TF_BACKEND_HCL_DEV }}
       TF_TFVARS_B64: ${{ github.ref_name == 'main' && secrets.TF_TFVARS || secrets.TF_TFVARS_DEV }}
@@ -108,6 +111,9 @@ jobs:
       (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev')
     runs-on: sample-awsops
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    concurrency:
+      group: deploy-web-rollout-${{ github.ref_name }}
+      cancel-in-progress: ${{ github.ref_name != 'main' }}
     env:
       TF_BACKEND_HCL_B64: ${{ github.ref_name == 'main' && secrets.TF_BACKEND_HCL || secrets.TF_BACKEND_HCL_DEV }}
       TF_TFVARS_B64: ${{ github.ref_name == 'main' && secrets.TF_TFVARS || secrets.TF_TFVARS_DEV }}
