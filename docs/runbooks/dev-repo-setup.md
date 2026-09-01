@@ -46,8 +46,8 @@ repo's sub pattern to each role's trust policy condition:
 "Condition": {
   "StringLike": {
     "token.actions.githubusercontent.com:sub": [
-      "repo:<PUBLIC_ORG>/<PUBLIC_REPO>:*",
-      "repo:<PRIVATE_OWNER>/<PRIVATE_DEV_REPO>:*"
+      "repo:aws-samples/sample-awsops:*",
+      "repo:Atom-oh/sample-awsops-dev:*"
     ]
   }
 }
@@ -65,15 +65,27 @@ ARN 변수는 dev 리포에 이미 복사돼 있습니다. dev 스택을 별도 
 ### 3. Provision the dev stack + set its TF secrets / dev 스택과 시크릿
 
 Run `make configure` once FOR THE DEV STACK (its own state key and its own
-dev domain/cert inputs), apply it, then store the generated files as the dev
-repo's secrets:
+dev domain/cert inputs), then provision it under the repo's terraform
+discipline — a saved plan applied verbatim, never `-auto-approve`:
 
 ```bash
-gh secret set TF_BACKEND_HCL -R <PRIVATE_OWNER>/<PRIVATE_DEV_REPO> \
+terraform -chdir=terraform/foundation init -backend-config=backend.hcl
+terraform -chdir=terraform/foundation plan -out tfplan   # review the plan
+terraform -chdir=terraform/foundation apply tfplan       # apply EXACTLY that plan
+```
+
+Then store the generated files as the dev repo's secrets:
+
+```bash
+gh secret set TF_BACKEND_HCL -R Atom-oh/sample-awsops-dev \
   --body "$(base64 -w0 terraform/foundation/backend.hcl)"
-gh secret set TF_TFVARS -R <PRIVATE_OWNER>/<PRIVATE_DEV_REPO> \
+gh secret set TF_TFVARS -R Atom-oh/sample-awsops-dev \
   --body "$(base64 -w0 terraform/foundation/terraform.tfvars)"
 ```
+
+(From then on, terraform changes for the dev stack go through this repo's
+`terraform.yml` — automatic plan on PR/push, saved-plan apply via dispatch —
+the same control as production.)
 
 These must be the DEV stack's files — never the production pair, which lives
 only in the public repo's secrets.
@@ -98,6 +110,7 @@ pass the smoke test end-to-end. (dev에 web 변경을 push해 빌드→pin→롤
 
 ```bash
 git push samples dev:release/$(date +%Y%m%d)   # short-lived public branch
-gh pr create -R <PUBLIC_ORG>/<PUBLIC_REPO> --base main --head release/<date>
-# merge → delete the release branch → dispatch Deploy Web on main (approval)
+gh pr create -R aws-samples/sample-awsops --base main --head "release/$(date +%Y%m%d)"
+# merge → delete the release branch → dispatch Deploy Web on main
+# (production-environment approval; the rollout pins the approved web-<sha>)
 ```
