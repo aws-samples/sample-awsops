@@ -9,20 +9,35 @@ const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 let cw: CloudWatchClient | null = null;
 const cwClient = () => (cw ??= new CloudWatchClient({ region: REGION }));
 
-/** Fleet average of the latest 1h CPUUtilization across up to 100 instances. null when no datapoints. */
-export async function ec2AvgCpu(instanceIds: string[]): Promise<number | null> {
-  const ids = instanceIds.slice(0, 100);
-  if (!ids.length) return null;
-  const r = await cwClient().send(new GetMetricDataCommand({
-    StartTime: new Date(Date.now() - 3 * 3600_000), EndTime: new Date(),
-    MetricDataQueries: ids.map((id, i) => ({
-      Id: `m${i}`, ReturnData: true,
-      MetricStat: { Metric: { Namespace: 'AWS/EC2', MetricName: 'CPUUtilization', Dimensions: [{ Name: 'InstanceId', Value: id }] }, Period: 3600, Stat: 'Average' },
-    })),
+export interface Ec2CpuStats {
+  avg: number | null;                 // fleet average across instances reporting a datapoint
+  byInstance: Record<string, number>; // latest CPU % per instance id (gap L138 Top-N ranking)
+}
+
+const EC2_CPU_METRIC = [{ key: 'cpu', name: 'CPUUtilization', stat: 'Average' }] as const;
+
+/**
+ * Fleet-wide per-instance latest CPU + the fleet average. Instances are grouped by their
+ * inventory region (CloudWatch metrics live in the resource's region) and each region's ids
+ * are batched through fleetLatest's chunked GetMetricData — no arbitrary 100-instance sample.
+ * The average is computed from RAW datapoints; byInstance values are display-rounded to 0.1.
+ */
+export async function ec2CpuStats(idsByRegion: Record<string, string[]>): Promise<Ec2CpuStats> {
+  const regions = Object.entries(idsByRegion).filter(([, ids]) => ids.length > 0);
+  if (!regions.length) return { avg: null, byInstance: {} };
+  const byInstance: Record<string, number> = {};
+  const raw: number[] = [];
+  await Promise.all(regions.map(async ([region, ids]) => {
+    const fleet = await fleetLatest('AWS/EC2', ids, (id) => [{ Name: 'InstanceId', Value: id }], EC2_CPU_METRIC, region, 3 * 3600_000, 3600);
+    for (const [id, m] of Object.entries(fleet)) {
+      if (typeof m.cpu === 'number') {
+        raw.push(m.cpu);
+        byInstance[id] = Math.round(m.cpu * 10) / 10;
+      }
+    }
   }));
-  const latest = (r.MetricDataResults ?? []).map((m) => m.Values?.[0]).filter((v): v is number => typeof v === 'number');
-  if (!latest.length) return null;
-  return Math.round((latest.reduce((a, b) => a + b, 0) / latest.length) * 10) / 10;
+  const avg = raw.length ? Math.round((raw.reduce((a, b) => a + b, 0) / raw.length) * 10) / 10 : null;
+  return { avg, byInstance };
 }
 
 // ── RDS per-instance CloudWatch metrics (v1 parity) ─────────────────────────
@@ -100,6 +115,89 @@ export async function rdsMetrics(instanceIds: string[], accountId?: string): Pro
   const cpus = Object.values(byInstance).map((m) => m.cpu).filter((v): v is number => typeof v === 'number');
   const avgCpu = cpus.length ? Math.round((cpus.reduce((a, b) => a + b, 0) / cpus.length) * 10) / 10 : null;
   return { byInstance, avgCpu };
+}
+
+// ── RDS per-instance metric TRENDS (gap L141/L142/L155, v1 parity) ──────────
+export interface TrendSample { t: string; v: number }
+export type RdsSparkField = 'cpu' | 'freeableMemory' | 'connections' | 'readIops' | 'writeIops' | 'freeStorage';
+export interface RdsInstanceTrends {
+  /** 1h sparklines at 5-min resolution, keyed by RdsInstanceMetrics field name (6 metrics). */
+  spark: Record<RdsSparkField, TrendSample[] | null>;
+  /** FreeableMemory, 24h at 1h resolution (bytes). */
+  mem24h: TrendSample[] | null;
+  /** CPUUtilization, 14d at daily resolution (%). */
+  cpu14d: TrendSample[] | null;
+}
+
+const SPARK_METRICS = [
+  { field: 'cpu', name: 'CPUUtilization' },
+  { field: 'freeableMemory', name: 'FreeableMemory' },
+  { field: 'connections', name: 'DatabaseConnections' },
+  { field: 'readIops', name: 'ReadIOPS' },
+  { field: 'writeIops', name: 'WriteIOPS' },
+  { field: 'freeStorage', name: 'FreeStorageSpace' },
+] as const;
+
+/**
+ * Per-instance RDS metric time-series for the detail panel — TWO parallel GetMetricData
+ * calls: sparks (6 queries, Period 300, ~65-min window → ≤13 points each) and long trends
+ * (FreeableMemory Period 3600 + CPUUtilization Period 86400 over 14d → ≤24 + ≤14 points).
+ * Read-only live fetch; degrades to null series on any CloudWatch error (the rdsMetrics
+ * contract) — the UI renders '데이터 불가', never a dead panel.
+ */
+export async function rdsInstanceTrends(instanceId: string, accountId?: string): Promise<RdsInstanceTrends> {
+  const empty: RdsInstanceTrends = {
+    spark: Object.fromEntries(SPARK_METRICS.map((m) => [m.field, null])) as RdsInstanceTrends['spark'],
+    mem24h: null, cpu14d: null,
+  };
+  try {
+    const client = await assumedClient(accountId, CloudWatchClient, { region: REGION });
+    const dim = [{ Name: 'DBInstanceIdentifier', Value: instanceId }];
+    const stat = (name: string, period: number) => ({
+      Metric: { Namespace: 'AWS/RDS', MetricName: name, Dimensions: dim }, Period: period, Stat: 'Average',
+    });
+    // TWO bounded calls — `Period` sets aggregation RESOLUTION, not a per-query window, so a
+    // single 14-day StartTime would make each 5-min spark query return ~4,000 datapoints
+    // (~24k per panel open) only to be trimmed client-side. Sparks get their own ~65-minute
+    // window (≤13 points each); the two long trends share the 14-day window (≤14 + ≤24 points).
+    const [sparkRes, longRes] = await Promise.all([
+      client.send(new GetMetricDataCommand({
+        StartTime: new Date(Date.now() - 65 * 60_000), EndTime: new Date(),
+        MetricDataQueries: SPARK_METRICS.map((m, i) => ({ Id: `spark_${i}`, ReturnData: true, MetricStat: stat(m.name, 300) })),
+        ScanBy: 'TimestampAscending',
+      })),
+      client.send(new GetMetricDataCommand({
+        StartTime: new Date(Date.now() - 14 * 86_400_000), EndTime: new Date(),
+        MetricDataQueries: [
+          { Id: 'mem24h', ReturnData: true, MetricStat: stat('FreeableMemory', 3600) },
+          { Id: 'cpu14d', ReturnData: true, MetricStat: stat('CPUUtilization', 86_400) },
+        ],
+        ScanBy: 'TimestampAscending',
+      })),
+    ]);
+    const series = (from: typeof sparkRes, id: string, sinceMs: number): TrendSample[] | null => {
+      const res = (from.MetricDataResults ?? []).find((x) => x.Id === id);
+      if (!res?.Timestamps?.length || !res.Values?.length) return null;
+      const out: TrendSample[] = [];
+      for (let i = 0; i < res.Timestamps.length; i++) {
+        const ts = res.Timestamps[i] instanceof Date ? (res.Timestamps[i] as Date) : new Date(String(res.Timestamps[i]));
+        const v = res.Values[i];
+        if (typeof v === 'number' && ts.getTime() >= sinceMs) {
+          out.push({ t: ts.toISOString(), v: Math.round(v * 100) / 100 });
+        }
+      }
+      return out.length ? out : null;
+    };
+    return {
+      spark: Object.fromEntries(
+        SPARK_METRICS.map((m, i) => [m.field, series(sparkRes, `spark_${i}`, Date.now() - 3600_000)]),
+      ) as RdsInstanceTrends['spark'],
+      mem24h: series(longRes, 'mem24h', Date.now() - 24 * 3600_000),
+      cpu14d: series(longRes, 'cpu14d', Date.now() - 14 * 86_400_000),
+    };
+  } catch {
+    return empty;
+  }
 }
 
 let pricing: PricingClient | null = null;
@@ -250,9 +348,9 @@ export async function bedrockModelMetrics(range = '24h', accountId?: string): Pr
 // One GetMetricData call per resource; every failure degrades to [] (never blanks the panel).
 export interface LiveMetric { label: string; value: string }
 
-type LiveFmt = 'pct' | 'gb' | 'mb' | 'count' | 'ms' | 'bps';
+export type LiveFmt = 'pct' | 'ratioPct' | 'gb' | 'mb' | 'mbRaw' | 'count' | 'ms' | 'bps';
 interface LiveMetricDef { name: string; label: string; stat: 'Average' | 'Sum' | 'Maximum'; fmt: LiveFmt }
-interface LiveMetricSpec { namespace: string; dims: (id: string) => { Name: string; Value: string }[]; metrics: LiveMetricDef[] }
+interface LiveMetricSpec { namespace: string; dims: (id: string, accountId?: string) => { Name: string; Value: string }[]; metrics: LiveMetricDef[] }
 
 const LIVE_SPECS: Record<string, LiveMetricSpec> = {
   // resource_id = CacheClusterId
@@ -266,19 +364,25 @@ const LIVE_SPECS: Record<string, LiveMetricSpec> = {
       { name: 'NetworkBytesIn', label: 'Network In', stat: 'Average', fmt: 'mb' },
       { name: 'NetworkBytesOut', label: 'Network Out', stat: 'Average', fmt: 'mb' },
       { name: 'CurrConnections', label: 'Connections', stat: 'Average', fmt: 'count' },
+      // CacheHitRate arrives as a 0–1 RATIO (see ElasticacheNodeMetrics.hitPctOf) — plain 'pct'
+      // would render 0.92 as '0.9%'.
+      { name: 'CacheHitRate', label: 'Cache Hit Rate', stat: 'Average', fmt: 'ratioPct' },
     ],
   },
   // resource_id = DomainName. AWS/ES requires the ClientId (account) dimension.
   opensearch: {
     namespace: 'AWS/ES',
-    dims: (id) => [
+    // ClientId must be the OWNING account — pinning the host id made every member-account
+    // domain query return empty series ('데이터 불가') while claiming cross-account support.
+    dims: (id, accountId) => [
       { Name: 'DomainName', Value: id },
-      { Name: 'ClientId', Value: process.env.AWS_ACCOUNT_ID ?? '' },
+      { Name: 'ClientId', Value: accountId && accountId !== 'self' ? accountId : process.env.AWS_ACCOUNT_ID ?? '' },
     ],
     metrics: [
       { name: 'CPUUtilization', label: 'CPU', stat: 'Average', fmt: 'pct' },
       { name: 'JVMMemoryPressure', label: 'JVM Memory', stat: 'Average', fmt: 'pct' },
-      { name: 'FreeStorageSpace', label: 'Free Storage', stat: 'Average', fmt: 'mb' },
+      // AWS/ES reports FreeStorageSpace in MEGABYTES already — 'mb' (bytes÷1e6) understated it ~1e6×.
+      { name: 'FreeStorageSpace', label: 'Free Storage', stat: 'Average', fmt: 'mbRaw' },
       { name: 'SearchableDocuments', label: 'Documents', stat: 'Average', fmt: 'count' },
       { name: 'SearchLatency', label: 'Search Latency', stat: 'Average', fmt: 'ms' },
       { name: 'IndexingLatency', label: 'Indexing Latency', stat: 'Average', fmt: 'ms' },
@@ -302,8 +406,11 @@ const LIVE_SPECS: Record<string, LiveMetricSpec> = {
 function fmtLive(v: number, fmt: LiveFmt): string {
   switch (fmt) {
     case 'pct': return `${Math.round(v * 10) / 10}%`;
+    // 0–1 ratio → percent (values >1 pass through — some engines report percent directly)
+    case 'ratioPct': return `${Math.round((v <= 1 ? v * 100 : v) * 10) / 10}%`;
     case 'gb': return `${(v / 1e9).toFixed(1)} GB`;
     case 'mb': return `${(v / 1e6).toFixed(1)} MB`;
+    case 'mbRaw': return `${v.toFixed(1)} MB`; // source metric already in megabytes (AWS/ES)
     case 'ms': return `${Math.round(v * 1000) / 1000} ms`;
     case 'bps': return `${(v / 1e6).toFixed(1)} MB/s`;
     default: return Math.round(v).toLocaleString();
@@ -313,16 +420,16 @@ function fmtLive(v: number, fmt: LiveFmt): string {
 export function hasLiveMetrics(type: string): boolean { return type in LIVE_SPECS; }
 
 /** Latest-hour metrics for ONE resource of a LIVE_SPECS type. [] on error/no data. */
-export async function liveResourceMetrics(type: string, id: string, accountId?: string): Promise<LiveMetric[]> {
+export async function liveResourceMetrics(type: string, id: string, accountId?: string, region?: string): Promise<LiveMetric[]> {
   const spec = LIVE_SPECS[type];
   if (!spec) return [];
   try {
-    const client = await assumedClient(accountId, CloudWatchClient, { region: REGION });
+    const client = await assumedClient(accountId, CloudWatchClient, { region: region ?? REGION });
     const r = await client.send(new GetMetricDataCommand({
       StartTime: new Date(Date.now() - 3 * 3600_000), EndTime: new Date(),
       MetricDataQueries: spec.metrics.map((m, i) => ({
         Id: `lm${i}`, ReturnData: true,
-        MetricStat: { Metric: { Namespace: spec.namespace, MetricName: m.name, Dimensions: spec.dims(id) }, Period: 3600, Stat: m.stat },
+        MetricStat: { Metric: { Namespace: spec.namespace, MetricName: m.name, Dimensions: spec.dims(id, accountId) }, Period: 3600, Stat: m.stat },
       })),
     }));
     const out: LiveMetric[] = [];
@@ -335,6 +442,81 @@ export async function liveResourceMetrics(type: string, id: string, accountId?: 
     return out;
   } catch {
     return [];
+  }
+}
+
+export interface LiveTrendMetric { label: string; fmt: LiveFmt; samples: TrendSample[] | null }
+
+/** 1-hour 5-min sparkline series for ONE resource of a LIVE_SPECS type (gap L118 — v1's
+ *  elasticache detail sparklines, generalized to opensearch/msk which share the spec table).
+ *  Bounded window (~65min → ≤13 points/metric); [] on error (never throws). */
+export async function liveResourceTrends(type: string, id: string, accountId?: string, region?: string): Promise<LiveTrendMetric[]> {
+  const spec = LIVE_SPECS[type];
+  if (!spec) return [];
+  try {
+    // Opening the account dimension without the region would half-open the scope: a member
+    // account's cluster outside the deployment region would silently read '데이터 불가' (or a
+    // same-named default-region cluster would chart the WRONG resource).
+    const client = await assumedClient(accountId, CloudWatchClient, { region: region ?? REGION });
+    const r = await client.send(new GetMetricDataCommand({
+      StartTime: new Date(Date.now() - 65 * 60_000), EndTime: new Date(),
+      MetricDataQueries: spec.metrics.map((m, i) => ({
+        Id: `lt${i}`, ReturnData: true,
+        MetricStat: { Metric: { Namespace: spec.namespace, MetricName: m.name, Dimensions: spec.dims(id, accountId) }, Period: 300, Stat: m.stat },
+      })),
+      ScanBy: 'TimestampAscending',
+    }));
+    return spec.metrics.map((def, i) => {
+      const res = (r.MetricDataResults ?? []).find((x) => x.Id === `lt${i}`);
+      const samples: TrendSample[] = [];
+      for (let k = 0; k < (res?.Timestamps?.length ?? 0); k++) {
+        const ts = res!.Timestamps![k] instanceof Date ? (res!.Timestamps![k] as Date) : new Date(String(res!.Timestamps![k]));
+        const v = res!.Values?.[k];
+        if (typeof v === 'number' && ts.getTime() >= Date.now() - 3600_000) {
+          samples.push({ t: ts.toISOString(), v: Math.round(v * 100) / 100 });
+        }
+      }
+      return { label: def.label, fmt: def.fmt, samples: samples.length ? samples : null };
+    });
+  } catch {
+    return [];
+  }
+}
+
+// ── EC2 per-instance 24h network trends (gap L139, v1 parity) ───────────────
+export interface Ec2NetworkTrends {
+  netIn: TrendSample[] | null;  // hourly NetworkIn Sum (bytes/hour); null = no data / error
+  netOut: TrendSample[] | null; // hourly NetworkOut Sum (bytes/hour)
+}
+
+/** One bounded read-only GetMetricData — 24h hourly NetworkIn/Out for one instance.
+ *  Account/region thread through assumedClient so member-account and off-region instances
+ *  chart their OWN metrics; any CloudWatch error degrades both series to null (never throws). */
+export async function ec2NetworkTrends(instanceId: string, accountId?: string, region?: string): Promise<Ec2NetworkTrends> {
+  try {
+    const client = await assumedClient(accountId, CloudWatchClient, { region: region ?? REGION });
+    const metrics = ['NetworkIn', 'NetworkOut'] as const;
+    const r = await client.send(new GetMetricDataCommand({
+      StartTime: new Date(Date.now() - 24 * 3600_000), EndTime: new Date(),
+      MetricDataQueries: metrics.map((name, i) => ({
+        Id: `nt${i}`, ReturnData: true,
+        MetricStat: { Metric: { Namespace: 'AWS/EC2', MetricName: name, Dimensions: [{ Name: 'InstanceId', Value: instanceId }] }, Period: 3600, Stat: 'Sum' },
+      })),
+      ScanBy: 'TimestampAscending',
+    }));
+    const series = (i: number): TrendSample[] | null => {
+      const res = (r.MetricDataResults ?? []).find((x) => x.Id === `nt${i}`);
+      const samples: TrendSample[] = [];
+      for (let k = 0; k < (res?.Timestamps?.length ?? 0); k++) {
+        const ts = res!.Timestamps![k] instanceof Date ? (res!.Timestamps![k] as Date) : new Date(String(res!.Timestamps![k]));
+        const v = res!.Values?.[k];
+        if (typeof v === 'number') samples.push({ t: ts.toISOString(), v });
+      }
+      return samples.length ? samples : null;
+    };
+    return { netIn: series(0), netOut: series(1) };
+  } catch {
+    return { netIn: null, netOut: null };
   }
 }
 

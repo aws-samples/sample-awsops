@@ -11,7 +11,7 @@ SAMPLE = {
             "title": "1 IAM",
             "summary": {"control": {"total": 2, "ok": 1, "alarm": 1, "info": 0, "skip": 0, "error": 0}},
             "controls": [
-                {"control_id": "1.1", "title": "MFA", "tags": {"severity": "high"}, "results": [
+                {"control_id": "1.1", "title": "MFA", "description": "Enable MFA for all IAM users with a console password.", "tags": {"severity": "high"}, "results": [
                     {"status": "ok", "reason": "ok", "resource": "arn:user/a",
                      "dimensions": [{"key": "region", "value": "us-east-1"}]},
                     {"status": "alarm", "reason": "no mfa", "resource": "arn:user/b",
@@ -30,6 +30,16 @@ def test_parse_totals_from_group_summaries():
     assert sorted(c["status"] for c in controls) == ["alarm", "ok"]
     assert all(c["region"] == "us-east-1" for c in controls)
     assert controls[0]["severity"] == "high"
+    # Gap L70: the control description (recommendation rationale) rides every leaf result row.
+    assert all(c["description"] == "Enable MFA for all IAM users with a console password." for c in controls)
+
+
+def test_parse_missing_description_defaults_to_empty():
+    doc = {"groups": [{"title": "g", "controls": [
+        {"control_id": "x", "title": "t", "results": [{"status": "ok", "reason": "", "resource": "r"}]},
+    ]}]}
+    _, controls = compliance.parse_powerpipe_json(doc)
+    assert controls[0]["description"] == ""
 
 
 def test_parse_empty_is_zero_not_crash():

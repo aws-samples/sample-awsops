@@ -157,9 +157,13 @@ def loki_schema(args):
     try:
         labels = _get(creds, "/loki/api/v1/labels", {})
     except _ApiError:
-        labels = []
-    labels = labels if isinstance(labels, list) else []
-    return ok({"version": version, "labels": labels[:200], "truncated": len(labels) > 200})
+        labels = None
+    labels_ok = isinstance(labels, list)  # a FAILED label fetch is not an empty schema
+    labels = labels if labels_ok else []
+    # Failure surfaces as truncation (mirrors prometheus/mimir): absence is then UNDETERMINED —
+    # cards degrade to "unknown" instead of a confident "unavailable" persisted over a good cache.
+    return ok({"version": version, "labels": labels[:200],
+               "truncated": (not labels_ok) or len(labels) > 200})
 
 
 _TOOLS = {

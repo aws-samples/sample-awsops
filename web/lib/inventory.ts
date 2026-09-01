@@ -71,6 +71,26 @@ export interface ReadResourcesOpts {
   accounts?: AccountScope;
 }
 
+// Worst-first ordering must run BEFORE the LIMIT (gap L68): with >LIMIT rows, a client-side
+// re-sort only reorders whichever rows happened to survive the near-uniform captured_at cut —
+// firing alarms could be silently excluded exactly when triage matters. Built from the STATIC
+// spec (trusted code, not user input); identifiers are still charset-validated before inlining
+// as defense-in-depth, and an invalid spec falls back to the default ordering.
+function worstFirstOrderBy(type: string): string {
+  const wf = INVENTORY_TYPES[type]?.worstFirst;
+  if (!wf) return '';
+  const ID = /^[a-z0-9_]{1,64}$/;
+  if (!ID.test(wf.col) || (wf.tieBreak !== undefined && !ID.test(wf.tieBreak))) return '';
+  const whens = Object.entries(wf.rank)
+    .filter(([k]) => /^[A-Za-z0-9_-]{1,64}$/.test(k))
+    .filter(([, v]) => Number.isFinite(Number(v)))
+    .map(([k, v]) => `WHEN '${k.toLowerCase()}' THEN ${Number(v)}`)
+    .join(' ');
+  if (!whens) return '';
+  const tie = wf.tieBreak ? `data->>'${wf.tieBreak}' DESC NULLS LAST, ` : '';
+  return `CASE lower(data->>'${wf.col}') ${whens} ELSE ${Object.keys(wf.rank).length} END, ${tie}`;
+}
+
 export async function readResources(type: string, { limit, offset, regions = '__all__', includeGlobal = true, accounts = ['self'] }: ReadResourcesOpts): Promise<InventoryPage> {
   const pool = getPool();
   const params: unknown[] = [type];
@@ -78,7 +98,7 @@ export async function readResources(type: string, { limit, offset, regions = '__
   params.push(limit, offset);
   const r = await pool.query(
     `SELECT resource_id, region, account_id, data, captured_at FROM inventory_resources
-     WHERE ${where} ORDER BY captured_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+     WHERE ${where} ORDER BY ${worstFirstOrderBy(type)}captured_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
   const s = await pool.query(

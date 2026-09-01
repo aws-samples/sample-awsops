@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   INVENTORY_TYPES, inventoryGroups, isDeprecatedRuntime, DEPRECATED_RUNTIMES,
   navTree, overviewGroups, groupBySlug, groupForPath, RESERVED_NAV_SLUGS,
-  computeHighlights, HIGHLIGHTS, layoutOf,
+  computeHighlights, HIGHLIGHTS, layoutOf, worstFirst,
 } from './inventory-types';
 
 describe('INVENTORY_TYPES registry', () => {
@@ -207,6 +207,68 @@ describe('computeHighlights (per-type highlight cards)', () => {
     const rows = [{ size: 100 }, { size: 50 }, { size: '20' }];
     expect(computeHighlights(rows, [{ kind: 'sum', label: 't', col: 'size', suffix: ' GB' }])[0].value).toBe('170 GB');
   });
+  it('countGt counts strictly-greater numeric cells; non-numeric never matches (L134)', () => {
+    const rows = [{ t: 300 }, { t: 301 }, { t: '900' }, { t: 'x' }, { t: null }];
+    const [c] = computeHighlights(rows, [{ kind: 'countGt', label: 'long', col: 't', gt: 300, tone: 'danger' }]);
+    expect(c).toEqual({ label: 'long', value: 2, variant: 'danger' }); // 300 itself excluded
+  });
+  it('avg averages finite numeric cells only; empty → — (L230)', () => {
+    const rows = [{ m: 128 }, { m: '256' }, { m: 'n/a' }];
+    expect(computeHighlights(rows, [{ kind: 'avg', label: 'mem', col: 'm', suffix: ' MB' }])[0].value).toBe('192 MB');
+    expect(computeHighlights([], [{ kind: 'avg', label: 'mem', col: 'm' }])[0].value).toBe('—');
+  });
+  it('percent renders NN% (n/total) with 100/80 thresholds (L100)', () => {
+    const enc = (n: number, total: number) =>
+      computeHighlights(
+        Array.from({ length: total }, (_, i) => ({ e: i < n ? 'true' : 'false' })),
+        [{ kind: 'percent', label: '암호화율', col: 'e', eq: 'true' }],
+      )[0];
+    expect(enc(4, 4)).toEqual({ label: '암호화율', value: '100% (4/4)', variant: 'accent' });
+    expect(enc(4, 5)).toEqual({ label: '암호화율', value: '80% (4/5)', variant: 'default' });
+    expect(enc(3, 5)).toEqual({ label: '암호화율', value: '60% (3/5)', variant: 'danger' });
+    expect(computeHighlights([], [{ kind: 'percent', label: 'x', col: 'e', eq: 'true' }])[0].value).toBe('—');
+  });
+  it('percent judges the raw ratio: a near-100 fleet is neither accent nor "100%"', () => {
+    const pct = (rows: Record<string, unknown>[]) =>
+      computeHighlights(rows, [{ kind: 'percent', label: 'enc', col: 'e', eq: 'true' }])[0];
+    // 499/500 = 99.8% — rounds to 100 but is NOT complete → one decimal + 'default'
+    const near = [...Array(499).fill({ e: 'true' }), { e: 'false' }];
+    expect(pct(near)).toEqual({ label: 'enc', value: '99.8% (499/500)', variant: 'default' });
+    // 399/500 = 79.8% — rounds to 80 but is below the 0.8 raw-ratio bar → one decimal + danger
+    const low = [...Array(399).fill({ e: 'true' }), ...Array(101).fill({ e: 'false' })];
+    expect(pct(low)).toEqual({ label: 'enc', value: '79.8% (399/500)', variant: 'danger' });
+    // complete match stays accent at a real 100% (uncapped)
+    expect(pct(Array(500).fill({ e: 'true' }))).toEqual({ label: 'enc', value: '100% (500/500)', variant: 'accent' });
+    // low end: rounds to 0 but is nonzero → one decimal + danger
+    const tiny = [{ e: 'true' }, ...Array(999).fill({ e: 'false' })];
+    expect(pct(tiny)).toEqual({ label: 'enc', value: '0.1% (1/1000)', variant: 'danger' });
+  });
+  it('percent on a capped sample never claims the accented all-clear', () => {
+    const rows = Array(500).fill({ e: 'true' });
+    const card = computeHighlights(rows, [{ kind: 'percent', label: 'enc', col: 'e', eq: 'true' }], { capped: true })[0];
+    expect(card).toEqual({ label: 'enc', value: '100% (500/500 표본)', variant: 'default' });
+  });
+  it('avg excludes null/empty cells (Number(null) === 0 would skew the mean)', () => {
+    const rows = [{ m: 100 }, { m: null }, { m: '' }];
+    expect(computeHighlights(rows, [{ kind: 'avg', label: 'mem', col: 'm' }])[0].value).toBe('100');
+  });
+  it('sumProductWhere sums colA×colB over matching rows; non-numeric factor → 0 (L103)', () => {
+    const rows = [
+      { s: 'running', a: 2, b: 2 },   // 4
+      { s: 'running', a: '4', b: 1 }, // 4
+      { s: 'stopped', a: 8, b: 8 },   // filtered
+      { s: 'running', a: 'x', b: 2 }, // 0
+    ];
+    expect(computeHighlights(rows, [{ kind: 'sumProductWhere', label: 'vCPU', cols: ['a', 'b'], where: 's', eq: 'running' }])[0].value).toBe('8');
+  });
+  it('HIGHLIGHTS gained the batch-7 entries (ec2 vCPU · ebs % · lambda gt/avg · rds sum · ecs_cluster band)', () => {
+    expect(HIGHLIGHTS.ec2.some((h) => h.kind === 'sumProductWhere')).toBe(true);
+    expect(HIGHLIGHTS.ebs_volume.some((h) => h.kind === 'percent')).toBe(true);
+    expect(HIGHLIGHTS.lambda.some((h) => h.kind === 'countGt')).toBe(true);
+    expect(HIGHLIGHTS.lambda.some((h) => h.kind === 'avg')).toBe(true);
+    expect(HIGHLIGHTS.rds.some((h) => h.kind === 'sum')).toBe(true);
+    expect((HIGHLIGHTS.ecs_cluster ?? []).filter((h) => h.kind === 'sum')).toHaveLength(3);
+  });
   it('deprecatedRuntime counts EOL Lambda runtimes (danger when > 0)', () => {
     const rows = [{ r: 'python3.7' }, { r: 'nodejs20.x' }, { r: 'go1.x' }];
     expect(computeHighlights(rows, [{ kind: 'deprecatedRuntime', label: 'eol', col: 'r' }])[0]).toEqual({ label: 'eol', value: 2, variant: 'danger' });
@@ -216,16 +278,26 @@ describe('computeHighlights (per-type highlight cards)', () => {
     for (const [type, hls] of Object.entries(HIGHLIGHTS)) {
       const spec = INVENTORY_TYPES[type];
       expect(spec, `HIGHLIGHTS[${type}] has a registered type`).toBeTruthy();
-      // Known synced fields = table columns ∪ detail-section keys (both validated against
-      // sync_lambda.py) ∪ state/dist keys. Dotted JSONB paths validate their ROOT field.
+      // Known fields = table columns ∪ detail-section keys (validated against sync_lambda.py
+      // where they're raw synced columns; *_h keys are client-derived) ∪ hideKeys (raw blobs
+      // or superseded derived columns hidden from the panel — still real row data) ∪
+      // state/dist keys. Dotted JSONB paths validate their ROOT field.
       const cols = new Set<string>([
         ...spec.columns.map((c) => c.key),
         ...(spec.sections ?? []).flatMap((sec) => sec.keys),
+        ...(spec.hideKeys ?? []),
         ...[spec.stateKey, spec.distKey, spec.distKey2, spec.barKey?.col].filter((k): k is string => Boolean(k)),
       ]);
       for (const h of hls) {
-        const root = h.col.split('.')[0];
-        expect(cols.has(root) || VIRTUAL.has(root), `${type}.${h.col}`).toBe(true);
+        const refs = [
+          ...('col' in h && h.col ? [h.col] : []),
+          ...('cols' in h && Array.isArray(h.cols) ? h.cols : []),
+          ...('where' in h && h.where ? [h.where] : []),
+        ];
+        for (const ref of refs) {
+          const root = ref.split('.')[0];
+          expect(cols.has(root) || VIRTUAL.has(root), `${type}.${ref}`).toBe(true);
+        }
       }
     }
   });
@@ -254,5 +326,31 @@ describe('layout archetypes', () => {
       const hl = HIGHLIGHTS[t] ?? [];
       expect(hl.some((h) => h.tone === 'danger'), `${t} risk hero needs a danger highlight`).toBe(true);
     }
+  });
+});
+
+describe('worstFirst (gap L68)', () => {
+  const wf = { col: 'state_value', rank: { ALARM: 0, INSUFFICIENT_DATA: 1, OK: 2 }, tieBreak: 'ts' };
+  it('ranks ALARM first, unknown values last (surfaced, never hidden)', () => {
+    const rows = [
+      { state_value: 'OK', ts: '3' }, { state_value: 'WEIRD', ts: '9' },
+      { state_value: 'ALARM', ts: '1' }, { state_value: 'INSUFFICIENT_DATA', ts: '2' },
+    ];
+    expect(worstFirst(rows, wf).map((r) => r.state_value))
+      .toEqual(['ALARM', 'INSUFFICIENT_DATA', 'OK', 'WEIRD']);
+  });
+  it('ties break by tieBreak DESC (newest state change first)', () => {
+    const rows = [
+      { state_value: 'ALARM', ts: '2026-01-01' }, { state_value: 'ALARM', ts: '2026-03-01' },
+    ];
+    expect(worstFirst(rows, wf).map((r) => r.ts)).toEqual(['2026-03-01', '2026-01-01']);
+  });
+  it('does not mutate the input array', () => {
+    const rows = [{ state_value: 'OK', ts: '1' }, { state_value: 'ALARM', ts: '2' }];
+    worstFirst(rows, wf);
+    expect(rows[0].state_value).toBe('OK');
+  });
+  it('cloudwatch_alarm spec carries the worst-first config', () => {
+    expect(INVENTORY_TYPES.cloudwatch_alarm.worstFirst?.rank.ALARM).toBe(0);
   });
 });

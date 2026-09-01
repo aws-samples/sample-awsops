@@ -81,6 +81,11 @@ export interface NodeResourceAgg {
   podCount: number;
 }
 
+/** Terminal phases hold no scheduler reservation (Succeeded/Failed — kubectl parity). */
+export function isTerminalPodPhase(status: unknown): boolean {
+  return status === 'Succeeded' || status === 'Failed';
+}
+
 /**
  * Aggregate pod requests per node against node allocatable.
  * Pods are matched to a node by PodRow.node === NodeRow.name. reqPct is clamped 0..100
@@ -90,6 +95,10 @@ export function aggregateNodeResources(nodes: NodeRow[], pods: PodRow[]): NodeRe
   const byNode = new Map<string, { cpu: number; mem: number; disk: number; count: number }>();
   for (const p of pods) {
     if (!p.node) continue;
+    // Terminal pods keep spec.nodeName + requests but release the reservation — including
+    // them overstates Requested on Job/CronJob-churning clusters (kubectl describe node
+    // excludes them). The scheduler-reservation claim requires the same exclusion.
+    if (isTerminalPodPhase(p.status)) continue;
     const e = byNode.get(p.node) ?? { cpu: 0, mem: 0, disk: 0, count: 0 };
     e.cpu += p.cpuRequest || 0;
     e.mem += p.memRequest || 0;

@@ -3,6 +3,7 @@ import {
   SubscribeCommand,
   UnsubscribeCommand,
   ListSubscriptionsByTopicCommand,
+  PublishCommand,
 } from '@aws-sdk/client-sns';
 
 // In-app management of the scheduled-diagnosis mailing list (v1 report-scheduler parity). The worker
@@ -61,6 +62,26 @@ export async function subscribeEmail(arn: string, email: string): Promise<void> 
 
 export async function unsubscribe(subscriptionArn: string): Promise<void> {
   await sns().send(new UnsubscribeCommand({ SubscriptionArn: subscriptionArn }));
+}
+
+/** Admin-triggered test message (gap L53) so a subscriber can verify delivery after confirming.
+ *  Subject MUST stay ASCII — SNS rejects non-ASCII subjects (same constraint as the worker's
+ *  notify.py _SUBJECT). Errors propagate — the route surfaces them (never a silent success). */
+export async function publishTest(arn: string): Promise<string | undefined> {
+  const at = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+  // The triggering admin's identity deliberately stays OUT of the body (it would broadcast an
+  // email address to every subscriber) — the server log on the route carries the audit trail.
+  const body = [
+    'AWSops 진단 알림 테스트 메시지입니다. 이 메일이 도착했다면 구독이 정상 동작합니다.',
+    'This is a test message from AWSops diagnosis notifications. Receiving it confirms your subscription works.',
+    '',
+    'Triggered by: an AWSops administrator',
+    `At: ${at} (KST)`,
+  ].join('\n');
+  const r = await sns().send(new PublishCommand({
+    TopicArn: arn, Subject: '[AWSops] Test Notification', Message: body,
+  }));
+  return r.MessageId;
 }
 
 /** A subscription ARN must belong to OUR topic: `${topicArn}:${uuid}`. Guards against unsubscribing

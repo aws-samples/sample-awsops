@@ -19,13 +19,12 @@ import Screenshot from '@site/src/components/Screenshot';
 ## 主要功能
 
 ### 高亮卡片
-页面顶部的 4 个高亮卡片显示核心指标：
+页面顶部的 5 个高亮卡片显示核心指标：
 - **实例中**：`instance_state` 为 running 的实例数量
 - **已停止**：`instance_state` 为 stopped 的实例数量
 - **公共 IP**：已分配公共 IP 的实例数量
 - **类型种类数**：正在使用的实例类型（`instance_type`）的去重计数
-
-不存在显示 vCPU 总和的卡片（该指标仅存在于 v1）。
+- **运行中 vCPU 总数**: running 实例的实际 vCPU 总和（`cpu_options` 核心 × 线程 — 按实例实际值统计，而非类型默认值）
 
 ### 可视化图表
 - 按实例类型（`instance_type`）和状态（`instance_state`）分布的环形图

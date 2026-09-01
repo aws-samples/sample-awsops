@@ -53,13 +53,14 @@ class FakeConn:
     (`graph_inserts`/`graph_deletes`, new) independently, since the two tables have independent
     schema-version hashes and independent skip-on-unchanged behavior."""
     def __init__(self, *, kind="prometheus", metrics=PROM_METRICS, schema_present=True,
-                 schema=None, existing_version=None, existing_graph_version=None,
+                 schema=None, existing_version=None, existing_graph_version=None, existing_card_version=None,
                  existing_rows=None, fail_list_read=False, existing_budget=None,
                  existing_reservation=None, live_budget_at_write=None):
         self.kind, self.metrics, self.schema_present = kind, metrics, schema_present
         self._schema_override = schema
         self.existing_version = existing_version
         self.existing_graph_version = existing_graph_version
+        self.existing_card_version = existing_card_version
         self.existing_rows = existing_rows or []
         self.fail_list_read = fail_list_read
         self.existing_budget = existing_budget
@@ -75,6 +76,7 @@ class FakeConn:
             else existing_budget
         self.inserts, self.deletes = [], []
         self.graph_inserts, self.graph_deletes = [], []
+        self.card_inserts, self.card_deletes = [], []
         self.schema_writes = []
         self.generated_version_touches = []
         self.reservations, self.releases = [], []
@@ -101,6 +103,8 @@ class FakeConn:
             return [[1, self.existing_version]] if self.existing_version is not None else [[0, None]]
         if "COUNT(DISTINCT schema_version)" in sql and "datasource_graph_queries" in sql:
             return [[1, self.existing_graph_version]] if self.existing_graph_version is not None else [[0, None]]
+        if "COUNT(DISTINCT schema_version)" in sql and "datasource_dashboard_cards" in sql:
+            return [[1, self.existing_card_version]] if self.existing_card_version is not None else [[0, None]]
         if "SELECT meta FROM datasource_diag_signals" in sql:
             if p.get("sk") == wdb.BUDGET_KEY:
                 if self.existing_budget:
@@ -139,6 +143,10 @@ class FakeConn:
             self.deletes.append(p); return []
         if sql.strip().startswith("INSERT INTO datasource_graph_queries"):
             self.graph_inserts.append(p); return []
+        if sql.strip().startswith("INSERT INTO datasource_dashboard_cards"):
+            self.card_inserts.append(p); return []
+        if sql.strip().startswith("DELETE FROM datasource_dashboard_cards"):
+            self.card_deletes.append(p); return []
         if sql.strip().startswith("DELETE FROM datasource_graph_queries"):
             self.graph_deletes.append(p); return []
         if sql.strip().startswith("INSERT INTO datasource_schemas"):
@@ -1215,6 +1223,7 @@ class TestAccountKeyFallback:
             def __init__(self):
                 self.inserts, self.deletes = [], []
                 self.graph_inserts, self.graph_deletes = [], []
+                self.card_inserts, self.card_deletes = [], []
                 self.schema_writes = []
             def run(self, sql, **p):
                 if "FROM datasource_schemas" in sql:
@@ -1357,6 +1366,22 @@ class TestReintrospectRejectsErrorEnvelopes:
             raise RuntimeError("connector down")
         monkeypatch.setattr(dsi, "_lambda_invoke", boom)
         assert _REAL_REINTROSPECT("clickhouse", 7) is None
+
+    def test_prom_kinds_pass_card_required_probe_metrics(self, monkeypatch):
+        # prometheus/mimir schema fetches must name the card-required metrics so the connector
+        # probes each one past its 500-name cap; other kinds must NOT grow the argument.
+        captured = {}
+
+        def capture(kind, tool, arguments=None):
+            captured[kind] = arguments
+            return {"metrics": ["up"]} if kind in ("prometheus", "mimir") else {"tables": []}
+        monkeypatch.setattr(dsi, "_lambda_invoke", capture)
+        import card_catalog as _cc
+        for kind in ("prometheus", "mimir"):
+            assert _REAL_REINTROSPECT(kind, 7) == {"metrics": ["up"]}
+            assert captured[kind]["probe_metrics"] == _cc.required_metrics()
+        _REAL_REINTROSPECT("clickhouse", 7)
+        assert "probe_metrics" not in captured["clickhouse"]
 
 
 class TestLambdaInvokeEnvelopeValidation:
@@ -1711,3 +1736,40 @@ class TestCarriedGeneratedRowIsLiveVerified:
         import diagnosis.signal_catalog_gen as gen
         src = inspect.getsource(gen.still_relevant_live)
         assert "_dry_run_check(" in src and "still_relevant(" in src
+
+
+# ── Dashboard cards (2026-08-28): third pre-built-content family — deterministic only ──────────────
+class TestDashboardCards:
+    def test_prometheus_builds_cards_alongside_signals_and_graph(self):
+        c = FakeConn(kind="prometheus", schema={"metrics": ["up", "node_cpu_seconds_total"]})
+        out = dsi.run({"integration_id": 7, "kind": "prometheus"}, c)
+        assert out.get("cards_built") == 5
+        assert out.get("cards_ready") == 2  # up_targets + cpu_usage
+        keys = {p["ck"] for p in c.card_inserts}
+        assert {"up_targets", "cpu_usage", "memory_available"} <= keys
+        # sweep against exactly the written keys
+        assert c.card_deletes and set(c.card_deletes[0]["keep"]) == keys
+
+    def test_card_build_skips_when_hash_unchanged(self):
+        c0 = FakeConn(kind="tempo", schema={"tags": []})
+        dsi.run({"integration_id": 7, "kind": "tempo"}, c0)
+        cversion = c0.card_inserts[0]["sv"]
+        c = FakeConn(kind="tempo", schema={"tags": []}, existing_card_version=cversion)
+        out = dsi.run({"integration_id": 7, "kind": "tempo"}, c)
+        assert c.card_inserts == [] and out.get("cards_skipped") is True
+
+    def test_unknown_kind_writes_only_the_sentinel(self):
+        # jaeger is index-wired for signals/graph? Not built by card_catalog — empty build writes the
+        # schema-version sentinel so the next unchanged run skips.
+        c = FakeConn(kind="jaeger", schema={"tags": ["x"]})
+        dsi.run({"integration_id": 7, "kind": "jaeger"}, c)
+        assert [p["ck"] for p in c.card_inserts] == [wdb.SCHEMA_VERSION_SENTINEL_KEY]
+
+    def test_card_failure_does_not_sink_the_other_families(self, monkeypatch):
+        monkeypatch.setattr(dsi, "_rebuild_dashboard_cards",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        c = FakeConn(kind="prometheus", schema={"metrics": ["up"]})
+        out = dsi.run({"integration_id": 7, "kind": "prometheus"}, c)
+        assert out.get("cards_error", "").startswith("boom")
+        assert "error" not in out           # the run itself did not fail
+        assert c.graph_inserts              # graph family still built

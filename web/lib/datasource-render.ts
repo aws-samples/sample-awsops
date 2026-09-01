@@ -56,17 +56,20 @@ function prom(body: Record<string, unknown>): NormalizedResult {
       const raw = labelStr(so.metric) || `series ${i + 1}`;
       return raw.length > 60 ? `${raw.slice(0, 57)}…#${i + 1}` : raw;
     });
-    const byT = new Map<string, Record<string, unknown>>();
+    // Keyed and SORTED by the epoch, not the display label — the label drops the year
+    // (`12-31 23:00` / `01-01 00:00`), so a lexical sort corrupts any window crossing Jan 1
+    // (review: exposed by the new 7d/30d presets). `_ts` rides along as chart-invisible metadata.
+    const byT = new Map<number, Record<string, unknown>>();
     charted.forEach((so, i) => {
       const values = Array.isArray(so.values) ? (so.values as unknown[][]) : [];
       for (const pnt of values) {
-        const t = new Date(num(pnt[0]) * 1000).toISOString().slice(5, 16).replace('T', ' ');
-        const row = byT.get(t) ?? { t };
+        const ms = num(pnt[0]) * 1000;
+        const row = byT.get(ms) ?? { t: new Date(ms).toISOString().slice(5, 16).replace('T', ' '), _ts: ms };
         row[keys[i]] = num(pnt[1]);
-        byT.set(t, row);
+        byT.set(ms, row);
       }
     });
-    const series = [...byT.values()].sort((a, b) => String(a.t).localeCompare(String(b.t)));
+    const series = [...byT.values()].sort((a, b) => Number(a._ts) - Number(b._ts));
     const rows = result.map((s) => {
       const so = s as Record<string, unknown>;
       const pts = Array.isArray(so.values) ? (so.values as unknown[]).length : 0;
@@ -107,7 +110,15 @@ function loki(body: Record<string, unknown>): NormalizedResult {
     const values = Array.isArray(so.values) ? (so.values as unknown[][]) : [];
     for (const pair of values) {
       const ns = num(pair[0]);
-      rows.push({ timestamp: new Date(ns / 1e6).toISOString(), line: String(pair[1] ?? ''), labels });
+      // `_labelPairs` is additive display metadata (structured stream labels — quote-containing
+      // values survive it, unlike the flat `labels` string the generic table path still shows).
+      // The DataTable renders only `columns`, so it ignores this field.
+      rows.push({
+        timestamp: new Date(ns / 1e6).toISOString(),
+        line: String(pair[1] ?? ''),
+        labels,
+        _labelPairs: isObj(so.stream) ? Object.entries(so.stream as Record<string, unknown>).map(([k, v]) => ({ key: k, value: String(v) })) : [],
+      });
     }
   }
   if (!rows.length) return { shape: 'empty', truncated, note: '로그 없음' };
@@ -156,17 +167,17 @@ function mergeSeries(
   const MAX_SERIES = 8;
   const charted = entries.slice(0, MAX_SERIES);
   const keys = charted.map((e, i) => (e.key.length > 60 ? `${e.key.slice(0, 57)}…#${i + 1}` : e.key || `series ${i + 1}`));
-  const byT = new Map<string, Record<string, unknown>>();
+  // Epoch-keyed/sorted for the same year-boundary reason as the prom matrix path above.
+  const byT = new Map<number, Record<string, unknown>>();
   charted.forEach((e, i) => {
     for (const [ms, v] of e.points) {
       if (v == null) continue;
-      const t = new Date(ms).toISOString().slice(5, 16).replace('T', ' ');
-      const row = byT.get(t) ?? { t };
+      const row = byT.get(ms) ?? { t: new Date(ms).toISOString().slice(5, 16).replace('T', ' '), _ts: ms };
       row[keys[i]] = v;
-      byT.set(t, row);
+      byT.set(ms, row);
     }
   });
-  const series = [...byT.values()].sort((a, b) => String(a.t).localeCompare(String(b.t)));
+  const series = [...byT.values()].sort((a, b) => Number(a._ts) - Number(b._ts));
   if (!series.length) return { shape: 'empty', truncated, note: '시계열 포인트 없음' };
   const rows = entries.map((e) => ({ metric: e.key, points: e.points.length }));
   return {

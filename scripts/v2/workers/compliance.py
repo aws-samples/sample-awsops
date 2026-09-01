@@ -25,6 +25,8 @@ def _walk_controls(node, section, out):
             out.append({
                 "control_id": c.get("control_id") or c.get("name", ""),
                 "title": c.get("title", ""),
+                # Gap L70: the recommendation rationale shown in the control detail panel.
+                "description": c.get("description", "") or "",
                 "section": section,
                 "status": r.get("status", ""),
                 "reason": r.get("reason", ""),
@@ -110,7 +112,8 @@ def persist(conn, run_id, totals, controls):
              inf=totals["info"], sk=totals["skip"], er=totals["error"], id=run_id)
     for c in controls:
         conn.run("INSERT INTO compliance_results "
-                 "(run_id, control_id, title, section, status, reason, resource, region, severity) "
-                 "VALUES (:r,:cid,:ti,:se,:st,:re,:res,:reg,:sev)",
+                 "(run_id, control_id, title, section, status, reason, resource, region, severity, description) "
+                 "VALUES (:r,:cid,:ti,:se,:st,:re,:res,:reg,:sev,:de)",
                  r=run_id, cid=c["control_id"], ti=c["title"], se=c["section"], st=c["status"],
-                 re=c["reason"], res=c["resource"], reg=c["region"], sev=c["severity"])
+                 re=c["reason"], res=c["resource"], reg=c["region"], sev=c["severity"],
+                 de=c["description"])

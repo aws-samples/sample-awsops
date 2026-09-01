@@ -8,14 +8,53 @@ export interface InvType {
   label: string; group: string; columns: InvColumn[]; stateKey?: string; distKey?: string;
   /** Optional second distribution dimension — rendered as a second donut beside the first. */
   distKey2?: string;
+  /** Default worst-first row ordering (gap L68): rank rows by `rank[cell(col)]` ascending
+   *  (unknown values rank AFTER known ones — surfaced, never hidden), tie-broken by `tieBreak`
+   *  DESC (e.g. newest state change first). Applied by the page BEFORE DataTable, so a user's
+   *  own column-header sort still overrides it. */
+  worstFirst?: { col: string; rank: Record<string, number>; tieBreak?: string };
+  /** Semantic slice colors for the distKey2 donut, keyed by the RAW cell value (case-sensitive —
+   *  the donut buckets raw values, unlike countWhere's case-insensitive compare). Unmapped
+   *  values fall back to the positional palette. */
+  distKey2Colors?: Record<string, string>;
   /** Optional Top-N metric bar chart: numeric column ranked desc over the row set. */
   barKey?: { col: string; label: string };
+  /** Optional value-distribution histogram (gap L135): row COUNTS per distinct numeric value
+   *  of `col` (top 10 by count, then numerically sorted; e.g. lambda functions per
+   *  memory_size). Rendered beside the Top-N bar as a second BarDistribution. */
+  histKey?: { col: string; label: string; suffix?: string };
   sections?: { label: string; keys: string[] }[];
+  /** Raw row keys replaced by derived/structured fields (gap L150) — buildDetailGroups marks
+   *  them used-but-hidden so they neither render in a section nor leak into "Other". */
+  hideKeys?: string[];
   // filterKeys (optional, v1-parity facet filters): row keys rendered as dropdown facets above
   // the table (each option shows a live count). The stateKey already has its own SegmentedControl,
   // so list OTHER discriminating keys here (e.g. ec2 type/vpc, lambda runtime). Keys need not be
   // table columns — non-column keys (e.g. region) get their label from the page's FACET_LABELS.
   filterKeys?: string[];
+}
+
+// Worst-first default ordering (gap L68): rank by spec.worstFirst.rank ascending (unknown
+// values rank AFTER known ones — surfaced, never hidden), tie-broken by tieBreak DESC
+// (newest state change first). The page applies it before DataTable, so a user's own
+// column-header sort still overrides it. Pure — unit-tested alongside computeHighlights.
+export function worstFirst<T extends Record<string, unknown>>(
+  rows: T[],
+  wf: { col: string; rank: Record<string, number>; tieBreak?: string },
+): T[] {
+  // Case-insensitive rank lookup — the rest of the pipeline compares state values
+  // case-insensitively (summary SQL lower(), countWhere), so a casing drift must not
+  // silently disable the default ordering.
+  const norm: Record<string, number> = {};
+  for (const [k, v] of Object.entries(wf.rank)) norm[k.toLowerCase()] = v;
+  const rank = (r: T) => norm[String(r[wf.col] ?? '').toLowerCase()] ?? Number.MAX_SAFE_INTEGER;
+  return [...rows].sort((a, b) => {
+    const d = rank(a) - rank(b);
+    if (d !== 0) return d;
+    if (!wf.tieBreak) return 0;
+    // numeric:true matches DataTable.compareValues' semantics for mixed numeric strings.
+    return String(b[wf.tieBreak] ?? '').localeCompare(String(a[wf.tieBreak] ?? ''), undefined, { numeric: true });
+  });
 }
 
 // resource_id + region are prepended by the page; columns here are the type-specific extras.
@@ -37,7 +76,8 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
       { label: 'Image', keys: ['image_id', 'architecture', 'platform_details', 'virtualization_type', 'hypervisor'] },
     ],
     filterKeys: ['region', 'name', 'instance_type', 'pricing_model', 'subnet_id', 'vpc_id'] },
-  lambda: { label: 'Lambda Functions', group: 'Compute', stateKey: 'state', distKey: 'runtime', distKey2: 'package_type', barKey: { col: 'memory_size', label: 'Memory (MB)' }, columns: [
+  lambda: { label: 'Lambda Functions', group: 'Compute', stateKey: 'state', distKey: 'runtime', distKey2: 'package_type', barKey: { col: 'memory_size', label: 'Memory (MB)' },
+    histKey: { col: 'memory_size', label: 'Memory Allocation', suffix: ' MB' }, columns: [
     { key: 'runtime', label: 'Runtime' }, { key: 'memory_size', label: 'Mem(MB)' },
     { key: 'timeout', label: 'Timeout(s)' }, { key: 'state', label: 'State' },
     { key: 'handler', label: 'Handler' }, { key: 'last_modified', label: 'Modified' } ],
@@ -84,10 +124,11 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
     ] },
   ecr: { label: 'ECR Repositories', group: 'Compute', distKey: 'image_tag_mutability', columns: [
     { key: 'repository_uri', label: 'URI' }, { key: 'image_tag_mutability', label: 'Tag mutability' },
-    { key: 'created_at', label: 'Created' } ],
+    // Repository-level basic scanning setting — registry-level Inspector enhanced scanning is not represented here.
+    { key: 'scan_on_push', label: 'Scan on Push (Basic)' }, { key: 'created_at', label: 'Created' } ],
     sections: [
       { label: 'Identity', keys: ['resource_id', 'repository_name', 'account_id', 'region', 'arn', 'registry_id', 'repository_uri', 'created_at'] },
-      { label: 'Config', keys: ['image_tag_mutability', 'image_scanning_configuration', 'lifecycle_policy'] },
+      { label: 'Config', keys: ['image_tag_mutability', 'scan_on_push', 'image_scanning_configuration', 'lifecycle_policy'] },
       { label: 'Security', keys: ['encryption_configuration'] },
       { label: 'Tags', keys: ['tags'] },
     ],
@@ -361,12 +402,22 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
     { key: 'created', label: 'Created' } ],
     sections: [
       { label: 'Identity', keys: ['resource_id', 'domain_name', 'account_id', 'region', 'arn', 'domain_id', 'created', 'deleted', 'processing'] },
-      { label: 'Engine', keys: ['engine_type', 'engine_version', 'cluster_config'] },
-      { label: 'Endpoint', keys: ['endpoint', 'endpoints', 'vpc_options'] },
-      { label: 'Security', keys: ['encryption_at_rest_options', 'node_to_node_encryption_options_enabled', 'advanced_security_options', 'cognito_options'] },
-      { label: 'Storage', keys: ['ebs_options'] },
+      { label: 'Engine', keys: ['engine_type', 'engine_version', 'software_update_h', 'upgrade_processing'] },
+      // L150 structured rendering — derived *_h fields (inventory-derived.ts) replace the raw
+      // cluster_config/ebs_options/vpc_options/encryption/advanced-security JSONB blobs.
+      { label: 'Cluster Config', keys: ['instance_type_h', 'instance_count_h', 'dedicated_master_h', 'zone_awareness_h', 'warm_storage_h', 'cold_storage_h', 'multi_az_standby_h'] },
+      { label: 'Endpoint & Network', keys: ['endpoint', 'endpoints', 'enforce_https_h', 'tls_policy_h', 'custom_endpoint_h', 'custom_endpoint_cert_h', 'vpc_id_h', 'subnets_h', 'security_groups_h', 'azs_h'] },
+      // Raw advanced_security_options/cognito_options stay visible after the derived flags —
+      // they carry fields (SAML, user-pool ids) the flags don't derive; hiding them would
+      // regress information availability.
+      { label: 'Security', keys: ['rest_enc_h', 'kms_key_h', 'n2n_enc_h', 'adv_security_h', 'internal_user_db_h', 'anonymous_auth_h', 'cognito_h', 'advanced_security_options', 'cognito_options', 'access_policies'] },
+      { label: 'Storage', keys: ['ebs_volume_h'] },
+      // L153: partially-derived/reference blobs stay visible (log_publishing_options,
+      // advanced_options, auto_tune_options carry fields the *_h derivations don't cover).
+      { label: 'Operations', keys: ['auto_tune_h', 'snapshot_hour_h', 'service_software_options', 'log_publishing_options', 'advanced_options', 'auto_tune_options'] },
       { label: 'Tags', keys: ['tags'] },
     ],
+    hideKeys: ['cluster_config', 'ebs_options', 'vpc_options', 'encryption_at_rest_options', 'node_to_node_encryption_options_enabled', 'storage_gb_h', 'domain_endpoint_options', 'snapshot_options'],
     filterKeys: ['region', 'engine_version', 'engine_type'] },
   msk: { label: 'MSK Clusters', group: 'Storage & DB', stateKey: 'state', distKey: 'cluster_type', distKey2: 'state', columns: [
     { key: 'state', label: 'State' }, { key: 'cluster_type', label: 'Type' },
@@ -426,7 +477,12 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
     ],
     filterKeys: ['region', 'type'] },
 
-  cloudwatch_alarm: { label: 'CloudWatch Alarms', group: 'Monitoring', stateKey: 'state_value', distKey: 'namespace', distKey2: 'state_value', columns: [
+  cloudwatch_alarm: { label: 'CloudWatch Alarms', group: 'Monitoring', stateKey: 'state_value', distKey: 'namespace', distKey2: 'state_value',
+    // Worst-first default (gap L68): firing alarms surface on top with zero interaction.
+    worstFirst: { col: 'state_value', rank: { ALARM: 0, INSUFFICIENT_DATA: 1, OK: 2 }, tieBreak: 'state_updated_timestamp' },
+    // Semantic alarm-state colors (gap-audit L190): green OK / red ALARM / gray INSUFFICIENT_DATA
+    // — the palette otherwise assigns colors by slice size, so ALARM could render green.
+    distKey2Colors: { OK: '#01A88D', ALARM: '#D13212', INSUFFICIENT_DATA: '#9AA6B2' }, columns: [
     { key: 'state_value', label: 'State' }, { key: 'metric_name', label: 'Metric' }, { key: 'namespace', label: 'Namespace' },
     { key: 'threshold', label: 'Threshold' }, { key: 'state_reason', label: 'Reason' }, { key: 'actions_enabled', label: 'Actions' } ],
     sections: [
@@ -666,6 +722,19 @@ export type Highlight =
   | { kind: 'distinct'; label: string; col: string }
   | { kind: 'sum'; label: string; col: string; suffix?: string; fmt?: 'bytes' }
   | { kind: 'sumWhere'; label: string; col: string; where: string; eq: string; suffix?: string; tone?: 'accent' | 'danger' }
+  | { kind: 'countGt'; label: string; col: string; gt: number; tone?: 'accent' | 'danger' }
+  | { kind: 'avg'; label: string; col: string; suffix?: string }
+  // percent: count(cell==eq)/rows as 'NN% (n/total)'. Variant comes from the RAW ratio (v1
+  // parity, L100): every row matching → accent, ratio ≥0.8 → default, else danger; 0 rows → '—'.
+  // Displays ONE DECIMAL whenever rounding would move the rate into a different threshold class
+  // than the raw ratio (e.g. 499/500 → '99.8%', 399/500 → '79.8%'), so a near-complete fleet
+  // never reads as a finished '100%' and an 80%-rounded rate never contradicts its danger tone.
+  // When the row set is a capped sample (opts.capped), the rate can never render 'accent' and the
+  // value is marked ' 표본' — a 500-row-capped sample is not fleet-wide completeness.
+  | { kind: 'percent'; label: string; col: string; eq: string }
+  // sumProductWhere: Σ(colA×colB) over rows matching where==eq — per-row factors, so a
+  // custom-CPU-options instance counts its ACTUAL vCPUs, not the type default (L103).
+  | { kind: 'sumProductWhere'; label: string; cols: [string, string]; where: string; eq: string; suffix?: string }
   | { kind: 'deprecatedRuntime'; label: string; col: string };
 
 export interface HighlightCard { label: string; value: string | number; variant: 'default' | 'accent' | 'danger' }
@@ -700,7 +769,11 @@ function humanBytes(n: number): string {
 }
 
 /** Compute highlight cards from the full row set. Pure — unit-tested. */
-export function computeHighlights(rows: Array<Record<string, unknown>>, highlights: Highlight[]): HighlightCard[] {
+export function computeHighlights(
+  rows: Array<Record<string, unknown>>,
+  highlights: Highlight[],
+  opts?: { capped?: boolean },
+): HighlightCard[] {
   const tone = (t: 'accent' | 'danger' | undefined, n: number): HighlightCard['variant'] =>
     t === 'danger' ? (n > 0 ? 'danger' : 'default') : t === 'accent' ? 'accent' : 'default';
   return highlights.map((h) => {
@@ -728,6 +801,58 @@ export function computeHighlights(rows: Array<Record<string, unknown>>, highligh
           .reduce((acc, r) => acc + (Number(cell(r, h.col)) || 0), 0);
         return { label: h.label, value: `${Math.round(total).toLocaleString()}${h.suffix ?? ''}`, variant: tone(h.tone, total) };
       }
+      case 'countGt': {
+        const n = rows.filter((r) => {
+          const v = Number(cell(r, h.col));
+          return Number.isFinite(v) && v > h.gt;
+        }).length;
+        return { label: h.label, value: n, variant: tone(h.tone, n) };
+      }
+      case 'avg': {
+        // Exclude null/undefined/blank cells — Number(null) === 0 would skew the mean.
+        const nums = rows
+          .map((r) => cell(r, h.col))
+          .filter((v) => v != null && String(v).trim() !== '')
+          .map(Number)
+          .filter((n) => Number.isFinite(n));
+        if (!nums.length) return { label: h.label, value: '—', variant: 'default' };
+        const mean = Math.round(nums.reduce((a, b) => a + b, 0) / nums.length);
+        return { label: h.label, value: `${mean.toLocaleString()}${h.suffix ?? ''}`, variant: 'default' };
+      }
+      case 'percent': {
+        if (!rows.length) return { label: h.label, value: '—', variant: 'default' };
+        const n = rows.filter((r) => sv(cell(r, h.col)).trim().toLowerCase() === h.eq.toLowerCase()).length;
+        // A capped row set is a sample, not the fleet — a complete match can never claim the
+        // accented all-clear.
+        const capped = !!opts?.capped;
+        // Variant from the RAW ratio, never the rounded pct: 499/500 rounds to 100% but is
+        // not a complete match, so it must not read as 'accent'.
+        const variant: HighlightCard['variant'] =
+          n === rows.length && !capped ? 'accent' : n / rows.length >= 0.8 ? 'default' : 'danger';
+        const ratio = n / rows.length;
+        const rounded = Math.round(ratio * 100);
+        // Show one decimal whenever rounding would cross a threshold class the raw ratio is not
+        // in (rounded 100 but incomplete, rounded ≥80 but raw <0.8, rounded 0 but nonzero).
+        const crosses = (rounded === 100 && n !== rows.length)
+          || (rounded >= 80 && ratio < 0.8)
+          || (rounded === 0 && n > 0);
+        const pctStr = crosses ? (ratio * 100).toFixed(1) : String(rounded);
+        return {
+          label: h.label,
+          value: `${pctStr}% (${n}/${rows.length}${capped ? ' 표본' : ''})`,
+          variant,
+        };
+      }
+      case 'sumProductWhere': {
+        const total = rows
+          .filter((r) => sv(cell(r, h.where)).trim().toLowerCase() === h.eq.toLowerCase())
+          .reduce((acc, r) => {
+            const a = Number(cell(r, h.cols[0]));
+            const b = Number(cell(r, h.cols[1]));
+            return acc + (Number.isFinite(a) && Number.isFinite(b) ? a * b : 0);
+          }, 0);
+        return { label: h.label, value: `${Math.round(total).toLocaleString()}${h.suffix ?? ''}`, variant: 'default' };
+      }
       case 'deprecatedRuntime': {
         const n = rows.filter((r) => isDeprecatedRuntime(cell(r, h.col))).length;
         return { label: h.label, value: n, variant: n > 0 ? 'danger' : 'default' };
@@ -743,17 +868,28 @@ export const HIGHLIGHTS: Record<string, Highlight[]> = {
     { kind: 'countWhere', label: '중지됨', col: 'instance_state', eq: 'stopped', tone: 'danger' },
     { kind: 'countTruthy', label: '퍼블릭 IP', col: 'public_ip_address' },
     { kind: 'distinct', label: '타입 종류', col: 'instance_type' },
+    { kind: 'sumProductWhere', label: '실행 중 총 vCPU', cols: ['cpu_options_core_count', 'cpu_options_threads_per_core'], where: 'instance_state', eq: 'running' },
   ],
   rds: [
     { kind: 'countWhere', label: '가용', col: 'status', eq: 'available', tone: 'accent' },
     { kind: 'countWhere', label: 'Multi-AZ', col: 'multi_az', eq: 'true', tone: 'accent' },
     { kind: 'countWhere', label: '퍼블릭 노출', col: 'publicly_accessible', eq: 'true', tone: 'danger' },
     { kind: 'distinct', label: '엔진 종류', col: 'engine' },
+    // Aurora reports a nominal allocated_storage placeholder — this is provisioned storage, not Aurora usage.
+    { kind: 'sum', label: '총 프로비저닝 스토리지', col: 'allocated_storage', suffix: ' GB' },
   ],
   lambda: [
     { kind: 'countWhere', label: '활성', col: 'state', eq: 'active', tone: 'accent' },
     { kind: 'deprecatedRuntime', label: 'EOL 런타임', col: 'runtime' },
+    { kind: 'countGt', label: '타임아웃 >300s', col: 'timeout', gt: 300, tone: 'danger' },
+    { kind: 'avg', label: '평균 메모리', col: 'memory_size', suffix: ' MB' },
     { kind: 'distinct', label: '런타임 종류', col: 'runtime' },
+  ],
+  ecs_cluster: [
+    { kind: 'countWhere', label: 'ACTIVE', col: 'status', eq: 'active', tone: 'accent' },
+    { kind: 'sum', label: '실행 태스크', col: 'running_tasks_count' },
+    { kind: 'sum', label: '활성 서비스', col: 'active_services_count' },
+    { kind: 'sum', label: '컨테이너 인스턴스', col: 'registered_container_instances_count' },
   ],
   ecs_task: [
     { kind: 'countWhere', label: 'RUNNING', col: 'last_status', eq: 'running', tone: 'accent' },
@@ -770,6 +906,7 @@ export const HIGHLIGHTS: Record<string, Highlight[]> = {
   ebs_volume: [
     { kind: 'countWhere', label: '사용 중', col: 'state', eq: 'in-use', tone: 'accent' },
     { kind: 'countWhere', label: '미암호화', col: 'encrypted', eq: 'false', tone: 'danger' },
+    { kind: 'percent', label: '암호화율', col: 'encrypted', eq: 'true' },
     { kind: 'sum', label: '총 용량', col: 'size', suffix: ' GB' },
     { kind: 'countWhere', label: '유휴 볼륨', col: 'state', eq: 'available', tone: 'danger' },
     { kind: 'sumWhere', label: '유휴(낭비) 용량', col: 'size', where: 'state', eq: 'available', suffix: ' GB', tone: 'danger' },

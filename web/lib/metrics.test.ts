@@ -7,6 +7,11 @@ vi.mock('@aws-sdk/client-cloudwatch', () => ({
   GetMetricDataCommand: class { constructor(public input: unknown) {} },
   ListMetricsCommand: class { constructor(public input: unknown) {} },
 }));
+// assumedClient's member-account path hits a real STSClient — passthrough keeps the host path
+// identical while letting member-account dims tests run against the mocked CloudWatch client.
+vi.mock('./aws-assume', () => ({
+  assumedClient: async (_a: unknown, Ctor: new (c: Record<string, unknown>) => unknown, cfg: Record<string, unknown> = {}) => new Ctor(cfg),
+}));
 vi.mock('@aws-sdk/client-pricing', () => ({
   PricingClient: class { send = priceSend; },
   GetProductsCommand: class { constructor(public input: unknown) {} },
@@ -31,32 +36,49 @@ const priceList = (usd: string) => JSON.stringify({
   },
 });
 
-describe('ec2AvgCpu', () => {
-  it('averages the latest datapoint across results, rounded to 0.1', async () => {
+describe('ec2CpuStats (gap L138 fleet-wide per-region)', () => {
+  it('per-instance map + raw-value average, mapped by query Id (out-of-order safe)', async () => {
     cwSend.mockResolvedValueOnce({
       MetricDataResults: [
-        { Id: 'm0', Values: [10.2, 5] },
-        { Id: 'm1', Values: [20.6, 9] },
+        { Id: 'cpu_i1', Values: [20.64] }, // out of order on purpose
+        { Id: 'cpu_i0', Values: [10.24] },
       ],
     });
-    const { ec2AvgCpu } = await import('./metrics');
-    // (10.2 + 20.6) / 2 = 15.4
-    expect(await ec2AvgCpu(['i-aaa', 'i-bbb'])).toBe(15.4);
+    const { ec2CpuStats } = await import('./metrics');
+    const st = await ec2CpuStats({ 'ap-northeast-2': ['i-aaa', 'i-bbb'] });
+    expect(st.byInstance).toEqual({ 'i-aaa': 10.2, 'i-bbb': 20.6 });
+    // avg from RAW datapoints (10.24+20.64)/2 = 15.44 → 15.4, not from the rounded display values
+    expect(st.avg).toBe(15.4);
   });
 
-  it('returns null for empty ids (no CloudWatch call)', async () => {
-    const { ec2AvgCpu } = await import('./metrics');
-    expect(await ec2AvgCpu([])).toBeNull();
+  it('merges regions — one GetMetricData batch per region, ids never cross-region sampled', async () => {
+    cwSend
+      .mockResolvedValueOnce({ MetricDataResults: [{ Id: 'cpu_i0', Values: [50] }] })
+      .mockResolvedValueOnce({ MetricDataResults: [{ Id: 'cpu_i0', Values: [10] }] });
+    const { ec2CpuStats } = await import('./metrics');
+    const st = await ec2CpuStats({ 'ap-northeast-2': ['i-kr'], 'us-east-1': ['i-us'] });
+    expect(cwSend).toHaveBeenCalledTimes(2);
+    expect(Object.keys(st.byInstance).sort()).toEqual(['i-kr', 'i-us']);
+    expect(st.avg).toBe(30);
+  });
+
+  it('empty input → {avg: null, byInstance: {}} without a CloudWatch call', async () => {
+    const { ec2CpuStats } = await import('./metrics');
+    expect(await ec2CpuStats({})).toEqual({ avg: null, byInstance: {} });
+    expect(await ec2CpuStats({ 'ap-northeast-2': [] })).toEqual({ avg: null, byInstance: {} });
     expect(cwSend).not.toHaveBeenCalled();
   });
 
-  it('returns null when no datapoints', async () => {
-    cwSend.mockResolvedValueOnce({ MetricDataResults: [{ Id: 'm0', Values: [] }] });
-    const { ec2AvgCpu } = await import('./metrics');
-    expect(await ec2AvgCpu(['i-aaa'])).toBeNull();
+  it('no datapoints → avg null; a region-level CloudWatch deny degrades to the other regions', async () => {
+    cwSend.mockResolvedValueOnce({ MetricDataResults: [{ Id: 'cpu_i0', Values: [] }] });
+    const { ec2CpuStats } = await import('./metrics');
+    expect((await ec2CpuStats({ 'ap-northeast-2': ['i-aaa'] })).avg).toBeNull();
+    cwSend.mockRejectedValueOnce(new Error('AccessDenied'));
+    cwSend.mockResolvedValueOnce({ MetricDataResults: [{ Id: 'cpu_i0', Values: [7] }] });
+    const st = await ec2CpuStats({ 'us-east-1': ['i-denied'], 'ap-northeast-2': ['i-ok'] });
+    expect(st.byInstance).toEqual({ 'i-ok': 7 });
   });
 });
-
 describe('ec2HourlyCost', () => {
   it('parses Pricing on-demand USD and sums price × count', async () => {
     priceSend
@@ -166,5 +188,135 @@ describe('rdsMetrics', () => {
     const r = await rdsMetrics(ids);
     expect(cwSend).toHaveBeenCalledTimes(2);       // 63 → chunk(62) + chunk(1)
     expect(Object.keys(r.byInstance)).toHaveLength(63); // every instance represented
+  });
+});
+
+describe('rdsInstanceTrends (gap L141/L142/L155)', () => {
+  const iso = (minAgo: number) => new Date(Date.now() - minAgo * 60_000);
+  type CwInput = { input: { StartTime: Date; MetricDataQueries: { Id: string; MetricStat: { Period: number } }[]; ScanBy?: string } };
+  it('makes TWO bounded parallel calls — a ~65-min spark window and a 14-day long-trend window', async () => {
+    cwSend.mockResolvedValue({ MetricDataResults: [] });
+    const { rdsInstanceTrends } = await import('./metrics');
+    await rdsInstanceTrends('db-1');
+    expect(cwSend).toHaveBeenCalledTimes(2);
+    const [a, b] = cwSend.mock.calls.map((c) => (c[0] as CwInput).input);
+    const spark = a.MetricDataQueries[0].Id.startsWith('spark') ? a : b;
+    const long = spark === a ? b : a;
+    // Period sets RESOLUTION, not a window — the spark call must carry its own short StartTime
+    // (one 14d window returned ~4,000 points per 5-min query only to be trimmed client-side).
+    expect(Date.now() - spark.StartTime.getTime()).toBeLessThan(70 * 60_000);
+    expect(spark.MetricDataQueries).toHaveLength(6);
+    expect(spark.MetricDataQueries.every((q) => q.MetricStat.Period === 300)).toBe(true);
+    expect(Date.now() - long.StartTime.getTime()).toBeGreaterThan(13 * 86_400_000);
+    const periods = Object.fromEntries(long.MetricDataQueries.map((q) => [q.Id, q.MetricStat.Period]));
+    expect(periods).toEqual({ mem24h: 3600, cpu14d: 86_400 });
+    expect(spark.ScanBy).toBe('TimestampAscending');
+    expect(long.ScanBy).toBe('TimestampAscending');
+  });
+  it('maps series into {t,v}[] and windows sparks to the last hour', async () => {
+    cwSend.mockImplementation(async (cmd: { input: { MetricDataQueries: { Id: string }[] } }) => (
+      cmd.input.MetricDataQueries[0].Id.startsWith('spark')
+        ? { MetricDataResults: [{ Id: 'spark_0', Timestamps: [iso(120), iso(30), iso(5)], Values: [9, 41.234, 43.5] }] }
+        : { MetricDataResults: [{ Id: 'mem24h', Timestamps: [iso(60)], Values: [2 * 1024 ** 3] }] }
+    ));
+    const { rdsInstanceTrends } = await import('./metrics');
+    const t = await rdsInstanceTrends('db-1');
+    // the 120-min-old point falls outside the 1h spark window
+    expect(t.spark.cpu?.map((s) => s.v)).toEqual([41.23, 43.5]);
+    expect(t.mem24h?.[0].v).toBe(2 * 1024 ** 3);
+    expect(t.cpu14d).toBeNull(); // no datapoints → null, never []
+  });
+  it('degrades every series to null (never throws) when CloudWatch denies', async () => {
+    cwSend.mockRejectedValueOnce(new Error('AccessDenied'));
+    const { rdsInstanceTrends } = await import('./metrics');
+    const t = await rdsInstanceTrends('db-1');
+    expect(t.mem24h).toBeNull();
+    expect(t.cpu14d).toBeNull();
+    expect(Object.values(t.spark).every((v) => v === null)).toBe(true);
+  });
+
+});
+
+describe('liveResourceTrends (gap L118)', () => {
+  it('one bounded ~65-min call, Period 300, ascending; per-spec labels; empty series → null', async () => {
+    cwSend.mockResolvedValueOnce({ MetricDataResults: [
+      { Id: 'lt0', Timestamps: [new Date(Date.now() - 10 * 60_000)], Values: [42.123] },
+    ] });
+    const { liveResourceTrends } = await import('./metrics');
+    const t = await liveResourceTrends('elasticache', 'cc-1');
+    const input = (cwSend.mock.calls[0][0] as { input: { StartTime: Date; MetricDataQueries: { MetricStat: { Period: number; Metric: { MetricName: string } } }[]; ScanBy?: string } }).input;
+    expect(Date.now() - input.StartTime.getTime()).toBeLessThan(70 * 60_000);
+    expect(input.MetricDataQueries.every((q) => q.MetricStat.Period === 300)).toBe(true);
+    expect(input.ScanBy).toBe('TimestampAscending');
+    // the audit-required CacheHitRate is part of the elasticache spec
+    expect(input.MetricDataQueries.map((q) => q.MetricStat.Metric.MetricName)).toContain('CacheHitRate');
+    expect(t[0]).toMatchObject({ label: 'CPU', fmt: 'pct' });
+    expect(t[0].samples?.[0].v).toBe(42.12);
+    expect(t[1].samples).toBeNull(); // no datapoints → null, never []
+  });
+  it('unknown type → []; CloudWatch deny → [] (never throws)', async () => {
+    const { liveResourceTrends } = await import('./metrics');
+    expect(await liveResourceTrends('nope', 'x')).toEqual([]);
+    cwSend.mockRejectedValueOnce(new Error('AccessDenied'));
+    expect(await liveResourceTrends('elasticache', 'cc-1')).toEqual([]);
+  });
+  it('opensearch dims carry the OWNING account ClientId (member domains must not query with the host id)', async () => {
+    process.env.AWS_ACCOUNT_ID = '123456789012';
+    cwSend.mockResolvedValueOnce({ MetricDataResults: [] });
+    const { liveResourceTrends } = await import('./metrics');
+    await liveResourceTrends('opensearch', 'dom-1', '123456789012');
+    const q = (cwSend.mock.calls[0][0] as { input: { MetricDataQueries: { MetricStat: { Metric: { Dimensions: { Name: string; Value: string }[] } } }[] } }).input.MetricDataQueries[0];
+    const client = q.MetricStat.Metric.Dimensions.find((d) => d.Name === 'ClientId');
+    expect(client?.Value).toBe('123456789012');
+  });
+});
+
+describe('live fmt (ratio/native units)', () => {
+  it('CacheHitRate uses ratioPct — 0.92 renders 92%, never 0.9% (0–1 ratio source)', async () => {
+    cwSend.mockResolvedValueOnce({ MetricDataResults: [
+      { Id: 'lm6', Values: [0.92] }, // elasticache spec index 6 = CacheHitRate
+    ] });
+    const { liveResourceMetrics } = await import('./metrics');
+    const rows = await liveResourceMetrics('elasticache', 'cc-1');
+    const hit = rows.find((r) => r.label === 'Cache Hit Rate');
+    expect(hit?.value).toBe('92%');
+  });
+  it('opensearch FreeStorageSpace (already megabytes) renders without the bytes÷1e6 division', async () => {
+    cwSend.mockResolvedValueOnce({ MetricDataResults: [
+      { Id: 'lm2', Values: [512.4] }, // opensearch spec index 2 = FreeStorageSpace (mbRaw)
+    ] });
+    const { liveResourceMetrics } = await import('./metrics');
+    const rows = await liveResourceMetrics('opensearch', 'dom-1');
+    const fs = rows.find((r) => r.label === 'Free Storage');
+    expect(fs?.value).toBe('512.4 MB');
+  });
+});
+
+describe('ec2NetworkTrends (gap L139)', () => {
+  it('one bounded 24h hourly call — both metrics, ascending, account+region forwarded', async () => {
+    cwSend.mockResolvedValueOnce({ MetricDataResults: [
+      { Id: 'nt0', Timestamps: [new Date('2026-09-01T00:00:00Z'), new Date('2026-09-01T01:00:00Z')], Values: [1e6, 2e6] },
+      { Id: 'nt1', Timestamps: [new Date('2026-09-01T00:00:00Z')], Values: [5e5] },
+    ] });
+    const { ec2NetworkTrends } = await import('./metrics');
+    const t = await ec2NetworkTrends('i-abc12345', '123456789012', 'us-west-2');
+    const input = (cwSend.mock.calls[0][0] as { input: { StartTime: Date; EndTime: Date; ScanBy?: string; MetricDataQueries: { MetricStat: { Metric: { MetricName?: string }; Period?: number } }[] } }).input;
+    const windowMs = input.EndTime.getTime() - input.StartTime.getTime();
+    expect(windowMs).toBeLessThanOrEqual(25 * 3600_000);
+    expect(windowMs).toBeGreaterThanOrEqual(23 * 3600_000);
+    expect(input.ScanBy).toBe('TimestampAscending');
+    expect(input.MetricDataQueries.map((q) => q.MetricStat.Metric.MetricName)).toEqual(['NetworkIn', 'NetworkOut']);
+    expect(input.MetricDataQueries.every((q) => q.MetricStat.Period === 3600)).toBe(true);
+    expect(t.netIn).toHaveLength(2);
+    expect(t.netIn![1]).toEqual({ t: '2026-09-01T01:00:00.000Z', v: 2e6 });
+    expect(t.netOut).toHaveLength(1);
+  });
+
+  it('empty series → null; CloudWatch error → both null (never throws)', async () => {
+    cwSend.mockResolvedValueOnce({ MetricDataResults: [{ Id: 'nt0', Timestamps: [], Values: [] }] });
+    const { ec2NetworkTrends } = await import('./metrics');
+    expect(await ec2NetworkTrends('i-abc12345')).toEqual({ netIn: null, netOut: null });
+    cwSend.mockRejectedValueOnce(new Error('AccessDenied'));
+    expect(await ec2NetworkTrends('i-abc12345')).toEqual({ netIn: null, netOut: null });
   });
 });

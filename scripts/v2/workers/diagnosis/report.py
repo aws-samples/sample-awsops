@@ -21,7 +21,7 @@ _RENDER_CONCURRENCY = max(1, int(os.environ.get("DIAGNOSIS_RENDER_CONCURRENCY", 
 from . import sources as src
 from . import invariants as inv
 from . import db as ddb
-from .sections import SECTIONS, DEEP_SECTIONS, INTENDED_VS_ACTUAL_SECTION
+from .sections import SECTIONS, DEEP_SECTIONS, INTENDED_VS_ACTUAL_SECTION, LANG_RULES, localized_title
 
 # Inference-profile id — a BARE id ("anthropic.claude-...") throws ValidationException on
 # Claude 4.x invoke_model. Uses global.* profiles invoked from ap-northeast-2 (matches agent/agent.py)
@@ -36,11 +36,27 @@ _MODEL_SONNET = os.environ.get("DIAGNOSIS_MODEL_SONNET", MODEL_ID)  # MODEL_ID k
 _MODEL_OPUS = os.environ.get("DIAGNOSIS_MODEL_OPUS", "global.anthropic.claude-opus-4-8")
 # Auto title/tags use a small cheap call (default = the Sonnet id; override to Haiku via env).
 _TITLE_MODEL = os.environ.get("DIAGNOSIS_TITLE_MODEL", _MODEL_SONNET)
-_TITLE_PROMPT = (
-    "아래 AWS 진단 리포트를 읽고, 가장 중요한 핵심 1가지만 담은 한국어 제목 한 줄(40자 이내)과 "
-    "관련 태그 3~5개를 만들어라. 반드시 JSON 객체만 출력하라(설명 금지): "
-    '{"title": "한 줄 제목", "tags": ["태그1", "태그2"]}'
-)
+# Title/tags prompt — the title language follows the report lang (gap L50).
+_TITLE_LANG_NAME = {"ko": "한국어", "en": "영어(English)", "zh": "중국어 간체(Simplified Chinese)", "ja": "일본어(日本語)"}
+
+
+def _title_prompt(lang="ko"):
+    name = _TITLE_LANG_NAME.get(lang, _TITLE_LANG_NAME["ko"])
+    return (
+        f"아래 AWS 진단 리포트를 읽고, 가장 중요한 핵심 1가지만 담은 {name} 제목 한 줄(40자 이내)과 "
+        f"관련 태그 3~5개({name})를 만들어라. 반드시 JSON 객체만 출력하라(설명 금지): "
+        '{"title": "...", "tags": ["...", "..."]}'  # neutral skeleton — no ko example values to leak into non-ko titles
+    )
+
+
+# Document chrome (title line / generated label / TOC label / coverage heading) per report lang.
+# The coverage BODY stays Korean (operator diagnostics, not report content).
+_CHROME = {
+    "ko": {"title": "AWS 진단 리포트", "generated": "생성 일시", "toc": "목차", "coverage": "데이터 커버리지 (Data coverage)"},
+    "en": {"title": "AWS Diagnosis Report", "generated": "Generated", "toc": "Table of Contents", "coverage": "Data coverage"},
+    "zh": {"title": "AWS 诊断报告", "generated": "生成时间", "toc": "目录", "coverage": "数据覆盖 (Data coverage)"},
+    "ja": {"title": "AWS 診断レポート", "generated": "生成日時", "toc": "目次", "coverage": "データカバレッジ (Data coverage)"},
+}
 TIER_CATALOG = {"light": SECTIONS, "mid": SECTIONS, "deep": DEEP_SECTIONS}
 TIER_MAX_TOKENS = {"light": 1500, "mid": 1500, "deep": 2200}
 
@@ -52,11 +68,11 @@ def _resolve_tier(tier, model):
     return catalog, model_id, TIER_MAX_TOKENS.get(tier, 1500)
 
 
-def make_title_and_tags(md):
+def make_title_and_tags(md, lang="ko"):
     """One cheap LLM call → {'title': str|None, 'tags': [str]}. Best-effort: ANY failure → None/[]
     (the title is decorative; it must never affect report success)."""
     try:
-        raw = _bedrock_render(_TITLE_PROMPT, md, _TITLE_MODEL, 300)
+        raw = _bedrock_render(_title_prompt(lang), md, _TITLE_MODEL, 300)
         snippet = raw[raw.find("{"): raw.rfind("}") + 1]  # tolerate ```json fences / filler text
         data = json.loads(snippet)
         title = data.get("title")
@@ -145,12 +161,13 @@ def _normalize_headings(text):
     return re.sub(r"^#{1,6}[ \t]+(#{1,6}[ \t])", r"\1", text, flags=re.M)
 
 
-def render_section(section, collected, model_id, max_tokens):
+def render_section(section, collected, model_id, max_tokens, lang="ko"):
     # Section sees ONLY the sources it declares (least-context).
     ctx = {k: collected[k]["data"] for k in section["sources"] if k in collected}
     ctx_json = _redact(json.dumps(ctx, ensure_ascii=False, default=str))  # [GATE-FIX] redact pre-LLM
-    body = _normalize_headings(_balance_code_fences(_bedrock_render(section["prompt"], ctx_json, model_id, max_tokens)))
-    return {"key": section["key"], "title": section["title"], "body": body}
+    prompt = section["prompt"] + " " + LANG_RULES.get(lang, LANG_RULES["ko"])
+    body = _normalize_headings(_balance_code_fences(_bedrock_render(prompt, ctx_json, model_id, max_tokens)))
+    return {"key": section["key"], "title": localized_title(section, lang), "body": body}
 
 
 def _is_empty(data):
@@ -158,10 +175,12 @@ def _is_empty(data):
     return (not data) or all(not v for v in data.values())
 
 
-def _coverage_note(collected):
+def _coverage_note(collected, lang="ko"):
     """Render which collectors actually had data — so a thin/generic report is self-explaining
-    (ok | empty | degraded(reason)) instead of mysteriously vague."""
-    lines = ["## 데이터 커버리지 (Data coverage)", "",
+    (ok | empty | degraded(reason)) instead of mysteriously vague. Heading follows the report
+    lang; the status body stays Korean (operator diagnostics, not report content)."""
+    chrome = _CHROME.get(lang, _CHROME["ko"])
+    lines = [f"## {chrome['coverage']}", "",
              "이 리포트가 근거로 삼은 수집기 상태 — `empty`/`degraded`는 해당 영역 진단이 빈약할 수 있음을 뜻합니다.", ""]
     for key, r in collected.items():
         if key == "datasources_obs":
@@ -199,18 +218,20 @@ def _datasource_utilization(r):
     return f"사용 — {used}/{queried}개 인스턴스 신호 실행({names}){extra}"
 
 
-def build_markdown(rendered, account, tier, collected=None):
+def build_markdown(rendered, account, tier, collected=None, lang="ko"):
+    chrome = _CHROME.get(lang, _CHROME["ko"])
     toc = "\n".join(f"- [{s['title']}](#{s['key']})" for s in rendered)
     # TOC sits ABOVE the first `## ` section heading (bold label, not a heading) so a
     # reader — and `md.split("##", 1)[0]` — sees the full table of contents first.
     generated = datetime.now(_KST).strftime("%Y-%m-%d %H:%M")
-    parts = [f"# AWS 진단 리포트 — 계정 {account} ({tier})", "",
-             f"> 생성 일시: {generated} (KST)", "",
-             "**목차**", "", toc, ""]
+    parts = [f"# {chrome['title']} — 계정 {account} ({tier})" if lang == "ko"
+             else f"# {chrome['title']} — {account} ({tier})", "",
+             f"> {chrome['generated']}: {generated} (KST)", "",
+             f"**{chrome['toc']}**", "", toc, ""]
     for s in rendered:
         parts += [f"## {s['title']}", "", s["body"], ""]
     if collected:
-        parts += [_coverage_note(collected), ""]
+        parts += [_coverage_note(collected, lang), ""]
     return "\n".join(parts)
 
 
@@ -243,7 +264,8 @@ def _diff_summary(current_drift, parent_summary):
     return {"regressions": regressions, "improvements": improvements}
 
 
-def generate(conn, account, tier="mid", report_id=None, on_progress=None, model="sonnet", scope="self"):
+def generate(conn, account, tier="mid", report_id=None, on_progress=None, model="sonnet", scope="self",
+             lang="ko"):
     """Collect → evaluate active invariants → render each section → markdown + summary.
     Returns (markdown, summary, sources_used). Read-only throughout; the LLM sees verdict-only
     drift, never raw untrusted edge text. `report_id` (optional) enables the parent-report diff.
@@ -253,11 +275,11 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     base_catalog, model_id, max_tokens = _resolve_tier(tier, model)
     total = len(base_catalog) + 1  # + INTENDED_VS_ACTUAL_SECTION; fixed so the UI can show N/total
 
-    def _emit(current, section, phase):
+    def _emit(current, section, phase, completed=None):
         if on_progress is None:
             return
         try:
-            on_progress(current, total, section, phase)
+            on_progress(current, total, section, phase, completed)
         except Exception as e:  # noqa: BLE001 — progress is a heartbeat, never fatal to the report
             print(f"progress emit failed (non-fatal): {e}", file=sys.stderr)  # [P4 gemini MINOR] don't fail silently
 
@@ -285,23 +307,31 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     # sinking the whole report; results reassembled in catalog order. Progress is emitted on completion.
     def _render_one(i, sec):
         try:
-            return i, render_section(sec, collected, model_id, max_tokens)
+            return i, render_section(sec, collected, model_id, max_tokens, lang)
         except Exception as e:  # noqa: BLE001 — one section must never fail the whole report
             print(f"diagnosis: section '{sec.get('key')}' render failed (degraded): {e}", file=sys.stderr)
-            return i, {"key": sec.get("key"), "title": sec["title"],
-                       "body": f"_이 섹션 생성에 실패했습니다 (degraded): {e}_"}
+            # 'degraded' stays verbatim — the UI severity heuristic keys on it in every language.
+            fail = {"ko": "이 섹션 생성에 실패했습니다 (degraded)",
+                    "en": "This section failed to render (degraded)",
+                    "zh": "此章节生成失败 (degraded)",
+                    "ja": "このセクションの生成に失敗しました (degraded)"}
+            return i, {"key": sec.get("key"), "title": localized_title(sec, lang),
+                       "body": f"_{fail.get(lang, fail['ko'])}: {e}_"}
 
-    rendered_by_idx, done = {}, 0
+    rendered_by_idx, done, completed_titles = {}, 0, []
     with ThreadPoolExecutor(max_workers=min(_RENDER_CONCURRENCY, len(catalog))) as ex:
         futures = [ex.submit(_render_one, i, sec) for i, sec in enumerate(catalog)]
         for fut in as_completed(futures):
             i, result = fut.result()
             rendered_by_idx[i] = result
             done += 1
-            _emit(done, result["title"], "render")  # progress as each section completes
+            # gap L177: accumulate finished-section titles (completion order — render is
+            # concurrent, so this is NOT catalog order) for the UI checklist grid.
+            completed_titles.append(result["title"])
+            _emit(done, result["title"], "render", list(completed_titles))
     rendered = [rendered_by_idx[i] for i in range(len(catalog))]
-    _emit(total, "리포트 조립", "assemble")
-    md = build_markdown(rendered, account, tier, collected)
+    _emit(total, "리포트 조립", "assemble", list(completed_titles))  # keep the grid populated at 100%
+    md = build_markdown(rendered, account, tier, collected, lang)
     summary = {"sections": len(rendered), "sources_used": sources_used,
                "degraded": degraded, "drift": drift}
 

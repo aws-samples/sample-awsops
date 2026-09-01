@@ -95,6 +95,29 @@ class TestSchema(_Base):
         self.assertIn("metrics",b); self.assertIn("labels",b)
         self.assertEqual(b["version"],"2.11.0")  # captured for version-aware PromQL
 
+    def test_schema_probe_metrics_decides_names_past_the_cap(self):
+        # Mirrors test_prometheus_mcp: probe names are decided by LOCAL membership in the full
+        # in-memory list (no per-name network calls); every valid requested name lands in `probed`.
+        many = [f"m{i:04d}" for i in range(501)] + ["up"]
+        calls = {"n": 0}
+
+        def fake(method, url, headers=None, body=None, timeout=None):
+            calls["n"] += 1
+            if "buildinfo" in url:
+                return 200, {"status": "success", "data": {"version": "2.11.0"}}
+            if url.endswith("/labels"):
+                return 200, {"status": "success", "data": ["job"]}
+            return 200, {"status": "success", "data": many}
+        with mock.patch.object(mm, "http_json", side_effect=fake):
+            out = mm.lambda_handler({"tool_name": "mimir_schema", "arguments": {
+                "probe_metrics": ["up", "node_cpu_seconds_total"]}}, None)
+        b = json.loads(out["body"])
+        self.assertTrue(b["truncated"])
+        self.assertIn("up", b["metrics"])
+        self.assertNotIn("node_cpu_seconds_total", b["metrics"])
+        self.assertEqual(b["probed"], ["node_cpu_seconds_total", "up"])
+        self.assertEqual(calls["n"], 3)  # zero probe traffic
+
     def test_instance_id_resolves_per_instance_credential_blind(self):
         mm.load_datasource.reset_mock()
         with mock.patch.object(mm,"http_json",return_value=(200,{"status":"success","data":{"resultType":"vector","result":[]}})):

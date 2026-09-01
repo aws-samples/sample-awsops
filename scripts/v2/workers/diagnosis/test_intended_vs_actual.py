@@ -176,13 +176,16 @@ def test_generate_emits_monotonic_section_progress(monkeypatch):
 
     events = []
     report.generate(FakeConn(), account="1", tier="mid",
-                     on_progress=lambda cur, total, section, phase: events.append((cur, total, section, phase)))
+                     on_progress=lambda cur, total, section, phase, completed=None: events.append((cur, total, section, phase, completed)))
 
     total_sections = len(sections.SECTIONS) + 1  # + INTENDED_VS_ACTUAL_SECTION
     renders = [e for e in events if e[3] == "render"]
     assert len(renders) == total_sections
     # monotonic 1..N, all carrying the fixed total + a section title
     assert [e[0] for e in renders] == list(range(1, total_sections + 1))
+    # L177: the completed list grows by one per render event and ends covering every section
+    assert [len(e[4]) for e in renders] == list(range(1, total_sections + 1))
+    assert renders[-1][4] and set(renders[-1][4]) == {e[2] for e in renders}
     assert all(e[1] == total_sections and e[2] for e in renders)
     # collect emitted before the first render; assemble after the last
     assert events[0][3] == "collect"

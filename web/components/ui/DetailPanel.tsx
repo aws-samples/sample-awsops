@@ -10,6 +10,10 @@ import StatePill from './StatePill';
 import { buildDetailGroups, type DetailValue } from '@/lib/inventory-detail';
 import type { InvType } from '@/lib/inventory-types';
 import type { RdsInstanceMetrics } from '@/lib/metrics';
+import { EbsRelatedSection } from '@/components/inventory/metrics/EbsRelatedSection';
+import { RdsTrendsSection } from '@/components/inventory/metrics/RdsTrendsSection';
+import { LiveTrendsSection } from '@/components/inventory/metrics/LiveTrendsSection';
+import { RdsSgRulesSection } from '@/components/inventory/metrics/RdsSgRulesSection';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
 // v1-parity: each detail section is a titled card with a leading icon. Section labels are a small
@@ -201,7 +205,7 @@ function RdsMetricsSection({ instanceId }: { instanceId: string }) {
 // {label, value} rows from /api/inventory/<type>/metrics?id=. Same degrade behavior as RDS.
 const LIVE_METRIC_TYPES = new Set(['elasticache', 'opensearch', 'msk']);
 
-function LiveMetricsSection({ type, id }: { type: string; id: string }) {
+function LiveMetricsSection({ type, id, accountId, region }: { type: string; id: string; accountId?: string; region?: string }) {
   const { tt } = useI18n();
   const [s, setS] = useState<{ loading: boolean; rows: { label: string; value: string }[]; error: boolean }>({
     loading: true, rows: [], error: false,
@@ -209,12 +213,14 @@ function LiveMetricsSection({ type, id }: { type: string; id: string }) {
   useEffect(() => {
     let alive = true;
     setS({ loading: true, rows: [], error: false });
-    fetch(`/api/inventory/${type}/metrics?id=${encodeURIComponent(id)}`)
+    const scope = (accountId ? `&account=${encodeURIComponent(accountId)}` : '')
+      + (region ? `&region=${encodeURIComponent(region)}` : '');
+    fetch(`/api/inventory/${type}/metrics?id=${encodeURIComponent(id)}${scope}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((d) => { if (alive) setS({ loading: false, rows: (d.metrics ?? []) as { label: string; value: string }[], error: false }); })
       .catch(() => { if (alive) setS({ loading: false, rows: [], error: true }); });
     return () => { alive = false; };
-  }, [type, id]);
+  }, [type, id, accountId, region]);
 
   return (
     <div>
@@ -284,6 +290,23 @@ export default function DetailPanel({
 
   const groups = buildDetailGroups(data, spec);
   const rdsInstanceId = resourceType === 'rds' && typeof data.resource_id === 'string' ? data.resource_id : null;
+  // SG inbound chaining (gap L154): parse attached SG ids from the row's vpc_security_groups
+  // (Steampipe JSONB — PascalCase or snake_case depending on plugin version; string ids too).
+  const rdsSgIds = rdsInstanceId
+    ? (Array.isArray(data.vpc_security_groups) ? data.vpc_security_groups : [])
+        .map((g) => {
+          if (typeof g === 'string') return g;
+          if (g && typeof g === 'object') {
+            const o = g as Record<string, unknown>;
+            const v = o.VpcSecurityGroupId ?? o.vpc_security_group_id ?? o.GroupId ?? o.group_id;
+            return typeof v === 'string' ? v : null;
+          }
+          return null;
+        })
+        .filter((v): v is string => !!v && v.startsWith('sg-'))
+    : [];
+  // EBS drill-down (gap L97/L98): per-volume snapshots + attached-instance enrichment.
+  const ebsVolumeId = resourceType === 'ebs_volume' && typeof data.resource_id === 'string' ? data.resource_id : null;
   const liveMetricId =
     resourceType && LIVE_METRIC_TYPES.has(resourceType) && typeof data.resource_id === 'string' ? data.resource_id : null;
 
@@ -389,9 +412,38 @@ export default function DetailPanel({
               <RdsMetricsSection instanceId={rdsInstanceId} />
             </section>
           )}
+          {rdsInstanceId && (
+            <section className="rounded-lg border border-ink-100 bg-paper-muted/40 p-3">
+              <RdsTrendsSection instanceId={rdsInstanceId} />
+            </section>
+          )}
+          {rdsSgIds.length > 0 && (
+            <section className="rounded-lg border border-ink-100 bg-paper-muted/40 p-3">
+              <RdsSgRulesSection
+                sgIds={rdsSgIds}
+                accountId={typeof data.account_id === 'string' ? data.account_id : undefined}
+                region={typeof data.region === 'string' ? data.region : undefined}
+              />
+            </section>
+          )}
+          {ebsVolumeId && (
+            <section className="rounded-lg border border-ink-100 bg-paper-muted/40 p-3">
+              <EbsRelatedSection
+                volumeId={ebsVolumeId}
+                accountId={typeof data.account_id === 'string' ? data.account_id : undefined}
+                region={typeof data.region === 'string' ? data.region : undefined}
+                attachments={data.attachments}
+              />
+            </section>
+          )}
           {liveMetricId && resourceType && (
             <section className="rounded-lg border border-ink-100 bg-paper-muted/40 p-3">
-              <LiveMetricsSection type={resourceType} id={liveMetricId} />
+              <LiveMetricsSection type={resourceType} id={liveMetricId} accountId={typeof data.account_id === 'string' ? data.account_id : undefined} region={typeof data.region === 'string' ? data.region : undefined} />
+            </section>
+          )}
+          {liveMetricId && resourceType && (
+            <section className="rounded-lg border border-ink-100 bg-paper-muted/40 p-3">
+              <LiveTrendsSection type={resourceType} id={liveMetricId} accountId={typeof data.account_id === 'string' ? data.account_id : undefined} region={typeof data.region === 'string' ? data.region : undefined} />
             </section>
           )}
           {children}

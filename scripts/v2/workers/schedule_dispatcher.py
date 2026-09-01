@@ -12,10 +12,14 @@ diagnosis_reports row when no report_id is supplied, so this dispatcher does not
 import json
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import boto3
 
 import db
+
+# KST as a fixed +9 offset — Korea has no DST, so no tzdata needed in the slim image.
+_KST = timezone(timedelta(hours=9))
 
 QUEUE_URL = os.environ.get("JOBS_QUEUE_URL", "")
 HOST_ACCOUNT = os.environ.get("AWS_ACCOUNT_ID", "")  # account to diagnose (single-account host)
@@ -29,7 +33,7 @@ _CLAIM_SQL = (
     "  WHEN 'biweekly' THEN interval '14 days' "
     "  ELSE interval '1 month' END) "
     "WHERE enabled = true AND next_run_at <= now() "
-    "RETURNING user_sub, schedule_type, config"
+    "RETURNING user_sub, schedule_type, config, next_run_at"
 )
 
 
@@ -42,6 +46,58 @@ def _coerce_config(config):
         except (ValueError, TypeError):
             return {}
     return config if isinstance(config, dict) else {}
+
+
+def _int_in(v, lo, hi):
+    return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+
+
+def _precise_next_run(schedule_type, cfg, claimed_next=None):
+    """Next occurrence honoring the config detail fields (gap L51): dayOfWeek 0-6 (JS getDay
+    convention, 0=Sun, KST) for weekly/biweekly, dayOfMonth 1-28 (KST) for monthly, hour 0-23
+    (KST) for all. The precise weekday/date branch runs only when the cadence's PARTNER field
+    is present — an `hour` alone keeps the coarse interval with the run hour pinned (KST),
+    never inventing a run date. Returns an aware KST datetime, or None when the config carries
+    no usable detail field — the caller then keeps the coarse interval the claim SQL already
+    wrote (today's behavior). Runs AFTER the advance-first claim, as a follow-up UPDATE:
+    idempotent, and a crash between the two UPDATEs degrades to the coarse interval (never a
+    double run)."""
+    dow = cfg.get("dayOfWeek")
+    dom = cfg.get("dayOfMonth")
+    hour = cfg.get("hour")
+    has_hour = _int_in(hour, 0, 23)
+    has_partner = _int_in(dom, 1, 28) if schedule_type == "monthly" else _int_in(dow, 0, 6)
+    if not has_partner and not has_hour:
+        return None
+    h = hour if has_hour else 0
+    now = datetime.now(_KST)
+    if not has_partner:
+        # hour-only: reuse the DATE the claim SQL already wrote (Postgres `+ interval '1 month'`
+        # clamps month-ends correctly — Jan 31 → Feb 28/29) and pin only the hour. Re-deriving the
+        # date here diverged from the claim on month-ends (a min(day,28) clamp permanently shifted
+        # day-30/31 schedules). Without the claimed value (direct calls/tests), fall back to a
+        # plain interval — weekly/biweekly are day-exact; monthly keeps the claim's value by
+        # returning None (no refinement needed when we can't do better than the claim).
+        if isinstance(claimed_next, datetime):
+            base = claimed_next.astimezone(_KST)
+            return base.replace(hour=h, minute=0, second=0, microsecond=0)
+        if schedule_type in ("weekly", "biweekly"):
+            cand = now + timedelta(days=7 if schedule_type == "weekly" else 14)
+            return cand.replace(hour=h, minute=0, second=0, microsecond=0)
+        return None
+    if schedule_type in ("weekly", "biweekly"):
+        py_target = (dow + 6) % 7  # JS 0=Sun → python weekday() 0=Mon
+        cand = now.replace(hour=h, minute=0, second=0, microsecond=0) \
+            + timedelta(days=(py_target - now.weekday()) % 7)
+        if cand <= now:
+            cand += timedelta(days=7)
+        if schedule_type == "biweekly":
+            cand += timedelta(days=7)
+        return cand
+    cand = now.replace(day=dom, hour=h, minute=0, second=0, microsecond=0)
+    if cand <= now:  # 1-28 always exists in every month, so a +32d/day-reset hop is safe
+        cand = (cand.replace(day=1) + timedelta(days=32)).replace(day=dom)
+    return cand
 
 
 def _create_report(conn, tier, owner_sub, model, account=None):
@@ -140,12 +196,15 @@ def _enqueue_report(conn, owner_sub, config):
     tier = cfg.get("tier", "mid")
     # only the deep tier may select opus; light/mid are pinned to sonnet (matches the BFF/worker resolver).
     model = "opus" if (tier == "deep" and cfg.get("model") == "opus") else "sonnet"
+    # Report output language (gap L50) — allowlist fail-closed to 'ko', matching the worker handler.
+    lang = cfg.get("lang") if cfg.get("lang") in ("ko", "en", "zh", "ja") else "ko"
     report_id = _create_report(conn, tier, owner_sub, model, account)  # visible 'running' row first
     job_id = str(uuid.uuid4())
     payload = {
         "account": account,
         "tier": tier,
         "model": model,
+        "lang": lang,
         "requested_by": owner_sub,
         "report_id": report_id,  # _report uses this → no duplicate self-created row
         "scheduled": True,
@@ -178,9 +237,22 @@ def lambda_handler(_event, _ctx):
         due = conn.run(_CLAIM_SQL)  # atomic claim+advance
         enqueued, failed = [], []
         for row in due or []:
-            owner_sub, _schedule_type, config = row[0], row[1], row[2]
+            owner_sub, _schedule_type, config, claimed_next = row[0], row[1], row[2], row[3]
             try:
                 enqueued.append(_enqueue_report(conn, owner_sub, config))
+                # L51: when the config carries detail fields, refine the coarse interval the
+                # claim already wrote to the precise next occurrence (KST). Follow-up UPDATE by
+                # the unique (user_sub, schedule_type) key — idempotent; skipped on enqueue failure
+                # (the coarse advance still prevents an immediate re-claim). The `next_run_at =
+                # :c` guard makes a user's concurrent save between claim and refinement win
+                # instead of being overwritten.
+                nxt = _precise_next_run(_schedule_type, _coerce_config(config), claimed_next)
+                if nxt is not None:
+                    conn.run(
+                        "UPDATE report_schedules SET next_run_at = :n "
+                        "WHERE user_sub = :u AND schedule_type = :t AND next_run_at = :c",
+                        n=nxt, u=owner_sub, t=_schedule_type, c=claimed_next,
+                    )
             except Exception as exc:  # noqa: BLE001 — one bad row must not block the rest
                 print(f"schedule_dispatcher: enqueue failed for {owner_sub}: {exc}")
                 failed.append(owner_sub)

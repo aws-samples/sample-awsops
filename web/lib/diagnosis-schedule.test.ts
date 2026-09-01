@@ -19,6 +19,42 @@ describe('computeNextRun', () => {
   it('weekly adds 7 days', () => expect(computeNextRun('weekly', from)).toBe('2026-06-25T00:00:00.000Z'));
   it('biweekly adds 14 days', () => expect(computeNextRun('biweekly', from)).toBe('2026-07-02T00:00:00.000Z'));
   it('monthly adds 1 calendar month', () => expect(computeNextRun('monthly', from)).toBe('2026-07-18T00:00:00.000Z'));
+
+  // Detail fields (gap L51): KST occurrences, strictly in the future. `from` above is
+  // 2026-06-18T00:00:00Z = 2026-06-18 09:00 KST, a Thursday (JS getDay 4).
+  it('weekly + dayOfWeek/hour lands on the next KST occurrence (future-strict)', () => {
+    // Thursday 10:00 KST is later today → today 10:00 KST = 01:00 UTC.
+    expect(computeNextRun('weekly', from, { dayOfWeek: 4, hour: 10 })).toBe('2026-06-18T01:00:00.000Z');
+    // Thursday 09:00 KST equals "now" → pushed a full week out.
+    expect(computeNextRun('weekly', from, { dayOfWeek: 4, hour: 9 })).toBe('2026-06-25T00:00:00.000Z');
+    // Sunday (0) 06:00 KST → 2026-06-21 06:00 KST = 2026-06-20T21:00:00Z.
+    expect(computeNextRun('weekly', from, { dayOfWeek: 0, hour: 6 })).toBe('2026-06-20T21:00:00.000Z');
+  });
+  it('biweekly adds one extra week past the next occurrence', () => {
+    expect(computeNextRun('biweekly', from, { dayOfWeek: 0, hour: 6 })).toBe('2026-06-27T21:00:00.000Z');
+  });
+  it('monthly + dayOfMonth/hour picks this month if future, else next month (KST)', () => {
+    // 25th 09:00 KST = 2026-06-25T00:00:00Z (still ahead of Jun 18).
+    expect(computeNextRun('monthly', from, { dayOfMonth: 25, hour: 9 })).toBe('2026-06-25T00:00:00.000Z');
+    // 5th already passed in June → July 5th 09:00 KST.
+    expect(computeNextRun('monthly', from, { dayOfMonth: 5, hour: 9 })).toBe('2026-07-05T00:00:00.000Z');
+  });
+  it('empty detail object keeps the pure-interval behavior', () => {
+    expect(computeNextRun('weekly', from, {})).toBe('2026-06-25T00:00:00.000Z');
+  });
+  it('hour-only keeps the interval date and pins the KST hour (never invents a run date)', () => {
+    // weekly interval lands on 2026-06-25 09:00 KST; hour 10 pins the wall clock → 01:00 UTC.
+    expect(computeNextRun('weekly', from, { hour: 10 })).toBe('2026-06-25T01:00:00.000Z');
+    // monthly interval lands on 2026-07-18 09:00 KST; hour 9 is a no-op pin.
+    expect(computeNextRun('monthly', from, { hour: 9 })).toBe('2026-07-18T00:00:00.000Z');
+    // a monthly hour-only must NOT jump to the 1st of the month.
+    expect(computeNextRun('monthly', from, { hour: 9 })).not.toContain('-07-01');
+  });
+  it('monthly interval clamps month-ends instead of overflowing (Jan 31 → Feb 28, not Mar 3)', () => {
+    expect(computeNextRun('monthly', '2026-01-31T00:00:00.000Z')).toBe('2026-02-28T00:00:00.000Z');
+    // hour pin composes with the clamp (2026-01-31T00:00Z = Jan 31 09:00 KST → Feb 28 10:00 KST).
+    expect(computeNextRun('monthly', '2026-01-31T00:00:00.000Z', { hour: 10 })).toBe('2026-02-28T01:00:00.000Z');
+  });
 });
 
 describe('readSchedule', () => {

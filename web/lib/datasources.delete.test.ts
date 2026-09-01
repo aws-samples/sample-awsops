@@ -52,6 +52,7 @@ describe('deleteDatasource', () => {
       .mockResolvedValueOnce({ rows: [] })   // DELETE datasource_schemas
       .mockResolvedValueOnce({ rows: [] })   // DELETE datasource_diag_signals
       .mockResolvedValueOnce({ rows: [] })   // DELETE datasource_graph_queries
+      .mockResolvedValueOnce({ rows: [] })   // DELETE datasource_dashboard_cards
       .mockResolvedValueOnce({ rows: [] })   // DELETE integrations
       .mockResolvedValueOnce({ rows: [{ id: 8 }] }) // SELECT next default candidate
       .mockResolvedValueOnce({ rows: [] });  // UPDATE set new default
@@ -66,6 +67,7 @@ describe('deleteDatasource', () => {
       .mockResolvedValueOnce({ rows: [] })   // DELETE cache
       .mockResolvedValueOnce({ rows: [] })   // DELETE datasource_diag_signals
       .mockResolvedValueOnce({ rows: [] })   // DELETE datasource_graph_queries
+      .mockResolvedValueOnce({ rows: [] })   // DELETE datasource_dashboard_cards
       .mockResolvedValueOnce({ rows: [] })   // DELETE row
       .mockResolvedValueOnce({ rows: [] });  // SELECT next → none
     await deleteDatasource(5);

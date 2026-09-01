@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import DetailPanel from '@/components/ui/DetailPanel';
 import NodeCapacityCards from '@/components/eks/NodeCapacityCards';
+import { isTerminalPodPhase } from '@/lib/eks-resources';
 import NodePodsSection from '@/components/eks/NodePodsSection';
 import NodeEniSection from '@/components/eks/NodeEniSection';
 import { useI18n } from '@/components/shell/LanguageProvider';
@@ -37,8 +38,11 @@ export default function NodeDrilldownPanel({ cluster, nodeName, onClose }: {
   }, [cluster, nodeName, tt]);
 
   const pods = detail.pods;
-  const cpuRequest = (pods ?? []).reduce((s, p) => s + (p.cpuRequest || 0), 0);
-  const memRequest = (pods ?? []).reduce((s, p) => s + (p.memRequest || 0), 0);
+  // null = the pods fetch failed — the shared StackBar renders its honest unknown mode
+  // instead of a fabricated zero-requested bar. Terminal pods hold no reservation.
+  const active = pods == null ? null : pods.filter((p) => !isTerminalPodPhase(p.status));
+  const cpuRequest = active == null ? null : active.reduce((s, p) => s + (p.cpuRequest || 0), 0);
+  const memRequest = active == null ? null : active.reduce((s, p) => s + (p.memRequest || 0), 0);
 
   return (
     <DetailPanel
