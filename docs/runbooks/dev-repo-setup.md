@@ -41,15 +41,35 @@ Create four DEV-scoped roles — `sample-awsops-dev-ci-{build,deployer,
 terraform-plan,review}` — mirroring the production roles' permission shapes
 but **scoped to the dev stack's resources only** (its ECR repo, its ECS
 cluster/service, its tfstate key), each trusting the GitHub OIDC provider
-with a `sub` condition that matches **only the private dev repo**:
+with a `sub` condition scoped **per role** — never the repo-wide
+`repo:Atom-oh/sample-awsops-dev:*` wildcard, which would let ANY branch of
+this repo (including an experiment branch with an edited workflow file)
+assume the mutation roles:
 
 ```json
+// dev-ci-deployer, dev-ci-terraform-plan(apply 사용 시): dev 브랜치 런만
+"Condition": {
+  "StringEquals": {
+    "token.actions.githubusercontent.com:sub": "repo:Atom-oh/sample-awsops-dev:ref:refs/heads/dev"
+  }
+}
+
+// dev-ci-build: dev 브랜치 push 빌드만 — 위와 동일한 dev-branch sub
+// dev-ci-terraform-plan(plan은 PR에서도 돌게 하려면), dev-ci-review:
 "Condition": {
   "StringLike": {
-    "token.actions.githubusercontent.com:sub": "repo:Atom-oh/sample-awsops-dev:*"
+    "token.actions.githubusercontent.com:sub": [
+      "repo:Atom-oh/sample-awsops-dev:ref:refs/heads/dev",
+      "repo:Atom-oh/sample-awsops-dev:pull_request"
+    ]
   }
 }
 ```
+
+(mutation 능력이 있는 역할(deployer, apply에 쓰는 plan 역할)은
+`ref:refs/heads/dev` 단일 sub로 고정 — 임의 브랜치의 수정된 워크플로가
+역할을 assume하는 경로를 차단합니다. read-only 역할만 PR sub를 추가로
+허용합니다.)
 
 ⚠️ Do **NOT** instead add the dev repo to the production roles' trust policy.
 This repo's pipeline is deliberately ungated (no environment reviewer —
