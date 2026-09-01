@@ -18,9 +18,12 @@ name: Deploy Web
 # `deploy` (the actual `ecs update-service --force-new-deployment`, ci-deployer)
 # runs automatically after a dev-branch build (continuous deploy on dev), but
 # for main it stays workflow_dispatch-only behind the `production` environment
-# and its protection rules. The approval is tied to a concrete image: deploy
-# re-points the mutable :web-latest at the exact web-<sha> it was approved
-# for before rolling, so a build landing mid-approval can't swap the payload. Mirrors scripts/v2/deploy.mjs's
+# and its protection rules. The approval is bound to a concrete image by tag
+# discipline: build pushes ONLY the immutable web-<sha> tag and never touches
+# :web-latest — the deploy job's pin step (inside the environment gate) is the
+# ONLY writer of :web-latest. A build landing mid-approval can't swap the
+# payload, and later ECS task churn (scale-out, ADR-015 restarts) re-resolves
+# :web-latest to the last APPROVED image, never to an unapproved build. Mirrors scripts/v2/deploy.mjs's
 # build+push+roll+wait+smoke steps, split across the two jobs/roles.
 
 on:
@@ -99,9 +102,12 @@ jobs:
           context: web
           platforms: linux/arm64
           push: true
-          tags: |
-            ${{ steps.tf.outputs.ecr_web_uri }}:web-latest
-            ${{ steps.tf.outputs.ecr_web_uri }}:web-${{ github.sha }}
+          # ONLY the immutable per-commit tag. :web-latest (what the ECS task
+          # definition pulls) is promoted exclusively by the deploy job's pin
+          # step, inside the environment gate — so the tag ECS resolves on any
+          # task start (rollout, scale-out, ADR-015 self-healing restart) can
+          # only ever be an image a deploy was approved for.
+          tags: ${{ steps.tf.outputs.ecr_web_uri }}:web-${{ github.sha }}
 
   deploy:
     name: Roll ECS service
@@ -150,12 +156,11 @@ jobs:
           echo "ecr_repo=$(terraform output -raw ecr_web_uri | sed 's|^[^/]*/||')" >> "$GITHUB_OUTPUT"
 
       - name: Pin web-latest to the approved image
-        # The task definition references the mutable :web-latest, so between a
-        # dispatch and its environment approval a newer build could move that
-        # tag — the approver would then roll an image they never looked at.
-        # Re-point web-latest at the EXACT web-<sha> image this run was
-        # approved for (dispatch input, defaulting to the dispatched ref's
-        # HEAD; the run's own commit on dev pushes) before rolling.
+        # The task definition references :web-latest, and this step is that
+        # tag's ONLY writer (build never touches it). Point it at the EXACT
+        # web-<sha> image this run was approved for (dispatch input,
+        # defaulting to the dispatched ref's HEAD; the run's own commit on
+        # dev pushes) before rolling.
         env:
           PIN_SHA: ${{ inputs.image_sha || github.sha }}
         run: |
