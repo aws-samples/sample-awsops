@@ -88,7 +88,12 @@ jobs:
           # definition pulls) is promoted exclusively by the deploy job's pin
           # step — so the tag ECS resolves on any task start (rollout,
           # scale-out, ADR-015 self-healing restart) can only ever be an image
-          # this pipeline actually deployed.
+          # a deploy run pinned. Caveat: the pin necessarily precedes the roll
+          # (ECS pulls the tag mid-roll), so a roll that then fails or is
+          # cancelled leaves :web-latest at the pinned-but-not-stabilized
+          # image until the next run — later task churn would start it. On
+          # this auto-CD dev stack that's accepted; re-run (or dispatch a
+          # known-good image_sha) to move the tag back.
           tags: ${{ steps.tf.outputs.ecr_web_uri }}:web-${{ github.sha }}
 
   deploy:
