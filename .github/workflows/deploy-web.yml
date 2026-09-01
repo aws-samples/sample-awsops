@@ -92,8 +92,10 @@ jobs:
           # (ECS pulls the tag mid-roll), so a roll that then fails or is
           # cancelled leaves :web-latest at the pinned-but-not-stabilized
           # image until the next run — later task churn would start it. On
-          # this auto-CD dev stack that's accepted; re-run (or dispatch a
-          # known-good image_sha) to move the tag back.
+          # this auto-CD dev stack that's accepted. Recovery: re-run the
+          # failed run to retry the SAME image forward, or dispatch this
+          # workflow with a known-good image_sha to point the tag back at a
+          # previously stabilized image and roll that.
           tags: ${{ steps.tf.outputs.ecr_web_uri }}:web-${{ github.sha }}
 
   deploy:
