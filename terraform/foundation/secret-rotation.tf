@@ -32,7 +32,7 @@ data "archive_file" "secret_rotation_redeploy" {
   type        = "zip"
   output_path = "${path.module}/.build/secret_rotation_redeploy.zip"
   source {
-    content  = file("${path.root}/../../../scripts/v2/secret-rotation/redeploy.py")
+    content  = file("${path.root}/../../scripts/v2/secret-rotation/redeploy.py")
     filename = "redeploy.py"
   }
 }

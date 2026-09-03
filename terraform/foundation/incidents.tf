@@ -23,9 +23,9 @@
 locals {
   il             = var.incident_lifecycle_enabled ? 1 : 0
   rwb            = var.rca_writeback_enabled ? 1 : 0 # ADR-034 write-back gate (see writeback.tf)
-  inc_src        = "${path.module}/../../../scripts/v2/incident"
-  workers_src_il = "${path.module}/../../../scripts/v2/workers"     # reuse db.py + status_updater ARN
-  rem_src_il     = "${path.module}/../../../scripts/v2/remediation" # ADR-034: writeback.py imports remediation_executor (+ action_catalog) — the 029/036 single-write surface
+  inc_src        = "${path.module}/../../scripts/v2/incident"
+  workers_src_il = "${path.module}/../../scripts/v2/workers"     # reuse db.py + status_updater ARN
+  rem_src_il     = "${path.module}/../../scripts/v2/remediation" # ADR-034: writeback.py imports remediation_executor (+ action_catalog) — the 029/036 single-write surface
   inc_acct       = data.aws_caller_identity.current.account_id
   # The AgentCore runtime ARN SSM param — created by ai.tf when agentcore_enabled, written by
   # provision.py after apply. Referenced by NAME (string), NOT the gated resource, so the incident

@@ -258,7 +258,7 @@ resource "aws_cloudwatch_metric_alarm" "steampipe_down" {
 # ---- sync Lambda (VPC, pg8000 layer; queries Steampipe + writes Aurora) ----
 resource "terraform_data" "inv_pg8000_build" {
   count            = local.sp
-  triggers_replace = filemd5("${path.module}/../../../scripts/v2/steampipe/requirements.txt")
+  triggers_replace = filemd5("${path.module}/../../scripts/v2/steampipe/requirements.txt")
   provisioner "local-exec" {
     command = <<-EOT
       set -e
@@ -288,7 +288,7 @@ data "archive_file" "inv_sync_src" {
   type        = "zip"
   output_path = "${path.module}/.build/inv_sync.zip"
   source {
-    content  = file("${path.module}/../../../scripts/v2/steampipe/sync_lambda.py")
+    content  = file("${path.module}/../../scripts/v2/steampipe/sync_lambda.py")
     filename = "sync_lambda.py"
   }
 }

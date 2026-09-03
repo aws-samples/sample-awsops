@@ -76,13 +76,13 @@ data "archive_file" "eks_auto_register" {
   type        = "zip"
   output_path = "${path.module}/.build/eks_auto_register.zip"
   source {
-    content  = file("${path.root}/../../../scripts/v2/eks/auto_register.py")
+    content  = file("${path.root}/../../scripts/v2/eks/auto_register.py")
     filename = "auto_register.py"
   }
   source {
     # Regional RDS CA trust bundle — the Lambda REQUIRES verified TLS to Aurora
     # (PR #36 review: this write-path must not run CERT_NONE).
-    content  = file("${path.root}/../../../scripts/v2/eks/rds-ca-bundle.pem")
+    content  = file("${path.root}/../../scripts/v2/eks/rds-ca-bundle.pem")
     filename = "rds-ca-bundle.pem"
   }
 }
