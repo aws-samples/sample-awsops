@@ -1,34 +1,37 @@
 name: Deploy Web
 
-# SINGLE-REPO branch-split pipeline:
-#   dev  -> DEV stack (awsops-dev.whchoi.net) — continuous deploy on push
-#   main -> PRODUCTION stack (domain pending — CloudFront default until
-#           decided); build on push, ECS roll is workflow_dispatch-only behind
-#           the `production` environment's reviewer approval
-# Stack selection is purely by distinctly-NAMED repo secrets (a dev job can
-# never fall back to production secrets):
-#   main: TF_BACKEND_HCL     / TF_TFVARS
+# FIVE-BRANCH pipeline — one standing branch per tier/user, each with its own
+# stack and domain:
+#   main            -> production stack (domain pending — CloudFront default);
+#                      build on push, ECS roll is dispatch-only behind the
+#                      `production` environment's reviewer approval
+#   dev             -> dev stack, awsops-dev.whchoi.net — continuous deploy
+#   atomoh|ssminji|whchoi -> that user's stack, <user>.awsops-dev.whchoi.net —
+#                      continuous deploy on push to their own branch
+#
+# Stack selection is an explicit per-branch case with hard-fail on missing
+# config — NEVER an `expr && A || B` ternary, whose empty-value fallthrough
+# would silently deploy against another stack. Secrets per stack:
+#   main: TF_BACKEND_HCL / TF_TFVARS
 #   dev:  TF_BACKEND_HCL_DEV / TF_TFVARS_DEV
-# Secrets are repo-level, not environment-scoped: `build` must run ungated
-# (an environment's reviewer would pause it); environments gate ONLY the
-# mutation `deploy` job. Per-user previews are a separate workflow
-# (deploy-preview.yml). Fork PRs never reach this workflow (push/dispatch
-# triggers only), and GitHub denies fork runs secrets and id-token anyway.
+#   user: TF_BACKEND_HCL_PREVIEW_<USER> / TF_TFVARS_PREVIEW_<USER>
+# Roles: main uses the production build/deployer roles; dev and user branches
+# use the dev-tier roles (permissions scoped to dev+user stacks, never
+# production). Jobs WITH an `environment:` present the `environment:<name>`
+# OIDC sub — the deployer roles' trust must match that, not a branch ref
+# (see docs/runbooks/dev-repo-setup.md §2 for the full trust matrix).
 #
-# The stack's own terraform outputs (ecr_web_uri, ecs_cluster_name,
-# ecs_service_name, public_url) provide the per-branch ECR repo, service and
-# smoke domain — nothing environment-specific is hardcoded, so attaching the
-# production domain later changes nothing here.
+# Fork PRs never reach this workflow (push/dispatch only) and GitHub denies
+# fork runs secrets and id-token anyway.
 #
-# Approval is bound to a concrete image by tag discipline: build pushes ONLY
-# the immutable web-<sha> tag and never touches :web-latest — the deploy job's
-# pin step is the ONLY writer of :web-latest. A build landing mid-approval
-# can't swap the payload, and later ECS task churn (scale-out, ADR-015
-# restarts) re-resolves :web-latest to the last pinned image.
+# Tag discipline: build pushes ONLY the immutable web-<sha>; the deploy job's
+# pin step is the ONLY writer of that stack's :web-latest — approval/rollout
+# is always bound to a concrete image, and ECS task churn re-resolves to the
+# last pinned image.
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main, dev, atomoh, ssminji, whchoi]
     paths: ["web/**", "CHANGELOG.md"]
   workflow_dispatch:
     inputs:
@@ -40,11 +43,9 @@ permissions:
   contents: read
   id-token: write
 
-# Concurrency is declared PER JOB with separate build/rollout groups: GitHub
-# replaces a PENDING run in a group even with cancel-in-progress:false, so a
-# workflow-level group would let a main push (build-only run) displace a
-# dispatched production rollout waiting on reviewer approval. A push's skipped
-# deploy job never enters the rollout group. dev is newest-wins; main queues.
+# Per-job concurrency with separate build/rollout groups (a pending production
+# rollout must never be displaced by a push's build-only run). main queues;
+# every other branch is newest-wins.
 
 jobs:
   build:
@@ -55,26 +56,50 @@ jobs:
       group: deploy-web-build-${{ github.ref_name }}
       cancel-in-progress: ${{ github.ref_name != 'main' }}
     env:
-      TF_BACKEND_HCL_B64: ${{ github.ref_name == 'main' && secrets.TF_BACKEND_HCL || secrets.TF_BACKEND_HCL_DEV }}
-      TF_TFVARS_B64: ${{ github.ref_name == 'main' && secrets.TF_TFVARS || secrets.TF_TFVARS_DEV }}
+      BRANCH: ${{ github.ref_name }}
+      MAIN_ROLE: ${{ vars.AWS_CI_BUILD_ROLE_ARN }}
+      DEV_ROLE: ${{ vars.AWS_CI_BUILD_DEV_ROLE_ARN }}
+      MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
+      MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
+      DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
+      DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
+      USER_BACKEND_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', github.ref_name)] }}
+      USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select the branch's stack (fail-closed — no cross-branch fallback)
+        id: sel
+        run: |
+          case "$BRANCH" in
+            main) ROLE="$MAIN_ROLE";;
+            dev|atomoh|ssminji|whchoi) ROLE="$DEV_ROLE";;
+            *) echo "::error::unexpected branch '$BRANCH'"; exit 1;;
+          esac
+          [ -n "$ROLE" ] || { echo "::error::build role variable for '$BRANCH' is not set"; exit 1; }
+          echo "role=$ROLE" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials (OIDC -> ci-build)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ github.ref_name == 'main' && vars.AWS_CI_BUILD_ROLE_ARN || vars.AWS_CI_BUILD_DEV_ROLE_ARN }}
+          role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
 
       - name: Restore terraform.foundation backend (read-only — just need `output`)
         working-directory: terraform/foundation
         run: |
-          if [ -z "$TF_BACKEND_HCL_B64" ]; then
-            echo "::error::this branch's TF backend secrets are not set — run 'make configure' once for its stack (docs/runbooks/branch-strategy.md)."
+          case "$BRANCH" in
+            main) B="$MAIN_BACKEND_B64"; V="$MAIN_TFVARS_B64";;
+            dev)  B="$DEV_BACKEND_B64";  V="$DEV_TFVARS_B64";;
+            atomoh|ssminji|whchoi) B="$USER_BACKEND_B64"; V="$USER_TFVARS_B64";;
+            *) echo "::error::unexpected branch '$BRANCH'"; exit 1;;
+          esac
+          if [ -z "$B" ] || [ -z "$V" ]; then
+            echo "::error::TF backend secrets for '$BRANCH' are not set — provision its stack first (docs/runbooks/branch-strategy.md). No cross-branch fallback, by design."
             exit 1
           fi
-          echo "$TF_BACKEND_HCL_B64" | base64 -d > backend.hcl
-          echo "$TF_TFVARS_B64" | base64 -d > terraform.tfvars
+          echo "$B" | base64 -d > backend.hcl
+          echo "$V" | base64 -d > terraform.tfvars
           terraform init -backend-config=backend.hcl -input=false
 
       - name: Resolve ECR repo URI
@@ -105,39 +130,63 @@ jobs:
 
   deploy:
     name: Roll ECS service
-    # dev: continuous deploy right after its own build.
     # main: workflow_dispatch only (production environment gates it).
+    # dev + user branches: continuous deploy right after their own build.
     needs: [build]
     if: >-
       !cancelled() &&
       (needs.build.result == 'success' || needs.build.result == 'skipped') &&
-      (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev')
+      (github.event_name == 'workflow_dispatch' || github.ref_name != 'main')
     runs-on: sample-awsops
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     concurrency:
       group: deploy-web-rollout-${{ github.ref_name }}
       cancel-in-progress: ${{ github.ref_name != 'main' }}
     env:
-      TF_BACKEND_HCL_B64: ${{ github.ref_name == 'main' && secrets.TF_BACKEND_HCL || secrets.TF_BACKEND_HCL_DEV }}
-      TF_TFVARS_B64: ${{ github.ref_name == 'main' && secrets.TF_TFVARS || secrets.TF_TFVARS_DEV }}
+      BRANCH: ${{ github.ref_name }}
+      MAIN_ROLE: ${{ vars.AWS_CI_DEPLOYER_ROLE_ARN }}
+      DEV_ROLE: ${{ vars.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+      MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
+      MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
+      DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
+      DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
+      USER_BACKEND_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', github.ref_name)] }}
+      USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select the branch's stack (fail-closed — no cross-branch fallback)
+        id: sel
+        run: |
+          case "$BRANCH" in
+            main) ROLE="$MAIN_ROLE";;
+            dev|atomoh|ssminji|whchoi) ROLE="$DEV_ROLE";;
+            *) echo "::error::unexpected branch '$BRANCH'"; exit 1;;
+          esac
+          [ -n "$ROLE" ] || { echo "::error::deployer role variable for '$BRANCH' is not set"; exit 1; }
+          echo "role=$ROLE" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials (OIDC -> ci-deployer)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ github.ref_name == 'main' && vars.AWS_CI_DEPLOYER_ROLE_ARN || vars.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
 
       - name: Restore terraform.foundation backend
         working-directory: terraform/foundation
         run: |
-          if [ -z "$TF_BACKEND_HCL_B64" ]; then
-            echo "::error::this branch's TF backend secrets are not set — see docs/runbooks/branch-strategy.md."
+          case "$BRANCH" in
+            main) B="$MAIN_BACKEND_B64"; V="$MAIN_TFVARS_B64";;
+            dev)  B="$DEV_BACKEND_B64";  V="$DEV_TFVARS_B64";;
+            atomoh|ssminji|whchoi) B="$USER_BACKEND_B64"; V="$USER_TFVARS_B64";;
+            *) echo "::error::unexpected branch '$BRANCH'"; exit 1;;
+          esac
+          if [ -z "$B" ] || [ -z "$V" ]; then
+            echo "::error::TF backend secrets for '$BRANCH' are not set — provision its stack first (docs/runbooks/branch-strategy.md). No cross-branch fallback, by design."
             exit 1
           fi
-          echo "$TF_BACKEND_HCL_B64" | base64 -d > backend.hcl
-          echo "$TF_TFVARS_B64" | base64 -d > terraform.tfvars
+          echo "$B" | base64 -d > backend.hcl
+          echo "$V" | base64 -d > terraform.tfvars
           terraform init -backend-config=backend.hcl -input=false
 
       - name: Resolve ECS cluster/service/URL + ECR repo
@@ -153,7 +202,7 @@ jobs:
         # The task definition references :web-latest, and this step is that
         # tag's ONLY writer (build never touches it). Point it at the EXACT
         # web-<sha> this run was approved for (dispatch input, defaulting to
-        # the dispatched ref's HEAD; the run's own commit on dev pushes).
+        # the dispatched ref's HEAD; the run's own commit on branch pushes).
         # Caveat: the pin necessarily precedes the roll, so a roll that then
         # fails or is cancelled leaves :web-latest at the pinned-but-not-
         # stabilized image until the next run. Recovery: dispatch this

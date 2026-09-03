@@ -1,6 +1,6 @@
 # Branch strategy & deployment map / 브랜치 전략과 배포 맵
 
-Related files / 관련 파일: `.github/workflows/{deploy-web,deploy-preview,terraform,guard-main-prs}.yml`,
+Related files / 관련 파일: `.github/workflows/{deploy-web,terraform,guard-main-prs}.yml`,
 `docs/runbooks/dev-repo-setup.md` (CI/OIDC bring-up)
 
 ## The shape / 전체 구조 — single public repo / 단일 공개 리포
@@ -16,13 +16,22 @@ permanently retrievable via PR refs even after branch deletion.**
 push된 커밋은 브랜치를 지워도 PR ref로 영구 조회됩니다.)
 
 ```
-<user>/<topic> ──PR──▶ dev ──PR (guard: dev only)──▶ main
-preview stack           dev stack                      production stack
-<user>.awsops-dev.      awsops-dev.whchoi.net          domain PENDING — deploy on the
-whchoi.net                                             CloudFront default domain first,
-                                                       then decide whether to attach
-                                                       awsops.whchoi.net
+atomoh | ssminji | whchoi ──PR──▶ dev ──PR (guard: dev only)──▶ main
+user stacks (standing)          dev stack               production stack
+<user>.awsops-dev.whchoi.net    awsops-dev.whchoi.net   domain PENDING — deploy on the
+(auto-deploy on push to                                 CloudFront default domain first,
+ one's own branch)                                      then decide whether to attach
+                                                        awsops.whchoi.net
 ```
+
+**Five standing branches, five pipelines**: `main`, `dev`, and one branch per user
+(`atomoh`, `ssminji`, `whchoi`). Each user's branch continuously deploys to that
+user's own stack on push — a personal integration lane. Topic work happens on the
+user's branch (or short-lived branches merged into it), then flows up via PR to
+`dev` and on to `main`.
+(상시 브랜치 5개 = 파이프라인 5개. 사용자 브랜치는 push 즉시 자기 스택으로 자동
+배포되는 개인 통합 레인이며, 작업은 사용자 브랜치에서 → PR로 dev → main으로
+승격됩니다.)
 
 - `dev` is the **default branch** — PRs (internal and external) target it by default.
 - `main` accepts PRs **only from `dev`**, enforced mechanically by
@@ -31,9 +40,11 @@ whchoi.net                                             CloudFront default domain
 
 ## Branch flow / 브랜치 흐름
 
-1. **User branch / 사용자 브랜치** — `<user>/<topic>` (e.g. `whchoi/fix-eks-panel`),
-   PR into `dev`. PR checks: merge-verify + AI pr-review + terraform plan (when
-   `terraform/foundation/**` changed; same-repo PRs only).
+1. **User branch / 사용자 브랜치** — the standing branch named after the user
+   (`atomoh`, `ssminji`, `whchoi`). Push = auto-deploy to
+   `<user>.awsops-dev.whchoi.net`. When ready, PR into `dev`. PR checks:
+   merge-verify + AI pr-review + terraform plan (when `terraform/foundation/**`
+   changed; same-repo PRs only).
 2. **`dev`** — integration branch; every push auto-deploys the DEV stack
    (`awsops-dev.whchoi.net`) via `deploy-web.yml` (build → pin → roll → smoke).
 3. **`main`** — promotion PR `dev → main` (ordinary same-repo PR). The production
@@ -59,7 +70,7 @@ guard 체크가 실패합니다. 첫 기여자의 CI 실행은 관리자 승인 
 
 | Tier | Branch | Stack / domain | Deploy trigger |
 |---|---|---|---|
-| Preview | `<user>/<topic>` | per-user stack, `<user>.awsops-dev.whchoi.net` | `deploy-preview.yml` dispatch (input: `user`; write access required) |
+| User | `atomoh` / `ssminji` / `whchoi` | that user's stack, `<user>.awsops-dev.whchoi.net` | auto on push (`deploy-web.yml`) |
 | Dev | `dev` | dev stack, `awsops-dev.whchoi.net` | auto on push (`deploy-web.yml`) |
 | Production | `main` | production stack — **domain not attached yet** | dispatch + `production` environment approval |
 
@@ -101,13 +112,14 @@ Provision once per user:
    gh secret set TF_TFVARS_PREVIEW_<USER> -R aws-samples/sample-awsops \
      --body "$(base64 -w0 terraform/foundation/terraform.tfvars)"
    ```
-4. Actions → **Deploy Preview** → run from the branch with input `user` (lowercase).
-   Missing secrets fail with a pointer here — no fallback to dev/production stacks.
-   Dispatch requires repo write access, so external users cannot trigger previews.
+4. Push to your branch — `deploy-web.yml` builds and rolls your stack
+   automatically. Missing secrets fail with a pointer here — no fallback to the
+   dev/production stacks, by design.
 
-Preview deploys use the dedicated any-branch preview role (permissions scoped to
-preview-stack resources only); the dev/production deployer roles' trust is pinned to
-their own branch refs — see `dev-repo-setup.md` §2 for the role/trust matrix.
+User-branch deploys run under the dev-tier roles (`environment: development`
+gates which branches may deploy — its branch policy lists dev + the three user
+branches); production stays behind the `production` environment approval. See
+`dev-repo-setup.md` §2 for the role/trust matrix.
 
 ## Verification / 확인
 
