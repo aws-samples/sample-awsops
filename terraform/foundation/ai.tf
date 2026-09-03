@@ -809,11 +809,11 @@ data "archive_file" "agent" {
   type        = "zip"
   output_path = "${path.module}/.build/agent-${each.key}.zip"
   source {
-    content  = file("${path.module}/../../../agent/lambda/${each.value.file}")
+    content  = file("${path.module}/../../agent/lambda/${each.value.file}")
     filename = each.value.file
   }
   source {
-    content  = file("${path.module}/../../../agent/lambda/cross_account.py")
+    content  = file("${path.module}/../../agent/lambda/cross_account.py")
     filename = "cross_account.py"
   }
   # The datasource-family connectors (clickhouse/prometheus/loki/tempo/mimir) import the shared
@@ -823,7 +823,7 @@ data "archive_file" "agent" {
   dynamic "source" {
     for_each = contains(["clickhouse_mcp.py", "prometheus_mcp.py", "loki_mcp.py", "tempo_mcp.py", "mimir_mcp.py", "jaeger_mcp.py", "dynatrace_mcp.py", "datadog_mcp.py"], each.value.file) ? [1] : []
     content {
-      content  = file("${path.module}/../../../agent/lambda/datasource_http.py")
+      content  = file("${path.module}/../../agent/lambda/datasource_http.py")
       filename = "datasource_http.py"
     }
   }
@@ -834,7 +834,7 @@ data "archive_file" "agent" {
   dynamic "source" {
     for_each = contains(["clickhouse_mcp.py", "aws_rds_mcp.py"], each.value.file) ? [1] : []
     content {
-      content  = file("${path.module}/../../../agent/lambda/sql_readonly_guard.py")
+      content  = file("${path.module}/../../agent/lambda/sql_readonly_guard.py")
       filename = "sql_readonly_guard.py"
     }
   }
