@@ -82,6 +82,20 @@ production service and `:web-latest` tag, and a `terraform apply` against
 production state. Role separation closes both structurally — the production
 roles never need to trust this repo at all.
 
+Additionally create a FIFTH role for per-user preview deploys —
+`sample-awsops-dev-ci-preview`. Its trust must allow ANY branch of this repo
+(`"token.actions.githubusercontent.com:sub": "repo:Atom-oh/sample-awsops-dev:ref:refs/heads/*"`
+via StringLike) because previews dispatch from user branches, but its
+PERMISSIONS must be scoped strictly to preview-stack resource name patterns
+(preview ECR repos / ECS clusters+services / tfstate keys) — never the dev or
+production stacks; the any-branch trust is safe only because the blast radius
+is preview-only. Register it as the `AWS_CI_PREVIEW_ROLE_ARN` repo variable
+(already pointing at that name).
+(프리뷰 배포용 다섯 번째 역할 `sample-awsops-dev-ci-preview`: 사용자 브랜치에서
+dispatch되므로 신뢰는 이 리포의 모든 브랜치 sub를 허용하되, 권한은 preview 스택
+리소스 패턴으로만 스코프 — dev/production 불포함. any-branch 신뢰가 안전한 것은
+폭발반경이 preview 한정이기 때문입니다.)
+
 This repo's `AWS_CI_*_ROLE_ARN` variables already point at the dev-scoped
 role names above; creating the roles makes them live. If the dev stack lives
 in a **different account**, create the roles there and update the variables'

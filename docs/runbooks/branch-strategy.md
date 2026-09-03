@@ -87,10 +87,13 @@ A preview is a full (small) stack per user, provisioned once:
    `user` (lowercase; the workflow uppercases it to pick the secrets). Missing secrets
    fail with a pointer here, never fall back to another stack.
 
-The dev-scoped CI roles must cover preview stacks too — scope them to the dev AND
-preview resource name patterns (see `dev-repo-setup.md` §2), never to production.
-(dev 전용 CI 역할의 리소스 스코프는 dev와 preview 스택 이름 패턴까지 포함해야 하며,
-production은 절대 포함하지 않습니다.)
+Preview deploys use the dedicated `sample-awsops-dev-ci-preview` role (any-branch
+OIDC trust, permissions scoped to preview-stack resources only) — the dev deployer
+role's trust is pinned to `refs/heads/dev` and deliberately cannot be assumed from
+user branches. See `dev-repo-setup.md` §2.
+(프리뷰 배포는 전용 `sample-awsops-dev-ci-preview` 역할을 사용합니다 — 신뢰는 모든
+브랜치, 권한은 preview 스택 한정. dev deployer 역할은 `refs/heads/dev` 전용이라
+사용자 브랜치에서 assume할 수 없고, 그래서는 안 됩니다.)
 
 ## Verification / 확인
 
