@@ -20,7 +20,7 @@ name: AI Code Review
 on:
   pull_request_target:
     types: [opened, synchronize]
-    branches: [dev] # private dev repo: feature PRs land on dev
+    branches: [main, dev] # feature PRs land on dev; main only takes dev (guard-main-prs)
 
 jobs:
   review:

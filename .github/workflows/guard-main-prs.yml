@@ -1,0 +1,32 @@
+name: Guard main PRs
+
+# Enforce the branch chain mechanically: `main` accepts PRs ONLY from `dev`.
+# External contributions (and internal feature work) land on `dev` first
+# (<user>/<topic> -> dev -> main). This check fails any PR whose base is main
+# and whose head is not the repo's own dev branch, so a fork or feature branch
+# can never merge straight into the public production branch even if a
+# maintainer clicks merge without looking. Runs on the hosted runner — no
+# secrets, no AWS, safe for fork PRs.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  only-dev-into-main:
+    name: main accepts PRs from dev only
+    runs-on: ubuntu-latest
+    env:
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+    steps:
+      - name: Check the head branch
+        run: |
+          if [ "$HEAD_REPO" = "${{ github.repository }}" ] && [ "$HEAD_REF" = "dev" ]; then
+            echo "OK: dev -> main promotion"
+            exit 0
+          fi
+          echo "::error::PRs into main are accepted only from this repo's dev branch (got ${HEAD_REPO}:${HEAD_REF}). Open your PR against dev instead — see docs/runbooks/branch-strategy.md."
+          exit 1

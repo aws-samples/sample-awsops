@@ -1,7 +1,7 @@
 name: Deploy AgentCore
 
-# workflow_dispatch-only. In THIS private dev repo it targets the
-# DEVELOPMENT stack (repo secrets = dev backend). Runs `make migrate` then
+# workflow_dispatch-only; the dispatched branch selects the stack —
+# main -> production (environment-gated), dev -> development. Runs `make migrate` then
 # `make agentcore`, in that order, per the platform's DESIGN.md
 # ("make migrate -> make agentcore, order preserved"). Never reversed:
 # AgentCore's Data API auth assumes migrations are already applied.
@@ -22,16 +22,17 @@ jobs:
   deploy:
     name: migrate + agentcore
     runs-on: sample-awsops
+    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
-      TF_BACKEND_HCL_B64: ${{ secrets.TF_BACKEND_HCL }}
-      TF_TFVARS_B64: ${{ secrets.TF_TFVARS }}
+      TF_BACKEND_HCL_B64: ${{ github.ref_name == 'main' && secrets.TF_BACKEND_HCL || secrets.TF_BACKEND_HCL_DEV }}
+      TF_TFVARS_B64: ${{ github.ref_name == 'main' && secrets.TF_TFVARS || secrets.TF_TFVARS_DEV }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC -> ci-deployer)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_CI_DEPLOYER_ROLE_ARN }}
+          role-to-assume: ${{ github.ref_name == 'main' && vars.AWS_CI_DEPLOYER_ROLE_ARN || vars.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
           aws-region: ap-northeast-2
 
       - name: Restore terraform.foundation backend

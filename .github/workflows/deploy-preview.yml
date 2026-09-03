@@ -1,6 +1,6 @@
 name: Deploy Preview
 
-# PRIVATE DEV REPO — per-user preview deploy. Runs the dispatched branch's web
+# Per-user preview deploy (dispatch-only; repo write access required). Runs the dispatched branch's web
 # image into that USER's own preview stack (`<user>.awsops-dev.whchoi.net`),
 # selected purely by distinctly-named secrets:
 #   TF_BACKEND_HCL_PREVIEW_<USER> / TF_TFVARS_PREVIEW_<USER>   (uppercased user)
