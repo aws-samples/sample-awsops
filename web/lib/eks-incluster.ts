@@ -188,6 +188,7 @@ interface K8sItem {
     containers?: { resources?: { requests?: Record<string, string> } }[];
     initContainers?: { resources?: { requests?: Record<string, string> } }[];
     overhead?: Record<string, string>;
+    serviceAccountName?: string;
     taints?: { key?: string; value?: string; effect?: string }[];
     ingressClassName?: string;
     defaultBackend?: IngressBackend;
@@ -332,6 +333,7 @@ export function normalizePod(it: K8sItem): PodRow {
     age: age(it.metadata?.creationTimestamp),
     podIP: it.status?.podIP ?? '',
     workload: podWorkload(it),
+    serviceAccount: it.spec?.serviceAccountName ?? '',
     cpuRequest: eff(
       app.reduce((s, r) => s + parseCpuCores(r.cpu), 0),
       init.reduce((mx, r) => Math.max(mx, parseCpuCores(r.cpu)), 0),

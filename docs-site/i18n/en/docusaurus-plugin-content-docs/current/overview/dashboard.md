@@ -43,6 +43,7 @@ Key resource metrics are organized into three groups.
 | **Resources by category** | Share per category with total (donut) |
 | **Job status** | Share of succeeded, failed, running, and queued jobs (donut) |
 | **Daily cost trend** | Cost trend by date (area) |
+| **Monthly Cost Impact (est.)** | 30-day resource-count change × static per-type unit-cost heuristic (±$N/mo est., top 8 by \|impact\|) — not billing data; types without a 30-day baseline are excluded |
 
 ## How to use
 

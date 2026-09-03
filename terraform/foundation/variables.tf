@@ -279,6 +279,56 @@ variable "steampipe_image_tag" {
   default     = "steampipe-latest"
 }
 
+variable "steampipe_aws_max_concurrency" {
+  type        = number
+  default     = 4
+  description = "Global Steampipe AWS plugin maximum concurrent upstream calls."
+  validation {
+    condition     = floor(var.steampipe_aws_max_concurrency) == var.steampipe_aws_max_concurrency && var.steampipe_aws_max_concurrency >= 1 && var.steampipe_aws_max_concurrency <= 20
+    error_message = "steampipe_aws_max_concurrency must be an integer from 1 to 20."
+  }
+}
+
+variable "steampipe_aws_bucket_size" {
+  type        = number
+  default     = 4
+  description = "Global Steampipe AWS plugin burst bucket size."
+  validation {
+    condition     = floor(var.steampipe_aws_bucket_size) == var.steampipe_aws_bucket_size && var.steampipe_aws_bucket_size >= 1 && var.steampipe_aws_bucket_size <= 40
+    error_message = "steampipe_aws_bucket_size must be an integer from 1 to 40."
+  }
+}
+
+variable "steampipe_aws_fill_rate" {
+  type        = number
+  default     = 2
+  description = "Global Steampipe AWS plugin token bucket refill rate per second."
+  validation {
+    condition     = var.steampipe_aws_fill_rate >= 0.1 && var.steampipe_aws_fill_rate <= 20
+    error_message = "steampipe_aws_fill_rate must be from 0.1 to 20."
+  }
+}
+
+variable "steampipe_sync_reserved_concurrency" {
+  type        = number
+  default     = 4
+  description = "Reserved concurrency for the Steampipe inventory sync Lambda."
+  validation {
+    condition     = floor(var.steampipe_sync_reserved_concurrency) == var.steampipe_sync_reserved_concurrency && var.steampipe_sync_reserved_concurrency >= 1 && var.steampipe_sync_reserved_concurrency <= 20
+    error_message = "steampipe_sync_reserved_concurrency must be an integer from 1 to 20."
+  }
+}
+
+variable "inventory_stale_after_minutes" {
+  type        = number
+  default     = 30
+  description = "Age in minutes after which inventory-read reports a resource type as stale."
+  validation {
+    condition     = floor(var.inventory_stale_after_minutes) == var.inventory_stale_after_minutes && var.inventory_stale_after_minutes >= 1 && var.inventory_stale_after_minutes <= 1440
+    error_message = "inventory_stale_after_minutes must be an integer from 1 to 1440."
+  }
+}
+
 variable "eks_auto_register_enabled" {
   type        = bool
   description = "EKS auto-register gate: EventBridge(CloudTrail AssociateAccessPolicy/DeleteAccessEntry for the task role) -> Lambda -> eks_registrations. Observe-only toward AWS (no resource mutation). Requires workers_enabled (pg8000 layer reuse). false (default) = 0 resources."

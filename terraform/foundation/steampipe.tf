@@ -34,7 +34,7 @@ resource "aws_iam_role_policy" "execution_steampipe_secret" {
   name  = "${var.project}-exec-steampipe-secret"
   role  = aws_iam_role.execution.id
   policy = jsonencode({
-    Version = "2012-10-17"
+    Version   = "2012-10-17"
     Statement = [{ Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = [aws_secretsmanager_secret.steampipe[0].arn] }]
   })
 }
@@ -134,7 +134,7 @@ resource "aws_iam_role_policy" "steampipe_task" {
         "elasticache:Describe*", "elasticache:ListTagsForResource",
         "es:Describe*", "es:List*",
         "kafka:Describe*", "kafka:List*",
-        "eks:Describe*", "eks:List*",  # aws-data/eks-optimize 콜렉터: aws_eks_cluster 등 EKS 테이블
+        "eks:Describe*", "eks:List*", # aws-data/eks-optimize 콜렉터: aws_eks_cluster 등 EKS 테이블
         "wafv2:List*", "wafv2:Get*",
         "cloudwatch:Describe*",
         "cloudtrail:Describe*", "cloudtrail:List*", "cloudtrail:GetTrailStatus", "cloudtrail:GetEventSelectors", "cloudtrail:GetInsightSelectors",
@@ -190,12 +190,15 @@ resource "aws_ecs_task_definition" "steampipe" {
       { name = "AURORA_ENDPOINT", value = aws_rds_cluster.aurora.endpoint },
       { name = "AURORA_DATABASE", value = aws_rds_cluster.aurora.database_name },
       { name = "AURORA_USER", value = "steampipe_reader" },
+      { name = "STEAMPIPE_AWS_MAX_CONCURRENCY", value = tostring(var.steampipe_aws_max_concurrency) },
+      { name = "STEAMPIPE_AWS_BUCKET_SIZE", value = tostring(var.steampipe_aws_bucket_size) },
+      { name = "STEAMPIPE_AWS_FILL_RATE", value = tostring(var.steampipe_aws_fill_rate) },
     ]
     secrets = [
       { name = "STEAMPIPE_DATABASE_PASSWORD", valueFrom = aws_secretsmanager_secret.steampipe[0].arn },
     ]
     healthCheck = {
-      command = ["CMD-SHELL", "steampipe query \"select 1\" >/dev/null 2>&1 || exit 1"]
+      command  = ["CMD-SHELL", "steampipe query \"select 1\" >/dev/null 2>&1 || exit 1"]
       interval = 30
       timeout  = 10
       # retries=5 (150s consecutive-failure tolerance) — NOT just the initial startup case.
@@ -319,7 +322,7 @@ resource "aws_iam_role_policy" "inv_sync" {
       { Effect = "Allow", Action = ["cloudfront:ListVpcOrigins", "cloudfront:GetVpcOrigin", "cloudfront:ListDistributions", "cloudfront:GetDistributionConfig"], Resource = "*" },
       # SDK-sourced s3_public_access sync (Steampipe aws_s3_bucket public-access columns fail the whole
       # query on one denied bucket): read-only per-bucket public-access flags. Read-only; no mutation.
-      { Effect = "Allow", Action = ["s3:ListAllMyBuckets", "s3:GetBucketLocation", "s3:GetBucketPolicyStatus", "s3:GetBucketPublicAccessBlock", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketLogging"], Resource = "*" },
+      { Effect = "Allow", Action = ["s3:ListAllMyBuckets", "s3:GetBucketLocation", "s3:GetBucketPolicyStatus", "s3:GetBucketPublicAccessBlock", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketLogging", "s3:GetBucketTagging"], Resource = "*" },
       # SDK-sourced alb_listener_rule sync (Steampipe rule table needs a per-listener qualifier):
       # read-only ELBv2 describe for LBs/listeners/rules. Read-only; no mutation.
       { Effect = "Allow", Action = ["elasticloadbalancing:DescribeLoadBalancers", "elasticloadbalancing:DescribeListeners", "elasticloadbalancing:DescribeRules"], Resource = "*" },
@@ -336,17 +339,18 @@ resource "aws_iam_role_policy" "inv_sync" {
   })
 }
 resource "aws_lambda_function" "inv_sync" {
-  count            = local.sp
-  function_name    = "${var.project}-inv-sync"
-  role             = aws_iam_role.inv_sync[0].arn
-  runtime          = "python3.12"
-  architectures    = ["arm64"]
-  handler          = "sync_lambda.lambda_handler"
-  filename         = data.archive_file.inv_sync_src[0].output_path
-  source_code_hash = data.archive_file.inv_sync_src[0].output_base64sha256
-  timeout          = 120
-  memory_size      = 512
-  layers           = [aws_lambda_layer_version.inv_pg8000[0].arn]
+  count                          = local.sp
+  function_name                  = "${var.project}-inv-sync"
+  role                           = aws_iam_role.inv_sync[0].arn
+  runtime                        = "python3.12"
+  architectures                  = ["arm64"]
+  handler                        = "sync_lambda.lambda_handler"
+  filename                       = data.archive_file.inv_sync_src[0].output_path
+  source_code_hash               = data.archive_file.inv_sync_src[0].output_base64sha256
+  timeout                        = 120
+  memory_size                    = 512
+  layers                         = [aws_lambda_layer_version.inv_pg8000[0].arn]
+  reserved_concurrent_executions = var.steampipe_sync_reserved_concurrency
   vpc_config {
     subnet_ids         = local.private_subnet_ids
     security_group_ids = [aws_security_group.service.id]
@@ -363,6 +367,13 @@ resource "aws_lambda_function" "inv_sync" {
   depends_on = [aws_cloudwatch_log_group.inv_sync, aws_iam_role_policy_attachment.inv_sync_vpc]
 }
 
+resource "aws_lambda_function_event_invoke_config" "inv_sync" {
+  count                        = local.sp
+  function_name                = aws_lambda_function.inv_sync[0].function_name
+  maximum_event_age_in_seconds = 900
+  maximum_retry_attempts       = 0
+}
+
 # ---- scheduled sync (EventBridge rate(15m) -> ec2) ----
 resource "aws_cloudwatch_event_rule" "inv_sync" {
   count               = local.sp
@@ -375,6 +386,10 @@ resource "aws_cloudwatch_event_target" "inv_sync" {
   target_id = "inv-sync-ec2"
   arn       = aws_lambda_function.inv_sync[0].arn
   input     = jsonencode({ type = "all" })
+  retry_policy {
+    maximum_event_age_in_seconds = 900
+    maximum_retry_attempts       = 0
+  }
 }
 resource "aws_lambda_permission" "inv_sync_events" {
   count         = local.sp

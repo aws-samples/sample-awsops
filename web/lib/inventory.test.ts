@@ -68,10 +68,20 @@ describe('readResources', () => {
   });
 });
 describe('triggerSync', () => {
-  it('invokes the sync Lambda and parses the result', async () => {
-    lambdaSend.mockResolvedValue({ Payload: new TextEncoder().encode(JSON.stringify({ status: 'succeeded', row_count: 3 })) });
+  it('queues the sync Lambda asynchronously through the bounded path', async () => {
+    lambdaSend.mockResolvedValue({ StatusCode: 202 });
     const { triggerSync } = await import('./inventory');
-    const r = await triggerSync('ec2');
-    expect(r.status).toBe('succeeded');
+    await expect(triggerSync('ec2')).resolves.toEqual({ status: 'queued' });
+    const command = lambdaSend.mock.calls[0][0] as { input: Record<string, unknown> };
+    expect(command.input).toMatchObject({
+      FunctionName: 'fn',
+      InvocationType: 'Event',
+    });
+  });
+
+  it('rejects an unexpected async invoke status', async () => {
+    lambdaSend.mockResolvedValue({ StatusCode: 200 });
+    const { triggerSync } = await import('./inventory');
+    await expect(triggerSync('ec2')).rejects.toThrow('inventory sync enqueue failed');
   });
 });

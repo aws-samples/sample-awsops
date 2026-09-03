@@ -30,9 +30,9 @@
 
 ## Decisions (ADRs) / 결정
 
-**EN** — No dedicated ADR exists for EKS onboarding (a documentation gap). Onboarding inherits the multi-account model of [ADR-011](../../decisions/011-multi-account.md), but here it is **host-account only** — cross-account assume-role onboarding is intentionally excluded. kubeconfig auto-registration and the Kubernetes query UI are **deferred to P3**.
+**EN** — No dedicated ADR exists for EKS onboarding (a documentation gap). Onboarding inherits the multi-account model of [ADR-011](../decisions/011-multi-account.md), but here it is **host-account only** — cross-account assume-role onboarding is intentionally excluded. kubeconfig auto-registration and the Kubernetes query UI are **deferred to P3**.
 
-**KO** — EKS 온보딩 전용 ADR은 없다(문서 공백). [ADR-011](../../decisions/011-multi-account.md)의 멀티 계정 모델을 계승하지만 여기서는 **호스트 계정 전용**이며, 교차 계정 assume-role 온보딩은 의도적으로 제외했다. kubeconfig 자동 등록과 Kubernetes 조회 UI는 **P3로 연기**되었다.
+**KO** — EKS 온보딩 전용 ADR은 없다(문서 공백). [ADR-011](../decisions/011-multi-account.md)의 멀티 계정 모델을 계승하지만 여기서는 **호스트 계정 전용**이며, 교차 계정 assume-role 온보딩은 의도적으로 제외했다. kubeconfig 자동 등록과 Kubernetes 조회 UI는 **P3로 연기**되었다.
 
 ## Key files / 핵심 파일
 

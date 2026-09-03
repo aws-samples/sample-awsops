@@ -23,7 +23,7 @@ AWS アカウントの API アクティビティを記録する CloudTrail の�
 ### タブ構成
 | タブ | 内容 |
 |---|------|
-| Trails | トレイル一覧、設定、S3 バケット |
+| Trails | トレイル一覧、設定、S3 バケット — Last Delivery (UTC) カラムは**直近の成功した配信時刻**です（現在失敗中でも過去の成功時刻が残ります — 失敗シグナルは詳細の `latest_delivery_error`） |
 | Recent Events | 最近の API イベント (全イベント) |
 | Write Events | 書き込みイベントのみフィルタリング (リソース変更の監査) |
 
@@ -37,10 +37,10 @@ Events および Write Events タブは、クリック時にのみデータを�
 
 ### トレイル詳細情報
 トレイル行をクリックするとスライドパネルで確認できます:
-- **Trail**: 名前、ARN、ホームリージョン、ロギング状態、Multi-Region の有無
-- **Storage**: S3 バケット、プレフィックス、SNS トピック、KMS キー
-- **CloudWatch**: ロググループ、IAM ロール、最終送信時刻
-- **Validation**: ログファイル検証、最終配信時刻
+- **Identity**: 名前、ARN、アカウント、リージョン、ホームリージョン
+- **Logging**: ロギング状態、Multi-Region/組織トレイル、ログファイル検証、ロギング開始/停止時刻、S3・CloudWatch Logs・ダイジェストそれぞれの最終配信時刻と配信エラー（`latest_delivery_error` など — 配信失敗のシグナルはここで確認）
+- **Storage**: S3 バケット/プレフィックス、ロググループ、CW Logs IAM ロール
+- **Security**: KMS キー、SNS トピック、イベント/インサイトセレクター
 - **Tags**: リソースタグ
 
 ### イベント詳細情報

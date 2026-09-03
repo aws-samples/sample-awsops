@@ -6,6 +6,7 @@ description: 在 AWSops EC2 实例上访问 EKS 集群的认证配置指南
 
 # EKS 认证配置
 
+
 :::caution v1 归档文档 — 不适用于 v2
 本页描述的是 v1（EC2 实例 + Steampipe）架构的认证步骤。v2 基于 ECS Fargate，EKS 认证改为由 `terraform/foundation/eks.tf` 为 **web 任务角色授予 Access Entry + `AmazonEKSAdminViewPolicy`**。请不要将本页的命令（SSH、`AmazonEKSClusterAdminPolicy`、`data/config.json` 等）应用于 v2 环境。
 :::

@@ -6,7 +6,7 @@ import {
 } from './inventory-types';
 
 describe('INVENTORY_TYPES registry', () => {
-  it('has the 41 registered types (39 + elasticache_replication_group + iam_policy)', () => {
+  it('has the 43 registered types (41 + waf_rule_group + waf_ip_set)', () => {
     const keys = Object.keys(INVENTORY_TYPES);
     expect(keys).toContain('ec2'); expect(keys).toContain('s3'); expect(keys).toContain('iam_role');
     expect(keys).toContain('cloudfront'); expect(keys).toContain('cloudwatch_alarm'); expect(keys).toContain('msk');
@@ -17,7 +17,7 @@ describe('INVENTORY_TYPES registry', () => {
     expect(keys).toContain('apigatewayv2_route'); expect(keys).toContain('alb_listener_rule');
     // security findings source (denial-safe S3 public-access sync)
     expect(keys).toContain('s3_public_access');
-    expect(keys.length).toBe(41);
+    expect(keys.length).toBe(43);
   });
   it('every type has a label, group, and >=1 column', () => {
     for (const [k, v] of Object.entries(INVENTORY_TYPES)) {
@@ -94,11 +94,11 @@ describe('navTree (sidebar IA hierarchy)', () => {
     expect(tree.map((g) => g.slug)).toEqual(['compute', 'storage', 'network', 'security', 'monitoring']);
   });
 
-  it('places every inventory type exactly once (no drop, no dup) — 41 total', () => {
+  it('places every inventory type exactly once (no drop, no dup) — 43 total', () => {
     const placed = tree.flatMap((g) => invTypesOf(g.slug));
     expect(new Set(placed).size).toBe(placed.length); // no duplicates
     expect(new Set(placed)).toEqual(new Set(Object.keys(INVENTORY_TYPES)));
-    expect(placed.length).toBe(41);
+    expect(placed.length).toBe(43);
   });
 
   it('Compute nests the EKS family as a feature-link subgroup + the ECS subgroup', () => {
@@ -286,7 +286,8 @@ describe('computeHighlights (per-type highlight cards)', () => {
         ...spec.columns.map((c) => c.key),
         ...(spec.sections ?? []).flatMap((sec) => sec.keys),
         ...(spec.hideKeys ?? []),
-        ...[spec.stateKey, spec.distKey, spec.distKey2, spec.barKey?.col].filter((k): k is string => Boolean(k)),
+        ...[spec.stateKey, spec.distKey, spec.distKey2, spec.barKey?.col, spec.countBarKey?.col].filter((k): k is string => Boolean(k)),
+        ...(spec.flagBarKey?.flags ?? []).map((f) => f.col),
       ]);
       for (const h of hls) {
         const refs = [

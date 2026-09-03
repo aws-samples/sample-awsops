@@ -36,6 +36,8 @@ export interface PodRow {
   cpuRequest: number; memRequest: number; diskRequest: number;
   // for topology: pod IP (matches an ALB/NLB target IP) + owning workload (Deployment/etc.).
   podIP?: string; workload?: string;
+  // v1 node-detail parity (gap L226): the pod's service account ('' when the API omits it).
+  serviceAccount?: string;
 }
 
 /** Parse a K8s CPU quantity to cores: "8"→8, "7910m"→7.91, ""/null→0. */

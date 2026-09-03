@@ -31,7 +31,7 @@ v1은 클러스터/서비스/태스크를 한 페이지에서 통합 조회했�
 | Instances | 등록된 컨테이너 인스턴스 수 |
 | MTD Cost ($) | 월간 누적 비용 |
 
-상세 패널: Identity(Name, Account, Region, ARN) / Tasks & Services / Config(Settings, Container Insights 등) / Tags 섹션.
+상세 패널: Identity(Name, Account, Region, ARN) / Tasks & Services / Config(Settings, Container Insights 등) / Tags 섹션 — Settings는 항목별 라벨–값 행(containerInsights disabled 식)으로 표시됩니다.
 
 ### ECS Services (`/inventory/ecs_service`)
 하이라이트 카드는 Desired/Running/Pending 합계와 클러스터 distinct 수를 보여줍니다.

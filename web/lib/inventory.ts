@@ -108,13 +108,16 @@ export async function readResources(type: string, { limit, offset, regions = '__
   return { rows: r.rows, run: s.rows[0] ?? null };
 }
 
-export async function triggerSync(type: string): Promise<{ status: string; row_count?: number; error?: string }> {
+export async function triggerSync(type: string): Promise<{ status: 'queued' }> {
   const fn = process.env.INV_SYNC_FUNCTION;
   if (!fn) throw new Error('INV_SYNC_FUNCTION not set');
   const out = await lambdaClient().send(new InvokeCommand({
     FunctionName: fn,
+    InvocationType: 'Event',
     Payload: new TextEncoder().encode(JSON.stringify({ type })),
   }));
-  const raw = out.Payload ? new TextDecoder().decode(out.Payload) : '{}';
-  try { return JSON.parse(raw); } catch { return { status: 'unknown' }; }
+  if (out.StatusCode !== 202) {
+    throw new Error(`inventory sync enqueue failed: status ${out.StatusCode ?? 'unknown'}`);
+  }
+  return { status: 'queued' };
 }

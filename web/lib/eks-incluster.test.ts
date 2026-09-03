@@ -199,6 +199,19 @@ describe('normalizers', () => {
     expect(row).toMatchObject({ name: 'web-abc', namespace: 'default', status: 'Running', node: 'ip-10-0-1-5', restarts: 5, age: '5h' });
   });
 
+  it('pod: podIP + serviceAccount mapped, empty string when the API omits them (gap L226)', () => {
+    const row = normalizePod({
+      metadata: { name: 'p', namespace: 'd' },
+      status: { phase: 'Running', podIP: '10.0.1.23' },
+      spec: { nodeName: 'n1', serviceAccountName: 'app-sa' },
+    });
+    expect(row.podIP).toBe('10.0.1.23');
+    expect(row.serviceAccount).toBe('app-sa');
+    const bare = normalizePod({ metadata: { name: 'q', namespace: 'd' }, status: { phase: 'Pending' }, spec: {} });
+    expect(bare.podIP).toBe('');
+    expect(bare.serviceAccount).toBe('');
+  });
+
   it('deployment: ready as readyReplicas/spec.replicas + upToDate + available', () => {
     const row = normalizeDeployment({
       metadata: { name: 'api', namespace: 'prod' },

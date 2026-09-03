@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 const verifyUser = vi.fn();
+const isAdmin = vi.fn();
 const triggerSync = vi.fn();
 const readResources = vi.fn();
 const assertInventoryTypeAllowed = vi.fn();
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
+vi.mock('@/lib/admin', () => ({ isAdmin: (...a: unknown[]) => isAdmin(...a) }));
 vi.mock('@/lib/inventory', () => ({
   triggerSync: (...a: unknown[]) => triggerSync(...a),
   readResources: (...a: unknown[]) => readResources(...a),
@@ -12,7 +14,9 @@ vi.mock('@/lib/inventory', () => ({
 const req = () => new Request('http://x/api/inventory/ec2/refresh', { method: 'POST', headers: { cookie: 'awsops_token=t' } });
 const ctx = { params: { type: 'ec2' } };
 beforeEach(() => {
-  verifyUser.mockReset(); triggerSync.mockReset(); readResources.mockReset(); assertInventoryTypeAllowed.mockReset();
+  verifyUser.mockReset(); isAdmin.mockReset(); triggerSync.mockReset();
+  readResources.mockReset(); assertInventoryTypeAllowed.mockReset();
+  isAdmin.mockResolvedValue(true);
   assertInventoryTypeAllowed.mockResolvedValue(null);
 });
 
@@ -20,16 +24,36 @@ describe('POST refresh', () => {
   it('401 unauth', async () => {
     verifyUser.mockResolvedValue(null);
     const { POST } = await import('./route');
-    expect((await POST(req(), ctx)).status).toBe(401);
+    const res = await POST(req(), ctx);
+    expect(res.status).toBe(401);
+    expect(isAdmin).not.toHaveBeenCalled();
+    expect(triggerSync).not.toHaveBeenCalled();
   });
-  it('syncs then returns fresh rows', async () => {
-    verifyUser.mockResolvedValue({ sub: 'u' });
-    triggerSync.mockResolvedValue({ status: 'succeeded', row_count: 2 });
+  it('403 authenticated non-admin without invoking the sync Lambda', async () => {
+    const user = { sub: 'u' };
+    verifyUser.mockResolvedValue(user);
+    isAdmin.mockResolvedValue(false);
+    const { POST } = await import('./route');
+    const res = await POST(req(), ctx);
+    expect(res.status).toBe(403);
+    expect(isAdmin).toHaveBeenCalledWith(user);
+    expect(assertInventoryTypeAllowed).not.toHaveBeenCalled();
+    expect(triggerSync).not.toHaveBeenCalled();
+  });
+  it('queues a sync for an admin and returns currently stored rows', async () => {
+    const user = { sub: 'admin-u' };
+    verifyUser.mockResolvedValue(user);
+    triggerSync.mockResolvedValue({ status: 'queued' });
     readResources.mockResolvedValue({ rows: [{ resource_id: 'i-1' }], run: { status: 'succeeded' } });
     const { POST } = await import('./route');
     const res = await POST(req(), ctx);
     expect(res.status).toBe(200);
-    expect((await res.json()).rows.length).toBe(1);
+    expect(await res.json()).toMatchObject({
+      rows: [{ resource_id: 'i-1' }],
+      sync: { status: 'queued' },
+    });
+    expect(isAdmin).toHaveBeenCalledWith(user);
+    expect(assertInventoryTypeAllowed).toHaveBeenCalledWith('ec2', user);
     expect(triggerSync).toHaveBeenCalledWith('ec2');
   });
   it('503 when sync fails', async () => {

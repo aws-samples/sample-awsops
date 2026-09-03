@@ -1,5 +1,6 @@
 // Client-side derived fields per inventory type — flattens JSONB nests / formats raw values
 // into table-ready columns (v1 parity: readable MSK/DynamoDB/EBS/ECS-task lists). Pure, no React.
+import { estimateDailyCost } from './cost-basis';
 
 type Row = Record<string, unknown>;
 
@@ -32,6 +33,8 @@ function walk(root: unknown, path: string): unknown {
 
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
 function bytesH(v: unknown): string | undefined {
+  // null/'' coerce to 0 via Number() — a synced-but-null size must read unknown, not '0 B'.
+  if (v == null || v === '') return undefined;
   const n = Number(v);
   if (!Number.isFinite(n)) return undefined;
   if (n <= 0) return '0 B';
@@ -46,6 +49,28 @@ function dateH(v: unknown): string | undefined {
 
 const boolH = (v: unknown): string | undefined =>
   v === true || v === 'true' ? 'true' : v === false || v === 'false' ? 'false' : undefined;
+
+/** Independent flag-count bars (gap L240 — InvType.flagBarKey): each flag counts rows whose
+ *  `col` is strictly true (strictly false when `negate`), with 'true'/'false' string coercion.
+ *  Unknown (null/absent/other) rows count into NEITHER side, a row can count into several
+ *  bars, declared order is kept, and zero bars are kept (a zero Public bar is signal) —
+ *  EXCEPT when a column has no known value on ANY row (e.g. the field isn't synced yet, or
+ *  every read was denied): its flags are dropped entirely, because an all-unknown 0 rendered
+ *  as a bar would read as an affirmative all-clear. */
+export function countFlags(
+  rows: Row[],
+  flags: { name: string; col: string; negate?: boolean }[],
+): { name: string; value: number }[] {
+  const known = new Set(
+    flags.map((f) => f.col).filter((col) => rows.some((r) => boolH(r[col]) !== undefined)),
+  );
+  return flags
+    .filter((f) => known.has(f.col))
+    .map((f) => ({
+      name: f.name,
+      value: rows.filter((r) => boolH(r[f.col]) === (f.negate ? 'false' : 'true')).length,
+    }));
+}
 
 function _ecsTaskBase(r: Row): Row {
   return {
@@ -90,6 +115,16 @@ const DERIVERS: Record<string, (r: Row) => Row> = {
       storage_gb_h: walk(ebs, 'volume_size'),
       n2n_enc_h: boolH(r.node_to_node_encryption_options_enabled),
       rest_enc_h: boolH(walk(enc, 'enabled')),
+      // L236: Full/Partial/No Encryption from the at-rest + n2n pair; unknown EITHER side →
+      // undefined (an unknown must never count as 'No Encryption' in the donut).
+      encryption_status_h: (() => {
+        const rest = flag(walk(enc, 'enabled'));
+        const n2n = flag(r.node_to_node_encryption_options_enabled);
+        if (rest == null || n2n == null) return undefined;
+        if (rest && n2n) return 'Full Encryption';
+        if (rest || n2n) return 'Partial';
+        return 'No Encryption';
+      })(),
       dedicated_master_h: dm === true
         ? `${walk(cc, 'dedicated_master_type') ?? '?'} × ${walk(cc, 'dedicated_master_count') ?? '?'}`
         : dm === false ? 'disabled' : undefined,
@@ -194,10 +229,29 @@ const DERIVERS: Record<string, (r: Row) => Row> = {
   // Lambda value formatting (gap L137, v1 parity): null/absent runtime → 'custom' (container-
   // image functions; overriding the raw column keeps the table, runtime donut, facet, and
   // detail panel in agreement — v1 did the COALESCE in SQL), and last_modified formatted.
-  lambda: (r) => ({
-    runtime: r.runtime ?? 'custom',
-    last_modified: dateH(r.last_modified) ?? (r.last_modified as string | undefined),
-  }),
+  lambda: (r) => {
+    // L232: layers → one 'name:version' per row (trailing two ARN segments); vpc_h tri-state —
+    // the id when present, v1's explicit 'Not in VPC' when the synced field is null/empty,
+    // undefined when the field is absent entirely (never a fabricated verdict).
+    const layersArr = asArr(r.layers);
+    const layerNames = (layersArr ?? []).map((l) => {
+      const arn = typeof l === 'string' ? l : String(asObj(l)?.Arn ?? asObj(l)?.arn ?? '');
+      const segs = arn.split(':');
+      return segs.length >= 2 ? `${segs[segs.length - 2]}:${segs[segs.length - 1]}` : arn;
+    }).filter(Boolean);
+    // Post-filter length check: with the raw layers JSON hidden, an all-unresolvable list must
+    // fall back to undefined (absent), never an empty-but-confident [].
+    const layers_h = layerNames.length === (layersArr?.length ?? 0) && layerNames.length > 0 ? layerNames : undefined;
+    return {
+      runtime: r.runtime ?? 'custom',
+      last_modified: dateH(r.last_modified) ?? (r.last_modified as string | undefined),
+      // L231: human-readable code size (B/KB/MB) — replaces the raw byte integer in the panel.
+      code_size_h: bytesH(r.code_size),
+      layers_h,
+      vpc_h: typeof r.vpc_id === 'string' && r.vpc_id ? r.vpc_id
+        : 'vpc_id' in r ? 'Not in VPC' : undefined,
+    };
+  },
   // scan_on_push (gap-audit L107): Yes/No from the JSONB scanning config. A missing/malformed
   // config means scanning is off (the API default), so 'No' — never undefined (keeps the column
   // filterable and the No count honest). The truthiness test deliberately mirrors
@@ -205,21 +259,48 @@ const DERIVERS: Record<string, (r: Row) => Row> = {
   // "True" can never read KPI-enabled but column-'No'.
   ecr: (r) => {
     const v = walk(r.image_scanning_configuration, 'scan_on_push');
+    const encType = walk(r.encryption_configuration, 'encryption_type');
     return {
       scan_on_push: v != null
         && !['', 'false', 'null', 'undefined', '0', 'none', 'no', 'disabled'].includes(String(v).trim().toLowerCase())
         ? 'Yes' : 'No',
+      // L213: pass-through of the encryption type (AES256 | KMS | KMS_DSSE | future values —
+      // rendered as-is; undefined when the blob is absent)
+      encryption_type_h: typeof encType === 'string' && encType ? encType : undefined,
     };
   },
+  waf: (r) => {
+    // L252: the default action is the JSONB object's own top-level key ('Allow' | 'Block') —
+    // parse-only, case-preserved; malformed/absent → undefined (the raw blob stays visible).
+    const da = asObj(r.default_action);
+    const keys = da ? Object.keys(da) : [];
+    return { default_action_h: keys.length === 1 ? keys[0] : undefined };
+  },
+  cloudtrail: (r) => {
+    // L188: 'is this trail actually delivering' at a glance. The sync persists pg8000
+    // datetimes via str() → '2026-09-01 03:04:00+00:00' (space-separated) — normalize to
+    // ISO before parsing (space-form Date() parsing is implementation-defined). dateH
+    // renders UTC; the column header carries the (UTC) marker.
+    const raw = typeof r.latest_delivery_time === 'string'
+      ? r.latest_delivery_time.replace(' ', 'T')
+      : r.latest_delivery_time;
+    return { last_delivery_h: dateH(raw) };
+  },
+  waf_ip_set: (r) => {
+    // gap L253: address count from the addresses array — undefined when the field is absent
+    // (unknown must never read a confident 0).
+    const a = Array.isArray(r.addresses) ? r.addresses : undefined;
+    return { addresses_count: a ? a.length : undefined };
+  },
   ecs_task: (r) => {
-    // Fargate on-demand (ap-northeast-2): $/vCPU-h + $/GB-h — v1 constants (config-overridable in v1).
-    const VCPU_H = 0.04656;
-    const GB_H = 0.00511;
+    // Fargate on-demand (ap-northeast-2) — the SHARED cost-basis constants (gap L194: the
+    // EcsCostBasisPanel documents these numbers, so the deriver must compute from the same
+    // source; the batch-25 single-source rule). v1's config.json override does not exist in v2.
     const cpu = Number(r.cpu);
     const mem = Number(r.memory);
     const isFargate = String(r.launch_type ?? '').toUpperCase() === 'FARGATE';
     const daily = isFargate && Number.isFinite(cpu) && Number.isFinite(mem)
-      ? (cpu / 1024) * VCPU_H * 24 + (mem / 1024) * GB_H * 24
+      ? estimateDailyCost(cpu / 1024, mem / 1024)
       : undefined;
     const clusterArn = String(r.cluster_arn ?? '');
     return {

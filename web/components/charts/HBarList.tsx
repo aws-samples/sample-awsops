@@ -56,7 +56,9 @@ export default function HBarList({
       <ul className="space-y-2.5">
         {data.map((d, i) => {
           const n = Number(d[valueKey]) || 0;
-          const pct = max > 0 ? Math.max(2, (n / max) * 100) : 0;
+          // 2% visibility floor only for NONZERO values — a zero bar must render empty
+          // (flagBarKey deliberately keeps zero bars as signal, gap L240).
+          const pct = max > 0 && n > 0 ? Math.max(2, (n / max) * 100) : 0;
           const isMax = highlightMax && max > 0 && n === max;
           return (
             <li key={i} className="flex items-center gap-3">

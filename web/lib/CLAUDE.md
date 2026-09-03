@@ -1,7 +1,7 @@
 # Library Module
 
 ## Role
-118 domain-logic modules shared by API routes and components, mostly React-free (includes `collectors/`). Tests colocated with source, vitest.
+134 domain-logic modules (verified `find web/lib -name "*.ts" ! -name "*.test.ts" | wc -l`) shared by API routes and components, mostly React-free (includes `collectors/`). Tests colocated with source, vitest.
 
 ## Key Files
 - `db.ts` — Aurora node-pg shared pool `getPool()`: RDS IAM DB auth (`awsops_web` role, not the master secret). `password` is passed as a function so each connection signs a fresh 15-minute token — safe across the 7-day secret auto-rotation. `max: 3`.

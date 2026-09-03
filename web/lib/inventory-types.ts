@@ -13,12 +13,26 @@ export interface InvType {
    *  DESC (e.g. newest state change first). Applied by the page BEFORE DataTable, so a user's
    *  own column-header sort still overrides it. */
   worstFirst?: { col: string; rank: Record<string, number>; tieBreak?: string };
+  /** Optional label for the distKey2 donut title when distKey2 is a derived-only field (not a
+   *  table column — colLabel would fall back to the raw key). */
+  distKey2Label?: string;
+  /** Drop the '(none)' bucket from the distKey2 donut (gap L236): a semantic-verdict donut
+   *  (e.g. encryption status) must not render unknown rows as a colored slice/denominator. */
+  distKey2DropNone?: boolean;
   /** Semantic slice colors for the distKey2 donut, keyed by the RAW cell value (case-sensitive —
    *  the donut buckets raw values, unlike countWhere's case-insensitive compare). Unmapped
    *  values fall back to the positional palette. */
   distKey2Colors?: Record<string, string>;
   /** Optional Top-N metric bar chart: numeric column ranked desc over the row set. */
   barKey?: { col: string; label: string };
+  /** Optional count-distribution bar (gap L221): row COUNTS per distinct value of `col`,
+   *  count-descending (distinct from barKey's numeric ranking and histKey's numeric axis). */
+  countBarKey?: { col: string; label: string };
+  /** Optional independent flag-count bars (gap L240): each flag counts rows whose `col` is
+   *  strictly true (strictly false when `negate`) — null/absent (unknown) rows count into
+   *  NEITHER side, and a row can count into several bars (not a distribution of one column,
+   *  which is countBarKey's job). Bars keep the declared order and zero bars are kept. */
+  flagBarKey?: { label: string; flags: { name: string; col: string; negate?: boolean }[] };
   /** Optional value-distribution histogram (gap L135): row COUNTS per distinct numeric value
    *  of `col` (top 10 by count, then numerically sorted; e.g. lambda functions per
    *  memory_size). Rendered beside the Top-N bar as a second BarDistribution. */
@@ -79,15 +93,20 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
   lambda: { label: 'Lambda Functions', group: 'Compute', stateKey: 'state', distKey: 'runtime', distKey2: 'package_type', barKey: { col: 'memory_size', label: 'Memory (MB)' },
     histKey: { col: 'memory_size', label: 'Memory Allocation', suffix: ' MB' }, columns: [
     { key: 'runtime', label: 'Runtime' }, { key: 'memory_size', label: 'Mem(MB)' },
-    { key: 'timeout', label: 'Timeout(s)' }, { key: 'state', label: 'State' },
+    { key: 'timeout', label: 'Timeout(s)' }, { key: 'code_size', label: 'Code Size' }, { key: 'state', label: 'State' },
     { key: 'handler', label: 'Handler' }, { key: 'last_modified', label: 'Modified' } ],
     sections: [
       { label: 'Identity', keys: ['resource_id', 'name', 'account_id', 'region', 'arn', 'description', 'version', 'last_modified'] },
       { label: 'Runtime', keys: ['runtime', 'handler', 'package_type', 'architectures', 'state', 'last_update_status'] },
-      { label: 'Capacity', keys: ['memory_size', 'timeout', 'code_size', 'code_sha_256', 'layers'] },
-      { label: 'Network', keys: ['vpc_id', 'vpc_subnet_ids', 'vpc_security_group_ids'] },
+      // Raw layers stays visible after the derived list (the adv-security precedent) — layers_h
+      // reads undefined on unparseable shapes, and the raw JSON must remain reachable then.
+      { label: 'Capacity', keys: ['memory_size', 'timeout', 'code_size_h', 'code_sha_256', 'layers_h', 'layers'] },
+      { label: 'Network', keys: ['vpc_h', 'vpc_subnet_ids', 'vpc_security_group_ids'] },
     ],
-    filterKeys: ['region', 'runtime', 'memory_size', 'timeout', 'vpc_id'] },
+    // raw byte int / raw vpc_id are replaced by code_size_h / vpc_h; the raw layers JSON stays
+    // reachable (Other group) because layers_h falls back to undefined on unparseable shapes.
+    hideKeys: ['code_size', 'vpc_id'],
+    filterKeys: ['region', 'runtime', 'memory_size', 'timeout', 'vpc_h'] },
   ecs_cluster: { label: 'ECS Clusters', group: 'Compute', stateKey: 'status', distKey: 'status', distKey2: 'region', barKey: { col: 'running_tasks_count', label: 'Running Tasks' }, columns: [
     { key: 'status', label: 'Status' }, { key: 'running_tasks_count', label: 'Running' },
     { key: 'pending_tasks_count', label: 'Pending' }, { key: 'active_services_count', label: 'Services' },
@@ -125,20 +144,34 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
   ecr: { label: 'ECR Repositories', group: 'Compute', distKey: 'image_tag_mutability', columns: [
     { key: 'repository_uri', label: 'URI' }, { key: 'image_tag_mutability', label: 'Tag mutability' },
     // Repository-level basic scanning setting — registry-level Inspector enhanced scanning is not represented here.
-    { key: 'scan_on_push', label: 'Scan on Push (Basic)' }, { key: 'created_at', label: 'Created' } ],
+    { key: 'scan_on_push', label: 'Scan on Push (Basic)' }, { key: 'encryption_type_h', label: 'Encryption' }, { key: 'created_at', label: 'Created' } ],
     sections: [
       { label: 'Identity', keys: ['resource_id', 'repository_name', 'account_id', 'region', 'arn', 'registry_id', 'repository_uri', 'created_at'] },
       { label: 'Config', keys: ['image_tag_mutability', 'scan_on_push', 'image_scanning_configuration', 'lifecycle_policy'] },
-      { label: 'Security', keys: ['encryption_configuration'] },
+      { label: 'Security', keys: ['encryption_type_h', 'encryption_configuration'] },
       { label: 'Tags', keys: ['tags'] },
     ],
     filterKeys: ['region', 'image_tag_mutability'] },
-  s3: { label: 'S3 Buckets', group: 'Storage & DB', distKey: 'region', distKey2: 'encryption', filterKeys: ['region', 'versioning_enabled', 'encryption', 'logging_enabled'], columns: [
+  // Security Status flag bars (gap L240, v1 parity): the policy bars need the synced
+  // bucket_policy_is_public (populated by the next sync run — until then they read 0 while
+  // Versioned/Logging chart immediately); unknown (null) buckets count into neither. The
+  // labels say POLICY Private/Public on purpose: the flag measures bucket-policy status only,
+  // narrower than PUBLIC_S3_WHERE's full exposure predicate (policy OR BPA-disabled) — a
+  // plain 'Private' here would false-all-clear a BPA-disabled bucket /security flags.
+  s3: { label: 'S3 Buckets', group: 'Storage & DB', distKey: 'region', distKey2: 'encryption',
+    flagBarKey: { label: 'Security Status', flags: [
+      { name: 'Policy Private', col: 'bucket_policy_is_public', negate: true },
+      { name: 'Policy Public', col: 'bucket_policy_is_public' },
+      { name: 'Versioned', col: 'versioning_enabled' },
+      { name: 'Logging', col: 'logging_enabled' },
+    ] },
+    filterKeys: ['region', 'versioning_enabled', 'encryption', 'logging_enabled', 'bucket_policy_is_public'], columns: [
     { key: 'versioning_enabled', label: 'Versioning' }, { key: 'encryption', label: 'Encryption' },
     { key: 'logging_enabled', label: 'Logging' }, { key: 'creation_date', label: 'Created' } ],
     sections: [
       { label: 'Identity', keys: ['resource_id', 'name', 'account_id', 'region', 'arn', 'creation_date'] },
-      { label: 'Security', keys: ['versioning_enabled', 'encryption', 'logging_enabled'] },
+      { label: 'Security', keys: ['versioning_enabled', 'encryption', 'logging_enabled', 'bucket_policy_is_public'] },
+      { label: 'Tags', keys: ['tags'] },
     ] },
   ebs_volume: { label: 'EBS Volumes', group: 'Storage & DB', stateKey: 'state', distKey: 'volume_type', distKey2: 'encrypted', columns: [
     { key: 'name', label: 'Name' }, { key: 'volume_type', label: 'Type' }, { key: 'size', label: 'Size(GB)' },
@@ -198,7 +231,7 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
       { label: 'Tags', keys: ['tags'] },
     ],
     filterKeys: ['region', 'name', 'cidr_block', 'is_default'] },
-  subnet: { label: 'Subnets', group: 'Network', distKey: 'availability_zone', distKey2: 'map_public_ip_on_launch', barKey: { col: 'available_ip_address_count', label: 'Available IPs' }, columns: [
+  subnet: { label: 'Subnets', group: 'Network', distKey: 'availability_zone', distKey2: 'map_public_ip_on_launch', barKey: { col: 'available_ip_address_count', label: 'Available IPs' }, countBarKey: { col: 'vpc_id', label: 'Subnets per VPC' }, columns: [
     { key: 'name', label: 'Name' }, { key: 'vpc_id', label: 'VPC' }, { key: 'cidr_block', label: 'CIDR' },
     { key: 'state', label: 'State' }, { key: 'availability_zone', label: 'AZ' },
     { key: 'available_ip_address_count', label: 'Free IPs' }, { key: 'map_public_ip_on_launch', label: 'Auto-public-IP' } ],
@@ -256,7 +289,7 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
     filterKeys: ['region', 'amazon_side_asn'] },
 
   iam_role: { label: 'IAM Roles', group: 'Security', distKey: 'path', columns: [
-    { key: 'create_date', label: 'Created' }, { key: 'path', label: 'Path' },
+    { key: 'description', label: 'Description' }, { key: 'create_date', label: 'Created' }, { key: 'path', label: 'Path' },
     { key: 'role_id', label: 'Role ID' }, { key: 'max_session_duration', label: 'Max session(s)' } ],
     sections: [
       { label: 'Identity', keys: ['resource_id', 'name', 'account_id', 'arn', 'role_id', 'path', 'create_date', 'description'] },
@@ -276,7 +309,7 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
     filterKeys: ['region', 'path', 'mfa_enabled'] },
   // ---- D3 wave ----
   cloudfront: { label: 'CloudFront', group: 'Network', stateKey: 'status', distKey: 'price_class', distKey2: 'status', columns: [
-    { key: 'domain_name', label: 'Domain' }, { key: 'status', label: 'Status' },
+    { key: 'name', label: 'Name' }, { key: 'domain_name', label: 'Domain' }, { key: 'status', label: 'Status' },
     { key: 'enabled', label: 'Enabled' }, { key: 'price_class', label: 'Price class' } , { key: 'protocol_h', label: 'Protocol' } ],
     sections: [
       { label: 'Identity', keys: ['resource_id', 'name', 'account_id', 'arn', 'domain_name', 'e_tag'] },
@@ -362,27 +395,50 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
     { key: 'description', label: 'Description' }, { key: 'managed_by_firewall_manager', label: 'FMS-managed' } ],
     sections: [
       { label: 'Identity', keys: ['resource_id', 'name', 'account_id', 'region', 'id', 'arn', 'description'] },
-      { label: 'Security', keys: ['scope', 'capacity', 'default_action', 'managed_by_firewall_manager', 'visibility_config'] },
+      { label: 'Security', keys: ['scope', 'capacity', 'default_action_h', 'default_action', 'managed_by_firewall_manager', 'visibility_config'] },
       { label: 'Rules', keys: ['rules'] },
       { label: 'Tags', keys: ['tags'] },
     ],
     filterKeys: ['region', 'scope'] },
+  waf_rule_group: { label: 'WAF Rule Groups', group: 'Security', distKey: 'scope', barKey: { col: 'capacity', label: 'WCU Capacity' }, filterKeys: ['region', 'scope'], columns: [
+    { key: 'scope', label: 'Scope' }, { key: 'capacity', label: 'WCU' }, { key: 'description', label: 'Description' } ],
+    sections: [
+      { label: 'Identity', keys: ['resource_id', 'account_id', 'region', 'arn', 'id', 'scope', 'description'] },
+      { label: 'Rules', keys: ['capacity', 'rules', 'visibility_config'] },
+      { label: 'Tags', keys: ['tags'] },
+    ] },
+  waf_ip_set: { label: 'WAF IP Sets', group: 'Security', distKey: 'scope', distKey2: 'ip_address_version', filterKeys: ['region', 'scope', 'ip_address_version'], columns: [
+    { key: 'scope', label: 'Scope' }, { key: 'ip_address_version', label: 'IP Version' },
+    { key: 'addresses_count', label: 'Addresses' }, { key: 'description', label: 'Description' } ],
+    sections: [
+      { label: 'Identity', keys: ['resource_id', 'account_id', 'region', 'arn', 'id', 'scope', 'description'] },
+      { label: 'Addresses', keys: ['ip_address_version', 'addresses_count', 'addresses'] },
+      { label: 'Tags', keys: ['tags'] },
+    ] },
   cloudtrail: { label: 'CloudTrail Trails', group: 'Security', distKey: 'home_region', columns: [
-    { key: 'is_logging', label: 'Logging' }, { key: 'is_multi_region_trail', label: 'Multi-region' },
-    { key: 'home_region', label: 'Home region' }, { key: 's3_bucket_name', label: 'S3 bucket' }, { key: 'log_file_validation_enabled', label: 'Log validation' } ],
+    { key: 'is_logging', label: 'Logging' }, { key: 'last_delivery_h', label: 'Last Delivery (UTC)' },
+    { key: 'is_multi_region_trail', label: 'Multi-region' }, { key: 'home_region', label: 'Home region' },
+    { key: 's3_bucket_name', label: 'S3 bucket' }, { key: 'log_file_validation_enabled', label: 'Log validation' } ],
     sections: [
       { label: 'Identity', keys: ['resource_id', 'name', 'account_id', 'region', 'arn', 'home_region'] },
-      { label: 'Logging', keys: ['is_logging', 'is_multi_region_trail', 'is_organization_trail', 'include_global_service_events', 'log_file_validation_enabled', 'start_logging_time', 'latest_delivery_time', 'latest_delivery_error'] },
-      { label: 'Storage', keys: ['s3_bucket_name', 's3_key_prefix', 'log_group_arn'] },
+      // Delivery-health evidence stays TOGETHER in Logging (S3, CW Logs, digest) — an operator
+      // compares these side by side; only the plumbing (bucket/role/group) lives in Storage.
+      { label: 'Logging', keys: ['is_logging', 'is_multi_region_trail', 'is_organization_trail', 'include_global_service_events', 'log_file_validation_enabled', 'start_logging_time', 'stop_logging_time', 'latest_delivery_time', 'latest_delivery_error', 'latest_cloudwatch_logs_delivery_time', 'latest_cloudwatch_logs_delivery_error', 'latest_digest_delivery_time', 'latest_digest_delivery_error'] },
+      { label: 'Storage', keys: ['s3_bucket_name', 's3_key_prefix', 'log_group_arn', 'cloudwatch_logs_role_arn'] },
       { label: 'Security', keys: ['kms_key_id', 'sns_topic_arn', 'has_custom_event_selectors', 'has_insight_selectors'] },
       { label: 'Tags', keys: ['tags'] },
     ],
+    // last_delivery_h is a table-only derivation of latest_delivery_time — rendering both in
+    // the panel (section + Other) would duplicate the value in two formats.
+    hideKeys: ['last_delivery_h'],
     filterKeys: ['region', 'is_multi_region_trail', 'home_region', 's3_bucket_name', 'include_global_service_events'] },
   s3_public_access: { label: 'S3 Public Access', group: 'Security', distKey: 'bucket_policy_is_public', columns: [
     { key: 'bucket_policy_is_public', label: 'Policy public' }, { key: 'block_public_acls', label: 'Block ACLs' },
     { key: 'block_public_policy', label: 'Block policy' }, { key: 'restrict_public_buckets', label: 'Restrict public' }, { key: 'ignore_public_acls', label: 'Ignore ACLs' } ],
     filterKeys: ['region', 'name'] },
-  elasticache: { label: 'ElastiCache', group: 'Storage & DB', stateKey: 'cache_cluster_status', distKey: 'engine', distKey2: 'cache_node_type', columns: [
+  // v1 parity (gap L221): engine donut + node-type count BAR — the same dimension must not
+  // render as both a donut and a bar, so distKey2 is dropped for countBarKey.
+  elasticache: { label: 'ElastiCache', group: 'Storage & DB', stateKey: 'cache_cluster_status', distKey: 'engine', countBarKey: { col: 'cache_node_type', label: 'Node Type Distribution' }, columns: [
     { key: 'engine', label: 'Engine' }, { key: 'engine_version', label: 'Version' },
     { key: 'cache_node_type', label: 'Node type' }, { key: 'cache_cluster_status', label: 'Status' }, { key: 'num_cache_nodes', label: 'Nodes' },
     { key: 'replication_group_id', label: 'Repl Group' }, { key: 'at_rest_encryption_enabled', label: 'At-Rest Enc' } ],
@@ -395,7 +451,9 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
       { label: 'Tags', keys: ['tags'] },
     ],
     filterKeys: ['region', 'engine_version', 'cache_node_type', 'replication_group_id', 'at_rest_encryption_enabled', 'transit_encryption_enabled'] },
-  opensearch: { label: 'OpenSearch', group: 'Storage & DB', distKey: 'engine_version', distKey2: 'engine_type', columns: [
+  // v1 parity (gap L236): the second donut is the DERIVED encryption status (Full/Partial/No),
+  // not engine_type (never a v1 chart); unknown-either-side rows carry no value → excluded.
+  opensearch: { label: 'OpenSearch', group: 'Storage & DB', distKey: 'engine_version', distKey2: 'encryption_status_h', distKey2Label: 'Encryption Status', distKey2DropNone: true, distKey2Colors: { 'Full Encryption': '#059669', 'Partial': '#D97706', 'No Encryption': '#E11D48' }, columns: [
     { key: 'engine_version', label: 'Version' }, { key: 'instance_type_h', label: 'Instance' },
     { key: 'instance_count_h', label: 'Count' }, { key: 'storage_gb_h', label: 'Storage(GB)' },
     { key: 'n2n_enc_h', label: 'N2N Enc' }, { key: 'rest_enc_h', label: 'Rest Enc' },
@@ -410,7 +468,7 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
       // Raw advanced_security_options/cognito_options stay visible after the derived flags —
       // they carry fields (SAML, user-pool ids) the flags don't derive; hiding them would
       // regress information availability.
-      { label: 'Security', keys: ['rest_enc_h', 'kms_key_h', 'n2n_enc_h', 'adv_security_h', 'internal_user_db_h', 'anonymous_auth_h', 'cognito_h', 'advanced_security_options', 'cognito_options', 'access_policies'] },
+      { label: 'Security', keys: ['encryption_status_h', 'rest_enc_h', 'kms_key_h', 'n2n_enc_h', 'adv_security_h', 'internal_user_db_h', 'anonymous_auth_h', 'cognito_h', 'advanced_security_options', 'cognito_options', 'access_policies'] },
       { label: 'Storage', keys: ['ebs_volume_h'] },
       // L153: partially-derived/reference blobs stay visible (log_publishing_options,
       // advanced_options, auto_tune_options carry fields the *_h derivations don't cover).
@@ -592,7 +650,7 @@ const GROUPS: Record<string, GroupMeta> = {
   },
   'Security': {
     slug: 'security', labelKey: 'group.security', splitKeys: ['iamUserNoMfa'],
-    order: ['iam_role', 'iam_user', 'iam_policy', 'waf', 'cloudtrail', 's3_public_access'],
+    order: ['iam_role', 'iam_user', 'iam_policy', 'waf', 'waf_rule_group', 'waf_ip_set', 'cloudtrail', 's3_public_access'],
   },
   'Monitoring': {
     slug: 'monitoring', labelKey: 'group.monitoring', singleton: true, splitKeys: [],
@@ -863,6 +921,16 @@ export function computeHighlights(
 
 // High-value types first (synced columns only). EKS is a feature route (/eks), not an inventory type.
 export const HIGHLIGHTS: Record<string, Highlight[]> = {
+  waf_rule_group: [
+    { kind: 'sum', label: 'WCU 합', col: 'capacity' },
+    { kind: 'countWhere', label: 'CLOUDFRONT scope', col: 'scope', eq: 'CLOUDFRONT' },
+    { kind: 'countWhere', label: 'REGIONAL scope', col: 'scope', eq: 'REGIONAL' },
+  ],
+  waf_ip_set: [
+    { kind: 'countWhere', label: 'IPv4', col: 'ip_address_version', eq: 'IPV4' },
+    { kind: 'countWhere', label: 'IPv6', col: 'ip_address_version', eq: 'IPV6' },
+    { kind: 'distinct', label: 'Scope 종류', col: 'scope' },
+  ],
   ec2: [
     { kind: 'countWhere', label: '실행 중', col: 'instance_state', eq: 'running', tone: 'accent' },
     { kind: 'countWhere', label: '중지됨', col: 'instance_state', eq: 'stopped', tone: 'danger' },

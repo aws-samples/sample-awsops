@@ -874,9 +874,10 @@ resource "aws_lambda_function" "agent" {
       # least-privilege `awsops_sql_reader` secret, NOT the RDS-managed master secret (both this
       # connector and rds-mcp's execute_sql are pure SELECT paths).
       each.key == "inventory-read" ? {
-        AURORA_CLUSTER_ARN = aws_rds_cluster.aurora.arn
-        AURORA_SECRET_ARN  = aws_secretsmanager_secret.agent_sql_reader[0].arn
-        AURORA_DATABASE    = aws_rds_cluster.aurora.database_name
+        AURORA_CLUSTER_ARN            = aws_rds_cluster.aurora.arn
+        AURORA_SECRET_ARN             = aws_secretsmanager_secret.agent_sql_reader[0].arn
+        AURORA_DATABASE               = aws_rds_cluster.aurora.database_name
+        INVENTORY_STALE_AFTER_MINUTES = tostring(var.inventory_stale_after_minutes)
       } : {},
       # rds-mcp's execute_sql resolves its Data API credential and database from env ONLY — the
       # caller-supplied secret_arn/database arguments are ignored (and removed from the tool schema).

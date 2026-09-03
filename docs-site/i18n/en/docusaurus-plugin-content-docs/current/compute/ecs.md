@@ -31,7 +31,7 @@ Table columns:
 | Instances | Number of registered container instances |
 | MTD Cost ($) | Month-to-date cost |
 
-Detail panel: Identity (Name, Account, Region, ARN) / Tasks & Services / Config (Settings, Container Insights, etc.) / Tags sections.
+Detail panel: Identity (Name, Account, Region, ARN) / Tasks & Services / Config (Settings, Container Insights, etc.) / Tags sections — Settings render as per-item label–value rows (e.g. containerInsights disabled).
 
 ### ECS Services (`/inventory/ecs_service`)
 Highlight cards show Desired/Running/Pending totals and the distinct cluster count.

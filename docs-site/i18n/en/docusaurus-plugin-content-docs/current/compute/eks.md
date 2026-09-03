@@ -24,19 +24,19 @@ Display key information for each cluster in card format:
 - Cluster Name, Status (ACTIVE)
 - Kubernetes Version, VPC ID, Platform Version, Region
 - **Access Entry badge**: K8s Connected (green) / No Access (red)
-- **Register ViewPolicy button**: Auto-register Access Entry + AdminViewPolicy for unregistered clusters
+- **Cluster registration button (admin)**: register an unconnected cluster in one of three modes — Access Entry lookup-register (verifies an EXISTING Access Entry then registers — never creates one at runtime [ADR-005]; a missing entry returns 409 with a Terraform/CLI onboarding script), ServiceAccount token (create a read-only SA in the cluster and paste its token — no AWS-side setup), or AssumeRole (authenticate to the K8s API via an IAM role that ALREADY holds an Access Entry on that cluster — role ARN + external ID; the role MUST be named `AWSopsReadOnlyRole` [the web task's sts:AssumeRole grant is name-pinned to it], and the cluster itself must belong to the host account, which the register route verifies against the host cluster list). The Terraform path is `make configure`'s EKS multi-select → `eks.tf` granting the web task role an Access Entry + AmazonEKSAdminViewPolicy
 - **Click to filter**: Click a cluster card to filter all data to that cluster (cyan border)
 
 :::tip Cluster Access
-Unregistered clusters cannot display data. Use the "Register ViewPolicy" button or ask the cluster owner to follow the [Authentication Guide](./eks-auth).
+When clusters are registered but live data can't be read from ANY of them, a page-level no-access banner appears with the raw failure reason and a link to this guide. Unconnected clusters cannot display data — connect via the cluster registration button (lookup-register / SA token / AssumeRole) or the Terraform onboarding (`make configure` → `eks.tf`). If lookup-register returns 409, hand the on-screen onboarding script to the cluster owner.
 :::
 
 ### Stats Cards (Click to Navigate)
 Click each card to navigate to the detail page:
-- **Nodes** → Node Details (`/k8s/nodes`)
-- **Pods** → Pod Details (`/k8s/pods`)
-- **Deployments** → Deployment Details (`/k8s/deployments`)
-- **Services** → Service Details (`/k8s/services`)
+- **Nodes** → Node Details (`/eks/nodes`)
+- **Pods** → Pod Details (`/eks/pods`)
+- **Deployments** → Deployment Details (`/eks/deployments`)
+- **Services** → Service Details (`/eks/services`)
 
 ### Node Card Grid
 Visually display resource usage for each node:
@@ -48,18 +48,13 @@ Visually display resource usage for each node:
 ### Node Detail View
 Click a node card to navigate to the detail page:
 - **CPU/Memory/Pod Info cards**: Capacity, Allocatable, Requested, Available
-- **ENI list**: IP allocation per network interface, traffic (NetworkIn/Out)
+- **ENI list**: IP allocation per network interface
 - **Pods table**: List of Pods running on that node
 
-### Visualization Charts (Tab Switching)
+### Visualization Charts
 
-**Pod Analysis tab:**
 - **Pod Status Distribution**: Running, Pending, Failed, Succeeded distribution (pie chart)
 - **Pods per Namespace**: Pod count by namespace (bar chart)
-
-**Service Resources tab:**
-- **CPU per Service (millicores)**: Sum of CPU requests for pods belonging to each Service (bar chart)
-- **Memory per Service (MiB)**: Sum of memory requests for pods belonging to each Service (bar chart)
 
 ### Warning Events Table
 Display Kubernetes Warning events in real-time:
@@ -72,8 +67,7 @@ Display Kubernetes Warning events in real-time:
 3. Click stats cards to navigate to Pods/Nodes/Deployments/Services detail pages
 4. Identify nodes with high resource usage from the node cards
 5. Click a node to view detailed resources and Pod list
-6. Switch to **Service Resources** tab to analyze CPU/Memory allocation per Service
-7. Monitor problem events in Warning Events
+6. Monitor problem events in Warning Events
 
 ## Tips
 

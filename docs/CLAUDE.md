@@ -10,6 +10,7 @@ Project documentation organized by purpose. Each subdirectory has its own CLAUDE
 | [onboarding.md](onboarding.md) | New-joiner onboarding |
 | [reference/](reference/) | Current v2 design, one file per component (single source per component) |
 | [runbooks/](runbooks/) | Operational playbooks by scenario |
+| [diagrams/](diagrams/) | Interactive archify diagrams (spec `.json` + delivered standalone `.html`) — regenerate via the archify skill, never hand-edit the HTML |
 | [guides/](guides/) | AI test question sets (`ai-test-questions.md`, `ai-testing.md`), test coverage plan (`test-coverage-plan.md`), install/onboarding/troubleshooting guides |
 | [api-reference.md](api-reference.md) | Full API route index (root `CLAUDE.md` calls this the 99-route index) |
 

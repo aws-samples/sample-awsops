@@ -82,15 +82,20 @@ _INVENTORY_STALE_AFTER_HOURS = 24
 
 
 def _require_fresh_inventory(conn, resource_type):
-    """Raise (not return-empty) unless inventory_sync_runs shows a `succeeded` run for
-    `resource_type` finished within _INVENTORY_STALE_AFTER_HOURS. No row / status != 'succeeded' /
-    finished_at NULL or stale all mean "this rule cannot honestly evaluate this run" — letting the
-    caller return [] here would make engine.run()'s resolve_stale wipe every real prior finding for
-    the rule, mistaking absent/stale/failed sync state for a confirmed clean result (the same class
-    of bug the Compute Optimizer rules fix for a different data source). A `succeeded` run with
-    row_count=0 passes this check — that IS a trustworthy true zero, not treated as unavailable."""
+    """Raise (not return-empty) unless inventory_sync_runs shows inventory for `resource_type`
+    that is fresh within _INVENTORY_STALE_AFTER_HOURS. The PRIMARY signal is the durable
+    `last_success_at` column: a later `partial` run (one SDK sub-call failed) preserves every
+    last-good row and does NOT reset that marker, so it — not the latest run's status — is the
+    honest freshness signal. The legacy latest-run `status == 'succeeded'` check remains only as
+    the fallback for pre-migration ledger rows where `last_success_at` was never populated.
+    No row / never-succeeded / stale all mean "this rule cannot honestly evaluate this run" —
+    letting the caller return [] here would make engine.run()'s resolve_stale wipe every real
+    prior finding for the rule, mistaking absent/stale/failed sync state for a confirmed clean
+    result (the same class of bug the Compute Optimizer rules fix for a different data source).
+    A successful run with row_count=0 passes this check — that IS a trustworthy true zero, not
+    treated as unavailable."""
     rows = conn.run(
-        "SELECT status, finished_at FROM inventory_sync_runs WHERE resource_type = :rt AND account_id = 'self'",
+        "SELECT status, finished_at, last_success_at FROM inventory_sync_runs WHERE resource_type = :rt AND account_id = 'self'",
         rt=resource_type,
     )
     if not rows:
@@ -98,7 +103,20 @@ def _require_fresh_inventory(conn, resource_type):
             f"inventory_sync_runs has no row for {resource_type!r} — Steampipe inv_sync is "
             f"disabled or has never run; treating as data-unavailable rather than 'confirmed none found'"
         )
-    status, finished_at = rows[0]
+    status, finished_at, last_success_at = rows[0]
+    if last_success_at is not None:
+        # Durable success marker (freshness migration): a later 'partial' run preserves
+        # every last-good row AND leaves last_success_at at the last fully-successful
+        # sweep, so it — not the latest run's status — is the honest freshness signal.
+        if _is_stale(last_success_at, _INVENTORY_STALE_AFTER_HOURS):
+            raise RuntimeError(
+                f"inventory_sync_runs for {resource_type!r} last fully succeeded at "
+                f"{last_success_at} (> {_INVENTORY_STALE_AFTER_HOURS}h ago) — treating as "
+                f"data-unavailable rather than 'confirmed none found'"
+            )
+        return
+    # Pre-freshness ledger rows (last_success_at never populated): fall back to the
+    # legacy latest-run contract.
     if status != "succeeded" or finished_at is None:
         raise RuntimeError(
             f"inventory_sync_runs for {resource_type!r} is status={status!r} (not a completed "

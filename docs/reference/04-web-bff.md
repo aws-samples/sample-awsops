@@ -32,8 +32,8 @@
 
 ## Decisions (ADRs) / 결정
 
-- **ADR-001** — v2 foundation: ECS Fargate workload + Aurora split (the v2 workload topology this component runs on). → [`../../decisions/001-v2-foundation.md`](../../decisions/001-v2-foundation.md)
-- **ADR-024 (legacy → consolidated into ADR-001)** — CDK three-stack split (v1 precedent; **superseded** by the Terraform-based v2 foundation). → [`../../decisions/001-v2-foundation.md`](../../decisions/001-v2-foundation.md)
+- **ADR-001** — v2 foundation: ECS Fargate workload + Aurora split (the v2 workload topology this component runs on). → [`../decisions/001-v2-foundation.md`](../decisions/001-v2-foundation.md)
+- **ADR-024 (legacy → consolidated into ADR-001)** — CDK three-stack split (v1 precedent; **superseded** by the Terraform-based v2 foundation). → [`../decisions/001-v2-foundation.md`](../decisions/001-v2-foundation.md)
 
 ## Key files / 핵심 파일
 

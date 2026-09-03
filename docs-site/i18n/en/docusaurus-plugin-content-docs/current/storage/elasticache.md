@@ -47,7 +47,7 @@ Information available when clicking on a cluster:
 - Network settings (subnet group, AZ)
 - Security settings (At-Rest/Transit encryption, Auth Token)
 - Configuration settings (snapshot retention, maintenance window)
-- Security Groups and inbound rules
+- Security Groups and inbound rules — each SG expands to protocol/port/source (CIDR · SG · prefix list) from the synced security_group inventory (no live AWS call; an unsynced SG reads 'not synced')
 - CloudWatch metrics charts
 
 ## How to Use

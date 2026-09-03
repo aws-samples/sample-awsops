@@ -57,7 +57,7 @@ AWSops의 데이터 엔진은 [Steampipe](https://steampipe.io/)(내장 PostgreS
 
 ## 3. AWS 리소스 기본 대시보드 (43 페이지)
 
-EC2·Lambda·ECS/ECR·EKS(Pod/Node/Deployment/Service/Explorer)·VPC·CloudFront·WAF·EBS·S3·RDS·DynamoDB·ElastiCache·MSK·OpenSearch 등 **43개 페이지**가 실시간 차트와 React Flow 토폴로지 맵으로 구성됩니다. MSK·RDS·ElastiCache·OpenSearch는 CloudWatch 메트릭까지 인라인 표시합니다.
+EC2·Lambda·ECS/ECR·EKS(Pod/Node/Deployment/Service/Explorer)·VPC·CloudFront·WAF·EBS·S3·RDS·DynamoDB·ElastiCache·MSK·OpenSearch 등 **43개 페이지**가 실시간 차트와 React Flow 토폴로지 맵으로 구성됩니다. MSK·RDS·ElastiCache·OpenSearch·EBS는 CloudWatch 메트릭까지 인라인 표시합니다.
 
 ---
 

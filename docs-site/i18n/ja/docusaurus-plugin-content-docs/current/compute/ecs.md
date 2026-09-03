@@ -31,7 +31,7 @@ v1 ではクラスター/サービス/タスクを 1 ページで統合監視し
 | Instances | 登録済みコンテナインスタンス数 |
 | MTD Cost ($) | 月初来累計コスト |
 
-詳細パネル: Identity(Name、Account、Region、ARN)/ Tasks & Services / Config(Settings、Container Insights など)/ Tags の各セクション。
+詳細パネル: Identity(Name、Account、Region、ARN)/ Tasks & Services / Config(Settings、Container Insights など)/ Tags の各セクション。Settings は項目ごとのラベル–値の行（例: containerInsights disabled）で表示されます。
 
 ### ECS Services (`/inventory/ecs_service`)
 ハイライトカードは Desired/Running/Pending の合計と、クラスターの distinct 数を表示します。

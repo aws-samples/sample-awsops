@@ -34,7 +34,7 @@ A page for monitoring AWS Bedrock model usage across calls, tokens, latency, cos
 - **Cost by model**: shows each model's cost share as a donut chart with a legend.
 
 ### Model detail table
-For each model the table provides: **Model**, **Calls**, **Input Tokens**, **Output Tokens**, **Avg Latency** (ms), **Errors**, and **Cost**. The table sorts by cost (highest first) by default.
+For each model the table provides: **Model**, **Calls**, **Input Tokens**, **Output Tokens**, **Avg Latency** (ms), **Errors**, and **Cost**. The table sorts by cost (highest first) by default. Clicking a row opens the detail panel with the model's **Invocations Over Time** and **Token Usage (input+output)** charts over the selected range ('no time-series data' when empty).
 
 ## How to use
 1. Click **Cost > Bedrock Usage** in the sidebar.

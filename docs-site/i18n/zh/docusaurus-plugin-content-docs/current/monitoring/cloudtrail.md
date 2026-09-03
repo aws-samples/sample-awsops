@@ -23,7 +23,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ### 选项卡结构
 | 选项卡 | 内容 |
 |---|------|
-| Trails | 跟踪列表、配置、S3 存储桶 |
+| Trails | 跟踪列表、配置、S3 存储桶 — Last Delivery (UTC) 列是**最近一次成功投递的时间**（当前投递失败时旧的成功时间仍会保留 — 失败信号见详情面板的 `latest_delivery_error`） |
 | Recent Events | 最近的 API 事件（所有事件） |
 | Write Events | 仅筛选写入事件（资源变更审计） |
 
@@ -37,10 +37,10 @@ Events 和 Write Events 选项卡仅在点击时才加载数据（`eventsLoaded`
 
 ### 跟踪详细信息
 点击跟踪行后，可在滑出面板中查看：
-- **Trail**: 名称、ARN、主区域、日志记录状态、是否为 Multi-Region
-- **Storage**: S3 存储桶、前缀、SNS 主题、KMS 密钥
-- **CloudWatch**: 日志组、IAM 角色、最后传送时间
-- **Validation**: 日志文件验证、最后交付时间
+- **Identity**: 名称、ARN、账户、区域、主区域
+- **Logging**: 日志记录状态、Multi-Region/组织跟踪、日志文件验证、日志开始/停止时间，以及 S3・CloudWatch Logs・摘要各自的最后投递时间与投递错误（`latest_delivery_error` 等 — 投递失败信号在此查看）
+- **Storage**: S3 存储桶/前缀、日志组、CW Logs IAM 角色
+- **Security**: KMS 密钥、SNS 主题、事件/洞察选择器
 - **Tags**: 资源标签
 
 ### 事件详细信息

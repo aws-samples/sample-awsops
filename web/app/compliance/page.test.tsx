@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 vi.mock('@/components/charts/DonutBreakdown', () => ({ default: () => null }));
 
@@ -68,6 +68,33 @@ describe('CompliancePage', () => {
     expect(screen.getByText(/^실행 /)).toBeTruthy();
     // viewing a saved run must NOT start a new benchmark (no POST /api/compliance/run)
     expect(fetchMock.mock.calls.every((c) => (c[1]?.method ?? 'GET') !== 'POST')).toBe(true);
+  });
+
+  it('renders Alarms by Section bars with zero-alarm sections filtered (gap L191)', async () => {
+    vi.stubGlobal('fetch', routedFetch({
+      '/api/compliance/benchmarks': { benchmarks: [{ id: 'cis_v300', name: 'CIS AWS v3.0.0', description: '' }] },
+      '/api/compliance/runs': { runs: [
+        { id: 9, benchmark: 'cis_v300', status: 'succeeded', pass_rate: 50, started_at: '2026-06-18T00:00:00Z' },
+      ] },
+      '/api/compliance/runs/': {
+        run: { id: 9, benchmark: 'cis_v300', status: 'succeeded', pass_rate: 50, total_controls: 3, ok: 1, alarm: 2, info: 0, skip: 0, error: 0, started_at: '2026-06-18T01:23:45Z' },
+        results: [
+          { control_id: '1.1', title: 'MFA', section: '1 IAM', status: 'alarm', reason: '', resource: 'a', region: 'r', severity: 'high' },
+          { control_id: '1.2', title: 'Keys', section: '1 IAM', status: 'alarm', reason: '', resource: 'b', region: 'r', severity: 'high' },
+          { control_id: '2.1', title: 'CT', section: '2 Logging', status: 'ok', reason: '', resource: 'c', region: 'r', severity: 'low' },
+        ],
+      },
+    }));
+    render(<CompliancePage />);
+    await waitFor(() => expect(screen.getByText('cis_v300')).toBeTruthy());
+    fireEvent.click(screen.getByText('cis_v300'));
+    await waitFor(() => expect(screen.getByText('Alarms by Section')).toBeTruthy());
+    // scope to the chart card: '1 IAM' (2 alarms) gets a bar; the all-ok '2 Logging' must not
+    // (it still renders elsewhere — the pass-rate list and the controls table).
+    const card = screen.getByText('Alarms by Section').closest('.shadow-card') as HTMLElement;
+    expect(within(card).getByText('1 IAM')).toBeTruthy();
+    expect(within(card).getByText('2')).toBeTruthy(); // the alarm-count value cell
+    expect(within(card).queryByText('2 Logging')).toBeNull();
   });
 
   it('adopts a running run on mount (refresh/new-tab) → Run disabled without any click', async () => {

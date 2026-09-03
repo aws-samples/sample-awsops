@@ -251,6 +251,10 @@ export interface BedrockModelMetric {
   avgLatencyMs: number; clientErrors: number; serverErrors: number;
   cacheReadTokens: number; cacheWriteTokens: number;
   cost: CostBreakdown;
+  // gap L184 (v1 detail-panel parity): per-model time series over the selected range —
+  // invocations and combined input+output tokens. [] when the model reported no datapoints.
+  invSeries: { t: string; v: number }[];
+  tokenSeries: { t: string; v: number }[];
 }
 export interface BedrockMetrics {
   models: BedrockModelMetric[];
@@ -308,6 +312,9 @@ export async function bedrockModelMetrics(range = '24h', accountId?: string): Pr
 
   const acc: Record<number, { inv: number[]; in: number[]; out: number[]; lat: number[]; e4: number[]; e5: number[]; cr: number[]; cw: number[] }> = {};
   const seriesByTs = new Map<string, number>();
+  // gap L184: per-model timestamped samples (invocations / in+out tokens) for the detail charts.
+  const perModelInv: Record<number, Map<string, number>> = {};
+  const perModelTok: Record<number, Map<string, number>> = {};
   for (const res of r.MetricDataResults ?? []) {
     const m = (res.Id ?? '').match(/^(\w+?)_m(\d+)$/);
     if (!m) continue;
@@ -315,16 +322,27 @@ export async function bedrockModelMetrics(range = '24h', accountId?: string): Pr
     const mi = Number(m[2]);
     if (mi >= models.length) continue;
     (acc[mi] ??= { inv: [], in: [], out: [], lat: [], e4: [], e5: [], cr: [], cw: [] })[key] = (res.Values ?? []) as number[];
-    // combined token time series (input + output) keyed by timestamp
+    if (key === 'inv') {
+      const map = (perModelInv[mi] ??= new Map());
+      (res.Timestamps ?? []).forEach((t, i) => {
+        const iso = t instanceof Date ? t.toISOString() : String(t);
+        map.set(iso, (map.get(iso) ?? 0) + ((res.Values ?? [])[i] ?? 0));
+      });
+    }
+    // combined token time series (input + output) keyed by timestamp — total + per-model
     if (key === 'in' || key === 'out') {
       const ts = res.Timestamps ?? [];
       const vals = res.Values ?? [];
+      const map = (perModelTok[mi] ??= new Map());
       ts.forEach((t, i) => {
         const iso = t instanceof Date ? t.toISOString() : String(t);
         seriesByTs.set(iso, (seriesByTs.get(iso) ?? 0) + (vals[i] ?? 0));
+        map.set(iso, (map.get(iso) ?? 0) + (vals[i] ?? 0));
       });
     }
   }
+  const toSeries = (m?: Map<string, number>) =>
+    [...(m ?? new Map<string, number>()).entries()].sort(([a], [b]) => a.localeCompare(b)).map(([t, v]) => ({ t, v }));
 
   const out: BedrockModelMetric[] = models.map((modelId, mi) => {
     const a = acc[mi] ?? { inv: [], in: [], out: [], lat: [], e4: [], e5: [], cr: [], cw: [] };
@@ -333,6 +351,8 @@ export async function bedrockModelMetrics(range = '24h', accountId?: string): Pr
     return {
       modelId, label: getModelLabel(modelId), pricing,
       invocations: sum(a.inv), ...usage,
+      invSeries: toSeries(perModelInv[mi]),
+      tokenSeries: toSeries(perModelTok[mi]),
       avgLatencyMs: Math.round(avg(a.lat)),
       clientErrors: sum(a.e4), serverErrors: sum(a.e5),
       cost: computeCost(usage, pricing),
@@ -344,12 +364,14 @@ export async function bedrockModelMetrics(range = '24h', accountId?: string): Pr
   return { models: out, totalCost, series };
 }
 
-// ── Generic per-resource live CloudWatch metrics (v1 parity for ElastiCache/OpenSearch/MSK) ──
+// ── Generic per-resource live CloudWatch metrics (ElastiCache/OpenSearch/MSK/EBS) ──
 // One GetMetricData call per resource; every failure degrades to [] (never blanks the panel).
 export interface LiveMetric { label: string; value: string }
 
-export type LiveFmt = 'pct' | 'ratioPct' | 'gb' | 'mb' | 'mbRaw' | 'count' | 'ms' | 'bps';
-interface LiveMetricDef { name: string; label: string; stat: 'Average' | 'Sum' | 'Maximum'; fmt: LiveFmt }
+export type LiveFmt = 'pct' | 'ratioPct' | 'gb' | 'mb' | 'mbRaw' | 'count' | 'ms' | 'bps' | 'iops' | 'dec1';
+// perSecond: the metric is a period SUM — both call sites divide by their own Period before
+// formatting (latest grid 3600s, spark trends 300s), so 'iops' renders true ops/sec.
+interface LiveMetricDef { name: string; label: string; stat: 'Average' | 'Sum' | 'Maximum'; fmt: LiveFmt; perSecond?: boolean }
 interface LiveMetricSpec { namespace: string; dims: (id: string, accountId?: string) => { Name: string; Value: string }[]; metrics: LiveMetricDef[] }
 
 const LIVE_SPECS: Record<string, LiveMetricSpec> = {
@@ -390,6 +412,17 @@ const LIVE_SPECS: Record<string, LiveMetricSpec> = {
       { name: 'ClusterStatus.red', label: 'Status Red', stat: 'Maximum', fmt: 'count' },
     ],
   },
+  // resource_id = VolumeId (gap L233 — v1's measured Read IOPS; the shared 1h-spark contract).
+  ebs_volume: {
+    namespace: 'AWS/EBS',
+    dims: (id) => [{ Name: 'VolumeId', Value: id }],
+    metrics: [
+      { name: 'VolumeReadOps', label: 'Read IOPS', stat: 'Sum', fmt: 'iops', perSecond: true },
+      { name: 'VolumeWriteOps', label: 'Write IOPS', stat: 'Sum', fmt: 'iops', perSecond: true },
+      { name: 'VolumeQueueLength', label: 'Queue Length', stat: 'Average', fmt: 'dec1' },
+      { name: 'BurstBalance', label: 'Burst Balance', stat: 'Average', fmt: 'pct' },
+    ],
+  },
   // resource_id = cluster name (sync primary key). Cluster-level dimensions only.
   msk: {
     namespace: 'AWS/Kafka',
@@ -413,6 +446,8 @@ function fmtLive(v: number, fmt: LiveFmt): string {
     case 'mbRaw': return `${v.toFixed(1)} MB`; // source metric already in megabytes (AWS/ES)
     case 'ms': return `${Math.round(v * 1000) / 1000} ms`;
     case 'bps': return `${(v / 1e6).toFixed(1)} MB/s`;
+    case 'iops': return `${(Math.round(v * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 })} IOPS`;
+    case 'dec1': return (Math.round(v * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 }); // fractional averages (queue length) must not integer-round to 0
     default: return Math.round(v).toLocaleString();
   }
 }
@@ -429,14 +464,33 @@ export async function liveResourceMetrics(type: string, id: string, accountId?: 
       StartTime: new Date(Date.now() - 3 * 3600_000), EndTime: new Date(),
       MetricDataQueries: spec.metrics.map((m, i) => ({
         Id: `lm${i}`, ReturnData: true,
-        MetricStat: { Metric: { Namespace: spec.namespace, MetricName: m.name, Dimensions: spec.dims(id, accountId) }, Period: 3600, Stat: m.stat },
+        // perSecond metrics query at Period 300: an hourly bucket made the headline up to
+        // 1–2h stale (round-3 gate) — the newest COMPLETE 5-min bucket is both fresh and
+        // honestly convertible (÷300).
+        MetricStat: { Metric: { Namespace: spec.namespace, MetricName: m.name, Dimensions: spec.dims(id, accountId) }, Period: m.perSecond ? 300 : 3600, Stat: m.stat },
       })),
     }));
     const out: LiveMetric[] = [];
     for (const res of r.MetricDataResults ?? []) {
       const i = Number((res.Id ?? '').replace('lm', ''));
       const def = spec.metrics[i];
-      const v = res.Values?.[0];
+      // perSecond (÷Period) makes bucket COMPLETENESS load-bearing: the newest bucket is the
+      // still-filling current hour (default newest-first order), and dividing its partial Sum
+      // by the full period systematically understates the value — pick the newest bucket
+      // whose end (ts + Period) is already past. Averages/Maximums keep Values[0] (a partial
+      // bucket is a valid sample for them).
+      let raw: number | undefined;
+      if (def?.perSecond) {
+        const ts = res.Timestamps ?? [];
+        const vals = res.Values ?? [];
+        for (let k = 0; k < ts.length; k++) {
+          const t = ts[k] instanceof Date ? (ts[k] as Date) : new Date(String(ts[k]));
+          if (t.getTime() + 300_000 <= Date.now()) { raw = vals[k]; break; }
+        }
+      } else {
+        raw = res.Values?.[0];
+      }
+      const v = typeof raw === 'number' && def?.perSecond ? raw / 300 : raw;
       if (def) out.push({ label: def.label, value: typeof v === 'number' ? fmtLive(v, def.fmt) : '—' });
     }
     return out;
@@ -472,8 +526,12 @@ export async function liveResourceTrends(type: string, id: string, accountId?: s
       for (let k = 0; k < (res?.Timestamps?.length ?? 0); k++) {
         const ts = res!.Timestamps![k] instanceof Date ? (res!.Timestamps![k] as Date) : new Date(String(res!.Timestamps![k]));
         const v = res!.Values?.[k];
+        // perSecond: a still-filling 5-min bucket ÷300 would end every spark in a fake dip —
+        // include only buckets whose end is already past.
+        if (def.perSecond && ts.getTime() + 300_000 > Date.now()) continue;
         if (typeof v === 'number' && ts.getTime() >= Date.now() - 3600_000) {
-          samples.push({ t: ts.toISOString(), v: Math.round(v * 100) / 100 });
+          const scaled = def.perSecond ? v / 300 : v;
+          samples.push({ t: ts.toISOString(), v: Math.round(scaled * 100) / 100 });
         }
       }
       return { label: def.label, fmt: def.fmt, samples: samples.length ? samples : null };

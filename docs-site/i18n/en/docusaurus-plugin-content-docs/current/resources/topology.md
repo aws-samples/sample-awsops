@@ -15,7 +15,7 @@ A page for exploring the request flow (**Route53 → CloudFront → Load Balance
 ## Features
 ### Request-flow graph
 - Visualizes the traffic path **Route53 → CloudFront → Load Balancer → Target Group → target** as nodes and edges.
-- Nodes are distinguished by per-kind color and icon; target nodes change color by their health state (**healthy / unhealthy / draining**, etc.).
+- Nodes are distinguished by per-kind color and icon; target nodes change color by their health state (**healthy / unhealthy / draining**, etc.). The info line above the graph shows color legend chips for the kinds/health states present in the current graph.
 - The header above the graph shows the current **node count** and **edge count**, plus the inventory sync time.
 - Use the **MiniMap** at the bottom-right and the **Controls** at the bottom-left to pan and zoom freely.
 

@@ -13,13 +13,15 @@ import DonutBreakdown from '@/components/charts/DonutBreakdown';
 import BarDistribution from '@/components/charts/BarDistribution';
 import RiskHero from '@/components/inventory/RiskHero';
 import CloudTrailEvents from '@/components/inventory/CloudTrailEvents';
+import EcsCostBasisPanel from '@/components/inventory/EcsCostBasisPanel';
+import { EcsCostByService } from '@/components/inventory/metrics/EcsCostByService';
 import VpcResourceMap from '@/components/inventory/VpcResourceMap';
 import { ElasticacheNodeMetrics, OpensearchDomainMetrics, MskBrokerNodes, RdsInstanceMetrics, DynamoTableMetrics, AlbMetrics, NlbMetrics, S3Metrics, EbsMetrics, Ec2Metrics, LambdaMetrics, TgwSection } from '@/components/inventory/NodeMetricsTables';
 import { INVENTORY_TYPES, HIGHLIGHTS, computeHighlights, layoutOf, worstFirst } from '@/lib/inventory-types';
 import { TYPE_ICON, GROUP_ICON, highlightIcon } from '@/lib/type-icons';
 import { useActiveScope, scopeParams } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
-import { deriveRow } from '@/lib/inventory-derived';
+import { deriveRow, countFlags } from '@/lib/inventory-derived';
 
 type Row = Record<string, unknown>;
 
@@ -46,6 +48,7 @@ const FACET_LABELS: Record<string, string> = {
   http_version: 'HTTP Version', is_ipv6_enabled: 'IPv6', role_last_used_region: 'Last Used Region',
   include_global_service_events: 'Global Service Events', statistic: 'Statistic',
   comparison_operator: 'Comparison', period: 'Period (s)',
+  bucket_policy_is_public: 'Policy Public',
 };
 
 // Count rows by a column value (stringified), descending by count.
@@ -180,7 +183,9 @@ export default function InventoryTypePage() {
     [allRows, spec?.distKey],
   );
   const distData2 = useMemo(
-    () => (spec?.distKey2 ? top6(countBy(allRows, spec.distKey2)) : []),
+    () => (spec?.distKey2
+      ? top6(countBy(allRows, spec.distKey2).filter((d) => !(spec.distKey2DropNone && d.name === '(none)')))
+      : []),
     [allRows, spec?.distKey2],
   );
 
@@ -234,6 +239,22 @@ export default function InventoryTypePage() {
         .map((d) => ({ label: `${d.name}${spec.histKey!.suffix ?? ''}`, value: d.value }))
     : []), [allRows, spec?.histKey]);
 
+  // Count-distribution bar data (gap L221) — hook ABOVE the !spec early return (rules of
+  // hooks; the histData precedent), top-10 by count with '(none)' filtered.
+  const countBarData = useMemo(
+    () => (spec?.countBarKey
+      ? countBy(allRows, spec.countBarKey.col).filter((d) => d.name !== '(none)').sort((a, b) => b.value - a.value).slice(0, 10)
+      : []),
+    [allRows, spec?.countBarKey],
+  );
+
+  // Independent flag-count bars (gap L240) — hook ABOVE the !spec early return (rules of
+  // hooks). Declared order kept; zero bars kept (a zero Public bar is signal).
+  const flagBarData = useMemo(
+    () => (spec?.flagBarKey ? countFlags(allRows, spec.flagBarKey.flags) : []),
+    [allRows, spec?.flagBarKey],
+  );
+
   if (!spec) {
     return (
       <>
@@ -280,7 +301,7 @@ export default function InventoryTypePage() {
     ? <DonutBreakdown title={`${distLabel} 분포`} data={distData} nameKey="name" valueKey="value" />
     : null;
   const donut2 = spec.distKey2 && spec.distKey2 !== spec.distKey && distData2.length > 0
-    ? <DonutBreakdown title={`${colLabel(spec.distKey2)} 분포`} data={distData2} nameKey="name" valueKey="value" colors={spec.distKey2Colors} />
+    ? <DonutBreakdown title={`${spec.distKey2Label ?? colLabel(spec.distKey2)} 분포`} data={distData2} nameKey="name" valueKey="value" colors={spec.distKey2Colors} />
     : null;
   // Optional Top-N numeric bar (spec.barKey): rows ranked by the column, labelled by name/id.
   const hist = spec.histKey && histData.length > 0
@@ -311,6 +332,18 @@ export default function InventoryTypePage() {
   // Server-computed ranking chart (gap L138): the metrics route's optional `bar` payload.
   const serverBar = metricBar
     ? <BarDistribution title={metricBar.title} data={metricBar.data} xKey="label" yKey="value" decimals={1} />
+    : null;
+  // Count-distribution bar (gap L221): row counts per distinct value, count-desc (the
+  // BarDistribution default) — distinct from barKey (numeric ranking) and hist (numeric axis).
+
+  const countBar = spec.countBarKey && countBarData.length > 0
+    ? <BarDistribution title={isTruncated ? `${spec.countBarKey.label} (${tt('표본 기준')})` : spec.countBarKey.label} data={countBarData} xKey="name" yKey="value" />
+    : null;
+  // Flag-count bars (gap L240): rendered only when at least one flag column has a known
+  // value (countFlags drops all-unknown columns — a 0/0 must not read as all-clear);
+  // preserveOrder keeps the declared semantic order instead of the count-desc re-sort.
+  const flagBar = spec.flagBarKey && flagBarData.length > 0
+    ? <BarDistribution title={isTruncated ? `${spec.flagBarKey.label} (${tt('표본 기준')})` : spec.flagBarKey.label} data={flagBarData} xKey="name" yKey="value" preserveOrder />
     : null;
   // Graph band: one full-width donut, or two side-by-side when the spec has a second dimension.
   const graphBand = donut && donut2
@@ -374,7 +407,7 @@ export default function InventoryTypePage() {
             )}
             {graphBand}
             {(() => {
-              const charts = [barChart, hist, serverBar].filter(Boolean);
+              const charts = [barChart, hist, countBar, flagBar, serverBar].filter(Boolean);
               if (charts.length === 0) return null;
               if (charts.length === 1) return charts[0];
               return <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">{charts.map((c, i) => <div key={i} className="min-w-0">{c}</div>)}</div>;
@@ -392,6 +425,9 @@ export default function InventoryTypePage() {
             {type === 'nlb' && <NlbMetrics rows={filteredRows} />}
             {type === 's3' && <S3Metrics rows={filteredRows} />}
             {type === 'ebs_volume' && <EbsMetrics rows={filteredRows} />}
+            {/* Cost by Service grouped bar (gap L195) + Cost Calculation Basis (gap L194). */}
+            {type === 'ecs_task' && <EcsCostByService rows={filteredRows} isTruncated={isTruncated} />}
+            {type === 'ecs_task' && <EcsCostBasisPanel />}
             {type === 'ec2' && <Ec2Metrics rows={filteredRows} />}
             {type === 'lambda' && <LambdaMetrics rows={filteredRows} />}
             {type === 'transit_gateway' && <TgwSection rows={filteredRows} />}

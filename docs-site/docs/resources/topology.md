@@ -15,7 +15,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ## 주요 기능
 ### 요청 흐름 그래프
 - **Route53 → CloudFront → Load Balancer → Target Group → 타깃**으로 이어지는 트래픽 경로를 노드와 엣지로 시각화합니다.
-- 노드는 종류별 색상과 아이콘으로 구분되며, 타깃 노드는 **healthy / unhealthy / draining** 등 health 상태에 따라 색이 바뀝니다.
+- 노드는 종류별 색상과 아이콘으로 구분되며, 타깃 노드는 **healthy / unhealthy / draining** 등 health 상태에 따라 색이 바뀝니다. 그래프 상단 정보 줄에 현재 그래프에 존재하는 종류/health 색상 범례 칩이 함께 표시됩니다.
 - 그래프 상단에 현재 **노드 수**와 **엣지 수**, 그리고 인벤토리 동기화 시각이 표시됩니다.
 - 화면 우하단의 **MiniMap**과 좌하단 **Controls**로 자유롭게 이동(pan)/확대(zoom)할 수 있습니다.
 

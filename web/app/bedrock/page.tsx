@@ -4,6 +4,7 @@ import { DollarSign, Activity, ArrowDownToLine, ArrowUpFromLine, PiggyBank, Time
 import Card from '@/components/ui/Card';
 import DetailPanel from '@/components/ui/DetailPanel';
 import { getModelPricing } from '@/lib/bedrock';
+import { mergeBedrock, type ModelMetric, type BedrockData } from '@/lib/bedrock-merge';
 import StatTile from '@/components/ui/StatTile';
 import PageHeader from '@/components/ui/PageHeader';
 import RefreshButton from '@/components/ui/RefreshButton';
@@ -17,11 +18,6 @@ import ChatOpsStatsCard from '@/components/chat/ChatOpsStatsCard';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
 interface CostBreakdown { inputCost: number; outputCost: number; cacheReadCost: number; cacheWriteCost: number; total: number; cacheSavings: number }
-interface ModelMetric {
-  modelId: string; label: string; invocations: number; inputTokens: number; outputTokens: number;
-  avgLatencyMs: number; clientErrors: number; serverErrors: number; cacheReadTokens: number; cacheWriteTokens: number; cost: CostBreakdown;
-}
-interface BedrockData { range: string; models: ModelMetric[]; totalCost: number; series: { t: string; tokens: number }[] }
 
 const RANGES = ['1h', '6h', '24h', '7d', '30d'];
 const DASH = '—';
@@ -38,35 +34,6 @@ async function fetchBedrock(range: string, accountId: string): Promise<BedrockDa
   return r.json();
 }
 
-/** Merge per-account BedrockData: sum per modelId (tokens/invocations/cost), invocation-weighted latency. */
-function mergeBedrock(parts: BedrockData[]): BedrockData {
-  const byModel = new Map<string, ModelMetric>();
-  const lat = new Map<string, { lat: number; inv: number }>();
-  let totalCost = 0;
-  const seriesByT = new Map<string, number>();
-  for (const p of parts) {
-    totalCost += p.totalCost ?? 0;
-    for (const m of p.models ?? []) {
-      const la = lat.get(m.modelId) ?? { lat: 0, inv: 0 };
-      la.lat += (m.avgLatencyMs || 0) * (m.invocations || 0); la.inv += m.invocations || 0;
-      lat.set(m.modelId, la);
-      const e = byModel.get(m.modelId);
-      if (!e) { byModel.set(m.modelId, { ...m, cost: { ...m.cost } }); continue; }
-      e.invocations += m.invocations; e.inputTokens += m.inputTokens; e.outputTokens += m.outputTokens;
-      e.cacheReadTokens += m.cacheReadTokens; e.cacheWriteTokens += m.cacheWriteTokens;
-      e.clientErrors += m.clientErrors; e.serverErrors += m.serverErrors;
-      e.cost = {
-        inputCost: e.cost.inputCost + m.cost.inputCost, outputCost: e.cost.outputCost + m.cost.outputCost,
-        cacheReadCost: e.cost.cacheReadCost + m.cost.cacheReadCost, cacheWriteCost: e.cost.cacheWriteCost + m.cost.cacheWriteCost,
-        total: e.cost.total + m.cost.total, cacheSavings: e.cost.cacheSavings + m.cost.cacheSavings,
-      };
-    }
-    for (const s of p.series ?? []) seriesByT.set(s.t, (seriesByT.get(s.t) ?? 0) + s.tokens);
-  }
-  for (const [id, e] of byModel) { const la = lat.get(id)!; e.avgLatencyMs = la.inv ? la.lat / la.inv : 0; }
-  const series = [...seriesByT.entries()].map(([t, tokens]) => ({ t, tokens })).sort((a, b) => (a.t < b.t ? -1 : 1));
-  return { range: parts[0]?.range ?? '', models: [...byModel.values()], totalCost, series };
-}
 
 /** Client-side fan-out: fetch every enabled account in bounded parallel + aggregate (thin-BFF). */
 async function loadAllAccounts(range: string): Promise<BedrockData> {
@@ -144,7 +111,9 @@ export default function BedrockPage() {
   const cacheHitRate = totalInput + totalCacheRead > 0 ? (totalCacheRead / (totalInput + totalCacheRead)) * 100 : 0;
 
   // Model drill-down (v1 parity): unit prices + cost breakdown + 4xx/5xx split, flat fields.
-  const pickedModel = models.find((m) => m.label === picked) ?? null;
+  // keyed on modelId (round-2 gate): getModelLabel collides across ids (e.g. regional
+  // prefix variants), and the charts' whole purpose is per-model attribution.
+  const pickedModel = models.find((m) => m.modelId === picked) ?? null;
   const pickedDetail = pickedModel
     ? (() => {
         const pr = getModelPricing(pickedModel.modelId);
@@ -179,6 +148,7 @@ export default function BedrockPage() {
   const costRows = models.map((m) => ({ label: m.label, cost: m.cost.total }));
   const invRows = models.map((m) => ({ label: m.label, invocations: m.invocations }));
   const tableRows = models.map((m) => ({
+    modelId: m.modelId, // row key for selection (labels collide across regional id variants)
     model: m.label,
     invocations: m.invocations.toLocaleString(),
     inputTokens: compact(m.inputTokens),
@@ -280,7 +250,7 @@ export default function BedrockPage() {
                     { key: 'cost', label: '비용' },
                   ]}
                   rows={tableRows}
-                  onRowClick={(row) => setPicked(String(row.model))}
+                  onRowClick={(row) => setPicked(String(row.modelId))}
                 />
               </section>
             </>
@@ -290,7 +260,24 @@ export default function BedrockPage() {
         {/* v1-parity AI-call ops stats — independent of the CloudWatch range/account above
             (own /api/chat/stats fetch); self-hides when nothing is recorded. */}
         <ChatOpsStatsCard />
-        <DetailPanel title={picked ?? undefined} data={pickedDetail} onClose={() => setPicked(null)} />
+        <DetailPanel title={pickedModel?.label ?? picked ?? undefined} data={pickedDetail} onClose={() => setPicked(null)}>
+          {/* gap L184 (v1 parity): per-model Invocations / Token time series over the selected
+              range — an empty series reads 'no data', never a fabricated flat line. */}
+          {pickedModel && (
+            (pickedModel.invSeries?.length ?? 0) > 1 || (pickedModel.tokenSeries?.length ?? 0) > 1 ? (
+              <div className="flex flex-col gap-3">
+                {(pickedModel.invSeries?.length ?? 0) > 1 && (
+                  <AreaTrend title={tt('호출 추이')} data={pickedModel.invSeries ?? []} xKey="t" yKey="v" />
+                )}
+                {(pickedModel.tokenSeries?.length ?? 0) > 1 && (
+                  <AreaTrend title={tt('모델별 토큰 추이 (입력+출력)')} data={pickedModel.tokenSeries ?? []} xKey="t" yKey="v" />
+                )}
+              </div>
+            ) : (
+              <p className="text-[12px] text-ink-400">{tt('선택 구간에 시계열 데이터가 없습니다.')}</p>
+            )
+          )}
+        </DetailPanel>
       </div>
     </>
   );

@@ -60,6 +60,12 @@ const HEALTH_DARK: Record<string, [string, string]> = {
   draining: ['#33260C', '#F5B53C'], initial: ['#33260C', '#F5B53C'],
 };
 
+// Legend labels per kind (gap L248 — the MapLegend precedent: English technical labels).
+const FLOW_KIND_LABELS: Record<FlowKind, string> = {
+  route53: 'Route53', cloudfront: 'CloudFront', alb: 'ALB', nlb: 'NLB', tg: 'Target Group',
+  waf: 'WAF', apigw: 'API Gateway', lambda: 'Lambda', target: 'Target', origin: 'Origin', more: 'More',
+};
+
 function nodeColors(n: FlowNode, dark: boolean): [string, string] {
   if (n.kind === 'target') {
     const h = String(n.meta?.health ?? 'unknown');
@@ -286,6 +292,20 @@ export default function TopologyPage() {
   const dark = useTheme() === 'dark';
 
   const full = useMemo(() => (data ? buildFlowGraph(data) : { nodes: [], edges: [] }), [data]);
+
+  // Color legend (gap L248): kind chips for the kinds present in the loaded graph. Target nodes
+  // are colored by HEALTH (not kind), so targets contribute health chips instead of a kind chip;
+  // an unknown health falls back to the neutral target kind chip (same as nodeColors).
+  const legend = useMemo(() => {
+    const kinds = new Set<FlowKind>();
+    const healths = new Set<string>();
+    for (const n of full.nodes) {
+      const h = n.kind === 'target' ? String(n.meta?.health ?? 'unknown') : '';
+      if (n.kind === 'target' && h in HEALTH_LIGHT) healths.add(h);
+      else kinds.add(n.kind);
+    }
+    return { kinds: [...kinds], healths: [...healths] };
+  }, [full]);
 
   // Resource-name search: match nodes by label or id (case-insensitive); selecting one focuses it
   // (reuses the focus collapse + re-center). Capped so the dropdown stays usable on big graphs.
@@ -572,12 +592,31 @@ export default function TopologyPage() {
             </div>
           ) : (
             <>
-              <div className="flex items-center gap-3 text-[12px] text-ink-400">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-ink-400">
                 <span>{tt(`노드 ${nodes.length} · 엣지 ${edges.length}`)}</span>
                 {syncedAt && <span>{tt('인벤토리 동기화:')} {new Date(syncedAt).toLocaleString()}</span>}
                 {cappedTypes.length > 0 && (
                   <span className="text-warning">{tt(`⚠ ${cappedTypes.join(', ')} ${ROW_CAP}개 초과 — 일부만 표시`)}</span>
                 )}
+                {/* kind/health color legend (gap L248) — the same fills the nodes render. */}
+                {legend.kinds.map((k) => {
+                  const [bg, border] = (dark ? KIND_DARK : KIND_LIGHT)[k];
+                  return (
+                    <span key={k} className="inline-flex items-center gap-1">
+                      <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: bg, border: `1px solid ${border}` }} />
+                      {FLOW_KIND_LABELS[k]}
+                    </span>
+                  );
+                })}
+                {legend.healths.map((h) => {
+                  const [bg, border] = (dark ? HEALTH_DARK : HEALTH_LIGHT)[h];
+                  return (
+                    <span key={h} className="inline-flex items-center gap-1">
+                      <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: bg, border: `1px solid ${border}` }} />
+                      {`Target · ${h}`}
+                    </span>
+                  );
+                })}
               </div>
               <div className="flex-1 min-h-0 w-full rounded-lg border border-ink-100 bg-card">
                 <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.2 }} colorMode={dark ? 'dark' : 'light'} proOptions={{ hideAttribution: true }}

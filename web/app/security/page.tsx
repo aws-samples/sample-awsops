@@ -8,6 +8,7 @@ import Badge from '@/components/ui/Badge';
 import DataTable from '@/components/ui/DataTable';
 import DetailPanel from '@/components/ui/DetailPanel';
 import DonutBreakdown from '@/components/charts/DonutBreakdown';
+import BarDistribution from '@/components/charts/BarDistribution';
 import SegmentedControl from '@/components/ui/SegmentedControl';
 import RefreshButton from '@/components/ui/RefreshButton';
 import { CHECK_META, type CheckKey, type Finding } from '@/lib/security-findings';
@@ -149,6 +150,17 @@ export default function SecurityPage() {
     return Object.entries(t).filter(([, v]) => v > 0).map(([name, value]) => ({ name, value }));
   })();
 
+  // v1 'Security Issues Summary' parity — one bar per issue class (the 4 non-CVE checks by
+  // finding count + CVE Critical/High summed from the ECR scan details), zero bars filtered.
+  const issueBars = (() => {
+    const bars = CHECKS.filter((k) => k !== 'ecr_cve').map((k) => ({ name: CHECK_META[k].label, value: summary[k] ?? 0 }));
+    for (const sev of ['CRITICAL', 'HIGH'] as const) {
+      const v = cveSevData.find((d) => d.name === sev)?.value ?? 0;
+      bars.push({ name: sev === 'CRITICAL' ? 'CVE Critical' : 'CVE High', value: v });
+    }
+    return bars.filter((b) => b.value > 0);
+  })();
+
   return (
     <div>
       <PageHeader
@@ -159,7 +171,11 @@ export default function SecurityPage() {
       <div className="px-8 py-6">
         {err && <Card className="mb-4 text-[14px] text-brand-700">{err}</Card>}
 
-        {data && !enabled ? (
+        {/* First fetch in flight (gap L246): an explicit loading line instead of zero-valued
+            tiles / an empty donut / an empty table that read like a real all-clear. */}
+        {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
+
+        {data && (!enabled ? (
           <Card className="flex items-start gap-3">
             <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-ink-400" />
             <div>
@@ -186,8 +202,12 @@ export default function SecurityPage() {
               ))}
             </div>
 
-            {/* Severity distribution (+ v1-parity CVE severity pie when ECR scans report CVEs) */}
+            {/* Issues-summary bars (v1 parity, gap L245) + severity distribution
+                (+ v1-parity CVE severity pie when ECR scans report CVEs) */}
             <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+              {issueBars.length > 0 && (
+                <BarDistribution title="Security Issues Summary" data={issueBars} xKey="name" yKey="value" />
+              )}
               <DonutBreakdown title="Findings by severity" data={sevData} nameKey="name" valueKey="value" />
               {cveSevData.length > 0 && (
                 <DonutBreakdown
@@ -217,7 +237,7 @@ export default function SecurityPage() {
               </div>
             </div>
           </>
-        )}
+        ))}
       </div>
 
       <DetailPanel

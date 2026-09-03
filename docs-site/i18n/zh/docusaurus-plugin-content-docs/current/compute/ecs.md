@@ -31,7 +31,7 @@ v1 曾在一个页面中统一监控集群/服务/任务，但**v2 将其拆分�
 | Instances | 已注册容器实例数量 |
 | MTD Cost ($) | 本月至今累计成本 |
 
-详情面板：Identity（Name、Account、Region、ARN）/ Tasks & Services / Config（Settings、Container Insights 等）/ Tags 各部分。
+详情面板：Identity（Name、Account、Region、ARN）/ Tasks & Services / Config（Settings、Container Insights 等）/ Tags 各部分。Settings 以逐项标签–值行显示（如 containerInsights disabled）。
 
 ### ECS Services（`/inventory/ecs_service`）
 高亮卡片显示 Desired/Running/Pending 总和及集群去重数量。

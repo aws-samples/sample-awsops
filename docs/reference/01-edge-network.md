@@ -51,10 +51,10 @@ viewer ──TLS──> CloudFront ──TLS (https-only:443)──> VPC Origin
 
 ## Decisions (ADRs) / 결정
 
-- [ADR-001 — v2 foundation (ECS Fargate + Aurora split)](../../decisions/001-v2-foundation.md):
+- [ADR-001 — v2 foundation (ECS Fargate + Aurora split)](../decisions/001-v2-foundation.md):
   adopts the v2 topology — web on **ECS Fargate** (ARM64) behind an internal ALB, replacing the
   v1 single-EC2 host. This reference covers the edge/ALB/network half of that topology.
-- [ADR-014 — cross-cutting (CloudFront CachingDisabled)](../../decisions/014-cross-cutting-cache-i18n-cdn.md):
+- [ADR-014 — cross-cutting (CloudFront CachingDisabled)](../decisions/014-cross-cutting-cache-i18n-cdn.md):
   the default cache behavior runs with `CACHING_DISABLED` so dynamic dashboard responses and
   SSE streams are never cached/buffered at the edge.
 

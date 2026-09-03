@@ -15,7 +15,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ## 主な機能
 ### リクエストフローグラフ
 - **Route53 → CloudFront → Load Balancer → Target Group → ターゲット**へと続くトラフィック経路を、ノードとエッジで可視化します。
-- ノードは種類ごとの色とアイコンで区別され、ターゲットノードは **healthy / unhealthy / draining** などの health 状態に応じて色が変わります。
+- ノードは種類ごとの色とアイコンで区別され、ターゲットノードは **healthy / unhealthy / draining** などの health 状態に応じて色が変わります。グラフ上部の情報行に、現在のグラフに存在する種類/health の色凡例チップが表示されます。
 - グラフ上部に現在の**ノード数**と**エッジ数**、そしてインベントリの同期時刻が表示されます。
 - 画面右下の **MiniMap** と左下の **Controls** で自由に移動（pan）/拡大（zoom）できます。
 
