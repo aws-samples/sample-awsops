@@ -10,7 +10,7 @@
 
 locals {
   we           = var.workers_enabled ? 1 : 0
-  workers_src  = "${path.module}/../../../scripts/v2/workers"
+  workers_src  = "${path.module}/../../scripts/v2/workers"
   worker_cname = "worker" # MUST equal the ContainerOverrides Name in sfn.asl.json
   acct         = data.aws_caller_identity.current.account_id
   # ai-cost aggregator gate — reuses the worker role/pg8000 layer/VPC, so it REQUIRES workers_enabled.

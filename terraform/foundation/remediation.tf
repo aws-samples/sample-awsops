@@ -18,8 +18,8 @@ locals {
   # the IAM split). Both default false ⇒ re_or_iw=0 ⇒ unchanged.
   iw              = var.integrations_write_enabled ? 1 : 0
   re_or_iw        = (var.remediation_enabled || var.integrations_write_enabled) ? 1 : 0
-  rem_src         = "${path.module}/../../../scripts/v2/remediation"
-  workers_src_re  = "${path.module}/../../../scripts/v2/workers" # reuse db.py/status_updater
+  rem_src         = "${path.module}/../../scripts/v2/remediation"
+  workers_src_re  = "${path.module}/../../scripts/v2/workers" # reuse db.py/status_updater
   rem_acct        = data.aws_caller_identity.current.account_id
   worker_cname_re = local.worker_cname # reuse the worker container name (workers.tf)
 }
