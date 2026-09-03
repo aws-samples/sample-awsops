@@ -1,7 +1,7 @@
 name: Deploy Preview
 
 # PRIVATE DEV REPO — per-user preview deploy. Runs the dispatched branch's web
-# image into that USER's own preview stack (`<user>-awsops.dev.whchoi.net`),
+# image into that USER's own preview stack (`<user>.awsops-dev.whchoi.net`),
 # selected purely by distinctly-named secrets:
 #   TF_BACKEND_HCL_PREVIEW_<USER> / TF_TFVARS_PREVIEW_<USER>   (uppercased user)
 # Missing secrets FAIL with a pointer to the provisioning runbook — there is no
@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       user:
-        description: "Preview owner (lowercase; picks TF_*_PREVIEW_<USER> secrets and the <user>-awsops.dev.whchoi.net stack)"
+        description: "Preview owner (lowercase; picks TF_*_PREVIEW_<USER> secrets and the <user>.awsops-dev.whchoi.net stack)"
         required: true
 
 permissions:

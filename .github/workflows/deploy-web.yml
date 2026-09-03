@@ -1,7 +1,7 @@
 name: Deploy Web
 
 # PRIVATE DEV REPO pipeline (sample-awsops-dev) — continuous deploy of the
-# `dev` branch to the DEVELOPMENT stack (awsops.dev.whchoi.net). The public
+# `dev` branch to the DEVELOPMENT stack (awsops-dev.whchoi.net). The public
 # repo (aws-samples/sample-awsops) carries only `main` and its production
 # pipeline; work is promoted there via short-lived release/* branches.
 #

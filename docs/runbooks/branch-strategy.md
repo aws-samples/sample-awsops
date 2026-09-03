@@ -11,7 +11,7 @@ Related files / 관련 파일: `.github/workflows/{deploy-web,deploy-preview,ter
 │ <user>/<topic> ──PR──▶ dev         │──push──▶│ release/YYYYMMDD ──PR──▶ main │
 └────────────────────────────────────┘         └──────────────────────────┘
   preview stack        dev stack                    production stack
-  <user>-awsops.dev.   awsops.dev.whchoi.net        domain PENDING — deploy on the
+  <user>.awsops-dev.   awsops-dev.whchoi.net        domain PENDING — deploy on the
   whchoi.net                                        CloudFront default domain first,
                                                     then decide whether to attach
                                                     awsops.whchoi.net
@@ -30,7 +30,7 @@ Related files / 관련 파일: `.github/workflows/{deploy-web,deploy-preview,ter
    Push to the private dev repo and open a **PR into `dev`**. PR checks (merge-verify,
    AI pr-review) run on PRs targeting `dev`.
 2. **`dev`** — the integration branch. Every push auto-deploys to the DEV stack
-   (`awsops.dev.whchoi.net`) via `deploy-web.yml` (build → pin → roll → smoke).
+   (`awsops-dev.whchoi.net`) via `deploy-web.yml` (build → pin → roll → smoke).
 3. **`main` (public)** — promote with a short-lived release branch:
    ```bash
    git push samples dev:release/$(date +%Y%m%d)
@@ -44,8 +44,8 @@ Related files / 관련 파일: `.github/workflows/{deploy-web,deploy-preview,ter
 
 | Tier | Branch | Stack / domain | Deploy trigger |
 |---|---|---|---|
-| Preview | `<user>/<topic>` | per-user stack, `<user>-awsops.dev.whchoi.net` | `deploy-preview.yml` workflow_dispatch (input: `user`) |
-| Dev | `dev` | dev stack, `awsops.dev.whchoi.net` | auto on push (`deploy-web.yml`) |
+| Preview | `<user>/<topic>` | per-user stack, `<user>.awsops-dev.whchoi.net` | `deploy-preview.yml` workflow_dispatch (input: `user`) |
+| Dev | `dev` | dev stack, `awsops-dev.whchoi.net` | auto on push (`deploy-web.yml`) |
 | Production | `main` (public repo) | production stack — **domain not attached yet** | dispatch + `production` environment approval |
 
 ### Production domain decision / 프로덕션 도메인 결정 (PENDING)
@@ -70,10 +70,20 @@ CloudFront distribution, decide whether to attach `awsops.whchoi.net`:
 
 ## Per-user preview stacks / 사용자별 프리뷰 스택
 
+The public hosted zone **`awsops-dev.whchoi.net` already exists** (operator-managed; it
+is not in the workload account's Route53, so stacks reference it by zone ID/domain via
+tfvars). Because previews are `<user>.awsops-dev.whchoi.net`, one **wildcard ACM cert
+`*.awsops-dev.whchoi.net`** (us-east-1 for CloudFront) covers every preview AND the dev
+stack — issue it once and reuse it across stacks instead of per-stack certs.
+(`awsops-dev.whchoi.net` 퍼블릭 호스티드 존은 이미 존재합니다 — 워크로드 계정 Route53에
+없으므로 스택은 tfvars의 존 ID/도메인으로 참조합니다. 프리뷰가 `<user>.awsops-dev...`
+계층이라 **와일드카드 ACM `*.awsops-dev.whchoi.net` 한 장**(us-east-1)으로 모든 프리뷰와
+dev 스택을 커버할 수 있습니다 — 스택마다 발급하지 말고 재사용하세요.)
+
 A preview is a full (small) stack per user, provisioned once:
 
 1. `make configure` for the user's stack — its own tfstate key, domain
-   `<user>-awsops.dev.whchoi.net`.
+   `<user>.awsops-dev.whchoi.net`.
 2. `terraform plan -out tfplan` → review → `terraform apply tfplan` (never
    `-auto-approve`).
 3. Register the generated files as repo secrets, uppercased user in the name:
@@ -99,6 +109,6 @@ user branches. See `dev-repo-setup.md` §2.
 
 - User PR → `dev`: merge-verify + AI review run and pass on the PR.
 - Push to `dev`: `deploy-web.yml` run ends green with the smoke against
-  `awsops.dev.whchoi.net/api/health`.
+  `awsops-dev.whchoi.net/api/health`.
 - Promotion: release PR merges into public `main`; production deploy waits for the
   `production` environment approval and smokes against the `public_url` output.
