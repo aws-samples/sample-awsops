@@ -51,8 +51,11 @@ jobs:
     runs-on: sample-awsops
     # plan is automatic and read-only — it must never sit behind any gate.
     env:
-      TF_BACKEND_HCL_B64: ${{ (github.base_ref || github.ref_name) == 'main' && secrets.TF_BACKEND_HCL || secrets.TF_BACKEND_HCL_DEV }}
-      TF_TFVARS_B64: ${{ (github.base_ref || github.ref_name) == 'main' && secrets.TF_TFVARS || secrets.TF_TFVARS_DEV }}
+      TARGET: ${{ github.base_ref || github.ref_name }}
+      MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
+      MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
+      DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
+      DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
     steps:
       - uses: actions/checkout@v4
 
@@ -65,13 +68,20 @@ jobs:
       - name: Restore backend.hcl / terraform.tfvars
         id: restore
         run: |
-          if [ -z "$TF_BACKEND_HCL_B64" ]; then
-            echo "::warning::This repo's TF backend secrets are not set yet — run 'make configure' once for the dev stack, then store its backend.hcl and terraform.tfvars as base64 in the TF_BACKEND_HCL / TF_TFVARS repo secrets (see docs/runbooks/dev-repo-setup.md). Skipping plan until then."
+          # Explicit per-branch case, hard-fail semantics — never an &&/|| ternary
+          # whose empty-value fallthrough would plan against the other stack.
+          case "$TARGET" in
+            main) B="$MAIN_BACKEND_B64"; V="$MAIN_TFVARS_B64";;
+            dev)  B="$DEV_BACKEND_B64";  V="$DEV_TFVARS_B64";;
+            *) echo "::error::unexpected target '$TARGET'"; exit 1;;
+          esac
+          if [ -z "$B" ] || [ -z "$V" ]; then
+            echo "::warning::TF backend secrets for '$TARGET' are not set yet — run 'make configure' once for that stack (docs/runbooks/dev-repo-setup.md). Skipping plan until then."
             echo "skip=1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "$TF_BACKEND_HCL_B64" | base64 -d > backend.hcl
-          echo "$TF_TFVARS_B64" | base64 -d > terraform.tfvars
+          echo "$B" | base64 -d > backend.hcl
+          echo "$V" | base64 -d > terraform.tfvars
 
       - name: terraform init
         if: steps.restore.outputs.skip != '1'
@@ -95,25 +105,46 @@ jobs:
     runs-on: sample-awsops
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
-      TF_BACKEND_HCL_B64: ${{ github.ref_name == 'main' && secrets.TF_BACKEND_HCL || secrets.TF_BACKEND_HCL_DEV }}
-      TF_TFVARS_B64: ${{ github.ref_name == 'main' && secrets.TF_TFVARS || secrets.TF_TFVARS_DEV }}
+      TARGET: ${{ github.ref_name }}
+      MAIN_ROLE: ${{ vars.AWS_CI_DEPLOYER_ROLE_ARN }}
+      DEV_ROLE: ${{ vars.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+      MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
+      MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
+      DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
+      DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select the branch's stack (fail-closed)
+        id: sel
+        run: |
+          case "$TARGET" in
+            main) ROLE="$MAIN_ROLE";;
+            dev)  ROLE="$DEV_ROLE";;
+            *) echo "::error::apply dispatches only from main or dev (got '$TARGET')"; exit 1;;
+          esac
+          [ -n "$ROLE" ] || { echo "::error::deployer role variable for '$TARGET' is not set"; exit 1; }
+          echo "role=$ROLE" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials (OIDC -> ci-deployer)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ github.ref_name == 'main' && vars.AWS_CI_DEPLOYER_ROLE_ARN || vars.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
 
       - name: Restore backend.hcl / terraform.tfvars
         run: |
-          if [ -z "$TF_BACKEND_HCL_B64" ]; then
-            echo "::error::This repo's TF backend secrets are not set — see docs/runbooks/dev-repo-setup.md."
+          case "$TARGET" in
+            main) B="$MAIN_BACKEND_B64"; V="$MAIN_TFVARS_B64";;
+            dev)  B="$DEV_BACKEND_B64";  V="$DEV_TFVARS_B64";;
+            *) echo "::error::unexpected target '$TARGET'"; exit 1;;
+          esac
+          if [ -z "$B" ] || [ -z "$V" ]; then
+            echo "::error::TF backend secrets for '$TARGET' are not set — see docs/runbooks/dev-repo-setup.md."
             exit 1
           fi
-          echo "$TF_BACKEND_HCL_B64" | base64 -d > backend.hcl
-          echo "$TF_TFVARS_B64" | base64 -d > terraform.tfvars
+          echo "$B" | base64 -d > backend.hcl
+          echo "$V" | base64 -d > terraform.tfvars
 
       - name: terraform init
         run: terraform init -backend-config=backend.hcl -input=false
