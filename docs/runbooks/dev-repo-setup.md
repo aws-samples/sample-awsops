@@ -44,28 +44,32 @@ provider with a `sub` condition — never the repo-wide `:*` wildcard, which wou
 let ANY branch (including an experiment branch with an edited workflow) assume the
 mutation roles. Role-to-sub matrix:
 
-| Role | Used by | Trust `sub` (StringEquals unless noted) | Permissions scope |
+| Role | Used by | Trust `sub` | Permissions scope |
 |---|---|---|---|
-| `sample-awsops-ci-build` | main build | `repo:aws-samples/sample-awsops:ref:refs/heads/main` | prod ECR push |
-| `sample-awsops-ci-deployer` | main roll / apply / agentcore (production env) | `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply |
-| `sample-awsops-dev-ci-build` | dev build | `...:ref:refs/heads/dev` | dev ECR push |
-| `sample-awsops-dev-ci-deployer` | dev roll / apply / agentcore | `...:ref:refs/heads/dev` | dev ECS/ECR-pin/apply |
-| `sample-awsops-dev-ci-preview` | preview deploys (any user branch) | StringLike `...:ref:refs/heads/*` | **preview-stack resources only** — the any-branch trust is safe only because the blast radius is preview-only |
+| `sample-awsops-ci-build` | main build (no environment) | StringEquals `repo:aws-samples/sample-awsops:ref:refs/heads/main` | prod ECR push |
+| `sample-awsops-ci-deployer` | main roll / apply / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply |
+| `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | dev + user stacks' ECR push |
+| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply — **never production** |
 | `sample-awsops-ci-terraform-plan` | plan (PR/push, read-only) | StringLike: `...:ref:refs/heads/main`, `...:ref:refs/heads/dev`, `...:pull_request` | ReadOnlyAccess |
 | `sample-awsops-ci-review` | AI pr-review | StringLike: `...:ref:refs/heads/main`, `...:ref:refs/heads/dev` | Bedrock invoke |
 
-Notes:
-- Mutation roles pin to a single branch ref (or the `production` environment sub,
-  which is even narrower — jobs with `environment: production` present
-  `repo:...:environment:production`). Read-only roles may also accept the
-  `pull_request` sub; fork PRs can never mint tokens anyway (GitHub withholds
-  id-token from forks), and `terraform.yml` skips non-same-repo PRs outright.
-- The `AWS_CI_*_ROLE_ARN` / `AWS_CI_*_DEV_ROLE_ARN` / `AWS_CI_PREVIEW_ROLE_ARN`
-  repo variables must point at these roles.
+CRITICAL sub rule: **a job that declares `environment:` presents the
+`repo:<owner>/<repo>:environment:<name>` sub — NOT its branch ref.** Deployer
+roles must therefore trust the environment sub (pinning them to a branch ref
+makes every deploy fail AssumeRoleWithWebIdentity). Which branches can reach an
+environment is enforced by the environment's own deployment branch policy
+(`production` → main only; `development` → dev, atomoh, ssminji, whchoi).
+Build/plan jobs carry no environment and present branch-ref subs. Fork PRs can
+never mint tokens (GitHub withholds id-token from forks) and `terraform.yml`
+skips non-same-repo PRs outright.
+(`environment:`가 선언된 잡의 OIDC sub는 브랜치 ref가 아니라 `environment:<이름>`
+입니다 — deployer 역할 신뢰는 environment sub로, 브랜치 제한은 environment의
+deployment branch policy로 거는 것이 올바른 구성입니다.)
 
-(mutation 역할은 단일 브랜치 ref 또는 `environment:production` sub로 고정, read-only
-역할만 `pull_request` sub를 추가 허용합니다. fork PR은 GitHub이 id-token 자체를 주지
-않아 어떤 역할도 assume할 수 없습니다.)
+The former `sample-awsops-dev-ci-preview` role and `deploy-preview.yml` are
+RETIRED — user branches are standing branches with continuous deploy, covered by
+the dev-tier roles above. (구 preview 역할·워크플로는 은퇴 — 사용자 브랜치가 상시
+브랜치가 되면서 dev-tier 역할이 담당합니다.)
 
 ### 3. Per-stack terraform secrets / 스택별 TF 시크릿
 
@@ -84,7 +88,7 @@ Then register the generated files (base64) as repo secrets:
 |---|---|
 | production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` |
 | dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` |
-| preview (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` |
+| user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
 
 ```bash
 gh secret set TF_BACKEND_HCL_DEV -R aws-samples/sample-awsops \
