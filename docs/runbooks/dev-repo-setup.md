@@ -39,8 +39,8 @@ too, from the runner platform that hosts it.
 
 Create four DEV-scoped roles — `sample-awsops-dev-ci-{build,deployer,
 terraform-plan,review}` — mirroring the production roles' permission shapes
-but **scoped to the dev stack's resources only** (its ECR repo, its ECS
-cluster/service, its tfstate key), each trusting the GitHub OIDC provider
+but **scoped to the dev AND per-user preview stacks' resources only** (their
+ECR repos, ECS clusters/services, tfstate keys — never production's), each trusting the GitHub OIDC provider
 with a `sub` condition scoped **per role** — never the repo-wide
 `repo:Atom-oh/sample-awsops-dev:*` wildcard, which would let ANY branch of
 this repo (including an experiment branch with an edited workflow file)

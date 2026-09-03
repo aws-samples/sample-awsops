@@ -1,0 +1,118 @@
+name: Deploy Preview
+
+# PRIVATE DEV REPO — per-user preview deploy. Runs the dispatched branch's web
+# image into that USER's own preview stack (`<user>-awsops.dev.whchoi.net`),
+# selected purely by distinctly-named secrets:
+#   TF_BACKEND_HCL_PREVIEW_<USER> / TF_TFVARS_PREVIEW_<USER>   (uppercased user)
+# Missing secrets FAIL with a pointer to the provisioning runbook — there is no
+# fallback to the dev or production stacks, by design. Stack provisioning and
+# secret registration: docs/runbooks/branch-strategy.md §Per-user preview stacks.
+#
+# Tag discipline matches dev/production: build pushes only the immutable
+# web-<sha>; the pin step (this workflow) is the only writer of the preview
+# stack's :web-latest.
+
+on:
+  workflow_dispatch:
+    inputs:
+      user:
+        description: "Preview owner (lowercase; picks TF_*_PREVIEW_<USER> secrets and the <user>-awsops.dev.whchoi.net stack)"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-preview-${{ inputs.user }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build & roll ${{ inputs.user }}'s preview
+    runs-on: sample-awsops
+    env:
+      TF_BACKEND_HCL_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', inputs.user)] }}
+      TF_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', inputs.user)] }}
+    steps:
+      - name: Validate the user input
+        run: |
+          case "${{ inputs.user }}" in
+            *[!a-z0-9-]*|"") echo "::error::user must be lowercase [a-z0-9-]"; exit 1;;
+          esac
+
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC -> dev ci-deployer)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_DEPLOYER_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      - name: Restore this preview stack's terraform backend
+        working-directory: terraform/foundation
+        run: |
+          if [ -z "$TF_BACKEND_HCL_B64" ]; then
+            echo "::error::TF_BACKEND_HCL_PREVIEW_$(echo '${{ inputs.user }}' | tr a-z A-Z) is not set — provision the preview stack first (docs/runbooks/branch-strategy.md §Per-user preview stacks)."
+            exit 1
+          fi
+          echo "$TF_BACKEND_HCL_B64" | base64 -d > backend.hcl
+          echo "$TF_TFVARS_B64" | base64 -d > terraform.tfvars
+          terraform init -backend-config=backend.hcl -input=false
+
+      - name: Resolve the preview stack's ECR/ECS/URL
+        id: tf
+        working-directory: terraform/foundation
+        run: |
+          echo "ecr_web_uri=$(terraform output -raw ecr_web_uri)" >> "$GITHUB_OUTPUT"
+          echo "ecr_repo=$(terraform output -raw ecr_web_uri | sed 's|^[^/]*/||')" >> "$GITHUB_OUTPUT"
+          echo "cluster=$(terraform output -raw ecs_cluster_name)" >> "$GITHUB_OUTPUT"
+          echo "service=$(terraform output -raw ecs_service_name)" >> "$GITHUB_OUTPUT"
+          echo "url=$(terraform output -raw public_url)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Copy CHANGELOG into build context
+        run: cp CHANGELOG.md web/CHANGELOG.md
+
+      - name: Build and push (arm64, immutable tag only)
+        uses: docker/build-push-action@v6
+        with:
+          context: web
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.tf.outputs.ecr_web_uri }}:web-${{ github.sha }}
+
+      - name: Pin web-latest to this build
+        run: |
+          MANIFEST=$(aws ecr batch-get-image \
+            --repository-name "${{ steps.tf.outputs.ecr_repo }}" \
+            --image-ids imageTag="web-${{ github.sha }}" \
+            --region ap-northeast-2 \
+            --query 'images[0].imageManifest' --output text)
+          if [ -z "$MANIFEST" ] || [ "$MANIFEST" = "None" ]; then
+            echo "::error::built image web-${{ github.sha }} not found in ${{ steps.tf.outputs.ecr_repo }}"
+            exit 1
+          fi
+          OUT=$(aws ecr put-image \
+            --repository-name "${{ steps.tf.outputs.ecr_repo }}" \
+            --image-tag web-latest \
+            --image-manifest "$MANIFEST" \
+            --region ap-northeast-2 2>&1) || {
+              echo "$OUT" | grep -q ImageAlreadyExistsException || { echo "$OUT" >&2; exit 1; }
+            }
+
+      - name: ECS force-new-deployment + wait + smoke
+        run: |
+          aws ecs update-service \
+            --cluster "${{ steps.tf.outputs.cluster }}" \
+            --service "${{ steps.tf.outputs.service }}" \
+            --force-new-deployment --region ap-northeast-2 >/dev/null
+          aws ecs wait services-stable \
+            --cluster "${{ steps.tf.outputs.cluster }}" \
+            --services "${{ steps.tf.outputs.service }}" --region ap-northeast-2
+          curl -fsS --max-time 15 "${{ steps.tf.outputs.url }}/api/health" && echo

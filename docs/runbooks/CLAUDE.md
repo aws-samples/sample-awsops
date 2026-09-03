@@ -20,6 +20,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [user-offboarding.md](user-offboarding.md) | Offboarding a departing employee's Cognito account — closing the account-takeover path (ADR-002/009) |
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
+| [branch-strategy.md](branch-strategy.md) | Branch/PR chain (user → dev → main), domain map, production-domain decision, per-user preview stacks |
 | [dev-repo-setup.md](dev-repo-setup.md) | Private dev repo bring-up — runner, OIDC trust, dev-stack secrets, ECR pin perms |
 | [agent-sql-reader.md](agent-sql-reader.md) | `execute_sql`/`inventory-read` Data API auth failures — `awsops_sql_reader` role/password sync (`apply → make migrate → make agentcore`) |
 
