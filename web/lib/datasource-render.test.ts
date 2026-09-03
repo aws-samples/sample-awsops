@@ -112,3 +112,33 @@ describe('normalizeResult', () => {
     expect(normalizeResult('mystery', 'x', { foo: 1 }).shape).toBe('empty');
   });
 });
+
+describe('year-boundary ordering (review: 30d windows crossing Jan 1)', () => {
+  it('prometheus matrix points spanning New Year sort chronologically, not lexically', () => {
+    const dec = Math.floor(Date.parse('2026-12-31T23:00:00Z') / 1000);
+    const jan = Math.floor(Date.parse('2027-01-01T01:00:00Z') / 1000);
+    const r = normalizeResult('prometheus', 'prometheus_query_range', {
+      resultType: 'matrix',
+      result: [{ metric: { job: 'x' }, values: [[jan, '2'], [dec, '1']] }],
+    });
+    expect(r.shape).toBe('series');
+    const ts = (r.series ?? []).map((p) => String(p.t));
+    expect(ts).toEqual(['12-31 23:00', '01-01 01:00']); // December FIRST — epoch order, label unchanged
+  });
+
+  it('mergeSeries consumers (dynatrace) also sort by epoch across New Year', () => {
+    const dec = Date.parse('2026-12-31T23:00:00Z');
+    const jan = Date.parse('2027-01-01T01:00:00Z');
+    const r = normalizeResult('dynatrace', 'dynatrace_query', {
+      result: [{ metricId: 'm', data: [{ dimensions: [], timestamps: [jan, dec], values: [2, 1] }] }],
+    });
+    if (r.shape === 'series') {
+      const ts = (r.series ?? []).map((p) => String(p.t));
+      expect(ts).toEqual(['12-31 23:00', '01-01 01:00']);
+    } else {
+      // if the dynatrace fixture shape doesn't match the normalizer, this test must be adjusted —
+      // fail loudly rather than skipping silently
+      expect(r.shape).toBe('series');
+    }
+  });
+});

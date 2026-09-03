@@ -63,6 +63,8 @@ describe('POST /api/datasources/query', () => {
     expect(call.tool).toBe('clickhouse_query');
     expect(call.args.sql).toBe('SELECT 1');
     expect(call.args.query).toBeUndefined();
+    // the `timeout` arg is prometheus/mimir-only — clickhouse's connector never reads it
+    expect(call.args.timeout).toBeUndefined();
   });
 
   it('range flag selects *_query_range; tempo always uses tempo_search', async () => {
@@ -118,12 +120,14 @@ describe('POST /api/datasources/query', () => {
     expect(typeof call.args.step).toBe('string');
     expect(Number(call.args.end) - Number(call.args.start)).toBe(300);
     expect(call.args.step).toBe('2');
+    // forwarded to the connector, which clamps and passes it upstream on instant AND range paths
+    expect(call.args.timeout).toBe('10s');
   });
 
   it('range object with out-of-bounds window or step → 400 and no invoke', async () => {
     const { POST } = await import('./route');
     expect((await POST(req({ slug: 'prometheus', query: 'up', range: { window: 30, step: 2 } }))).status).toBe(400); // window < 60
-    expect((await POST(req({ slug: 'prometheus', query: 'up', range: { window: 999999, step: 2 } }))).status).toBe(400); // window > 86400
+    expect((await POST(req({ slug: 'prometheus', query: 'up', range: { window: 2592001, step: 600 } }))).status).toBe(400); // window > 30d
     expect((await POST(req({ slug: 'prometheus', query: 'up', range: { window: 300, step: 0 } }))).status).toBe(400); // step < 1
     expect((await POST(req({ slug: 'prometheus', query: 'up', range: { window: 300, step: 99999999 } }))).status).toBe(400); // step > 86400
     expect(invokeMcpLambdaTool).not.toHaveBeenCalled();
@@ -142,6 +146,26 @@ describe('POST /api/datasources/query', () => {
     // a sane density (≈250 points, what the UI sends) is accepted
     await POST(req({ slug: 'prometheus', query: 'up', range: { window: 3600, step: 14 } }));
     expect(invokeMcpLambdaTool.mock.calls.at(-1)![0].tool).toBe('prometheus_query_range');
+  });
+
+  it('extended ranges (7d/30d) are accepted at UI-shaped densities (gap-audit L86)', async () => {
+    const { POST } = await import('./route');
+    expect((await POST(req({ slug: 'prometheus', query: 'up', range: { window: 604800, step: 2419 } }))).status).toBe(200);
+    expect((await POST(req({ slug: 'prometheus', query: 'up', range: { window: 2592000, step: 10368 } }))).status).toBe(200);
+    // the density cap is still the DoS guard at the widened bound
+    expect((await POST(req({ slug: 'prometheus', query: 'up', range: { window: 2592000, step: 500 } }))).status).toBe(400); // 5184 points
+    expect((await POST(req({ slug: 'loki', query: '{job="x"}', range: { window: 2592000, step: 10368 } }))).status).toBe(400); // loki capped at 7d
+    expect((await POST(req({ slug: 'loki', query: '{job="x"}', range: { window: 604800, step: 2419 } }))).status).toBe(200);
+  });
+
+  it('returns executionTimeMs metadata alongside the result (gap-audit L88)', async () => {
+    const { POST } = await import('./route');
+    const res = await POST(req({ slug: 'prometheus', query: 'up' }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.result).toBeDefined();
+    expect(typeof body.metadata?.executionTimeMs).toBe('number');
+    expect(body.metadata.executionTimeMs).toBeGreaterThanOrEqual(0);
   });
 
   it('range:false and absent range → instant tool', async () => {

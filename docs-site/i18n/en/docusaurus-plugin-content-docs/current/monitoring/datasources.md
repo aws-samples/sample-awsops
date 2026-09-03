@@ -262,33 +262,14 @@ Prometheus datasources support visualizing up to **8 series** simultaneously.
 For performance, Prometheus multi-series charts are limited to a maximum of 8 series. If results exceed 8 series, only the top 8 are displayed.
 :::
 
-## Datasource Diagnostics
+## Diagnose with AI
 
-When a datasource has connectivity issues, click the **Diagnose** button (stethoscope icon) to automatically run an 8-step diagnostic sequence.
-
-:::info Admin Only
-The Diagnose feature requires an admin role.
-:::
-
-### datasource-diag AI Route
-
-Diagnostic requests are routed to the `datasource-diag` AI route. This route systematically analyzes datasource connectivity issues by executing 8 specialized diagnostic tools in sequence.
-
-### 8-Step Automated Diagnostics
-
-| Step | Tool | Description |
-|------|------|-------------|
-| 1 | **URL Validation** | Validates URL format, protocol, and allowed network list |
-| 2 | **DNS Resolution** | Resolves hostname to IP and checks reachability |
-| 3 | **NLB Health** | Checks Network Load Balancer target group health |
-| 4 | **SG Chain** | Validates Security Group inbound/outbound rule chains |
-| 5 | **Network Path** | Traces VPC routing, subnets, and NACLs |
-| 6 | **HTTP Test** | Sends HTTP request and validates response code/body |
-| 7 | **K8s Endpoint** | Verifies Kubernetes Service and Pod endpoint status |
-| 8 | **Full Report** | Aggregates all results into a diagnostic summary |
-
-Once diagnostics start, you are automatically redirected to the AI assistant screen where you can follow the diagnostic process in real time.
-
+On the Datasources management tab, each kind's **default** datasource row shows a **Diagnose with AI**
+link (supported kinds: Prometheus, ClickHouse, Loki, Mimir, Tempo). Clicking it opens the AI assistant
+with a section-pinned diagnostic prompt prefilled (Prometheus/ClickHouse → `/observability`,
+Loki/Mimir/Tempo → `/monitoring`). It is **never sent automatically** — review and send it yourself,
+and it starts a fresh conversation. The agent probes the datasource using that connector's
+query/schema tools.
 ## Allowed Networks
 
 Admins can configure an allow list to exempt specific private network addresses from SSRF blocking.

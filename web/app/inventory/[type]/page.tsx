@@ -15,7 +15,7 @@ import RiskHero from '@/components/inventory/RiskHero';
 import CloudTrailEvents from '@/components/inventory/CloudTrailEvents';
 import VpcResourceMap from '@/components/inventory/VpcResourceMap';
 import { ElasticacheNodeMetrics, OpensearchDomainMetrics, MskBrokerNodes, RdsInstanceMetrics, DynamoTableMetrics, AlbMetrics, NlbMetrics, S3Metrics, EbsMetrics, Ec2Metrics, LambdaMetrics, TgwSection } from '@/components/inventory/NodeMetricsTables';
-import { INVENTORY_TYPES, HIGHLIGHTS, computeHighlights, layoutOf } from '@/lib/inventory-types';
+import { INVENTORY_TYPES, HIGHLIGHTS, computeHighlights, layoutOf, worstFirst } from '@/lib/inventory-types';
 import { TYPE_ICON, GROUP_ICON, highlightIcon } from '@/lib/type-icons';
 import { useActiveScope, scopeParams } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
@@ -78,7 +78,33 @@ export default function InventoryTypePage() {
   const [mapVpc, setMapVpc] = useState<Row | null>(null);
   // Supplementary metric KPI cards (e.g. EC2 avg CPU + hourly cost). Degrade silently to [].
   const [metricCards, setMetricCards] = useState<{ label: string; value: string | number; accent?: boolean }[]>([]);
+  // Optional server-computed ranking chart (gap L138, e.g. EC2 CPU Top 15) — generic: any type
+  // whose metrics route returns `bar` renders it with no page changes.
+  const [metricBar, setMetricBar] = useState<{ title: string; data: { label: string; value: number }[] } | null>(null);
   const [scope] = useActiveScope();
+
+  // Accurate fleet total past the 500-row cap (gap L110): the summary endpoint's byType
+  // count is the true DB count (scoped by the SAME accounts+regions params as the rows).
+  // Fetched only once the cap is actually hit (it is the heaviest inventory aggregation);
+  // refreshTick refetches after an on-demand sync. Failure degrades silently to the row count.
+  const [trueTotal, setTrueTotal] = useState<number | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const atCap = (rows?.length ?? 0) >= ROW_LIMIT;
+  useEffect(() => {
+    setTrueTotal(null);
+    if (!spec || !atCap) return;
+    let alive = true;
+    fetch(`/api/inventory/summary?${scopeParams(scope)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!alive) return;
+        const n = (d?.byType as { type: string; count: number }[] | undefined)
+          ?.find((t) => t.type === type)?.count;
+        if (typeof n === 'number') setTrueTotal(n);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [spec, type, scope, atCap, refreshTick]);
 
   const load = useCallback(async () => {
     try {
@@ -97,12 +123,13 @@ export default function InventoryTypePage() {
   // while the table/donut narrow to the selected region, showing mismatched numbers.
   useEffect(() => {
     setMetricCards([]);
+    setMetricBar(null);
     if (!spec) return;
     let alive = true;
     fetch(`/api/inventory/${type}/metrics?${scopeParams(scope)}`)
       .then((r) => (r.ok ? r.json() : { cards: [] }))
-      .then((d) => { if (alive) setMetricCards(d.cards || []); })
-      .catch(() => { if (alive) setMetricCards([]); });
+      .then((d) => { if (alive) { setMetricCards(d.cards || []); setMetricBar(d.bar && Array.isArray(d.bar.data) && d.bar.data.length ? d.bar : null); } })
+      .catch(() => { if (alive) { setMetricCards([]); setMetricBar(null); } });
     return () => { alive = false; };
   }, [spec, type, scope]);
 
@@ -112,10 +139,19 @@ export default function InventoryTypePage() {
       const r = await fetch(`/api/inventory/${type}/refresh`, { method: 'POST' });
       if (!r.ok) throw new Error(r.status === 401 ? tt('세션 만료 — 새로고침') : tt(`수집 실패 (${r.status})`));
       await load();
+      setRefreshTick((c) => c + 1); // the true total must reflect the fresh sync too
     } catch (e) { setErr(String(e)); } finally { setBusy(false); }
   };
 
   const allRows = useMemo(() => rows ?? [], [rows]);
+  // Below the cap the row count is already exact; at the cap prefer the summary's true count
+  // (never smaller than what is visibly loaded).
+  const totalCount = allRows.length >= ROW_LIMIT && trueTotal != null
+    ? Math.max(trueTotal, allRows.length) : allRows.length;
+  // ONE truncation signal for every sample-based consumer: at the cap AND a confirmed-or-unknown
+  // remainder exists. An exactly-at-cap fleet whose true total equals the rows scanned was fully
+  // scanned — not a sample.
+  const isTruncated = allRows.length >= ROW_LIMIT && (trueTotal == null || trueTotal > allRows.length);
 
   // KPI state breakdown — from the FULL row set (not filtered).
   const stateCounts = useMemo(
@@ -126,8 +162,10 @@ export default function InventoryTypePage() {
   // Per-type highlight cards (tailored top KPIs from synced columns). Empty → fall
   // back to the generic state tiles, so unconfigured types render as before.
   const highlightCards = useMemo(
-    () => (HIGHLIGHTS[type] ? computeHighlights(allRows, HIGHLIGHTS[type]) : []),
-    [allRows, type],
+    () => (HIGHLIGHTS[type]
+      ? computeHighlights(allRows, HIGHLIGHTS[type], { capped: isTruncated })
+      : []),
+    [allRows, type, isTruncated],
   );
 
   // Distribution donut — top 6 + 기타, from the FULL row set.
@@ -184,6 +222,18 @@ export default function InventoryTypePage() {
     return out;
   }, [allRows, spec?.stateKey, stateFilter, facets, query]);
 
+  // Value-distribution histogram (gap L135): counts per distinct numeric value of histKey.col,
+  // top 10 by count, then numerically sorted (v1's memory-allocation bar). preserveOrder keeps
+  // the numeric axis — BarDistribution's default re-sort is count-descending (rankings).
+  // Hook — must sit ABOVE the !spec early return (rules of hooks; no ESLint here to catch it).
+  const histData = useMemo(() => (spec?.histKey
+    ? countBy(allRows, spec.histKey.col)
+        .filter((d) => d.name !== '(none)')
+        .slice(0, 10)
+        .sort((a, b) => Number(a.name) - Number(b.name))
+        .map((d) => ({ label: `${d.name}${spec.histKey!.suffix ?? ''}`, value: d.value }))
+    : []), [allRows, spec?.histKey]);
+
   if (!spec) {
     return (
       <>
@@ -219,7 +269,7 @@ export default function InventoryTypePage() {
   };
   const kpiRow = (
     <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-      <StatTile label={`총 ${spec.label}`} value={allRows.length} variant="accent" icon={<TypeIcon size={16} />} />
+      <StatTile label={`총 ${spec.label}`} value={totalCount} variant="accent" icon={<TypeIcon size={16} />} />
       {highlightCards.length > 0
         ? highlightCards.map((h) => <StatTile key={h.label} label={h.label} value={h.value} variant={h.variant} icon={cardIcon(h.label, h.variant)} />)
         : stateCounts.slice(0, 4).map((s) => <StatTile key={s.name} label={s.name} value={s.value} variant={stateVariant(s.name)} icon={cardIcon(s.name, stateVariant(s.name))} />)}
@@ -230,9 +280,21 @@ export default function InventoryTypePage() {
     ? <DonutBreakdown title={`${distLabel} 분포`} data={distData} nameKey="name" valueKey="value" />
     : null;
   const donut2 = spec.distKey2 && spec.distKey2 !== spec.distKey && distData2.length > 0
-    ? <DonutBreakdown title={`${colLabel(spec.distKey2)} 분포`} data={distData2} nameKey="name" valueKey="value" />
+    ? <DonutBreakdown title={`${colLabel(spec.distKey2)} 분포`} data={distData2} nameKey="name" valueKey="value" colors={spec.distKey2Colors} />
     : null;
   // Optional Top-N numeric bar (spec.barKey): rows ranked by the column, labelled by name/id.
+  const hist = spec.histKey && histData.length > 0
+    ? (
+      <BarDistribution
+        title={isTruncated ? `${spec.histKey.label} (${tt('표본 기준')})` : spec.histKey.label}
+        data={histData}
+        xKey="label"
+        yKey="value"
+        preserveOrder
+      />
+    )
+    : null;
+
   const barData = spec.barKey
     ? [...allRows]
         .map((r) => ({
@@ -245,6 +307,10 @@ export default function InventoryTypePage() {
     : [];
   const barChart = spec.barKey && barData.length > 0
     ? <BarDistribution title={`Top ${barData.length} — ${spec.barKey.label}`} data={barData} xKey="label" yKey="value" />
+    : null;
+  // Server-computed ranking chart (gap L138): the metrics route's optional `bar` payload.
+  const serverBar = metricBar
+    ? <BarDistribution title={metricBar.title} data={metricBar.data} xKey="label" yKey="value" decimals={1} />
     : null;
   // Graph band: one full-width donut, or two side-by-side when the spec has a second dimension.
   const graphBand = donut && donut2
@@ -265,10 +331,10 @@ export default function InventoryTypePage() {
         facets={facets}
         onFacet={(key, val) => setFacets((prev) => ({ ...prev, [key]: val }))}
         shownCount={filteredRows.length}
-        totalCount={allRows.length}
+        totalCount={totalCount}
         onClear={anyFilterActive ? clearAll : undefined}
       />
-      <DataTable columns={columns} rows={filteredRows} onRowClick={setSelected} />
+      <DataTable columns={columns} rows={spec.worstFirst ? worstFirst(filteredRows, spec.worstFirst) : filteredRows} onRowClick={setSelected} />
     </div>
   );
 
@@ -276,7 +342,7 @@ export default function InventoryTypePage() {
     <>
       <PageHeader
         title={spec.label}
-        subtitle={`${spec.group} · ${allRows.length.toLocaleString()}개 리소스`}
+        subtitle={`${spec.group} · ${totalCount.toLocaleString()}개 리소스`}
         right={<RefreshButton busy={busy} onClick={refresh} capturedAt={captured} />}
       />
       <div className="px-8 py-8 flex flex-col gap-6">
@@ -289,7 +355,14 @@ export default function InventoryTypePage() {
                 Risk types keep their verdict hero as the KPI band; everything else uses kpiRow. */}
             {arch === 'risk' ? (
               <>
-                <RiskHero label={spec.label} total={allRows.length} cards={highlightCards} capped={allRows.length >= ROW_LIMIT} />
+                <RiskHero
+                  label={spec.label}
+                  total={totalCount}
+                  sampled={allRows.length}
+                  totalIsExact={allRows.length < ROW_LIMIT || trueTotal != null}
+                  cards={highlightCards}
+                  capped={isTruncated}
+                />
                 {metricCards.length > 0 && (
                   <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                     {metricCards.map((c) => <StatTile key={c.label} label={c.label} value={c.value} variant="accent" icon={<Activity size={16} />} />)}
@@ -300,7 +373,12 @@ export default function InventoryTypePage() {
               kpiRow
             )}
             {graphBand}
-            {barChart}
+            {(() => {
+              const charts = [barChart, hist, serverBar].filter(Boolean);
+              if (charts.length === 0) return null;
+              if (charts.length === 1) return charts[0];
+              return <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">{charts.map((c, i) => <div key={i} className="min-w-0">{c}</div>)}</div>;
+            })()}
             {/* Type-specific live sections (v1 parity): CloudTrail recent-events audit view. */}
             {type === 'cloudtrail' && <CloudTrailEvents />}
             {tableBlock}

@@ -53,8 +53,11 @@ resource "aws_iam_role_policy" "worker_diagnosis_notify" {
   })
 }
 
-# Web task role → manage the email subscriptions for this one topic (in-app admin UI). Read-only on the
-# rest of SNS; no CreateTopic / DeleteTopic / Publish. aws_iam_role.task always exists (no count).
+# Web task role → manage the email subscriptions for this one topic (in-app admin UI), plus a
+# single admin-triggered test Publish (gap L53 — POST /api/diagnosis/subscribers/test) so a
+# subscriber can verify delivery. Publish is scoped to this one topic (mirrors what the worker
+# roles already hold); report/digest publishing stays worker-only. Read-only on the rest of SNS;
+# no CreateTopic / DeleteTopic. aws_iam_role.task always exists (no count).
 resource "aws_iam_role_policy" "task_diagnosis_notify" {
   count = local.notify_count
   name  = "${var.project}-task-diagnosis-notify"
@@ -64,7 +67,7 @@ resource "aws_iam_role_policy" "task_diagnosis_notify" {
     Statement = [{
       Sid      = "ManageDiagnosisSubscriptions"
       Effect   = "Allow"
-      Action   = ["sns:Subscribe", "sns:Unsubscribe", "sns:ListSubscriptionsByTopic", "sns:GetTopicAttributes"]
+      Action   = ["sns:Subscribe", "sns:Unsubscribe", "sns:ListSubscriptionsByTopic", "sns:GetTopicAttributes", "sns:Publish"]
       Resource = aws_sns_topic.diagnosis[0].arn
     }]
   })

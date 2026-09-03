@@ -126,7 +126,7 @@ Single Terraform root `terraform/foundation/` — partial S3 backend (`backend.h
 | `workers.tf` | SQS + ESM + dispatcher/worker/status_updater/reaper Lambda + Step Functions + Fargate worker (`workers_enabled`) |
 | `eks.tf` | `for_each onboard_eks_clusters` Access Entry + AdminView policy + endpoint/CA outputs |
 | `steampipe.tf` | Warm Steampipe Fargate (FDW) + sync Lambda → Aurora inventory (`steampipe_enabled`) |
-| `notify.tf` | Diagnosis-completion SNS topic + subscription IAM (`diagnosis_notify_enabled`) |
+| `notify.tf` | Diagnosis-completion SNS topic + subscription IAM + admin-only web-task test Publish, single-topic-scoped (`diagnosis_notify_enabled`) |
 | `incidents.tf` | Incident-lifecycle webhook/status (`incident_lifecycle_enabled`, ADR-006) |
 | `k8sgpt.tf` | K8sGPT diagnosis layer Bedrock budget/resources (`k8sgpt_enabled`) |
 | `writeback.tf` | RCA result write-back path (`rca_writeback_enabled`) |
@@ -295,7 +295,7 @@ flowchart LR
 | `workers.tf` | SQS + ESM + dispatcher/worker/status_updater/reaper Lambda + Step Functions + Fargate 워커(`workers_enabled`) |
 | `eks.tf` | `for_each onboard_eks_clusters` Access Entry + AdminView 정책 + endpoint/CA output |
 | `steampipe.tf` | warm Steampipe Fargate(FDW) + sync Lambda → Aurora 인벤토리(`steampipe_enabled`) |
-| `notify.tf` | 진단 완료 SNS 토픽 + 구독 IAM(`diagnosis_notify_enabled`) |
+| `notify.tf` | 진단 완료 SNS 토픽 + 구독 IAM + 관리자 전용 web 태스크 테스트 발송(동일 토픽 한정 Publish)(`diagnosis_notify_enabled`) |
 | `incidents.tf` | 인시던트 라이프사이클 webhook/상태(`incident_lifecycle_enabled`, ADR-006) |
 | `k8sgpt.tf` | K8sGPT 진단층 Bedrock 예산/리소스(`k8sgpt_enabled`) |
 | `writeback.tf` | RCA 결과 write-back 경로(`rca_writeback_enabled`) |

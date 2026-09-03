@@ -57,6 +57,9 @@ describe('GET /api/compliance/runs/[id]', () => {
     const body = await res.json();
     expect(body.run.id).toBe(2);
     expect(body.results[0].control_id).toBe('c1');
+    // Gap L70: the detail SELECT carries the control description column.
+    const resultsSql = String(query.mock.calls.at(-1)?.[0] ?? '');
+    expect(resultsSql).toContain('description');
   });
   it('200 for an admin reading a run owned by someone else', async () => {
     verifyUser.mockResolvedValue({ sub: 'admin-u' });

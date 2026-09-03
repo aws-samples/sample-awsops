@@ -16,7 +16,13 @@ import { useI18n } from '@/components/shell/LanguageProvider';
  * neutral "표본 검사" instead (never a false account-wide safety claim), and issue
  * counts are shown as a lower bound ("주의 N건+").
  */
-export default function RiskHero({ label, total, cards, capped = false }: { label: string; total: number; cards: HighlightCard[]; capped?: boolean }) {
+export default function RiskHero({ label, total, cards, capped = false, sampled, totalIsExact }: {
+  label: string; total: number; cards: HighlightCard[]; capped?: boolean;
+  /** Rows actually scanned for the verdict (drives the 표본 caption). Defaults to `total`. */
+  sampled?: number;
+  /** True when `total` is the real fleet count (no `+` lower-bound marker). Defaults to !capped. */
+  totalIsExact?: boolean;
+}) {
   const { tt } = useI18n();
   const issues = cards
     .filter((c) => c.variant === 'danger' && typeof c.value === 'number')
@@ -25,10 +31,12 @@ export default function RiskHero({ label, total, cards, capped = false }: { labe
   const verdict = hasIssues ? `주의 ${issues.toLocaleString()}건${capped ? '+' : ''}` : capped ? '표본 검사' : '정상';
   const accentBar = hasIssues ? 'border-l-rose-400' : capped ? 'border-l-amber-400' : 'border-l-emerald-400';
   const verdictColor = hasIssues ? 'text-rose-600' : capped ? 'text-amber-600' : 'text-emerald-600';
+  const sampledCount = sampled ?? total;
+  const exact = totalIsExact ?? !capped;
   const sub = hasIssues
     ? '아래 위험 항목 확인'
     : capped
-      ? `표본 ${total.toLocaleString()}건 기준 · 전체가 아닐 수 있어요`
+      ? `표본 ${sampledCount.toLocaleString()}건 기준 · 전체가 아닐 수 있어요`
       : '위험 신호 없음';
 
   return (
@@ -38,7 +46,7 @@ export default function RiskHero({ label, total, cards, capped = false }: { labe
           <div className="text-[11px] font-semibold uppercase tracking-[0.04em] text-ink-400">{tt(label)} · {tt('보안 상태')}</div>
           <div className={cn('mt-1 text-[24px] font-semibold leading-none', verdictColor)}>{tt(verdict)}</div>
           <div className="mt-1.5 text-[12px] text-ink-400">
-            {tt('총')} {total.toLocaleString()}{capped ? '+' : ''} · {tt(sub)}
+            {tt('총')} {total.toLocaleString()}{exact ? '' : '+'} · {tt(sub)}
           </div>
         </div>
         <div className="grid min-w-0 flex-1 grid-cols-2 gap-3 sm:grid-cols-3 lg:max-w-2xl lg:grid-cols-4">

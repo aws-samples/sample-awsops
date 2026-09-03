@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import ExplorePanel from './ExplorePanel';
+import { EXAMPLE_QUERIES } from '@/lib/example-queries';
 
 const INSTANCES = [
   { id: 1, name: 'prod-prom', kind: 'prometheus', authType: 'none', isDefault: true, connected: true },
@@ -215,5 +216,34 @@ describe('ExplorePanel', () => {
     fireEvent.change(screen.getByRole('combobox', { name: '범위' }), { target: { value: '3600' } });
     await waitFor(() => expect(screen.getByText('시계열')).toBeTruthy());
     expect(screen.queryByText('상위 결과')).toBeNull();
+  });
+});
+
+const CH_DS = [{ id: 7, name: 'ch-prod', kind: 'clickhouse', authType: 'none', isDefault: true, connected: true }];
+
+describe('ExplorePanel example chips', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url) === '/api/datasources') return { ok: true, json: async () => ({ datasources: CH_DS }) };
+      if (String(url).includes('/diag-signals')) return { ok: true, json: async () => ({ ready: [], unavailable: [] }) };
+      if (String(url).includes('/query')) return { ok: true, json: async () => ({ result: { shape: 'empty', note: '결과 없음' }, metadata: { executionTimeMs: 5, tool: 'clickhouse_query' } }) };
+      return { ok: true, json: async () => ({}) };
+    }));
+  });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it('renders curated chips for the selected kind and runs the expr on click', async () => {
+    render(<ExplorePanel instanceId={7} />);
+    await waitFor(() => expect(screen.getByText(EXAMPLE_QUERIES.clickhouse[0].label)).toBeTruthy());
+    fireEvent.click(screen.getByText(EXAMPLE_QUERIES.clickhouse[0].label));
+    const f = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    await waitFor(() => expect(f.mock.calls.some(([u, init]) =>
+      String(u).includes('/query') && JSON.parse((init as { body: string }).body).query === EXAMPLE_QUERIES.clickhouse[0].expr)).toBe(true));
+  });
+
+  it('no CLICKHOUSE chip expression touches system.* (connector DANGER token)', () => {
+    // The system.* block is clickhouse_mcp-specific — Datadog metric names legitimately start
+    // with `system.` (avg:system.cpu.user{*}), so the guard must not be blanket-applied.
+    for (const e of EXAMPLE_QUERIES.clickhouse) expect(/system\./i.test(e.expr), e.expr).toBe(false);
   });
 });

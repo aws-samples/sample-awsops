@@ -488,6 +488,66 @@ def sweep_graph_queries(conn, integration_id, keep_keys):
         iid=integration_id, keep=list(keep_keys or []))
 
 
+# ── datasource_dashboard_cards (pre-built dashboard cards) ──────────────────────────────────────
+# Third pre-built-content family; mirrors the diag-signal helpers (sentinel on empty build) with the
+# graph-query helpers' simpler shape — deterministic only, so no budget/provenance machinery.
+
+
+def upsert_dashboard_cards(conn, integration_id, rows, schema_version):
+    """Idempotent upsert of built dashboard-card rows for one instance. jsonb fields are bound + cast
+    (never inlined). Caller sweeps stale keys via sweep_dashboard_cards.
+
+    Empty rows write the schema-version sentinel row (see upsert_diag_signals' docstring) so
+    "this schema genuinely yields no cards" is remembered instead of rebuilt every run.
+    Returns the card_keys actually written — what the caller must sweep against.
+    """
+    rows = list(rows or [])
+    if not rows:
+        rows = [{
+            "card_key": SCHEMA_VERSION_SENTINEL_KEY,
+            "title": "(no cards for this schema)",
+            "viz": "stat", "unit": "", "status": "unavailable", "query": None, "missing": [],
+        }]
+    for r in rows:
+        conn.run(
+            "INSERT INTO datasource_dashboard_cards "
+            "(account_id, integration_id, card_key, title, viz, unit, status, query, missing, schema_version, built_at) "
+            "VALUES ('self', :iid, :ck, :ti, :vz, :un, :st, :q::jsonb, :mi::jsonb, :sv, now()) "
+            "ON CONFLICT (account_id, integration_id, card_key) DO UPDATE SET "
+            "title=EXCLUDED.title, viz=EXCLUDED.viz, unit=EXCLUDED.unit, status=EXCLUDED.status, "
+            "query=EXCLUDED.query, missing=EXCLUDED.missing, "
+            "schema_version=EXCLUDED.schema_version, built_at=now()",
+            iid=integration_id, ck=r["card_key"], ti=r["title"], vz=r["viz"],
+            un=r.get("unit") or "", st=r["status"],
+            q=(json.dumps(r["query"]) if r.get("query") is not None else None),
+            mi=json.dumps(r.get("missing") or []), sv=schema_version,
+        )
+    return [r["card_key"] for r in rows]
+
+
+def read_card_schema_version(conn, integration_id):
+    """Return a stable schema_version only when all existing card rows agree (mirrors
+    read_signal_schema_version — see its docstring for why mixed versions must not short-circuit)."""
+    rows = conn.run(
+        "SELECT COUNT(DISTINCT schema_version), MIN(schema_version) "
+        "FROM datasource_dashboard_cards "
+        "WHERE account_id='self' AND integration_id=:iid",
+        iid=integration_id)
+    if not rows:
+        return None
+    distinct, version = rows[0]
+    return version if distinct == 1 and version else None
+
+
+def sweep_dashboard_cards(conn, integration_id, keep_keys):
+    """Delete this instance's card rows whose key is NOT in keep_keys (mark-sweep after a rebuild).
+    Empty keep_keys → delete all rows for the instance."""
+    conn.run(
+        "DELETE FROM datasource_dashboard_cards "
+        "WHERE account_id='self' AND integration_id=:iid AND card_key <> ALL(:keep)",
+        iid=integration_id, keep=list(keep_keys or []))
+
+
 _MAX_SCHEMA_BYTES = 256_000  # mirrors web/lib/datasource-schema.ts's MAX_SCHEMA_BYTES — same table/cap
 
 

@@ -68,6 +68,23 @@ If you see the **result truncated (cap reached)** warning, narrow the query's ra
 - "traces that took over 500ms" → generates a TraceQL query
 - "row count per table" → generates a read-only SQL query
 
+## Diagnose with AI
+
+On the Datasources management tab, each kind's **default** datasource row shows a **Diagnose with AI**
+link (supported kinds: Prometheus, ClickHouse, Loki, Mimir, Tempo). Clicking it opens the AI assistant
+with a section-pinned diagnostic prompt prefilled (Prometheus/ClickHouse → `/observability`,
+Loki/Mimir/Tempo → `/monitoring`). It is **never sent automatically** — review and send it yourself,
+and it starts a fresh conversation. The agent probes the datasource using that connector's
+query/schema tools.
+
+## Explore feature summary
+
+- Curated **example-query and natural-language prompt chips** per kind (all 8 kinds)
+- **7d/30d range presets** (Prometheus/Mimir up to 30d, Loki 7d — per-kind bounds)
+- Result **metadata bar** (rows/series · round-trip ms · query language · shape)
+- Dedicated **Loki log viewer** (newest-first, label badges) and Tempo/Jaeger **duration bars**
+- An **"AI generated" banner** on drafted queries; management-tab **KPI tiles and refresh**
+
 ## Related pages
 - [Custom Agents](../operations/custom-agents) - Connect datasources and register credentials
 - [AI Assistant](../overview/assistant) - Conversational AI operations helper

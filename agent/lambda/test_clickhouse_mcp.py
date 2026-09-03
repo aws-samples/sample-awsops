@@ -126,6 +126,9 @@ class TestTools(unittest.TestCase):
         self.assertEqual(captured["method"], "POST")
         self.assertIn("readonly=1", captured["url"])
         self.assertIn("max_result_rows=2", captured["url"])
+        # ClickHouse's default 64-bit-as-STRING serialization is kept: forcing JSON numbers would
+        # silently round UInt64 > 2^53 for every consumer; stat cards coerce strings client-side.
+        self.assertNotIn("output_format_json_quote_64bit_integers", captured["url"])
         self.assertIn("FORMAT JSON", captured["body"])
         self.assertEqual(captured["headers"]["Authorization"][:6], "Basic ")
 

@@ -41,9 +41,9 @@ Click on a trail row to view in the slide panel:
 
 ### Event Details
 Click on an event row to view:
-- **Event**: ID, name, source, time, user, Access Key
+- **Event**: ID, name, source, time, user (Access Key is admin-only)
 - **Resource**: Resource type and name
-- **Raw Event**: Full event data in JSON format
+- **Raw Event** (admin only): Projected event data in JSON format — userIdentity is reduced to selected identity attributes and credential-family keys are masked by a deny-list (defense-in-depth, not a completeness guarantee — review before copying out)
 
 ## How to Use
 
@@ -68,7 +68,7 @@ Focus on the Write Events tab for security audits.
 ### Detecting Suspicious Activity
 Check the following in the Write Events tab:
 - API calls at unusual times
-- Unknown usernames or Access Keys
+- Unknown usernames (admins can additionally check Access Keys)
 - Large number of delete (Delete*) events
 - IAM-related change events
 

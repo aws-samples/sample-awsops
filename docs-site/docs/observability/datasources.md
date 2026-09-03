@@ -68,6 +68,22 @@ import Screenshot from '@site/src/components/Screenshot';
 - "500ms 이상 걸린 트레이스" → TraceQL 쿼리로 생성
 - "테이블별 행 수" → 읽기 전용 SQL 로 생성
 
+## AI로 진단
+
+Datasources 관리 탭에서 각 kind의 **default** 데이터소스 행에는 **AI로 진단** 링크가 표시됩니다
+(지원 kind: Prometheus·ClickHouse·Loki·Mimir·Tempo). 클릭하면 AI 어시스턴트로 이동하며, 섹션이
+고정된 진단 프롬프트가 입력창에 미리 채워집니다(Prometheus/ClickHouse → `/observability`,
+Loki/Mimir/Tempo → `/monitoring`). **자동으로 전송되지 않으며**, 검토 후 직접 전송하면 새 대화로
+시작됩니다. 에이전트는 해당 커넥터의 쿼리/스키마 도구로 데이터소스 응답 상태를 점검합니다.
+
+## Explore 기능 요약
+
+- 타입별 **예제 쿼리·자연어 프롬프트 칩**(8개 kind), 클릭 시 즉시 실행/입력
+- **7d/30d 기간 프리셋**(Prometheus/Mimir 30d, Loki 7d — kind별 상한)
+- 결과 **메타데이터 바**(행/시리즈 수 · 왕복 ms · 쿼리 언어 · 형태)
+- **Loki 전용 로그 뷰어**(최신순 정렬·라벨 배지), Tempo/Jaeger **duration 바**
+- AI 생성 쿼리 **출처 배너**, 관리 탭 **KPI 타일·새로고침**
+
 ## 관련 페이지
 - [커스텀 에이전트](../operations/custom-agents) - 에이전트·스킬 구성(데이터소스/커넥터는 연동 허브로 이동)
 - [AI 어시스턴트](../overview/assistant) - 대화형 AI 운영 도우미

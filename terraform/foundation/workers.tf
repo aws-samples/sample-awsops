@@ -137,7 +137,7 @@ data "archive_file" "workers_src" {
   }
   # datasource_index handler (REGISTRY 'datasource_index', lambda runtime) + its catalogs. Flattened —
   # datasource_index.py falls back to `import signal_catalog` when the diagnosis package isn't
-  # bundled; graph_catalog.py/graph_querygen.py are always flat (they never lived under a package).
+  # bundled; graph_catalog.py/graph_querygen.py/card_catalog.py are always flat (they never lived under a package).
   source {
     content  = file("${local.workers_src}/datasource_index.py")
     filename = "datasource_index.py"
@@ -157,6 +157,10 @@ data "archive_file" "workers_src" {
   source {
     content  = file("${local.workers_src}/graph_querygen.py")
     filename = "graph_querygen.py"
+  }
+  source {
+    content  = file("${local.workers_src}/card_catalog.py")
+    filename = "card_catalog.py"
   }
   # AI Insights: the `insight` REGISTRY handler (job.py) + collectors. The `insight/` package structure
   # is PRESERVED in the zip (NOT flattened) so `from insight.x import …` resolves at runtime.

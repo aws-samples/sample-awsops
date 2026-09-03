@@ -8,22 +8,78 @@ import { getPool } from '@/lib/db';
 export type ScheduleFreq = 'weekly' | 'biweekly' | 'monthly';
 export const SCHEDULE_FREQS: ScheduleFreq[] = ['weekly', 'biweekly', 'monthly'];
 
-export interface DiagnosisSchedule {
+// Detail fields (gap L51, all optional — absent keeps the pure-interval behavior):
+// dayOfWeek 0-6 (JS getDay convention, 0=Sun, KST) for weekly/biweekly; dayOfMonth 1-28 (KST)
+// for monthly; hour 0-23 (KST) for all. KST is a fixed +9 offset (no DST).
+export interface ScheduleDetail {
+  dayOfWeek?: number;
+  dayOfMonth?: number;
+  hour?: number;
+}
+
+export interface DiagnosisSchedule extends ScheduleDetail {
   scheduleType: ScheduleFreq;
   enabled: boolean;
   tier: string;
   model: string | null;
+  lang?: string;
   nextRunAt: string | null;
   lastRunAt: string | null;
 }
 
-/** Next run = `from` + one interval, returned as a UTC ISO string. weekly=+7d, biweekly=+14d, monthly=+1 month. */
-export function computeNextRun(type: ScheduleFreq, fromISO: string): string {
-  const d = new Date(fromISO);
-  if (type === 'weekly') d.setUTCDate(d.getUTCDate() + 7);
-  else if (type === 'biweekly') d.setUTCDate(d.getUTCDate() + 14);
-  else d.setUTCMonth(d.getUTCMonth() + 1);
-  return d.toISOString();
+const KST_OFFSET_MS = 9 * 3600_000;
+const kstParts = (utcMs: number) => new Date(utcMs + KST_OFFSET_MS); // read its getUTC* as KST fields
+
+/** Next run as a UTC ISO string. Without detail fields: `from` + one interval (weekly=+7d,
+ *  biweekly=+14d, monthly=+1 month — today's behavior). The precise weekday/date branch runs
+ *  only when the cadence's PARTNER field is present (`dayOfWeek` for weekly/biweekly,
+ *  `dayOfMonth` for monthly) — an `hour` alone keeps the interval behavior with the run hour
+ *  pinned in KST, never inventing a run date. Mirrors the dispatcher's `_precise_next_run` so
+ *  the BFF-computed first run and the worker-computed subsequent runs agree. */
+export function computeNextRun(type: ScheduleFreq, fromISO: string, detail?: ScheduleDetail): string {
+  const h = typeof detail?.hour === 'number' && detail.hour >= 0 && detail.hour <= 23 ? detail.hour : null;
+  const hasPartner = type === 'monthly'
+    ? typeof detail?.dayOfMonth === 'number' && detail.dayOfMonth >= 1 && detail.dayOfMonth <= 28
+    : typeof detail?.dayOfWeek === 'number' && detail.dayOfWeek >= 0 && detail.dayOfWeek <= 6;
+  if (!hasPartner) {
+    const d = new Date(fromISO);
+    if (type === 'weekly') d.setUTCDate(d.getUTCDate() + 7);
+    else if (type === 'biweekly') d.setUTCDate(d.getUTCDate() + 14);
+    else {
+      // Overflow-safe month add — raw setUTCMonth turns Jan 31 into Mar 3 (skipping February).
+      // Clamp to the target month's last day instead (matches Postgres `+ interval '1 month'`,
+      // which the dispatcher's claim SQL uses for subsequent runs).
+      const day = d.getUTCDate();
+      d.setUTCDate(1);
+      d.setUTCMonth(d.getUTCMonth() + 1);
+      const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+      d.setUTCDate(Math.min(day, lastDay));
+    }
+    if (h === null) return d.toISOString();
+    // hour-only: pin the KST wall-clock hour on the interval date.
+    const k = kstParts(d.getTime());
+    const pinned = Date.UTC(k.getUTCFullYear(), k.getUTCMonth(), k.getUTCDate(), h, 0, 0);
+    return new Date(pinned - KST_OFFSET_MS).toISOString();
+  }
+  const nowMs = new Date(fromISO).getTime();
+  const now = kstParts(nowMs);
+  const hh = h ?? 0;
+  let cand: Date;
+  if (type === 'weekly' || type === 'biweekly') {
+    const target = detail!.dayOfWeek as number;
+    cand = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(),
+      now.getUTCDate() + ((target - now.getUTCDay()) + 7) % 7, hh, 0, 0));
+    if (cand.getTime() - KST_OFFSET_MS <= nowMs) cand = new Date(cand.getTime() + 7 * 86400_000);
+    if (type === 'biweekly') cand = new Date(cand.getTime() + 7 * 86400_000);
+  } else {
+    const d = detail!.dayOfMonth as number;
+    cand = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), d, hh, 0, 0));
+    if (cand.getTime() - KST_OFFSET_MS <= nowMs) {
+      cand = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, d, hh, 0, 0));
+    }
+  }
+  // cand's getUTC* fields carry KST wall-clock values → shift back to real UTC.
+  return new Date(cand.getTime() - KST_OFFSET_MS).toISOString();
 }
 
 interface Row {
@@ -31,7 +87,8 @@ interface Row {
   enabled: boolean;
   next_run_at: string | Date | null;
   last_run_at: string | Date | null;
-  config: { tier?: string; model?: string | null } | null;
+  config: { tier?: string; model?: string | null; lang?: string;
+    dayOfWeek?: number; dayOfMonth?: number; hour?: number } | null;
 }
 
 const iso = (v: string | Date | null): string | null => (v == null ? null : new Date(v).toISOString());
@@ -43,6 +100,10 @@ function mapRow(r: Row): DiagnosisSchedule {
     enabled: r.enabled,
     tier: cfg.tier ?? 'mid',
     model: cfg.model ?? null,
+    ...(cfg.lang !== undefined ? { lang: cfg.lang } : {}),
+    ...(cfg.dayOfWeek !== undefined ? { dayOfWeek: cfg.dayOfWeek } : {}),
+    ...(cfg.dayOfMonth !== undefined ? { dayOfMonth: cfg.dayOfMonth } : {}),
+    ...(cfg.hour !== undefined ? { hour: cfg.hour } : {}),
     nextRunAt: iso(r.next_run_at),
     lastRunAt: iso(r.last_run_at),
   };
@@ -68,10 +129,17 @@ export class ScheduleSlotTakenError extends Error {
 /** Create/replace the caller's schedule. next_run_at is always recomputed (NOT NULL); `enabled` gates firing. */
 export async function upsertSchedule(
   userSub: string,
-  input: { scheduleType: ScheduleFreq; enabled: boolean; tier?: string; model?: string | null; nowISO?: string },
+  input: { scheduleType: ScheduleFreq; enabled: boolean; tier?: string; model?: string | null;
+    lang?: string; nowISO?: string } & ScheduleDetail,
 ): Promise<DiagnosisSchedule> {
-  const nextRunAt = computeNextRun(input.scheduleType, input.nowISO ?? new Date().toISOString());
-  const config = { tier: input.tier ?? 'mid', model: input.model ?? null };
+  const detail: ScheduleDetail = {
+    ...(typeof input.dayOfWeek === 'number' ? { dayOfWeek: input.dayOfWeek } : {}),
+    ...(typeof input.dayOfMonth === 'number' ? { dayOfMonth: input.dayOfMonth } : {}),
+    ...(typeof input.hour === 'number' ? { hour: input.hour } : {}),
+  };
+  const nextRunAt = computeNextRun(input.scheduleType, input.nowISO ?? new Date().toISOString(), detail);
+  const config = { tier: input.tier ?? 'mid', model: input.model ?? null,
+    ...(input.lang ? { lang: input.lang } : {}), ...detail };
   // One active schedule per user. The table's conflict key is (user_sub, schedule_type), so changing
   // frequency (e.g. weekly→monthly) would INSERT a new row and leave the previous one enabled — the
   // dispatcher (WHERE enabled) would then fire BOTH, and readSchedule (LIMIT 1) would hide the leak.

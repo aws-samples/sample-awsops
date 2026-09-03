@@ -351,3 +351,55 @@ class TestUpsertDatasourceSchema:
         assert "INSERT INTO datasource_schemas" in sql and "::jsonb" in sql
         assert p["acct"] == "self" and p["iid"] == 42 and p["k"] == "clickhouse"
         assert json.loads(p["s"]) == {"version": "1.2", "tables": []}
+
+
+# ── datasource_dashboard_cards (pre-built dashboard cards) ───────────────────────────────────────
+CARD_READY = {"card_key": "up_targets", "title": "정상 타깃 수", "viz": "stat", "unit": "",
+              "status": "ready",
+              "query": {"tool": "prometheus_query", "expr": "count(up == 1)", "range": None},
+              "missing": []}
+CARD_UNAVAIL = {"card_key": "memory_available", "title": "가용 메모리", "viz": "timeseries", "unit": "bytes",
+                "status": "unavailable", "query": None, "missing": ["node_memory_MemAvailable_bytes"]}
+
+
+class TestUpsertDashboardCards:
+    def test_upsert_binds_params_and_jsonb_casts(self):
+        c = FakeConn()
+        written = db.upsert_dashboard_cards(c, 42, [CARD_READY, CARD_UNAVAIL], "abc123")
+        assert written == ["up_targets", "memory_available"]
+        assert len(c.calls) == 2
+        for sql, p in c.calls:
+            assert "INSERT INTO datasource_dashboard_cards" in sql
+            assert "::jsonb" in sql
+            assert p["iid"] == 42 and p["sv"] == "abc123"
+            assert "up_targets" not in sql  # bound, not inlined
+        ready_call = next(p for _, p in c.calls if p["ck"] == "up_targets")
+        assert json.loads(ready_call["q"])["tool"] == "prometheus_query"
+
+    def test_upsert_empty_rows_writes_version_sentinel(self):
+        c = FakeConn()
+        written = db.upsert_dashboard_cards(c, 1, [], "v9")
+        assert written == [db.SCHEMA_VERSION_SENTINEL_KEY]
+        sql, p = c.calls[0]
+        assert "datasource_dashboard_cards" in sql and p["sv"] == "v9"
+
+
+class TestReadCardSchemaVersion:
+    def test_returns_value_when_rows_agree(self):
+        c = FakeConn(returns=[[[1, "abc123"]]])
+        assert db.read_card_schema_version(c, 7) == "abc123"
+        sql, p = c.calls[0]
+        assert "datasource_dashboard_cards" in sql and p["iid"] == 7
+
+    def test_returns_none_when_absent_or_mixed(self):
+        assert db.read_card_schema_version(FakeConn(returns=[[[0, None]]]), 7) is None
+        assert db.read_card_schema_version(FakeConn(returns=[[[2, "newest"]]]), 7) is None
+
+
+class TestSweepDashboardCards:
+    def test_sweep_deletes_keys_not_kept_bound(self):
+        c = FakeConn()
+        db.sweep_dashboard_cards(c, 5, ["up_targets"])
+        sql, p = c.calls[0]
+        assert "DELETE FROM datasource_dashboard_cards" in sql
+        assert p["iid"] == 5 and p["keep"] == ["up_targets"]

@@ -45,9 +45,9 @@ Events 및 Write Events 탭은 클릭 시에만 데이터를 로드합니다(`ev
 
 ### 이벤트 상세 정보
 이벤트 행 클릭 시 확인:
-- **Event**: ID, 이름, 소스, 시간, 사용자, Access Key
+- **Event**: ID, 이름, 소스, 시간, 사용자 (Access Key는 관리자 전용)
 - **Resource**: 리소스 유형 및 이름
-- **Raw Event**: JSON 형식의 전체 이벤트 데이터
+- **Raw Event** (관리자 전용): JSON 형식의 프로젝션된 이벤트 데이터 — userIdentity는 선별된 신원 속성으로 축소되고 자격증명 계열 키는 deny-list로 마스킹됩니다(완전성 보장이 아닌 defense-in-depth — 복사 전 내용 확인 권장)
 
 ## 사용 방법
 
@@ -72,7 +72,7 @@ Events 및 Write Events 탭은 클릭 시에만 데이터를 로드합니다(`ev
 ### 의심스러운 활동 탐지
 Write Events 탭에서 다음을 확인:
 - 비정상적인 시간대의 API 호출
-- 알 수 없는 사용자명 또는 Access Key
+- 알 수 없는 사용자명 (관리자는 Access Key까지 확인 가능)
 - 대량의 삭제(Delete*) 이벤트
 - IAM 관련 변경 이벤트
 

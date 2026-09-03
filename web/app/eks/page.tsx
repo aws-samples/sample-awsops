@@ -15,6 +15,7 @@ import BarDistribution from '@/components/charts/BarDistribution';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import DetailPanel from '@/components/ui/DetailPanel';
 import NodeDrilldownPanel from '@/components/eks/NodeDrilldownPanel';
+import EksFilterPanel, { NO_VPC, type EksFilterState } from '@/components/eks/EksFilterPanel';
 import NodePodsSection from '@/components/eks/NodePodsSection';
 import NodeEniSection from '@/components/eks/NodeEniSection';
 import type { NodeRow, PodRow } from '@/lib/eks-resources';
@@ -85,6 +86,9 @@ export default function EksPage() {
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
   // v1 parity: 클러스터 카드 클릭 = 아래 패널(노드/파드/타입/네임스페이스/이벤트) 필터 토글.
   const [clusterFilter, setClusterFilter] = useState('');
+  // Gap L130 (v1 parity): multi-select cluster/VPC facet filter — narrows the card grid and
+  // the fleet panels; composes with the single-cluster card-click scope above.
+  const [facet, setFacet] = useState<EksFilterState>({ clusters: [], vpcs: [] });
   // v1 parity: 노드 클릭 → CPU/Memory/Pod Info/ENI/Pods 상세 패널 (per-cluster live fetch).
   const [nodeSel, setNodeSel] = useState<{ cluster: string; name: string } | null>(null);
   const openNode = useCallback((cluster: string, name: string) => setNodeSel({ cluster, name }), []);
@@ -189,9 +193,34 @@ export default function EksPage() {
     return m;
   }, [fleet]);
 
+  const facetActive = facet.clusters.length > 0 || facet.vpcs.length > 0;
+  const facetRows = useMemo(() => (rows ?? []).filter((c) => {
+    if (facet.clusters.length && !facet.clusters.includes(c.name)) return false;
+    if (facet.vpcs.length && !facet.vpcs.includes(c.vpcId || NO_VPC)) return false;
+    return true;
+  }), [rows, facet]);
+  const facetNames = useMemo(() => new Set(facetRows.map((c) => c.name)), [facetRows]);
+  // The card-click scope must not silently zero every panel when the facet excludes it.
+  useEffect(() => {
+    if (facetActive && clusterFilter && !facetNames.has(clusterFilter)) setClusterFilter('');
+  }, [facetActive, clusterFilter, facetNames]);
+  // Prune facet selections that no longer exist after a reload/account switch — a vanished
+  // cluster/VPC must not pin the page on the no-match empty state.
+  useEffect(() => {
+    if (!rows) return;
+    const names = new Set(rows.map((c) => c.name));
+    const vpcs = new Set(rows.map((c) => c.vpcId || NO_VPC));
+    setFacet((cur) => {
+      const clusters = cur.clusters.filter((c) => names.has(c));
+      const vs = cur.vpcs.filter((v) => vpcs.has(v));
+      return clusters.length === cur.clusters.length && vs.length === cur.vpcs.length ? cur : { clusters, vpcs: vs };
+    });
+  }, [rows]);
   const visibleFleet = useMemo(
-    () => (clusterFilter ? fleet.filter((f) => f.name === clusterFilter) : fleet),
-    [fleet, clusterFilter],
+    () => fleet.filter((f) =>
+      (clusterFilter ? f.name === clusterFilter : true)
+      && (facetActive ? facetNames.has(f.name) : true)),
+    [fleet, clusterFilter, facetActive, facetNames],
   );
   const reachable = useMemo(() => visibleFleet.filter((f) => f.reachable), [visibleFleet]);
   const connected = reachable.length;
@@ -397,9 +426,20 @@ export default function EksPage() {
         </div>
       )}
 
+      {rows && rows.length > 0 && (
+        <EksFilterPanel
+          clusters={rows.map((c) => ({ name: c.name, vpcId: c.vpcId }))}
+          value={facet}
+          onChange={setFacet}
+          filteredCount={facetRows.length}
+        />
+      )}
+      {rows && facetActive && facetRows.length === 0 && (
+        <div className="rounded-md border border-ink-100 bg-ink-50 px-3 py-3 text-[13px] text-ink-400">{tt('필터와 일치하는 클러스터가 없습니다')}</div>
+      )}
       {rows && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {rows.map((c) => {
+          {facetRows.map((c) => {
             const f = fleetBy.get(c.name);
             return (
               <div

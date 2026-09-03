@@ -57,13 +57,101 @@ function _ecsTaskBase(r: Row): Row {
 }
 
 const DERIVERS: Record<string, (r: Row) => Row> = {
-  opensearch: (r) => ({
-    instance_type_h: walk(r.cluster_config, 'instance_type'),
-    instance_count_h: walk(r.cluster_config, 'instance_count'),
-    storage_gb_h: walk(r.ebs_options, 'volume_size'),
-    n2n_enc_h: boolH(r.node_to_node_encryption_options_enabled),
-    rest_enc_h: boolH(walk(r.encryption_at_rest_options, 'enabled')),
-  }),
+  opensearch: (r) => {
+    // L150 structured detail: flatten cluster_config/ebs_options/vpc_options/encryption/
+    // advanced-security JSONB into readable fields (v1's structured detail panel). The raw
+    // blobs are then hidden from the panel via the spec's hideKeys.
+    const cc = r.cluster_config;
+    const ebs = r.ebs_options;
+    const vpc = r.vpc_options;
+    const enc = r.encryption_at_rest_options;
+    const adv = r.advanced_security_options;
+    // Tolerant boolean (boolH parity — Steampipe JSONB can carry 'true'/'false' strings);
+    // an ABSENT key yields undefined so a `{}` blob never fabricates a confident 'disabled'.
+    const flag = (v: unknown): boolean | undefined =>
+      v === true || v === 'true' ? true : v === false || v === 'false' ? false : undefined;
+    // Raw arrays pass through so formatDetailValue's one-per-row idlist rendering applies
+    // (a pre-joined comma string would flatten v1's subnet/SG chip list into one line).
+    const arr = (v: unknown): unknown[] | undefined => {
+      const a = asArr(v);
+      return a && a.length ? a : undefined;
+    };
+    const iops = walk(ebs, 'iops');
+    const thr = walk(ebs, 'throughput');
+    const dm = flag(walk(cc, 'dedicated_master_enabled'));
+    const za = flag(walk(cc, 'zone_awareness_enabled'));
+    const warm = flag(walk(cc, 'warm_enabled'));
+    const cold = flag(walk(cc, 'cold_storage_options.enabled'));
+    const standby = flag(walk(cc, 'multi_az_with_standby_enabled'));
+    const ebsOn = flag(walk(ebs, 'ebs_enabled'));
+    return {
+      instance_type_h: walk(cc, 'instance_type'),
+      instance_count_h: walk(cc, 'instance_count'),
+      storage_gb_h: walk(ebs, 'volume_size'),
+      n2n_enc_h: boolH(r.node_to_node_encryption_options_enabled),
+      rest_enc_h: boolH(walk(enc, 'enabled')),
+      dedicated_master_h: dm === true
+        ? `${walk(cc, 'dedicated_master_type') ?? '?'} × ${walk(cc, 'dedicated_master_count') ?? '?'}`
+        : dm === false ? 'disabled' : undefined,
+      zone_awareness_h: za === true
+        ? `enabled (${walk(cc, 'zone_awareness_config.availability_zone_count') ?? '?'} AZ)`
+        : za === false ? 'disabled' : undefined,
+      warm_storage_h: warm === true
+        ? `${walk(cc, 'warm_type') ?? '?'} × ${walk(cc, 'warm_count') ?? '?'}`
+        : warm === false ? 'disabled' : undefined,
+      cold_storage_h: cold === true ? 'enabled' : cold === false ? 'disabled' : undefined,
+      multi_az_standby_h: standby === true ? 'enabled' : standby === false ? 'disabled' : undefined,
+      ebs_volume_h: ebsOn === true
+        ? `${walk(ebs, 'volume_type') ?? '?'} · ${walk(ebs, 'volume_size') ?? '?'} GB`
+          + (iops != null ? ` · ${iops} IOPS` : '')
+          + (thr != null ? ` · ${thr} MB/s` : '')
+        : ebsOn === false ? 'disabled' : undefined,
+      vpc_id_h: walk(vpc, 'vpc_id'),
+      subnets_h: arr(walk(vpc, 'subnet_ids')),
+      security_groups_h: arr(walk(vpc, 'security_group_ids')),
+      azs_h: arr(walk(vpc, 'availability_zones')),
+      kms_key_h: walk(enc, 'kms_key_id'),
+      // real booleans → the DetailPanel's Badge rendering (green true / neutral false)
+      adv_security_h: flag(walk(adv, 'enabled')),
+      internal_user_db_h: flag(walk(adv, 'internal_user_database_enabled')),
+      anonymous_auth_h: flag(walk(adv, 'anonymous_auth_enabled')),
+      cognito_h: flag(walk(r.cognito_options, 'enabled')),
+      // L153 sync additions — service software / endpoint policy / auto-tune / snapshots.
+      software_update_h: (() => {
+        // UpdateAvailable:false does NOT mean healthy — it also covers IN_PROGRESS and the
+        // persistently unhealthy NOT_ELIGIBLE (domain must upgrade first). Derive from
+        // UpdateStatus when present; UpdateAvailable is only the last-resort fallback.
+        const sso = r.service_software_options;
+        const cur = walk(sso, 'current_version');
+        const next = walk(sso, 'new_version');
+        const status = walk(sso, 'update_status');
+        if (typeof status === 'string' && status) {
+          const st = status.toUpperCase();
+          if (st === 'COMPLETED') return `up to date${cur != null ? ` (${cur})` : ''}`;
+          if (st === 'IN_PROGRESS') return `update in progress: ${cur ?? '?'} → ${next ?? '?'}`;
+          if (st === 'PENDING_UPDATE') return `update pending: ${cur ?? '?'} → ${next ?? '?'}`;
+          if (st === 'NOT_ELIGIBLE') return `not eligible for update${cur != null ? ` (${cur})` : ''} — domain upgrade required`;
+          if (st === 'ELIGIBLE') return `update available: ${cur ?? '?'} → ${next ?? '?'}`;
+          return `${status}${cur != null ? ` (${cur})` : ''}`;
+        }
+        const avail = flag(walk(sso, 'update_available'));
+        if (avail === true) return `update available: ${cur ?? '?'} → ${next ?? '?'}`;
+        if (avail === false) return `no update available${cur != null ? ` (${cur})` : ''}`;
+        return undefined;
+      })(),
+      enforce_https_h: flag(walk(r.domain_endpoint_options, 'enforce_https')),
+      tls_policy_h: walk(r.domain_endpoint_options, 'tls_security_policy'),
+      custom_endpoint_h: flag(walk(r.domain_endpoint_options, 'custom_endpoint_enabled')) === true
+        ? walk(r.domain_endpoint_options, 'custom_endpoint') ?? 'enabled'
+        : flag(walk(r.domain_endpoint_options, 'custom_endpoint_enabled')) === false ? 'disabled' : undefined,
+      custom_endpoint_cert_h: walk(r.domain_endpoint_options, 'custom_endpoint_certificate_arn'),
+      auto_tune_h: walk(r.auto_tune_options, 'state'),
+      snapshot_hour_h: (() => {
+        const h = walk(r.snapshot_options, 'automated_snapshot_start_hour');
+        return Number.isFinite(Number(h)) && h !== null && h !== '' ? `${h}:00 UTC` : undefined;
+      })(),
+    };
+  },
   cloudfront: (r) => ({
     protocol_h: walk(r.default_cache_behavior, 'viewer_protocol_policy'),
   }),
@@ -102,6 +190,26 @@ const DERIVERS: Record<string, (r: Row) => Row> = {
     const first = att && att.length > 0 ? asObj(att[0]) : null;
     const inst = first ? (walk(first, 'instance_id') as string | undefined) : undefined;
     return { attached_to: inst ?? 'Unattached' };
+  },
+  // Lambda value formatting (gap L137, v1 parity): null/absent runtime → 'custom' (container-
+  // image functions; overriding the raw column keeps the table, runtime donut, facet, and
+  // detail panel in agreement — v1 did the COALESCE in SQL), and last_modified formatted.
+  lambda: (r) => ({
+    runtime: r.runtime ?? 'custom',
+    last_modified: dateH(r.last_modified) ?? (r.last_modified as string | undefined),
+  }),
+  // scan_on_push (gap-audit L107): Yes/No from the JSONB scanning config. A missing/malformed
+  // config means scanning is off (the API default), so 'No' — never undefined (keeps the column
+  // filterable and the No count honest). The truthiness test deliberately mirrors
+  // computeHighlights' countTruthy FALSY set (inventory-types.ts), so a config carrying `1` or
+  // "True" can never read KPI-enabled but column-'No'.
+  ecr: (r) => {
+    const v = walk(r.image_scanning_configuration, 'scan_on_push');
+    return {
+      scan_on_push: v != null
+        && !['', 'false', 'null', 'undefined', '0', 'none', 'no', 'disabled'].includes(String(v).trim().toLowerCase())
+        ? 'Yes' : 'No',
+    };
   },
   ecs_task: (r) => {
     // Fargate on-demand (ap-northeast-2): $/vCPU-h + $/GB-h — v1 constants (config-overridable in v1).

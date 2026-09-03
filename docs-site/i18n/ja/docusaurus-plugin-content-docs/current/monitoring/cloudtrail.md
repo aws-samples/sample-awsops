@@ -45,9 +45,9 @@ Events および Write Events タブは、クリック時にのみデータを�
 
 ### イベント詳細情報
 イベント行をクリックすると確認できます:
-- **Event**: ID、名前、ソース、時刻、ユーザー、Access Key
+- **Event**: ID、名前、ソース、時刻、ユーザー（Access Key は管理者専用）
 - **Resource**: リソースタイプおよび名前
-- **Raw Event**: JSON 形式の完全なイベントデータ
+- **Raw Event**（管理者専用）: JSON 形式のプロジェクション済みイベントデータ — userIdentity は選別された身元属性に縮約され、資格情報系のキーは deny-list でマスキングされます（完全性の保証ではなく defense-in-depth — コピー前に内容の確認を推奨）
 
 ## 使い方
 
@@ -72,7 +72,7 @@ Events および Write Events タブは、クリック時にのみデータを�
 ### 不審なアクティビティの検知
 Write Events タブで次を確認してください:
 - 通常と異なる時間帯の API 呼び出し
-- 不明なユーザー名または Access Key
+- 不明なユーザー名（管理者は Access Key も確認可能）
 - 大量の削除 (Delete*) イベント
 - IAM 関連の変更イベント
 

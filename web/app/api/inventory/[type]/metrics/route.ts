@@ -1,6 +1,6 @@
 import { verifyUser } from '@/lib/auth';
 import { getPool } from '@/lib/db';
-import { ec2AvgCpu, ec2HourlyCost, rdsMetrics, hasLiveMetrics, liveResourceMetrics, mskBootstrapBrokers, elasticacheFleetLive, opensearchFleetLive, mskListNodes, mskBrokerFleetLive, mskClusterHealth, mskOffsetLags, rdsFleetLive, ddbFleetLive, ddbReplicationLags, albFleetLive, albTargetHealth, nlbFleetLive, s3FleetLive, s3ReplicationStatus, ebsFleetLive, ec2EbsBalance, ec2DiagFleetLive, lambdaFleetLive, tgwFleetLive } from '@/lib/metrics';
+import { ec2CpuStats, ec2NetworkTrends, ec2HourlyCost, rdsMetrics, rdsInstanceTrends, hasLiveMetrics, liveResourceMetrics, liveResourceTrends, mskBootstrapBrokers, elasticacheFleetLive, opensearchFleetLive, mskListNodes, mskBrokerFleetLive, mskClusterHealth, mskOffsetLags, rdsFleetLive, ddbFleetLive, ddbReplicationLags, albFleetLive, albTargetHealth, nlbFleetLive, s3FleetLive, s3ReplicationStatus, ebsFleetLive, ec2EbsBalance, ec2DiagFleetLive, lambdaFleetLive, tgwFleetLive } from '@/lib/metrics';
 import { regionWhereClause, type RegionScope } from '@/lib/inventory';
 
 export const dynamic = 'force-dynamic';
@@ -10,12 +10,10 @@ type Card = { label: string; value: string | number; accent?: boolean };
 // Supplementary KPI cards (CloudWatch avg CPU + Pricing hourly cost). EC2-first.
 // Every failure path degrades silently to { cards: [] } — these cards never blank
 // the page (the F3 total/state tiles + donut + table + F4 detail panel stay intact).
-// KNOWN LIMITATION (pre-existing, not introduced or fixed by the region-scope filter): the
-// instance IDs fed to ec2AvgCpu/ec2HourlyCost/rdsMetrics below are now correctly scoped by
-// region, but lib/metrics.ts itself queries CloudWatch/Pricing against a single fixed
-// AWS_REGION client — it has no per-instance region routing. Selecting a non-default region
-// narrows the table correctly but these two KPI cards can go null/inaccurate for it. Fixing
-// that needs per-region CloudWatch clients in lib/metrics.ts, which is a separate change.
+// KNOWN LIMITATION (pre-existing, narrowed by gap L138): EC2 CPU (ec2CpuStats) now routes
+// per-region clients via the inventory row's region, so the average card and the Top-15
+// ranking are fleet-wide. ec2HourlyCost (Pricing) and rdsMetrics still query a single fixed
+// AWS_REGION client — those cards can go null/inaccurate for a non-default region selection.
 export async function GET(request: Request, { params }: { params: { type: string } }) {
   if (!(await verifyUser(request.headers.get('cookie')))) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
@@ -49,28 +47,58 @@ export async function GET(request: Request, { params }: { params: { type: string
         );
         return Response.json({ fleet, range });
       }
+      // Per-instance 24h network trends (gap L139): ?id=&trends=1 returns ONLY {trends} —
+      // the established trends=1 contract (rds / live-metrics branches).
+      const ec2Id = url.searchParams.get('id');
+      if (ec2Id && url.searchParams.get('trends') === '1') {
+        if (!/^i-[0-9a-f]{8,17}$/.test(ec2Id)) {
+          return Response.json({ status: 'error', message: 'invalid id' }, { status: 400 });
+        }
+        const account = url.searchParams.get('account') ?? undefined;
+        if (account !== undefined && account !== 'self' && !/^[0-9]{12}$/.test(account)) {
+          return Response.json({ status: 'error', message: 'invalid account' }, { status: 400 });
+        }
+        const reg = url.searchParams.get('region') ?? undefined;
+        if (reg !== undefined && !/^[a-z]{2,4}(-[a-z]+)+-\d$/.test(reg)) {
+          return Response.json({ status: 'error', message: 'invalid region' }, { status: 400 });
+        }
+        return Response.json({ trends: await ec2NetworkTrends(ec2Id, account, reg) });
+      }
       const qparams: unknown[] = [];
       const where = `resource_type = 'ec2' AND account_id = 'self'` + regionWhereClause(regions, includeGlobal, qparams);
-      const r = await getPool().query<{ id: string | null; state: string | null; type: string | null }>(
-        `SELECT data->>'instance_id' AS id, data->>'instance_state' AS state, data->>'instance_type' AS type
+      const r = await getPool().query<{ id: string | null; state: string | null; type: string | null; name: string | null; region: string | null }>(
+        `SELECT data->>'instance_id' AS id, data->>'instance_state' AS state, data->>'instance_type' AS type,
+                COALESCE(data->>'name', data->'tags'->>'Name') AS name, region
          FROM inventory_resources WHERE ${where}`,
         qparams,
       );
-      const runningIds = r.rows
-        .filter((x) => x.state === 'running')
-        .map((x) => x.id)
-        .filter((id): id is string => !!id);
+      // Group running instances by their inventory region — CloudWatch metrics live in the
+      // resource's region, so a fixed-region client would silently drop every other region
+      // from the ranking (the same byRegion pattern the ?ids= diagnostics branch uses).
+      const runningByRegion: Record<string, string[]> = {};
+      for (const x of r.rows) {
+        if (x.state !== 'running' || !x.id) continue;
+        const reg = x.region || process.env.AWS_REGION || 'ap-northeast-2';
+        (runningByRegion[reg] ??= []).push(x.id);
+      }
       const typeCounts: Record<string, number> = {};
       for (const x of r.rows) {
         if (x.type) typeCounts[x.type] = (typeCounts[x.type] ?? 0) + 1;
       }
 
-      const [cpu, cost] = await Promise.all([ec2AvgCpu(runningIds), ec2HourlyCost(typeCounts)]);
+      const [cpuStats, cost] = await Promise.all([ec2CpuStats(runningByRegion), ec2HourlyCost(typeCounts)]);
       const cards: Card[] = [
-        { label: '평균 CPU', value: cpu == null ? '—' : `${cpu}%`, accent: true },
+        { label: '평균 CPU', value: cpuStats.avg == null ? '—' : `${cpuStats.avg}%`, accent: true },
         { label: '시간당 비용(USD)', value: cost == null ? '—' : `$${cost.toFixed(2)}`, accent: true },
       ];
-      return Response.json({ cards });
+      // Top-15 per-instance CPU ranking (gap L138) — the same GetMetricData call already
+      // carried per-instance latest values; label = Name tag, falling back to the instance id.
+      const nameById = new Map(r.rows.filter((x) => x.id).map((x) => [x.id as string, x.name]));
+      const top = Object.entries(cpuStats.byInstance)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 15)
+        .map(([id, v]) => ({ label: nameById.get(id) || id, value: v }));
+      return Response.json(top.length ? { cards, bar: { title: 'EC2 CPU Top 15 (%)', data: top } } : { cards });
     }
 
     if (params.type === 'rds') {
@@ -83,6 +111,18 @@ export async function GET(request: Request, { params }: { params: { type: string
       }
       const instanceId = new URL(request.url).searchParams.get('id');
       if (instanceId) {
+        // Same identifier charset the sibling ?ids= branch enforces.
+        if (!/^[a-zA-Z0-9.-]+$/.test(instanceId)) {
+          return Response.json({ status: 'error', message: 'invalid id' }, { status: 400 });
+        }
+        // Opt-in time-series (gap L141/L142/L155): trends=1 returns ONLY the trends — its
+        // consumer (RdsTrendsSection) never reads the snapshot, and the sibling section
+        // already fetches it; running rdsMetrics here doubled the CloudWatch calls and
+        // serialized the trends behind a result nobody read. The default ?id= shape stays
+        // untouched for existing consumers.
+        if (new URL(request.url).searchParams.get('trends') === '1') {
+          return Response.json({ trends: await rdsInstanceTrends(instanceId) });
+        }
         const one = await rdsMetrics([instanceId]);
         return Response.json({ instance: one.byInstance[instanceId] ?? null });
       }
@@ -285,7 +325,27 @@ export async function GET(request: Request, { params }: { params: { type: string
     if (hasLiveMetrics(params.type)) {
       const id = url.searchParams.get('id');
       if (id) {
-        const metrics = await liveResourceMetrics(params.type, id);
+        if (!/^[a-zA-Z0-9._-]{1,128}$/.test(id)) {
+          return Response.json({ status: 'error', message: 'invalid id' }, { status: 400 });
+        }
+        // `account`/`region` (validated) reach assumedClient so member-account and
+        // non-default-region resources read their OWN metrics — both the latest-value grid
+        // and the opt-in trends path (half-opening the scope charts the wrong resource).
+        const account = url.searchParams.get('account') ?? undefined;
+        if (account !== undefined && account !== 'self' && !/^[0-9]{12}$/.test(account)) {
+          return Response.json({ status: 'error', message: 'invalid account' }, { status: 400 });
+        }
+        const reg = url.searchParams.get('region') ?? undefined;
+        // AWS-region shape (the sg-rules.ts form) — this string reaches SDK client construction.
+        if (reg !== undefined && !/^[a-z]{2,4}(-[a-z]+)+-\d$/.test(reg)) {
+          return Response.json({ status: 'error', message: 'invalid region' }, { status: 400 });
+        }
+        // Opt-in 1h sparkline series (gap L118): trends=1 returns ONLY the trends — the
+        // latest-value grid is the sibling section's fetch (the RDS trends=1 contract).
+        if (url.searchParams.get('trends') === '1') {
+          return Response.json({ trends: await liveResourceTrends(params.type, id, account, reg) });
+        }
+        const metrics = await liveResourceMetrics(params.type, id, account, reg);
         // MSK: append bootstrap broker connection strings (v1 parity) — ARN from the synced row.
         if (params.type === 'msk') {
           try {

@@ -115,8 +115,12 @@ def mimir_query_range(args):
     query = (args.get("query") or "").strip()
     if not query:
         return err("query (PromQL) required")
-    data = _get(_ds(), f"{BASE}/query_range", {"query": query, "start": _parse_time(args.get("start"), 3600),
-                                               "end": _parse_time(args.get("end")), "step": str(args.get("step") or "60")})
+    params = {"query": query, "start": _parse_time(args.get("start"), 3600),
+              "end": _parse_time(args.get("end")), "step": str(args.get("step") or "60")}
+    timeout = _timeout_param(args.get("timeout"))
+    if timeout:
+        params["timeout"] = timeout
+    data = _get(_ds(), f"{BASE}/query_range", params)
     bounded, tr = _bound(data)
     return ok({"truncated": tr, **(bounded if isinstance(bounded, dict) else {"result": bounded})})
 
@@ -151,11 +155,26 @@ def mimir_schema(args):
     try:
         metrics = _get(creds, f"{base}/label/__name__/values", {})
     except _ApiError:
-        metrics = []
+        metrics = None
     labels = labels if isinstance(labels, list) else []
-    metrics = metrics if isinstance(metrics, list) else []
-    return ok({"version": version, "metrics": metrics[:500], "labels": labels[:200],
-               "truncated": len(metrics) > 500 or len(labels) > 200})
+    metrics_ok = isinstance(metrics, list)  # a FAILED bulk fetch is not an empty schema
+    metrics = metrics if metrics_ok else []
+    # A failed metric fetch surfaces as truncation: absence is then UNDETERMINED (cards degrade to
+    # "unknown"), never a confident "unavailable" derived from an empty list.
+    out = {"version": version, "metrics": metrics[:500], "labels": labels[:200],
+           "truncated": (not metrics_ok) or len(metrics) > 500 or len(labels) > 200}
+    # Same rationale as prometheus_schema: caller-named metrics are decided by local membership in
+    # the full un-capped in-memory list — definitive, zero extra network calls. A failed bulk fetch
+    # skips this (nothing decided) and `truncated` degrades absence to "unknown".
+    probe = args.get("probe_metrics") if isinstance(args, dict) else None
+    if isinstance(probe, list) and metrics_ok:
+        wanted = [m for m in (str(x).strip() for x in probe)
+                  if m and re.match(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$", m)][:24]
+        full = set(metrics)
+        kept = set(out["metrics"])
+        out["metrics"] = out["metrics"] + sorted((full & set(wanted)) - kept)
+        out["probed"] = sorted(set(wanted))
+    return ok(out)
 
 
 def mimir_metric_meta(args):

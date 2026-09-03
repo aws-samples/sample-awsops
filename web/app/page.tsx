@@ -19,6 +19,7 @@ import MultiLineTrend from '@/components/charts/MultiLineTrend';
 import SegmentedControl from '@/components/ui/SegmentedControl';
 import AiOps from '@/components/overview/AiOps';
 import { useActiveScope, scopeParams } from '@/lib/account-context';
+import { nearestSnapshot, netChange } from '@/lib/trend-utils';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { localeOf } from '@/lib/i18n';
 
@@ -43,7 +44,7 @@ interface Ec2Type { name: string; count: number; [k: string]: unknown }
 interface Summary { byType: ByType[]; byCategory: ByCategory[]; total: number; splits?: Splits; ec2Types?: Ec2Type[]; lastSyncAt?: string | null }
 interface TrendPoint { date: string; amount: number; [k: string]: unknown }
 interface Cost { trend: TrendPoint[]; monthly?: { month: string; total: number }[] }
-interface ResourceTrendPoint { date: string; total: number; ec2: number; [k: string]: unknown }
+interface ResourceTrendPoint { date: string; total: number; ec2?: number; [k: string]: unknown }
 interface ResourceTrend { trend: ResourceTrendPoint[]; types?: string[] }
 interface FleetCluster {
   name: string;
@@ -201,33 +202,41 @@ export default function Home() {
     hasFleet && recentEvents.length > 0 && { key: 'k8s', dot: 'var(--warning)', text: `K8s Warning 이벤트 ${recentEvents.length}건`, href: '/eks' },
   ].filter((w): w is { key: string; dot: string; text: string; href: string } => Boolean(w));
 
-  // Multi-line trend series (top 8 types by latest count) + Current/7d/30d delta rows (v1 parity).
+  // Multi-line trend series + Current/7d/30d delta rows (v1 parity). L126: top 8 types as
+  // toggle chips (the chart palette has exactly 8 hues — more would duplicate colors) — Core
+  // (top 5) visible by default, Other default-hidden; colors stay pinned to each series'
+  // original index inside MultiLineTrend.
   const trendTypes = (resTrend?.types ?? []).slice(0, 8);
   const trendSeries = trendTypes.map((t) => ({ key: t, label: INV_LABEL(t) }));
+  const coreTypes = trendTypes.slice(0, 5);
+  const otherTypes = trendTypes.slice(5);
+  // L127: 7d net change (lib/trend-utils netChange — coverage-parity diff with honest-degrade
+  // branches; see its doc). The trend endpoint is account_id='self'-fixed with no region
+  // dimension (scoping it is a separately tracked open item), so a narrowed scope also renders
+  // '—' — the adjacent 전체 리소스 IS scoped, and one KPI row must not silently mix the two.
+  const scopeIsDefault =
+    Array.isArray(scope.accounts) && scope.accounts.length === 1 && scope.accounts[0] === 'self'
+    && scope.regions === '__all__' && scope.includeGlobal === true;
+  const net7 = scopeIsDefault ? netChange(resTrend?.trend ?? [], 7) : null;
+
   const deltaRows = (() => {
     const pts = resTrend?.trend ?? [];
     if (pts.length < 2) return [];
     const last = pts[pts.length - 1];
-    const at = (daysAgo: number): Record<string, unknown> | null => {
-      const target = new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10);
-      // nearest snapshot within ±2 days (v1 tolerance)
-      let best: Record<string, unknown> | null = null;
-      let bestGap = 3;
-      for (const p of pts) {
-        const gap = Math.abs((new Date(p.date).getTime() - new Date(target).getTime()) / 86_400_000);
-        if (gap < bestGap) { best = p; bestGap = gap; }
-      }
-      return best;
-    };
-    const w = at(7);
-    const m = at(30);
+    const w = nearestSnapshot(pts, 7);
+    const m = nearestSnapshot(pts, 30);
+    // Key ABSENCE means "no successful sync for that type that day" (the route no longer
+    // pre-seeds zeros) — it must render '—', never a fabricated Current 0 / −100%.
+    const val = (p: Record<string, unknown> | null, t: string): number | null =>
+      p && typeof p[t] === 'number' ? (p[t] as number) : null;
     return (resTrend?.types ?? []).map((t) => {
-      const cur = Number(last[t] ?? 0);
-      const wv = w ? Number(w[t] ?? 0) : null;
-      const mv = m && m !== w ? Number(m[t] ?? 0) : null;
-      const pct = (from: number | null) => (from == null || from === 0 ? null : ((cur - from) / from) * 100);
+      const cur = val(last, t);
+      const wv = val(w, t);
+      const mv = m && m !== w ? val(m, t) : null;
+      const pct = (from: number | null) =>
+        cur == null || from == null || from === 0 ? null : ((cur - from) / from) * 100;
       return { type: t, label: INV_LABEL(t), cur, w: wv, m: mv, wPct: pct(wv), mPct: pct(mv) };
-    }).filter((r) => r.cur > 0 || (r.w ?? 0) > 0);
+    }).filter((r) => (r.cur ?? 0) > 0 || (r.w ?? 0) > 0);
   })();
 
   const loading = !ov && !ovErr && !sum && !sumErr;
@@ -417,6 +426,25 @@ export default function Home() {
           </div>
         </section>
 
+        {/* ---- Inventory summary KPI bar (gap L127, v1 parity): types · total · 7d net ---- */}
+        {sum && (
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg border border-ink-100 bg-card px-4 py-2 text-[12.5px] text-ink-600">
+            <span>{tt('리소스 타입')} <b className="tabular text-ink-800">{sum.byType.length}</b></span>
+            <span>{tt('전체 리소스')} <b className="tabular text-ink-800">{sum.total.toLocaleString()}</b></span>
+            <span>
+              {tt('7일 순증감')}{' '}
+              {net7 == null ? (
+                // honest-degrade: fewer than 2 snapshots, or no snapshot near 7d ago
+                <b className="text-ink-400">—</b>
+              ) : (
+                <b className={`tabular ${net7 > 0 ? 'text-emerald-600' : net7 < 0 ? 'text-rose-600' : 'text-ink-800'}`}>
+                  {net7 > 0 ? '+' : ''}{net7.toLocaleString()}
+                </b>
+              )}
+            </span>
+          </div>
+        )}
+
         {/* ---- Resource trend (14d, DESIGN.md §3) + category donut ---- */}
         {resTrend && (
           <div className="grid grid-cols-1 lg:grid-cols-[1.6fr_1fr] gap-6">
@@ -433,6 +461,13 @@ export default function Home() {
                 data={resTrend.trend}
                 xKey="date"
                 series={trendSeries}
+                key={trendTypes.join(',')} // period toggle re-ranks types → remount resets hidden state
+                interactiveLegend
+                legendGroups={[
+                  { label: tt('Core Resources'), keys: coreTypes },
+                  ...(otherTypes.length ? [{ label: tt('Other Resources'), keys: otherTypes }] : []),
+                ]}
+                defaultHidden={otherTypes}
               />
             ) : (
               <Card title={`리소스 추세 (${trendDays}d)`}>
@@ -477,7 +512,7 @@ export default function Home() {
                     return (
                       <tr key={r.type} className="border-b border-ink-50 last:border-0">
                         <td className="px-4 py-1.5 text-ink-700">{r.label}</td>
-                        <td className="tabular px-4 py-1.5 text-right font-semibold text-ink-800">{r.cur.toLocaleString()}</td>
+                        <td className="tabular px-4 py-1.5 text-right font-semibold text-ink-800">{r.cur == null ? '—' : r.cur.toLocaleString()}</td>
                         <td className="tabular px-4 py-1.5 text-right text-ink-500">{r.w == null ? '—' : r.w.toLocaleString()}</td>
                         <td className="tabular px-4 py-1.5 text-right">{pctCell(r.wPct)}</td>
                         <td className="tabular px-4 py-1.5 text-right text-ink-500">{r.m == null ? '—' : r.m.toLocaleString()}</td>

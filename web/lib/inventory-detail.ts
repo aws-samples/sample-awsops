@@ -207,6 +207,17 @@ const VIRTUAL_LABELS: Record<string, string> = {
   sse_h: 'SSE', pitr_h: 'PITR', key_schema: 'Key Schema',
   kafka_version: 'Kafka Version', broker_nodes: 'Broker Nodes',
   broker_instance_type: 'Broker Instance', broker_ebs_gb: 'Broker EBS (GB)',
+  // OpenSearch structured detail (gap L150)
+  dedicated_master_h: 'Dedicated Master', zone_awareness_h: 'Zone Awareness',
+  warm_storage_h: 'Warm Storage', cold_storage_h: 'Cold Storage',
+  multi_az_standby_h: 'Multi-AZ Standby', ebs_volume_h: 'EBS Volume',
+  vpc_id_h: 'VPC', subnets_h: 'Subnets', security_groups_h: 'Security Groups', azs_h: 'AZs',
+  kms_key_h: 'KMS Key', adv_security_h: 'Advanced Security',
+  internal_user_db_h: 'Internal User DB', anonymous_auth_h: 'Anonymous Auth', cognito_h: 'Cognito Auth',
+  software_update_h: 'Service Software', enforce_https_h: 'Enforce HTTPS',
+  tls_policy_h: 'TLS Policy', custom_endpoint_h: 'Custom Endpoint',
+  custom_endpoint_cert_h: 'Custom Endpoint Cert',
+  auto_tune_h: 'Auto-Tune', snapshot_hour_h: 'Automated Snapshot',
 };
 
 // Acronyms kept uppercase when humanizing a snake_case key into a friendly label.
@@ -243,7 +254,9 @@ export function buildDetailGroups(row: Record<string, unknown>, spec?: InvType):
   }
 
   const present = new Map(entries);
-  const used = new Set<string>();
+  // hideKeys (gap L150): raw keys replaced by structured/derived fields — treated as used so
+  // they don't render in a section and don't leak back through the "Other" group.
+  const used = new Set<string>(spec.hideKeys ?? []);
   const groups: DetailGroup[] = [];
   for (const sec of spec.sections) {
     const items: DetailItem[] = [];

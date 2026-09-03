@@ -6,6 +6,7 @@ import DiagnosisGuide from './DiagnosisGuide';
 import { EC2_GUIDE } from './guides';
 import MetricTable, { type MetricCol } from './MetricTable';
 import { type Row, num, meter, RangePicker, useFleet } from './shared';
+import { Ec2NetworkPanel } from './Ec2NetworkPanel';
 
 // EC2 per-instance diagnostics (owner 가이드): 상태 점검 System/Instance/EBS 구분(책임 소재),
 // T계열 크레딧, 네트워크 Mbps/PPS(선택 기간 합계 환산), 인스턴스 관점 EBS IOPS·밸런스.
@@ -16,6 +17,8 @@ type Item = { row: Row; m: Record<string, number | null> };
 export function Ec2Metrics({ rows }: { rows: Row[] }) {
   const { tt } = useI18n();
   const [range, setRange] = useState(3600);
+  // Gap L139: row click → 24h NetworkIn/Out slide-in panel for that instance.
+  const [netTarget, setNetTarget] = useState<Row | null>(null);
   const ids = useMemo(() => [...new Set(rows.map((r) => String(r.resource_id)))].slice(0, 150), [rows]);
   const { fleet, err } = useFleet('ec2', ids, range);
 
@@ -37,6 +40,7 @@ export function Ec2Metrics({ rows }: { rows: Row[] }) {
     { key: 'id', label: 'Instance', mono: true, value: (it) => String(it.row.resource_id) },
     { key: 'name', label: 'Name', value: (it) => (typeof it.row.name === 'string' ? it.row.name : null) },
     { key: 'type', label: 'Type', mono: true, facet: true, value: (it) => (typeof it.row.instance_type === 'string' ? it.row.instance_type : null) },
+    { key: 'pip', label: 'Private IP', mono: true, value: (it) => (typeof it.row.private_ip_address === 'string' ? it.row.private_ip_address : null) },
     {
       key: 'cpu', label: 'CPU', type: 'num', title: tt('CPUUtilization — 지속 80% 초과 시 확장/타입 변경 검토 (하이퍼바이저 관점)'),
       value: (it) => num(it.m.cpu), render: (it) => meter(num(it.m.cpu)),
@@ -100,8 +104,17 @@ export function Ec2Metrics({ rows }: { rows: Row[] }) {
       padded={false}
     >
       {err && <div className="px-3 py-2 text-[12px] text-rose-600">{tt('메트릭 조회 실패')}: {err}</div>}
-      <MetricTable columns={columns} items={items} rowKey={(it) => String(it.row.resource_id)} />
+      <div className="px-3 pt-1 text-[11px] text-ink-400">{tt('행 클릭 → 24시간 네트워크 In/Out 차트')}</div>
+      <MetricTable columns={columns} items={items} rowKey={(it) => String(it.row.resource_id)} onRowClick={(it) => setNetTarget(it.row)} />
       <DiagnosisGuide spec={EC2_GUIDE} />
+      {netTarget && (
+        <Ec2NetworkPanel
+          instanceId={String(netTarget.resource_id)}
+          accountId={typeof netTarget.account_id === 'string' ? netTarget.account_id : undefined}
+          region={typeof netTarget.region === 'string' ? netTarget.region : undefined}
+          onClose={() => setNetTarget(null)}
+        />
+      )}
     </Card>
   );
 }
