@@ -93,8 +93,20 @@ plan/apply.)
 
 ## Per-user preview stacks / 사용자별 프리뷰 스택
 
-The public hosted zone **`awsops-dev.whchoi.net` already exists** (operator-managed;
-not in the workload account's Route53 — stacks reference it via tfvars). Previews are
+The public hosted zone **`awsops-dev.whchoi.net` exists in the samples account**
+(`Z05356393HGNKULJIZ69V`) — but ⚠️ **its NS delegation from the live `whchoi.net`
+zone (owned by another account) is PENDING**. Until the domain owner adds this
+record to the live parent zone, ACM validation for every stack under this zone
+stalls and applies time out:
+
+```
+awsops-dev.whchoi.net  NS  ns-565.awsdns-06.net
+                           ns-1465.awsdns-55.org
+                           ns-12.awsdns-01.com
+                           ns-1997.awsdns-57.co.uk
+```
+(라이브 whchoi.net 존 소유자가 위 NS 위임 레코드를 추가해야 이 존 아래 모든
+스택의 ACM 검증이 통과합니다 — 1회성 공용 작업.) Previews are
 `<user>.awsops-dev.whchoi.net`, so one **wildcard ACM cert `*.awsops-dev.whchoi.net`**
 (us-east-1) covers every preview AND the dev stack — issue once, reuse across stacks.
 (`awsops-dev.whchoi.net` 퍼블릭 호스티드 존은 이미 존재하며, 프리뷰가 그 아래 서브도메인
@@ -113,8 +125,10 @@ Provision once per user:
      --body "$(base64 -w0 terraform/foundation/terraform.tfvars)"
    ```
 4. Push to your branch — `deploy-web.yml` builds and rolls your stack
-   automatically. Missing secrets fail with a pointer here — no fallback to the
-   dev/production stacks, by design.
+   automatically, and `terraform.yml` plans your stack on terraform-path pushes
+   (apply = dispatch from your branch; `deploy-agentcore` likewise). Missing
+   secrets fail with a pointer here — no fallback to the dev/production stacks,
+   by design.
 
 User-branch deploys run under the dev-tier roles (`environment: development`
 gates which branches may deploy — its branch policy lists dev + the three user
