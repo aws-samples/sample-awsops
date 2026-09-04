@@ -100,14 +100,22 @@ resource "aws_cognito_user_group" "admins" {
   description  = "Admins — IAM-related views are visible only to this group"
 }
 
-# Regular demo user — every stack gets one; carries no group, so IAM views stay hidden.
+# Regular demo user — carries no group, so IAM views stay hidden. Gated so a stack
+# (e.g. production) can refuse the shared demo credential entirely.
 resource "aws_cognito_user" "demo" {
+  count        = var.create_demo_user ? 1 : 0
   user_pool_id = aws_cognito_user_pool.main.id
   username     = var.demo_email
   password     = var.demo_password
   attributes = {
     email          = var.demo_email
     email_verified = true
+  }
+  lifecycle {
+    precondition {
+      condition     = var.demo_password != ""
+      error_message = "create_demo_user=true requires demo_password (TF_VAR_DEMO_PASSWORD secret in CI, or a per-stack tfvars override)."
+    }
   }
 }
 

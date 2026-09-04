@@ -97,6 +97,12 @@ variable "admin_password" {
   default     = ""
 }
 
+variable "create_demo_user" {
+  type        = bool
+  description = "Create the shared regular demo user. Default true; a stack that must not accept the shared demo credential (e.g. production) sets false, or overrides demo_password per stack."
+  default     = true
+}
+
 variable "demo_email" {
   type        = string
   description = "Regular (non-admin) demo user email — created in every stack"
@@ -105,8 +111,9 @@ variable "demo_email" {
 
 variable "demo_password" {
   type        = string
-  description = "Demo user permanent password (>=8, upper+lower+number). No default — CI supplies it via the TF_VAR_DEMO_PASSWORD secret."
+  description = "Demo user permanent password (>=8, upper+lower+number). CI supplies the shared default via the TF_VAR_DEMO_PASSWORD secret; a stack may override it in its own tfvars blob (tfvars outranks env) or disable the user via create_demo_user."
   sensitive   = true
+  default     = ""
 }
 
 variable "k8sgpt_enabled" {

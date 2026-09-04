@@ -67,7 +67,7 @@ resource "aws_rds_cluster" "aurora" {
   manage_master_user_password = true
   # RDS Data API (HTTP endpoint): lets the read-only inventory-read MCP Lambda query the synced
   # inventory without a VPC attachment or pg8000 bundling. In-place enable (no reboot/replace).
-  enable_http_endpoint          = true
+  enable_http_endpoint = true
   # IAM database authentication: lets long-running Fargate tasks connect via a short-lived
   # STS-signed auth token (rds-db:connect) instead of the Aurora master secret. The master secret
   # is RDS-managed and auto-rotates every 7 days; a task that only reads it once at container
@@ -77,14 +77,14 @@ resource "aws_rds_cluster" "aurora" {
   # Steampipe's boot-time generator (`steampipe_reader`, M1 fix) and the web BFF (`awsops_web`).
   # In-place enable, no reboot/replace. Unconditional now that web depends on it too.
   iam_database_authentication_enabled = true
-  master_user_secret_kms_key_id = aws_kms_key.aurora.key_id
-  storage_encrypted             = true
-  kms_key_id                    = aws_kms_key.aurora.arn
-  db_subnet_group_name          = aws_db_subnet_group.aurora.name
-  vpc_security_group_ids        = [aws_security_group.aurora.id]
-  backup_retention_period       = 7
-  deletion_protection           = false
-  skip_final_snapshot           = true
+  master_user_secret_kms_key_id       = aws_kms_key.aurora.key_id
+  storage_encrypted                   = true
+  kms_key_id                          = aws_kms_key.aurora.arn
+  db_subnet_group_name                = aws_db_subnet_group.aurora.name
+  vpc_security_group_ids              = [aws_security_group.aurora.id]
+  backup_retention_period             = 7
+  deletion_protection                 = false
+  skip_final_snapshot                 = true
 
   serverlessv2_scaling_configuration {
     min_capacity = var.aurora_min_acu

@@ -85,25 +85,29 @@ terraform -chdir=terraform/foundation apply tfplan       # apply EXACTLY that pl
 Sensitive-value policy (public repo — Actions LOGS are public): role ARNs and
 anything carrying the account id live in repo **secrets** (auto-masked in
 logs), never variables; every credentials step sets `mask-aws-account-id`.
-Cognito users: every stack gets the shared regular **demo user**
+Cognito users: dev/preview stacks get the shared regular **demo user**
 (`demo_email` defaults to `demo@awsops.local`; its password rides as the
 `TF_VAR_DEMO_PASSWORD` repo secret, exported by terraform.yml as
-`TF_VAR_demo_password` on the plan step only — one shared demo credential
-across stacks is by design). The **admin user is NOT created by CI**
-(`create_admin_user` defaults to `false`); enabling it is a per-stack decision
-with per-stack credentials — never a repo-wide shared pair. Only admins (the
-Cognito `admins` group, or the SSM email allowlist) see IAM-related views.
-`admin_email`/`admin_password` (and `demo_*`) must NOT sit in any registered
-tfvars blob — the restore step hard-fails on a blob still carrying `admin_*`
-(tfvars outranks `TF_VAR_*` env, so leaving them in would silently bypass the
-secrets channel).
+`TF_VAR_demo_password` on the plan step only). Sharing one demo credential
+across the dev-tier stacks is accepted; **production must not accept it** —
+set `create_demo_user = false` there, or override `demo_password` in
+production's own tfvars blob (the blob is itself a secret; tfvars outranks
+env, so the override is the sanctioned per-stack path). The **admin user is
+NOT created by CI** (`create_admin_user` defaults to `false`); enable it per
+stack via a local apply with `TF_VAR_admin_email`/`TF_VAR_admin_password` env
+— never a repo-wide shared pair. Only admins (the Cognito `admins` group, or
+the SSM email allowlist) see IAM-related views. `admin_password` must NOT sit
+in any registered tfvars blob — the restore step hard-fails on it
+(`admin_email` alone is fine: it is not a secret, and `k8sgpt_enabled` stacks
+need it in tfvars for the budget alarm subscriber).
 The plan artifact is a covered channel too: a tfplan embeds every variable
 value in plaintext and public-repo artifacts are downloadable by anyone, so
 the plan job encrypts it with the `TF_PLAN_ENC_KEY` secret (fail-closed) and
 the apply job decrypts before applying.
 (공개 리포는 Actions 로그도 공개 — 역할 ARN 등 계정 ID 포함 값은 변수 금지·시크릿
-전용. demo 사용자 비밀번호는 `TF_VAR_DEMO_PASSWORD` 시크릿으로만 공급하고, admin
-사용자는 CI가 만들지 않습니다 — 스택별로 로컬 apply 시
+전용. demo 사용자 비밀번호는 `TF_VAR_DEMO_PASSWORD` 시크릿으로 공급하되 production은
+`create_demo_user=false` 또는 자체 tfvars 블롭의 `demo_password` override로 공유
+자격을 거부합니다. admin 사용자는 CI가 만들지 않습니다 — 스택별로 로컬 apply 시
 `TF_VAR_admin_email`/`TF_VAR_admin_password` env + `create_admin_user=true`로
 프로비저닝합니다.)
 
@@ -111,7 +115,7 @@ Then register the generated files (base64) as repo secrets:
 
 | Stack | Secrets |
 |---|---|
-| all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (plan-artifact encryption) / `TF_VAR_DEMO_PASSWORD` (demo user) |
+| all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (plan-artifact encryption) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
 | production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` |
 | dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |

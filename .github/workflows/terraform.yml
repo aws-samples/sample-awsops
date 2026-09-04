@@ -86,8 +86,11 @@ jobs:
           fi
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
-          if grep -Eq '^[[:space:]]*admin_(email|password)[[:space:]]*=' terraform.tfvars; then
-            echo "::error::restored terraform.tfvars still contains admin_email/admin_password — tfvars wins over TF_VAR_* env, silently bypassing the secrets channel. Strip both fields and re-register the secret (docs/runbooks/dev-repo-setup.md)."
+          # Guard the PASSWORD only: admin_email is not a secret (and k8sgpt.tf needs it
+          # in tfvars when that flag is on); a per-stack demo_password override in the
+          # stack's own tfvars blob is the sanctioned path, so it is not guarded either.
+          if grep -Eq '^[[:space:]]*admin_password[[:space:]]*=' terraform.tfvars; then
+            echo "::error::restored terraform.tfvars still contains admin_password — strip it and re-register the secret; admins are provisioned per stack via a local apply with TF_VAR_admin_* env (docs/runbooks/dev-repo-setup.md)."
             exit 1
           fi
 
@@ -183,8 +186,11 @@ jobs:
           fi
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
-          if grep -Eq '^[[:space:]]*admin_(email|password)[[:space:]]*=' terraform.tfvars; then
-            echo "::error::restored terraform.tfvars still contains admin_email/admin_password — tfvars wins over TF_VAR_* env, silently bypassing the secrets channel. Strip both fields and re-register the secret (docs/runbooks/dev-repo-setup.md)."
+          # Guard the PASSWORD only: admin_email is not a secret (and k8sgpt.tf needs it
+          # in tfvars when that flag is on); a per-stack demo_password override in the
+          # stack's own tfvars blob is the sanctioned path, so it is not guarded either.
+          if grep -Eq '^[[:space:]]*admin_password[[:space:]]*=' terraform.tfvars; then
+            echo "::error::restored terraform.tfvars still contains admin_password — strip it and re-register the secret; admins are provisioned per stack via a local apply with TF_VAR_admin_* env (docs/runbooks/dev-repo-setup.md)."
             exit 1
           fi
 
