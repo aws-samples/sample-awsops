@@ -80,13 +80,27 @@ variable "cognito_domain_prefix" {
 
 variable "admin_email" {
   type        = string
-  description = "Initial Cognito admin user email"
+  description = "Notification email reused by k8sgpt.tf SNS (required when k8sgpt_enabled). The Cognito admin USER is not Terraform-managed — see auth.tf / docs/runbooks/dev-repo-setup.md."
+  default     = ""
 }
 
-variable "admin_password" {
+variable "create_demo_user" {
+  type        = bool
+  description = "Create the shared regular demo user. Default FALSE (fail-closed — the shared credential must never reach a stack, production foremost, by omission): dev-tier stacks opt in explicitly in their tfvars."
+  default     = false
+}
+
+variable "demo_email" {
   type        = string
-  description = "Initial admin permanent password (>=8, upper+lower+number)"
+  description = "Regular (non-admin) demo user email — created in every stack"
+  default     = "demo@awsops.local"
+}
+
+variable "demo_password" {
+  type        = string
+  description = "Demo user permanent password (>=8, upper+lower+number). CI supplies the shared default via the TF_VAR_DEMO_PASSWORD secret; a stack may override it in its own tfvars blob (tfvars outranks env) or disable the user via create_demo_user."
   sensitive   = true
+  default     = ""
 }
 
 variable "k8sgpt_enabled" {

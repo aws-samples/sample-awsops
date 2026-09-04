@@ -64,7 +64,8 @@ jobs:
       - name: Configure AWS credentials (OIDC -> ci-terraform-plan)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
+          mask-aws-account-id: true
+          role-to-assume: ${{ secrets.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
           aws-region: ap-northeast-2
 
       - name: Restore backend.hcl / terraform.tfvars
@@ -85,6 +86,13 @@ jobs:
           fi
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
+          # Guard the PASSWORD only: admin_email is not a secret (and k8sgpt.tf needs it
+          # in tfvars when that flag is on); a per-stack demo_password override in the
+          # stack's own tfvars blob is the sanctioned path, so it is not guarded either.
+          if grep -Eq '^[[:space:]]*admin_password[[:space:]]*=' terraform.tfvars; then
+            echo "::error::restored terraform.tfvars still contains admin_password — strip it and re-register the secret. Admins are not Terraform-managed: provision per stack with admin-create-user (docs/runbooks/dev-repo-setup.md)."
+            exit 1
+          fi
 
       - name: terraform init
         if: steps.restore.outputs.skip != '1'
@@ -92,15 +100,41 @@ jobs:
 
       - name: terraform plan
         if: steps.restore.outputs.skip != '1'
+        env:
+          # Sensitive inputs ride as TF_VAR_ env from masked secrets, never inside the
+          # tfvars blob (public-repo logs are public; secrets are auto-masked). Scoped to
+          # this one step so no other step (or PR-authored hook) sees them. The demo user
+          # is deliberately one shared credential across stacks; admin users are per-stack
+          # and NOT created by CI (create_admin_user defaults to false).
+          TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
         run: terraform plan -out=tfplan -input=false
 
-      - name: Upload plan artifact
+      # A plan file embeds every input variable value in plaintext (sensitive
+      # ones included), and artifacts on a public repo are downloadable by any
+      # GitHub account — encrypt before upload, fail-closed without the key.
+      - name: Encrypt plan artifact
+        if: steps.restore.outputs.skip != '1'
+        env:
+          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+        run: |
+          [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::TF_PLAN_ENC_KEY secret is not set — refusing to upload a plaintext plan."; exit 1; }
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in tfplan -out tfplan.enc -pass env:TF_PLAN_ENC_KEY
+          rm -f tfplan
+
+      - name: Upload plan artifact (encrypted)
         if: steps.restore.outputs.skip != '1'
         uses: actions/upload-artifact@v4
         with:
           name: tfplan
-          path: terraform/foundation/tfplan
+          path: terraform/foundation/tfplan.enc
           retention-days: 5
+
+      # Same principle as the apply job: the runner is persistent and shared —
+      # never leave the plaintext plan (an encrypt-step failure strands it) or
+      # the restored config behind, whatever the outcome.
+      - name: Clean sensitive files off the runner
+        if: always()
+        run: rm -f tfplan tfplan.enc terraform.tfvars backend.hcl
 
   apply:
     name: Apply (saved plan)
@@ -109,8 +143,8 @@ jobs:
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
       TARGET: ${{ github.ref_name }}
-      MAIN_ROLE: ${{ vars.AWS_CI_DEPLOYER_ROLE_ARN }}
-      DEV_ROLE: ${{ vars.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+      MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
+      DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
       DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
@@ -128,12 +162,13 @@ jobs:
             dev|atomoh|ssminji|whchoi) ROLE="$DEV_ROLE";;
             *) echo "::error::unexpected dispatch target '$TARGET'"; exit 1;;
           esac
-          [ -n "$ROLE" ] || { echo "::error::deployer role variable for '$TARGET' is not set"; exit 1; }
+          [ -n "$ROLE" ] || { echo "::error::deployer role secret for '$TARGET' is not set"; exit 1; }
           echo "role=$ROLE" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials (OIDC -> ci-deployer)
         uses: aws-actions/configure-aws-credentials@v4
         with:
+          mask-aws-account-id: true
           role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
 
@@ -151,6 +186,13 @@ jobs:
           fi
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
+          # Guard the PASSWORD only: admin_email is not a secret (and k8sgpt.tf needs it
+          # in tfvars when that flag is on); a per-stack demo_password override in the
+          # stack's own tfvars blob is the sanctioned path, so it is not guarded either.
+          if grep -Eq '^[[:space:]]*admin_password[[:space:]]*=' terraform.tfvars; then
+            echo "::error::restored terraform.tfvars still contains admin_password — strip it and re-register the secret. Admins are not Terraform-managed: provision per stack with admin-create-user (docs/runbooks/dev-repo-setup.md)."
+            exit 1
+          fi
 
       - name: terraform init
         run: terraform init -backend-config=backend.hcl -input=false
@@ -161,5 +203,18 @@ jobs:
         run: |
           gh run download "${{ inputs.plan_run_id }}" --repo "${{ github.repository }}" --name tfplan --dir .
 
+      - name: Decrypt the approved plan
+        env:
+          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+        run: |
+          [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::TF_PLAN_ENC_KEY secret is not set."; exit 1; }
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in tfplan.enc -out tfplan -pass env:TF_PLAN_ENC_KEY
+
       - name: terraform apply (exact saved plan — never re-planned)
         run: terraform apply -input=false tfplan
+
+      # The runner is persistent — never leave the decrypted plan (embeds sensitive
+      # variable values in plaintext) or the restored config behind.
+      - name: Clean sensitive files off the runner
+        if: always()
+        run: rm -f tfplan tfplan.enc terraform.tfvars backend.hcl

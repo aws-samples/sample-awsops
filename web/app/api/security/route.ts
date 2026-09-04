@@ -1,4 +1,5 @@
 import { verifyUser } from '@/lib/auth';
+import { isAdmin } from '@/lib/admin';
 import { getPool } from '@/lib/db';
 import { FINDING_SQL, rowToFinding, CHECK_META, type CheckKey, type Finding } from '@/lib/security-findings';
 import { ecrCveFindings } from '@/lib/ecr-cve';
@@ -27,9 +28,13 @@ async function resolveAccounts(raw: string | null): Promise<string[]> {
 }
 
 export async function GET(request: Request) {
-  if (!(await verifyUser(request.headers.get('cookie')))) {
+  const user = await verifyUser(request.headers.get('cookie'));
+  if (!user) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
   }
+  // IAM identity data is admin-only (same convention as lib/inventory.ts ADMIN_ONLY_TYPES —
+  // iam_no_mfa findings are rows of the admin-gated iam_user inventory type).
+  const checks = (await isAdmin(user)) ? CHECKS : CHECKS.filter((k) => k !== 'iam_no_mfa');
   try {
     const pool = getPool();
     const accounts = await resolveAccounts(new URL(request.url).searchParams.get('accounts'));
@@ -44,11 +49,11 @@ export async function GET(request: Request) {
       [accounts],
     );
     if (Number(probe.rows[0]?.n ?? 0) === 0) {
-      return Response.json({ enabled: false, summary: {}, findings: {} });
+      return Response.json({ enabled: false, summary: {}, findings: {}, checks });
     }
     const summary = {} as Record<CheckKey, number>;
     const findings = {} as Record<CheckKey, Finding[]>;
-    for (const check of CHECKS) {
+    for (const check of checks) {
       if (!(check in FINDING_SQL)) continue; // live-SDK checks handled below
       const r = await pool.query<{ resource_id: string; region: string; account_id?: string; detail: unknown }>(
         FINDING_SQL[check as keyof typeof FINDING_SQL], [accounts],
@@ -63,7 +68,7 @@ export async function GET(request: Request) {
       findings.ecr_cve = [];
     }
     summary.ecr_cve = findings.ecr_cve.length;
-    return Response.json({ enabled: true, summary, findings, accounts });
+    return Response.json({ enabled: true, summary, findings, accounts, checks });
   } catch (e) {
     return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }

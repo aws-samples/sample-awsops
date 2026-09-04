@@ -25,8 +25,8 @@ jobs:
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
       TARGET: ${{ github.ref_name }}
-      MAIN_ROLE: ${{ vars.AWS_CI_DEPLOYER_ROLE_ARN }}
-      DEV_ROLE: ${{ vars.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+      MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
+      DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
       DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
@@ -50,6 +50,7 @@ jobs:
       - name: Configure AWS credentials (OIDC -> ci-deployer)
         uses: aws-actions/configure-aws-credentials@v4
         with:
+          mask-aws-account-id: true
           role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
 
@@ -87,3 +88,11 @@ jobs:
         # SMOKE just needs to be non-empty to enable Makefile's `$(if $(SMOKE),...)`
         # — "false" is non-empty too, so only export it when actually true.
         run: make agentcore ${{ inputs.smoke && 'SMOKE=1' || '' }}
+
+      # The runner is persistent and shared — never leave the restored stack
+      # config behind, whatever the outcome.
+      - name: Clean restored terraform config off the runner
+        if: always()
+        working-directory: terraform/foundation
+        run: rm -f terraform.tfvars backend.hcl
+
