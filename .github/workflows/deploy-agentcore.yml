@@ -88,3 +88,11 @@ jobs:
         # SMOKE just needs to be non-empty to enable Makefile's `$(if $(SMOKE),...)`
         # — "false" is non-empty too, so only export it when actually true.
         run: make agentcore ${{ inputs.smoke && 'SMOKE=1' || '' }}
+
+      # The runner is persistent and shared — never leave the restored stack
+      # config behind, whatever the outcome.
+      - name: Clean restored terraform config off the runner
+        if: always()
+        working-directory: terraform/foundation
+        run: rm -f terraform.tfvars backend.hcl
+

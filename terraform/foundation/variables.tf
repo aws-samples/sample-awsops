@@ -99,8 +99,8 @@ variable "admin_password" {
 
 variable "create_demo_user" {
   type        = bool
-  description = "Create the shared regular demo user. Default true; a stack that must not accept the shared demo credential (e.g. production) sets false, or overrides demo_password per stack."
-  default     = true
+  description = "Create the shared regular demo user. Default FALSE (fail-closed — the shared credential must never reach a stack, production foremost, by omission): dev-tier stacks opt in explicitly in their tfvars."
+  default     = false
 }
 
 variable "demo_email" {

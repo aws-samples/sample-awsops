@@ -88,10 +88,11 @@ logs), never variables; every credentials step sets `mask-aws-account-id`.
 Cognito users: dev/preview stacks get the shared regular **demo user**
 (`demo_email` defaults to `demo@awsops.local`; its password rides as the
 `TF_VAR_DEMO_PASSWORD` repo secret, exported by terraform.yml as
-`TF_VAR_demo_password` on the plan step only). Sharing one demo credential
-across the dev-tier stacks is accepted; **production must not accept it** —
-set `create_demo_user = false` there, or override `demo_password` in
-production's own tfvars blob (the blob is itself a secret; tfvars outranks
+`TF_VAR_demo_password` on the plan step only). `create_demo_user` defaults to
+**false** (fail-closed): a dev-tier stack opts in with `create_demo_user =
+true` in its tfvars blob, so the shared credential can never reach a stack —
+production foremost — by omission. A stack may instead override
+`demo_password` in its own blob (the blob is itself a secret; tfvars outranks
 env, so the override is the sanctioned per-stack path). The **admin user is
 NOT created by CI** (`create_admin_user` defaults to `false`); enable it per
 stack via a local apply with `TF_VAR_admin_email`/`TF_VAR_admin_password` env

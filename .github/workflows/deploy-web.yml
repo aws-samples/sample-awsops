@@ -108,6 +108,13 @@ jobs:
         working-directory: terraform/foundation
         run: echo "ecr_web_uri=$(terraform output -raw ecr_web_uri)" >> "$GITHUB_OUTPUT"
 
+      # The runner is persistent and shared — never leave the restored stack
+      # config behind, whatever the outcome.
+      - name: Clean restored terraform config off the runner
+        if: always()
+        working-directory: terraform/foundation
+        run: rm -f terraform.tfvars backend.hcl
+
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
@@ -199,6 +206,13 @@ jobs:
           echo "service=$(terraform output -raw ecs_service_name)" >> "$GITHUB_OUTPUT"
           echo "url=$(terraform output -raw public_url)" >> "$GITHUB_OUTPUT"
           echo "ecr_repo=$(terraform output -raw ecr_web_uri | sed 's|^[^/]*/||')" >> "$GITHUB_OUTPUT"
+
+      # The runner is persistent and shared — never leave the restored stack
+      # config behind, whatever the outcome.
+      - name: Clean restored terraform config off the runner
+        if: always()
+        working-directory: terraform/foundation
+        run: rm -f terraform.tfvars backend.hcl
 
       - name: Pin web-latest to the approved image
         # The task definition references :web-latest, and this step is that
