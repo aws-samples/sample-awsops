@@ -102,7 +102,10 @@ value in plaintext and public-repo artifacts are downloadable by anyone, so
 the plan job encrypts it with the `TF_PLAN_ENC_KEY` secret (fail-closed) and
 the apply job decrypts before applying.
 (공개 리포는 Actions 로그도 공개 — 역할 ARN 등 계정 ID 포함 값은 변수 금지·시크릿
-전용, admin 자격은 tfvars에서 제거하고 TF_VAR_* 시크릿으로만 공급합니다.)
+전용. demo 사용자 비밀번호는 `TF_VAR_DEMO_PASSWORD` 시크릿으로만 공급하고, admin
+사용자는 CI가 만들지 않습니다 — 스택별로 로컬 apply 시
+`TF_VAR_admin_email`/`TF_VAR_admin_password` env + `create_admin_user=true`로
+프로비저닝합니다.)
 
 Then register the generated files (base64) as repo secrets:
 

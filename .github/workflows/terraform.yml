@@ -126,6 +126,13 @@ jobs:
           path: terraform/foundation/tfplan.enc
           retention-days: 5
 
+      # Same principle as the apply job: the runner is persistent and shared —
+      # never leave the plaintext plan (an encrypt-step failure strands it) or
+      # the restored config behind, whatever the outcome.
+      - name: Clean sensitive files off the runner
+        if: always()
+        run: rm -f tfplan tfplan.enc terraform.tfvars backend.hcl
+
   apply:
     name: Apply (saved plan)
     if: github.event_name == 'workflow_dispatch'
