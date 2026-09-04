@@ -586,14 +586,14 @@ resource "aws_lambda_function" "worker" {
   }
   environment {
     variables = merge({
-      AURORA_ENDPOINT   = aws_rds_cluster.aurora.endpoint
-      AURORA_DATABASE   = aws_rds_cluster.aurora.database_name
-      AURORA_USER       = "awsops_worker"
+      AURORA_ENDPOINT = aws_rds_cluster.aurora.endpoint
+      AURORA_DATABASE = aws_rds_cluster.aurora.database_name
+      AURORA_USER     = "awsops_worker"
       # AI Diagnosis (Task 1b): report worker uploads here + invokes a global.* Bedrock profile from var.region.
       ARTIFACT_BUCKET = aws_s3_bucket.diagnosis_artifacts[0].bucket
       BEDROCK_REGION  = var.region
       # + gated DIAGNOSIS_SNS_TOPIC_ARN/APP_DOMAIN (notify) — empty map when diagnosis_notify_enabled=false → no env diff.
-    }, local.notify_worker_env_map, local.ds_env_map, local.insight_env_map, local.gqg_env_map,
+      }, local.notify_worker_env_map, local.ds_env_map, local.insight_env_map, local.gqg_env_map,
     local.dsqg_env_map)
     # + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled;
     # + GRAPH_QUERYGEN_ENABLED when graph_querygen_enabled
@@ -619,9 +619,9 @@ resource "aws_lambda_function" "status_updater" {
   }
   environment {
     variables = {
-      AURORA_ENDPOINT   = aws_rds_cluster.aurora.endpoint
-      AURORA_DATABASE   = aws_rds_cluster.aurora.database_name
-      AURORA_USER       = "awsops_worker"
+      AURORA_ENDPOINT = aws_rds_cluster.aurora.endpoint
+      AURORA_DATABASE = aws_rds_cluster.aurora.database_name
+      AURORA_USER     = "awsops_worker"
     }
   }
   depends_on = [aws_cloudwatch_log_group.status_updater, aws_iam_role_policy_attachment.worker_lambda_vpc]
@@ -1086,8 +1086,8 @@ resource "aws_iam_role_policy" "worker_lambda_graph_querygen" {
         Resource = "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/ops/${var.project}/agentcore/interpreter_id"
       },
       {
-        Sid      = "CodeInterpreterSandboxCheck"
-        Effect   = "Allow"
+        Sid    = "CodeInterpreterSandboxCheck"
+        Effect = "Allow"
         Action = [
           "bedrock-agentcore:StartCodeInterpreterSession",
           "bedrock-agentcore:InvokeCodeInterpreter",
@@ -1296,11 +1296,11 @@ resource "aws_lambda_function" "schedule_dispatcher" {
   }
   environment {
     variables = {
-      AURORA_ENDPOINT   = aws_rds_cluster.aurora.endpoint
-      AURORA_DATABASE   = aws_rds_cluster.aurora.database_name
-      AURORA_USER       = "awsops_worker"
-      AWS_ACCOUNT_ID    = local.acct
-      JOBS_QUEUE_URL    = aws_sqs_queue.jobs[0].url
+      AURORA_ENDPOINT = aws_rds_cluster.aurora.endpoint
+      AURORA_DATABASE = aws_rds_cluster.aurora.database_name
+      AURORA_USER     = "awsops_worker"
+      AWS_ACCOUNT_ID  = local.acct
+      JOBS_QUEUE_URL  = aws_sqs_queue.jobs[0].url
     }
   }
   depends_on = [aws_cloudwatch_log_group.schedule_dispatcher, aws_iam_role_policy_attachment.worker_lambda_vpc]
@@ -1500,11 +1500,11 @@ resource "aws_lambda_function" "dsindex_dispatcher" {
   }
   environment {
     variables = {
-      AURORA_ENDPOINT   = aws_rds_cluster.aurora.endpoint
-      AURORA_DATABASE   = aws_rds_cluster.aurora.database_name
-      AURORA_USER       = "awsops_worker"
-      AWS_ACCOUNT_ID    = local.acct
-      JOBS_QUEUE_URL    = aws_sqs_queue.jobs[0].url
+      AURORA_ENDPOINT = aws_rds_cluster.aurora.endpoint
+      AURORA_DATABASE = aws_rds_cluster.aurora.database_name
+      AURORA_USER     = "awsops_worker"
+      AWS_ACCOUNT_ID  = local.acct
+      JOBS_QUEUE_URL  = aws_sqs_queue.jobs[0].url
     }
   }
   depends_on = [aws_cloudwatch_log_group.dsindex_dispatcher, aws_iam_role_policy_attachment.worker_lambda_vpc]
@@ -1599,10 +1599,10 @@ resource "aws_lambda_function" "insight_dispatcher" {
   }
   environment {
     variables = {
-      AURORA_ENDPOINT   = aws_rds_cluster.aurora.endpoint
-      AURORA_DATABASE   = aws_rds_cluster.aurora.database_name
-      AURORA_USER       = "awsops_worker"
-      JOBS_QUEUE_URL    = aws_sqs_queue.jobs[0].url
+      AURORA_ENDPOINT = aws_rds_cluster.aurora.endpoint
+      AURORA_DATABASE = aws_rds_cluster.aurora.database_name
+      AURORA_USER     = "awsops_worker"
+      JOBS_QUEUE_URL  = aws_sqs_queue.jobs[0].url
     }
   }
   depends_on = [aws_cloudwatch_log_group.insight_dispatcher, aws_iam_role_policy_attachment.worker_lambda_vpc]
