@@ -93,14 +93,30 @@ Cognito users: dev/preview stacks get the shared regular **demo user**
 true` in its tfvars blob, so the shared credential can never reach a stack —
 production foremost — by omission. A stack may instead override
 `demo_password` in its own blob (the blob is itself a secret; tfvars outranks
-env, so the override is the sanctioned per-stack path). The **admin user is
-NOT created by CI** (`create_admin_user` defaults to `false`); enable it per
-stack via a local apply with `TF_VAR_admin_email`/`TF_VAR_admin_password` env
-— never a repo-wide shared pair. Only admins (the Cognito `admins` group, or
-the SSM email allowlist) see IAM-related views. `admin_password` must NOT sit
-in any registered tfvars blob — the restore step hard-fails on it
-(`admin_email` alone is fine: it is not a secret, and `k8sgpt_enabled` stacks
-need it in tfvars for the budget alarm subscriber).
+env, so the override is the sanctioned per-stack path). **Admin users are not
+Terraform-managed at all** (a TF-managed admin would need a password channel
+through CI plans, and a locally-applied one would ping-pong into a destroy on
+the next CI plan via the shared remote state). Provision an admin per stack
+out-of-band, with per-stack credentials — never a repo-wide shared pair:
+
+```bash
+aws cognito-idp admin-create-user --user-pool-id <pool-id> \
+  --username <email> --user-attributes Name=email,Value=<email> Name=email_verified,Value=true \
+  --message-action SUPPRESS
+aws cognito-idp admin-set-user-password --user-pool-id <pool-id> \
+  --username <email> --password '<per-stack password>' --permanent
+aws cognito-idp admin-add-user-to-group --user-pool-id <pool-id> \
+  --username <email> --group-name admins
+```
+
+Only admins (the Cognito `admins` group, or the SSM email allowlist) see
+IAM-related views. `admin_password` must NOT sit in any registered tfvars
+blob — the restore step hard-fails on it (`admin_email` alone is fine: it is
+not a secret, and `k8sgpt_enabled` stacks need it in tfvars for the budget
+alarm subscriber). Stacks provisioned before this policy carried a TF-managed
+admin user: the first post-merge plan proposes destroying it — that removal
+is intentional (recreate via the CLI above when the stack actually needs an
+admin).
 The plan artifact is a covered channel too: a tfplan embeds every variable
 value in plaintext and public-repo artifacts are downloadable by anyone, so
 the plan job encrypts it with the `TF_PLAN_ENC_KEY` secret (fail-closed) and
@@ -108,9 +124,9 @@ the apply job decrypts before applying.
 (공개 리포는 Actions 로그도 공개 — 역할 ARN 등 계정 ID 포함 값은 변수 금지·시크릿
 전용. demo 사용자 비밀번호는 `TF_VAR_DEMO_PASSWORD` 시크릿으로 공급하되 production은
 `create_demo_user=false` 또는 자체 tfvars 블롭의 `demo_password` override로 공유
-자격을 거부합니다. admin 사용자는 CI가 만들지 않습니다 — 스택별로 로컬 apply 시
-`TF_VAR_admin_email`/`TF_VAR_admin_password` env + `create_admin_user=true`로
-프로비저닝합니다.)
+자격을 거부합니다. admin 사용자는 Terraform 관리 밖입니다 — 스택별로 위
+`admin-create-user` CLI 3종으로 만들고 `admins` 그룹에 넣습니다. 기존 스택의
+TF-관리 admin은 머지 후 첫 plan에서 삭제로 표시되며, 이는 의도된 제거입니다.)
 
 Then register the generated files (base64) as repo secrets:
 

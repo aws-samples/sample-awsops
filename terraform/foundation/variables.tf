@@ -78,22 +78,9 @@ variable "cognito_domain_prefix" {
   }
 }
 
-variable "create_admin_user" {
-  type        = bool
-  description = "Create the Cognito admin user (member of the 'admins' group — IAM-related views are admin-only). Default false: stacks start with only the demo user; enable per stack once per-stack admin credentials are provisioned."
-  default     = false
-}
-
 variable "admin_email" {
   type        = string
-  description = "Cognito admin user email — required when create_admin_user (also reused by k8sgpt.tf SNS when k8sgpt_enabled)"
-  default     = ""
-}
-
-variable "admin_password" {
-  type        = string
-  description = "Admin permanent password (>=8, upper+lower+number) — required when create_admin_user"
-  sensitive   = true
+  description = "Notification email reused by k8sgpt.tf SNS (required when k8sgpt_enabled). The Cognito admin USER is not Terraform-managed — see auth.tf / docs/runbooks/dev-repo-setup.md."
   default     = ""
 }
 

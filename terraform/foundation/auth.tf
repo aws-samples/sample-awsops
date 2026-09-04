@@ -119,31 +119,13 @@ resource "aws_cognito_user" "demo" {
   }
 }
 
-# Admin user is deliberately NOT created by default (create_admin_user=false) — enabling it is a
-# per-stack decision with per-stack credentials, never a shared repo-wide pair.
-resource "aws_cognito_user" "admin" {
-  count        = var.create_admin_user ? 1 : 0
-  user_pool_id = aws_cognito_user_pool.main.id
-  username     = var.admin_email
-  password     = var.admin_password
-  attributes = {
-    email          = var.admin_email
-    email_verified = true
-  }
-  lifecycle {
-    precondition {
-      condition     = var.admin_email != "" && var.admin_password != ""
-      error_message = "create_admin_user=true requires admin_email and admin_password."
-    }
-  }
-}
-
-resource "aws_cognito_user_in_group" "admin" {
-  count        = var.create_admin_user ? 1 : 0
-  user_pool_id = aws_cognito_user_pool.main.id
-  group_name   = aws_cognito_user_group.admins.name
-  username     = aws_cognito_user.admin[0].username
-}
+# Admin users are deliberately NOT managed by Terraform. A TF-managed admin would need a
+# password channel through CI (plan evaluates variables), which the public-repo hygiene
+# policy forbids — and a locally-applied one would ping-pong into a destroy on the next CI
+# plan (shared remote state). Admins are provisioned out-of-band per stack
+# (admin-create-user + admin-add-user-to-group into the "admins" group above) — see
+# docs/runbooks/dev-repo-setup.md. The previously TF-managed admin user is intentionally
+# removed from state on the next apply.
 
 data "aws_iam_policy_document" "edge_assume" {
   statement {

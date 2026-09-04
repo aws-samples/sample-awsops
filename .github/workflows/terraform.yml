@@ -90,7 +90,7 @@ jobs:
           # in tfvars when that flag is on); a per-stack demo_password override in the
           # stack's own tfvars blob is the sanctioned path, so it is not guarded either.
           if grep -Eq '^[[:space:]]*admin_password[[:space:]]*=' terraform.tfvars; then
-            echo "::error::restored terraform.tfvars still contains admin_password — strip it and re-register the secret; admins are provisioned per stack via a local apply with TF_VAR_admin_* env (docs/runbooks/dev-repo-setup.md)."
+            echo "::error::restored terraform.tfvars still contains admin_password — strip it and re-register the secret. Admins are not Terraform-managed: provision per stack with admin-create-user (docs/runbooks/dev-repo-setup.md)."
             exit 1
           fi
 
@@ -190,7 +190,7 @@ jobs:
           # in tfvars when that flag is on); a per-stack demo_password override in the
           # stack's own tfvars blob is the sanctioned path, so it is not guarded either.
           if grep -Eq '^[[:space:]]*admin_password[[:space:]]*=' terraform.tfvars; then
-            echo "::error::restored terraform.tfvars still contains admin_password — strip it and re-register the secret; admins are provisioned per stack via a local apply with TF_VAR_admin_* env (docs/runbooks/dev-repo-setup.md)."
+            echo "::error::restored terraform.tfvars still contains admin_password — strip it and re-register the secret. Admins are not Terraform-managed: provision per stack with admin-create-user (docs/runbooks/dev-repo-setup.md)."
             exit 1
           fi
 
