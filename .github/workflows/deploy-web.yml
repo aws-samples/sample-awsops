@@ -68,6 +68,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
       - name: Select the branch's stack (fail-closed — no cross-branch fallback)
         id: sel
         run: |
@@ -162,6 +166,10 @@ jobs:
       USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
 
       - name: Select the branch's stack (fail-closed — no cross-branch fallback)
         id: sel
