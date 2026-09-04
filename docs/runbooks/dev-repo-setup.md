@@ -117,6 +117,16 @@ alarm subscriber). Stacks provisioned before this policy carried a TF-managed
 admin user: the first post-merge plan proposes destroying it — that removal
 is intentional (recreate via the CLI above when the stack actually needs an
 admin).
+
+⚠️ Identity caveat: app ownership (reports, chat threads, …) is keyed by the
+Cognito `sub`, which is minted per user object — deleting and recreating a
+user (the TF-managed admin removal above, or any demo-user recreate) yields a
+NEW `sub`, so rows owned by the old identity do not follow it. Only the
+legacy verified-email read path bridges some tables. Treat user deletion as
+identity loss: on a stack with real user-owned data, prefer disabling
+(`admin-disable-user`) over delete/recreate.
+(사용자 삭제 후 재생성은 `sub`가 바뀌어 기존 소유 데이터와 연결이 끊깁니다 —
+실데이터가 있는 스택에서는 삭제 대신 `admin-disable-user`를 권장합니다.)
 The plan artifact is a covered channel too: a tfplan embeds every variable
 value in plaintext and public-repo artifacts are downloadable by anyone, so
 the plan job encrypts it with the `TF_PLAN_ENC_KEY` secret (fail-closed) and
