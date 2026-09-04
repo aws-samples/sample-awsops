@@ -25,7 +25,7 @@ on:
     branches: [main, dev]
     paths: ["terraform/foundation/**"]
   push:
-    branches: [main, dev]
+    branches: [main, dev, atomoh, ssminji, whchoi]
     paths: ["terraform/foundation/**"]
   workflow_dispatch:
     inputs:
@@ -56,6 +56,8 @@ jobs:
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
       DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
       DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
+      USER_BACKEND_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', github.base_ref || github.ref_name)] }}
+      USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.base_ref || github.ref_name)] }}
     steps:
       - uses: actions/checkout@v4
 
@@ -73,6 +75,7 @@ jobs:
           case "$TARGET" in
             main) B="$MAIN_BACKEND_B64"; V="$MAIN_TFVARS_B64";;
             dev)  B="$DEV_BACKEND_B64";  V="$DEV_TFVARS_B64";;
+            atomoh|ssminji|whchoi) B="$USER_BACKEND_B64"; V="$USER_TFVARS_B64";;
             *) echo "::error::unexpected target '$TARGET'"; exit 1;;
           esac
           if [ -z "$B" ] || [ -z "$V" ]; then
@@ -112,6 +115,8 @@ jobs:
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
       DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
       DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
+      USER_BACKEND_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', github.ref_name)] }}
+      USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
     steps:
       - uses: actions/checkout@v4
 
@@ -120,8 +125,8 @@ jobs:
         run: |
           case "$TARGET" in
             main) ROLE="$MAIN_ROLE";;
-            dev)  ROLE="$DEV_ROLE";;
-            *) echo "::error::apply dispatches only from main or dev (got '$TARGET')"; exit 1;;
+            dev|atomoh|ssminji|whchoi) ROLE="$DEV_ROLE";;
+            *) echo "::error::unexpected dispatch target '$TARGET'"; exit 1;;
           esac
           [ -n "$ROLE" ] || { echo "::error::deployer role variable for '$TARGET' is not set"; exit 1; }
           echo "role=$ROLE" >> "$GITHUB_OUTPUT"
@@ -137,6 +142,7 @@ jobs:
           case "$TARGET" in
             main) B="$MAIN_BACKEND_B64"; V="$MAIN_TFVARS_B64";;
             dev)  B="$DEV_BACKEND_B64";  V="$DEV_TFVARS_B64";;
+            atomoh|ssminji|whchoi) B="$USER_BACKEND_B64"; V="$USER_TFVARS_B64";;
             *) echo "::error::unexpected target '$TARGET'"; exit 1;;
           esac
           if [ -z "$B" ] || [ -z "$V" ]; then
