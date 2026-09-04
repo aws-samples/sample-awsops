@@ -38,6 +38,11 @@ on:
       image_sha:
         description: "Full commit SHA whose web-<sha> image to promote and roll (default: the dispatched ref's HEAD)"
         required: false
+      build:
+        description: "Build & push web-<HEAD sha> first, then roll it (for a stack whose image was never built / was lost). Mutually exclusive with image_sha."
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -50,7 +55,7 @@ permissions:
 jobs:
   build:
     name: Build & push (arm64)
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build)
     runs-on: sample-awsops
     concurrency:
       group: deploy-web-build-${{ github.ref_name }}
@@ -223,7 +228,12 @@ jobs:
         # has deployed since; prefer the explicit dispatch.)
         env:
           PIN_SHA: ${{ inputs.image_sha || github.sha }}
+          DISPATCH_BUILD: ${{ inputs.build }}
+          DISPATCH_IMAGE_SHA: ${{ inputs.image_sha }}
         run: |
+          if [ "$DISPATCH_BUILD" = "true" ] && [ -n "$DISPATCH_IMAGE_SHA" ]; then
+            echo "::error::'build' and 'image_sha' are mutually exclusive — a fresh build is always HEAD's sha."; exit 1
+          fi
           MANIFEST=$(aws ecr batch-get-image \
             --repository-name "${{ steps.tf.outputs.ecr_repo }}" \
             --image-ids imageTag="web-${PIN_SHA}" \
