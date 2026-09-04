@@ -59,18 +59,11 @@ jobs:
       BRANCH: ${{ github.ref_name }}
       MAIN_ROLE: ${{ secrets.AWS_CI_BUILD_ROLE_ARN }}
       DEV_ROLE: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
-      MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
-      DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
       DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
-      USER_BACKEND_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', github.ref_name)] }}
       USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_wrapper: false
 
       - name: Select the branch's stack (fail-closed — no cross-branch fallback)
         id: sel
@@ -90,39 +83,33 @@ jobs:
           role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
 
-      - name: Restore terraform.foundation backend (read-only — just need `output`)
-        working-directory: terraform/foundation
+      # The build job needs exactly one stack fact — the web ECR repository —
+      # and derives it WITHOUT reading Terraform state (the ci-build role is
+      # ECR-push-only by design; no S3 tfstate access): repo name is
+      # "${project}-web" (terraform/foundation/ecr.tf), project comes from the
+      # stack's tfvars blob, registry from the ECR login below.
+      - name: Resolve the stack's project name from tfvars
+        id: stack
         run: |
           case "$BRANCH" in
-            main) B="$MAIN_BACKEND_B64"; V="$MAIN_TFVARS_B64";;
-            dev)  B="$DEV_BACKEND_B64";  V="$DEV_TFVARS_B64";;
-            atomoh|ssminji|whchoi) B="$USER_BACKEND_B64"; V="$USER_TFVARS_B64";;
+            main) V="$MAIN_TFVARS_B64";;
+            dev)  V="$DEV_TFVARS_B64";;
+            atomoh|ssminji|whchoi) V="$USER_TFVARS_B64";;
             *) echo "::error::unexpected branch '$BRANCH'"; exit 1;;
           esac
-          if [ -z "$B" ] || [ -z "$V" ]; then
-            echo "::error::TF backend secrets for '$BRANCH' are not set — provision its stack first (docs/runbooks/branch-strategy.md). No cross-branch fallback, by design."
+          if [ -z "$V" ]; then
+            echo "::error::TF tfvars secret for '$BRANCH' is not set — provision its stack first (docs/runbooks/branch-strategy.md). No cross-branch fallback, by design."
             exit 1
           fi
-          echo "$B" | base64 -d > backend.hcl
-          echo "$V" | base64 -d > terraform.tfvars
-          terraform init -backend-config=backend.hcl -input=false
-
-      - name: Resolve ECR repo URI
-        id: tf
-        working-directory: terraform/foundation
-        run: echo "ecr_web_uri=$(terraform output -raw ecr_web_uri)" >> "$GITHUB_OUTPUT"
-
-      # The runner is persistent and shared — never leave the restored stack
-      # config behind, whatever the outcome.
-      - name: Clean restored terraform config off the runner
-        if: always()
-        working-directory: terraform/foundation
-        run: rm -f terraform.tfvars backend.hcl
+          PROJECT=$(echo "$V" | base64 -d | sed -nE 's/^[[:space:]]*project[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' | head -1)
+          PROJECT="${PROJECT:-awsops-v2}"   # variables.tf default
+          echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
       - name: Login to Amazon ECR
+        id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Copy CHANGELOG into build context
@@ -138,7 +125,7 @@ jobs:
           push: true
           # ONLY the immutable per-commit tag — :web-latest is written solely
           # by the deploy job's pin step.
-          tags: ${{ steps.tf.outputs.ecr_web_uri }}:web-${{ github.sha }}
+          tags: ${{ steps.ecr.outputs.registry }}/${{ steps.stack.outputs.project }}-web:web-${{ github.sha }}
 
   deploy:
     name: Roll ECS service
