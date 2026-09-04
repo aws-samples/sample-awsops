@@ -50,7 +50,7 @@ mutation roles. Role-to-sub matrix:
 | `sample-awsops-ci-deployer` | main roll / apply / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply |
 | `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | dev + user stacks' ECR push |
 | `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply — **never production** |
-| `sample-awsops-ci-terraform-plan` | plan (PR/push, read-only) | StringLike: `...:ref:refs/heads/main`, `...:ref:refs/heads/dev`, `...:pull_request` | ReadOnlyAccess |
+| `sample-awsops-ci-terraform-plan` | plan (PR/push incl. user-branch own-stack plans, read-only) | StringLike: `...:pull_request` + refs `main`, `dev`, `atomoh`, `ssminji`, `whchoi` | ReadOnlyAccess |
 | `sample-awsops-ci-review` | AI pr-review | StringLike: `...:ref:refs/heads/main`, `...:ref:refs/heads/dev` | Bedrock invoke |
 
 CRITICAL sub rule: **a job that declares `environment:` presents the
@@ -82,10 +82,57 @@ terraform -chdir=terraform/foundation plan -out tfplan   # review the plan
 terraform -chdir=terraform/foundation apply tfplan       # apply EXACTLY that plan
 ```
 
+Sensitive-value policy (public repo — Actions LOGS are public): role ARNs and
+anything carrying the account id live in repo **secrets** (auto-masked in
+logs), never variables; every credentials step sets `mask-aws-account-id`.
+Cognito users: dev/preview stacks get the shared regular **demo user**
+(`demo_email` defaults to `demo@awsops.local`; its password rides as the
+`TF_VAR_DEMO_PASSWORD` repo secret, exported by terraform.yml as
+`TF_VAR_demo_password` on the plan step only). `create_demo_user` defaults to
+**false** (fail-closed): a dev-tier stack opts in with `create_demo_user =
+true` in its tfvars blob, so the shared credential can never reach a stack —
+production foremost — by omission. A stack may instead override
+`demo_password` in its own blob (the blob is itself a secret; tfvars outranks
+env, so the override is the sanctioned per-stack path). **Admin users are not
+Terraform-managed at all** (a TF-managed admin would need a password channel
+through CI plans, and a locally-applied one would ping-pong into a destroy on
+the next CI plan via the shared remote state). Provision an admin per stack
+out-of-band, with per-stack credentials — never a repo-wide shared pair:
+
+```bash
+aws cognito-idp admin-create-user --user-pool-id <pool-id> \
+  --username <email> --user-attributes Name=email,Value=<email> Name=email_verified,Value=true \
+  --message-action SUPPRESS
+aws cognito-idp admin-set-user-password --user-pool-id <pool-id> \
+  --username <email> --password '<per-stack password>' --permanent
+aws cognito-idp admin-add-user-to-group --user-pool-id <pool-id> \
+  --username <email> --group-name admins
+```
+
+Only admins (the Cognito `admins` group, or the SSM email allowlist) see
+IAM-related views. `admin_password` must NOT sit in any registered tfvars
+blob — the restore step hard-fails on it (`admin_email` alone is fine: it is
+not a secret, and `k8sgpt_enabled` stacks need it in tfvars for the budget
+alarm subscriber). Stacks provisioned before this policy carried a TF-managed
+admin user: the first post-merge plan proposes destroying it — that removal
+is intentional (recreate via the CLI above when the stack actually needs an
+admin).
+The plan artifact is a covered channel too: a tfplan embeds every variable
+value in plaintext and public-repo artifacts are downloadable by anyone, so
+the plan job encrypts it with the `TF_PLAN_ENC_KEY` secret (fail-closed) and
+the apply job decrypts before applying.
+(공개 리포는 Actions 로그도 공개 — 역할 ARN 등 계정 ID 포함 값은 변수 금지·시크릿
+전용. demo 사용자 비밀번호는 `TF_VAR_DEMO_PASSWORD` 시크릿으로 공급하되 production은
+`create_demo_user=false` 또는 자체 tfvars 블롭의 `demo_password` override로 공유
+자격을 거부합니다. admin 사용자는 Terraform 관리 밖입니다 — 스택별로 위
+`admin-create-user` CLI 3종으로 만들고 `admins` 그룹에 넣습니다. 기존 스택의
+TF-관리 admin은 머지 후 첫 plan에서 삭제로 표시되며, 이는 의도된 제거입니다.)
+
 Then register the generated files (base64) as repo secrets:
 
 | Stack | Secrets |
 |---|---|
+| all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (plan-artifact encryption) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
 | production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` |
 | dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |

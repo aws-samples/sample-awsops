@@ -26,6 +26,9 @@ interface ApiResp {
   enabled: boolean;
   summary: Partial<Record<CheckKey, number>>;
   findings: Partial<Record<CheckKey, Finding[]>>;
+  // Checks visible to this caller — the API omits admin-only ones (iam_no_mfa) for
+  // non-admins; absent (older API) means all checks.
+  checks?: CheckKey[];
 }
 
 // Fixed CVE-severity slice colors (v1 parity: red/orange/purple/cyan; v2 chart-palette hues).
@@ -115,14 +118,20 @@ export default function SecurityPage() {
   }, [load]);
 
   const enabled = data?.enabled ?? true;
+  const visibleChecks = data?.checks ?? CHECKS;
   const summary = data?.summary ?? {};
+
+  // The active tab can reference a check the API withheld (admin-only) — snap to the first visible.
+  useEffect(() => {
+    if (visibleChecks.length > 0 && !visibleChecks.includes(active)) setActive(visibleChecks[0]);
+  }, [visibleChecks, active]);
   const findings = data?.findings ?? {};
 
   // Severity rollup for the donut (high vs medium).
   const sevData = (() => {
     let high = 0;
     let medium = 0;
-    for (const k of CHECKS) {
+    for (const k of visibleChecks) {
       const n = summary[k] ?? 0;
       if (CHECK_META[k].severity === 'high') high += n;
       else if (CHECK_META[k].severity === 'medium') medium += n;
@@ -190,7 +199,7 @@ export default function SecurityPage() {
           <>
             {/* Per-check counts */}
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-              {CHECKS.map((k) => (
+              {visibleChecks.map((k) => (
                 <StatTile
                   key={k}
                   label={CHECK_META[k].label}
@@ -223,7 +232,7 @@ export default function SecurityPage() {
             {/* Tabs + table */}
             <div className="mt-6">
               <SegmentedControl
-                options={CHECKS.map((k) => ({ value: k, label: `${CHECK_META[k].label} (${summary[k] ?? 0})` }))}
+                options={visibleChecks.map((k) => ({ value: k, label: `${CHECK_META[k].label} (${summary[k] ?? 0})` }))}
                 value={active}
                 onChange={(v) => setActive(v as CheckKey)}
               />

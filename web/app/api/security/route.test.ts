@@ -19,8 +19,8 @@ describe('GET /api/security', () => {
     const body = await (await GET(req())).json();
     expect(body.enabled).toBe(false);
   });
-  it('200 returns summary + findings per check', async () => {
-    verifyUser.mockResolvedValue({ sub: 'u' });
+  it('200 returns summary + findings per check (admin sees iam_no_mfa)', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u', groups: ['admins'] });
     query
       .mockResolvedValueOnce({ rows: [{ n: 4 }] }) // presence probe
       .mockResolvedValueOnce({ rows: [{ resource_id: 'b1', region: 'us-east-1', detail: { bucket_policy_is_public: true } }] }) // public_s3
@@ -35,6 +35,20 @@ describe('GET /api/security', () => {
     expect(body.summary).toEqual({ public_s3: 1, open_sg: 1, unencrypted_ebs: 0,
       ecr_cve: 0, iam_no_mfa: 1 });
     expect(body.findings.public_s3[0]).toMatchObject({ check: 'public_s3', resource_id: 'b1', severity: 'high' });
+    expect(body.checks).toContain('iam_no_mfa');
+  });
+  it('non-admin: iam_no_mfa withheld from checks/summary/findings', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' }); // no groups, no SSM allowlist → not admin
+    query
+      .mockResolvedValueOnce({ rows: [{ n: 4 }] }) // presence probe
+      .mockResolvedValueOnce({ rows: [] }) // public_s3
+      .mockResolvedValueOnce({ rows: [] }) // open_sg
+      .mockResolvedValueOnce({ rows: [] }); // unencrypted_ebs — iam_no_mfa never queried
+    const { GET } = await import('./route');
+    const body = await (await GET(req())).json();
+    expect(body.checks).not.toContain('iam_no_mfa');
+    expect(body.summary).not.toHaveProperty('iam_no_mfa');
+    expect(body.findings).not.toHaveProperty('iam_no_mfa');
   });
   it('500 on db error', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });

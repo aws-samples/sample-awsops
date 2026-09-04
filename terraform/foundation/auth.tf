@@ -92,15 +92,40 @@ resource "aws_cognito_user_pool_client" "main" {
   }
 }
 
-resource "aws_cognito_user" "admin" {
+# Admin gate group — web/lib/admin.ts checks cognito:groups for ADMIN_GROUP (default 'admins');
+# IAM-related views (iam_user/iam_role inventory, iam_no_mfa findings) are admin-only.
+resource "aws_cognito_user_group" "admins" {
+  name         = "admins"
   user_pool_id = aws_cognito_user_pool.main.id
-  username     = var.admin_email
-  password     = var.admin_password
+  description  = "Admins — IAM-related views are visible only to this group"
+}
+
+# Regular demo user — carries no group, so IAM views stay hidden. Gated so a stack
+# (e.g. production) can refuse the shared demo credential entirely.
+resource "aws_cognito_user" "demo" {
+  count        = var.create_demo_user ? 1 : 0
+  user_pool_id = aws_cognito_user_pool.main.id
+  username     = var.demo_email
+  password     = var.demo_password
   attributes = {
-    email          = var.admin_email
+    email          = var.demo_email
     email_verified = true
   }
+  lifecycle {
+    precondition {
+      condition     = var.demo_password != ""
+      error_message = "create_demo_user=true requires demo_password (TF_VAR_DEMO_PASSWORD secret in CI, or a per-stack tfvars override)."
+    }
+  }
 }
+
+# Admin users are deliberately NOT managed by Terraform. A TF-managed admin would need a
+# password channel through CI (plan evaluates variables), which the public-repo hygiene
+# policy forbids — and a locally-applied one would ping-pong into a destroy on the next CI
+# plan (shared remote state). Admins are provisioned out-of-band per stack
+# (admin-create-user + admin-add-user-to-group into the "admins" group above) — see
+# docs/runbooks/dev-repo-setup.md. The previously TF-managed admin user is intentionally
+# removed from state on the next apply.
 
 data "aws_iam_policy_document" "edge_assume" {
   statement {

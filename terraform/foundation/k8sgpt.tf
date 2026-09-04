@@ -34,6 +34,13 @@ resource "aws_budgets_budget" "k8sgpt_bedrock" {
     values = ["Amazon Bedrock"]
   }
 
+  lifecycle {
+    precondition {
+      condition     = var.admin_email != ""
+      error_message = "k8sgpt_enabled=true requires admin_email (budget alarm subscriber) — admin_email now defaults to \"\"."
+    }
+  }
+
   notification {
     comparison_operator        = "GREATER_THAN"
     threshold                  = 80
