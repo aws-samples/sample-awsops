@@ -92,7 +92,29 @@ resource "aws_cognito_user_pool_client" "main" {
   }
 }
 
+# Admin gate group — web/lib/admin.ts checks cognito:groups for ADMIN_GROUP (default 'admins');
+# IAM-related views (iam_user/iam_role inventory, iam_no_mfa findings) are admin-only.
+resource "aws_cognito_user_group" "admins" {
+  name         = "admins"
+  user_pool_id = aws_cognito_user_pool.main.id
+  description  = "Admins — IAM-related views are visible only to this group"
+}
+
+# Regular demo user — every stack gets one; carries no group, so IAM views stay hidden.
+resource "aws_cognito_user" "demo" {
+  user_pool_id = aws_cognito_user_pool.main.id
+  username     = var.demo_email
+  password     = var.demo_password
+  attributes = {
+    email          = var.demo_email
+    email_verified = true
+  }
+}
+
+# Admin user is deliberately NOT created by default (create_admin_user=false) — enabling it is a
+# per-stack decision with per-stack credentials, never a shared repo-wide pair.
 resource "aws_cognito_user" "admin" {
+  count        = var.create_admin_user ? 1 : 0
   user_pool_id = aws_cognito_user_pool.main.id
   username     = var.admin_email
   password     = var.admin_password
@@ -100,6 +122,19 @@ resource "aws_cognito_user" "admin" {
     email          = var.admin_email
     email_verified = true
   }
+  lifecycle {
+    precondition {
+      condition     = var.admin_email != "" && var.admin_password != ""
+      error_message = "create_admin_user=true requires admin_email and admin_password."
+    }
+  }
+}
+
+resource "aws_cognito_user_in_group" "admin" {
+  count        = var.create_admin_user ? 1 : 0
+  user_pool_id = aws_cognito_user_pool.main.id
+  group_name   = aws_cognito_user_group.admins.name
+  username     = aws_cognito_user.admin[0].username
 }
 
 data "aws_iam_policy_document" "edge_assume" {

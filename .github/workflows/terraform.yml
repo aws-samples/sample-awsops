@@ -51,10 +51,6 @@ jobs:
     runs-on: sample-awsops
     # plan is automatic and read-only — it must never sit behind any gate.
     env:
-      # Sensitive inputs ride as TF_VAR_ env from masked secrets, never inside
-      # the tfvars blob (public-repo logs are public; secrets are auto-masked).
-      TF_VAR_admin_email: ${{ secrets.TF_VAR_ADMIN_EMAIL }}
-      TF_VAR_admin_password: ${{ secrets.TF_VAR_ADMIN_PASSWORD }}
       TARGET: ${{ github.base_ref || github.ref_name }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
@@ -101,6 +97,13 @@ jobs:
 
       - name: terraform plan
         if: steps.restore.outputs.skip != '1'
+        env:
+          # Sensitive inputs ride as TF_VAR_ env from masked secrets, never inside the
+          # tfvars blob (public-repo logs are public; secrets are auto-masked). Scoped to
+          # this one step so no other step (or PR-authored hook) sees them. The demo user
+          # is deliberately one shared credential across stacks; admin users are per-stack
+          # and NOT created by CI (create_admin_user defaults to false).
+          TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
         run: terraform plan -out=tfplan -input=false
 
       # A plan file embeds every input variable value in plaintext (sensitive
@@ -129,8 +132,6 @@ jobs:
     runs-on: sample-awsops
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
-      TF_VAR_admin_email: ${{ secrets.TF_VAR_ADMIN_EMAIL }}
-      TF_VAR_admin_password: ${{ secrets.TF_VAR_ADMIN_PASSWORD }}
       TARGET: ${{ github.ref_name }}
       MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
       DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
@@ -198,3 +199,9 @@ jobs:
 
       - name: terraform apply (exact saved plan — never re-planned)
         run: terraform apply -input=false tfplan
+
+      # The runner is persistent — never leave the decrypted plan (embeds sensitive
+      # variable values in plaintext) or the restored config behind.
+      - name: Clean sensitive files off the runner
+        if: always()
+        run: rm -f tfplan tfplan.enc terraform.tfvars backend.hcl

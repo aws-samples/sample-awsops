@@ -78,14 +78,34 @@ variable "cognito_domain_prefix" {
   }
 }
 
+variable "create_admin_user" {
+  type        = bool
+  description = "Create the Cognito admin user (member of the 'admins' group — IAM-related views are admin-only). Default false: stacks start with only the demo user; enable per stack once per-stack admin credentials are provisioned."
+  default     = false
+}
+
 variable "admin_email" {
   type        = string
-  description = "Initial Cognito admin user email"
+  description = "Cognito admin user email — required when create_admin_user (also reused by k8sgpt.tf SNS when k8sgpt_enabled)"
+  default     = ""
 }
 
 variable "admin_password" {
   type        = string
-  description = "Initial admin permanent password (>=8, upper+lower+number)"
+  description = "Admin permanent password (>=8, upper+lower+number) — required when create_admin_user"
+  sensitive   = true
+  default     = ""
+}
+
+variable "demo_email" {
+  type        = string
+  description = "Regular (non-admin) demo user email — created in every stack"
+  default     = "demo@awsops.local"
+}
+
+variable "demo_password" {
+  type        = string
+  description = "Demo user permanent password (>=8, upper+lower+number). No default — CI supplies it via the TF_VAR_DEMO_PASSWORD secret."
   sensitive   = true
 }
 

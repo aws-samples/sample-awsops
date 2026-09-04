@@ -85,11 +85,18 @@ terraform -chdir=terraform/foundation apply tfplan       # apply EXACTLY that pl
 Sensitive-value policy (public repo — Actions LOGS are public): role ARNs and
 anything carrying the account id live in repo **secrets** (auto-masked in
 logs), never variables; every credentials step sets `mask-aws-account-id`.
-`admin_email`/`admin_password` are NOT written into any tfvars — they ride as
-`TF_VAR_admin_email`/`TF_VAR_admin_password` repo secrets that terraform.yml
-exports as env. Strip both fields from tfvars before registering it — the
-restore step hard-fails on a blob still carrying them (tfvars outranks
-`TF_VAR_*` env, so leaving them in would silently bypass the secrets channel).
+Cognito users: every stack gets the shared regular **demo user**
+(`demo_email` defaults to `demo@awsops.local`; its password rides as the
+`TF_VAR_DEMO_PASSWORD` repo secret, exported by terraform.yml as
+`TF_VAR_demo_password` on the plan step only — one shared demo credential
+across stacks is by design). The **admin user is NOT created by CI**
+(`create_admin_user` defaults to `false`); enabling it is a per-stack decision
+with per-stack credentials — never a repo-wide shared pair. Only admins (the
+Cognito `admins` group, or the SSM email allowlist) see IAM-related views.
+`admin_email`/`admin_password` (and `demo_*`) must NOT sit in any registered
+tfvars blob — the restore step hard-fails on a blob still carrying `admin_*`
+(tfvars outranks `TF_VAR_*` env, so leaving them in would silently bypass the
+secrets channel).
 The plan artifact is a covered channel too: a tfplan embeds every variable
 value in plaintext and public-repo artifacts are downloadable by anyone, so
 the plan job encrypts it with the `TF_PLAN_ENC_KEY` secret (fail-closed) and
@@ -101,6 +108,7 @@ Then register the generated files (base64) as repo secrets:
 
 | Stack | Secrets |
 |---|---|
+| all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (plan-artifact encryption) / `TF_VAR_DEMO_PASSWORD` (demo user) |
 | production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` |
 | dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
