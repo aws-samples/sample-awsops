@@ -82,6 +82,15 @@ terraform -chdir=terraform/foundation plan -out tfplan   # review the plan
 terraform -chdir=terraform/foundation apply tfplan       # apply EXACTLY that plan
 ```
 
+Sensitive-value policy (public repo — Actions LOGS are public): role ARNs and
+anything carrying the account id live in repo **secrets** (auto-masked in
+logs), never variables; every credentials step sets `mask-aws-account-id`.
+`admin_email`/`admin_password` are NOT written into any tfvars — they ride as
+`TF_VAR_admin_email`/`TF_VAR_admin_password` repo secrets that terraform.yml
+exports as env. Strip both fields from tfvars before registering it.
+(공개 리포는 Actions 로그도 공개 — 역할 ARN 등 계정 ID 포함 값은 변수 금지·시크릿
+전용, admin 자격은 tfvars에서 제거하고 TF_VAR_* 시크릿으로만 공급합니다.)
+
 Then register the generated files (base64) as repo secrets:
 
 | Stack | Secrets |

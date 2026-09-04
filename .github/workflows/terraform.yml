@@ -51,6 +51,10 @@ jobs:
     runs-on: sample-awsops
     # plan is automatic and read-only — it must never sit behind any gate.
     env:
+      # Sensitive inputs ride as TF_VAR_ env from masked secrets, never inside
+      # the tfvars blob (public-repo logs are public; secrets are auto-masked).
+      TF_VAR_admin_email: ${{ secrets.TF_VAR_ADMIN_EMAIL }}
+      TF_VAR_admin_password: ${{ secrets.TF_VAR_ADMIN_PASSWORD }}
       TARGET: ${{ github.base_ref || github.ref_name }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
@@ -64,7 +68,8 @@ jobs:
       - name: Configure AWS credentials (OIDC -> ci-terraform-plan)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
+          mask-aws-account-id: true
+          role-to-assume: ${{ secrets.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
           aws-region: ap-northeast-2
 
       - name: Restore backend.hcl / terraform.tfvars
@@ -108,9 +113,11 @@ jobs:
     runs-on: sample-awsops
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
+      TF_VAR_admin_email: ${{ secrets.TF_VAR_ADMIN_EMAIL }}
+      TF_VAR_admin_password: ${{ secrets.TF_VAR_ADMIN_PASSWORD }}
       TARGET: ${{ github.ref_name }}
-      MAIN_ROLE: ${{ vars.AWS_CI_DEPLOYER_ROLE_ARN }}
-      DEV_ROLE: ${{ vars.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+      MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
+      DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
       DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
@@ -134,6 +141,7 @@ jobs:
       - name: Configure AWS credentials (OIDC -> ci-deployer)
         uses: aws-actions/configure-aws-credentials@v4
         with:
+          mask-aws-account-id: true
           role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
 

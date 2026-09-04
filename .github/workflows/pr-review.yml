@@ -53,7 +53,8 @@ jobs:
       - name: Configure AWS credentials (OIDC -> ci-review)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_CI_REVIEW_ROLE_ARN }}
+          mask-aws-account-id: true
+          role-to-assume: ${{ secrets.AWS_CI_REVIEW_ROLE_ARN }}
           aws-region: us-east-1
 
       # Security (M1): pull_request_target runs in a secrets/write-permission context ->
