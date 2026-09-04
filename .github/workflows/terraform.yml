@@ -90,6 +90,10 @@ jobs:
           fi
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
+          if grep -Eq '^[[:space:]]*admin_(email|password)[[:space:]]*=' terraform.tfvars; then
+            echo "::error::restored terraform.tfvars still contains admin_email/admin_password — tfvars wins over TF_VAR_* env, silently bypassing the secrets channel. Strip both fields and re-register the secret (docs/runbooks/dev-repo-setup.md)."
+            exit 1
+          fi
 
       - name: terraform init
         if: steps.restore.outputs.skip != '1'
@@ -99,12 +103,24 @@ jobs:
         if: steps.restore.outputs.skip != '1'
         run: terraform plan -out=tfplan -input=false
 
-      - name: Upload plan artifact
+      # A plan file embeds every input variable value in plaintext (sensitive
+      # ones included), and artifacts on a public repo are downloadable by any
+      # GitHub account — encrypt before upload, fail-closed without the key.
+      - name: Encrypt plan artifact
+        if: steps.restore.outputs.skip != '1'
+        env:
+          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+        run: |
+          [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::TF_PLAN_ENC_KEY secret is not set — refusing to upload a plaintext plan."; exit 1; }
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in tfplan -out tfplan.enc -pass env:TF_PLAN_ENC_KEY
+          rm -f tfplan
+
+      - name: Upload plan artifact (encrypted)
         if: steps.restore.outputs.skip != '1'
         uses: actions/upload-artifact@v4
         with:
           name: tfplan
-          path: terraform/foundation/tfplan
+          path: terraform/foundation/tfplan.enc
           retention-days: 5
 
   apply:
@@ -135,7 +151,7 @@ jobs:
             dev|atomoh|ssminji|whchoi) ROLE="$DEV_ROLE";;
             *) echo "::error::unexpected dispatch target '$TARGET'"; exit 1;;
           esac
-          [ -n "$ROLE" ] || { echo "::error::deployer role variable for '$TARGET' is not set"; exit 1; }
+          [ -n "$ROLE" ] || { echo "::error::deployer role secret for '$TARGET' is not set"; exit 1; }
           echo "role=$ROLE" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials (OIDC -> ci-deployer)
@@ -159,6 +175,10 @@ jobs:
           fi
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
+          if grep -Eq '^[[:space:]]*admin_(email|password)[[:space:]]*=' terraform.tfvars; then
+            echo "::error::restored terraform.tfvars still contains admin_email/admin_password — tfvars wins over TF_VAR_* env, silently bypassing the secrets channel. Strip both fields and re-register the secret (docs/runbooks/dev-repo-setup.md)."
+            exit 1
+          fi
 
       - name: terraform init
         run: terraform init -backend-config=backend.hcl -input=false
@@ -168,6 +188,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh run download "${{ inputs.plan_run_id }}" --repo "${{ github.repository }}" --name tfplan --dir .
+
+      - name: Decrypt the approved plan
+        env:
+          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+        run: |
+          [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::TF_PLAN_ENC_KEY secret is not set."; exit 1; }
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in tfplan.enc -out tfplan -pass env:TF_PLAN_ENC_KEY
 
       - name: terraform apply (exact saved plan — never re-planned)
         run: terraform apply -input=false tfplan

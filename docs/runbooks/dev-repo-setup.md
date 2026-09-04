@@ -87,7 +87,13 @@ anything carrying the account id live in repo **secrets** (auto-masked in
 logs), never variables; every credentials step sets `mask-aws-account-id`.
 `admin_email`/`admin_password` are NOT written into any tfvars — they ride as
 `TF_VAR_admin_email`/`TF_VAR_admin_password` repo secrets that terraform.yml
-exports as env. Strip both fields from tfvars before registering it.
+exports as env. Strip both fields from tfvars before registering it — the
+restore step hard-fails on a blob still carrying them (tfvars outranks
+`TF_VAR_*` env, so leaving them in would silently bypass the secrets channel).
+The plan artifact is a covered channel too: a tfplan embeds every variable
+value in plaintext and public-repo artifacts are downloadable by anyone, so
+the plan job encrypts it with the `TF_PLAN_ENC_KEY` secret (fail-closed) and
+the apply job decrypts before applying.
 (공개 리포는 Actions 로그도 공개 — 역할 ARN 등 계정 ID 포함 값은 변수 금지·시크릿
 전용, admin 자격은 tfvars에서 제거하고 TF_VAR_* 시크릿으로만 공급합니다.)
 
