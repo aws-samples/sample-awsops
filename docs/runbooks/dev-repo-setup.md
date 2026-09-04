@@ -128,7 +128,8 @@ situations:
   apply WILL delete the user object; disabling cannot stop a planned destroy.
   To keep the identity (and its `sub`) alive on a stack with real user-owned
   data, detach it from state BEFORE the first post-merge apply:
-  `terraform state rm 'aws_cognito_user.admin'` — Terraform then forgets the
+  `terraform -chdir=terraform/foundation state rm 'aws_cognito_user.admin'` —
+  Terraform then forgets the
   resource without touching the live user. Skip this on stacks with nothing
   to preserve and let the apply delete it.
 - **Manually-provisioned users** (the CLI flow above): to revoke access,
@@ -136,7 +137,8 @@ situations:
   loss.
 
 (TF-관리 admin은 다음 apply가 반드시 삭제합니다 — 보존하려면 apply 전에
-`terraform state rm 'aws_cognito_user.admin'`으로 상태에서만 떼어냅니다.
+`terraform -chdir=terraform/foundation state rm 'aws_cognito_user.admin'`으로
+상태에서만 떼어냅니다.
 disable은 삭제를 막지 못하며, 수동 생성 사용자에 대한 접근 차단 수단입니다.)
 The plan artifact is a covered channel too: a tfplan embeds every variable
 value in plaintext and public-repo artifacts are downloadable by anyone, so
