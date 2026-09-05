@@ -551,15 +551,50 @@ def sweep_dashboard_cards(conn, integration_id, keep_keys):
 _MAX_SCHEMA_BYTES = 256_000  # mirrors web/lib/datasource-schema.ts's MAX_SCHEMA_BYTES — same table/cap
 
 
+def _trim_schema_for_cache(schema):
+    """Mirror of web/lib/datasource-schema.ts trimSchemaForCache: bound an over-limit schema instead
+    of caching NOTHING. Tables → 50 × 80 columns; metric schemas (Prometheus/Mimir — the connector
+    cap is a name COUNT, so long-name stacks can exceed the byte cap) → labels 100 + every k-th metric
+    name (interleaved, so late node_*/kube_* families survive). Always marks `truncated`."""
+    if not isinstance(schema, dict):
+        return schema
+    if isinstance(schema.get("tables"), list):
+        tables = []
+        for t in schema["tables"][:50]:
+            if isinstance(t, dict) and isinstance(t.get("columns"), list):
+                tables.append({**t, "columns": t["columns"][:80]})
+            else:
+                tables.append(t)
+        return {**schema, "tables": tables, "truncated": True}
+    if isinstance(schema.get("metrics"), list):
+        allm = schema["metrics"]
+        # `probed` names present in the original list MUST survive the stride — card_catalog reads
+        # "probed but absent from metrics" as a DEFINITIVE absence. `trimmed` marks a size trim.
+        present = set(allm)
+        keep = {p for p in schema.get("probed", []) if p in present} if isinstance(schema.get("probed"), list) else set()
+        out = {**schema, "truncated": True, "trimmed": True}
+        if isinstance(schema.get("labels"), list):
+            out["labels"] = schema["labels"][:100]
+        stride = 1
+        while len(json.dumps(out).encode("utf-8")) > _MAX_SCHEMA_BYTES and stride < len(allm):
+            stride *= 2
+            out["metrics"] = [m for i, m in enumerate(allm) if i % stride == 0 or m in keep]
+        return out
+    return schema
+
+
 def upsert_datasource_schema(conn, account_id, integration_id, kind, schema):
     """Write-back of a freshly re-introspected schema (drift refresh, datasource_index.py only —
     the BFF's normal warm/refresh path uses upsertSchema in web/lib/datasource-schema.ts; this is the
     python-worker-side mirror, same table). jsonb bound + cast, never inlined. Raises (caller falls
     back to the cached schema — see run()'s `fresh is not None` write-back path) when the introspected
-    schema exceeds the same size cap the BFF enforces, so an oversized live schema never gets cached."""
+    schema exceeds the same size cap the BFF enforces AND cannot be trimmed; a trimmable over-limit
+    schema (tables / metrics) is stored as a bounded `truncated` copy, same as the BFF's upsertSchema."""
     payload = json.dumps(schema)
     if len(payload.encode("utf-8")) > _MAX_SCHEMA_BYTES:
-        raise ValueError("introspected schema exceeds size limit")
+        payload = json.dumps(_trim_schema_for_cache(schema))
+        if len(payload.encode("utf-8")) > _MAX_SCHEMA_BYTES:
+            raise ValueError("introspected schema exceeds size limit")
     conn.run(
         "INSERT INTO datasource_schemas (account_id, integration_id, kind, schema, fetched_at) "
         "VALUES (:acct, :iid, :k, :s::jsonb, now()) "

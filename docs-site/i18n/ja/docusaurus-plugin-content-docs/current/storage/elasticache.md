@@ -47,7 +47,7 @@ CloudWatch から収集したリアルタイムメトリクス:
 - ネットワーク設定(サブネットグループ、AZ)
 - セキュリティ設定(At-Rest/Transit 暗号化、Auth Token)
 - 構成設定(スナップショット保持、メンテナンスウィンドウ)
-- Security Group とインバウンドルール
+- Security Group とインバウンドルール — 各 SG は同期済みの security_group インベントリから protocol/port/ソース（CIDR・SG・プレフィックスリスト）に展開されます（ライブ AWS 呼び出しなし。未同期の SG は 'not synced' 表示）
 - CloudWatch メトリクスチャート
 
 ## 使い方

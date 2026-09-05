@@ -1,3 +1,7 @@
+
+# NOTE (i18n lockstep): the Korean `title` strings below are REGISTERED in
+# web/lib/i18n-terms.ts (the web UI renders them through tt()). Adding or renaming a title
+# here requires the matching TERMS entry there, or the chip/card stays Korean in en/zh/ja.
 """Deterministic diagnostic-signal catalog for Prometheus/Mimir/Loki/Tempo datasources.
 
 A curated map of ops diagnostic INTENTS → standard PromQL templates (cadvisor / node-exporter /

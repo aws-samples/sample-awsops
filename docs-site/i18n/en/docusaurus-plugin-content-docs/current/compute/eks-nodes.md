@@ -18,7 +18,7 @@ A page for viewing detailed information about Kubernetes node capacity, allocata
 - **Total Nodes**: Total node count (cyan)
 - **Ready**: Ready status node count (green)
 - **Total CPU**: Total vCPU capacity sum (purple)
-- **Total Memory**: Total memory capacity sum (orange)
+- **Total Memory**: Total memory capacity sum (orange) — with an allocatable total and reserved % (Capacity − Allocatable) hint (omitted when allocatable is unreported)
 
 ### CPU Usage per Node Chart
 Display CPU resource status per node with 3-level bar chart:
@@ -50,6 +50,9 @@ Display Memory resource status per node with the same 3-level bar chart:
 | Allocatable CPU | Allocatable CPU |
 | Allocatable Memory | Allocatable memory |
 | Created | Creation time |
+
+### Node drilldown Pods table
+Clicking a node opens the pods-scheduled-on-this-node table — Namespace / Pod / Status / Owner / **Pod IP** / **Service Account** / Restarts / CPU / Mem / Age columns ('-' when unknown, e.g. a terminated pod has no IP).
 
 ## Understanding Resource Concepts
 

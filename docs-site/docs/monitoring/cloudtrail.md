@@ -23,7 +23,7 @@ AWS 계정의 API 활동을 기록하는 CloudTrail 트레일과 이벤트를 �
 ### 탭 구조
 | 탭 | 내용 |
 |---|------|
-| Trails | 트레일 목록, 설정, S3 버킷 |
+| Trails | 트레일 목록, 설정, S3 버킷 — Last Delivery (UTC) 컬럼은 **가장 최근의 성공한 배달 시각**입니다(현재 실패 중이어도 과거 성공 시각이 남습니다 — 실패 신호는 상세의 `latest_delivery_error`) |
 | Recent Events | 최근 API 이벤트 (모든 이벤트) |
 | Write Events | 쓰기 이벤트만 필터링 (리소스 변경 감사) |
 
@@ -37,10 +37,10 @@ Events 및 Write Events 탭은 클릭 시에만 데이터를 로드합니다(`ev
 
 ### 트레일 상세 정보
 트레일 행 클릭 시 슬라이드 패널에서 확인:
-- **Trail**: 이름, ARN, 홈 리전, 로깅 상태, Multi-Region 여부
-- **Storage**: S3 버킷, 프리픽스, SNS 토픽, KMS 키
-- **CloudWatch**: 로그 그룹, IAM 역할, 마지막 전송 시간
-- **Validation**: 로그 파일 검증, 마지막 배달 시간
+- **Identity**: 이름, ARN, 계정, 리전, 홈 리전
+- **Logging**: 로깅 상태, Multi-Region/조직 트레일 여부, 로그 파일 검증, 로깅 시작/중지 시각, S3·CloudWatch Logs·다이제스트별 마지막 배달 시각과 배달 오류 (`latest_delivery_error` 등 — 배달 실패 신호는 여기서 확인)
+- **Storage**: S3 버킷/프리픽스, 로그 그룹, CW Logs IAM 역할
+- **Security**: KMS 키, SNS 토픽, 이벤트/인사이트 셀렉터 여부
 - **Tags**: 리소스 태그
 
 ### 이벤트 상세 정보

@@ -47,7 +47,7 @@ import Screenshot from '@site/src/components/Screenshot';
 - 网络设置（子网组、AZ）
 - 安全设置（At-Rest/Transit 加密、Auth Token）
 - 配置设置（快照保留、维护窗口）
-- Security Group 及入站规则
+- Security Group 及入站规则 — 每个 SG 会从已同步的 security_group 库存展开 protocol/port/来源（CIDR · SG · 前缀列表）（无实时 AWS 调用；未同步的 SG 显示 'not synced'）
 - CloudWatch 指标图表
 
 ## 使用方法

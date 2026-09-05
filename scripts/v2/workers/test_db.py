@@ -352,6 +352,34 @@ class TestUpsertDatasourceSchema:
         assert p["acct"] == "self" and p["iid"] == 42 and p["k"] == "clickhouse"
         assert json.loads(p["s"]) == {"version": "1.2", "tables": []}
 
+    def test_oversized_metric_schema_is_stored_bounded_and_truncated(self):
+        c = FakeConn()
+        big = {"metrics": [f"very_long_metric_name_{'x' * 80}_{i}" for i in range(3000)], "truncated": False}
+        db.upsert_datasource_schema(c, "self", 42, "prometheus", big)
+        assert len(c.calls) == 1
+        stored = json.loads(c.calls[0][1]["s"])
+        assert len(c.calls[0][1]["s"].encode("utf-8")) <= db._MAX_SCHEMA_BYTES
+        assert stored["truncated"] is True and 0 < len(stored["metrics"]) < 3000
+        assert stored["metrics"][0] == big["metrics"][0]
+
+    def test_metric_trim_keeps_probed_present_names_and_marks_trimmed(self):
+        metrics = [f"very_long_metric_name_{'x' * 80}_{i}" for i in range(3000)]
+        out = db._trim_schema_for_cache({"metrics": metrics, "probed": [metrics[1], metrics[1501], "absent"], "truncated": False})
+        assert out["trimmed"] is True and out["truncated"] is True
+        assert metrics[1] in out["metrics"] and metrics[1501] in out["metrics"]
+        assert "absent" not in out["metrics"]
+        assert out["probed"] == [metrics[1], metrics[1501], "absent"]
+        assert len(json.dumps(out).encode("utf-8")) <= db._MAX_SCHEMA_BYTES
+
+    def test_oversized_untrimmable_schema_still_raises(self):
+        c = FakeConn()
+        try:
+            db.upsert_datasource_schema(c, "self", 42, "clickhouse", {"blob": "x" * 300_000})
+            raise AssertionError("expected ValueError")
+        except ValueError:
+            pass
+        assert c.calls == []
+
 
 # ── datasource_dashboard_cards (pre-built dashboard cards) ───────────────────────────────────────
 CARD_READY = {"card_key": "up_targets", "title": "정상 타깃 수", "viz": "stat", "unit": "",

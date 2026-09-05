@@ -15,7 +15,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ## 主要功能
 ### 请求流图
 - 将 **Route53 → CloudFront → Load Balancer → Target Group → 目标**相连的流量路径以节点和边可视化。
-- 节点按类型以颜色和图标区分，目标节点会根据 **healthy / unhealthy / draining** 等 health 状态变换颜色。
+- 节点按类型以颜色和图标区分，目标节点会根据 **healthy / unhealthy / draining** 等 health 状态变换颜色。图上方的信息行会显示当前图中存在的类型/health 颜色图例。
 - 图形顶部显示当前的**节点数**、**边数**以及清单同步时刻。
 - 通过屏幕右下角的 **MiniMap** 和左下角的 **Controls** 可以自由移动（pan）/缩放（zoom）。
 

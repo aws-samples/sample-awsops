@@ -11,7 +11,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ECS 클러스터, 서비스, 태스크의 상태를 모니터링할 수 있는 페이지입니다.
 
 :::info v2 조회 방식
-v1은 클러스터/서비스/태스크를 한 페이지에서 통합 조회했지만, **v2는 이를 3개의 독립된 인벤토리 라우트로 분리**합니다 — `/inventory/ecs_cluster`, `/inventory/ecs_service`, `/inventory/ecs_task`. 사이드바에서는 "컴퓨트" 그룹 아래 세 항목으로 함께 묶여 있을 뿐, 각각 별도 테이블/필터/상세 패널을 가진 별개 페이지입니다. 아래 내용은 v1의 통합 페이지가 아니라 이 3-라우트 구조를 기준으로 작성되었습니다.
+v1은 클러스터/서비스/태스크를 한 페이지에서 통합 조회했습니다. v2는 3개의 독립된 인벤토리 라우트(`/inventory/ecs_cluster`, `/inventory/ecs_service`, `/inventory/ecs_task` — 각각 별도 테이블/필터/상세 패널)를 기본으로 하고, 여기에 **통합 개요 페이지 `/inventory/ecs`(사이드바 'ECS 개요')**가 추가되어 요약 KPI(클러스터/서비스/태스크 수 + Desired 대비 미달 태스크), 클러스터 테이블, 서비스 테이블을 한 화면에서 보여줍니다. 개요는 읽기 전용 글랜스 레이어입니다 — 검색/패싯/상세 패널은 3개 타입 페이지에 있고 각 테이블 헤더의 '전체 보기'로 이동합니다. 500행 이상이면 '(표본 기준)'으로 표기되고 표본이거나 서비스 sync가 성공 상태가 아니면 서비스 기반 running/desired·미달 태스크 집계를 보류하며(태스크 수 KPI는 별도 summary 전수 집계 + ecs_task sync run 상태로 게이트), sync가 성공 상태가 아니면 상태별 캡션(실패=오래된 데이터 안내, 부분 수집, 실행 중)이, 미수집 시 '미수집' 안내가 표시됩니다.
 :::
 
 <Screenshot src="/screenshots/compute/ecs.png" alt="ECS" />
@@ -31,7 +31,7 @@ v1은 클러스터/서비스/태스크를 한 페이지에서 통합 조회했�
 | Instances | 등록된 컨테이너 인스턴스 수 |
 | MTD Cost ($) | 월간 누적 비용 |
 
-상세 패널: Identity(Name, Account, Region, ARN) / Tasks & Services / Config(Settings, Container Insights 등) / Tags 섹션.
+상세 패널: Identity(Name, Account, Region, ARN) / Tasks & Services / Config(Settings, Container Insights 등) / Tags 섹션 — Settings는 항목별 라벨–값 행(containerInsights disabled 식)으로 표시됩니다.
 
 ### ECS Services (`/inventory/ecs_service`)
 하이라이트 카드는 Desired/Running/Pending 합계와 클러스터 distinct 수를 보여줍니다.

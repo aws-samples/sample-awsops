@@ -10,7 +10,7 @@ import DatasourceForm, { type DatasourceFormValue } from './DatasourceForm';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
 interface Instance {
-  id: number; name: string; kind: string; endpoint?: string | null; authType?: string | null; isDefault?: boolean; connected?: boolean;
+  id: number; name: string; kind: string; endpoint?: string | null; authType?: string | null; isDefault?: boolean; connected?: boolean; settings?: { timeoutS?: number; database?: string };
 }
 
 // Chat section per datasource kind (the deep-link prompt pins it with a leading /section —
@@ -89,7 +89,7 @@ export default function DatasourcesTab({ canManage = false }: { canManage?: bool
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : undefined} />
           </button>
-          {canManage && <Button onClick={() => setForm({ mode: 'add' })}>＋ Add datasource</Button>}
+          {canManage && <Button onClick={() => setForm({ mode: 'add' })}>＋ {tt('데이터소스 추가')}</Button>}
         </div>
       </div>
 
@@ -128,9 +128,9 @@ export default function DatasourcesTab({ canManage = false }: { canManage?: bool
                 )}
                 <td className="px-3 py-2 text-ink-500">{i.authType ?? 'none'}</td>
                 <td className="px-3 py-2">
-                  <span className={i.connected ? 'text-emerald-600' : 'text-amber-600'}>{i.connected ? '● connected' : '○ unconfigured'}</span>
+                  <span className={i.connected ? 'text-emerald-600' : 'text-amber-600'}>{i.connected ? tt('● 연결됨') : tt('○ 미설정')}</span>
                 </td>
-                <td className="px-3 py-2">{i.isDefault ? <span className="text-amber-600">★ default</span> : (canManage && <button className="text-[12px] text-brand-600 hover:underline" onClick={() => onSetDefault(i)} disabled={busyId === i.id}>set default</button>)}</td>
+                <td className="px-3 py-2">{i.isDefault ? <span className="text-amber-600">{tt('★ 기본')}</span> : (canManage && <button className="text-[12px] text-brand-600 hover:underline" onClick={() => onSetDefault(i)} disabled={busyId === i.id}>{tt('기본으로 설정')}</button>)}</td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">
                   {/* The chat gateway path resolves each kind's DEFAULT instance (kind-mirror
                       credential) — a non-default row's diagnosis would confidently describe the
@@ -144,9 +144,9 @@ export default function DatasourcesTab({ canManage = false }: { canManage?: bool
                       {tt('AI로 진단')}
                     </Link>
                   )}
-                  <Link href={`/integrations/datasources/${i.id}`} className="text-[12px] text-brand-600 hover:underline mr-3">Explore →</Link>
-                  {canManage && <button className="text-[12px] text-ink-600 hover:underline mr-3" onClick={() => setForm({ mode: 'edit', value: { id: i.id, name: i.name, kind: i.kind, endpoint: i.endpoint ?? '', authType: i.authType ?? 'none' } })}>Edit</button>}
-                  {canManage && <button className="text-[12px] text-rose-600 hover:underline" onClick={() => onDelete(i)} disabled={busyId === i.id}>Delete</button>}
+                  <Link href={`/integrations/datasources/${i.id}`} className="text-[12px] text-brand-600 hover:underline mr-3">{tt('탐색')} →</Link>
+                  {canManage && <button className="text-[12px] text-ink-600 hover:underline mr-3" onClick={() => setForm({ mode: 'edit', value: { id: i.id, name: i.name, kind: i.kind, endpoint: i.endpoint ?? '', authType: i.authType ?? 'none', settings: i.settings } })}>{tt('편집')}</button>}
+                  {canManage && <button className="text-[12px] text-rose-600 hover:underline" onClick={() => onDelete(i)} disabled={busyId === i.id}>{tt('삭제')}</button>}
                 </td>
               </tr>
             ))}

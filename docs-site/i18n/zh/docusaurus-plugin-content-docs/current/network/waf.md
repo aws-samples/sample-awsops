@@ -24,6 +24,8 @@ import Screenshot from '@site/src/components/Screenshot';
 | **Rule Groups** | 规则组总数 | purple |
 | **IP Sets** | IP 集合总数 | orange |
 
+在 v2 中，这三项计数显示为 **Security 组概览（`/inventory/g/security`）的按类型磁贴**，Rule Groups（`/inventory/waf_rule_group`）和 IP Sets（`/inventory/waf_ip_set`）各有专用库存页面（scope 环形图、WCU 柱状图、IPv4/IPv6 分布、地址数）— terraform apply + 下次同步后显示数据。
+
 ### Web ACL 列表
 
 在表格中查看所有 Web ACL：

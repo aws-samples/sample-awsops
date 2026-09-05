@@ -61,7 +61,7 @@ export default function DiagSignalChips({ instanceId, kind, onPick }: Props) {
           title={s.query.queries.map((q) => q.expr).join('\n')}
           onClick={() => { const q = s.query.queries[0]?.expr; if (q) onPick(q); }}
         >
-          {s.title}
+          {tt(s.title)}
         </button>
       ))}
       {unavailable.map((s) => (
@@ -71,7 +71,7 @@ export default function DiagSignalChips({ instanceId, kind, onPick }: Props) {
           title={tt(`metric ${s.missingMetrics.join(', ')} 없음 — Refresh schema`)}
           data-testid="diag-chip-unavailable"
         >
-          {s.title}
+          {tt(s.title)}
         </span>
       ))}
     </div>

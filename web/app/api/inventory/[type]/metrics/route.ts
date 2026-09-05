@@ -321,11 +321,15 @@ export async function GET(request: Request, { params }: { params: { type: string
       return Response.json({ nodes, brokerMetrics, health, lags, range });
     }
 
-    // ElastiCache/OpenSearch/MSK: per-resource live metrics for the detail panel (?id=).
+    // ElastiCache/OpenSearch/MSK/EBS: per-resource live metrics for the detail panel (?id=).
     if (hasLiveMetrics(params.type)) {
       const id = url.searchParams.get('id');
       if (id) {
         if (!/^[a-zA-Z0-9._-]{1,128}$/.test(id)) {
+          return Response.json({ status: 'error', message: 'invalid id' }, { status: 400 });
+        }
+        // per-type shape (round-3 L3 minor): the sibling ebs fleet branch already pins vol- ids.
+        if (params.type === 'ebs_volume' && !/^vol-[0-9a-f]+$/.test(id)) {
           return Response.json({ status: 'error', message: 'invalid id' }, { status: 400 });
         }
         // `account`/`region` (validated) reach assumedClient so member-account and

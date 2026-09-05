@@ -27,6 +27,7 @@ from datasource_http import (
     set_request_conn,
 )
 from sql_readonly_guard import assert_read_only as _shared_assert_read_only
+from sql_readonly_guard import strip_sql as _shared_strip_sql
 
 SLUG = "clickhouse"
 DEFAULT_MAX_ROWS = 100
@@ -43,6 +44,24 @@ _TABLE_FN = re.compile(
     re.IGNORECASE,
 )
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")  # db.table or table
+# Query-level SETTINGS that relax the per-URL bounds are blocked (round-7 correction of the
+# round-6 blanket \bSETTINGS\b block, which broke PERSISTED service-graph templates —
+# graph_querygen emits e.g. `... LIMIT {cap} SETTINGS max_rows = {cap}`, a pinned supported
+# shape). Only the bound-relaxing settings are dangerous; readonly=1 already rejects settings
+# not marked changeable_in_readonly, this is the belt over that server-profile nuance.
+_SETTINGS_CLAUSE = re.compile(
+    r"\bSETTINGS\b[^;]*\b(max_execution_time|max_result_rows|readonly|timeout_overflow_mode)\b",
+    re.IGNORECASE,
+)
+# The SETTINGS check runs on the SHARED tokenizer's output (round-10: sequential regexes
+# desync — a quote inside a backtick identifier opened the string-literal branch and
+# swallowed the SETTINGS clause into a trailing comment, exactly the failure mode
+# sql_readonly_guard's docstring warns about). strip_sql keeps identifier inner names
+# visible (round-9's quoted-setting-name requirement) and uses the ClickHouse dialect flags.
+
+
+def _strip_sql_noise(sql):
+    return _shared_strip_sql(sql, hash_comment=True, nested_block_comment=False)
 
 
 def _validate_identifier(name):
@@ -62,6 +81,8 @@ def _assert_read_only(sql):
     # version of the shared guard defaulted to Postgres-style nesting unconditionally, which let a
     # single crafted comment swallow real SQL (incl. a _TABLE_FN call) between two adjacent-looking
     # comments; see sql_readonly_guard.py's module docstring for the traced PoC.
+    if _SETTINGS_CLAUSE.search(_strip_sql_noise(sql)):
+        raise ValueError("read-only: overriding execution bounds via query-level SETTINGS is not allowed")
     _shared_assert_read_only(
         sql,
         extra_forbidden_re=_TABLE_FN,
@@ -99,18 +120,48 @@ def _run_sql(sql, max_rows, trusted=False, max_execution_time=None):
     ds = load_datasource(SLUG)
     assert_host_allowed(ds["endpoint"])
     base = ds["endpoint"].rstrip("/")
+    # Gap L203: the per-datasource timeoutS (riding the conn config / secret blob) is the
+    # CEILING for the execution bound — a caller-supplied max_execution_time can only
+    # TIGHTEN it, never exceed it (round-3 review: an agent tool call or the worker
+    # dry-run's pinned 5s must not override an admin's bound upward; a tighter caller value
+    # still wins downward). Absent everything → 10s (the documented default; an unbounded
+    # server-side scan is exactly what _clamp_seconds's docstring exists to stop). Capped at
+    # 55s so the aligned HTTP timeout below (+3s) stays under the Lambda's 60s wall.
+    # The DEFAULT is the ceiling too (round-7): with no configured timeoutS, a caller-supplied
+    # max_execution_time must not exceed the documented 10s default bound either.
+    configured = _clamp_seconds(ds.get("timeoutS")) or 10
+    if max_execution_time is None:
+        max_execution_time = configured
+    else:
+        max_execution_time = min(int(max_execution_time), configured)
+    max_execution_time = min(int(max_execution_time), 55)
     # ClickHouse's default output_format_json_quote_64bit_integers=1 (Int64 as JSON STRINGS) is
     # kept deliberately: this function serves EVERY consumer (Explore, graph queries, agent tools),
     # and forcing JSON numbers would silently round UInt64 values above 2^53 (hash/ID columns) in
     # Node's JSON.parse. Numeric consumers coerce string counts client-side (CardDashboard
     # finiteCell) — precision-lossless for display, no connector-wide change needed.
     url = f"{base}/?readonly=1&max_result_rows={max_rows}&default_format=JSON"
-    if max_execution_time:
-        url += f"&max_execution_time={max_execution_time}&timeout_overflow_mode=throw"
+    # Gap L203: per-datasource default database (identifier-only, validated on BOTH sides —
+    # the web tier's sanitizeDsSettings on write/read AND here before URL interpolation).
+    # system/information_schema are REJECTED outright: the read-only guard is lexical over
+    # the SQL text, so database=system would resolve an unqualified `FROM tables` to
+    # system.tables (create_table_query/engine_full can carry plaintext engine credentials) —
+    # the exact reach the guard's own docstring forbids.
+    database = ds.get("database")
+    if database:
+        db = str(database)
+        # fullmatch (not match+$: Python's $ also matches before a trailing newline) + length bound
+        if len(db) > 128 or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", db) or db.lower() in ("system", "information_schema"):
+            return err("invalid database identifier in datasource settings")
+        url += f"&database={db}"
+    url += f"&max_execution_time={max_execution_time}&timeout_overflow_mode=throw"
     headers = dict(auth_headers(ds))
     headers["Content-Type"] = "text/plain; charset=utf-8"
     body = f"{sql}\nFORMAT JSON"
-    status, data = http_json("POST", url, headers=headers, body=body)
+    # HTTP timeout ALIGNED ABOVE the execution bound (+3s margin): the shared default of 12s
+    # would client-abort a legitimately long query while the server kept scanning under
+    # timeout_overflow_mode=throw — the server-side bound must fire first.
+    status, data = http_json("POST", url, headers=headers, body=body, timeout=max_execution_time + 3)
     if status >= 400:
         snippet = data.get("raw") or data.get("exception") or data
         return err(f"ClickHouse query failed ({status}): {str(snippet)[:300]}")

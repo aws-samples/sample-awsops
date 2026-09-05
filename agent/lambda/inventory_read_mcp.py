@@ -8,9 +8,9 @@ reconnects "the topology data we built in Aurora" to AgentCore — the bridge th
 
 Tools (all read-only — SELECT only; no AWS mutation, no arbitrary SQL):
   - find_unused_resources : orphan TGs, empty CloudFront origins, dead/idle LBs, unattached EBS …
-  - query_inventory       : list/filter synced resources by type, including ecs_service
+  - query_inventory       : list/filter synced resources by type (+ per-type freshness block)
   - get_topology          : topology_nodes/edges graph (nodes+edges, matches /api/graph contract)
-  - inventory_summary     : counts by type + sync freshness
+  - inventory_summary     : counts by type + per-type freshness (healthy|degraded|stale|unavailable)
 
 Aurora access uses the **RDS Data API** (boto3 `rds-data`, bundled in the Lambda runtime) — no VPC
 attachment and no pg8000 packaging needed (the agent Lambdas are zipped from raw .py with no pip
@@ -26,6 +26,24 @@ import os
 from cross_account import resolve_tool_name
 
 
+DEFAULT_INVENTORY_STALE_AFTER_MINUTES = 30
+
+
+def _inventory_stale_after_minutes(env=None):
+    """Read the non-secret stale threshold without letting malformed env crash the tool."""
+    source = os.environ if env is None else env
+    try:
+        value = int(source.get(
+            "INVENTORY_STALE_AFTER_MINUTES",
+            str(DEFAULT_INVENTORY_STALE_AFTER_MINUTES),
+        ))
+    except (TypeError, ValueError):
+        return DEFAULT_INVENTORY_STALE_AFTER_MINUTES
+    if value < 1 or value > 1440:
+        return DEFAULT_INVENTORY_STALE_AFTER_MINUTES
+    return value
+
+
 # ── Resource types the topology/unused detection reads (mirrors graph-store TYPE_TO_KEY) ──────────
 TOPOLOGY_TYPES = ["cloudfront", "alb", "nlb", "target_group", "ec2", "ebs", "security_group",
                   "route53", "lambda", "ecs_task", "s3"]
@@ -34,7 +52,11 @@ TOPOLOGY_TYPES = ["cloudfront", "alb", "nlb", "target_group", "ec2", "ebs", "sec
 # and unattached EIP/ENI are out of scope for the Aurora-backed detector (live-API only).
 COVERAGE_NOTE = ("Derived from the synced Aurora inventory (inventory_resources). Elastic IPs, "
                  "detached ENIs, and ELB listeners are not synced yet, so those are out of scope "
-                 "here. Freshness = the latest inventory sync; see inventory_summary().")
+                 "here. query_inventory and inventory_summary carry a per-type freshness block "
+                 "(healthy | degraded | stale | unavailable) classified from the durable "
+                 "last_success_at and the oldest captured_at of current rows; degraded also covers "
+                 "succeeded runs with attribute blind spots (unknown_attribute_count > 0). For this "
+                 "tool's data, call inventory_summary().")
 
 
 # ── Pure detection logic (fixture-testable; no DB) ───────────────────────────────────────────────
@@ -288,10 +310,95 @@ def _fetch_one_type(rtype, limit):
     return [_coerce(r.get("data")) for r in rows]
 
 
-def _sync_freshness():
-    rows = _execute("SELECT resource_type, status, finished_at, row_count FROM inventory_sync_runs "
-                    "WHERE account_id = 'self' ORDER BY resource_type")
+def _sync_freshness(resource_type=None):
+    """Return threshold-classified freshness per type using bound Data API parameters.
+
+    Current rows use their oldest captured_at so a partial refresh cannot hide preserved stale
+    rows behind newer rows. When no rows exist, the durable last_success_at keeps a genuine
+    zero-row success visible across later running/failed/partial attempts.
+
+    A succeeded run with attribute blind spots (unknown_attribute_count > 0 — attribute reads
+    denied in steady state) reports 'degraded', not 'healthy': the denial must not block pruning
+    or last_success_at, but the reader must not be told the sweep saw everything either.
+    """
+    stale_after = _inventory_stale_after_minutes()
+    params = [{
+        "name": "stale_after_minutes",
+        "value": {"longValue": stale_after},
+    }]
+    type_filter = ""
+    if resource_type is not None:
+        type_filter = " WHERE classified.resource_type = :rt"
+        params.append({"name": "rt", "value": {"stringValue": resource_type}})
+
+    rows = _execute(
+        "WITH types AS ("
+        "SELECT resource_type FROM inventory_sync_runs WHERE account_id = 'self' "
+        "UNION "
+        "SELECT resource_type FROM inventory_resources WHERE account_id = 'self'"
+        "), resource_counts AS ("
+        "SELECT resource_type, COUNT(*)::integer AS current_count, "
+        "MIN(captured_at) AS oldest_captured_at FROM inventory_resources "
+        "WHERE account_id = 'self' GROUP BY resource_type"
+        "), per_type AS ("
+        "SELECT types.resource_type, runs.status, runs.finished_at, runs.row_count, "
+        "runs.last_success_at, runs.last_success_row_count, "
+        "runs.unknown_attribute_count, "
+        "COALESCE(resources.current_count, 0) AS current_count, "
+        "resources.oldest_captured_at "
+        "FROM types "
+        "LEFT JOIN inventory_sync_runs runs "
+        "ON runs.account_id = 'self' AND runs.resource_type = types.resource_type "
+        "LEFT JOIN resource_counts resources "
+        "ON resources.resource_type = types.resource_type"
+        "), classified AS ("
+        "SELECT resource_type, status, finished_at, row_count, last_success_at, "
+        "last_success_row_count, unknown_attribute_count, current_count, oldest_captured_at, "
+        "CASE WHEN last_success_at IS NULL THEN NULL ELSE "
+        "LEAST(last_success_at, COALESCE(oldest_captured_at, last_success_at)) END "
+        "AS latest_success_at "
+        "FROM per_type"
+        ") "
+        "SELECT resource_type, status, finished_at, row_count, last_success_at, "
+        "last_success_row_count, unknown_attribute_count, current_count, oldest_captured_at, "
+        "latest_success_at, "
+        "CASE "
+        "WHEN latest_success_at IS NULL THEN 'unavailable' "
+        "WHEN latest_success_at < CURRENT_TIMESTAMP - "
+        "(:stale_after_minutes * INTERVAL '1 minute') THEN 'stale' "
+        "WHEN status IN ('partial', 'failed', 'running') THEN 'degraded' "
+        "WHEN status = 'succeeded' AND COALESCE(unknown_attribute_count, 0) > 0 THEN 'degraded' "
+        "WHEN status = 'succeeded' THEN 'healthy' "
+        "ELSE 'unavailable' END AS freshness, "
+        "CASE WHEN latest_success_at IS NULL THEN NULL ELSE "
+        "GREATEST(0, FLOOR(EXTRACT(EPOCH FROM "
+        "(CURRENT_TIMESTAMP - latest_success_at)) / 60))::integer END AS age_minutes, "
+        ":stale_after_minutes AS stale_after_minutes "
+        "FROM classified" + type_filter + " ORDER BY resource_type",
+        params=params,
+    )
     return rows
+
+
+def _freshness_for_type(resource_type):
+    rows = _sync_freshness(resource_type)
+    if rows:
+        return rows[0]
+    return {
+        "resource_type": resource_type,
+        "status": None,
+        "finished_at": None,
+        "row_count": None,
+        "current_count": 0,
+        "last_success_at": None,
+        "last_success_row_count": None,
+        "unknown_attribute_count": None,
+        "oldest_captured_at": None,
+        "latest_success_at": None,
+        "freshness": "unavailable",
+        "age_minutes": None,
+        "stale_after_minutes": _inventory_stale_after_minutes(),
+    }
 
 
 # ── Tool dispatch ─────────────────────────────────────────────────────────────────────────────────
@@ -343,7 +450,12 @@ def lambda_handler(event, context):
         except (TypeError, ValueError):
             limit = 200  # a hallucinated non-numeric limit must not 500
         rows = _fetch_one_type(rtype, limit)
-        result = {"resource_type": rtype, "count": len(rows), "resources": rows}
+        result = {
+            "resource_type": rtype,
+            "count": len(rows),
+            "resources": rows,
+            "freshness": _freshness_for_type(rtype),
+        }
         if rtype not in PROJECTIONS:
             # PR #197 review MAJOR: an unregistered type's `resources` entries only carry whatever
             # keys happen to be on SOME other type's projection allowlist — genuinely absent fields

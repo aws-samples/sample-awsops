@@ -29,6 +29,24 @@ export function momChangePctDaily(thisMtd: number, lastMonthTotal: number, now: 
   return momChangePct(thisMtd / elapsed, lastMonthTotal / lastDays);
 }
 
+/** UTC variant of momChangePctDaily for the ALERT surface (red cells / surge count): CE
+ *  buckets are UTC calendar months, so a local-time day count inverts the verdict in the
+ *  ~9h window after a UTC month rollover (KST) and skews elapsed by one day daily. The MoM
+ *  tile keeps the original local-time behavior (pre-existing, non-alerting). */
+/** CONTRACT: `thisMtdCompleted` must be the MTD with TODAY'S (UTC) partial bucket already
+ *  subtracted by the caller (the cost page derives it from dailyByService — no extra CE
+ *  call). Both sides then cover completed UTC days only: numerator = completed-day spend,
+ *  divisor = completed days. Any mixed window systematically biases the thresholded verdict
+ *  (rounds 8–10: +100% on day 2 with a completed divisor and an including numerator; −33%
+ *  on day 3 the other way). Callers suppress the verdict entirely on UTC day 1 (zero
+ *  completed days). */
+export function momChangePctDailyUtc(thisMtdCompleted: number, lastMonthTotal: number, now: Date): number {
+  const elapsed = Math.max(1, now.getUTCDate() - 1);
+  const lastDays = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0)).getUTCDate();
+  if (lastDays <= 0) return 0;
+  return momChangePct(thisMtdCompleted / elapsed, lastMonthTotal / lastDays);
+}
+
 /** Linear projection of month-end spend from month-to-date. `now` injected for determinism. */
 export function projectMonthEnd(mtd: number, now: Date): number {
   const dayOfMonth = now.getDate();
@@ -145,4 +163,43 @@ export function mergeDailyByService(parts: DailyServiceCostPoint[][]): DailyServ
       date,
       byService: [...svc.entries()].map(([service, amount]) => ({ service, amount })).sort((a, b) => b.amount - a.amount),
     }));
+}
+
+
+/** Gap L197: "Cost Explorer probably isn't enabled" ONLY when the load succeeded LIVE (not a
+ *  cached fallback), nothing is filtered, no fan-out leg failed, the daily leg actually
+ *  returned buckets (a swallowed daily-leg failure yields [], and [].every() is vacuously
+ *  true), and there is no spend ANYWHERE — including the earlier monthly buckets, so an
+ *  account whose spend stopped >30 days ago never reads an onboarding banner above a chart
+ *  showing real historical bars. A successful zero-spend CE response still returns ~30 zero
+ *  daily buckets and one (empty-byService) bucket per month, so the intended case still
+ *  fires; a genuinely-disabled CE throws and takes the error path instead. */
+export function looksLikeCeUnconfigured(p: {
+  busy: boolean; err: string; loaded: boolean; cached: boolean; filtered: boolean; failedLegs: number;
+  total: number; changeRowCount: number; trend: { amount: number }[];
+  monthlyByService: MonthlyServiceCostPoint[];
+}): boolean {
+  if (p.busy || p.err !== '' || !p.loaded || p.cached || p.filtered || p.failedLegs > 0) return false;
+  if (p.trend.length === 0) return false; // daily leg failed/empty — not evidence of anything
+  if (p.monthlyByService.length === 0) return false; // same vacuous-every() hole on the monthly axis
+  const noHistoricalSpend = p.monthlyByService.every((m) => m.byService.length === 0);
+  return p.total === 0 && p.changeRowCount === 0 && noHistoricalSpend && p.trend.every((t) => t.amount === 0);
+}
+
+
+/** The composed per-service ALERT change (table color / danger / surge count). Returns null
+ *  ("no verdict") whenever an honest verdict is impossible: no baseline, UTC day 1 (zero
+ *  completed days), a degraded/absent daily leg (today's bucket can't be subtracted — the
+ *  math would silently revert to the biased includes-today basis), or a clamped numerator
+ *  (today's bucket exceeding the monthly MTD — cross-call skew, not a real -100%). */
+export function serviceAlertChange(p: {
+  current: number; previous: number; todayAmount: number | null; // null = daily leg degraded
+  now: Date;
+}): number | null {
+  if (p.previous <= 0) return null;
+  if (p.now.getUTCDate() <= 1) return null;
+  if (p.todayAmount == null) return null;
+  const completed = p.current - p.todayAmount;
+  if (completed < 0) return null; // cross-call skew — never a confident -100%
+  return momChangePctDailyUtc(completed, p.previous, p.now);
 }

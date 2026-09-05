@@ -15,7 +15,12 @@ network-listening Steampipe process (port 9193) cannot leak a DB credential it n
 On Aurora-unreachable: bounded retry, then fail-closed (exit non-zero) — never start with an
 empty/stale config. A background watchdog re-queries Aurora every SCOPE_WATCH_INTERVAL seconds and
 restarts Steampipe when account/region scope changes (MAJOR 3 fix — M3).
+
+Every render also discloses the effective plugin rate-limiter knobs to stderr as a
+`steampipe_limiter_config` JSON event (max_concurrency / bucket_size / fill_rate), so the
+quota posture a task actually started with is visible in its logs.
 """
+import json
 import os
 import signal
 import ssl
@@ -28,7 +33,7 @@ import boto3
 import pg8000.native
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from spc_render import render_spc  # noqa: E402
+from spc_render import limiter_config_from_env, render_spc  # noqa: E402
 
 SPC_PATH = os.environ.get("AWS_SPC_PATH", "/home/steampipe/.steampipe/config/aws.spc")
 AURORA_USER = os.environ.get("AURORA_USER", "steampipe_reader")
@@ -83,6 +88,17 @@ def fetch_rows():
         return [dict(zip(cols, r)) for r in rows]
     finally:
         conn.close()
+
+
+def _render_spc(rows):
+    limiter = limiter_config_from_env()
+    print(json.dumps({
+        "event": "steampipe_limiter_config",
+        "max_concurrency": limiter.max_concurrency,
+        "bucket_size": limiter.bucket_size,
+        "fill_rate": limiter.fill_rate,
+    }, sort_keys=True), file=sys.stderr)
+    return render_spc(rows, limiter)
 
 
 def write_spc(spc: str) -> None:
@@ -191,7 +207,7 @@ def _scope_watchdog(
     current = initial_spc
     while not stop.wait(SCOPE_WATCH_INTERVAL):
         try:
-            new_spc = render_spc(fetch_rows())
+            new_spc = _render_spc(fetch_rows())
             if new_spc == current:
                 continue
             print("[gen-spc] account scope changed — rewriting config and restarting steampipe",
@@ -235,7 +251,7 @@ def main() -> None:
               f"failing closed: {last}", file=sys.stderr)
         sys.exit(1)
 
-    spc = render_spc(rows)
+    spc = _render_spc(rows)
     write_spc(spc)
     print(f"[gen-spc] wrote {SPC_PATH} for {len(rows)} enabled account(s)", file=sys.stderr)
 

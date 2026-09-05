@@ -24,6 +24,8 @@ AWS Web Application Firewall을 모니터링하고 규칙을 확인하는 페이
 | **Rule Groups** | 규칙 그룹 총 개수 | purple |
 | **IP Sets** | IP 집합 총 개수 | orange |
 
+v2에서는 이 세 지표가 **Security 그룹 개요(`/inventory/g/security`)의 타입별 카운트 타일**로 표시되고, Rule Groups(`/inventory/waf_rule_group`)와 IP Sets(`/inventory/waf_ip_set`)는 각각 전용 인벤토리 페이지(scope 도넛·WCU 바·IPv4/IPv6 분포·주소 수)를 가집니다 — terraform apply + 다음 sync 이후 데이터가 표시됩니다.
+
 ### Web ACL 목록
 
 테이블에서 모든 Web ACL을 확인합니다:

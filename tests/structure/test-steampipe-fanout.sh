@@ -10,7 +10,64 @@ fail() { echo "not ok - $1"; FAILS=$((FAILS+1)); }
 echo "# Steampipe fan-out terraform wiring"
 
 SP=terraform/foundation/steampipe.tf
+AI=terraform/foundation/ai.tf
 DT=terraform/foundation/data.tf
+VARS=terraform/foundation/variables.tf
+RUNBOOK=docs/runbooks/steampipe-quota-and-staleness.md
+
+check_number_variable() {
+  local name=$1
+  local default=$2
+  local block
+
+  block=$(sed -n "/^variable \"$name\" {/,/^}$/p" "$VARS")
+  printf '%s\n' "$block" | grep -Eq 'type[[:space:]]*=[[:space:]]*number' \
+    && printf '%s\n' "$block" | grep -Eq "default[[:space:]]*=[[:space:]]*$default" \
+    && printf '%s\n' "$block" | grep -Eq 'validation[[:space:]]*\{' \
+    && pass "$name is a validated number variable with default $default" \
+    || fail "$name is a validated number variable with default $default"
+}
+
+check_number_variable "steampipe_aws_max_concurrency" 4
+check_number_variable "steampipe_aws_bucket_size" 4
+check_number_variable "steampipe_aws_fill_rate" 2
+check_number_variable "steampipe_sync_reserved_concurrency" 4
+check_number_variable "inventory_stale_after_minutes" 30
+
+grep -Eq 'STEAMPIPE_AWS_MAX_CONCURRENCY' "$SP" \
+  && pass "Steampipe task gets STEAMPIPE_AWS_MAX_CONCURRENCY env" \
+  || fail "Steampipe task gets STEAMPIPE_AWS_MAX_CONCURRENCY env"
+
+grep -Eq 'STEAMPIPE_AWS_BUCKET_SIZE' "$SP" \
+  && pass "Steampipe task gets STEAMPIPE_AWS_BUCKET_SIZE env" \
+  || fail "Steampipe task gets STEAMPIPE_AWS_BUCKET_SIZE env"
+
+grep -Eq 'STEAMPIPE_AWS_FILL_RATE' "$SP" \
+  && pass "Steampipe task gets STEAMPIPE_AWS_FILL_RATE env" \
+  || fail "Steampipe task gets STEAMPIPE_AWS_FILL_RATE env"
+
+grep -Eq 'reserved_concurrent_executions[[:space:]]*=[[:space:]]*var\.steampipe_sync_reserved_concurrency' "$SP" \
+  && pass "inventory sync Lambda uses reserved concurrency variable" \
+  || fail "inventory sync Lambda uses reserved concurrency variable"
+
+grep -Eq 'INVENTORY_STALE_AFTER_MINUTES[[:space:]]*=[[:space:]]*tostring\(var\.inventory_stale_after_minutes\)' "$AI" \
+  && pass "inventory-read Lambda gets INVENTORY_STALE_AFTER_MINUTES env" \
+  || fail "inventory-read Lambda gets INVENTORY_STALE_AFTER_MINUTES env"
+
+grep -Eq 'maximum_event_age_in_seconds[[:space:]]*=[[:space:]]*900' "$SP" \
+  && pass "inventory sync Lambda expires delayed async events after 900 seconds" \
+  || fail "inventory sync Lambda expires delayed async events after 900 seconds"
+
+grep -Eq 'maximum_retry_attempts[[:space:]]*=[[:space:]]*0' "$SP" \
+  && pass "inventory sync Lambda disables asynchronous retries" \
+  || fail "inventory sync Lambda disables asynchronous retries"
+
+EVENT_TARGET_BLOCK=$(sed -n '/^resource "aws_cloudwatch_event_target" "inv_sync" {/,/^}/p' "$SP")
+printf '%s\n' "$EVENT_TARGET_BLOCK" | grep -Eq 'retry_policy[[:space:]]*\{' \
+  && printf '%s\n' "$EVENT_TARGET_BLOCK" | grep -Eq 'maximum_event_age_in_seconds[[:space:]]*=[[:space:]]*900' \
+  && printf '%s\n' "$EVENT_TARGET_BLOCK" | grep -Eq 'maximum_retry_attempts[[:space:]]*=[[:space:]]*0' \
+  && pass "EventBridge target expires scheduled deliveries after 900 seconds with zero retries" \
+  || fail "EventBridge target must set retry_policy age 900 and retries 0"
 
 grep -q 'AURORA_ENDPOINT' "$SP" && grep -q 'AURORA_DATABASE' "$SP" \
   && pass "steampipe task gets AURORA_ENDPOINT + AURORA_DATABASE env" \
@@ -69,5 +126,34 @@ grep -Eq 'rds-ca-bundle\.pem' "$DOCKERFILE" \
 grep -Eq 'cafile=RDS_CA_BUNDLE' "$ENTRYPOINT" && ! grep -Eq 'verify_mode\s*=\s*ssl\.CERT_NONE' "$ENTRYPOINT" \
   && pass "gen_spc_entrypoint uses VERIFY_FULL (cafile), not CERT_NONE (M3)" \
   || fail "gen_spc_entrypoint uses VERIFY_FULL (cafile), not CERT_NONE (M3)"
+
+# The inv-sync Lambda package is owned by Terraform, while its running UPSERT depends on the
+# run_token column created by make migrate. Guard the operator contract against documenting
+# Terraform apply before the migration (which would create a schema/code incompatibility window).
+DEPLOY_ORDER=$(sed -n '/^## 4\. 배포 순서/,/^## 5\./p' "$RUNBOOK")
+MIGRATE_LINE=$(printf '%s\n' "$DEPLOY_ORDER" | grep -n -m1 '^make migrate' | cut -d: -f1)
+APPLY_LINE=$(printf '%s\n' "$DEPLOY_ORDER" | grep -n -m1 '^terraform -chdir=terraform/foundation apply tfplan' | cut -d: -f1)
+if [ -n "$MIGRATE_LINE" ] && [ -n "$APPLY_LINE" ] && [ "$MIGRATE_LINE" -lt "$APPLY_LINE" ]; then
+  pass "runbook migrates Aurora before Terraform rolls the inv-sync Lambda"
+else
+  fail "runbook must place make migrate before apply tfplan in the deployment-order section"
+fi
+
+FIRST_ENABLE=$(printf '%s\n' "$DEPLOY_ORDER" | sed -n '/^### 최초 활성화/,$p')
+FIRST_ENABLE_APPLIES=$(printf '%s\n' "$FIRST_ENABLE" \
+  | grep -c '^terraform -chdir=terraform/foundation apply ')
+FIRST_ENABLE_QUALIFIED=$(printf '%s\n' "$FIRST_ENABLE" | awk '
+  /^terraform -chdir=terraform\/foundation apply / {
+    if (previous == "# Controller-approved operation only:") qualified++
+  }
+  { previous = $0 }
+  END { print qualified + 0 }
+')
+if [ "$FIRST_ENABLE_APPLIES" -eq 2 ] \
+  && [ "$FIRST_ENABLE_QUALIFIED" -eq "$FIRST_ENABLE_APPLIES" ]; then
+  pass "every first-time shared-infra apply has the exact controller-only qualifier"
+else
+  fail "both first-time applies must be immediately preceded by # Controller-approved operation only:"
+fi
 
 [ "$FAILS" -eq 0 ] || exit 1

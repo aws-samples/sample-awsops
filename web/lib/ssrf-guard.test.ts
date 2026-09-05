@@ -53,6 +53,9 @@ describe('isBlockedHost (ADR-011 blocklist)', () => {
 });
 
 describe('assertEgressEndpointAllowed', () => {
+  it('rejects a backslash endpoint (parser-differential, PR #286 round-7)', () => {
+    expect(() => assertEgressEndpointAllowed('https://victim:443\\@attacker.example')).toThrow(/backslash/);
+  });
   it('throws on non-https', () => {
     expect(() => assertEgressEndpointAllowed('http://grafana.example.com')).toThrow(/https/);
   });
@@ -88,6 +91,10 @@ describe('assertEgressEndpointAllowed', () => {
 import { isAlwaysBlockedHost, assertDatasourceEndpointAllowed } from './ssrf-guard';
 
 describe('assertDatasourceEndpointAllowed (datasource — private allowed, always-block only)', () => {
+  it('rejects a backslash endpoint (WHATWG/urlparse differential — the Node origin compare would read victim, the Python connector attacker)', () => {
+    expect(() => assertDatasourceEndpointAllowed('http://victim:9090\\@attacker.example:9091')).toThrow(/backslash/);
+  });
+
   it('rejects metadata / loopback / link-local / multicast', () => {
     for (const u of [
       'http://169.254.169.254/latest/meta-data/',

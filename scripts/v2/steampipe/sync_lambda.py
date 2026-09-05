@@ -8,9 +8,48 @@ from datetime import datetime, timezone
 import os
 import re
 import ssl
+import time
+import uuid
 import boto3
 import pg8000.native
 from botocore.exceptions import ClientError
+
+
+def _log(event: str, **fields) -> None:
+    print(json.dumps({"event": event, **fields}, default=str, sort_keys=True))
+
+
+_THROTTLING_CODES = {
+    "ec2throttledexception",
+    "limitexceededexception",
+    "priorrequestnotcomplete",
+    "provisionedthroughputexceededexception",
+    "requestlimitexceeded",
+    "slowdown",
+    "throttling",
+    "throttlingexception",
+    "toomanyrequestsexception",
+}
+
+
+def _is_throttling_error(exc: Exception) -> bool:
+    """Classify throttling from structured metadata only; never inspect/log raw message text."""
+    response = getattr(exc, "response", None)
+    error = response.get("Error", {}) if isinstance(response, dict) else {}
+    code = str(error.get("Code") or "").lower()
+    return (
+        code in _THROTTLING_CODES
+        or "throttl" in code
+        or "throttl" in type(exc).__name__.lower()
+    )
+
+
+def _failure_label_is_throttling(label):
+    """Match a safe failure label's structured code suffix (e.g. 'ClientError:SlowDown')
+    against _THROTTLING_CODES — same contract as _is_throttling_error, no raw text."""
+    code = str(label).rsplit(":", 1)[-1].lower()
+    return code in _THROTTLING_CODES or "throttl" in code or "slowdown" in code
+
 
 # resource_type -> (steampipe SQL, resource_id column, region column). Waves add rows here.
 QUERIES = {
@@ -86,9 +125,27 @@ QUERIES = {
         "region",
     ),
     "iam_role": (
+        # attached_policy_arns (gap L242): a per-row ListAttachedRolePolicies hydrate in the
+        # pinned plugin. Cost is one call per role — and because the `aws` connection is a
+        # multi-account AGGREGATOR, "per role" means the role total across ALL connected
+        # accounts, through the shared 2 req/s awsops_global limiter (bucket_size 4). At the
+        # default fill_rate the 180s hydrate budget below covers roughly (180*2)+4 ≈ 360
+        # aggregate roles if the limiter is otherwise idle — LESS under concurrent type syncs
+        # (one limiter for everything). If the hydrated query fails (budget timeout,
+        # SCP-blocked hydrate, anything), sync() retries ONCE with HYDRATE_FALLBACK_SQL (same
+        # columns minus the hydrate) so the BASE iam_role inventory never regresses; only the
+        # drill-down column is absent, and the run is DISCLOSED as degraded via
+        # unknown_attribute_count (ADR-021 freshness machinery) plus the
+        # inventory_sync_hydrate_fallback log event, whose remedy is cause-specific: budget
+        # timeout → raise the limiter fill_rate (0.1–20, ADR-021 Phase-1 defaults); SCP/IAM
+        # denial → grant iam:ListAttachedRolePolicies (rate tuning cannot fix a denial).
+        # On the query path the whole-type last-good freeze needs the base query to ALSO
+        # fail; the FINAL run status still follows the normal lifecycle (an overlapping
+        # unreachable account records partial; a later-stage Aurora error records failed) —
+        # the ADR-010 2026-09-02 amendment's disclosed semantics.
         "SELECT name, region, account_id, arn, role_id, create_date, path, description, "
         "max_session_duration, role_last_used_date, role_last_used_region, instance_profile_arns, "
-        "permissions_boundary_arn, assume_role_policy, tags "
+        "permissions_boundary_arn, assume_role_policy, attached_policy_arns, tags "
         "FROM aws_iam_role ORDER BY create_date DESC",
         "name",
         "region",
@@ -249,8 +306,14 @@ QUERIES = {
         "region",
     ),
     "transit_gateway": (
+        # gap L168 residue: the option columns (v1's list showed ASN/DNS) — all standard
+        # aws_ec2_transit_gateway columns in the pinned plugin; they populate on the next
+        # sync after the lambda redeploy (blank until then, never a fabricated value).
         "SELECT transit_gateway_id, region, account_id, transit_gateway_arn, state, owner_id, "
-        "description, creation_time, amazon_side_asn, tags "
+        "description, creation_time, amazon_side_asn, dns_support, vpn_ecmp_support, "
+        "multicast_support, auto_accept_shared_attachments, default_route_table_association, "
+        "default_route_table_propagation, association_default_route_table_id, "
+        "propagation_default_route_table_id, tags "
         "FROM aws_ec2_transit_gateway ORDER BY transit_gateway_id",
         "transit_gateway_id",
         "region",
@@ -296,6 +359,23 @@ QUERIES = {
         "name",
         "region",
     ),
+    "waf_rule_group": (
+        # gap L253 — columns verified against the pinned plugin source
+        # (v0.142.0 table_aws_wafv2_rule_group.go); List needs no key quals.
+        "SELECT name, region, account_id, id, arn, scope, capacity, description, rules, "
+        "visibility_config, tags "
+        "FROM aws_wafv2_rule_group ORDER BY name",
+        "name",
+        "region",
+    ),
+    "waf_ip_set": (
+        # gap L253 — columns verified against v0.142.0 table_aws_wafv2_ip_set.go.
+        "SELECT name, region, account_id, id, arn, scope, description, ip_address_version, "
+        "addresses, tags "
+        "FROM aws_wafv2_ip_set ORDER BY name",
+        "name",
+        "region",
+    ),
     "cloudwatch_alarm": (
         "SELECT name, region, account_id, arn, state_value, state_reason, state_updated_timestamp, "
         "namespace, metric_name, comparison_operator, threshold, period, evaluation_periods, statistic, "
@@ -308,7 +388,10 @@ QUERIES = {
         "SELECT name, region, account_id, arn, home_region, is_multi_region_trail, is_logging, "
         "log_file_validation_enabled, s3_bucket_name, s3_key_prefix, sns_topic_arn, kms_key_id, "
         "log_group_arn, is_organization_trail, include_global_service_events, has_custom_event_selectors, "
-        "has_insight_selectors, latest_delivery_time, latest_delivery_error, start_logging_time, tags "
+        "has_insight_selectors, latest_delivery_time, latest_delivery_error, start_logging_time, "
+        # L189 detail fields (all verified present in the pinned plugin aws@0.142.0)
+        "cloudwatch_logs_role_arn, latest_cloudwatch_logs_delivery_time, latest_cloudwatch_logs_delivery_error, "
+        "latest_digest_delivery_time, latest_digest_delivery_error, stop_logging_time, tags "
         "FROM aws_cloudtrail_trail ORDER BY name",
         "name",
         "region",
@@ -359,17 +442,152 @@ QUERIES = {
 }
 
 
+# ---- Hydrate-budget fallback (round-8 gate; ADR-010 2026-09-02 amendment) --------------------
+# Types whose query carries a per-row list hydrate get a SECOND, hydrate-free SQL: if the
+# hydrated query fails for ANY reason (statement_timeout from an aggregate role count beyond the
+# limiter budget, an SCP-blocked hydrate, a transient error), sync() retries once with the
+# fallback so the pre-existing BASE inventory never regresses to a permanent whole-type failure.
+# The fallback re-upserts every row's data JSON wholesale, so the hydrate column disappears from
+# ALL rows consistently — its consumer (S3IamAccessSection) detects the absent column and renders
+# the non-conclusive "not synced yet" state instead of a stale or false claim.
+# Budget split (Lambda timeout 420s): the hydrated attempt gets ≤180s (≈360 aggregate
+# role-hydrates at the default 2 req/s + bucket 4, limiter idle), the fallback ≤90s (plain
+# paginated ListRoles — a handful of calls per account), leaving ≥150s for Aurora upserts +
+# two-phase prune + snapshots + finalizer (AURORA_RESERVE_S) — and every budget is further
+# clamped to the invocation's actual remaining time (_query_budget_s), so a query is refused
+# up-front rather than started when it could race the Lambda wall and strand the ledger at
+# 'running'. The fallback log event's remedy is cause-specific (fill_rate for budget timeouts,
+# a permission grant for SCP/IAM denials).
+HYDRATE_FALLBACK_SQL = {
+    "iam_role": (
+        "SELECT name, region, account_id, arn, role_id, create_date, path, description, "
+        "max_session_duration, role_last_used_date, role_last_used_region, instance_profile_arns, "
+        "permissions_boundary_arn, assume_role_policy, tags "
+        "FROM aws_iam_role ORDER BY create_date DESC"
+    ),
+}
+HYDRATE_STATEMENT_TIMEOUT_S = 180
+HYDRATE_FALLBACK_STATEMENT_TIMEOUT_S = 90
+DEFAULT_STATEMENT_TIMEOUT_S = 240
+# _account_reachable() probes are single-row caller-identity lookups that run in the PRUNE
+# phase, after the main query budgets — they must never inherit the 240s default (round-10
+# gate: that was the one unbudgeted query left that could race the Lambda wall).
+REACHABILITY_PROBE_TIMEOUT_S = 30
+# Post-query Aurora reserve (round-9 gate): per-row upserts + the two-phase prune's full
+# existing-rows scan + snapshots + the finalizer all run OUTSIDE the statement-timeout budgets,
+# so query budgets are clamped to (remaining Lambda time − this reserve) — a query never starts
+# if it could strand the ledger at 'running' by racing the Lambda wall.
+AURORA_RESERVE_S = 120
+_MIN_QUERY_BUDGET_S = 15
+
+# Wall-clock deadline for the CURRENT invocation (monotonic seconds), set by lambda_handler
+# from context.get_remaining_time_in_millis(). None (e.g. unit tests, local runs) disables the
+# remaining-time clamp and the fixed caps apply alone.
+_DEADLINE = None
+
+
+def _query_budget_s(cap_s, also_reserve_s=0):
+    """Clamp a statement-timeout cap to the remaining Lambda time minus the Aurora reserve
+    (and, for a hydrated attempt, minus the fallback's own budget so the retry always fits).
+    Raises instead of returning a sliver: failing fast records 'failed' cleanly, whereas a
+    query racing the Lambda wall would hard-kill the process mid-write."""
+    if _DEADLINE is None:
+        return cap_s
+    remaining = _DEADLINE - time.monotonic()
+    budget = int(min(cap_s, remaining - AURORA_RESERVE_S - also_reserve_s))
+    if budget < _MIN_QUERY_BUDGET_S:
+        raise RuntimeError(
+            f"insufficient remaining Lambda time for a Steampipe query "
+            f"(remaining={remaining:.0f}s, reserve={AURORA_RESERVE_S + also_reserve_s}s)"
+        )
+    return budget
+
+
 # ---- SDK-sourced inventory (NOT Steampipe) ---------------------------------------------------
 # Some data Steampipe cannot supply. CloudFront VPC origins: aws_cloudfront_vpc_origin has no
 # Steampipe table AND aws_cloudfront_distribution.origins omits VpcOriginConfig (absent from the
 # pinned cloudfront SDK Origin struct), so neither vo→LB nor distribution→vo is obtainable via SQL.
-# These fetchers return (list[dict] rows, id_col, region_col) — fed through the SAME upsert path.
+# These fetchers return (list[dict] rows, id_col, region_col, failure_metadata) — successful rows
+# still flow through the same upsert path, while safe per-subcall failure codes make the run partial.
+_SAFE_FAILURE_LABEL_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+
+
+def _safe_sdk_failure_type(error):
+    error_type = type(error).__name__
+    code = ""
+    if isinstance(error, ClientError):
+        code = str(error.response.get("Error", {}).get("Code") or "")
+    label = f"{error_type}:{code}" if code else error_type
+    return label if _SAFE_FAILURE_LABEL_RE.fullmatch(label) else error_type
+
+
+# Steady-state authorization denials on per-bucket ATTRIBUTE calls (PAB/policy-status/
+# versioning/encryption/logging) are already modeled as "unknown -> None" on the row —
+# counting them toward sdk_partial would make one SCP-denied bucket disable stale-pruning
+# and freeze last_success_at on every run forever. Location failures are NOT in this
+# carve-out: a bucket we cannot place is skipped for the run (see the fetchers), which
+# must keep the run partial so its last-good row survives the skipped prunes.
+_S3_STEADY_DENIAL_CODES = frozenset(
+    {"AccessDenied", "AccessDeniedException", "UnauthorizedOperation", "AllAccessDisabled"}
+)
+
+
+def _safe_sdk_response_failure_type(error):
+    code = str(error.get("errorCode") or "") if isinstance(error, dict) else ""
+    label = f"CollectionError:{code}" if code else "CollectionError"
+    return label if _SAFE_FAILURE_LABEL_RE.fullmatch(label) else "CollectionError"
+
+
+def _sdk_failure_metadata(failure_types=(), unknown_attribute_count=0):
+    labels = tuple(failure_types)
+    safe_types = sorted({
+        label for label in labels
+        if isinstance(label, str) and _SAFE_FAILURE_LABEL_RE.fullmatch(label)
+    })
+    return {
+        "failure_count": len(labels),
+        "failure_types": safe_types,
+        # Attribute reads blinded by a steady-state denial: disclosed as a count so readers can
+        # degrade freshness, never counted as a failure (which would block pruning forever).
+        "unknown_attribute_count": max(0, int(unknown_attribute_count)),
+    }
+
+
+def _sdk_collection(rows, id_col, region_col, failures=(), unknown_attribute_count=0):
+    return rows, id_col, region_col, _sdk_failure_metadata(
+        tuple(failures), unknown_attribute_count
+    )
+
+
+def _normalize_sdk_collection(result):
+    """Accept the current 4-field contract and legacy internal test doubles with 3 fields."""
+    if len(result) == 3:
+        rows, id_col, region_col = result
+        return rows, id_col, region_col, _sdk_failure_metadata()
+    if len(result) != 4:
+        raise ValueError("invalid SDK inventory collector result")
+    rows, id_col, region_col, metadata = result
+    failure_count = int(metadata.get("failure_count", 0))
+    failure_types = sorted({
+        label for label in metadata.get("failure_types", [])
+        if isinstance(label, str) and _SAFE_FAILURE_LABEL_RE.fullmatch(label)
+    })
+    unknown_attribute_count = max(0, int(metadata.get("unknown_attribute_count", 0)))
+    return rows, id_col, region_col, {
+        "failure_count": max(0, failure_count),
+        "failure_types": failure_types,
+        "unknown_attribute_count": unknown_attribute_count,
+    }
+
+
 def _fetch_cloudfront_vpc_origins():
     cf = boto3.client("cloudfront", region_name="us-east-1")  # CloudFront is global → us-east-1
     if not hasattr(cf, "list_vpc_origins"):
         # botocore too old for the (late-2024) VPC-origins API → degrade gracefully, never crash
-        print("cloudfront_vpc_origin: botocore lacks list_vpc_origins; returning 0 rows")
-        return [], "resource_id", "region"
+        return _sdk_collection(
+            [], "resource_id", "region", ["UnsupportedApi"]
+        )
+    failures = []
     # (b2) vo_id → backing LB ARN + status
     vos, marker = {}, None
     while True:
@@ -382,7 +600,7 @@ def _fetch_cloudfront_vpc_origins():
                 cfg = d.get("VpcOriginEndpointConfig") or {}
                 vos[vid] = {"name": cfg.get("Name"), "arn": cfg.get("Arn"), "status": d.get("Status")}
             except ClientError as e:
-                print(f"get_vpc_origin {vid} failed: {e}")
+                failures.append(_safe_sdk_failure_type(e))
         marker = lst.get("NextMarker")
         if not marker:
             break
@@ -390,6 +608,7 @@ def _fetch_cloudfront_vpc_origins():
     # live. Capture (distribution_id, origin domain) per vo so the topology builder links only the
     # SPECIFIC origin (not every origin on the distribution → no false edge for a co-resident origin).
     dists, refs, marker = {}, {}, None
+    distribution_config_failed = False
     while True:
         resp = cf.list_distributions(**({"Marker": marker} if marker else {}))
         dl = resp.get("DistributionList", {}) or {}
@@ -403,15 +622,23 @@ def _fetch_cloudfront_vpc_origins():
                         dists.setdefault(vid, set()).add(did)
                         refs.setdefault(vid, []).append({"distribution_id": did, "domain": o.get("DomainName")})
             except ClientError as e:
-                print(f"get_distribution_config {did} skipped: {e}")  # one bad dist must not blank the type
+                failures.append(_safe_sdk_failure_type(e))
+                distribution_config_failed = True
         marker = dl.get("NextMarker")
         if not marker:
             break
+    if distribution_config_failed:
+        # A failed get_distribution_config leaves dists/refs incomplete for EVERY row (any
+        # distribution can reference any vpc-origin), so every rec's origin-ref attribution is
+        # now partial. Upserting them would overwrite complete last-known-good rows with a
+        # truncated distribution_ids/origin_refs set. Drop the rows instead: the counted
+        # failure keeps the run partial and the skipped prunes preserve last-good content.
+        return _sdk_collection([], "resource_id", "region", failures)
     rows = [{"resource_id": vid, "region": "global", "vpc_origin_id": vid, "name": v["name"],
              "arn": v["arn"], "status": v["status"], "distribution_ids": sorted(dists.get(vid, [])),
              "origin_refs": refs.get(vid, [])}
             for vid, v in vos.items()]
-    return rows, "resource_id", "region"
+    return _sdk_collection(rows, "resource_id", "region", failures)
 
 
 def _fetch_alb_listener_rules():
@@ -422,6 +649,7 @@ def _fetch_alb_listener_rules():
     region = os.environ.get("AWS_REGION", "ap-northeast-2")
     elb = boto3.client("elbv2", region_name=region)
     rows = []
+    failures = []
     lb_marker = None
     while True:
         kw = {"Marker": lb_marker} if lb_marker else {}
@@ -441,11 +669,11 @@ def _fetch_alb_listener_rules():
                             "conditions": rule.get("Conditions", []), "actions": rule.get("Actions", []),
                         })
             except ClientError as e:
-                print(f"alb_listener_rule {lb_arn} skipped: {e}")  # one bad LB must not blank the type
+                failures.append(_safe_sdk_failure_type(e))
         lb_marker = lbs.get("NextMarker")
         if not lb_marker:
             break
-    return rows, "resource_id", "region"
+    return _sdk_collection(rows, "resource_id", "region", failures)
 
 
 def _fetch_s3_public_access(s3=None):
@@ -454,16 +682,29 @@ def _fetch_s3_public_access(s3=None):
     GetPublicAccessBlock, and ONE denied bucket fails the WHOLE table query — so source via boto3
     and tolerate per-bucket AccessDenied. STRICTLY READ-ONLY (List/Get only).
     NoSuchPublicAccessBlock => no PAB configured => blocks are effectively False (a real signal);
+    NoSuchBucketPolicy => no bucket policy at all => policy is definitively NOT public => False
+    (kept in lockstep with _fetch_s3_security's identical call — the two types must never carry
+    different semantics for the same column on the same bucket);
     AccessDenied => genuinely unknown => leave None (FINDING_SQL treats None as non-public)."""
     s3 = s3 or boto3.client("s3", region_name=os.environ.get("AWS_REGION", "ap-northeast-2"))
     rows = []
+    failures = []
+    unknown_attrs = 0
     for b in s3.list_buckets().get("Buckets", []) or []:
         name = b["Name"]
+        transient_failed = False
+        denied_attrs = []
         try:
             loc = s3.get_bucket_location(Bucket=name).get("LocationConstraint")
             region = loc or "us-east-1"  # null LocationConstraint => us-east-1
-        except ClientError:
-            region = ""
+        except ClientError as e:
+            # Never upsert under region "" — that lands a NEW row under a different
+            # conflict key while the partial run skips both prune phases, leaving the
+            # old-region row AND the ""-region row for the same bucket. Skip the bucket
+            # for this run instead: counting the failure keeps the run partial, so the
+            # bucket's last-good row is preserved by the skipped prunes.
+            failures.append(_safe_sdk_failure_type(e))
+            continue
         rec = {"name": name, "region": region, "bucket_policy_is_public": None,
                "block_public_acls": None, "block_public_policy": None,
                "restrict_public_buckets": None, "ignore_public_acls": None}
@@ -474,19 +715,61 @@ def _fetch_s3_public_access(s3=None):
             rec["restrict_public_buckets"] = cfg.get("RestrictPublicBuckets")
             rec["ignore_public_acls"] = cfg.get("IgnorePublicAcls")
         except ClientError as e:
-            if e.response.get("Error", {}).get("Code") == "NoSuchPublicAccessBlock":
+            code = e.response.get("Error", {}).get("Code")
+            # The live API returns "NoSuchPublicAccessBlockConfiguration"; the short
+            # "NoSuchPublicAccessBlock" is kept for compatibility. Matching only the short
+            # form made every PAB-less bucket (the common case) count as a transient
+            # failure — rec skipped, run permanently partial, last_success_at frozen.
+            if code in ("NoSuchPublicAccessBlockConfiguration", "NoSuchPublicAccessBlock"):
                 rec["block_public_acls"] = False
                 rec["block_public_policy"] = False
                 rec["restrict_public_buckets"] = False
                 rec["ignore_public_acls"] = False
-            # else AccessDenied / other → leave None (unknown)
+            elif code in _S3_STEADY_DENIAL_CODES:
+                # steady-state denial -> leave None (unknown) WITHOUT counting toward
+                # sdk_partial (see _S3_STEADY_DENIAL_CODES); disclosed on the ledger as an
+                # unknown attribute so freshness can degrade without blocking pruning.
+                unknown_attrs += 1
+                denied_attrs.extend([
+                    "block_public_acls", "block_public_policy",
+                    "restrict_public_buckets", "ignore_public_acls",
+                ])
+            else:
+                failures.append(_safe_sdk_failure_type(e))
+                transient_failed = True
         try:
             rec["bucket_policy_is_public"] = (
                 s3.get_bucket_policy_status(Bucket=name).get("PolicyStatus", {}).get("IsPublic"))
-        except ClientError:
-            pass  # AccessDenied / NoSuchBucketPolicy → leave None
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if code == "NoSuchBucketPolicy":
+                # NoSuchBucketPolicy → definitively not public via policy (False, in
+                # lockstep with _fetch_s3_security's gap-L240 handler).
+                rec["bucket_policy_is_public"] = False
+            elif code in _S3_STEADY_DENIAL_CODES:
+                # steady-state denial → unknown (None), uncounted as a failure but disclosed
+                unknown_attrs += 1
+                denied_attrs.append("bucket_policy_is_public")
+            else:
+                failures.append(_safe_sdk_failure_type(e))
+                transient_failed = True
+        if transient_failed:
+            # A transiently-degraded rec must never overwrite the bucket's last-known-good
+            # row content: the upsert runs BEFORE sdk_partial gates the prunes, so writing
+            # this rec would null out previously-known fields while freshness reads
+            # healthy-recent (fresh captured_at). Skip the rec — the counted failure keeps
+            # the run partial, and the skipped prunes preserve the existing row intact.
+            continue
+        if denied_attrs:
+            # Per-row disclosure of the blind spot: without this, upserting None over
+            # previously-known values makes a known-public bucket read as clean on the
+            # security page (its WHERE matches only explicit true/false), indistinguishable
+            # from verified-private. The row-level marker lets readers render
+            # "unassessable" instead of silence; the per-type unknown_attribute_count
+            # aggregate alone names neither the bucket nor the fields.
+            rec["attributes_unknown"] = denied_attrs
         rows.append(rec)
-    return rows, "name", "region"
+    return _sdk_collection(rows, "name", "region", failures, unknown_attrs)
 
 
 def _fetch_s3_security(s3=None):
@@ -496,24 +779,44 @@ def _fetch_s3_security(s3=None):
     STRICTLY READ-ONLY (List/Get only)."""
     s3 = s3 or boto3.client("s3", region_name=os.environ.get("AWS_REGION", "ap-northeast-2"))
     rows = []
+    failures = []
+    unknown_attrs = 0
     for b in s3.list_buckets().get("Buckets", []) or []:
         name = b["Name"]
+        transient_failed = False
+        denied_attrs = []
         try:
             loc = s3.get_bucket_location(Bucket=name).get("LocationConstraint")
             region = loc or "us-east-1"
-        except ClientError:
-            region = ""
+        except ClientError as e:
+            # Never upsert under region "" — that lands a NEW row under a different
+            # conflict key while the partial run skips both prune phases, leaving the
+            # old-region row AND the ""-region row for the same bucket. Skip the bucket
+            # for this run instead: counting the failure keeps the run partial, so the
+            # bucket's last-good row is preserved by the skipped prunes.
+            failures.append(_safe_sdk_failure_type(e))
+            continue
         rec = {
             "name": name, "region": region,
             "arn": f"arn:aws:s3:::{name}",
             "creation_date": b.get("CreationDate").isoformat() if b.get("CreationDate") else None,
             "versioning_enabled": None, "encryption": None, "logging_enabled": None,
+            "bucket_policy_is_public": None,
         }
         try:
             v = s3.get_bucket_versioning(Bucket=name)
             rec["versioning_enabled"] = v.get("Status") == "Enabled"
-        except ClientError:
-            pass  # denied → unknown (None)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if code in _S3_STEADY_DENIAL_CODES:
+                # steady-state denial → unknown (None) WITHOUT counting toward sdk_partial
+                # (see _S3_STEADY_DENIAL_CODES); disclosed on the ledger as an unknown
+                # attribute so freshness can degrade without blocking pruning.
+                unknown_attrs += 1
+                denied_attrs.append("versioning_enabled")
+            else:
+                failures.append(_safe_sdk_failure_type(e))
+                transient_failed = True
         try:
             enc = s3.get_bucket_encryption(Bucket=name)
             rules = enc.get("ServerSideEncryptionConfiguration", {}).get("Rules", [])
@@ -521,16 +824,78 @@ def _fetch_s3_security(s3=None):
                     if rules else None)
             rec["encryption"] = algo or "enabled"
         except ClientError as e:
-            if e.response.get("Error", {}).get("Code") == "ServerSideEncryptionConfigurationNotFoundError":
+            code = e.response.get("Error", {}).get("Code")
+            if code == "ServerSideEncryptionConfigurationNotFoundError":
                 rec["encryption"] = "none"
-            # else denied → unknown (None)
+            elif code in _S3_STEADY_DENIAL_CODES:
+                # steady-state denial → unknown (None), uncounted as a failure but disclosed
+                unknown_attrs += 1
+                denied_attrs.append("encryption")
+            else:
+                failures.append(_safe_sdk_failure_type(e))
+                transient_failed = True
         try:
             log = s3.get_bucket_logging(Bucket=name)
             rec["logging_enabled"] = bool(log.get("LoggingEnabled"))
-        except ClientError:
-            pass
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if code in _S3_STEADY_DENIAL_CODES:
+                # steady-state denial → unknown (None), uncounted as a failure but disclosed
+                unknown_attrs += 1
+                denied_attrs.append("logging_enabled")
+            else:
+                failures.append(_safe_sdk_failure_type(e))
+                transient_failed = True
+        try:
+            # gap L243: per-bucket tags for the detail Tags section. NoSuchTagSet is a
+            # DEFINITIVE "no tags" -> {} (v1 renders 'No tags'); a steady denial leaves the
+            # key absent (unknown — the panel shows nothing, never a fabricated empty list)
+            # and is disclosed via attributes_unknown; transient failures skip the rec so a
+            # degraded row never overwrites last-known-good tags.
+            tagset = s3.get_bucket_tagging(Bucket=name).get("TagSet", []) or []
+            rec["tags"] = {t.get("Key", ""): t.get("Value", "") for t in tagset if t.get("Key")}
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if code == "NoSuchTagSet":
+                rec["tags"] = {}
+            elif code in _S3_STEADY_DENIAL_CODES:
+                unknown_attrs += 1
+                denied_attrs.append("tags")
+            else:
+                failures.append(_safe_sdk_failure_type(e))
+                transient_failed = True
+        try:
+            # gap L240: the Policy Private/Public flag bars chart this off the bucket row
+            # itself (the separate s3_public_access fetch keeps the public-access-block
+            # detail). NoSuchBucketPolicy (no bucket policy at all — the common case) is a
+            # DEFINITIVE "not public via policy" → False (the _fetch_s3_public_access
+            # NoSuchPublicAccessBlock→False precedent; its policy-status handler is kept in
+            # lockstep); a steady denial → None (unknown), disclosed via attributes_unknown.
+            rec["bucket_policy_is_public"] = (
+                s3.get_bucket_policy_status(Bucket=name).get("PolicyStatus", {}).get("IsPublic"))
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if code == "NoSuchBucketPolicy":
+                rec["bucket_policy_is_public"] = False
+            elif code in _S3_STEADY_DENIAL_CODES:
+                unknown_attrs += 1
+                denied_attrs.append("bucket_policy_is_public")
+            else:
+                failures.append(_safe_sdk_failure_type(e))
+                transient_failed = True
+        if transient_failed:
+            # A transiently-degraded rec must never overwrite the bucket's last-known-good
+            # row content: the upsert runs BEFORE sdk_partial gates the prunes, so writing
+            # this rec would null out previously-known fields while freshness reads
+            # healthy-recent (fresh captured_at). Skip the rec — the counted failure keeps
+            # the run partial, and the skipped prunes preserve the existing row intact.
+            continue
+        if denied_attrs:
+            # Per-row disclosure of the blind spot (see _fetch_s3_public_access for why the
+            # aggregate count alone is not enough).
+            rec["attributes_unknown"] = denied_attrs
         rows.append(rec)
-    return rows, "name", "region"
+    return _sdk_collection(rows, "name", "region", failures, unknown_attrs)
 
 
 def _fetch_opensearch_serverless(aoss=None):
@@ -550,8 +915,14 @@ def _fetch_opensearch_serverless(aoss=None):
         if not token:
             break
     rows = []
+    failures = []
     for i in range(0, len(ids), 100):
-        detail = aoss.batch_get_collection(ids=ids[i : i + 100]).get("collectionDetails", []) or []
+        response = aoss.batch_get_collection(ids=ids[i : i + 100])
+        detail = response.get("collectionDetails", []) or []
+        failures.extend(
+            _safe_sdk_response_failure_type(error)
+            for error in response.get("collectionErrorDetails", []) or []
+        )
         for c in detail:
             arn = c.get("arn", "")
             acct = arn.split(":")[4] if arn.count(":") >= 5 else ""
@@ -568,7 +939,7 @@ def _fetch_opensearch_serverless(aoss=None):
                 "created_date": _ts(c.get("createdDate")),
                 "last_modified_date": _ts(c.get("lastModifiedDate")),
             })
-    return rows, "name", "region"
+    return _sdk_collection(rows, "name", "region", failures)
 
 
 SDK_SYNCS = {
@@ -601,10 +972,31 @@ def _aurora():
                                     port=5432, ssl_context=_ssl_ctx())
 
 
-def _steampipe():
-    return pg8000.native.Connection(user="steampipe", password=_secret(os.environ["STEAMPIPE_SECRET_ARN"]).strip(),
+def _steampipe(statement_timeout_s=DEFAULT_STATEMENT_TIMEOUT_S):
+    # Validate BEFORE connecting (a plain int seconds in a bounded range — the value is
+    # interpolated into SET, so this is also the injection guard; a real exception, not an
+    # assert, so -O can't elide it and no connection leaks on a bad value).
+    if not isinstance(statement_timeout_s, int) or not (1 <= statement_timeout_s <= DEFAULT_STATEMENT_TIMEOUT_S):
+        raise ValueError(f"statement_timeout_s out of range: {statement_timeout_s!r}")
+    # Socket timeout bounds CONNECTION SETUP too (round-11): a stalled TCP/TLS/auth handshake
+    # was otherwise bounded by nothing but the Lambda wall — the statement_timeout below only
+    # applies once a session exists. pg8000's timeout is a per-socket-op (recv) timeout that
+    # ALSO ticks while waiting for query results, so it must sit ABOVE the statement budget
+    # (the server's statement_timeout fires first for a slow query; the socket timeout only
+    # catches a genuinely dead peer).
+    conn = pg8000.native.Connection(user="steampipe", password=_secret(os.environ["STEAMPIPE_SECRET_ARN"]).strip(),
                                     host=os.environ["STEAMPIPE_HOST"], database="steampipe",
-                                    port=9193, ssl_context=_ssl_ctx())
+                                    port=9193, ssl_context=_ssl_ctx(),
+                                    timeout=statement_timeout_s + 15)
+    # Remaining-time guard (round-5 gate, with the iam_role hydrate column): a query that
+    # outlives the Lambda would hard-timeout the process BEFORE the failure handler runs,
+    # leaving the ledger row 'running' forever. A statement_timeout below the Lambda budget
+    # makes the DB kill the query first — control returns, and the run either falls back
+    # hydrate-free (HYDRATE_FALLBACK_SQL types) or records 'failed' with last-good rows
+    # preserved. Callers size the value via _query_budget_s (remaining time minus the Aurora
+    # reserve), so the budget shrinks as the invocation ages instead of racing the wall.
+    conn.run(f"SET statement_timeout = '{statement_timeout_s}s'")
+    return conn
 
 
 _ACCT_RE = re.compile(r"^\d{12}$")
@@ -652,11 +1044,52 @@ def _rec_account(rec):
     return "self" if str(aid) == _caller_account() else str(aid)
 
 
-def _self_count(recs):
-    """Count of synced rows that resolve to the host ('self') — used for the daily
-    inventory_snapshots row so the dashboard trend chart matches the account_id='self'
-    scope every other host-facing read (inventory summary, StatTile counts) already uses."""
-    return sum(1 for r in recs if _rec_account(r) == "self")
+def _account_counts(recs):
+    """Synced row count per resolved account (gap L124) — one daily inventory_snapshots row is
+    written per account in `present`, so the dashboard trend chart can be scoped by the same
+    accounts vocabulary every other inventory read uses. An account in `present` with no rows
+    gets a genuine 0 (missing account ⇒ key absence, the chart's no-sync signal)."""
+    counts = {}
+    for r in recs:
+        a = _rec_account(r)
+        counts[a] = counts.get(a, 0) + 1
+    return counts
+
+
+# Derived security-count trend series (gap L129): after upsert+prune, COUNT the just-written
+# inventory_resources per account with the WEB'S OWN finding predicates and write the result
+# as extra inventory_snapshots series. LOCKSTEP: each WHERE below is copied verbatim from
+# web/lib/security-findings.ts (PUBLIC_S3_WHERE / FINDING_SQL) — the trend series must count
+# exactly what the /security page lists; change them together. The web trend route excludes
+# these keys from the chart `total` (web/lib/trend-utils.ts DERIVED_TREND_TYPES — a third
+# lockstep site) since the underlying resources are already counted by their base series.
+# INVARIANTS: the WHERE fragments below are string-concatenated into SQL — they must stay
+# CODE CONSTANTS in this dict, never sourced from the event, env, or DB; and a derived series
+# name must never collide with a real synced resource_type (_ALLOWED) — a collision would make
+# _write_snapshot_row's same-day DELETE silently wipe the base series (pytest-guarded).
+DERIVED_SNAPSHOTS = {
+    "s3_public_access": (
+        "public_s3_buckets",
+        "( (data->>'bucket_policy_is_public')='true'"
+        " OR (data->>'block_public_acls')='false'"
+        " OR (data->>'block_public_policy')='false' )",
+    ),
+    "security_group": (
+        "open_security_groups",
+        "(data->'ip_permissions')::text ~"
+        " '\"(cidr_ip|CidrIp|cidr_ipv6|CidrIpv6)\"\\s*:\\s*\"(0\\.0\\.0\\.0/0|::/0)\"'",
+    ),
+    "ebs_volume": ("unencrypted_ebs", "(data->>'encrypted')='false'"),
+}
+
+
+def _write_snapshot_row(adb, acct, series_type, count):
+    """Same-day replace of one (account, day, series) snapshot row — per-account DELETE so an
+    account absent from this run (unreachable / out of scope) keeps its earlier same-day row."""
+    adb.run("DELETE FROM inventory_snapshots WHERE account_id=:a AND resource_type=:t "
+            "AND captured_at::date = CURRENT_DATE", a=acct, t=series_type)
+    adb.run("INSERT INTO inventory_snapshots (account_id, captured_at, resource_type, resource_count) "
+            "VALUES (:a, now(), :t, :n)", a=acct, t=series_type, n=count)
 
 
 def _owner_ids_in(adb):
@@ -709,7 +1142,19 @@ def _account_reachable(account_id):
     to fetch or touch any real account data beyond the caller-identity check."""
     if not _ACCT_RE.match(str(account_id)):
         return False
-    conn = _steampipe()
+    # Remaining-time clamp (round-10 gate): the probe runs in the prune phase, AFTER the main
+    # query budgets and the Aurora upserts, once per unpresent account — a bare 240s default
+    # here would be the one query that can still race the 420s Lambda wall and strand the
+    # ledger at 'running'. A caller-identity probe is a single-row lookup: cap it at
+    # REACHABILITY_PROBE_TIMEOUT_S, clamped to the actual remaining time; when even that
+    # cannot fit ahead of the Aurora reserve, refuse the probe and report UNREACHABLE — the
+    # conservative direction (last-good rows protected, run records partial) — instead of
+    # starting a query that could outlive the invocation.
+    try:
+        budget = _query_budget_s(REACHABILITY_PROBE_TIMEOUT_S)
+    except RuntimeError:
+        return False
+    conn = _steampipe(budget)
     try:
         rows = conn.run(f"SELECT account_id FROM aws_{account_id}.aws_caller_identity LIMIT 1")
         return len(rows) > 0
@@ -730,42 +1175,214 @@ def _inject_account(sql, account_id):
     return sql.format(account_id=account_id)
 
 
+def _new_run_token():
+    return uuid.uuid4().hex
+
+
+def _finalize_sync_ledger(
+    resource_type, run_token, status, row_count=None, error=None,
+    unknown_attribute_count=0,
+):
+    """Write one terminal ledger state on a fresh connection after main cleanup.
+
+    The running row and durable last-success fields must remain truthful if the work connection
+    cannot unlock/close, this final write fails, or a newer run has replaced this run's ownership
+    token. Closing the finalizer is best-effort once its update has completed.
+    """
+    finalizer = None
+    try:
+        finalizer = _aurora()
+        if status == "succeeded":
+            updated = finalizer.run(
+                "UPDATE inventory_sync_runs SET status='succeeded', finished_at=now(), "
+                "row_count=:n, error=NULL, unknown_attribute_count=:u, last_success_at=now(), "
+                "last_success_row_count=:n "
+                "WHERE resource_type=:t AND account_id='self' "
+                "AND run_token=:run_token RETURNING 1",
+                t=resource_type,
+                n=row_count,
+                u=unknown_attribute_count,
+                run_token=run_token,
+            )
+        elif status == "partial":
+            updated = finalizer.run(
+                "UPDATE inventory_sync_runs SET status='partial', finished_at=now(), "
+                "row_count=:n, error=NULL, unknown_attribute_count=:u "
+                "WHERE resource_type=:t AND account_id='self' "
+                "AND run_token=:run_token RETURNING 1",
+                t=resource_type,
+                n=row_count,
+                u=unknown_attribute_count,
+                run_token=run_token,
+            )
+        elif status == "failed":
+            updated = finalizer.run(
+                "UPDATE inventory_sync_runs SET status='failed', finished_at=now(), "
+                "row_count=:n, error=:e "
+                "WHERE resource_type=:t AND account_id='self' "
+                "AND run_token=:run_token RETURNING 1",
+                t=resource_type,
+                n=row_count,
+                e=error,
+                run_token=run_token,
+            )
+        else:
+            raise ValueError(f"unknown inventory sync terminal status: {status}")
+        if len(updated) > 1:
+            raise RuntimeError("inventory sync finalizer updated multiple rows")
+        return len(updated) == 1
+    finally:
+        if finalizer is not None:
+            try:
+                finalizer.close()
+            except Exception:
+                pass
+
+
+def _hydrate_fallback_cause(exc):
+    """Bounded cause category for the fallback log event — NEVER the raw exception text
+    (ADR-021 observability contract: an IAM/SCP denial surfaced through Postgres typically
+    embeds assumed-role ARNs with account IDs and the failing SQL; detail stays server-side,
+    same as the inventory_sync_failed path)."""
+    msg = str(exc)
+    if "AccessDenied" in msg or "not authorized" in msg or "UnauthorizedOperation" in msg:
+        return "denial"
+    if "statement timeout" in msg or "canceling statement" in msg:
+        return "statement_timeout"
+    return "other"
+
+
+def _hydrate_fallback_remedy(exc):
+    """Cause-specific operator guidance for the fallback log event: rate tuning cannot fix an
+    IAM/SCP denial, and a permission grant cannot fix a budget timeout — name the right knob."""
+    cause = _hydrate_fallback_cause(exc)
+    if cause == "denial":
+        return ("SCP/IAM denial — grant iam:ListAttachedRolePolicies to the scanned accounts' "
+                "read role (raising the limiter fill_rate cannot fix a denial)")
+    if cause == "statement_timeout":
+        return ("hydrate budget exceeded (aggregate role count across all connected accounts) — "
+                "raise the steampipe limiter fill_rate (0.1-20, ADR-021 knobs)")
+    return ("unclassified — if it repeats: AccessDenied => grant iam:ListAttachedRolePolicies; "
+            "statement timeout => raise the limiter fill_rate (ADR-021)")
+
+
+def _run_steampipe_query(resource_type, sql):
+    """Execute one inventory query, with the hydrate-budget fallback for types that carry a
+    per-row list hydrate: if the hydrated query fails for ANY reason (statement_timeout from
+    an aggregate role count above the limiter budget, an SCP-blocked hydrate, a transient
+    error), retry ONCE hydrate-free so the base inventory never regresses to a permanent
+    whole-type failure. Returns (rows, cols, fallback_used) — the caller MUST disclose a
+    fallback run through unknown_attribute_count so ADR-021's succeeded+unknowns→degraded
+    freshness machinery reaches every reader, not just the S3 section's column check."""
+    fallback_sql = HYDRATE_FALLBACK_SQL.get(resource_type)
+    try:
+        if fallback_sql:
+            budget = _query_budget_s(HYDRATE_STATEMENT_TIMEOUT_S,
+                                     also_reserve_s=HYDRATE_FALLBACK_STATEMENT_TIMEOUT_S)
+        else:
+            budget = _query_budget_s(DEFAULT_STATEMENT_TIMEOUT_S)
+        sdb = _steampipe(budget)
+        try:
+            return sdb.run(sql), [c["name"] for c in sdb.columns], False
+        finally:
+            sdb.close()  # close even if the Steampipe query throws
+    except Exception as hydrate_exc:
+        if fallback_sql is None:
+            raise
+        _log(
+            "inventory_sync_hydrate_fallback",
+            resource_type=resource_type,
+            # sanitized like inventory_sync_failed: bounded category + exception type only —
+            # raw text can carry role ARNs/account IDs/SQL (ADR-021 observability contract)
+            error_category=_hydrate_fallback_cause(hydrate_exc),
+            error_type=type(hydrate_exc).__name__,
+            remedy=_hydrate_fallback_remedy(hydrate_exc),
+        )
+        sdb = _steampipe(_query_budget_s(HYDRATE_FALLBACK_STATEMENT_TIMEOUT_S))
+        try:
+            return sdb.run(fallback_sql), [c["name"] for c in sdb.columns], True
+        finally:
+            sdb.close()
+
+
 def sync(resource_type):
+    started = time.monotonic()
     if resource_type not in _ALLOWED:
         return {"error": f"unknown type {resource_type}"}
-    adb = _aurora()
+    adb = None
+    locked = False
+    result = None
+    terminal_event = None
+    terminal_fields = None
+    pending_ledger_status = None
+    pending_ledger_row_count = None
+    pending_ledger_error = None
+    run_token = None
+    sdk_failure_count = 0
+    sdk_unknown_attrs = 0
+    sdk_failure_types = []
+    sdk_partial = False
     try:
+        run_token = _new_run_token()
+        adb = _aurora()
         # advisory lock per type (no Steampipe stampede); skip if busy
         got = adb.run("SELECT pg_try_advisory_lock(hashtext(:t))", t=f"inv:{resource_type}")
         if not got[0][0]:
-            return {"status": "busy", "type": resource_type}
-        try:
+            result = {"status": "busy", "type": resource_type}
+            terminal_event = "inventory_sync_busy"
+            terminal_fields = {
+                "resource_type": resource_type,
+                "degraded": True,
+                "throttled": False,
+            }
+        else:
+            locked = True
             # NOTE (M4): inventory_sync_runs is a JOB-LEVEL ledger — one row per resource_type keyed
             # under the host 'self' sentinel, tracking the aggregator run's status/row_count. It is
             # intentionally NOT per-account: a single aggregator run covers every connected account at
             # once. Per-account freshness is the captured_at on each inventory_resources row (which IS
             # keyed by real account_id), so no per-account state is lost.
             # mark running INSIDE the try so a throw here records 'failed' and the finally still unlocks
-            adb.run("INSERT INTO inventory_sync_runs (resource_type, status, started_at, finished_at, row_count, error) "
-                    "VALUES (:t,'running',now(),NULL,NULL,NULL) "
-                    "ON CONFLICT (resource_type, account_id) DO UPDATE SET status='running', started_at=now(), "
-                    "finished_at=NULL, error=NULL", t=resource_type)
+            adb.run(
+                "INSERT INTO inventory_sync_runs "
+                "(resource_type, status, started_at, finished_at, row_count, error, "
+                "unknown_attribute_count, run_token) "
+                "VALUES (:t,'running',now(),NULL,NULL,NULL,NULL,:run_token) "
+                "ON CONFLICT (resource_type, account_id) DO UPDATE SET "
+                "status='running', started_at=now(), finished_at=NULL, row_count=NULL, error=NULL, "
+                "unknown_attribute_count=NULL, run_token=:run_token",
+                t=resource_type,
+                run_token=run_token,
+            )
+            expected_target_accounts = (
+                [] if resource_type in SDK_SYNCS else _enabled_target_accounts(adb)
+            )
             # SDK-sourced types bypass Steampipe; both paths yield list[dict] rows (recs).
             if resource_type in SDK_SYNCS:
-                recs, id_col, region_col = SDK_SYNCS[resource_type]()
+                recs, id_col, region_col, sdk_metadata = _normalize_sdk_collection(
+                    SDK_SYNCS[resource_type]()
+                )
+                sdk_failure_count = sdk_metadata["failure_count"]
+                sdk_unknown_attrs = sdk_metadata["unknown_attribute_count"]
+                sdk_failure_types = sdk_metadata["failure_types"]
+                sdk_partial = sdk_failure_count > 0
             else:
                 sql, id_col, region_col = QUERIES[resource_type]
                 if "{owner_ids}" in sql:  # multi-account OwnerIds pushdown (all enabled accounts)
                     sql = sql.replace("{owner_ids}", _owner_ids_in(adb))
                 if "{account_id}" in sql:  # legacy single-account literal pushdown
                     sql = _inject_account(sql, _caller_account())
-                sdb = _steampipe()
-                try:
-                    rows = sdb.run(sql)
-                    cols = [c["name"] for c in sdb.columns]
-                finally:
-                    sdb.close()  # close even if the Steampipe query throws
+                rows, cols, hydrate_fallback_used = _run_steampipe_query(resource_type, sql)
                 recs = [dict(zip(cols, r)) for r in rows]
+                if hydrate_fallback_used:
+                    # ADR-021 disclosure (round-9 gate): every row is missing the hydrate
+                    # attribute, so a fallback run is a succeeded-but-degraded sweep — the
+                    # unknown-attribute count rides the existing succeeded+unknowns→degraded
+                    # freshness machinery (ledger column, terminal event, MCP reader), the
+                    # same channel the SDK collectors use. Without this, query_inventory/
+                    # inventory_summary would report 'healthy' while a security column is
+                    # blinded fleet-wide.
+                    sdk_unknown_attrs = len(recs)
             # EBS snapshots: the OwnerIds IN-list can surface snapshots SHARED into a connection but
             # owned by another enabled account; keep only those the connection actually OWNS
             # (owner_id == account_id) so each snapshot is attributed once, to its true owner.
@@ -797,70 +1414,295 @@ def sync(resource_type):
             # same phantom-inventory class rounds 3-5 fixed, reached through a different door).
             # 'self' is excluded here — the host always scans all regions regardless of the flag
             # (C1 host-parity guard) and is handled by phase 2 below.
-            adb.run(PHASE1_PRUNE_SQL, t=resource_type)
-            # Phase 2 — row-level stale within enabled/in-scope accounts: delete individual rows
-            # that were NOT returned in this run, but ONLY for accounts that DID contribute rows
-            # (`present`). An account with 0 rows from the aggregator may have suffered a transient
-            # connection failure — pruning it would silently discard its last-good inventory (M5).
+            # Assumption (documented, not newly introduced): Steampipe partiality is
+            # connection-level — an intra-connection region/page error fails the whole
+            # table scan (run records 'failed', no prune) rather than silently omitting
+            # rows, so an account that returned SOME rows can be treated as fully
+            # present. Connection-level omission is handled by the reachability probe
+            # below; SDK collectors handle sub-call failures via sdk_partial.
             present = {a for (a, _, _) in seen}
-            # M-2 (round 8): host ('self') protection must be SYMMETRIC with target accounts, not
-            # an unconditional `| {'self'}`. An earlier version force-included 'self' on the
-            # reasoning "host uses IAM task-role creds (not AssumeRole), always succeeds" — but
-            # that only rules out an AUTH failure, not a transient failure of the Steampipe
-            # connection's QUERY itself (e.g. an AWS API throttle/blip on this specific run). The
-            # aggregator returns PARTIAL results on a single-connection failure without raising, so
-            # a host-connection hiccup this run would otherwise force-prune the host's last-good
-            # inventory to zero — the exact M5 data-loss class, applied asymmetrically to 'self'.
-            # SDK_SYNCS types don't go through Steampipe at all: reaching this point already means
-            # the direct SDK call succeeded (a failure would have raised above, short-circuiting
-            # before this section), so 0 rows there is the SDK's own definitive "genuinely empty"
-            # signal — no probe needed. Aggregator-backed (QUERIES) types: probe the host's OWN
-            # connection (aws_<host_real_id>, via _caller_account()) exactly like a target account.
-            if 'self' not in present:
-                if resource_type in SDK_SYNCS or _account_reachable(_caller_account()):
-                    present.add('self')
-            # M2 (round 6): an enabled TARGET account that contributed 0 rows this run is
-            # ambiguous under the M5 guard above — it might be genuinely empty (e.g. all its EC2
-            # instances were terminated) or its aggregator connection might be transiently
-            # failing. Aggregator-backed (QUERIES) types only — SDK_SYNCS are host-only and never
-            # populate target rows. Positively probe each such account via its OWN Steampipe
-            # connection (data path, not an independent IAM trust check — see _account_reachable):
-            # reachable + 0 rows = genuinely empty (include in present so its stale rows get
-            # pruned); unreachable = protect its last-good inventory (leave excluded).
-            if resource_type not in SDK_SYNCS:
-                for acct_id in _enabled_target_accounts(adb):
-                    if acct_id not in present and _account_reachable(acct_id):
-                        present.add(acct_id)
-            existing = adb.run("SELECT account_id, region, resource_id FROM inventory_resources WHERE resource_type=:t", t=resource_type)
-            for acct, rg, rid in existing:
-                if str(acct) in present and (str(acct), str(rg), str(rid)) not in seen:
-                    adb.run("DELETE FROM inventory_resources WHERE resource_type=:t AND account_id=:acct AND region=:rg AND resource_id=:id",
-                            t=resource_type, acct=acct, rg=rg, id=rid)
-            adb.run("UPDATE inventory_sync_runs SET status='succeeded', finished_at=now(), row_count=:n, error=NULL "
-                    "WHERE resource_type=:t AND account_id='self'", t=resource_type, n=len(recs))
-            # Daily inventory_snapshots row (dashboard "리소스 추세" chart, self-scoped only —
-            # see _self_count). One row per (account, day, type): delete same-day then insert,
-            # matching backfill-v1.mjs's convention — a resource type can sync more than once a day.
-            adb.run("DELETE FROM inventory_snapshots WHERE account_id='self' AND resource_type=:t "
-                    "AND captured_at::date = CURRENT_DATE", t=resource_type)
-            adb.run("INSERT INTO inventory_snapshots (account_id, captured_at, resource_type, resource_count) "
-                    "VALUES ('self', now(), :t, :n)", t=resource_type, n=_self_count(recs))
-            return {"status": "succeeded", "type": resource_type, "row_count": len(recs)}
-        except Exception as e:
-            adb.run("UPDATE inventory_sync_runs SET status='failed', finished_at=now(), error=:e "
-                    "WHERE resource_type=:t AND account_id='self'", t=resource_type, e=str(e)[:2000])
-            return {"status": "failed", "type": resource_type, "error": str(e)[:300]}
-        finally:
-            adb.run("SELECT pg_advisory_unlock(hashtext(:t))", t=f"inv:{resource_type}")
+            unreachable_accounts = set()
+            if not sdk_partial:
+                adb.run(PHASE1_PRUNE_SQL, t=resource_type)
+                # Phase 2 — row-level stale within enabled/in-scope accounts: delete individual
+                # rows not returned in this run, but only for accounts proven present/reachable.
+                # An SDK sub-call failure makes the entire type incomplete, so both prune phases
+                # are skipped above and below; successful rows are upserted while last-good rows
+                # remain intact.
+                # M-2 (round 8): host ('self') protection must be symmetric with target accounts.
+                if 'self' not in present:
+                    if resource_type in SDK_SYNCS or _account_reachable(_caller_account()):
+                        present.add('self')
+                    else:
+                        unreachable_accounts.add('self')
+                if resource_type not in SDK_SYNCS:
+                    for acct_id in expected_target_accounts:
+                        if acct_id not in present:
+                            if _account_reachable(acct_id):
+                                present.add(acct_id)
+                            else:
+                                unreachable_accounts.add(acct_id)
+                existing = adb.run(
+                    "SELECT account_id, region, resource_id FROM inventory_resources "
+                    "WHERE resource_type=:t",
+                    t=resource_type,
+                )
+                for acct, rg, rid in existing:
+                    if str(acct) in present and (str(acct), str(rg), str(rid)) not in seen:
+                        adb.run(
+                            "DELETE FROM inventory_resources WHERE resource_type=:t "
+                            "AND account_id=:acct AND region=:rg AND resource_id=:id",
+                            t=resource_type,
+                            acct=acct,
+                            rg=rg,
+                            id=rid,
+                        )
+            if sdk_partial:
+                pending_ledger_status = "partial"
+                pending_ledger_row_count = len(recs)
+                result = {
+                    "status": "partial",
+                    "type": resource_type,
+                    "row_count": len(recs),
+                    "failure_count": sdk_failure_count,
+                    "failure_types": sdk_failure_types,
+                    "unknown_attribute_count": sdk_unknown_attrs,
+                }
+                terminal_event = "inventory_sync_complete"
+                terminal_fields = {
+                    "resource_type": resource_type,
+                    "row_count": len(recs),
+                    "failure_count": sdk_failure_count,
+                    "failure_types": sdk_failure_types,
+                    "unknown_attribute_count": sdk_unknown_attrs,
+                    "degraded": True,
+                    "throttled": any(
+                        _failure_label_is_throttling(failure_type)
+                        for failure_type in sdk_failure_types
+                    ),
+                    "freshness": "degraded",
+                    "age_minutes": None,
+                }
+            elif unreachable_accounts:
+                pending_ledger_status = "partial"
+                pending_ledger_row_count = len(recs)
+                result = {
+                    "status": "partial",
+                    "type": resource_type,
+                    "row_count": len(recs),
+                    "unreachable_account_count": len(unreachable_accounts),
+                    # a hydrate fallback can coincide with an unreachable-account partial —
+                    # the blind-attribute count must not vanish from the event on that path
+                    "unknown_attribute_count": sdk_unknown_attrs,
+                }
+                terminal_event = "inventory_sync_complete"
+                terminal_fields = {
+                    "resource_type": resource_type,
+                    "row_count": len(recs),
+                    "unreachable_account_count": len(unreachable_accounts),
+                    "unknown_attribute_count": sdk_unknown_attrs,
+                    "degraded": True,
+                    "throttled": False,
+                    "freshness": "degraded",
+                    "age_minutes": None,
+                }
+            else:
+                pending_ledger_status = "succeeded"
+                pending_ledger_row_count = len(recs)
+                result = {
+                    "status": "succeeded",
+                    "type": resource_type,
+                    "row_count": len(recs),
+                    "unknown_attribute_count": sdk_unknown_attrs,
+                }
+                terminal_event = "inventory_sync_complete"
+                terminal_fields = {
+                    "resource_type": resource_type,
+                    "row_count": len(recs),
+                    "unknown_attribute_count": sdk_unknown_attrs,
+                    "degraded": bool(sdk_unknown_attrs),
+                    "throttled": False,
+                    # Attribute blind spots degrade the DISCLOSED freshness while the status stays
+                    # succeeded — pruning and last_success_at must not be blocked by a steady
+                    # denial, but readers must not be told the sweep saw everything either.
+                    # Both 'degraded' and 'freshness' derive from the same signal, so a dashboard
+                    # keying on either field reads the same story.
+                    "freshness": "degraded" if sdk_unknown_attrs else "healthy",
+                    "age_minutes": 0,
+                }
+            # Daily inventory_snapshots rows (dashboard "리소스 추세" chart) — one row per
+            # (account, day, type), delete same-day then insert (a type can sync more than once a
+            # day; backfill-v1.mjs convention). Gap L124: written PER ACCOUNT over `present` — the
+            # same trusted set the prune phases use, so a snapshot is never written for an account
+            # this run cannot vouch for, and an unreachable account keeps its earlier same-day row.
+            # Gap L129: for the DERIVED_SNAPSHOTS base types, the just-pruned inventory_resources
+            # is COUNTed with the web's own finding predicate and written as an extra series.
+            if not sdk_partial:
+                counts = _account_counts(recs)
+                derived = DERIVED_SNAPSHOTS.get(resource_type)
+                for acct in sorted(present):
+                    _write_snapshot_row(adb, acct, resource_type, counts.get(acct, 0))
+                    if derived:
+                        derived_type, where = derived
+                        # call-site guard on the concatenated fragment (defense-in-depth atop
+                        # the module-constant invariant): no statement separators/comments.
+                        if ";" in where or "--" in where or "/*" in where:
+                            raise ValueError("derived snapshot predicate is not a vetted constant")
+                        n = adb.run(
+                            "SELECT COUNT(*) FROM inventory_resources "
+                            "WHERE resource_type=:t AND account_id=:a AND " + where,
+                            t=resource_type, a=acct,
+                        )[0][0]
+                        _write_snapshot_row(adb, acct, derived_type, int(n))
+    except Exception as e:
+        if locked:
+            # The sanitization threat model applies to EVERY sink, not just logs: raw
+            # exception text (which can contain SQL, secrets, or resource payloads) must
+            # not reach the Lambda result (the BFF forwards it to authenticated callers)
+            # or the ledger error column either. Return/persist the same bounded
+            # category+type vocabulary the structured logs use; detail stays server-side.
+            error_category = "sync"
+            error = f"{error_category} failed: {type(e).__name__}"
+            result = {"status": "failed", "type": resource_type, "error": error}
+            pending_ledger_status = "failed"
+            pending_ledger_error = error
+        else:
+            result = {"status": "failed", "type": resource_type, "error": "inventory sync failed"}
+            error_category = "lifecycle"
+        terminal_event = "inventory_sync_failed"
+        terminal_fields = {
+            "resource_type": resource_type,
+            "error_category": error_category,
+            "error": "inventory sync failed",
+            "error_type": type(e).__name__,
+            "degraded": True,
+            "throttled": _is_throttling_error(e),
+        }
     finally:
-        adb.close()
+        cleanup_error = None
+        if adb is not None:
+            if locked:
+                # Unlock BEFORE ledger finalization is deliberate: pg advisory locks are
+                # session-scoped, so the fresh finalizer connection could never hold this
+                # one anyway, and the run_token CAS makes the window fail-safe — a run
+                # superseded here loses its last_success_at advance and reports
+                # "superseded" (freshness may under-report, never corrupt).
+                try:
+                    adb.run("SELECT pg_advisory_unlock(hashtext(:t))", t=f"inv:{resource_type}")
+                except Exception as e:
+                    cleanup_error = e
+            try:
+                adb.close()
+            except Exception as e:
+                if cleanup_error is None:
+                    cleanup_error = e
+        if cleanup_error is not None and terminal_fields is not None:
+            result = {
+                "status": "failed",
+                "type": resource_type,
+                "error": "inventory sync cleanup failed",
+            }
+            pending_ledger_status = "failed"
+            pending_ledger_error = "inventory sync cleanup failed"
+            terminal_event = "inventory_sync_failed"
+            terminal_fields = {
+                "resource_type": resource_type,
+                "error_category": "cleanup",
+                "error": "inventory sync cleanup failed",
+                "error_type": type(cleanup_error).__name__,
+                "degraded": True,
+                "throttled": _is_throttling_error(cleanup_error),
+            }
+        if locked and terminal_fields is not None and pending_ledger_status is not None:
+            try:
+                finalized = _finalize_sync_ledger(
+                    resource_type,
+                    run_token,
+                    pending_ledger_status,
+                    row_count=pending_ledger_row_count,
+                    error=pending_ledger_error,
+                    # Only the succeeded/partial statements write this column; 'failed' leaves
+                    # the previous disclosure untouched.
+                    unknown_attribute_count=sdk_unknown_attrs,
+                )
+                if not finalized:
+                    result = {
+                        "status": "failed",
+                        "type": resource_type,
+                        "error": "inventory sync superseded",
+                    }
+                    terminal_event = "inventory_sync_failed"
+                    terminal_fields = {
+                        "resource_type": resource_type,
+                        "error_category": "superseded",
+                        "error": "inventory sync superseded",
+                        "error_type": "SupersededRun",
+                        "degraded": True,
+                        "throttled": False,
+                    }
+            except Exception as e:
+                # Preserve a real work/cleanup failure as the one terminal outcome. If the work
+                # itself was otherwise successful/partial, the failed finalizer becomes the
+                # lifecycle failure. In every case the durable row remains running with its
+                # previous last-success values because no terminal update ran on the main
+                # connection.
+                if terminal_event != "inventory_sync_failed":
+                    result = {
+                        "status": "failed",
+                        "type": resource_type,
+                        "error": "inventory sync failed",
+                    }
+                    terminal_event = "inventory_sync_failed"
+                    terminal_fields = {
+                        "resource_type": resource_type,
+                        "error_category": "lifecycle",
+                        "error": "inventory sync failed",
+                        "error_type": type(e).__name__,
+                        "degraded": True,
+                        "throttled": _is_throttling_error(e),
+                    }
+        if terminal_fields is not None:
+            terminal_fields["elapsed_ms"] = int((time.monotonic() - started) * 1000)
+            _log(terminal_event, **terminal_fields)
+    return result
 
 
 def lambda_handler(event, ctx):
+    # Arm the remaining-time clamp for this invocation (see _query_budget_s). getattr-guarded
+    # so local/test invocations with a bare ctx object simply run without the clamp.
+    global _DEADLINE
+    remaining_ms = getattr(ctx, "get_remaining_time_in_millis", lambda: None)()
+    _DEADLINE = (time.monotonic() + remaining_ms / 1000.0) if remaining_ms else None
     rtype = (event or {}).get("type", "all")
     if rtype == "all":
-        for rt in list(QUERIES) + list(SDK_SYNCS):
-            _lambda.invoke(FunctionName=ctx.invoked_function_arn, InvocationType="Event",
-                           Payload=json.dumps({"type": rt}).encode())
-        return {"status": "dispatched", "types": list(QUERIES) + list(SDK_SYNCS)}
+        types = list(QUERIES) + list(SDK_SYNCS)
+        queued_types = []
+        failed_types = []
+        for rt in types:
+            try:
+                response = _lambda.invoke(
+                    FunctionName=ctx.invoked_function_arn,
+                    InvocationType="Event",
+                    Payload=json.dumps({"type": rt}).encode(),
+                )
+                if response.get("StatusCode") == 202:
+                    queued_types.append(rt)
+                else:
+                    failed_types.append(rt)
+            except Exception:
+                failed_types.append(rt)
+        status = (
+            "failed" if not queued_types
+            else "partial" if failed_types
+            else "dispatched"
+        )
+        result = {
+            "status": status,
+            "queued_count": len(queued_types),
+            "failed_count": len(failed_types),
+            "queued_types": queued_types,
+            "failed_types": failed_types,
+        }
+        _log("inventory_sync_dispatch", type_count=len(types), **result)
+        return result
     return sync(rtype)

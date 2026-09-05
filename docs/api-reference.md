@@ -23,14 +23,14 @@
 ## inventory (8)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
-| `/api/inventory/[type]` | GET | 인벤토리 리소스 목록 — `iam_user`/`iam_role`은 admin 전용 | verifyUser |
+| `/api/inventory/[type]` | GET | 인벤토리 리소스 목록 — `iam_user`/`iam_role`은 admin 전용; `ecs_cluster`는 MTD 비용(CE) 병합 기본, `?cost=0`으로 생략(비용 미표시 소비자용); `?view=agg`는 행 대신 전 플릿 집계(총계·state/dist/facet GROUP BY, 동일 스코프·게이트; 클라이언트 파생 키 차원은 제외되어 표본 유지, 버킷 상한 50) 반환 | verifyUser |
 | `/api/inventory/[type]/metrics` | GET | 보조 KPI 카드 (CloudWatch/Pricing) + `?ids=`/`?nodes=` 타입별 라이브 진단 플릿(ec2/rds/alb/nlb/s3/transit_gateway/lambda/ebs_volume/dynamodb/elasticache/opensearch/msk) — 실패 시 `{cards:[]}`로 조용히 degrade | verifyUser |
-| `/api/inventory/[type]/refresh` | POST | warm Steampipe → Aurora sync 트리거 + 첫 페이지 반환 (락 중이면 `busy`) | verifyUser |
+| `/api/inventory/[type]/refresh` | POST | warm Steampipe → Aurora sync 트리거 + 첫 페이지 반환 (락 중이면 `busy`); admin 전용. `type=all`은 sync Lambda의 type=all fan-out을 1회 dispatch(행 미반환, `{status:'queued',dispatched:'all'}`; sync 비활성 시 503 `unconfigured`, enqueue 실패 시 503 `error`) | verifyUser |
 | `/api/inventory/cloudtrail/events` | GET | CloudTrail `LookupEvents` 조회 — 드릴다운(`raw`+`accessKeyId`)은 admin 전용 subset, 그 외 사용자는 flat 필드만 | verifyUser |
 | `/api/inventory/ebs_volume/related` | GET | 볼륨 드릴다운 — 스냅샷 20개 + 연결 EC2 enrichment (Aurora 교차조회, 계정 스코프) | verifyUser |
 | `/api/inventory/security_group/inbound` | GET | SG 인바운드 규칙 체이닝 — 첨부 SG(≤20)의 인바운드 규칙 파싱 (Aurora 교차조회, 계정 스코프) | verifyUser |
 | `/api/inventory/summary` | GET | 타입/카테고리별 카운트 + 보안 분할(ec2 running, 미암호화 EBS 등) — `regions`/`includeGlobal` 스코프 반영(홈 대시보드 카운트 포함) | verifyUser |
-| `/api/inventory/trend` | GET | 일별 리소스 카운트 추세 (`inventory_snapshots`, 기본 14일/최대 90일) | verifyUser |
+| `/api/inventory/trend` | GET | 일별 리소스 카운트 추세 (`inventory_snapshots`, 기본 14일/최대 90일) — `accounts` 스코프(기본 self, `__all__`은 서버에서 self+스캔 스코프 내 활성 멤버[all_regions 또는 활성 리전 ≥1]로 해석, 검증된 CSV; 리전 차원 없음) + (일자, 타입)별 계정 커버리지·해석된 계정 목록(`accounts`)·계정 레지스트리 조회 실패 시 `degraded: true` 반환, 파생 보안 시리즈(public_s3_buckets 등)는 total에서 제외 | verifyUser |
 
 ## eks (10)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -81,7 +81,7 @@
 ## tgw (1)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
-| `/api/tgw` | GET | Transit Gateway 상세 — 어태치먼트 + 라우트 테이블(+라우트). `ids`는 `tgw-` 접두사만 통과, 인벤토리로 TGW별 소속 리전 해석 | verifyUser |
+| `/api/tgw` | GET | Transit Gateway 상세 — 어태치먼트(+VPC 어태치먼트 options: DNS/IPv6/Appliance — VPC 타입만, 불완전 경로[조회 실패·페이지 캡 절단·미반환 VPC 행]는 optionsDegradedRegions로 공개, options만 누락) + 라우트 테이블(+라우트). `ids`는 `tgw-` 접두사만 통과, 인벤토리로 TGW별 소속 리전 해석 | verifyUser |
 
 ## vpce (1)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -110,7 +110,7 @@
 | `/api/customization` | GET, POST, PUT | 스킬/에이전트 카탈로그 CRUD (ADR-004[legacy 031], admin) | verifyUser |
 | `/api/datasources` | GET | 데이터소스 인스턴스 목록 — 크리덴셜 미노출 | verifyUser |
 | `/api/datasources/generate` | POST | 자연어 → 쿼리 초안 생성 (리뷰용 — 절대 실행 안 함) | verifyUser |
-| `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin) | verifyUser |
+| `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin); `settings`(timeoutS 1–60[clickhouse 유효 최대 55]·clickhouse database)는 서버 측 sanitize 후 ds_settings JSONB에 저장 | verifyUser |
 | `/api/datasources/query` | POST | 인스턴스 대상 read-only 쿼리 실행 (admin 아님 — 탐색용) | verifyUser |
 | `/api/datasources/test` | POST | 저장 전 연결 probe — SSRF 가드 (admin) | verifyUser |
 | `/api/datasources/[id]` | DELETE | 인스턴스 삭제 — 스키마 캐시/크리덴셜 cascade, 기본값 재선정 (admin) | verifyUser |

@@ -4,6 +4,7 @@ import {
   allServiceNames, filterServiceTotal, filterMonthlyTotals, filterDailyTotals,
   serviceChangeRows, mergeMonthlyByService, mergeDailyByService,
   type MonthlyServiceCostPoint, type DailyServiceCostPoint,
+  looksLikeCeUnconfigured, momChangePctDailyUtc, serviceAlertChange,
 } from './cost';
 
 describe('momChangePct', () => {
@@ -171,5 +172,87 @@ describe('mergeMonthlyByService / mergeDailyByService (전체 계정 fan-out)', 
   it('empty parts → empty result', () => {
     expect(mergeMonthlyByService([])).toEqual([]);
     expect(mergeDailyByService([[], []])).toEqual([]);
+  });
+});
+
+
+describe('momChangePctDailyUtc (alert-surface UTC math)', () => {
+  it('completed-days contract: day 3 at an unchanged run-rate reads exactly ~0 (no -33% green bias)', () => {
+    const now = new Date('2026-09-03T12:00:00Z'); // completed UTC days = 2
+    // prev month (Aug, 31d) total 310 → 10/day; completed-days MTD (today already subtracted
+    // by the caller) = 20 → 10/day → change 0.
+    expect(Math.abs(momChangePctDailyUtc(20, 310, now))).toBeLessThan(0.5);
+  });
+  it('day 2: one completed day at the same rate reads ~0; a real 2x surge reads ~+100%', () => {
+    const now = new Date('2026-09-02T12:00:00Z'); // completed = 1
+    expect(Math.abs(momChangePctDailyUtc(10, 310, now))).toBeLessThan(0.5);
+    expect(momChangePctDailyUtc(20, 310, now)).toBeGreaterThan(80);
+  });
+  it('uses UTC calendar days regardless of browser timezone (callers suppress UTC day 1)', () => {
+    const now = new Date('2026-09-01T03:00:00Z'); // KST already Sep 1 local; UTC day 1 → clamp divisor 1
+    // day-1 verdicts are suppressed by callers — the function itself just stays finite.
+    expect(Number.isFinite(momChangePctDailyUtc(0, 310, now))).toBe(true);
+  });
+});
+
+describe('looksLikeCeUnconfigured (gap L197)', () => {
+  const zeroTrend = [{ date: '2026-08-30', amount: 0 }, { date: '2026-08-31', amount: 0 }] as { amount: number }[];
+  const emptyMonths = [
+    { month: '2026-08', byService: [] },
+    { month: '2026-09', byService: [] },
+  ] as never;
+  const base = {
+    busy: false, err: '', loaded: true, cached: false, filtered: false, failedLegs: 0,
+    total: 0, changeRowCount: 0, trend: zeroTrend, monthlyByService: emptyMonths,
+  };
+  it('fires on a successful LIVE, unfiltered, failure-free load with zero spend anywhere', () => {
+    expect(looksLikeCeUnconfigured(base)).toBe(true);
+  });
+  it('a zero-cost bucketed response with any nonzero value stays quiet', () => {
+    expect(looksLikeCeUnconfigured({ ...base, total: 0.01 })).toBe(false);
+    expect(looksLikeCeUnconfigured({ ...base, changeRowCount: 1 })).toBe(false);
+    expect(looksLikeCeUnconfigured({ ...base, trend: [{ amount: 3 }] })).toBe(false);
+  });
+  it('HISTORICAL spend in an earlier month suppresses the banner (decommissioned workload)', () => {
+    const months = [{ month: '2026-07', byService: [{ service: 'EC2', amount: 42 }] }, { month: '2026-09', byService: [] }] as never;
+    expect(looksLikeCeUnconfigured({ ...base, monthlyByService: months })).toBe(false);
+  });
+  it('an EMPTY trend is a failed/degraded daily leg, not onboarding evidence (vacuous every())', () => {
+    expect(looksLikeCeUnconfigured({ ...base, trend: [] })).toBe(false);
+  });
+
+  it('an EMPTY monthly matrix is a failed/degraded monthly leg — same vacuous-every() hole', () => {
+    expect(looksLikeCeUnconfigured({ ...base, monthlyByService: [] as never })).toBe(false);
+  });
+  it('a cached-snapshot fallback (server-side degradation) fails closed', () => {
+    expect(looksLikeCeUnconfigured({ ...base, cached: true })).toBe(false);
+  });
+  it('suppressed while busy / on error / before load / with a service filter active', () => {
+    expect(looksLikeCeUnconfigured({ ...base, busy: true })).toBe(false);
+    expect(looksLikeCeUnconfigured({ ...base, err: '500' })).toBe(false);
+    expect(looksLikeCeUnconfigured({ ...base, loaded: false })).toBe(false);
+    expect(looksLikeCeUnconfigured({ ...base, filtered: true })).toBe(false);
+  });
+  it('a failed fan-out leg is an access/error condition, NEVER an onboarding diagnosis', () => {
+    expect(looksLikeCeUnconfigured({ ...base, failedLegs: 1 })).toBe(false);
+  });
+});
+
+
+describe('serviceAlertChange (composed alert verdict)', () => {
+  const now = new Date('2026-09-10T12:00:00Z'); // 9 completed days; Aug = 31d
+  it('subtracts today and compares completed-day run rates (flat rate → ~0)', () => {
+    // prev 310 → 10/day; completed MTD 90 + today partial 4 → current 94.
+    expect(Math.abs(serviceAlertChange({ current: 94, previous: 310, todayAmount: 4, now })!)).toBeLessThan(0.5);
+  });
+  it('null verdicts: no baseline / UTC day 1 / degraded daily leg / cross-call clamp', () => {
+    expect(serviceAlertChange({ current: 94, previous: 0, todayAmount: 4, now })).toBeNull();
+    expect(serviceAlertChange({ current: 5, previous: 310, todayAmount: 5, now: new Date('2026-09-01T12:00:00Z') })).toBeNull();
+    expect(serviceAlertChange({ current: 94, previous: 310, todayAmount: null, now })).toBeNull(); // degraded → never the biased basis
+    expect(serviceAlertChange({ current: 3, previous: 310, todayAmount: 5, now })).toBeNull();     // clamp skew → never a confident -100%
+  });
+  it('a real surge still trips the threshold', () => {
+    // completed MTD 270 over 9 days = 30/day vs prev 10/day → +200%.
+    expect(serviceAlertChange({ current: 280, previous: 310, todayAmount: 10, now })!).toBeGreaterThan(100);
   });
 });

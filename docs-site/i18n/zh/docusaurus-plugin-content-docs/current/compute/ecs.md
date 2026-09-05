@@ -11,7 +11,7 @@ import Screenshot from '@site/src/components/Screenshot';
 用于监控 ECS 集群、服务和任务状态的页面。
 
 :::info v2 中的呈现方式
-v1 曾在一个页面中统一监控集群/服务/任务，但**v2 将其拆分为 3 个独立的清单路由** —— `/inventory/ecs_cluster`、`/inventory/ecs_service`、`/inventory/ecs_task`。侧边栏只是将三者归入「计算」分组下一并显示 —— 每个都是拥有各自表格、筛选器和详情面板的独立页面。以下内容基于这一 3-路由结构，而非 v1 的统一页面。
+v1 曾在一个页面中统一监控集群/服务/任务。v2 以 3 个独立的清单路由为主（`/inventory/ecs_cluster`、`/inventory/ecs_service`、`/inventory/ecs_task` —— 各自拥有表格、筛选器和详情面板），并新增了**统一概览页 `/inventory/ecs`**（侧边栏「ECS 概览」），在一个屏幕上展示摘要 KPI（集群/服务/任务数 + 低于期望数的任务）、集群表格和服务表格。概览是只读速览层 —— 搜索/分面/详情在三个类型页面上，可通过各表头的「查看全部」跳转。达到或超过 500 行会标注为样本（样本或服务同步的最近一次 run 非成功状态时，会暂缓基于服务的 running/desired·未达任务汇总；任务数 KPI 来自单独的全量 summary 汇总，并由 ecs_task 同步 run 状态把关），同步未处于成功状态时会显示对应状态的提示（失败=过期数据提示、部分采集、进行中），未采集时显示「尚未采集」。
 :::
 
 <Screenshot src="/screenshots/compute/ecs.png" alt="ECS" />
@@ -31,7 +31,7 @@ v1 曾在一个页面中统一监控集群/服务/任务，但**v2 将其拆分�
 | Instances | 已注册容器实例数量 |
 | MTD Cost ($) | 本月至今累计成本 |
 
-详情面板：Identity（Name、Account、Region、ARN）/ Tasks & Services / Config（Settings、Container Insights 等）/ Tags 各部分。
+详情面板：Identity（Name、Account、Region、ARN）/ Tasks & Services / Config（Settings、Container Insights 等）/ Tags 各部分。Settings 以逐项标签–值行显示（如 containerInsights disabled）。
 
 ### ECS Services（`/inventory/ecs_service`）
 高亮卡片显示 Desired/Running/Pending 总和及集群去重数量。

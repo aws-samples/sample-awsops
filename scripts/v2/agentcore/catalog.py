@@ -93,8 +93,8 @@ TARGETS = {
         "tools": [
             {"name": "find_unused_resources", "description": "Find unused/orphaned resources from the synced inventory: orphan target groups (no LB / 0 healthy), empty CloudFront origins, dead/idle load balancers, unattached EBS volumes", "inputSchema": {"type": "object", "properties": {"category": _p("string", "Optional category filter, e.g. 'TargetGroup' or 'CloudFront'")}}},
             {"name": "get_topology", "description": "Return the materialized topology graph (nodes + edges) from Aurora topology_nodes/edges — matches the /api/graph contract. class='flow' (default) for traffic-path graph (CF→LB→TG→target); class='infra' for resource-relationship graph. Optionally scope to a node's 1-hop neighbourhood via resource_id.", "inputSchema": {"type": "object", "properties": {"resource_id": _p("string", "Optional node id (e.g. CloudFront id, ALB ARN) to scope to its 1-hop neighbourhood"), "class": _p("string", "Graph class: 'flow' (traffic path, default) or 'infra' (resource relationships)")}}},
-            {"name": "query_inventory", "description": "List synced resources of one type (alb, nlb, target_group, cloudfront, ec2, ebs, security_group, route53, lambda, ecs_task, ecs_service, s3)", "inputSchema": {"type": "object", "properties": {"resource_type": _p("string", "Resource type to list"), "limit": _p("integer", "Max rows (default 200, cap 500)")}, "required": ["resource_type"]}},
-            {"name": "inventory_summary", "description": "Per-type counts + last-sync freshness (inventory_sync_runs)", "inputSchema": {"type": "object", "properties": {}}},
+            {"name": "query_inventory", "description": "List synced resources of one type (alb, nlb, target_group, cloudfront, ec2, ebs, security_group, route53, lambda, ecs_task, ecs_service, s3); the response includes a freshness block (healthy|degraded|stale|unavailable, from durable last-success + oldest-capture)", "inputSchema": {"type": "object", "properties": {"resource_type": _p("string", "Resource type to list"), "limit": _p("integer", "Max rows (default 200, cap 500)")}, "required": ["resource_type"]}},
+            {"name": "inventory_summary", "description": "Per-type host/self-scoped current_count from Aurora inventory resources, plus last-run row_count and per-type freshness (healthy|degraded|stale|unavailable; degraded includes attribute blind spots)", "inputSchema": {"type": "object", "properties": {}}},
         ],
     },
     "reachability-read-target": {
@@ -385,7 +385,7 @@ TARGETS = {
             {"name": "prometheus_query_range", "description": "Range PromQL query over a time window", "inputSchema": {"type": "object", "properties": {"query": _p("string", "PromQL"), "start": _p("string", "1h/30m or unix/ISO (default now-1h)"), "end": _p("string", "unix/ISO (default now)"), "step": _p("string", "Step seconds (default 60)")}, "required": ["query"]}},
             {"name": "prometheus_labels", "description": "List label names", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "prometheus_series", "description": "Find series matching a selector", "inputSchema": {"type": "object", "properties": {"match": _p("string", "Series selector e.g. up{job=\"x\"}")}, "required": ["match"]}},
-            {"name": "prometheus_metric_meta", "description": "Per-metric type (metadata) + label names for the given metrics (read-only)", "inputSchema": {"type": "object", "properties": {"metrics": {"type": "array", "items": {"type": "string"}, "description": "Metric names (max 12)"}}, "required": ["metrics"]}},
+            {"name": "prometheus_metric_meta", "description": "Per-metric type (metadata) + label names + tri-state exists (true/false/null=unknown on backend failure or spent time budget) for the given metrics (read-only)", "inputSchema": {"type": "object", "properties": {"metrics": {"type": "array", "items": {"type": "string"}, "description": "Metric names (max 12)"}}, "required": ["metrics"]}},
         ],
     },
     # Loki datasource (v1 family #3) — read-only LogQL. monitoring gateway. User-supplied endpoint via
@@ -426,7 +426,7 @@ TARGETS = {
             {"name": "mimir_query_range", "description": "Range PromQL query", "inputSchema": {"type": "object", "properties": {"query": _p("string", "PromQL"), "start": _p("string", "1h/30m or unix (default now-1h)"), "end": _p("string", "unix (default now)"), "step": _p("string", "Step seconds (default 60)")}, "required": ["query"]}},
             {"name": "mimir_labels", "description": "List label names", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "mimir_series", "description": "Find series matching a selector", "inputSchema": {"type": "object", "properties": {"match": _p("string", "Series selector")}, "required": ["match"]}},
-            {"name": "mimir_metric_meta", "description": "Per-metric type (metadata) + label names for the given metrics (read-only)", "inputSchema": {"type": "object", "properties": {"metrics": {"type": "array", "items": {"type": "string"}, "description": "Metric names (max 12)"}}, "required": ["metrics"]}},
+            {"name": "mimir_metric_meta", "description": "Per-metric type (metadata) + label names + tri-state exists (true/false/null=unknown on backend failure or spent time budget) for the given metrics (read-only)", "inputSchema": {"type": "object", "properties": {"metrics": {"type": "array", "items": {"type": "string"}, "description": "Metric names (max 12)"}}, "required": ["metrics"]}},
         ],
     },
 }

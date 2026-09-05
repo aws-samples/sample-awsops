@@ -11,12 +11,25 @@ export interface Column {
   label: string;
 }
 
+// Keys whose cells render as human-readable bytes (raw numeric values keep numeric sorting).
+const BYTE_KEYS = new Set(['code_size']);
+const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
+function bytesCell(v: unknown): string {
+  const n = Number(v);
+  if (!Number.isFinite(n) || v == null || v === '') return '';
+  if (n <= 0) return '0 B';
+  const i = Math.min(BYTE_UNITS.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  return `${(n / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${BYTE_UNITS[i]}`;
+}
+
 // Keys whose cells render as a StatePill (resource state/status).
 const STATE_KEYS = new Set(['state', 'status', 'instance_state', 'cache_cluster_status', 'state_value', 'table_status', 'last_status', 'state_code']);
 
 function renderCell(key: string, value: unknown) {
   // Pre-rendered cell (e.g. a drill-in <Link>) — render as-is, don't stringify.
   if (isValidElement(value)) return value;
+  // Byte columns render human-readable while the underlying raw number keeps numeric sorting.
+  if (BYTE_KEYS.has(key)) return bytesCell(value);
   if (typeof value === 'boolean') {
     return (
       <Badge tone={value ? 'positive' : 'neutral'} variant="soft">

@@ -24,6 +24,8 @@ View WAF resource status in the top cards:
 | **Rule Groups** | Total number of rule groups | purple |
 | **IP Sets** | Total number of IP sets | orange |
 
+In v2 these three counts render as **per-type tiles on the Security group overview (`/inventory/g/security`)**, and Rule Groups (`/inventory/waf_rule_group`) / IP Sets (`/inventory/waf_ip_set`) each get a dedicated inventory page (scope donut, WCU bar, IPv4/IPv6 distribution, address counts) — data appears after a terraform apply + the next sync.
+
 ### Web ACL List
 
 View all Web ACLs in the table:
