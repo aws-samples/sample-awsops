@@ -117,6 +117,29 @@ alarm subscriber). Stacks provisioned before this policy carried a TF-managed
 admin user: the first post-merge plan proposes destroying it — that removal
 is intentional (recreate via the CLI above when the stack actually needs an
 admin).
+
+⚠️ Identity caveat: app ownership (reports, chat threads, …) is keyed by the
+Cognito `sub`, which is minted per user object — deleting and recreating a
+user yields a NEW `sub`, so rows owned by the old identity do not follow it.
+Only the legacy verified-email read path bridges some tables. Two distinct
+situations:
+
+- **TF-managed admin about to be destroyed by the config removal above**: the
+  apply WILL delete the user object; disabling cannot stop a planned destroy.
+  To keep the identity (and its `sub`) alive on a stack with real user-owned
+  data, detach it from state BEFORE the first post-merge apply:
+  `terraform -chdir=terraform/foundation state rm 'aws_cognito_user.admin'` —
+  Terraform then forgets the
+  resource without touching the live user. Skip this on stacks with nothing
+  to preserve and let the apply delete it.
+- **Manually-provisioned users** (the CLI flow above): to revoke access,
+  prefer `admin-disable-user` over delete/recreate — deletion is identity
+  loss.
+
+(TF-관리 admin은 다음 apply가 반드시 삭제합니다 — 보존하려면 apply 전에
+`terraform -chdir=terraform/foundation state rm 'aws_cognito_user.admin'`으로
+상태에서만 떼어냅니다.
+disable은 삭제를 막지 못하며, 수동 생성 사용자에 대한 접근 차단 수단입니다.)
 The plan artifact is a covered channel too: a tfplan embeds every variable
 value in plaintext and public-repo artifacts are downloadable by anyone, so
 the plan job encrypts it with the `TF_PLAN_ENC_KEY` secret (fail-closed) and

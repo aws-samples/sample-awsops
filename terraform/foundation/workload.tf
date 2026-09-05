@@ -556,7 +556,17 @@ resource "aws_ecs_task_definition" "web" {
 
 # CloudFront provisions VPC Origin ENIs into a managed SG ("CloudFront-VPCOrigins-Service-SG").
 # The ALB allows ONLY that SG on 443 (review #3: dropped the broad VPC-CIDR rule).
-data "aws_security_group" "cf_vpc_origin" {
+#
+# Fresh-VPC bootstrap: that managed SG only appears once the FIRST VPC origin in
+# the VPC exists — which is this stack's own aws_cloudfront_vpc_origin, which in
+# turn needs this ALB. The singular data source hard-failed the plan on any new
+# VPC ("no matching EC2 Security Group found"; the original live env never hit
+# it because it reused a VPC that already had another stack's VPC origin). The
+# plural lookup returns an empty list instead, and the ALB simply has NO 443
+# ingress while the SG is absent (no CIDR fallback — see the SG below); the next
+# plan after the VPC origin exists finds the SG and adds the rule in place. The
+# check block below surfaces the bootstrap state as a warning.
+data "aws_security_groups" "cf_vpc_origin" {
   filter {
     name   = "group-name"
     values = ["CloudFront-VPCOrigins-Service-SG"]
@@ -564,6 +574,17 @@ data "aws_security_group" "cf_vpc_origin" {
   filter {
     name   = "vpc-id"
     values = [local.vpc_id]
+  }
+}
+
+locals {
+  cf_vpc_origin_sg_id = length(data.aws_security_groups.cf_vpc_origin.ids) > 0 ? data.aws_security_groups.cf_vpc_origin.ids[0] : null
+}
+
+check "cf_vpc_origin_sg_present" {
+  assert {
+    condition     = local.cf_vpc_origin_sg_id != null
+    error_message = "CloudFront-VPCOrigins-Service-SG is not in this VPC yet — the ALB SG has NO 443 ingress (bootstrap). Expected on a brand-new VPC before the first apply creates the VPC origin; run plan/apply once more afterwards to add the managed-SG rule, or the edge stays 504."
   }
 }
 
@@ -576,13 +597,20 @@ resource "aws_security_group" "alb" {
   description = "Internal ALB - reachable from within the VPC (CloudFront VPC Origin ENIs)"
   vpc_id      = local.vpc_id
 
-  ingress {
-    description     = "HTTPS from CloudFront VPC Origin managed SG"
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    security_groups = [data.aws_security_group.cf_vpc_origin.id]
+  dynamic "ingress" {
+    for_each = local.cf_vpc_origin_sg_id != null ? [local.cf_vpc_origin_sg_id] : []
+    content {
+      description     = "HTTPS from CloudFront VPC Origin managed SG"
+      from_port       = 443
+      to_port         = 443
+      protocol        = "tcp"
+      security_groups = [ingress.value]
+    }
   }
+  # While the managed SG is absent there is deliberately NO ingress rule at all:
+  # a VPC-CIDR fallback would serve no CloudFront traffic (ENIs are matched by
+  # the managed SG, not CIDR) and would only open an unauthenticated in-VPC path
+  # to the app. Nothing can reach the ALB until the second apply adds the rule.
   egress {
     from_port   = 0
     to_port     = 0
