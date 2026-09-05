@@ -562,10 +562,10 @@ resource "aws_ecs_task_definition" "web" {
 # turn needs this ALB. The singular data source hard-failed the plan on any new
 # VPC ("no matching EC2 Security Group found"; the original live env never hit
 # it because it reused a VPC that already had another stack's VPC origin). The
-# plural lookup returns an empty list instead, and the ALB ingress below falls
-# back to the VPC CIDR ONLY while the SG is absent; the next plan after the VPC
-# origin exists finds the SG and tightens the rule in place (SG rule edits are
-# in-place). The check block below surfaces the bootstrap state as a warning.
+# plural lookup returns an empty list instead, and the ALB simply has NO 443
+# ingress while the SG is absent (no CIDR fallback — see the SG below); the next
+# plan after the VPC origin exists finds the SG and adds the rule in place. The
+# check block below surfaces the bootstrap state as a warning.
 data "aws_security_groups" "cf_vpc_origin" {
   filter {
     name   = "group-name"
