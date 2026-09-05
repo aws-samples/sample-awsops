@@ -584,7 +584,7 @@ locals {
 check "cf_vpc_origin_sg_present" {
   assert {
     condition     = local.cf_vpc_origin_sg_id != null
-    error_message = "CloudFront-VPCOrigins-Service-SG is not in this VPC yet — the ALB SG is in BOOTSTRAP mode (443 from the VPC CIDR). Expected on a brand-new VPC before the first apply creates the VPC origin; run plan/apply once more afterwards to tighten the rule to the managed SG."
+    error_message = "CloudFront-VPCOrigins-Service-SG is not in this VPC yet — the ALB SG has NO 443 ingress (bootstrap). Expected on a brand-new VPC before the first apply creates the VPC origin; run plan/apply once more afterwards to add the managed-SG rule, or the edge stays 504."
   }
 }
 
@@ -607,19 +607,10 @@ resource "aws_security_group" "alb" {
       security_groups = [ingress.value]
     }
   }
-
-  # Bootstrap-only (see the data source comment): present solely while the
-  # managed SG does not exist yet; replaced in place by the rule above.
-  dynamic "ingress" {
-    for_each = local.cf_vpc_origin_sg_id == null ? [local.vpc_cidr] : []
-    content {
-      description = "BOOTSTRAP: HTTPS from the VPC CIDR until the CloudFront VPC Origin SG exists"
-      from_port   = 443
-      to_port     = 443
-      protocol    = "tcp"
-      cidr_blocks = [ingress.value]
-    }
-  }
+  # While the managed SG is absent there is deliberately NO ingress rule at all:
+  # a VPC-CIDR fallback would serve no CloudFront traffic (ENIs are matched by
+  # the managed SG, not CIDR) and would only open an unauthenticated in-VPC path
+  # to the app. Nothing can reach the ALB until the second apply adds the rule.
   egress {
     from_port   = 0
     to_port     = 0

@@ -36,9 +36,10 @@ viewer ──TLS──> CloudFront ──TLS (https-only:443)──> VPC Origin
   two filters: `group-name` + `vpc-id` (= `local.vpc_id`). The earlier broad VPC-CIDR :443 rule
   was dropped — a VPC-CIDR-only rule causes a persistent 504. **Fresh-VPC bootstrap:** that
   managed SG only appears once the first VPC origin in the VPC exists (this stack's own), so on a
-  brand-new VPC the lookup is empty and the ALB SG temporarily carries a `BOOTSTRAP` 443-from-VPC-
-  CIDR rule instead (a `check` block warns); the next plan/apply after the VPC origin exists swaps
-  it in place for the managed-SG rule. Bootstrap mode is a plan-able state, not a serving state.
+  brand-new VPC the lookup is empty and the ALB SG has **no 443 ingress at all** (a `check` block
+  warns; deliberately no CIDR fallback — it would serve no CloudFront traffic and only open an
+  unauthenticated in-VPC path); the next plan/apply after the VPC origin exists adds the
+  managed-SG rule in place. Bootstrap mode is a plan-able state, not a serving state.
 - **VPC: new-or-reuse via `create_network`.** `true` (default) builds a new VPC
   (`10.20.0.0/16` default), 2 public + 2 private subnets, IGW, NAT, route tables. `false`
   reuses an existing VPC (`existing_vpc_id` + `existing_private_subnet_ids`, no `ec2:Create*`,
@@ -93,8 +94,8 @@ The 504 → 200 root cause (reuse-critical — re-read before changing the edge)
    ingress rule produces a **persistent 504** — CloudFront's VPC Origin ENIs are reached via that
    managed SG, not by CIDR. Reference it with a plural `data "aws_security_groups"` lookup filtered
    on `group-name` + `vpc-id` — plural, because on a brand-new VPC the SG does not exist until this
-   stack's own VPC origin is created (the singular lookup hard-fails every plan); the ALB SG runs a
-   bootstrap VPC-CIDR rule only until then, and a second apply tightens it.
+   stack's own VPC origin is created (the singular lookup hard-fails every plan); the ALB SG has no
+   443 ingress until then, and a second apply adds the managed-SG rule.
 3. **A VPC Origin's protocol cannot update in-place** while attached to a distribution (409
    `CannotUpdateEntityWhileInUse`). Use `lifecycle { create_before_destroy = true }` + a **distinct
    name** (e.g. `*-alb-origin-tls`) + a `terraform apply -replace` so Terraform stands up the new
