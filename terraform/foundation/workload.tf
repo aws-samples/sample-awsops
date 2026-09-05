@@ -556,7 +556,17 @@ resource "aws_ecs_task_definition" "web" {
 
 # CloudFront provisions VPC Origin ENIs into a managed SG ("CloudFront-VPCOrigins-Service-SG").
 # The ALB allows ONLY that SG on 443 (review #3: dropped the broad VPC-CIDR rule).
-data "aws_security_group" "cf_vpc_origin" {
+#
+# Fresh-VPC bootstrap: that managed SG only appears once the FIRST VPC origin in
+# the VPC exists — which is this stack's own aws_cloudfront_vpc_origin, which in
+# turn needs this ALB. The singular data source hard-failed the plan on any new
+# VPC ("no matching EC2 Security Group found"; the original live env never hit
+# it because it reused a VPC that already had another stack's VPC origin). The
+# plural lookup returns an empty list instead, and the ALB ingress below falls
+# back to the VPC CIDR ONLY while the SG is absent; the next plan after the VPC
+# origin exists finds the SG and tightens the rule in place (SG rule edits are
+# in-place). The check block below surfaces the bootstrap state as a warning.
+data "aws_security_groups" "cf_vpc_origin" {
   filter {
     name   = "group-name"
     values = ["CloudFront-VPCOrigins-Service-SG"]
@@ -564,6 +574,17 @@ data "aws_security_group" "cf_vpc_origin" {
   filter {
     name   = "vpc-id"
     values = [local.vpc_id]
+  }
+}
+
+locals {
+  cf_vpc_origin_sg_id = length(data.aws_security_groups.cf_vpc_origin.ids) > 0 ? data.aws_security_groups.cf_vpc_origin.ids[0] : null
+}
+
+check "cf_vpc_origin_sg_present" {
+  assert {
+    condition     = local.cf_vpc_origin_sg_id != null
+    error_message = "CloudFront-VPCOrigins-Service-SG is not in this VPC yet — the ALB SG is in BOOTSTRAP mode (443 from the VPC CIDR). Expected on a brand-new VPC before the first apply creates the VPC origin; run plan/apply once more afterwards to tighten the rule to the managed SG."
   }
 }
 
@@ -576,12 +597,28 @@ resource "aws_security_group" "alb" {
   description = "Internal ALB - reachable from within the VPC (CloudFront VPC Origin ENIs)"
   vpc_id      = local.vpc_id
 
-  ingress {
-    description     = "HTTPS from CloudFront VPC Origin managed SG"
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    security_groups = [data.aws_security_group.cf_vpc_origin.id]
+  dynamic "ingress" {
+    for_each = local.cf_vpc_origin_sg_id != null ? [local.cf_vpc_origin_sg_id] : []
+    content {
+      description     = "HTTPS from CloudFront VPC Origin managed SG"
+      from_port       = 443
+      to_port         = 443
+      protocol        = "tcp"
+      security_groups = [ingress.value]
+    }
+  }
+
+  # Bootstrap-only (see the data source comment): present solely while the
+  # managed SG does not exist yet; replaced in place by the rule above.
+  dynamic "ingress" {
+    for_each = local.cf_vpc_origin_sg_id == null ? [local.vpc_cidr] : []
+    content {
+      description = "BOOTSTRAP: HTTPS from the VPC CIDR until the CloudFront VPC Origin SG exists"
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = [ingress.value]
+    }
   }
   egress {
     from_port   = 0
