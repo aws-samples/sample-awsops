@@ -99,15 +99,30 @@ copy of the resource into application state. Permission policies are a separate 
 inspect inline policies, attachments, and any permissions boundary, including Mantle
 permissions; do not infer privileges from the policy's name.
 
-**Prepare and verify the external controls before enabling the workflow:**
+**Merge prerequisite — complete the external rollout before merging or enabling this
+workflow. GitHub automatically creates a referenced missing environment with no protection
+rules. A workflow reference or a successful YAML check is not proof of protection.**
+Read back both environments, reviewers, exact allowed refs and disabled bypass; compare
+the live IAM trust with the reviewed plan immediately before merge. Stop the merge if any
+control is absent or different. Head-controlled workflow checks cannot replace this step.
+
+**머지 선행 조건 — 워크플로 머지·활성화 전에 외부 보호 설정을 완료해야 합니다.**
+GitHub는 참조된 환경이 없으면 보호 규칙 없는 환경을 자동 생성합니다. YAML에 환경 이름이
+있다는 것만으로 보호가 보장되지 않습니다. 머지 직전에 두 환경·승인자·정확한 실행 ref·우회
+금지와 실제 IAM 신뢰를 다시 읽어 계획과 대조하고, 누락·차이가 있으면 머지를 중단합니다.
+
+**Prepare and verify the external controls:**
 
 1. Read the current role trust/permission policies and GitHub OIDC configuration. Keep the
    originals private for comparison and rollback. Use the API's `sub_claim_prefix` when
    immutable subjects are enabled — the prefix contains owner/repository IDs. Do not turn
    off immutable subjects or replace the IDs with a broad wildcard. The planner requires
    explicit boolean `use_immutable_subject` and string `sub_claim_prefix` fields from the
-   API readback. If they are absent, stop and verify the format from GitHub OIDC settings
-   or an observed token subject; do not infer a legacy subject from missing fields.
+   API readback. If they are absent, this planner procedure is unsupported on that
+   installation: stop before generating/applying a plan and obtain a supported API
+   readback from the GitHub administrator. Do not manually complete or edit `oidc.json`,
+   infer a legacy format, or continue with an older saved plan. The apply-time equality
+   check deliberately requires the original, unmodified API response.
 2. Generate a local plan with `scripts/v2/ci_review_access.py`. It makes no API writes,
    preserves existing explicit denies, and refuses unrecognized trust relationships or
    additional restrictions instead of silently dropping them. Review the complete plan.
@@ -117,8 +132,10 @@ permissions; do not infer privileges from the policy's name.
 4. Read back the IAM policy and compare it with the plan. Verify there is no direct
    `pull_request` or wildcard-repository allow. Validate the policy with IAM Access Analyzer.
 
-(아래 명령은 한 셸에서 순서대로 실행합니다. 계획의 OIDC 형식 필드가 누락되면 추측하지
-않고 중단하며, 권한 문서와 전체 계획을 확인한 뒤 다음 적용 단계로 진행합니다.)
+(아래 명령은 한 셸에서 순서대로 실행합니다. OIDC 형식 필드가 누락된 설치는 이 계획
+절차의 지원 대상이 아니므로 적용 전에 중단합니다. GitHub 관리자에게 지원되는 API 응답을
+확보하며, `oidc.json`을 수작업으로 보완하거나 이전 계획을 재사용하지 않습니다. 적용 단계는
+원본 API 응답이 그대로 유지되는지 의도적으로 검사합니다.)
 
 ```bash
 set -euo pipefail
