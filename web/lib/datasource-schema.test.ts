@@ -89,6 +89,60 @@ describe('renderSchemaForPrompt', () => {
     expect(renderSchemaForPrompt({ version: '2.8.0', tags: [] }, 'tempo')).toBe('');
   });
 
+  it('marks limited Tempo type evidence unknown without tainting an uncapped sibling sample', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: [
+        { name: 'span.http.status_code', types: ['string'], types_truncated: true },
+        { name: 'span.http.response.status_code', types: ['int'], types_truncated: false },
+      ],
+    }, 'tempo');
+    expect(out).toContain('span.http.status_code (type unknown; observed: string; sampling incomplete)');
+    expect(out).not.toContain('span.http.status_code (string)');
+    expect(out).toContain('span.http.response.status_code (int)');
+  });
+
+  it('treats old truncated Tempo caches without per-attribute sampling metadata conservatively', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: [{ name: 'span.http.status_code', types: ['string'] }],
+    }, 'tempo');
+    expect(out).toContain('span.http.status_code (type unknown; observed: string; sampling incomplete)');
+  });
+
+  it('discloses limited discovery without claiming zero additional Tempo attributes', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: [{ name: 'span.custom' }],
+    }, 'tempo');
+    expect(out).toContain('span.custom (type unknown)');
+    expect(out).toContain('schema discovery limited');
+    expect(out).not.toMatch(/\+0/);
+    expect(out).not.toContain('more attributes');
+  });
+
+  it('reports known omitted Tempo attributes separately from discovery limits', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: Array.from({ length: 81 }, (_, i) => ({ name: `span.attr${i}` })),
+    }, 'tempo');
+    expect(out).toContain('(+1 more attributes; discovery also limited)');
+    expect(out).not.toContain('+1+');
+  });
+
+  it('keeps incomplete Tempo sampling disclosures within a small prompt budget', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: [
+        { name: 'span.http.status_code', types: ['string'], types_truncated: true },
+        ...Array.from({ length: 10 }, (_, i) => ({ name: `span.attr${i}` })),
+      ],
+    }, 'tempo', 300);
+    expect(out.length).toBeLessThanOrEqual(300);
+    expect(out).toContain('span.http.status_code (type unknown; observed: string; sampling incomplete)');
+    expect(out).toContain('discovery also limited');
+  });
+
   it('emits SQL tables WITH columns and types (not just names) — the core ClickHouse fix', () => {
     const schema = {
       version: '24.8.1',

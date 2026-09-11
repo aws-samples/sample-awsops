@@ -126,9 +126,15 @@ const clamp = (str: string, max: number) => (str.length > max ? `${str.slice(0, 
  * tag names: use the unscoped `.name` syntax rather than inventing a span/resource scope or a type. */
 function renderTempoSchema(s: Record<string, unknown>, maxChars: number): string {
   const scoped = Array.isArray(s.attributes) ? s.attributes : [];
-  const attributes: { name: string; types: string[] }[] = scoped.flatMap((a) => {
+  const attributes: { name: string; types: string[]; typesTruncated?: boolean }[] = scoped.flatMap((a) => {
     if (!a || typeof a !== 'object' || typeof a.name !== 'string' || !a.name) return [];
-    return [{ name: a.name, types: Array.isArray(a.types) ? a.types.filter((t: unknown) => typeof t === 'string').slice(0, 8) : [] }];
+    return [{
+      name: a.name,
+      types: Array.isArray(a.types) ? a.types.filter((t: unknown) => typeof t === 'string').slice(0, 8) : [],
+      // Older truncated caches cannot say whether the names or the type samples
+      // were limited. Only explicit per-attribute evidence clears that uncertainty.
+      typesTruncated: a.types_truncated === true || (s.truncated === true && a.types_truncated !== false),
+    }];
   });
   if (!attributes.length && Array.isArray(s.tags)) {
     for (const tag of s.tags) {
@@ -140,7 +146,7 @@ function renderTempoSchema(s: Record<string, unknown>, maxChars: number): string
   }
   if (!attributes.length) return '';
   const limit = Math.max(80, maxChars);
-  const lines = ['Tempo attributes (observed types; unknown means not sampled):'];
+  const lines = ['Tempo attributes (observed types; unknown means not sampled or incomplete):'];
   if (typeof s.version === 'string' && s.version) {
     lines.unshift(`Tempo version: ${clamp(s.version, 80)}`);
   }
@@ -149,14 +155,20 @@ function renderTempoSchema(s: Record<string, unknown>, maxChars: number): string
   let used = lines.join('\n').length;
   let emitted = 0;
   for (const a of attributes.slice(0, 80)) {
-    const line = `${a.name} (${a.types.length ? a.types.join(' | ') : 'type unknown'})`;
+    const types = !a.types.length ? 'type unknown'
+      : a.typesTruncated ? `type unknown; observed: ${a.types.join(' | ')}; sampling incomplete`
+        : a.types.join(' | ');
+    const line = `${a.name} (${types})`;
     if (line.length > PROMPT_MAX_LINE_CHARS || used + line.length + 1 > limit - 60) continue;
     lines.push(line);
     used += line.length + 1;
     emitted += 1;
   }
-  if (emitted < attributes.length || s.truncated) {
-    lines.push(`… (+${attributes.length - emitted}${s.truncated ? '+' : ''} more attributes)`);
+  const omitted = attributes.length - emitted;
+  if (omitted > 0) {
+    lines.push(`… (+${omitted} more attributes${s.truncated ? '; discovery also limited' : ''})`);
+  } else if (s.truncated) {
+    lines.push('… (schema discovery limited; more data may exist)');
   }
   return clamp(lines.join('\n'), limit);
 }

@@ -216,13 +216,18 @@ def _schema_observed_types(creds, attributes, window):
         values = data.get("tagValues", []) if isinstance(data, dict) else None
         if not isinstance(values, list):
             continue
-        truncated |= len(values) >= MAX_SCHEMA_VALUES
+        # A full sample can hide another type beyond the limit. Preserve this per
+        # attribute so the prompt renderer does not present the observed type as
+        # definitive, or confuse a type-sample limit with omitted attribute names.
+        types_truncated = len(values) >= MAX_SCHEMA_VALUES or data.get("truncated") is True
+        truncated |= types_truncated
         types = {
             item["type"] for item in values[:MAX_SCHEMA_VALUES]
             if isinstance(item, dict) and isinstance(item.get("type"), str) and item["type"] in _SCHEMA_TYPES
         }
         if types:
             attributes[identifier]["types"] = sorted(types)
+            attributes[identifier]["types_truncated"] = types_truncated
     return truncated
 
 
