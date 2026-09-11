@@ -412,7 +412,7 @@ fi
 # banner is still left so the review body shows immediately WHY it FAILed.
 if [ -s "$WORK/degraded-lenses.txt" ]; then
   DEGRADED_LENSES="$(tr '\n' ',' < "$WORK/degraded-lenses.txt" | sed 's/,$//; s/,/, /g')"
-  { echo "🛑 **Lens coverage collapse**: lens(es) [$DEGRADED_LENSES] got no response from any model — nobody reviewed it."
+  { echo "🛑 **Lens coverage collapse**: required model responses are missing for lens(es) [$DEGRADED_LENSES] — cross-model review is incomplete."
     echo ""
     cat "$OUT"
   } > "$OUT.tmp" && mv "$OUT.tmp" "$OUT"
@@ -434,7 +434,7 @@ if [ -f "$WORK/coverage-severe.flag" ]; then
   # contradicts the lens-collapse banner already attached above. Disambiguate by which file was
   # actually raised, and pick the matching message.
   if [ -s "$WORK/degraded-lenses.txt" ]; then
-    SEVERE_REASON="lens(es) [$(tr '\n' ',' < "$WORK/degraded-lenses.txt" | sed 's/,$//; s/,/, /g')] got no response from any model, so cross-verification cannot happen"
+    SEVERE_REASON="lens(es) [$(tr '\n' ',' < "$WORK/degraded-lenses.txt" | sed 's/,$//; s/,/, /g')] has incomplete required model responses, so cross-verification is incomplete"
   else
     SEVERE_REASON="at most one vendor survived, so cross-verification across the lens x model matrix cannot happen"
   fi
