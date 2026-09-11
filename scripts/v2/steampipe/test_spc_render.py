@@ -2,10 +2,12 @@
 import os
 import sys
 import re
+import json
 import unittest.mock as mock
+import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
-from spc_render import render_spc  # noqa: E402
+from spc_render import LimiterConfig, limiter_config_from_env, render_spc  # noqa: E402
 
 
 def _conn_names(spc):
@@ -103,10 +105,66 @@ def test_host_included_even_when_flag_false_and_no_regions():
     assert 'regions = ["*"]' in spc
 
 
+def test_default_plugin_limiter_is_rendered_once_and_is_global():
+    spc = render_spc([{
+        "account_id": "123456789012", "is_host": True,
+        "role_name": "AWSopsReadOnlyRole", "external_id": None,
+        "all_regions": True, "regions": [],
+    }])
+    assert spc.count('plugin "aws"') == 1
+    assert 'limiter "awsops_global"' in spc
+    assert "max_concurrency = 4" in spc
+    assert "bucket_size = 4" in spc
+    assert "fill_rate = 2.0" in spc
+    assert "scope =" not in spc
+
+
+def test_custom_limiter_values_are_rendered():
+    spc = render_spc([], LimiterConfig(2, 3, 0.5))
+    assert "max_concurrency = 2" in spc
+    assert "bucket_size = 3" in spc
+    assert "fill_rate = 0.5" in spc
+
+
+def test_limiter_env_validation_fails_closed():
+    with pytest.raises(ValueError, match="STEAMPIPE_AWS_MAX_CONCURRENCY"):
+        limiter_config_from_env({"STEAMPIPE_AWS_MAX_CONCURRENCY": "0"})
+    with pytest.raises(ValueError, match="STEAMPIPE_AWS_BUCKET_SIZE"):
+        limiter_config_from_env({"STEAMPIPE_AWS_BUCKET_SIZE": "41"})
+    with pytest.raises(ValueError, match="STEAMPIPE_AWS_FILL_RATE"):
+        limiter_config_from_env({"STEAMPIPE_AWS_FILL_RATE": "0"})
+
+
+@pytest.mark.parametrize("fill_rate", ["nan", "inf", "-inf"])
+def test_limiter_env_rejects_non_finite_fill_rate(fill_rate):
+    with pytest.raises(ValueError, match="STEAMPIPE_AWS_FILL_RATE"):
+        limiter_config_from_env({"STEAMPIPE_AWS_FILL_RATE": fill_rate})
+
+
 # --- Supervisor / blast-radius tests (gen_spc_entrypoint) ---
 # NOTE: gen_spc_entrypoint imports boto3 + pg8000.native. Import it LOCALLY inside each test below
 # (not at module level) so a CI environment missing those deps only fails these specific tests —
 # not the pure render_spc tests above, which have no such dependency and must always collect/run.
+
+
+def test_entrypoint_renders_with_validated_limiter_config_and_logs_effective_values(capsys):
+    import gen_spc_entrypoint
+
+    rows = [{"account_id": "123456789012"}]
+    limiter = LimiterConfig(2, 3, 0.5)
+    with mock.patch.object(gen_spc_entrypoint, "limiter_config_from_env", return_value=limiter) as config, \
+         mock.patch.object(gen_spc_entrypoint, "render_spc", return_value="rendered") as render:
+        assert gen_spc_entrypoint._render_spc(rows) == "rendered"
+
+    config.assert_called_once_with()
+    render.assert_called_once_with(rows, limiter)
+    record = json.loads(capsys.readouterr().err)
+    assert record == {
+        "event": "steampipe_limiter_config",
+        "max_concurrency": 2,
+        "bucket_size": 3,
+        "fill_rate": 0.5,
+    }
 
 
 def test_no_aurora_secret_anywhere():

@@ -43,6 +43,7 @@ Key resource metrics are organized into three groups.
 | **Resources by category** | Share per category with total (donut) |
 | **Job status** | Share of succeeded, failed, running, and queued jobs (donut) |
 | **Daily cost trend** | Cost trend by date (area) |
+| **Monthly Cost Impact (est.)** | 30-day resource-count change × static per-type unit-cost heuristic (±$N/mo est., top 8 by \|impact\|) — not billing data; types without a 30-day baseline are excluded |
 
 ## How to use
 
@@ -50,7 +51,8 @@ Key resource metrics are organized into three groups.
 2. In the **AI Operations** row, click **Start chat** to begin a conversation, or reopen a previous one from **Recent AI conversations**.
 3. Check any tiles highlighted in warning/danger colors in the KPI section.
 4. Review the charts for resource composition, job status, and cost trend.
-5. Use the **Refresh** button in the header to reload all data. The last-updated time is shown alongside it.
+5. Use the **Refresh** button in the header to reload all data. The last-updated time is shown alongside it. Admins additionally see a **Sync all** button — it enqueues an on-demand all-types inventory sync (async batch: an enqueue acknowledgement, not a completion guarantee; already-running types are skipped; check via Refresh a few minutes later). Environments with sync disabled show a disabled note.
+6. Resource tiles carry state-decomposition sublines (e.g. EC2 running/stopped, EBS GiB · unencrypted, VPC subnets/NAT/TGW, ECS services/tasks, WAF rule groups/IP sets). A subline appears only once its data is loaded, and the EKS subline covers REGISTERED clusters and renders only when every registered cluster answered, the account scope is all-accounts, AND the tile's cluster count matches the registered-cluster count (the registry and the account lookup are different sources — on a mismatch the subline is hidden rather than shown against a contradicting headline).
 
 :::tip Keeping data fresh
 The **Refresh** button shows the time data was last loaded (KST) and adds an **(outdated)** marker after 30 minutes. If highlighted tiles appear or the timestamp looks stale, refresh once.

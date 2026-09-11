@@ -9,38 +9,14 @@ import Card from '@/components/ui/Card';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { groupBySlug, ATTENTION_SPLITS, type NavLeaf } from '@/lib/inventory-types';
 import { TYPE_ICON, GROUP_ICON, variantIcon, highlightIcon } from '@/lib/type-icons';
+// Gap L82: the per-type micro-stat subline map is SHARED with the dashboard tiles
+// (web/lib/tile-micro.ts) so the two surfaces cannot drift.
+import { typeMicroLine, type TileSplits } from '@/lib/tile-micro';
 
 interface ByType { type: string; label: string; count: number; [k: string]: unknown }
-interface Splits {
-  ec2Running: number; ec2Stopped: number; ebsUnencrypted: number; iamUserNoMfa: number; sgOpenIngress: number;
-  s3Public?: number; cwAlarm?: number;
-  // Gap L82 micro-stat sublines (optional — an older task during a rolling deploy may omit them).
-  lambdaRuntimes?: number; lambdaLongTimeout?: number; ebsTotalGb?: number;
-  rdsMultiAz?: number; rdsUnencrypted?: number; ecrScanOnPush?: number; ecrImmutable?: number;
-  s3VersioningOff?: number; cloudfrontEnabled?: number;
-}
-interface Summary { byType: ByType[]; total: number; splits?: Splits }
+interface Summary { byType: ByType[]; total: number; splits?: TileSplits }
 
 const DASH = '—';
-
-// Gap L82 (v1 parity): per-type tile micro-stat sublines — state decomposition rendered as
-// the tile's trend line. Only rendered once the summary is loaded (no fabricated zeros while
-// loading); an undefined split (rolling-deploy skew) drops just that part. Technical terms
-// stay English as v1 rendered them.
-const TYPE_MICRO: Record<string, (s: Splits, countOf: (t: string) => number) => string | null> = {
-  ec2: (s) => `${s.ec2Running} running · ${s.ec2Stopped} stopped`,
-  lambda: (s) => (s.lambdaRuntimes == null ? null : `${s.lambdaRuntimes} runtimes · ${s.lambdaLongTimeout ?? 0} >300s`),
-  ebs_volume: (s) => (s.ebsTotalGb == null ? null : `${s.ebsTotalGb.toLocaleString()} GiB · ${s.ebsUnencrypted} unencrypted`),
-  rds: (s) => (s.rdsMultiAz == null ? null : `${s.rdsMultiAz} Multi-AZ · ${s.rdsUnencrypted ?? 0} unencrypted`),
-  ecr: (s) => (s.ecrScanOnPush == null ? null : `${s.ecrScanOnPush} scan-on-push · ${s.ecrImmutable ?? 0} immutable`),
-  s3: (s) => (s.s3VersioningOff == null ? null : `${s.s3Public ?? 0} public · ${s.s3VersioningOff} versioning off`),
-  iam_user: (s) => `${s.iamUserNoMfa} no MFA`,
-  security_group: (s) => `${s.sgOpenIngress} open ingress`,
-  // cloudwatch_alarm lives in the singleton Monitoring group (no /inventory/g page) — no entry.
-  cloudfront: (s) => (s.cloudfrontEnabled == null ? null : `${s.cloudfrontEnabled} enabled`),
-  // Cross-type composition — subnet/NAT totals already ride byType, zero extra SQL.
-  vpc: (_s, countOf) => `${countOf('subnet')} subnets · ${countOf('nat_gateway')} NAT · ${countOf('transit_gateway')} TGW`,
-};
 
 /**
  * Group overview — Phase 1 status summary for one inventory category. Reuses the
@@ -127,7 +103,7 @@ export default function GroupOverviewClient({ slug }: { slug: string }) {
                 <StatTile
                   label={leaf.labelKey ? t(leaf.labelKey) : leaf.label ?? leaf.type ?? ''}
                   value={countFor(leaf.type)}
-                  trend={(leaf.type && splits && TYPE_MICRO[leaf.type]?.(splits, (tp) => Number(sum?.byType.find((x) => x.type === tp)?.count ?? 0))) || undefined}
+                  trend={typeMicroLine(leaf.type, splits, (tp) => Number(sum?.byType.find((x) => x.type === tp)?.count ?? 0)) || undefined}
                   icon={(() => { const I = (leaf.type && TYPE_ICON[leaf.type]) || GROUP_ICON[node.group] || null; return I ? <I size={16} /> : undefined; })()}
                 />
               </Link>

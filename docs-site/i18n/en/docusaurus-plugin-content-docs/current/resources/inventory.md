@@ -23,6 +23,7 @@ A single screen browses around 22 resource types — **EC2**, **Lambda**, **RDS*
 ### Distribution chart
 - A donut chart breaks the type down by its key attribute (for **EC2**, by **Type**)
 - The top 6 values plus an **Other** bucket give an at-a-glance view of the composition
+- Past the 500-row cap the donuts use server-side full-fleet aggregation and **Other** is computed against the fleet total. Dimensions whose values are client-derived (e.g. Lambda runtime, DynamoDB billing mode) stay sample-based, and such donuts carry a **(sampled)** qualifier in the title
 
 ### Sortable table
 - Type in the search box to instantly filter across every column value

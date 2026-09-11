@@ -33,6 +33,10 @@ export interface StatTileProps {
   /** 'compact' — smaller value/padding, sunken background, no hint/trend/watermark
    *  (design handoff 개선안 ①: quiet "still healthy" resource tiles). */
   size?: 'default' | 'compact';
+  /** Gap L82: single-line micro-stat subline for COMPACT tiles only (the deliberate
+   *  no-hint/trend rule stays — this is a narrower, quieter slot: 10.5px muted, truncated).
+   *  Ignored on default-size tiles (use `trend`/`hint` there). */
+  micro?: string;
   className?: string;
   /** When set, the tile becomes a navigation link (v1-parity: click a KPI → its page). */
   href?: string;
@@ -73,6 +77,7 @@ export default function StatTile({
   hint,
   variant = 'default',
   size = 'default',
+  micro,
   className,
   href,
   icon,
@@ -132,6 +137,9 @@ export default function StatTile({
       >
         {value}
       </div>
+      {compact && micro && (
+        <div className="mt-0.5 truncate text-[10.5px] leading-snug text-ink-400 tabular">{micro}</div>
+      )}
       {!compact && (trend || hint != null) && (
         <div className="flex items-center gap-2 mt-1.5">
           {trend && (

@@ -2,7 +2,9 @@ import {
   EC2Client,
   DescribeTransitGatewayAttachmentsCommand,
   DescribeTransitGatewayRouteTablesCommand,
+  DescribeTransitGatewayVpcAttachmentsCommand,
   SearchTransitGatewayRoutesCommand,
+  type TransitGatewayVpcAttachment,
 } from '@aws-sdk/client-ec2';
 
 // Transit Gateway 상세 (inventory transit_gateway 페이지 하단 테이블): 어태치먼트 +
@@ -40,6 +42,12 @@ export function _resetTgwCacheForTests() { cache.clear(); inflight.clear(); clie
 export interface TgwAttachment {
   id: string; tgwId: string; resourceType: string; resourceId: string;
   state: string; routeTableId: string | null;
+  /** VPC-attachment options (gap L168 — v1's row-click options JSON). The API exposes
+   *  options per attachment TYPE; only `vpc` attachments carry them — others stay null.
+   *  A null on a VPC attachment can also mean the options describe was denied/failed for
+   *  its region — that state is disclosed via TgwDetails.optionsDegradedRegions, never
+   *  silently conflated with "not a VPC attachment". Missing individual fields are null. */
+  options: { dnsSupport: string | null; ipv6Support: string | null; applianceModeSupport: string | null } | null;
 }
 export interface TgwRoute {
   cidr: string; type: string; state: string;
@@ -57,6 +65,10 @@ export interface TgwDetails {
   routeTables: TgwRouteTable[];
   // regions whose describe failed — their attachments/routeTables are MISSING, not empty (honest-degrade)
   degradedRegions?: string[];
+  // regions whose VPC-attachment OPTIONS describe failed (denied/throttled) while the main
+  // describes succeeded — their VPC attachments render without options, and the UI must not
+  // present that as "not a VPC attachment" (same honest-degrade contract as degradedRegions).
+  optionsDegradedRegions?: string[];
 }
 
 const ROUTE_CAP = 100;
@@ -77,24 +89,65 @@ export async function tgwDetails(tgws: { id: string; region?: string }[]): Promi
       attachments: parts.flatMap((p) => p.attachments),
       routeTables: parts.flatMap((p) => p.routeTables),
       degradedRegions: parts.flatMap((p) => p.degradedRegions ?? []),
+      optionsDegradedRegions: parts.flatMap((p) => p.optionsDegradedRegions ?? []),
     };
   });
 }
 
 async function tgwRegionDetails(region: string, ids: string[]): Promise<TgwDetails> {
   try {
-    const [att, rtb] = await Promise.all([
+    const [att, rtb, vpcAtt] = await Promise.all([
       ec2(region).send(new DescribeTransitGatewayAttachmentsCommand({
         Filters: [{ Name: 'transit-gateway-id', Values: ids }], MaxResults: 200,
       })),
       ec2(region).send(new DescribeTransitGatewayRouteTablesCommand({
         Filters: [{ Name: 'transit-gateway-id', Values: ids }], MaxResults: 50,
       })),
+      // VPC-attachment options (gap L168): read-only describes per region — options are only
+      // exposed on the per-type API. NextToken is followed (the general attachment list's
+      // MaxResults cap is pre-existing; without pagination HERE a displayed row past page 1
+      // would silently read '—'). EVERY incomplete-view path is disclosed as incomplete —
+      // never conflated with "not a VPC attachment": a failed page (already-fetched pages are
+      // KEPT — a throttle on page 3 must not blank pages 1-2), a leftover NextToken after the
+      // page cap, and (reconciled below) a VPC-type row the response never returned.
+      (async () => {
+        const out: TransitGatewayVpcAttachment[] = [];
+        let token: string | undefined;
+        try {
+          for (let page = 0; page < 5; page += 1) {
+            const r = await ec2(region).send(new DescribeTransitGatewayVpcAttachmentsCommand({
+              Filters: [{ Name: 'transit-gateway-id', Values: ids }], MaxResults: 200,
+              ...(token ? { NextToken: token } : {}),
+            }));
+            out.push(...(r.TransitGatewayVpcAttachments ?? []));
+            token = r.NextToken;
+            if (!token) break;
+          }
+          // leftover token after the page cap = truncated view, NOT success
+          return { list: out, incomplete: Boolean(token) };
+        } catch (e) {
+          // error NAME only (AccessDenied vs Throttling matters in the merge→apply window;
+          // never the raw message — it can carry payload)
+          console.warn(`[tgw] options describe failed (${region}):`, e instanceof Error ? e.name : 'unknown');
+          return { list: out, incomplete: true };
+        }
+      })(),
     ]);
+    let optionsDegraded = vpcAtt.incomplete;
+    const optById = new Map<string, TgwAttachment['options']>();
+    for (const v of vpcAtt.list) {
+      if (!v.TransitGatewayAttachmentId || !v.Options) continue;
+      optById.set(v.TransitGatewayAttachmentId, {
+        dnsSupport: v.Options.DnsSupport ?? null,
+        ipv6Support: v.Options.Ipv6Support ?? null,
+        applianceModeSupport: v.Options.ApplianceModeSupport ?? null,
+      });
+    }
     const attachments: TgwAttachment[] = (att.TransitGatewayAttachments ?? []).map((a) => ({
       id: a.TransitGatewayAttachmentId ?? '', tgwId: a.TransitGatewayId ?? '',
       resourceType: a.ResourceType ?? '?', resourceId: a.ResourceId ?? '',
       state: a.State ?? '?', routeTableId: a.Association?.TransitGatewayRouteTableId ?? null,
+      options: optById.get(a.TransitGatewayAttachmentId ?? '') ?? null,
     }));
     const routeTables: TgwRouteTable[] = await Promise.all(
       (rtb.TransitGatewayRouteTables ?? []).map(async (t) => {
@@ -122,7 +175,16 @@ async function tgwRegionDetails(region: string, ids: string[]): Promise<TgwDetai
         };
       }),
     );
-    return { attachments, routeTables };
+    // Reconciliation: a VPC-TYPE attachment the (successful) options response never returned
+    // (e.g. a RAM-shared cross-account attachment) is an INCOMPLETE options view, not a
+    // non-VPC row — disclose it the same way.
+    if (!optionsDegraded && attachments.some((a) => a.resourceType === 'vpc' && a.options === null)) {
+      optionsDegraded = true;
+    }
+    return {
+      attachments, routeTables,
+      ...(optionsDegraded ? { optionsDegradedRegions: [region] } : {}),
+    };
   } catch {
     return { attachments: [], routeTables: [], degradedRegions: [region] }; // per-region degrade
   }

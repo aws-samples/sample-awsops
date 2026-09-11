@@ -56,7 +56,7 @@ AWSops 的数据引擎是 [Steampipe](https://steampipe.io/)（内嵌 PostgreSQL
 
 ## 3. AWS 资源基础仪表板（43 个页面）
 
-EC2·Lambda·ECS/ECR·EKS（Pod/Node/Deployment/Service/Explorer）·VPC·CloudFront·WAF·EBS·S3·RDS·DynamoDB·ElastiCache·MSK·OpenSearch 等 **43 个页面**由实时图表和 React Flow 拓扑图构成。MSK·RDS·ElastiCache·OpenSearch 还内联显示 CloudWatch 指标。
+EC2·Lambda·ECS/ECR·EKS（Pod/Node/Deployment/Service/Explorer）·VPC·CloudFront·WAF·EBS·S3·RDS·DynamoDB·ElastiCache·MSK·OpenSearch 等 **43 个页面**由实时图表和 React Flow 拓扑图构成。MSK·RDS·ElastiCache·OpenSearch·EBS 还内联显示 CloudWatch 指标。
 
 ---
 

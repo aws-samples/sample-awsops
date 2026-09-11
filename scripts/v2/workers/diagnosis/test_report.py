@@ -551,6 +551,70 @@ def test_coverage_note_lists_collector_status():
     assert "service_map" in note and "empty" in note.lower()  # ran ok but no signal
 
 
+def test_build_actual_preserves_collector_status_and_provenance():
+    collected = {"service_map": _coll("service_map", degraded=True, notes="partial graph",
+                                    data={"edges": [{"from": "api", "to": "rds", "calls": 4,
+                                                     "error_rate": 0}]}),
+                 "inventory": _coll("inventory", data={"by_type": {"rds": 1}})}
+    collected["inventory"].update({"freshness": "stale", "captured_at": "2020-01-01T00:00:00Z"})
+    actual = report._build_actual(collected)
+    assert actual["service_map"] == collected["service_map"]["data"]
+    assert actual["_sources"]["service_map"]["degraded"] is True
+    assert actual["_sources"]["service_map"]["notes"] == "partial graph"
+    assert actual["_sources"]["inventory"]["captured_at"] == "2020-01-01T00:00:00Z"
+    assert actual["_sources"]["inventory"]["freshness"] == "stale"
+
+
+@pytest.mark.parametrize("collected", [{}, {"service_map": None}, {"service_map": []},
+                                      {"service_map": {"data": None}},
+                                      {"service_map": {"ok": True, "data": ["bad"]}}])
+def test_build_actual_missing_or_malformed_collector_stays_unknown(collected):
+    active = [{"id": 1, "kind": "max_error_rate", "params": {"from": "api", "to": "rds"}}]
+    assert report._evaluate_intent(active, report._build_actual(collected))[0]["passed"] is None
+
+
+@pytest.mark.parametrize("degraded", [False, True])
+def test_generate_current_source_shapes_do_not_claim_active_invariants_healthy(monkeypatch, degraded):
+    # Matches sources.collect_service_map's unresolved references and inventory's bounded sample.
+    collected = [
+        _coll("service_map", degraded=degraded, data={"edges": [
+            {"from": "api", "to_ref": 1, "calls": 0, "error_rate": 0}], "service_count": 2}),
+        _coll("inventory", data={"by_type": {"rds": 20}, "resources": {
+            "rds": [{"resource_id": "db", "region": "test", "data": {"storage_encrypted": True}}]},
+            "truncated": False}),
+    ]
+    active = [{"id": i, "kind": kind, "target": "rds", "params": {"from": "api", "to": "rds"}}
+              for i, kind in enumerate(["private_only", "encryption_required", "max_error_rate"])]
+    monkeypatch.setattr(report.src, "collect_all", lambda *a: collected)
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda *a: active)
+    captured = []
+
+    def render(prompt, ctx, *a):
+        data = json.loads(ctx)
+        if "intended_vs_actual" in data:
+            captured.extend(data["intended_vs_actual"]["verdicts"])
+        return "body"
+
+    monkeypatch.setattr(report, "_bedrock_render", render)
+    report.generate(object(), account="1")
+    assert len(captured) == 3
+    assert all(v["passed"] is None for v in captured)
+
+
+@pytest.mark.parametrize("degraded,expected_improvements", [(True, []), (False, [1])])
+def test_report_diff_requires_observed_pass_for_improvement(monkeypatch, degraded, expected_improvements):
+    # A previous failure turning unknown must not appear as "improved" in the report UI.
+    collected = [_coll("inventory", degraded=degraded, data={"unencrypted": {"rds": 0}})]
+    active = [{"id": 1, "kind": "encryption_required", "target": "rds", "params": {}}]
+    monkeypatch.setattr(report.src, "collect_all", lambda *a: collected)
+    monkeypatch.setattr(report.ddb, "list_active_invariants", lambda *a: active)
+    monkeypatch.setattr(report.ddb, "get_report_summary",
+                        lambda conn, rid: (3, {}) if rid == 7 else (None, {"drift": [{"id": 1}]}))
+    monkeypatch.setattr(report, "_bedrock_render", lambda *a: "body")
+    _, summary, _ = report.generate(object(), account="1", report_id=7)
+    assert summary["diff"]["improvements"] == expected_improvements
+
+
 def test_build_markdown_appends_coverage_note_optional():
     rendered = [{"key": "executive_summary", "title": "Executive Summary", "body": "x"}]
     collected = {"inventory": _coll("inventory", data={"by_type": {}})}  # ok but empty

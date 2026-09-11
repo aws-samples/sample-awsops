@@ -125,6 +125,8 @@ import Screenshot from '@site/src/components/Screenshot';
 | Pink | ELB | - |
 | Orange | RDS, NAT | Service |
 | Red | TGW | - |
+
+地图上方信息行中的图例仅显示当前图中存在的类型。卡片名称旁的状态点也会出现在图例中 — **ok**（绿）/ **warn**（橙）/ **bad**（红）/ **neutral**（灰）。
 :::
 
 ## 相关页面

@@ -132,6 +132,131 @@ class TestTools(unittest.TestCase):
         self.assertIn("FORMAT JSON", captured["body"])
         self.assertEqual(captured["headers"]["Authorization"][:6], "Basic ")
 
+    def test_database_setting_appends_validated_param(self):
+        # gap L203: a per-datasource default database rides the conn config → &database=
+        captured = {}
+
+        def fake_http(method, url, headers=None, body=None, timeout=None):
+            captured.update(url=url)
+            return 200, {"data": []}
+
+        ds = dict(DS, database="metrics_db")
+        with mock.patch.object(ch, "load_datasource", return_value=ds), \
+             mock.patch.object(ch, "http_json", side_effect=fake_http):
+            out = ch.lambda_handler({"tool_name": "clickhouse_query",
+                                     "arguments": {"sql": "SELECT 1"}}, None)
+        self.assertEqual(out["statusCode"], 200)
+        self.assertIn("&database=metrics_db", captured["url"])
+
+    def test_execution_bound_defaults_to_10_and_conn_timeoutS_overrides(self):
+        captured = {}
+
+        def fake_http(method, url, headers=None, body=None, timeout=None):
+            captured.update(url=url, timeout=timeout)
+            return 200, {"data": []}
+
+        with mock.patch.object(ch, "http_json", side_effect=fake_http):
+            ch.lambda_handler({"tool_name": "clickhouse_query", "arguments": {"sql": "SELECT 1"}}, None)
+        # documented default 10s even when nothing is configured — never an unbounded scan
+        self.assertIn("max_execution_time=10", captured["url"])
+        self.assertEqual(captured["timeout"], 13)  # HTTP timeout aligned ABOVE the bound (+3)
+        ds = dict(DS, timeoutS=30)
+        with mock.patch.object(ch, "load_datasource", return_value=ds), \
+             mock.patch.object(ch, "http_json", side_effect=fake_http):
+            ch.lambda_handler({"tool_name": "clickhouse_query", "arguments": {"sql": "SELECT 1"}}, None)
+        self.assertIn("max_execution_time=30", captured["url"])
+        self.assertEqual(captured["timeout"], 33)
+        # capped at 55 so the aligned HTTP timeout stays under the Lambda's 60s wall
+        ds = dict(DS, timeoutS=60)
+        with mock.patch.object(ch, "load_datasource", return_value=ds), \
+             mock.patch.object(ch, "http_json", side_effect=fake_http):
+            ch.lambda_handler({"tool_name": "clickhouse_query", "arguments": {"sql": "SELECT 1"}}, None)
+        self.assertIn("max_execution_time=55", captured["url"])
+        self.assertEqual(captured["timeout"], 58)
+
+    def test_bound_relaxing_settings_rejected_but_benign_settings_pass(self):
+        # bound-relaxing SETTINGS are blocked before any HTTP call…
+        for sql in ("SELECT 1 SETTINGS max_execution_time=0",
+                    "SELECT 1 SETTINGS max_result_rows = 999999",
+                    "SELECT 1 SETTINGS readonly=0"):
+            with mock.patch.object(ch, "http_json") as hj:
+                out = ch.lambda_handler({"tool_name": "clickhouse_query", "arguments": {"sql": sql}}, None)
+            self.assertEqual(out["statusCode"], 400, sql)
+            hj.assert_not_called()
+        # NO comment form can smuggle a ';' past the clause window (rounds 8–9: block, --, #)
+        for sql in ("SELECT 1 SETTINGS /* ; */ max_execution_time=0",
+                    "SELECT 1 SETTINGS # ;\nmax_execution_time=0",
+                    "SELECT 1 SETTINGS -- ;\nmax_execution_time=0",
+                    'SELECT 1 SETTINGS "max_execution_time" = 0',
+                    "SELECT 1 SETTINGS `max_execution_time` = 0",
+                    # round-10 desync PoC: a quote inside a backtick identifier must not let a
+                    # sequential stripper swallow the clause into the trailing comment
+                    "SELECT 1 AS `a'`, count() FROM t SETTINGS max_execution_time=0 --'"):
+            with mock.patch.object(ch, "http_json") as hj:
+                out = ch.lambda_handler({"tool_name": "clickhouse_query", "arguments": {"sql": sql}}, None)
+            self.assertEqual(out["statusCode"], 400, sql)
+            hj.assert_not_called()
+        # a STRING LITERAL containing the words is not a false positive (round-8)
+        with mock.patch.object(ch, "http_json", return_value=(200, {"data": []})):
+            out = ch.lambda_handler({"tool_name": "clickhouse_query",
+                                     "arguments": {"sql": "SELECT 'SETTINGS max_execution_time=0' AS doc"}}, None)
+        self.assertEqual(out["statusCode"], 200)
+        # …but the persisted graph-template shape (SETTINGS max_rows) keeps working (round-7:
+        # the round-6 blanket block silently emptied service graphs built from stored templates)
+        with mock.patch.object(ch, "http_json", return_value=(200, {"data": []})):
+            out = ch.lambda_handler({"tool_name": "clickhouse_query",
+                                     "arguments": {"sql": "SELECT a FROM t LIMIT 50 SETTINGS max_rows = 50"}}, None)
+        self.assertEqual(out["statusCode"], 200)
+
+    def test_configured_timeout_is_a_ceiling_not_a_default(self):
+        captured = {}
+
+        def fake_http(method, url, headers=None, body=None, timeout=None):
+            captured.update(url=url)
+            return 200, {"data": []}
+
+        ds = dict(DS, timeoutS=5)
+        # a caller asking for 55s cannot exceed the admin's 5s bound…
+        with mock.patch.object(ch, "load_datasource", return_value=ds), \
+             mock.patch.object(ch, "http_json", side_effect=fake_http):
+            ch.lambda_handler({"tool_name": "clickhouse_query",
+                               "arguments": {"sql": "SELECT 1", "max_execution_time": 55}}, None)
+        self.assertIn("max_execution_time=5", captured["url"])
+        # …but a TIGHTER caller value still wins downward
+        ds = dict(DS, timeoutS=30)
+        with mock.patch.object(ch, "load_datasource", return_value=ds), \
+             mock.patch.object(ch, "http_json", side_effect=fake_http):
+            ch.lambda_handler({"tool_name": "clickhouse_query",
+                               "arguments": {"sql": "SELECT 1", "max_execution_time": 5}}, None)
+        self.assertIn("max_execution_time=5", captured["url"])
+        # with NO configured timeoutS the DEFAULT 10s is the ceiling too — a caller cannot
+        # raise the bound to 55s on an unconfigured instance (round-7)
+        with mock.patch.object(ch, "http_json", side_effect=fake_http):
+            ch.lambda_handler({"tool_name": "clickhouse_query",
+                               "arguments": {"sql": "SELECT 1", "max_execution_time": 55}}, None)
+        self.assertIn("max_execution_time=10", captured["url"])
+
+    def test_database_system_rejected_before_request(self):
+        # the read-only guard is lexical — database=system would resolve unqualified FROM
+        # tables to system.tables; both spellings must be rejected before any HTTP call
+        for db in ("system", "SYSTEM", "information_schema"):
+            ds = dict(DS, database=db)
+            with mock.patch.object(ch, "load_datasource", return_value=ds), \
+                 mock.patch.object(ch, "http_json") as hj:
+                out = ch.lambda_handler({"tool_name": "clickhouse_query",
+                                         "arguments": {"sql": "SELECT create_table_query FROM tables"}}, None)
+            self.assertEqual(out["statusCode"], 400)
+            hj.assert_not_called()
+
+    def test_database_setting_rejects_non_identifier_before_request(self):
+        ds = dict(DS, database="bad-db; DROP")
+        with mock.patch.object(ch, "load_datasource", return_value=ds), \
+             mock.patch.object(ch, "http_json") as hj:
+            out = ch.lambda_handler({"tool_name": "clickhouse_query",
+                                     "arguments": {"sql": "SELECT 1"}}, None)
+        self.assertEqual(out["statusCode"], 400)
+        hj.assert_not_called()
+
     def test_query_rejects_non_readonly_before_request(self):
         with mock.patch.object(ch, "http_json") as hj:
             out = ch.lambda_handler({"tool_name": "clickhouse_query", "arguments": {"sql": "DROP TABLE t"}}, None)

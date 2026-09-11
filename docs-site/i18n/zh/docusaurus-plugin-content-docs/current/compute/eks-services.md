@@ -24,6 +24,12 @@ import Screenshot from '@site/src/components/Screenshot';
 以饼图可视化各服务类型的分布：
 - ClusterIP、NodePort、LoadBalancer、Other（ExternalName 等）
 
+### Service Resources 图表
+两个按服务的资源请求量 top-15 条形图：
+- **CPU per Service (millicores)** / **Memory per Service (MiB)** — 将每个 Service 的选择器与同一（集群, 命名空间）内的 **Running Pod** 关联，汇总其调度器有效请求量（应用容器之和与 init 容器最大值中的较大者 + overhead）
+- 数值为请求量（预留），并非实际用量（图表说明中已注明）
+- 无选择器（ExternalName/手动 Endpoints）或没有匹配 Running Pod 的服务会被**排除**而不是绘制为 0；Pod 查询失败的集群会从图表中排除，并在说明中显示其名称
+
 ### Service 表格
 | 列 | 说明 |
 |------|------|

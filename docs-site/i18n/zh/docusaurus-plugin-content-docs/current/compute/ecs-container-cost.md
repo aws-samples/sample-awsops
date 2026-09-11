@@ -8,8 +8,8 @@ import Screenshot from '@site/src/components/Screenshot';
 
 # ECS Container Cost
 
-:::caution v1 归档文档 — v2 中没有对应页面
-本文档描述的是 v1 专用的 **ECS Container Cost** 页面（统计卡片、图表和 "Cost Calculation Basis" 折叠区）。**v2 中没有这样的专用页面/UI** —— `web/` 中不存在 `showBasis` 折叠开关，也没有对应的 StatsCard/图表。v2 中唯一对应的功能是 **`/inventory/ecs_task`** 库存视图中的 **Cost/Day、Cost/Mo** 两列，这些数值是根据任务定义分配的 cpu/memory 计算出的**静态估算值**，并非来自 CloudWatch Container Insights 的使用率指标（参见 `web/lib/inventory-derived.ts` 的 `ecs_task` deriver，约第 106-124 行）。下方的**价格常量与计算公式**（`$0.04656`/`$0.00511`，`(CPU units/1024)×单价×24 + (MB/1024)×单价×24`）与该静态估算的实际逻辑一致，是准确的 —— 请勿修改。但本文档中的统计卡片、图表、"Cost Calculation Basis" 折叠区，以及"基于 CloudWatch Container Insights 指标计算"的说法均为 v1 专属，v2 中不存在。
+:::caution v1 归档文档 — v2 对应功能位于 /inventory/ecs_task
+本文档描述的是 v1 专用的 **ECS Container Cost** 页面（统计卡片、图表和 "Cost Calculation Basis" 折叠区）。**v2 没有专用页面，对应功能位于 `/inventory/ecs_task` 库存视图**：**Cost/Day、Cost/Mo** 两列、'每日成本合计 (est.)' KPI 磁贴，以及表格下方的可折叠 **成本计算依据** 面板（对应 v1 的 'Cost Calculation Basis'）。列值是根据任务定义分配的 cpu/memory 计算出的**静态估算值**，并非来自 CloudWatch Container Insights 的使用率指标（参见 `web/lib/inventory-derived.ts` 的 `ecs_task` deriver — 单价常量来自单一来源 `web/lib/cost-basis.ts`）。下方的**价格常量与计算公式**（`$0.04656`/`$0.00511`，`(CPU units/1024)×单价×24 + (MB/1024)×单价×24`）与该静态估算的实际逻辑一致，是准确的 —— 请勿修改。但本文档中的饼图以及"基于 CloudWatch Container Insights 指标计算"的说法为 v1 专属，v2 中不存在（v2 估算基于静态常量，且不反映临时存储单价）。不过 **Cost by Service (CPU vs Memory)** 图表在 v2 中存在 — 在 `/inventory/ecs_task` 上以按服务的分组柱显示（仅 FARGATE 任务，静态估算，前 10）。
 :::
 
 用于分析 ECS Fargate 任务成本的页面。基于 Fargate 价格和 CloudWatch Container Insights 指标计算成本。
@@ -28,7 +28,7 @@ import Screenshot from '@site/src/components/Screenshot';
 以饼图显示各服务的每日成本分布
 
 ### Cost by Service (CPU vs Memory) 图表
-以堆叠条形图对比各服务的 CPU 成本和 Memory 成本
+对比各服务的 CPU 成本和 Memory 成本。在 v2 中以**共用刻度的分组条**（两个 $ 序列共用一个刻度 — 保持真实比例）替代堆叠条，带集群/服务标签、仅 FARGATE、前 10，超过 500 行时标注'基于样本'。
 
 ### ECS Tasks 表格
 | 列 | 说明 |

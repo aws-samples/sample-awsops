@@ -11,7 +11,7 @@ import Screenshot from '@site/src/components/Screenshot';
 A page for monitoring the status of ECS clusters, services, and tasks.
 
 :::info How this is served in v2
-v1 monitored clusters/services/tasks together on one page, but **v2 splits this into 3 separate inventory routes** — `/inventory/ecs_cluster`, `/inventory/ecs_service`, `/inventory/ecs_task`. The sidebar just groups the three under "Compute" — each is its own page with its own table, filters, and detail panel. The content below reflects this 3-route structure, not v1's unified page.
+v1 monitored clusters/services/tasks together on one page. v2's primary structure is 3 separate inventory routes (`/inventory/ecs_cluster`, `/inventory/ecs_service`, `/inventory/ecs_task` — each with its own table, filters, and detail panel), now complemented by a **unified overview page `/inventory/ecs`** (sidebar 'ECS Overview') showing the summary KPI band (cluster/service/task counts + tasks below desired), the clusters table, and the services table on one screen. The overview is a read-only glance layer — search/facets/detail live on the three type pages, reachable via each table's 'View all' link. Pages at or over 500 rows are labeled as a sample (the service-derived running/desired/deficit rollup is withheld over a sample or whenever the service sync's last run is not succeeded; the Tasks KPI is a separate full summary aggregate, gated on the ecs_task sync-run status), a non-succeeded sync renders a state-specific caption (failed = stale-data note, partial, in-progress), and pre-sync data reads 'not collected yet'.
 :::
 
 <Screenshot src="/screenshots/compute/ecs.png" alt="ECS" />
@@ -31,7 +31,7 @@ Table columns:
 | Instances | Number of registered container instances |
 | MTD Cost ($) | Month-to-date cost |
 
-Detail panel: Identity (Name, Account, Region, ARN) / Tasks & Services / Config (Settings, Container Insights, etc.) / Tags sections.
+Detail panel: Identity (Name, Account, Region, ARN) / Tasks & Services / Config (Settings, Container Insights, etc.) / Tags sections — Settings render as per-item label–value rows (e.g. containerInsights disabled).
 
 ### ECS Services (`/inventory/ecs_service`)
 Highlight cards show Desired/Running/Pending totals and the distinct cluster count.

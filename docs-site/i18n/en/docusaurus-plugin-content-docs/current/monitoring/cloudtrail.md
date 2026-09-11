@@ -23,7 +23,7 @@ A page for viewing CloudTrail trails and events that record API activity in your
 ### Tab Structure
 | Tab | Content |
 |-----|---------|
-| Trails | Trail list, configuration, S3 bucket |
+| Trails | Trail list, configuration, S3 bucket — the Last Delivery (UTC) column is the **most recent SUCCESSFUL delivery time** (a stale success can persist through a current failure — the failure signal is `latest_delivery_error` in the detail panel) |
 | Recent Events | Recent API events (all events) |
 | Write Events | Write events only (resource change audit) |
 
@@ -33,10 +33,10 @@ The Events and Write Events tabs load data only when clicked. This optimization 
 
 ### Trail Details
 Click on a trail row to view in the slide panel:
-- **Trail**: Name, ARN, home region, logging status, Multi-Region flag
-- **Storage**: S3 bucket, prefix, SNS topic, KMS key
-- **CloudWatch**: Log group, IAM role, last delivery time
-- **Validation**: Log file validation, last delivery time
+- **Identity**: Name, ARN, account, region, home region
+- **Logging**: Logging status, multi-region/organization trail, log file validation, start/stop logging times, and the last delivery time AND delivery error for S3, CloudWatch Logs, and digest each (`latest_delivery_error` etc. — the delivery-FAILURE signal lives here)
+- **Storage**: S3 bucket/prefix, log group, CW Logs IAM role
+- **Security**: KMS key, SNS topic, event/insight selectors
 - **Tags**: Resource tags
 
 ### Event Details

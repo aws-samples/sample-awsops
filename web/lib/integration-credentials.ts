@@ -58,7 +58,24 @@ async function readMap(): Promise<Record<string, unknown>> {
  *  writes can't clobber each other. The mutator edits the map in place; size is checked before PUT. */
 async function mutateCredentialMap(
   mutate: (map: Record<string, unknown>) => void,
+  q?: { query: (text: string, values?: unknown[]) => Promise<unknown> },
 ): Promise<void> {
+  // Caller-supplied client (PR #286 round-12): withDatasourceLock's span already holds a
+  // pooled client inside a transaction — taking the credential lock on that SAME connection
+  // avoids a second pool checkout (max:3 — a second checkout per PATCH let concurrent admin
+  // edits exhaust the pool against themselves). Lock ordering stays acyclic: the manage span
+  // takes ds-manage:<id> then LOCK_KEY; nothing takes LOCK_KEY then ds-manage.
+  if (q) {
+    await q.query('SELECT pg_advisory_xact_lock($1)', [LOCK_KEY]);
+    const map = await readMap();
+    mutate(map);
+    const payload = JSON.stringify(map);
+    if (Buffer.byteLength(payload, 'utf8') > MAX_SECRET_PAYLOAD_BYTES) {
+      throw new Error('integration credentials payload exceeds size limit');
+    }
+    await client().send(new PutSecretValueCommand({ SecretId: SECRET_NAME, SecretString: payload }));
+    return; // BEGIN/COMMIT/ROLLBACK are owned by the outer span
+  }
   const c = await getPool().connect();
   try {
     await c.query('BEGIN');
@@ -142,22 +159,24 @@ function assertPositiveId(id: number): void {
 export async function setIntegrationCredentialById(
   id: number,
   secretObj: Record<string, unknown>,
+  q?: { query: (text: string, values?: unknown[]) => Promise<unknown> },
 ): Promise<void> {
   assertPositiveId(id);
   await mutateCredentialMap((map) => {
     map[String(id)] = secretObj;
-  });
+  }, q);
 }
 
 /** Write the managed default-mirror under the plain `kind` key (agent gateway no-inline path). */
 export async function mirrorDefaultCredential(
   kind: string,
   secretObj: Record<string, unknown>,
+  q?: { query: (text: string, values?: unknown[]) => Promise<unknown> },
 ): Promise<void> {
   assertKnownSlug(kind);
   await mutateCredentialMap((map) => {
     map[kind] = secretObj;
-  });
+  }, q);
 }
 
 /** Resolve an instance's credential: the id entry, else the kind mirror (fallback), else null.

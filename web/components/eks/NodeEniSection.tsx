@@ -15,6 +15,16 @@ interface NodeEni {
 
 const mb = (v: number | null | undefined) => (v == null ? '—' : `${(v / 1024 / 1024).toFixed(1)} MB`);
 const cnt = (v: number | null | undefined) => (v == null ? '—' : Math.round(v).toLocaleString());
+// v1-parity rate view (gap L228): the tiles carried only the cumulative sum; v1 showed
+// avg bytes + packet-rate. Derived as sum ÷ 3600 over the newest COMPLETE hour bucket (the
+// route requests completeBuckets — a partial current-hour Sum ÷ 3600 understates ~12× just
+// past the hour; metrics.ts perSecond precedent). null in → null out (no fabricated 0/s).
+const rateBytes = (v: number | null | undefined) => {
+  if (v == null) return null;
+  const r = v / 3600;
+  return r >= 1024 * 1024 ? `${(r / 1024 / 1024).toFixed(2)} MB/s` : r >= 1024 ? `${(r / 1024).toFixed(1)} KB/s` : `${r.toFixed(1)} B/s`;
+};
+const ratePkts = (v: number | null | undefined) => (v == null ? null : `${(v / 3600).toFixed(1)}/s`);
 
 /** 노드 ENI 패널 (v1 parity): 노드의 EC2 네트워크 인터페이스 + IP 용량 — 동기화된 ec2 행에서 매칭. */
 export default function NodeEniSection({ nodeName }: { nodeName: string }) {
@@ -48,11 +58,17 @@ export default function NodeEniSection({ nodeName }: { nodeName: string }) {
             <span> · ENI {d.eniCount}{d.maxEnis ? ` / max ${d.maxEnis}` : ''} · {tt(`IP ${d.totalIps}개`)}</span>
           </p>
           {d.traffic && (
-            <div className="mb-2 grid grid-cols-4 gap-2" title="인스턴스 트래픽 (1h 누적) — CloudWatch에 ENI별 메트릭은 없어 인스턴스 레벨로 표시">
-              {([['In', mb(d.traffic.netIn)], ['Out', mb(d.traffic.netOut)], ['Pkts In', cnt(d.traffic.pktIn)], ['Pkts Out', cnt(d.traffic.pktOut)]] as const).map(([l, v]) => (
+            <div className="mb-2 grid grid-cols-4 gap-2" title="인스턴스 트래픽 — 완결된 직전 1시간 버킷의 누적 + 평균 rate (진행 중 부분 버킷 아님); CloudWatch에 ENI별 메트릭은 없어 인스턴스 레벨로 표시">
+              {([
+                ['In', mb(d.traffic.netIn), rateBytes(d.traffic.netIn)],
+                ['Out', mb(d.traffic.netOut), rateBytes(d.traffic.netOut)],
+                ['Pkts In', cnt(d.traffic.pktIn), ratePkts(d.traffic.pktIn)],
+                ['Pkts Out', cnt(d.traffic.pktOut), ratePkts(d.traffic.pktOut)],
+              ] as const).map(([l, v, rate]) => (
                 <div key={l} className="rounded-md border border-ink-100 bg-paper-muted/40 px-2 py-1.5">
                   <div className="text-[10px] uppercase tracking-[0.04em] text-ink-400">{l}</div>
                   <div className="tabular text-[12.5px] font-medium text-ink-700">{v}</div>
+                  {rate && <div className="tabular text-[10.5px] text-ink-400">{tt('평균')} {rate}</div>}
                 </div>
               ))}
             </div>

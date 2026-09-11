@@ -21,7 +21,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | 标签页 | 资源 | 主要信息 |
 |---|--------|----------|
 | **VPCs** | Virtual Private Cloud | CIDR、租户模式、DNS 设置 |
-| **Subnets** | 子网 | AZ、CIDR、公有/私有 |
+| **Subnets** | 子网 | AZ、CIDR、公有/私有、按 VPC 的子网数量柱状图 |
 | **Security Groups** | 安全组 | 入站/出站规则 |
 | **Route Tables** | 路由表 | 路由、子网关联 |
 | **Transit Gateway** | TGW | VPC 连接、路由表 |

@@ -341,17 +341,29 @@ class TestTempoCatalogHash:
 def test_non_tempo_truncation_still_invalidates_catalogs(monkeypatch, kind, schema, card_key):
     monkeypatch.setenv("DIAG_SIGNAL_QUERYGEN_ENABLED", "false")
     monkeypatch.setenv("GRAPH_QUERYGEN_ENABLED", "false")
-    before = FakeConn(kind=kind, schema={**schema, "truncated": False})
+    before_schema = {**schema, "truncated": False}
+    after_schema = {**schema, "truncated": True}
+    before = FakeConn(kind=kind, schema=before_schema)
     dsi.run({"integration_id": 7, "kind": kind}, before)
-    after = FakeConn(kind=kind, schema={**schema, "truncated": True},
+    after = FakeConn(kind=kind, schema=after_schema,
                      existing_version=before.inserts[0]["sv"],
                      existing_graph_version=before.graph_inserts[0]["sv"],
                      existing_card_version=before.card_inserts[0]["sv"])
+    monkeypatch.setattr(dsi, "_reintrospect", lambda kind, iid: after_schema)
     out = dsi.run({"integration_id": 7, "kind": kind}, after)
     assert "error" not in out
-    assert after.inserts and after.graph_inserts and after.card_inserts
-    card = next(p for p in after.card_inserts if p["ck"] == card_key)
-    assert card["st"] == ("ready" if kind == "loki" else "unknown")
+    assert after.inserts and after.graph_inserts
+    assert dsi._card_schema_version(kind, before_schema) != dsi._card_schema_version(kind, after_schema)
+    if kind in ("prometheus", "mimir"):
+        # The hash changes, but fresh indeterminate evidence must retain the prior
+        # card set rather than replace it with unknown rows.
+        assert out["cards_skipped"] is True
+        assert out["cards_skip_reason"] == "schema_indeterminate"
+        assert after.card_inserts == after.card_deletes == []
+    else:
+        assert after.card_inserts
+        card = next(p for p in after.card_inserts if p["ck"] == card_key)
+        assert card["st"] == ("ready" if kind == "loki" else "unknown")
 
 
 class TestEmptyVsError:
@@ -1532,6 +1544,16 @@ class TestLambdaInvokeEnvelopeValidation:
         self._stub_boto3(monkeypatch, {"Payload": io.BytesIO(body)})
         assert dsi._lambda_invoke("prometheus", "prometheus_schema") == {"metrics": ["up"]}
 
+    def test_error_statuscode_with_plain_text_body_raises_connector_error(self, monkeypatch):
+        """A >=400 envelope whose body is NOT JSON must still surface as ConnectorInvokeError (so the
+        card classifier can see the text), never as a ValueError from the body parse (review MINOR)."""
+        import io
+        body = json.dumps({"statusCode": 502, "body": "upstream gateway timed out"}).encode()
+        self._stub_boto3(monkeypatch, {"Payload": io.BytesIO(body)})
+        with pytest.raises(dsi.ConnectorInvokeError) as ei:
+            dsi._lambda_invoke("prometheus", "prometheus_query")
+        assert "upstream gateway timed out" in str(ei.value)
+
 
 # ── M2 regression: flipping GRAPH_QUERYGEN_ENABLED must force a graph-query rebuild ─────────────────
 class TestGraphSchemaVersionMixesInQuerygenFlag:
@@ -1573,15 +1595,26 @@ class TestGraphSchemaVersionMixesInQuerygenFlag:
 
 # ── MINOR fix regression: 256KB write-back cap must not sink the whole job ──────────────────────────
 class TestSchemaWriteBackSizeCap:
-    def test_oversized_fresh_schema_is_used_for_this_run_but_not_persisted(self, monkeypatch):
+    def test_oversized_metric_schema_is_persisted_as_a_bounded_truncated_copy(self, monkeypatch):
+        # The shared writer trims an over-limit METRIC schema (interleaved, `truncated`) instead of
+        # leaving the stale row — same fallback the BFF's upsertSchema gives every other writer.
         huge = {"metrics": [f"metric_{i}" for i in range(50_000)]}  # comfortably over 256KB serialized
         assert len(json.dumps(huge).encode("utf-8")) > 256_000
         monkeypatch.setattr(dsi, "_reintrospect", lambda kind, iid: huge)
         c = FakeConn(existing_version="STALE")
         out = dsi.run({"integration_id": 7, "kind": "prometheus"}, c)
+        assert "schema_cache_skipped" not in out
+        assert len(c.schema_writes) == 1
+        assert out.get("built") == 8           # rebuilt from the FULL fresh schema (the trim is cache-only)
+        assert not out.get("error")
+
+    def test_oversized_untrimmable_schema_is_used_for_this_run_but_not_persisted(self, monkeypatch):
+        huge = {"blob": "x" * 300_000}
+        monkeypatch.setattr(dsi, "_reintrospect", lambda kind, iid: huge)
+        c = FakeConn(existing_version="STALE")
+        out = dsi.run({"integration_id": 7, "kind": "prometheus"}, c)
         assert out.get("schema_cache_skipped") == "oversized"
         assert c.schema_writes == []          # never persisted
-        assert out.get("built") == 8           # still rebuilt from the fresh (just-not-cached) schema
         assert not out.get("error")
 
 
@@ -1855,15 +1888,216 @@ class TestCarriedGeneratedRowIsLiveVerified:
 
 # ── Dashboard cards (2026-08-28): third pre-built-content family — deterministic only ──────────────
 class TestDashboardCards:
+    @pytest.fixture(autouse=True)
+    def _card_validation_success(self, monkeypatch):
+        monkeypatch.setattr(dsi, "_lambda_invoke", lambda kind, tool, arguments=None: {})
+
     def test_prometheus_builds_cards_alongside_signals_and_graph(self):
         c = FakeConn(kind="prometheus", schema={"metrics": ["up", "node_cpu_seconds_total"]})
         out = dsi.run({"integration_id": 7, "kind": "prometheus"}, c)
-        assert out.get("cards_built") == 5
-        assert out.get("cards_ready") == 2  # up_targets + cpu_usage
+        assert out.get("cards_built") == 13
+        assert out.get("cards_ready") == 4  # up/down targets + aggregate CPU + node CPU Top5
         keys = {p["ck"] for p in c.card_inserts}
         assert {"up_targets", "cpu_usage", "memory_available"} <= keys
         # sweep against exactly the written keys
         assert c.card_deletes and set(c.card_deletes[0]["keep"]) == keys
+
+    def test_ready_prometheus_cards_are_live_validated_before_upsert(self, monkeypatch):
+        calls = []
+
+        def invoke(kind, tool, arguments=None):
+            calls.append((kind, tool, arguments))
+            return {"resultType": "vector", "result": []}
+
+        monkeypatch.setattr(dsi, "_lambda_invoke", invoke)
+        c = FakeConn(kind="prometheus", schema={"metrics": ["up"]})
+        out = dsi.run({"integration_id": 7, "kind": "prometheus"}, c)
+
+        assert out["cards_validated"] == 2
+        # filter to the QUERY tools — run() may also invoke prometheus_schema (re-introspection)
+        # through the same mock depending on gating; that call is not part of card validation.
+        qcalls = [(k, t, a) for k, t, a in calls if t in ("prometheus_query", "prometheus_query_range")]
+        assert len(qcalls) == 2
+        assert all(kind == "prometheus" for kind, _, _ in qcalls)
+        assert all(args["instance_id"] == 7 and args["timeout"] == "5s" for _, _, args in qcalls)
+        assert c.card_inserts  # registration happens after every ready query validates
+
+    def test_conclusive_card_query_error_registers_the_card_unavailable(self, monkeypatch):
+        def invoke(kind, tool, arguments=None):
+            if arguments.get("query") == "sum(up)":
+                raise RuntimeError("Prometheus query failed (bad_data): parse error")
+            return {"resultType": "vector", "result": []}
+
+        monkeypatch.setattr(dsi, "_lambda_invoke", invoke)
+        c = FakeConn(kind="prometheus", schema={"metrics": ["up"]})
+        out = dsi.run({"integration_id": 7, "kind": "prometheus"}, c)
+
+        row = next(p for p in c.card_inserts if p["ck"] == "up_targets")
+        assert row["st"] == "unavailable"
+        assert row["q"] is None
+        assert "query validation failed" in row["mi"]
+        assert out["cards_invalid"] == 1
+
+    def test_http_422_without_conclusive_body_text_is_transient_not_conclusive(self, monkeypatch):
+        # Prometheus/Mimir return 422 for execution-LIMIT errors (too many samples,
+        # max-fetched-series) — load-dependent, NOT a property of the expression. A bare 422 with
+        # no conclusive body phrase must abort the rebuild (prior cards preserved), never disable.
+        monkeypatch.setattr(dsi, "_reintrospect", lambda kind, iid: {"metrics": ["up"]})
+        monkeypatch.setattr(
+            dsi,
+            "_lambda_invoke",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError(
+                "Prometheus HTTP 422: query processing would load too many samples into memory"
+            )),
+        )
+        c = FakeConn(kind="prometheus", schema={"metrics": ["up"]}, existing_card_version="old")
+        out = dsi.run({"integration_id": 7, "kind": "prometheus"}, c)
+        assert c.card_inserts == []
+        assert "cards_error" in out
+
+    def test_conclusive_body_text_on_a_422_is_still_conclusive(self, monkeypatch):
+        def invoke(kind, tool, arguments=None):
+            if arguments.get("query") == "sum(up)":
+                raise RuntimeError(
+                    "Prometheus HTTP 422: invalid parameter \"query\": 1:5: parse error: unexpected token"
+                )
+            return {"resultType": "vector", "result": []}
+
+        monkeypatch.setattr(dsi, "_lambda_invoke", invoke)
+        c = FakeConn(kind="prometheus", schema={"metrics": ["up"]})
+        out = dsi.run({"integration_id": 7, "kind": "prometheus"}, c)
+
+        row = next(p for p in c.card_inserts if p["ck"] == "up_targets")
+        assert row["st"] == "unavailable"
+        assert out["cards_invalid"] == 1
+        assert "cards_error" not in out
+
+    def test_range_cards_are_validated_through_the_range_tool_the_ui_executes(self, monkeypatch):
+        calls = []
+
+        def invoke(kind, tool, arguments=None):
+            calls.append((tool, dict(arguments or {})))
+            return {"resultType": "matrix", "result": []}
+
+        monkeypatch.setattr(dsi, "_lambda_invoke", invoke)
+        c = FakeConn(kind="prometheus", schema={
+            "metrics": ["up", "node_cpu_seconds_total", "node_memory_MemAvailable_bytes"]})
+        dsi.run({"integration_id": 7, "kind": "prometheus"}, c)
+        by_tool = {}
+        for tool, args in calls:
+            by_tool.setdefault(tool, []).append(args)
+        # instant cards (range: None) validate via the instant tool; range cards via query_range
+        assert "prometheus_query" in by_tool and "prometheus_query_range" in by_tool
+        rng = by_tool["prometheus_query_range"][0]
+        assert {"start", "end", "step"} <= set(rng)
+        assert int(rng["end"]) - int(rng["start"]) == 3600 and rng["step"] == "60"
+        assert all("start" not in a for a in by_tool["prometheus_query"] if a.get("query") == "sum(up)")
+
+    def test_validation_failed_cards_are_revalidated_next_run_via_vfail_hash_marker(self, monkeypatch):
+        def invoke(kind, tool, arguments=None):
+            if arguments.get("query") == "sum(up == bool 0)":
+                raise RuntimeError("Prometheus query failed (bad_data): parse error")
+            return {"resultType": "vector", "result": []}
+
+        monkeypatch.setattr(dsi, "_lambda_invoke", invoke)
+        c = FakeConn(kind="prometheus", schema={"metrics": ["up"]})
+        out = dsi.run({"integration_id": 7, "kind": "prometheus"}, c)
+        assert out["cards_invalid"] == 1
+        stored = c.card_inserts[0]["sv"]
+        assert stored.endswith(":vfail1")
+        # identical schema next run: the stored vfail-marked version can never equal the computed
+        # hash, so the rebuild runs again and the card gets revalidated (self-healing).
+        assert dsi._card_schema_version("prometheus", {"metrics": ["up"]}) != stored
+
+    def test_transient_card_validation_preserves_existing_cards(self, monkeypatch):
+        monkeypatch.setattr(dsi, "_reintrospect", lambda kind, iid: {"metrics": ["up"]})
+        monkeypatch.setattr(
+            dsi,
+            "_lambda_invoke",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("Prometheus HTTP 503: unavailable")),
+        )
+        c = FakeConn(kind="prometheus", schema={"metrics": ["up"]}, existing_card_version="old")
+        out = dsi.run({"integration_id": 7, "kind": "prometheus"}, c)
+
+        assert out["cards_error"] == "card validation unavailable"
+        assert c.card_inserts == []
+        assert c.card_deletes == []
+
+    def test_failed_live_introspection_preserves_existing_prometheus_cards(self, monkeypatch):
+        monkeypatch.setattr(dsi, "_reintrospect", lambda kind, iid: None)
+        c = FakeConn(
+            kind="prometheus",
+            schema={"metrics": ["up"], "truncated": False},
+            existing_card_version="last-good",
+        )
+
+        out = dsi.run({"integration_id": 7, "kind": "prometheus"}, c)
+
+        assert out["introspect_error"] == "introspect_failed"
+        assert out["cards_skipped"] is True
+        assert out["cards_skip_reason"] == "introspection_failed"
+        assert c.card_inserts == []
+        assert c.card_deletes == []
+
+    def test_unrelated_prometheus_metric_drift_skips_card_revalidation(self, monkeypatch):
+        calls = []
+
+        def invoke(kind, tool, arguments=None):
+            calls.append((kind, tool, arguments))
+            return {"resultType": "vector", "result": []}
+
+        monkeypatch.setattr(dsi, "_lambda_invoke", invoke)
+        c0 = FakeConn(kind="prometheus", schema={"metrics": ["up"]})
+        first = dsi._rebuild_dashboard_cards(c0, wdb, 7, "prometheus", {"metrics": ["up"]})
+        version = c0.card_inserts[0]["sv"]
+        assert first["cards_validated"] == 2
+
+        calls.clear()
+        c = FakeConn(
+            kind="prometheus",
+            schema={"metrics": ["up", "unrelated_application_metric_total"]},
+            existing_card_version=version,
+        )
+        out = dsi._rebuild_dashboard_cards(
+            c,
+            wdb,
+            7,
+            "prometheus",
+            {"metrics": ["up", "unrelated_application_metric_total"]},
+        )
+
+        assert out["cards_skipped"] is True
+        assert calls == []
+        assert c.card_inserts == []
+
+    def test_indeterminate_truncated_schema_preserves_existing_cards(self, monkeypatch):
+        monkeypatch.setattr(
+            dsi,
+            "_lambda_invoke",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not validate unknown cards")),
+        )
+        c = FakeConn(
+            kind="prometheus",
+            schema={"metrics": [], "probed": [], "truncated": True},
+            existing_card_version="last-good",
+        )
+
+        out = dsi._rebuild_dashboard_cards(
+            c,
+            wdb,
+            7,
+            "prometheus",
+            {"metrics": [], "probed": [], "truncated": True},
+        )
+
+        assert out == {"cards_skipped": True, "cards_skip_reason": "schema_indeterminate"}
+        assert c.card_inserts == []
+        assert c.card_deletes == []
+
+    def test_prometheus_backend_version_changes_card_validation_hash(self):
+        before = dsi._card_schema_version("prometheus", {"metrics": ["up"], "version": "2.48.0"})
+        after = dsi._card_schema_version("prometheus", {"metrics": ["up"], "version": "2.49.0"})
+        assert before != after
 
     def test_card_build_skips_when_hash_unchanged(self):
         c0 = FakeConn(kind="tempo", schema={"tags": []})

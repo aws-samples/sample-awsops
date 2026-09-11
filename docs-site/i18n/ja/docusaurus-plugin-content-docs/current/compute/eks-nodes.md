@@ -18,7 +18,7 @@ Kubernetes ノードの容量、割り当て可能リソース、Pod のリク�
 - **Total Nodes**: ノードの総数(シアン)
 - **Ready**: Ready 状態のノード数(緑)
 - **Total CPU**: 全体の vCPU 容量の合計(紫)
-- **Total Memory**: 全体のメモリ容量の合計(オレンジ)
+- **Total Memory**: 全体のメモリ容量の合計(オレンジ) — allocatable 合計と reserved %（Capacity − Allocatable）をヒントとして併記（allocatable が未報告の場合はヒント省略）
 
 ### CPU Usage per Node チャート
 ノード別の CPU リソースの状態を 3 段階の棒グラフで表示:
@@ -50,6 +50,9 @@ Kubernetes ノードの容量、割り当て可能リソース、Pod のリク�
 | Allocatable CPU | 割り当て可能な CPU |
 | Allocatable Memory | 割り当て可能なメモリ |
 | Created | 作成時刻 |
+
+### ノードドリルダウン Pods テーブル
+ノードをクリックすると、そのノードにスケジュールされた Pods テーブルが開きます — Namespace / Pod / Status / Owner / **Pod IP** / **Service Account** / Restarts / CPU / Mem / Age 列（不明の場合は「-」。例: 終了した Pod には IP がありません）。
 
 ## リソースの概念を理解する
 

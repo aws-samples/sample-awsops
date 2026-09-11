@@ -11,7 +11,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ECS クラスター、サービス、タスクの状態を監視できるページです。
 
 :::info v2 での提供方法
-v1 ではクラスター/サービス/タスクを 1 ページで統合監視していましたが、**v2 ではこれを 3 つの独立したインベントリルートに分割**しています — `/inventory/ecs_cluster`、`/inventory/ecs_service`、`/inventory/ecs_task`。サイドバーでは「コンピュート」グループの下に 3 項目としてまとめられているだけで、それぞれ独立したテーブル・フィルター・詳細パネルを持つ別々のページです。以下の内容は v1 の統合ページではなく、この 3 ルート構成に基づいています。
+v1 ではクラスター/サービス/タスクを 1 ページで統合監視していました。v2 は 3 つの独立したインベントリルート（`/inventory/ecs_cluster`、`/inventory/ecs_service`、`/inventory/ecs_task` — それぞれ独立したテーブル・フィルター・詳細パネル）を基本とし、これに**統合概要ページ `/inventory/ecs`**（サイドバー「ECS 概要」）が加わり、サマリー KPI（クラスタ/サービス/タスク数 + Desired 未達タスク）、クラスタテーブル、サービステーブルを 1 画面で表示します。概要は読み取り専用のグランスレイヤーです — 検索/ファセット/詳細は 3 つのタイプページにあり、各テーブルヘッダーの「すべて表示」から移動できます。500 行以上はサンプル表記（サンプル、またはサービス sync の直近 run が成功状態でない場合は、サービス由来の running/desired・未達タスク集計を保留します。タスク数 KPI は別途 summary の全量集計で、ecs_task の sync run 状態でゲートされます）、sync が成功状態でない場合は状態別の注記（失敗=古いデータの注記、部分収集、実行中）、未収集時は「未収集」と表示されます。
 :::
 
 <Screenshot src="/screenshots/compute/ecs.png" alt="ECS" />
@@ -31,7 +31,7 @@ v1 ではクラスター/サービス/タスクを 1 ページで統合監視し
 | Instances | 登録済みコンテナインスタンス数 |
 | MTD Cost ($) | 月初来累計コスト |
 
-詳細パネル: Identity(Name、Account、Region、ARN)/ Tasks & Services / Config(Settings、Container Insights など)/ Tags の各セクション。
+詳細パネル: Identity(Name、Account、Region、ARN)/ Tasks & Services / Config(Settings、Container Insights など)/ Tags の各セクション。Settings は項目ごとのラベル–値の行（例: containerInsights disabled）で表示されます。
 
 ### ECS Services (`/inventory/ecs_service`)
 ハイライトカードは Desired/Running/Pending の合計と、クラスターの distinct 数を表示します。

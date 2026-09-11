@@ -1,3 +1,10 @@
 domain_name      = "v2.example.com"
 hosted_zone_name = "example.com"
 # vpc_cidr       = "10.20.0.0/16"   # uncomment to override
+
+# Optional Steampipe AWS API limiter and inventory-sync Lambda backpressure overrides.
+# steampipe_aws_max_concurrency      = 4
+# steampipe_aws_bucket_size          = 4
+# steampipe_aws_fill_rate            = 2
+# steampipe_sync_reserved_concurrency = 4
+# inventory_stale_after_minutes       = 30

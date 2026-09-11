@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import time
 
 import boto3
 
@@ -39,6 +40,12 @@ try:  # fargate/tests: package path; lambda worker zip flattens it to signal_cat
     from diagnosis import signal_catalog_gen as _signal_gen
 except ImportError:
     import signal_catalog_gen as _signal_gen  # flattened in the worker_src lambda bundle
+
+
+class ConnectorInvokeError(RuntimeError):
+    def __init__(self, kind, tool, status, detail):
+        self.kind, self.tool, self.status = kind, tool, status
+        super().__init__(f"{kind}-mcp {tool} returned statusCode {status}: {str(detail)[:300]}")
 
 
 def _read_cached_schema(conn, integration_id):
@@ -87,11 +94,20 @@ def _lambda_invoke(kind, tool, arguments=None):
     raw = resp["Payload"].read()
     out = json.loads(raw) if raw else {}
     status = out.get("statusCode")
-    if isinstance(status, int) and status >= 400:
-        raise RuntimeError(f"{kind}-mcp {tool} returned statusCode {status}")
     body = out.get("body")
     if isinstance(body, str):
-        body = json.loads(body)
+        try:
+            body = json.loads(body)
+        except ValueError:
+            # A >=400 envelope may carry a plain-text body — that must still surface as a
+            # ConnectorInvokeError (so the caller's classifier sees it), not a ValueError.
+            if isinstance(status, int) and status >= 400:
+                raise ConnectorInvokeError(kind, tool, status, body[:300])
+            raise
+    if isinstance(status, int) and status >= 400:
+        detail = (body.get("error") if isinstance(body, dict) else None) or (
+            body if isinstance(body, str) and body else "connector error")
+        raise ConnectorInvokeError(kind, tool, status, detail)
     return body
 
 
@@ -201,22 +217,126 @@ def _graph_schema_version(schema):
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
 
 
-def _card_schema_version(schema):
-    """Stable cross-process hash of the catalog schema projection + card_catalog.CARD_CATALOG_VERSION.
-    No feature flag is mixed in — cards are deterministic-only (no LLM/generation mode to toggle),
-    so only a catalog dependency change or a catalog edit should force a rebuild."""
-    basis = (json.dumps(_canon(schema), sort_keys=True, separators=(",", ":"))
+def _card_schema_version(kind, schema):
+    """Stable hash of only the schema facts the card catalog consumes + its catalog version.
+
+    Prometheus/Mimir schemas commonly drift as unrelated application metrics appear/disappear. Hashing
+    the full metric list made each such drift re-run every ready card against the shared connector
+    Lambda and monitoring backend. Their cards depend only on required-metric presence/probe state and
+    truncation, so keep unrelated metric churn out of the rebuild key. Tempo retains only whether
+    introspection succeeded; its intrinsic cards do not consume schema content. Other kinds retain
+    the full canonical schema because their card matching consumes labels/tables/columns directly.
+    """
+    if kind in ("prometheus", "mimir"):
+        metrics = {m for m in (schema.get("metrics") or []) if isinstance(m, str)}
+        probed = {m for m in (schema.get("probed") or []) if isinstance(m, str)}
+        required = {}
+        for metric in _card_cat.required_metrics():
+            if metric in metrics:
+                required[metric] = "present"
+            elif metric in probed:
+                required[metric] = "probed_absent"
+            else:
+                required[metric] = "unprobed_absent"
+        version_input = {
+            "kind": kind,
+            "required_metrics": required,
+            "truncated": bool(schema.get("truncated")),
+            "version": schema.get("version") if isinstance(schema.get("version"), str) else None,
+        }
+    else:
+        version_input = {"kind": kind, "schema": _canon(_catalog_hash_schema(kind, schema))}
+    basis = (json.dumps(version_input, sort_keys=True, separators=(",", ":"))
              + "|" + _card_cat.CARD_CATALOG_VERSION)
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
 
 
-def _rebuild_dashboard_cards(conn, wdb, iid, kind, schema):
+def _card_schema_indeterminate(kind, schema):
+    """True when a truncated Prometheus/Mimir schema cannot decide at least one card requirement."""
+    if kind not in ("prometheus", "mimir") or not schema.get("truncated"):
+        return False
+    decided = {
+        m for m in (schema.get("metrics") or []) if isinstance(m, str)
+    } | {
+        m for m in (schema.get("probed") or []) if isinstance(m, str)
+    }
+    return any(metric not in decided for metric in _card_cat.required_metrics())
+
+
+# NOTE: this classifies on UPSTREAM-controlled error text — a hostile backend can steer a card
+# to disable-or-preserve, but the impact is availability-only and self-heals via the :vfail marker.
+# Conclusive = the BODY-derived error text Prometheus/Mimir attach to expression-level failures
+# (the connector's _ApiError embeds data["error"]). Deliberately NO blanket HTTP 400/422 match:
+# both backends return 422 for execution-LIMIT errors (too many samples, max-fetched-series),
+# which depend on load/cardinality, not the expression — those must stay transient.
+_CARD_QUERY_ERROR_RE = re.compile(
+    r"\b(?:bad_data|parse error|unexpected (?:end|token)|unknown function|"
+    r"invalid (?:parameter|query)|could not parse)\b",
+    re.IGNORECASE,
+)
+
+
+def _validate_dashboard_cards(kind, iid, rows):
+    """Live-validate ready Prometheus/Mimir card queries before they become registered rows.
+
+    Conclusive PromQL errors make only that card unavailable. A connector/network failure aborts
+    the whole card rebuild before BEGIN, preserving the prior card set and schema version.
+    Empty successful results are valid — this is syntax/execution validation, not a data-presence gate.
+    """
+    if kind not in ("prometheus", "mimir"):
+        return list(rows), 0, 0
+    out, validated, invalid = [], 0, 0
+    for row in rows:
+        card = dict(row)
+        query = card.get("query") if card.get("status") == "ready" else None
+        if not isinstance(query, dict) or not query.get("expr"):
+            out.append(card)
+            continue
+        validated += 1
+        # Validate through the SAME tool the UI executes (web api/datasources/query switches to the
+        # range tool whenever the stored card carries a `range`): a range-only failure must not
+        # register the card ready. Tool derived from kind (never from row data — no tool selector).
+        rng = query.get("range") if isinstance(query.get("range"), dict) else None
+        args = {"instance_id": iid, "query": query["expr"], "timeout": "5s"}
+        if rng:
+            now = int(time.time())
+            window = int(rng.get("window") or 3600)
+            args.update(start=str(now - window), end=str(now), step=str(rng.get("step") or 60))
+        try:
+            _lambda_invoke(kind, f"{kind}_query_range" if rng else f"{kind}_query", args)
+        except Exception as e:  # noqa: BLE001 — classify conclusive query errors vs transient connector failures
+            if not _CARD_QUERY_ERROR_RE.search(str(e)):
+                raise RuntimeError("card validation unavailable") from e
+            invalid += 1
+            card["status"] = "unavailable"
+            card["query"] = None
+            card["missing"] = list(card.get("missing") or []) + ["query validation failed"]
+        out.append(card)
+    return out, validated, invalid
+
+
+def _rebuild_dashboard_cards(conn, wdb, iid, kind, schema, schema_fresh=True):
     """Third pre-built family (dashboard cards) — mirrors _rebuild_graph_queries: schema-hash skip,
     atomic upsert+sweep. Deterministic only; an empty build writes the version sentinel (db.py)."""
-    version = _card_schema_version(_catalog_hash_schema(kind, schema))
-    if wdb.read_card_schema_version(conn, iid) == version:
+    existing_version = wdb.read_card_schema_version(conn, iid)
+    if kind in ("prometheus", "mimir") and not schema_fresh and existing_version is not None:
+        # A failed live introspection makes cached metric presence stale by definition. PromQL returns
+        # an empty success for removed metrics, so query validation cannot prove the cache is current.
+        return {"cards_skipped": True, "cards_skip_reason": "introspection_failed"}
+    if existing_version is not None and _card_schema_indeterminate(kind, schema):
+        # A transient/partial bulk-name failure must not replace a previously validated card set
+        # with all-unknown rows. Keep the last-good version until requirements are definitive again.
+        return {"cards_skipped": True, "cards_skip_reason": "schema_indeterminate"}
+    version = _card_schema_version(kind, schema)
+    if existing_version == version:
         return {"cards_skipped": True}
     rows = _card_cat.build_cards(kind, schema)
+    rows, validated, invalid = _validate_dashboard_cards(kind, iid, rows)
+    if invalid:
+        # Self-healing: a validation-disabled card must not be permanent. Storing the version with a
+        # `:vfail` marker guarantees the NEXT run's computed hash differs → rebuild + revalidate daily
+        # until every card validates clean (a misclassified limit-class error heals on its own).
+        version = f"{version}:vfail{invalid}"
     conn.run("BEGIN")
     try:
         written = wdb.upsert_dashboard_cards(conn, iid, rows, version)
@@ -225,7 +345,12 @@ def _rebuild_dashboard_cards(conn, wdb, iid, kind, schema):
     except Exception:
         conn.run("ROLLBACK")
         raise
-    return {"cards_built": len(rows), "cards_ready": sum(1 for r in rows if r["status"] == "ready")}
+    return {
+        "cards_built": len(rows),
+        "cards_ready": sum(1 for r in rows if r["status"] == "ready"),
+        "cards_validated": validated,
+        "cards_invalid": invalid,
+    }
 
 
 _MAX_GENERATION_ATTEMPTS = 3   # TOTAL tries per instance PER ISO WEEK, retries included
@@ -746,8 +871,9 @@ def run(payload, conn):
                 try:
                     wdb.upsert_datasource_schema(conn, acct, iid, kind, fresh)
                 except ValueError:
-                    # oversized schema (256KB cap, mirrors the BFF) — still USE it for this run's
-                    # rebuild below, just don't persist it; the cache keeps the last-good schema.
+                    # oversized AND untrimmable schema (256KB cap, mirrors the BFF; trimmable
+                    # tables/metrics shapes are stored bounded by the writer itself) — still USE it
+                    # for this run's rebuild below, just don't persist it; the cache keeps last-good.
                     out["schema_cache_skipped"] = "oversized"
             schema = fresh
         else:
@@ -761,7 +887,8 @@ def run(payload, conn):
         out.update(_rebuild_graph_queries(conn, wdb, iid, kind, schema))
         try:
             # Cards are the newest family — isolate their failure so signals/graph results still land.
-            out.update(_rebuild_dashboard_cards(conn, wdb, iid, kind, schema))
+            out.update(_rebuild_dashboard_cards(
+                conn, wdb, iid, kind, schema, schema_fresh=fresh is not None))
         except Exception as e:  # noqa: BLE001 — surfaced on the job result, never sinks the run
             logging.warning("[datasource_index] integration %s card build failed: %s", iid, e)
             out["cards_error"] = str(e)[:200]

@@ -57,7 +57,7 @@ The data engine is [Steampipe](https://steampipe.io/) (embedded PostgreSQL, port
 
 ## 3. Built-in AWS resource dashboards (43 pages)
 
-**43 pages** — EC2, Lambda, ECS/ECR, EKS (Pods/Nodes/Deployments/Services/Explorer), VPC, CloudFront, WAF, EBS, S3, RDS, DynamoDB, ElastiCache, MSK, OpenSearch and more — with live charts and a React Flow topology map. MSK/RDS/ElastiCache/OpenSearch show inline CloudWatch metrics.
+**43 pages** — EC2, Lambda, ECS/ECR, EKS (Pods/Nodes/Deployments/Services/Explorer), VPC, CloudFront, WAF, EBS, S3, RDS, DynamoDB, ElastiCache, MSK, OpenSearch and more — with live charts and a React Flow topology map. MSK/RDS/ElastiCache/OpenSearch/EBS show inline CloudWatch metrics.
 
 ---
 

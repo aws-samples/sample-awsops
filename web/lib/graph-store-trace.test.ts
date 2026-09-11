@@ -7,14 +7,17 @@ vi.mock('@/lib/datasources', () => ({
 }));
 vi.mock('@/lib/mcp-lambda-invoke', () => ({ invokeMcpLambdaTool: vi.fn(async () => ({ rows: [] })) }));
 import { rebuildTraceGraph, resolveInfraRef } from './graph-store';
-import { FakeTraceSource, type TraceSpan, type ServiceGraphCall } from './trace-source';
+import { FakeTraceSource, type TraceSpan, type ServiceGraphCall, type SourceRead } from './trace-source';
 
 // In-memory MetricsCallsSource-shaped stub for tests (the interface, not the real connector-backed
 // class — mirrors FakeTraceSource's role for TraceSource).
 class FakeMetricsCallsSource {
   constructor(private readonly rows: ServiceGraphCall[], private readonly isAvailable: boolean = true) {}
   async available(): Promise<boolean> { return this.isAvailable; }
-  async calls(_windowMins: number): Promise<ServiceGraphCall[]> { return this.rows; }
+  async calls(windowMins: number, endMs = Date.now()): Promise<SourceRead<ServiceGraphCall>> {
+    return { items: this.isAvailable ? this.rows : [], status: this.isAvailable ? 'ok' : 'unavailable',
+      sourceId: 'metrics:default', reasons: [], windowStartMs: endMs - windowMins * 60_000, windowEndMs: endMs };
+  }
 }
 
 // A pool that records every client.query call (sql + params) and lets the inventory/infra SELECT
@@ -28,7 +31,9 @@ function mockPool(infraNodeRows: unknown[] = []) {
   };
   const pool = {
     // rebuildTraceGraph may query infra nodes for bridge-ref resolution
-    query: vi.fn(() => Promise.resolve({ rows: infraNodeRows })),
+    query: vi.fn((sql: string) => Promise.resolve({
+      rows: sql.includes('to_regclass') ? [{ ready: true }] : infraNodeRows,
+    })),
     connect: vi.fn(() => Promise.resolve(client)),
   };
   return { pool, client, calls, params };
@@ -56,10 +61,10 @@ describe('rebuildTraceGraph aggregation', () => {
 
     // node ids inserted
     const allParams = params.flat().map(String);
-    expect(allParams).toContain('svc:checkout');
-    expect(allParams).toContain('svc:orders');
-    expect(allParams.some((s) => s.startsWith('db:postgresql:'))).toBe(true);
-    expect(allParams).toContain('workload:shop/checkout');
+    expect(params.some((p) => p[1] === 'service' && p[2] === 'checkout')).toBe(true);
+    expect(params.some((p) => p[1] === 'service' && p[2] === 'orders')).toBe(true);
+    expect(params.some((p) => p[1] === 'db' && JSON.parse(String(p[3])).system === 'postgresql')).toBe(true);
+    expect(params.some((p) => p[1] === 'workload' && p[2] === 'shop/checkout')).toBe(true);
 
     // edges: calls (checkout→orders), queries (orders→db), runs_on (checkout→workload)
     expect(allParams).toContain('calls');
@@ -79,7 +84,7 @@ describe('rebuildTraceGraph aggregation', () => {
     const { pool, params } = mockPool();
     await rebuildTraceGraph(pool as never, [new FakeTraceSource(withCluster, true)], 'RUNC');
     // node upsert params = [id, kind, label, metaJson, runId, class]; find the workload node row.
-    const wl = params.find((p) => p[0] === 'workload:mall-apne2-az-a/shop/checkout');
+    const wl = params.find((p) => p[1] === 'workload' && JSON.parse(String(p[3])).cluster === 'mall-apne2-az-a');
     expect(wl).toBeTruthy();
     expect(JSON.parse(String(wl![3])).cluster).toBe('mall-apne2-az-a');
   });
@@ -93,8 +98,8 @@ describe('rebuildTraceGraph aggregation', () => {
     ];
     const { pool, params } = mockPool();
     await rebuildTraceGraph(pool as never, [new FakeTraceSource(twoClusters, true)], 'RUNC2');
-    const wlA = params.find((p) => p[0] === 'workload:mall-apne2-az-a/shop/checkout');
-    const wlC = params.find((p) => p[0] === 'workload:mall-apne2-az-c/shop/checkout');
+    const wlA = params.find((p) => p[1] === 'workload' && JSON.parse(String(p[3])).cluster === 'mall-apne2-az-a');
+    const wlC = params.find((p) => p[1] === 'workload' && JSON.parse(String(p[3])).cluster === 'mall-apne2-az-c');
     expect(wlA).toBeTruthy();
     expect(wlC).toBeTruthy();
     expect(JSON.parse(String(wlA![3])).cluster).toBe('mall-apne2-az-a');
@@ -107,14 +112,14 @@ describe('rebuildTraceGraph aggregation', () => {
     ];
     const { pool, params } = mockPool();
     await rebuildTraceGraph(pool as never, [new FakeTraceSource(noCluster, true)], 'RUNC3');
-    const wl = params.find((p) => p[0] === 'workload:shop/checkout');
+    const wl = params.find((p) => p[1] === 'workload' && p[2] === 'shop/checkout');
     expect(wl).toBeTruthy();
-    expect(JSON.parse(String(wl![3])).cluster).toBeUndefined();
+    expect(JSON.parse(String(wl![3])).cluster).toBeNull();
   });
 
-  it('confidence is normalized to (0,1] by the max edge count (spec contract, M3)', async () => {
+  it('records observed evidence counts without presenting volume as confidence', async () => {
     // checkout→orders twice (calls count 2), orders→postgres once (queries count 1).
-    // max edge count = 2 → calls normalizes to "1", queries to "0.5"; every confidence ∈ (0,1].
+    // Volume is stored independently from the evidence classification.
     const dup: TraceSpan[] = [
       span({ traceId: 'a', spanId: 'p1', service: 'checkout' }),
       span({ traceId: 'a', spanId: 'c1', parentSpanId: 'p1', service: 'orders' }),
@@ -127,13 +132,10 @@ describe('rebuildTraceGraph aggregation', () => {
     // edge upsert params = [source, target, rel, confidence, runId, class]; confidence is index 3.
     const callsEdge = params.find((p) => p.includes('calls'));
     const queriesEdge = params.find((p) => p.includes('queries'));
-    expect(callsEdge?.[3]).toBe('1');     // max count (2) → 1
-    expect(queriesEdge?.[3]).toBe('0.5'); // 1 / 2
-    for (const p of params.filter((x) => x.includes('calls') || x.includes('queries'))) {
-      const conf = Number(p[3]);
-      expect(conf).toBeGreaterThan(0);
-      expect(conf).toBeLessThanOrEqual(1);
-    }
+    expect(callsEdge?.[3]).toBe('observed');
+    expect(queriesEdge?.[3]).toBe('observed');
+    expect(JSON.parse(String(callsEdge?.[7]))).toEqual({ spanCount: 2, metricCount: 0 });
+    expect(JSON.parse(String(queriesEdge?.[7]))).toEqual({ spanCount: 1, metricCount: 0 });
   });
 });
 
@@ -144,25 +146,24 @@ describe('rebuildTraceGraph multi-source union (registry-driven graph sources, 2
     const { pool, params } = mockPool();
     await rebuildTraceGraph(pool as never, [a, b], 'RUNM1');
     const allParams = params.flat().map(String);
-    expect(allParams).toContain('svc:checkout');
-    expect(allParams).toContain('svc:orders');
+    expect(params.some((p) => p[1] === 'service' && p[2] === 'checkout')).toBe(true);
+    expect(params.some((p) => p[1] === 'service' && p[2] === 'orders')).toBe(true);
   });
 
-  it('an unavailable source among several contributes nothing but does not block the rest', async () => {
+  it('retains the previous snapshot when one of several configured sources is unavailable', async () => {
     const available = new FakeTraceSource([span({ traceId: 'a', spanId: 'a1', service: 'checkout' })], true);
     const unavailable = new FakeTraceSource([span({ traceId: 'z', spanId: 'z1', service: 'ghost' })], false);
     const { pool, params } = mockPool();
     await rebuildTraceGraph(pool as never, [available, unavailable], 'RUNM2');
-    const allParams = params.flat().map(String);
-    expect(allParams).toContain('svc:checkout');
-    expect(allParams).not.toContain('svc:ghost');
+    expect(params.some((p) => p[1] === 'service')).toBe(false);
+    expect(params.some((p) => p.includes('unavailable'))).toBe(true);
   });
 
-  it('empty sources array + no metrics sources sweeps (allowEmpty) exactly like an unavailable single source', async () => {
+  it('an empty source registry preserves the previous snapshot', async () => {
     const { pool, calls } = mockPool();
     const res = await rebuildTraceGraph(pool as never, [], 'RUNM3');
     expect(res).toEqual({ nodes: 0, edges: 0 });
-    expect(calls.some((s) => s.includes('DELETE FROM topology_edges') && s.includes('class = $1'))).toBe(true);
+    expect(calls.some((s) => s.includes('DELETE FROM topology_edges') && s.includes('class = $1'))).toBe(false);
   });
 
   it('a metrics-only source (no span sources at all) produces service nodes + calls edges', async () => {
@@ -170,8 +171,8 @@ describe('rebuildTraceGraph multi-source union (registry-driven graph sources, 2
     const { pool, params } = mockPool();
     const res = await rebuildTraceGraph(pool as never, [], 'RUNM4', [metrics]);
     const allParams = params.flat().map(String);
-    expect(allParams).toContain('svc:checkout');
-    expect(allParams).toContain('svc:orders');
+    expect(params.some((p) => p[1] === 'service' && p[2] === 'checkout')).toBe(true);
+    expect(params.some((p) => p[1] === 'service' && p[2] === 'orders')).toBe(true);
     expect(allParams).toContain('calls');
     expect(res.nodes).toBeGreaterThan(0);
     expect(res.edges).toBeGreaterThan(0);
@@ -185,9 +186,9 @@ describe('rebuildTraceGraph multi-source union (registry-driven graph sources, 2
     expect(params.some((p) => p.includes('svc:a'))).toBe(false);
   });
 
-  it('metrics-sourced calls merge into the SAME edge as span-derived calls for a matching client/server pair', async () => {
+  it('keeps metric totals and sampled spans from different backends separate', async () => {
     // span source: checkout→orders once (calls count 1). metrics source: checkout→orders count 3.
-    // merged bucket count = 1 + 3 = 4 — proves it's a single summed edge, not two separate rows.
+    // Counts have different populations and must not be added as if they were requests.
     const spanSrc = new FakeTraceSource([
       span({ traceId: 'a', spanId: 'p1', service: 'checkout' }),
       span({ traceId: 'a', spanId: 'c1', parentSpanId: 'p1', service: 'orders' }),
@@ -196,21 +197,23 @@ describe('rebuildTraceGraph multi-source union (registry-driven graph sources, 2
     const { pool, params } = mockPool();
     await rebuildTraceGraph(pool as never, [spanSrc], 'RUNM6', [metrics]);
     const callsEdges = params.filter((p) => p.includes('calls'));
-    expect(callsEdges).toHaveLength(1); // one merged edge row, not two
-    expect(callsEdges[0]?.[3]).toBe('1'); // sole edge → normalizes to max (1)
+    expect(callsEdges).toHaveLength(2);
+    expect(callsEdges.map((p) => JSON.parse(String(p[7])))).toEqual(expect.arrayContaining([
+      { spanCount: 1, metricCount: 0 }, { spanCount: 0, metricCount: 3 },
+    ]));
   });
 });
 
-describe('rebuildTraceGraph no-op when source unavailable (T3 + allowEmpty sweep)', () => {
-  it('returns {0,0}, never throws, and SWEEPS stale trace rows (allowEmpty) without touching flow/infra', async () => {
+describe('rebuildTraceGraph preserves the snapshot when unavailable', () => {
+  it('records unavailability without deleting graph data', async () => {
     const { pool, calls, params } = mockPool();
     const res = await rebuildTraceGraph(pool as never, [new FakeTraceSource([], false)], 'RUNT3');
     expect(res).toEqual({ nodes: 0, edges: 0 });
-    // even with 0 nodes, the destructive sweep must run for class='trace'
-    expect(calls.some((s) => s.includes('DELETE FROM topology_edges') && s.includes('class = $1') && s.includes('run_id <> $2'))).toBe(true);
-    expect(calls.some((s) => s.includes('DELETE FROM topology_nodes') && s.includes('class = $1') && s.includes('run_id <> $2'))).toBe(true);
+    // An unavailable source cannot establish an empty observation window.
+    expect(calls.some((s) => s.includes('DELETE FROM topology_edges'))).toBe(false);
+    expect(calls.some((s) => s.includes('DELETE FROM topology_nodes'))).toBe(false);
     // class scope is trace only
-    expect(params.some((p) => p.includes('trace'))).toBe(true);
+    expect(params.some((p) => p.includes('unavailable'))).toBe(true);
     expect(params.some((p) => p.includes('flow') || p.includes('infra'))).toBe(false);
   });
 });

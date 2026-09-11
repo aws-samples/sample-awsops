@@ -24,7 +24,7 @@ describe('Tempo requested-status retention', () => {
     expect(await generateQuery({
       nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'observed',
       tempoAttributes: attributes, isSql: false, send,
-    })).toBe('{ span.http.status_code = 500 }');
+    })).toEqual({ query: '{ span.http.status_code = 500 }' });
     expect(send).toHaveBeenCalledTimes(2);
   });
 
@@ -43,7 +43,7 @@ describe('Tempo requested-status retention', () => {
     expect(await generateQuery({
       nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'observed',
       tempoAttributes: attributes, isSql: false, send,
-    })).toBe(draft);
+    })).toEqual({ query: draft });
     expect(send).toHaveBeenCalledTimes(1);
   });
 
@@ -80,7 +80,7 @@ describe('Tempo requested-status retention', () => {
       expect(await generateQuery({
         nl, lang: 'TraceQL', schemaBlock: 'observed',
         tempoAttributes: attributes, isSql: false, send,
-      })).toBe(draft);
+      })).toEqual({ query: draft });
       expect(send).toHaveBeenCalledTimes(1);
     },
   );

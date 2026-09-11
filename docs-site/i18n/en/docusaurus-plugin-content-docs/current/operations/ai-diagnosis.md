@@ -44,7 +44,7 @@ The left sidebar lists your recent reports — completed rows carry inline **MD/
 
 ### Scheduled diagnosis & notifications
 - **Scheduled diagnosis**: besides the cadence (weekly/biweekly/monthly) you can pick a **weekday** (weekly/biweekly), a **day of month 1–28** (monthly), a **run hour** (KST), and the **report language**; the **next run** and **last run** times are both shown. Unset fields keep the interval-only behavior.
-- **Diagnosis mailing list**: admins can, in addition to adding/removing subscribers, press **Send test** to deliver one test email to every confirmed subscriber and verify delivery. The **email notification switch** at the top of the panel pauses report/digest emails without a deploy (admin-only) — reports completed while paused are dropped from email (not re-sent on resume; a pause shorter than the ~15-minute digest cadence may drop nothing — the flag is checked per run), and the test-send button still works while paused (delivery-path verification).
+- **Diagnosis mailing list**: admins can, in addition to adding/removing subscribers, press **Send test** to deliver one test email to every confirmed subscriber and verify delivery. The **email notification switch** at the top of the panel pauses report/digest emails without a deploy (admin-only) — reports completed while paused are dropped from email (not re-sent on resume; a pause shorter than the ~15-minute digest cadence may drop nothing — the flag is checked per run), and the test-send button still works while paused (delivery-path verification). The same switch and subscriber list also govern the **compliance benchmark completion mail** on the shared topic.
 
 ## How to use
 
