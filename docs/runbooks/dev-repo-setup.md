@@ -284,8 +284,18 @@ uses the default branch for its workflow, `GITHUB_REF`, and `GITHUB_SHA` regardl
 target. See [GitHub's platform announcement](https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/),
 [environment protection rules](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments), and
 [immutable OIDC subjects](https://docs.github.com/en/actions/reference/security/oidc).
-Claude has two 600-second attempts, Codex two 300-second attempts, with hard-kill grace.
+Claude/L2 has two 1200-second attempts; Claude/L3–L5 retain two 600-second attempts,
+and Codex retains two 300-second attempts. The panel and chair have a 10-second
+hard-kill grace. The job ceiling is 90 minutes. Before chair synthesis, the same OIDC
+role obtains a fresh one-hour session; its permissions and maximum session duration
+are unchanged. Failed or timed-out chair output cannot supply a successful verdict.
 Missing/failed model cells remain blocking; all four lenses need both vendors.
+
+Claude/L2는 1200초씩, Claude/L3–L5는 600초씩, Codex는 300초씩 최대 두 번 실행합니다.
+패널과 종합 판정에는 10초의 강제 종료 유예를 적용하며 작업 전체 한도는 90분입니다.
+종합 판정 전에 같은 OIDC 역할의 1시간 세션을 새로 발급하고 역할 권한·최대 세션 기간은
+변경하지 않습니다. 실패하거나 시간 초과된 종합 응답은 성공 판정으로 인정하지 않으며,
+모든 렌즈에서 두 공급자의 검토가 완료되어야 합니다.
 
 (복구 라벨은 커밋 선택이며 권한 승인은 GitHub 보호 환경에서 강제합니다. 자동 환경은
 `dev`·`main`만 허용하고 복구 환경은 해당 PR 실행 ref와 지정 리뷰어만 허용합니다.
