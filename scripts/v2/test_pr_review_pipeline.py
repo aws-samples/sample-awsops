@@ -124,6 +124,22 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 8)
         self.assertFalse((out / "coverage-severe.flag").exists())
 
+    def test_workflow_budget_reaches_every_claude_lens_without_changing_codex(self):
+        workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
+        budgets = {}
+        for name in ("PANEL_TIMEOUT", "CLAUDE_PANEL_TIMEOUT", "CLAUDE_PANEL_L2_TIMEOUT"):
+            match = re.search(r"(?m)^\s*" + name + r':\s*"(\d+)"\s*$', workflow)
+            self.assertIsNotNone(match, f"missing workflow budget {name}")
+            budgets[name] = match.group(1)
+        out, calls = self.run_panel(**budgets)
+        for vendor in ("codex", "claude"):
+            for lens in ("L2", "L3", "L4", "L5"):
+                with self.subTest(vendor=vendor, lens=lens):
+                    invocation = (calls / f"{vendor}-{lens}.timeouts").read_text().splitlines()[0]
+                    self.assertEqual(json.loads(invocation)[-1], "1200" if vendor == "claude" else "300")
+        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 8)
+        self.assertFalse((out / "coverage-severe.flag").exists())
+
     def test_missing_claude_still_blocks(self):
         out, _ = self.run_panel(missing=("claude",))
         self.assertTrue((out / "coverage-severe.flag").exists())
@@ -432,7 +448,7 @@ class WorkflowBudgetTests(unittest.TestCase):
         # Independently checked contract: eight parallel cells, two attempts; the
         # primary and fallback chairs can each fast-fail once before a 900s retry.
         self.assertEqual(int(self.field(panel, "CLAUDE_PANEL_L2_TIMEOUT")), 1200)
-        self.assertEqual(int(self.field(panel, "CLAUDE_PANEL_TIMEOUT")), 600)
+        self.assertEqual(int(self.field(panel, "CLAUDE_PANEL_TIMEOUT")), 1200)
         self.assertEqual(int(self.field(panel, "PANEL_TIMEOUT")), 300)
         longest_panel = 2 * (1200 + 10)
         longest_chair = 2 * (120 + 900 + 10)
