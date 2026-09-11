@@ -1,4 +1,4 @@
-"""Resolve immutable review metadata; manual recovery reviews only its selected PR HEAD."""
+"""Pin recovery labels to PR HEAD and separate trusted CI code from target-base context."""
 import json
 import os
 from pathlib import Path
@@ -15,27 +15,10 @@ def review_context():
         raise ValueError("invalid repository")
     event = os.environ["GITHUB_EVENT_NAME"]
     workflow_sha = os.environ["GITHUB_SHA"]
-    if event == "workflow_dispatch":
-        number_input = os.environ.get("PR_NUMBER_INPUT", "")
-        expected_head = os.environ.get("EXPECTED_HEAD_INPUT", "")
-        if not re.fullmatch(r"[1-9][0-9]{0,11}", number_input) or not SHA.fullmatch(expected_head):
-            raise ValueError("recovery requires a PR number and an explicit full HEAD SHA")
-        # No shell interpolation; input is validated before the authenticated read.
-        response = subprocess.run(
-            ["gh", "api", f"repos/{repository}/pulls/{number_input}"],
-            capture_output=True, text=True, check=True, timeout=30,
-        )
-        if len(response.stdout) > 1_000_000:
-            raise ValueError("PR metadata exceeds size limit")
-        pr = json.loads(response.stdout)
-        if pr.get("number") != int(number_input):
-            raise ValueError("PR metadata does not match the requested number")
-    elif event == "pull_request_target":
-        pr = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())["pull_request"]
-        expected_head = None
-    else:
+    if event not in ("pull_request_target", "pull_request") or not SHA.fullmatch(workflow_sha):
         raise ValueError("unsupported review event")
-
+    payload = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+    pr = payload["pull_request"]
     if not isinstance(pr, dict):
         raise ValueError("invalid PR metadata")
     number = pr["number"]
@@ -49,13 +32,29 @@ def review_context():
     if pr["base"].get("ref") not in ("dev", "main"):
         raise ValueError("review requires a dev or main integration target")
     head, base = pr["head"]["sha"], pr["base"]["sha"]
-    if expected_head is not None:
-        # Dispatch runs maintainer-selected CI code, never arbitrary code from another PR.
-        # Pin the workflow run to the same commit so its check attaches to the reviewed HEAD.
-        if expected_head != head or workflow_sha != head:
-            raise ValueError("recovery workflow ref and expected HEAD must match the current PR HEAD")
-    elif workflow_sha != base:
-        raise ValueError("automatic review workflow must use the trusted base commit")
+    checkout_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, timeout=10,
+    ).stdout.strip()
+    if event == "pull_request":
+        # Labeling is the explicit recovery approval. A generic label or synchronize event
+        # cannot authorize a newer commit. The workflow checks this again before checkout.
+        if payload.get("action") != "labeled" or payload.get("label", {}).get("name") != f"ci-review:{head}":
+            raise ValueError("recovery requires an explicit label matching the full PR HEAD SHA")
+        if checkout_sha != head:
+            raise ValueError("recovery checkout does not match the approved PR HEAD")
+        response = subprocess.run(
+            ["gh", "api", f"repos/{repository}/pulls/{number}"],
+            capture_output=True, text=True, check=True, timeout=30,
+        )
+        if len(response.stdout) > 1_000_000:
+            raise ValueError("PR metadata exceeds size limit")
+        current = json.loads(response.stdout)
+        if current.get("number") != number or current.get("state") != "open" or current["head"]["sha"] != head:
+            raise ValueError("PR changed after recovery approval")
+    elif checkout_sha != workflow_sha:
+        # pull_request_target uses the DEFAULT branch's immutable GITHUB_SHA; the PR target
+        # can differ (e.g. dev -> main). Only the model's source context uses target base SHA.
+        raise ValueError("automatic review checkout must match the trusted workflow commit")
     title = pr.get("title", "")
     if not isinstance(title, str):
         raise ValueError("invalid PR title")

@@ -6,7 +6,7 @@ name: AI Code Review
 # platform-runner image built by the self-hosted-runner platform repo. (Ports
 # oh-my-cloud-skills' lens×model matrix design — this repo has no manifest-validation
 # target, so the deterministic L1 gate is not included.)
-#   - pull_request_target base-ref checkout (M1): PR head code never executes, diff is data only
+#   - pull_request_target trusted default-ref checkout: application PR head code is data only
 #   - matrix fan-out: scripts/pr-review/run-panel.sh (2 models x 4 lenses = 8 cells) -> synthesize.sh
 #   - auth: GitHub OIDC -> sample-awsops-ci-review IAM role (Bedrock invoke only), no baseline
 #     permission on the runner pod itself (see the platform repo's DESIGN.md credentials model)
@@ -15,27 +15,24 @@ name: AI Code Review
 #     grant is not region-scoped
 #
 # The ARC image supplies Codex and Claude. Each must complete all four review lenses.
-# Recovery dispatch is a maintainer action selecting CI code explicitly; its ref must be
-# the exact HEAD of the specified same-repository PR. All reviewed application code remains data.
+# A recovery label selects an exact same-repository PR HEAD explicitly. It uses the
+# already trusted pull_request OIDC subject; all reviewed application code remains data.
 on:
   pull_request_target:
     types: [opened, synchronize]
     branches: [main, dev] # feature PRs land on dev; main only takes dev (guard-main-prs)
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Same-repository recovery PR whose HEAD is this workflow ref
-        required: true
-        type: string
-      expected_head:
-        description: Full immutable HEAD SHA explicitly selected for recovery review
-        required: true
-        type: string
+  pull_request:
+    types: [labeled]
+    branches: [main, dev]
 
 jobs:
   review:
     name: AI Code Review
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event_name == 'pull_request_target' ||
+       (github.event_name == 'pull_request' && github.event.action == 'labeled' &&
+        github.event.label.name == format('ci-review:{0}', github.event.pull_request.head.sha)))
     runs-on: sample-awsops
     # Hang backstop: GitHub's default is 360 minutes (6h), so a hang in a section the
     # in-script timeouts don't cover (gh pr diff, npm fallback, panel wait, etc.) would pin
@@ -45,7 +42,7 @@ jobs:
     # 60 minutes only cuts a hang, never a normal run.
     timeout-minutes: 60
     concurrency:
-      group: pr-review-${{ github.event.pull_request.number || inputs.pr_number }}
+      group: pr-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     permissions:
       pull-requests: write
@@ -58,9 +55,10 @@ jobs:
       ANTHROPIC_BEDROCK_BASE_URL: https://bedrock-runtime.us-east-1.amazonaws.com
       AWS_REGION: us-east-1
     steps:
-      # Automatic PR reviews execute only the immutable trusted base's CI scripts.
-      # Recovery dispatch executes the maintainer-selected workflow ref, verified below against
-      # the PR HEAD before acquiring AWS credentials. Both modes review from a separate BASE worktree.
+      # Automatic reviews execute CI scripts from the immutable trusted DEFAULT branch commit.
+      # An explicit SHA label selects recovery CI code; the job guard pins that SHA before
+      # checkout, and context validation rechecks it before acquiring AWS credentials.
+      # Both modes review application changes from a separate target-BASE worktree.
       # persist-credentials: false — the default (true) leaves GH_TOKEN in .git/config's
       # http.<host>.extraheader (AUTHORIZATION: basic <base64>). The panel's Claude cell (and
       # the chair) are deliberately allowed Read/Grep/Glob over the entire base checkout (for
@@ -71,15 +69,13 @@ jobs:
       # at checkout time is the prevention layer.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.pull_request.base.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Resolve and pin review context
         id: review_context
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER_INPUT: ${{ inputs.pr_number }}
-          EXPECTED_HEAD_INPUT: ${{ inputs.expected_head }}
         run: python3 scripts/pr-review/review_context.py >> "$GITHUB_OUTPUT"
 
       # No baseline AWS permission on the runner pod; this role can only invoke models.

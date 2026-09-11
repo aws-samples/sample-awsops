@@ -51,7 +51,7 @@ mutation roles. Role-to-sub matrix:
 | `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | dev + user stacks' ECR push |
 | `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply — **never production** |
 | `sample-awsops-ci-terraform-plan` | plan (PR/push incl. user-branch own-stack plans, read-only) | StringLike: `...:pull_request` + refs `main`, `dev`, `atomoh`, `ssminji`, `whchoi` | ReadOnlyAccess |
-| `sample-awsops-ci-review` | AI pr-review | StringLike: `...:ref:refs/heads/main`, `...:ref:refs/heads/dev` | Bedrock invoke |
+| `sample-awsops-ci-review` | AI pr-review | StringLike: `...:pull_request` + refs `main`, `dev` | Bedrock invoke |
 
 CRITICAL sub rule: **a job that declares `environment:` presents the
 `repo:<owner>/<repo>:environment:<name>` sub — NOT its branch ref.** Deployer
@@ -70,6 +70,37 @@ The former `sample-awsops-dev-ci-preview` role and `deploy-preview.yml` are
 RETIRED — user branches are standing branches with continuous deploy, covered by
 the dev-tier roles above. (구 preview 역할·워크플로는 은퇴 — 사용자 브랜치가 상시
 브랜치가 되면서 dev-tier 역할이 담당합니다.)
+
+### Recovery of review CI / 리뷰 CI 복구
+
+Automatic `pull_request_target` review runs CI code from the immutable default-branch
+`github.sha`, which may differ from the PR target's base SHA. The panel and chair read
+application context from a separate worktree at the target base.
+
+When the trusted review workflow itself needs repair, explicitly approve its current
+same-repository PR commit with a `ci-review:<full HEAD SHA>` label. Review the CI changes
+before labeling: this authorizes execution of that commit's CI scripts with the review
+role. The `pull_request`/`labeled` recovery route uses the review role's existing
+`pull_request` trust; it does not require broadening branch trust or changing IAM.
+The workflow rejects forks, mismatched/stale labels, changed live HEADs and non-`dev`/`main`
+targets. Both vendors must complete all four lenses; the normal merge checks still apply.
+
+```bash
+read -r -p "Recovery PR number: " REVIEW_PR
+REVIEW_HEAD=$(gh pr view "$REVIEW_PR" -R aws-samples/sample-awsops --json headRefOid --jq '.headRefOid')
+gh label create "ci-review:$REVIEW_HEAD" -R aws-samples/sample-awsops --color 1D76DB --description 'Explicit approval of this CI recovery commit'
+gh pr edit "$REVIEW_PR" -R aws-samples/sample-awsops --add-label "ci-review:$REVIEW_HEAD"
+```
+
+A new commit needs a new matching label; a previous approval never follows a branch tip.
+If the label already exists, reuse it. To retry the identical commit, rerun the failed
+recovery workflow. After merging the repair, update dependent PRs against `dev` so the
+restored automatic review runs normally.
+
+(자동 리뷰 코드는 PR 대상 브랜치가 아닌 기본 브랜치의 불변 커밋에서 실행합니다.
+복구 PR의 CI 변경을 검토한 뒤 전체 HEAD SHA가 포함된 라벨을 명시적으로 붙이면
+기존 `pull_request` 신뢰 경로로 복구 리뷰를 실행합니다. 새 커밋은 새 라벨 승인이
+필요하며, 모델·검토 항목 누락과 필수 검사 실패는 계속 머지를 차단합니다.)
 
 ### 3. Per-stack terraform secrets / 스택별 TF 시크릿
 
