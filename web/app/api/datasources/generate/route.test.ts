@@ -197,6 +197,30 @@ describe('non-SQL datasources', () => {
 describe('empty Tempo observations', () => {
   const flush = () => new Promise((r) => setTimeout(r, 25));
 
+  it.each([
+    { names_truncated: true, truncated: true },
+    { names_truncated: true, truncated: false },
+    { names_truncated: false, truncated: true },
+    { truncated: true },
+  ])('retries incomplete empty discovery instead of caching an idle-window diagnosis: %j', async (flags) => {
+    getDatasource.mockResolvedValue({ id: 75, kind: 'tempo' });
+    listConfiguredSchemas.mockResolvedValue([{
+      integrationId: 75, kind: 'tempo', schema: { tags: [], attributes: [], ...flags },
+      fetched_at: new Date().toISOString(),
+    }]);
+    resolveConnConfig.mockResolvedValue({ endpoint: 'https://tempo.example', authType: 'none' });
+    invokeMcpLambdaTool.mockResolvedValue({ tags: [], attributes: [], truncated: false });
+    const { POST } = await import('./route');
+    await POST(req({ id: 75, nl: 'HTTP 500' }));
+    expect(lastGen()).toMatchObject({
+      schemaBlock: '', tempoSchemaEmpty: false, tempoSchemaIncomplete: true,
+    });
+    await flush();
+    expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
+    expect(assertDatasourceEndpointAllowed).toHaveBeenCalledWith('https://tempo.example');
+    expect(upsertSchema).toHaveBeenCalled();
+  });
+
   it('keeps a fresh empty cache distinct from a miss without repeatedly introspecting', async () => {
     getDatasource.mockResolvedValue({ id: 71, kind: 'tempo' });
     listConfiguredSchemas.mockResolvedValue([{

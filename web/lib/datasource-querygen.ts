@@ -132,11 +132,16 @@ export interface GenerateQueryInput {
   schemaBlock: string;
   /** A successful cached Tempo discovery contained no usable attributes (distinct from a cache miss). */
   tempoSchemaEmpty?: boolean;
+  /** Empty results from incomplete discovery must be retried, not described as an idle window. */
+  tempoSchemaIncomplete?: boolean;
   isSql: boolean;
   send?: QueryGenSend;
 }
 
 function tempoSchemaError(input: GenerateQueryInput): Error {
+  if (input.tempoSchemaIncomplete) {
+    return new Error('Tempo schema discovery was incomplete; an empty result does not confirm an idle window. Refresh the datasource schema and check the Tempo connection or proxy response if this persists. (스키마 수집이 불완전합니다. 스키마를 새로고침하고 문제가 계속되면 Tempo 연결 또는 프록시 응답을 확인하세요.)');
+  }
   if (input.tempoSchemaEmpty) {
     return new Error('The cached Tempo schema has no usable attributes in its observation window. Run a manual TraceQL query for historical data in Grafana Explore or the Tempo search API with an explicit time range. AWSops supports intrinsic-only filters such as duration for recent traces; refresh after new traces arrive. (관측 구간에 속성이 없습니다. 과거 데이터는 Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 조회하세요. AWSops의 최근 조회는 내장 필터를 사용하거나 새 트레이스 유입 후 스키마를 갱신하세요.)');
   }
@@ -172,7 +177,7 @@ export async function generateQuery(input: GenerateQueryInput): Promise<string> 
         if (cursor.type.isError && errorAt === null) errorAt = cursor.from;
         if (cursor.name === 'AttributeField') hasAttributes = true;
       } while (cursor.next());
-      if (hasAttributes && (!input.schemaBlock.trim() || input.tempoSchemaEmpty)) {
+      if (hasAttributes && (!input.schemaBlock.trim() || input.tempoSchemaEmpty || input.tempoSchemaIncomplete)) {
         throw tempoSchemaError(input);
       }
       if (errorAt !== null) {

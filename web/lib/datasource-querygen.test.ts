@@ -139,12 +139,24 @@ describe('generateQuery', () => {
     },
   );
 
-  it('still generates intrinsic-only queries from an empty observed schema', async () => {
+  it.each([{ tempoSchemaEmpty: true }, { tempoSchemaIncomplete: true }])('still generates intrinsic-only queries with unavailable attribute evidence: %j', async (state) => {
     const send = vi.fn().mockResolvedValue('{ duration > 500ms }');
     await expect(generateQuery({
-      nl: 'slow spans', lang: 'TraceQL', schemaBlock: '', tempoSchemaEmpty: true, isSql: false, send,
+      nl: 'slow spans', lang: 'TraceQL', schemaBlock: '', ...state, isSql: false, send,
     })).resolves.toBe('{ duration > 500ms }');
   });
+
+  it.each(['SCHEMA_REQUIRED', '{ span.http.status_code = 500 }'])(
+    'reports incomplete discovery rather than an idle window: %s',
+    async (draft) => {
+      const send = vi.fn().mockResolvedValue(draft);
+      await expect(generateQuery({
+        nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: '', tempoSchemaIncomplete: true,
+        isSql: false, send,
+      })).rejects.toThrow(/discovery was incomplete.*Refresh.*connection/i);
+      expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('does not promise that refreshing a populated schema will recover an unobserved attribute', async () => {
     const send = vi.fn().mockResolvedValue('SCHEMA_REQUIRED');

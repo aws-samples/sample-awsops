@@ -77,8 +77,9 @@ function refreshInBackground(accountId: string, ds: DatasourceRow, id: number, k
   void introspectAndCache(accountId, ds, id, kind).catch(() => {}).finally(() => refreshing.delete(id));
 }
 
-async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: boolean, kind: string, nl: string): Promise<{ schemaBlock: string; tempoSchemaEmpty: boolean }> {
+async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: boolean, kind: string, nl: string): Promise<{ schemaBlock: string; tempoSchemaEmpty: boolean; tempoSchemaIncomplete: boolean }> {
   const accountId = currentAccountId();
+  let tempoSchemaIncomplete = false;
   // Float NL-relevant metric/label names to the front so they survive the render cap (Prometheus/Mimir
   // return hundreds of metrics alphabetically; the relevant ones would otherwise be dropped).
   const render = (schema: unknown, k: string | null) => renderSchemaForPrompt(prioritizeSchemaForQuery(schema, nl), k);
@@ -87,15 +88,19 @@ async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: b
     const own = hasId ? schemas.find((s) => s.integrationId === id) : schemas.find((s) => s.kind === kind);
     if (own?.schema) {
       const block = render(own.schema, own.kind);
-      const raw = own.schema as { tags?: unknown; attributes?: unknown };
-      const tempoSchemaEmpty = kind === 'tempo' && !block
+      const raw = own.schema as { tags?: unknown; attributes?: unknown; names_truncated?: unknown; truncated?: unknown };
+      const emptyTempoResult = kind === 'tempo' && !block
         && (Array.isArray(raw.tags) || Array.isArray(raw.attributes));
+      // A proxy's malformed 200 or a truncated name listing can also normalize
+      // to empty arrays. Such results are not evidence of an idle window.
+      tempoSchemaIncomplete = emptyTempoResult && (raw.names_truncated === true || raw.truncated === true);
+      const tempoSchemaEmpty = emptyTempoResult && !tempoSchemaIncomplete;
       if (block || tempoSchemaEmpty) {
         // Lazy refresh: cache hit but stale → refresh in the background (next lookup is fresh), serve now.
         // An empty Tempo observation is also a cache hit: an idle window will not
         // become useful by introspecting again on every generation request.
         if (hasId && ds && isSchemaStale(own.fetched_at)) refreshInBackground(accountId, ds, id, kind);
-        return { schemaBlock: block, tempoSchemaEmpty };
+        return { schemaBlock: block, tempoSchemaEmpty, tempoSchemaIncomplete: false };
       }
     }
   } catch { /* cache is optional */ }
@@ -105,7 +110,7 @@ async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: b
   // Warm the cache in the BACKGROUND so the NEXT lookup is grounded; serve schema-less now (the model
   // writes a best-effort query and the connector's read-only guard backstops it on run).
   if (hasId && ds) refreshInBackground(accountId, ds, id, kind);
-  return { schemaBlock: '', tempoSchemaEmpty: false };
+  return { schemaBlock: '', tempoSchemaEmpty: false, tempoSchemaIncomplete };
 }
 
 export async function POST(request: Request) {
