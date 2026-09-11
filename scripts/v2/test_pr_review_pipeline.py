@@ -1,8 +1,12 @@
+import json
 import os
 from pathlib import Path
+import re
+import signal
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +42,18 @@ if os.environ.get('FAIL_ONCE') == cell and count == 1:
 print('Review ' + cell + ': no blocking findings.')
 """
 
+RECORDING_TIMEOUT = r"""#!/usr/bin/python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+vendor = next(name for name in ('codex', 'claude') if name in args)
+lens = next((name for name in ('L2', 'L3', 'L4', 'L5') if 'LENS: ' + name in ' '.join(args)), None)
+label = vendor + '-' + lens if lens else os.environ['ANTHROPIC_MODEL']
+path = pathlib.Path(os.environ['CALL_DIR']) / (label + '.timeouts')
+with path.open('a') as stream:
+    stream.write(json.dumps(args[:args.index(vendor)]) + '\n')
+os.execv('/usr/bin/timeout', ['/usr/bin/timeout', *args])
+"""
+
 
 class PanelTests(unittest.TestCase):
     def run_panel(self, missing=(), missing_lenses=(), expected_returncode=0, **overrides):
@@ -46,6 +62,9 @@ class PanelTests(unittest.TestCase):
         root = Path(directory.name)
         binaries = root / "bin"
         binaries.mkdir()
+        recorder = binaries / "timeout"
+        recorder.write_text(RECORDING_TIMEOUT)
+        recorder.chmod(0o755)
         for name in ("codex", "claude"):
             if name not in missing:
                 exe = binaries / name
@@ -64,6 +83,7 @@ class PanelTests(unittest.TestCase):
         env = {
             **os.environ, "PATH": f"{binaries}:/usr/bin:/bin",
             "PANEL_TIMEOUT": "3", "CLAUDE_PANEL_TIMEOUT": "3", "PANEL_RETRIES": "2",
+            "CLAUDE_PANEL_L2_TIMEOUT": "",
             "CALL_DIR": str(calls), **overrides,
         }
         process = subprocess.run(
@@ -77,6 +97,31 @@ class PanelTests(unittest.TestCase):
         out, _ = self.run_panel()
         self.assertEqual(set((out / "responded.txt").read_text().splitlines()),
                          {f"{model}/{lens}" for model in ("codex", "claude") for lens in ("L2", "L3", "L4", "L5")})
+        self.assertFalse((out / "coverage-severe.flag").exists())
+
+    def test_claude_l2_timeout_inherits_general_claude_budget_when_unset(self):
+        out, calls = self.run_panel(PANEL_TIMEOUT="4", CLAUDE_PANEL_TIMEOUT="5")
+        for vendor in ("codex", "claude"):
+            for lens in ("L2", "L3", "L4", "L5"):
+                with self.subTest(vendor=vendor, lens=lens):
+                    invocations = (calls / f"{vendor}-{lens}.timeouts").read_text().splitlines()
+                    self.assertEqual(len(invocations), 1)
+                    self.assertEqual(json.loads(invocations[0])[-1], "4" if vendor == "codex" else "5")
+        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 8)
+        self.assertFalse((out / "coverage-severe.flag").exists())
+
+    def test_claude_l2_timeout_override_changes_only_that_cell(self):
+        out, calls = self.run_panel(
+            PANEL_TIMEOUT="4", CLAUDE_PANEL_TIMEOUT="5", CLAUDE_PANEL_L2_TIMEOUT="7",
+        )
+        for vendor in ("codex", "claude"):
+            for lens in ("L2", "L3", "L4", "L5"):
+                with self.subTest(vendor=vendor, lens=lens):
+                    invocations = (calls / f"{vendor}-{lens}.timeouts").read_text().splitlines()
+                    self.assertEqual(len(invocations), 1)
+                    expected = "4" if vendor == "codex" else "7" if lens == "L2" else "5"
+                    self.assertEqual(json.loads(invocations[0])[-1], expected)
+        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 8)
         self.assertFalse((out / "coverage-severe.flag").exists())
 
     def test_missing_claude_still_blocks(self):
@@ -117,6 +162,276 @@ class PanelTests(unittest.TestCase):
         self.assertEqual((calls / "claude-L2").read_text(), "2")
         self.assertFalse((out / "coverage-severe.flag").exists())
         self.assertNotIn("Transient", (out / "slot/claude-L2.md").read_text())
+
+    def test_l2_override_is_retained_on_retry_without_counting_failed_stdout(self):
+        out, calls = self.run_panel(FAIL_ONCE="claude/L2", CLAUDE_PANEL_L2_TIMEOUT="7")
+        invocations = (calls / "claude-L2.timeouts").read_text().splitlines()
+        self.assertEqual([json.loads(call)[-1] for call in invocations], ["7", "7"])
+        self.assertEqual((calls / "claude-L2").read_text(), "2")
+        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 8)
+        self.assertFalse((out / "coverage-severe.flag").exists())
+        self.assertNotIn("Transient", (out / "slot/claude-L2.md").read_text())
+
+    def test_l2_override_does_not_weaken_missing_cell_failure(self):
+        out, calls = self.run_panel(FAIL_CELL="claude/L2", CLAUDE_PANEL_L2_TIMEOUT="7")
+        self.assertEqual((calls / "claude-L2").read_text(), "2")
+        self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 7)
+        self.assertNotIn("claude/L2", (out / "responded.txt").read_text())
+        self.assertEqual((out / "slot/claude-L2.md").read_text(), "")
+        self.assertIn("L2", (out / "degraded-lenses.txt").read_text().splitlines())
+        self.assertTrue((out / "coverage-severe.flag").exists())
+
+
+FAKE_CHAIR = r"""#!/usr/bin/python3
+import json, os, pathlib, signal, sys, time
+data = sys.stdin.read()
+if '=== DIFF UNDER REVIEW ===' not in data or '=== PANEL REVIEWS ===' not in data:
+    sys.exit(7)
+if '--strict-mcp-config' not in sys.argv or '--allowedTools' not in sys.argv:
+    sys.exit(8)
+calls = pathlib.Path(os.environ['CALL_DIR'])
+model = os.environ['ANTHROPIC_MODEL']
+count_file = calls / (model + '.count')
+count = int(count_file.read_text()) + 1 if count_file.exists() else 1
+count_file.write_text(str(count))
+actions = json.loads(os.environ['CHAIR_RESPONSES'])[model]
+action = actions[min(count - 1, len(actions) - 1)]
+with (calls / 'sequence').open('a') as stream:
+    stream.write(model + ':' + action + '\n')
+(calls / 'active.pid').write_text(str(os.getpid()))
+(calls / (model + '.pid')).write_text(str(os.getpid()))
+if action in ('hang', 'hang_verdict'):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if action in ('hang_verdict', 'failed_verdict'):
+    print('Review complete.\nVERDICT: PASS', flush=True)
+if action == 'failed_verdict':
+    sys.exit(17)
+if action == 'wait':
+    def terminate(signum, frame):
+        (calls / 'terminated').write_text('TERM received')
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, terminate)
+if action in ('hang', 'hang_verdict', 'wait'):
+    (calls / 'ready').write_text('ready')
+    time.sleep(30)
+    (calls / 'survived-timeout').write_text('late work')
+if action == 'invalid':
+    print('Incomplete review, no verdict.')
+    sys.exit(1)
+print('Review complete.')
+print('VERDICT: ' + ('FAIL' if action == 'finding' else 'PASS'))
+"""
+
+FAKE_CHAIR_CLOCK = r"""#!/usr/bin/python3
+import os, pathlib, sys
+if sys.argv[1:] != ['+%s']:
+    os.execv('/bin/date', ['/bin/date', *sys.argv[1:]])
+counter = pathlib.Path(os.environ['CALL_DIR']) / 'clock'
+tick = int(counter.read_text()) if counter.exists() else 0
+counter.write_text(str(tick + 1))
+print(tick * int(os.environ['CHAIR_CLOCK_STEP']))
+"""
+
+
+class ChairTests(unittest.TestCase):
+    def start_chair(self, primary, fallback=("valid",), clock_step=1, **overrides):
+        directory = tempfile.TemporaryDirectory(prefix="chair-recovery-")
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        binaries = root / "bin"
+        binaries.mkdir()
+        for name, source in (
+            ("claude", FAKE_CHAIR), ("date", FAKE_CHAIR_CLOCK), ("timeout", RECORDING_TIMEOUT),
+        ):
+            executable = binaries / name
+            executable.write_text(source)
+            executable.chmod(0o755)
+        calls = root / "calls"
+        calls.mkdir()
+        work = root / "work"
+        slots = work / "slot"
+        slots.mkdir(parents=True)
+        cells = [f"{vendor}/{lens}" for vendor in ("codex", "claude") for lens in ("L2", "L3", "L4", "L5")]
+        (work / "responded.txt").write_text("\n".join(cells) + "\n")
+        for cell in cells:
+            (slots / (cell.replace("/", "-") + ".md")).write_text("No blocking findings.\n")
+        diff = root / "diff"
+        diff.write_text("diff --git a/example.ts b/example.ts\n+readOnly()\n")
+        env = {
+            **os.environ, "PATH": f"{binaries}:/usr/bin:/bin", "CALL_DIR": str(calls),
+            "CHAIR_PRIMARY_MODEL": "primary-fixture", "CHAIR_FALLBACK_MODEL": "fallback-fixture",
+            "CHAIR_TIMEOUT": "1s", "CHAIR_KILL_AFTER": "1s",
+            "CHAIR_CLOCK_STEP": str(clock_step),
+            "CHAIR_RESPONSES": json.dumps({"primary-fixture": primary, "fallback-fixture": fallback}),
+            "GITHUB_ENV": str(root / "github-env"),
+            "omitted_source_paths": "", **overrides,
+        }
+        process = subprocess.Popen(
+            ["bash", str(ROOT / "scripts/pr-review/synthesize.sh"),
+             str(diff), str(work), "42", "CI timeout fixture", str(work / "review.md")],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
+        )
+        self.addCleanup(self.stop_chair, process, root)
+        return root, process
+
+    @staticmethod
+    def stop_chair(process, root):
+        # GNU timeout may give the CLI its own process group. Clean up that
+        # specific fixture child too, without a machine-wide pkill.
+        marker = root / "calls/active.pid"
+        if marker.exists():
+            pid = int(marker.read_text())
+            try:
+                command = Path(f"/proc/{pid}/cmdline").read_bytes()
+                if str(root).encode() in command:
+                    os.kill(pid, signal.SIGKILL)
+            except (FileNotFoundError, ProcessLookupError):
+                pass
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+        process.communicate(timeout=3)
+
+    def finish_chair(self, process, expected_status=0):
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.fail("chair did not finish within the fixture deadline; hard-kill/cleanup failed")
+        self.assertEqual(process.returncode, expected_status, stdout + stderr)
+
+    def sequence(self, root):
+        return (root / "calls/sequence").read_text().splitlines()
+
+    def test_chair_default_hard_kill_grace_is_passed_to_real_timeout(self):
+        root, process = self.start_chair(("valid",), CHAIR_KILL_AFTER="")
+        self.finish_chair(process)
+        options = json.loads((root / "calls/primary-fixture.timeouts").read_text().splitlines()[0])
+        self.assertIn("--kill-after=10s", options)
+
+    def test_chair_hard_kills_ignored_term_and_falls_back_without_slow_retry(self):
+        root, process = self.start_chair(("hang_verdict",), clock_step=900)
+        self.finish_chair(process)
+        self.assertEqual(self.sequence(root), ["primary-fixture:hang_verdict", "fallback-fixture:valid"])
+        pid = int((root / "calls/primary-fixture.pid").read_text())
+        try:
+            command = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except FileNotFoundError:
+            command = b""
+        self.assertNotIn(str(root).encode(), command, "TERM-ignoring chair is still running")
+        self.assertFalse((root / "calls/survived-timeout").exists())
+        self.assertFalse((root / "work/chair-failed.flag").exists())
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: PASS"))
+
+    def test_nonzero_exit_cannot_supply_a_valid_looking_verdict(self):
+        root, process = self.start_chair(("failed_verdict",))
+        self.finish_chair(process)
+        self.assertEqual(self.sequence(root), [
+            "primary-fixture:failed_verdict", "primary-fixture:failed_verdict",
+            "fallback-fixture:valid",
+        ])
+        self.assertFalse((root / "work/chair-failed.flag").exists())
+
+    def test_chair_retries_each_fast_failure_once_then_fails_closed(self):
+        root, process = self.start_chair(("invalid",), ("invalid",), clock_step=119)
+        self.finish_chair(process)
+        self.assertEqual(self.sequence(root), [
+            "primary-fixture:invalid", "primary-fixture:invalid",
+            "fallback-fixture:invalid", "fallback-fixture:invalid",
+        ])
+        self.assertTrue((root / "work/chair-failed.flag").exists())
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: FAIL"))
+
+    def test_chair_does_not_retry_at_fast_failure_boundary(self):
+        root, process = self.start_chair(("invalid",), clock_step=120)
+        self.finish_chair(process)
+        self.assertEqual(self.sequence(root), ["primary-fixture:invalid", "fallback-fixture:valid"])
+
+    def test_valid_blocking_verdict_is_not_retried_or_replaced(self):
+        root, process = self.start_chair(("finding",))
+        self.finish_chair(process)
+        self.assertEqual(self.sequence(root), ["primary-fixture:finding"])
+        self.assertFalse((root / "work/chair-failed.flag").exists())
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: FAIL"))
+
+    def test_cancellation_terminates_chair_without_starting_fallback(self):
+        root, process = self.start_chair(("wait",), CHAIR_TIMEOUT="10s")
+        deadline = time.monotonic() + 3
+        while not (root / "calls/ready").exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue((root / "calls/ready").exists(), "fixture chair did not start")
+        process.send_signal(signal.SIGTERM)
+        self.finish_chair(process, expected_status=143)
+        self.assertEqual(self.sequence(root), ["primary-fixture:wait"])
+        self.assertTrue((root / "calls/terminated").exists())
+        self.assertFalse((root / "calls/survived-timeout").exists())
+
+
+class WorkflowBudgetTests(unittest.TestCase):
+    def setUp(self):
+        self.workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
+        starts = list(re.finditer(r"(?m)^      - .+$", self.workflow))
+        self.steps = [
+            self.workflow[start.start():starts[index + 1].start() if index + 1 < len(starts) else None]
+            for index, start in enumerate(starts)
+        ]
+
+    def step(self, identifier):
+        matches = [
+            (index, block) for index, block in enumerate(self.steps)
+            if re.search(r"(?m)^\s*(?:- )?id:\s*" + re.escape(identifier) + r"\s*$", block)
+        ]
+        self.assertEqual(len(matches), 1, f"expected one workflow step with id {identifier}")
+        return matches[0]
+
+    def field(self, block, name):
+        match = re.search(r"(?m)^\s*(?:- )?" + re.escape(name) + r":\s*([^\n#]+)", block)
+        self.assertIsNotNone(match, f"missing workflow field {name}")
+        return match.group(1).strip().strip("'\"")
+
+    def test_credentials_are_renewed_between_panel_and_chair_with_same_role(self):
+        panel_index, _ = self.step("panel_review")
+        renewal_index, renewal = self.step("chair_credentials")
+        chair_index, _ = self.step("chair_review")
+        self.assertLess(panel_index, renewal_index)
+        self.assertLess(renewal_index, chair_index)
+        self.assertRegex(self.field(renewal, "uses"), r"^aws-actions/configure-aws-credentials@")
+        initial = [
+            block for block in self.steps[:panel_index]
+            if "uses: aws-actions/configure-aws-credentials@" in block
+        ]
+        self.assertEqual(len(initial), 1, "the panel must receive credentials before it starts")
+        for key in ("role-to-assume", "aws-region", "mask-aws-account-id", "role-duration-seconds"):
+            self.assertEqual(self.field(renewal, key), self.field(initial[0], key))
+        self.assertEqual(self.field(renewal, "role-duration-seconds"), "3600")
+        self.assertEqual(self.field(renewal, "unset-current-credentials"), "true")
+        self.assertEqual(self.field(renewal, "use-existing-credentials"), "false")
+        self.assertNotRegex(renewal, r"continue-on-error:\s*true")
+
+    def test_each_review_phase_uses_pinned_base_worktree_and_cleanup(self):
+        for identifier, script in (("panel_review", "run-panel.sh"), ("chair_review", "synthesize.sh")):
+            with self.subTest(phase=identifier):
+                _, block = self.step(identifier)
+                self.assertIn("steps.review_context.outputs.base_sha", block)
+                self.assertRegex(block, r'git worktree add --detach[^\n]*"\$BASE_SHA"')
+                self.assertRegex(block, r"trap '[^\n]*worktree remove[^\n]*' EXIT")
+                self.assertIn(script, block)
+
+    def test_workflow_budget_keeps_cleanup_margin_after_all_model_attempts(self):
+        _, panel = self.step("panel_review")
+        # Independently checked contract: eight parallel cells, two attempts; the
+        # primary and fallback chairs can each fast-fail once before a 900s retry.
+        self.assertEqual(int(self.field(panel, "CLAUDE_PANEL_L2_TIMEOUT")), 1200)
+        self.assertEqual(int(self.field(panel, "CLAUDE_PANEL_TIMEOUT")), 600)
+        self.assertEqual(int(self.field(panel, "PANEL_TIMEOUT")), 300)
+        longest_panel = 2 * (1200 + 10)
+        longest_chair = 2 * (120 + 900 + 10)
+        job_timeout = re.search(r"(?m)^    timeout-minutes:\s*(\d+)\s*$", self.workflow)
+        self.assertIsNotNone(job_timeout)
+        self.assertGreaterEqual(
+            int(job_timeout.group(1)) * 60 - longest_panel - longest_chair,
+            15 * 60,
+            "job must leave at least fifteen minutes for setup, publication and cleanup",
+        )
 
 
 class LockfileMetadataTests(unittest.TestCase):
