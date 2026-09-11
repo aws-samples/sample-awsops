@@ -177,6 +177,10 @@ The 99 API routes live under `web/app/api/`. Key routes: `health` (public), `str
 4. Push to the branch (`git push origin feat/amazing-feature`)
 5. Open a Pull Request
 
+Target `dev`. Fork contributions are integrated through a maintainer-owned internal PR
+after patch inspection and full AI/CI review; fork tests alone do not satisfy the AI gate.
+See [the contribution branch flow](docs/runbooks/branch-strategy.md#external-fork-prs--외부-pr).
+
 ## License
 
 Licensed under the MIT License. See [LICENSE](LICENSE) for details.
@@ -349,6 +353,10 @@ cd web && npx vitest run          # web 유닛 테스트만
 3. 변경 사항을 커밋합니다 (`git commit -m 'feat: add amazing feature'`)
 4. 브랜치에 Push 합니다 (`git push origin feat/amazing-feature`)
 5. Pull Request를 엽니다
+
+대상 브랜치는 `dev`입니다. Fork 기여는 유지관리자가 패치를 확인한 뒤 내부 PR로
+가져와 전체 AI·CI 검사를 거쳐 통합합니다. Fork 테스트 통과만으로 AI 검사를 대신하지
+않습니다. [기여 브랜치 흐름](docs/runbooks/branch-strategy.md#external-fork-prs--외부-pr)을 참고하세요.
 
 ## 라이선스
 
