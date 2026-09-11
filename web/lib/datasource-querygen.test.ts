@@ -144,12 +144,12 @@ describe('generateQuery', () => {
   });
 
   it.each([
-    '{ span.customResponseCode = 500 }',
-    '{ span.http.status_code != 500 && span.customResponseCode = 500 }',
-  ])('leaves nonstandard field meaning to review in mixed schemas: %s', async draft => {
+    ['HTTP 500', '{ span.customResponseCode = 500 }'],
+    ['customResponseCode 500 excluding HTTP 500', '{ span.http.status_code != 500 && span.customResponseCode = 500 }'],
+  ])('leaves explicitly requested nonstandard field meaning to review: %s', async (nl, draft) => {
     const send = vi.fn().mockResolvedValue(draft);
     expect(await generateQuery({
-      nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'observed',
+      nl, lang: 'TraceQL', schemaBlock: 'observed',
       tempoAttributes: [
         ...typedTempo, { name: 'span.customResponseCode', types: ['int'], typesTruncated: false },
       ],

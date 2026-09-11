@@ -190,53 +190,99 @@ function literalAt(node: TraceqlNode, query: string): { type: string; value: unk
  * Extra context, negation, ranges, and general language are left to model/user review: trying to
  * infer their meaning with a negative-word list can turn an exclusion into an inclusion. */
 function requestedHttpStatus(nl: string): number | null {
-  const match = /^HTTP(?:\s+(?:status(?:\s+code)?|response(?:\s+(?:status(?:\s+code)?|code))?))?\s*[:=]?\s*([1-5]\d{2})(?:\s+(?:responses?|spans?|traces?|errors?|응답(?:\s+스팬)?|스팬|트레이스))?[.!?]?$/i.exec(nl.trim());
+  // These qualifiers do not change status polarity. Recognition never changes execution time bounds.
+  const temporal = '(?:today|yesterday|last (?:hour|day|week)|오늘|어제)';
+  const request = nl.trim().replace(/\s+/g, ' ')
+    .replace(new RegExp(`^${temporal} `, 'i'), '')
+    .replace(new RegExp(` ${temporal}([.!?]?)$`, 'i'), '$1');
+  const match = /^HTTP(?:\s+(?:status(?:\s+code)?|response(?:\s+(?:status(?:\s+code)?|code))?))?\s*[:=]?\s*([1-5]\d{2})(?:\s+(?:responses?|spans?|traces?|errors?|응답(?:\s+스팬)?|스팬|트레이스))?[.!?]?$/i.exec(request);
   return match ? Number(match[1]) : null;
 }
 
 const HTTP_STATUS_KEYS = new Set(['http.status_code', 'http.response.status_code']);
 
-function requiresHttpStatus(node: TraceqlNode, query: string, status: number): boolean {
-  const parts = children(node);
-  if (/^[!-]/.test(query.slice(node.from, node.to).trim())) return false;
-  if (parts.length === 1) return requiresHttpStatus(parts[0], query, status);
-  if (parts.length !== 3) return false;
-  const op = query.slice(parts[1].from, parts[1].to).trim();
-  if (op === '&&') return requiresHttpStatus(parts[0], query, status) || requiresHttpStatus(parts[2], query, status);
-  if (op === '||') return requiresHttpStatus(parts[0], query, status) && requiresHttpStatus(parts[2], query, status);
-  if (op !== '=') return false;
-  for (const [left, right] of [[parts[0], parts[2]], [parts[2], parts[0]]]) {
-    const name = attributeAt(left, query);
-    const identity = name ? tempoAttributeIdentity(name) : null;
-    const value = literalAt(right, query);
-    if (identity && HTTP_STATUS_KEYS.has(identity.key)
-        && value && (value.type === 'int' || value.type === 'float' || value.type === 'string')
-        && String(value.value) === String(status)) return true;
+type StatusCandidate = (name: string) => boolean;
+type StatusEvidence = 'none' | 'candidate' | 'standardReference' | 'standardMatch';
+
+function referencesStandardHttp(node: TraceqlNode, query: string): boolean {
+  const pending = [node];
+  while (pending.length) {
+    const current = pending.pop()!;
+    if (current.name === 'AttributeField') {
+      const identity = tempoAttributeIdentity(query.slice(current.from, current.to));
+      if (identity && HTTP_STATUS_KEYS.has(identity.key)) return true;
+    }
+    pending.push(...children(current));
   }
   return false;
 }
 
-/** Prove that a returned trace must contain a matching status, respecting spanset operators.
+/** Four possible evidence states bound boolean analysis without expanding the query into DNF.
+ * In an AND branch, referencing a standard key requires a matching standard predicate; an
+ * unrelated candidate cannot rescue HTTP 404. OR branches retain independent evidence. */
+function statusEvidence(node: TraceqlNode, query: string, status: number, isCandidate: StatusCandidate): Set<StatusEvidence> {
+  const parts = children(node);
+  const unproven = (): Set<StatusEvidence> =>
+    new Set([referencesStandardHttp(node, query) ? 'standardReference' : 'none']);
+  if (parts.length === 1) {
+    if (/^[!-]/.test(query.slice(node.from, node.to).trim())) return unproven();
+    return statusEvidence(parts[0], query, status, isCandidate);
+  }
+  if (parts.length !== 3) return unproven();
+  const op = query.slice(parts[1].from, parts[1].to).trim();
+  if (op === '&&' || op === '||') {
+    const left = statusEvidence(parts[0], query, status, isCandidate);
+    const right = statusEvidence(parts[2], query, status, isCandidate);
+    if (op === '||') return new Set([...left, ...right]);
+    const combined = new Set<StatusEvidence>();
+    for (const a of left) for (const b of right) {
+      combined.add(a === 'standardMatch' || b === 'standardMatch' ? 'standardMatch'
+        : a === 'standardReference' || b === 'standardReference' ? 'standardReference'
+          : a === 'candidate' || b === 'candidate' ? 'candidate' : 'none');
+    }
+    return combined;
+  }
+  if (op !== '=') return unproven();
+  for (const [left, right] of [[parts[0], parts[2]], [parts[2], parts[0]]]) {
+    const name = attributeAt(left, query);
+    const value = literalAt(right, query);
+    if (name && isCandidate(name)
+        && value && (value.type === 'int' || value.type === 'float' || value.type === 'string')
+        && String(value.value) === String(status)) {
+      const identity = tempoAttributeIdentity(name)!;
+      return new Set([HTTP_STATUS_KEYS.has(identity.key) ? 'standardMatch' : 'candidate']);
+    }
+  }
+  return unproven();
+}
+
+function requiresHttpStatus(node: TraceqlNode, query: string, status: number, isCandidate: StatusCandidate): boolean {
+  return [...statusEvidence(node, query, status, isCandidate)]
+    .every(evidence => evidence === 'standardMatch' || evidence === 'candidate');
+}
+
+/** Require matching standard status evidence or a candidate value across spanset operators.
+ * Nonstandard candidate meaning still requires user review.
  * Positive relationships require both operands to match; negative relationships only require the
  * right-hand set. A predicate on the excluded left side does not prove its presence in the trace. */
-function spansetRequiresHttpStatus(node: TraceqlNode, query: string, status: number): boolean {
-  if (node.name === 'SpansetFilter') return requiresHttpStatus(node, query, status);
+function spansetRequiresHttpStatus(node: TraceqlNode, query: string, status: number, isCandidate: StatusCandidate): boolean {
+  if (node.name === 'SpansetFilter') return requiresHttpStatus(node, query, status, isCandidate);
   if (!['TraceQL', 'SpansetPipeline', 'WrappedSpansetPipeline', 'SpansetPipelineExpression'].includes(node.name)) return false;
   const parts = children(node).filter(child => node.name !== 'TraceQL' || child.name !== 'WithHint');
-  if (parts.length === 1) return spansetRequiresHttpStatus(parts[0], query, status);
+  if (parts.length === 1) return spansetRequiresHttpStatus(parts[0], query, status, isCandidate);
   // The pinned grammar leaves the sibling operator anonymous, unlike the other binary operators.
   // This gap contains only the operator and comments; do not interpret operator text inside comments.
   if (parts.length === 2 && node.name === 'SpansetPipelineExpression') {
     const gap = query.slice(parts[0].to, parts[1].from)
       .replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, '').trim();
-    return gap === '~' && (spansetRequiresHttpStatus(parts[0], query, status)
-      || spansetRequiresHttpStatus(parts[1], query, status));
+    return gap === '~' && (spansetRequiresHttpStatus(parts[0], query, status, isCandidate)
+      || spansetRequiresHttpStatus(parts[1], query, status, isCandidate));
   }
   if (parts.length !== 3) return false;
   const op = query.slice(parts[1].from, parts[1].to).trim();
-  const right = () => spansetRequiresHttpStatus(parts[2], query, status);
+  const right = () => spansetRequiresHttpStatus(parts[2], query, status, isCandidate);
   if (['!>>', '!<<', '!>', '!<', '!~'].includes(op)) return right();
-  const left = spansetRequiresHttpStatus(parts[0], query, status);
+  const left = spansetRequiresHttpStatus(parts[0], query, status, isCandidate);
   if (op === '||') return left && right();
   if (['&&', '|', '>>', '<<', '>', '<', '~', '&>>', '&<<', '&>', '&<', '&~'].includes(op)) {
     return left || right();
@@ -271,7 +317,6 @@ function traceqlSchemaProblem(tree: ReturnType<typeof traceqlParser.parse>, quer
     };
   };
   let problem: string | null = null;
-  let hasUnclassifiedAttributes = false;
   // Resolve all names before literal validation, so a repairable type mismatch cannot hide
   // the fact that discovery did not establish another requested attribute.
   if (attributes) tree.iterate({ enter(node) {
@@ -281,10 +326,6 @@ function traceqlSchemaProblem(tree: ReturnType<typeof traceqlParser.parse>, quer
       if (!observedFor(name)) {
         problem = 'TraceQL schema mismatch: a custom attribute was not observed';
         return false;
-      }
-      const identity = tempoAttributeIdentity(name)!;
-      if (!HTTP_STATUS_KEYS.has(identity.key) && identity.key !== 'service.name') {
-        hasUnclassifiedAttributes = true;
       }
     }
   } });
@@ -314,12 +355,18 @@ function traceqlSchemaProblem(tree: ReturnType<typeof traceqlParser.parse>, quer
     const identity = tempoAttributeIdentity(attribute.name);
     return identity && HTTP_STATUS_KEYS.has(identity.key);
   });
-  // This narrow backstop only interprets standard HTTP/service keys. If the draft references any
-  // other observed key, even alongside standard keys, its meaning remains model/user review.
-  // Syntax/name/type validation above still applies to every custom field.
-  if (status !== null && hasStandardHttpEvidence && !hasUnclassifiedAttributes
-      && !spansetRequiresHttpStatus(tree.topNode, query, status)) {
-    return 'TraceQL HTTP-status filter is missing or broadened';
+  const isCandidate: StatusCandidate = name => {
+    const identity = tempoAttributeIdentity(name);
+    if (!identity) return false;
+    if (HTTP_STATUS_KEYS.has(identity.key)) return !attributes || !!observedFor(name);
+    // A model-selected nonstandard field is only a candidate: the equality/value and boolean
+    // checks still apply. Its meaning remains user review; merely referencing it grants no waiver.
+    return !!attributes && identity.key !== 'service.name' && !!observedFor(name);
+  };
+  if (status !== null && !spansetRequiresHttpStatus(tree.topNode, query, status, isCandidate)) {
+    return hasStandardHttpEvidence
+      ? 'TraceQL HTTP-status filter is missing or broadened'
+      : 'TraceQL HTTP-status schema evidence is missing';
   }
   return null;
 }
@@ -375,6 +422,11 @@ export async function generateQuery(input: GenerateQueryInput): Promise<string> 
         ? `TraceQL syntax error at character ${errorAt + 1}`
         : traceqlSchemaProblem(tree, query, input);
       if (problem) {
+        if (problem === 'TraceQL HTTP-status schema evidence is missing') {
+          if (input.tempoSchemaIncomplete || input.tempoSchemaEmpty || input.tempoSchemaNamesTruncated
+              || !input.schemaBlock.trim()) throw tempoSchemaError(input);
+          throw new Error('Could not generate an HTTP-status filter from the observed Tempo schema. Verify the status attribute and use a manually reviewed TraceQL query in Grafana Explore or the Tempo API. (관측된 Tempo 스키마에서 HTTP 상태 필터를 생성하지 못했습니다. 상태 속성을 확인하고 검토한 TraceQL을 Grafana Explore 또는 Tempo API에서 사용하세요.)');
+        }
         if (input.tempoSchemaNamesTruncated
             && problem === 'TraceQL schema mismatch: a custom attribute was not observed') {
           // Re-prompting cannot recover evidence excluded by discovery bounds.
