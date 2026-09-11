@@ -193,3 +193,76 @@ describe('non-SQL datasources', () => {
     expect(getDatasource).not.toHaveBeenCalled(); // slug path → no instance fetch / introspect
   });
 });
+
+describe('empty Tempo observations', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 25));
+
+  it.each([
+    { names_truncated: true, truncated: true },
+    { names_truncated: true, truncated: false },
+    { names_truncated: false, truncated: true },
+    { truncated: true },
+  ])('retries incomplete empty discovery instead of caching an idle-window diagnosis: %j', async (flags) => {
+    getDatasource.mockResolvedValue({ id: 75, kind: 'tempo' });
+    listConfiguredSchemas.mockResolvedValue([{
+      integrationId: 75, kind: 'tempo', schema: { tags: [], attributes: [], ...flags },
+      fetched_at: new Date().toISOString(),
+    }]);
+    resolveConnConfig.mockResolvedValue({ endpoint: 'https://tempo.example', authType: 'none' });
+    invokeMcpLambdaTool.mockResolvedValue({ tags: [], attributes: [], truncated: false });
+    const { POST } = await import('./route');
+    await POST(req({ id: 75, nl: 'HTTP 500' }));
+    expect(lastGen()).toMatchObject({
+      schemaBlock: '', tempoSchemaEmpty: false, tempoSchemaIncomplete: true,
+    });
+    await flush();
+    expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
+    expect(assertDatasourceEndpointAllowed).toHaveBeenCalledWith('https://tempo.example');
+    expect(upsertSchema).toHaveBeenCalled();
+  });
+
+  it('keeps a fresh empty cache distinct from a miss without repeatedly introspecting', async () => {
+    getDatasource.mockResolvedValue({ id: 71, kind: 'tempo' });
+    listConfiguredSchemas.mockResolvedValue([{
+      integrationId: 71, kind: 'tempo', schema: { tags: [], attributes: [], truncated: false },
+      fetched_at: new Date().toISOString(),
+    }]);
+    const { POST } = await import('./route');
+    await POST(req({ id: 71, nl: 'HTTP 500 yesterday' }));
+    await POST(req({ id: 71, nl: 'HTTP 500 yesterday' }));
+    expect(lastGen()).toMatchObject({ lang: 'TraceQL', schemaBlock: '', tempoSchemaEmpty: true });
+    await flush();
+    expect(resolveConnConfig).not.toHaveBeenCalled();
+    expect(invokeMcpLambdaTool).not.toHaveBeenCalled();
+  });
+
+  it('refreshes a stale empty cache under the normal TTL and preserves its state for this request', async () => {
+    getDatasource.mockResolvedValue({ id: 72, kind: 'tempo' });
+    listConfiguredSchemas.mockResolvedValue([{
+      integrationId: 72, kind: 'tempo', schema: { tags: [] }, fetched_at: '2020-01-01T00:00:00Z',
+    }]);
+    resolveConnConfig.mockResolvedValue({ endpoint: 'https://tempo.example', authType: 'none' });
+    invokeMcpLambdaTool.mockResolvedValue({ tags: [], attributes: [] });
+    const { POST } = await import('./route');
+    await POST(req({ id: 72, nl: 'HTTP 500 yesterday' }));
+    expect(lastGen()).toMatchObject({ schemaBlock: '', tempoSchemaEmpty: true });
+    await flush();
+    expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
+    expect(assertDatasourceEndpointAllowed).toHaveBeenCalledWith('https://tempo.example');
+    expect(upsertSchema).toHaveBeenCalled();
+  });
+
+  it('does not use an empty sibling schema as evidence about this instance', async () => {
+    getDatasource.mockResolvedValue({ id: 73, kind: 'tempo' });
+    listConfiguredSchemas.mockResolvedValue([{
+      integrationId: 74, kind: 'tempo', schema: { tags: [] }, fetched_at: new Date().toISOString(),
+    }]);
+    resolveConnConfig.mockResolvedValue({ endpoint: 'https://tempo.example', authType: 'none' });
+    invokeMcpLambdaTool.mockResolvedValue({ tags: [] });
+    const { POST } = await import('./route');
+    await POST(req({ id: 73, nl: 'HTTP 500' }));
+    expect(lastGen()).toMatchObject({ schemaBlock: '', tempoSchemaEmpty: false });
+    await flush();
+    expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
+  });
+});

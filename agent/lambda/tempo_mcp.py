@@ -216,13 +216,18 @@ def _schema_observed_types(creds, attributes, window):
         values = data.get("tagValues", []) if isinstance(data, dict) else None
         if not isinstance(values, list):
             continue
-        truncated |= len(values) >= MAX_SCHEMA_VALUES
+        # A full sample can hide another type beyond the limit. Preserve this per
+        # attribute so the prompt renderer does not present the observed type as
+        # definitive, or confuse a type-sample limit with omitted attribute names.
+        types_truncated = len(values) >= MAX_SCHEMA_VALUES or data.get("truncated") is True
+        truncated |= types_truncated
         types = {
             item["type"] for item in values[:MAX_SCHEMA_VALUES]
             if isinstance(item, dict) and isinstance(item.get("type"), str) and item["type"] in _SCHEMA_TYPES
         }
         if types:
             attributes[identifier]["types"] = sorted(types)
+            attributes[identifier]["types_truncated"] = types_truncated
     return truncated
 
 
@@ -252,10 +257,13 @@ def tempo_schema(args):
             raise
         scoped = False
         data = _get(creds, "/api/search/tags", params, timeout=_SCHEMA_TIMEOUT_S)
-    attributes, raw_names, truncated = _schema_attributes(data, scoped)
-    if scoped:
-        truncated |= _schema_observed_types(creds, attributes, window)
-    body = {"version": version, "tags": [], "attributes": list(attributes.values()), "truncated": truncated}
+    attributes, raw_names, names_truncated = _schema_attributes(data, scoped)
+    types_truncated = _schema_observed_types(creds, attributes, window) if scoped else False
+    body = {
+        "version": version, "tags": [], "attributes": list(attributes.values()),
+        "names_truncated": names_truncated, "types_truncated": types_truncated,
+        "truncated": names_truncated or types_truncated,  # compatibility with older consumers
+    }
     while True:
         body["tags"] = list(dict.fromkeys(raw_names[attr["name"]] for attr in body["attributes"]))
         if len(json.dumps(body, ensure_ascii=False).encode("utf-8")) <= MAX_SCHEMA_BYTES:
@@ -264,6 +272,7 @@ def tempo_schema(args):
         index = next(i for i in range(len(body["attributes"]) - 1, -1, -1)
                      if body["attributes"][i]["name"] not in _SCHEMA_TYPE_ATTRIBUTES)
         body["attributes"].pop(index)
+        body["names_truncated"] = True
         body["truncated"] = True
 
 

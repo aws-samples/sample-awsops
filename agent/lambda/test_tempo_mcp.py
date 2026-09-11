@@ -178,11 +178,11 @@ class TestSchemaIntrospection(_Base):
             "http.status_code", "http.response.status_code", "service.name", "custom",
         ])
         self.assertEqual(body["attributes"], [
-            {"name": "span.http.status_code", "types": ["int", "string"]},
-            {"name": "span.http.response.status_code", "types": ["int"]},
-            {"name": "span.service.name", "types": ["string"]},
+            {"name": "span.http.status_code", "types": ["int", "string"], "types_truncated": False},
+            {"name": "span.http.response.status_code", "types": ["int"], "types_truncated": False},
+            {"name": "span.service.name", "types": ["string"], "types_truncated": False},
             {"name": "span.custom"},
-            {"name": "resource.service.name", "types": ["string"]},
+            {"name": "resource.service.name", "types": ["string"], "types_truncated": False},
             {"name": "resource.custom"},
         ])
         self.assertFalse(body["truncated"])
@@ -237,7 +237,7 @@ class TestSchemaIntrospection(_Base):
         )
         self.assertEqual(out["statusCode"], 200)
         self.assertEqual(body["attributes"], [
-            {"name": "span.http.status_code", "types": ["string"]},
+            {"name": "span.http.status_code", "types": ["string"], "types_truncated": False},
             {"name": "span.http.response.status_code"},
             {"name": "span.custom"},
         ])
@@ -297,7 +297,8 @@ class TestSchemaIntrospection(_Base):
         )
         self.assertEqual(out["statusCode"], 200)
         self.assertEqual(body["attributes"], [
-            {"name": "span.http.status_code"}, {"name": "span.http.response.status_code", "types": ["int"]},
+            {"name": "span.http.status_code"},
+            {"name": "span.http.response.status_code", "types": ["int"], "types_truncated": False},
         ])
 
     def test_quoted_identifiers_preserve_unusual_raw_attribute_names(self):
@@ -419,6 +420,8 @@ class TestSchemaIntrospection(_Base):
                 self.assertEqual(len(body["attributes"]), 200)
                 self.assertLessEqual(len(body["tags"]), 200)
                 self.assertTrue(body["truncated"])
+                self.assertTrue(body["names_truncated"])
+                self.assertFalse(body["types_truncated"])
 
     def test_type_candidates_survive_full_earlier_scopes(self):
         candidates = {
@@ -451,6 +454,8 @@ class TestSchemaIntrospection(_Base):
         self.assertTrue(body["truncated"])
         self.assertNotIn("preview", body)
         self.assertEqual(len(body["tags"]), len(body["attributes"]))
+        self.assertTrue(body["names_truncated"])
+        self.assertFalse(body["types_truncated"])
 
     def test_oversized_and_malformed_legacy_tags_cannot_swamp_schema(self):
         out, body, _ = self.schema(
@@ -470,7 +475,47 @@ class TestSchemaIntrospection(_Base):
             )})},
         )
         self.assertEqual(out["statusCode"], 200)
-        self.assertEqual(body["attributes"], [{"name": "span.http.status_code", "types": ["string"]}])
+        self.assertEqual(body["attributes"], [
+            {"name": "span.http.status_code", "types": ["string"], "types_truncated": True},
+        ])
+        self.assertTrue(body["truncated"])
+
+    def test_type_sampling_limit_is_reported_per_attribute(self):
+        out, body, _ = self.schema(
+            (200, {"scopes": [{"name": "span", "tags": [
+                "http.status_code", "http.response.status_code",
+            ]}]}),
+            values={
+                "span.http.status_code": (200, {"tagValues": [
+                    {"type": "string", "value": "private"} for _ in range(32)
+                ]}),
+                "span.http.response.status_code": (200, {"tagValues": [
+                    {"type": "int", "value": "secret"} for _ in range(31)
+                ]}),
+            },
+        )
+        self.assertEqual(out["statusCode"], 200)
+        self.assertEqual(body["attributes"], [
+            {"name": "span.http.status_code", "types": ["string"], "types_truncated": True},
+            {"name": "span.http.response.status_code", "types": ["int"], "types_truncated": False},
+        ])
+        self.assertTrue(body["truncated"])
+        self.assertNotIn("private", out["body"])
+        self.assertNotIn("secret", out["body"])
+        self.assertFalse(body["names_truncated"])
+        self.assertTrue(body["types_truncated"])
+
+    def test_upstream_type_truncation_is_preserved_below_the_local_limit(self):
+        _, body, _ = self.schema(
+            (200, {"scopes": [{"name": "span", "tags": ["http.status_code"]}]}),
+            values={"span.http.status_code": (200, {
+                "tagValues": [{"type": "string", "value": "503"}],
+                "truncated": True,
+            })},
+        )
+        self.assertEqual(body["attributes"], [
+            {"name": "span.http.status_code", "types": ["string"], "types_truncated": True},
+        ])
         self.assertTrue(body["truncated"])
 
     def test_schema_remains_behind_existing_ssrf_guard(self):
