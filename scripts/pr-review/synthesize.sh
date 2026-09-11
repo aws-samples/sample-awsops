@@ -133,6 +133,10 @@ Synthesize ONE final review, grouped by lens (L2/L3/L4/L5):
 
 Review criteria: bugs, security, logic errors, and violations of this repo's CLAUDE.md/AGENTS.md
 conventions.
+PLATFORM VERSION: GitHub changed pull_request_target on 2025-12-08 to use the default
+branch workflow/GITHUB_SHA regardless of the PR target. Target-base source context
+is a separate SHA. Source:
+https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/
 BASE CONTEXT (avoids false positives): this repo's BASE branch is checked out in the current
 working directory and you can read files (read/grep). The diff is a PATCH applied on top of that
 base and may be a STACKED PR (the base may already define the symbols/imports/DB columns/IAM/

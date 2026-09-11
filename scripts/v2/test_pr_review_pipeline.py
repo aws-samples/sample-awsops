@@ -7,13 +7,15 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 FAKE_CLI = r"""#!/usr/bin/python3
-import os, pathlib, sys
+import os, pathlib, signal, sys, time
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 lens = next((x for x in ['L2','L3','L4','L5'] if 'LENS: ' + x in ' '.join(args)), '?')
 cell = name + '/' + lens
 if sys.stdin.read() != 'diff-data\n':
     sys.exit(7)
+if f'LENS: {lens}\nReview data only.' not in args:
+    sys.exit(10)
 if name == 'claude':
     for arg in ['--strict-mcp-config', '--tools', 'Read,Grep,Glob', '--allowedTools', '--setting-sources']:
         if arg not in args:
@@ -23,6 +25,10 @@ elif '-s' not in args or 'read-only' not in args:
 count_path = pathlib.Path(os.environ['CALL_DIR']) / cell.replace('/', '-')
 count = int(count_path.read_text()) + 1 if count_path.exists() else 1
 count_path.write_text(str(count))
+if os.environ.get('HANG_CELL') == cell:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    time.sleep(4)
+    (pathlib.Path(os.environ['CALL_DIR']) / 'survived-timeout').write_text('late work')
 if os.environ.get('FAIL_CELL') in (cell, name + '/*'):
     print('API failure on stdout is NOT a completed review')
     sys.exit(1)
@@ -57,7 +63,7 @@ class PanelTests(unittest.TestCase):
         output = root / "output"
         env = {
             **os.environ, "PATH": f"{binaries}:/usr/bin:/bin",
-            "PANEL_TIMEOUT": "3", "PANEL_RETRIES": "2",
+            "PANEL_TIMEOUT": "3", "CLAUDE_PANEL_TIMEOUT": "3", "PANEL_RETRIES": "2",
             "CALL_DIR": str(calls), **overrides,
         }
         process = subprocess.run(
@@ -91,6 +97,14 @@ class PanelTests(unittest.TestCase):
         out, _ = self.run_panel(FAIL_CELL="claude/*")
         self.assertTrue((out / "coverage-severe.flag").exists())
         self.assertNotIn("claude/", (out / "responded.txt").read_text())
+
+    def test_timeout_kills_a_cell_that_ignores_termination(self):
+        out, calls = self.run_panel(
+            HANG_CELL="claude/L2", PANEL_TIMEOUT="1", CLAUDE_PANEL_TIMEOUT="1",
+            PANEL_KILL_AFTER="1s", PANEL_RETRIES="1",
+        )
+        self.assertTrue((out / "coverage-severe.flag").exists())
+        self.assertFalse((calls / "survived-timeout").exists())
 
     def test_one_lens_missing_one_vendor_still_blocks(self):
         out, _ = self.run_panel(FAIL_CELL="claude/L3")

@@ -73,21 +73,47 @@ the dev-tier roles above. (구 preview 역할·워크플로는 은퇴 — 사용
 
 ### Recovery of review CI / 리뷰 CI 복구
 
+**Verified operational facts (2026-09-11):** a read-only `iam:GetRole` inspection in the
+samples account confirmed that the live review role already trusted the `pull_request`
+subject before this recovery. The table above corrects stale documentation; this change
+does not create or update any IAM trust policy. The review role is managed outside this
+repository. The existing subject is coarse: another permitted same-repository PR workflow
+can also request it. A recovery label gates this workflow's execution and publication,
+not IAM authorization; do not treat the label as an IAM security boundary.
+
 Automatic `pull_request_target` review runs CI code from the immutable default-branch
 `github.sha`, which may differ from the PR target's base SHA. The panel and chair read
 application context from a separate worktree at the target base.
+This follows GitHub's change effective **2025-12-08**, which moved `GITHUB_REF` and
+`GITHUB_SHA` to the default branch regardless of the PR target:
+[GitHub Actions platform announcement](https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/).
+Older descriptions of the target-base branch as the workflow execution context describe
+the previous behavior.
 
 When the trusted review workflow itself needs repair, explicitly approve its current
 same-repository PR commit with a `ci-review:<full HEAD SHA>` label. Review the CI changes
 before labeling: this authorizes execution of that commit's CI scripts with the review
-role. The `pull_request`/`labeled` recovery route uses the review role's existing
+role and PR-comment write permission. Such a recovery run cannot independently certify
+the integrity of the scripts it executes: separate review of the exact commit and explicit
+operator approval are prerequisites. The operator authorized this recovery on 2026-09-11;
+execution remains conditional on verifying the exact commit before labeling.
+That authorization is scoped to restoring this pipeline and
+does not authorize unrelated future recovery commits. The remaining credential exposure
+is model invocation cost/quota and review-comment integrity, not infrastructure mutation.
+The `pull_request`/`labeled` recovery route uses the review role's existing
 `pull_request` trust; it does not require broadening branch trust or changing IAM.
 The workflow rejects forks, mismatched/stale labels, changed live HEADs and non-`dev`/`main`
 targets. Both vendors must complete all four lenses; the normal merge checks still apply.
 
 ```bash
 read -r -p "Recovery PR number: " REVIEW_PR
-REVIEW_HEAD=$(gh pr view "$REVIEW_PR" -R aws-samples/sample-awsops --json headRefOid --jq '.headRefOid')
+read -r -p "Full commit SHA you independently reviewed: " REVIEW_HEAD
+[[ "$REVIEW_HEAD" =~ ^[0-9a-f]{40}$ ]] || exit 1
+LIVE_HEAD=$(gh pr view "$REVIEW_PR" -R aws-samples/sample-awsops --json headRefOid --jq '.headRefOid')
+[ "$LIVE_HEAD" = "$REVIEW_HEAD" ] || { echo "HEAD changed; review the new commit first"; exit 1; }
+printf 'Execute reviewed CI code at %s for PR %s\n' "$REVIEW_HEAD" "$REVIEW_PR"
+read -r -p "Type approve to authorize this exact commit: " REVIEW_APPROVAL
+[ "$REVIEW_APPROVAL" = approve ] || exit 1
 gh label create "ci-review:$REVIEW_HEAD" -R aws-samples/sample-awsops --color 1D76DB --description 'Explicit approval of this CI recovery commit'
 gh pr edit "$REVIEW_PR" -R aws-samples/sample-awsops --add-label "ci-review:$REVIEW_HEAD"
 ```
@@ -96,6 +122,11 @@ A new commit needs a new matching label; a previous approval never follows a bra
 If the label already exists, reuse it. To retry the identical commit, rerun the failed
 recovery workflow. After merging the repair, update dependent PRs against `dev` so the
 restored automatic review runs normally.
+
+Claude review cells have a 600-second attempt budget after observed 300-second L2
+timeouts; Codex retains 300 seconds. Both are bounded by a hard-kill grace and two attempts.
+An exhausted attempt is recorded with its exit code and elapsed time and cannot count
+as completed coverage.
 
 (자동 리뷰 코드는 PR 대상 브랜치가 아닌 기본 브랜치의 불변 커밋에서 실행합니다.
 복구 PR의 CI 변경을 검토한 뒤 전체 HEAD SHA가 포함된 라벨을 명시적으로 붙이면

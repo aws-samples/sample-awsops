@@ -9,6 +9,8 @@ ensure_slots "$WORK"
 SLOT="$WORK/slot"; RESP="$WORK/responded.txt"; : > "$RESP"
 rm -f "$WORK/coverage-severe.flag"
 T="${PANEL_TIMEOUT:-300}"
+CLAUDE_TIMEOUT="${CLAUDE_PANEL_TIMEOUT:-600}"
+KILL_AFTER="${PANEL_KILL_AFTER:-10s}"
 RETRIES="${PANEL_RETRIES:-2}"
 CLAUDE_MODEL="${CLAUDE_PANEL_MODEL:-${ANTHROPIC_MODEL:-us.anthropic.claude-opus-5}}"
 PANEL_MODELS=(codex claude)
@@ -25,15 +27,21 @@ done
 
 try_panel() {
   local slot="$1" err="$2"; shift 2
-  local a
+  local a started rc
   for a in $(seq 1 "$RETRIES"); do
-    if "$@" > "$slot" 2>"$err" < "$DIFF" && [ -s "$slot" ]; then
-      break
+    started=$SECONDS
+    if "$@" > "$slot" 2>"$err" < "$DIFF"; then
+      [ -s "$slot" ] && return 0
+      rc=0
+    else
+      rc=$?
     fi
     # A failed CLI may print its error on stdout: it is not a completed review.
     : > "$slot"
+    echo "[attempt $a/$RETRIES] $(basename "$slot" .md) exit=$rc elapsed=$((SECONDS-started))s; no completed review" >&2
     [ "$a" -lt "$RETRIES" ] && echo "[retry $a/$RETRIES] $(basename "$slot" .md)" >&2
   done
+  return 1
 }
 
 for lens_file in "${LENS_FILES[@]}"; do
@@ -42,13 +50,13 @@ for lens_file in "${LENS_FILES[@]}"; do
   if command -v codex >/dev/null 2>&1; then
     ( try_panel "$SLOT/codex-$lens.md" "$SLOT/codex-$lens.err" \
         env AWS_REGION="${CODEX_AWS_REGION:-us-east-1}" AWS_DEFAULT_REGION="${CODEX_AWS_REGION:-us-east-1}" \
-        timeout "$T" codex exec -s read-only --skip-git-repo-check "$LENS_PROMPT" ) &
+        timeout --kill-after="$KILL_AFTER" "$T" codex exec -s read-only --skip-git-repo-check "$LENS_PROMPT" ) &
   else echo "[skip] codex/$lens (binary absent)" >&2; : > "$SLOT/codex-$lens.md"; fi
 
   if command -v claude >/dev/null 2>&1; then
     ( try_panel "$SLOT/claude-$lens.md" "$SLOT/claude-$lens.err" \
         env ANTHROPIC_MODEL="$CLAUDE_MODEL" \
-        timeout "$T" claude -p "$LENS_PROMPT" --output-format text \
+        timeout --kill-after="$KILL_AFTER" "$CLAUDE_TIMEOUT" claude -p "$LENS_PROMPT" --output-format text \
         --strict-mcp-config --tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" \
         --setting-sources "" ) &
   else echo "[skip] claude/$lens (binary absent)" >&2; : > "$SLOT/claude-$lens.md"; fi

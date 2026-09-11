@@ -36,10 +36,11 @@ fi
 
 # Must still fetch the PR head SHA explicitly — the base-only checkout (M1 security boundary)
 # has no head objects locally without this.
-if echo "$DIFF_STEP" | grep -q "pull_request.head.sha"; then
-  pass "diff step fetches the PR head sha"
+if echo "$DIFF_STEP" | grep -q 'HEAD_SHA:.*steps.review_context.outputs.head_sha' &&
+   echo "$DIFF_CMDS" | grep -q 'git fetch.*"\$HEAD_SHA"'; then
+  pass "diff step fetches the validated immutable PR head sha"
 else
-  fail "diff step fetches the PR head sha"
+  fail "diff step fetches the validated immutable PR head sha"
 fi
 
 # M1 security boundary must survive: the head ref is never checked out as the working tree
