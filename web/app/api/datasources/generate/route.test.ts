@@ -68,6 +68,26 @@ describe('auth + validation', () => {
 });
 
 describe('Tempo structured observations', () => {
+  it.each([true, false])('preserves name-discovery limits on a populated cache: %s', async namesTruncated => {
+    getDatasource.mockResolvedValue({ id: 44, kind: 'tempo' });
+    listConfiguredSchemas.mockResolvedValue([{
+      integrationId: 44, kind: 'tempo', fetched_at: new Date().toISOString(),
+      schema: {
+        __block: 'span.http.status_code (int)',
+        attributes: [{ name: 'span.http.status_code', types: ['int'], types_truncated: true }],
+        names_truncated: namesTruncated, types_truncated: true, truncated: true,
+      },
+    }]);
+    const { POST } = await import('./route');
+    expect((await POST(req({ id: 44, nl: 'HTTP 500' }))).status).toBe(200);
+    expect(lastGen()).toMatchObject({
+      tempoSchemaNamesTruncated: namesTruncated, tempoSchemaIncomplete: false,
+      tempoSchemaEmpty: false,
+      tempoAttributes: [{ name: 'span.http.status_code', types: ['int'], typesTruncated: true }],
+    });
+    expect(invokeMcpLambdaTool).not.toHaveBeenCalled();
+  });
+
   it('refreshes a confirmed-empty observation after one minute instead of six hours', async () => {
     getDatasource.mockResolvedValue({ id: 41, kind: 'tempo', endpoint: 'http://tempo', authType: 'none' });
     listConfiguredSchemas.mockResolvedValue([{

@@ -79,10 +79,12 @@ function refreshInBackground(accountId: string, ds: DatasourceRow, id: number, k
 }
 
 async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: boolean, kind: string, nl: string): Promise<{
-  schemaBlock: string; tempoSchemaEmpty: boolean; tempoSchemaIncomplete: boolean; tempoAttributes?: TempoAttribute[];
+  schemaBlock: string; tempoSchemaEmpty: boolean; tempoSchemaIncomplete: boolean;
+  tempoSchemaNamesTruncated?: boolean; tempoAttributes?: TempoAttribute[];
 }> {
   const accountId = currentAccountId();
   let tempoSchemaIncomplete = false;
+  let tempoSchemaNamesTruncated = false;
   // Float NL-relevant metric/label names to the front so they survive the render cap (Prometheus/Mimir
   // return hundreds of metrics alphabetically; the relevant ones would otherwise be dropped).
   const render = (schema: unknown, k: string | null) => renderSchemaForPrompt(prioritizeSchemaForQuery(schema, nl), k);
@@ -92,6 +94,7 @@ async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: b
     if (own?.schema) {
       const block = render(own.schema, own.kind);
       const normalized = kind === 'tempo' ? normalizeTempoSchema(own.schema) : undefined;
+      tempoSchemaNamesTruncated = normalized?.namesTruncated ?? false;
       const emptyTempoResult = !!normalized && !block && normalized.attributes.length === 0;
       // A proxy's malformed 200 or a truncated name listing can also normalize
       // to empty arrays. Such results are not evidence of an idle window.
@@ -106,7 +109,7 @@ async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: b
           : isSchemaStale(own.fetched_at);
         if (hasId && ds && stale) refreshInBackground(accountId, ds, id, kind);
         return { schemaBlock: block, tempoSchemaEmpty, tempoSchemaIncomplete: false,
-          ...(normalized ? { tempoAttributes: normalized.attributes } : {}) };
+          ...(normalized ? { tempoAttributes: normalized.attributes, tempoSchemaNamesTruncated } : {}) };
       }
     }
   } catch { /* cache is optional */ }
@@ -117,7 +120,7 @@ async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: b
   // writes a best-effort query and the connector's read-only guard backstops it on run).
   if (hasId && ds) refreshInBackground(accountId, ds, id, kind);
   return { schemaBlock: '', tempoSchemaEmpty: false, tempoSchemaIncomplete,
-    ...(kind === 'tempo' ? { tempoAttributes: [] } : {}) };
+    ...(kind === 'tempo' ? { tempoAttributes: [], tempoSchemaNamesTruncated } : {}) };
 }
 
 export async function POST(request: Request) {

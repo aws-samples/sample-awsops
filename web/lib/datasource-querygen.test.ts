@@ -72,6 +72,43 @@ describe('generateQuery', () => {
     { name: 'resource.service.name', types: ['string'], typesTruncated: false },
   ];
   it.each([
+    'SCHEMA_REQUIRED',
+    '{ span.http.response.status_code = 500 }',
+    '{ resource.service.name = 123 && span.http.response.status_code = 500 }',
+    '{ span.http.response.status_code = 500 && resource.service.name = 123 }',
+  ])(
+    'explains limited name discovery without retrying missing evidence: %s', async draft => {
+      const send = vi.fn().mockResolvedValue(draft);
+      let message = '';
+      try {
+        await generateQuery({
+          nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'observed',
+          tempoAttributes: typedTempo, tempoSchemaNamesTruncated: true,
+          isSql: false, send,
+        });
+      } catch (error) { message = (error as Error).message; }
+      expect(message).toMatch(/discovery.*limited|limited.*discovery/i);
+      expect(message).toContain('200');
+      expect(message).toContain('64 KiB');
+      expect(message).toMatch(/not.*(prove|establish).*absen/i);
+      expect(message).toMatch(/refresh.*same.*limit/i);
+      expect(message).toMatch(/Grafana.*Tempo/i);
+      expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('uses observed fields normally even when other names were truncated', async () => {
+    const draft = '{ span.http.status_code = 500 }';
+    const send = vi.fn().mockResolvedValue(draft);
+    expect(await generateQuery({
+      nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'observed',
+      tempoAttributes: typedTempo, tempoSchemaNamesTruncated: true,
+      isSql: false, send,
+    })).toBe(draft);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
     '{ span.made_up = 500 }',
     '{ span.http.status_code = "500" }',
     '{ status = error }',
