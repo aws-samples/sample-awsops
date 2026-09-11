@@ -27,7 +27,14 @@ on:
 
 jobs:
   review:
-    name: AI Code Review
+    # Keep this eligibility expression identical to `if`: skipped label/fork events must
+    # never publish the canonical required-check name as a successful skipped job.
+    name: >-
+      ${{ github.event.pull_request.head.repo.full_name == github.repository &&
+          (github.event_name == 'pull_request_target' ||
+           (github.event_name == 'pull_request' && github.event.action == 'labeled' &&
+            github.event.label.name == format('ci-review:{0}', github.event.pull_request.head.sha))) &&
+          'AI Code Review' || 'AI review not requested' }}
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       (github.event_name == 'pull_request_target' ||
