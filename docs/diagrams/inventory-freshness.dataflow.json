@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Quota-Safe Inventory Collection & Freshness Disclosure",
+    "output": "docs/diagrams/inventory-freshness-dataflow.html",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1080,
+      780
+    ]
+  },
+  "stages": [
+    {
+      "label": "Sources"
+    },
+    {
+      "label": "Collect"
+    },
+    {
+      "label": "Guard"
+    },
+    {
+      "label": "Persist"
+    },
+    {
+      "label": "Disclose"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "awsapi",
+      "type": "external",
+      "label": "AWS APIs",
+      "sublabel": "List / Get / Describe",
+      "stage": 0,
+      "row": 1,
+      "tag": "read-only"
+    },
+    {
+      "id": "steampipe",
+      "type": "cloud",
+      "label": "Steampipe FDW",
+      "sublabel": "warm Fargate · limiter",
+      "stage": 1,
+      "row": 0,
+      "tag": "rate-limited"
+    },
+    {
+      "id": "sdk",
+      "type": "backend",
+      "label": "SDK collectors",
+      "sublabel": "S3·CF·ELBv2·AOSS",
+      "stage": 1,
+      "row": 2,
+      "tag": "denial-safe"
+    },
+    {
+      "id": "sync",
+      "type": "backend",
+      "label": "sync Lambda",
+      "sublabel": "advisory lock",
+      "stage": 2,
+      "row": 1,
+      "tag": "sanitized logs"
+    },
+    {
+      "id": "guard",
+      "type": "security",
+      "label": "Partial-run guard",
+      "sublabel": "skip · stamp",
+      "stage": 2,
+      "row": 3,
+      "tag": "content-preserving"
+    },
+    {
+      "id": "resources",
+      "type": "database",
+      "label": "inventory_resources",
+      "sublabel": "upsert + 2-phase prune",
+      "stage": 3,
+      "row": 0,
+      "tag": "last-good kept"
+    },
+    {
+      "id": "ledger",
+      "type": "database",
+      "label": "inventory_sync_runs",
+      "sublabel": "run_token CAS finalizer",
+      "stage": 3,
+      "row": 2,
+      "tag": "last_success_at"
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "label": "inventory-read MCP",
+      "sublabel": "freshness disclosure",
+      "stage": 4,
+      "row": 2,
+      "tag": "freshness block"
+    },
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "web BFF",
+      "sublabel": "/inventory · /security",
+      "stage": 4,
+      "row": 0,
+      "tag": "authed"
+    }
+  ],
+  "flows": [
+    {
+      "id": "scan",
+      "from": "awsapi",
+      "to": "steampipe",
+      "label": "table scans",
+      "classification": "quota-guarded",
+      "variant": "default"
+    },
+    {
+      "id": "attr",
+      "from": "awsapi",
+      "to": "sdk",
+      "label": "per-attribute reads",
+      "classification": "per-bucket",
+      "variant": "default"
+    },
+    {
+      "id": "sp-rows",
+      "from": "steampipe",
+      "to": "sync",
+      "label": "rows per connection",
+      "classification": "aggregator",
+      "variant": "emphasis"
+    },
+    {
+      "id": "sdk-recs",
+      "from": "sdk",
+      "to": "sync",
+      "label": "recs + failure metadata",
+      "classification": "unknown_attribute_count",
+      "variant": "emphasis"
+    },
+    {
+      "id": "classify",
+      "from": "sync",
+      "to": "guard",
+      "label": "failure classification",
+      "classification": "steady vs transient",
+      "variant": "security",
+      "labelDy": 60
+    },
+    {
+      "id": "upsert",
+      "from": "sync",
+      "to": "resources",
+      "label": "upsert; SDK-partial skips both prunes",
+      "classification": "unreachable-acct partial still prunes reachable",
+      "variant": "emphasis"
+    },
+    {
+      "id": "finalize",
+      "from": "sync",
+      "to": "ledger",
+      "label": "status + last_success_at (CAS)",
+      "classification": "durable marker",
+      "variant": "emphasis"
+    },
+    {
+      "id": "fresh",
+      "from": "ledger",
+      "to": "mcp",
+      "label": "per-type freshness",
+      "classification": "degraded on unknowns",
+      "variant": "default",
+      "labelAt": [
+        843,
+        428
+      ]
+    },
+    {
+      "id": "reader",
+      "from": "resources",
+      "to": "mcp",
+      "label": "sql_reader views",
+      "classification": "error/run_token excluded",
+      "variant": "security"
+    },
+    {
+      "id": "bff",
+      "from": "resources",
+      "to": "web",
+      "label": "findings + attributes_unknown",
+      "classification": "row-level disclosure",
+      "variant": "default",
+      "labelAt": [
+        935,
+        200
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Quota-Safe Collection",
+      "items": [
+        "Steampipe plugin rate limiter is env-tunable and bounds-validated (STEAMPIPE_AWS_MAX_CONCURRENCY / BUCKET_SIZE / FILL_RATE)",
+        "SDK collectors tolerate per-attribute denials instead of failing whole sweeps",
+        "A transient sub-call failure marks the run partial and skips both prune phases"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Content-Preserving Partials",
+      "items": [
+        "A transiently-degraded rec is skipped, never upserted over last-known-good row content",
+        "Steady-state denials keep the row with None fields plus a per-row attributes_unknown marker",
+        "Failed runs return and persist only the bounded 'sync failed: <ExceptionType>' label",
+        "An unreachable-account partial still prunes reachable accounts — only that account's last-good rows are preserved"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Honest Freshness",
+      "items": [
+        "run_token CAS keeps last_success_at truthful across superseding and failed runs",
+        "A succeeded run with unknown_attribute_count > 0 is disclosed as degraded, never healthy",
+        "query_inventory and inventory_summary carry the per-type freshness block; the sql_reader view still excludes error and run_token"
+      ]
+    }
+  ]
+}

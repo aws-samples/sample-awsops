@@ -61,6 +61,29 @@ def _sql(conn):
     return "\n".join(" ".join(sql.split()).lower() for sql, _ in conn.calls)
 
 
+@pytest.mark.parametrize("content", [None, "", "no header", "CONFIDENCE:", "CONFIDENCE: certain",
+                                    "CONFIDENCE: HIGH", "CONFIDENCE:\nhigh"])
+def test_missing_or_malformed_confidence_is_conservative(content):
+    assert rootcause.parse_rca(content)["confidence"] == "low"
+
+
+@pytest.mark.parametrize("confidence", ["high", "medium", "low"])
+def test_explicit_valid_confidence_is_preserved(confidence):
+    content = f"ROOT_CAUSE: bad deploy\nCATEGORY: deployment\nCONFIDENCE: {confidence}\n\nAnalysis"
+    assert rootcause.parse_rca(content)["confidence"] == confidence
+
+
+def test_missing_confidence_persists_low_on_default_path(monkeypatch):
+    conn = FakeConn({"id": "i1"})
+    monkeypatch.delenv("RCA_ORCHESTRATOR_ENABLED", raising=False)
+    monkeypatch.setattr(rootcause.db, "connect", lambda: conn)
+    monkeypatch.setattr(agent_bridge, "invoke", lambda *a, **kw: "ROOT_CAUSE: uncertain\nCATEGORY: unknown")
+    result = rootcause.lambda_handler({"incident_id": "i1"}, None)
+    assert result["rca"]["confidence"] == "low"
+    assert conn.incident["rca"]["confidence"] == "low"
+    assert conn.stages == [] and conn.closed
+
+
 def test_rca_orchestrator_branch_invokes_agent_and_persists(monkeypatch):
     conn = FakeConn({"id": "i1", "services": ["ec2:x"], "resources": []})
     monkeypatch.setenv("RCA_ORCHESTRATOR_ENABLED", "true")

@@ -40,6 +40,29 @@ completed 2026-08-02. Note the runtime nuance (matches the customer deck's slide
 the BFF-local live-Steampipe path is closed by design (ADR-001/010, `steampipeAvailable()`
 hard-`false`); the 9 gateway-routed keys answer via their own agents.
 
+**2026-08-31 rollout note (ADR-021):** Phase 1's quota guard, structured terminal state,
+and freshness threshold are implemented in the repository. The agent making this change did not
+run apply; controller deployment status must be verified separately. **Current truth is
+coexistence: the ops gateway's limited Aurora-backed `inventory-read-target` is already present
+alongside direct domain inventory/configuration control-plane targets.** `query_inventory` and
+`inventory_summary` disclose per-type `healthy|degraded|stale|unavailable` using durable
+last-success metadata and the oldest current row timestamp. A later failed/partial/running attempt
+does not erase a genuine zero-row success, and preserved stale rows cannot be hidden by newer rows.
+Phase 2 expands domain-aware Aurora coverage and retires direct targets after parity; Aurora-only
+is not live. Phase 3 cache work is also pending.
+ADR-005's mutation/autonomy FROZEN posture is unchanged.
+
+**2026-08-31 롤아웃 노트(ADR-021):** Phase 1 쿼터 가드, structured terminal state,
+freshness threshold는 저장소에 구현됐다. 이 변경을 수행한 에이전트는 apply를 실행하지
+않았고 controller 배포 상태는 별도 확인한다. **현재 ops gateway의 limited Aurora
+`inventory-read-target`이 direct domain inventory/configuration target과 공존한다.**
+`query_inventory`와 `inventory_summary`는 durable last-success와 현재 row의 가장 오래된
+수집 시각으로 type별 `healthy|degraded|stale|unavailable`을 공개한다. 이후
+failed/partial/running 실행은 성공한 0-row 기록을 지우지 않으며 새 row가 preserved stale
+row를 가리지 않는다. Phase 2가
+domain-aware coverage를 확장하고 parity 뒤 direct target을 retirement하므로 Aurora-only는
+아직 live가 아니다. Phase 3 cache도 pending이며 ADR-005 FROZEN은 바뀌지 않는다.
+
 **Provisioner:** `scripts/v2/agentcore/{catalog.py, provision.py}` — `catalog.py` holds
 the 9 gateway names + the target tool schemas; `provision.py` does boto3 `list →
 create/update` for Runtime, the 9 gateways, the target slices, Memory, and the Code
@@ -67,12 +90,15 @@ Terraform; `provision.py` overwrites with real values.
 
 - **ADR-004** — AgentCore gateways & runtime, incl. runtime-customizable agents & skills
   (Aurora catalog + resolver + registry-agnostic `agent.py`; built-in vs custom tiers;
-  per-account Agent Spaces; BYO-MCP). [`../../decisions/004-agentcore-gateways-runtime.md`](../../decisions/004-agentcore-gateways-runtime.md)
+  per-account Agent Spaces; BYO-MCP). [`../decisions/004-agentcore-gateways-runtime.md`](../decisions/004-agentcore-gateways-runtime.md)
 - **ADR-004** — gateway role split (note the **2026-06-03 correction: 7 → 8 gateways**).
-  [`../../decisions/004-agentcore-gateways-runtime.md`](../../decisions/004-agentcore-gateways-runtime.md)
+  [`../decisions/004-agentcore-gateways-runtime.md`](../decisions/004-agentcore-gateways-runtime.md)
 - **ADR-003** — AI agent routing (hybrid routing & multi-route parallel synthesis; the
   classifier picks built-in routes + enabled custom agents).
-  [`../../decisions/003-ai-agent-routing.md`](../../decisions/003-ai-agent-routing.md)
+  [`../decisions/003-ai-agent-routing.md`](../decisions/003-ai-agent-routing.md)
+- **ADR-021** — quota-isolated inventory reads; Phase 1 repository implementation complete,
+  limited ops Aurora reader coexists with direct targets, Phase 2/3 cutover pending.
+  [`../decisions/021-quota-isolated-inventory-reads.md`](../decisions/021-quota-isolated-inventory-reads.md)
 
 ## Key files / 핵심 파일
 

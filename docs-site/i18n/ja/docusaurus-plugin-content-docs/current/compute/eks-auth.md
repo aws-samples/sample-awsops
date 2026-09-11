@@ -6,6 +6,7 @@ description: AWSops EC2 インスタンスから EKS クラスターにアクセ
 
 # EKS 認証設定
 
+
 :::caution v1 アーカイブ文書 — v2 には適用されません
 このページは v1（EC2 インスタンス + Steampipe）アーキテクチャの認証手順を説明しています。v2 は ECS Fargate ベースで、EKS 認証は `terraform/foundation/eks.tf` が **web タスクロールに Access Entry + `AmazonEKSAdminViewPolicy`** を付与する方式に置き換えられています。このページのコマンド（SSH、`AmazonEKSClusterAdminPolicy`、`data/config.json` など）を v2 環境に適用しないでください。
 :::

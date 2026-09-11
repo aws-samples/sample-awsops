@@ -34,11 +34,13 @@ export async function POST(request: Request) {
   // Resolve the kind + (for an instance id) the inline conn-config.
   let kind = '';
   let connConfig: ConnConfig | undefined;
+  let dsTimeoutS: number | undefined; // gap L203: per-datasource upstream execution bound
   const id = Number(body.id);
   if (Number.isInteger(id) && id > 0) {
     const ds = await getDatasource(id);
     if (!ds || !isDatasourceKind(ds.kind)) return json({ error: 'unknown datasource instance' }, 400);
     kind = ds.kind;
+    dsTimeoutS = ds.settings?.timeoutS; // defensive: older callers/mocks may lack the field
     connConfig = await resolveConnConfig(ds); // row endpoint (authoritative) + SM cred — works even for auth=none
   } else {
     kind = typeof body.slug === 'string' ? body.slug : '';
@@ -58,11 +60,15 @@ export async function POST(request: Request) {
 
   const args: Record<string, unknown> = { [spec.arg]: query, ...(spec.extra ?? {}) };
 
-  // Upstream execution bound (review hardening): prometheus/mimir accept a `timeout` API param
-  // (connector clamps 1..60s) — pass one under the connector's own 12s HTTP timeout so the
-  // upstream engine stops evaluating when the client gives up. Scoped strictly to the kinds
-  // whose connector reads it, so no other kind sees an unknown arg.
-  if (kind === 'prometheus' || kind === 'mimir') args.timeout = '10s';
+  // Upstream execution bound (review hardening + gap L203 per-datasource setting):
+  // prometheus/mimir accept a `timeout` API param — the effective value is the datasource's
+  // own timeoutS (validated 1..60) further capped at 10s so it stays UNDER the connector's
+  // 12s HTTP timeout (a longer upstream bound than the HTTP client's is dead config).
+  // clickhouse needs NO arg here: its timeoutS rides the conn config (resolveConnConfig) and
+  // the connector applies it as the default max_execution_time on EVERY path — Explore,
+  // service-graph sources, and the agent/worker secret path — aligning its own HTTP timeout
+  // above the bound. Other kinds see no unknown arg.
+  if (kind === 'prometheus' || kind === 'mimir') args.timeout = `${Math.min(dsTimeoutS ?? 10, 10)}s`;
 
   // Range mode: absent/false = instant; true = legacy 1h range (connector default);
   // { window, step } = explicit time range. An object range is validated regardless of kind (so a bad

@@ -22,6 +22,8 @@ function fmtValue(v: number, fmt: LiveTrendMetric['fmt']): string {
     case 'mbRaw': return `${v.toFixed(1)} MB`; // source metric already in megabytes (AWS/ES)
     case 'ms': return `${Math.round(v * 1000) / 1000} ms`;
     case 'bps': return `${(v / 1e6).toFixed(1)} MB/s`;
+    case 'iops': return `${(Math.round(v * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 })} IOPS`;
+    case 'dec1': return (Math.round(v * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 });
     default: return Math.round(v).toLocaleString();
   }
 }

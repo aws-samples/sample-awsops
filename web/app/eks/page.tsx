@@ -48,7 +48,7 @@ interface FleetEvent {
   count: number; lastSeen: string; lastSeenTs: number;
 }
 interface FleetCluster {
-  name: string; reachable: boolean;
+  name: string; reachable: boolean; error?: string;
   counts: { nodes: number; nodesReady: number; pods: number; podsRunning: number; deployments: number; services: number };
   nodeAgg: NodeAgg[];
   instanceTypes: Array<{ type: string; count: number }>;
@@ -61,7 +61,7 @@ interface FleetCluster {
 const fmtMib = (mib: number): string => (mib >= 1024 ? `${(mib / 1024).toFixed(1)}G` : `${Math.round(mib)}M`);
 
 export default function EksPage() {
-  const { tt } = useI18n();
+  const { tt, lang } = useI18n();
   const [activeAccount] = useActiveAccount();
   const [rows, setRows] = useState<Cluster[] | null>(null);
   const [admin, setAdmin] = useState(false);
@@ -81,6 +81,7 @@ export default function EksPage() {
   const [regMode, setRegMode] = useState<'entry' | 'sa-token' | 'assume-role'>('sa-token');
   const [busyCluster, setBusyCluster] = useState('');
   const [fleet, setFleet] = useState<FleetCluster[]>([]);
+  const [fleetLoaded, setFleetLoaded] = useState(false);
   const [copied, setCopied] = useState('');
   const [busy, setBusy] = useState(false);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
@@ -107,7 +108,7 @@ export default function EksPage() {
     const seq = ++fleetSeqRef.current;
     fetch('/api/eks/fleet')
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (d && seq === fleetSeqRef.current) setFleet(d.clusters ?? []); })
+      .then((d) => { if (d && seq === fleetSeqRef.current) { setFleet(d.clusters ?? []); setFleetLoaded(true); } })
       .catch(() => {});
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -128,7 +129,7 @@ export default function EksPage() {
           try {
             const r = await fetch('/api/eks/fleet');
             const d = r.ok ? await r.json() : null;
-            if (d && seq === fleetSeqRef.current) setFleet(d.clusters ?? []);
+            if (d && seq === fleetSeqRef.current) { setFleet(d.clusters ?? []); setFleetLoaded(true); }
           } catch { /* keep previous fleet */ }
         })(),
       ]);
@@ -317,6 +318,32 @@ export default function EksPage() {
       {notice && <div className="text-[13px] text-brand-700">{notice}</div>}
       {!rows && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
 
+      {/* Page-level no-access banner (gap L227, v1 parity): clusters exist but ZERO K8s data
+          is reachable — title + why (the fleet route's per-cluster error, mono box) + the
+          docs-site EKS auth guide link. Never while the fleet is still loading. */}
+      {rows && rows.length > 0 && fleetLoaded && fleet.length > 0 && fleet.every((f) => !f.reachable) && (
+        <div className="rounded-lg border border-amber-300 border-l-[3px] bg-amber-50 p-4">
+          <div className="text-[14px] font-semibold text-amber-800">{tt('K8s 데이터에 접근할 수 없습니다')}</div>
+          <p className="mt-1 text-[13px] text-amber-700">
+            {tt('등록된 클러스터가 있지만 어느 클러스터에서도 라이브 데이터를 읽지 못했습니다. Access Entry(AmazonEKSAdminViewPolicy) 부여와 클러스터 등록(인증) 상태를 확인하세요.')}
+          </p>
+          {(() => { const errs = fleet.filter((f) => f.error).slice(0, 2); return errs.length > 0 ? (
+            <pre className="mt-2 overflow-x-auto rounded bg-white/70 p-2 font-mono text-[11.5px] text-amber-900">{errs.map((f) => `${f.name}: ${f.error}`).join('\n')}</pre>
+          ) : null; })()}
+          {/* v2-current EKS overview guide (registration + Access Entry / Register ViewPolicy
+              flow) — NOT the archived v1 eks-auth page. Locale-aware: ko is the docs-site
+              default locale (root path), others live under /{lang}. A constant, not an env —
+              NEXT_PUBLIC_* inlines at build time and the Dockerfile passes no such ARG. */}
+          <a
+            href={`https://www.atomai.click/awsops${lang === 'ko' ? '' : `/${lang}`}/compute/eks`}
+            target="_blank" rel="noreferrer"
+            className="mt-2 inline-block text-[13px] font-medium text-amber-800 underline underline-offset-2"
+          >
+            {tt('EKS 인증 가이드 문서 →')}
+          </a>
+        </div>
+      )}
+
       {admin && regOpen && (
         <Card title="클러스터 등록" subtitle="클러스터를 선택하고 연결 방식을 지정하세요 — 인증은 Aurora에 저장되며 조회 전용입니다 (v1 kubeconfig 등록 대응).">
           <div className="flex flex-col gap-3 text-[12px]">
@@ -367,7 +394,7 @@ export default function EksPage() {
                 <input
                   value={authRole}
                   onChange={(e) => setAuthRole(e.target.value)}
-                  placeholder={tt('arn:aws:iam::123456789012:role/eks-read (클러스터에 Access Entry 보유)')}
+                  placeholder={tt('arn:aws:iam::123456789012:role/AWSopsReadOnlyRole (클러스터에 Access Entry 보유)')}
                   className="w-full max-w-xl rounded-md border border-ink-200 bg-card px-2 py-1.5 font-mono text-[11px]"
                 />
                 <input
@@ -376,7 +403,7 @@ export default function EksPage() {
                   placeholder={tt('External ID (선택)')}
                   className="w-full max-w-xl rounded-md border border-ink-200 bg-card px-2 py-1.5 font-mono text-[11px]"
                 />
-                <p className="text-ink-400">{tt('해당 클러스터에 Access Entry가 있는 IAM Role을 AssumeRole 해서 조회합니다.')}</p>
+                <p className="text-ink-400">{tt('해당 클러스터에 Access Entry가 있는 IAM Role을 AssumeRole 해서 조회합니다. web 태스크의 AssumeRole 권한은 role 이름 AWSopsReadOnlyRole로 고정되어 있어, 다른 이름의 role은 조회 시점에 실패합니다.')}</p>
               </div>
             )}
             {regMode === 'entry' && (
@@ -535,7 +562,7 @@ export default function EksPage() {
                         <input
                           value={authRole}
                           onChange={(e) => setAuthRole(e.target.value)}
-                          placeholder={tt('arn:aws:iam::123456789012:role/eks-read (클러스터에 Access Entry 보유)')}
+                          placeholder={tt('arn:aws:iam::123456789012:role/AWSopsReadOnlyRole (클러스터에 Access Entry 보유)')}
                           className="w-full rounded-md border border-ink-200 bg-card px-2 py-1.5 font-mono text-[11px]"
                         />
                         <input

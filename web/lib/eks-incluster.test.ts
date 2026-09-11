@@ -199,6 +199,19 @@ describe('normalizers', () => {
     expect(row).toMatchObject({ name: 'web-abc', namespace: 'default', status: 'Running', node: 'ip-10-0-1-5', restarts: 5, age: '5h' });
   });
 
+  it('pod: podIP + serviceAccount mapped, empty string when the API omits them (gap L226)', () => {
+    const row = normalizePod({
+      metadata: { name: 'p', namespace: 'd' },
+      status: { phase: 'Running', podIP: '10.0.1.23' },
+      spec: { nodeName: 'n1', serviceAccountName: 'app-sa' },
+    });
+    expect(row.podIP).toBe('10.0.1.23');
+    expect(row.serviceAccount).toBe('app-sa');
+    const bare = normalizePod({ metadata: { name: 'q', namespace: 'd' }, status: { phase: 'Pending' }, spec: {} });
+    expect(bare.podIP).toBe('');
+    expect(bare.serviceAccount).toBe('');
+  });
+
   it('deployment: ready as readyReplicas/spec.replicas + upToDate + available', () => {
     const row = normalizeDeployment({
       metadata: { name: 'api', namespace: 'prod' },
@@ -214,6 +227,32 @@ describe('normalizers', () => {
       spec: { type: 'ClusterIP', clusterIP: '10.100.0.1', ports: [{ port: 80, protocol: 'TCP' }, { port: 443, protocol: 'TCP' }] },
     });
     expect(row).toMatchObject({ name: 'svc', namespace: 'default', type: 'ClusterIP', clusterIP: '10.100.0.1', ports: '80/TCP,443/TCP' });
+    // gap L229: no selector in spec → field ABSENT (selectorless services join nothing)
+    expect(row.selector).toBeUndefined();
+  });
+
+  it('service: spec.selector passes through only when non-empty (gap L229)', () => {
+    const withSel = normalizeService({
+      metadata: { name: 'svc', namespace: 'default' },
+      spec: { type: 'ClusterIP', clusterIP: '10.100.0.1', ports: [], selector: { app: 'web' } },
+    });
+    expect(withSel.selector).toEqual({ app: 'web' });
+    const emptySel = normalizeService({
+      metadata: { name: 'svc', namespace: 'default' },
+      spec: { type: 'ClusterIP', clusterIP: '10.100.0.1', ports: [], selector: {} },
+    });
+    expect(emptySel.selector).toBeUndefined(); // {} joins nothing meaningfully
+  });
+
+  it('pod: metadata.labels passes through (gap L229 — the selector join side)', () => {
+    const row = normalizePod({
+      metadata: { name: 'p', namespace: 'ns', labels: { app: 'web', tier: 'fe' } },
+      status: { phase: 'Running' },
+      spec: { nodeName: 'n' },
+    });
+    expect(row.labels).toEqual({ app: 'web', tier: 'fe' });
+    const bare = normalizePod({ metadata: { name: 'p', namespace: 'ns' }, status: { phase: 'Running' }, spec: {} });
+    expect(bare.labels).toBeUndefined();
   });
 
   it('namespace: name + phase', () => {

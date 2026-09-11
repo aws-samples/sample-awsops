@@ -12,14 +12,24 @@ the view, and the row-copy key must never be. These assertions read the migratio
 on either side of the contract moving.
 """
 import os
+import importlib.util
 import re
 import unittest
+from glob import glob
 
 import inventory_read_mcp as inv
 
 MIGRATION = os.path.join(
     os.path.dirname(__file__), "..", "..", "terraform", "foundation", "migrations",
     "01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql")
+FRESHNESS_MIGRATION_GLOB = os.path.join(
+    os.path.dirname(__file__), "..", "..", "terraform", "foundation", "migrations",
+    "*_inventory_sync_freshness.sql")
+# The CURRENT owner of sql_reader.inventory_sync_runs: it recreates the view the freshness
+# migration first widened, adding unknown_attribute_count.
+UNKNOWN_ATTRS_MIGRATION_GLOB = os.path.join(
+    os.path.dirname(__file__), "..", "..", "terraform", "foundation", "migrations",
+    "*_inventory_sync_unknown_attrs.sql")
 
 
 def _entries():
@@ -116,6 +126,67 @@ class TestInventoryViewContract(unittest.TestCase):
             cols = _view_columns(table)
             for c in needed:
                 self.assertIn(c, cols, f"{table} view lost {c!r}, which inventory_read_mcp selects")
+
+    def test_inventory_sync_runs_view_exposes_durable_freshness_without_error_text(self):
+        matches = glob(FRESHNESS_MIGRATION_GLOB)
+        self.assertEqual(len(matches), 1, "expected one inventory_sync_freshness migration")
+        src = open(matches[0], encoding="utf-8").read()
+        match = re.search(
+            r"CREATE\s+VIEW\s+sql_reader\.inventory_sync_runs.*?AS\s+SELECT\s+(.*?)"
+            r"\s+FROM\s+public\.inventory_sync_runs",
+            src,
+            re.I | re.S,
+        )
+        self.assertIsNotNone(match, "freshness migration must recreate inventory_sync_runs view")
+        columns = match.group(1).lower()
+        for column in (
+            "resource_type", "account_id", "started_at", "finished_at", "status", "row_count",
+            "last_success_at", "last_success_row_count",
+        ):
+            self.assertRegex(columns, rf"\b{column}\b")
+        self.assertNotRegex(columns, r"\berror\b")
+        self.assertNotRegex(columns, r"\brun_token\b")
+
+    def test_inventory_sync_runs_view_exposes_unknown_attribute_count(self):
+        # _sync_freshness() selects unknown_attribute_count to degrade a succeeded run with
+        # attribute blind spots; the view that ships last must expose it, or the reader role
+        # gets "column does not exist" — the same outage class this file exists to prevent.
+        matches = glob(UNKNOWN_ATTRS_MIGRATION_GLOB)
+        self.assertEqual(len(matches), 1, "expected one inventory_sync_unknown_attrs migration")
+        src = open(matches[0], encoding="utf-8").read()
+        match = re.search(
+            r"CREATE\s+VIEW\s+sql_reader\.inventory_sync_runs.*?AS\s+SELECT\s+(.*?)"
+            r"\s+FROM\s+public\.inventory_sync_runs",
+            src,
+            re.I | re.S,
+        )
+        self.assertIsNotNone(match, "unknown_attrs migration must recreate inventory_sync_runs view")
+        columns = match.group(1).lower()
+        for column in (
+            "resource_type", "account_id", "started_at", "finished_at", "status", "row_count",
+            "last_success_at", "last_success_row_count", "unknown_attribute_count",
+        ):
+            self.assertRegex(columns, rf"\b{column}\b")
+        self.assertNotRegex(columns, r"\berror\b")
+        self.assertNotRegex(columns, r"\brun_token\b")
+
+    def test_inventory_summary_catalog_contract_names_host_scoped_current_count(self):
+        catalog_path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "scripts", "v2", "agentcore", "catalog.py"
+        )
+        spec = importlib.util.spec_from_file_location("agentcore_catalog_contract", catalog_path)
+        catalog = importlib.util.module_from_spec(spec)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        spec.loader.exec_module(catalog)
+        tools = catalog.TARGETS["inventory-read-target"]["tools"]
+        summary = next(tool for tool in tools if tool["name"] == "inventory_summary")
+        description = summary["description"].lower()
+        self.assertIn("current_count", description)
+        self.assertTrue(
+            "host" in description or "self" in description,
+            "inventory_summary catalog must disclose that current_count is host/self-scoped",
+        )
 
 
     def test_a_projection_is_dollar_quoted_so_its_inner_quotes_survive(self):

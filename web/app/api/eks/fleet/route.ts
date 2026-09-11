@@ -54,8 +54,12 @@ export async function GET(request: Request) {
         podsByNamespace: podsByNamespace(pods).slice(0, NS_CAP),
         events: [...events].sort((a, b) => b.lastSeenTs - a.lastSeenTs).slice(0, EVENTS_CAP),
       };
-    } catch {
-      return empty(name);
+    } catch (e) {
+      // gap L227: surface the live-read failure (truncated) so the /eks no-access banner can
+      // show WHY (v1 parity — it showed the raw error string); still degrades to reachable:false.
+      // INVARIANT this leans on: eks-incluster's eksToken() swallows credential-path errors
+      // internally, so no secret material can appear in this message — keep it that way.
+      return { ...empty(name), error: String(e instanceof Error ? e.message : e).slice(0, 300) };
     }
   }));
   return Response.json({ clusters });

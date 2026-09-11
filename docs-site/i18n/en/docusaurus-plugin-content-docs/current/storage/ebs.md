@@ -34,9 +34,12 @@ View volumes and snapshots in separate tabs:
 Click on a volume to view in the right panel:
 - Volume ID, name, type, size
 - IOPS, Throughput, AZ
+- Live measured metrics (Read/Write IOPS · Queue Length · Burst Balance [published for gp2/st1/sc1 only]) — latest values + 1-hour 5-min sparklines (CloudWatch; a missing series reads as unavailable)
 - Multi-Attach setting
-- Encryption status and KMS key
-- Attached EC2 instance information
+- **Encryption verdict banner**: encrypted (green, with the KMS key) / unencrypted (red, with the encrypted-copy recommendation) — no banner when encryption is unknown
+- **Idle-volume hint**: a banner recommending cleanup when the volume was detached (available) at the last sync
+- Encryption status and KMS key (fields)
+- Attached EC2 instance information — each attachment flags **DeleteOnTermination** when set (the volume is deleted with the instance)
 - List of snapshots for the volume
 
 ## How to Use
@@ -56,11 +59,12 @@ In the "Attached Resources" section of the volume detail panel:
 - Attached EC2 instance ID
 - Device path (e.g., /dev/xvda)
 - Instance name, type, status
+- DeleteOnTermination flag (shown only on attachments that have it set)
 
 ## Tips
 
 :::tip Idle Volume Management
-Volumes in "available" state are not attached to EC2 and only incur costs. Check idle volumes in the Idle Volumes card and delete unnecessary volumes.
+Volumes in "available" state are not attached to EC2 and only incur costs. Check them in the Idle Volumes card and the idle banner in the volume detail, and delete unnecessary volumes.
 :::
 
 :::info Encryption Recommended

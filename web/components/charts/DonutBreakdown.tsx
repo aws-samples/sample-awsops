@@ -9,7 +9,12 @@ import { tooltipStyles } from './theme';
 
 export interface DonutBreakdownProps {
   title: ReactNode;
+  subtitle?: ReactNode;
   right?: ReactNode;
+  /** Center-total label (default '합계'). Pass an honest qualifier when the DATA ITSELF is a
+   *  server-capped subset (e.g. '상위 10 합계') — the center figure is the sum of what was
+   *  given, and labeling a partial sum 합계 fabricates a fleet total. */
+  centerLabel?: string;
   data: Array<Record<string, unknown>>;
   nameKey: string;
   valueKey: string;
@@ -32,6 +37,8 @@ export interface DonutBreakdownProps {
  */
 export default function DonutBreakdown({
   title,
+  subtitle,
+  centerLabel,
   right,
   data,
   nameKey,
@@ -44,10 +51,10 @@ export default function DonutBreakdown({
   const { tt } = useI18n();
   const c = useChartColors();
   const total = data.reduce((s, d) => s + (Number(d[valueKey]) || 0), 0);
-  const fmtTotal =
-    valuePrefix === '$'
-      ? `$${Math.round(total).toLocaleString()}`
-      : total.toLocaleString();
+  // $ keeps CENTS (2dp) — Math.round showed a real sub-dollar spend as a fabricated $0 next to a
+  // nonzero slice, and disagreed with the page's own usd()/2dp KPI tiles (review MAJOR, batch 46).
+  const usd = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtTotal = valuePrefix === '$' ? usd(total) : total.toLocaleString();
 
   // Sort descending so the rollup drops the smallest tail, then fold anything past
   // maxSlices-1 into one "기타" slice (keeps one slot for it within maxSlices total).
@@ -67,7 +74,7 @@ export default function DonutBreakdown({
   const pct = (v: unknown) => (total > 0 ? `${((Number(v) / total) * 100).toFixed(1)}%` : '0%');
 
   return (
-    <Card title={title} right={right} className={className}>
+    <Card title={title} subtitle={subtitle} right={right} className={className}>
       <div className="flex items-center gap-4">
         {/* Fixed-size PieChart (the wrapper is a fixed 170 square) — NOT ResponsiveContainer,
             which measured the parent as width(-1)/height(-1) on narrow/SSR layout passes and
@@ -92,7 +99,7 @@ export default function DonutBreakdown({
               formatter={(v, n) =>
                 [
                   valuePrefix === '$'
-                    ? `$${Math.round(Number(v)).toLocaleString()}`
+                    ? usd(Number(v))
                     : Number(v).toLocaleString(),
                   n as string,
                 ] as [string, string]
@@ -103,7 +110,7 @@ export default function DonutBreakdown({
             <div className="tabular text-[20px] font-semibold leading-none text-ink-800">
               {fmtTotal}
             </div>
-            <div className="text-[10px] uppercase tracking-[0.04em] text-ink-400 mt-1">{tt('합계')}</div>
+            <div className="text-[10px] uppercase tracking-[0.04em] text-ink-400 mt-1">{tt(centerLabel ?? '합계')}</div>
           </div>
         </div>
         <ul className="min-w-0 flex-1 space-y-1.5">
@@ -117,7 +124,7 @@ export default function DonutBreakdown({
               <span className="shrink-0 text-ink-400">{pct(d[valueKey])}</span>
               <span className="tabular shrink-0 font-medium text-ink-800">
                 {valuePrefix === '$'
-                  ? `$${Math.round(Number(d[valueKey])).toLocaleString()}`
+                  ? usd(Number(d[valueKey]))
                   : Number(d[valueKey]).toLocaleString()}
               </span>
             </li>

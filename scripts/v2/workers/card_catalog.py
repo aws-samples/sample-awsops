@@ -16,12 +16,19 @@ requirements become status "unknown", never a confident "missing" (honest-degrad
 """
 import re
 
+# NOTE (i18n lockstep): the Korean `title` strings below are REGISTERED in
+# web/lib/i18n-terms.ts (the web UI renders them through tt()). Adding or renaming a title
+# here requires the matching TERMS entry there, or the chip/card stays Korean in en/zh/ja.
+
+# v5: expand Prometheus/Mimir operational cards 5 → 13 (targets, CPU, memory, disk, load, network,
+# containers, restarts), selective rebuild hash (required-metric presence/probe + truncation only),
+# and build-time live validation of the stored queries via the same instant/range tool the UI runs.
 # v4: trace discriminator requires a trace-ONLY column (Duration/ParentSpanId/SpanKind) — the
 # standard otel_logs table carries SpanId too, so SpanId must not qualify a table as traces.
 # v3: sum(up) (count(up==1) is an EMPTY vector during a total outage — must render 0, not "값 없음"),
 # schema `probed` support (definitive per-name presence despite the 500-name cap).
 # v2: accept db-qualified table names (per-segment validated + quoted) — clickhouse_mcp introspection emits f"{database}.{name}"
-CARD_CATALOG_VERSION = "v4"
+CARD_CATALOG_VERSION = "v5"
 
 _IDENT = re.compile(r"^[A-Za-z0-9_]+$")
 _RANGE_1H = {"window": 3600, "step": 60}
@@ -32,15 +39,51 @@ _PROM_CARDS = [
     # still evaluates over the down series and renders the honest 0.
     {"card_key": "up_targets", "title": "정상 타깃 수", "viz": "stat", "unit": "",
      "requires": ["up"], "expr": "sum(up)", "range": None},
+    {"card_key": "down_targets", "title": "다운된 타깃 수", "viz": "stat", "unit": "",
+     "requires": ["up"], "expr": "sum(up == bool 0)", "range": None},
     {"card_key": "cpu_usage", "title": "노드 CPU 사용률", "viz": "timeseries", "unit": "%",
      "requires": ["node_cpu_seconds_total"],
      "expr": '100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)', "range": _RANGE_1H},
+    {"card_key": "node_cpu_top5", "title": "CPU 사용률 높은 노드 Top5", "viz": "timeseries", "unit": "%",
+     "requires": ["node_cpu_seconds_total"],
+     "expr": 'topk(5, 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100))',
+     "range": _RANGE_1H},
     {"card_key": "memory_available", "title": "가용 메모리", "viz": "timeseries", "unit": "bytes",
      "requires": ["node_memory_MemAvailable_bytes"],
      "expr": "sum(node_memory_MemAvailable_bytes)", "range": _RANGE_1H},
+    {"card_key": "node_memory_usage_top5", "title": "메모리 사용률 높은 노드 Top5",
+     "viz": "timeseries", "unit": "%",
+     "requires": ["node_memory_MemAvailable_bytes", "node_memory_MemTotal_bytes"],
+     "expr": "topk(5, 100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)))",
+     "range": _RANGE_1H},
+    {"card_key": "node_disk_usage_top5", "title": "디스크 사용률 높은 노드 Top5",
+     "viz": "timeseries", "unit": "%",
+     "requires": ["node_filesystem_avail_bytes", "node_filesystem_size_bytes"],
+     "expr": 'topk(5, max by (instance) (100 * (1 - '
+             '(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay",mountpoint!~"/run.*"} '
+             '/ node_filesystem_size_bytes{fstype!~"tmpfs|overlay",mountpoint!~"/run.*"}))))',
+     "range": _RANGE_1H},
+    {"card_key": "node_load1_top5", "title": "로드 애버리지 높은 노드 Top5",
+     "viz": "timeseries", "unit": "",
+     "requires": ["node_load1"], "expr": "topk(5, node_load1)", "range": _RANGE_1H},
+    {"card_key": "node_network_receive_top5", "title": "네트워크 수신량 높은 노드 Top5",
+     "viz": "timeseries", "unit": "bytes/s",
+     "requires": ["node_network_receive_bytes_total"],
+     "expr": 'topk(5, sum by (instance) (rate(node_network_receive_bytes_total{device!="lo"}[5m])))',
+     "range": _RANGE_1H},
+    {"card_key": "node_network_transmit_top5", "title": "네트워크 송신량 높은 노드 Top5",
+     "viz": "timeseries", "unit": "bytes/s",
+     "requires": ["node_network_transmit_bytes_total"],
+     "expr": 'topk(5, sum by (instance) (rate(node_network_transmit_bytes_total{device!="lo"}[5m])))',
+     "range": _RANGE_1H},
     {"card_key": "container_cpu", "title": "네임스페이스별 컨테이너 CPU Top5", "viz": "timeseries", "unit": "cores",
      "requires": ["container_cpu_usage_seconds_total"],
      "expr": "topk(5, sum by (namespace) (rate(container_cpu_usage_seconds_total[5m])))", "range": _RANGE_1H},
+    {"card_key": "container_memory_top5", "title": "네임스페이스별 컨테이너 메모리 Top5",
+     "viz": "timeseries", "unit": "bytes",
+     "requires": ["container_memory_working_set_bytes"],
+     "expr": 'topk(5, sum by (namespace) (container_memory_working_set_bytes{container!="",image!=""}))',
+     "range": _RANGE_1H},
     {"card_key": "pod_restarts", "title": "최근 1시간 파드 재시작", "viz": "stat", "unit": "",
      "requires": ["kube_pod_container_status_restarts_total"],
      "expr": "sum(increase(kube_pod_container_status_restarts_total[1h]))", "range": None},

@@ -7,6 +7,7 @@ introspected schema, it resolves a small per-kind catalog into rows
 {query_key, status, query, missing, meta}.
 """
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +33,26 @@ def _by_key(rows):
 
 
 class TestClickhouse:
+    def test_optional_operation_status_and_links_are_selected_only_when_present(self):
+        optional = ["SpanName", "StatusCode", "Links.TraceId", "Links.SpanId"]
+        schema = {"tables": [{"name": "otel.traces", "columns": OTEL_COLUMNS + [
+            {"name": name} for name in optional + ["StatusMessage", "Links.Attributes"]
+        ]}]}
+        sql = gc.build_graph_queries("clickhouse", schema)[0]["query"]["args_template"]["sql"]
+        for name in optional:
+            assert (f"`{name}`" if "." in name else name) in sql
+        assert "StatusMessage" not in sql and "Links.Attributes" not in sql
+        old_sql = gc.build_graph_queries("clickhouse", {"tables": [
+            {"name": "old", "columns": OTEL_COLUMNS}
+        ]})[0]["query"]["args_template"]["sql"]
+        assert all(name not in old_sql for name in optional)
+
+    def test_trace_query_has_an_upper_window_bound(self):
+        sql = gc.build_graph_queries("clickhouse", {"tables": [
+            {"name": "traces", "columns": OTEL_COLUMNS}
+        ]})[0]["query"]["args_template"]["sql"]
+        assert "Timestamp <= now()" in sql
+
     def test_ready_when_a_table_matches_the_otel_exporter_shape(self):
         schema = {"tables": [{"name": "otel_traces", "columns": OTEL_COLUMNS}]}
         by = _by_key(gc.build_graph_queries("clickhouse", schema))
@@ -118,6 +139,36 @@ class TestTempo:
 
 
 class TestPrometheusMimirServiceGraph:
+    def test_grouping_preserves_every_identity_label_recognized_by_the_web_mapper(self):
+        # Query construction and mapping must agree: dropping even one label before mapping can
+        # merge prod/staging, accounts or clusters into the same edge. Read the finite alias table
+        # rather than maintaining an incomplete second copy of it here.
+        from pathlib import Path
+        mapper = (Path(__file__).resolve().parents[3] / "web/lib/trace-source.ts").read_text()
+        aliases = re.search(r"const METRIC_IDENTITY_LABELS\s*=\s*\{(.*?)\}\s*as const", mapper, re.S)
+        assert aliases, "identity label aliases must be explicit for the catalog/mapper contract"
+        suffixes = set(re.findall(r"'([a-z_]+)'", aliases.group(1)))
+        for kind, metric, endpoints in [
+            ("prometheus", "traces_service_graph_request_total", ("client", "server")),
+            ("mimir", "istio_requests_total", ("source_workload", "destination_workload")),
+        ]:
+            query = gc.build_graph_queries(kind, {"metrics": [metric]})[0]["query"]["args_template"]["query"]
+            grouping = set(re.search(r"sum by \(([^)]+)\)", query).group(1).split(","))
+            assert set(endpoints).issubset(grouping)
+            for suffix in suffixes:
+                assert suffix in grouping
+                for prefix in ("client", "server", "source", "destination"):
+                    assert f"{prefix}_{suffix}" in grouping
+            assert query.endswith(f"(increase({metric}[{{window}}m]))")
+
+    def test_prod_staging_and_cross_cluster_istio_scopes_survive_aggregation(self):
+        for metric in ("traces_service_graph_request_total", "istio_requests_total"):
+            query = gc.build_graph_queries("prometheus", {"metrics": [metric]})[0]["query"]["args_template"]["query"]
+            grouping = set(re.search(r"sum by \(([^)]+)\)", query).group(1).split(","))
+            assert {"deployment_environment_name", "source_workload_namespace",
+                    "destination_workload_namespace", "source_cluster", "destination_cluster",
+                    "client_cloud_account_id", "server_service_namespace"}.issubset(grouping)
+
     def test_ready_servicegraph_v1_when_tempo_metrics_generator_metric_present(self):
         schema = {"metrics": ["traces_service_graph_request_total", "up"]}
         by = _by_key(gc.build_graph_queries("prometheus", schema))

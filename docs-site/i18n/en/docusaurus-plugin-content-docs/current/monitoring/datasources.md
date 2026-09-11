@@ -1,7 +1,7 @@
 ---
 sidebar_position: 7
 title: Datasources
-description: External datasource management (Prometheus, Loki, Tempo, ClickHouse, Jaeger, Dynatrace, Datadog)
+description: External datasource management (Prometheus, Mimir, Loki, Tempo, ClickHouse, Jaeger, Dynatrace, Datadog)
 ---
 
 import Screenshot from '@site/src/components/Screenshot';
@@ -21,7 +21,7 @@ The AWSops Datasources feature provides centralized management of external obser
 <DatasourceFlow />
 
 Key features:
-- **7 datasource types** supported (Prometheus, Loki, Tempo, ClickHouse, Jaeger, Dynatrace, Datadog)
+- **8 datasource types** supported (Prometheus, Mimir, Loki, Tempo, ClickHouse, Jaeger, Dynatrace, Datadog)
 - **CRUD management**: Add, edit, delete datasources (admin only)
 - **Connection test**: One-click connectivity verification with latency measurement
 - **Query execution**: Native query language support for each datasource type
@@ -32,6 +32,7 @@ Key features:
 | Datasource | Query Language | Default Port | Key Features |
 |-----------|---------------|-------------|-------------|
 | **Prometheus** | PromQL | 9090 | Metrics collection, alerting, time-series data |
+| **Mimir** | PromQL | 9009 | Long-term metrics storage, multi-tenant (X-Scope-OrgID) |
 | **Loki** | LogQL | 3100 | Log aggregation, label-based search |
 | **Tempo** | TraceQL | 3200 | Distributed tracing, span search |
 | **ClickHouse** | SQL | 8123 | Columnar analytics, large-scale data processing |
@@ -42,7 +43,7 @@ Key features:
 ## Adding Datasources
 
 :::info Admin Only
-Creating, editing, and deleting datasources requires an admin role. Admins are users listed in `adminEmails` in `data/config.json`.
+Creating, editing, and deleting datasources requires an admin role. In v2, admins are determined by the Cognito admin group or the SSM email allowlist (v1's `data/config.json` `adminEmails` model is retired).
 :::
 
 ### Configuration Fields
@@ -50,12 +51,15 @@ Creating, editing, and deleting datasources requires an admin role. Admins are u
 | Field | Required | Description |
 |-------|----------|-------------|
 | **Name** | Yes | Datasource display name |
-| **Type** | Yes | Datasource type (select from 7 types) |
+| **Type** | Yes | Datasource type (select from 8 types) |
 | **URL** | Yes | Endpoint URL (e.g., `http://prometheus:9090`) |
 | **Authentication** | No | Auth method (None, Basic, Bearer Token, Custom Header) |
-| **Timeout** | No | Request timeout (default: 30s) |
-| **Cache TTL** | No | Cache time-to-live (default: 5min) |
-| **Database** | No | Database name (ClickHouse only) |
+| **Timeout** | No | Upstream query execution bound (seconds, 1–60 · default 10) — forwarded as the API `timeout` param for Prometheus/Mimir and `max_execution_time` for ClickHouse; other kinds (Loki/Tempo/Jaeger/Dynatrace/Datadog) store the value but do not apply it today |
+| **Database** | No | Default database name (ClickHouse only, identifier-only) |
+
+:::note Difference from v1
+v1's result-cache TTL setting does not exist in v2 — the v2 query path is deliberately uncached (thin-BFF; a result cache would need its own staleness disclosure). The Timeout unit also changed from v1's ms to seconds (1–60).
+:::
 
 ### Steps
 
@@ -156,7 +160,7 @@ Stored passwords and tokens are masked in the UI. New values can only be entered
 
 The following security checks are applied to datasource URLs:
 
-- **Private IP blocking**: Blocks `10.x.x.x`, `172.16-31.x.x`, `192.168.x.x`, `127.0.0.1` and other internal IPs
+- **Blocked targets**: only metadata (169.254.169.254), loopback, and link-local addresses — private (RFC1918) datasource endpoints are ALLOWED per ADR-007 (URLs containing a backslash are rejected to prevent parser-differential abuse)
 - **Metadata endpoint blocking**: Blocks `169.254.169.254` (EC2 instance metadata) access
 - **Link-local address blocking**: Blocks the `169.254.x.x` range
 - **Protocol restriction**: Only `http://` and `https://` are allowed
@@ -189,27 +193,21 @@ The AI assistant can leverage registered datasources for analysis.
 Datasource-related questions are processed through the `datasource` route. The AI can analyze both Steampipe data and external datasources together.
 :::
 
-## Settings Reference
+## Settings reference
 
-### Common Settings
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| **timeout** | 30s | Request timeout (max 120s) |
-| **cacheTTL** | 300s (5min) | Query result cache time-to-live |
-
-### ClickHouse Only
+### Common
 
 | Setting | Default | Description |
-|---------|---------|-------------|
-| **database** | `default` | Target database name |
+|------|--------|------|
+| **Timeout** | 10s | Upstream query execution bound (seconds, 1–60). ClickHouse applies it as the CEILING on every path (Explore, service graph, agent — callers can only tighten it) with the connector aligning its own HTTP timeout above it (effective maximum 55s — values 56–60 are shortened to 55s to stay under the Lambda's 60s wall); Prometheus/Mimir apply it as the Explore-path API `timeout` param, capped at 10s under the connector's 12s HTTP timeout |
 
-### Limitations
+### ClickHouse only
 
-- Maximum registered datasources: Unlimited
-- Maximum query result rows: 1,000
-- ClickHouse: SELECT queries only (DDL/DML blocked)
-- URLs: Private IPs and metadata endpoints blocked
+| Setting | Default | Description |
+|------|--------|------|
+| **Database** | (server default) | Default database name — identifier-only; `system`/`information_schema` are rejected (validated on both the web tier and the connector) |
+
+Limits: ClickHouse queries must pass the read-only guard (table functions and SYSTEM blocked), and returned rows are capped at 1,000 (`max_result_rows`).
 
 ## Explore Page
 
@@ -271,6 +269,10 @@ Loki/Mimir/Tempo → `/monitoring`). It is **never sent automatically** — revi
 and it starts a fresh conversation. The agent probes the datasource using that connector's
 query/schema tools.
 ## Allowed Networks
+
+:::caution v1 documentation
+This section describes v1's Allowed Networks feature, which does not exist in v2 — private (RFC1918) datasource endpoints are allowed by default per ADR-007; only metadata/loopback/link-local addresses are blocked.
+:::
 
 Admins can configure an allow list to exempt specific private network addresses from SSRF blocking.
 

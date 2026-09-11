@@ -73,7 +73,7 @@ ledger 행을 먼저 쓰고(권위), 그 다음 best-effort SQS send. 디스패�
 
 ## Decisions (ADRs) / 결정
 
-- **[ADR-005 — AWS mutation & autonomy (FROZEN)](../../decisions/005-aws-mutation-autonomy-frozen.md)** — P2
+- **[ADR-005 — AWS mutation & autonomy (FROZEN)](../decisions/005-aws-mutation-autonomy-frozen.md)** — P2
   implements the *safety hooks* (idempotency token, kill-switch, mutate/unknown-type guard, dry-run
   pass-through) as a dark/inactive substrate for a potential future mutate-action registry — this is
   architecturally reserved, not an implicit escalation path. AWS-resource mutation stays FROZEN per
@@ -84,7 +84,7 @@ ledger 행을 먼저 쓰고(권위), 그 다음 best-effort SQS send. 디스패�
   경로가 아니다. AWS 리소스 변경은 ADR-005에 따라 계속 FROZEN이며, 이를 실제 mutate 작업(승인
   워크플로·1급 롤백·mutate-action 레지스트리 자체)으로 전환하려면 구현이 아니라 새 ADR 결정이
   필요하다.
-- **[ADR-001 — v2 foundation (ECS/Fargate + Aurora split)](../../decisions/001-v2-foundation.md)** — the job
+- **[ADR-001 — v2 foundation (ECS/Fargate + Aurora split)](../decisions/001-v2-foundation.md)** — the job
   ledger is the Aurora `worker_jobs` table (an infra table orthogonal to the 7 app-state tables); the
   worker_jobs row, not the SFN execution status, is the source of truth.
   / 잡 ledger는 Aurora `worker_jobs` 테이블(7개 app-state 테이블과 직교하는 인프라 테이블); 권위는

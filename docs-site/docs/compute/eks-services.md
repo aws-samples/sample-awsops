@@ -24,6 +24,12 @@ Kubernetes Service의 목록과 네트워크 설정을 확인할 수 있는 페�
 서비스 타입별 분포를 파이 차트로 시각화:
 - ClusterIP, NodePort, LoadBalancer, Other (ExternalName 등)
 
+### Service Resources 차트
+서비스별 리소스 요청량 top-15 바 차트 2개:
+- **CPU per Service (millicores)** / **Memory per Service (MiB)** — 각 Service의 셀렉터를 같은 (클러스터, 네임스페이스)의 **Running Pod**에 조인해 스케줄러 유효 요청량(앱 컨테이너 합과 init 최댓값 중 큰 쪽 + overhead)을 합산
+- 값은 요청량(예약) 기준이며 실사용량이 아닙니다(캡션에 명시)
+- 셀렉터가 없거나(ExternalName/수동 Endpoints) 매칭되는 Running Pod가 없는 서비스는 0으로 그리지 않고 **제외**되며, Pod 조회가 실패한 클러스터는 차트에서 제외되고 캡션에 이름이 표시됩니다
+
 ### Service 테이블
 | 컬럼 | 설명 |
 |------|------|

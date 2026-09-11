@@ -1,10 +1,10 @@
 # API 레퍼런스 / API Reference
 
 ## 역할 / Role
-`web/app/api/**/route.ts` 전수(99개 라우트) 인덱스 — 경로·메서드·역할·인증.
-(Full index of all 99 `route.ts` files under `web/app/api` — path, methods, role, auth.)
+`web/app/api/**/route.ts` 경로 인덱스 — 경로·메서드·역할·인증.
+(API route index under `web/app/api` — path, methods, role, auth.)
 - 인증 컬럼: `verifyUser` = Cognito `awsops_token` 쿠키 검증(`@/lib/auth`). `없음` = 라우트 자체 비게이트(엣지 Lambda@Edge 게이트는 별도). 역할에 "admin"이 있으면 `isAdmin` 추가 게이트.
-- 모든 라우트는 루트 경로(`/api/*`) — basePath 없음. web은 thin-BFF: 무거운 작업은 `POST /api/jobs`로 enqueue.
+- 모든 라우트는 루트 경로(`/api/*`) — basePath 없음. web은 thin-BFF: 도메인 작업은 소유권을 검사하는 전용 라우트로 enqueue하며, 일반 `POST /api/jobs`는 허용된 noop 종류만 받는다.
 
 ## auth (2)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -23,14 +23,14 @@
 ## inventory (8)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
-| `/api/inventory/[type]` | GET | 인벤토리 리소스 목록 — `iam_user`/`iam_role`은 admin 전용 | verifyUser |
+| `/api/inventory/[type]` | GET | 인벤토리 리소스 목록 — `iam_user`/`iam_role`은 admin 전용; `ecs_cluster`는 MTD 비용(CE) 병합 기본, `?cost=0`으로 생략(비용 미표시 소비자용); `?view=agg`는 행 대신 전 플릿 집계(총계·state/dist/facet GROUP BY, 동일 스코프·게이트; 클라이언트 파생 키 차원은 제외되어 표본 유지, 버킷 상한 50) 반환 | verifyUser |
 | `/api/inventory/[type]/metrics` | GET | 보조 KPI 카드 (CloudWatch/Pricing) + `?ids=`/`?nodes=` 타입별 라이브 진단 플릿(ec2/rds/alb/nlb/s3/transit_gateway/lambda/ebs_volume/dynamodb/elasticache/opensearch/msk) — 실패 시 `{cards:[]}`로 조용히 degrade | verifyUser |
-| `/api/inventory/[type]/refresh` | POST | warm Steampipe → Aurora sync 트리거 + 첫 페이지 반환 (락 중이면 `busy`) | verifyUser |
+| `/api/inventory/[type]/refresh` | POST | warm Steampipe → Aurora sync 트리거 + 첫 페이지 반환 (락 중이면 `busy`); admin 전용. `type=all`은 sync Lambda의 type=all fan-out을 1회 dispatch(행 미반환, `{status:'queued',dispatched:'all'}`; sync 비활성 시 503 `unconfigured`, enqueue 실패 시 503 `error`) | verifyUser |
 | `/api/inventory/cloudtrail/events` | GET | CloudTrail `LookupEvents` 조회 — 드릴다운(`raw`+`accessKeyId`)은 admin 전용 subset, 그 외 사용자는 flat 필드만 | verifyUser |
 | `/api/inventory/ebs_volume/related` | GET | 볼륨 드릴다운 — 스냅샷 20개 + 연결 EC2 enrichment (Aurora 교차조회, 계정 스코프) | verifyUser |
 | `/api/inventory/security_group/inbound` | GET | SG 인바운드 규칙 체이닝 — 첨부 SG(≤20)의 인바운드 규칙 파싱 (Aurora 교차조회, 계정 스코프) | verifyUser |
 | `/api/inventory/summary` | GET | 타입/카테고리별 카운트 + 보안 분할(ec2 running, 미암호화 EBS 등) — `regions`/`includeGlobal` 스코프 반영(홈 대시보드 카운트 포함) | verifyUser |
-| `/api/inventory/trend` | GET | 일별 리소스 카운트 추세 (`inventory_snapshots`, 기본 14일/최대 90일) | verifyUser |
+| `/api/inventory/trend` | GET | 일별 리소스 카운트 추세 (`inventory_snapshots`, 기본 14일/최대 90일) — `accounts` 스코프(기본 self, `__all__`은 서버에서 self+스캔 스코프 내 활성 멤버[all_regions 또는 활성 리전 ≥1]로 해석, 검증된 CSV; 리전 차원 없음) + (일자, 타입)별 계정 커버리지·해석된 계정 목록(`accounts`)·계정 레지스트리 조회 실패 시 `degraded: true` 반환, 파생 보안 시리즈(public_s3_buckets 등)는 total에서 제외 | verifyUser |
 
 ## eks (10)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -81,7 +81,7 @@
 ## tgw (1)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
-| `/api/tgw` | GET | Transit Gateway 상세 — 어태치먼트 + 라우트 테이블(+라우트). `ids`는 `tgw-` 접두사만 통과, 인벤토리로 TGW별 소속 리전 해석 | verifyUser |
+| `/api/tgw` | GET | Transit Gateway 상세 — 어태치먼트(+VPC 어태치먼트 options: DNS/IPv6/Appliance — VPC 타입만, 불완전 경로[조회 실패·페이지 캡 절단·미반환 VPC 행]는 optionsDegradedRegions로 공개, options만 누락) + 라우트 테이블(+라우트). `ids`는 `tgw-` 접두사만 통과, 인벤토리로 TGW별 소속 리전 해석 | verifyUser |
 
 ## vpce (1)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -110,7 +110,7 @@
 | `/api/customization` | GET, POST, PUT | 스킬/에이전트 카탈로그 CRUD (ADR-004[legacy 031], admin) | verifyUser |
 | `/api/datasources` | GET | 데이터소스 인스턴스 목록 — 크리덴셜 미노출 | verifyUser |
 | `/api/datasources/generate` | POST | 자연어 → 쿼리 초안 생성 (리뷰용 — 절대 실행 안 함) | verifyUser |
-| `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin) | verifyUser |
+| `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin); `settings`(timeoutS 1–60[clickhouse 유효 최대 55]·clickhouse database)는 서버 측 sanitize 후 ds_settings JSONB에 저장 | verifyUser |
 | `/api/datasources/query` | POST | 인스턴스 대상 read-only 쿼리 실행 (admin 아님 — 탐색용) | verifyUser |
 | `/api/datasources/test` | POST | 저장 전 연결 probe — SSRF 가드 (admin) | verifyUser |
 | `/api/datasources/[id]` | DELETE | 인스턴스 삭제 — 스키마 캐시/크리덴셜 cascade, 기본값 재선정 (admin) | verifyUser |
@@ -138,7 +138,8 @@
 | `/api/integrations/credential` | GET, PUT | 통합 크리덴셜 저장 — 단일 Secrets Manager secret에 slug(kind) 키 (admin) | verifyUser |
 | `/api/integrations/schema` | GET, POST | 인스턴스 스키마 introspect/캐시 (admin) | verifyUser |
 | `/api/jobs` | GET, POST | 비동기 작업 enqueue/목록 (P2 — `worker_jobs` + SQS) | verifyUser |
-| `/api/jobs/[id]` | GET | 작업 상태 단건 조회 — UUID 형식 검증만 | 없음 |
+| `/api/jobs/[id]` | GET | 작업 상태 단건 조회 — UUID 검증 + 소유자 또는 관리자 / owner-or-admin | verifyUser |
+| `/api/jobs/observability` | GET | 접수 기간별 작업 시간·완료 목표: `windowHours` 1–168, 선택적 `type` 및 `targetMs` 1–86400000. 소유자/관리자 범위, 최대 2000건 표본·최근 50건 상세, 누락·잘림 시 미확정 / ownership-scoped workload observations | verifyUser |
 | `/api/me` | GET | 현재 사용자 + `isAdmin` 시그널 (UI 표시용 — 쓰기 게이트는 서버측 별도 유지) | verifyUser |
 | `/api/monitoring` | GET | 모니터링 허브 — `?tab=ec2\|rds` 플릿, `?series=`+`range`로 단일 리소스 시계열 | verifyUser |
 | `/api/opencost/[cluster]` | GET, PUT | OpenCost 저장 설정 — 조회 auth / 저장 admin (null = 미저장, 페이지가 기본값 사용) | verifyUser |

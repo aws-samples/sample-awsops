@@ -18,7 +18,7 @@ Kubernetes 노드의 용량, 할당 가능 리소스, Pod 요청량을 상세히
 - **Total Nodes**: 전체 노드 수 (시안)
 - **Ready**: Ready 상태 노드 수 (녹색)
 - **Total CPU**: 전체 vCPU 용량 합계 (보라색)
-- **Total Memory**: 전체 메모리 용량 합계 (주황색)
+- **Total Memory**: 전체 메모리 용량 합계 (주황색) — allocatable 합계와 reserved %(Capacity − Allocatable)를 힌트로 함께 표시 (allocatable이 보고되지 않으면 힌트 생략)
 
 ### CPU Usage per Node 차트
 노드별 CPU 리소스 상태를 3단계 바 차트로 표시:
@@ -50,6 +50,9 @@ Kubernetes 노드의 용량, 할당 가능 리소스, Pod 요청량을 상세히
 | Allocatable CPU | 할당 가능한 CPU |
 | Allocatable Memory | 할당 가능한 메모리 |
 | Created | 생성 시간 |
+
+### 노드 드릴다운 Pods 테이블
+노드를 클릭하면 해당 노드에 스케줄된 Pods 테이블이 열립니다 — Namespace / Pod / Status / Owner / **Pod IP** / **Service Account** / Restarts / CPU / Mem / Age 컬럼(값이 없으면 '-', 예: 종료된 Pod는 IP 없음).
 
 ## 리소스 개념 이해
 

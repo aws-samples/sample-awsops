@@ -6,7 +6,7 @@
 // share a cache row (the PK was swapped from (account_id, slug) by the datasource-instances migration).
 import { getPool } from '@/lib/db';
 
-const MAX_SCHEMA_BYTES = 256_000; // bound a single cached schema (Aurora row + later prompt injection)
+export const MAX_SCHEMA_BYTES = 256_000; // bound a single cached schema (Aurora row + later prompt injection)
 
 export interface CachedSchema {
   integrationId: number;
@@ -38,10 +38,15 @@ function mapRow(r: Record<string, unknown>): CachedSchema {
   };
 }
 
+/** Cache write shared by EVERY writer (generate-route warm, connect-time warm, admin manual refresh;
+ *  the python worker mirrors it in scripts/v2/workers/db.py). An over-limit schema is trimmed to a
+ *  bounded copy (`trimSchemaForCache`, marked `truncated`) instead of leaving NO row — the throw
+ *  remains only for shapes that cannot be trimmed. */
 export async function upsertSchema(accountId: string, integrationId: number, kind: string | null, schema: unknown): Promise<void> {
-  const json = JSON.stringify(schema ?? {});
+  let json = JSON.stringify(schema ?? {});
   if (Buffer.byteLength(json, 'utf8') > MAX_SCHEMA_BYTES) {
-    throw new Error('introspected schema exceeds size limit');
+    json = JSON.stringify(trimSchemaForCache(schema) ?? {});
+    if (Buffer.byteLength(json, 'utf8') > MAX_SCHEMA_BYTES) throw new Error('introspected schema exceeds size limit');
   }
   await getPool().query(
     `INSERT INTO datasource_schemas (account_id, integration_id, kind, schema, fetched_at)
@@ -90,17 +95,69 @@ export function isSchemaStale(fetchedAt: string | null | undefined, now: number 
  * is stable, so equal-scored names keep their original (alphabetical) order, and a query that matches
  * nothing leaves the order unchanged (same as before). Non-array / non-metric schemas pass through.
  */
+// Korean ops vocabulary → the English substrings metric names actually carry. Without this a
+// Korean NL request ("메모리 사용률이 높은 인스턴스") tokenizes to ZERO terms, the alphabetical
+// head of the metric list fills the prompt, and the model answers from world knowledge (a
+// kube-prometheus recording rule the target never had — the reported '메모리 사용률' bug).
+// Curated, small, and additive: unknown Korean words simply contribute nothing.
+export const KO_METRIC_TERMS: Readonly<Record<string, readonly string[]>> = {
+  메모리: ['memory', 'mem'], 씨피유: ['cpu'], 디스크: ['disk', 'filesystem', 'fs'],
+  네트워크: ['network', 'net'], 트래픽: ['network', 'bytes', 'receive', 'transmit'],
+  사용률: ['usage', 'utilization', 'used'], 사용량: ['usage', 'used', 'bytes'],
+  인스턴스: ['instance', 'node'], 노드: ['node'], 파드: ['pod', 'container'], 포드: ['pod'],
+  컨테이너: ['container'], 서비스: ['service'], 네임스페이스: ['namespace'],
+  에러: ['error', 'errors', 'failed'], 오류: ['error', 'errors', 'failed'], 실패: ['failed', 'failure', 'errors'],
+  요청: ['request', 'requests'], 응답시간: ['duration', 'latency', 'seconds'], 지연: ['latency', 'duration'],
+  재시작: ['restart', 'restarts'], 다운: ['up'], 타깃: ['up', 'scrape'], 타겟: ['up', 'scrape'],
+  로그: ['log', 'logs'], 큐: ['queue'], 연결: ['connection', 'connections'], 스로틀: ['throttl'],
+  디플로이먼트: ['deployment'], 볼륨: ['volume', 'filesystem'], 스토리지: ['storage', 'filesystem'],
+  가용: ['available', 'avail'], 여유: ['free', 'available'], 부하: ['load'], 평균: ['avg', 'average'],
+};
+
+/** NL → lowercase search terms: ASCII identifier tokens (≥3 chars) plus the English expansions of
+ *  any Korean ops words the request contains (substring match on the Korean, so particles like
+ *  '메모리가'/'사용률이' still hit). Exported for tests. */
+export function nlSearchTerms(nl: string): string[] {
+  return nlSearchConcepts(nl).flat();
+}
+
+/** Same as nlSearchTerms but grouped per CONCEPT: each ASCII token is its own concept; each Korean
+ *  word contributes ONE concept holding all its expansions (so 'memory'+'mem' score a name once,
+ *  not twice). Exported for tests. */
+export function nlSearchConcepts(nl: string): string[][] {
+  const lower = (nl || '').toLowerCase();
+  const seen = new Set<string>();
+  const out: string[][] = [];
+  const push = (terms: string[]) => {
+    const fresh = terms.filter((t) => !seen.has(t));
+    if (!fresh.length) return;
+    fresh.forEach((t) => seen.add(t));
+    out.push(fresh);
+  };
+  for (const t of lower.split(/[^a-z0-9_]+/)) if (t.length >= 3) push([t]);
+  for (const [word, expansions] of Object.entries(KO_METRIC_TERMS)) {
+    if (lower.includes(word)) push([...expansions]);
+  }
+  return out;
+}
+
+/** Substring match for terms ≥3 chars; SHORT terms ('up', 'fs') must match a whole '_'-separated
+ *  segment (or the whole name) — otherwise they hit inside unrelated names ('group', 'setup'). */
+export function termMatches(lowerName: string, term: string): boolean {
+  if (term.length >= 3) return lowerName.includes(term);
+  return lowerName === term || lowerName.split(/[_:]/).includes(term);
+}
+
 export function prioritizeSchemaForQuery(schema: unknown, nl: string): unknown {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return schema;
-  const terms = Array.from(
-    new Set((nl || '').toLowerCase().split(/[^a-z0-9_]+/).filter((t) => t.length >= 3)),
-  );
-  if (!terms.length) return schema;
+  const concepts = nlSearchConcepts(nl);
+  if (!concepts.length) return schema;
   const s = schema as Record<string, unknown>;
   const nameOf = (x: unknown) => (typeof x === 'string' ? x : ((x as { name?: string })?.name ?? '')).toLowerCase();
+  const score = (name: string) => concepts.reduce((n, c) => n + (c.some((t) => termMatches(name, t)) ? 1 : 0), 0);
   const reorder = (arr: unknown[]) =>
     arr
-      .map((x, i) => ({ x, i, sc: terms.reduce((n, t) => n + (nameOf(x).includes(t) ? 1 : 0), 0) }))
+      .map((x, i) => ({ x, i, sc: score(nameOf(x)) }))
       .sort((a, b) => b.sc - a.sc || a.i - b.i) // score desc, stable on ties
       .map((e) => e.x);
   const out: Record<string, unknown> = { ...s };
@@ -108,6 +165,18 @@ export function prioritizeSchemaForQuery(schema: unknown, nl: string): unknown {
     if (Array.isArray(s[k]) && (s[k] as unknown[]).length) out[k] = reorder(s[k] as unknown[]);
   }
   return out;
+}
+
+/** FULL metric-name list from a cached schema (PromQL kinds) — the querygen vocabulary anchor.
+ *  Entries may be strings or {name}; non-conforming shapes yield []. Unlike the RENDERED prompt
+ *  block (capped at ~80 names), this is the whole cached list. */
+export function schemaMetricNames(schema: unknown): string[] {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return [];
+  const m = (schema as { metrics?: unknown }).metrics;
+  if (!Array.isArray(m)) return [];
+  return m
+    .map((x) => (typeof x === 'string' ? x : (x as { name?: unknown })?.name))
+    .filter((n): n is string => typeof n === 'string' && n.length > 0);
 }
 
 // --- Prompt rendering -------------------------------------------------------
@@ -223,4 +292,65 @@ export function renderSchemaForPrompt(schema: unknown, _kind?: string | null, ma
   }
 
   return lines.join('\n');
+}
+
+// --- Cache-shape helpers for the generate route (kept here: Next.js route files may only export handlers) ---
+/** Per-instance background-refresh cooldown (see the generate route). */
+export const REFRESH_COOLDOWN_MS = 10 * 60 * 1000;
+
+/** Trim an introspected schema so it fits under the cache size limit — used as a fallback so a large
+ *  warehouse (>256KB schema) is still cached (bounded), instead of re-introspecting on EVERY request. */
+export function trimSchemaForCache(schema: unknown): unknown {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return schema;
+  const s = schema as Record<string, unknown>;
+  if (Array.isArray(s.tables)) {
+    const tables = (s.tables as unknown[]).slice(0, 50).map((t) =>
+      t && typeof t === 'object' && Array.isArray((t as { columns?: unknown }).columns)
+        ? { ...(t as object), columns: ((t as { columns: unknown[] }).columns).slice(0, 80) }
+        : t,
+    );
+    return { ...s, tables, truncated: true };
+  }
+  // Metric schemas (Prometheus/Mimir): the connector cap is a COUNT (3000 names), so long-name
+  // environments can still exceed the byte limit — halve the metric list until it fits (labels
+  // trimmed first), keeping the connector's `truncated` semantics honest.
+  if (Array.isArray(s.metrics)) {
+    if (Buffer.byteLength(JSON.stringify(s), 'utf8') <= MAX_SCHEMA_BYTES) return schema; // already fits
+    // Interleaved (every k-th name) rather than the alphabetical prefix, so the late node_*/kube_*
+    // families this cap raise set out to recover survive the trim. Mirrored in scripts/v2/workers/db.py.
+    // `probed` names (individually checked by the connector — definitive presence/absence even on a
+    // truncated list) that ARE in the original metrics must survive the stride, or a consumer reading
+    // "probed but absent from metrics" would conclude a present metric is definitively missing.
+    // `trimmed: true` marks the row as a size trim (not a connector count cap) for isLegacyCapSnapshot.
+    const all = s.metrics as unknown[];
+    const keep = new Set<unknown>(Array.isArray(s.probed) ? (s.probed as unknown[]).filter((p) => all.includes(p)) : []);
+    let stride = 1;
+    let out: Record<string, unknown> = { ...s, truncated: true, trimmed: true };
+    if (Array.isArray(s.labels)) out.labels = (s.labels as unknown[]).slice(0, 100);
+    while (Buffer.byteLength(JSON.stringify(out), 'utf8') > MAX_SCHEMA_BYTES && stride < all.length) {
+      stride *= 2;
+      out = { ...out, metrics: all.filter((m, i) => i % stride === 0 || keep.has(m)) };
+    }
+    return out;
+  }
+  return schema;
+}
+
+/** The connectors' FORMER metric cap — a cached metric schema truncated at EXACTLY this many
+ *  names is a snapshot taken under the old cap (the new cap is 3000). Exported for tests. */
+export const LEGACY_METRIC_CAP = 500;
+/** Old connectors appended up to this many individually-probed names PAST the cap (worker
+ *  `probe_metrics`), so an old-cap snapshot holds LEGACY_METRIC_CAP..+LEGACY_PROBE_MAX names. */
+export const LEGACY_PROBE_MAX = 24;
+/** True only for a PromQL-kind cache that is (near-)provably an old-cap snapshot: connector
+ *  `truncated`, NOT a size trim (`trimmed`), and LEGACY_METRIC_CAP..LEGACY_METRIC_CAP+LEGACY_PROBE_MAX
+ *  names. Does not fire for ClickHouse trims, failed metric fetches (0 names) or sub-cap label-only
+ *  truncation — those re-produce the same row on refresh (no convergence); a target with exactly
+ *  500..524 real metrics and >200 labels is the accepted false positive (one cooldown-bounded
+ *  background introspect per instance per 10 min). */
+export function isLegacyCapSnapshot(kind: string | null, schema: unknown, names: string[]): boolean {
+  const s = schema as { truncated?: unknown; trimmed?: unknown } | null;
+  return (kind === 'prometheus' || kind === 'mimir')
+    && Boolean(s?.truncated) && !s?.trimmed
+    && names.length >= LEGACY_METRIC_CAP && names.length <= LEGACY_METRIC_CAP + LEGACY_PROBE_MAX;
 }

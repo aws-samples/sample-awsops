@@ -642,7 +642,7 @@ class TestRootCause(StageLambdaBase):
 
     def test_parsers_default_safely(self):
         self.assertEqual(rootcause.extract_category("no header"), "unknown")
-        self.assertEqual(rootcause.extract_confidence("no header"), "medium")
+        self.assertEqual(rootcause.extract_confidence("no header"), "low")
         self.assertEqual(rootcause.extract_category("CATEGORY: bogus"), "unknown")
 
 

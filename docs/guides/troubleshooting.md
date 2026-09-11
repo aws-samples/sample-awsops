@@ -25,9 +25,10 @@ steampipe query "SELECT column_name FROM information_schema.columns WHERE table_
 
 | 차단된 API | 영향 | 해결 |
 |-----------|------|------|
-| `iam:ListMFADevices` | mfa_enabled 컬럼 조회 실패 → 전체 쿼리 실패 | mfa_enabled 참조 제거 |
+| `iam:ListMFADevices` | mfa_enabled 컬럼 조회 실패 → 전체 쿼리 실패 | v2 sync는 폴백 없이 유지 중(ADR-010 개정 前 선례) — 차단 시 iam_user run 전체 failed·last-good 동결, 필요하면 컬럼 제거 |
 | `lambda:GetFunction` | tags 컬럼 hydrate 실패 → 전체 쿼리 실패 | tags 참조 제거 (list 쿼리) |
-| `iam:ListAttachedUserPolicies` | attached_policy_arns 조회 실패 | attached_policy_arns 제거 |
+| `iam:ListAttachedUserPolicies` | iam_user attached_policy_arns 조회 실패 | 컬럼 제거 (기본 규칙) |
+| `iam:ListAttachedRolePolicies` | iam_role attached_policy_arns 하이드레이트 실패 | ADR-010 2026-09-02 개정 경로로 위험 수용·공지됨 — 하이드레이트-프리 폴백 1회 재시도로 기본 인벤토리 유지·컬럼만 부재(run은 succeeded + unknown_attribute_count로 degraded 공개, inventory_sync_hydrate_fallback 로그의 remedy가 원인별 조치 안내: SCP 거부→권한 부여, timeout→fill_rate 상향); 기본 쿼리까지 실패 시에만 run 전체 failed·last-good 동결 |
 
 **aws.spc 설정으로 에러 무시:**
 ```hcl
@@ -37,7 +38,7 @@ connection "aws" {
 }
 ```
 
-> ⚠️ `ignore_error_codes`는 **테이블 레벨** 에러만 무시. **컬럼 hydrate 에러**는 해당 컬럼을 쿼리에서 제거해야 함.
+> ⚠️ `ignore_error_codes`는 **테이블 레벨** 에러만 무시. **컬럼 hydrate 에러**는 해당 컬럼을 쿼리에서 제거하거나, ADR-010 2026-09-02 개정 경로로 위험을 수용·공지해야 함(수용 시맨틱: 하이드레이트 실패는 하이드레이트-프리 폴백 1회 재시도로 기본 인벤토리 유지·컬럼만 부재 — inventory_sync_hydrate_fallback 로그가 fill_rate 노브 안내; 기본 쿼리까지 실패 시에만 해당 타입 run 전체 failed + 전 계정 last-good 동결).
 
 ---
 

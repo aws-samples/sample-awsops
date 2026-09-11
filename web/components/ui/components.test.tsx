@@ -122,6 +122,20 @@ describe('StatTile (legacy StatCard props)', () => {
     expect(container.innerHTML).toContain('text-rose-700');
   });
 
+  // Gap L82: compact micro subline — the quiet slot compact tiles get instead of hint/trend.
+  it('compact renders the micro subline', () => {
+    render(<StatTile size="compact" label="EC2 인스턴스" value={9} micro="7 running · 2 stopped" />);
+    expect(screen.getByText('7 running · 2 stopped')).toBeTruthy();
+  });
+  it('default size ignores micro (hint/trend own that surface)', () => {
+    render(<StatTile label="EC2 인스턴스" value={9} micro="should not render" />);
+    expect(screen.queryByText('should not render')).toBeNull();
+  });
+  it('compact without micro renders no subline node', () => {
+    const { container } = render(<StatTile size="compact" label="EC2" value={9} />);
+    expect(container.innerHTML).not.toContain('text-[10.5px]');
+  });
+
   it('accent variant renders the AwsopsMark watermark', () => {
     const { container } = render(<StatTile label="EC2" value={25} variant="accent" />);
     expect(container.querySelector('svg')).toBeTruthy();
