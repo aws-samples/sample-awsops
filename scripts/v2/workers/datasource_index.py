@@ -139,9 +139,9 @@ def _canon(v):
     `metrics`/`labels`, loki `labels`, tempo `tags`, clickhouse `tables` and their `columns` are all
     consumed as set comprehensions or name lookups (signal_catalog._missing_for, graph_catalog,
     signal_catalog_gen._vocab_names), never positionally. So two live introspections returning the
-    SAME content in a different order hashed differently, read as "the schema changed", and bought a
-    full rebuild plus — for the LLM-fallback kinds — a fresh weekly-budget Bedrock call for zero
-    actual change (review MAJOR-5).
+    SAME content in a different order hashed differently, read as "the schema changed", and forced a
+    full rebuild plus — for the LLM-fallback kinds — another attempt within the existing per-instance
+    weekly Bedrock budget for zero actual change.
 
     Recursive and shape-blind on purpose: sorting a hand-listed set of known list fields would let
     the next list-valued field a connector adds reintroduce this silently. Sorted by each element's
@@ -155,10 +155,23 @@ def _canon(v):
     return v
 
 
+def _catalog_hash_schema(kind, schema):
+    """Hash only catalog dependencies; keep the full schema for caching and query generation.
+
+    Tempo's signal_catalog._missing_for, graph_catalog._tempo_trace_spans and card_catalog.build_cards
+    only require an introspected dict. Tags, services, sampled attribute types, truncation, time windows
+    and server version cannot change their intrinsic queries. Catalog versions and generation flags
+    remain separate hash inputs. Other kinds retain the full schema (including meaningful truncation).
+    """
+    if kind == "tempo":
+        return {"introspected": isinstance(schema, dict)}
+    return schema
+
+
 def _schema_version(schema):
-    """Stable cross-process hash of the FULL schema (all kinds' catalog entries key off different
-    parts of it — labels/tables/tags, not just metric names) + signal_catalog.CATALOG_VERSION + the
-    DIAG_SIGNAL_QUERYGEN_ENABLED flag's on/off state. Mirrors _graph_schema_version's reasoning: the flag is
+    """Stable cross-process hash of the catalog schema projection (full schema except Tempo)
+    + signal_catalog.CATALOG_VERSION + DIAG_SIGNAL_QUERYGEN_ENABLED's on/off state.
+    Mirrors _graph_schema_version's reasoning: the flag is
     mixed in so flipping it — with the schema itself unchanged — still changes
     the version and forces a rebuild; otherwise an instance first indexed while the flag was off
     (catalog matched zero ready rows, LLM fallback skipped) would stay permanently stuck with zero
@@ -176,9 +189,9 @@ def _schema_version(schema):
 
 
 def _graph_schema_version(schema):
-    """Stable cross-process hash of the FULL schema (graph queries key off tables too, not just
-    metric names — e.g. clickhouse) + graph_catalog.CATALOG_VERSION + the querygen flag's on/off
-    state. The flag is mixed in so flipping GRAPH_QUERYGEN_ENABLED — with the schema itself
+    """Stable cross-process hash of the catalog schema projection (full schema except Tempo)
+    + graph_catalog.CATALOG_VERSION + the querygen flag's on/off state.
+    The flag is mixed in so flipping GRAPH_QUERYGEN_ENABLED — with the schema itself
     unchanged — still changes the version and forces a rebuild; otherwise a schema cached while the
     flag was off (catalog 'unavailable', hybrid fallback skipped) stays permanently skipped after the
     flag turns on, since nothing about the schema itself would ever drift again."""
@@ -189,9 +202,9 @@ def _graph_schema_version(schema):
 
 
 def _card_schema_version(schema):
-    """Stable cross-process hash of the FULL schema + card_catalog.CARD_CATALOG_VERSION. No feature
-    flag is mixed in — cards are deterministic-only (no LLM/generation mode to toggle), so only a
-    schema drift or a catalog edit should force a rebuild."""
+    """Stable cross-process hash of the catalog schema projection + card_catalog.CARD_CATALOG_VERSION.
+    No feature flag is mixed in — cards are deterministic-only (no LLM/generation mode to toggle),
+    so only a catalog dependency change or a catalog edit should force a rebuild."""
     basis = (json.dumps(_canon(schema), sort_keys=True, separators=(",", ":"))
              + "|" + _card_cat.CARD_CATALOG_VERSION)
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
@@ -200,7 +213,7 @@ def _card_schema_version(schema):
 def _rebuild_dashboard_cards(conn, wdb, iid, kind, schema):
     """Third pre-built family (dashboard cards) — mirrors _rebuild_graph_queries: schema-hash skip,
     atomic upsert+sweep. Deterministic only; an empty build writes the version sentinel (db.py)."""
-    version = _card_schema_version(schema)
+    version = _card_schema_version(_catalog_hash_schema(kind, schema))
     if wdb.read_card_schema_version(conn, iid) == version:
         return {"cards_skipped": True}
     rows = _card_cat.build_cards(kind, schema)
@@ -215,7 +228,7 @@ def _rebuild_dashboard_cards(conn, wdb, iid, kind, schema):
     return {"cards_built": len(rows), "cards_ready": sum(1 for r in rows if r["status"] == "ready")}
 
 
-_MAX_GENERATION_ATTEMPTS = 3   # TOTAL tries per schema_version PER ISO WEEK, retries included
+_MAX_GENERATION_ATTEMPTS = 3   # TOTAL tries per instance PER ISO WEEK, retries included
 
 
 def _iso_week():
@@ -376,7 +389,7 @@ def _keep_last_good_generated(conn, wdb, iid, kind, schema, rows, invoke_connect
 
 
 def _rebuild_diag_signals(conn, wdb, iid, kind, schema):
-    version = _schema_version(schema)
+    version = _schema_version(_catalog_hash_schema(kind, schema))
     existing_content_version = wdb.read_signal_schema_version(conn, iid)
     existing_budget = wdb.read_diag_signal_budget(conn, iid)
     if existing_budget is None:
@@ -690,7 +703,7 @@ def _hybrid_fallback(kind, schema, iid, rows):
 
 
 def _rebuild_graph_queries(conn, wdb, iid, kind, schema):
-    version = _graph_schema_version(schema)
+    version = _graph_schema_version(_catalog_hash_schema(kind, schema))
     if wdb.read_graph_schema_version(conn, iid) == version:
         return {"graph_skipped": True}
     rows = _graph_cat.build_graph_queries(kind, schema)

@@ -11,6 +11,7 @@ bound trace count + per-trace bytes (UTF-8) + ensure_ascii=False. Stdlib + boto3
 import json
 import re
 import time
+from http.client import HTTPException
 from urllib.parse import quote, urlencode
 
 from cross_account import resolve_tool_name
@@ -26,16 +27,9 @@ MAX_SCHEMA_TAGS = 200
 MAX_SCHEMA_BYTES = 64_000
 MAX_SCHEMA_VALUES = 32
 _SCHEMA_WINDOW_S = 3600
-_SCHEMA_TIMEOUT_S = 4  # at most six reads; stay within the Lambda's request budget
-_SCHEMA_STALE_VALUES = 200
+_SCHEMA_TIMEOUT_S = 4  # optional buildinfo/type evidence has a shorter deadline
+_SCHEMA_NAMES_TIMEOUT_S = 12  # mandatory discovery retains the normal datasource HTTP budget
 _SCHEMA_SCOPES = {"span", "resource", "event", "link", "instrumentation"}
-# These are builtins, not custom attributes. Keep only known bare intrinsic identifiers.
-_SCHEMA_INTRINSICS = {
-    "duration", "kind", "name", "status", "statusMessage", "rootName", "rootServiceName",
-    "traceDuration", "span:duration", "span:kind", "span:name", "span:status",
-    "span:statusMessage", "trace:duration", "trace:rootName", "trace:rootService",
-    "event:name", "event:timeSinceStart", "instrumentation:name", "instrumentation:version",
-}
 # Four lookups maximum, and only for attributes actually returned by the scoped tags API.
 _SCHEMA_TYPE_ATTRIBUTES = (
     "span.http.status_code", "span.http.response.status_code",
@@ -132,7 +126,34 @@ def tempo_tag_values(args):
     tag = (args.get("tag") or "").strip()
     if not tag:
         return err("tag required")
-    data = _get(_ds(), f"/api/search/tag/{quote(tag, safe='')}/values")
+    scope, separator, key = tag.partition(".")
+    qualified = bool(separator) and scope in _SCHEMA_SCOPES | {""}
+    raw_key = tag
+    if qualified:
+        # Schema identifiers quote the whole raw key. Decode exactly one JSON
+        # string, never split inside it or URL-decode literal percent escapes.
+        if key.startswith('"'):
+            try:
+                raw_key = json.loads(key)
+            except ValueError:
+                return err("invalid quoted tag identifier")
+        elif _UNQUOTED_ATTRIBUTE.fullmatch(key):
+            raw_key = key
+        else:
+            return err("invalid tag identifier")
+        if _schema_identifier(raw_key, "") is None:
+            return err("invalid tag identifier")
+    creds = _ds()
+    if qualified:
+        try:
+            data = _get(creds, f"/api/v2/search/tag/{quote(tag, safe='')}/values")
+        except _ApiError as exc:
+            if exc.status not in (404, 405, 501):
+                raise
+            # V1 cannot express scope; preserve only the actual raw key.
+            data = _get(creds, f"/api/search/tag/{quote(raw_key, safe='')}/values")
+    else:
+        data = _get(creds, f"/api/search/tag/{quote(tag, safe='')}/values")
     return ok(data if isinstance(data, dict) else {"values": data})
 
 
@@ -147,8 +168,6 @@ def _schema_identifier(tag, scope):
         return None
     if any(ord(c) < 32 or ord(c) == 127 for c in tag):
         return None
-    if scope == "intrinsic":
-        return tag if tag in _SCHEMA_INTRINSICS else None
     # Scope keywords are lexer tokens even inside attribute keys; quoting preserves the raw key.
     reserved = tag.partition(".")[0] in _SCHEMA_SCOPES | {"parent", "trace"}
     name = tag if _UNQUOTED_ATTRIBUTE.fullmatch(tag) and not reserved else json.dumps(tag, ensure_ascii=False)
@@ -159,23 +178,29 @@ def _schema_attributes(data, scoped):
     """Normalize a bounded subset; malformed/omitted entries never acquire invented scopes."""
     truncated = isinstance(data, dict) and data.get("truncated") is True
     if scoped:
-        scopes = (data.get("scopes", []) if isinstance(data, dict)
+        scopes = (data.get("scopes") if isinstance(data, dict)
                   and "raw" not in data and "tagNames" not in data else None)
     else:
-        tags = data.get("tagNames", []) if isinstance(data, dict) and "raw" not in data else data
+        tags = data.get("tagNames") if isinstance(data, dict) and "raw" not in data else None
         scopes = [{"name": "", "tags": tags}]
     if not isinstance(scopes, list):
         return {}, {}, True
 
     attributes, raw_names = {}, {}
-    allowed_scopes = _SCHEMA_SCOPES | {"intrinsic"} if scoped else {""}
-    # The API has six scopes. Also bound malformed/duplicate scope envelopes locally.
+    allowed_scopes = _SCHEMA_SCOPES if scoped else {""}
+    # Builtins are supplied by the prompt. Ignore the entire intrinsic scope,
+    # including future names, without consuming the custom-name budget or
+    # suggesting that custom attributes were omitted.
+    if scoped:
+        scopes = [scope for scope in scopes
+                  if not isinstance(scope, dict) or scope.get("name") != "intrinsic"]
+    # Also bound malformed/duplicate custom scope envelopes locally.
     truncated |= len(scopes) > 16
     for scope in scopes[:16]:
         if not isinstance(scope, dict):
             truncated = True
             continue
-        name, tags = scope.get("name"), scope.get("tags", [])
+        name, tags = scope.get("name"), scope.get("tags")
         if not isinstance(name, str) or name not in allowed_scopes or not isinstance(tags, list):
             truncated = True
             continue
@@ -215,7 +240,7 @@ def _schema_observed_types(creds, attributes, window):
             data = _get(creds, f"/api/v2/search/tag/{quote(identifier, safe='')}/values",
                         {**window, "limit": MAX_SCHEMA_VALUES},
                         timeout=_SCHEMA_TIMEOUT_S)
-        except (_ApiError, OSError):
+        except (_ApiError, OSError, HTTPException, SsrfBlocked):
             continue  # optional type evidence; the names remain useful on older/unavailable endpoints
         values = data.get("tagValues", []) if isinstance(data, dict) else None
         if not isinstance(values, list):
@@ -240,7 +265,10 @@ def tempo_schema(args):
 
     API shapes/limits: https://grafana.com/docs/tempo/latest/api_docs/
     V2 has scopes[{name,tags}] and tagValues[{type,value}]. V1 names have no scope/type
-    evidence. All network reads retain the existing credential/SSRF/auth guarded _get.
+    evidence. Its virtual intrinsics are injected only for scope=intrinsic, which
+    we never request; do not map raw names to builtins based on their spelling.
+    Verified: grafana/tempo v2.9.0 modules/frontend/tag_handlers.go (newTagsHTTPHandler).
+    All network reads retain the existing credential/SSRF/auth guarded _get.
     """
     creds = _ds()
     end = int(time.time())
@@ -250,17 +278,19 @@ def tempo_schema(args):
         version = bi.get("version") if isinstance(bi, dict) else None
         if not isinstance(version, str) or len(version) > 128 or _schema_identifier(version, "") is None:
             version = None
-    except (_ApiError, OSError):
+    except (_ApiError, OSError, HTTPException, SsrfBlocked):
         version = None
-    params = {**window, "limit": MAX_SCHEMA_TAGS + 1, "maxStaleValues": _SCHEMA_STALE_VALUES}
+    # Omitted maxStaleValues defaults to zero (disabled). A stale-name threshold
+    # could hide later names below the count cap without any truncation signal.
+    params = {**window, "limit": MAX_SCHEMA_TAGS + 1}
     scoped = True
     try:
-        data = _get(creds, "/api/v2/search/tags", params, timeout=_SCHEMA_TIMEOUT_S)
+        data = _get(creds, "/api/v2/search/tags", params, timeout=_SCHEMA_NAMES_TIMEOUT_S)
     except _ApiError as exc:
         if exc.status not in (404, 405, 501):
             raise
         scoped = False
-        data = _get(creds, "/api/search/tags", params, timeout=_SCHEMA_TIMEOUT_S)
+        data = _get(creds, "/api/search/tags", params, timeout=_SCHEMA_NAMES_TIMEOUT_S)
     attributes, raw_names, names_truncated = _schema_attributes(data, scoped)
     types_truncated = _schema_observed_types(creds, attributes, window) if scoped else False
     body = {

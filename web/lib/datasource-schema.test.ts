@@ -40,6 +40,32 @@ describe('datasource-schema (keyed by integration_id)', () => {
 });
 
 describe('renderSchemaForPrompt', () => {
+  it('does not present intrinsic-only cached rows as custom attributes', () => {
+    expect(renderSchemaForPrompt({
+      attributes: [{ name: 'duration' }, { name: 'span:status' }, { name: 'trace:id' }],
+      tags: ['duration', 'status'],
+    }, 'tempo')).toBe('');
+  });
+
+  it('keeps raw legacy custom keys distinct from similarly named intrinsics', () => {
+    const out = renderSchemaForPrompt({ tags: ['duration', 'status', 'rootServiceName', 'http.status_code'] }, 'tempo');
+    expect(out).toContain('.http.status_code');
+    expect(out).toContain('.duration (type unknown)');
+    expect(out).toContain('.status (type unknown)');
+    expect(out).toContain('.rootServiceName (type unknown)');
+  });
+
+  it('keeps genuinely scoped attributes even when their names match intrinsics', () => {
+    expect(renderSchemaForPrompt({ attributes: [{ name: 'span.duration', types: ['int'] }] }, 'tempo'))
+      .toContain('span.duration (int)');
+  });
+
+  it('returns no usable schema when the budget cannot hold any complete attribute', () => {
+    expect(renderSchemaForPrompt({
+      version: '2.9.0', attributes: [{ name: 'span.' + 'a'.repeat(1000), types: ['string'] }],
+    }, 'tempo', 100)).toBe('');
+  });
+
   it('preserves Tempo attribute scopes, observed types, and server version', () => {
     const out = renderSchemaForPrompt({
       version: '2.8.0',

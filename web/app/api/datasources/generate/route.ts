@@ -15,6 +15,7 @@ import { invokeMcpLambdaTool } from '@/lib/mcp-lambda-invoke';
 import { assertDatasourceEndpointAllowed } from '@/lib/ssrf-guard';
 import { isDatasourceKind } from '@/lib/integrations-category';
 import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
+import { normalizeTempoSchema, type TempoAttribute } from '@/lib/tempo-schema';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -77,7 +78,9 @@ function refreshInBackground(accountId: string, ds: DatasourceRow, id: number, k
   void introspectAndCache(accountId, ds, id, kind).catch(() => {}).finally(() => refreshing.delete(id));
 }
 
-async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: boolean, kind: string, nl: string): Promise<{ schemaBlock: string; tempoSchemaEmpty: boolean; tempoSchemaIncomplete: boolean }> {
+async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: boolean, kind: string, nl: string): Promise<{
+  schemaBlock: string; tempoSchemaEmpty: boolean; tempoSchemaIncomplete: boolean; tempoAttributes?: TempoAttribute[];
+}> {
   const accountId = currentAccountId();
   let tempoSchemaIncomplete = false;
   // Float NL-relevant metric/label names to the front so they survive the render cap (Prometheus/Mimir
@@ -88,19 +91,22 @@ async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: b
     const own = hasId ? schemas.find((s) => s.integrationId === id) : schemas.find((s) => s.kind === kind);
     if (own?.schema) {
       const block = render(own.schema, own.kind);
-      const raw = own.schema as { tags?: unknown; attributes?: unknown; names_truncated?: unknown; truncated?: unknown };
-      const emptyTempoResult = kind === 'tempo' && !block
-        && (Array.isArray(raw.tags) || Array.isArray(raw.attributes));
+      const normalized = kind === 'tempo' ? normalizeTempoSchema(own.schema) : undefined;
+      const emptyTempoResult = !!normalized && !block && normalized.attributes.length === 0;
       // A proxy's malformed 200 or a truncated name listing can also normalize
       // to empty arrays. Such results are not evidence of an idle window.
-      tempoSchemaIncomplete = emptyTempoResult && (raw.names_truncated === true || raw.truncated === true);
-      const tempoSchemaEmpty = emptyTempoResult && !tempoSchemaIncomplete;
+      tempoSchemaIncomplete = !!normalized && !block && normalized.incomplete;
+      const tempoSchemaEmpty = emptyTempoResult && !!normalized?.hasShape && !tempoSchemaIncomplete;
       if (block || tempoSchemaEmpty) {
         // Lazy refresh: cache hit but stale → refresh in the background (next lookup is fresh), serve now.
-        // An empty Tempo observation is also a cache hit: an idle window will not
-        // become useful by introspecting again on every generation request.
-        if (hasId && ds && isSchemaStale(own.fetched_at)) refreshInBackground(accountId, ds, id, kind);
-        return { schemaBlock: block, tempoSchemaEmpty, tempoSchemaIncomplete: false };
+        // Keep a brief empty-observation cache, so traffic resuming does not wait
+        // for the normal six-hour schema TTL. Refresh remains off the read path.
+        const stale = tempoSchemaEmpty
+          ? isSchemaStale(own.fetched_at, Date.now(), 60_000)
+          : isSchemaStale(own.fetched_at);
+        if (hasId && ds && stale) refreshInBackground(accountId, ds, id, kind);
+        return { schemaBlock: block, tempoSchemaEmpty, tempoSchemaIncomplete: false,
+          ...(normalized ? { tempoAttributes: normalized.attributes } : {}) };
       }
     }
   } catch { /* cache is optional */ }
@@ -110,7 +116,8 @@ async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: b
   // Warm the cache in the BACKGROUND so the NEXT lookup is grounded; serve schema-less now (the model
   // writes a best-effort query and the connector's read-only guard backstops it on run).
   if (hasId && ds) refreshInBackground(accountId, ds, id, kind);
-  return { schemaBlock: '', tempoSchemaEmpty: false, tempoSchemaIncomplete };
+  return { schemaBlock: '', tempoSchemaEmpty: false, tempoSchemaIncomplete,
+    ...(kind === 'tempo' ? { tempoAttributes: [] } : {}) };
 }
 
 export async function POST(request: Request) {

@@ -239,6 +239,121 @@ class TestRebuildOnChange:
         assert a.inserts[0]["sv"] == b.inserts[0]["sv"]  # deterministic (sha256, not salted hash())
 
 
+class TestTempoCatalogHash:
+    @pytest.fixture
+    def indexed(self, monkeypatch):
+        monkeypatch.setenv("DIAG_SIGNAL_QUERYGEN_ENABLED", "true")
+        monkeypatch.setenv("GRAPH_QUERYGEN_ENABLED", "true")
+        # These are the external generation boundaries; the three catalogs and DB helpers stay real.
+        def unexpected_generation(*args, **kwargs):
+            pytest.fail("Tempo's deterministic catalogs must not invoke generation")
+        monkeypatch.setattr(dsi._signal_gen, "try_generate_signal_with_status", unexpected_generation)
+        monkeypatch.setattr(dsi._querygen, "try_generate_clickhouse_trace_spans", unexpected_generation)
+        c = FakeConn(kind="tempo", schema={
+            "version": "2.8.0", "tags": ["http.status_code"],
+            "attributes": [{"name": "span.http.status_code", "types": ["string"],
+                            "types_truncated": False}],
+            "names_truncated": False, "types_truncated": False, "truncated": False,
+            "time_window": {"start": 1000, "end": 4600},
+        })
+        out = dsi.run({"integration_id": 7, "kind": "tempo"}, c)
+        assert (out["ready"], out["graph_ready"], out["cards_ready"]) == (2, 1, 2)
+        assert c.reservations == []
+        return c
+
+    @staticmethod
+    def cached(indexed):
+        return FakeConn(kind="tempo", schema=indexed._schema_override,
+                        existing_version=indexed.inserts[0]["sv"],
+                        existing_graph_version=indexed.graph_inserts[0]["sv"],
+                        existing_card_version=indexed.card_inserts[0]["sv"])
+
+    @pytest.mark.parametrize("update", [
+        {"attributes": [{"name": "span.http.status_code", "types": ["int", "string"],
+                         "types_truncated": True}]},
+        {"names_truncated": True},
+        {"types_truncated": True},
+        {"truncated": True},
+        {"time_window": {"start": 1060, "end": 4660}},
+        {"tags": [], "attributes": []},
+        {"tags": ["service.name"], "services": ["checkout"],
+         "attributes": [{"name": "resource.service.name", "types": ["string"]}]},
+        {"version": "2.9.0"},
+    ], ids=["sampled-types", "name-limit", "type-limit", "combined-limit",
+            "rolling-window", "empty-window", "different-vocabulary", "server-version"])
+    def test_live_metadata_refresh_preserves_catalogs(self, monkeypatch, indexed, update):
+        fresh = {**indexed._schema_override, **update}
+        monkeypatch.setattr(dsi, "_reintrospect", lambda kind, iid: fresh)
+        c = self.cached(indexed)
+        out = dsi.run({"integration_id": 7, "kind": "tempo"}, c)
+        assert (out.get("skipped"), out.get("graph_skipped"), out.get("cards_skipped")) == (
+            True, True, True)
+        assert c.inserts == c.graph_inserts == c.card_inserts == []
+        assert c.deletes == c.graph_deletes == c.card_deletes == []
+        assert c.reservations == []
+        # Query generation still receives the COMPLETE fresh schema, never the hash projection.
+        assert len(c.schema_writes) == 1
+        assert json.loads(c.schema_writes[0]["s"]) == fresh
+
+    @pytest.mark.parametrize("family,module,version_attr", [
+        ("signal", dsi._cat, "CATALOG_VERSION"),
+        ("graph", dsi._graph_cat, "CATALOG_VERSION"),
+        ("card", dsi._card_cat, "CARD_CATALOG_VERSION"),
+    ])
+    def test_catalog_version_change_rebuilds_only_its_family(
+            self, monkeypatch, indexed, family, module, version_attr):
+        monkeypatch.setattr(module, version_attr, getattr(module, version_attr) + "-next")
+        c = self.cached(indexed)
+        out = dsi.run({"integration_id": 7, "kind": "tempo"}, c)
+        assert "error" not in out
+        assert (bool(c.inserts), bool(c.graph_inserts), bool(c.card_inserts)) == (
+            family == "signal", family == "graph", family == "card")
+
+    @pytest.mark.parametrize("flag,family", [
+        ("DIAG_SIGNAL_QUERYGEN_ENABLED", "signal"),
+        ("GRAPH_QUERYGEN_ENABLED", "graph"),
+    ])
+    def test_flag_change_rebuilds_only_its_family(self, monkeypatch, indexed, flag, family):
+        monkeypatch.setenv(flag, "false")
+        c = self.cached(indexed)
+        out = dsi.run({"integration_id": 7, "kind": "tempo"}, c)
+        assert "error" not in out
+        assert (bool(c.inserts), bool(c.graph_inserts), bool(c.card_inserts)) == (
+            family == "signal", family == "graph", False)
+
+    def test_missing_schema_preserves_catalogs_then_first_introspection_builds(self, monkeypatch):
+        c = FakeConn(kind="tempo", schema_present=False)
+        out = dsi.run({"integration_id": 7, "kind": "tempo"}, c)
+        assert out.get("no_schema") is True
+        assert c.inserts == c.graph_inserts == c.card_inserts == []
+        assert c.deletes == c.graph_deletes == c.card_deletes == []
+        monkeypatch.setattr(dsi, "_reintrospect", lambda kind, iid: {"tags": [], "attributes": []})
+        out = dsi.run({"integration_id": 7, "kind": "tempo"}, c)
+        assert (out["ready"], out["graph_ready"], out["cards_ready"]) == (2, 1, 2)
+
+
+@pytest.mark.parametrize("kind,schema,card_key", [
+    ("prometheus", {"metrics": []}, "up_targets"),
+    ("mimir", {"metrics": []}, "up_targets"),
+    ("loki", {"labels": ["job"]}, "log_volume"),
+    ("clickhouse", {"tables": []}, "otel_span_rate"),
+])
+def test_non_tempo_truncation_still_invalidates_catalogs(monkeypatch, kind, schema, card_key):
+    monkeypatch.setenv("DIAG_SIGNAL_QUERYGEN_ENABLED", "false")
+    monkeypatch.setenv("GRAPH_QUERYGEN_ENABLED", "false")
+    before = FakeConn(kind=kind, schema={**schema, "truncated": False})
+    dsi.run({"integration_id": 7, "kind": kind}, before)
+    after = FakeConn(kind=kind, schema={**schema, "truncated": True},
+                     existing_version=before.inserts[0]["sv"],
+                     existing_graph_version=before.graph_inserts[0]["sv"],
+                     existing_card_version=before.card_inserts[0]["sv"])
+    out = dsi.run({"integration_id": 7, "kind": kind}, after)
+    assert "error" not in out
+    assert after.inserts and after.graph_inserts and after.card_inserts
+    card = next(p for p in after.card_inserts if p["ck"] == card_key)
+    assert card["st"] == ("ready" if kind == "loki" else "unknown")
+
+
 class TestEmptyVsError:
     def test_missing_cache_preserves_rows_and_skips(self):
         c = FakeConn(schema_present=False)

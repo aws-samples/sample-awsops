@@ -61,6 +61,78 @@ describe('looksLikeProse [1]', () => {
 });
 
 describe('generateQuery', () => {
+  const typedTempo = [
+    { name: 'span.http.status_code', types: ['int'], typesTruncated: false },
+    { name: 'resource.service.name', types: ['string'], typesTruncated: false },
+  ];
+  it.each([
+    '{ span.made_up = 500 }',
+    '{ span.http.status_code = "500" }',
+    '{ status = error }',
+    '{}',
+    '{ span.http.status_code = 500 || status = error }',
+    '{ span.http.status_code = 500 } || {}',
+  ])('repairs a schema/HTTP-filter violation instead of returning it: %s', async (draft) => {
+    const send = vi.fn().mockResolvedValueOnce(draft).mockResolvedValueOnce('{ span.http.status_code = 500 }');
+    expect(await generateQuery({
+      nl: 'HTTP 500 응답 스팬', lang: 'TraceQL', schemaBlock: 'span.http.status_code (int)',
+      tempoAttributes: typedTempo, isSql: false, send,
+    })).toBe('{ span.http.status_code = 500 }');
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a repeated schema mismatch after one correction', async () => {
+    const send = vi.fn().mockResolvedValue('{ span.made_up = 500 }');
+    await expect(generateQuery({
+      nl: 'traces', lang: 'TraceQL', schemaBlock: 'span.http.status_code (int)',
+      tempoAttributes: typedTempo, isSql: false, send,
+    })).rejects.toThrow(/TraceQL.*schema/i);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    '{ span.http.status_code = 500 && resource.service.name = "checkout" }',
+    '{ span.http.status_code = 500 && (status = error || name = "HTTP") }',
+    '{ span."http.status_code" = 500 }',
+  ])('preserves schema-grounded HTTP filters: %s', async (draft) => {
+    const send = vi.fn().mockResolvedValue(draft);
+    expect(await generateQuery({
+      nl: 'HTTP 500 응답 스팬', lang: 'TraceQL', schemaBlock: 'observed', tempoAttributes: typedTempo,
+      isSql: false, send,
+    })).toBe(draft);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reject an unobserved literal type when sampling is incomplete', async () => {
+    const send = vi.fn().mockResolvedValue('{ span.http.status_code = 500 || span.http.status_code = "500" }');
+    await expect(generateQuery({
+      nl: 'HTTP 500 응답 스팬', lang: 'TraceQL', schemaBlock: 'observed',
+      tempoAttributes: [{ name: 'span.http.status_code', types: ['string'], typesTruncated: true }],
+      isSql: false, send,
+    })).resolves.toContain('= 500');
+  });
+
+  it.each([
+    ['float', '{ span.http.status_code = 500 }'],
+    ['int', '{ span.http.status_code = 500.0 }'],
+  ])('accepts compatible numeric comparisons for observed %s', async (type, draft) => {
+    const send = vi.fn().mockResolvedValue(draft);
+    expect(await generateQuery({
+      nl: 'HTTP 500 응답 스팬', lang: 'TraceQL', schemaBlock: 'observed',
+      tempoAttributes: [{ name: 'span.http.status_code', types: [type], typesTruncated: false }],
+      isSql: false, send,
+    })).toBe(draft);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('recognizes a decorated missing-schema sentinel without burning the syntax retry', async () => {
+    const send = vi.fn().mockResolvedValue('SCHEMA_REQUIRED — no HTTP attributes observed');
+    await expect(generateQuery({
+      nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: '', isSql: false, send,
+    })).rejects.toThrow(/Tempo.*schema/i);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it('repairs the reported bare HTTP attribute once before returning a TraceQL draft', async () => {
     const send = vi.fn()
       .mockResolvedValueOnce('{ http.status_code = "500" }')

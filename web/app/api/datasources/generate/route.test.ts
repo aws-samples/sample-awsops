@@ -67,6 +67,52 @@ describe('auth + validation', () => {
   });
 });
 
+describe('Tempo structured observations', () => {
+  it('refreshes a confirmed-empty observation after one minute instead of six hours', async () => {
+    getDatasource.mockResolvedValue({ id: 41, kind: 'tempo', endpoint: 'http://tempo', authType: 'none' });
+    listConfiguredSchemas.mockResolvedValue([{
+      integrationId: 41, kind: 'tempo', schema: { tags: [], attributes: [], names_truncated: false },
+      fetched_at: new Date(Date.now() - 120_000).toISOString(),
+    }]);
+    resolveConnConfig.mockResolvedValue({ endpoint: 'http://tempo', authType: 'none' });
+    invokeMcpLambdaTool.mockResolvedValue({ tags: ['http.status_code'], attributes: [{ name: 'span.http.status_code' }] });
+    generateQuery.mockResolvedValue('{ duration > 500ms }');
+    const { POST } = await import('./route');
+    expect((await POST(req({ id: 41, nl: 'slow traces' }))).status).toBe(200);
+    await vi.waitFor(() => expect(invokeMcpLambdaTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'tempo_schema' })));
+  });
+
+  it('passes observed custom names and types to the generator', async () => {
+    getDatasource.mockResolvedValue({ id: 42, kind: 'tempo', endpoint: 'http://tempo', authType: 'none' });
+    listConfiguredSchemas.mockResolvedValue([{
+      integrationId: 42, kind: 'tempo',
+      schema: { __block: 'span.http.status_code (int)', attributes: [
+        { name: 'duration' }, { name: 'span.http.status_code', types: ['int'], types_truncated: false },
+      ] }, fetched_at: new Date().toISOString(),
+    }]);
+    generateQuery.mockResolvedValue('{ span.http.status_code = 500 }');
+    const { POST } = await import('./route');
+    await POST(req({ id: 42, nl: 'HTTP 500 응답 스팬' }));
+    expect(lastGen()).toMatchObject({
+      tempoAttributes: [{ name: 'span.http.status_code', types: ['int'], typesTruncated: false }],
+    });
+  });
+
+  it('does not classify malformed attribute rows as a confirmed idle window', async () => {
+    getDatasource.mockResolvedValue({ id: 43, kind: 'tempo', endpoint: 'http://tempo', authType: 'none' });
+    listConfiguredSchemas.mockResolvedValue([{
+      integrationId: 43, kind: 'tempo', schema: { attributes: [null, { wrong: 'shape' }] },
+      fetched_at: new Date().toISOString(),
+    }]);
+    resolveConnConfig.mockResolvedValue({ endpoint: 'http://tempo', authType: 'none' });
+    invokeMcpLambdaTool.mockResolvedValue({ tags: [], names_truncated: true });
+    generateQuery.mockResolvedValue('{ status = error }');
+    const { POST } = await import('./route');
+    await POST(req({ id: 43, nl: 'errors' }));
+    expect(lastGen()).toMatchObject({ tempoSchemaEmpty: false, tempoSchemaIncomplete: true });
+  });
+});
+
 describe('SQL generation (the ClickHouse fix)', () => {
   it('uses the cached schema block and read-only SQL lang for a clickhouse instance', async () => {
     getDatasource.mockResolvedValue({ id: 2, kind: 'clickhouse', endpoint: 'http://ch', authType: 'none' });

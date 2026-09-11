@@ -5,6 +5,7 @@
 // datasource). Keyed PER INSTANCE by (account_id, integration_id) so two instances of one kind don't
 // share a cache row (the PK was swapped from (account_id, slug) by the datasource-instances migration).
 import { getPool } from '@/lib/db';
+import { normalizeTempoSchema } from '@/lib/tempo-schema';
 
 const MAX_SCHEMA_BYTES = 256_000; // bound a single cached schema (Aurora row + later prompt injection)
 
@@ -125,25 +126,8 @@ const clamp = (str: string, max: number) => (str.length > max ? `${str.slice(0, 
 /** Tempo v2 metadata retains TraceQL scopes and observed types. Legacy cache rows contain only raw
  * tag names: use the unscoped `.name` syntax rather than inventing a span/resource scope or a type. */
 function renderTempoSchema(s: Record<string, unknown>, maxChars: number): string {
-  const scoped = Array.isArray(s.attributes) ? s.attributes : [];
-  const attributes: { name: string; types: string[]; typesTruncated?: boolean }[] = scoped.flatMap((a) => {
-    if (!a || typeof a !== 'object' || typeof a.name !== 'string' || !a.name) return [];
-    return [{
-      name: a.name,
-      types: Array.isArray(a.types) ? a.types.filter((t: unknown) => typeof t === 'string').slice(0, 8) : [],
-      // Older truncated caches cannot say whether the names or the type samples
-      // were limited. Only explicit per-attribute evidence clears that uncertainty.
-      typesTruncated: a.types_truncated === true || (s.truncated === true && a.types_truncated !== false),
-    }];
-  });
-  if (!attributes.length && Array.isArray(s.tags)) {
-    for (const tag of s.tags) {
-      if (typeof tag !== 'string' || !tag) continue;
-      const reserved = /^(span|resource|event|link|instrumentation|parent|trace)(\.|$)/.test(tag);
-      const name = /^[a-zA-Z_][a-zA-Z0-9_.]*$/.test(tag) && !reserved ? tag : JSON.stringify(tag);
-      attributes.push({ name: `.${name}`, types: [] });
-    }
-  }
+  const normalized = normalizeTempoSchema(s);
+  const attributes = normalized.attributes;
   if (!attributes.length) return '';
   const limit = Math.max(80, maxChars);
   const lines = ['Tempo attributes (observed types; unknown means not sampled or incomplete):'];
@@ -164,10 +148,11 @@ function renderTempoSchema(s: Record<string, unknown>, maxChars: number): string
     used += line.length + 1;
     emitted += 1;
   }
+  if (!emitted) return '';
   const omitted = attributes.length - emitted;
   // New caches separate name discovery from type sampling. Older global flags
   // cannot identify which budget was hit, so keep their conservative disclosure.
-  const discoveryLimited = typeof s.names_truncated === 'boolean' ? s.names_truncated : s.truncated === true;
+  const discoveryLimited = normalized.namesTruncated;
   if (omitted > 0) {
     lines.push(`… (+${omitted} more attributes${discoveryLimited ? '; discovery also limited' : ''})`);
   } else if (discoveryLimited) {

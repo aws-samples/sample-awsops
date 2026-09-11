@@ -1,5 +1,6 @@
 """Tests for tempo_mcp — read-only TraceQL connector on datasource_http (seconds time, hex trace_id)."""
 import json, os, sys, unittest
+from http.client import HTTPException, IncompleteRead
 from unittest import mock
 from urllib.parse import urlparse, parse_qs, unquote
 sys.path.insert(0, os.path.dirname(__file__))
@@ -53,6 +54,106 @@ class TestTags(_Base):
             tm.lambda_handler({"tool_name":"tempo_tag_values","arguments":{"tag":"service.name"}},None); self.assertIn("/api/search/tag/service.name/values",cap["url"])
     def test_tag_values_requires_tag(self):
         self.assertEqual(tm.lambda_handler({"tool_name":"tempo_tag_values","arguments":{}},None)["statusCode"],400)
+
+    def tag_values(self, tag, responses):
+        calls = []
+
+        def respond(method, url, headers=None, timeout=None):
+            self.assertEqual(method, "GET")
+            calls.append(url)
+            response = responses[len(calls) - 1]
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        with mock.patch.object(tm, "http_json", side_effect=respond):
+            out = tm.lambda_handler({"tool_name": "tempo_tag_values", "arguments": {"tag": tag}}, None)
+        return out, json.loads(out["body"]), calls
+
+    def test_qualified_values_use_v2_and_preserve_typed_response(self):
+        for tag in ("span.http.status_code", "resource.service.name", "event.exception.type",
+                    "link.custom", "instrumentation.language", ".http.status_code",
+                    'span."route/name"', 'resource."a\\"b"', 'span."path\\\\key"'):
+            with self.subTest(tag=tag):
+                payload = {"tagValues": [{"type": "string", "value": "observed"}]}
+                out, body, calls = self.tag_values(tag, [(200, payload)])
+                self.assertEqual(out["statusCode"], 200)
+                self.assertEqual(body, payload)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(unquote(urlparse(calls[0]).path), f"/api/v2/search/tag/{tag}/values")
+                self.assertEqual(urlparse(calls[0]).query, "")
+
+    def test_raw_values_keep_v1_and_literal_key(self):
+        for tag in ("service.name", "http.status_code", "name", "status.code", "error",
+                    "route/name", 'a"b', r"path\key", "고객.이름"):
+            with self.subTest(tag=tag):
+                payload = {"tagValues": ["legacy"]}
+                out, body, calls = self.tag_values(tag, [(200, payload)])
+                self.assertEqual(out["statusCode"], 200)
+                self.assertEqual(body, payload)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(unquote(urlparse(calls[0]).path), f"/api/search/tag/{tag}/values")
+                self.assertEqual(urlparse(calls[0]).query, "")
+
+    def test_qualified_values_fallback_decodes_whole_raw_identifier(self):
+        cases = [
+            ("span.http.status_code", "http.status_code"),
+            (".service.name", "service.name"),
+            ('resource."service.name"', "service.name"),
+            ('span."resource.service.name"', "resource.service.name"),
+            ('span."header with spaces"', "header with spaces"),
+            ('span."a\\"b"', 'a"b'),
+            ('span."path\\\\key"', r"path\key"),
+            ('span."route/name?x=1#fragment"', "route/name?x=1#fragment"),
+            ('span."고객.이름"', "고객.이름"),
+            ('span."literal%2Fname"', "literal%2Fname"),
+        ]
+        for status in (404, 405, 501):
+            for tag, raw in cases:
+                with self.subTest(status=status, tag=tag):
+                    out, body, calls = self.tag_values(tag, [
+                        (status, {"raw": "unsupported"}), (200, {"tagValues": ["legacy"]}),
+                    ])
+                    self.assertEqual(out["statusCode"], 200)
+                    self.assertEqual(body, {"tagValues": ["legacy"]})
+                    self.assertEqual(len(calls), 2)
+                    self.assertEqual(unquote(urlparse(calls[0]).path), f"/api/v2/search/tag/{tag}/values")
+                    self.assertEqual(unquote(urlparse(calls[1]).path), f"/api/search/tag/{raw}/values")
+                    self.assertEqual(urlparse(calls[1]).query, "")
+                    self.assertEqual(urlparse(calls[1]).fragment, "")
+                    self.assertNotIn(raw, ("", ".", ".."))
+
+    def test_qualified_values_do_not_fallback_on_auth_server_or_guard_errors(self):
+        for response in (
+            (401, {}), (403, {}), (429, {}), (500, {}), TimeoutError("timed out"),
+            HTTPException("invalid HTTP"), tm.SsrfBlocked("redirect blocked"),
+        ):
+            with self.subTest(response=response):
+                out, body, calls = self.tag_values("span.http.status_code", [response])
+                self.assertEqual(out["statusCode"], 400)
+                self.assertIn("error", body)
+                self.assertEqual(len(calls), 1)
+                self.assertIn("/api/v2/search/tag/", calls[0])
+
+    def test_malformed_qualified_identifier_cannot_fallback_as_another_raw_key(self):
+        for tag in ('span."unterminated', 'span."a"."b"', 'span."a" trailing',
+                    'span."bad\\q"', 'span.""', 'span."\\n"', 'span."\\ud800"', "span."):
+            with self.subTest(tag=tag):
+                out, body, calls = self.tag_values(tag, [(404, {"raw": "unsupported"})])
+                self.assertEqual(out["statusCode"], 400)
+                self.assertIn("error", body)
+                self.assertLessEqual(len(calls), 1)
+                if calls:
+                    self.assertIn("/api/v2/search/tag/", calls[0])
+
+    def test_values_initial_ssrf_guard_prevents_all_requests(self):
+        with mock.patch.object(tm, "assert_host_allowed", side_effect=tm.SsrfBlocked("blocked")), \
+             mock.patch.object(tm, "http_json") as http:
+            out = tm.lambda_handler({
+                "tool_name": "tempo_tag_values", "arguments": {"tag": "resource.service.name"},
+            }, None)
+        self.assertEqual(out["statusCode"], 400)
+        http.assert_not_called()
 
 class TestOrgId(_Base):
     def test_org_id(self):
@@ -120,10 +221,10 @@ class TestSchemaIntrospection(_Base):
 
         def respond(method, url, headers=None, timeout=None):
             self.assertEqual(method, "GET")
-            self.assertIsNotNone(timeout, "schema calls need a short request timeout")
-            self.assertGreater(timeout, 0)
-            self.assertLessEqual(timeout, 4)
             parsed = urlparse(url)
+            self.assertIsNotNone(timeout)
+            self.assertGreater(timeout, 0)
+            self.assertLessEqual(timeout, 12)
             calls.append((unquote(parsed.path), _qs(url), headers))
             if parsed.path == "/api/status/buildinfo":
                 response = buildinfo if buildinfo is not None else (200, {"version": "2.9.0"})
@@ -148,6 +249,35 @@ class TestSchemaIntrospection(_Base):
              mock.patch.object(tm.time, "time", return_value=1_710_000_000):
             out = tm.lambda_handler({"tool_name": "tempo_schema", "arguments": args or {}}, None)
         return out, json.loads(out["body"]), calls
+
+    def test_mandatory_names_have_twelve_seconds_optional_reads_have_four(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                calls = []
+
+                def respond(method, url, headers=None, timeout=None):
+                    self.assertEqual(method, "GET")
+                    path = urlparse(url).path
+                    calls.append((path, timeout))
+                    if path == "/api/status/buildinfo":
+                        return 200, {"version": "2.9.0"}
+                    if path == "/api/v2/search/tags":
+                        return (404, {}) if legacy else (
+                            200, {"scopes": [{"name": "span", "tags": ["http.status_code"]}]},
+                        )
+                    if path == "/api/search/tags":
+                        return 200, {"tagNames": ["http.status_code"]}
+                    return 200, {"tagValues": [{"type": "int", "value": "200"}]}
+
+                with mock.patch.object(tm, "http_json", side_effect=respond):
+                    out = tm.lambda_handler({"tool_name": "tempo_schema", "arguments": {}}, None)
+                self.assertEqual(out["statusCode"], 200)
+                self.assertEqual(calls, [
+                    ("/api/status/buildinfo", 4), ("/api/v2/search/tags", 12),
+                    ("/api/search/tags", 12) if legacy else (
+                        "/api/v2/search/tag/span.http.status_code/values", 4,
+                    ),
+                ])
 
     def test_scopes_and_observed_types_preserve_old_and_new_http_names(self):
         out, body, calls = self.schema(
@@ -216,11 +346,26 @@ class TestSchemaIntrospection(_Base):
             self.assertEqual(headers["Authorization"], "Bearer tok")
             self.assertGreater(int(params["limit"][0]), 0)
             self.assertLessEqual(int(params["limit"][0]), 32 if path.endswith("/values") else 201)
-            if path.endswith("/values"):
-                self.assertNotIn("maxStaleValues", params)
-            else:
-                self.assertGreater(int(params["maxStaleValues"][0]), 0)
-                self.assertLessEqual(int(params["maxStaleValues"][0]), 200)
+            self.assertNotIn("maxStaleValues", params)
+
+    def test_name_discovery_does_not_early_stop_on_repeated_names(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                def names(params):
+                    observed = ["custom"]
+                    # Repeated names can hide a later name even far below the count cap.
+                    if not int(params.get("maxStaleValues", ["0"])[0]):
+                        observed.append("later")
+                    return 200, ({"tagNames": observed} if legacy else {
+                        "scopes": [{"name": "span", "tags": observed}],
+                    })
+
+                out, body, _ = self.schema(
+                    (404, {}) if legacy else names, legacy=names if legacy else None,
+                )
+                self.assertEqual(out["statusCode"], 200)
+                self.assertEqual(body["tags"], ["custom", "later"])
+                self.assertFalse(body["names_truncated"])
 
     def test_type_discovery_does_not_early_stop_before_a_later_numeric_type(self):
         def values(params):
@@ -297,6 +442,8 @@ class TestSchemaIntrospection(_Base):
         for response in (
             (404, {"raw": "unsupported"}), (501, {"raw": "unsupported"}),
             (500, {"raw": "unavailable"}), TimeoutError("timed out"),
+            HTTPException("invalid HTTP"), IncompleteRead(b"partial", 20),
+            tm.SsrfBlocked("redirect blocked"),
         ):
             with self.subTest(response=response):
                 out, body, _ = self.schema(
@@ -356,7 +503,7 @@ class TestSchemaIntrospection(_Base):
             {"name": 'span."parent.foo"'},
         ])
 
-    def test_other_scopes_and_intrinsics_remain_valid_identifiers(self):
+    def test_other_scopes_remain_custom_and_intrinsics_are_excluded(self):
         out, body, _ = self.schema((200, {"scopes": [
             {"name": "event", "tags": ["exception.type"]},
             {"name": "link", "tags": ["link_type"]},
@@ -366,10 +513,56 @@ class TestSchemaIntrospection(_Base):
         self.assertEqual(out["statusCode"], 200)
         self.assertEqual(body["attributes"], [
             {"name": "event.exception.type"}, {"name": "link.link_type"},
-            {"name": "instrumentation.language"}, {"name": "duration"},
-            {"name": "span:status"}, {"name": "trace:rootService"},
+            {"name": "instrumentation.language"},
         ])
+        self.assertEqual(body["tags"], ["exception.type", "link_type", "language"])
         self.assertFalse(body["truncated"])
+
+    def test_intrinsic_only_including_unknown_names_is_known_empty(self):
+        for intrinsics in (
+            ["duration", "span:status", "trace:rootService"],
+            ["future:intrinsic"],
+            ["future:intrinsic"] * 250,
+            [None, "bad\nname"],
+        ):
+            with self.subTest(intrinsics=intrinsics[:3]):
+                out, body, calls = self.schema((200, {
+                    "scopes": [{"name": "intrinsic", "tags": intrinsics}],
+                }))
+                self.assertEqual(out["statusCode"], 200)
+                self.assertEqual(body["attributes"], [])
+                self.assertEqual(body["tags"], [])
+                self.assertFalse(body["names_truncated"])
+                self.assertFalse(body["types_truncated"])
+                self.assertFalse(body["truncated"])
+                self.assertEqual(len(calls), 2)
+
+    def test_unknown_intrinsics_do_not_poison_custom_names_or_consume_name_budget(self):
+        out, body, _ = self.schema((200, {"scopes": [
+            {"name": "intrinsic", "tags": ["future:intrinsic"] * 250},
+            {"name": "span", "tags": ["duration", "name", "status"]},
+        ]}))
+        self.assertEqual(out["statusCode"], 200)
+        self.assertEqual(body["attributes"], [
+            {"name": "span.duration"}, {"name": "span.name"}, {"name": "span.status"},
+        ])
+        self.assertEqual(body["tags"], ["duration", "name", "status"])
+        self.assertFalse(body["names_truncated"])
+
+    def test_v1_unscoped_names_do_not_invent_virtual_intrinsic_mappings(self):
+        # Tempo v2.9.0 modules/frontend/tag_handlers.go adds virtual intrinsic
+        # names to v1 ONLY for scope=intrinsic. This fallback never asks for it.
+        raw = ["duration", "name", "status", "status.code", "error", "rootName", "span:status"]
+        out, body, calls = self.schema((404, {}), legacy=(200, {"tagNames": raw}))
+        self.assertEqual(out["statusCode"], 200)
+        self.assertEqual(body["tags"], raw)
+        self.assertEqual(body["attributes"], [
+            {"name": ".duration"}, {"name": ".name"}, {"name": ".status"},
+            {"name": ".status.code"}, {"name": ".error"}, {"name": ".rootName"},
+            {"name": '."span:status"'},
+        ])
+        self.assertNotIn("scope", calls[-1][1])
+        self.assertFalse(body["names_truncated"])
 
     def test_malformed_entries_are_skipped_and_duplicates_coalesced(self):
         out, body, _ = self.schema((200, {"scopes": [
@@ -380,9 +573,9 @@ class TestSchemaIntrospection(_Base):
             {"name": "intrinsic", "tags": ["not an intrinsic", "duration"]},
         ]}))
         self.assertEqual(out["statusCode"], 200)
-        self.assertEqual(body["tags"], ["foo", "duration"])
+        self.assertEqual(body["tags"], ["foo"])
         self.assertEqual(body["attributes"], [
-            {"name": "span.foo"}, {"name": "resource.foo"}, {"name": "duration"},
+            {"name": "span.foo"}, {"name": "resource.foo"},
         ])
         self.assertTrue(body["truncated"])
 
@@ -407,12 +600,49 @@ class TestSchemaIntrospection(_Base):
         self.assertIsNone(body["version"])
         self.assertEqual(body["attributes"], [{"name": "span.foo"}])
 
-    def test_empty_protobuf_payload_is_an_empty_schema(self):
-        out, body, calls = self.schema((200, {}))
-        self.assertEqual(out["statusCode"], 200)
+    def test_blank_payload_is_incomplete_but_explicit_empty_shape_is_known_empty(self):
+        for legacy in (False, True):
+            payloads = [
+                ({}, True), ({"metrics": {}}, True), ([], True),
+                ({"tagNames": []} if legacy else {"scopes": []}, False),
+            ]
+            for payload, incomplete in payloads:
+                with self.subTest(legacy=legacy, payload=payload):
+                    out, body, calls = self.schema(
+                        (404, {}) if legacy else (200, payload),
+                        legacy=(200, payload) if legacy else None,
+                    )
+                    self.assertEqual(out["statusCode"], 200)
+                    self.assertEqual(body["attributes"], [])
+                    self.assertEqual(body["tags"], [])
+                    self.assertEqual(body["names_truncated"], incomplete)
+                    self.assertEqual(body["truncated"], incomplete)
+                    self.assertEqual(len(calls), 3 if legacy else 2)
+
+    def test_missing_custom_scope_tags_are_incomplete(self):
+        _, body, _ = self.schema((200, {"scopes": [{"name": "span"}]}))
         self.assertEqual(body["attributes"], [])
-        self.assertFalse(body["truncated"])
-        self.assertEqual(len(calls), 2)
+        self.assertTrue(body["names_truncated"])
+
+    def test_optional_buildinfo_transport_failures_do_not_erase_names(self):
+        for response in (HTTPException("invalid HTTP"), tm.SsrfBlocked("redirect blocked")):
+            with self.subTest(response=response):
+                out, body, _ = self.schema(
+                    (200, {"scopes": [{"name": "span", "tags": ["custom"]}]}),
+                    buildinfo=response,
+                )
+                self.assertEqual(out["statusCode"], 200)
+                self.assertIsNone(body["version"])
+                self.assertEqual(body["attributes"], [{"name": "span.custom"}])
+
+    def test_mandatory_name_transport_failures_remain_fatal(self):
+        for response in (TimeoutError("timed out"), HTTPException("invalid HTTP"),
+                         tm.SsrfBlocked("redirect blocked")):
+            with self.subTest(response=response):
+                out, body, calls = self.schema(response)
+                self.assertEqual(out["statusCode"], 400)
+                self.assertIn("error", body)
+                self.assertEqual(len(calls), 2)
 
     def test_malformed_values_or_buildinfo_do_not_erase_valid_names(self):
         for payload in ([], None, {"tagValues": "bad"}, {"tagValues": [None, 1, "200"]}):
