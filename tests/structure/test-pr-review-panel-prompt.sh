@@ -1,9 +1,9 @@
 #!/bin/bash
-# Guard the pr-review panel prompt: every panelist (codex + all kiro models) must receive the
+# Guard the pr-review panel prompt: every panelist (Codex + Claude) must receive the
 # data-only / prompt-injection guard. Since the lens refactor (PR #205-era), the shared guard
 # lives in the workflow's COMMON variable, fanned into every lens prompt file (L2..L5) that
-# run-panel.sh feeds to codex and kiro; kiro additionally gets a file-path addendum
-# (KIRO_INSTRUCTION) that must carry its own data-only line for the $DIFF file it reads.
+# run-panel.sh feeds to both CLIs over stdin. Executable CLI fixtures below check exact
+# prompt forwarding, read-only tools, timeout/retry behavior and complete lens coverage.
 cd "$(dirname "$0")/../.."
 
 FAILED=0
@@ -51,32 +51,13 @@ else
   fail "every lens prompt heredoc embeds \$COMMON ($LENS_WITH_COMMON of $LENS_HEREDOCS do)"
 fi
 
-# Kiro addendum: file-path delivery + its own data-only guard for the file content.
-BLOCK="$(sed -n '/^[[:space:]]*KIRO_INSTRUCTION=/,/KIRO_MODELS\[@\]/p' "$SCRIPT")"
-
-if [ -n "$BLOCK" ]; then
-  pass "KIRO_INSTRUCTION assignment block found"
+# Exercise the actual panel script with fake external CLIs: this checks what each
+# CLI receives, rather than requiring the source text of the retired Kiro adapter.
+if PANEL_RESULT=$(python3 scripts/v2/test_pr_review_pipeline.py 2>&1); then
+  pass "Codex/Claude receive guarded prompts and read-only tools; coverage fails closed"
 else
-  fail "KIRO_INSTRUCTION assignment block found"
-fi
-
-if echo "$BLOCK" | grep -q '\$DIFF'; then
-  pass "KIRO_INSTRUCTION references \$DIFF file path (file-read delivery)"
-else
-  fail "KIRO_INSTRUCTION references \$DIFF file path (file-read delivery)"
-fi
-
-if echo "$BLOCK" | grep -qiE "data only|not follow|never follow"; then
-  pass "KIRO_INSTRUCTION carries its own data-only guard for the diff file"
-else
-  fail "KIRO_INSTRUCTION carries its own data-only guard for the diff file"
-fi
-
-# --trust-tools and the prompt's tool-name mentions must be documented as staying in sync.
-if grep -B2 -- '--trust-tools=read,grep,fs_read' "$SCRIPT" | grep -qiE "sync|align"; then
-  pass "trust-tools / prompt tool-name alignment is documented"
-else
-  fail "trust-tools / prompt tool-name alignment is documented"
+  printf '%s\n' "$PANEL_RESULT" | sed 's/^/# /'
+  fail "executable panel contracts"
 fi
 
 [ "$FAILED" -eq 0 ] || exit 1

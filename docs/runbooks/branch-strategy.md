@@ -62,9 +62,30 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
   contributors" so unknown contributors' runs need a maintainer click.
 - PR content and review text are untrusted data for CI and AI review alike.
 
+Fork PRs intentionally do **not** receive the canonical `AI Code Review` check; a
+skipped job must not impersonate a completed review. A green test/CodeQL run alone
+does not make a fork PR eligible to merge under the review policy.
+
+Maintainer path:
+
+1. Review the contributor's patch as data, especially workflow/build-hook changes,
+   before putting it on a same-repository branch. Do not blindly mirror executable
+   CI changes into a branch that can receive repository secrets.
+2. Create a maintainer-owned topic branch and an internal PR targeting `dev`, linking
+   the original fork PR. The trusted automatic review runs against the internal PR's
+   exact HEAD; use the normal full AI/CI checks, not a recovery label.
+3. Merge the internal PR only after those checks pass, then close the original fork
+   PR with the integration link. A changed internal HEAD requires fresh review.
+
 (외부 fork PR은 시크릿·OIDC 토큰을 받지 못해 배포/AWS 접근이 불가하고, plan 잡은
 same-repo가 아니면 시작하지 않습니다. main 대상 PR은 head가 이 리포의 `dev`가 아니면
 guard 체크가 실패합니다. 첫 기여자의 CI 실행은 관리자 승인 후에만 동작합니다.)
+
+Fork PR에는 정식 `AI Code Review` 검사를 발행하지 않으므로 테스트·CodeQL 통과만으로
+머지할 수 없습니다. 유지관리자는 패치, 특히 CI·빌드 훅 변경을 먼저 검토한 뒤 내부
+토픽 브랜치와 `dev` 대상 PR을 만들고 원본 PR을 연결합니다. 내부 PR의 최신 HEAD가
+전체 AI·CI 검사를 통과하면 그 PR을 머지하고 원본 fork PR에 통합 결과를 연결해
+닫습니다. 이 경로에서 복구 라벨이나 검사 우회는 사용하지 않습니다.
 
 ## Domain / deployment map / 도메인·배포 맵
 

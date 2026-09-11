@@ -133,6 +133,10 @@ Synthesize ONE final review, grouped by lens (L2/L3/L4/L5):
 
 Review criteria: bugs, security, logic errors, and violations of this repo's CLAUDE.md/AGENTS.md
 conventions.
+PLATFORM VERSION: GitHub changed pull_request_target on 2025-12-08 to use the default
+branch workflow/GITHUB_SHA regardless of the PR target. Target-base source context
+is a separate SHA. Source:
+https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/
 BASE CONTEXT (avoids false positives): this repo's BASE branch is checked out in the current
 working directory and you can read files (read/grep). The diff is a PATCH applied on top of that
 base and may be a STACKED PR (the base may already define the symbols/imports/DB columns/IAM/
@@ -412,7 +416,7 @@ fi
 # banner is still left so the review body shows immediately WHY it FAILed.
 if [ -s "$WORK/degraded-lenses.txt" ]; then
   DEGRADED_LENSES="$(tr '\n' ',' < "$WORK/degraded-lenses.txt" | sed 's/,$//; s/,/, /g')"
-  { echo "🛑 **Lens coverage collapse**: lens(es) [$DEGRADED_LENSES] got no response from any model — nobody reviewed it."
+  { echo "🛑 **Lens coverage collapse**: required model responses are missing for lens(es) [$DEGRADED_LENSES] — cross-model review is incomplete."
     echo ""
     cat "$OUT"
   } > "$OUT.tmp" && mv "$OUT.tmp" "$OUT"
@@ -434,7 +438,7 @@ if [ -f "$WORK/coverage-severe.flag" ]; then
   # contradicts the lens-collapse banner already attached above. Disambiguate by which file was
   # actually raised, and pick the matching message.
   if [ -s "$WORK/degraded-lenses.txt" ]; then
-    SEVERE_REASON="lens(es) [$(tr '\n' ',' < "$WORK/degraded-lenses.txt" | sed 's/,$//; s/,/, /g')] got no response from any model, so cross-verification cannot happen"
+    SEVERE_REASON="lens(es) [$(tr '\n' ',' < "$WORK/degraded-lenses.txt" | sed 's/,$//; s/,/, /g')] has incomplete required model responses, so cross-verification is incomplete"
   else
     SEVERE_REASON="at most one vendor survived, so cross-verification across the lens x model matrix cannot happen"
   fi
