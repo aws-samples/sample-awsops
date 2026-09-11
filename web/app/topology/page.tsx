@@ -1,7 +1,8 @@
 'use client';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Globe, Cloud, Network, Target as TargetIcon, Shield, CircleHelp, MoreHorizontal, Server, Zap, Hexagon, Boxes, Circle, Copy, Sparkles, Search, Webhook, Archive, type LucideIcon } from 'lucide-react';
 import { Background, Controls, MiniMap, Position, type Node, type Edge, type ReactFlowInstance } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -9,10 +10,11 @@ import PageHeader from '@/components/ui/PageHeader';
 import RefreshButton from '@/components/ui/RefreshButton';
 import DetailPanel from '@/components/ui/DetailPanel';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
-import { buildFlowGraph, filterFromEntry, scopedTargetIp, type FlowInput, type FlowKind, type FlowNode } from '@/lib/flow-topology';
+import { buildFlowGraph, filterFromEntry, type FlowInput, type FlowKind, type FlowNode } from '@/lib/flow-topology';
+import { fetchEksIpMap } from '@/lib/topology-config';
 import { layoutFlow } from '@/lib/flow-layout';
 import { useTheme } from '@/lib/use-theme';
-import { scopeParams, useActiveScope } from '@/lib/account-context';
+import { scopeParams, useActiveScope, type ScopeSelection } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
 // ReactFlow touches the DOM on mount — load it client-only to avoid SSR mismatch.
@@ -126,12 +128,12 @@ function nodeLabel(n: FlowNode): ReactNode {
 
 const ROW_CAP = 500; // /api/inventory caps limit at 500
 
-async function fetchType(t: InvType, scopeQuery: string): Promise<{ rows: Row[]; finishedAt: string | null; capped: boolean; failed: boolean }> {
+async function fetchType(t: InvType | 'vpc' | 'subnet' | 'security_group', scopeQuery: string): Promise<{ rows: Row[]; finishedAt: string | null; capped: boolean; failed: boolean }> {
   try {
     const r = await fetch(`/api/inventory/${t}?limit=${ROW_CAP}&${scopeQuery}`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
-    if (!Array.isArray(d.rows)) throw new Error('Invalid inventory response');
+    if (d.error || !Array.isArray(d.rows)) throw new Error('Invalid inventory response');
     const rows = d.rows as { resource_id: unknown; region: unknown; data?: object }[];
     return {
       rows: rows.map((x) => ({ resource_id: x.resource_id, region: x.region, ...(x.data ?? {}) })),
@@ -144,72 +146,14 @@ async function fetchType(t: InvType, scopeQuery: string): Promise<{ rows: Row[];
   }
 }
 
-// Resolve ALB/NLB ip targets to EKS workloads: for each connected cluster, map pod IP →
-// "namespace/workload" (Deployment). Best-effort — failures per cluster are skipped.
-async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved']>> {
-  const map: NonNullable<FlowInput['ipResolved']> = {};
-  const ambiguous = new Set<string>();
-  try {
-    const list = await fetch('/api/eks').then((r) => (r.ok ? r.json() : null));
-    // NOTE: /api/eks returns { clusters: [...] } (matches the EKS page + fleet). Reading `rows` here
-    // silently yielded [] → EKS pod resolution never ran (every EKS ip-target showed as a raw IP).
-    const clusters = (list?.clusters ?? []) as { name: string; access?: string; region?: string; vpcId?: string }[];
-    await Promise.all(clusters.filter((c) => c.access === 'connected' && c.name && c.region && c.vpcId).map(async (cluster) => {
-      try {
-        const name = cluster.name;
-        const key = (ip: string) => scopedTargetIp(cluster.region!, cluster.vpcId!, ip);
-        const put = (ip: string, value: NonNullable<FlowInput['ipResolved']>[string]) => {
-          const id = key(ip);
-          if (ambiguous.has(id)) return;
-          const previous = map[id];
-          if (previous && (previous.label !== value.label || previous.meta?.cluster !== value.meta?.cluster)) {
-            delete map[id];
-            ambiguous.add(id);
-            return;
-          }
-          map[id] = value;
-        };
-        const get = (kind: string) => fetch(`/api/eks/${encodeURIComponent(name)}/incluster?kind=${kind}`).then((x) => (x.ok ? x.json() : null));
-        const [eps, pods] = await Promise.all([get('endpoints'), get('pods')]);
-        // pod IP → owning workload (fallback when an IP isn't fronted by a Service)
-        const podByIp = new Map<string, { podIP?: string; namespace?: string; name?: string; workload?: string }>();
-        for (const p of (pods?.rows ?? []) as { podIP?: string; namespace?: string; name?: string; workload?: string }[]) {
-          if (p.podIP) podByIp.set(p.podIP, p);
-        }
-        // Service mapping (preferred): an Endpoints object's name == the Service name; its addresses
-        // are the backing pod IPs. More stable than the pod/workload — a TG ip-target fronts a Service.
-        for (const e of (eps?.rows ?? []) as { name?: string; namespace?: string; ips?: string[] }[]) {
-          for (const ip of e.ips ?? []) {
-            const pod = podByIp.get(ip);
-            put(ip, {
-              label: `${e.namespace ?? ''}/${e.name ?? ''}`,
-              resolved: 'eks',
-              meta: { cluster: name, namespace: e.namespace, service: e.name, pod: pod?.name, workload: pod?.workload, region: cluster.region, vpcId: cluster.vpcId },
-            });
-          }
-        }
-        for (const [ip, p] of podByIp) {
-          if (!map[key(ip)] && !ambiguous.has(key(ip))) put(ip, {
-            label: `${p.namespace ?? ''}/${p.workload || p.name || ''}`,
-            resolved: 'eks',
-            meta: { cluster: name, namespace: p.namespace, workload: p.workload, pod: p.name, region: cluster.region, vpcId: cluster.vpcId },
-          });
-        }
-      } catch { /* skip this cluster */ }
-    }));
-  } catch { /* no EKS resolution */ }
-  return map;
-}
-
 // ---- VPC / subnet / security-group id → name resolution (for the detail panel) ----
 type NetMaps = { vpc: Map<string, string>; subnet: Map<string, string>; sg: Map<string, string> };
 const emptyNetMaps = (): NetMaps => ({ vpc: new Map(), subnet: new Map(), sg: new Map() });
 
-// inventory row {resource_id, data:{...}} → a human name (Name tag / group_name), else the id.
-function invName(invRow: { resource_id?: unknown; data?: Record<string, unknown> }): string {
-  const d = invRow.data ?? {};
+// Flattened inventory row → a human name (Name tag / group_name), else the id.
+function invName(d: Row): string {
   const tags = (d.tags ?? {}) as Record<string, unknown>;
-  return String(tags.Name ?? d.group_name ?? d.title ?? d.name ?? invRow.resource_id ?? '');
+  return String(tags.Name ?? d.group_name ?? d.title ?? d.name ?? d.resource_id ?? '');
 }
 // pull ids from the many shapes a row uses: 'sg-x' | {GroupId} | {SubnetId} | {Id} | availability_zones[].SubnetId
 function idsFrom(v: unknown): string[] {
@@ -238,12 +182,14 @@ function networkNames(row: Record<string, unknown>, nm: NetMaps): Record<string,
   return out;
 }
 
-export default function TopologyPage() {
+function TopologyPageContent({ activeScope }: { activeScope: ScopeSelection }) {
   const { tt } = useI18n();
-  const [activeScope] = useActiveScope();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const activeAccount = activeScope.accounts === '__all__' ? '__all__' : activeScope.accounts.join(',');
   const inventoryScope = scopeParams(activeScope);
-  const [view, setView] = useState<'flow' | 'e2e'>('flow');
+  const view = searchParams.get('view') === 'e2e' ? 'e2e' : 'flow';
+  const clusterFilter = searchParams.get('cluster') ?? '';
   const [loadedScope, setLoadedScope] = useState<string | null>(null);
   const loadGeneration = useRef(0);
   const [data, setData] = useState<FlowInput | null>(null);
@@ -254,7 +200,6 @@ export default function TopologyPage() {
   const [cappedTypes, setCappedTypes] = useState<string[]>([]);
   const [failedTypes, setFailedTypes] = useState<string[]>([]);
   const [entryId, setEntryId] = useState<string>('');
-  const [clusterFilter, setClusterFilter] = useState<string>('');
   const [selected, setSelected] = useState<FlowNode | null>(null);
   const [query, setQuery] = useState('');
   const [netMaps, setNetMaps] = useState<NetMaps>(emptyNetMaps);
@@ -268,16 +213,16 @@ export default function TopologyPage() {
       const [res, ipResolved, net] = await Promise.all([
         Promise.all(TYPES.map((t) => fetchType(t, inventoryScope))),
         activeAccount === 'self' ? fetchEksIpMap() : Promise.resolve({}),
-        // VPC/subnet/SG inventory → id→name maps for the detail panel (lookup only, not graph nodes)
-        Promise.all(NET.map((t) => fetch(`/api/inventory/${t}?limit=500&${inventoryScope}`).then((r) => (r.ok ? r.json() : { rows: [] })).catch(() => ({ rows: [] })))),
+        // Reuse the existing network inventory for names AND ECS attachment scope proof.
+        Promise.all(NET.map((t) => fetchType(t, inventoryScope))),
       ]);
       if (generation !== loadGeneration.current) return;
-      const mk = (rows: { resource_id?: unknown; data?: Record<string, unknown> }[]) =>
+      const mk = (rows: Row[]) =>
         new Map((rows ?? []).map((r) => [String(r.resource_id), invName(r)]));
       setNetMaps({ vpc: mk(net[0]?.rows), subnet: mk(net[1]?.rows), sg: mk(net[2]?.rows) });
-      const out: FlowInput = { ipResolved };
-      let newest: string | null = null;
-      const capped: string[] = [];
+      const out: FlowInput = { ipResolved, subnet: net[1].rows };
+      let newest: string | null = net[1].finishedAt;
+      const capped: string[] = net[1].capped ? ['subnet'] : [];
       TYPES.forEach((t, i) => {
         out[FLOW_KEY[t]] = res[i].rows;
         const f = res[i].finishedAt;
@@ -288,7 +233,7 @@ export default function TopologyPage() {
       setLoadedScope(inventoryScope);
       setSyncedAt(newest);
       setCappedTypes(capped);
-      setFailedTypes(TYPES.filter((_, i) => res[i].failed));
+      setFailedTypes([...TYPES.filter((_, i) => res[i].failed), ...(net[1].failed ? ['subnet'] : [])]);
       setErr('');
       setCapturedAt(new Date().toISOString());
     } catch (e) {
@@ -302,33 +247,19 @@ export default function TopologyPage() {
     load();
     return () => { loadGeneration.current += 1; };
   }, [load]);
-  useEffect(() => {
-    const read = () => {
-      setView(new URLSearchParams(window.location.search).get('view') === 'e2e' ? 'e2e' : 'flow');
-      setSelected(null);
-    };
-    read();
-    window.addEventListener('popstate', read);
-    return () => window.removeEventListener('popstate', read);
-  }, []);
-  const chooseView = (next: 'flow' | 'e2e') => {
-    const url = new URL(window.location.href);
-    url.searchParams.set('view', next);
-    window.history.pushState(null, '', url);
+  const navigateParam = (key: string, value: string) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (value) params.set(key, value); else params.delete(key);
+    const query = params.toString();
+    router.push(`/topology${query ? `?${query}` : ''}${window.location.hash}`, { scroll: false });
     setSelected(null);
-    setView(next);
   };
+  const chooseView = (next: 'flow' | 'e2e') => navigateParam('view', next === 'e2e' ? 'e2e' : '');
 
-  // Deep-link from the service map (/topology/services): ?cluster=<resolved:name> seeds the cluster
-  // filter so a trace workload click lands on this cluster's request path. Reads directly from
-  // window.location (no useSearchParams → no Suspense boundary needed for the standalone build).
-  // Also re-reads on popstate so browser back/forward after the filter changes tracks the URL.
+  // Both same-page router navigation and browser history update the derived view/cluster filter.
   useEffect(() => {
-    const read = () => setClusterFilter(new URLSearchParams(window.location.search).get('cluster') ?? '');
-    read();
-    window.addEventListener('popstate', read);
-    return () => window.removeEventListener('popstate', read);
-  }, []);
+    setSelected(null);
+  }, [view, clusterFilter]);
 
   const dark = useTheme() === 'dark';
 
@@ -482,7 +413,7 @@ export default function TopologyPage() {
   }, [selected, netMaps]);
 
   const onEntry = (e: React.ChangeEvent<HTMLSelectElement>) => setEntryId(e.target.value);
-  const onCluster = (e: React.ChangeEvent<HTMLSelectElement>) => { setClusterFilter(e.target.value); setSelected(null); };
+  const onCluster = (e: React.ChangeEvent<HTMLSelectElement>) => navigateParam('cluster', e.target.value);
   // max-w bounds the select so a long CloudFront/LB option label can't blow the toolbar width out
   // and crush the PageHeader title/subtitle (which would wrap the subtitle one char per line).
   const selectCls = 'max-w-[170px] rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-700';
@@ -663,4 +594,24 @@ export default function TopologyPage() {
       )}
     </div>
   );
+}
+
+function TopologyLoading() {
+  const { tt } = useI18n();
+  return <div className="p-6 text-[13px] text-ink-400">{tt('로딩 중…')}</div>;
+}
+
+function RestoredTopologyPage() {
+  // useActiveScope starts at self and restores storage in its effect. Do not mount either
+  // inventory or observation loaders until that effect has run, including on cold deep links.
+  const [scope] = useActiveScope();
+  const [restored, setRestored] = useState(false);
+  useEffect(() => { setRestored(true); }, []);
+  if (!restored) return <TopologyLoading />;
+  // Scope changes also discard selected details, searches and entry focus, and cancel old loads.
+  return <TopologyPageContent key={scopeParams(scope)} activeScope={scope} />;
+}
+
+export default function TopologyPage() {
+  return <Suspense fallback={<TopologyLoading />}><RestoredTopologyPage /></Suspense>;
 }

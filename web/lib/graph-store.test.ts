@@ -53,6 +53,35 @@ function mockPool(invRows: unknown[]) {
 }
 
 describe('rebuildGraph', () => {
+  it('materializes ECS scope from the account-scoped synced subnet rows it actually requests', async () => {
+    const inventory = [
+      { resource_type: 'target_group', resource_id: 'tg-b', region: 'us-east-1', data: {
+        target_type: 'ip', vpc_id: 'vpc-b', target_health_descriptions: [{ Target: { Id: '10.0.1.10' } }],
+      } },
+      { resource_type: 'ecs_task', resource_id: 'task-b', region: 'us-east-1', data: {
+        cluster_arn: 'cluster/b', task_group: 'service:orders', attachments: [{ Details: [
+          { Name: 'subnetId', Value: 'subnet-b' }, { Name: 'privateIPv4Address', Value: '10.0.1.10' },
+        ] }],
+      } },
+      { resource_type: 'subnet', resource_id: 'subnet-b', region: 'us-east-1', data: { vpc_id: 'vpc-b' } },
+    ];
+    const { pool, client } = mockPool([]);
+    pool.query.mockImplementation((...args: unknown[]) => {
+      const [sql, params] = args as [string, [string[], string]];
+      if (sql.includes('DISTINCT account_id')) return Promise.resolve({ rows: [{ account_id: 'self' }] });
+      expect(params[1]).toBe('self');
+      return Promise.resolve({ rows: inventory.filter(row => params[0].includes(row.resource_type)) });
+    });
+    await rebuildGraph(pool as never, 'ECS_SCOPE');
+    const write = client.query.mock.calls.find(([sql, params]) =>
+      sql.includes('INSERT INTO topology_nodes') && params?.[1] === 'target',
+    )!;
+    expect(write[1]?.[2]).toBe('orders');
+    expect(JSON.parse(String(write[1]?.[3]))).toMatchObject({
+      resolved: 'ecs', region: 'us-east-1', vpcId: 'vpc-b', subnetId: 'subnet-b',
+    });
+  });
+
   const inv = [
     { resource_type: 'alb', resource_id: 'web', region: 'r', data: { arn: 'arn:alb', dns_name: 'x.elb.amazonaws.com' } },
     { resource_type: 'target_group', resource_id: 'arn:tg', region: 'r', data: { target_group_name: 'tg', target_type: 'ip', load_balancer_arns: ['arn:alb'], target_health_descriptions: [{ Target: { Id: '10.0.0.1' }, TargetHealth: { State: 'healthy' } }] } },

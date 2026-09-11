@@ -47,21 +47,41 @@ const services = {
   ],
 };
 
-async function fixtures(page: Page, opts: { partial?: boolean; unavailable?: boolean } = {}) {
+async function fixtures(page: Page, opts: {
+  partial?: boolean; unavailable?: boolean; podsUnavailable?: 'empty' | 'failed'; foreignEcs?: boolean;
+} = {}) {
   const calls: string[] = [];
+  const data: typeof inventory = opts.foreignEcs ? {
+    ...inventory,
+    ecs_task: [{ resource_id: 'foreign-task', region: 'us-east-1', data: {
+      cluster_arn: 'cluster/foreign', task_group: 'service:foreign-ecs',
+      attachments: [{ Details: [
+        { Name: 'privateIPv4Address', Value: '10.0.1.10' }, { Name: 'subnetId', Value: 'subnet-foreign' },
+      ] }],
+    } }],
+    subnet: [{ resource_id: 'subnet-foreign', region: 'us-east-1', data: { vpc_id: 'vpc-peer' } }],
+  } : inventory;
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url());
     calls.push(`${url.pathname}${url.search}`);
     const json = (body: unknown, status = 200) => route.fulfill({ status, json: body });
     if (url.pathname.startsWith('/api/inventory/')) {
       const type = url.pathname.split('/').pop()!;
-      return json({ rows: inventory[type] ?? [], run: { finished_at: END } });
+      const rows = (data[type] ?? []).filter((row) => {
+        if (row.region === 'global') return url.searchParams.get('includeGlobal') !== '0';
+        const regions = url.searchParams.get('regions');
+        return !regions || regions === '__all__' || regions.split(',').includes(row.region);
+      });
+      return json({ rows, run: { finished_at: END } });
     }
-    if (url.pathname === '/api/eks') return json({ clusters: [{ name: 'demo', access: 'connected', region: 'us-east-1', vpcId: 'vpc-demo' }] });
+    if (url.pathname === '/api/eks') return json({ clusters: opts.foreignEcs ? [] : [{ name: 'demo', access: 'connected', region: 'us-east-1', vpcId: 'vpc-demo' }] });
     if (url.pathname === '/api/eks/demo/incluster') {
+      if (url.searchParams.get('kind') === 'pods' && opts.podsUnavailable) {
+        return json({ rows: [] }, opts.podsUnavailable === 'failed' ? 502 : 200);
+      }
       return json({ rows: ['frontend', 'orders'].map((name, index) => url.searchParams.get('kind') === 'pods'
         ? { name: `${name}-a`, namespace: 'shop', podIP: `10.0.${index + 1}.10`, workload: name }
-        : { name, namespace: 'shop', ips: [`10.0.${index + 1}.10`] }) });
+        : { name, namespace: 'shop', ips: [`10.0.${index + 1}.10`], targets: [{ ip: `10.0.${index + 1}.10`, pod: `${name}-a` }] }) });
     }
     if (url.pathname === '/api/graph') return json(services);
     if (url.pathname === '/api/nfm') return json({
@@ -206,4 +226,66 @@ test('late host inventory cannot overwrite a newly selected member account', asy
   await page.waitForTimeout(150);
   await expect(page.locator('[data-e2e-kind="cloudfront"]')).toContainText('member.example.test');
   await expect(page.locator('[data-e2e-kind="cloudfront"]')).not.toContainText('host.example.test');
+});
+
+test('same-page navigation and browser history keep the opt-in view consistent with the URL', async ({ page }) => {
+  const calls = await fixtures(page);
+  await page.goto('/topology?view=e2e');
+  await expect(page.getByRole('heading', { name: '서비스 + 네트워크', exact: true })).toBeVisible();
+  await page.locator('a[href="/topology"]').first().click();
+  await expect(page).toHaveURL(/\/topology$/);
+  await expect(page.getByRole('heading', { name: 'Topology', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '네트워크 조회', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '서비스 + 네트워크', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '서비스 + 네트워크', exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole('heading', { name: 'Topology', exact: true })).toBeVisible();
+  await page.goForward();
+  await expect(page.getByRole('heading', { name: '서비스 + 네트워크', exact: true })).toBeVisible();
+  expect(calls.filter((url) => url.startsWith('/api/nfm/query'))).toEqual([]);
+});
+
+for (const podsUnavailable of ['empty', 'failed'] as const) {
+  test(`Endpoints-only membership cannot establish a remote workload when pods are ${podsUnavailable}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 1050 });
+    await fixtures(page, { podsUnavailable });
+    await page.goto('/topology?view=e2e');
+    await expect(page.getByRole('region', { name: '서비스 소스' })).toContainText('노드 5');
+    await page.getByRole('combobox', { name: '목적지 분류', exact: true }).selectOption('INTER_AZ');
+    await page.getByRole('button', { name: '네트워크 조회', exact: true }).click();
+    await expect(page.locator('[data-e2e-kind="connection"]')).toHaveCount(1);
+    await page.locator('.react-flow__node').filter({
+      has: page.locator('[data-e2e-kind="endpoint"]'), hasText: 'orders-a',
+    }).click();
+    const detail = page.getByRole('region', { name: '선택한 노드 상세' });
+    await expect(detail).not.toContainText('configured-cluster');
+    await expect(detail).not.toContainText('shop/orders @demo');
+  });
+}
+
+test('a same-IP ECS task from another subnet/VPC cannot name the configured target', async ({ page }) => {
+  await fixtures(page, { foreignEcs: true });
+  await page.goto('/topology?view=e2e');
+  await expect(page.locator('[data-e2e-kind="target"]')).toHaveCount(2);
+  await expect(page.locator('[data-e2e-kind="target"]').filter({ hasText: 'foreign-ecs' })).toHaveCount(0);
+  await expect(page.locator('[data-e2e-kind="target"]').filter({ hasText: '10.0.1.10' })).toHaveCount(1);
+});
+
+test('region/global scope changes reach inventory requests and remove excluded global resources', async ({ page }) => {
+  const calls = await fixtures(page);
+  await page.goto('/topology?view=e2e');
+  await expect(page.locator('[data-e2e-kind="cloudfront"]')).toHaveCount(1);
+  await page.evaluate(() => {
+    localStorage.setItem('awsops:scope', JSON.stringify({
+      accounts: ['self'], regions: ['us-east-1'], includeGlobal: false,
+    }));
+    window.dispatchEvent(new CustomEvent('awsops:scopechange'));
+  });
+  await expect(page.locator('[data-e2e-kind="cloudfront"]')).toHaveCount(0);
+  await expect(page.locator('[data-e2e-kind="alb"]')).toHaveCount(1);
+  expect(calls.some((value) => {
+    const url = new URL(value, 'http://localhost');
+    return url.pathname === '/api/inventory/alb'
+      && url.searchParams.get('regions') === 'us-east-1' && url.searchParams.get('includeGlobal') === '0';
+  })).toBe(true);
 });
