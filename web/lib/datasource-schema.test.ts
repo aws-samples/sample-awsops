@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const query = vi.fn();
 vi.mock('@/lib/db', () => ({ getPool: () => ({ query }) }));
-import { upsertSchema, getSchema, listConfiguredSchemas, renderSchemaForPrompt, prioritizeSchemaForQuery, isSchemaStale } from './datasource-schema';
+import { upsertSchema, getSchema, listConfiguredSchemas, renderSchemaForPrompt, prioritizeSchemaForQuery, isSchemaStale, nlSearchTerms, nlSearchConcepts, termMatches } from './datasource-schema';
 
 beforeEach(() => { query.mockReset().mockResolvedValue({ rows: [] }); });
 
@@ -14,10 +14,37 @@ describe('datasource-schema (keyed by integration_id)', () => {
     expect(params[0]).toBe('acct'); expect(params[1]).toBe(7); expect(params[2]).toBe('prometheus');
     expect(JSON.parse(params[3])).toEqual({ metrics: ['up'] });
   });
-  it('rejects an oversized schema with NO query', async () => {
+  it('rejects an oversized UNTRIMMABLE schema with NO query', async () => {
     const huge = { blob: 'x'.repeat(300_000) };
     await expect(upsertSchema('a', 1, 'clickhouse', huge)).rejects.toThrow(/size|limit|large/i);
     expect(query).not.toHaveBeenCalled();
+  });
+  it('stores an oversized METRIC schema as a bounded, truncated copy (every writer gets the fallback)', async () => {
+    query.mockResolvedValueOnce({ rows: [] });
+    const big = { metrics: Array.from({ length: 3000 }, (_, i) => `very_long_metric_name_${'x'.repeat(80)}_${i}`), truncated: false };
+    await upsertSchema('a', 1, 'prometheus', big);
+    const params = query.mock.calls[0][1] as unknown[];
+    const stored = JSON.parse(params[3] as string) as { metrics: string[]; truncated: boolean };
+    expect(Buffer.byteLength(params[3] as string, 'utf8')).toBeLessThanOrEqual(256_000);
+    expect(stored.truncated).toBe(true);
+    expect(stored.metrics.length).toBeGreaterThan(0);
+    expect(stored.metrics).toContain(big.metrics[0]);
+  });
+  it('the metric trim keeps probed∩metrics names (definitive-absence contract) and marks `trimmed`', async () => {
+    const { trimSchemaForCache, isLegacyCapSnapshot } = await import('./datasource-schema');
+    const metrics = Array.from({ length: 3000 }, (_, i) => `very_long_metric_name_${'x'.repeat(80)}_${i}`);
+    const probed = [metrics[1], metrics[1501], 'absent_metric'];
+    const out = trimSchemaForCache({ metrics, probed, truncated: false }) as { metrics: string[]; probed: string[]; trimmed: boolean; truncated: boolean };
+    expect(out.trimmed).toBe(true);
+    expect(out.metrics).toContain(metrics[1]);
+    expect(out.metrics).toContain(metrics[1501]);
+    expect(out.metrics).not.toContain('absent_metric');
+    expect(out.probed).toEqual(probed);
+    // a size-trimmed row is never mistaken for an old-cap snapshot, even at exactly 500 names
+    expect(isLegacyCapSnapshot('prometheus', { truncated: true, trimmed: true }, Array.from({ length: 500 }, (_, i) => `m${i}`))).toBe(false);
+    // probe-enriched old-cap snapshots (500 + ≤24 probed names) DO qualify
+    expect(isLegacyCapSnapshot('prometheus', { truncated: true }, Array.from({ length: 512 }, (_, i) => `m${i}`))).toBe(true);
+    expect(isLegacyCapSnapshot('prometheus', { truncated: true }, Array.from({ length: 525 }, (_, i) => `m${i}`))).toBe(false);
   });
   it('getSchema returns the row (by integration_id) or null', async () => {
     query.mockResolvedValueOnce({ rows: [{ integration_id: 9, kind: 'loki', schema: { labels: ['app'] }, fetched_at: 't' }] });
@@ -139,5 +166,39 @@ describe('isSchemaStale (lazy-refresh TTL)', () => {
   });
   it('respects a custom TTL', () => {
     expect(isSchemaStale('2026-06-18T11:00:00Z', now, 30 * 60 * 1000)).toBe(true); // 1h old > 30m TTL
+  });
+});
+
+describe('nlSearchTerms / Korean ops vocabulary (the 메모리 사용률 chip)', () => {
+  const metrics = ['ALERTS', 'aggregator_discovery_total', 'apiserver_request_total',
+    'container_memory_working_set_bytes', 'kube_pod_status_phase', 'node_memory_MemAvailable_bytes', 'node_memory_MemTotal_bytes', 'up'];
+  it('a Korean request expands to English metric substrings (particles tolerated)', () => {
+    const terms = nlSearchTerms('메모리 사용률이 높은 인스턴스');
+    expect(terms).toEqual(expect.arrayContaining(['memory', 'mem', 'usage', 'utilization', 'instance', 'node']));
+  });
+  it('floats node_memory_* / container_memory_* to the front for the reported Korean chip', () => {
+    const out = prioritizeSchemaForQuery({ metrics }, '메모리 사용률이 높은 인스턴스') as { metrics: string[] };
+    // node_memory_* match memory+mem+node (3), container_memory_* match memory+mem (2)
+    expect(out.metrics.slice(0, 2).sort()).toEqual(['node_memory_MemAvailable_bytes', 'node_memory_MemTotal_bytes']);
+    expect(out.metrics[2]).toBe('container_memory_working_set_bytes');
+    expect(out.metrics.indexOf('ALERTS')).toBeGreaterThan(2);
+  });
+  it('scores per CONCEPT, not per expansion term (memory+mem count once)', () => {
+    // '메모리' alone → one concept; a name matching both 'memory' and 'mem' must not outrank one
+    // that matches a different concept as well.
+    const out = prioritizeSchemaForQuery({ metrics: ['container_memory_working_set_bytes', 'node_memory_MemTotal_bytes'] }, '노드 메모리') as { metrics: string[] };
+    expect(out.metrics[0]).toBe('node_memory_MemTotal_bytes'); // memory(1) + node(1) = 2 vs memory(1)
+    expect(nlSearchConcepts('메모리').length).toBe(1);
+  });
+  it('short expansions (<3 chars) match only whole name segments — "up" never hits "group"/"setup"', () => {
+    expect(termMatches('up', 'up')).toBe(true);
+    expect(termMatches('probe_up_total', 'up')).toBe(true);
+    expect(termMatches('kube_pod_group_total', 'up')).toBe(false);
+    expect(termMatches('node_setup_seconds', 'up')).toBe(false);
+    const out = prioritizeSchemaForQuery({ metrics: ['kube_pod_group_total', 'up'] }, '다운된 타깃') as { metrics: string[] };
+    expect(out.metrics[0]).toBe('up');
+  });
+  it('unmapped Korean still leaves the order unchanged', () => {
+    expect((prioritizeSchemaForQuery({ metrics }, '조회') as { metrics: string[] }).metrics).toEqual(metrics);
   });
 });

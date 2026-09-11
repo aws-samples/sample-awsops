@@ -81,11 +81,13 @@ describe('loadGraphSources', () => {
     expect(metricsSources).toHaveLength(0);
   });
 
-  it('never throws when the query itself fails (treated as no ready rows → fallback)', async () => {
+  it('exposes registry query failure instead of silently narrowing to the default source', async () => {
     const pool = { query: vi.fn(async () => { throw new Error('db down'); }) } as unknown as import('pg').Pool;
     const { sources } = await loadGraphSources(pool);
     expect(sources).toHaveLength(1);
-    expect(sources[0]).toBeInstanceOf(ClickHouseOtelTraceSource);
+    expect(await sources[0].recentSpans(60, 1000, 3600000)).toMatchObject({
+      status: 'error', sourceId: 'graph-registry', items: [], reasons: ['registry_read_failed'],
+    });
   });
 
   it('joins against integrations so a row for a deleted instance is skipped (M3 defense-in-depth, independent of deleteDatasource\'s sweep)', async () => {

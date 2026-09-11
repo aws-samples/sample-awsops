@@ -114,7 +114,7 @@ MFA가 활성화되지 않은 사용자가 있으면 상단에 경고 배너가 
 | `roleDetail` | 클릭 시 동적 SQL — 트러스트 정책 + 인스턴스 프로파일 포함 |
 
 :::info SCP 차단 컬럼 회피
-`mfa_enabled`, `attached_policy_arns`는 목록 쿼리에서 제외됩니다 (조직 SCP가 `ListMFADevices`, `ListAttachedUserPolicies`를 차단하는 환경 대응). MFA 통계는 별도 `summary` 쿼리에서 집계합니다.
+`iam_user`의 `mfa_enabled`와 `iam_role`의 `attached_policy_arns`는 per-row 하이드레이트 컬럼입니다. `iam_role`은 하이드레이트 쿼리가 실패하면(SCP의 `ListAttachedRolePolicies` 차단, 또는 전 계정 합산 role 수가 리미터 한도를 초과한 timeout) **하이드레이트 컬럼 없이 1회 재시도**하므로 기본 iam_role 인벤토리는 그대로 갱신되고 정책 목록 컬럼만 비게 됩니다(하이드레이트 실패 자체는 run을 failed로 만들지 않으며, 최종 run 상태는 통상 라이프사이클을 따릅니다 — 도달 불가 계정이 겹치면 partial, 이후 단계 오류면 failed) — S3 상세의 접근 role 섹션이 이를 "미동기화"로 표시하며, 운영자는 `inventory_sync_hydrate_fallback` 로그의 원인별 안내로 복구합니다(timeout이면 리미터 `fill_rate` 상향[ADR-021], SCP/IAM 거부이면 `iam:ListAttachedRolePolicies` 권한 부여 — rate 조정으로는 거부를 해결할 수 없음). 쿼리 경로에서 기본 쿼리까지 실패하면 그 타입의 sync run 전체가 failed로 기록되고(계정별 partial이 아님) 프루닝이 생략되어 모든 계정의 last-good 행이 보존·동결됩니다(ADR-010 2026-09-02 개정의 공지된 시맨틱; 일반 인벤토리 페이지의 run-status 노출은 후속 과제). `iam_user`의 `mfa_enabled`는 폴백 없이 유지되어 차단 시 whole-type 시맨틱이 그대로 적용됩니다. MFA 통계는 별도 `summary` 쿼리에서 집계합니다.
 :::
 
 ## 관련 페이지

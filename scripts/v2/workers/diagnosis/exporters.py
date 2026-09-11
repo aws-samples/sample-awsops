@@ -327,12 +327,15 @@ def to_pdf(md_text: str) -> bytes:
     with sync_playwright() as p:
         # Fargate blocks the user-namespace sandbox chromium uses by default → --no-sandbox; and the
         # container runs unprivileged so the setuid sandbox helper can't be used either →
-        # --disable-setuid-sandbox. Safe here: JS is disabled below and the HTML is static, server-
-        # built from already-redacted report data (no untrusted scripts to contain).
+        # --disable-setuid-sandbox. Report markup is untrusted even after redaction; disable scripts
+        # and isolate every page/frame from the network before loading any content.
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
         try:
-            # Static render of LLM-generated HTML over redacted data → no script execution.
-            page = browser.new_page(java_script_enabled=False)
+            context = browser.new_context(java_script_enabled=False, service_workers="block")
+            # JS-off alone still allows img, CSS and iframe fetches into the worker's network.
+            # Context-wide interception also covers nested frames. All report assets are inline.
+            context.route("**/*", lambda route: route.abort())
+            page = context.new_page()
             page.set_content(html, wait_until="load")
             return page.pdf(format="A4", print_background=True)
         finally:

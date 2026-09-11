@@ -237,11 +237,18 @@ def build_markdown(rendered, account, tier, collected=None, lang="ko"):
 
 def _build_actual(collected):
     """Assemble the deterministic-evaluator input from the Plan-1 collectors (read-only).
-    Shape: {"service_map": {edges:[...]}, "inventory": {by_type, unencrypted}} — exactly what
-    invariants.py expects. Missing/degraded collectors degrade to empty (the evaluator copes)."""
-    sm = (collected.get("service_map") or {}).get("data") or {}
-    invn = (collected.get("inventory") or {}).get("data") or {}
-    return {"service_map": sm, "inventory": invn}
+    Keep data in its existing shape and preserve collector status/provenance in _sources.
+    In particular, unresolved to_ref edges and bounded inventory samples are NOT proof of
+    absent traffic or encryption. The evaluator returns unknown when evidence is insufficient."""
+    actual = {"_sources": {}}
+    for key in ("service_map", "inventory"):
+        source = collected.get(key)
+        if not isinstance(source, dict):
+            source = {"ok": False, "degraded": True, "notes": "collector unavailable"}
+        data = source.get("data")
+        actual[key] = data if isinstance(data, dict) else {}
+        actual["_sources"][key] = {k: v for k, v in source.items() if k != "data"}
+    return actual
 
 
 def _evaluate_intent(active, actual):
@@ -254,13 +261,14 @@ def _drift(verdicts):
     return [v for v in verdicts if v.get("passed") is False]
 
 
-def _diff_summary(current_drift, parent_summary):
-    """Regression diff vs the parent report's summary. A regression = an invariant that PASSED in
-    the parent (i.e. was NOT in the parent's drift) but FAILS now (is in the current drift)."""
+def _diff_summary(current_drift, parent_summary, verdicts=()):
+    """New drift vs the parent's recorded failures; improvement requires an observed pass.
+    Absence from drift alone can mean unknown (or an inactive invariant), never recovery."""
     parent_failed = {v.get("id") for v in (parent_summary or {}).get("drift", [])}
     regressions = [v for v in current_drift if v.get("id") not in parent_failed]
+    passed = {v.get("id") for v in verdicts if v.get("passed") is True}
     improvements = [vid for vid in parent_failed
-                    if vid not in {v.get("id") for v in current_drift}]
+                    if vid in passed]
     return {"regressions": regressions, "improvements": improvements}
 
 
@@ -340,6 +348,6 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
         parent_id, _ = ddb.get_report_summary(conn, report_id)
         if parent_id is not None:
             _, parent_summary = ddb.get_report_summary(conn, parent_id)
-            summary["diff"] = _diff_summary(drift, parent_summary)
+            summary["diff"] = _diff_summary(drift, parent_summary, verdicts)
 
     return md, summary, sources_used

@@ -184,10 +184,13 @@ interface K8sItem {
     replicas?: number;
     type?: string;
     clusterIP?: string;
+    // Service label selector (gap L229) — absent on headless/selectorless Services
+    selector?: Record<string, string>;
     ports?: { port?: number; protocol?: string }[];
     containers?: { resources?: { requests?: Record<string, string> } }[];
     initContainers?: { resources?: { requests?: Record<string, string> } }[];
     overhead?: Record<string, string>;
+    serviceAccountName?: string;
     taints?: { key?: string; value?: string; effect?: string }[];
     ingressClassName?: string;
     defaultBackend?: IngressBackend;
@@ -209,7 +212,12 @@ interface K8sItem {
 
 // NodeRow / PodRow are defined (and re-exported) from ./eks-resources (client-safe).
 export interface DeploymentRow { name: string; namespace: string; ready: string; upToDate: number; available: number; age: string }
-export interface ServiceRow { name: string; namespace: string; type: string; clusterIP: string; ports: string; age: string }
+export interface ServiceRow {
+  name: string; namespace: string; type: string; clusterIP: string; ports: string; age: string;
+  /** spec.selector (gap L229 — the Service Resources join key). Absent on selectorless
+   *  Services (ExternalName / manual-Endpoints) — those join nothing, disclosed in the UI. */
+  selector?: Record<string, string>;
+}
 export interface NamespaceRow { name: string; status: string; age: string }
 /** A Service's backing pod IPs. name == the Service name (Endpoints object name). */
 export interface EndpointRow {
@@ -332,6 +340,9 @@ export function normalizePod(it: K8sItem): PodRow {
     age: age(it.metadata?.creationTimestamp),
     podIP: it.status?.podIP ?? '',
     workload: podWorkload(it),
+    serviceAccount: it.spec?.serviceAccountName ?? '',
+    // metadata.labels (gap L229 — the Service-selector join side). Non-secret metadata.
+    ...(it.metadata?.labels && Object.keys(it.metadata.labels).length ? { labels: it.metadata.labels } : {}),
     cpuRequest: eff(
       app.reduce((s, r) => s + parseCpuCores(r.cpu), 0),
       init.reduce((mx, r) => Math.max(mx, parseCpuCores(r.cpu)), 0),
@@ -374,6 +385,8 @@ export function normalizeService(it: K8sItem): ServiceRow {
     clusterIP: it.spec?.clusterIP ?? '',
     ports,
     age: age(it.metadata?.creationTimestamp),
+    // pass the selector only when it has entries — {} joins nothing meaningfully
+    ...(it.spec?.selector && Object.keys(it.spec.selector).length ? { selector: it.spec.selector } : {}),
   };
 }
 

@@ -114,6 +114,12 @@ step needs answered. `DRY_RUN=1 make migrate` connects and diffs against the liv
   매 실행 `syncSqlReaderPassword` 검사가 큰 소리로 실패한다.
   **원본 파일은 수정하지 않는다**: `migrate.mjs` 가 checksum drift 로 거부하고, 다른 모든 환경의
   이력까지 바꾸게 된다.
+  또한 `01M1B3NB288P56BDR1GMEN9GH9_inventory_sync_freshness.sql` 과
+  `01M1FV21NGHGPVQVA86PKNBSJP_inventory_sync_unknown_attrs.sql` 이 `sql_reader.inventory_sync_runs`
+  뷰를 공동 소유한다(각각 `last_success_at`/`last_success_row_count`,
+  `unknown_attribute_count` 추가) — repair 마이그레이션은 freshness 컬럼과
+  `unknown_attribute_count` 를 포함한 현재 뷰 정의로 재생성해야 하며, `01KYVY9J…` 시점의 컬럼
+  목록으로 만들면 복구 '성공' 후 `_sync_freshness()` 가 조용히 깨진다.
   **Already applied** but the role is gone (dropped by hand, restored from a snapshot predating it):
   the recorded checksum makes that file un-runnable. Add a **new repair migration** that recreates
   the role, its `sql_reader` views and the grants. If recovery from a bad manual recreation requires
@@ -129,7 +135,13 @@ step needs answered. `DRY_RUN=1 make migrate` connects and diffs against the liv
   `01KZ87KAJFA2Y27KY0QSMVBBDS_agent_sql_reader_elevated_attr_guard.sql` migration and the standing
   `syncSqlReaderPassword` check in `migrate.mjs` fail loud if the recreated role is in a bad state.
   Do not edit the original file: `migrate.mjs` will refuse on checksum drift, and editing it would
-  also change history for every other environment.
+  also change history for every other environment. Note that
+  `01M1B3NB288P56BDR1GMEN9GH9_inventory_sync_freshness.sql` and
+  `01M1FV21NGHGPVQVA86PKNBSJP_inventory_sync_unknown_attrs.sql` co-own the
+  `sql_reader.inventory_sync_runs` view (they add `last_success_at`/`last_success_row_count` and
+  `unknown_attribute_count` respectively) — a repair migration must recreate the view with the
+  freshness columns AND `unknown_attribute_count`, not the pre-freshness column list, or
+  `_sync_freshness()` silently breaks after an apparently successful recovery.
 
 회전 시 자동 수렴 훅은 **의도적으로 없다**. Terraform 쪽 비밀번호 변경과 다음 `make migrate` 사이의
 창은 알려진 갭이며, 없애기보다 수용했다 — 닫으려면 Aurora 에 `ALTER ROLE` 권한을 가진 회전 트리거

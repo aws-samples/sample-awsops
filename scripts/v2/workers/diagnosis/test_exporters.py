@@ -1,6 +1,8 @@
 import io
 import re
 
+import pytest
+
 from diagnosis import exporters
 
 _SAMPLE = "# AWS 진단 리포트\n\n> 생성 일시: 2026-06-17 09:00 (KST)\n\n## 요약\n\n본문 문단입니다.\n\n- 항목 A\n- 항목 B\n\n| 키 | 값 |\n|----|----|\n| a  | 1  |\n"
@@ -29,14 +31,72 @@ def test_to_docx_preserves_content():
     assert any(t.rows for t in doc.tables)  # the markdown table became a docx table
 
 
-def test_to_pdf_returns_pdf_bytes():
-    import pytest
-    pytest.importorskip("playwright")  # playwright is image-only; skip in local/CI without it
+@pytest.fixture
+def pdf_browser_available():
+    api = pytest.importorskip("playwright.sync_api")
     try:
-        out = exporters.to_pdf(_SAMPLE)
-    except Exception as e:  # chromium binary not installed in this env
+        with api.sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+            browser.close()
+    except (api.Error, OSError, AttributeError) as e:
         pytest.skip(f"chromium unavailable: {e}")
+
+
+def test_to_pdf_returns_pdf_bytes(pdf_browser_available):
+    # Once the browser is available, renderer failures must fail the test, not skip.
+    out = exporters.to_pdf(_SAMPLE)
     assert isinstance(out, (bytes, bytearray)) and bytes(out[:5]) == b"%PDF-"
+
+
+@pytest.mark.parametrize("markup", [
+    "![image]({url}/markdown-image)",
+    '<img src="{url}/image">',
+    '<style>@import url("{url}/import.css"); body {{ background: url("{url}/background") }}</style>',
+    '<iframe src="{url}/frame"></iframe>',
+    '<iframe srcdoc=\'<img src="{url}/nested-image">\'></iframe>',
+])
+def test_to_pdf_prevents_real_resource_requests(pdf_browser_available, markup):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+    from playwright.sync_api import sync_playwright
+
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"/* local request probe */")
+
+        def log_message(self, *args):
+            pass
+
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    except OSError as e:
+        pytest.skip(f"loopback server unavailable: {e}")
+    thread = Thread(target=lambda: server.serve_forever(poll_interval=0.05), daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        # Positive control proves requests actually reach our local server without the renderer guard.
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+            try:
+                browser.new_page(java_script_enabled=False).set_content(f'<img src="{url}/control">')
+            finally:
+                browser.close()
+        assert requests == ["/control"]
+        requests.clear()
+
+        out = exporters.to_pdf("# Local report\n\n" + markup.format(url=url))
+        assert out.startswith(b"%PDF-")
+        assert requests == [], f"PDF renderer fetched injected resources: {requests}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_html_template_uses_system_font_no_external_import():

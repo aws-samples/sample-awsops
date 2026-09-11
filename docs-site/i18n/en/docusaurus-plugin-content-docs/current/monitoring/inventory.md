@@ -21,28 +21,18 @@ A page for tracking daily changes in AWS resource counts and estimating cost imp
 
 ### Resource Trend Graph
 - Multi-line chart visualizing resource count trends by type
-- Time range toggle: 30 days / 90 days
+- Time range toggle: 14 days (default) / 30 days / 90 days
 - Resource type toggles to select which resources to display
+- Scoped by the account selector at the top (per-account history accrues from when this feature was deployed; there is no region dimension). When the two compared days differ in per-type account coverage (an account silent for that type's sync), the net change / delta / cost impact render '—' instead of a fabricated number. Narrowing the REGION scope (snapshots have no region dimension) renders the net-change KPI as '—' and hides the cost-impact panel
+- Derived security series (Public S3 Buckets / Open Security Groups / Unencrypted EBS) are recorded on every sync with the same criteria as the Security page, and are excluded from the overall total to avoid double-counting their underlying resources; the Public S3 Buckets series is host-account-only (the S3 public-access collection is a host SDK sweep — the same scope the Security page reads)
 
-### Core Resources (Displayed by Default)
-- EC2 Instances
-- RDS Instances
-- S3 Buckets
-- EBS Volumes
-- Lambda Functions
-
-### Other Resources
-- VPCs, Subnets, NAT Gateways
-- ALBs, NLBs, Route Tables
-- IAM Users, IAM Roles
-- ECS Tasks, ECS Services
-- DynamoDB Tables
-- EKS Nodes, K8s Pods, K8s Deployments
-- ElastiCache Clusters
-- CloudFront Distributions
-- WAF Web ACLs
-- ECR Repositories
-- Public S3 Buckets, Open Security Groups, Unencrypted EBS
+### Series Toggle Groups
+Chart series are ranked dynamically by the latest snapshot counts, not a fixed list:
+- **Core Resources**: the top 5 real resource types by count — shown by default
+- **Other Resources**: up to the next 3 types — hidden by default (click a chip to show)
+- Remaining types don't chart, but all of them appear in the delta table below
+### Security Series (hidden by default, own toggle group)
+- Public S3 Buckets, Open Security Groups, Unencrypted EBS — derived counts using the Security page's criteria, excluded from the overall total
 
 ### Resource Table
 | Column | Description |
@@ -57,8 +47,7 @@ A page for tracking daily changes in AWS resource counts and estimating cost imp
 ### Cost Impact Estimation
 Estimates monthly cost impact based on resource count changes:
 - RDS Instances: $200/month (estimated)
-- ElastiCache Clusters: $150/month
-- EKS Nodes: $100/month
+- ElastiCache Clusters: $100/month
 - NAT Gateways: $45/month
 - EC2 Instances: $80/month
 - Weight factors applied for other resources
@@ -66,13 +55,13 @@ Estimates monthly cost impact based on resource count changes:
 ## How to Use
 
 1. **Check Trends**: Review resource count change patterns in the graph
-2. **Change Time Range**: Toggle between 30d/90d for analysis period
+2. **Change Time Range**: Toggle between 14d (default)/30d/90d for the analysis period
 3. **Select Resources**: Use toggle buttons to show only resources of interest
 4. **Analyze Table**: Review detailed numbers and change rates
 5. **Cost Impact**: Check the cost estimation section at the bottom
 
 :::tip Snapshot-Based Data
-Resource Inventory automatically saves snapshots when the dashboard loads. History data accumulates without additional API queries, so there is no performance impact.
+Snapshots are written per account to Aurora (`inventory_snapshots`) on every inventory sync run. A run with partial SDK collection writes no snapshots at all, while a run with some accounts unreachable still writes fresh rows for every reachable account and preserves only the unreachable account's prior row — which is why an individual (account, type) daily point can be missing — independent of dashboard loads, and reading them makes no additional AWS API calls.
 :::
 
 ## Usage Tips
@@ -94,7 +83,7 @@ In the Cost Impact Estimation section:
 Actual costs may vary depending on instance types, usage, etc.
 
 :::info Data Retention
-Snapshot data is stored in the `data/inventory/` directory. Data older than 90 days is excluded from analysis but files are retained.
+Snapshot data is stored in the Aurora `inventory_snapshots` table. The trend query reads at most the last 90 days (older rows are simply not queried).
 :::
 
 ## AI Analysis Tips

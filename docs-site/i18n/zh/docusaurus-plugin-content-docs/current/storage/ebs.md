@@ -34,9 +34,12 @@ import Screenshot from '@site/src/components/Screenshot';
 点击卷后可在右侧面板中查看：
 - 卷 ID、名称、类型、大小
 - IOPS、Throughput、AZ
+- 实测实时指标（Read/Write IOPS · Queue Length · Burst Balance[仅 gp2/st1/sc1 发布]）— 最新值 + 1 小时 5 分钟迷你趋势图（CloudWatch；无序列时显示为不可用）
 - Multi-Attach 设置
-- 加密状态及 KMS 密钥
-- 关联的 EC2 实例信息
+- **加密判定横幅**：已加密（绿色，显示 KMS 密钥）/ 未加密（红色，附加密副本建议）— 加密状态未知时不显示横幅
+- **闲置卷提示**：上次同步时未挂载（available）则显示成本清理建议横幅
+- 加密状态及 KMS 密钥（字段）
+- 关联的 EC2 实例信息 — 各 attachment 在设置了 **DeleteOnTermination** 时显示该标志（随实例终止一并删除卷）
 - 该卷的快照列表
 
 ## 使用方法
@@ -56,11 +59,12 @@ import Screenshot from '@site/src/components/Screenshot';
 - 关联的 EC2 实例 ID
 - 设备路径（例如：/dev/xvda）
 - 实例名称、类型、状态
+- DeleteOnTermination 标志（仅在已设置的 attachment 上显示）
 
 ## 使用技巧
 
 :::tip 闲置卷管理
-处于 "available" 状态的卷未关联到 EC2，只会产生费用。请在 Idle Volumes 卡片中确认闲置卷，并删除不需要的卷。
+处于 "available" 状态的卷未关联到 EC2，只会产生费用。请在 Idle Volumes 卡片和卷详情的闲置横幅中确认，并删除不需要的卷。
 :::
 
 :::info 建议加密

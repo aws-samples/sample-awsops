@@ -4,6 +4,8 @@ DescribeSnapshots from fetching public AWS snapshots.
 
 (ecs_service [g-01] landed via the concurrent merge — keyed by cluster+service — and is covered
 by scripts/v2/steampipe/test_sync_lambda_queries.py, so it is intentionally not re-tested here.)"""
+import pytest
+
 import sync_lambda  # PYTHONPATH must include scripts/v2/steampipe
 
 
@@ -64,7 +66,7 @@ def test_host_probe_symmetric_with_target_probe_via_real_account_reachable(monke
         def close(self):
             pass
 
-    monkeypatch.setattr(mod, "_steampipe", lambda: FakeConn())
+    monkeypatch.setattr(mod, "_steampipe", lambda *_a: FakeConn())
     assert mod._account_reachable(mod._caller_account()) is True
     assert "aws_111111111111.aws_caller_identity" in queried_schemas[0]
 
@@ -84,7 +86,7 @@ def test_host_probe_unreachable_protects_last_good_inventory(monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr(mod, "_steampipe", lambda: FakeConn())
+    monkeypatch.setattr(mod, "_steampipe", lambda *_a: FakeConn())
     assert mod._account_reachable(mod._caller_account()) is False
 
 
@@ -141,19 +143,314 @@ def test_inject_account_noop_without_placeholder():
     assert sync_lambda._inject_account(plain, "bogus") == plain
 
 
-def test_self_count_matches_rec_account_self_only(monkeypatch):
-    """_self_count (dashboard trend-chart snapshot row) must count exactly the rows
-    _rec_account resolves to 'self' — the host's real id and target-account rows are excluded,
-    mirroring the account_id='self' scope every other host-facing read already uses."""
+def test_account_counts_buckets_by_rec_account(monkeypatch):
+    """_account_counts (dashboard trend-chart snapshot rows, gap L124) must bucket rows by
+    _rec_account: the host's real id folds into 'self' (rows without the column too), target
+    accounts keep their own 12-digit key — one snapshot row per account."""
     sync_lambda._ACCOUNT_CACHE["id"] = "111111111111"  # host's real 12-digit id
     recs = [
         {"account_id": "111111111111"},  # host's real id -> 'self'
         {"account_id": "111111111111"},
-        {"account_id": "222222222222"},  # target account -> not counted
+        {"account_id": "222222222222"},  # target account -> its own bucket
         {},  # no account_id column (SDK sync) -> 'self'
     ]
-    assert sync_lambda._self_count(recs) == 3
+    assert sync_lambda._account_counts(recs) == {"self": 3, "222222222222": 1}
 
 
-def test_self_count_empty():
-    assert sync_lambda._self_count([]) == 0
+def test_account_counts_empty():
+    assert sync_lambda._account_counts([]) == {}
+
+
+class _FakeS3PolicyStatus:
+    """Minimal boto3-s3 stand-in for _fetch_s3_security (gap L240: bucket_policy_is_public
+    lands on the bucket row itself so the page's Private/Public flag bars can chart it)."""
+
+    def __init__(self, policy_status_by_bucket):
+        self._ps = policy_status_by_bucket
+
+    def list_buckets(self):
+        return {"Buckets": [{"Name": n} for n in self._ps]}
+
+    def get_bucket_location(self, Bucket):
+        return {"LocationConstraint": "ap-northeast-2"}
+
+    def get_bucket_versioning(self, Bucket):
+        return {"Status": "Enabled"}
+
+    def get_bucket_encryption(self, Bucket):
+        return {"ServerSideEncryptionConfiguration": {"Rules": []}}
+
+    def get_bucket_logging(self, Bucket):
+        return {}
+
+    def get_bucket_policy_status(self, Bucket):
+        out = self._ps[Bucket]
+        if isinstance(out, Exception):
+            raise out
+        return {"PolicyStatus": {"IsPublic": out}}
+
+    def get_bucket_tagging(self, Bucket):
+        out = self._tags.get(Bucket) if hasattr(self, "_tags") else None
+        if isinstance(out, Exception):
+            raise out
+        if out is None:
+            from botocore.exceptions import ClientError as _CE
+
+            raise _CE({"Error": {"Code": "NoSuchTagSet"}}, "GetBucketTagging")
+        return {"TagSet": out}
+
+
+def _client_error(code):
+    from botocore.exceptions import ClientError
+
+    return ClientError({"Error": {"Code": code}}, "GetBucketPolicyStatus")
+
+
+def test_s3_security_rows_carry_bucket_policy_is_public():
+    fake = _FakeS3PolicyStatus({
+        "pub": True,
+        "priv": False,
+        "denied": _client_error("AccessDenied"),
+        "nopolicy": _client_error("NoSuchBucketPolicy"),
+    })
+    rows, id_col, region_col, _meta = sync_lambda._fetch_s3_security(s3=fake)
+    by_name = {r["name"]: r for r in rows}
+    assert by_name["pub"]["bucket_policy_is_public"] is True
+    assert by_name["priv"]["bucket_policy_is_public"] is False
+    # denial => unknown (None), never a fabricated verdict
+    assert by_name["denied"]["bucket_policy_is_public"] is None
+    # NO bucket policy at all is a DEFINITIVE "not public via policy" (the majority case) —
+    # None here would zero the Policy Private bar on a typical fleet.
+    assert by_name["nopolicy"]["bucket_policy_is_public"] is False
+    assert id_col == "name" and region_col == "region"
+
+
+def test_s3_security_rows_fold_tags_to_a_dict():
+    """gap L243: TagSet list -> {Key: Value} dict; NoSuchTagSet -> {} (definitive 'no tags');
+    denial -> key absent (unknown, never a fabricated empty list)."""
+    fake = _FakeS3PolicyStatus({"tagged": False, "bare": False, "denied": False})
+    fake._tags = {
+        "tagged": [{"Key": "env", "Value": "prod"}, {"Key": "team", "Value": "infra"}],
+        "denied": _client_error("AccessDenied"),
+        # "bare" absent -> NoSuchTagSet
+    }
+    rows, _id, _rg, _meta = sync_lambda._fetch_s3_security(s3=fake)
+    by = {r["name"]: r for r in rows}
+    assert by["tagged"]["tags"] == {"env": "prod", "team": "infra"}
+    assert by["bare"]["tags"] == {}
+    assert "tags" not in by["denied"]
+
+
+def test_waf_rule_group_and_ip_set_registered():
+    """gap L253: two new WAF types — columns verified against the pinned plugin source
+    (v0.142.0 table_aws_wafv2_{rule_group,ip_set}.go; List needs no key quals)."""
+    for t, table, cols in (
+        ("waf_rule_group", "aws_wafv2_rule_group",
+         ("name", "scope", "capacity", "rules", "visibility_config", "tags")),
+        ("waf_ip_set", "aws_wafv2_ip_set",
+         ("name", "scope", "ip_address_version", "addresses", "tags")),
+    ):
+        assert t in sync_lambda.QUERIES and t in sync_lambda._ALLOWED
+        sql, id_col, region_col = sync_lambda.QUERIES[t]
+        assert table in sql
+        for c in cols:
+            assert c in sql, (t, c)
+        assert id_col == "name" and region_col == "region"
+
+
+def test_iam_role_query_carries_attached_policy_arns():
+    """gap L242: the S3 detail's IAM-access drill-down reads the SYNCED attached policies —
+    a per-row ListAttachedRolePolicies hydrate in the pinned plugin (quota-safe post-ADR-021)."""
+    sql, id_col, _rg = sync_lambda.QUERIES["iam_role"]
+    assert "attached_policy_arns" in sql
+    assert id_col == "name"
+
+
+def test_iam_role_hydrate_fallback_sql_is_the_query_minus_the_hydrate():
+    """Round-8 gate: a fleet whose aggregate role count exceeds the hydrate budget must not
+    permanently fail the whole iam_role sync — the fallback SQL is EXACTLY the primary query
+    with the hydrate column removed, so the base inventory never regresses and only the
+    drill-down column disappears (its consumer renders 'not synced yet')."""
+    sql, _id, _rg = sync_lambda.QUERIES["iam_role"]
+    fallback = sync_lambda.HYDRATE_FALLBACK_SQL["iam_role"]
+    assert "attached_policy_arns" not in fallback
+    assert fallback == sql.replace("attached_policy_arns, ", "")
+    # the hydrated attempt runs under a TIGHTER statement_timeout than the 240s default so
+    # the fallback + the Aurora reserve still fit inside the 420s Lambda budget
+    assert sync_lambda.HYDRATE_STATEMENT_TIMEOUT_S == 180
+    assert sync_lambda.HYDRATE_FALLBACK_STATEMENT_TIMEOUT_S == 90
+    assert (sync_lambda.HYDRATE_STATEMENT_TIMEOUT_S + sync_lambda.HYDRATE_FALLBACK_STATEMENT_TIMEOUT_S
+            + sync_lambda.AURORA_RESERVE_S) <= 420 - 30  # 30s slack under the Terraform timeout
+
+
+def _fake_steampipe_factory(script, timeouts):
+    """script: list of ('raise'|rows) per successive query; timeouts collects each conn's
+    statement_timeout."""
+    state = {"i": 0}
+
+    class FakeConn:
+        def __init__(self):
+            self.columns = [{"name": "name"}, {"name": "region"}]
+            self.closed = False
+
+        def run(self, q):
+            step = script[state["i"]]
+            state["i"] += 1
+            if isinstance(step, Exception):
+                raise step
+            if step == "raise":
+                raise RuntimeError("canceling statement due to statement timeout")
+            return step
+
+        def close(self):
+            self.closed = True
+
+    def fake(timeout_s=240):
+        timeouts.append(timeout_s)
+        return FakeConn()
+
+    return fake
+
+
+def test_hydrated_query_failure_falls_back_to_base_inventory(monkeypatch):
+    """Round-8 gate control flow: primary (hydrated, 180s) fails → ONE hydrate-free retry
+    (90s) succeeds, the base rows come back, and fallback_used=True so the caller can
+    disclose the degraded sweep (round-9 gate) — never a whole-type failure."""
+    timeouts = []
+    monkeypatch.setattr(
+        sync_lambda, "_steampipe",
+        _fake_steampipe_factory(["raise", [["r1", "global"]]], timeouts))
+    rows, cols, fallback_used = sync_lambda._run_steampipe_query(
+        "iam_role", sync_lambda.QUERIES["iam_role"][0])
+    assert rows == [["r1", "global"]] and cols == ["name", "region"]
+    assert fallback_used is True
+    assert timeouts == [180, 90]
+
+
+def test_hydrated_query_success_reports_no_fallback(monkeypatch):
+    timeouts = []
+    monkeypatch.setattr(
+        sync_lambda, "_steampipe",
+        _fake_steampipe_factory([[["r1", "global"]]], timeouts))
+    rows, _cols, fallback_used = sync_lambda._run_steampipe_query(
+        "iam_role", sync_lambda.QUERIES["iam_role"][0])
+    assert rows and fallback_used is False
+    assert timeouts == [180]
+
+
+def test_non_hydrate_types_do_not_retry(monkeypatch):
+    timeouts = []
+    monkeypatch.setattr(
+        sync_lambda, "_steampipe", _fake_steampipe_factory(["raise"], timeouts))
+    with pytest.raises(RuntimeError):
+        sync_lambda._run_steampipe_query("iam_user", sync_lambda.QUERIES["iam_user"][0])
+    assert timeouts == [240]
+
+
+def test_query_budget_clamps_to_remaining_lambda_time(monkeypatch):
+    """Round-9 gate: budgets shrink with the invocation's remaining time (minus the Aurora
+    reserve) and a sliver refuses up-front instead of racing the Lambda wall."""
+    import time as _time
+    # no deadline armed → fixed caps apply
+    monkeypatch.setattr(sync_lambda, "_DEADLINE", None)
+    assert sync_lambda._query_budget_s(180, also_reserve_s=90) == 180
+    # plenty of time → cap wins
+    monkeypatch.setattr(sync_lambda, "_DEADLINE", _time.monotonic() + 415)
+    assert sync_lambda._query_budget_s(180, also_reserve_s=90) == 180
+    # mid-invocation → remaining-time clamp wins (remaining 200 − 120 reserve − 0 = 80)
+    monkeypatch.setattr(sync_lambda, "_DEADLINE", _time.monotonic() + 200)
+    assert sync_lambda._query_budget_s(90) <= 80
+    # sliver → refuse before starting a query
+    monkeypatch.setattr(sync_lambda, "_DEADLINE", _time.monotonic() + 130)
+    with pytest.raises(RuntimeError):
+        sync_lambda._query_budget_s(180)
+
+
+def test_account_reachable_probe_is_remaining_time_clamped(monkeypatch):
+    """Round-10 gate: the prune-phase reachability probe must not inherit the 240s default —
+    it gets a short clamped budget, and when even that cannot fit ahead of the Aurora reserve
+    it refuses WITHOUT connecting and reports unreachable (conservative: last-good protected)."""
+    import time as _time
+    mod = sync_lambda
+    timeouts = []
+
+    class FakeConn:
+        def run(self, sql):
+            return [("111111111111",)]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mod, "_steampipe", lambda t=240: (timeouts.append(t), FakeConn())[1])
+    # plenty of remaining time → the short probe cap applies (never the 240s default)
+    monkeypatch.setattr(mod, "_DEADLINE", _time.monotonic() + 400)
+    assert mod._account_reachable("111111111111") is True
+    assert timeouts == [mod.REACHABILITY_PROBE_TIMEOUT_S]
+    # a sliver → refuse before connecting, report unreachable
+    connected = []
+    monkeypatch.setattr(mod, "_steampipe", lambda t=240: connected.append(t))
+    monkeypatch.setattr(mod, "_DEADLINE", _time.monotonic() + 125)
+    assert mod._account_reachable("111111111111") is False
+    assert connected == []
+
+
+def test_hydrate_fallback_log_is_sanitized(monkeypatch, capsys):
+    """Round-10 gate: the fallback event carries a bounded error_category + exception type,
+    NEVER raw exception text (which can embed role ARNs/account IDs/SQL — ADR-021 contract)."""
+    import json as _json
+    timeouts = []
+    secret_msg = ("AccessDenied: arn:aws:sts::999999999999:assumed-role/leaky is not "
+                  "authorized to perform iam:ListAttachedRolePolicies")
+    monkeypatch.setattr(
+        sync_lambda, "_steampipe",
+        _fake_steampipe_factory([RuntimeError(secret_msg), [["r1", "global"]]], timeouts))
+    rows, _cols, fallback_used = sync_lambda._run_steampipe_query(
+        "iam_role", sync_lambda.QUERIES["iam_role"][0])
+    assert fallback_used is True
+    events = [_json.loads(l) for l in capsys.readouterr().out.splitlines()
+              if '"inventory_sync_hydrate_fallback"' in l]
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["error_category"] == "denial" and ev["error_type"] == "RuntimeError"
+    assert "error" not in ev
+    assert "999999999999" not in _json.dumps(ev)
+
+
+def test_hydrate_fallback_remedy_is_cause_specific():
+    """Round-9 L5 gate: rate tuning cannot fix a denial and a grant cannot fix a timeout —
+    the log remedy must name the right knob per cause."""
+    denial = sync_lambda._hydrate_fallback_remedy(RuntimeError(
+        "AccessDenied: user is not authorized to perform iam:ListAttachedRolePolicies"))
+    assert "grant iam:ListAttachedRolePolicies" in denial and "fill_rate" not in denial.split("(")[0]
+    timeout = sync_lambda._hydrate_fallback_remedy(RuntimeError(
+        "canceling statement due to statement timeout"))
+    assert "fill_rate" in timeout and "grant" not in timeout
+    unknown = sync_lambda._hydrate_fallback_remedy(RuntimeError("connection reset"))
+    assert "AccessDenied" in unknown and "fill_rate" in unknown
+
+
+def test_steampipe_conn_rejects_arbitrary_statement_timeouts(monkeypatch):
+    """_steampipe() interpolates the timeout into SQL — a bounded int is enforced with a real
+    ValueError BEFORE connecting (no -O elision, no leaked connection on a bad value)."""
+    calls = []
+    connected = []
+
+    class FakeConn:
+        def run(self, q):
+            calls.append(q)
+
+    def fake_connection(**kw):
+        connected.append(1)
+        return FakeConn()
+
+    monkeypatch.setattr(sync_lambda.pg8000.native, "Connection", fake_connection)
+    monkeypatch.setattr(sync_lambda, "_secret", lambda arn: "pw")
+    monkeypatch.setattr(sync_lambda, "_ssl_ctx", lambda: None)
+    monkeypatch.setenv("STEAMPIPE_SECRET_ARN", "arn:x")
+    monkeypatch.setenv("STEAMPIPE_HOST", "h")
+    sync_lambda._steampipe(180)
+    assert calls == ["SET statement_timeout = '180s'"]
+    for bad in ("180s", 0, 241, 9.5):
+        with pytest.raises(ValueError):
+            sync_lambda._steampipe(bad)
+    assert len(connected) == 1  # rejected values never opened a connection

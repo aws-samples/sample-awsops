@@ -9,8 +9,10 @@ class FakeConn:
     query. `sync_run` controls the _require_fresh_inventory precheck (mirrors an inventory_sync_runs
     row): 'ok' (default) -> a succeeded run finished just now (even if `rows` is empty — a healthy
     sync that found nothing); 'missing' -> no inventory_sync_runs row at all; 'failed' -> a row with
-    status='failed'; a datetime -> a succeeded run that finished at that timestamp (used to simulate
-    staleness)."""
+    status='failed' and last_success_at NULL (pre-freshness legacy path); 'partial-fresh' -> a
+    'partial' latest run whose durable last_success_at is fresh; 'partial-stale' -> a 'partial'
+    latest run whose last_success_at is >24h old; a datetime -> a succeeded run that finished at
+    that timestamp (used to simulate staleness)."""
     def __init__(self, rows, sync_run='ok', enabled_accounts=None):
         self.rows = rows
         self.sync_run = sync_run
@@ -24,9 +26,14 @@ class FakeConn:
             if self.sync_run == 'missing':
                 return []
             if self.sync_run == 'failed':
-                return [('failed', datetime.now(timezone.utc))]
+                return [('failed', datetime.now(timezone.utc), None)]
+            if self.sync_run == 'partial-fresh':
+                return [('partial', datetime.now(timezone.utc), datetime.now(timezone.utc))]
+            if self.sync_run == 'partial-stale':
+                return [('partial', datetime.now(timezone.utc),
+                         datetime.now(timezone.utc) - timedelta(hours=25))]
             finished_at = self.sync_run if isinstance(self.sync_run, datetime) else datetime.now(timezone.utc)
-            return [('succeeded', finished_at)]
+            return [('succeeded', finished_at, finished_at)]
         if "FROM accounts" in sql:
             return self.enabled_accounts
         if "GROUP BY account_id, region" in sql:
@@ -247,6 +254,28 @@ def test_ebs_unattached_ok_when_sync_succeeded_and_genuinely_found_nothing():
     # counts instead of the inventory_sync_runs ledger).
     conn = FakeConn([], sync_run='ok')
     assert rules.ebs_unattached(conn, [0]) == []
+
+
+def test_ebs_unattached_ok_when_latest_run_partial_but_last_success_fresh():
+    # A 'partial' run (one SDK sub-call failed) preserves every last-good row and leaves the
+    # durable last_success_at at the last fully-successful sweep — fresh, prune-safe data the
+    # engine must be allowed to evaluate, not refuse.
+    conn = FakeConn([("vol-1", "self", "ap-northeast-2", {"state": "available", "size": 100,
+                                                          "volume_type": "gp2", "tags": {}}, _NOW)],
+                    sync_run='partial-fresh')
+    out = rules.ebs_unattached(conn, [0])
+    assert len(out) == 1
+
+
+def test_ebs_unattached_raises_when_partial_and_last_success_stale():
+    # A partial run whose last FULL success is >24h old means nothing has been pruned/refreshed
+    # in a day — data-unavailable, not "confirmed none unattached".
+    conn = FakeConn([], sync_run='partial-stale')
+    try:
+        rules.ebs_unattached(conn, [0])
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "fully succeeded" in str(e) or "ago" in str(e)
 
 
 class FakeCOPaged:

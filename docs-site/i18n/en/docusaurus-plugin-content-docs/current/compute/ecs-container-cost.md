@@ -8,8 +8,8 @@ import Screenshot from '@site/src/components/Screenshot';
 
 # ECS Container Cost
 
-:::caution v1 archive doc — no equivalent page exists in v2
-This document describes v1's dedicated **ECS Container Cost** page (stats cards, charts, and the "Cost Calculation Basis" toggle). **v2 has no such dedicated page/UI** — there is no `showBasis` toggle or matching StatsCard/chart anywhere in `web/`. v2's only equivalent is the **Cost/Day** and **Cost/Mo** columns on the **`/inventory/ecs_task`** inventory view, and those values are a **static estimate derived from the task definition's allocated cpu/memory** — not from CloudWatch Container Insights utilization metrics (`web/lib/inventory-derived.ts`'s `ecs_task` deriver, around lines 106-124). The **pricing constants and formula** below (`$0.04656`/`$0.00511`, `(CPU units/1024)×rate×24 + (MB/1024)×rate×24`) match that static-estimate logic and are accurate — don't change those. But the stats cards, charts, "Cost Calculation Basis" toggle, and the "calculated from CloudWatch Container Insights metrics" claim in this document are v1-only and don't exist in v2.
+:::caution v1 archive doc — the v2 equivalents live on /inventory/ecs_task
+This document describes v1's dedicated **ECS Container Cost** page (stats cards, charts, and the "Cost Calculation Basis" toggle). **v2 has no dedicated page — its equivalents live on the `/inventory/ecs_task` inventory view**: the **Cost/Day**/**Cost/Mo** columns, the daily-cost-total KPI tile, and a collapsible **Cost Calculation Basis** panel below the table (matching v1's toggle). The column values are a **static estimate derived from the task definition's allocated cpu/memory** — not from CloudWatch Container Insights utilization metrics (`web/lib/inventory-derived.ts`'s `ecs_task` deriver — unit prices come from the single source `web/lib/cost-basis.ts`). The **pricing constants and formula** below (`$0.04656`/`$0.00511`, `(CPU units/1024)×rate×24 + (MB/1024)×rate×24`) match that static-estimate logic and are accurate — don't change those. But this document's pie chart and the "calculated from CloudWatch Container Insights metrics" claim are v1-only and don't exist in v2 (v2's estimate is static-constant based, and ephemeral-storage pricing is not reflected). The **Cost by Service (CPU vs Memory)** chart, however, DOES exist in v2 — rendered on `/inventory/ecs_task` as per-service grouped bars (FARGATE tasks only, static estimate, top 10).
 :::
 
 A page for analyzing the cost of ECS Fargate tasks. Costs are calculated based on Fargate pricing and CloudWatch Container Insights metrics.
@@ -28,7 +28,7 @@ A page for analyzing the cost of ECS Fargate tasks. Costs are calculated based o
 Pie chart showing daily cost distribution by service
 
 ### Cost by Service (CPU vs Memory) Chart
-Stacked bar chart comparing CPU cost vs Memory cost per service
+Compares CPU cost vs Memory cost per service. In v2 this renders as **shared-scale grouped bars** (both $ series on one scale — real proportions preserved) instead of stacked bars, with cluster/service labels, FARGATE-only scope, top 10, and a 'sampled' tag past the 500-row cap.
 
 ### ECS Tasks Table
 | Column | Description |

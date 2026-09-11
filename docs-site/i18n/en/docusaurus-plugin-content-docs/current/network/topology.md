@@ -125,6 +125,8 @@ Troubleshooting "No Pods connected to Service":
 | Pink | ELB | - |
 | Orange | RDS, NAT | Service |
 | Red | TGW | - |
+
+The legend chips in the info line above the map show only the kinds present in the current graph. The status dot next to a card name is also shown in the legend — **ok** (green) / **warn** (amber) / **bad** (red) / **neutral** (gray).
 :::
 
 ## Related Pages

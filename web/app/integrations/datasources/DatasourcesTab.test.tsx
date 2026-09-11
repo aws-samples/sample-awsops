@@ -21,25 +21,26 @@ describe('DatasourcesTab', () => {
     render(<DatasourcesTab canManage={false} />);
     await waitFor(() => expect(screen.getByText('prod-prom')).toBeTruthy());
     expect(screen.getByText('stg-prom')).toBeTruthy();
-    expect(screen.getByText('★ default')).toBeTruthy();
-    const links = screen.getAllByText('Explore →') as HTMLAnchorElement[];
+    expect(screen.getByText('★ 기본')).toBeTruthy();
+    const links = screen.getAllByText('탐색 →') as HTMLAnchorElement[];
     expect(links[0].getAttribute('href')).toBe('/integrations/datasources/1');
   });
 
   it('hides Add/Edit/Delete for non-admins (read-only)', async () => {
     render(<DatasourcesTab canManage={false} />);
     await waitFor(() => expect(screen.getByText('prod-prom')).toBeTruthy());
-    expect(screen.queryByText('＋ Add datasource')).toBeNull();
-    expect(screen.queryByText('Edit')).toBeNull();
-    expect(screen.queryByText('Delete')).toBeNull();
+    expect(screen.queryByText('＋ 데이터소스 추가')).toBeNull();
+    expect(screen.queryByText('편집')).toBeNull();
+    expect(screen.queryByText('삭제')).toBeNull();
   });
 
   it('shows Add/Edit/Delete for admins and opens the form on Add', async () => {
     render(<DatasourcesTab canManage />);
     await waitFor(() => expect(screen.getByText('prod-prom')).toBeTruthy());
-    expect(screen.getByText('＋ Add datasource')).toBeTruthy();
-    expect(screen.getAllByText('Delete').length).toBe(2);
-    fireEvent.click(screen.getByText('＋ Add datasource'));
+    expect(screen.getByText('＋ 데이터소스 추가')).toBeTruthy();
+    expect(screen.getAllByText('삭제').length).toBe(2);
+    expect(screen.getAllByText('편집').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText('＋ 데이터소스 추가'));
     expect(screen.getByText('데이터소스 추가')).toBeTruthy();
   });
 

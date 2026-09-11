@@ -130,7 +130,9 @@ resource "aws_iam_role_policy" "task_metrics" {
         "ec2:DescribeNetworkInterfaces",
         "ec2:DescribeAddresses",
         # inventory transit_gateway 상세: 어태치먼트 + 라우트 테이블 + 라우트 검색
+        # (+ VPC 어태치먼트 options — gap L168, read-only Describe 1종 추가)
         "ec2:DescribeTransitGatewayAttachments",
+        "ec2:DescribeTransitGatewayVpcAttachments",
         "ec2:DescribeTransitGatewayRouteTables",
         "ec2:SearchTransitGatewayRoutes",
         # /vpc-endpoints: 엔드포인트 리스트+분석 (PrivateLink 메트릭 미사용 감지)

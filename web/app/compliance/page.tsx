@@ -9,6 +9,7 @@ import Meter from '@/components/ui/Meter';
 import DataTable from '@/components/ui/DataTable';
 import DetailPanel from '@/components/ui/DetailPanel';
 import DonutBreakdown from '@/components/charts/DonutBreakdown';
+import BarDistribution from '@/components/charts/BarDistribution';
 import { useActiveAccount } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { localeOf } from '@/lib/i18n';
@@ -235,6 +236,18 @@ export default function CompliancePage() {
 
   const passRate = run?.pass_rate != null ? Number(run.pass_rate) : null;
 
+  // v1 'Alarms by Section' parity (gap L191): alarm counts per section from the SAME rollup
+  // the pass-rate list uses — zero-alarm sections filtered, chart omitted when none alarm,
+  // top-10 by count (the countBarKey cap precedent — a deeply-grouped benchmark could yield
+  // a long list). Counts are per FINDING (one leaf result per checked resource), while the
+  // status donut counts CONTROLS — the title hint keeps the two side-by-side charts honest.
+  const alarmSections = sections
+    .filter((s) => s.alarm > 0)
+    .map((s) => ({ name: s.section, value: s.alarm }))
+    .sort((a, b) => b.value - a.value);
+  const alarmBySection = alarmSections.slice(0, 10);
+  const alarmSectionsTruncated = alarmSections.length > alarmBySection.length;
+
   return (
     <div>
       <PageHeader
@@ -369,6 +382,19 @@ export default function CompliancePage() {
                   ))}
                 </div>
               </Card>
+              {alarmBySection.length > 0 && (
+                <BarDistribution
+                  title="Alarms by Section"
+                  right={
+                    <span className="text-[11px] text-ink-400">
+                      {alarmSectionsTruncated ? `Top 10 of ${alarmSections.length} · ` : ''}per finding
+                    </span>
+                  }
+                  data={alarmBySection}
+                  xKey="name"
+                  yKey="value"
+                />
+              )}
             </div>
 
             <div className="mt-6">

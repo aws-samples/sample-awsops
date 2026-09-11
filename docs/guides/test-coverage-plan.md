@@ -59,7 +59,7 @@ Single test file covering all 25 query modules (`src/lib/queries/*.ts`):
 // For each query function in each module:
 // 1. Query includes account_id column (project rule)
 // 2. No $ characters in SQL (project rule)
-// 3. No SCP-blocked columns: mfa_enabled, attached_policy_arns, Lambda tags
+// 3. SCP-blocked hydrate columns are either absent or explicitly risk-accepted per the ADR-010 2026-09-02 amendment (accepted via the amendment: iam_role.attached_policy_arns, with the hydrate-free fallback; iam_user.mfa_enabled is a pre-existing precedent retained without a fallback)
 // 4. Query is non-empty string
 // 5. Snapshot test to catch unintended changes
 ```

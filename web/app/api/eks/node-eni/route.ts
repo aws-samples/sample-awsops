@@ -59,10 +59,12 @@ export async function GET(request: Request) {
     const maxEnis = Number(d.max_enis) || null;
     const instanceType = typeof d.instance_type === 'string' ? d.instance_type : null;
     const ipv4PerEni = instanceType ? IPV4_PER_ENI[instanceType] ?? 15 : 15; // v1 폴백: /15
-    // 인스턴스 트래픽 (1h): CloudWatch에 ENI별 메트릭은 없음 — 인스턴스 레벨로 정직하게 표시.
+    // 인스턴스 트래픽: CloudWatch에 ENI별 메트릭은 없음 — 인스턴스 레벨로 정직하게 표시.
+    // completeBuckets: 타일이 rate(÷3600)를 파생하므로 진행 중 부분 버킷이 아니라 '완결된
+    // 직전 1시간' 버킷을 사용(부분 Sum÷3600은 정시 직후 ~12× 과소 표시 — metrics.ts perSecond 선례).
     let traffic: { netIn: number | null; netOut: number | null; pktIn: number | null; pktOut: number | null } | null = null;
     try {
-      const m = (await ec2DiagFleetLive([row.id], typeof d.region === 'string' ? d.region : undefined))[row.id] ?? {};
+      const m = (await ec2DiagFleetLive([row.id], typeof d.region === 'string' ? d.region : undefined, 3600, true))[row.id] ?? {};
       traffic = {
         netIn: m.netIn ?? null, netOut: m.netOut ?? null,
         pktIn: m.pktIn ?? null, pktOut: m.pktOut ?? null,

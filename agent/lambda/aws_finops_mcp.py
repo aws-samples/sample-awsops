@@ -6,6 +6,25 @@ import json
 from cross_account import get_client, get_role_arn, resolve_tool_name
 
 
+def _monthly_savings(option):
+    """Keep absent estimates unknown; discounted savings are a separate basis."""
+    savings = option.get("savingsOpportunity", {}).get("estimatedMonthlySavings", {})
+    return {
+        "estimatedMonthlySavings": savings.get("value"),
+        "currency": savings.get("currency"),
+    }
+
+
+def _rightsizing_result(response, recommendations):
+    """Expose incomplete coverage while retaining the single-page request bound."""
+    return {
+        "count": len(recommendations),
+        "recommendations": recommendations,
+        "truncated": bool(response.get("nextToken")),
+        "errors": response.get("errors", []),
+    }
+
+
 def lambda_handler(event, context):
     params = event if isinstance(event, dict) else json.loads(event)
     t = resolve_tool_name(params, context)
@@ -27,6 +46,8 @@ def lambda_handler(event, context):
         # Compute Optimizer: EC2/RDS/ECS/Lambda 인스턴스 rightsizing 추천
         if t == "get_rightsizing_recommendations":
             resource_type = args.get("resource_type", "all")
+            if resource_type not in ("all", "ec2", "rds", "ecs", "lambda"):
+                return err("Unsupported resource_type; expected all, ec2, rds, ecs, or lambda")
             co = get_client('compute-optimizer', 'ap-northeast-2', role_arn)
             results = {}
 
@@ -43,12 +64,11 @@ def lambda_handler(event, context):
                             "currentType": r.get("currentInstanceType", ""),
                             "finding": r.get("finding", ""),
                             "recommendedType": top.get("instanceType", ""),
-                            "estimatedMonthlySavings": top.get("estimatedMonthlySavings", {}).get("value", 0),
-                            "currency": top.get("estimatedMonthlySavings", {}).get("currency", "USD"),
+                            **_monthly_savings(top),
                             "performanceRisk": top.get("performanceRisk", 0),
                             "migrationEffort": top.get("migrationEffort", ""),
                         })
-                    results["ec2"] = {"count": len(recs), "recommendations": recs}
+                    results["ec2"] = _rightsizing_result(resp, recs)
                 except Exception as e:
                     results["ec2"] = {"error": str(e)[:200]}
 
@@ -56,18 +76,18 @@ def lambda_handler(event, context):
                 try:
                     resp = co.get_rds_database_recommendations(maxResults=50)
                     recs = []
-                    for r in resp.get("rdsDatabaseRecommendations", []):
-                        options = r.get("recommendationOptions", [])
+                    for r in resp.get("rdsDBRecommendations", []):
+                        options = r.get("instanceRecommendationOptions", [])
                         top = options[0] if options else {}
                         recs.append({
                             "resourceArn": r.get("resourceArn", ""),
                             "currentDBInstanceClass": r.get("currentDBInstanceClass", ""),
                             "engine": r.get("engine", ""),
-                            "finding": r.get("finding", ""),
+                            "finding": r.get("instanceFinding", ""),
                             "recommendedDBInstanceClass": top.get("dbInstanceClass", ""),
-                            "estimatedMonthlySavings": top.get("estimatedMonthlySavings", {}).get("value", 0),
+                            **_monthly_savings(top),
                         })
-                    results["rds"] = {"count": len(recs), "recommendations": recs}
+                    results["rds"] = _rightsizing_result(resp, recs)
                 except Exception as e:
                     results["rds"] = {"error": str(e)[:200]}
 
@@ -86,9 +106,9 @@ def lambda_handler(event, context):
                             "currentMemory": r.get("currentServiceConfiguration", {}).get("memory", 0),
                             "recommendedCpu": top.get("cpu", 0),
                             "recommendedMemory": top.get("memory", 0),
-                            "estimatedMonthlySavings": top.get("estimatedMonthlySavings", {}).get("value", 0),
+                            **_monthly_savings(top),
                         })
-                    results["ecs"] = {"count": len(recs), "recommendations": recs}
+                    results["ecs"] = _rightsizing_result(resp, recs)
                 except Exception as e:
                     results["ecs"] = {"error": str(e)[:200]}
 
@@ -104,17 +124,30 @@ def lambda_handler(event, context):
                             "finding": r.get("finding", ""),
                             "currentMemory": r.get("currentMemorySize", 0),
                             "recommendedMemory": top.get("memorySize", 0),
-                            "estimatedMonthlySavings": top.get("estimatedMonthlySavings", {}).get("value", 0),
+                            **_monthly_savings(top),
                         })
-                    results["lambda"] = {"count": len(recs), "recommendations": recs}
+                    results["lambda"] = _rightsizing_result(resp, recs)
                 except Exception as e:
                     results["lambda"] = {"error": str(e)[:200]}
 
-            total_savings = sum(
-                sum(r.get("estimatedMonthlySavings", 0) for r in v.get("recommendations", []))
-                for v in results.values() if isinstance(v, dict) and "recommendations" in v
+            recommendations = [
+                r for result in results.values() for r in result.get("recommendations", [])
+            ]
+            savings = [r["estimatedMonthlySavings"] for r in recommendations]
+            currencies = {r["currency"] for r in recommendations}
+            # Missing data, partial pages and different currencies cannot form a total.
+            complete = (
+                all(not (r.get("error") or r.get("errors") or r.get("truncated"))
+                    for r in results.values())
+                and all(value is not None for value in savings)
+                and (not recommendations or (len(currencies) == 1 and None not in currencies))
             )
-            return ok({"resourceType": resource_type, "totalEstimatedMonthlySavings": round(total_savings, 2), "results": results})
+            return ok({
+                "resourceType": resource_type,
+                "totalEstimatedMonthlySavings": round(sum(savings), 2) if complete else None,
+                "currency": next(iter(currencies)) if len(currencies) == 1 else None,
+                "results": results,
+            })
 
         # Cost Explorer: Savings Plans purchase recommendations
         # Cost Explorer: Savings Plans 구매 추천
@@ -144,8 +177,8 @@ def lambda_handler(event, context):
                     "estimatedSavingsPercentage": d.get("EstimatedSavingsPercentage", ""),
                     "estimatedROI": d.get("EstimatedROI", ""),
                     "currentOnDemandSpend": d.get("CurrentAverageHourlyOnDemandSpend", ""),
-                    "region": d.get("Region", ""),
-                    "instanceFamily": d.get("InstanceFamily", ""),
+                    "region": d.get("SavingsPlansDetails", {}).get("Region", ""),
+                    "instanceFamily": d.get("SavingsPlansDetails", {}).get("InstanceFamily", ""),
                 })
             return ok({
                 "type": sp_type, "term": term, "payment": payment, "lookback": lookback,
@@ -228,7 +261,7 @@ def lambda_handler(event, context):
                     "resourceId": r.get("resourceId", ""),
                     "resourceArn": r.get("resourceArn", ""),
                     "actionType": r.get("actionType", ""),
-                    "resourceType": r.get("resourceType", ""),
+                    "resourceType": r.get("currentResourceType", ""),
                     "estimatedMonthlySavings": r.get("estimatedMonthlySavings", 0),
                     "estimatedSavingsPercentage": r.get("estimatedSavingsPercentage", 0),
                     "currentResourceSummary": r.get("currentResourceSummary", ""),
