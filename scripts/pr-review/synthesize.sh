@@ -210,10 +210,12 @@ PROMPT_EOF
 # 96KB), the Fable 5 primary hit the 600s cap on three consecutive runs the same day (empty
 # stderr isn't an error — it's the timeout killing a process that was still generating; the
 # same chair completes normally on a small diff). Worst normal path: (120s fast-fail + 900s
-# retry) x2 chair attempts + panel ~15min ~= 49min — the job's timeout-minutes is 60 to match.
+# retry + 10s hard-kill grace) x2 chair models ~= 34m20s. With the workflow's longest
+# panel cell budget of 40m20s, a 90-minute job leaves about 15 minutes for other steps.
 PRIMARY_MODEL="${CHAIR_PRIMARY_MODEL:-us.anthropic.claude-fable-5}"
 FALLBACK_MODEL="${CHAIR_FALLBACK_MODEL:-us.anthropic.claude-opus-5}"
 CHAIR_TIMEOUT="${CHAIR_TIMEOUT:-900}"
+CHAIR_KILL_AFTER="${CHAIR_KILL_AFTER:-10s}"
 
 chair_label() { case "$1" in
   *fable-5*)  echo "Claude Fable 5" ;;
@@ -293,16 +295,19 @@ run_chair() {  # $1=model $2=err-file -> writes "$OUT". Continues via `|| true` 
   local scrub_out=$!
   strip_controls < "$errfifo" | scrub_secrets > "$2" &
   local scrub_err=$!
-  ANTHROPIC_MODEL="$1" timeout "$CHAIR_TIMEOUT" \
+  ANTHROPIC_MODEL="$1" timeout --kill-after="$CHAIR_KILL_AFTER" "$CHAIR_TIMEOUT" \
     claude -p "$(cat "$WORK/synth-prompt.txt")" --output-format text \
     --strict-mcp-config --allowedTools "Read Grep Glob" \
     < "$WORK/synth-stdin.txt" \
     > "$outfifo" 2> "$errfifo" &
   CHAIR_JOB_PID=$!
-  wait "$CHAIR_JOB_PID" || true
+  local chair_rc=0
+  wait "$CHAIR_JOB_PID" || chair_rc=$?
   CHAIR_JOB_PID=""
   wait "$scrub_out" "$scrub_err" || true   # deterministic — replaces the settle-loop heuristic
   rm -f "$outfifo" "$errfifo"
+  # A failed or timed-out CLI can leave complete-looking text. It is not a completed review.
+  [ "$chair_rc" -eq 0 ] || : > "$OUT"
 }
 
 scrubbed_err_excerpt() {
