@@ -420,6 +420,8 @@ class TestSchemaIntrospection(_Base):
                 self.assertEqual(len(body["attributes"]), 200)
                 self.assertLessEqual(len(body["tags"]), 200)
                 self.assertTrue(body["truncated"])
+                self.assertTrue(body["names_truncated"])
+                self.assertFalse(body["types_truncated"])
 
     def test_type_candidates_survive_full_earlier_scopes(self):
         candidates = {
@@ -452,6 +454,8 @@ class TestSchemaIntrospection(_Base):
         self.assertTrue(body["truncated"])
         self.assertNotIn("preview", body)
         self.assertEqual(len(body["tags"]), len(body["attributes"]))
+        self.assertTrue(body["names_truncated"])
+        self.assertFalse(body["types_truncated"])
 
     def test_oversized_and_malformed_legacy_tags_cannot_swamp_schema(self):
         out, body, _ = self.schema(
@@ -498,6 +502,8 @@ class TestSchemaIntrospection(_Base):
         self.assertTrue(body["truncated"])
         self.assertNotIn("private", out["body"])
         self.assertNotIn("secret", out["body"])
+        self.assertFalse(body["names_truncated"])
+        self.assertTrue(body["types_truncated"])
 
     def test_upstream_type_truncation_is_preserved_below_the_local_limit(self):
         _, body, _ = self.schema(

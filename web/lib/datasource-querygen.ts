@@ -34,8 +34,9 @@ const TRACEQL_RULES = [
   'Built-in intrinsics do NOT need to appear in the schema: duration (span duration), trace:duration (whole-trace duration), status, name, kind, rootServiceName. Examples: { duration > 500ms }, { trace:duration > 500ms }, { status = error }, {} for recent traces. error is an unquoted enum, not "error". Use duration units such as 500ms, not "500ms".',
   'Match literal types to the observed schema: int/float → 500, string → "500", bool → true/false. For HTTP status 500, use { span.http.status_code = 500 } ONLY if that attribute exists and is numeric. Some instances instead use span.http.response.status_code — choose the observed name, never assume both exist.',
   'For unknown or mixed numeric/string HTTP status types, use both typed predicates joined with || (e.g. .http.status_code = 500 || .http.status_code = "500"); never silently assume a type. String 5xx uses =~ "5[0-9][0-9]", numeric 5xx uses >= 500 && < 600.',
+  'The schema is a bounded recent observation, not a complete historical catalog. An unobserved attribute or type may exist in older traces; never invent it or claim it does not exist.',
   'If the request needs custom attributes missing from the schema (including when no schema is available), output exactly SCHEMA_REQUIRED as the sole exception to query-only output. Never drop the requested filter or substitute a broader query: HTTP status 500 is not equivalent to status = error. Intrinsic-only requests still work without a schema.',
-  'Keep to basic search syntax supported by the reported Tempo version. Time range and result limit are supplied by the console, not SQL clauses.',
+  'Keep to basic search syntax supported by the reported Tempo version. Time bounds and result limits belong to the search request, not SQL clauses; generating a query does not change them.',
 ].join('\n');
 
 let client: BedrockRuntimeClient | null = null;
@@ -129,8 +130,20 @@ export interface GenerateQueryInput {
   nl: string;
   lang: string;
   schemaBlock: string;
+  /** A successful cached Tempo discovery contained no usable attributes (distinct from a cache miss). */
+  tempoSchemaEmpty?: boolean;
   isSql: boolean;
   send?: QueryGenSend;
+}
+
+function tempoSchemaError(input: GenerateQueryInput): Error {
+  if (input.tempoSchemaEmpty) {
+    return new Error('The cached Tempo schema has no usable attributes in its observation window. Run a manual TraceQL query for historical data in Grafana Explore or the Tempo search API with an explicit time range. AWSops supports intrinsic-only filters such as duration for recent traces; refresh after new traces arrive. (관측 구간에 속성이 없습니다. 과거 데이터는 Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 조회하세요. AWSops의 최근 조회는 내장 필터를 사용하거나 새 트레이스 유입 후 스키마를 갱신하세요.)');
+  }
+  if (input.schemaBlock.trim()) {
+    return new Error('The requested Tempo attributes were not observed in the cached schema. Verify their names and run a manual TraceQL query for historical data in Grafana Explore or the Tempo search API with an explicit time range, or refresh after new traces arrive. (요청한 속성이 캐시에서 관측되지 않았습니다. 과거 데이터는 속성명을 확인해 Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 조회하거나 새 트레이스 유입 후 스키마를 갱신하세요.)');
+  }
+  return new Error(TEMPO_SCHEMA_REQUIRED);
 }
 
 /** Generate a single query string. Throws on Bedrock failure (route → 502), on a prose answer (ALL
@@ -149,7 +162,7 @@ export async function generateQuery(input: GenerateQueryInput): Promise<string> 
       throw new Error('could not generate a valid read-only query');
     }
     if (input.lang === 'TraceQL') {
-      if (query === 'SCHEMA_REQUIRED') throw new Error(TEMPO_SCHEMA_REQUIRED);
+      if (query === 'SCHEMA_REQUIRED') throw tempoSchemaError(input);
       // Grafana's editor parser catches malformed syntax without executing a Tempo search. This is
       // not server-version/type validation; the actual connector remains authoritative on execution.
       const cursor = traceqlParser.parse(query).cursor();
@@ -159,8 +172,8 @@ export async function generateQuery(input: GenerateQueryInput): Promise<string> 
         if (cursor.type.isError && errorAt === null) errorAt = cursor.from;
         if (cursor.name === 'AttributeField') hasAttributes = true;
       } while (cursor.next());
-      if (hasAttributes && !input.schemaBlock.trim()) {
-        throw new Error(TEMPO_SCHEMA_REQUIRED);
+      if (hasAttributes && (!input.schemaBlock.trim() || input.tempoSchemaEmpty)) {
+        throw tempoSchemaError(input);
       }
       if (errorAt !== null) {
         if (attempt > 0) throw new Error('could not generate valid TraceQL syntax; revise the request and try again');

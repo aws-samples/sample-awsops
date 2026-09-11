@@ -127,6 +127,34 @@ describe('generateQuery', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['SCHEMA_REQUIRED', '{ span.http.status_code = 500 }'])(
+    'offers a historical-query escape path for a cached empty Tempo schema: %s',
+    async (draft) => {
+      const send = vi.fn().mockResolvedValue(draft);
+      await expect(generateQuery({
+        nl: 'HTTP 500 yesterday', lang: 'TraceQL', schemaBlock: '', tempoSchemaEmpty: true,
+        isSql: false, send,
+      })).rejects.toThrow(/no usable.*attributes.*manual TraceQL.*Grafana Explore.*explicit time range/i);
+      expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('still generates intrinsic-only queries from an empty observed schema', async () => {
+    const send = vi.fn().mockResolvedValue('{ duration > 500ms }');
+    await expect(generateQuery({
+      nl: 'slow spans', lang: 'TraceQL', schemaBlock: '', tempoSchemaEmpty: true, isSql: false, send,
+    })).resolves.toBe('{ duration > 500ms }');
+  });
+
+  it('does not promise that refreshing a populated schema will recover an unobserved attribute', async () => {
+    const send = vi.fn().mockResolvedValue('SCHEMA_REQUIRED');
+    await expect(generateQuery({
+      nl: 'HTTP 500 yesterday', lang: 'TraceQL',
+      schemaBlock: 'resource.service.name (string)', isSql: false, send,
+    })).rejects.toThrow(/not observed.*manual TraceQL.*Grafana Explore.*explicit time range/i);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it('returns the model query for a SQL datasource when it is read-only', async () => {
     const send = vi.fn().mockResolvedValue('```sql\nSELECT ServiceName FROM otel_traces LIMIT 10\n```');
     const q = await generateQuery({ nl: 'services', lang: 'read-only SQL', schemaBlock: 'otel_traces(ServiceName String)', isSql: true, send });

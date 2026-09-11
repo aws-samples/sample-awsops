@@ -165,9 +165,12 @@ function renderTempoSchema(s: Record<string, unknown>, maxChars: number): string
     emitted += 1;
   }
   const omitted = attributes.length - emitted;
+  // New caches separate name discovery from type sampling. Older global flags
+  // cannot identify which budget was hit, so keep their conservative disclosure.
+  const discoveryLimited = typeof s.names_truncated === 'boolean' ? s.names_truncated : s.truncated === true;
   if (omitted > 0) {
-    lines.push(`… (+${omitted} more attributes${s.truncated ? '; discovery also limited' : ''})`);
-  } else if (s.truncated) {
+    lines.push(`… (+${omitted} more attributes${discoveryLimited ? '; discovery also limited' : ''})`);
+  } else if (discoveryLimited) {
     lines.push('… (schema discovery limited; more data may exist)');
   }
   return clamp(lines.join('\n'), limit);

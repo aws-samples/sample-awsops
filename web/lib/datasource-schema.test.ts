@@ -110,6 +110,25 @@ describe('renderSchemaForPrompt', () => {
     expect(out).toContain('span.http.status_code (type unknown; observed: string; sampling incomplete)');
   });
 
+  it('does not label a type-only sampling limit as incomplete attribute-name discovery', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true, names_truncated: false, types_truncated: true,
+      attributes: [{ name: 'span.http.status_code', types: ['string'], types_truncated: true }],
+    }, 'tempo');
+    expect(out).toContain('type unknown; observed: string; sampling incomplete');
+    expect(out).not.toContain('discovery limited');
+    expect(out).not.toContain('more attributes');
+  });
+
+  it('retains explicit name-limit disclosure without tainting a complete type sample', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true, names_truncated: true, types_truncated: false,
+      attributes: [{ name: 'span.http.status_code', types: ['int'], types_truncated: false }],
+    }, 'tempo');
+    expect(out).toContain('span.http.status_code (int)');
+    expect(out).toContain('schema discovery limited');
+  });
+
   it('discloses limited discovery without claiming zero additional Tempo attributes', () => {
     const out = renderSchemaForPrompt({
       truncated: true,

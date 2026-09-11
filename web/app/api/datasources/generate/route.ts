@@ -77,7 +77,7 @@ function refreshInBackground(accountId: string, ds: DatasourceRow, id: number, k
   void introspectAndCache(accountId, ds, id, kind).catch(() => {}).finally(() => refreshing.delete(id));
 }
 
-async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: boolean, kind: string, nl: string): Promise<string> {
+async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: boolean, kind: string, nl: string): Promise<{ schemaBlock: string; tempoSchemaEmpty: boolean }> {
   const accountId = currentAccountId();
   // Float NL-relevant metric/label names to the front so they survive the render cap (Prometheus/Mimir
   // return hundreds of metrics alphabetically; the relevant ones would otherwise be dropped).
@@ -87,10 +87,15 @@ async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: b
     const own = hasId ? schemas.find((s) => s.integrationId === id) : schemas.find((s) => s.kind === kind);
     if (own?.schema) {
       const block = render(own.schema, own.kind);
-      if (block) {
+      const raw = own.schema as { tags?: unknown; attributes?: unknown };
+      const tempoSchemaEmpty = kind === 'tempo' && !block
+        && (Array.isArray(raw.tags) || Array.isArray(raw.attributes));
+      if (block || tempoSchemaEmpty) {
         // Lazy refresh: cache hit but stale → refresh in the background (next lookup is fresh), serve now.
+        // An empty Tempo observation is also a cache hit: an idle window will not
+        // become useful by introspecting again on every generation request.
         if (hasId && ds && isSchemaStale(own.fetched_at)) refreshInBackground(accountId, ds, id, kind);
-        return block;
+        return { schemaBlock: block, tempoSchemaEmpty };
       }
     }
   } catch { /* cache is optional */ }
@@ -100,7 +105,7 @@ async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: b
   // Warm the cache in the BACKGROUND so the NEXT lookup is grounded; serve schema-less now (the model
   // writes a best-effort query and the connector's read-only guard backstops it on run).
   if (hasId && ds) refreshInBackground(accountId, ds, id, kind);
-  return '';
+  return { schemaBlock: '', tempoSchemaEmpty: false };
 }
 
 export async function POST(request: Request) {
@@ -133,10 +138,10 @@ export async function POST(request: Request) {
   const nl = typeof body.nl === 'string' ? body.nl.trim().slice(0, MAX_NL) : '';
   if (!nl) return json({ error: 'nl (natural-language request) required' }, 400);
 
-  const schemaBlock = await resolveSchemaBlock(ds, id, hasId, kind, nl);
+  const schema = await resolveSchemaBlock(ds, id, hasId, kind, nl);
 
   try {
-    const query = await generateQuery({ nl, lang, schemaBlock, isSql });
+    const query = await generateQuery({ nl, lang, ...schema, isSql });
     return json({ query, lang }, 200);
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : 'generation failed' }, 502);
