@@ -22,13 +22,36 @@ from datasource_http import (
 SLUG = "tempo"
 MAX_TRACES = 50
 MAX_TOTAL_BYTES = 1_000_000  # cap serialized trace payload well under the 6 MB Lambda limit
+MAX_SCHEMA_TAGS = 200
+MAX_SCHEMA_BYTES = 64_000
+MAX_SCHEMA_VALUES = 32
+_SCHEMA_WINDOW_S = 3600
+_SCHEMA_TIMEOUT_S = 4  # at most six reads; stay within the Lambda's request budget
+_SCHEMA_STALE_VALUES = 200
+_SCHEMA_SCOPES = {"span", "resource", "event", "link", "instrumentation"}
+# These are builtins, not custom attributes. Keep only known bare intrinsic identifiers.
+_SCHEMA_INTRINSICS = {
+    "duration", "kind", "name", "status", "statusMessage", "rootName", "rootServiceName",
+    "traceDuration", "span:duration", "span:kind", "span:name", "span:status",
+    "span:statusMessage", "trace:duration", "trace:rootName", "trace:rootService",
+    "event:name", "event:timeSinceStart", "instrumentation:name", "instrumentation:version",
+}
+# Four lookups maximum, and only for attributes actually returned by the scoped tags API.
+_SCHEMA_TYPE_ATTRIBUTES = (
+    "span.http.status_code", "span.http.response.status_code",
+    "resource.service.name", "span.service.name",
+)
+_SCHEMA_TYPES = {"string", "int", "float", "bool", "duration", "status", "kind"}
+_UNQUOTED_ATTRIBUTE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
 _REL = re.compile(r"^(\d+)([smhdw])$")
 _UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 _HEX = re.compile(r"^[0-9a-fA-F]+$")
 
 
 class _ApiError(Exception):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
 
 
 def _parse_time_s(v, default_delta_s=None):
@@ -56,11 +79,13 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params=None):
+def _get(creds, path, params=None, *, timeout=None):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    status, data = http_json("GET", url, headers=_headers(creds))
+    request_options = {"timeout": timeout} if timeout is not None else {}
+    status, data = http_json("GET", url, headers=_headers(creds), **request_options)
     if status >= 400:  # Tempo has no envelope status → HTTP 2xx is success
-        raise _ApiError(f"Tempo HTTP {status}: {str(data.get('raw') or data.get('error') or data)[:300]}")
+        detail = (data.get("raw") or data.get("error") or data) if isinstance(data, dict) else data
+        raise _ApiError(f"Tempo HTTP {status}: {str(detail)[:300]}", status)
     return data
 
 
@@ -111,17 +136,135 @@ def tempo_tag_values(args):
     return ok(data if isinstance(data, dict) else {"values": data})
 
 
+def _schema_identifier(tag, scope):
+    """Tag APIs return raw keys: preserve them, quoting unsafe names as TraceQL strings."""
+    if not isinstance(tag, str) or not tag or len(tag) > 1024:
+        return None
+    try:
+        if len(tag.encode("utf-8")) > 1024:
+            return None
+    except UnicodeEncodeError:
+        return None
+    if any(ord(c) < 32 or ord(c) == 127 for c in tag):
+        return None
+    if scope == "intrinsic":
+        return tag if tag in _SCHEMA_INTRINSICS else None
+    # Scope keywords are lexer tokens even inside attribute keys; quoting preserves the raw key.
+    reserved = tag.partition(".")[0] in _SCHEMA_SCOPES | {"parent", "trace"}
+    name = tag if _UNQUOTED_ATTRIBUTE.fullmatch(tag) and not reserved else json.dumps(tag, ensure_ascii=False)
+    return f"{scope}.{name}"  # empty legacy scope intentionally produces a leading dot
+
+
+def _schema_attributes(data, scoped):
+    """Normalize a bounded subset; malformed/omitted entries never acquire invented scopes."""
+    truncated = isinstance(data, dict) and data.get("truncated") is True
+    if scoped:
+        scopes = (data.get("scopes", []) if isinstance(data, dict)
+                  and "raw" not in data and "tagNames" not in data else None)
+    else:
+        tags = data.get("tagNames", []) if isinstance(data, dict) and "raw" not in data else data
+        scopes = [{"name": "", "tags": tags}]
+    if not isinstance(scopes, list):
+        return {}, {}, True
+
+    attributes, raw_names = {}, {}
+    allowed_scopes = _SCHEMA_SCOPES | {"intrinsic"} if scoped else {""}
+    # The API has six scopes. Also bound malformed/duplicate scope envelopes locally.
+    truncated |= len(scopes) > 16
+    for scope in scopes[:16]:
+        if not isinstance(scope, dict):
+            truncated = True
+            continue
+        name, tags = scope.get("name"), scope.get("tags", [])
+        if not isinstance(name, str) or name not in allowed_scopes or not isinstance(tags, list):
+            truncated = True
+            continue
+        # Ask for one extra name to distinguish a full schema from the local 200-name cap.
+        truncated |= len(tags) >= MAX_SCHEMA_TAGS + 1
+        for tag in tags[:MAX_SCHEMA_TAGS + 1]:
+            identifier = _schema_identifier(tag, name)
+            if identifier is None:
+                truncated = True
+                continue
+            if identifier in attributes:
+                continue
+            if len(attributes) >= MAX_SCHEMA_TAGS:
+                truncated = True
+                if identifier not in _SCHEMA_TYPE_ATTRIBUTES:
+                    continue
+                # A large earlier scope must not crowd out observed HTTP/service candidates.
+                victim = next(key for key in reversed(attributes) if key not in _SCHEMA_TYPE_ATTRIBUTES)
+                del attributes[victim]
+                del raw_names[victim]
+            attributes[identifier] = {"name": identifier}
+            raw_names[identifier] = tag
+    return attributes, raw_names, truncated
+
+
+def _schema_observed_types(creds, attributes, window):
+    """Retain only explicit Tempo types; never return, cache or infer from sample values."""
+    truncated = False
+    for identifier in _SCHEMA_TYPE_ATTRIBUTES:
+        if identifier not in attributes:
+            continue
+        try:
+            data = _get(creds, f"/api/v2/search/tag/{quote(identifier, safe='')}/values",
+                        {**window, "limit": MAX_SCHEMA_VALUES, "maxStaleValues": _SCHEMA_STALE_VALUES},
+                        timeout=_SCHEMA_TIMEOUT_S)
+        except (_ApiError, OSError):
+            continue  # optional type evidence; the names remain useful on older/unavailable endpoints
+        values = data.get("tagValues", []) if isinstance(data, dict) else None
+        if not isinstance(values, list):
+            continue
+        truncated |= len(values) >= MAX_SCHEMA_VALUES
+        types = {
+            item["type"] for item in values[:MAX_SCHEMA_VALUES]
+            if isinstance(item, dict) and isinstance(item.get("type"), str) and item["type"] in _SCHEMA_TYPES
+        }
+        if types:
+            attributes[identifier]["types"] = sorted(types)
+    return truncated
+
+
 def tempo_schema(args):
+    """Bounded schema observations, not an exhaustive catalog.
+
+    API shapes/limits: https://grafana.com/docs/tempo/latest/api_docs/
+    V2 has scopes[{name,tags}] and tagValues[{type,value}]. V1 names have no scope/type
+    evidence. All network reads retain the existing credential/SSRF/auth guarded _get.
+    """
     creds = _ds()
+    end = int(time.time())
+    window = {"start": str(end - _SCHEMA_WINDOW_S), "end": str(end)}
     try:  # best-effort server version for version-aware TraceQL
-        bi = _get(creds, "/api/status/buildinfo")
+        bi = _get(creds, "/api/status/buildinfo", timeout=_SCHEMA_TIMEOUT_S)
         version = bi.get("version") if isinstance(bi, dict) else None
-    except _ApiError:
+        if not isinstance(version, str) or len(version) > 128 or _schema_identifier(version, "") is None:
+            version = None
+    except (_ApiError, OSError):
         version = None
-    data = _get(creds, "/api/search/tags")
-    tags = data.get("tagNames") if isinstance(data, dict) else data
-    tags = tags if isinstance(tags, list) else []
-    return ok({"version": version, "tags": tags[:200], "truncated": len(tags) > 200})
+    params = {**window, "limit": MAX_SCHEMA_TAGS + 1, "maxStaleValues": _SCHEMA_STALE_VALUES}
+    scoped = True
+    try:
+        data = _get(creds, "/api/v2/search/tags", params, timeout=_SCHEMA_TIMEOUT_S)
+    except _ApiError as exc:
+        if exc.status not in (404, 405, 501):
+            raise
+        scoped = False
+        data = _get(creds, "/api/search/tags", params, timeout=_SCHEMA_TIMEOUT_S)
+    attributes, raw_names, truncated = _schema_attributes(data, scoped)
+    if scoped:
+        truncated |= _schema_observed_types(creds, attributes, window)
+    body = {"version": version, "tags": [], "attributes": list(attributes.values()), "truncated": truncated}
+    while True:
+        body["tags"] = list(dict.fromkeys(raw_names[attr["name"]] for attr in body["attributes"]))
+        if len(json.dumps(body, ensure_ascii=False).encode("utf-8")) <= MAX_SCHEMA_BYTES:
+            return ok(body)
+        # Retain the four important attributes through the byte cap as well as the count cap.
+        index = next(i for i in range(len(body["attributes"]) - 1, -1, -1)
+                     if body["attributes"][i]["name"] not in _SCHEMA_TYPE_ATTRIBUTES)
+        body["attributes"].pop(index)
+        body["truncated"] = True
 
 
 _TOOLS = {

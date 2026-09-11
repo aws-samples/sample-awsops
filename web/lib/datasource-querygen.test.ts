@@ -61,6 +61,72 @@ describe('looksLikeProse [1]', () => {
 });
 
 describe('generateQuery', () => {
+  it('repairs the reported bare HTTP attribute once before returning a TraceQL draft', async () => {
+    const send = vi.fn()
+      .mockResolvedValueOnce('{ http.status_code = "500" }')
+      .mockResolvedValueOnce('{ span.http.status_code = 500 }');
+    const query = await generateQuery({
+      nl: 'HTTP 500 응답 스팬', lang: 'TraceQL',
+      schemaBlock: 'attributes:\nspan.http.status_code (int)', isSql: false, send,
+    });
+    expect(query).toBe('{ span.http.status_code = 500 }');
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][1]).toContain('{ http.status_code = "500" }');
+    expect(send.mock.calls[1][1]).toMatch(/syntax/i);
+  });
+
+  it('does not return an invalid TraceQL draft when correction also fails', async () => {
+    const send = vi.fn().mockResolvedValue('{ http.status_code = "500" }');
+    await expect(generateQuery({
+      nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'tags: .http.status_code', isSql: false, send,
+    })).rejects.toThrow(/TraceQL.*syntax/i);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    '{ duration > 500ms }',
+    '{ status = error }',
+    '{}',
+    '{ trace:duration > 500ms }',
+  ])('accepts intrinsic TraceQL without a schema or a retry: %s', async (draft) => {
+    const send = vi.fn().mockResolvedValue(draft);
+    expect(await generateQuery({
+      nl: 'traces', lang: 'TraceQL', schemaBlock: '', isSql: false, send,
+    })).toBe(draft);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    '{ span.http.status_code = 500 }',
+    '{ .http.status_code = 500 }',
+    '{ span.http.response.status_code = "500" }',
+    '{ resource.service.name = "checkout" && status = error }',
+    '{ span."http status" = 500 }',
+    '{ span.http.status_code >= 500 } | count() > 1',
+  ])('preserves valid TraceQL attributes and literals: %s', async (draft) => {
+    const send = vi.fn().mockResolvedValue(draft);
+    expect(await generateQuery({
+      nl: 'traces', lang: 'TraceQL', schemaBlock: 'attributes: observed', isSql: false, send,
+    })).toBe(draft);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for schema refresh instead of returning guessed attributes on a cold cache', async () => {
+    const send = vi.fn().mockResolvedValue('{ span.http.status_code = 500 }');
+    await expect(generateQuery({
+      nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: '', isSql: false, send,
+    })).rejects.toThrow(/Tempo.*schema/i);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles missing schema evidence without replacing the requested filter with a broad query', async () => {
+    const send = vi.fn().mockResolvedValue('SCHEMA_REQUIRED');
+    await expect(generateQuery({
+      nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: '', isSql: false, send,
+    })).rejects.toThrow(/Tempo.*schema/i);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it('returns the model query for a SQL datasource when it is read-only', async () => {
     const send = vi.fn().mockResolvedValue('```sql\nSELECT ServiceName FROM otel_traces LIMIT 10\n```');
     const q = await generateQuery({ nl: 'services', lang: 'read-only SQL', schemaBlock: 'otel_traces(ServiceName String)', isSql: true, send });

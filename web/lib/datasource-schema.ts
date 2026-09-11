@@ -104,7 +104,7 @@ export function prioritizeSchemaForQuery(schema: unknown, nl: string): unknown {
       .sort((a, b) => b.sc - a.sc || a.i - b.i) // score desc, stable on ties
       .map((e) => e.x);
   const out: Record<string, unknown> = { ...s };
-  for (const k of ['metrics', 'labels', 'tags', 'services'] as const) {
+  for (const k of ['metrics', 'labels', 'tags', 'services', 'attributes'] as const) {
     if (Array.isArray(s[k]) && (s[k] as unknown[]).length) out[k] = reorder(s[k] as unknown[]);
   }
   return out;
@@ -122,6 +122,45 @@ const PROMPT_MAX_CHARS = 6000;      // default total; callers (chat) may pass a 
 
 const clamp = (str: string, max: number) => (str.length > max ? `${str.slice(0, max - 1)}…` : str);
 
+/** Tempo v2 metadata retains TraceQL scopes and observed types. Legacy cache rows contain only raw
+ * tag names: use the unscoped `.name` syntax rather than inventing a span/resource scope or a type. */
+function renderTempoSchema(s: Record<string, unknown>, maxChars: number): string {
+  const scoped = Array.isArray(s.attributes) ? s.attributes : [];
+  const attributes: { name: string; types: string[] }[] = scoped.flatMap((a) => {
+    if (!a || typeof a !== 'object' || typeof a.name !== 'string' || !a.name) return [];
+    return [{ name: a.name, types: Array.isArray(a.types) ? a.types.filter((t: unknown) => typeof t === 'string').slice(0, 8) : [] }];
+  });
+  if (!attributes.length && Array.isArray(s.tags)) {
+    for (const tag of s.tags) {
+      if (typeof tag !== 'string' || !tag) continue;
+      const reserved = /^(span|resource|event|link|instrumentation|parent|trace)(\.|$)/.test(tag);
+      const name = /^[a-zA-Z_][a-zA-Z0-9_.]*$/.test(tag) && !reserved ? tag : JSON.stringify(tag);
+      attributes.push({ name: `.${name}`, types: [] });
+    }
+  }
+  if (!attributes.length) return '';
+  const limit = Math.max(80, maxChars);
+  const lines = ['Tempo attributes (observed types; unknown means not sampled):'];
+  if (typeof s.version === 'string' && s.version) {
+    lines.unshift(`Tempo version: ${clamp(s.version, 80)}`);
+  }
+  // Keep complete identifiers: cutting an attribute name would invent a nonexistent field.
+  // Reserve room for the omitted-attribute count, including the discovery cap when disclosed.
+  let used = lines.join('\n').length;
+  let emitted = 0;
+  for (const a of attributes.slice(0, 80)) {
+    const line = `${a.name} (${a.types.length ? a.types.join(' | ') : 'type unknown'})`;
+    if (line.length > PROMPT_MAX_LINE_CHARS || used + line.length + 1 > limit - 60) continue;
+    lines.push(line);
+    used += line.length + 1;
+    emitted += 1;
+  }
+  if (emitted < attributes.length || s.truncated) {
+    lines.push(`… (+${attributes.length - emitted}${s.truncated ? '+' : ''} more attributes)`);
+  }
+  return clamp(lines.join('\n'), limit);
+}
+
 /**
  * Render a cached datasource schema into a compact, prompt-ready block.
  *
@@ -129,14 +168,15 @@ const clamp = (str: string, max: number) => (str.length > max ? `${str.slice(0, 
  *   model sees the COLUMNS, not just table names (the previous renderer dropped columns, so the model
  *   couldn't write a correct ClickHouse query).
  * - OpenSearch (`domains: [{name, indices: […]}]`) → `domain: idx, idx, …` so the data gateway gets index names.
- * - metric/label/tag datasources (Prometheus/Loki/Tempo) → `key: name, name, …` (names are all those carry).
+ * - Tempo → qualified attribute names WITH observed types (legacy tags use `.name`, type unknown).
+ * - metric/label/tag datasources (Prometheus/Loki) → `key: name, name, …`.
  *
  * Bounded by tables/columns/domains, per-line and per-column length, and a total `maxChars` budget;
- * truncation is always disclosed (`… (+N more …)`), never a silent slice. `_kind` is reserved for
- * future kind-specific shaping (rendering is currently shape-driven, not kind-driven).
+ * truncation is always disclosed (`… (+N more …)`), never a silent slice.
  */
 export function renderSchemaForPrompt(schema: unknown, _kind?: string | null, maxChars: number = PROMPT_MAX_CHARS): string {
   const s = (schema && typeof schema === 'object' && !Array.isArray(schema)) ? (schema as Record<string, unknown>) : {};
+  if (_kind === 'tempo') return renderTempoSchema(s, maxChars);
   const lines: string[] = [];
   let budget = Math.max(80, maxChars); // running char budget so truncation is explicit, never a blind slice()
 

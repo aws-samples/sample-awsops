@@ -40,6 +40,55 @@ describe('datasource-schema (keyed by integration_id)', () => {
 });
 
 describe('renderSchemaForPrompt', () => {
+  it('preserves Tempo attribute scopes, observed types, and server version', () => {
+    const out = renderSchemaForPrompt({
+      version: '2.8.0',
+      tags: ['http.status_code', 'service.name'],
+      attributes: [
+        { name: 'span.http.status_code', types: ['int'] },
+        { name: 'span.http.response.status_code', types: ['string', 'int'] },
+        { name: 'resource.service.name', types: ['string'] },
+      ],
+    }, 'tempo');
+    expect(out).toContain('Tempo version: 2.8.0');
+    expect(out).toContain('span.http.status_code (int)');
+    expect(out).toContain('span.http.response.status_code (string | int)');
+    expect(out).toContain('resource.service.name (string)');
+    expect(out).not.toContain('tags: http.status_code');
+  });
+
+  it('renders old Tempo cache tags as valid unscoped attributes without guessing scope or type', () => {
+    const out = renderSchemaForPrompt({ tags: ['http.status_code', 'service.name', 'http status'] }, 'tempo');
+    expect(out).toContain('.http.status_code (type unknown)');
+    expect(out).toContain('.service.name (type unknown)');
+    expect(out).toContain('."http status" (type unknown)');
+    expect(out).not.toContain('span.http.status_code');
+  });
+
+  it.each(['resource.service.name', 'span.foo', 'parent.foo', 'event', 'trace.foo'])(
+    'quotes a legacy Tempo key beginning with a reserved scope: %s', (tag) => {
+      expect(renderSchemaForPrompt({ tags: [tag] }, 'tempo')).toContain(`."${tag}" (type unknown)`);
+    },
+  );
+
+  it('keeps relevant typed Tempo attributes within the render budget', () => {
+    const schema = {
+      attributes: [
+        ...Array.from({ length: 150 }, (_, i) => ({ name: `span.attr${i}`, types: ['string'] })),
+        { name: 'span.http.response.status_code', types: ['int'] },
+      ],
+    };
+    const out = renderSchemaForPrompt(prioritizeSchemaForQuery(schema, 'HTTP 500 응답 스팬'), 'tempo', 300);
+    expect(out).toContain('span.http.response.status_code (int)');
+    expect(out.length).toBeLessThanOrEqual(300);
+    expect(out).toMatch(/more attributes/);
+    expect(schema.attributes[0].name).toBe('span.attr0');
+  });
+
+  it('does not treat a version-only Tempo schema as observed attributes', () => {
+    expect(renderSchemaForPrompt({ version: '2.8.0', tags: [] }, 'tempo')).toBe('');
+  });
+
   it('emits SQL tables WITH columns and types (not just names) — the core ClickHouse fix', () => {
     const schema = {
       version: '24.8.1',
