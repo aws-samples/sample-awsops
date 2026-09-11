@@ -434,9 +434,10 @@ jobs:
         env:
           BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
           PANEL_TIMEOUT: "300"
-          # L2 repeatedly hit both 600s attempts on large diffs. Keep the same model,
-          # prompts, retries, and required coverage; extend only this cell's budget.
-          CLAUDE_PANEL_TIMEOUT: "600"
+          # Both L2 and L4 have exhausted 600s attempts on large diffs. Every Claude
+          # lens gets the longer budget; parallelism keeps the existing job ceiling.
+          # Models, prompts, retries, and required coverage remain unchanged.
+          CLAUDE_PANEL_TIMEOUT: "1200"
           CLAUDE_PANEL_L2_TIMEOUT: "1200"
         run: |
           set -euo pipefail
