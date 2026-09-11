@@ -388,6 +388,17 @@ class WorkflowBudgetTests(unittest.TestCase):
         self.assertIsNotNone(match, f"missing workflow field {name}")
         return match.group(1).strip().strip("'\"")
 
+    def test_each_model_phase_mints_fresh_credentials_immediately_before_execution(self):
+        for credentials, phase in (("panel_credentials", "panel_review"),
+                                   ("chair_credentials", "chair_review")):
+            with self.subTest(phase=phase):
+                credentials_index, credentials_block = self.step(credentials)
+                phase_index, _ = self.step(phase)
+                self.assertEqual(credentials_index + 1, phase_index,
+                                 "slow setup must not consume model-phase credential lifetime")
+                self.assertEqual(self.field(credentials_block, "unset-current-credentials"), "true")
+                self.assertEqual(self.field(credentials_block, "use-existing-credentials"), "false")
+
     def test_credentials_are_renewed_between_panel_and_chair_with_same_role(self):
         panel_index, _ = self.step("panel_review")
         renewal_index, renewal = self.step("chair_credentials")
