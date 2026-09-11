@@ -8,15 +8,15 @@ name: AI Code Review
 # target, so the deterministic L1 gate is not included.)
 #   - pull_request_target trusted default-ref checkout: application PR head code is data only
 #   - matrix fan-out: scripts/pr-review/run-panel.sh (2 models x 4 lenses = 8 cells) -> synthesize.sh
-#   - auth: GitHub OIDC -> sample-awsops-ci-review IAM role (Bedrock invoke only), no baseline
+#   - auth: GitHub OIDC -> sample-awsops-ci-review model API role, no baseline
 #     permission on the runner pod itself (see the platform repo's DESIGN.md credentials model)
 #   - region: us-east-1 (Claude us. geo / codex gpt-5.6-sol bedrock-mantle In-Region) — chosen
 #     independently of the runner's own region (ap-northeast-2); the ci-review role's Bedrock
 #     grant is not region-scoped
 #
 # The ARC image supplies Codex and Claude. Each must complete all four review lenses.
-# A recovery label selects an exact same-repository PR HEAD explicitly. It uses the
-# already trusted pull_request OIDC subject; all reviewed application code remains data.
+# A recovery label selects an exact same-repository PR HEAD. GitHub's protected recovery
+# environment must approve execution before checkout; IAM trusts only protected subjects.
 on:
   pull_request_target:
     types: [opened, synchronize]
@@ -41,6 +41,8 @@ jobs:
        (github.event_name == 'pull_request' && github.event.action == 'labeled' &&
         github.event.label.name == format('ci-review:{0}', github.event.pull_request.head.sha)))
     runs-on: sample-awsops
+    environment:
+      name: ${{ github.event_name == 'pull_request' && 'ci-review-recovery' || 'ci-review-auto' }}
     # Hang backstop: GitHub's default is 360 minutes (6h), so a hang in a section the
     # in-script timeouts don't cover (gh pr diff, npm fallback, panel wait, etc.) would pin
     # the runner pod for 6 hours. Normal ceiling (after adding CHAIR_TIMEOUT 900s + fast-fail
@@ -58,13 +60,15 @@ jobs:
     env:
       # unified on us-east-1: Claude us. geo (on-demand) + codex gpt-5.6-sol mantle (In-Region).
       ANTHROPIC_MODEL: us.anthropic.claude-fable-5
+      CLAUDE_PANEL_MODEL: us.anthropic.claude-opus-5
       CLAUDE_CODE_USE_BEDROCK: 1
       ANTHROPIC_BEDROCK_BASE_URL: https://bedrock-runtime.us-east-1.amazonaws.com
       AWS_REGION: us-east-1
     steps:
       # Automatic reviews execute CI scripts from the immutable trusted DEFAULT branch commit.
-      # An explicit SHA label selects recovery CI code; the job guard pins that SHA before
-      # checkout, and context validation rechecks it before acquiring AWS credentials.
+      # An explicit SHA label selects recovery CI code, but GitHub environment protection
+      # (outside the PR's control) approves the job before checkout. Context validation
+      # rechecks the SHA before acquiring environment-scoped AWS credentials.
       # Both modes review application changes from a separate target-BASE worktree.
       # persist-credentials: false — the default (true) leaves GH_TOKEN in .git/config's
       # http.<host>.extraheader (AUTHORIZATION: basic <base64>). The panel's Claude cell (and
@@ -85,7 +89,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/pr-review/review_context.py >> "$GITHUB_OUTPUT"
 
-      # No baseline AWS permission on the runner pod; this role can only invoke models.
+      # No baseline AWS permission on the runner pod; model API credentials require protected subjects.
       - name: Configure AWS credentials (OIDC -> ci-review)
         uses: aws-actions/configure-aws-credentials@v4
         with:

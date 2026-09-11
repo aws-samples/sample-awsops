@@ -51,7 +51,7 @@ mutation roles. Role-to-sub matrix:
 | `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | dev + user stacks' ECR push |
 | `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply — **never production** |
 | `sample-awsops-ci-terraform-plan` | plan (PR/push incl. user-branch own-stack plans, read-only) | StringLike: `...:pull_request` + refs `main`, `dev`, `atomoh`, `ssminji`, `whchoi` | ReadOnlyAccess |
-| `sample-awsops-ci-review` | AI pr-review | StringLike: `...:pull_request` + refs `main`, `dev` | Bedrock invoke |
+| `sample-awsops-ci-review` | AI pr-review | StringEquals: verified subject prefix + environments `ci-review-auto` / `ci-review-recovery`, or legacy refs `main` / `dev`; no bare `pull_request` subject | Bedrock / Mantle policies — inspect actual permissions before approval |
 
 CRITICAL sub rule: **a job that declares `environment:` presents the
 `repo:<owner>/<repo>:environment:<name>` sub — NOT its branch ref.** Deployer
@@ -71,67 +71,102 @@ RETIRED — user branches are standing branches with continuous deploy, covered 
 the dev-tier roles above. (구 preview 역할·워크플로는 은퇴 — 사용자 브랜치가 상시
 브랜치가 되면서 dev-tier 역할이 담당합니다.)
 
-### Recovery of review CI / 리뷰 CI 복구
+#### Review CI protection and recovery / 리뷰 CI 보호·복구
 
-**Verified operational facts (2026-09-11):** a read-only `iam:GetRole` inspection in the
-samples account confirmed that the live review role already trusted the `pull_request`
-subject before this recovery. The table above corrects stale documentation; this change
-does not create or update any IAM trust policy. The review role is managed outside this
-repository. The existing subject is coarse: another permitted same-repository PR workflow
-can also request it. A recovery label gates this workflow's execution and publication,
-not IAM authorization; do not treat the label as an IAM security boundary.
+Recovery approval is enforced by GitHub environments, outside PR-controlled code. A
+`ci-review:<full HEAD SHA>` label only selects a commit; it is not authorization by itself.
 
-Automatic `pull_request_target` review runs CI code from the immutable default-branch
-`github.sha`, which may differ from the PR target's base SHA. The panel and chair read
-application context from a separate worktree at the target base.
-This follows GitHub's change effective **2025-12-08**, which moved `GITHUB_REF` and
-`GITHUB_SHA` to the default branch regardless of the PR target:
-[GitHub Actions platform announcement](https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/).
-Older descriptions of the target-base branch as the workflow execution context describe
-the previous behavior.
+| Environment | Required control | Allowed execution refs |
+|---|---|---|
+| `ci-review-auto` | Custom branch policy; admin bypass disabled | `dev`, `main` |
+| `ci-review-recovery` | A named repository operator as required reviewer; admin bypass disabled | The specific recovery PR, e.g. `refs/pull/41/merge` |
 
-When the trusted review workflow itself needs repair, explicitly approve its current
-same-repository PR commit with a `ci-review:<full HEAD SHA>` label. Review the CI changes
-before labeling: this authorizes execution of that commit's CI scripts with the review
-role and PR-comment write permission. Such a recovery run cannot independently certify
-the integrity of the scripts it executes: separate review of the exact commit and explicit
-operator approval are prerequisites. The operator authorized this recovery on 2026-09-11;
-execution remains conditional on verifying the exact commit before labeling.
-That authorization is scoped to restoring this pipeline and
-does not authorize unrelated future recovery commits. The remaining credential exposure
-is model invocation cost/quota and review-comment integrity, not infrastructure mutation.
-The `pull_request`/`labeled` recovery route uses the review role's existing
-`pull_request` trust; it does not require broadening branch trust or changing IAM.
-The workflow rejects forks, mismatched/stale labels, changed live HEADs and non-`dev`/`main`
-targets. Both vendors must complete all four lenses; the normal merge checks still apply.
+GitHub evaluates environment branch rules against the actual execution ref. A
+`pull_request` job uses `refs/pull/<number>/merge`; a `pull_request_target` job uses the
+trusted default-branch ref. A feature PR cannot select `ci-review-auto` to avoid approval.
+The recovery job must wait for a listed reviewer before checkout or credential issuance.
+Self-review prevention is false so a designated operator may initiate and explicitly
+approve their own repair; an ordinary PR author who is not that reviewer cannot approve it.
+
+The AWS trust policy must allow only the exact repository's protected environment
+subjects (plus the trusted legacy `dev`/`main` ref subjects). Remove coarse
+`...:pull_request` and wildcard repository subjects: otherwise head code could omit the
+environment and request credentials directly. This role is managed outside the application
+Terraform root; coordinate its trust update with that owner rather than importing a second
+copy of the resource into application state. Permission policies are a separate boundary:
+inspect inline policies, attachments, and any permissions boundary, including Mantle
+permissions; do not infer privileges from the policy's name.
+
+**Prepare and verify the external controls before enabling the workflow:**
+
+1. Read the current role trust/permission policies and GitHub OIDC configuration. Keep the
+   originals private for comparison and rollback. Use the API's `sub_claim_prefix` when
+   immutable subjects are enabled — the prefix contains owner/repository IDs. Do not turn
+   off immutable subjects or replace the IDs with a broad wildcard.
+2. Generate a local plan with `scripts/v2/ci_review_access.py`. It makes no API writes,
+   preserves existing explicit denies, and refuses unrecognized trust relationships or
+   additional restrictions instead of silently dropping them. Review the complete plan.
+3. Apply both environment settings and their exact branch policies. Read them back and
+   verify the reviewer, disabled bypass, and allowed refs. Only then apply the generated
+   trust policy to the dedicated CI review role; keep permission policies unchanged.
+4. Read back the IAM policy and compare it with the plan. Verify there is no direct
+   `pull_request` or wildcard-repository allow. Validate the policy with IAM Access Analyzer.
 
 ```bash
+# These files are private operator artifacts, not committed credentials/config dumps.
+CI_ACCESS_DIR=$(mktemp -d)
+chmod 700 "$CI_ACCESS_DIR"
+aws --profile samples iam get-role --role-name sample-awsops-ci-review --query Role.AssumeRolePolicyDocument > "$CI_ACCESS_DIR/trust.json"
+aws --profile samples iam list-role-policies --role-name sample-awsops-ci-review
+aws --profile samples iam list-attached-role-policies --role-name sample-awsops-ci-review
+# Inspect every returned permission document (get-role-policy/get-policy-version).
+gh api repos/aws-samples/sample-awsops/actions/oidc/customization/sub > "$CI_ACCESS_DIR/oidc.json"
+read -r -p "Designated GitHub reviewer numeric ID: " CI_REVIEWER_ID
 read -r -p "Recovery PR number: " REVIEW_PR
+python3 scripts/v2/ci_review_access.py --trust-file "$CI_ACCESS_DIR/trust.json" --repository aws-samples/sample-awsops --oidc-config-file "$CI_ACCESS_DIR/oidc.json" --reviewer-id "$CI_REVIEWER_ID" --recovery-pr "$REVIEW_PR" --output "$CI_ACCESS_DIR/plan.json"
+```
+
+After the controls are verified, independently review the exact recovery commit before
+labeling. A recovery run executes that commit's CI scripts with model and PR-comment
+permissions; it cannot independently certify its own script integrity. A listed operator
+must also approve the pending `ci-review-recovery` environment in GitHub, after checking the
+run and live PR still refer to the reviewed SHA. Use the normal required-review approval,
+never an administrator bypass. One-time authorization belongs in the PR/audit trail,
+not in this runbook as standing approval.
+
+```bash
 read -r -p "Full commit SHA you independently reviewed: " REVIEW_HEAD
 [[ "$REVIEW_HEAD" =~ ^[0-9a-f]{40}$ ]] || exit 1
 LIVE_HEAD=$(gh pr view "$REVIEW_PR" -R aws-samples/sample-awsops --json headRefOid --jq '.headRefOid')
 [ "$LIVE_HEAD" = "$REVIEW_HEAD" ] || { echo "HEAD changed; review the new commit first"; exit 1; }
 printf 'Execute reviewed CI code at %s for PR %s\n' "$REVIEW_HEAD" "$REVIEW_PR"
-read -r -p "Type approve to authorize this exact commit: " REVIEW_APPROVAL
+read -r -p "Type approve to select this exact commit: " REVIEW_APPROVAL
 [ "$REVIEW_APPROVAL" = approve ] || exit 1
-gh label create "ci-review:$REVIEW_HEAD" -R aws-samples/sample-awsops --color 1D76DB --description 'Explicit approval of this CI recovery commit'
+if ! gh api "repos/aws-samples/sample-awsops/labels/ci-review:$REVIEW_HEAD" >/dev/null 2>&1; then
+  gh label create "ci-review:$REVIEW_HEAD" -R aws-samples/sample-awsops --color 1D76DB --description 'Select this reviewed CI recovery commit'
+fi
 gh pr edit "$REVIEW_PR" -R aws-samples/sample-awsops --add-label "ci-review:$REVIEW_HEAD"
+# In Actions, approve the pending ci-review-recovery environment for this exact run/SHA.
 ```
 
-A new commit needs a new matching label; a previous approval never follows a branch tip.
-If the label already exists, reuse it. To retry the identical commit, rerun the failed
-recovery workflow. After merging the repair, update dependent PRs against `dev` so the
-restored automatic review runs normally.
+The prefix plus SHA reaches GitHub's 50-character label limit. A new commit needs a new
+matching label and environment approval. After merging the repair, update dependent PRs
+against `dev`; normal reviews run through `ci-review-auto` without manual approval.
 
-Claude review cells have a 600-second attempt budget after observed 300-second L2
-timeouts; Codex retains 300 seconds. Both are bounded by a hard-kill grace and two attempts.
-An exhausted attempt is recorded with its exit code and elapsed time and cannot count
-as completed coverage.
+Automatic CI code is selected from immutable `github.sha`, while the panel reads source
+context from a separate target-base worktree. Since **2025-12-08**, `pull_request_target`
+uses the default branch for its workflow, `GITHUB_REF`, and `GITHUB_SHA` regardless of PR
+target. See [GitHub's platform announcement](https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/),
+[environment protection rules](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments), and
+[immutable OIDC subjects](https://docs.github.com/en/actions/reference/security/oidc).
+Claude has two 600-second attempts, Codex two 300-second attempts, with hard-kill grace.
+Missing/failed model cells remain blocking; all four lenses need both vendors.
 
-(자동 리뷰 코드는 PR 대상 브랜치가 아닌 기본 브랜치의 불변 커밋에서 실행합니다.
-복구 PR의 CI 변경을 검토한 뒤 전체 HEAD SHA가 포함된 라벨을 명시적으로 붙이면
-기존 `pull_request` 신뢰 경로로 복구 리뷰를 실행합니다. 새 커밋은 새 라벨 승인이
-필요하며, 모델·검토 항목 누락과 필수 검사 실패는 계속 머지를 차단합니다.)
+(복구 라벨은 커밋 선택이며 권한 승인은 GitHub 보호 환경에서 강제합니다. 자동 환경은
+`dev`·`main`만 허용하고 복구 환경은 해당 PR 실행 ref와 지정 리뷰어만 허용합니다.
+OIDC 불변 ID를 보존한 정확한 환경 주체만 AWS 역할에 허용하며, 환경을 생략한 PR이
+역할을 얻지 못하도록 포괄 `pull_request` 신뢰를 제거합니다. 설정·권한을 실행 시점에
+확인하고, 독립 검토한 SHA의 환경 승인을 정상 절차로 수행합니다.)
 
 ### 3. Per-stack terraform secrets / 스택별 TF 시크릿
 
