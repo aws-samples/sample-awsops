@@ -14,6 +14,12 @@ describe('buildQueryGenSystem', () => {
     expect(buildQueryGenSystem('read-only SQL', '')).not.toMatch(/or EXISTS/); // [8] EXISTS dropped from the suggestion
     expect(buildQueryGenSystem('PromQL', '')).not.toMatch(/START with SELECT/);
   });
+  it('does not ask TraceQL to guess custom attributes without a schema', () => {
+    const sys = buildQueryGenSystem('TraceQL', '');
+    expect(sys).not.toContain('write the most reasonable query');
+    expect(sys).toContain('SCHEMA_REQUIRED');
+    expect(sys).toContain('Intrinsic-only');
+  });
 });
 
 describe('extractQuery', () => {
@@ -111,6 +117,116 @@ describe('generateQuery', () => {
       isSql: false, send,
     })).resolves.toContain('= 500');
   });
+
+  it.each([
+    '{ resource.service.name = "checkout" } && { span.http.status_code = 500 }',
+    '{ span.http.status_code = 500 } && { resource.service.name = "checkout" }',
+    '{ resource.service.name = "checkout" } >> { span.http.status_code = 500 }',
+    '{ span.http.status_code = 500 } >> { resource.service.name = "checkout" }',
+    '{ span.http.status_code = 500 } &>> { resource.service.name = "checkout" }',
+    '{ resource.service.name = "checkout" } !>> { span.http.status_code = 500 }',
+    '({ span.http.status_code = 500 } && {}) || { span.http.status_code = 500 }',
+    '({} || { status = error }) && { span.http.status_code = 500 }',
+    '{ span.http.status_code = 500 } | count() > 1',
+    '({ span.http.status_code = 500 })',
+    '(({ span.http.status_code = 500 }))',
+    '{ span.http.status_code = 500 } ~ { name = "request" }',
+    '{ name = "request" } /* || */ ~ // &&\n { span.http.status_code = 500 }',
+    '{ span.http.status_code = 500 } with (most_recent=true)',
+  ])('accepts a required HTTP status across spansets: %s', async draft => {
+    const send = vi.fn().mockResolvedValue(draft);
+    expect(await generateQuery({
+      nl: 'checkout HTTP 500 traces', lang: 'TraceQL', schemaBlock: 'observed',
+      tempoAttributes: typedTempo, isSql: false, send,
+    })).toBe(draft);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    '({ span.http.status_code = 500 } && {}) || {}',
+    '({ span.http.status_code = 500 } || {}) >> { status = error }',
+    '{ span.http.status_code = 500 } !>> {}',
+    '{ span.http.status_code = 500 } !< {}',
+    '{ span.http.status_code = 500 } !~ {}',
+    '({ span.http.status_code = 500 } | count() > 1) || {}',
+    '({ span.http.status_code = 500 }) || {}',
+    '({ span.http.status_code = 500 } || {}) ~ { status = error }',
+    '{} with (most_recent=true)',
+  ])('still rejects spanset branches that do not require the requested status: %s', async draft => {
+    const send = vi.fn().mockResolvedValue(draft);
+    await expect(generateQuery({
+      nl: 'HTTP 500 traces', lang: 'TraceQL', schemaBlock: 'observed',
+      tempoAttributes: typedTempo, isSql: false, send,
+    })).rejects.toThrow(/HTTP-status filter/);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['.http.status_code', 'span.http.status_code'],
+    ['span.http.status_code', '.http.status_code'],
+    ['.http.status_code', 'resource.http.status_code'],
+    ['resource.http.status_code', '.http.status_code'],
+    ['."http.status_code"', 'span."http.status_code"'],
+  ])('matches compatible scope for %s observed as %s', async (name, observed) => {
+    const draft = `{ ${name} = 500 }`;
+    const send = vi.fn().mockResolvedValue(draft);
+    expect(await generateQuery({
+      nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'observed',
+      tempoAttributes: [{ name: observed, types: ['int'], typesTruncated: false }],
+      isSql: false, send,
+    })).toBe(draft);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['span.http.status_code', 'resource.http.status_code'],
+    ['resource.http.status_code', 'span.http.status_code'],
+    ['.http.status_code', 'event.http.status_code'],
+    ['.http.status_code', 'link.http.status_code'],
+    ['event.http.status_code', '.http.status_code'],
+    ['instrumentation.http.status_code', '.http.status_code'],
+  ])('does not alias distinct explicit or non-span/resource scopes: %s vs %s', async (name, observed) => {
+    const send = vi.fn().mockResolvedValue(`{ ${name} = 500 }`);
+    await expect(generateQuery({
+      nl: 'traces', lang: 'TraceQL', schemaBlock: 'observed',
+      tempoAttributes: [{ name: observed, types: ['int'], typesTruncated: false }],
+      isSql: false, send,
+    })).rejects.toThrow(/custom attribute was not observed/);
+  });
+
+  it.each([{ types: ['int'] }, { types: [] }])('unions types and propagates unknown evidence across unscoped matches: %j', async ({ types }) => {
+    const draft = '{ .http.status_code = 500 || .http.status_code = "500" }';
+    const send = vi.fn().mockResolvedValue(draft);
+    expect(await generateQuery({
+      nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'observed',
+      tempoAttributes: [
+        { name: 'span.http.status_code', types, typesTruncated: false },
+        { name: 'resource.http.status_code', types: ['string'], typesTruncated: false },
+      ],
+      isSql: false, send,
+    })).toBe(draft);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps literal validation for an unscoped name with only numeric evidence', async () => {
+    const send = vi.fn().mockResolvedValue('{ .http.status_code = "500" }');
+    await expect(generateQuery({
+      nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: 'observed', tempoAttributes: typedTempo,
+      isSql: false, send,
+    })).rejects.toThrow(/literal type/);
+  });
+
+  it.each(['HTTP 500 at least', 'HTTP 500 or over', 'HTTP 500 빼고'])(
+    'leaves range and exclusion intent to model/user review: %s', async nl => {
+      const draft = '{ span.http.status_code > 500 }';
+      const send = vi.fn().mockResolvedValue(draft);
+      expect(await generateQuery({
+        nl, lang: 'TraceQL', schemaBlock: 'observed', tempoAttributes: typedTempo,
+        isSql: false, send,
+      })).toBe(draft);
+      expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([
     ['float', '{ span.http.status_code = 500 }'],

@@ -6,6 +6,10 @@ Explore의 AI 생성 결과가 속성 범위·타입 오류로 실행되지 않�
 
 Explore generates a query with an invalid attribute scope or literal type, or keeps asking for a schema refresh without finding the requested attributes.
 
+생성 단계에서 `could not generate a valid query: TraceQL ...` 오류(HTTP 502)가 나오거나, 생성된 초안을 사용자가 실행했을 때 `Tempo HTTP 400`이 나오는 경우를 구분한다.
+
+Distinguish a generation error, `could not generate a valid query: TraceQL ...` (HTTP 502), from `Tempo HTTP 400` after the user executes a generated draft.
+
 ## 원인 후보 / Candidate causes
 
 - 웹·Tempo 커넥터 Lambda·스키마 캐시 중 일부만 갱신됐다. / The web app, Tempo connector Lambda, and schema cache have not all been updated.
@@ -32,11 +36,25 @@ In refreshed summaries, `attributes` is a **count** of custom attributes. `names
 
 Inspect actual names/types in traces through **Grafana Explore** on the same datasource, or through an approved Tempo API access path. Use the v2 tag-name API `/api/v2/search/tags` and typed-value API `/api/v2/search/tag/<URL-encoded TraceQL identifier>/values` with matching `start` and `end` bounds (Unix seconds). Specify those bounds on `/api/search` for historical traces too. `{ duration > 500ms }` works without an attribute schema; it is not a substitute for an HTTP 500 filter.
 
+### 생성 검증 오류 / Draft validation errors
+
+웹은 고정된 Grafana TraceQL 파서로 문법을 검사하고, 관측된 사용자 속성·호환 타입·명확한 단일 HTTP 상태 조건을 확인한다. 문법·스키마·필터 오류가 있으면 모델에 **한 번만 수정 요청**한다(최대 두 번 생성). 수정된 결과도 실패하면 생성 API가 502를 반환하며 Tempo 검색은 실행하지 않는다. `SCHEMA_REQUIRED` 응답은 이 수정 단계를 거치지 않고 스키마 안내로 반환된다.
+
+The web app checks syntax with a pinned Grafana TraceQL parser, then observed custom names, compatible types, and clear single HTTP-status intent. A syntax, schema, or filter error gets **one correction request** (at most two generations). If that result also fails, the generation API returns 502 without running a Tempo search. `SCHEMA_REQUIRED` goes directly to schema guidance without a correction attempt.
+
+- `syntax error`: 잘못된 범위·따옴표·연산자를 확인한다. 파서는 서버 버전의 모든 문법을 보장하지 않으므로 새 문법은 같은 Tempo의 Grafana Explore에서 확인한다. / Check scopes, quoting, and operators. The pinned parser does not cover every server version; verify newer syntax through Grafana Explore on the same Tempo.
+- `schema mismatch`: 위 API 절차로 관측 구간·속성명·타입을 확인하고 필요하면 캐시를 갱신한다. 범위를 생략한 `.key`는 `span`·`resource` 관측과 호환되지만 `event`·`link`·`instrumentation`은 명시적 범위를 유지한다. / Verify the observation window, names, and types using the API procedure above, refreshing when needed. `.key` can match span/resource observations; event/link/instrumentation retain explicit scopes.
+- `HTTP-status filter is missing or broadened`: 질문의 상태 코드를 유지해 다시 생성하거나 검토한 TraceQL을 직접 입력한다. `status = error`나 `{}`는 HTTP 500 조건을 대신할 수 없다. / Preserve the requested status code when regenerating or manually enter reviewed TraceQL. `status = error` or `{}` does not preserve an HTTP 500 condition.
+
+배포·새로고침 후 `HTTP 500 응답 스팬`을 다시 생성해 실제 관측된 HTTP 속성·타입이 초안에 반영되는지 확인한다. 서비스와 HTTP 조건을 별도 스팬으로 결합한 `&&` 쿼리도 유효할 수 있다. 생성 성공은 서버 실행 성공을 보증하지 않으므로 초안을 검토한 후 실행 결과를 확인한다. 실행 시 400이 계속되면 반환된 Tempo 오류와 서버 버전을 확인한다.
+
+After deployment and refresh, regenerate “HTTP 500 응답 스팬” and verify that the draft uses observed HTTP attributes and types. An `&&` query can legitimately combine service and HTTP conditions on separate spans. A successful generation does not guarantee server acceptance; review the draft and inspect its execution result. If execution still returns 400, inspect the Tempo error and server version.
+
 로컬 회귀 검증 / Local regression checks, from the repository root:
 
 ```bash
 (cd agent/lambda && python3 -m pytest test_tempo_mcp.py -q)
-(cd web && npx vitest run lib/datasource-schema.test.ts lib/datasource-querygen.test.ts app/api/datasources/generate/route.test.ts)
+(cd web && npx vitest run lib/tempo-schema.test.ts lib/datasource-schema.test.ts lib/datasource-querygen.test.ts app/api/datasources/generate/route.test.ts app/api/integrations/schema/route.test.ts)
 python3 -m pytest scripts/v2/workers/test_datasource_index.py scripts/v2/workers/test_graph_catalog.py scripts/v2/workers/test_card_catalog.py scripts/v2/workers/diagnosis/test_signal_catalog.py -q
 ```
 
@@ -57,16 +75,17 @@ terraform -chdir=terraform/foundation plan -out=tfplan
 terraform -chdir=terraform/foundation show tfplan
 ```
 
-계획 검토 후 컨트롤러가 저장된 계획을 적용하고 웹을 배포한다. / After reviewing the saved plan, the controller applies it and deploys the web app:
+계획 검토 후 컨트롤러가 저장된 계획을 적용하고 웹·AgentCore를 순서대로 배포한다. `make deploy`의 선행 `make migrate`가 완료된 후 `make agentcore`를 실행한다. / After reviewing the saved plan, the controller applies it and deploys the web app and AgentCore in order. Run `make agentcore` after `make deploy` has completed its prerequisite `make migrate`:
 
 ```bash
 terraform -chdir=terraform/foundation apply tfplan
 make deploy
+make agentcore
 ```
 
-`make deploy`는 웹을 배포하고 `make agentcore`는 에이전트 이미지·프로비저닝을 처리한다. 둘 다 위 Terraform의 커넥터 Lambda 코드 배포를 대체하지 않는다. 기존 연결의 권한·게이트웨이·기능 플래그를 바꿀 필요는 없다.
+`make deploy`는 웹을 배포한다. 이번 변경에는 `scripts/v2/agentcore/catalog.py`의 Tempo 도구 설명 변경도 있으므로 **`make agentcore`가 필요하다**. 프로비저너는 도구의 이름·설명·입력 스키마 지문을 비교하고 기존 게이트웨이 타깃의 설명을 동기화한다. 둘 다 위 Terraform의 커넥터 Lambda 코드 배포를 대체하지 않는다. 기존 권한이나 기능 플래그를 변경할 필요는 없다.
 
-`make deploy` ships the web app; `make agentcore` handles the agent image and provisioning. Neither replaces Terraform's connector Lambda code deployment. Existing connection permissions, gateways, and feature flags do not need changing for this update.
+`make deploy` ships the web app. **`make agentcore` is required for this change** because it also updates Tempo tool descriptions in `scripts/v2/agentcore/catalog.py`. The provisioner fingerprints tool names, descriptions, and input schemas and reconciles the descriptions on existing gateway targets. Neither command replaces Terraform's connector Lambda code deployment. Existing permissions and feature flags do not need changing.
 
 배포 후 AWSops에 **관리자로 로그인한 탭**에서 개발자 도구의 Console을 열고 아래 블록 전체를 실행한다. 같은 출처의 세션 쿠키로만 요청하며 토큰·도메인을 붙여 넣지 않는다. 명령은 구성된 Tempo 인스턴스와 기존 캐시 요약을 먼저 출력한다. 프롬프트에 대상 인스턴스의 양의 정수 ID를 입력하면 `POST /api/integrations/schema`에 **`{ id }`**를 보내고, GET으로 다시 읽어 요약·`fetched_at`을 비교한다. 취소하면 POST하지 않는다.
 
@@ -165,10 +184,15 @@ If the recent window remains empty, repeated refreshes cannot recover historical
 ## 관련 파일 / Related files
 
 - `agent/lambda/tempo_mcp.py`
+- `web/lib/tempo-schema.ts`
+- `web/lib/tempo-schema.test.ts`
 - `web/lib/datasource-schema.ts`
 - `web/lib/datasource-querygen.ts`
 - `web/app/api/datasources/generate/route.ts`
 - `web/app/api/integrations/schema/route.ts`
+- `web/app/api/integrations/schema/route.test.ts`
+- `scripts/v2/agentcore/catalog.py`
+- `scripts/v2/agentcore/provision.py`
 - `scripts/v2/workers/datasource_index.py`
 - `scripts/v2/workers/diagnosis/signal_catalog.py`
 - `scripts/v2/workers/graph_catalog.py`
