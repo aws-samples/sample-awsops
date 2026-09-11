@@ -94,7 +94,7 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   Defines the Phase 1 7-table schema and the ECS Fargate + Aurora split.
   See [`../decisions/001-v2-foundation.md`](../decisions/001-v2-foundation.md).
 - **ADR-021** — quota-limited inventory collection and the staged Aurora-backed MCP target.
-  See [`../decisions/021-quota-isolated-inventory-reads.md`](../decisions/021-quota-isolated-inventory-reads.md).
+  See ADR-021 (private upstream decision).
 
 ## Key files / 핵심 파일
 

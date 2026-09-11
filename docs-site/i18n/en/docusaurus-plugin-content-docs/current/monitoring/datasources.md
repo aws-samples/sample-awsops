@@ -54,7 +54,7 @@ Creating, editing, and deleting datasources requires an admin role. In v2, admin
 | **Type** | Yes | Datasource type (select from 8 types) |
 | **URL** | Yes | Endpoint URL (e.g., `http://prometheus:9090`) |
 | **Authentication** | No | Auth method (None, Basic, Bearer Token, Custom Header) |
-| **Timeout** | No | Upstream query execution bound (seconds, 1–60 · default 10) — forwarded as the API `timeout` param for Prometheus/Mimir and `max_execution_time` for ClickHouse; other kinds (Loki/Tempo/Jaeger/Dynatrace/Datadog) store the value but do not apply it today |
+| **Timeout** | No | Stored range 1–60 seconds (default 10). ClickHouse applies the `max_execution_time` ceiling on every path, with an effective maximum of 55s (56–60 is shortened to 55). Prometheus/Mimir apply the API `timeout` only on the Explore path, capped at 10s. Other kinds (Loki/Tempo/Jaeger/Dynatrace/Datadog) store the value but do not apply it today |
 | **Database** | No | Default database name (ClickHouse only, identifier-only) |
 
 :::note Difference from v1

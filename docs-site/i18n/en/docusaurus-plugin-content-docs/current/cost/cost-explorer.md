@@ -33,7 +33,7 @@ When there is no data at all (every series empty), a 'no cost data in the select
 ### Per-Service Breakdown
 - **Cost by service**: A horizontal bar list of cost per service
 - **Cost composition**: A donut chart of the top services plus an **Other** rollup of the remainder
-- **Service detail table**: service / this month / last month / change (day-normalized — thresholds: >20% red · >0 orange · <0 green; no baseline '—') / share (mini bar) — numeric sort, search, and a problems-only toggle
+- **Service detail table**: service / this month / last month / change (day-normalized — thresholds: >20% red · >0 orange · &lt;0 green; no baseline '—') / share (mini bar) — numeric sort, search, and a problems-only toggle
 
 ### Service Drill-Down Panel
 Clicking a service row in the table opens a detail panel on the right:

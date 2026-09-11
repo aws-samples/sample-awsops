@@ -58,7 +58,7 @@ AWSops 데이터소스 기능은 외부 관측성 플랫폼을 중앙에서 관�
 | **Type** | O | 데이터소스 유형 (8종 중 선택) |
 | **URL** | O | 엔드포인트 URL (예: `http://prometheus:9090`) |
 | **Authentication** | - | 인증 방식 (None, Basic, Bearer Token, Custom Header) |
-| **Timeout** | - | 업스트림 쿼리 실행 제한(초, 1–60 · 기본 10) — Prometheus/Mimir는 API `timeout` 파라미터로, ClickHouse는 `max_execution_time`으로 전달. 그 외 kind(Loki/Tempo/Jaeger/Dynatrace/Datadog)는 저장만 되고 현재는 적용되지 않음 |
+| **Timeout** | - | 저장 범위 1–60초(기본 10초). ClickHouse는 모든 경로에서 `max_execution_time` 상한으로 적용하며 유효 최대는 55초(56–60초는 55초로 단축). Prometheus/Mimir는 Explore 경로에서만 API `timeout`으로 적용하며 최대 10초. 그 외 kind(Loki/Tempo/Jaeger/Dynatrace/Datadog)는 저장만 되고 현재 적용되지 않음 |
 | **Database** | - | 기본 데이터베이스 이름 (ClickHouse 전용, 식별자만 허용) |
 
 :::note v1과의 차이

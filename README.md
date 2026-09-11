@@ -153,7 +153,7 @@ awsops/
   terraform/foundation/  # single Terraform root: network, edge, auth, data, workload, ai, workers, eks
   scripts/v2/             # configure/deploy/migrate/agentcore/workers tooling (all Node.js/Python)
   tests/                  # repo-wide hook/structure tests + PR-review/Steampipe/ExternalId wiring checks
-  docs/                   # guides, runbooks, decisions/ (BASELINE.md + 21 consolidated ADRs)
+  docs/                   # guides, runbooks, implementation references (ADR bodies remain private)
   docs-site/              # Docusaurus user guide (deployed separately)
 ```
 
@@ -326,7 +326,7 @@ awsops/
   terraform/foundation/  # 단일 Terraform 루트: network, edge, auth, data, workload, ai, workers, eks
   scripts/v2/               # configure/deploy/migrate/agentcore/workers 도구(전부 Node.js/Python)
   tests/                    # repo 전반의 hook/structure 테스트 + PR-review/Steampipe/ExternalId 배선 체크
-  docs/                     # 가이드, 런북, decisions/(BASELINE.md + 통합 ADR 21개)
+  docs/                     # 가이드, 런북, 구현 참조 문서(ADR 본문은 비공개 upstream에서 관리)
   docs-site/                # Docusaurus 사용자 가이드(별도 배포)
 ```
 

@@ -98,7 +98,7 @@ Terraform; `provision.py` overwrites with real values.
   [`../decisions/003-ai-agent-routing.md`](../decisions/003-ai-agent-routing.md)
 - **ADR-021** — quota-isolated inventory reads; Phase 1 repository implementation complete,
   limited ops Aurora reader coexists with direct targets, Phase 2/3 cutover pending.
-  [`../decisions/021-quota-isolated-inventory-reads.md`](../decisions/021-quota-isolated-inventory-reads.md)
+  ADR-021 (private upstream decision)
 
 ## Key files / 핵심 파일
 
