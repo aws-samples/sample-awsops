@@ -133,6 +133,10 @@ Synthesize ONE final review, grouped by lens (L2/L3/L4/L5):
 
 Review criteria: bugs, security, logic errors, and violations of this repo's CLAUDE.md/AGENTS.md
 conventions.
+PLATFORM VERSION: GitHub changed pull_request_target on 2025-12-08 to use the default
+branch workflow/GITHUB_SHA regardless of the PR target. Target-base source context
+is a separate SHA. Source:
+https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/
 BASE CONTEXT (avoids false positives): this repo's BASE branch is checked out in the current
 working directory and you can read files (read/grep). The diff is a PATCH applied on top of that
 base and may be a STACKED PR (the base may already define the symbols/imports/DB columns/IAM/
@@ -206,16 +210,17 @@ PROMPT_EOF
 # 96KB), the Fable 5 primary hit the 600s cap on three consecutive runs the same day (empty
 # stderr isn't an error — it's the timeout killing a process that was still generating; the
 # same chair completes normally on a small diff). Worst normal path: (120s fast-fail + 900s
-# retry) x2 chair attempts + panel ~15min ~= 49min — the job's timeout-minutes is 60 to match.
-PRIMARY_MODEL="${CHAIR_PRIMARY_MODEL:-global.anthropic.claude-fable-5-1}"
-FALLBACK_MODEL="${CHAIR_FALLBACK_MODEL:-global.anthropic.claude-opus-5}"
+# retry + 10s hard-kill grace) x2 chair models ~= 34m20s. With the workflow's longest
+# panel cell budget of 40m20s, a 90-minute job leaves about 15 minutes for other steps.
+PRIMARY_MODEL="${CHAIR_PRIMARY_MODEL:-us.anthropic.claude-fable-5}"
+FALLBACK_MODEL="${CHAIR_FALLBACK_MODEL:-us.anthropic.claude-opus-5}"
 CHAIR_TIMEOUT="${CHAIR_TIMEOUT:-900}"
+CHAIR_KILL_AFTER="${CHAIR_KILL_AFTER:-10s}"
 
 chair_label() { case "$1" in
-  *fable-5-1*) echo "Claude Fable 5.1" ;;
-  *fable-5*)   echo "Claude Fable 5" ;;
-  *opus-5*)    echo "Claude Opus 5" ;;
-  *)           echo "$1" ;;
+  *fable-5*)  echo "Claude Fable 5" ;;
+  *opus-5*)   echo "Claude Opus 5" ;;
+  *)          echo "$1" ;;
 esac ; }
 
 run_chair() {  # $1=model $2=err-file -> writes "$OUT". Continues via `|| true` even if claude fails.
@@ -290,16 +295,19 @@ run_chair() {  # $1=model $2=err-file -> writes "$OUT". Continues via `|| true` 
   local scrub_out=$!
   strip_controls < "$errfifo" | scrub_secrets > "$2" &
   local scrub_err=$!
-  ANTHROPIC_MODEL="$1" timeout "$CHAIR_TIMEOUT" \
+  ANTHROPIC_MODEL="$1" timeout --kill-after="$CHAIR_KILL_AFTER" "$CHAIR_TIMEOUT" \
     claude -p "$(cat "$WORK/synth-prompt.txt")" --output-format text \
     --strict-mcp-config --allowedTools "Read Grep Glob" \
     < "$WORK/synth-stdin.txt" \
     > "$outfifo" 2> "$errfifo" &
   CHAIR_JOB_PID=$!
-  wait "$CHAIR_JOB_PID" || true
+  local chair_rc=0
+  wait "$CHAIR_JOB_PID" || chair_rc=$?
   CHAIR_JOB_PID=""
   wait "$scrub_out" "$scrub_err" || true   # deterministic — replaces the settle-loop heuristic
   rm -f "$outfifo" "$errfifo"
+  # A failed or timed-out CLI can leave complete-looking text. It is not a completed review.
+  [ "$chair_rc" -eq 0 ] || : > "$OUT"
 }
 
 scrubbed_err_excerpt() {
@@ -413,7 +421,7 @@ fi
 # banner is still left so the review body shows immediately WHY it FAILed.
 if [ -s "$WORK/degraded-lenses.txt" ]; then
   DEGRADED_LENSES="$(tr '\n' ',' < "$WORK/degraded-lenses.txt" | sed 's/,$//; s/,/, /g')"
-  { echo "🛑 **Lens coverage collapse**: lens(es) [$DEGRADED_LENSES] got no response from any model — nobody reviewed it."
+  { echo "🛑 **Lens coverage collapse**: required model responses are missing for lens(es) [$DEGRADED_LENSES] — cross-model review is incomplete."
     echo ""
     cat "$OUT"
   } > "$OUT.tmp" && mv "$OUT.tmp" "$OUT"
@@ -435,7 +443,7 @@ if [ -f "$WORK/coverage-severe.flag" ]; then
   # contradicts the lens-collapse banner already attached above. Disambiguate by which file was
   # actually raised, and pick the matching message.
   if [ -s "$WORK/degraded-lenses.txt" ]; then
-    SEVERE_REASON="lens(es) [$(tr '\n' ',' < "$WORK/degraded-lenses.txt" | sed 's/,$//; s/,/, /g')] got no response from any model, so cross-verification cannot happen"
+    SEVERE_REASON="lens(es) [$(tr '\n' ',' < "$WORK/degraded-lenses.txt" | sed 's/,$//; s/,/, /g')] has incomplete required model responses, so cross-verification is incomplete"
   else
     SEVERE_REASON="at most one vendor survived, so cross-verification across the lens x model matrix cannot happen"
   fi
