@@ -8,7 +8,7 @@ name: AI Code Review
 # target, so the deterministic L1 gate is not included.)
 #   - pull_request_target trusted default-ref checkout: application PR head code is data only
 #   - matrix fan-out: scripts/pr-review/run-panel.sh (2 models x 4 lenses = 8 cells) -> synthesize.sh
-#   - auth: GitHub OIDC -> sample-awsops-ci-review model API role, no baseline
+#   - auth: GitHub OIDC -> sample-awsops-ci-review, fresh before each model phase; no baseline
 #     permission on the runner pod itself (see the platform repo's DESIGN.md credentials model)
 #   - region: us-east-1 (Claude us. geo / codex gpt-5.6-sol bedrock-mantle In-Region) — chosen
 #     independently of the runner's own region (ap-northeast-2); the ci-review role's Bedrock
@@ -49,11 +49,10 @@ jobs:
       name: ${{ github.event_name == 'pull_request' && 'ci-review-recovery' || 'ci-review-auto' }}
     # Hang backstop: GitHub's default is 360 minutes (6h), so a hang in a section the
     # in-script timeouts don't cover (gh pr diff, npm fallback, panel wait, etc.) would pin
-    # the runner pod for 6 hours. Normal ceiling (after adding CHAIR_TIMEOUT 900s + fast-fail
-    # retry): Claude cells have two 600s attempts + hard-kill grace, then the chair worst case
-    # (fast-fail 120s + retry 900s) x2 ~= 34min -> normal ceiling remains below 60min.
-    # 60 minutes only cuts a hang, never a normal run.
-    timeout-minutes: 60
+    # the runner pod for 6 hours. The longest panel cell is 2*(1200+10)=40m20s.
+    # Chair primary/fallback total at most 2*(120+900+10)=34m20s, leaving 15m20s
+    # for setup, publication, and cleanup. Mint a one-hour AWS session before each model phase.
+    timeout-minutes: 90
     concurrency:
       group: pr-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -92,14 +91,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/pr-review/review_context.py >> "$GITHUB_OUTPUT"
-
-      # No baseline AWS permission on the runner pod; model API credentials require protected subjects.
-      - name: Configure AWS credentials (OIDC -> ci-review)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          mask-aws-account-id: true
-          role-to-assume: ${{ secrets.AWS_CI_REVIEW_ROLE_ARN }}
-          aws-region: us-east-1
 
       # persist-credentials:false means later steps' `git fetch` has no credentials — fine
       # on a public repo (unauthenticated fetch just works), but this repo is private, so
@@ -425,15 +416,28 @@ jobs:
             echo "panel_truncated=1" >> "$GITHUB_ENV"
           fi
 
-      - name: Run panel + synthesize (lens×model matrix -> Claude chair)
+      # Git/CLI/prompt preparation needs no AWS session. Issue credentials only now so
+      # even slow setup cannot consume the panel's one-hour credential lifetime.
+      - name: Configure fresh AWS credentials before panel review
+        id: panel_credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          mask-aws-account-id: true
+          role-to-assume: ${{ secrets.AWS_CI_REVIEW_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 3600
+          unset-current-credentials: true
+          use-existing-credentials: false
+
+      - name: Run panel (lens×model matrix)
+        id: panel_review
         env:
-          PR_NUMBER: ${{ steps.review_context.outputs.number }}
-          PR_TITLE: ${{ fromJSON(steps.review_context.outputs.title_json) }}
           BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
           PANEL_TIMEOUT: "300"
-          # Observed: the Claude L2 review exceeded 300s twice. Keep full coverage and
-          # the same model, with a separate bounded budget and hard-kill grace.
+          # L2 repeatedly hit both 600s attempts on large diffs. Keep the same model,
+          # prompts, retries, and required coverage; extend only this cell's budget.
           CLAUDE_PANEL_TIMEOUT: "600"
+          CLAUDE_PANEL_L2_TIMEOUT: "1200"
         run: |
           set -euo pipefail
           SCRIPT_ROOT="$GITHUB_WORKSPACE/scripts/pr-review"
@@ -442,9 +446,34 @@ jobs:
           trap 'git -C "$GITHUB_WORKSPACE" worktree remove "$REVIEW_BASE" 2>/dev/null || true' EXIT
           cd "$REVIEW_BASE"
           bash "$SCRIPT_ROOT/run-panel.sh" /tmp/pr-diff-truncated.txt /tmp/pr-review/lenses /tmp/pr-review
+          echo "panel_responded=$(tr '\n' ' ' < /tmp/pr-review/responded.txt 2>/dev/null)" >> "$GITHUB_ENV"
+
+      - name: Renew AWS credentials before chair synthesis
+        id: chair_credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          mask-aws-account-id: true
+          role-to-assume: ${{ secrets.AWS_CI_REVIEW_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 3600
+          unset-current-credentials: true
+          use-existing-credentials: false
+
+      - name: Synthesize panel reviews (Claude chair)
+        id: chair_review
+        env:
+          PR_NUMBER: ${{ steps.review_context.outputs.number }}
+          PR_TITLE: ${{ fromJSON(steps.review_context.outputs.title_json) }}
+          BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          SCRIPT_ROOT="$GITHUB_WORKSPACE/scripts/pr-review"
+          REVIEW_BASE=$(mktemp -d "$RUNNER_TEMP/pr-review-chair-base.XXXXXX")
+          git worktree add --detach "$REVIEW_BASE" "$BASE_SHA"
+          trap 'git -C "$GITHUB_WORKSPACE" worktree remove "$REVIEW_BASE" 2>/dev/null || true' EXIT
+          cd "$REVIEW_BASE"
           bash "$SCRIPT_ROOT/synthesize.sh" /tmp/pr-diff-truncated.txt /tmp/pr-review \
             "$PR_NUMBER" "$PR_TITLE" /tmp/review.md
-          echo "panel_responded=$(tr '\n' ' ' < /tmp/pr-review/responded.txt 2>/dev/null)" >> "$GITHUB_ENV"
 
       - name: Check for blocking issues
         id: gate

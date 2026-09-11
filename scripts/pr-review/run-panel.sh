@@ -10,6 +10,7 @@ SLOT="$WORK/slot"; RESP="$WORK/responded.txt"; : > "$RESP"
 rm -f "$WORK/coverage-severe.flag"
 T="${PANEL_TIMEOUT:-300}"
 CLAUDE_TIMEOUT="${CLAUDE_PANEL_TIMEOUT:-600}"
+CLAUDE_L2_TIMEOUT="${CLAUDE_PANEL_L2_TIMEOUT:-$CLAUDE_TIMEOUT}"
 KILL_AFTER="${PANEL_KILL_AFTER:-10s}"
 RETRIES="${PANEL_RETRIES:-2}"
 CLAUDE_MODEL="${CLAUDE_PANEL_MODEL:-${ANTHROPIC_MODEL:-us.anthropic.claude-opus-5}}"
@@ -54,9 +55,11 @@ for lens_file in "${LENS_FILES[@]}"; do
   else echo "[skip] codex/$lens (binary absent)" >&2; : > "$SLOT/codex-$lens.md"; fi
 
   if command -v claude >/dev/null 2>&1; then
+    lens_timeout="$CLAUDE_TIMEOUT"
+    [ "$lens" != "L2" ] || lens_timeout="$CLAUDE_L2_TIMEOUT"
     ( try_panel "$SLOT/claude-$lens.md" "$SLOT/claude-$lens.err" \
         env ANTHROPIC_MODEL="$CLAUDE_MODEL" \
-        timeout --kill-after="$KILL_AFTER" "$CLAUDE_TIMEOUT" claude -p "$LENS_PROMPT" --output-format text \
+        timeout --kill-after="$KILL_AFTER" "$lens_timeout" claude -p "$LENS_PROMPT" --output-format text \
         --strict-mcp-config --tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" \
         --setting-sources "" ) &
   else echo "[skip] claude/$lens (binary absent)" >&2; : > "$SLOT/claude-$lens.md"; fi
