@@ -434,6 +434,25 @@ describe('generateQuery', () => {
     },
   );
 
+  it.each(['SCHEMA_REQUIRED', '{ span.http.status_code = 500 }', '{ status = error }'])(
+    'prioritizes incomplete discovery when name truncation is also set: %s',
+    async draft => {
+      const send = vi.fn().mockResolvedValue(draft);
+      let message = '';
+      try {
+        await generateQuery({
+          nl: 'HTTP 500', lang: 'TraceQL', schemaBlock: '', tempoAttributes: [],
+          tempoSchemaIncomplete: true, tempoSchemaNamesTruncated: true,
+          isSql: false, send,
+        });
+      } catch (error) { message = (error as Error).message; }
+      expect(message).toMatch(/Tempo schema discovery was incomplete.*Refresh.*connection or proxy/i);
+      expect(message).toContain('스키마 수집이 불완전합니다');
+      expect(message).not.toMatch(/200|64 kB|Observed attributes remain available/);
+      expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('does not promise that refreshing a populated schema will recover an unobserved attribute', async () => {
     const send = vi.fn().mockResolvedValue('SCHEMA_REQUIRED');
     await expect(generateQuery({

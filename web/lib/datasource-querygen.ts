@@ -325,11 +325,11 @@ function traceqlSchemaProblem(tree: ReturnType<typeof traceqlParser.parse>, quer
 }
 
 function tempoSchemaError(input: GenerateQueryInput): Error {
-  if (input.tempoSchemaNamesTruncated) {
-    return new Error('Tempo schema name discovery was limited or incomplete. Discovery retains up to 200 custom names and 64 kB (64,000 bytes) from the last hour; an unobserved name does not prove absence. Refreshing can hit the same limits. Verify the attribute in Grafana Explore or the Tempo API with an explicit time range, then use a manually reviewed query. Observed attributes remain available for AI generation. (속성명 수집이 제한되었거나 불완전합니다. 최근 1시간에서 최대 200개·64 kB(64,000바이트)를 수집하므로 미관측은 속성 부재의 증거가 아닙니다. 새로고침해도 같은 제한에 걸릴 수 있습니다. Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 확인하고 검토한 쿼리를 직접 사용하세요. 관측된 속성은 계속 AI 생성에 사용할 수 있습니다.)');
-  }
   if (input.tempoSchemaIncomplete) {
     return new Error('Tempo schema discovery was incomplete; an empty result does not confirm an idle window. Refresh the datasource schema and check the Tempo connection or proxy response if this persists. (스키마 수집이 불완전합니다. 스키마를 새로고침하고 문제가 계속되면 Tempo 연결 또는 프록시 응답을 확인하세요.)');
+  }
+  if (input.tempoSchemaNamesTruncated) {
+    return new Error('Tempo schema name discovery was limited or incomplete. Discovery retains up to 200 custom names and 64 kB (64,000 bytes) from the last hour; an unobserved name does not prove absence. Refreshing can hit the same limits. Verify the attribute in Grafana Explore or the Tempo API with an explicit time range, then use a manually reviewed query. Observed attributes remain available for AI generation. (속성명 수집이 제한되었거나 불완전합니다. 최근 1시간에서 최대 200개·64 kB(64,000바이트)를 수집하므로 미관측은 속성 부재의 증거가 아닙니다. 새로고침해도 같은 제한에 걸릴 수 있습니다. Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 확인하고 검토한 쿼리를 직접 사용하세요. 관측된 속성은 계속 AI 생성에 사용할 수 있습니다.)');
   }
   if (input.tempoSchemaEmpty) {
     return new Error('The cached Tempo schema has no usable attributes in its observation window. Run a manual TraceQL query for historical data in Grafana Explore or the Tempo search API with an explicit time range. AWSops supports intrinsic-only filters such as duration for recent traces; refresh after new traces arrive. (관측 구간에 속성이 없습니다. 과거 데이터는 Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 조회하세요. AWSops의 최근 조회는 내장 필터를 사용하거나 새 트레이스 유입 후 스키마를 갱신하세요.)');

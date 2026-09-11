@@ -131,6 +131,45 @@ describe('Tempo structured observations', () => {
     await POST(req({ id: 43, nl: 'errors' }));
     expect(lastGen()).toMatchObject({ tempoSchemaEmpty: false, tempoSchemaIncomplete: true });
   });
+
+  it.each([
+    { name: 'malformed', id: 76, schema: { attributes: [null, { wrong: 'shape' }] } },
+    { name: 'empty limited', id: 77, schema: {
+      tags: [], attributes: [], names_truncated: true, truncated: true,
+    } },
+  ])('returns incomplete-discovery guidance for a $name cache with both flags set', async ({ id, schema }) => {
+    const realQuerygen = await vi.importActual<typeof import('@/lib/datasource-querygen')>(
+      '@/lib/datasource-querygen',
+    );
+    const realSchema = await vi.importActual<typeof import('@/lib/datasource-schema')>(
+      '@/lib/datasource-schema',
+    );
+    const send = vi.fn().mockResolvedValue('SCHEMA_REQUIRED');
+    generateQuery.mockImplementation((input: Parameters<typeof realQuerygen.generateQuery>[0]) =>
+      realQuerygen.generateQuery({ ...input, send }));
+    renderSchemaForPrompt.mockImplementation(realSchema.renderSchemaForPrompt);
+    getDatasource.mockResolvedValue({ id, kind: 'tempo' });
+    listConfiguredSchemas.mockResolvedValue([{
+      integrationId: id, kind: 'tempo', schema, fetched_at: new Date().toISOString(),
+    }]);
+    resolveConnConfig.mockResolvedValue({ endpoint: 'https://tempo.example', authType: 'none' });
+    invokeMcpLambdaTool.mockResolvedValue({ tags: [], attributes: [], truncated: false });
+
+    const { POST } = await import('./route');
+    const response = await POST(req({ id, nl: 'HTTP 500' }));
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body).toEqual({
+      error: expect.stringMatching(/Tempo schema discovery was incomplete.*Refresh.*connection or proxy/i),
+    });
+    expect(body.error).toContain('스키마 수집이 불완전합니다');
+    expect(body.error).not.toMatch(/200|64 kB|Observed attributes remain available/);
+    expect(lastGen()).toMatchObject({
+      schemaBlock: '', tempoSchemaEmpty: false, tempoSchemaIncomplete: true,
+      tempoSchemaNamesTruncated: true, tempoAttributes: [],
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('SQL generation (the ClickHouse fix)', () => {
