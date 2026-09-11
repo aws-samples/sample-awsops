@@ -186,15 +186,15 @@ function literalAt(node: TraceqlNode, query: string): { type: string; value: unk
   return null;
 }
 
-/** High-confidence single HTTP-status requests (including the built-in example chip).
- * General natural-language equivalence is still a user-review task. */
+/** Only complete affirmative request templates (including the built-in example chip).
+ * Extra context, negation, ranges, and general language are left to model/user review: trying to
+ * infer their meaning with a negative-word list can turn an exclusion into an inclusion. */
 function requestedHttpStatus(nl: string): number | null {
-  if (/\b(not|except|exclude|without|above|below|greater|less|over|under|or|between|minimum|maximum)\b|\bat\s+(least|most)\b|제외|아닌|이외|이상|이하|미만|초과|빼고|또는|혹은/i.test(nl)) return null;
-  const codes = new Set(nl.match(/\b[1-5]\d{2}\b/g) ?? []);
-  if (codes.size > 1) return null;
-  const match = /\bHTTP(?:\s+(?:status(?:\s+code)?|response(?:\s+code)?))?\s*[:=]?\s*([1-5]\d{2})\b/i.exec(nl);
+  const match = /^HTTP(?:\s+(?:status(?:\s+code)?|response(?:\s+(?:status(?:\s+code)?|code))?))?\s*[:=]?\s*([1-5]\d{2})(?:\s+(?:responses?|spans?|traces?|errors?|응답(?:\s+스팬)?|스팬|트레이스))?[.!?]?$/i.exec(nl.trim());
   return match ? Number(match[1]) : null;
 }
+
+const HTTP_STATUS_KEYS = new Set(['http.status_code', 'http.response.status_code']);
 
 function requiresHttpStatus(node: TraceqlNode, query: string, status: number): boolean {
   const parts = children(node);
@@ -209,7 +209,7 @@ function requiresHttpStatus(node: TraceqlNode, query: string, status: number): b
     const name = attributeAt(left, query);
     const identity = name ? tempoAttributeIdentity(name) : null;
     const value = literalAt(right, query);
-    if (identity && ['http.status_code', 'http.response.status_code'].includes(identity.key)
+    if (identity && HTTP_STATUS_KEYS.has(identity.key)
         && value && (value.type === 'int' || value.type === 'float' || value.type === 'string')
         && String(value.value) === String(status)) return true;
   }
@@ -271,6 +271,7 @@ function traceqlSchemaProblem(tree: ReturnType<typeof traceqlParser.parse>, quer
     };
   };
   let problem: string | null = null;
+  let hasUnclassifiedAttributes = false;
   // Resolve all names before literal validation, so a repairable type mismatch cannot hide
   // the fact that discovery did not establish another requested attribute.
   if (attributes) tree.iterate({ enter(node) {
@@ -280,6 +281,10 @@ function traceqlSchemaProblem(tree: ReturnType<typeof traceqlParser.parse>, quer
       if (!observedFor(name)) {
         problem = 'TraceQL schema mismatch: a custom attribute was not observed';
         return false;
+      }
+      const identity = tempoAttributeIdentity(name)!;
+      if (!HTTP_STATUS_KEYS.has(identity.key) && identity.key !== 'service.name') {
+        hasUnclassifiedAttributes = true;
       }
     }
   } });
@@ -305,7 +310,15 @@ function traceqlSchemaProblem(tree: ReturnType<typeof traceqlParser.parse>, quer
   } });
   if (problem) return problem;
   const status = requestedHttpStatus(input.nl);
-  if (status !== null && !spansetRequiresHttpStatus(tree.topNode, query, status)) {
+  const hasStandardHttpEvidence = attributes?.some(attribute => {
+    const identity = tempoAttributeIdentity(attribute.name);
+    return identity && HTTP_STATUS_KEYS.has(identity.key);
+  });
+  // This narrow backstop only interprets standard HTTP/service keys. If the draft references any
+  // other observed key, even alongside standard keys, its meaning remains model/user review.
+  // Syntax/name/type validation above still applies to every custom field.
+  if (status !== null && hasStandardHttpEvidence && !hasUnclassifiedAttributes
+      && !spansetRequiresHttpStatus(tree.topNode, query, status)) {
     return 'TraceQL HTTP-status filter is missing or broadened';
   }
   return null;
@@ -313,7 +326,7 @@ function traceqlSchemaProblem(tree: ReturnType<typeof traceqlParser.parse>, quer
 
 function tempoSchemaError(input: GenerateQueryInput): Error {
   if (input.tempoSchemaNamesTruncated) {
-    return new Error('Tempo schema name discovery was limited or incomplete. Discovery retains up to 200 custom names and 64 KiB from the last hour; an unobserved name does not prove absence. Refreshing can hit the same limits. Verify the attribute in Grafana Explore or the Tempo API with an explicit time range, then use a manually reviewed query. Observed attributes remain available for AI generation. (속성명 수집이 제한되었거나 불완전합니다. 최근 1시간에서 최대 200개·64 KiB를 수집하므로 미관측은 속성 부재의 증거가 아닙니다. 새로고침해도 같은 제한에 걸릴 수 있습니다. Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 확인하고 검토한 쿼리를 직접 사용하세요. 관측된 속성은 계속 AI 생성에 사용할 수 있습니다.)');
+    return new Error('Tempo schema name discovery was limited or incomplete. Discovery retains up to 200 custom names and 64 kB (64,000 bytes) from the last hour; an unobserved name does not prove absence. Refreshing can hit the same limits. Verify the attribute in Grafana Explore or the Tempo API with an explicit time range, then use a manually reviewed query. Observed attributes remain available for AI generation. (속성명 수집이 제한되었거나 불완전합니다. 최근 1시간에서 최대 200개·64 kB(64,000바이트)를 수집하므로 미관측은 속성 부재의 증거가 아닙니다. 새로고침해도 같은 제한에 걸릴 수 있습니다. Grafana Explore 또는 시간 범위를 지정한 Tempo API에서 확인하고 검토한 쿼리를 직접 사용하세요. 관측된 속성은 계속 AI 생성에 사용할 수 있습니다.)');
   }
   if (input.tempoSchemaIncomplete) {
     return new Error('Tempo schema discovery was incomplete; an empty result does not confirm an idle window. Refresh the datasource schema and check the Tempo connection or proxy response if this persists. (스키마 수집이 불완전합니다. 스키마를 새로고침하고 문제가 계속되면 Tempo 연결 또는 프록시 응답을 확인하세요.)');
@@ -354,7 +367,8 @@ export async function generateQuery(input: GenerateQueryInput): Promise<string> 
         if (cursor.type.isError && errorAt === null) errorAt = cursor.from;
         if (cursor.name === 'AttributeField') hasAttributes = true;
       } while (cursor.next());
-      if (hasAttributes && (!input.schemaBlock.trim() || input.tempoSchemaEmpty || input.tempoSchemaIncomplete)) {
+      if ((hasAttributes || requestedHttpStatus(input.nl) !== null)
+          && (!input.schemaBlock.trim() || input.tempoSchemaEmpty || input.tempoSchemaIncomplete)) {
         throw tempoSchemaError(input);
       }
       const problem = errorAt !== null
