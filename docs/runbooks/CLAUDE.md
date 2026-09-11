@@ -21,7 +21,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
-| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC bring-up (single repo) — role/trust matrix, per-stack TF secrets, ECR pin perms |
+| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC bring-up and protected review recovery — role/trust matrix, environment approval/auth failures, exact-SHA recovery, per-stack TF secrets, ECR pin perms |
 | [agent-sql-reader.md](agent-sql-reader.md) | `execute_sql`/`inventory-read` Data API auth failures — `awsops_sql_reader` role/password sync (`apply → make migrate → make agentcore`) |
 
 ## Conventions

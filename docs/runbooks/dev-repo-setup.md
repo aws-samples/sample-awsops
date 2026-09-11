@@ -1,7 +1,8 @@
 # CI/OIDC bring-up (single repo) / CI·OIDC 활성화 (단일 리포)
 
 Related files / 관련 파일: `.github/workflows/{deploy-web,deploy-preview,terraform,deploy-agentcore}.yml`,
-`docs/runbooks/branch-strategy.md`
+`docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
+`scripts/v2/ci_review_access.py`
 
 > Historical note: this file previously described the two-repo split
 > (`Atom-oh/sample-awsops-dev`). The project consolidated into the single public
@@ -17,10 +18,11 @@ Related files / 관련 파일: `.github/workflows/{deploy-web,deploy-preview,ter
 - it fails at *Restore terraform.foundation backend* with
   `this branch's TF backend secrets are not set`, or
 - a preview dispatch fails the same way for `TF_*_PREVIEW_<USER>`, or
-- the deploy job's *Pin web-latest* step fails with an ECR `AccessDenied`.
+- the deploy job's *Pin web-latest* step fails with an ECR `AccessDenied`, or
+- AI review waits for a protected-environment approval or fails `AssumeRoleWithWebIdentity`.
 
 (dev push 런이 자격증명/시크릿/ECR pin 단계에서 실패하는 경우 — 아래 1회성 작업이
-아직 안 된 것입니다.)
+아직 안 된 것입니다. AI 리뷰가 보호 환경 승인 대기 또는 역할 인증 실패로 멈추는 경우도 포함합니다.)
 
 ## Cause / 원인
 
@@ -102,7 +104,10 @@ permissions; do not infer privileges from the policy's name.
 1. Read the current role trust/permission policies and GitHub OIDC configuration. Keep the
    originals private for comparison and rollback. Use the API's `sub_claim_prefix` when
    immutable subjects are enabled — the prefix contains owner/repository IDs. Do not turn
-   off immutable subjects or replace the IDs with a broad wildcard.
+   off immutable subjects or replace the IDs with a broad wildcard. The planner requires
+   explicit boolean `use_immutable_subject` and string `sub_claim_prefix` fields from the
+   API readback. If they are absent, stop and verify the format from GitHub OIDC settings
+   or an observed token subject; do not infer a legacy subject from missing fields.
 2. Generate a local plan with `scripts/v2/ci_review_access.py`. It makes no API writes,
    preserves existing explicit denies, and refuses unrecognized trust relationships or
    additional restrictions instead of silently dropping them. Review the complete plan.
@@ -112,11 +117,16 @@ permissions; do not infer privileges from the policy's name.
 4. Read back the IAM policy and compare it with the plan. Verify there is no direct
    `pull_request` or wildcard-repository allow. Validate the policy with IAM Access Analyzer.
 
+(아래 명령은 한 셸에서 순서대로 실행합니다. 계획의 OIDC 형식 필드가 누락되면 추측하지
+않고 중단하며, 권한 문서와 전체 계획을 확인한 뒤 다음 적용 단계로 진행합니다.)
+
 ```bash
+set -euo pipefail
+umask 077
 # These files are private operator artifacts, not committed credentials/config dumps.
 CI_ACCESS_DIR=$(mktemp -d)
 chmod 700 "$CI_ACCESS_DIR"
-aws --profile samples iam get-role --role-name sample-awsops-ci-review --query Role.AssumeRolePolicyDocument > "$CI_ACCESS_DIR/trust.json"
+aws --profile samples iam get-role --role-name sample-awsops-ci-review --query Role.AssumeRolePolicyDocument --output json > "$CI_ACCESS_DIR/trust.json"
 aws --profile samples iam list-role-policies --role-name sample-awsops-ci-review
 aws --profile samples iam list-attached-role-policies --role-name sample-awsops-ci-review
 # Inspect every returned permission document (get-role-policy/get-policy-version).
@@ -124,6 +134,87 @@ gh api repos/aws-samples/sample-awsops/actions/oidc/customization/sub > "$CI_ACC
 read -r -p "Designated GitHub reviewer numeric ID: " CI_REVIEWER_ID
 read -r -p "Recovery PR number: " REVIEW_PR
 python3 scripts/v2/ci_review_access.py --trust-file "$CI_ACCESS_DIR/trust.json" --repository aws-samples/sample-awsops --oidc-config-file "$CI_ACCESS_DIR/oidc.json" --reviewer-id "$CI_REVIEWER_ID" --recovery-pr "$REVIEW_PR" --output "$CI_ACCESS_DIR/plan.json"
+```
+
+**Apply and read back the reviewed plan. Never update IAM trust before both environments
+exist with the exact protections.** This procedure replaces stale branch-policy entries;
+repeat it with a newly generated plan for each later recovery PR. It makes no permission-
+policy changes. Coordinate with other operators before running it.
+
+**검토한 계획을 적용하고 재확인합니다. 두 환경의 정확한 보호 설정을 검증하기 전에는
+IAM 신뢰를 변경하지 않습니다.** 이전 복구 PR의 브랜치 규칙은 교체되므로, 다음 장애 때도
+새 PR 번호로 계획을 다시 생성·검토하고 이 절차를 반복합니다. 권한 정책은 변경하지 않습니다.
+
+```bash
+python3 - "$CI_ACCESS_DIR" <<'PYAPPLY'
+import json, subprocess, sys, time
+from pathlib import Path
+root = Path(sys.argv[1])
+plan = json.loads((root / "plan.json").read_text())
+original = json.loads((root / "trust.json").read_text())
+repo, role = "aws-samples/sample-awsops", "sample-awsops-ci-review"
+def call(command, body=None):
+    result = subprocess.run(command, input=json.dumps(body) if body is not None else None,
+                            text=True, capture_output=True, check=True)
+    return json.loads(result.stdout) if result.stdout.strip() else None
+def gh(path, method=None, body=None):
+    args = ["gh", "api", path]
+    if method: args += ["--method", method]
+    if body is not None: args += ["--input", "-"]
+    return call(args, body)
+def aws(*args):
+    return call(["aws", "--profile", "samples", *args, "--output", "json"])
+def trust_now():
+    return aws("iam", "get-role", "--role-name", role)["Role"]["AssumeRolePolicyDocument"]
+assert trust_now() == original, "Trust changed after planning; regenerate and review"
+assert gh(f"repos/{repo}/actions/oidc/customization/sub") == json.loads((root / "oidc.json").read_text())
+assert set(plan["environments"]) == {"ci-review-auto", "ci-review-recovery"}
+for name, spec in plan["environments"].items():
+    path = f"repos/{repo}/environments/{name}"
+    gh(path, "PUT", spec["settings"])
+    desired = {(item["name"], item["type"]) for item in spec["branch_policies"]}
+    current = gh(path + "/deployment-branch-policies")["branch_policies"]
+    for old in current:
+        if (old["name"], old["type"]) not in desired:
+            gh(path + f"/deployment-branch-policies/{old['id']}", "DELETE")
+    existing = {(item["name"], item["type"]) for item in current}
+    for item in spec["branch_policies"]:
+        if (item["name"], item["type"]) not in existing:
+            gh(path + "/deployment-branch-policies", "POST", item)
+    env = gh(path)
+    branches = gh(path + "/deployment-branch-policies")["branch_policies"]
+    assert env.get("can_admins_bypass") is False
+    assert env["deployment_branch_policy"] == spec["settings"]["deployment_branch_policy"]
+    assert {(item["name"], item["type"]) for item in branches} == desired
+    rules = [r for r in env["protection_rules"] if r["type"] == "required_reviewers"]
+    expected = spec["settings"].get("reviewers", [])
+    if expected:
+        assert len(rules) == 1 and rules[0]["prevent_self_review"] is False
+        assert {(r["type"], r["reviewer"]["id"]) for r in rules[0]["reviewers"]} == {(r["type"], r["id"]) for r in expected}
+    else:
+        assert not rules
+    (root / f"{name}-readback.json").write_text(json.dumps(env, indent=2))
+# Only after all external GitHub protections were read back successfully:
+assert trust_now() == original, "Concurrent trust change; do not overwrite it"
+policy_file = root / "desired-trust.json"
+policy_file.write_text(json.dumps(plan["trust_policy"], indent=2))
+validation = aws("accessanalyzer", "validate-policy", "--region", "us-east-1",
+                 "--policy-document", f"file://{policy_file}", "--policy-type", "RESOURCE_POLICY",
+                 "--validate-policy-resource-type", "AWS::IAM::AssumeRolePolicyDocument")
+assert not any(f["findingType"] in ("ERROR", "SECURITY_WARNING") for f in validation["findings"]), validation
+# Review other warnings; environment subjects rely on the verified GitHub branch rules.
+(root / "policy-validation.json").write_text(json.dumps(validation, indent=2))
+aws("iam", "update-assume-role-policy", "--role-name", role,
+    "--policy-document", f"file://{policy_file}")
+for attempt in range(5):
+    after = trust_now()
+    if after == plan["trust_policy"]: break
+    time.sleep(2)
+else:
+    raise RuntimeError("Readback differs; investigate before running CI")
+(root / "trust-readback.json").write_text(json.dumps(after, indent=2))
+print("Environment protections and exact IAM trust verified; originals retained locally.")
+PYAPPLY
 ```
 
 After the controls are verified, independently review the exact recovery commit before
@@ -152,6 +243,23 @@ gh pr edit "$REVIEW_PR" -R aws-samples/sample-awsops --add-label "ci-review:$REV
 The prefix plus SHA reaches GitHub's 50-character label limit. A new commit needs a new
 matching label and environment approval. After merging the repair, update dependent PRs
 against `dev`; normal reviews run through `ci-review-auto` without manual approval.
+
+
+After merging or abandoning a recovery PR, remove its SHA label from that PR. For another
+incident, regenerate the access plan for the new PR and replace the recovery branch rule;
+do not accumulate allowed PR refs. Retain the environment/reviewer gate and exact IAM
+subjects. Remove a repository label only after confirming no other PR uses it.
+
+복구 PR을 머지하거나 중단한 뒤 해당 SHA 라벨을 제거합니다. 다음 장애는 새 PR 번호로
+계획을 다시 생성하고 이전 실행 ref를 교체합니다. 허용 PR ref를 누적하거나 보호 환경을
+해제하지 않습니다. 저장소 라벨 삭제 전에는 다른 PR에서 사용하지 않는지 확인합니다.
+
+```bash
+gh pr edit "$REVIEW_PR" -R aws-samples/sample-awsops --remove-label "ci-review:$REVIEW_HEAD"
+gh pr list -R aws-samples/sample-awsops --state all --label "ci-review:$REVIEW_HEAD"
+# Only when unused:
+# gh label delete "ci-review:$REVIEW_HEAD" -R aws-samples/sample-awsops --yes
+```
 
 Automatic CI code is selected from immutable `github.sha`, while the panel reads source
 context from a separate target-base worktree. Since **2025-12-08**, `pull_request_target`

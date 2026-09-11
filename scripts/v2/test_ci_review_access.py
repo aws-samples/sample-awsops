@@ -69,13 +69,17 @@ class ReviewAccessPlanTests(unittest.TestCase):
         self.assertEqual(replay, plan)
 
     def test_legacy_subject_format_is_preserved_when_repository_uses_it(self):
-        result, plan = self.plan(oidc={"use_default": True})
+        result, plan = self.plan(oidc={"use_default": True, "use_immutable_subject": False,
+                                     "sub_claim_prefix": "repo:example/repo"})
         self.assertEqual(result.returncode, 0, result.stderr)
         subjects = plan["trust_policy"]["Statement"][0]["Condition"]["StringEquals"]["token.actions.githubusercontent.com:sub"]
         self.assertIn("repo:example/repo:environment:ci-review-recovery", subjects)
 
     def test_unknown_custom_or_foreign_subject_prefix_is_rejected(self):
-        for oidc in ({"use_default": False}, {**OIDC, "sub_claim_prefix": "repo:other@10/repo@20"},
+        for oidc in ({"use_default": False}, {"use_default": True},
+                     {"use_default": True, "sub_claim_prefix": "repo:example/repo"},
+                     {**OIDC, "use_immutable_subject": "true"},
+                     {**OIDC, "sub_claim_prefix": "repo:other@10/repo@20"},
                      {**OIDC, "sub_claim_prefix": "repo:example*/repo*"}):
             with self.subTest(oidc=oidc):
                 result, plan = self.plan(oidc=oidc)

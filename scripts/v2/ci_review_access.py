@@ -16,9 +16,11 @@ def build_plan(trust, repository, reviewer_id, recovery_pr, oidc):
         raise ValueError("reviewer and recovery PR must be explicit positive IDs")
     if oidc.get("use_default") is not True:
         raise ValueError("custom OIDC claims require separate review")
+    if type(oidc.get("use_immutable_subject")) is not bool or not isinstance(oidc.get("sub_claim_prefix"), str):
+        raise ValueError("explicit verified immutable-subject mode and subject prefix are required")
     owner, name = map(re.escape, repository.split("/"))
-    immutable = oidc.get("use_immutable_subject", False)
-    prefix = oidc.get("sub_claim_prefix", f"repo:{repository}" if not immutable else "")
+    immutable = oidc["use_immutable_subject"]
+    prefix = oidc["sub_claim_prefix"]
     pattern = rf"repo:{owner}@[0-9]+/{name}@[0-9]+" if immutable else rf"repo:{owner}/{name}"
     if not isinstance(prefix, str) or not re.fullmatch(pattern, prefix):
         raise ValueError("subject prefix must match this repository's verified OIDC format")
