@@ -72,4 +72,19 @@ describe('/api/integrations/schema', () => {
     const { schemas } = await resp.json();
     expect(schemas[0]).toEqual({ integrationId: 5, kind: 'prometheus', fetched_at: 't', summary: { metrics: 1 } });
   });
+
+  it('GET exposes Tempo observation counts and limits without attribute/sample values', async () => {
+    listConfiguredSchemas.mockResolvedValue([{
+      integrationId: 9, kind: 'tempo', fetched_at: 't',
+      schema: { tags: ['private.attribute'], attributes: [{ name: 'span.private.attribute', types: ['string'] }],
+        names_truncated: false, types_truncated: true, truncated: true },
+    }]);
+    const { GET } = await import('./route');
+    const response = await GET(req(undefined, 'GET'));
+    const body = await response.json();
+    expect(body.schemas[0].summary).toEqual({
+      tags: 1, attributes: 1, names_truncated: false, types_truncated: true, truncated: true,
+    });
+    expect(JSON.stringify(body)).not.toContain('private.attribute');
+  });
 });

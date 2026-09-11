@@ -408,11 +408,11 @@ TARGETS = {
         "lambda_key": "tempo-mcp",
         "description": "Tempo read-only — TraceQL search, get trace, tags, tag values (4 tools)",
         "tools": [
-            {"name": "tempo_schema", "description": "Introspect tag names (cached)", "inputSchema": {"type": "object", "properties": {}}},
+            {"name": "tempo_schema", "description": "Discover bounded custom TraceQL attributes from the last hour, raw compatibility tags, optional version/type evidence, and separate name/type truncation flags. Builtins are excluded; v1 fallback has unknown scope and types.", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "tempo_search", "description": "Search traces by TraceQL over a time window", "inputSchema": {"type": "object", "properties": {"query": _p("string", "TraceQL"), "start": _p("string", "1h/30m or unix sec (default now-1h)"), "end": _p("string", "unix sec (default now)"), "limit": _p("string", "Max traces")}, "required": ["query"]}},
             {"name": "tempo_get_trace", "description": "Fetch a full trace by hex trace ID", "inputSchema": {"type": "object", "properties": {"trace_id": _p("string", "Hex trace ID")}, "required": ["trace_id"]}},
             {"name": "tempo_search_tags", "description": "List searchable tag names", "inputSchema": {"type": "object", "properties": {}}},
-            {"name": "tempo_tag_values", "description": "List values of a tag", "inputSchema": {"type": "object", "properties": {"tag": _p("string", "Tag name")}, "required": ["tag"]}},
+            {"name": "tempo_tag_values", "description": "List values of a custom attribute or raw tag. Qualified/dot-prefixed identifiers use v2 typed values, with v1 raw-key fallback on HTTP 404/405/501 (scope/type evidence is lost); raw tag names use v1.", "inputSchema": {"type": "object", "properties": {"tag": _p("string", 'Raw tag key or TraceQL custom identifier, e.g. span.http.status_code, resource.service.name, .custom, span."key with spaces"')}, "required": ["tag"]}},
         ],
     },
     # Mimir datasource (v1 family #5 final) — read-only PromQL (Prometheus-compatible, multi-tenant). monitoring.
