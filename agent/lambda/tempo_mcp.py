@@ -208,8 +208,12 @@ def _schema_observed_types(creds, attributes, window):
         if identifier not in attributes:
             continue
         try:
+            # Do not request maxStaleValues here: it can stop before another type
+            # appears while still returning fewer than MAX_SCHEMA_VALUES values.
+            # The omitted threshold defaults to zero (disabled) in Tempo; the
+            # value limit and short HTTP deadline still bound this observation.
             data = _get(creds, f"/api/v2/search/tag/{quote(identifier, safe='')}/values",
-                        {**window, "limit": MAX_SCHEMA_VALUES, "maxStaleValues": _SCHEMA_STALE_VALUES},
+                        {**window, "limit": MAX_SCHEMA_VALUES},
                         timeout=_SCHEMA_TIMEOUT_S)
         except (_ApiError, OSError):
             continue  # optional type evidence; the names remain useful on older/unavailable endpoints

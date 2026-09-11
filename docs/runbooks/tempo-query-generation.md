@@ -13,6 +13,10 @@ Explore generates a query with an invalid attribute scope or literal type, or ke
 - 스키마 수집은 최근 **1시간**의 제한된 관측이다. 현재 AWSops의 Tempo Explore는 시간 범위를 선택할 수 없으며 검색도 최근 1시간을 사용한다. 오래된 트레이스에만 있는 속성이 최근 캐시에 없을 수 있다. / Schema discovery samples the last **hour**. AWSops's Tempo Explore currently has no time-range control and searches the last hour. Attributes present only in older traces may be absent from this cache.
 - 타입 표본은 수집된 속성 중 `span.http.status_code`, `span.http.response.status_code`, `resource.service.name`, `span.service.name`만 대상으로 한다. 각 최대 32개 값에서 타입만 보존하며, 값 자체는 반환하거나 캐시하지 않는다. 표본 제한 또는 미수집은 타입을 확정할 근거가 아니다. / Type sampling covers only these four discovered attributes, retaining types from at most 32 values each. Values are neither returned nor cached; limited or missing samples cannot establish a definitive type.
 
+타입 조회는 `maxStaleValues` 조기 종료를 사용하지 않습니다. 반복된 문자열 값 뒤에 나오는 숫자 타입을 놓치지 않도록 하며, 32개 값 제한과 짧은 HTTP 제한 시간은 유지합니다.
+
+Type discovery does not request `maxStaleValues` early termination, so repeated string values do not prevent discovery of a later numeric type. The 32-value cap and short HTTP deadline remain.
+
 ## 확인 / Verification
 
 선택한 Tempo 인스턴스와 스키마 갱신 시각을 확인한다. 최근 트레이스가 없는 경우, Grafana Explore에서 같은 Tempo 데이터소스와 과거 범위를 선택해 실제 속성명·타입을 확인하거나, Tempo 검색 API에 `start`·`end`(Unix 초)를 명시한다. `{ duration > 500ms }`는 속성 스키마 없이 사용할 수 있지만 HTTP 500 필터와 같은 의미는 아니다.

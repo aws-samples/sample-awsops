@@ -138,6 +138,8 @@ class TestSchemaIntrospection(_Base):
                 response = values[identifier]
             else:
                 self.fail(f"unexpected request: {url}")
+            if callable(response):
+                response = response(_qs(url))
             if isinstance(response, Exception):
                 raise response
             return response
@@ -214,8 +216,28 @@ class TestSchemaIntrospection(_Base):
             self.assertEqual(headers["Authorization"], "Bearer tok")
             self.assertGreater(int(params["limit"][0]), 0)
             self.assertLessEqual(int(params["limit"][0]), 32 if path.endswith("/values") else 201)
-            self.assertGreater(int(params["maxStaleValues"][0]), 0)
-            self.assertLessEqual(int(params["maxStaleValues"][0]), 200)
+            if path.endswith("/values"):
+                self.assertNotIn("maxStaleValues", params)
+            else:
+                self.assertGreater(int(params["maxStaleValues"][0]), 0)
+                self.assertLessEqual(int(params["maxStaleValues"][0]), 200)
+
+    def test_type_discovery_does_not_early_stop_before_a_later_numeric_type(self):
+        def values(params):
+            observed = [{"type": "string", "value": "500"}]
+            # A stale-value threshold can stop on repeated string values before
+            # the numeric representation is reached, even below the 32-value cap.
+            if not int(params.get("maxStaleValues", ["0"])[0]):
+                observed.append({"type": "int", "value": "500"})
+            return 200, {"tagValues": observed}
+        out, body, _ = self.schema(
+            (200, {"scopes": [{"name": "span", "tags": ["http.status_code"]}]}),
+            values={"span.http.status_code": values},
+        )
+        self.assertEqual(out["statusCode"], 200)
+        self.assertEqual(body["attributes"], [{
+            "name": "span.http.status_code", "types": ["int", "string"], "types_truncated": False,
+        }])
 
     def test_no_type_inference_from_numeric_strings_or_unknown_types(self):
         out, body, _ = self.schema(
