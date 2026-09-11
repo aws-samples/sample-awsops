@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { Activity, Boxes, Globe, Loader2, Radar } from 'lucide-react';
 import PageHeader from '@/components/ui/PageHeader';
 import Card from '@/components/ui/Card';
@@ -224,6 +225,12 @@ export default function NetworkFlowPage() {
       <PageHeader
         title="Network Flow"
         subtitle="CloudWatch Network Flow Monitor(NFM) 기반 플로우 조회 — 모니터·메트릭·카테고리·기간별 top-contributors 탐색"
+        right={
+          <Link href={`/topology?view=e2e&monitor=${encodeURIComponent(monitor)}&metric=${metric}&category=${category}&range=${range}`}
+            className="rounded-md bg-brand-action px-3 py-2 text-[12px] font-medium text-white hover:bg-brand-action-hover">
+            {tt('서비스 그래프로 보기')}
+          </Link>
+        }
       />
       <div className="px-4 lg:px-8 py-8 flex flex-col gap-6">
         {statusErr && (

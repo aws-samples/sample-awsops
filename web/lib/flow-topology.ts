@@ -49,7 +49,7 @@ export interface FlowInput {
   // 'integrations/<id>') label the apigw→backend edge.
   alb_listener_rule?: Row[];
   apigatewayv2_route?: Row[];
-  // ip-target resolution (Spec 2): pod/ENI IP → friendly label + meta. EKS comes live from the
+  // ip-target resolution (Spec 2): region|VPC|IP → friendly label + meta (legacy raw IP also accepted). EKS comes live from the
   // page (ipResolved); ECS is derived here from synced ecsTask rows. Builder stays pure.
   ipResolved?: Record<string, { label: string; resolved: 'eks' | 'ecs'; meta?: Record<string, unknown> }>;
 }
@@ -57,6 +57,7 @@ export interface FlowInput {
 /** ECS task ENI private IP → service/task. attachments[].Details[Name=privateIPv4Address].Value (PascalCase). */
 function ecsIpMap(tasks: Row[]): Map<string, { label: string; resolved: 'ecs'; meta: Record<string, unknown> }> {
   const map = new Map<string, { label: string; resolved: 'ecs'; meta: Record<string, unknown> }>();
+  const ambiguous = new Set<string>();
   for (const t of tasks) {
     const group = str(t.task_group);
     const svc = group.startsWith('service:') ? group.slice(8) : group;
@@ -64,13 +65,28 @@ function ecsIpMap(tasks: Row[]): Map<string, { label: string; resolved: 'ecs'; m
     for (const att of arr(t.attachments)) {
       for (const d of arr(att.Details)) {
         if (str(d.Name) === 'privateIPv4Address' && d.Value) {
-          map.set(str(d.Value), { label: svc || taskId, resolved: 'ecs', meta: { ecsService: svc, task: taskId, cluster: str(t.cluster_arn).split('/').pop() } });
+          const ip = str(d.Value);
+          if (ambiguous.has(ip)) continue;
+          const cluster = str(t.cluster_arn).split('/').pop();
+          const previous = map.get(ip);
+          if (previous && (previous.meta.task !== taskId || previous.meta.cluster !== cluster
+            || previous.meta.region !== str(t.region))) {
+            map.delete(ip);
+            ambiguous.add(ip);
+            continue;
+          }
+          map.set(ip, { label: svc || taskId, resolved: 'ecs', meta: {
+            ecsService: svc, task: taskId, cluster, region: str(t.region), vpcId: str(t.vpc_id),
+          } });
         }
       }
     }
   }
   return map;
 }
+
+/** Qualify private addresses before resolving them across multiple VPCs. */
+export const scopedTargetIp = (region: string, vpcId: string, ip: string): string => `${region}|${vpcId}|${ip}`;
 
 /** CloudFront `aliases` jsonb → string[] (PascalCase {Items:[...]} or a plain array). */
 function aliasesOf(c: Row): string[] {
@@ -458,7 +474,12 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
       if (ttype === 'instance') { resolved = ec2ById.has(targetId) ? 'ec2' : ''; key = 'ec2'; mlabel = ec2ById.get(targetId) || targetId; groupLabel = 'EC2 instances'; }
       else if (ttype === 'lambda') { resolved = lambdaByArn.has(targetId) ? 'lambda' : ''; key = `lambda:${targetId}`; mlabel = lambdaByArn.get(targetId) || targetId; groupLabel = mlabel; }
       else if (ttype === 'ip') {
-        const r = input.ipResolved?.[targetId] ?? ecsByIp.get(targetId); // EKS (live) then ECS (synced)
+        const pod = input.ipResolved?.[scopedTargetIp(str(t.region), str(t.vpc_id), targetId)] ?? input.ipResolved?.[targetId];
+        const inScope = (candidate: typeof pod) => candidate
+          && !(candidate.meta?.region && t.region && candidate.meta.region !== t.region)
+          && !(candidate.meta?.vpcId && t.vpc_id && candidate.meta.vpcId !== t.vpc_id);
+        const task = ecsByIp.get(targetId);
+        const r = inScope(pod) ? pod : inScope(task) ? task : undefined;
         // group key includes cluster so same-named workloads in different clusters don't merge
         if (r) { resolved = r.resolved; key = `${r.resolved}:${str(r.meta?.cluster ?? '')}/${r.label}`; mlabel = r.label; groupLabel = r.label; meta = r.meta ?? {}; }
       }

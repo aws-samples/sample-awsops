@@ -9,14 +9,16 @@ import PageHeader from '@/components/ui/PageHeader';
 import RefreshButton from '@/components/ui/RefreshButton';
 import DetailPanel from '@/components/ui/DetailPanel';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
-import { buildFlowGraph, filterFromEntry, type FlowInput, type FlowKind, type FlowNode } from '@/lib/flow-topology';
+import { buildFlowGraph, filterFromEntry, scopedTargetIp, type FlowInput, type FlowKind, type FlowNode } from '@/lib/flow-topology';
 import { layoutFlow } from '@/lib/flow-layout';
 import { useTheme } from '@/lib/use-theme';
-import { useActiveAccount } from '@/lib/account-context';
+import { scopeParams, useActiveScope } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
 // ReactFlow touches the DOM on mount — load it client-only to avoid SSR mismatch.
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
+const ServiceNetworkTopology = dynamic(() => import('@/components/topology/ServiceNetworkTopology'), { ssr: false });
+const EMPTY_FLOW = { nodes: [], edges: [] };
 
 const TYPES = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2', 'lambda', 'ecs_task', 's3',
   'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin', 'apigatewayv2_route', 'alb_listener_rule'] as const;
@@ -124,34 +126,50 @@ function nodeLabel(n: FlowNode): ReactNode {
 
 const ROW_CAP = 500; // /api/inventory caps limit at 500
 
-async function fetchType(t: InvType, account: string): Promise<{ rows: Row[]; finishedAt: string | null; capped: boolean }> {
-  // account scope: 'self' | 12-digit | '__all__' — the inventory read route's `accounts` param.
-  const r = await fetch(`/api/inventory/${t}?limit=${ROW_CAP}&accounts=${encodeURIComponent(account)}`);
-  if (!r.ok) return { rows: [], finishedAt: null, capped: false };
-  const d = await r.json();
-  const rows = (d.rows ?? []) as { resource_id: unknown; region: unknown; data?: object }[];
-  return {
-    rows: rows.map((x) => ({ resource_id: x.resource_id, region: x.region, ...(x.data ?? {}) })),
-    finishedAt: d.run?.finished_at ?? null,
-    capped: rows.length >= ROW_CAP, // hit the cap → more rows exist, surfaced below (no silent truncation)
-  };
+async function fetchType(t: InvType, scopeQuery: string): Promise<{ rows: Row[]; finishedAt: string | null; capped: boolean; failed: boolean }> {
+  try {
+    const r = await fetch(`/api/inventory/${t}?limit=${ROW_CAP}&${scopeQuery}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    if (!Array.isArray(d.rows)) throw new Error('Invalid inventory response');
+    const rows = d.rows as { resource_id: unknown; region: unknown; data?: object }[];
+    return {
+      rows: rows.map((x) => ({ resource_id: x.resource_id, region: x.region, ...(x.data ?? {}) })),
+      finishedAt: d.run?.finished_at ?? null,
+      capped: rows.length >= ROW_CAP,
+      failed: false,
+    };
+  } catch {
+    return { rows: [], finishedAt: null, capped: false, failed: true };
+  }
 }
 
 // Resolve ALB/NLB ip targets to EKS workloads: for each connected cluster, map pod IP →
 // "namespace/workload" (Deployment). Best-effort — failures per cluster are skipped.
 async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved']>> {
   const map: NonNullable<FlowInput['ipResolved']> = {};
+  const ambiguous = new Set<string>();
   try {
     const list = await fetch('/api/eks').then((r) => (r.ok ? r.json() : null));
     // NOTE: /api/eks returns { clusters: [...] } (matches the EKS page + fleet). Reading `rows` here
     // silently yielded [] → EKS pod resolution never ran (every EKS ip-target showed as a raw IP).
-    const clusters: string[] = (list?.clusters ?? [])
-      .filter((c: { access?: string }) => c.access === 'connected')
-      .map((c: { name?: string }) => c.name)
-      .filter(Boolean);
-    await Promise.all(clusters.map(async (name) => {
+    const clusters = (list?.clusters ?? []) as { name: string; access?: string; region?: string; vpcId?: string }[];
+    await Promise.all(clusters.filter((c) => c.access === 'connected' && c.name && c.region && c.vpcId).map(async (cluster) => {
       try {
-        const get = (kind: string) => fetch(`/api/eks/${name}/incluster?kind=${kind}`).then((x) => (x.ok ? x.json() : null));
+        const name = cluster.name;
+        const key = (ip: string) => scopedTargetIp(cluster.region!, cluster.vpcId!, ip);
+        const put = (ip: string, value: NonNullable<FlowInput['ipResolved']>[string]) => {
+          const id = key(ip);
+          if (ambiguous.has(id)) return;
+          const previous = map[id];
+          if (previous && (previous.label !== value.label || previous.meta?.cluster !== value.meta?.cluster)) {
+            delete map[id];
+            ambiguous.add(id);
+            return;
+          }
+          map[id] = value;
+        };
+        const get = (kind: string) => fetch(`/api/eks/${encodeURIComponent(name)}/incluster?kind=${kind}`).then((x) => (x.ok ? x.json() : null));
         const [eps, pods] = await Promise.all([get('endpoints'), get('pods')]);
         // pod IP → owning workload (fallback when an IP isn't fronted by a Service)
         const podByIp = new Map<string, { podIP?: string; namespace?: string; name?: string; workload?: string }>();
@@ -163,19 +181,19 @@ async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved']>> {
         for (const e of (eps?.rows ?? []) as { name?: string; namespace?: string; ips?: string[] }[]) {
           for (const ip of e.ips ?? []) {
             const pod = podByIp.get(ip);
-            map[ip] = {
+            put(ip, {
               label: `${e.namespace ?? ''}/${e.name ?? ''}`,
               resolved: 'eks',
-              meta: { cluster: name, namespace: e.namespace, service: e.name, pod: pod?.name, workload: pod?.workload },
-            };
+              meta: { cluster: name, namespace: e.namespace, service: e.name, pod: pod?.name, workload: pod?.workload, region: cluster.region, vpcId: cluster.vpcId },
+            });
           }
         }
         for (const [ip, p] of podByIp) {
-          if (!map[ip]) map[ip] = {
+          if (!map[key(ip)] && !ambiguous.has(key(ip))) put(ip, {
             label: `${p.namespace ?? ''}/${p.workload || p.name || ''}`,
             resolved: 'eks',
-            meta: { cluster: name, namespace: p.namespace, workload: p.workload, pod: p.name },
-          };
+            meta: { cluster: name, namespace: p.namespace, workload: p.workload, pod: p.name, region: cluster.region, vpcId: cluster.vpcId },
+          });
         }
       } catch { /* skip this cluster */ }
     }));
@@ -222,13 +240,19 @@ function networkNames(row: Record<string, unknown>, nm: NetMaps): Record<string,
 
 export default function TopologyPage() {
   const { tt } = useI18n();
-  const [activeAccount] = useActiveAccount();
+  const [activeScope] = useActiveScope();
+  const activeAccount = activeScope.accounts === '__all__' ? '__all__' : activeScope.accounts.join(',');
+  const inventoryScope = scopeParams(activeScope);
+  const [view, setView] = useState<'flow' | 'e2e'>('flow');
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
+  const loadGeneration = useRef(0);
   const [data, setData] = useState<FlowInput | null>(null);
   const [syncedAt, setSyncedAt] = useState<string | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
   const [cappedTypes, setCappedTypes] = useState<string[]>([]);
+  const [failedTypes, setFailedTypes] = useState<string[]>([]);
   const [entryId, setEntryId] = useState<string>('');
   const [clusterFilter, setClusterFilter] = useState<string>('');
   const [selected, setSelected] = useState<FlowNode | null>(null);
@@ -236,16 +260,18 @@ export default function TopologyPage() {
   const [netMaps, setNetMaps] = useState<NetMaps>(emptyNetMaps);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     setBusy(true);
+    setErr('');
     try {
-      const account = activeAccount || 'self';
       const NET = ['vpc', 'subnet', 'security_group'] as const;
       const [res, ipResolved, net] = await Promise.all([
-        Promise.all(TYPES.map((t) => fetchType(t, account))),
-        fetchEksIpMap(),
+        Promise.all(TYPES.map((t) => fetchType(t, inventoryScope))),
+        activeAccount === 'self' ? fetchEksIpMap() : Promise.resolve({}),
         // VPC/subnet/SG inventory → id→name maps for the detail panel (lookup only, not graph nodes)
-        Promise.all(NET.map((t) => fetch(`/api/inventory/${t}?limit=500&accounts=${encodeURIComponent(account)}`).then((r) => (r.ok ? r.json() : { rows: [] })).catch(() => ({ rows: [] })))),
+        Promise.all(NET.map((t) => fetch(`/api/inventory/${t}?limit=500&${inventoryScope}`).then((r) => (r.ok ? r.json() : { rows: [] })).catch(() => ({ rows: [] })))),
       ]);
+      if (generation !== loadGeneration.current) return;
       const mk = (rows: { resource_id?: unknown; data?: Record<string, unknown> }[]) =>
         new Map((rows ?? []).map((r) => [String(r.resource_id), invName(r)]));
       setNetMaps({ vpc: mk(net[0]?.rows), subnet: mk(net[1]?.rows), sg: mk(net[2]?.rows) });
@@ -259,18 +285,39 @@ export default function TopologyPage() {
         if (res[i].capped) capped.push(t);
       });
       setData(out);
+      setLoadedScope(inventoryScope);
       setSyncedAt(newest);
       setCappedTypes(capped);
+      setFailedTypes(TYPES.filter((_, i) => res[i].failed));
       setErr('');
       setCapturedAt(new Date().toISOString());
     } catch (e) {
-      setErr(String(e));
+      if (generation === loadGeneration.current) setErr(String(e));
     } finally {
-      setBusy(false);
+      if (generation === loadGeneration.current) setBusy(false);
     }
-  }, [activeAccount]);
+  }, [activeAccount, inventoryScope]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    return () => { loadGeneration.current += 1; };
+  }, [load]);
+  useEffect(() => {
+    const read = () => {
+      setView(new URLSearchParams(window.location.search).get('view') === 'e2e' ? 'e2e' : 'flow');
+      setSelected(null);
+    };
+    read();
+    window.addEventListener('popstate', read);
+    return () => window.removeEventListener('popstate', read);
+  }, []);
+  const chooseView = (next: 'flow' | 'e2e') => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('view', next);
+    window.history.pushState(null, '', url);
+    setSelected(null);
+    setView(next);
+  };
 
   // Deep-link from the service map (/topology/services): ?cluster=<resolved:name> seeds the cluster
   // filter so a trace workload click lands on this cluster's request path. Reads directly from
@@ -320,6 +367,7 @@ export default function TopologyPage() {
   }, [full]);
 
   const { nodes, edges } = useMemo(() => {
+    if (view === 'e2e' || loadedScope !== inventoryScope) return { nodes: [], edges: [] };
     let gFull = filterFromEntry(full, entryId || null);
 
     // Cluster filter: keep target nodes belonging to the selected cluster + every upstream
@@ -392,16 +440,17 @@ export default function TopologyPage() {
       style: e.confidence === 'inferred' ? { strokeDasharray: '4 4' } : {},
     }));
     return { nodes, edges };
-  }, [full, entryId, clusterFilter, dark, selected]);
+  }, [full, entryId, clusterFilter, dark, selected, view, loadedScope, inventoryScope]);
 
   // Re-center imperatively (NOT by remounting — a remount destroys the user's pan/zoom and makes
   // dragging feel broken). Keep one mounted instance; refit when the entry filter or focus changes.
   // rAF defers the fit until after the detail panel has docked and the layout has settled.
   const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   useEffect(() => {
+    if (view !== 'flow') return;
     const id = requestAnimationFrame(() => rfRef.current?.fitView({ padding: 0.2, duration: 300, maxZoom: 1.2 }));
     return () => cancelAnimationFrame(id);
-  }, [entryId, clusterFilter, selected?.id]);
+  }, [entryId, clusterFilter, selected?.id, view]);
 
   // Detail for the clicked node: resource nodes show their full inventory row (every field —
   // vpc, subnet, tags …); target/origin nodes synthesize a small detail from their meta.
@@ -500,6 +549,17 @@ export default function TopologyPage() {
     </div>
   ) : undefined;
 
+  if (view === 'e2e') {
+    const current = loadedScope === inventoryScope;
+    return (
+      <ServiceNetworkTopology key={inventoryScope} configured={current ? full : EMPTY_FLOW} account={activeAccount}
+        configuration={{
+          loading: busy || !current, capturedAt: current ? syncedAt : null, error: err,
+          cappedTypes: current ? cappedTypes : [], failedTypes: current ? failedTypes : [],
+        }}
+        onBack={() => chooseView('flow')} onRefresh={load} />
+    );
+  }
   return (
     <div className="flex h-full flex-col">
       <PageHeader
@@ -507,6 +567,10 @@ export default function TopologyPage() {
         subtitle="요청 흐름 그래프 (Route53 → CloudFront → LB → Target Group → 타깃)"
         right={
           <div className="flex flex-wrap items-center justify-end gap-2">
+            <button type="button" onClick={() => chooseView('e2e')}
+              className="rounded-md bg-brand-action px-3 py-1.5 text-[12px] font-medium text-white hover:bg-brand-action-hover">
+              {tt('서비스 + 네트워크')}
+            </button>
             <div className="relative">
               <div className="flex items-center gap-1 rounded-md border border-ink-200 bg-card px-2 py-1">
                 <Search size={13} className="text-ink-400" />
@@ -564,8 +628,8 @@ export default function TopologyPage() {
       />
       <div className="flex-1 min-h-0 flex flex-col gap-4 px-8 py-6">
         {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
-        {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
-        {data && !err && (
+        {(!data || loadedScope !== inventoryScope) && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
+        {data && loadedScope === inventoryScope && !err && (
           full.nodes.length === 0 ? (
             <div className="rounded-md border border-ink-100 bg-ink-50 px-3 py-3 text-[13px] text-ink-400">
               {tt('그래프로 그릴 리소스가 없습니다. (cloudfront/alb/nlb/target_group sync 확인 — target_group은 steampipe 동기화 후 채워집니다.)')}
@@ -578,6 +642,7 @@ export default function TopologyPage() {
                 {cappedTypes.length > 0 && (
                   <span className="text-warning">{tt(`⚠ ${cappedTypes.join(', ')} ${ROW_CAP}개 초과 — 일부만 표시`)}</span>
                 )}
+                {failedTypes.length > 0 && <span className="text-warning">{tt('조회 실패:')} {failedTypes.join(', ')}</span>}
               </div>
               <div className="flex-1 min-h-0 w-full rounded-lg border border-ink-100 bg-card">
                 <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.2 }} colorMode={dark ? 'dark' : 'light'} proOptions={{ hideAttribution: true }}

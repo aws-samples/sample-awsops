@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { layoutFlow } from './flow-layout';
+
+it('keeps nodes separated when callers reuse one immutable node-size object', () => {
+  const size = { width: 232, height: 76 };
+  const positions = layoutFlow({
+    nodes: [{ id: 'a' }, { id: 'b' }],
+    edges: [{ source: 'a', target: 'b' }],
+  }, { nodeSize: () => size });
+  expect(positions[1].x).toBeGreaterThan(positions[0].x + size.width);
+  expect(size).toEqual({ width: 232, height: 76 });
+});
 import type { FlowGraph } from './flow-topology';
 
 const graph: FlowGraph = {

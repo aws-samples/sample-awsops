@@ -1,6 +1,43 @@
 import { describe, it, expect } from 'vitest';
 import { buildFlowGraph, filterFromEntry, TARGET_CAP } from './flow-topology';
 
+describe('scoped endpoint resolution for network correlation', () => {
+  const tg = {
+    resource_id: 'tg-scope', target_type: 'ip', region: 'us-east-1', vpc_id: 'vpc-a',
+    target_health_descriptions: [{ Target: { Id: '10.0.1.10', Port: 80 }, TargetHealth: { State: 'healthy' } }],
+  };
+  it('uses region/VPC-qualified pod IPs so identical private addresses do not cross clusters', () => {
+    const graph = buildFlowGraph({
+      tg: [tg], ipResolved: {
+        'us-east-1|vpc-a|10.0.1.10': { label: 'shop/frontend', resolved: 'eks', meta: { cluster: 'alpha' } },
+        'us-east-1|vpc-b|10.0.1.10': { label: 'other/frontend', resolved: 'eks', meta: { cluster: 'beta' } },
+      },
+    });
+    expect(graph.nodes.find((n) => n.kind === 'target')).toMatchObject({ label: 'shop/frontend', meta: { cluster: 'alpha' } });
+  });
+
+  it('does not use an explicitly conflicting legacy IP resolution', () => {
+    const graph = buildFlowGraph({
+      tg: [tg], ipResolved: {
+        '10.0.1.10': { label: 'wrong', resolved: 'eks', meta: { region: 'us-east-1', vpcId: 'vpc-b' } },
+      },
+    });
+    expect(graph.nodes.find((n) => n.kind === 'target')?.meta?.resolved).toBeUndefined();
+  });
+
+  it('leaves an ECS IP ambiguous when different tasks share it across network scopes', () => {
+    const graph = buildFlowGraph({
+      tg: [tg], ecsTask: [
+        { resource_id: 'task-a', cluster_arn: 'cluster/alpha', task_group: 'service:a', region: 'us-east-1',
+          attachments: [{ Details: [{ Name: 'privateIPv4Address', Value: '10.0.1.10' }] }] },
+        { resource_id: 'task-b', cluster_arn: 'cluster/beta', task_group: 'service:b', region: 'us-east-1',
+          attachments: [{ Details: [{ Name: 'privateIPv4Address', Value: '10.0.1.10' }] }] },
+      ],
+    });
+    expect(graph.nodes.find((n) => n.kind === 'target')?.meta?.resolved).toBeUndefined();
+  });
+});
+
 // Fixtures in REAL Steampipe shape: flattened { resource_id, region, ...data } where nested
 // jsonb columns keep AWS SDK PascalCase keys. alb/nlb resource_id = name; tg resource_id = arn.
 const ALB_ARN = 'arn:aws:elasticloadbalancing:ap-northeast-2:1:loadbalancer/app/web/abc';
