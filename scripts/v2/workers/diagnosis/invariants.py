@@ -1,14 +1,20 @@
 """Deterministic intended-vs-actual evaluator. PURE — no LLM, no AWS. The LLM never calls this;
-it only runs admin-promoted invariants against the Plan-1 'actual' collector output. A verdict
-(passed True/False/None + observed string + severity) is the ONLY thing handed to the report LLM.
+it evaluates admin-promoted invariants against an expected normalized evidence contract. A verdict
+(passed True/False/None + observed string + severity) feeds the deterministic report section.
 
-`actual` shape (assembled in report.generate from the Plan-1 collectors):
+Expected normalized `actual` shape (used by unit fixtures and direct callers):
   {"service_map": {"edges": [{"from","to","calls","error_rate"}, ...]},
    "inventory": {"by_type": {...}, "unencrypted": {type: count}},
    "_sources": {collector_key: {ok, degraded, notes, ...}}}
 
-Only complete, usable evidence can pass. Observed violations can fail even with partial coverage.
-Unresolved X-Ray `to_ref` edges and inventory samples without encryption aggregates are unknown.
+Only complete, usable evidence can pass. Normalized observed violations can fail with partial coverage.
+
+Live integration limit: report.generate forwards collect_service_map's X-Ray `to_ref` edges
+without resolving `to`, and collect_inventory emits no `unencrypted` aggregate. Therefore the
+current production collectors cannot support any of the six verdict kinds below: they remain
+unknown, including empty service maps. Valid-zero/violation unit cases establish the normalized
+evaluator contract, not working live collector coverage. Empty drift/improvement lists in this
+state mean unassessed evidence, not a healthy configuration. Producer integration is pending.
 
 Fixed predicate `kind` enum (§4.2-KB / §8R3). Adding a kind = one branch + tests. An unknown
 kind or a malformed invariant yields passed=None (never crashes a report)."""
