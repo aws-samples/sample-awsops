@@ -36,8 +36,42 @@ DO NOTHING`. Concurrent branches kept **preempting the same integer** (manual re
   INTEGER→TEXT + adds the `checksum` + `app_version` columns + a `baseline` marker. Run during a coordinated quiet
   window (concurrent sessions may still INSERT integer rows). Legacy integer rows (v1..vN) are preserved as applied;
   the baseline `schema.sql` stays as the one-time bootstrap of those tables.
+- `INITIALIZE_EMPTY_DB=1 make migrate` — fresh database only: refuse existing
+  user objects without a ledger; atomically initialize the baseline then run ULIDs.
+- `SQL_READER_SYNC_MODE=secret` requires `SQL_READER_SECRET_ARN`;
+  `disabled` is an explicit no-sync choice, and `terraform` reads the reader-secret
+  output. Exporting `AURORA_SECRET_ARN` requires an explicit mode; it cannot silently
+  disable synchronization. Ordinary `make migrate` defaults to Terraform mode.
+
+신규 DB 초기화와 기존 INTEGER ledger bootstrap은 별도 모드입니다. 환경변수로
+master secret을 지정하면 SQL-reader 모드도 명시해야 하며, `secret`은 ARN 필수,
+`disabled`는 의도적인 비활성화, `terraform`은 Terraform output 사용을 뜻합니다.
 
 ## Release versioning & upgrades
+### Fresh private CI initialization / 신규 CI 초기화
+
+The one-off migration task sets `INITIALIZE_EMPTY_DB=1`. Under the same advisory
+lock, `initialize-db.mjs` applies the frozen baseline only when no ledger and no
+user objects exist. Baseline DDL, TEXT ledger conversion, metadata columns and
+the baseline checksum commit atomically; all pending ULIDs then run normally.
+An occupied database without a ledger is rejected. An existing ledger skips
+baseline replay; legacy INTEGER ledgers still require the explicit `BOOTSTRAP=1`
+procedure above. TLS-verified credentials are read at runtime from Secrets Manager.
+Existing staged dev stacks migrate before the full foundation saved-plan apply.
+The service plan is guarded first and reused unchanged after migration. A
+post-apply run rechecks the ledger and synchronizes the current reader secret;
+reconciliation failure prevents a successful deployment status.
+Fresh core bootstrap has no existing app and keeps web desired count zero;
+existing stacks without a migration template fail an explicit prerequisite check.
+
+CI task의 `INITIALIZE_EMPTY_DB=1`은 ledger와 사용자 객체가 모두 없는 DB에서만
+baseline을 적용합니다. 동일 advisory lock 안에서 baseline·TEXT ledger·checksum을
+원자적으로 기록하고 ULID를 적용합니다. 기존 DB/ledger는 재초기화하지 않으며
+INTEGER ledger는 기존 명시적 BOOTSTRAP 절차를 따릅니다. 기존 stack은 migration
+후 전체 저장 plan을 적용하고, 신규 bootstrap만 web count 0으로 시작합니다.
+
+### Cumulative upgrades / 누적 업그레이드
+
 Migrations are **cumulative**, not version-pair scripts. The `schema_migrations` ledger records which
 migration IDs are applied; `make migrate` applies whatever the live DB is *missing*, in ULID (chronological)
 order — regardless of which release you started from. So you never author a "2.0.1 → 2.1.5" script:

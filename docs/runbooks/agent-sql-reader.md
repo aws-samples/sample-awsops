@@ -13,6 +13,15 @@ The agent's read-only SQL boundary is a **DB role**, not a lexical guard: migrat
 `sql_reader` schema's views). The RDS Data API needs a Secrets Manager secret (there is no
 IAM DB auth on that path), so this one role has a password — Terraform generates it and
 `syncSqlReaderPassword` in `scripts/v2/migrate.mjs` converges the DB role onto the secret.
+For env-backed runs, choose `SQL_READER_SYNC_MODE=secret` with
+`SQL_READER_SECRET_ARN`, or explicitly choose `disabled`/`terraform`. Missing mode
+with `AURORA_SECRET_ARN` is an error; a configured but absent role also fails.
+Staged CI runs migration before applying its guarded plan, then runs it again
+after service/edge apply so secret rotations are reconciled before readiness.
+
+환경변수 실행은 SQL-reader 모드를 명시합니다. master ARN만 지정해 동기화를
+조용히 생략하지 않습니다. staged CI는 plan 적용 전 migration과 적용 후 재동기화를
+수행하며, reader secret/role 오류가 있으면 배포 성공으로 처리하지 않습니다.
 
 ## 실행 순서 — `make migrate` 필수, 빠뜨리기 쉽다 / Enable order — `make migrate` is required, and easy to miss
 
@@ -33,7 +42,7 @@ the failure does not look like a missing migration:
 | 증상 / Symptom | 원인 / Cause |
 |---|---|
 | `execute_sql`·`inventory-read` 가 Data API **auth** 오류 / fail with a Data API **auth** error | 롤 부재 또는 비밀번호 ≠ 시크릿 / role absent, or its password ≠ the secret |
-| `migrate` 로그에 `sql-reader: role not present yet — skipping password sync` | 롤 생성 마이그레이션 전에 실행됨 / ran before the role-creating migration |
+| `sql-reader sync enabled but awsops_sql_reader is missing` | 롤 생성 마이그레이션 누락 또는 롤 삭제 / role migration missing or role removed |
 
 두 도구만 실패한다. 나머지 rds-mcp 도구(`describe_*`, `list_*`)는 reader 시크릿이 아니라 실행
 역할을 쓰므로 계속 동작한다 — 그 비대칭이 판별 단서다.
@@ -70,14 +79,12 @@ make migrate            # ALTER ROLE awsops_sql_reader WITH PASSWORD <secret>
 ### 롤 부재 → 마이그레이션 적용 여부에 따라 다르다 / Role absent → depends on whether the migration already applied
 
 `migrate.mjs` 는 **pending** 마이그레이션만 실행하고 적용된 것에는 checksum 불변성을 강제하므로,
-이미 기록된 마이그레이션의 롤은 재실행으로 **다시 만들어지지 않는다** — 동기화 단계가
-`role not present yet — skipping password sync` 를 다시 로그할 뿐이어서 실패가 아니라 no-op 처럼
-읽힌다.
+이미 기록된 마이그레이션의 롤은 재실행으로 **다시 만들어지지 않는다**. 동기화가 활성화된
+상태에서 롤이 없으면 명시적으로 실패하므로 아래 복구 절차를 수행한다.
 
 `migrate.mjs` runs only **pending** migrations and enforces checksum immutability on applied ones, so
-re-running it will NOT recreate a role whose migration is already recorded — the sync step just logs
-`role not present yet — skipping password sync` again, which reads like a no-op rather than the
-failure it is.
+re-running it will NOT recreate a role whose migration is already recorded.
+Enabled synchronization now fails explicitly for that missing role; use the recovery below.
 
 ```
 DRY_RUN=1 make migrate  # 01KYVY9J…_agent_sql_reader_role 이 LIVE DB 기준으로 아직 pending 인가?

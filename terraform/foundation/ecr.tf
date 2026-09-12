@@ -1,6 +1,6 @@
 resource "aws_ecr_repository" "web" {
   name                 = "${var.project}-web"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = var.ci_deployment_enabled ? "IMMUTABLE" : "MUTABLE"
   image_scanning_configuration {
     scan_on_push = true
   }

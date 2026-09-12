@@ -1,13 +1,13 @@
 output "cloudfront_domain" {
-  value = aws_cloudfront_distribution.main.domain_name
+  value = try(aws_cloudfront_distribution.main[0].domain_name, null)
 }
 
 output "distribution_id" {
-  value = aws_cloudfront_distribution.main.id
+  value = try(aws_cloudfront_distribution.main[0].id, null)
 }
 
 output "public_url" {
-  value = "https://${var.domain_name}"
+  value = !var.defer_edge_until_dns ? "https://${var.domain_name}" : null
 }
 
 output "alb_arn" {

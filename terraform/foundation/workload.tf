@@ -381,6 +381,7 @@ resource "aws_cloudwatch_metric_alarm" "revocation_write_failed" {
 
 resource "aws_ecs_task_definition" "web" {
   family                   = "${var.project}-web"
+  skip_destroy             = var.ci_deployment_enabled
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = "512"
@@ -396,7 +397,7 @@ resource "aws_ecs_task_definition" "web" {
   container_definitions = jsonencode([
     {
       name         = "web"
-      image        = "${aws_ecr_repository.web.repository_url}:${var.image_tag}"
+      image        = var.web_image_digest != "" ? "${aws_ecr_repository.web.repository_url}@${var.web_image_digest}" : "${aws_ecr_repository.web.repository_url}:${var.image_tag}"
       essential    = true
       portMappings = [{ containerPort = 3000, protocol = "tcp" }]
       # concat keeps this byte-identical when workers_enabled=false (concat(base, []) == base →
@@ -585,7 +586,7 @@ locals {
 
 check "cf_vpc_origin_sg_present" {
   assert {
-    condition     = local.cf_vpc_origin_sg_id != null
+    condition     = var.defer_edge_until_dns || local.cf_vpc_origin_sg_id != null
     error_message = "CloudFront-VPCOrigins-Service-SG is not in this VPC yet — the ALB SG has NO 443 ingress (bootstrap). Expected on a brand-new VPC before the first apply creates the VPC origin; run plan/apply once more afterwards to add the managed-SG rule, or the edge stays 504."
   }
 }
@@ -651,8 +652,9 @@ resource "aws_acm_certificate" "alb" {
 }
 
 resource "aws_acm_certificate_validation" "alb" {
+  count                   = !var.defer_edge_until_dns ? 1 : 0
   certificate_arn         = aws_acm_certificate.alb.arn
-  validation_record_fqdns = [for r in aws_route53_record.cf_validation : r.fqdn]
+  validation_record_fqdns = [for dvo in aws_acm_certificate.alb.domain_validation_options : dvo.resource_record_name]
 }
 
 resource "aws_lb" "internal" {
@@ -683,11 +685,12 @@ resource "aws_lb_target_group" "web" {
 }
 
 resource "aws_lb_listener" "https" {
+  count             = !var.defer_edge_until_dns ? 1 : 0
   load_balancer_arn = aws_lb.internal.arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate_validation.alb.certificate_arn
+  certificate_arn   = aws_acm_certificate_validation.alb[0].certificate_arn
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.web.arn
@@ -697,8 +700,8 @@ resource "aws_lb_listener" "https" {
 resource "aws_ecs_service" "web" {
   name            = "${var.project}-web"
   cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.web.arn
-  desired_count   = 1
+  task_definition = var.web_task_definition_arn != "" ? var.web_task_definition_arn : aws_ecs_task_definition.web.arn
+  desired_count   = var.web_desired_count
   launch_type     = "FARGATE"
 
   network_configuration {
@@ -707,10 +710,13 @@ resource "aws_ecs_service" "web" {
     assign_public_ip = false
   }
 
-  load_balancer {
-    target_group_arn = aws_lb_target_group.web.arn
-    container_name   = "web"
-    container_port   = 3000
+  dynamic "load_balancer" {
+    for_each = !var.defer_edge_until_dns ? [1] : []
+    content {
+      target_group_arn = aws_lb_target_group.web.arn
+      container_name   = "web"
+      container_port   = 3000
+    }
   }
 
   deployment_circuit_breaker {

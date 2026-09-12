@@ -39,3 +39,6 @@ jobs:
 
       - name: Run merge verification
         run: bash scripts/v2/merge-verify.sh
+
+      - name: Test deployment helpers without deployment credentials
+        run: node --test scripts/v2/ci/*.test.mjs

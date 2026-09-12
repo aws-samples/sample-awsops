@@ -11,8 +11,11 @@
 import { execSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import pg from 'pg';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { initializeEmptyDatabase } from './initialize-db.mjs';
+import { sqlReaderConfiguration } from './sql-reader-config.mjs';
 import {
   parseMigrationFile, computePending, sha256, findDuplicateIds, hasNoTxnFlag,
   parseSinceHeader, resolveAppVersion,
@@ -31,8 +34,7 @@ const PKG_JSON = (() => { try { return readFileSync(join(ROOT, 'web', 'package.j
 const APP_VERSION = resolveAppVersion(process.env.APP_VERSION, PKG_JSON);
 
 const tf = (out) => execSync(`terraform -chdir=${TF} output -raw ${out}`, { cwd: ROOT, encoding: 'utf8' }).trim();
-const tfOptional = (out) => { try { return tf(out); } catch { return ''; } };
-const die = (msg) => { console.error(`\n✗ ${msg}`); process.exit(1); };
+const die = (msg) => { throw new Error(msg); };
 
 // 1. Load migration files + fail-loud duplicate-id precheck (before connecting).
 if (!existsSync(MIG_DIR)) die(`migrations dir not found: ${MIG_DIR}`);
@@ -62,30 +64,37 @@ if (STATUS) {
 
 // No migration files (e.g. empty migrations/ today) → nothing to do; skip the DB connection entirely
 // so `make deploy` (which depends on migrate) stays cheap until the first ULID migration is authored.
-if (migrations.length === 0) { console.log('migrate: no migration files — nothing to do'); process.exit(0); }
+if (migrations.length === 0 && process.env.INITIALIZE_EMPTY_DB !== '1') { console.log('migrate: no migration files — nothing to do'); process.exit(0); }
 
 // 2. Creds (skip the network in pure dry-run with no DB).
-function loadCreds() {
-  const secretArn = tf('aurora_secret_arn');
-  const endpoint = tf('aurora_endpoint');
-  const secret = JSON.parse(execSync(
-    `aws secretsmanager get-secret-value --region ${REGION} --secret-id ${secretArn} --query SecretString --output text`,
-    { cwd: ROOT, encoding: 'utf8' },
-  ));
-  return { host: endpoint, user: secret.username, password: secret.password, database: 'awsops', port: 5432, ssl: { rejectUnauthorized: false } };
+const secrets = new SecretsManagerClient({ region: REGION });
+async function readSecret(arn) {
+  const result = await secrets.send(new GetSecretValueCommand({ SecretId: arn }));
+  return JSON.parse(result.SecretString);
+}
+async function loadCreds() {
+  const secretArn = process.env.AURORA_SECRET_ARN || tf('aurora_secret_arn');
+  const endpoint = process.env.AURORA_ENDPOINT || tf('aurora_endpoint');
+  const secret = await readSecret(secretArn);
+  return { host: endpoint, user: secret.username, password: secret.password,
+    database: process.env.AURORA_DATABASE || 'awsops', port: 5432,
+    ssl: { rejectUnauthorized: true, ca: readFileSync(join(ROOT, 'scripts/v2/eks/rds-ca-bundle.pem'), 'utf8') } };
 }
 
 // Sync the Terraform-generated password for the least-privilege `awsops_sql_reader` role (see the
 // `agent_sql_reader_role` migration) onto the DB role. The RDS Data API requires a Secrets Manager
 // secretArn (no IAM DB auth on that path), so this one role needs a password — Terraform owns it,
 // the secret is the source of truth, and this makes the DB converge to it on every `make migrate`
-// (including after a Terraform-side rotation). No-ops when agentcore is disabled (no such output/
-// secret) or before the migration that creates the role has been applied.
-async function syncSqlReaderPassword(client) {
-  const arn = tfOptional('agent_sql_reader_secret_arn');
-  if (!arn) return; // agentcore_enabled=false → no secret, nothing to sync
+// (including after a Terraform-side rotation). Only explicit disabled mode or an empty
+// Terraform reader-secret output skips synchronization; missing configuration/role is an error.
+async function syncSqlReaderPassword(client, configuration) {
+  if (configuration.mode === 'disabled') {
+    console.log(`sql-reader: sync intentionally disabled (${configuration.reason ?? 'explicit mode'})`);
+    return;
+  }
+  const arn = configuration.arn;
   const { rowCount } = await client.query(`SELECT 1 FROM pg_roles WHERE rolname='awsops_sql_reader'`);
-  if (!rowCount) { console.log('sql-reader: role not present yet — skipping password sync'); return; }
+  if (!rowCount) die('sql-reader sync enabled but awsops_sql_reader is missing; complete its migration before deployment');
   const { rows: [role] } = await client.query(
     `SELECT rolsuper, rolreplication, rolbypassrls FROM pg_roles WHERE rolname='awsops_sql_reader'`,
   );
@@ -95,18 +104,22 @@ async function syncSqlReaderPassword(client) {
       + `the Aurora master user is not a real superuser and cannot clear SUPERUSER/REPLICATION/BYPASSRLS. `
       + `See docs/runbooks/agent-sql-reader.md for the repair-migration procedure.`);
   }
-  const secret = JSON.parse(execSync(
-    `aws secretsmanager get-secret-value --region ${REGION} --secret-id ${arn} --query SecretString --output text`,
-    { cwd: ROOT, encoding: 'utf8' },
-  ));
+  const secret = await readSecret(arn);
   if (!secret.password) die('sql-reader secret has no password field');
   // ALTER ROLE ... PASSWORD takes no bind parameters — escape via pg's own literal escaper.
   await client.query(`ALTER ROLE awsops_sql_reader WITH PASSWORD ${client.escapeLiteral(secret.password)}`);
   console.log('sql-reader: password synced from Secrets Manager');
 }
 
-async function main() {
-  const client = new pg.Client({ ...loadCreds(), statement_timeout: 300_000, lock_timeout: 30_000 });
+// Export the real runner for the disposable-PostgreSQL integration test. The CLI
+// remains responsible for fetching Aurora credentials and enforcing TLS.
+export async function migrateDatabase(client) {
+  let reader = sqlReaderConfiguration(process.env);
+  if (reader.mode === 'terraform') {
+    // Missing Terraform/output is an error, not evidence that AgentCore is disabled.
+    const arn = tf('agent_sql_reader_secret_arn');
+    reader = arn ? { mode: 'secret', arn } : { mode: 'disabled', reason: 'empty Terraform reader-secret output' };
+  }
   // Surface server-side notices. A migration that decides something irreversibly (e.g. which duplicate
   // row to disable) can only leave an audit trail through RAISE NOTICE, and without a listener node-pg
   // drops those silently — the record existed only in the migration author's imagination (review).
@@ -116,6 +129,10 @@ async function main() {
   try {
     await client.query('SELECT pg_advisory_lock($1)', [LOCK_KEY]);
     locked = true;
+    if (process.env.INITIALIZE_EMPTY_DB === '1') {
+      if (DRY) throw new Error('INITIALIZE_EMPTY_DB cannot be combined with DRY_RUN');
+      await initializeEmptyDatabase(client, readFileSync(join(ROOT, 'terraform/foundation/data/schema.sql'), 'utf8'), APP_VERSION);
+    }
 
     // Column-type detect → bootstrap gate.
     const { rows: cols } = await client.query(
@@ -168,7 +185,7 @@ async function main() {
 
     if (pending.length === 0) {
       console.log('✅ up to date — no pending migrations');
-      if (!DRY) await syncSqlReaderPassword(client);
+      if (!DRY) await syncSqlReaderPassword(client, reader);
       return;
     }
     console.log(`pending (${pending.length}): ${pending.join(', ')}`);
@@ -195,7 +212,7 @@ async function main() {
         die(`migration ${m.file} failed (rolled back): ${e instanceof Error ? e.message : e}`);
       }
     }
-    if (!DRY) await syncSqlReaderPassword(client);
+    if (!DRY) await syncSqlReaderPassword(client, reader);
     console.log(DRY
       ? `\n■ preview only — ${pending.length} migration(s) pending, nothing applied`
       : `\n✅ applied ${pending.length} migration(s)`);
@@ -211,4 +228,8 @@ if (DRY && process.env.OFFLINE === '1') {
   for (const m of migrations) console.log(`\n--- ${m.file} ---\n${m.sql}`);
   process.exit(0);
 }
-main().catch((e) => die(e instanceof Error ? e.message : String(e)));
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  (async () => migrateDatabase(new pg.Client({ ...await loadCreds(), statement_timeout: 300_000, lock_timeout: 30_000 })))()
+    .catch((e) => { console.error(e instanceof Error ? e.message : String(e)); process.exitCode = 1; })
+    .finally(() => secrets.destroy());
+}
