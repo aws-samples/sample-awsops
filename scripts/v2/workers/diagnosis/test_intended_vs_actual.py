@@ -19,6 +19,7 @@ class FakeConn:
     def __init__(self, ret_by_sql=None):
         self.ret_by_sql = ret_by_sql or {}
         self.calls = []
+        self.closed = False
 
     def run(self, sql, **kw):
         self.calls.append((sql, kw))
@@ -26,6 +27,9 @@ class FakeConn:
             if needle in sql:
                 return ret
         return []
+
+    def close(self):
+        self.closed = True
 
 
 def test_list_active_invariants_normalizes_params():
@@ -290,7 +294,8 @@ def offline_generate(monkeypatch):
     monkeypatch.setattr(report, "_bedrock_render", fake_llm)
     monkeypatch.setattr(report.boto3, "client", no_aws)
 
-    def run(active, *, inventory=None, service_map=None, lang="en", tier="mid", parent=None):
+    def run(active, *, inventory=None, service_map=None, lang="en", tier="mid", parent=None,
+            degraded_sources=()):
         collected = [
             {"key": "inventory", "ok": True, "degraded": False, "notes": "",
              "data": inventory if inventory is not None else {"by_type": {"rds": 1}}},
@@ -298,6 +303,10 @@ def offline_generate(monkeypatch):
              "data": service_map if service_map is not None else {
                  "edges": [{"from": "api", "to_ref": 1, "calls": 0, "error_rate": 0}]}},
         ]
+        for source in collected:
+            if source["key"] in degraded_sources:
+                source.update(ok=False, degraded=True, notes="collector unavailable",
+                              data={"_failed": True})
         monkeypatch.setattr(report.src, "collect_all", lambda *args: collected)
         monkeypatch.setattr(db, "list_active_invariants", lambda conn: active)
         if parent is not None:
@@ -338,7 +347,7 @@ def test_generate_all_unknown_preserves_reasons_and_cannot_render_all_clear(
     assert len(summary["unassessed"]) == 6
     assert all(v["passed"] is None and v["observed"].startswith("unknown:")
                for v in summary["unassessed"])
-    assert summary["degraded"] == ["intended_vs_actual"]
+    assert summary["degraded"] == []  # incomplete evaluation is not a collector failure
     assert used == ["inventory", "service_map"]
     assert summary["sections"] == total_sections
     assert len(calls) == llm_sections
@@ -348,6 +357,7 @@ def test_generate_all_unknown_preserves_reasons_and_cannot_render_all_clear(
     assert "LLM says no drift" not in body
     assert _LANG_LABELS[lang][4] in body and "degraded" in body
     assert "| 6 | 0 | 0 | 0 | 6 |" in body
+    assert "- `intended_vs_actual`:" not in md
     rendered = _RenderedContent(markdown.markdown(body, extensions=["tables"]))
     for verdict in summary["unassessed"]:
         assert verdict["observed"] in "".join(rendered.text)
@@ -360,7 +370,7 @@ def test_generate_all_unknown_preserves_reasons_and_cannot_render_all_clear(
 
     # Persisting the existing summary JSON must preserve every original unknown reason.
     conn = FakeConn()
-    db.finish_report(conn, 7, status="partial", summary=summary, sources_used=used)
+    db.finish_report(conn, 7, status="succeeded", summary=summary, sources_used=used)
     stored = json.loads(conn.calls[-1][1]["sm"])
     assert stored["unassessed"] == summary["unassessed"]
     assert stored["invariant_coverage"] == summary["invariant_coverage"]
@@ -388,7 +398,8 @@ def test_generate_coverage_distinguishes_unconfigured_pass_failure_and_mixed(
     assert summary["invariant_coverage"] == expected
     assert len(summary["drift"]) == expected["failed"]
     assert len(summary["unassessed"]) == expected["unassessed"]
-    assert ("intended_vs_actual" in summary["degraded"]) == bool(expected["unassessed"])
+    assert summary["degraded"] == []
+    assert "- `intended_vs_actual`:" not in md
     body = _intent_body(md)
     assert all(label in body for label in _LANG_LABELS[lang])
     assert "LLM says no drift" not in body
@@ -399,6 +410,65 @@ def test_generate_coverage_distinguishes_unconfigured_pass_failure_and_mixed(
         rendered = _RenderedContent(markdown.markdown(body, extensions=["tables"]))
         for verdict in summary["drift"] + summary["unassessed"]:
             assert verdict["observed"] in "".join(rendered.text)
+
+
+@pytest.mark.parametrize("lang", ["ko", "en", "zh", "ja"])
+def test_generate_preserves_real_collector_degradation_with_unassessed_intent(offline_generate, lang):
+    active = [{"id": 1, "kind": "encryption_required", "target": "rds", "params": {}}]
+    md, summary, used, _, _ = offline_generate(
+        active, lang=lang, degraded_sources=("inventory",))
+    assert summary["degraded"] == ["inventory"]
+    assert used == ["service_map"]
+    assert summary["invariant_coverage"]["unassessed"] == 1
+    assert len(summary["unassessed"]) == 1
+    assert "- `inventory`: degraded — collector unavailable" in md
+    assert "- `intended_vs_actual`:" not in md
+    assert _LANG_LABELS[lang][4] in _intent_body(md)
+    assert "degraded" in _intent_body(md)
+
+
+@pytest.mark.parametrize("configured,degraded_sources,expected_status", [
+    (True, (), "succeeded"),
+    (True, ("inventory",), "partial"),
+    (False, (), "succeeded"),
+])
+def test_actual_report_handler_status_uses_real_collector_health(
+        monkeypatch, offline_generate, configured, degraded_sources, expected_status):
+    import db as worker_db
+    import handlers
+
+    active = [
+        {"id": i, "kind": kind, "target": "rds", "params": {"from": "api", "to": "rds"}}
+        for i, kind in enumerate([
+            "private_only", "encryption_required", "expected_edge",
+            "forbidden_edge", "max_error_rate", "no_public_ingress",
+        ], 1)
+    ] if configured else []
+    # Install external-boundary fakes, keeping handler -> generate -> evaluator -> persistence real.
+    offline_generate(active, degraded_sources=degraded_sources)
+    conn = FakeConn()
+    monkeypatch.setattr(worker_db, "connect", lambda: conn)
+    monkeypatch.setattr(handlers, "_upload_markdown", lambda md, rid: f"s3://test/{rid}.md")
+    monkeypatch.setattr(handlers, "_export_artifacts", lambda md, rid: None)
+    monkeypatch.setattr(report, "make_title_and_tags", lambda *args: {"title": None, "tags": []})
+
+    result, artifact = handlers._report(
+        {"account": "self", "tier": "mid", "lang": "en", "report_id": 7}, dry_run=False)
+    stored = next(kw for sql, kw in conn.calls if "SET status=:s" in sql)
+    summary = json.loads(stored["sm"])
+    assert result["status"] == stored["s"] == expected_status
+    assert summary["degraded"] == list(degraded_sources)
+    assert summary["invariant_coverage"]["unassessed"] == (6 if configured else 0)
+    assert len(summary["unassessed"]) == (6 if configured else 0)
+    assert conn.closed is True
+    md = artifact.decode("utf-8")
+    assert "- `intended_vs_actual`:" not in md
+    if configured:
+        assert _intent_body(md).lstrip().startswith("[Warning]\n")
+        assert "Unassessed is not a pass" in _intent_body(md)
+    else:
+        assert _NOT_CONFIGURED["en"] in _intent_body(md)
+        assert "empty (no data returned)" not in md
 
 
 def test_generate_unknown_is_not_an_improvement(offline_generate):
@@ -513,19 +583,20 @@ const code = ts.transpileModule(matches[0].getText(source), {
 }).outputText;
 let input = '';
 for await (const chunk of process.stdin) input += chunk;
-const results = JSON.parse(input).map(body => {
-  const context = vm.createContext({exports: {}, body}, {
+const results = JSON.parse(input).map(({body, title}) => {
+  const context = vm.createContext({exports: {}, body, title}, {
     codeGeneration: {strings: false, wasm: false}
   });
-  return vm.runInContext(code + '\\nsectionSeverity(body)', context, {timeout: 1000});
+  return vm.runInContext(code + '\\nsectionSeverity(body, title)', context, {timeout: 1000});
 });
 console.log(JSON.stringify(results));
 """
 
-    def classify(bodies):
+    def classify(bodies, *, title):
         result = subprocess.run(
             [node, "--input-type=module", "-e", script], cwd=web,
-            input=json.dumps(bodies), text=True, capture_output=True, check=True,
+            input=json.dumps([{"body": body, "title": title} for body in bodies]),
+            text=True, capture_output=True, check=True,
             timeout=30, env={},
         )
         return json.loads(result.stdout)
@@ -574,7 +645,7 @@ def test_generated_sections_match_exact_app_severity_contract(
                                           key=lambda v: v["id"])
         ]
         assert observed_severities == expected_severities
-    actual = app_section_severity(bodies)
+    actual = app_section_severity(bodies, title=sections.INTENDED_VS_ACTUAL_SECTION["title"])
     for (name, _, _, expected), got in zip(cases, actual, strict=True):
         assert got == expected, (lang, name, got, expected)
 
@@ -599,4 +670,5 @@ def test_verdict_fields_cannot_forge_app_severity_markers(app_section_severity, 
             assert json.loads(rendered.code[_VERDICT_FIELDS.index(field)]) == \
                 " ".join(_VERDICT_ATTACK.split())
             assert "[Critical]" not in body
-    assert app_section_severity(bodies) == expected
+    assert app_section_severity(
+        bodies, title=sections.INTENDED_VS_ACTUAL_SECTION["title"]) == expected

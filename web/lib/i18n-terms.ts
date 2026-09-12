@@ -8,6 +8,7 @@ type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
   '불변식 평가 범위': { en: 'Invariant assessment coverage', zh: '不变量评估覆盖范围', ja: '不変条件の評価範囲' },
+  '불변식 통과': { en: 'Passed', zh: '通过', ja: '合格' },
   '불변식 평가 정보 없음': { en: 'Invariant assessment unavailable', zh: '不变量评估信息不可用', ja: '不変条件の評価情報なし' },
   '이 보고서에는 유효한 불변식 평가 범위가 기록되지 않았습니다.': { en: 'This report has no valid record of invariant assessment coverage.', zh: '此报告未记录有效的不变量评估覆盖范围。', ja: 'このレポートには有効な不変条件の評価範囲が記録されていません。' },
   '활성 불변식 없음': { en: 'No active invariants', zh: '没有启用的不变量', ja: '有効な不変条件なし' },

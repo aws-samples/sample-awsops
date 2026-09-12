@@ -622,7 +622,7 @@ function ReportInsights({ summary }: { summary: ReportSummary }) {
         ) : (
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-ink-700">
             <span>{tt('평가 완료')} {coverage.assessed} / {coverage.total}</span>
-            <span>{tt('통과')} {coverage.passed}</span>
+            <span>{tt('불변식 통과')} {coverage.passed}</span>
             <span>{tt('위반')} {coverage.failed}</span>
             <span>{tt('미평가')} {coverage.unassessed}</span>
           </div>

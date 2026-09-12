@@ -2,8 +2,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, within, fireEvent, waitFor } from '@testing-library/react';
 import DiagnosisView from './DiagnosisView';
+import { LanguageProvider } from '@/components/shell/LanguageProvider';
 
 afterEach(cleanup);
+afterEach(() => localStorage.removeItem('awsops-lang'));
 
 function mockCapture(reports: Array<Record<string, unknown>> = []) {
   const posts: any[] = [];
@@ -180,6 +182,19 @@ describe('DiagnosisView — export menu + generation date', () => {
 });
 
 describe('DiagnosisView — invariant assessment coverage', () => {
+  it.each([
+    ['zh', '不变量评估覆盖范围', '通过 2'],
+    ['ja', '不変条件の評価範囲', '合格 2'],
+  ])('uses assessment-specific passed labels in %s', async (lang, region, passed) => {
+    localStorage.setItem('awsops-lang', lang);
+    mockList([{ id: 71, tier: 'mid', status: 'succeeded', created_at: 't',
+      summary: { drift: [], unassessed: [],
+        invariant_coverage: { total: 2, assessed: 2, passed: 2, failed: 0, unassessed: 0 } } }]);
+    render(<LanguageProvider><DiagnosisView /></LanguageProvider>);
+    fireEvent.click(await screen.findByRole('button', { name: /#71/ }));
+    expect(within(await screen.findByRole('region', { name: region })).getByText(passed)).toBeTruthy();
+  });
+
   async function openSummary(summary: Record<string, unknown>) {
     mockList([{ id: 71, tier: 'mid', status: 'succeeded', created_at: 't', summary }]);
     const view = render(<DiagnosisView />);
@@ -206,7 +221,7 @@ describe('DiagnosisView — invariant assessment coverage', () => {
       invariant_coverage: { total: 3, assessed: 2, passed: 1, failed: 1, unassessed: 1 },
     });
     expect(within(panel).getByText('평가 완료 2 / 3')).toBeTruthy();
-    expect(within(panel).getByText('통과 1')).toBeTruthy();
+    expect(within(panel).getByText('불변식 통과 1')).toBeTruthy();
     expect(within(panel).getByText('위반 1')).toBeTruthy();
     expect(within(panel).getByText('unknown: aggregate missing')).toBeTruthy();
     expect(screen.getByText('forbidden_edge')).toBeTruthy();
@@ -218,7 +233,7 @@ describe('DiagnosisView — invariant assessment coverage', () => {
       invariant_coverage: { total: 0, assessed: 0, passed: 0, failed: 0, unassessed: 0 },
     });
     expect(within(panel).getByText('활성 불변식 없음')).toBeTruthy();
-    expect(within(panel).queryByText('통과 0')).toBeNull();
+    expect(within(panel).queryByText('불변식 통과 0')).toBeNull();
   });
 
   it('discloses missing coverage for historical reports', async () => {
@@ -241,7 +256,7 @@ describe('DiagnosisView — invariant assessment coverage', () => {
       invariant_coverage: { total: 2, assessed: 2, passed: 2, failed: 0, unassessed: 0 },
     });
     expect(within(panel).getByText('평가 완료 2 / 2')).toBeTruthy();
-    expect(within(panel).getByText('통과 2')).toBeTruthy();
+    expect(within(panel).getByText('불변식 통과 2')).toBeTruthy();
     expect(within(panel).queryByText('미평가 결과는 정상 또는 개선을 뜻하지 않습니다.')).toBeNull();
   });
 

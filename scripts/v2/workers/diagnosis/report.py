@@ -289,6 +289,8 @@ def _coverage_note(collected, lang="ko"):
     lines = [f"## {chrome['coverage']}", "",
              "이 리포트가 근거로 삼은 수집기 상태 — `empty`/`degraded`는 해당 영역 진단이 빈약할 수 있음을 뜻합니다.", ""]
     for key, r in collected.items():
+        if key == INTENDED_VS_ACTUAL_SECTION["key"]:
+            continue  # Synthetic assessment has its own coverage section; it is not a collector.
         if key == "datasources_obs":
             status = _datasource_utilization(r)            # 외부 datasource 활용 여부 (사용/비활성/없음/unavailable)
         elif r.get("degraded"):
@@ -409,8 +411,6 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     drift = _drift(verdicts)
     unassessed = [v for v in verdicts if v.get("passed") is None]
     invariant_coverage = _invariant_coverage(verdicts)
-    if unassessed:
-        degraded.append("intended_vs_actual")
     # Keep this section in the existing catalog/progress pipeline, but render its states directly.
     # Its only input is the evaluator's verdict list, never raw edges or LLM-authored conclusions.
     collected["intended_vs_actual"] = {
