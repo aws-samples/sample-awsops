@@ -136,7 +136,8 @@ class PanelTests(unittest.TestCase):
             for lens in ("L2", "L3", "L4", "L5"):
                 with self.subTest(vendor=vendor, lens=lens):
                     invocation = (calls / f"{vendor}-{lens}.timeouts").read_text().splitlines()[0]
-                    self.assertEqual(json.loads(invocation)[-1], "1200")
+                    budget = "PANEL_TIMEOUT" if vendor == "codex" else "CLAUDE_PANEL_TIMEOUT"
+                    self.assertEqual(json.loads(invocation)[-1], budgets[budget])
         self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 8)
         self.assertFalse((out / "coverage-severe.flag").exists())
 

@@ -285,8 +285,8 @@ target. See [GitHub's platform announcement](https://github.blog/changelog/2025-
 [environment protection rules](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments), and
 [immutable OIDC subjects](https://docs.github.com/en/actions/reference/security/oidc).
 The workflow gives every Codex and Claude panel lens (L2–L5) two 1200-second attempts.
-The panel and chair have a 10-second
-hard-kill grace. The job ceiling is 90 minutes. After Git/CLI/prompt preparation,
+The panel and chair have a 10-second hard-kill grace. The job ceiling is 90 minutes.
+After Git/CLI/prompt preparation,
 immediately before the panel and again immediately before chair synthesis, the same OIDC
 role obtains a fresh one-hour session; its permissions and maximum session duration
 are unchanged. Failed or timed-out chair output cannot supply a successful verdict.
