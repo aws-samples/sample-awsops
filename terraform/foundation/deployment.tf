@@ -1,19 +1,19 @@
 # Defaults preserve the ordinary all-at-once deployment. The dev CI controller
 # chooses a monotonic stage from state and rejects any delete/replacement plan.
-variable "edge_enabled" {
+variable "defer_edge_until_dns" {
   type        = bool
-  default     = true
-  description = "Attach certificate validation waits, HTTPS listener and CloudFront. False is for NEW pre-DNS stacks only."
+  default     = false
+  description = "Defer certificate validation waits, HTTPS listener and CloudFront for NEW pre-DNS stacks only. Existing stacks keep the edge."
 }
-variable "dns_validation_records_enabled" {
+variable "defer_dns_validation_records" {
   type        = bool
-  default     = true
-  description = "Manage ACM validation records in the selected child zone. Staged CI leaves DNS registration manual."
+  default     = false
+  description = "Defer ACM validation record management for manual DNS registration. Default preserves ordinary managed DNS."
 }
-variable "dns_alias_records_enabled" {
+variable "defer_dns_alias_records" {
   type        = bool
-  default     = true
-  description = "Manage public aliases in the selected child zone. Never manages parent delegation."
+  default     = false
+  description = "Defer public alias management for manual DNS registration. Default preserves ordinary managed DNS; never manages parent delegation."
 }
 variable "ci_deployment_enabled" {
   type        = bool
@@ -136,7 +136,7 @@ output "deployment_config" {
     project                   = var.project
     smoke_email               = var.create_demo_user ? var.demo_email : null
     region                    = var.region
-    edge_enabled              = var.edge_enabled
+    edge_enabled              = !var.defer_edge_until_dns
     desired_count             = var.web_desired_count
     task_definition           = aws_ecs_service.web.task_definition
     web_template              = aws_ecs_task_definition.web.arn
@@ -169,5 +169,5 @@ output "deployment_config" {
 
 output "deployment_stage" {
   description = "Infrastructure stage only; CI reports deployed only after digest/health and authenticated HTTPS smoke checks."
-  value       = var.edge_enabled ? "awaiting_verification" : "awaiting_dns"
+  value       = !var.defer_edge_until_dns ? "awaiting_verification" : "awaiting_dns"
 }

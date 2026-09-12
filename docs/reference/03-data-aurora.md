@@ -29,16 +29,19 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   (`storage_encrypted`) and the master-user secret.
 - **Credentials**: RDS-managed master secret (`manage_master_user_password = true`,
   master username `awsops_admin`) in Secrets Manager — exposed as output
-  `aurora_secret_arn`. The app reads this in P1d.
+  `aurora_secret_arn`. The private migration task reads it at runtime; the web app
+  uses its dedicated `awsops_web` IAM database identity, not the master password.
 - **Network**: lives in the reused `mgmt-vpc` private subnets (DB subnet group
   `awsops-v2-aurora`). SG `awsops-v2-aurora-sg` allows **:5432 from the app/Fargate
   service SG**, plus an optional VPC-CIDR ingress (gated by `var.allow_vpc_db_access`)
   for in-VPC schema migration from the deploy host.
 - **Backups**: 7-day retention. `deletion_protection = false` + `skip_final_snapshot = true`
   (dev-only — flip both for prod).
-- **Schema**: the **ADR-001 baseline schema** (Phase-1 7-table baseline, **frozen**; expanded since via ULID `migrations/*` — current table count per `schema.sql`, incl. incident/k8s/integrations/topology/ai_usage/accounts) + a P2 `worker_jobs` table, applied via
-  `psql` from an in-VPC deploy host. Tracked by a `schema_migrations` table.
-  Idempotent (`CREATE TABLE IF NOT EXISTS` throughout).
+- **Schema**: frozen ADR-001 `schema.sql` plus cumulative ULID migrations,
+  tracked by `schema_migrations`. Private CI sets `INITIALIZE_EMPTY_DB=1`:
+  only an empty database without a ledger receives the transactional baseline,
+  TEXT ledger/checksum upgrade and then pending ULIDs. Occupied untracked DBs
+  fail closed; an existing ledger never causes baseline replay.
 - **App access**: **node-pg** (`web/lib/db.ts`). No *live* Steampipe in v2 — live AWS
   queries go through AgentCore MCP Lambda tools; the ops gateway already has a limited
   Aurora-backed `inventory-read-target`, while direct domain API targets remain registered.
@@ -70,12 +73,18 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   `steampipe_enabled=false`, migrate, create/push the image, and enable the feature only in the
   final saved-plan apply. `make deploy` rolls the web service, not this Lambda; if this order cannot
   be met, do not deploy the new Lambda.
+  Staged dev follows this gate: existing `core` only verifies the migration
+  template, outputs and ECR; `release` migrates before its full saved-plan apply.
+  Only empty-state bootstrap creates core infrastructure with web count zero.
+  An existing stack missing migration prerequisites stops explicitly.
+  (기존 dev core는 선행 리소스를 조회만 하며 migration 후 전체 저장 plan을 적용한다.
+  빈 신규 state만 web count 0으로 bootstrap하고 선행 조건이 없는 기존 stack은 중단한다.)
 
 ### ADR-001 schema tables / 스키마 테이블
 
 | Table | Replaces (v1) | Notes |
 |-------|---------------|-------|
-| `schema_migrations` | — | applied-version tracker; seeded with version 1 |
+| `schema_migrations` | — | TEXT version ledger with baseline marker/checksum and cumulative ULIDs; legacy integer rows are retained during explicit bootstrap |
 | `inventory_snapshots` | `data/inventory/<account>/*.json` | `(account_id, captured_at)` indexes; JSONB `payload`. Since 2026-09-04 the sync writes one daily row per (trusted account, resource_type) — plus derived security series (`public_s3_buckets`/`open_security_groups`/`unencrypted_ebs`, lockstep with `web/lib/security-findings.ts`); host-only SDK types stay `self`-scoped. No prune — the trend route filters by resolved account scope + a snake_case type charset (legacy v1 backfill label rows excluded) |
 | `cost_snapshots` | `data/cost/<account>/*.json` | UPSERT on `(account, period, granularity)` |
 | `agentcore_memory` | `data/memory/<user>/*.json` | per-user, 365-day TTL via `expires_at` (ADR-004) |
@@ -136,9 +145,10 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   flip both (and set `final_snapshot_identifier`) for prod.
 - A **pre-upgrade manual snapshot is the rollback anchor** — a major in-place
   *downgrade* is impossible.
-- The schema is idempotent and applied via `psql` from an in-VPC deploy host; if
-  the host can't reach Aurora, confirm the VPC-CIDR ingress + that the host is in
-  `mgmt-vpc`.
+- The CI migration task uses private subnets, the service SG, scoped runtime
+  secret access and verified RDS CA TLS. Manual in-VPC migrations still use
+  `make migrate`; use `INITIALIZE_EMPTY_DB=1` only for a proven fresh database.
+  CI migration은 private subnet/서비스 SG와 runtime secret, 검증된 RDS CA를 사용한다.
 
 ## Source / 출처
 

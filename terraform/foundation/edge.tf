@@ -12,7 +12,7 @@ resource "aws_acm_certificate" "cf" {
 }
 
 resource "aws_route53_record" "cf_validation" {
-  for_each = var.dns_validation_records_enabled ? {
+  for_each = !var.defer_dns_validation_records ? {
     for dvo in aws_acm_certificate.cf.domain_validation_options : dvo.domain_name => {
       name   = dvo.resource_record_name
       record = dvo.resource_record_value
@@ -28,7 +28,7 @@ resource "aws_route53_record" "cf_validation" {
 }
 
 resource "aws_acm_certificate_validation" "cf" {
-  count                   = var.edge_enabled ? 1 : 0
+  count                   = !var.defer_edge_until_dns ? 1 : 0
   provider                = aws.use1
   certificate_arn         = aws_acm_certificate.cf.arn
   validation_record_fqdns = [for dvo in aws_acm_certificate.cf.domain_validation_options : dvo.resource_record_name]
@@ -51,7 +51,7 @@ data "aws_cloudfront_origin_request_policy" "all_viewer" {
 # (409 CannotUpdateEntityWhileInUse). create_before_destroy + a distinct name lets Terraform stand up the
 # new https-only origin, repoint the distribution, then delete the old http-only origin — the AWS-supported swap.
 resource "aws_cloudfront_vpc_origin" "alb" {
-  count      = var.edge_enabled ? 1 : 0
+  count      = !var.defer_edge_until_dns ? 1 : 0
   depends_on = [aws_lb_listener.https]
   vpc_origin_endpoint_config {
     name                   = "${var.project}-alb-origin-tls"
@@ -70,7 +70,7 @@ resource "aws_cloudfront_vpc_origin" "alb" {
 }
 
 resource "aws_cloudfront_distribution" "main" {
-  count       = var.edge_enabled ? 1 : 0
+  count       = !var.defer_edge_until_dns ? 1 : 0
   enabled     = true
   comment     = "AWSops v2 spine — ${var.domain_name}"
   aliases     = concat([var.domain_name], var.extra_domain_aliases)
@@ -128,7 +128,7 @@ resource "aws_cloudfront_distribution" "main" {
 }
 
 resource "aws_route53_record" "alias" {
-  for_each = var.edge_enabled && var.dns_alias_records_enabled ? toset(concat([var.domain_name], var.extra_domain_aliases)) : toset([])
+  for_each = !var.defer_edge_until_dns && !var.defer_dns_alias_records ? toset(concat([var.domain_name], var.extra_domain_aliases)) : toset([])
   zone_id  = data.aws_route53_zone.main.zone_id
   name     = each.value
   type     = "A"

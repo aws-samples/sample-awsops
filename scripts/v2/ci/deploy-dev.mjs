@@ -4,11 +4,12 @@
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, appendFileSync, copyFileSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { guardPlan, stageVariables, verifyService, aliasesRegistered } from './guards.mjs';
+import { guardPlan, stageVariables, verifyService, aliasesRegistered, assertDeploymentAccount } from './guards.mjs';
 const TF = 'terraform/foundation';
 const PRIVATE = `${TF}/.build/ci`;
 const REGION = 'ap-northeast-2';
 const sha = process.env.GITHUB_SHA;
+let deploymentAccount;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -18,17 +19,19 @@ function save(name, value) { writeFileSync(`${PRIVATE}/${name}`, JSON.stringify(
 function load(name) { return JSON.parse(readFileSync(`${PRIVATE}/${name}`)); }
 function run(command, args, { input, visible = false } = {}) {
   return new Promise((resolve, reject) => {
+    const terraformLog = command === 'terraform' && ['plan', 'apply'].includes(args[1]) ? `${TF}/tfplan.log` : null;
+    if (terraformLog) writeFileSync(terraformLog, '', { mode: 0o600 });
     const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
-    child.stdout.on('data', data => { stdout += data; if (visible) process.stdout.write(data); });
-    child.stderr.on('data', data => { stderr += data; if (visible) process.stderr.write(data); });
+    child.stdout.on('data', data => { stdout += data; if (terraformLog) appendFileSync(terraformLog, data); if (visible) process.stdout.write(data); });
+    child.stderr.on('data', data => { stderr += data; if (terraformLog) appendFileSync(terraformLog, data); if (visible) process.stderr.write(data); });
     child.on('error', reject);
     child.on('close', code => {
       if (code === 0) resolve(stdout.trim());
       else {
         // Never echo Terraform values or AWS request/response contents in public CI.
         writeFileSync(`${PRIVATE}/last-error.log`, stdout + stderr, { mode: 0o600 });
-        const error = new Error(`${command} ${args[0]} failed (${code}); inspect restricted runner diagnostics before cleanup`);
+        const error = new Error(`${command} ${args[0]} failed (${code}); inspect the encrypted failure-diagnostics artifact`);
         error.stderr = stderr; reject(error);
       }
     });
@@ -51,6 +54,9 @@ async function assertContext({ planning = false } = {}) {
       !(planning ? ['push', 'pull_request'] : ['push', 'workflow_dispatch']).includes(process.env.GITHUB_EVENT_NAME) ||
       await run('git', ['rev-parse', 'HEAD']) !== sha) throw new Error('Dev deployment requires the exact dev push/dispatch SHA');
   if (process.env.IMAGE_SHA && process.env.IMAGE_SHA !== sha) throw new Error('Staged dev deployment uses this commit only; use a revert commit on dev for rollback');
+  const { Account } = await aws('sts', 'get-caller-identity');
+  assertDeploymentAccount(Account, process.env.AWS_DEV_ACCOUNT_ID);
+  deploymentAccount = Account;
 }
 function flatten(module) { return [...(module?.resources ?? []), ...(module?.child_modules ?? []).flatMap(flatten)]; }
 async function stateResources() { return flatten(JSON.parse(await tf('show', '-json')).values?.root_module); }
@@ -65,7 +71,7 @@ async function applyPhase(phase, variables) {
   const plan = JSON.parse(await tf('show', '-json', '.build/ci/tfplan'));
   if (plan.variables?.project?.value !== 'awsops-dev' || plan.variables?.region?.value !== REGION ||
       plan.variables?.ci_deployment_enabled?.value !== true) throw new Error('Refusing a plan outside the samples dev stack');
-  guardPlan(plan, { bootstrapOrigin: phase === 'edge' });
+  guardPlan(plan, { bootstrapOrigin: phase === 'edge', enforceFrozenFlags: true });
   save('plan-provenance.json', { ...metadata, digest: hash(readFileSync(`${PRIVATE}/tfplan`)) });
   // No second plan between guard and apply. Hash all local inputs and the binary
   // immediately before applying, in the same environment/concurrency lock.
@@ -85,8 +91,29 @@ async function prepare() {
   return variables;
 }
 async function core() {
-  await applyPhase('core', await prepare());
-  summary('Core infrastructure ready. ECR exists before build; migration precedes service rollout.');
+  const resources = await stateResources();
+  const variables = stageVariables(resources);
+  save('variables.tfvars.json', variables);
+  if (resources.some(resource => resource.mode !== 'data')) {
+    // No whole-root update before migration on a running/previously bootstrapped stack:
+    // Terraform may package database-dependent Lambdas as well as the web task.
+    const migration = resources.find(resource => resource.type === 'aws_ecs_task_definition' && resource.name === 'migration');
+    if (!migration) throw new Error('Existing-stack migration prerequisite missing: provision the reviewed migration role/template before staged CI; refusing a pre-migration root apply');
+    const out = await outputs();
+    const config = out.deployment_config;
+    const expectedUri = `${deploymentAccount}.dkr.ecr.${REGION}.amazonaws.com/awsops-dev-web`;
+    if (config?.project !== 'awsops-dev' || config?.region !== REGION ||
+        !config.migration_task_definition || out.ecr_web_uri !== expectedUri ||
+        out.ecs_cluster_name !== 'awsops-dev' || out.ecs_service_name !== 'awsops-dev-web') {
+      throw new Error('Existing-stack deployment output prerequisites are missing or outside the pinned dev stack');
+    }
+    const { repositories } = await aws('ecr', 'describe-repositories', ['--repository-names', 'awsops-dev-web']);
+    if (repositories?.length !== 1 || repositories[0].repositoryUri !== expectedUri) throw new Error('Existing dev ECR prerequisite mismatch');
+    summary('Existing core/output/ECR prerequisites verified. No root plan/apply ran before migration.');
+    return;
+  }
+  await applyPhase('core', variables);
+  summary('Fresh empty-state bootstrap complete with web desired count zero. Existing stacks are never updated here; migration precedes their full foundation apply.');
 }
 async function imageDigest(repo, tag) {
   const response = await aws('ecr', 'batch-get-image', ['--repository-name', repo, '--image-ids', `imageTag=${tag}`]);
@@ -97,9 +124,7 @@ async function imageDigest(repo, tag) {
 }
 async function images() {
   // Build job has branch OIDC, ECR-only credentials and no Terraform state access.
-  const { Account } = await aws('sts', 'get-caller-identity');
-  if (!/^\d{12}$/.test(Account)) throw new Error('Invalid build account');
-  const repo = 'awsops-dev-web', uri = `${Account}.dkr.ecr.${REGION}.amazonaws.com/${repo}`;
+  const repo = 'awsops-dev-web', uri = `${deploymentAccount}.dkr.ecr.${REGION}.amazonaws.com/${repo}`;
   const password = await run('aws', ['ecr', 'get-login-password', '--region', REGION]);
   await run('docker', ['login', '--username', 'AWS', '--password-stdin', uri.split('/')[0]], { input: password });
   const built = {};
@@ -179,6 +204,7 @@ async function release() {
   const built = { web: process.env.WEB_DIGEST, migration: process.env.MIGRATION_DIGEST, sha };
   if (![built.web, built.migration].every(digest => digestPattern.test(digest ?? ''))) throw new Error('Missing immutable image digests from this run');
   const out = await outputs();
+  await proveSmokeIdentity(out);
   const repo = out.ecr_web_uri.split('/').slice(1).join('/');
   for (const kind of ['web', 'migration']) {
     if (await imageDigest(repo, `${kind}-${sha}`) !== built[kind]) throw new Error('Source SHA/image digest mismatch');
@@ -201,6 +227,51 @@ function reportDns(config) {
   summary(`\n\`\`\`text\n${dns.zone} NS ${dns.nameservers.join(' ')}\n${[...new Set(dns.validation.map(r => `${r.name} ${r.type} ${r.value}`))].join('\n')}\n${dns.target ? dns.aliases.map(name => `${name} A ALIAS ${dns.target} (target zone ${dns.target_zone})`).join('\n') : 'CloudFront alias target will be reported after certificate issuance.'}\n\`\`\``);
 }
 async function request(url, options = {}) { return fetch(url, { ...options, redirect: 'manual', signal: AbortSignal.timeout(20000) }); }
+async function smokeCredentials(out) {
+  const arn = process.env.SMOKE_SECRET_ARN;
+  let credentials;
+  try {
+    credentials = arn
+      ? JSON.parse((await aws('secretsmanager', 'get-secret-value', ['--secret-id', arn])).SecretString)
+      : { username: out.deployment_config.smoke_email, password: process.env.TF_VAR_demo_password };
+  } catch {
+    throw new Error('Smoke identity credentials could not be read; check the configured secret and its access');
+  }
+  if (typeof credentials?.username !== 'string' || !credentials.username.trim() ||
+      typeof credentials?.password !== 'string' || !credentials.password) {
+    throw new Error('Smoke identity missing: configure a usable demo identity with TF_VAR_DEMO_PASSWORD or DEV_SMOKE_SECRET_ARN before DNS readiness');
+  }
+  return credentials;
+}
+async function proveSmokeIdentity(out) {
+  const credentials = await smokeCredentials(out);
+  if (typeof out.cognito_client_id !== 'string' || !/^[a-zA-Z0-9]+$/.test(out.cognito_client_id)) {
+    throw new Error('Smoke identity preflight requires this stack’s Cognito client ID');
+  }
+  let response, body;
+  try {
+    // Public USER_PASSWORD_AUTH is unsigned and needs no Cognito IAM grant.
+    // Its HTTPS endpoint works before our application's DNS or edge exists.
+    response = await request(`https://cognito-idp.${REGION}.amazonaws.com/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-amz-json-1.1', 'X-Amz-Target': 'AWSCognitoIdentityProviderService.InitiateAuth' },
+      body: JSON.stringify({
+        AuthFlow: 'USER_PASSWORD_AUTH', ClientId: out.cognito_client_id,
+        AuthParameters: { USERNAME: credentials.username, PASSWORD: credentials.password },
+      }),
+    });
+    body = await response.json();
+  } catch {
+    throw new Error('Smoke identity preflight could not complete Cognito sign-in; DNS is not the only remaining prerequisite');
+  }
+  if (!response.ok || body?.ChallengeName ||
+      typeof body?.AuthenticationResult?.IdToken !== 'string' || !body.AuthenticationResult.IdToken ||
+      typeof body?.AuthenticationResult?.AccessToken !== 'string' || !body.AuthenticationResult.AccessToken) {
+    throw new Error('Smoke identity sign-in rejected or requires a challenge; resolve it before DNS readiness');
+  }
+  // Discard the tokens; final HTTPS smoke still signs in through the real BFF.
+  return credentials;
+}
 async function smoke(out) {
   const url = out.public_url;
   const health = await request(`${url}/api/health`);
@@ -209,12 +280,7 @@ async function smoke(out) {
   if (denied.status !== 302 || !denied.headers.get('location')?.startsWith('/login')) throw new Error('Unauthenticated edge request was not redirected to login');
   // Dedicated smoke credentials are fetched at runtime, or use the existing
   // masked demo secret. Neither response body nor cookie is logged.
-  const arn = process.env.SMOKE_SECRET_ARN;
-  const credentials = arn
-    ? JSON.parse((await aws('secretsmanager', 'get-secret-value', ['--secret-id', arn])).SecretString)
-    : { username: out.deployment_config.smoke_email, password: process.env.TF_VAR_demo_password };
-  const { username, password } = credentials;
-  if (!username || !password) throw new Error('Authenticated smoke requires the configured demo identity and TF_VAR_DEMO_PASSWORD, or DEV_SMOKE_SECRET_ARN');
+  const { username, password } = await smokeCredentials(out);
   const login = await request(`${url}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json', origin: url }, body: JSON.stringify({ email: username, password }) });
   const cookie = login.headers.getSetCookie().find(value => value.startsWith('awsops_token='))?.split(';')[0];
   if (login.status !== 200 || !cookie) throw new Error('Smoke identity could not sign in');
@@ -226,6 +292,7 @@ async function smoke(out) {
 }
 async function edge() {
   let out = await outputs();
+  await proveSmokeIdentity(out);
   const certificates = await Promise.all(out.deployment_config.certificates.map(async certificate => {
     const result = await aws('acm', 'describe-certificate', ['--certificate-arn', certificate.arn], certificate.region);
     return result.Certificate.Status;
@@ -235,7 +302,7 @@ async function edge() {
     if (certificates.some(state => state !== 'PENDING_VALIDATION' && state !== 'ISSUED')) throw new Error('Certificate is neither issued nor pending validation');
     status('awaiting_dns'); return;
   }
-  const phase = load('phase.json'); phase.variables.edge_enabled = true;
+  const phase = load('phase.json'); phase.variables.defer_edge_until_dns = false;
   out = await applyPhase('edge', phase.variables);
   // The CloudFront-managed SG only exists AFTER the first VPC origin. A second
   // guarded plan converges the existing ALB ingress in place, with no CIDR fallback.

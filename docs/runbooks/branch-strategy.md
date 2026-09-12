@@ -43,13 +43,22 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
 1. **User branch / 사용자 브랜치** — the standing branch named after the user
    (`atomoh`, `ssminji`, `whchoi`). Push = auto-deploy to
    `<user>.awsops-dev.whchoi.net`. When ready, PR into `dev`. PR checks:
-   merge-verify + AI pr-review + terraform plan (when `terraform/foundation/**`
-   changed; same-repo PRs only).
+   merge-verify + AI pr-review + the real trusted-base Terraform Plan check for
+   matching infrastructure/CI paths (same-repo PRs only). Candidate tests and
+   backend-free Terraform validation run without deployment credentials.
 2. **`dev`** — integration branch; every push auto-deploys the DEV stack
-   (`awsops-dev.whchoi.net`) via `deploy-web.yml` (build → pin → roll → smoke).
+   via `deploy-web.yml`: verify existing core (or bootstrap a new empty state with
+   web count zero) → immutable images → identity preflight and migration → full
+   saved-plan apply/digest rollout → edge/DNS checks → authenticated smoke.
+   `awaiting_dns` is a successful private stage, not a completed public deployment.
 3. **`main`** — promotion PR `dev → main` (ordinary same-repo PR). The production
    ECS roll stays workflow_dispatch + `production` environment reviewer approval;
    terraform apply likewise (saved-plan, dispatch, per-branch environment).
+
+dev는 기존 core를 조회만 하고 migration 후 전체 저장 plan을 적용합니다. 빈 신규
+state만 web count 0으로 bootstrap합니다. SHA 태그는 불변이며 `web-latest` pin을
+사용하지 않습니다. `awaiting_dns`는 사설 단계 완료이고 공개 배포 완료는 아닙니다.
+상세 절차는 [단계별 배포](ci-staged-deployment.md)를 따릅니다.
 
 ## External (fork) PRs / 외부 PR
 
@@ -160,7 +169,12 @@ branches); production stays behind the `production` environment approval. See
 
 - User PR → `dev`: merge-verify + AI review green; a fork PR shows no plan job.
 - PR to `main` from anything but `dev`: `guard-main-prs` fails the PR.
-- Push to `dev`: `deploy-web.yml` ends green, smoke against
-  `awsops-dev.whchoi.net/api/health`.
+- Push to `dev`: inspect `deployment_status`. `awaiting_dns` requires manual
+  NS/CNAME/ALIAS registration; only `deployed` proves public health, login redirect,
+  and authenticated smoke against `public_url`. Missing identity or migration
+  prerequisites fail rather than being classified as DNS-only work.
 - `dev → main` merge, then production dispatch: waits for the `production`
   environment approval, smokes against the `public_url` output.
+
+dev 검증에서는 단순한 green 여부가 아니라 `deployment_status`를 확인합니다.
+`awaiting_dns`는 DNS 등록 대기이며, `deployed`만 공개 HTTPS/인증 검증 완료입니다.

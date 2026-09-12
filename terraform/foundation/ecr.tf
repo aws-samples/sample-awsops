@@ -1,13 +1,6 @@
 resource "aws_ecr_repository" "web" {
   name                 = "${var.project}-web"
-  image_tag_mutability = var.ci_deployment_enabled ? "IMMUTABLE_WITH_EXCLUSION" : "MUTABLE"
-  dynamic "image_tag_mutability_exclusion_filter" {
-    for_each = var.ci_deployment_enabled ? [1] : []
-    content {
-      filter      = "web-latest"
-      filter_type = "WILDCARD"
-    }
-  }
+  image_tag_mutability = var.ci_deployment_enabled ? "IMMUTABLE" : "MUTABLE"
   image_scanning_configuration {
     scan_on_push = true
   }

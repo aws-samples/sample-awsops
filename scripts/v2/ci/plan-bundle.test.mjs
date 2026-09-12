@@ -24,7 +24,7 @@ test('encrypted saved plan carries generated Lambda ZIPs across a clean checkout
     const run = { id: 123, event: 'push', status: 'completed', conclusion: 'success', head_sha: sha,
       head_branch: 'dev', path: '.github/workflows/terraform.yml', repository: { full_name: 'owner/repo' } };
     writeFileSync(join(bin, 'gh'), `#!/bin/sh\nprintf '%s' '${JSON.stringify(run)}'\n`, { mode: 0o700 });
-    writeFileSync(join(bin, 'terraform'), '#!/bin/sh\nprintf \'{"resource_changes":[]}\'\n', { mode: 0o700 });
+    writeFileSync(join(bin, 'terraform'), '#!/bin/sh\nprintf \'{"resource_changes":[],"variables":{"remediation_enabled":{"value":false}}}\'\n', { mode: 0o700 });
     const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, GITHUB_REPOSITORY: 'owner/repo',
       TARGET: 'dev', GITHUB_REF: 'refs/heads/dev', GITHUB_SHA: sha, GITHUB_RUN_ID: '123',
       TF_PLAN_ENC_KEY: 'test-key-only-not-an-actual-credential' };

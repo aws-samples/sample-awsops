@@ -26,6 +26,23 @@ test('failed resource checks cannot pass an automatic plan', () => {
   assert.throws(() => guardPlan({ checks: [{ status: 'fail' }] }), /check/i);
 });
 
+test('reviewed origin bootstrap exempts only the named managed-SG check', () => {
+  const bootstrap = { status: 'fail', address: { to_display: 'check.cf_vpc_origin_sg_present' } };
+  assert.throws(() => guardPlan({ checks: [bootstrap] }), /check/i);
+  guardPlan({ checks: [bootstrap] }, { bootstrapOrigin: true });
+  assert.throws(() => guardPlan({ checks: [bootstrap, { status: 'fail', address: { to_display: 'check.unrelated' } }] },
+    { bootstrapOrigin: true }), /check/i);
+});
+
+test('deployment plans must explicitly preserve the frozen remediation gate', () => {
+  for (const value of [true, 'false', null, undefined]) {
+    assert.throws(() => guardPlan({ variables: { remediation_enabled: { value } } },
+      { enforceFrozenFlags: true }), /frozen|remediation/i);
+  }
+  guardPlan({ variables: { remediation_enabled: { value: false } }, resource_changes: [] },
+    { enforceFrozenFlags: true });
+});
+
 test('stable ECS is insufficient: desired count, rollout, digest and container health must match', () => {
   const digest = `sha256:${'a'.repeat(64)}`;
   const service = { desiredCount: 1, runningCount: 1, pendingCount: 0, deployments: [{ status: 'PRIMARY', rolloutState: 'COMPLETED', taskDefinition: 'expected' }] };

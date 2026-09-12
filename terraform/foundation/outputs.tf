@@ -7,7 +7,7 @@ output "distribution_id" {
 }
 
 output "public_url" {
-  value = var.edge_enabled ? "https://${var.domain_name}" : null
+  value = !var.defer_edge_until_dns ? "https://${var.domain_name}" : null
 }
 
 output "alb_arn" {

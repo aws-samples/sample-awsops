@@ -281,7 +281,7 @@ jobs:
     environment: development
     env:
       TF_IN_AUTOMATION: 'true'
-      TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
+      AWS_DEV_ACCOUNT_ID: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
       IMAGE_SHA: ${{ inputs.image_sha }}
     steps:
       - uses: actions/checkout@v4
@@ -317,13 +317,28 @@ jobs:
           role-duration-seconds: 3600
           aws-region: ap-northeast-2
       - name: Initialize and provision core (saved plan)
+        env:
+          TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
         run: |
           terraform -chdir=terraform/foundation init -backend-config=backend.hcl -input=false -lockfile=readonly
           node scripts/v2/ci/deploy-dev.mjs core
+      - name: Preserve encrypted failure diagnostics
+        if: failure()
+        id: diagnostics
+        env:
+          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+        run: node scripts/v2/ci/failure-logs.mjs
+      - name: Upload encrypted failure diagnostics
+        if: failure() && steps.diagnostics.outputs.encrypted == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-failure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: ${{ steps.diagnostics.outputs.path }}
+          retention-days: 5
       - name: Remove private files
         if: always()
         run: |
-          rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars
+          rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars terraform/foundation/tfplan.log
           rm -rf terraform/foundation/.build terraform/foundation/.terraform
 
   dev-images:
@@ -332,6 +347,9 @@ jobs:
     if: github.ref == 'refs/heads/dev'
     runs-on: sample-awsops
     timeout-minutes: 60
+    env:
+      AWS_DEV_ACCOUNT_ID: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
+      DOCKER_CONFIG: /tmp/awsops-docker-${{ github.run_id }}-${{ github.run_attempt }}
     # No environment: preserve the existing refs/heads/dev build-role OIDC sub.
     outputs:
       web_digest: ${{ steps.images.outputs.web_digest }}
@@ -351,14 +369,25 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Build immutable arm64 web and migration images
         id: images
-        env:
-          DOCKER_CONFIG: ${{ runner.temp }}/awsops-docker-${{ github.run_id }}
         run: node scripts/v2/ci/deploy-dev.mjs images
+      - name: Preserve encrypted failure diagnostics
+        if: failure()
+        id: diagnostics
+        env:
+          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+        run: node scripts/v2/ci/failure-logs.mjs
+      - name: Upload encrypted failure diagnostics
+        if: failure() && steps.diagnostics.outputs.encrypted == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-failure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: ${{ steps.diagnostics.outputs.path }}
+          retention-days: 5
       - name: Remove build credentials and coordination files
         if: always()
-        env:
-          DOCKER_CONFIG: ${{ runner.temp }}/awsops-docker-${{ github.run_id }}
-        run: rm -rf terraform/foundation/.build "$DOCKER_CONFIG"
+        run: |
+          rm -rf terraform/foundation/.build "$DOCKER_CONFIG"
+          rm -f terraform/foundation/tfplan.log
 
   dev-release:
     name: Dev migrate → private service → edge
@@ -371,8 +400,7 @@ jobs:
       deployment_status: ${{ steps.edge.outputs.deployment_status }}
     env:
       TF_IN_AUTOMATION: 'true'
-      TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
-      SMOKE_SECRET_ARN: ${{ secrets.DEV_SMOKE_SECRET_ARN }}
+      AWS_DEV_ACCOUNT_ID: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
       WEB_DIGEST: ${{ needs.dev-images.outputs.web_digest }}
       MIGRATION_DIGEST: ${{ needs.dev-images.outputs.migration_digest }}
     steps:
@@ -405,6 +433,9 @@ jobs:
           role-duration-seconds: 3600
           aws-region: ap-northeast-2
       - name: Migrate in VPC then roll and verify ECS
+        env:
+          TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
+          SMOKE_SECRET_ARN: ${{ secrets.DEV_SMOKE_SECRET_ARN }}
         run: |
           terraform -chdir=terraform/foundation init -backend-config=backend.hcl -input=false -lockfile=readonly
           node scripts/v2/ci/deploy-dev.mjs release
@@ -417,11 +448,25 @@ jobs:
           aws-region: ap-northeast-2
       - name: Attach issued certificates and verify edge, or report awaiting_dns
         id: edge
+        env:
+          TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
+          SMOKE_SECRET_ARN: ${{ secrets.DEV_SMOKE_SECRET_ARN }}
         run: node scripts/v2/ci/deploy-dev.mjs edge
+      - name: Preserve encrypted failure diagnostics
+        if: failure()
+        id: diagnostics
+        env:
+          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+        run: node scripts/v2/ci/failure-logs.mjs
+      - name: Upload encrypted failure diagnostics
+        if: failure() && steps.diagnostics.outputs.encrypted == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-failure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: ${{ steps.diagnostics.outputs.path }}
+          retention-days: 5
       - name: Remove private config, plans, generated archives and registry credentials
         if: always()
-        env:
-          DOCKER_CONFIG: ${{ runner.temp }}/awsops-docker-${{ github.run_id }}
         run: |
-          rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars
-          rm -rf terraform/foundation/.build terraform/foundation/.terraform "$DOCKER_CONFIG"
+          rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars terraform/foundation/tfplan.log
+          rm -rf terraform/foundation/.build terraform/foundation/.terraform

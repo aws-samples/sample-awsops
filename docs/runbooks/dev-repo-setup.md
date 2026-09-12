@@ -22,7 +22,8 @@ registration, use [Staged dev deployment](ci-staged-deployment.md).
 - it fails at *Restore terraform.foundation backend* with
   `this branch's TF backend secrets are not set`, or
 - a preview dispatch fails the same way for `TF_*_PREVIEW_<USER>`, or
-- the deploy job's *Pin web-latest* step fails with an ECR `AccessDenied`, or
+- a main/user deploy's *Pin web-latest* step, or dev's immutable image read/build,
+  fails with an ECR `AccessDenied`, or
 - AI review waits for a protected-environment approval or fails `AssumeRoleWithWebIdentity`.
 
 (dev push 런이 자격증명/시크릿/ECR pin 단계에서 실패하는 경우 — 아래 1회성 작업이
@@ -55,7 +56,7 @@ mutation roles. Role-to-sub matrix:
 | `sample-awsops-ci-build` | main build (no environment) | StringEquals `repo:aws-samples/sample-awsops:ref:refs/heads/main` | prod ECR push |
 | `sample-awsops-ci-deployer` | main roll / apply / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply |
 | `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | dev + user stacks' ECR push |
-| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply — **never production** |
+| `sample-awsops-dev-ci-deployer` | staged dev + user-branch rolls, dev apply/agentcore (`environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | Scoped foundation apply; ECS register/describe/deregister/run/stop/task/service reads; ECR describe/read; ACM/Route53 reads; PassRole to the stack's web execution/task and migration roles; user-stack ECR pin only — **never production** |
 | `sample-awsops-ci-terraform-plan` | plan (PR/push incl. user-branch own-stack plans, read-only) | StringLike: `...:pull_request` + refs `main`, `dev`, `atomoh`, `ssminji`, `whchoi` | ReadOnlyAccess |
 | `sample-awsops-ci-review` | AI pr-review | StringEquals: verified subject prefix + environments `ci-review-auto` / `ci-review-recovery`, or legacy refs `main` / `dev`; no bare `pull_request` subject | Bedrock / Mantle policies — inspect actual permissions before approval |
 
@@ -395,7 +396,7 @@ Then register the generated files (base64) as repo secrets:
 |---|---|
 | all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (plan-artifact encryption) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
 | production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` |
-| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` |
+| dev | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` / protected `AWS_DEV_ACCOUNT_ID` / `DEV_SMOKE_SECRET_ARN` when using a dedicated smoke identity |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
 
 ```bash
@@ -413,17 +414,32 @@ environment — `production` carries the reviewer approval).
 폴백할 수 없습니다. 이후 변경은 terraform.yml로: PR/push 자동 plan, dispatch
 저장-plan apply — main은 production environment 승인 게이트가 추가됩니다.)
 
-### 4. ECR permissions for the pin step / ci-deployer ECR 권한
+### 4. ECR and staged deploy permissions / ECR·단계별 배포 권한
 
-The deploy jobs re-point `:web-latest` at the approved `web-<sha>` before rolling,
-so each deployer role needs `ecr:BatchGetImage` + `ecr:PutImage` scoped to its own
-stack's web ECR repository (plus the auth-token action it already has).
-(각 deployer 역할에 자기 스택 web ECR 스코프의 `ecr:BatchGetImage`·`ecr:PutImage`
-권한이 필요합니다.)
+Main/user promotion still needs `ecr:BatchGetImage` + `ecr:PutImage` for its own
+repository's `web-latest` tag. Staged dev uses a fully `IMMUTABLE` repository and
+digest revisions; its deployer needs ECR describe/read, not a tag-pinning write.
+The dev build role still needs scoped image-push permissions. The deployer also
+needs `ecr:DescribeRepositories`, `ecr:BatchGetImage`, the scoped ECS
+register/describe/deregister task-definition and run/describe/stop task operations,
+service/task reads, and PassRole in the matrix
+above, plus read/decrypt for an optional smoke secret. Unsigned Cognito preflight
+requires no Cognito IAM grant. Validate the real role in CI rather than assuming
+the PostgreSQL test proves its permissions.
+
+main/사용자 stack은 기존 ECR pin 권한을 유지합니다. dev는 `IMMUTABLE`/digest 방식이므로
+deployer에 pin 쓰기는 필요 없고 ECR 조회, migration/ECS revision 작업, 제한된 PassRole,
+선택한 smoke secret의 읽기·복호화가 필요합니다. 실제 IAM 권한은 CI에서 확인합니다.
 
 ## Verification / 확인
 
-Push a trivial `web/**` change to `dev`: the run should build, pin, roll and pass
-the smoke against `awsops-dev.whchoi.net/api/health` end-to-end. For production:
+Push a reviewed `web/**` change to `dev`: existing core is read-only, then images,
+identity preflight, migration, full saved apply and digest verification run.
+`awaiting_dns` is pending manual DNS; only `deployed` means public authenticated
+smoke passed. Failure logs are encrypted before cleanup; see the staged runbook.
+For production:
 merge `dev → main`, dispatch Deploy Web from main, approve, and watch the smoke
 against the `public_url` output.
+
+dev는 기존 core 조회 → 이미지 → 계정 로그인 확인 → migration → 전체 저장 apply →
+digest 검증 순서입니다. `awaiting_dns`와 공개 인증 검증 완료인 `deployed`를 구분합니다.

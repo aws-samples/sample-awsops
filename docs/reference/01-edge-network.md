@@ -29,7 +29,7 @@ viewer ──TLS──> CloudFront ──TLS (https-only:443)──> VPC Origin
   **public FQDN** (not the ALB DNS name) so the TLS SNI matches the ALB's regional ACM cert.
 - **Internal ALB only — no public ALB.** `aws_lb.internal` is `internal = true` with an
   **HTTPS:443 listener** backed by a **regional ACM certificate** (validated via the
-  CloudFront cert's existing Route53 CNAMEs). The ALB forwards to a `target_type = "ip"`
+  ALB certificate's own `domain_validation_options`). The ALB forwards to a `target_type = "ip"`
   target group on the Fargate container port (`3000`), health check path `/api/health`.
 - **ALB security group** allows **443 only from the CloudFront managed SG
   `CloudFront-VPCOrigins-Service-SG`**, looked up via a plural `data "aws_security_groups"` with
@@ -89,7 +89,8 @@ The 504 → 200 root cause (reuse-critical — re-read before changing the edge)
 1. **CF → ALB must be TLS end-to-end.** Set the VPC Origin `origin_protocol_policy = https-only`
    **and** the distribution origin `domain_name` to the **public FQDN** (this drives the TLS SNI
    to match the ALB cert). The ALB needs an **HTTPS:443 listener + a regional ACM cert**,
-   validated through the CloudFront cert's existing Route53 CNAME records.
+   validated through its own ACM validation records; the CloudFront certificate
+   separately uses its own validation options.
 2. **ALB SG must allow 443 from `CloudFront-VPCOrigins-Service-SG`.** A broad VPC-CIDR-only :443
    ingress rule produces a **persistent 504** — CloudFront's VPC Origin ENIs are reached via that
    managed SG, not by CIDR. Reference it with a plural `data "aws_security_groups"` lookup filtered
@@ -104,6 +105,14 @@ The 504 → 200 root cause (reuse-critical — re-read before changing the edge)
 Also: SSE must not buffer at the edge — keep `CACHING_DISABLED` on the dynamic behavior (ADR-028)
 and ensure origin read timeout exceeds the event interval. The real app (P1d) must emit an SSE
 heartbeat at least every ~20s.
+
+Staged dev uses default-off `defer_edge_until_dns` and DNS-record deferrals only
+for fresh bootstrap/manual DNS. Once certificates are issued, it adds the HTTPS
+listener, VPC origin and ECS load-balancer attachment, then converges managed-SG
+ingress. The manual path has an explicit `reviewed_origin_bootstrap` exception
+for that named bootstrap check only; replacement checks remain strict.
+dev 단계별 배포는 신규 bootstrap에서만 edge/DNS를 유예하고 발급 후 HTTPS 경로와
+managed-SG ingress를 완성합니다. 수동 예외도 해당 SG check에만 한정됩니다.
 
 ## Source / 출처
 

@@ -38,6 +38,27 @@ DO NOTHING`. Concurrent branches kept **preempting the same integer** (manual re
   the baseline `schema.sql` stays as the one-time bootstrap of those tables.
 
 ## Release versioning & upgrades
+### Fresh private CI initialization / 신규 CI 초기화
+
+The one-off migration task sets `INITIALIZE_EMPTY_DB=1`. Under the same advisory
+lock, `initialize-db.mjs` applies the frozen baseline only when no ledger and no
+user objects exist. Baseline DDL, TEXT ledger conversion, metadata columns and
+the baseline checksum commit atomically; all pending ULIDs then run normally.
+An occupied database without a ledger is rejected. An existing ledger skips
+baseline replay; legacy INTEGER ledgers still require the explicit `BOOTSTRAP=1`
+procedure above. TLS-verified credentials are read at runtime from Secrets Manager.
+Existing staged dev stacks migrate before the full foundation saved-plan apply.
+Fresh core bootstrap has no existing app and keeps web desired count zero;
+existing stacks without a migration template fail an explicit prerequisite check.
+
+CI task의 `INITIALIZE_EMPTY_DB=1`은 ledger와 사용자 객체가 모두 없는 DB에서만
+baseline을 적용합니다. 동일 advisory lock 안에서 baseline·TEXT ledger·checksum을
+원자적으로 기록하고 ULID를 적용합니다. 기존 DB/ledger는 재초기화하지 않으며
+INTEGER ledger는 기존 명시적 BOOTSTRAP 절차를 따릅니다. 기존 stack은 migration
+후 전체 저장 plan을 적용하고, 신규 bootstrap만 web count 0으로 시작합니다.
+
+### Cumulative upgrades / 누적 업그레이드
+
 Migrations are **cumulative**, not version-pair scripts. The `schema_migrations` ledger records which
 migration IDs are applied; `make migrate` applies whatever the live DB is *missing*, in ULID (chronological)
 order — regardless of which release you started from. So you never author a "2.0.1 → 2.1.5" script:

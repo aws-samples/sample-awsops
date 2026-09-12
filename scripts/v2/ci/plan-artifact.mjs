@@ -60,7 +60,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       const { plan, files } = openBundle(readFileSync('tfplan.enc'), metadata, process.env.TF_PLAN_ENC_KEY);
       writeFileSync('tfplan', plan, { mode: 0o600 });
       const json = JSON.parse(command('terraform', ['show', '-json', 'tfplan']));
-      guardPlan(json, { reviewedDeletes: process.env.REVIEWED_DELETES === 'true', manualDns: metadata.target === 'dev' });
+      guardPlan(json, { reviewedDeletes: process.env.REVIEWED_DELETES === 'true', manualDns: metadata.target === 'dev',
+        bootstrapOrigin: process.env.REVIEWED_ORIGIN_BOOTSTRAP === 'true', enforceFrozenFlags: true });
       mkdirSync('.build', { recursive: true, mode: 0o700 });
       for (const [name, bytes] of Object.entries(files)) writeFileSync(name, Buffer.from(bytes, 'base64'), { mode: 0o600 });
     } else throw new Error('Expected seal or open');

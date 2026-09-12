@@ -585,7 +585,7 @@ locals {
 
 check "cf_vpc_origin_sg_present" {
   assert {
-    condition     = !var.edge_enabled || local.cf_vpc_origin_sg_id != null
+    condition     = var.defer_edge_until_dns || local.cf_vpc_origin_sg_id != null
     error_message = "CloudFront-VPCOrigins-Service-SG is not in this VPC yet — the ALB SG has NO 443 ingress (bootstrap). Expected on a brand-new VPC before the first apply creates the VPC origin; run plan/apply once more afterwards to add the managed-SG rule, or the edge stays 504."
   }
 }
@@ -651,7 +651,7 @@ resource "aws_acm_certificate" "alb" {
 }
 
 resource "aws_acm_certificate_validation" "alb" {
-  count                   = var.edge_enabled ? 1 : 0
+  count                   = !var.defer_edge_until_dns ? 1 : 0
   certificate_arn         = aws_acm_certificate.alb.arn
   validation_record_fqdns = [for dvo in aws_acm_certificate.alb.domain_validation_options : dvo.resource_record_name]
 }
@@ -684,7 +684,7 @@ resource "aws_lb_target_group" "web" {
 }
 
 resource "aws_lb_listener" "https" {
-  count             = var.edge_enabled ? 1 : 0
+  count             = !var.defer_edge_until_dns ? 1 : 0
   load_balancer_arn = aws_lb.internal.arn
   port              = 443
   protocol          = "HTTPS"
@@ -710,7 +710,7 @@ resource "aws_ecs_service" "web" {
   }
 
   dynamic "load_balancer" {
-    for_each = var.edge_enabled ? [1] : []
+    for_each = !var.defer_edge_until_dns ? [1] : []
     content {
       target_group_arn = aws_lb_target_group.web.arn
       container_name   = "web"

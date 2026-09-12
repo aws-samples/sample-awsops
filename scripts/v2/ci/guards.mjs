@@ -1,5 +1,8 @@
 // Pure fail-closed checks shared by CI and its offline tests. Never print plan values.
-export function guardPlan(plan, { reviewedDeletes = false, manualDns = true, bootstrapOrigin = false } = {}) {
+export function guardPlan(plan, { reviewedDeletes = false, manualDns = true, bootstrapOrigin = false, enforceFrozenFlags = false } = {}) {
+  if (enforceFrozenFlags && plan.variables?.remediation_enabled?.value !== false) {
+    throw new Error('Frozen remediation_enabled must be explicitly false in the saved plan');
+  }
   if (plan.errored || plan.complete === false || plan.deferred_changes?.length) throw new Error('Incomplete plan refused');
   for (const check of plan.checks ?? []) {
     if (['fail', 'error'].includes(check.status) &&
@@ -17,6 +20,12 @@ export function guardPlan(plan, { reviewedDeletes = false, manualDns = true, boo
   }
 }
 
+export function assertDeploymentAccount(actual, expected) {
+  if (!/^\d{12}$/.test(expected ?? '') || actual !== expected) {
+    throw new Error('Deployment account mismatch or missing protected AWS_DEV_ACCOUNT_ID');
+  }
+}
+
 export function selectStage(addresses, certificatesIssued) {
   return certificatesIssued || addresses.some(a => /^aws_(cloudfront_(distribution|vpc_origin)|lb_listener|acm_certificate_validation)\./.test(a)) ? 'edge' : 'core';
 }
@@ -26,9 +35,9 @@ export function stageVariables(resources) {
   if (service && service.values.name !== 'awsops-dev-web') throw new Error('Backend belongs to a different stack');
   return {
     ci_deployment_enabled: true,
-    edge_enabled: selectStage(resources.map(r => r.address), false) === 'edge',
-    dns_validation_records_enabled: resources.some(r => r.type === 'aws_route53_record' && r.name === 'cf_validation'),
-    dns_alias_records_enabled: resources.some(r => r.type === 'aws_route53_record' && r.name === 'alias'),
+    defer_edge_until_dns: selectStage(resources.map(r => r.address), false) !== 'edge',
+    defer_dns_validation_records: !resources.some(r => r.type === 'aws_route53_record' && r.name === 'cf_validation'),
+    defer_dns_alias_records: !resources.some(r => r.type === 'aws_route53_record' && r.name === 'alias'),
     web_desired_count: service?.values.desired_count ?? 0,
     web_task_definition_arn: service?.values.task_definition ?? '',
   };

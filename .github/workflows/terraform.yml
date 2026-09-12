@@ -5,9 +5,11 @@ name: Terraform
 # base64 REPO-LEVEL secrets, one distinctly-named pair per stack:
 #   main -> TF_BACKEND_HCL     / TF_TFVARS      (production stack)
 #   dev  -> TF_BACKEND_HCL_DEV / TF_TFVARS_DEV  (dev stack, awsops-dev.whchoi.net)
-# Repo-level, not environment-scoped: the automatic plan job must run ungated
-# on PRs/pushes. Environments gate ONLY the dispatch-time apply. Until a
-# stack's secrets are populated, its plan skips with a warning.
+# PR tests run without secrets/OIDC on a hosted runner. The required Plan check
+# executes a real plan from the immutable PR base configuration, never PR code.
+# Its summary distinguishes that source from the candidate SHA. A trusted push
+# then plans the merged source and produces the only apply-eligible artifact.
+# Missing stack configuration fails Plan; it never becomes a successful skip.
 # Fork-PR guard: plan runs only for same-repo PRs — GitHub already denies fork
 # runs secrets and id-token, and the fork's branch controls the workflow file
 # on pull_request events, so we don't even start the job for forks.
@@ -39,41 +41,90 @@ on:
         type: boolean
         default: false
         required: false
+      reviewed_origin_bootstrap:
+        description: "Reviewed first-origin bootstrap: exempt only the missing CloudFront managed-SG check; converge ingress with the next plan"
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
-  actions: read
-  id-token: write
 
 defaults:
   run:
     working-directory: terraform/foundation
 
 jobs:
-  plan:
-    name: Plan
+  guard-tests:
+    name: Deployment guard tests
     if: >-
       github.event_name != 'workflow_dispatch' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: sample-awsops
-    # plan is automatic and read-only — it must never sit behind any gate.
-    env:
-      TARGET: ${{ github.base_ref || github.ref_name }}
-      MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
-      MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
-      DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
-      DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
-      USER_BACKEND_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', github.base_ref || github.ref_name)] }}
-      USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.base_ref || github.ref_name)] }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test candidate without deployment credentials
+        working-directory: .
+        run: node --test scripts/v2/ci/*.test.mjs
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+          terraform_version: 1.15.7
+      - name: Validate candidate Terraform without backend access
+        run: |
+          terraform init -backend=false -input=false -lockfile=readonly
+          terraform validate
+
+  plan:
+    name: Plan
+    needs: [guard-tests]
+    if: >-
+      always() && github.event_name != 'workflow_dispatch' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: sample-awsops
+    permissions:
+      contents: read
+      id-token: write
+    # Only immutable trusted-base/push files execute in this credentialed job.
+    env:
+      TARGET: ${{ github.base_ref || github.ref_name }}
+      PLAN_SOURCE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Require successful candidate tests
+        working-directory: .
+        env:
+          TEST_RESULT: ${{ needs.guard-tests.result }}
+        run: test "$TEST_RESULT" = success
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify and report the immutable plan source
+        working-directory: .
+        run: |
+          set -euo pipefail
+          [[ "$PLAN_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$PLAN_SOURCE_SHA"
+          printf 'Plan source SHA: `%s`\nCandidate SHA: `%s`\n' "$PLAN_SOURCE_SHA" "$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            echo 'This required check runs a real Terraform plan of the immutable trusted base. Candidate code is tested without credentials; the merged push must produce its own exact-SHA plan before apply.' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Deployment guard tests
-        run: node --test ../../scripts/v2/ci/*.test.mjs
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -87,8 +138,27 @@ jobs:
           role-to-assume: ${{ secrets.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
           aws-region: ap-northeast-2
 
+      - name: Verify the protected dev deployment account
+        env:
+          AWS_DEV_ACCOUNT_ID: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            dev|atomoh|ssminji|whchoi)
+              [[ "$AWS_DEV_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || { echo '::error::Missing protected AWS_DEV_ACCOUNT_ID'; exit 1; }
+              ACTUAL_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+              test "$ACTUAL_ACCOUNT" = "$AWS_DEV_ACCOUNT_ID" || { echo '::error::Deployment account mismatch'; exit 1; }
+              ;;
+          esac
+
       - name: Restore backend.hcl / terraform.tfvars
-        id: restore
+        env:
+          MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
+          MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
+          DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
+          DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
+          USER_BACKEND_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', github.base_ref || github.ref_name)] }}
+          USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.base_ref || github.ref_name)] }}
         run: |
           # Explicit per-branch case, hard-fail semantics — never an &&/|| ternary
           # whose empty-value fallthrough would plan against the other stack.
@@ -99,9 +169,8 @@ jobs:
             *) echo "::error::unexpected target '$TARGET'"; exit 1;;
           esac
           if [ -z "$B" ] || [ -z "$V" ]; then
-            echo "::warning::TF backend secrets for '$TARGET' are not set yet — run 'make configure' once for that stack (docs/runbooks/dev-repo-setup.md). Skipping plan until then."
-            echo "skip=1" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error::TF backend/tfvars secrets for '$TARGET' are required for a real Plan check."
+            exit 1
           fi
           umask 077
           echo "$B" | base64 -d > backend.hcl
@@ -115,16 +184,23 @@ jobs:
           fi
 
       - name: terraform init
-        if: steps.restore.outputs.skip != '1'
         run: terraform init -backend-config=backend.hcl -input=false -lockfile=readonly
 
-      - name: Preserve the current dev stage and image revision
-        if: steps.restore.outputs.skip != '1' && env.TARGET == 'dev'
+      - name: Prepare the trusted dev stage when supported
         working-directory: .
-        run: node scripts/v2/ci/deploy-dev.mjs prepare
+        env:
+          AWS_DEV_ACCOUNT_ID: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET" = dev ] && [ -f scripts/v2/ci/deploy-dev.mjs ]; then
+            GITHUB_SHA="$PLAN_SOURCE_SHA" node scripts/v2/ci/deploy-dev.mjs prepare
+          else
+            # The first PR's immutable base predates these helpers. Plan that
+            # base's actual config normally; never execute a helper from the PR.
+            echo 'Using the trusted source configuration without staged helper overrides.' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: terraform plan
-        if: steps.restore.outputs.skip != '1'
         env:
           # Sensitive inputs ride as TF_VAR_ env from masked secrets, never inside the
           # tfvars blob (public-repo logs are public; secrets are auto-masked). Scoped to
@@ -140,16 +216,16 @@ jobs:
           # Plan text can include non-sensitive-labelled credentials in providers;
           # keep it local too. Publish only the authenticated encrypted artifact.
           STAGE_ARGS=()
-          if [ "$TARGET" = dev ]; then STAGE_ARGS+=(-var-file=.build/ci/variables.tfvars.json); fi
+          if [ "$TARGET" = dev ] && [ -f .build/ci/variables.tfvars.json ]; then STAGE_ARGS+=(-var-file=.build/ci/variables.tfvars.json); fi
           terraform plan -out=tfplan -input=false -lock=false "${STAGE_ARGS[@]}" > tfplan.log 2>&1 || {
-            echo '::error::Terraform plan failed; inspect restricted runner diagnostics before cleanup'; exit 1;
+            echo '::error::Terraform plan failed; inspect the encrypted failure-diagnostics artifact'; exit 1;
           }
 
       # A plan file embeds every input variable value in plaintext (sensitive
       # ones included), and artifacts on a public repo are downloadable by any
       # GitHub account — encrypt before upload, fail-closed without the key.
       - name: Encrypt plan artifact
-        if: steps.restore.outputs.skip != '1'
+        if: github.event_name == 'push'
         env:
           TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
         run: |
@@ -158,11 +234,59 @@ jobs:
           rm -f tfplan
 
       - name: Upload plan artifact (encrypted)
-        if: steps.restore.outputs.skip != '1'
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: tfplan
           path: terraform/foundation/tfplan.enc
+          retention-days: 5
+
+      - name: Preserve encrypted failure diagnostics
+        if: failure()
+        id: diagnostics
+        working-directory: .
+        env:
+          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+        run: |
+          if [ -f scripts/v2/ci/failure-logs.mjs ]; then
+            node scripts/v2/ci/failure-logs.mjs
+          else
+            # Immutable bootstrap bases predate the helper. Use only builtin
+            # crypto here; never fetch or execute a helper from the PR.
+            node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { createCipheriv, randomBytes, scryptSync } from 'node:crypto';
+          const files = ['terraform/foundation/tfplan.log', 'terraform/foundation/.build/ci/last-error.log'];
+          const logs = Object.fromEntries(files.filter(p => fs.existsSync(p)).map(p => [path.basename(p), fs.readFileSync(p, 'utf8')]));
+          const output = (key, value) => fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
+          output('encrypted', 'false');
+          if (Object.keys(logs).length) {
+            const parent = path.resolve(process.env.RUNNER_TEMP, '..', '.awsops-private-diagnostics');
+            fs.mkdirSync(parent, {recursive:true, mode:0o700}); fs.chmodSync(parent, 0o700);
+            const dir = fs.mkdtempSync(path.join(parent, 'failure-'));
+            output('retained_dir', dir);
+            for (const [name, text] of Object.entries(logs)) fs.writeFileSync(path.join(dir, name), text, {mode:0o600});
+            if (!process.env.TF_PLAN_ENC_KEY) throw new Error(`Missing encryption key; diagnostics retained privately at ${dir}`);
+            const salt=randomBytes(16), iv=randomBytes(12);
+            const cipher=createCipheriv('aes-256-gcm', scryptSync(process.env.TF_PLAN_ENC_KEY,salt,32),iv);
+            const metadata={kind:'failure-diagnostics',sha:process.env.PLAN_SOURCE_SHA,runId:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT};
+            const payload=JSON.stringify({metadata,plan:Buffer.from(JSON.stringify(logs)).toString('base64'),files:{}});
+            const bytes=Buffer.concat([cipher.update(payload),cipher.final()]);
+            const target=path.join(dir,'diagnostics.enc');
+            fs.writeFileSync(target,Buffer.concat([salt,iv,cipher.getAuthTag(),bytes]),{mode:0o600});
+            for (const name of Object.keys(logs)) fs.rmSync(path.join(dir,name));
+            output('path',target); output('encrypted','true');
+            console.log(`Encrypted diagnostics retained at ${dir}`);
+          }
+          JS
+          fi
+      - name: Upload encrypted failure diagnostics
+        if: failure() && steps.diagnostics.outputs.encrypted == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-failure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: ${{ steps.diagnostics.outputs.path }}
           retention-days: 5
 
       # Same principle as the apply job: the runner is persistent and shared —
@@ -178,6 +302,10 @@ jobs:
     name: Apply (saved plan)
     if: github.event_name == 'workflow_dispatch'
     runs-on: sample-awsops
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     concurrency:
       group: deployment-${{ github.ref_name }}
@@ -221,6 +349,19 @@ jobs:
           role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
 
+      - name: Verify the protected dev apply account
+        env:
+          AWS_DEV_ACCOUNT_ID: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            dev|atomoh|ssminji|whchoi)
+              [[ "$AWS_DEV_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || { echo '::error::Missing protected AWS_DEV_ACCOUNT_ID'; exit 1; }
+              ACTUAL_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+              test "$ACTUAL_ACCOUNT" = "$AWS_DEV_ACCOUNT_ID" || { echo '::error::Deployment account mismatch'; exit 1; }
+              ;;
+          esac
+
       - name: Restore backend.hcl / terraform.tfvars
         run: |
           case "$TARGET" in
@@ -261,6 +402,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PLAN_RUN_ID: ${{ inputs.plan_run_id }}
           REVIEWED_DELETES: ${{ inputs.reviewed_deletes }}
+          REVIEWED_ORIGIN_BOOTSTRAP: ${{ inputs.reviewed_origin_bootstrap }}
         run: |
           [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::TF_PLAN_ENC_KEY secret is not set."; exit 1; }
           node ../../scripts/v2/ci/plan-artifact.mjs open
@@ -269,8 +411,23 @@ jobs:
         run: |
           umask 077
           terraform apply -input=false tfplan > tfplan.log 2>&1 || {
-            echo '::error::Saved-plan apply failed; inspect restricted runner diagnostics before cleanup'; exit 1;
+            echo '::error::Saved-plan apply failed; inspect the encrypted failure-diagnostics artifact'; exit 1;
           }
+
+      - name: Preserve encrypted failure diagnostics
+        if: failure()
+        id: diagnostics
+        working-directory: .
+        env:
+          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+        run: node scripts/v2/ci/failure-logs.mjs
+      - name: Upload encrypted failure diagnostics
+        if: failure() && steps.diagnostics.outputs.encrypted == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-failure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: ${{ steps.diagnostics.outputs.path }}
+          retention-days: 5
 
       # The runner is persistent — never leave the decrypted plan (embeds sensitive
       # variable values in plaintext) or the restored config behind.
