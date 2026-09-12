@@ -14,7 +14,8 @@ name: Terraform
 #
 # Mutation gate: `plan` is automatic (PR/push) and read-only (ci-terraform-plan,
 # ReadOnlyAccess). `apply` is workflow_dispatch-only and applies the EXACT
-# plan artifact from the run given in `plan_run_id` — never a fresh plan —
+# plan artifact from an explicit plan dispatch given in `plan_run_id` —
+# automatic PR/push plans are advisory and cannot be applied —
 # matching terraform/CLAUDE.md's "no -auto-approve; saved-plan apply" rule.
 # apply is gated per branch: dispatch from main -> `production` environment
 # (reviewer approval); dispatch from dev -> `development` (no reviewer) —
@@ -23,7 +24,7 @@ name: Terraform
 on:
   pull_request:
     branches: [main, dev]
-    paths: ["terraform/foundation/**"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_dns_policy.py"]
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
     # The workflow file itself is in the path filter so a workflow change
@@ -31,9 +32,33 @@ on:
     paths: ["terraform/foundation/**", ".github/workflows/terraform.yml"]
   workflow_dispatch:
     inputs:
+      mode:
+        description: "Create a fresh plan, or apply a verified saved plan"
+        type: choice
+        options: [plan, apply]
+        default: plan
+      plan_scope:
+        description: "ECR bootstrap creates only the web image repository; full plans the stack"
+        type: choice
+        options: [full, ecr-bootstrap]
+        default: full
+      publish_service_dns:
+        description: "Publish service A records (preserve current state when DNS changes are prohibited)"
+        type: boolean
+        default: true
+      allow_dns_changes:
+        description: "Permit DNS changes, including certificate validation; otherwise reuse issued certificates"
+        type: boolean
+        default: false
+      existing_cf_certificate_arn:
+        description: "Optional issued us-east-1 certificate to reuse without validation DNS"
+        required: false
+      existing_alb_certificate_arn:
+        description: "Optional issued regional ALB certificate to reuse without validation DNS"
+        required: false
       plan_run_id:
-        description: "Run ID of the terraform.yml run whose plan artifact to apply"
-        required: true
+        description: "Successful plan dispatch run ID from this exact branch and SHA (push plans are advisory)"
+        required: false
 
 permissions:
   contents: read
@@ -47,7 +72,7 @@ jobs:
   plan:
     name: Plan
     if: >-
-      github.event_name != 'workflow_dispatch' &&
+      (github.event_name != 'workflow_dispatch' || inputs.mode == 'plan') &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: sample-awsops
@@ -65,6 +90,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
+          terraform_version: 1.15.7
           terraform_wrapper: false
 
       - name: Configure AWS credentials (OIDC -> ci-terraform-plan)
@@ -104,6 +130,36 @@ jobs:
         if: steps.restore.outputs.skip != '1'
         run: terraform init -backend-config=backend.hcl -input=false
 
+      - name: Check existing certificates without changing DNS
+        id: dns
+        if: steps.restore.outputs.skip != '1' && github.event_name == 'workflow_dispatch'
+        env:
+          CF_CERTIFICATE_ARN: ${{ inputs.existing_cf_certificate_arn }}
+          ALB_CERTIFICATE_ARN: ${{ inputs.existing_alb_certificate_arn }}
+          ALLOW_DNS_CHANGES: ${{ inputs.allow_dns_changes }}
+          PUBLISH_SERVICE_DNS: ${{ inputs.publish_service_dns }}
+          PLAN_SCOPE: ${{ inputs.plan_scope }}
+        run: |
+          set -euo pipefail
+          umask 077
+          STATE_JSON=ci-state.json
+          trap 'rm -f "$STATE_JSON"' EXIT
+          # show and console read state without locking or refreshing it.
+          # console does NOT support -lock=false; verified against an offline backend.
+          terraform show -json > "$STATE_JSON"
+          terraform console -no-color \
+            <<<'jsonencode({domain = var.domain_name, aliases = var.extra_domain_aliases, region = var.region, cf_arn = var.existing_cf_certificate_arn, alb_arn = var.existing_alb_certificate_arn})' |
+            python3 ../../scripts/v2/ci_dns_policy.py certificates \
+              --state "$STATE_JSON" --allow-dns "$ALLOW_DNS_CHANGES" \
+              --publish "$PUBLISH_SERVICE_DNS" --scope "$PLAN_SCOPE" \
+              --cf-arn "$CF_CERTIFICATE_ARN" --alb-arn "$ALB_CERTIFICATE_ARN" \
+              > ci-deployment.tfvars.json
+          # JSON null preserves Terraform certificate ownership; "-var=...=null"
+          # would instead pass the literal string "null" to a string variable.
+          echo 'Certificate ownership and service DNS inputs (redacted):' >> "$GITHUB_STEP_SUMMARY"
+          python3 ../../scripts/v2/ci_dns_policy.py summary \
+            < ci-deployment.tfvars.json >> "$GITHUB_STEP_SUMMARY"
+
       - name: terraform plan
         if: steps.restore.outputs.skip != '1'
         env:
@@ -113,10 +169,35 @@ jobs:
           # is deliberately one shared credential across stacks; admin users are per-stack
           # and NOT created by CI (create_admin_user defaults to false).
           TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
+          DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+          PLAN_SCOPE: ${{ inputs.plan_scope }}
         # -lock=false: the plan role is ReadOnlyAccess by design and cannot write
         # the S3 lock object (use_lockfile → <key>.tflock, s3:PutObject). A
         # read-only plan needs no lock; apply (deployer role) still locks.
-        run: terraform plan -out=tfplan -input=false -lock=false
+        run: |
+          set -euo pipefail
+          args=(-out=tfplan -input=false -lock=false)
+          if [ "$DISPATCH" = "true" ]; then
+            [ -s ci-deployment.tfvars.json ] || { echo "::error::verified deployment inputs are missing"; exit 1; }
+            args+=(-var-file=ci-deployment.tfvars.json)
+            case "$PLAN_SCOPE" in
+              full) ;;
+              ecr-bootstrap) args+=(-target=aws_ecr_repository.web);;
+              *) echo "::error::unsupported plan scope"; exit 1;;
+            esac
+          fi
+          terraform plan "${args[@]}"
+
+      - name: Check planned DNS operations
+        if: steps.restore.outputs.skip != '1'
+        env:
+          ALLOW_DNS_CHANGES: ${{ github.event_name != 'workflow_dispatch' || inputs.allow_dns_changes }}
+          PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
+        run: |
+          set -euo pipefail
+          terraform show -json tfplan |
+            python3 ../../scripts/v2/ci_dns_policy.py check-plan \
+              --allow-dns "$ALLOW_DNS_CHANGES" --scope "$PLAN_SCOPE" | tee -a "$GITHUB_STEP_SUMMARY"
 
       # A plan file embeds every input variable value in plaintext (sensitive
       # ones included), and artifacts on a public repo are downloadable by any
@@ -143,11 +224,15 @@ jobs:
       # the restored config behind, whatever the outcome.
       - name: Clean sensitive files off the runner
         if: always()
-        run: rm -f tfplan tfplan.enc terraform.tfvars backend.hcl
+        run: rm -f tfplan tfplan.enc terraform.tfvars backend.hcl ci-deployment.tfvars.json ci-state.json
 
   apply:
     name: Apply (saved plan)
-    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'apply'
     runs-on: sample-awsops
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
@@ -163,8 +248,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify the saved plan belongs to this deployed commit and branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$PLAN_RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::plan_run_id is required"; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PLAN_RUN_ID" |
+            python3 ../../scripts/v2/ci_plan_context.py \
+              --repository "$GITHUB_REPOSITORY" --branch "$TARGET" --commit "$GITHUB_SHA"
+          CURRENT_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$TARGET" --jq '.object.sha')
+          [ "$CURRENT_SHA" = "$GITHUB_SHA" ] || { echo "::error::branch moved; create and review a fresh plan"; exit 1; }
+
       - uses: hashicorp/setup-terraform@v3
         with:
+          terraform_version: 1.15.7
           terraform_wrapper: false
 
       - name: Select the branch's stack (fail-closed)
@@ -213,8 +312,9 @@ jobs:
       - name: Download the approved plan
         env:
           GH_TOKEN: ${{ github.token }}
+          PLAN_RUN_ID: ${{ inputs.plan_run_id }}
         run: |
-          gh run download "${{ inputs.plan_run_id }}" --repo "${{ github.repository }}" --name tfplan --dir .
+          gh run download "$PLAN_RUN_ID" --repo "$GITHUB_REPOSITORY" --name tfplan --dir .
 
       - name: Decrypt the approved plan
         env:
@@ -223,8 +323,24 @@ jobs:
           [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::TF_PLAN_ENC_KEY secret is not set."; exit 1; }
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in tfplan.enc -out tfplan -pass env:TF_PLAN_ENC_KEY
 
+      - name: Recheck branch immediately before apply
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CURRENT_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$TARGET" --jq '.object.sha')
+          [ "$CURRENT_SHA" = "$GITHUB_SHA" ] || { echo "::error::branch moved; create and review a fresh plan"; exit 1; }
+
       - name: terraform apply (exact saved plan — never re-planned)
-        run: terraform apply -input=false tfplan
+        env:
+          ALLOW_DNS_CHANGES: ${{ inputs.allow_dns_changes }}
+          PLAN_SCOPE: ${{ inputs.plan_scope }}
+        run: |
+          set -euo pipefail
+          terraform show -json tfplan |
+            python3 ../../scripts/v2/ci_dns_policy.py check-plan \
+              --allow-dns "$ALLOW_DNS_CHANGES" --scope "$PLAN_SCOPE"
+          terraform apply -input=false tfplan
 
       # The runner is persistent — never leave the decrypted plan (embeds sensitive
       # variable values in plaintext) or the restored config behind.

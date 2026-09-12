@@ -23,9 +23,27 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
-| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC bring-up and protected review recovery — role/trust matrix, environment approval/auth failures, exact-SHA recovery, per-stack TF secrets, ECR pin perms |
+| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC and protected review recovery; ECR preflight; state-preserving DNS deferral, certificate ownership, dispatch-only same-SHA saved plans and Host/SNI smoke (ADR-002/016) |
 | [steampipe-quota-and-staleness.md](steampipe-quota-and-staleness.md) | Steampipe quota guard — rate limiter knobs, partial runs, freshness ledger/staleness response |
 | [agent-sql-reader.md](agent-sql-reader.md) | `execute_sql`/`inventory-read` Data API auth failures — `awsops_sql_reader` role/password sync (`apply → make migrate → make agentcore`) |
+
+## Deployment invariants
+- `dev-repo-setup.md` covers CI/OIDC, protected review recovery, ECR preflight, state-preserving
+  DNS deferral and explicit same-branch/SHA dispatch plans. PR/push plans are advisory.
+- Preserve managed certificates as JSON null and existing service aliases. External certificates
+  must be operator-selected or already attached; never scan the account. Routine CI cannot
+  externalize a managed certificate or delete/replace owned validation CNAMEs even when DNS is
+  allowed; ownership migration and validation-record retirement need separate reviewed procedures.
+- ALLDNS includes private Cloud Map, certificate validation and registered ECS task changes.
+  Steampipe tuning, hydrate-fallback remedies and rollback/disable can change private DNS and are
+  blocked too. No private-DNS exception. Future authorized cutovers explicitly set
+  `allow_dns_changes=true` on both plan and apply dispatches; examples do not grant permission.
+- Public summaries show only managed/external certificate suffixes. Workflow/manual smoke use
+  the same argv-safe CLI and preserve service Host/SNI/TLS through CloudFront.
+- Offline Terraform checks use `bash scripts/v2/terraform-test.sh` from the repo root:
+  Terraform 1.15.7, tracked working files copied in isolation, fresh `TF_DATA_DIR`,
+  `init -backend=false`, mocked providers and no real backend. Test dependencies are declared in
+  `scripts/v2/requirements-test.txt`; deployment Node tests also run in the shared merge script.
 
 ## Conventions
 - Filename: `kebab-case.md`, domain-then-topic order.
