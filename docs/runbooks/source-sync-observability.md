@@ -29,6 +29,8 @@ samples의 CI·OIDC·브랜치/배포 정책과 Terraform 경로를 유지한다
 
 - `01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql`: collection attempts,
   explicit graph evidence counts, and projected SQL-reader views.
+- `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`: queue claimed account/region
+  and constant `telemetry_claim` provenance in the SQL-reader projection, including retained snapshots.
 - `01M27AQXZKQQ5J611R01BEFHPD_worker_jobs_lifecycle_timestamps.sql`: first worker-start and
   terminal timestamps, stamped by the existing ledger's status transitions.
 
@@ -68,3 +70,43 @@ metadata and metric scope labels. Before reindexing, older cached queries can pr
 기한 초과와 아직 기한이 남은 작업을 구분한다. FinOps 권장 조건 해소는 실제 절감 검증이
 아니며, 업무 원가 배분·배포 이벤트 연계는 별도 원천 데이터가 필요하다. 합성 평가의 테스트
 통과를 운영 진단 정확도로 해석하지 않는다.
+
+
+## Trace identity boundaries / 트레이스 식별 경계
+
+- Queue ARNs join across caller accounts/regions only within the same datasource/environment.
+  `claimedAccountId` and `claimedRegion` come from telemetry, with constant
+  `identityProvenance: telemetry_claim`; even a host-account match does not verify a claim.
+  Queues have no AWS-inventory bridge. The graph row's `account_id = self` is snapshot storage
+  scope, not evidence of queue ownership. Apply the new projection migration before relying on
+  direct SQL-reader queries; the API and AI tool also relabel legacy retained queue metadata.
+- DB hostname matching retains its existing host-scope eligibility: absent account, `self`, or
+  an explicit account matching configured `HOST_ACCOUNT_ID`. Set `HOST_ACCOUNT_ID` from trusted
+  deployment configuration for manual graph rebuilds, never from a span. The resulting DB link
+  is a host-name correlation, not validation of arbitrary telemetry or a queue-identity rule.
+- Tempo search may omit leading hex zeros or return a 64-bit trace ID. Normalize trace hex up
+  to 32 digits to full 16-byte identity; span hex and base64 bytes keep their strict widths.
+  Opaque nonhex legacy IDs stay exact. A full zero parent means no parent; zero trace/child IDs
+  are invalid and contribute no graph identity.
+
+큐 ARN은 같은 데이터소스·환경에서만 호출자의 계정·리전을 넘어 연결된다. 계정·리전은
+텔레메트리가 주장한 값이며 호스트 계정과 같아도 검증되지 않는다. 큐를 AWS 인벤토리로
+연결하지 않고, 행의 `self`는 저장 범위일 뿐 소유권 증명이 아니다. 직접 SQL 조회는 새
+projection 마이그레이션을 적용해야 하며 API와 AI 도구는 이전 큐 메타데이터도 주장 값으로
+표시한다. DB 호스트명 매칭의 기존 범위(계정 부재·`self`·설정된 호스트 계정)는 유지한다.
+수동 그래프 재구축의 `HOST_ACCOUNT_ID`는 배포 설정에서 가져오며 span에서 설정하지 않는다.
+이 DB 링크는 호스트명 상관관계이고 임의 텔레메트리 검증이나 큐 식별 규칙이 아니다.
+Tempo의 짧은 hex trace ID는 16바이트로 정규화하고 span/base64 너비 검증은 유지한다.
+비-hex 레거시 ID는 그대로 보존하며, 전체 0 부모는 부재이고 0 trace/child는 무효이다.
+
+## Frozen approval contract / 동결된 승인 계약
+
+ADR-005 deliberately leaves `awaiting_approval` unclaimable in `db.claim_running`, even after
+an approval callback. The retained remediation ASL is dark substrate, not a supported execution
+path. SQL tests exercise the actual predicate before/after lifecycle migration; enabling this
+path or widening the predicate is outside these review fixes.
+
+ADR-005에 따라 승인 콜백 이후에도 `awaiting_approval`은 의도적으로 claim할 수 없다.
+남아 있는 remediation ASL은 비활성 코드이며 실행을 지원하는 경로가 아니다. 실제 SQL
+테스트는 lifecycle 마이그레이션 전후의 거부와 원래 행 보존을 확인한다. 이 경로 활성화나
+조건 확대는 이번 검토 수정의 범위가 아니다.

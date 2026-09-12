@@ -728,6 +728,21 @@ class TestTraceTopologyCollection(unittest.TestCase):
         return {"status": status, "attempted_at": self.ATTEMPTED, "captured_at": captured_at,
                 "details": {"sources": [], "retainedPrevious": False} if details is None else details}
 
+    def test_queue_arn_claims_remain_unverified_including_before_projection_migration(self):
+        for attrs in [
+            {"accountId": "111122223333", "region": "us-east-1"},
+            {"claimedAccountId": "111122223333", "claimedRegion": "us-east-1"},
+        ]:
+            body, _ = self._read(self._state(), nodes=[{
+                "id": "queue:one", "kind": "queue", "label": "orders",
+                "meta": {**attrs, "identityProvenance": "aws_verified", "infra_ref": "inventory:queue"},
+            }])
+            self.assertEqual(body["nodes"][0]["meta"], {
+                "claimedAccountId": "111122223333", "claimedRegion": "us-east-1",
+                "identityProvenance": "telemetry_claim",
+            })
+            self.assertIn("not verified AWS", body["note"])
+
     def test_trace_returns_latest_failure_and_retained_snapshot_evidence(self):
         source = {
             "sourceId": "tempo:7", "status": "error", "reasons": ["trace_fetch_failed"], "itemCount": 0,

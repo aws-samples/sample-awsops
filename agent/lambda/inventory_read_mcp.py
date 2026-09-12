@@ -67,7 +67,10 @@ TRACE_TOPOLOGY_NOTE = (
     "Legacy normalized volume values are not evidence counts. meta.spanCount counts observed span "
     "relationships; meta.metricCount is an aggregate metric count. These are separate evidence "
     "counts, not complete traffic volume. collection describes the latest attempt and snapshot "
-    "freshness; retained nodes alone do not establish that collection succeeded or is current."
+    "freshness; retained nodes alone do not establish that collection succeeded or is current. "
+    "Queue identities and claimedAccountId/claimedRegion are telemetry claims, not verified AWS "
+    "accounts, regions or queue inventory. identityProvenance is always telemetry_claim, even "
+    "when an ARN names the host. Shared destination ARNs join only within datasource/environment."
 )
 
 
@@ -213,6 +216,20 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
 
     nodes = [{"id": r["id"], "kind": r["kind"], "label": r["label"],
               "meta": _parse_meta(r.get("meta"))} for r in node_rows if r.get("id")]
+    if cls == "trace":
+        for node in nodes:
+            if node["kind"] != "queue":
+                continue
+            meta = node["meta"].copy()
+            # Also protect reads before the new SQL projection migration / graph rebuild.
+            for claimed, legacy in (("claimedAccountId", "accountId"), ("claimedRegion", "region")):
+                old = meta.pop(legacy, None)
+                value = meta.get(claimed)
+                meta[claimed] = value if isinstance(value, str) and value else (
+                    old if isinstance(old, str) and old else None)
+            meta.pop("infra_ref", None)
+            meta["identityProvenance"] = "telemetry_claim"
+            node["meta"] = meta
     edges = []
     for row in edge_rows:
         if not row.get("source") or not row.get("target"):

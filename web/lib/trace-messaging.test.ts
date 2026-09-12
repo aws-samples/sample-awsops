@@ -104,7 +104,9 @@ describe('qualified messaging destinations', () => {
     expect(queues).toHaveLength(1);
     expect(graph.edges.find(e => e.rel === 'publishes')?.target).toBe(queues[0].id);
     expect(graph.edges.find(e => e.rel === 'consumes')?.source).toBe(queues[0].id);
-    expect(queues[0].meta).toMatchObject({ accountId: '111122223333', region: 'us-east-1' });
+    expect(queues[0].meta).toMatchObject({ claimedAccountId: '111122223333', claimedRegion: 'us-east-1', identityProvenance: 'telemetry_claim' });
+    expect(queues[0].meta).not.toHaveProperty('accountId');
+    expect(queues[0].meta).not.toHaveProperty('region');
     expect(queues[0].meta.environment).toBe('prod');
   });
 
@@ -129,4 +131,27 @@ describe('qualified messaging destinations', () => {
     expect(graph.nodes.filter(n => n.kind === 'queue')).toHaveLength(2);
     expect(graph.unresolvedMessaging).toBe(1);
   });
+});
+
+it('never promotes a queue ARN claiming the host account into verified AWS inventory', () => {
+  const graph = buildTraceGraph([{
+    sourceId: 'tempo:1', traceId: 'trace', spanId: 'span', service: 'untrusted', kind: 'PRODUCER',
+    startMs: 1, durationMs: 1, messagingSystem: 'aws_sqs',
+    messagingDestination: 'arn:aws:sqs::111122223333:orders',
+  }], [], [{ id: 'queue:inventory', kind: 'queue', meta: { accountId: '111122223333' } }], '111122223333');
+  const queue = graph.nodes.find(n => n.kind === 'queue')!;
+  expect(queue.meta).toMatchObject({ claimedAccountId: '111122223333', claimedRegion: null, identityProvenance: 'telemetry_claim' });
+  expect(queue.meta).not.toHaveProperty('accountId');
+  expect(queue.meta).not.toHaveProperty('region');
+  expect(queue.meta).not.toHaveProperty('infra_ref');
+  expect(queue.id).not.toBe('queue:inventory');
+});
+
+it('normalizes local destination whitespace without removing broker scope', () => {
+  const span: TraceSpan = { sourceId: 'tempo:1', traceId: 't', spanId: 'p', service: 'publisher',
+    kind: 'PRODUCER', startMs: 1, durationMs: 1, messagingSystem: 'kafka',
+    messagingBroker: 'broker.example', messagingDestination: 'orders ' };
+  const graph = buildTraceGraph([span, { ...span, spanId: 'c', service: 'consumer', kind: 'CONSUMER', messagingDestination: 'orders' }], [], []);
+  expect(graph.nodes.filter(n => n.kind === 'queue')).toHaveLength(1);
+  expect(graph.edges.map(e => e.rel)).toEqual(['publishes', 'consumes']);
 });

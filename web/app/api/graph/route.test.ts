@@ -46,3 +46,16 @@ describe('graph collection evidence API', () => {
     expect((await response.json()).edges[0].confidence).toBe('unknown');
   });
 });
+
+describe('queue attribution on retained snapshots', () => {
+  it.each(['', '&from=queue:old'])('keeps claimed telemetry separate in trace API %s', async suffix => {
+    auth.mockResolvedValue({ sub: 'user' });
+    query.mockImplementation(async (sql: string) => ({ rows: sql.includes('FROM topology_nodes') ? [{
+      id: 'queue:old', kind: 'queue', label: 'orders', meta: {
+        accountId: '111122223333', region: 'us-east-1', identityProvenance: 'aws_verified', infra_ref: 'inventory:queue',
+      },
+    }] : [] }));
+    const body = await (await GET(new Request(`http://localhost/api/graph?class=trace${suffix}`))).json();
+    expect(body.nodes[0].meta).toEqual({ claimedAccountId: '111122223333', claimedRegion: 'us-east-1', identityProvenance: 'telemetry_claim' });
+  });
+});

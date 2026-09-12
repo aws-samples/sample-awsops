@@ -162,7 +162,7 @@ def test_html_policy_blocks_prefetch_without_offline_or_routing(
     assert requests == [] and connections == []
 
 
-@pytest.mark.parametrize("markup", [
+_ACTIVE_MARKUP = [
     '<LiNk ReL="preconnect" href="{url}">'
     '<link rel="dns-prefetch prefetch" href="{url}/hint">',
     '<meta http-equiv="x-dns-prefetch-control" content="on">'
@@ -175,7 +175,10 @@ def test_html_policy_blocks_prefetch_without_offline_or_routing(
     '<style>/* </style/foo><link rel="prefetch" href="{url}/raw-text"> */</style>',
     '<a href="java&#115;cript:alert(1)" ping="{url}/ping" onclick="alert(1)">link</a>'
     '<img src="{url}/image" srcset="{url}/srcset 2x" onerror="alert(1)">',
-])
+]
+
+
+@pytest.mark.parametrize("markup", _ACTIVE_MARKUP)
 def test_to_pdf_removes_active_elements_before_rendering(
         pdf_browser_available, pdf_resource_server, monkeypatch, markup):
     from playwright.sync_api import Page
@@ -429,3 +432,52 @@ def test_docx_unclosed_fence_does_not_crash_or_leak_backticks():
     # must be real fence handling, not an accidental artifact of _add_runs' naive backtick check
     code_p = next(p for p in doc.paragraphs if p.text == "aws s3 ls")
     assert code_p.runs[0].font.name == "Consolas"
+
+
+@pytest.mark.parametrize("markup", _ACTIVE_MARKUP)
+def test_pdf_markup_filter_without_browser_removes_active_html(markup):
+    # No pdf_browser_available fixture: CI exercises the pure filter without Chromium.
+    from lxml import html
+
+    tree = html.fromstring(exporters._html("# Local report\n\n" + markup.format(url="https://fixture.invalid")))
+    assert not tree.xpath("//link|//base|//iframe|//script|//object|//embed|//svg|//math")
+    assert not tree.xpath("//*[@onclick or @onerror or @srcdoc or @srcset or @ping]")
+    assert not tree.xpath("//a[starts-with(@href, 'javascript:')]|//img[starts-with(@src, 'http')]")
+    assert len(tree.xpath("//meta")) == 2
+    assert tree.xpath("//meta[@http-equiv='Content-Security-Policy']/@content") == [exporters._PDF_CSP]
+    assert "Local report" in tree.text_content()
+
+
+def test_pdf_markup_filter_without_browser_preserves_formatting_and_escaped_examples():
+    from lxml import html
+
+    tree = html.fromstring(exporters._html(_SAMPLE + (
+        '\n<style>#inline { color: #123456 } #inline::after { content: "A & B > C" }</style>'
+        '<p id="inline" style="font-weight: bold">본문 &amp; text</p>'
+        '<img id="pixel" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///w==">'
+        '\n\n```html\n<link rel="prefetch" href="#example">\n```\n\n[section](#section)'
+    )))
+    assert tree.xpath("//h1") and tree.xpath("//table")
+    assert tree.xpath("//p[@id='inline']/@style") == ["font-weight: bold"]
+    assert 'content: "A & B > C"' in tree.xpath("//style")[-1].text
+    assert tree.xpath("//img[@id='pixel']/@src")[0].startswith("data:image/gif;base64,")
+    assert '<link rel="prefetch" href="#example">' in tree.xpath("//pre/code")[0].text
+    assert not tree.xpath("//link")
+    assert tree.xpath("//a/@href") == ["#section"]
+
+
+def test_pdf_markup_unmatched_closers_preserve_allowed_tree_without_browser():
+    # Deep allowed nesting plus unmatched allowed closers used to re-scan the stack each time.
+    body = "<div>" * 2000 + "</span>" * 2000 + "kept</div>" + "</div>" * 1999
+    assert exporters._PdfMarkup().render(body) == "<div>" * 2000 + "kept" + "</div>" * 2000
+
+
+def test_pdf_markup_cdata_parser_stack_disagreement_still_escapes_html():
+    # Some older HTMLParser patch levels can keep cdata_elem after calling handle_endtag.
+    parser = exporters._PdfMarkup()
+    parser.handle_starttag("style", [])
+    parser.set_cdata_mode("style")
+    parser.handle_endtag("style")
+    parser.handle_data('<link rel="prefetch" href="https://fixture.invalid">')
+    assert "<link" not in "".join(parser.parts)
+    assert "&lt;link" in "".join(parser.parts)

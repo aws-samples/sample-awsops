@@ -192,21 +192,22 @@ function mapLinks(value: unknown): NonNullable<TraceSpan['links']> {
   });
 }
 
-/** Tempo supports hex IDs and protobuf JSON's padded base64 byte strings. Decode only
- * canonical, full-width representations: Buffer's permissive base64 decoder otherwise aliases
- * malformed values to valid identities. Opaque legacy IDs remain exact strings, never decoded. */
-function normalizeTempoId(value: unknown, bytes: 8 | 16): string | undefined {
+/** Tempo's TraceIDToHexString trims leading zeros, including 64-bit IDs. Mirror
+ * HexStringToTraceID's padding for trace hex only; spans and protobuf JSON base64 still need
+ * full bytes and canonical encoding. Opaque nonhex legacy IDs remain exact strings. */
+function normalizeTempoId(value: unknown, bytes: 8 | 16, allowZero = false): string | undefined {
   const raw = text(value);
   if (!raw) return undefined;
   let decoded: Buffer | undefined;
-  if (raw.length === bytes * 2 && /^[0-9a-f]+$/i.test(raw)) {
-    decoded = Buffer.from(raw, 'hex');
+  if (/^[0-9a-f]+$/i.test(raw)) {
+    if (raw.length > bytes * 2 || (bytes === 8 && raw.length !== 16)) return undefined;
+    decoded = Buffer.from(raw.padStart(bytes * 2, '0'), 'hex');
   } else if (raw.length === Math.ceil(bytes / 3) * 4 && /^[A-Za-z0-9+/]+={0,2}$/.test(raw)) {
     const candidate = Buffer.from(raw, 'base64');
     if (candidate.length === bytes && candidate.toString('base64') === raw) decoded = candidate;
   }
   // All-zero trace/span IDs are invalid, not shared placeholder identities.
-  return decoded ? (decoded.some(byte => byte !== 0) ? decoded.toString('hex') : undefined) : raw;
+  return decoded ? (allowZero || decoded.some(byte => byte !== 0) ? decoded.toString('hex') : undefined) : raw;
 }
 
 function otelLinks(row: Obj): unknown[] | undefined {
@@ -374,9 +375,9 @@ function parseTempoTrace(traceId: string, value: unknown): { items: TraceSpan[];
           startMs: start / 1e6, durationMs: (end - start) / 1e6,
         };
         if (s.parentSpanId !== undefined && s.parentSpanId !== '') {
-          const parent = normalizeTempoId(s.parentSpanId, 8);
-          if (parent) item.parentSpanId = parent;
-          else reasons.push('malformed_rows');
+          const parent = normalizeTempoId(s.parentSpanId, 8, true);
+          if (!parent) reasons.push('malformed_rows');
+          else if (parent !== '0000000000000000') item.parentSpanId = parent;
         }
         if (text(s.name)) item.name = s.name as string;
         if (s.status !== undefined) {

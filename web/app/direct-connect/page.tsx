@@ -14,6 +14,7 @@ import HBarList from '@/components/charts/HBarList';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import type { DxAnalysis, DxConnectionRow, DxVifRow, DxGatewayRow, DxRoute } from '@/lib/dx';
 import { assessResiliency, type DxSlaTier, type DxResiliency, type DxNoneReason } from '@/lib/dx-topology';
+import { summarizeDxLocations } from '@/lib/dx-evidence';
 import type { InvType } from '@/lib/inventory-types';
 
 // /direct-connect — Direct Connect 리스트+분석 (Network 메뉴). 커넥션/VIF를 리전 fan-out으로
@@ -214,7 +215,8 @@ export default function DirectConnectPage() {
   const vifs = useMemo(() => data?.vifs ?? [], [data]);
   const gws = useMemo(() => data?.gateways ?? [], [data]);
   const resiliency = useMemo(() => (data ? assessResiliency(data) : null), [data]);
-  const locations = data?.locations ?? [];
+  const locationSummary = useMemo(() => summarizeDxLocations(data?.connections ?? []), [data]);
+  const locations = locationSummary.locations;
 
   // 도넛: VIF 타입 분포 (transit/private/public).
   const vifTypeDist = useMemo(() => {
@@ -462,7 +464,7 @@ export default function DirectConnectPage() {
               <StatTile
                 label="커넥션"
                 value={resourcesDegraded ? `${t.connections}+` : t.connections}
-                hint={resourcesDegraded ? tt('일부 리전 조회 실패 — 실제보다 적을 수 있음') : `${tt('로케이션')} ${t.locations}`}
+                hint={resourcesDegraded ? tt('일부 리전 조회 실패 — 실제보다 적을 수 있음') : `${tt('확인된 로케이션')} ${locationSummary.knownLocations}`}
                 variant={resourcesDegraded ? 'warn' : 'default'}
                 icon={<Cable size={16} />}
               />
@@ -538,7 +540,7 @@ export default function DirectConnectPage() {
                       <Badge tone={TIER_TONE[resiliency.tier]} variant="soft">{tt(tierLabel(resiliency))}</Badge>
                       {resiliency.slaPct && <span className="text-[13px] font-semibold">SLA {resiliency.slaPct}</span>}
                       <span className="text-[12px] text-ink-500">
-                        {tt('로케이션')} {resiliency.locations} · {tt('디바이스 2개 이상 로케이션')} {resiliency.dualConnLocations}
+                        {tt('SLA 대상 로케이션 (배포된 owned)')} {resiliency.locations} · {tt('디바이스 2개 이상 로케이션')} {resiliency.dualConnLocations}
                       </span>
                     </div>
                     {resiliency.unknownLocationConnections > 0 && (
@@ -551,6 +553,12 @@ export default function DirectConnectPage() {
                         {tt('호스티드 커넥션은 AWS Direct Connect SLA 적용 제외 — 파트너 SLA를 확인하세요')} ({resiliency.hostedConnections})
                       </div>
                     )}
+                    <p className="px-4 pb-2 text-[12px] text-ink-500">
+                      {tt('커넥션 상태 평가 범위: 배포된 dedicated·hosted, 미배포 제외')}
+                      {' · '}{resiliency.connectionHealthCoverage.assessed}/{resiliency.connectionHealthCoverage.total}
+                      {' · '}{tt('제외')} {resiliency.connectionHealthCoverage.excluded}
+                      {' · '}{tt('확인 불가')} {resiliency.connectionHealthCoverage.unknown}
+                    </p>
                     <ul className="border-t border-ink-100">
                       {resiliency.checks.map((c) => (
                         <li key={c.label} className="flex items-start gap-2 border-b border-ink-50 px-4 py-2 text-[12.5px] last:border-0">
@@ -577,31 +585,35 @@ export default function DirectConnectPage() {
             {/* ③ 로케이션 이중화 — 전 커넥션 단일 로케이션 = 위치 장애 시 전체 DX 경로 상실 */}
             <Card
               title="로케이션 이중화"
-              subtitle="Direct Connect 로케이션별 커넥션 분포 — 위치 단일 장애점 분석"
+              subtitle="배포된 커넥션의 로케이션 분포 — 생성 중·삭제된 커넥션 제외"
               padded={false}
             >
-              {resourcesDegraded ? (
-                // 일부 리전이 통째로 빠진 상태에서는 "이상 없음"이든 "단일 로케이션"이든
-                // 신뢰할 수 없다 — 누락된 리전이 유일한 이중화 지점이었거나, 반대로
-                // 누락된 리전이 유일한 위험 지점이었을 수 있다. 확신 있는 판정을 내지 않는다.
-                <div className="px-4 py-3 text-[13px] text-warning-text">
-                  {tt('일부 리전 조회 실패로 로케이션 이중화 여부를 판단할 수 없습니다')} ({data.degradedRegions.join(', ')})
-                </div>
-              ) : resiliency && resiliency.unknownLocationConnections > 0 ? (
-                <div className="px-4 py-3 text-[13px] text-ink-500">
-                  {tt('로케이션')} · {tt('확인 불가')} ({resiliency.unknownLocationConnections})
-                </div>
-              ) : t.singleLocation ? (
-                <div className="px-4 pt-3 text-[12px] text-warning-text">
-                  {tt('모든 커넥션이 단일 로케이션에 있습니다 — 이 로케이션 장애 시 전체 DX 경로가 끊깁니다. AWS Resiliency Toolkit은 2개 이상 로케이션을 권장합니다')}
-                </div>
-              ) : t.connections > 0 ? (
+              {locationSummary.knownLocations >= 2 ? (
                 <div className="flex items-center gap-2 px-4 py-3 text-[13px] text-emerald-700">
                   <CheckCircle2 size={15} />
                   {tt('이상 없음 — 커넥션이 2개 이상 로케이션에 분산되어 있습니다')}
                 </div>
-              ) : (
+              ) : resourcesDegraded ? (
+                <div className="px-4 py-3 text-[13px] text-warning-text">
+                  {tt('일부 리전 조회 실패로 로케이션 이중화 여부를 판단할 수 없습니다')} ({data.degradedRegions.join(', ')})
+                </div>
+              ) : locationSummary.singleLocation ? (
+                <div className="px-4 pt-3 text-[12px] text-warning-text">
+                  {tt('모든 커넥션이 단일 로케이션에 있습니다 — 이 로케이션 장애 시 전체 DX 경로가 끊깁니다. AWS Resiliency Toolkit은 2개 이상 로케이션을 권장합니다')}
+                </div>
+              ) : locationSummary.assessedConnections === 0 ? (
                 <div className="px-4 py-3 text-[13px] text-ink-400">{tt('커넥션 없음')}</div>
+              ) : null}
+              {locationSummary.excludedConnections > 0 && (
+                <div className="px-4 py-2 text-[12px] text-ink-500">
+                  {tt('판정 범위')} {locationSummary.assessedConnections}/{data.connections.length}
+                </div>
+              )}
+              {locationSummary.unknownConnections > 0 && (
+                <div className="px-4 py-3 text-[13px] text-ink-500">
+                  {tt('확인된 로케이션')} {locationSummary.knownLocations} · {tt('로케이션')} · {tt('확인 불가')} ({locationSummary.unknownConnections})
+                  {locationSummary.knownLocations === 1 && <span> · {tt('확인된 커넥션은 단일 로케이션 — 미확인 커넥션의 위치 확인 필요')}</span>}
+                </div>
               )}
               {locations.length > 0 && (
                 <div className="overflow-x-auto pb-2">

@@ -333,10 +333,19 @@ def test_manual_intervention_is_a_terminal_completion(worker_pg):
     assert worker_pg.job(job_id) == row
 
 
-def test_claim_does_not_promote_awaiting_approval(worker_pg):
-    job_id = worker_pg.insert(status="awaiting_approval")
+@pytest.mark.parametrize("fixture_name", ["legacy_worker_pg", "worker_pg"])
+@pytest.mark.parametrize("runtime", ["lambda", "fargate", "ssm"])
+def test_adr005_frozen_awaiting_approval_deliberately_unclaimable(request, fixture_name, runtime):
+    """Run the actual SQL: approval is not authority to activate frozen remediation.
+
+    The exclusion must hold before/after the timing migration and preserve every ledger field.
+    A wider queued/running/awaiting_approval predicate makes this test fail.
+    """
+    worker_pg = request.getfixturevalue(fixture_name)
+    job_id = worker_pg.insert(status="awaiting_approval", type="remediation", attempt=1,
+                              task_token="fixture-approval-token")
     before = worker_pg.job(job_id)
-    assert db.claim_running(worker_pg.conn, job_id, "lambda") == 0
+    assert db.claim_running(worker_pg.conn, job_id, runtime) == 0
     assert worker_pg.job(job_id) == before
 
 

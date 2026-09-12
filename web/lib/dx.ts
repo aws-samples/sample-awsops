@@ -1,3 +1,4 @@
+import { summarizeDxLocations } from './dx-evidence';
 import {
   DirectConnectClient,
   DescribeConnectionsCommand,
@@ -573,15 +574,8 @@ export async function dxAnalysis(rangeSec: number): Promise<DxAnalysis> {
     const metricsDegradedRegions = perRegion.filter((r) => r.metricsDegraded).map((r) => r.region);
     const { gateways, ok: gatewaysOk } = await fetchGateways(vifs);
 
-    const locMap = new Map<string, { location: string; region: string; connections: number; bandwidthBps: number }>();
-    for (const c of connections) {
-      const key = `${c.location}|${c.region}`;
-      const cur = locMap.get(key) ?? { location: c.location, region: c.region, connections: 0, bandwidthBps: 0 };
-      cur.connections += 1;
-      cur.bandwidthBps += c.bandwidthBps;
-      locMap.set(key, cur);
-    }
-    const locations = [...locMap.values()].sort((a, b) => b.connections - a.connections);
+    const locationSummary = summarizeDxLocations(connections);
+    const { locations } = locationSummary;
 
     const utils = vifs.map((v) => v.peakUtilizationPct).filter((u): u is number => u != null);
     const totals: DxAnalysis['totals'] = {
@@ -594,9 +588,9 @@ export async function dxAnalysis(rangeSec: number): Promise<DxAnalysis> {
       gatewaysUnassociated: gateways.filter((g) => g.unassociated).length,
       gatewaysAssociationsUnknown: gateways.filter((g) => !g.associationsAvailable).length,
       totalBandwidthBps: connections.reduce((s, c) => s + c.bandwidthBps, 0),
-      locations: locations.length,
+      locations: locationSummary.knownLocations,
       maxUtilizationPct: utils.length ? Math.max(...utils) : null,
-      singleLocation: connections.length > 0 && new Set(connections.map((c) => c.location)).size === 1,
+      singleLocation: locationSummary.singleLocation,
     };
     return {
       connections, vifs, gateways, locations, totals, rangeSec,

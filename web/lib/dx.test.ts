@@ -168,6 +168,18 @@ describe('parseBandwidth', () => {
 });
 
 describe('dxAnalysis', () => {
+  it.each(['?', '', ' unknown '])('excludes unidentified site %j from verified API location counts', async location => {
+    mockDb([]);
+    mockDc({ conns: { 'ap-northeast-2': [CONNS[0], { ...CONNS[1], location }] } });
+    mockCw([], {});
+    const { dxAnalysis } = await import('./dx');
+    const a = await dxAnalysis(3600);
+    expect(a.totals.locations).toBe(1);
+    expect(a.totals.singleLocation).toBe(false); // Unknown site cannot prove all are single-site.
+    expect(a.locations.map(l => l.location)).toEqual(['TLS10']);
+    expect(a.connections).toHaveLength(2);
+  });
+
   it('표준 시나리오: 이중화·BGP down·사용률·프리픽스·라우트·게이트웨이 연계', async () => {
     mockDb([]);
     mockDc({

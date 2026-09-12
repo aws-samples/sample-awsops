@@ -95,7 +95,7 @@ export default function ServiceMapPage() {
         position: { x: p.x, y: p.y },
         data: { label: `${n.kind}: ${n.label}\n${[
           n.meta?.environment ?? 'unknown', n.meta?.cluster, n.meta?.namespace, n.meta?.broker, n.meta?.sourceId,
-        ].filter(Boolean).join(' · ')}` },
+        ].filter(Boolean).join(' · ')}${n.kind === 'queue' ? `\n${tt('Telemetry claim · AWS identity unverified')}` : ''}` },
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
         style: {
@@ -112,7 +112,7 @@ export default function ServiceMapPage() {
       style: { stroke: '#9AA6B2' }, labelStyle: { fontSize: 9, fill: '#586773' },
     }));
     return { nodes, edges };
-  }, [visibleGraph]);
+  }, [visibleGraph, tt]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => { void flow.current?.fitView({ padding: 0.2 }); });
@@ -130,6 +130,8 @@ export default function ServiceMapPage() {
   }, []);
 
   const onNodeClick = (_: unknown, node: Node) => {
+    // A claimed queue ARN is never an inventory bridge, including retained metadata.
+    if (graph?.nodes.find(n => n.id === node.id)?.kind === 'queue') return;
     const meta = metaById.get(node.id);
     const ref = infraRefOf(meta);
     if (ref) { router.push(`/topology/resource/${encodeURIComponent(ref)}`); return; }

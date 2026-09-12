@@ -252,8 +252,8 @@ describe('TempoTraceSource', () => {
     getDatasource.mockResolvedValue({ id: 9, kind: 'tempo', isDefault: false });
     resolveConnConfig.mockResolvedValue({ endpoint: 'http://tempo' });
     invokeMcpLambdaTool.mockImplementation(async ({ tool, args }: { tool: string; args: { trace_id?: string } }) => {
-      if (tool === 'tempo_search') return { traces: [{ traceID: 'good' }, { traceID: 'bad' }] };
-      if (args.trace_id === 'bad') throw new Error('fetch failed');
+      if (tool === 'tempo_search') return { traces: [{ traceID: 'good' }, { traceID: 'bad-trace' }] };
+      if (args.trace_id === 'bad-trace') throw new Error('fetch failed');
       return { batches: [{ resource: { attributes: [] }, scopeSpans: [{ spans: [{
         spanId: 's', kind: 1, startTimeUnixNano: String((Date.now() - 1000) * 1e6),
         endTimeUnixNano: String((Date.now() - 999) * 1e6),
@@ -429,7 +429,7 @@ describe('trace metadata allowlist', () => {
     expect(result[0].serviceNamespace).toBeUndefined();
   });
 
-  it('normalizes only complete valid Tempo IDs, preserving opaque legacy identifiers', () => {
+  it('normalizes full byte Tempo IDs, preserving opaque legacy identifiers', () => {
     const traceId = '00112233445566778899aabbccddeeff';
     const spanId = '1122334455667788';
     const mapped = mapTempoTrace(traceId.toUpperCase(), tempoTrace([tempoSpan({
@@ -450,6 +450,22 @@ describe('trace metadata allowlist', () => {
       traceId: 'ffeeddccbbaa99887766554433221100', spanId: '1122334455667788',
     })]))).toEqual([]);
   });
+
+  it.each(['0', '1234', '1'.repeat(17)])('does not pad incomplete/oversized hex span IDs: %s', spanId => {
+    expect(mapTempoTrace('1', tempoTrace([tempoSpan({ spanId })]))).toEqual([]);
+  });
+
+  it('rejects oversized trace hex and never aliases noncanonical base64 into full bytes', () => {
+    const full = '00112233445566778899aabbccddeeff';
+    expect(mapTempoTrace('1'.repeat(33), tempoTrace([tempoSpan()]))).toEqual([]);
+    const canonical = Buffer.from(full, 'hex').toString('base64');
+    const noncanonical = canonical.slice(0, -3) + 'x=='; // Same decoded bytes, invalid pad bits.
+    expect(Buffer.from(noncanonical, 'base64')).toEqual(Buffer.from(canonical, 'base64'));
+    expect(mapTempoTrace(noncanonical, tempoTrace([tempoSpan({ traceId: full })]))).toEqual([]);
+    // Preserve opaque legacy values exactly; permissive decoding must never alias them.
+    expect(mapTempoTrace('1', tempoTrace([tempoSpan({ spanId: 'ESIzRFVmd4h=' })]))[0].spanId)
+      .toBe('ESIzRFVmd4h=');
+  });
 });
 
 describe('SourceRead provenance and bounds', () => {
@@ -461,6 +477,53 @@ describe('SourceRead provenance and bounds', () => {
     getDatasource.mockResolvedValue({ id, kind });
     getDefaultDatasource.mockResolvedValue({ id, kind });
   };
+  it.each([
+    '123456789abcdef0123456789abcdef', // Tempo trims a leading zero nibble (odd width).
+    '123456789abcdef0', // Legacy 64-bit trace, zero-extended in the OTLP payload.
+    'abc',
+    '1',
+  ])('joins trimmed search trace %s to full-width hex/base64 OTLP spans', async searchId => {
+    configure('tempo');
+    const full = searchId.padStart(32, '0');
+    for (const traceId of [full.toUpperCase(), Buffer.from(full, 'hex').toString('base64')]) {
+      invokeMcpLambdaTool.mockReset()
+        .mockResolvedValueOnce({ traces: [{ traceID: searchId }, { traceID: full }] })
+        .mockResolvedValueOnce(tempoTrace([tempoSpan({ traceId, spanId: '1122334455667788' })]));
+      const read = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
+      expect(read).toMatchObject({ status: 'ok', reasons: [], items: [{ traceId: full }] });
+      expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(2);
+      expect(invokeMcpLambdaTool.mock.calls[1][0].args.trace_id).toBe(full);
+    }
+  });
+
+  it.each(['0000000000000000', 'AAAAAAAAAAA='])('treats zero parent %s as absent without degrading the read', async parentSpanId => {
+    configure('tempo');
+    invokeMcpLambdaTool.mockResolvedValueOnce({ traces: [{ traceID: '1' }] })
+      .mockResolvedValueOnce(tempoTrace([tempoSpan({ parentSpanId })]));
+    const read = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
+    expect(read.status).toBe('ok');
+    expect(read.reasons).toEqual([]);
+    expect(read.items).toHaveLength(1);
+    expect(read.items[0].parentSpanId).toBeUndefined();
+  });
+
+  it.each(['0', '0000000000000000', '00000000000000000000000000000000', 'AAAAAAAAAAAAAAAAAAAAAA=='])(
+    'rejects zero trace ID %s', async traceID => {
+      configure('tempo');
+      invokeMcpLambdaTool.mockResolvedValue({ traces: [{ traceID }] });
+      const read = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
+      expect(read).toMatchObject({ status: 'error', reasons: ['malformed_rows'], items: [] });
+      expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['0000000000000000', 'AAAAAAAAAAA='])('rejects zero child span %s', async spanId => {
+    configure('tempo');
+    invokeMcpLambdaTool.mockResolvedValueOnce({ traces: [{ traceID: '1' }] })
+      .mockResolvedValueOnce(tempoTrace([tempoSpan({ spanId })]));
+    expect(await new TempoTraceSource(7).recentSpans(30, 10, END_MS))
+      .toMatchObject({ status: 'error', reasons: ['malformed_rows'], items: [] });
+  });
   const factories = [
     ['clickhouse', () => new ClickHouseOtelTraceSource().recentSpans(30, 10, END_MS), { rows: [] }],
     ['tempo', () => new TempoTraceSource(7).recentSpans(30, 10, END_MS), { traces: [] }],
@@ -593,7 +656,7 @@ describe('SourceRead provenance and bounds', () => {
 
   it('Tempo keeps partial-fetch provenance and never exports a raw error', async () => {
     configure('tempo');
-    invokeMcpLambdaTool.mockResolvedValueOnce({ traces: [{ traceID: 'bad' }, { traceID: 'good' }] })
+    invokeMcpLambdaTool.mockResolvedValueOnce({ traces: [{ traceID: 'bad-trace' }, { traceID: 'good' }] })
       .mockRejectedValueOnce(new Error('private-token')).mockResolvedValueOnce(tempoTrace());
     const result = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
     expect(result).toMatchObject({ status: 'partial', reasons: ['trace_fetch_failed'] });
@@ -603,7 +666,7 @@ describe('SourceRead provenance and bounds', () => {
 
   it('Tempo marks a fully failed fetch as error and a saturated search as partial', async () => {
     configure('tempo');
-    invokeMcpLambdaTool.mockResolvedValueOnce({ traces: [{ traceID: 'bad' }] })
+    invokeMcpLambdaTool.mockResolvedValueOnce({ traces: [{ traceID: 'bad-trace' }] })
       .mockRejectedValueOnce(new Error('private-token'));
     expect(await new TempoTraceSource(7).recentSpans(30, 100, END_MS))
       .toMatchObject({ items: [], status: 'error', reasons: ['trace_fetch_failed'] });

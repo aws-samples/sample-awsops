@@ -4,11 +4,13 @@ Render an already-generated report markdown into download formats:
   - to_docx(markdown) -> bytes   (python-docx; pure-python)
   - to_pdf(markdown)  -> bytes   (markdown→HTML→headless chromium via playwright)
 
-Read-only: these only transcode a report that was already produced over redacted data. No AWS
-mutation, no network egress (the PDF CSS uses the system Noto CJK font — no external @import).
+Read-only: these only transcode a report already produced over redacted data. No AWS mutation.
+PDF resource isolation combines a markup allowlist, CSP, an offline browser context and
+context-wide request aborts. The system Noto CJK font needs no external import.
 """
 import io
 import re
+from collections import Counter
 from html import escape
 from html.parser import HTMLParser
 
@@ -346,6 +348,7 @@ class _PdfMarkup(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts = []
         self.open_tags = []
+        self.open_counts = Counter()
 
     def handle_starttag(self, tag, attrs):
         if tag not in _PDF_TAGS:
@@ -367,20 +370,24 @@ class _PdfMarkup(HTMLParser):
         self.parts.append(f"<{tag}{''.join(kept)}>")
         if tag not in _PDF_VOID_TAGS:
             self.open_tags.append(tag)
+            self.open_counts[tag] += 1
 
     def handle_endtag(self, tag):
-        if tag not in self.open_tags:
+        if not self.open_counts[tag]:
             return
         while self.open_tags:
             current = self.open_tags.pop()
+            self.open_counts[current] -= 1
             self.parts.append(f"</{current}>")
             if current == tag:
                 break
 
     def handle_data(self, data):
-        if self.open_tags and self.open_tags[-1] == "style":
+        if self.cdata_elem == "style" and self.open_tags and self.open_tags[-1] == "style":
             # HTMLParser and Chromium disagree on malformed raw-text end tags (e.g. </style/x>).
             # CSS-escape the slash so CSS strings retain their value without closing the element.
+            # Both parser and output must still be inside style; cdata_elem alone can linger
+            # after an older parser already closed our output tag. Escape that case as HTML.
             self.parts.append(data.replace("</", r"<\/"))
         else:
             self.parts.append(escape(data, quote=False))

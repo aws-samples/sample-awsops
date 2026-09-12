@@ -7,6 +7,8 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '배포된 커넥션의 로케이션 분포 — 생성 중·삭제된 커넥션 제외': { en: 'Deployed connection locations — provisioning and removed connections excluded', zh: '已部署连接的位置分布 — 不含创建中及已删除的连接', ja: '配備済み接続のロケーション分布 — 作成中・削除済み接続は除外' },
+  '판정 범위': { en: 'Assessment coverage', zh: '评估范围', ja: '判定範囲' },
   // ---- common UI ----
   '전체': { en: 'All', zh: '全部', ja: 'すべて' },
   '전체 계정': { en: 'All accounts', zh: '全部账号', ja: '全アカウント' },
@@ -1392,7 +1394,12 @@ export const TERMS: Record<string, Pair> = {
   '높은 복원력': { en: 'High resiliency', zh: '高弹性', ja: '高レジリエンス' },
   '단일 연결': { en: 'Single connection', zh: '单一连接', ja: '単一接続' },
   '디바이스 2개 이상 로케이션': { en: 'locations with 2+ devices', zh: '有 2+ 设备的位置', ja: 'デバイス 2 台以上のロケーション' },
-  '모든 커넥션 정상 (기간 내 다운 없음)': { en: 'All connections healthy (no downs in range)', zh: '所有连接正常（区间内无中断）', ja: '全接続正常（期間内ダウンなし）' },
+  '배포된 커넥션 정상 (기간 내 다운 없음)': { en: 'Deployed connections healthy (no downs in range)', zh: '已部署连接正常（区间内无中断）', ja: '配備済み接続正常（期間内ダウンなし）' },
+  '커넥션 상태 평가 범위: 배포된 dedicated·hosted, 미배포 제외': { en: 'Connection health scope: deployed dedicated/hosted; undeployed excluded', zh: '连接健康范围：已部署专用/托管连接；排除未部署连接', ja: '接続状態の評価範囲：配備済み専用/ホスト型、未配備は除外' },
+  '확인된 로케이션': { en: 'Verified locations', zh: '已确认位置', ja: '確認済みロケーション' },
+  'Telemetry claim · AWS identity unverified': { en: 'Telemetry claim · AWS identity unverified', zh: '遥测声明 · AWS 身份未经验证', ja: 'テレメトリの申告 · AWS ID は未検証' },
+  'SLA 대상 로케이션 (배포된 owned)': { en: 'SLA locations (deployed owned)', zh: 'SLA 位置（已部署 owned）', ja: 'SLA 対象ロケーション（配備済み owned）' },
+  '확인된 커넥션은 단일 로케이션 — 미확인 커넥션의 위치 확인 필요': { en: 'Known connections share one site — verify the remaining locations', zh: '已确认连接位于同一位置 — 请确认其余位置', ja: '確認済み接続は単一ロケーション — 残りの場所を確認してください' },
   '모든 VIF·BGP 정상': { en: 'All VIFs and BGP sessions healthy', zh: '所有 VIF·BGP 正常', ja: '全 VIF・BGP 正常' },
   '로케이션 이중화 — 99.9% SLA 요건 (2개 이상 로케이션, 호스티드 제외)': { en: 'Location redundancy — 99.9% SLA requirement (2+ locations, hosted excluded)', zh: '位置冗余 — 99.9% SLA 要求（2+ 位置，不含托管）', ja: 'ロケーション冗長化 — 99.9% SLA 要件（2 か所以上、ホスト型除く）' },
   '미연결 DX Gateway 없음': { en: 'No unassociated DX Gateways', zh: '无未关联的 DX Gateway', ja: '未関連付けの DX Gateway なし' },
