@@ -12,41 +12,19 @@ Use the existing backend and child hosted zone; this workflow does not create th
 `TF_TFVARS_DEV`, `AWS_CI_BUILD_DEV_ROLE_ARN`, `AWS_CI_DEPLOYER_DEV_ROLE_ARN`,
 the protected `AWS_DEV_ACCOUNT_ID`, and `TF_VAR_DEMO_PASSWORD` if the demo account is enabled. The dev tfvars must select project `awsops-dev` and region `ap-northeast-2`. No production fallback is permitted. The public HTTPS smoke uses the existing demo identity, or a dedicated standard identity in Secrets Manager selected by `DEV_SMOKE_SECRET_ARN` (JSON fields `username`, `password`; an already provisioned, usable account). Use the dedicated secret when the stack overrides the shared demo password. Exactly one usable identity path is required: a provisioned demo user with the matching shared password, or the dedicated secret. A password alone is not an identity. Every dev phase compares its STS caller account to `AWS_DEV_ACCOUNT_ID`; an absent or mismatched pin fails before deployment operations. Keep the actual account ID in the protected secret, never in committed configuration.
 
-기존 backend와 child hosted zone이 필요합니다. 위 secret을 사용하고 dev tfvars의 project/region을 일치시킵니다. backend 생성과 DNS 등록은 이 workflow의 작업이 아닙니다. HTTPS 인증 검증에는 demo 계정 또는 `DEV_SMOKE_SECRET_ARN`의 사전 생성된 일반 계정을 사용합니다. stack별 demo 비밀번호를 따로 쓰면 전용 smoke secret을 지정합니다.
-사용 가능한 demo 사용자와 일치하는 비밀번호 또는 전용 secret 중 하나가 반드시
-필요합니다. 비밀번호만으로는 충분하지 않습니다. 모든 dev 단계는 STS 계정을 보호된
+기존 backend와 child hosted zone이 필요합니다. 위 secret을 사용하고 dev tfvars의 project/region을 일치시킵니다. backend 생성과 DNS 등록은 이 workflow의 작업이 아닙니다. HTTPS 인증 검증에는 demo 계정 또는 `DEV_SMOKE_SECRET_ARN`의 사전 생성된 일반 계정을 사용합니다. stack별 demo 비밀번호를 따로 쓰면 전용 smoke secret을 지정합니다. 사용 가능한 demo 사용자와 일치하는 비밀번호 또는 전용 secret 중 하나가 반드시 필요합니다. 비밀번호만으로는 충분하지 않습니다. 모든 dev 단계는 STS 계정을 보호된
 `AWS_DEV_ACCOUNT_ID` secret과 비교하며 누락·불일치 시 배포 전에 실패합니다.
 실제 계정 ID는 코드에 기록하지 않습니다.
 
-The build job has **no GitHub environment**, preserving its `refs/heads/dev`
-OIDC subject and existing ECR-only role. Core/release use `development` and its
-environment OIDC subject. Keep that environment's deployment branch restriction.
-The deployer needs the stack's existing Terraform permissions plus ECS
-register/describe/deregister task definition, run/describe/stop task, service/task
-reads, ECR image reads, ACM certificate reads, Route53 record reads, and PassRole
-for this stack's web execution/task and migration roles. An optional smoke secret
-requires read/decrypt permission for that secret. No Route53 write permission is
-needed by staged CI. Sessions request 3,600 seconds and refresh before edge work.
+The build job has **no GitHub environment**, preserving its `refs/heads/dev` OIDC subject and existing ECR-only role. Core/release use `development` and its environment OIDC subject. Keep that environment's deployment branch restriction. The deployer needs the stack's existing Terraform permissions plus ECS register/describe/deregister task definition, run/describe/stop task, service/task reads, ECR image reads, ACM certificate reads, Route53 record reads, and PassRole for this stack's web execution/task and migration roles. An optional smoke secret requires read/decrypt permission for that secret. No Route53 write permission is needed by staged CI. Sessions request 3,600 seconds and refresh before edge work.
 
-build job은 environment 없이 기존 dev 브랜치 OIDC를 유지합니다. core/release는
-development 환경 OIDC를 사용합니다. deployer에는 기존 Terraform 권한 외에 해당
-stack의 ECS task 실행·조회·정리, 제한된 PassRole, ECR/ACM/DNS 조회가 필요합니다.
-전용 smoke secret을 사용하면 해당 secret 읽기·복호화 권한도 필요합니다.
-DNS 쓰기 권한은 필요하지 않습니다. 세션은 3,600초이며 edge 직전에 갱신합니다.
+build job은 environment 없이 기존 dev 브랜치 OIDC를 유지합니다. core/release는 development 환경 OIDC를 사용합니다. deployer에는 기존 Terraform 권한 외에 해당 stack의 ECS task 실행·조회·정리, 제한된 PassRole, ECR/ACM/DNS 조회가 필요합니다. 전용 smoke secret을 사용하면 해당 secret 읽기·복호화 권한도 필요합니다. DNS 쓰기 권한은 필요하지 않습니다. 세션은 3,600초이며 edge 직전에 갱신합니다.
 
-Before migration and again before any `awaiting_dns` handoff, CI proves that the
-configured identity can sign in through the stack's public Cognito client with
-unsigned `InitiateAuth` (`USER_PASSWORD_AUTH`). This needs neither application
-DNS nor Cognito IAM permission. Missing credentials, rejected sign-in, an MFA or
-password-change challenge, or an incomplete token response fails explicitly.
-Tokens are discarded and never published. This preflight does not replace the
-final authenticated HTTPS smoke through the application.
+Before migration and again before any `awaiting_dns` handoff, CI proves that the configured identity can sign in through the stack's public Cognito client with unsigned `InitiateAuth` (`USER_PASSWORD_AUTH`). This needs neither application DNS nor Cognito IAM permission. Missing credentials, rejected sign-in, an MFA or password-change challenge, or an incomplete token response fails explicitly. Tokens are discarded and never published. This preflight does not replace the final authenticated HTTPS smoke through the application.
 
 migration 전과 `awaiting_dns` 안내 전에 Cognito public client의 서명 없는
 `InitiateAuth`로 실제 로그인을 검증합니다. 애플리케이션 DNS나 Cognito IAM 권한이
-필요하지 않습니다. 자격증명 누락·로그인 거부·MFA/비밀번호 변경 challenge·불완전한
-토큰 응답은 명시적으로 실패하며 토큰은 출력하지 않고 폐기합니다.
-최종 애플리케이션 HTTPS 인증 검증은 그대로 수행합니다.
+필요하지 않습니다. 자격증명 누락·로그인 거부·MFA/비밀번호 변경 challenge·불완전한 토큰 응답은 명시적으로 실패하며 토큰은 출력하지 않고 폐기합니다. 최종 애플리케이션 HTTPS 인증 검증은 그대로 수행합니다.
 
 ## Flow and manual DNS / 흐름과 수동 DNS
 
@@ -97,34 +75,16 @@ migration 전과 `awaiting_dns` 안내 전에 Cognito public client의 서명 �
 6. DNS 전파 후 재실행하면 alias·위임·서비스 digest·HTTPS·로그인을 확인합니다.
    모든 검증을 통과해야 `deployed`입니다.
 
-The entire dev workflow shares the `deployment-dev` concurrency group with
-manual Terraform apply and does not cancel a running apply. No public ALB,
-HTTP origin fallback, broad ingress, SG-description replacement, or frozen
-product feature activation is introduced. Terraform's `deployment_stage`
-output is only infrastructure readiness (`awaiting_dns` or
+The entire dev workflow shares the `deployment-dev` concurrency group with manual Terraform apply and does not cancel a running apply. No public ALB, HTTP origin fallback, broad ingress, SG-description replacement, or frozen product feature activation is introduced. Terraform's `deployment_stage` output is only infrastructure readiness (`awaiting_dns` or
 `awaiting_verification`); the release job output is the verified deployment status.
 
-dev 전체 workflow와 수동 Terraform apply는 같은 잠금을 사용하며 실행 중 apply를
-취소하지 않습니다. public ALB, HTTP origin 우회, 광범위 ingress, SG description 변경,
-동결 기능 활성화는 하지 않습니다. Terraform output과 최종 배포 성공 상태는 구분합니다.
+dev 전체 workflow와 수동 Terraform apply는 같은 잠금을 사용하며 실행 중 apply를 취소하지 않습니다. public ALB, HTTP origin 우회, 광범위 ingress, SG description 변경, 동결 기능 활성화는 하지 않습니다. Terraform output과 최종 배포 성공 상태는 구분합니다.
 
 ## Saved plan and failure handling / 저장 plan과 실패 처리
 
-Automatic dev plans reject all DNS writes and every delete/replacement. A
-resource replacement that is actually needed must go through the separately
-reviewed manual Terraform plan/apply path (`reviewed_deletes`); it is not silently
-approved by dev CI. `terraform.yml` derives the current dev stage from state so
-its plan cannot reset the live service to the template image or default stage.
-Do not manually enable `defer_edge_until_dns` on an existing edge stack.
-Both automatic and manual saved-plan guards require `remediation_enabled=false`.
-The full foundation remains deployable from reviewed protected commits and
-protected configuration; this is not a second per-resource IAM policy engine.
+Automatic dev plans reject all DNS writes and every delete/replacement. A resource replacement that is actually needed must go through the separately reviewed manual Terraform plan/apply path (`reviewed_deletes`); it is not silently approved by dev CI. `terraform.yml` derives the current dev stage from state so its plan cannot reset the live service to the template image or default stage. Do not manually enable `defer_edge_until_dns` on an existing edge stack. Both automatic and manual saved-plan guards require `remediation_enabled=false`. The full foundation remains deployable from reviewed protected commits and protected configuration; this is not a second per-resource IAM policy engine.
 
-자동 dev는 DNS 쓰기 및 삭제/교체 plan을 거부합니다. 필요한 교체는 별도 검토한 수동
-Terraform plan/apply의 `reviewed_deletes`로 처리합니다. 수동 plan도 현재 dev 단계와
-revision을 보존합니다. 기존 edge의 `defer_edge_until_dns`를 true로 바꾸지 않습니다.
-자동·수동 저장 plan 모두 `remediation_enabled=false`를 확인합니다.
-검토된 보호 브랜치 커밋과 보호된 설정의 전체 foundation 배포는 허용하며,
+자동 dev는 DNS 쓰기 및 삭제/교체 plan을 거부합니다. 필요한 교체는 별도 검토한 수동 Terraform plan/apply의 `reviewed_deletes`로 처리합니다. 수동 plan도 현재 dev 단계와 revision을 보존합니다. 기존 edge의 `defer_edge_until_dns`를 true로 바꾸지 않습니다. 자동·수동 저장 plan 모두 `remediation_enabled=false`를 확인합니다. 검토된 보호 브랜치 커밋과 보호된 설정의 전체 foundation 배포는 허용하며,
 리소스별 IAM 정책을 별도의 엔진에서 다시 정의하지 않습니다.
 
 For a reviewed manual first-origin bootstrap, `reviewed_origin_bootstrap=true`

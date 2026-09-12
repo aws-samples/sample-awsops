@@ -54,6 +54,23 @@ test('manual apply has a separately reviewed, narrow origin-bootstrap override',
   assert.match(job('apply'), /REVIEWED_ORIGIN_BOOTSTRAP: \$\{\{ inputs\.reviewed_origin_bootstrap \}\}/);
 });
 
+test('failure cleanup works before checkout and preserves unrelated workspace files', () => {
+  const root = mkdtempSync(join(tmpdir(), 'awsops-cleanup-'));
+  try {
+    writeFileSync(join(root, 'retained.txt'), 'keep');
+    for (const name of ['plan', 'apply']) {
+      const body = job(name);
+      const cleanup = body.slice(body.indexOf('- name: Clean sensitive files off the runner'));
+      const directory = cleanup.match(/working-directory: (.+)/)?.[1] ?? 'terraform/foundation';
+      const result = spawnSync('bash', ['-e', '-c', stepRun(body, 'Clean sensitive files off the runner')], {
+        cwd: join(root, directory), encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+      assert.equal(readFileSync(join(root, 'retained.txt'), 'utf8'), 'keep');
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('dev builder configuration is shared and demo/smoke secrets are step scoped', () => {
   const deploy = readFileSync(new URL('../../../.github/workflows/deploy-web.yml', import.meta.url), 'utf8');
   for (const name of ['dev-core', 'dev-images', 'dev-release']) {

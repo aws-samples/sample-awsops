@@ -294,9 +294,10 @@ jobs:
       # the restored config behind, whatever the outcome.
       - name: Clean sensitive files off the runner
         if: always()
+        working-directory: .
         run: |
-          rm -f tfplan tfplan.enc tfplan.log terraform.tfvars backend.hcl
-          rm -rf .build .terraform
+          rm -f terraform/foundation/{tfplan,tfplan.enc,tfplan.log,terraform.tfvars,backend.hcl}
+          rm -rf terraform/foundation/.build terraform/foundation/.terraform
 
   apply:
     name: Apply (saved plan)
@@ -433,6 +434,7 @@ jobs:
       # variable values in plaintext) or the restored config behind.
       - name: Clean sensitive files off the runner
         if: always()
+        working-directory: .
         run: |
-          rm -f tfplan tfplan.enc tfplan.log terraform.tfvars backend.hcl
-          rm -rf .build .terraform
+          rm -f terraform/foundation/{tfplan,tfplan.enc,tfplan.log,terraform.tfvars,backend.hcl}
+          rm -rf terraform/foundation/.build terraform/foundation/.terraform
