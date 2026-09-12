@@ -13,12 +13,18 @@ secrets-manager) — installed by `make deps`.
   preserves service Host/SNI/TLS via CloudFront `--connect-to` before service DNS publication.
   The `DOCKER` env defaults to `sudo docker`.
 - `v2/ci_dns_policy.py` — reads Terraform state to preserve managed certificate ownership
-  (JSON null) and existing service aliases; verifies external certificates and blocks all
-  Route53/Cloud Map mutations when DNS is prohibited (including private DNS and validation).
+  (JSON null) and existing service aliases; verifies operator-selected/attached certificates
+  without account-wide selection. Redacts public summaries. Blocks all Route53/Cloud Map
+  mutations when DNS is prohibited (including private DNS, validation and registered ECS).
+  Routine CI always blocks managed-certificate externalization and owned validation-CNAME
+  retirement/replacement, regardless of DNS permission.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
 - `v2/test_ci_{dns_policy,plan_context,deployment_workflows,terraform_reads}.py` — local fixtures
   and a localhost-only state backend verify deployment gates without AWS calls.
+- `v2/terraform-test.sh` — Terraform 1.15.7 validate/mock tests in a disposable tracked-file
+  copy, `init -backend=false`, fresh data dir, no deployment credentials or real backend.
+  `v2/requirements-test.txt` declares pytest/PyYAML; the shared merge script runs Node smoke tests.
 - `v2/workers.mjs` — `make workers`: builds and pushes the worker image **only**. The Fargate
   worker is not an ECS service — SFN `RunTask` pulls `:worker-latest` at job time. Short jobs
   deploy as Lambda zips and need no image. Run after applying with `workers_enabled=true`.

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // AWSops v2 deploy: build arm64 -> push ECR -> ECS force-new-deployment -> wait stable -> smoke.
 import { execFileSync, execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { smokeArgs } from './deployment-smoke.mjs';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
@@ -17,7 +18,7 @@ const cluster = tf('ecs_cluster_name');
 const service = tf('ecs_service_name');
 const url = tf('public_url');
 const cloudfront = tf('cloudfront_domain');
-const smoke = smokeArgs(url, cloudfront); // Validate the destination before deployment.
+smokeArgs(url, cloudfront); // Validate the destination before deployment.
 
 console.log(`\n[1/5] ECR login -> ${registry}`);
 sh(`aws ecr get-login-password --region ${REGION} | ${DOCKER} login --username AWS --password-stdin ${registry}`);
@@ -35,6 +36,8 @@ console.log(`\n[4/5] wait services-stable (may take a few minutes)`);
 sh(`aws ecs wait services-stable --cluster ${cluster} --services ${service} --region ${REGION}`);
 
 console.log(`\n[5/5] smoke -> ${url}/api/health`);
-execFileSync('curl', smoke, { stdio: 'inherit' });
+execFileSync(process.execPath, [
+  fileURLToPath(new URL('./deployment-smoke.mjs', import.meta.url)), url, cloudfront,
+], { stdio: 'inherit' });
 
 console.log('\n✅ deploy complete');

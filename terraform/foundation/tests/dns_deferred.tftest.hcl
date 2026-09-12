@@ -1,6 +1,8 @@
 # Offline plans only: every provider, including us-east-1 and archive, is mocked.
 # State -> preflight -> typed inputs roundtrips are exercised in the Python CI tests.
-# Run: terraform test -filter=tests/dns_deferred.tftest.hcl
+# From the repository root, with Terraform 1.15.7 and cached providers:
+#   bash scripts/v2/terraform-test.sh
+# Copies tracked files; init -backend=false; validate; terraform test (no real backend).
 mock_provider "aws" {
   override_during = plan
 

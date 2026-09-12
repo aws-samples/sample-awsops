@@ -90,6 +90,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
+          terraform_version: 1.15.7
           terraform_wrapper: false
 
       - name: Configure AWS credentials (OIDC -> ci-terraform-plan)
@@ -155,8 +156,9 @@ jobs:
               > ci-deployment.tfvars.json
           # JSON null preserves Terraform certificate ownership; "-var=...=null"
           # would instead pass the literal string "null" to a string variable.
-          echo 'Certificate ownership and service DNS inputs (null = Terraform managed):' >> "$GITHUB_STEP_SUMMARY"
-          cat ci-deployment.tfvars.json >> "$GITHUB_STEP_SUMMARY"
+          echo 'Certificate ownership and service DNS inputs (redacted):' >> "$GITHUB_STEP_SUMMARY"
+          python3 ../../scripts/v2/ci_dns_policy.py summary \
+            < ci-deployment.tfvars.json >> "$GITHUB_STEP_SUMMARY"
 
       - name: terraform plan
         if: steps.restore.outputs.skip != '1'
@@ -261,6 +263,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
+          terraform_version: 1.15.7
           terraform_wrapper: false
 
       - name: Select the branch's stack (fail-closed)
@@ -320,16 +323,23 @@ jobs:
           [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::TF_PLAN_ENC_KEY secret is not set."; exit 1; }
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in tfplan.enc -out tfplan -pass env:TF_PLAN_ENC_KEY
 
-      - name: terraform apply (exact saved plan — never re-planned)
+      - name: Recheck branch immediately before apply
         env:
           GH_TOKEN: ${{ github.token }}
-          ALLOW_DNS_CHANGES: ${{ inputs.allow_dns_changes }}
         run: |
           set -euo pipefail
           CURRENT_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$TARGET" --jq '.object.sha')
           [ "$CURRENT_SHA" = "$GITHUB_SHA" ] || { echo "::error::branch moved; create and review a fresh plan"; exit 1; }
+
+      - name: terraform apply (exact saved plan — never re-planned)
+        env:
+          ALLOW_DNS_CHANGES: ${{ inputs.allow_dns_changes }}
+          PLAN_SCOPE: ${{ inputs.plan_scope }}
+        run: |
+          set -euo pipefail
           terraform show -json tfplan |
-            python3 ../../scripts/v2/ci_dns_policy.py check-plan --allow-dns "$ALLOW_DNS_CHANGES"
+            python3 ../../scripts/v2/ci_dns_policy.py check-plan \
+              --allow-dns "$ALLOW_DNS_CHANGES" --scope "$PLAN_SCOPE"
           terraform apply -input=false tfplan
 
       # The runner is persistent — never leave the decrypted plan (embeds sensitive

@@ -32,6 +32,7 @@ class DeploymentWorkflowTests(unittest.TestCase):
             scripts = root / "scripts/v2"
             scripts.mkdir(parents=True)
             shutil.copyfile(ROOT / "scripts/v2/ci_dns_policy.py", scripts / "ci_dns_policy.py")
+            shutil.copyfile(ROOT / "scripts/v2/deployment-smoke.mjs", scripts / "deployment-smoke.mjs")
             for name, content in (files or {}).items():
                 (working / name).write_text(content)
             binaries = root / "bin"
@@ -58,10 +59,6 @@ class DeploymentWorkflowTests(unittest.TestCase):
                     " if args[:2]==['ecr','batch-check-layer-availability']:\n"
                     "  sys.exit(int(os.environ.get('ECR_EXIT','0')))\n"
                     " elif args[:2]==['sts','get-caller-identity']: print('{\"Account\":\"123456789012\"}')\n"
-                    " elif args[:2]==['acm','list-certificates']:\n"
-                    "  region=args[args.index('--region')+1]\n"
-                    "  arn=os.environ['CF_ARN'].replace('us-east-1',region)\n"
-                    "  print(json.dumps({'CertificateSummaryList':[] if os.environ.get('NO_CERT') else [{'CertificateArn':arn}]}))\n"
                     " elif args[:2]==['acm','describe-certificate']:\n"
                     "  arn=args[args.index('--certificate-arn')+1]\n"
                     "  print(json.dumps({'Certificate':{'CertificateArn':arn,'Status':'ISSUED','Type':'IMPORTED',\n"
@@ -69,6 +66,7 @@ class DeploymentWorkflowTests(unittest.TestCase):
                     "   'NotBefore':'2020-01-01T00:00:00+00:00','NotAfter':'2099-01-01T00:00:00+00:00'}}))\n"
                     " elif args[:2]==['acm','get-certificate']: print('{\"Certificate\":\"offline fixture\"}')\n"
                     " else: sys.exit(98)\n"
+                    "elif name=='openssl': sys.exit(int(os.environ.get('OPENSSL_EXIT','0')))\n"
                 )
                 file.chmod(0o755)
             log = root / "commands.jsonl"
@@ -93,6 +91,8 @@ class DeploymentWorkflowTests(unittest.TestCase):
                 text=True, capture_output=True, timeout=15,
             )
             commands = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+            summary = root / "summary.md"
+            result.summary = summary.read_text() if summary.exists() else ""
             return result, commands
 
     def test_apply_blocks_dns_changes_before_calling_terraform_apply(self):
@@ -155,13 +155,32 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertIn(["terraform", "apply", "-input=false", "tfplan"], commands)
 
     def test_apply_rechecks_current_branch_and_uses_exact_saved_plan(self):
-        script = step("terraform.yml", "apply", "terraform apply (exact saved plan — never re-planned)")
+        script = step("terraform.yml", "apply", "Recheck branch immediately before apply")
+        script += "\n" + step("terraform.yml", "apply", "terraform apply (exact saved plan — never re-planned)")
         result, commands = self.run_step(script, CURRENT_SHA="b" * 40)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(command[0] == "terraform" for command in commands))
         result, commands = self.run_step(script)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(["terraform", "apply", "-input=false", "tfplan"], commands)
+        workflow = yaml.safe_load((ROOT / ".github/workflows/terraform.yml").read_text())
+        steps = workflow["jobs"]["apply"]["steps"]
+        apply_index = next(i for i, s in enumerate(steps) if s.get("name") == "terraform apply (exact saved plan — never re-planned)")
+        self.assertEqual(steps[apply_index - 1]["name"], "Recheck branch immediately before apply")
+        self.assertIn("GH_TOKEN", steps[apply_index - 1]["env"])
+        self.assertNotIn("GH_TOKEN", steps[apply_index]["env"])
+
+    def test_apply_rechecks_ecr_scope(self):
+        result, commands = self.run_step(
+            step("terraform.yml", "apply", "terraform apply (exact saved plan — never re-planned)"),
+            PLAN_SCOPE="ecr-bootstrap", changes=[{
+                "address": "aws_ecs_service.web", "type": "aws_ecs_service",
+                "change": {"actions": ["update"]},
+            }],
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ECR bootstrap", result.stderr)
+        self.assertFalse(any(c[:2] == ["terraform", "apply"] for c in commands))
 
     def test_dns_free_bootstrap_uses_typed_overrides_without_certificate_discovery(self):
         script = step("terraform.yml", "plan", "Check existing certificates without changing DNS")
@@ -177,6 +196,7 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertIn(["tfvars", {"publish_service_dns": False, "existing_cf_certificate_arn": None,
                                  "existing_alb_certificate_arn": None}], commands)
         self.assertFalse(any(c[:2] == ["aws", "acm"] for c in commands))
+        self.assertIn("managed", result.summary)
 
     def test_plan_treats_inputs_as_arguments_and_rejects_unknown_scope(self):
         script = step("terraform.yml", "plan", "terraform plan")
@@ -217,14 +237,29 @@ class DeploymentWorkflowTests(unittest.TestCase):
     def test_missing_certificate_stops_before_plan_and_explicit_input_is_never_shell_code(self):
         script = step("terraform.yml", "plan", "Check existing certificates without changing DNS")
         script += "\n" + step("terraform.yml", "plan", "terraform plan")
-        result, commands = self.run_step(script, DISPATCH="true", NO_CERT="1")
+        result, commands = self.run_step(script, DISPATCH="true")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("No existing public", result.stderr)
+        self.assertRegex(result.stderr, "explicit.*ARN")
         self.assertFalse(any(c[:2] == ["terraform", "plan"] for c in commands))
+        self.assertFalse(any(c[:2] == ["aws", "acm"] for c in commands))
         result, commands = self.run_step(script, DISPATCH="true", CF_CERTIFICATE_ARN='$(printf injected);value')
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(c[:2] == ["terraform", "plan"] for c in commands))
         self.assertNotIn("injected", result.stdout)
+        self.assertFalse(any(c[0] == "aws" for c in commands))
+
+    def test_external_certificate_summary_redacts_arns_and_account_and_chain_failure_blocks_plan(self):
+        script = step("terraform.yml", "plan", "Check existing certificates without changing DNS")
+        script += "\n" + step("terraform.yml", "plan", "terraform plan")
+        result, commands = self.run_step(script, DISPATCH="true", CF_CERTIFICATE_ARN=CF, ALB_CERTIFICATE_ARN=ALB)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("arn:", result.summary)
+        self.assertNotIn("123456789012", result.summary)
+        self.assertIn("external:55555555", result.summary)
+        result, commands = self.run_step(script, DISPATCH="true", CF_CERTIFICATE_ARN=CF,
+                                         ALB_CERTIFICATE_ARN=ALB, OPENSSL_EXIT="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(c[:2] == ["terraform", "plan"] for c in commands))
 
     def test_external_stack_dispatch_roundtrip_retains_attached_certificates_and_absent_aliases(self):
         script = step("terraform.yml", "plan", "Check existing certificates without changing DNS")
@@ -281,7 +316,7 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertIn("ci-deployment.tfvars.json", cleanup["run"])
 
     def test_smoke_retains_host_sni_and_tls_without_service_dns(self):
-        script = step("deploy-web.yml", "deploy", "Smoke test")
+        script = "cd ../..\n" + step("deploy-web.yml", "deploy", "Smoke test")
         result, commands = self.run_step(
             script, PUBLIC_URL="https://dev.example.com", CLOUDFRONT_DOMAIN="d123.cloudfront.net",
         )
@@ -291,6 +326,19 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertIn("https://dev.example.com/api/health", curl)
         self.assertNotIn("-k", curl)
         self.assertNotIn("--insecure", curl)
+
+    def test_smoke_rejects_malformed_destinations_before_curl(self):
+        script = "cd ../..\n" + step("deploy-web.yml", "deploy", "Smoke test")
+        for url, domain in (
+            ("https://dev.example.com/path", "d123.cloudfront.net"),
+            ("https://user@dev.example.com", "d123.cloudfront.net"),
+            ("https://dev.example.com:8443", "d123.cloudfront.net"),
+            ("https://dev.example.com", "foo.d123.cloudfront.net"),
+            ("https://dev.example.com/$(touch injected)", "d123.cloudfront.net"),
+        ):
+            result, commands = self.run_step(script, PUBLIC_URL=url, CLOUDFRONT_DOMAIN=domain)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertFalse(any(c[0] == "curl" for c in commands))
 
 
 if __name__ == "__main__":

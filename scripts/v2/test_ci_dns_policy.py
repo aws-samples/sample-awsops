@@ -62,6 +62,53 @@ class DnsPolicyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["dns_changes"], [])
 
+    def test_owned_validation_cnames_cannot_be_retired_even_with_dns_permission(self):
+        for allow in (False, True):
+            for actions in (["delete"], ["delete", "create"], ["create", "delete"]):
+                for prefix in ("", "module.edge."):
+                    with self.subTest(allow=allow, actions=actions, prefix=prefix):
+                        result = self.check_plan([{
+                            "address": prefix + 'aws_route53_record.cf_validation["extra.example.com"]',
+                            "type": "aws_route53_record", "change": {"actions": actions},
+                        }], allow=allow)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("separately reviewed", result.stderr)
+
+    def test_dns_authorized_alias_updates_and_validation_creation_remain_valid(self):
+        for name, actions in (("alias", ["update"]), ("cf_validation", ["create"]),
+                              ("cf_validation", ["no-op"])):
+            result = self.check_plan([{
+                "address": f'aws_route53_record.{name}["dev.example.com"]',
+                "type": "aws_route53_record", "change": {"actions": actions},
+            }], allow=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_plan_rejects_managed_certificate_retirement_but_allows_rotation(self):
+        for name in ("cf", "alb"):
+            for allow in (False, True):
+                result = self.check_plan([{
+                    "address": f"aws_acm_certificate.{name}[0]", "type": "aws_acm_certificate",
+                    "change": {"actions": ["delete"]},
+                }], allow=allow)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("ownership migration", result.stderr)
+            for actions in (["create"], ["no-op"], ["update"], ["create", "delete"], ["delete", "create"]):
+                result = self.check_plan([{
+                    "address": f"aws_acm_certificate.{name}[0]", "type": "aws_acm_certificate",
+                    "change": {"actions": actions},
+                }], allow=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_bad_plan_resources_produce_friendly_refusal(self):
+        valid = {"address": "aws_ecr_repository.web", "type": "aws_ecr_repository",
+                 "change": {"actions": ["create"]}}
+        for resource in (None, [], {**valid, "type": 7}, {**valid, "address": None},
+                         {**valid, "change": []}, {**valid, "change": {"actions": [None]}}):
+            result = self.check_plan([resource])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Deployment preflight refused: invalid Terraform plan", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
     def test_domain_registration_and_discovery_namespaces_are_dns_changes(self):
         for resource_type in ("aws_route53domains_registered_domain", "aws_service_discovery_private_dns_namespace",
                               "aws_service_discovery_public_dns_namespace", "aws_service_discovery_service",
@@ -205,7 +252,34 @@ class DnsPolicyTests(unittest.TestCase):
                     module.certificate_overrides(self.configuration(cf_arn=ARN), state, ACCOUNT, allow)
                 find.assert_not_called()
 
-    def test_discovery_excludes_managed_certificates_in_child_modules(self):
+    def test_managed_to_any_external_arn_is_rejected_in_all_modes(self):
+        module = self.module()
+        for key in ("cf", "alb"):
+            region = "us-east-1" if key == "cf" else "ap-northeast-2"
+            current = ARN.replace("us-east-1", region)
+            external = current.replace("11111111", "77777777")
+            state = self.state([self.resource(f"aws_acm_certificate.{key}[0]", arn=current)])
+            for allow in (False, True):
+                for scope in ("full", "ecr-bootstrap"):
+                    with self.subTest(key=key, allow=allow, scope=scope), patch.object(module, "aws") as aws:
+                        with self.assertRaisesRegex(ValueError, "ownership migration"):
+                            module.certificate_overrides(
+                                self.configuration(**{key + "_arn": external}), state, ACCOUNT,
+                                allow, scope=scope,
+                            )
+                        aws.assert_not_called()
+
+    def test_fresh_dns_authorized_stack_retains_managed_defaults(self):
+        module = self.module()
+        with patch.object(module, "aws") as aws:
+            self.assertEqual(
+                module.certificate_overrides(self.configuration(), self.state([]), ACCOUNT, True),
+                {"publish_service_dns": True, "existing_cf_certificate_arn": None,
+                 "existing_alb_certificate_arn": None},
+            )
+            aws.assert_not_called()
+
+    def test_selection_excludes_managed_certificates_in_child_modules(self):
         module = self.module()
         other = ARN.replace("11111111", "99999999")
         state = self.state([])
@@ -217,19 +291,21 @@ class DnsPolicyTests(unittest.TestCase):
         self.assertFalse(result["publish_service_dns"])
         self.assertEqual(find.call_args_list[0].kwargs["excluded"], {other})
 
-    def test_attached_external_certificates_are_preferred_and_reused(self):
+    def test_attached_external_certificates_are_reused_in_all_modes(self):
         module = self.module()
         alb = ARN.replace("us-east-1", "ap-northeast-2")
         state = self.state([
             self.resource("aws_cloudfront_distribution.main", viewer_certificate=[{"acm_certificate_arn": ARN}]),
             self.resource("aws_lb_listener.https", certificate_arn=alb),
         ])
-        with patch.object(module, "find_certificate", side_effect=[ARN, alb]) as find:
-            result = module.certificate_overrides(self.configuration(), state, ACCOUNT, False)
-        self.assertEqual(find.call_args_list[0].kwargs["preferred_arn"], ARN)
-        self.assertEqual(find.call_args_list[1].kwargs["preferred_arn"], alb)
-        self.assertEqual(result["existing_alb_certificate_arn"], alb)
-        self.assertFalse(result["publish_service_dns"])
+        for allow in (False, True):
+            for scope in ("full", "ecr-bootstrap"):
+                with patch.object(module, "find_certificate", side_effect=[ARN, alb]) as find:
+                    result = module.certificate_overrides(self.configuration(), state, ACCOUNT, allow, scope=scope)
+                self.assertEqual(find.call_args_list[0].kwargs["preferred_arn"], ARN)
+                self.assertEqual(find.call_args_list[1].kwargs["preferred_arn"], alb)
+                self.assertEqual(result["existing_alb_certificate_arn"], alb)
+                self.assertEqual(result["publish_service_dns"], allow)
 
     def test_missing_or_invalid_state_and_aliases_fail_closed(self):
         module = self.module()
@@ -250,7 +326,7 @@ class DnsPolicyTests(unittest.TestCase):
                                          ACCOUNT, True, scope="ecr-bootstrap")
             find.assert_called_once()
 
-    def test_discovery_does_not_describe_excluded_or_rotate_valid_attached_certificate(self):
+    def test_selection_does_not_describe_excluded_or_rotate_valid_attached_certificate(self):
         module = self.module()
         attached = ARN.replace("11111111", "88888888")
         def aws(*args):
@@ -266,26 +342,40 @@ class DnsPolicyTests(unittest.TestCase):
                 ["dev.example.com"], "us-east-1", ACCOUNT, excluded={ARN}, preferred_arn=attached,
             ), attached)
 
-    def test_discovery_skips_managed_candidates_before_describing_them(self):
+    def test_missing_selection_never_scans_account(self):
         module = self.module()
-        external = ARN.replace("11111111", "77777777")
-        calls = []
-        def aws(*args):
-            calls.append(args)
-            if args[:2] == ("acm", "list-certificates"):
-                return {"CertificateSummaryList": [{"CertificateArn": a} for a in (ARN, external)]}
-            if args[:2] == ("acm", "describe-certificate"):
-                self.assertEqual(args[-1], external)
-                return {"Certificate": {**CERTIFICATE, "CertificateArn": external,
-                                        "NotAfter": "2099-01-01T00:00:00+00:00"}}
-            if args[:2] == ("acm", "get-certificate"):
-                return {"Certificate": "public certificate"}
-            self.fail(f"Unexpected API call: {args[:2]}")
-        with patch.object(module, "aws", side_effect=aws), patch.object(module, "verify_chain", return_value=True):
-            self.assertEqual(module.find_certificate(
-                ["dev.example.com"], "us-east-1", ACCOUNT, excluded={ARN},
-            ), external)
-        self.assertIn("EC_secp384r1", calls[0][-1])
+        with patch.object(module, "aws") as aws:
+            with self.assertRaisesRegex(ValueError, "explicit.*ARN"):
+                module.find_certificate(["dev.example.com"], "us-east-1", ACCOUNT)
+            aws.assert_not_called()
+
+    def test_invalid_attached_certificate_does_not_fall_back_to_discovery(self):
+        module = self.module()
+        with patch.object(module, "aws", return_value={"Certificate": {
+            **CERTIFICATE, "Status": "EXPIRED",
+        }}) as aws:
+            with self.assertRaisesRegex(ValueError, "certificate"):
+                module.find_certificate(["dev.example.com"], "us-east-1", ACCOUNT, preferred_arn=ARN)
+            self.assertEqual(aws.call_count, 1)
+            self.assertEqual(aws.call_args.args[:2], ("acm", "describe-certificate"))
+
+    def test_invalid_explicit_arn_is_rejected_before_aws(self):
+        module = self.module()
+        for arn in ("garbage", "$(printf injected)", ARN.replace(ACCOUNT, "999999999999"),
+                    ARN.replace("us-east-1", "ap-northeast-2"), ARN.replace("11111111-", "111111111")):
+            with self.subTest(arn=arn), patch.object(module, "aws") as aws:
+                with self.assertRaisesRegex(ValueError, "ARN"):
+                    module.find_certificate(["dev.example.com"], "us-east-1", ACCOUNT, arn)
+                aws.assert_not_called()
+
+    def test_null_certificate_chain_is_normalized(self):
+        module = self.module()
+        with patch.object(module, "aws", side_effect=[
+            {"Certificate": {**CERTIFICATE, "NotAfter": "2099-01-01T00:00:00+00:00"}},
+            {"Certificate": "leaf", "CertificateChain": None},
+        ]), patch.object(module, "verify_chain", return_value=True) as verify:
+            self.assertEqual(module.find_certificate(["dev.example.com"], "us-east-1", ACCOUNT, ARN), ARN)
+            verify.assert_called_once_with("leaf", "", ["dev.example.com"])
 
     def test_unavailable_managed_certificate_does_not_fall_back_to_externalization(self):
         module = self.module()

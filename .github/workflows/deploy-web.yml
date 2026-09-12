@@ -175,6 +175,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
@@ -294,10 +298,5 @@ jobs:
           CLOUDFRONT_DOMAIN: ${{ steps.tf.outputs.cloudfront_domain }}
         run: |
           set -euo pipefail
-          case "$PUBLIC_URL" in https://*) ;; *) echo "::error::HTTPS URL required"; exit 1;; esac
-          case "$CLOUDFRONT_DOMAIN" in *.cloudfront.net) ;; *) echo "::error::CloudFront destination required"; exit 1;; esac
-          SERVICE_DOMAIN="${PUBLIC_URL#https://}"
-          curl -fsS --max-time 30 \
-            --connect-to "${SERVICE_DOMAIN}:443:${CLOUDFRONT_DOMAIN}:443" \
-            "${PUBLIC_URL}/api/health"
+          node scripts/v2/deployment-smoke.mjs "$PUBLIC_URL" "$CLOUDFRONT_DOMAIN"
           echo

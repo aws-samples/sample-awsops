@@ -163,12 +163,17 @@ and nullable external ARN inputs can select already-issued certificates.
 DNS deferral prohibits **all** steps that change DNS, including certificate CNAME validation.
 Do not execute this cutover while that prohibition is active. After separate DNS authorization,
 use a fresh explicit full Terraform plan dispatch with the authorized `allow_dns_changes`
-setting (true for a DNS-changing cutover), then apply only its successful same-branch/SHA plan.
+setting (`allow_dns_changes=true` on **both** plan and apply dispatches for a DNS-changing
+cutover), then apply only its successful same-branch/SHA plan. Apply does not inherit the
+plan's DNS permission. Routine CI rejects managed-certificate externalization and owned
+validation-CNAME deletion/replacement; each needs a separately reviewed ownership/retirement procedure.
 Push plans are advisory. See [dev-repo-setup §5](dev-repo-setup.md) for ownership preservation.
 
 아래는 최초 전환 기록이다. 현재 코드는 이미 조건부 for_each와 인증서 moved 블록을 포함하므로
 과거 예제로 되돌리지 않는다. DNS 금지 중에는 검증 CNAME을 포함한 전환 작업을 실행하지 않는다.
-별도 승인 후에만 DNS 변경을 허용한 새 전체 dispatch 계획을 검토하고 같은 브랜치·SHA로 적용한다.
+별도 승인 후에만 계획·적용 dispatch 양쪽에 `allow_dns_changes=true`를 명시하고 새 전체
+계획을 검토해 같은 브랜치·SHA로 적용한다. 일반 CI에서 관리 인증서 외부화 및 소유한 검증
+CNAME 삭제·교체는 금지하며 별도 소유권 이전/폐기 검토 절차가 필요하다.
 
 **CloudFront는 동일 별칭(CNAME)을 두 distribution에 동시 등록할 수 없다** — v2에 별칭을 추가하는 일반 `UpdateDistribution`을, v1이 아직 그 별칭을 갖고 있는 동안 실행하면 `CNAMEAlreadyExists`로 즉시 실패한다. 같은 계정 내 이동에는 전용 원자적 명령 `aws cloudfront associate-alias`를 쓴다.
 

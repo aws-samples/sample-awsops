@@ -1,0 +1,3 @@
+# Shared merge checks and deployment workflow fixtures (Python 3.12 in CI).
+pytest>=8,<9
+PyYAML>=6,<7
