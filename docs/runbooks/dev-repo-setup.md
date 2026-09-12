@@ -417,6 +417,62 @@ stack's web ECR repository (plus the auth-token action it already has).
 (각 deployer 역할에 자기 스택 web ECR 스코프의 `ecr:BatchGetImage`·`ecr:PutImage`
 권한이 필요합니다.)
 
+### 5. Deploy while DNS changes are deferred / DNS 변경 보류 상태의 배포
+
+`Terraform` dispatch defaults to `mode=plan` and `allow_dns_changes=false`.
+For a new stack, a DNS-free full plan needs two already-issued public ACM
+certificates: one in `us-east-1` covering the service and additional aliases,
+and one in the stack Region covering the origin hostname. Both must belong to
+the deployment account. CI checks validity, hostname coverage and the public CA
+chain, then supplies their ARNs to Terraform. Explicit
+`existing_cf_certificate_arn` / `existing_alb_certificate_arn` inputs can select
+certificates. A missing or unverifiable pair stops a DNS-free full dispatch.
+
+새 스택을 DNS 변경 없이 배포하려면 이미 발급된 인증서 두 개가 필요하다.
+CI가 인증서의 계정·리전·유효 기간·호스트 이름·공개 CA 체인을 검증한다.
+서비스 A 레코드와 인증서 검증 CNAME은 모두 생성하지 않으며, 계획에 DNS
+생성·수정·삭제가 하나라도 있으면 적용을 거부한다. 내부 ALB와 HTTPS 경로는
+유지한다. 자동 PR 계획의 인증서 가용성 표시는 읽기 전용 사전 점검이며,
+실제 DNS-free 배포 가능 여부는 명시적 dispatch에서 검증한다.
+
+```bash
+gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
+  -f mode=plan -f plan_scope=full \
+  -f allow_dns_changes=false -f publish_service_dns=false
+```
+
+Inspect the completed run, its resource changes and commit. Set `PLAN_RUN_ID` to
+that successful run's numeric ID, then apply its encrypted saved plan:
+
+완료된 실행의 커밋과 리소스 변경을 확인한 뒤, `PLAN_RUN_ID`에 검토한 성공
+실행의 숫자 ID를 지정하고 저장된 계획을 적용한다.
+
+```bash
+gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
+  -f mode=apply -f plan_run_id="$PLAN_RUN_ID" -f allow_dns_changes=false
+```
+
+Apply accepts only a successful Terraform push/dispatch run from the same
+repository, stack branch and commit. It checks the live branch again and
+rechecks DNS changes after decrypting the plan. A moved branch requires a fresh
+plan. `plan_scope=ecr-bootstrap` is available for an initial plan limited to the
+web ECR repository; apply a full reviewed plan before rolling the service.
+
+적용은 같은 저장소·스택 브랜치·커밋의 성공한 Terraform push/dispatch 계획만
+허용한다. 브랜치가 이동하면 새 계획이 필요하다. ECR 초기 준비만 필요한
+경우 `plan_scope=ecr-bootstrap`을 사용하고, 서비스 배포 전에 전체 계획을
+별도로 검토·적용한다.
+
+The web rollout smoke test connects to `cloudfront_domain` with curl
+`--connect-to` while requesting `public_url`. This preserves the service Host,
+SNI and certificate verification before service DNS is published. `/api/health`
+checks process liveness; complete the required database migrations and verify
+authenticated application routes separately.
+
+웹 배포 스모크 테스트는 `public_url`의 Host·SNI·인증서 검증을 유지하면서
+CloudFront 연결 주소로 요청한다. `/api/health`는 프로세스 생존 확인이므로,
+필수 DB 마이그레이션과 인증된 실제 기능 검증도 수행해야 한다.
+
 ## Verification / 확인
 
 Push a trivial `web/**` change to `dev`: the run should build, pin, roll and pass

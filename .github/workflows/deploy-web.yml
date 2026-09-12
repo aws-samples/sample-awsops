@@ -205,6 +205,7 @@ jobs:
           echo "cluster=$(terraform output -raw ecs_cluster_name)" >> "$GITHUB_OUTPUT"
           echo "service=$(terraform output -raw ecs_service_name)" >> "$GITHUB_OUTPUT"
           echo "url=$(terraform output -raw public_url)" >> "$GITHUB_OUTPUT"
+          echo "cloudfront_domain=$(terraform output -raw cloudfront_domain)" >> "$GITHUB_OUTPUT"
           echo "ecr_repo=$(terraform output -raw ecr_web_uri | sed 's|^[^/]*/||')" >> "$GITHUB_OUTPUT"
 
       # The runner is persistent and shared — never leave the restored stack
@@ -270,4 +271,17 @@ jobs:
             --region ap-northeast-2
 
       - name: Smoke test
-        run: curl -fsS --max-time 15 "${{ steps.tf.outputs.url }}/api/health" && echo
+        # Connect to CloudFront directly while preserving the configured Host,
+        # SNI and certificate verification. Service DNS can be published later.
+        env:
+          PUBLIC_URL: ${{ steps.tf.outputs.url }}
+          CLOUDFRONT_DOMAIN: ${{ steps.tf.outputs.cloudfront_domain }}
+        run: |
+          set -euo pipefail
+          case "$PUBLIC_URL" in https://*) ;; *) echo "::error::HTTPS URL required"; exit 1;; esac
+          case "$CLOUDFRONT_DOMAIN" in *.cloudfront.net) ;; *) echo "::error::CloudFront destination required"; exit 1;; esac
+          SERVICE_DOMAIN="${PUBLIC_URL#https://}"
+          curl -fsS --max-time 30 \
+            --connect-to "${SERVICE_DOMAIN}:443:${CLOUDFRONT_DOMAIN}:443" \
+            "${PUBLIC_URL}/api/health"
+          echo
