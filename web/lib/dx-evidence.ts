@@ -7,8 +7,42 @@ export function knownDxLocation(value: string | undefined): string | undefined {
 }
 
 // Unknown, missing and future states cannot establish a deployed connection.
-export const isDeployedDxConnection = (c: DxConnectionRow): boolean =>
+export const isDeployedDxConnection = (c: Pick<DxConnectionRow, 'state'>): boolean =>
   c.state === 'available' || c.state === 'down';
+
+/** Lifecycle/unknown metadata alone is not evidence of a connection failure. */
+export const hasDxDownEvidence = (c: Pick<DxConnectionRow, 'state' | 'stateMetricMin'>): boolean =>
+  c.state === 'down' || c.stateMetricMin === 0;
+
+export type DxConnectionEvidence = 'up' | 'down' | 'unknown' | 'unassessed' | 'unassessed-down';
+
+/** An affirmative up needs deployed metadata AND an up metric; down=false is not proof. */
+export function classifyDxConnection(c: DxConnectionRow): DxConnectionEvidence {
+  if (!isDeployedDxConnection(c)) return c.stateMetricMin === 0 ? 'unassessed-down' : 'unassessed';
+  if (hasDxDownEvidence(c) || c.down) return 'down';
+  return c.stateMetricMin === 1 ? 'up' : 'unknown';
+}
+
+/** One scope for API down totals, the KPI and the deployed-health checklist.
+ * A metric zero on an excluded row remains a period observation, not a deployed failure. */
+export function summarizeDxConnectionHealth(connections: DxConnectionRow[]) {
+  const coverage = {
+    total: connections.length, assessed: 0, excluded: 0, unknown: 0, down: 0,
+    excludedObservedDown: 0,
+  };
+  for (const c of connections) {
+    const evidence = classifyDxConnection(c);
+    if (evidence === 'unassessed' || evidence === 'unassessed-down') {
+      coverage.excluded++;
+      if (evidence === 'unassessed-down') coverage.excludedObservedDown++;
+      continue;
+    }
+    coverage.assessed++;
+    if (evidence === 'down') coverage.down++;
+    else if (evidence === 'unknown') coverage.unknown++;
+  }
+  return coverage;
+}
 
 /** Deployed connections, including hosted. Excluded states cannot certify a deployed site.
  * SLA eligibility is a separate owned-only scope. */

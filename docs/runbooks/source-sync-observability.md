@@ -80,6 +80,18 @@ metadata and metric scope labels. Before reindexing, older cached queries can pr
 통과를 운영 진단 정확도로 해석하지 않는다.
 
 
+The web task and inventory-reader Lambda both receive `graph_rebuild_interval_mins` through
+`GRAPH_REBUILD_INTERVAL_MINS`. Their freshness threshold is twice that cadence with a 15-minute
+minimum; zero retains that minimum. For example, a successful 20-minute-old snapshot is current
+at a 30-minute cadence in both readers. Failed/partial/retained evidence keeps its existing gates.
+Apply the Lambda environment binding through Terraform along with the reader code deployment;
+updating the code alone does not configure the cadence.
+
+웹과 inventory-reader Lambda에 같은 `graph_rebuild_interval_mins`를 전달한다. 신선도 기준은
+수집 주기의 두 배이며 최소 15분이고, 0에서도 이 최소값을 유지한다. 30분 주기에서 정상적으로
+수집된 20분 전 스냅샷은 양쪽에서 최신으로 판정한다. 실패·부분·보존 데이터의 기존 판정은
+유지하며, 코드 배포와 함께 Terraform의 Lambda 환경설정도 반영해야 한다.
+
 ## Trace identity boundaries / 트레이스 식별 경계
 
 - Queue ARNs join across caller accounts/regions only within the same datasource/environment.
@@ -121,11 +133,27 @@ owned-only SLA counts. All other states, including `deleting`, `unknown`, missin
 are excluded and disclosed as unassessed. A deployed-scope health pass does not certify the whole
 inventory. Missing metrics, location/device evidence and failed reads retain their unknown gates;
 two observed deployed sites establish a lower bound, not complete inventory coverage.
+`totals.connectionsDown`, the scoped down KPI and the deployed-health checklist share this
+classification. Excluded lifecycle metadata alone is not a failure. An explicit
+`ConnectionState` minimum of zero on an excluded row remains visible as a separate critical
+period observation in the KPI area and checklist, without asserting a current deployed failure.
+The KPI discloses assessed/excluded/unknown counts; an all-excluded fleet is unassessed, not zero-down healthy.
+Graph connections, location links and LAG summaries use the same affirmative evidence.
+Only deployed connections with an up metric and no down evidence count as `up`; unknown and
+unassessed members are labeled separately, including period-down observations on excluded members.
 
 상태가 `available` 또는 `down`인 커넥션만 배포된 것으로 인정해 상태·위치·owned 전용 SLA를
 평가한다. `deleting`·`unknown`·누락·미래 값을 포함한 다른 상태는 제외·미평가로 고지한다.
 배포 범위의 정상 판정은 전체 인벤토리의 정상 증명이 아니다. 메트릭·위치·디바이스 근거 누락과
 조회 실패의 미확인 판정은 유지하며, 관측된 두 배포 위치는 하한일 뿐 전체 수집을 증명하지 않는다.
+`totals.connectionsDown`·범위를 명시한 다운 KPI·배포된 커넥션 상태 체크리스트는 같은
+분류를 사용한다. 제외된 수명 주기 상태만으로 장애를 만들지 않는다. 제외 행의
+`ConnectionState` 최솟값이 명시적으로 0이면 KPI 영역과 체크리스트에 별도의 중요 기간 관측으로
+유지하되 현재 배포 장애로 단정하지 않는다. KPI는 평가·제외·미확인 수를 고지하며,
+전부 제외된 인벤토리는 다운 0건 정상 대신 미평가로 표시한다.
+그래프 커넥션·로케이션 링크·LAG 요약도 같은 긍정 근거를 사용한다. 배포 상태이고 up 메트릭이
+있으며 다운 근거가 없는 커넥션만 `up`으로 세고, 미확인·미평가 멤버와 제외 멤버의 기간 내
+다운 관측을 별도로 표시한다.
 
 ## Frozen approval contract / 동결된 승인 계약
 

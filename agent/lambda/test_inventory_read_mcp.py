@@ -5,7 +5,11 @@ of inventory_resources, keyed by resource_type) so it is testable with fixtures 
 """
 import os
 import json
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -685,6 +689,27 @@ class TestCatalogWiring(unittest.TestCase):
         tool = next(x for x in t["tools"] if x["name"] == "query_inventory")
         self.assertIn("ecs_service", tool["description"])
 
+    def test_inventory_reader_deployment_binds_web_graph_cadence(self):
+        # A binding elsewhere in ai.tf does not configure the inventory-reader Lambda.
+        for expression in _graph_cadence_expressions().values():
+            self.assertRegex(expression, r"^tostring\(\s*var\.graph_rebuild_interval_mins\s*\)$")
+
+
+def _graph_cadence_expressions():
+    """Read the deployed settings, without substituting a test-only cadence binding."""
+    foundation = Path(__file__).resolve().parents[2] / "terraform/foundation"
+    agent = (foundation / "ai.tf").read_text().split('resource "aws_lambda_function" "agent" {', 1)[1]
+    reader = re.search(r'each\.key\s*==\s*"inventory-read"\s*\?\s*\{([^}]+)\}\s*:\s*\{\}', agent)
+    assert reader is not None, "inventory-reader environment branch missing"
+    binding = re.search(r"^\s*GRAPH_REBUILD_INTERVAL_MINS\s*=\s*([^\n]+)", reader[1], re.M)
+    assert binding is not None, "inventory-reader Lambda must receive the web graph rebuild cadence"
+    web = re.search(
+        r'name\s*=\s*"GRAPH_REBUILD_INTERVAL_MINS"\s*,\s*value\s*=\s*([^}\n]+)',
+        (foundation / "workload.tf").read_text(),
+    )
+    assert web is not None, "web graph rebuild cadence binding missing"
+    return {"reader": binding[1].strip(), "web": web[1].strip()}
+
 
 class TestTraceTopologyCollection(unittest.TestCase):
     NOW = 1_789_128_000  # 2026-09-11T12:00:00Z
@@ -835,6 +860,87 @@ class TestTraceTopologyCollection(unittest.TestCase):
                 with mock.patch.dict(os.environ, {"GRAPH_REBUILD_INTERVAL_MINS": interval}):
                     body, _ = self._read(self._state(captured_at=captured))
                 self.assertEqual(body["collection"]["stale"], stale)
+
+    def test_deployed_graph_cadence_agrees_with_real_web_reader(self):
+        expressions = _graph_cadence_expressions()  # Missing binding fails even without optional tools.
+        root = Path(__file__).resolve().parents[2]
+        if not shutil.which("terraform") or not shutil.which("node"):
+            self.skipTest("Cross-runtime contract requires Terraform and Node; binding contract still runs")
+        if not (root / "web/node_modules/typescript/lib/typescript.js").is_file():
+            self.skipTest("Cross-runtime contract requires the existing web TypeScript dependency")
+        # Evaluate the actual HCL expressions in a provider-free, backend-free module.
+        # No foundation state, provider initialization, AWS credentials or network is used.
+        with tempfile.TemporaryDirectory(prefix="graph-cadence-") as directory:
+            fixture = Path(directory)
+            (fixture / "main.tf").write_text('variable "graph_rebuild_interval_mins" { type = number }\n')
+            (fixture / "terraform.rc").write_text("")
+            env = {k: v for k, v in os.environ.items() if not k.startswith("TF_")}
+            env.update(TF_DATA_DIR=str(fixture / ".terraform"),
+                       TF_CLI_CONFIG_FILE=str(fixture / "terraform.rc"), CHECKPOINT_DISABLE="1")
+            for minutes in (0, 15, 30, 60):
+                with self.subTest(minutes=minutes):
+                    expression = "jsonencode({" + ",".join(
+                        f"{key}=({value})" for key, value in expressions.items()) + "})\n"
+                    evaluated = subprocess.run(
+                        ["terraform", f"-chdir={directory}", "console", "-no-color",
+                         f"-var=graph_rebuild_interval_mins={minutes}"],
+                        input=expression, text=True, capture_output=True, env=env, timeout=20,
+                    )
+                    self.assertEqual(evaluated.returncode, 0, evaluated.stderr)
+                    deployed = json.loads(json.loads(evaluated.stdout))
+                    self.assertEqual(deployed, {"reader": str(minutes), "web": str(minutes)})
+                    cases = [
+                        (self._state(captured_at="2026-09-11T11:40:00Z"), minutes == 0),
+                    ]
+                    if minutes == 30:
+                        cases += [
+                            (self._state("empty", captured_at="2026-09-11T11:40:00Z"), False),
+                            (self._state("partial", captured_at="2026-09-11T11:40:00Z"), False),
+                            (self._state(captured_at="2026-09-11T11:00:00Z"), False),
+                            (self._state(captured_at="2026-09-11T10:59:59Z"), True),
+                            (self._state("error"), True), (self._state("unavailable"), True),
+                            (self._state(details={"sources": [], "retainedPrevious": True}), True),
+                            (self._state(captured_at=None), True), (None, True),
+                        ]
+                    # Execute graph-state.ts itself using the installed compiler, compatible with
+                    # the CI's Node 20. Only SQL rows, environment and wall clock are controlled.
+                    web = subprocess.run(["node", "-e", r"""
+const fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const ts = require(path.join(input.root, 'web/node_modules/typescript'));
+const source = fs.readFileSync(path.join(input.root, 'web/lib/graph-state.ts'), 'utf8');
+const code = ts.transpileModule(source, { compilerOptions: {
+  module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020,
+} }).outputText;
+const context = { exports: {}, process: { env: input.environment },
+  Date: class extends Date { static now() { return input.now; } } };
+vm.runInNewContext(code, context);
+Promise.all(input.rows.map(row => context.exports.readGraphState({
+  query: async (sql, args) => {
+    if (!sql.includes('FROM topology_graph_state') || args[0] !== 'self') throw Error('unexpected SQL');
+    return { rows: row ? [row] : [] };
+  },
+}, 'self'))).then(rows => process.stdout.write(JSON.stringify(rows)))
+  .catch(error => { console.error(error); process.exitCode = 1; });
+"""], input=json.dumps({
+                        "root": str(root), "now": self.NOW * 1000,
+                        # The web omits this variable when the configured timer is disabled.
+                        "environment": {"GRAPH_REBUILD_INTERVAL_MINS": deployed["web"]} if minutes else {},
+                        "rows": [row for row, _ in cases],
+                    }), text=True, capture_output=True, timeout=20)
+                    self.assertEqual(web.returncode, 0, web.stderr)
+                    web_collections = json.loads(web.stdout)
+                    self.assertEqual(len(web_collections), len(cases))
+                    for (state, stale), web_collection in zip(cases, web_collections):
+                        with self.subTest(state=state):
+                            with mock.patch.dict(os.environ, {
+                                "GRAPH_REBUILD_INTERVAL_MINS": deployed["reader"],
+                            }, clear=True):
+                                body, _ = self._read(state)
+                            self.assertEqual(body["collection"]["stale"], stale)
+                            self.assertEqual(body["collection"], web_collection)
+                            self.assertEqual("warning" in body,
+                                             stale or body["collection"]["status"] == "partial")
 
     def test_successfully_collected_empty_graph_is_not_reported_as_unmaterialized(self):
         body, _ = self._read(self._state("empty"), nodes=[])

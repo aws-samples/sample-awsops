@@ -440,16 +440,27 @@ export default function DirectConnectPage() {
           </div>
         )}
 
-        {data && t && (() => {
+        {data && t && resiliency && (() => {
           // 각 KPI/판정이 실제로 의존하는 리전 실패에만 반응 — 배너와 별개로, 그 지표
           // 자체가 낙관적일 수 있으면 "정상/0건"을 확신 있는 색으로 보여주지 않는다.
           const resourcesDegraded = data.degradedRegions.length > 0;
           const anyMetricsDegraded = resourcesDegraded || data.metricsDegradedRegions.length > 0;
-          const downTileVariant = kpiVariant(t.connectionsDown + t.vifsDown > 0, anyMetricsDegraded);
-          const downHint = downTileVariant !== 'danger' && anyMetricsDegraded
-            ? tt('일부 리전 조회 실패 — 실제보다 적게 집계될 수 있음')
-            // danger 라도 degraded 면 확정 수치가 아니라 하한 — 커넥션/VIF 타일의 `+` 관행 일치 (리뷰 L2-3)
-            : `${tt('커넥션')} ${t.connectionsDown}${anyMetricsDegraded ? '+' : ''} · VIF ${t.vifsDown}${anyMetricsDegraded ? '+' : ''}`;
+          const health = resiliency.connectionHealthCoverage;
+          // Use the same classification as the API and checklist, including cached older responses.
+          const scopedDown = health.down + t.vifsDown;
+          const downUnknown = anyMetricsDegraded || health.unknown > 0 || health.excluded > 0;
+          const downTileVariant = kpiVariant(scopedDown > 0, downUnknown);
+          const downHint = (
+            <span className="block whitespace-normal">
+              {tt('배포된 커넥션')} {health.down}{anyMetricsDegraded || health.unknown > 0 ? '+' : ''}
+              {' · '}VIF {t.vifsDown}{anyMetricsDegraded ? '+' : ''}
+              <br />
+              {tt('커넥션')} {health.assessed}/{health.total}
+              {' · '}{tt('제외')} · {tt('미평가')} {health.excluded}
+              {' · '}{tt('확인 불가')} {health.unknown}
+              {anyMetricsDegraded && <><br />{tt('일부 리전 조회 실패 — 실제보다 적게 집계될 수 있음')}</>}
+            </span>
+          );
           const gwTileVariant = kpiVariant(false, data.gatewaysDegraded || t.gatewaysUnassociated > 0 || t.gatewaysAssociationsUnknown > 0);
           const gwHint = data.gatewaysDegraded
             ? tt('DX Gateway 조회 실패 — 확인 불가')
@@ -490,8 +501,8 @@ export default function DirectConnectPage() {
                 icon={<Gauge size={16} />}
               />
               <StatTile
-                label="다운 감지"
-                value={t.connectionsDown + t.vifsDown}
+                label="다운 감지 (배포된 커넥션·VIF)"
+                value={health.assessed === 0 && health.excluded > 0 && t.vifs === 0 ? '—' : scopedDown}
                 variant={downTileVariant}
                 hint={downHint}
                 icon={<Unplug size={16} />}
@@ -504,6 +515,15 @@ export default function DirectConnectPage() {
                 icon={<Activity size={16} />}
               />
             </div>
+            {health.excludedObservedDown > 0 && (
+              <div role="alert" className="flex items-start gap-2 rounded-md border border-negative-border bg-negative-surface px-3 py-2 text-[12px] text-negative-text">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <span>
+                  {tt('제외·미평가 커넥션의 기간 내 다운 관측')}: {health.excludedObservedDown}
+                  {' — '}{tt('현재 배포 장애 판정 아님')}
+                </span>
+              </div>
+            )}
 
             {/* ② 분포 — VIF 타입 도넛 + VIF별 평균 트래픽 */}
             <div className="grid gap-6 lg:grid-cols-2">

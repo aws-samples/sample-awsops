@@ -1,6 +1,6 @@
 import dagre from '@dagrejs/dagre';
 import type { DxAnalysis, DxConnectionRow, DxVifRow, DxGatewayRow } from './dx';
-import { isDeployedDxConnection, knownDxLocation } from './dx-evidence';
+import { isDeployedDxConnection, knownDxLocation, summarizeDxConnectionHealth } from './dx-evidence';
 
 // Direct Connect 구성도 + 복원력(SLA 티어) 평가 — 순수 함수 (React 비의존).
 // 참조: aws-samples/sample-network-resilience-agent — 온프레미스 → DX 로케이션 →
@@ -24,6 +24,8 @@ export interface DxTopoNode {
   /** 2행: 보조 정보 (대역폭·타입·리전 등). */
   sub?: string;
   state: DxNodeState;
+  /** Explicit connection evidence for connection/site/LAG labels; absent on synthetic parents. */
+  connectionHealth?: ReturnType<typeof summarizeDxConnectionHealth>;
   /** 클릭 상세용 원본 행 (connection/vif/dxgw만). */
   row?: DxConnectionRow | DxVifRow | DxGatewayRow;
 }
@@ -42,6 +44,13 @@ export interface DxTopology { nodes: DxTopoNode[]; edges: DxTopoEdge[] }
 
 type Input = Pick<DxAnalysis, 'connections' | 'vifs' | 'gateways'>;
 
+function connectionNodeState(health: ReturnType<typeof summarizeDxConnectionHealth>): DxNodeState {
+  const observedDown = health.down + health.excludedObservedDown;
+  if (observedDown > 0) return observedDown === health.total ? 'down' : 'warn';
+  if (health.unknown > 0 || health.excluded > 0 || health.assessed === 0) return 'none';
+  return 'ok';
+}
+
 export function buildDxTopology(a: Input): DxTopology {
   const nodes: DxTopoNode[] = [];
   const edges: DxTopoEdge[] = [];
@@ -57,12 +66,14 @@ export function buildDxTopology(a: Input): DxTopology {
   // 로케이션 → 커넥션 (→ LAG)
   for (const c of a.connections) {
     const locId = `loc|${c.location || 'unknown'}`;
+    const connectionHealth = summarizeDxConnectionHealth([c]);
+    const state = connectionNodeState(connectionHealth);
     add({ id: locId, kind: 'location', label: c.location || 'unknown', sub: c.region, state: 'ok' });
-    add({ id: c.id, kind: 'connection', label: c.name || c.id, sub: `${c.bandwidth}${c.partnerName ? ` · ${c.partnerName}` : ''}`, state: c.down ? 'down' : 'ok', row: c });
-    edges.push({ id: `${locId}→${c.id}`, source: locId, target: c.id, label: c.bandwidth, state: c.down ? 'down' : 'ok' });
+    add({ id: c.id, kind: 'connection', label: c.name || c.id, sub: `${c.bandwidth}${c.partnerName ? ` · ${c.partnerName}` : ''}`, state, connectionHealth, row: c });
+    edges.push({ id: `${locId}→${c.id}`, source: locId, target: c.id, label: c.bandwidth, state });
     if (c.lagId) {
       add({ id: c.lagId, kind: 'lag', label: c.lagId, sub: 'LAG', state: 'ok' });
-      edges.push({ id: `${c.id}→${c.lagId}`, source: c.id, target: c.lagId, state: c.down ? 'down' : 'ok' });
+      edges.push({ id: `${c.id}→${c.lagId}`, source: c.id, target: c.lagId, state });
     }
   }
   // 온프레미스→로케이션: 로케이션당 1개, 멤버 커넥션 상태 집계 — 커넥션마다 push하면
@@ -70,10 +81,11 @@ export function buildDxTopology(a: Input): DxTopology {
   for (const n of nodes) {
     if (n.kind !== 'location') continue;
     const members = a.connections.filter((c) => `loc|${c.location || 'unknown'}` === n.id);
-    const downs = members.filter((c) => c.down).length;
+    n.connectionHealth = summarizeDxConnectionHealth(members);
+    n.state = connectionNodeState(n.connectionHealth);
     edges.push({
       id: `onprem→${n.id}`, source: 'onprem', target: n.id,
-      state: downs === 0 ? 'ok' : downs === members.length ? 'down' : 'warn',
+      state: n.state,
     });
   }
 
@@ -82,9 +94,10 @@ export function buildDxTopology(a: Input): DxTopology {
     if (n.kind !== 'lag') continue;
     const members = a.connections.filter((c) => c.lagId === n.id);
     if (members.length === 0) continue; // 합성 LAG(크로스 계정) — 멤버 비가시, sub/state 유지
-    const downs = members.filter((c) => c.down).length;
-    n.state = downs === 0 ? 'ok' : downs === members.length ? 'down' : 'warn';
-    n.sub = `LAG · ${members.length - downs}/${members.length} up`;
+    const health = summarizeDxConnectionHealth(members);
+    n.connectionHealth = health;
+    n.state = connectionNodeState(health);
+    n.sub = `LAG · ${health.assessed - health.down - health.unknown}/${members.length} up`;
   }
 
   // 알려진 DXGW (계정 내) — 크로스 계정 DXGW는 VIF attachment에서 합성
@@ -174,7 +187,7 @@ export interface DxResiliency {
   /** 일부 로케이션에서 awsDevice 정보가 없어 디바이스 이중화 여부를 확정할 수 없음. */
   deviceRedundancyUnverifiable: boolean;
   /** ConnectionState supports dedicated AND hosted; all states except available/down are unassessed. */
-  connectionHealthCoverage: { total: number; assessed: number; excluded: number; unknown: number; down: number };
+  connectionHealthCoverage: ReturnType<typeof summarizeDxConnectionHealth>;
   checks: DxResiliencyCheck[];
 }
 
@@ -228,16 +241,12 @@ export function assessResiliency(a: ResiliencyInput): DxResiliency {
         : 'single';
   const slaPct = tier === 'maximum' ? '99.99%' : tier === 'high' ? '99.9%' : tier === 'single' ? '95%' : null;
 
-  const connsDown = deployedAll.filter((c) => c.down).length;
+  const connectionHealthCoverage = summarizeDxConnectionHealth(a.connections);
+  const connsDown = connectionHealthCoverage.down;
   const totalAll = a.connections.length;
   // Connection-level Bps is unavailable for some hosted connections, but ConnectionState
   // supports both dedicated and hosted connections (AWS DX monitoring-cloudwatch reference).
   // Missing ConnectionState on a deployed hosted row is unknown, never "unsupported".
-  const connectionHealthCoverage = {
-    total: totalAll, assessed: deployedAll.length, excluded: totalAll - deployedAll.length,
-    unknown: deployedAll.filter(c => !c.down && (c.state !== 'available' || c.stateMetricMin !== 1)).length,
-    down: connsDown,
-  };
   // tier==='none'인 '이유' — 화면 라벨이 세 경우를 구분해야 한다(리뷰, 라운드 3: hostedConnections/
   // allConnectionsHosted 둘 다 '배포 상태'나 '상태 무관 전체'라는 단일 축만 봐서 owned+호스티드가
   // 혼재하는데 배포된 owned가 0인 경우를 여전히 오분류했다). totalAll(상태 무관 전체 커넥션 수)과
@@ -272,6 +281,12 @@ export function assessResiliency(a: ResiliencyInput): DxResiliency {
     { label: '미연결 DX Gateway 없음', ok: health(unassociated > 0, a.gatewaysDegraded === false && a.gateways.every(g => g.associationsAvailable === true)), severity: 'warn', detail: unassociated > 0 ? `${unassociated}` : undefined },
     { label: '미연결 VIF 없음 (게이트웨이 attachment)', ok: health(unattachedVifs > 0, inventoryComplete), severity: 'warn', detail: unattachedVifs > 0 ? `${unattachedVifs}` : undefined },
   ];
+  if (connectionHealthCoverage.excludedObservedDown > 0) {
+    checks.push({
+      label: '제외·미평가 커넥션의 기간 내 다운 관측 (현재 배포 장애 판정 아님)',
+      ok: false, severity: 'critical', detail: `${connectionHealthCoverage.excludedObservedDown}`,
+    });
+  }
 
   return { tier, slaPct, locations, dualConnLocations, unknownLocationConnections,
     hostedConnections, noneReason, deviceRedundancyUnverifiable, connectionHealthCoverage, checks };
@@ -279,7 +294,7 @@ export function assessResiliency(a: ResiliencyInput): DxResiliency {
 
 // ── dagre 레이아웃 (flow-layout.ts와 동일 기법 — LR 계층 배치, 중심→좌상단 변환) ──
 const NODE_W = 200;
-const NODE_H = 56;
+const NODE_H = 90;
 
 export function layoutDxTopology(g: DxTopology): Map<string, { x: number; y: number }> {
   const out = new Map<string, { x: number; y: number }>();

@@ -26,6 +26,41 @@ const gw = (o: Partial<DxGatewayRow>): DxGatewayRow => ({
 });
 
 describe('buildDxTopology', () => {
+  it.each(['pending', 'ordering', 'requested', 'unknown', 'available'])(
+    'never infers up from down=false for an unassessed %s LAG member', state => {
+      const g = buildDxTopology({
+        connections: [conn({ state, stateMetricMin: null, lagId: 'dxlag-1' })],
+        vifs: [], gateways: [],
+      });
+      expect(g.nodes.find(n => n.id === 'dxcon-1')!.state).toBe('none');
+      expect(g.nodes.find(n => n.id === 'loc|SEL1')!.state).toBe('none');
+      expect(g.nodes.find(n => n.id === 'dxlag-1')).toMatchObject({
+        state: 'none', sub: 'LAG · 0/1 up',
+        connectionHealth: { unknown: state === 'available' ? 1 : 0, excluded: state === 'available' ? 0 : 1 },
+      });
+      expect(g.edges.filter(e => e.source === 'onprem' || e.source === 'loc|SEL1' || e.target === 'dxlag-1')
+        .every(e => e.state === 'none')).toBe(true);
+    },
+  );
+
+  it('keeps unknown and excluded LAG members out of up counts while retaining metric-zero observations', () => {
+    const g = buildDxTopology({
+      connections: [
+        conn({ id: 'healthy', lagId: 'dxlag-1' }),
+        conn({ id: 'pending', state: 'pending', stateMetricMin: null, lagId: 'dxlag-1' }),
+        conn({ id: 'unknown', stateMetricMin: null, lagId: 'dxlag-1' }),
+        conn({ id: 'observed', state: 'deleting', stateMetricMin: 0, lagId: 'dxlag-1' }),
+      ], vifs: [], gateways: [],
+    });
+    expect(g.nodes.find(n => n.id === 'healthy')!.state).toBe('ok');
+    expect(g.nodes.find(n => n.id === 'observed')!.state).toBe('down');
+    expect(g.nodes.find(n => n.id === 'dxlag-1')).toMatchObject({
+      state: 'warn', sub: 'LAG · 1/4 up',
+      connectionHealth: { down: 0, unknown: 1, excluded: 2, excludedObservedDown: 1 },
+    });
+    expect(g.edges.find(e => e.source === 'onprem')!.state).toBe('warn');
+  });
+
   it('계층 그래프: 온프레미스→로케이션→커넥션→VIF→DXGW→TGW, association 상태·cidr 라벨', () => {
     const g = buildDxTopology({
       connections: [conn({})],
@@ -353,7 +388,7 @@ describe('resilience evidence coverage', () => {
     const health = r.checks.find(c => c.label.includes('배포된 커넥션'))!;
     expect(health.ok).toBe(true);
     expect(health.detail).toContain('1/2');
-    expect(r.connectionHealthCoverage).toEqual({ total: 2, assessed: 1, excluded: 1, unknown: 0, down: 0 });
+    expect(r.connectionHealthCoverage).toEqual({ total: 2, assessed: 1, excluded: 1, unknown: 0, down: 0, excludedObservedDown: 0 });
   });
 
   it.each(['deleting', 'unknown', 'other', '', undefined])('cannot certify locations or SLA from state %s', state => {
