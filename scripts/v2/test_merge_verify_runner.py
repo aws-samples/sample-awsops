@@ -58,6 +58,18 @@ def test_ci_workflow_gates_prs_to_main():
     assert "merge-verify.sh" in txt, "workflow must invoke the runner"
 
 
+def test_node_failure_blocks_shared_runner():
+    with tempfile.TemporaryDirectory() as d:
+        node = os.path.join(d, "node")
+        with open(node, "w") as f:
+            f.write("#!/bin/sh\nexit 19\n")
+        os.chmod(node, 0o755)
+        result = _run({"MERGE_VERIFY_PY_ROOT": d, "MERGE_VERIFY_SKIP_WEB": "1",
+                       "PATH": d + os.pathsep + os.environ["PATH"]})
+        assert result.returncode != 0, result.stdout
+        assert "Deployment Node tests: FAIL" in result.stdout
+
+
 def test_scenario_doc_covers_s1_s2_s3():
     assert os.path.isfile(DOC), "docs/v2-merge-verification.md missing"
     with open(DOC) as f:

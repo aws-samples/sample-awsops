@@ -2,7 +2,9 @@
 
 Related files / 관련 파일: `.github/workflows/{deploy-web,deploy-preview,terraform,deploy-agentcore}.yml`,
 `docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
-`scripts/v2/ci_review_access.py`
+`scripts/v2/ci_review_access.py`, `scripts/v2/ci_dns_policy.py`, `scripts/v2/ci_plan_context.py`,
+`scripts/v2/deploy.mjs`, `scripts/v2/deployment-smoke.mjs`,
+`terraform/foundation/tests/dns_deferred.tftest.hcl`, `docs/reference/01-edge-network.md`
 
 > Historical note: this file previously described the two-repo split
 > (`Atom-oh/sample-awsops-dev`). The project consolidated into the single public
@@ -19,17 +21,22 @@ Related files / 관련 파일: `.github/workflows/{deploy-web,deploy-preview,ter
   `this branch's TF backend secrets are not set`, or
 - a preview dispatch fails the same way for `TF_*_PREVIEW_<USER>`, or
 - the deploy job's *Pin web-latest* step fails with an ECR `AccessDenied`, or
-- AI review waits for a protected-environment approval or fails `AssumeRoleWithWebIdentity`.
+- AI review waits for a protected-environment approval or fails `AssumeRoleWithWebIdentity`, or
+- `Deployment preflight refused`, `DNS change prohibited`, or an unavailable certificate stops
+  a dispatch (§5), or
+- saved-plan apply reports `branch moved` / an advisory push-plan event (§5), or
+- the build reports `Cannot access the web ECR repository` (§4–5).
 
 (dev push 런이 자격증명/시크릿/ECR pin 단계에서 실패하는 경우 — 아래 1회성 작업이
 아직 안 된 것입니다. AI 리뷰가 보호 환경 승인 대기 또는 역할 인증 실패로 멈추는 경우도 포함합니다.)
 
 ## Cause / 원인
 
-The pipeline definitions are complete; four one-time account/infra steps remain
-outside what repo automation can do for itself.
-(파이프라인 정의는 완성돼 있고, 리포 자동화가 스스로 할 수 없는 1회성 계정/인프라
-작업 4개가 남아 있습니다.)
+The five sections below cover runner/identity/configuration prerequisites, ECR access,
+and deployment with DNS deferred. Missing issued certificates, a DNS-changing plan,
+or a moved branch intentionally stop the deployment.
+(아래 다섯 절은 러너·권한·설정·ECR 및 DNS 보류 배포를 다룹니다. 유효한 인증서 부재,
+DNS 변경 계획 또는 브랜치 이동은 의도적으로 배포를 중단합니다.)
 
 ## Action / 조치
 
@@ -402,12 +409,15 @@ gh secret set TF_TFVARS_DEV -R aws-samples/sample-awsops \
 ```
 
 The distinct NAMES are the isolation: a dev/preview job can never fall back to the
-production pair. From then on, terraform changes flow through `terraform.yml`
-(automatic plan on PR/push; saved-plan apply via dispatch, gated by the branch's
-environment — `production` carries the reviewer approval).
+production pair. From then on, terraform changes flow through `terraform.yml`.
+Automatic PR/push plans are advisory. Apply requires a successful explicit `mode=plan`
+dispatch at the same repository, branch and SHA, followed by `mode=apply` with its run ID,
+gated by the branch's environment (`production` carries the reviewer approval). See §5
+for DNS restrictions; the manual Terraform commands above alone do not enforce them.
 (시크릿 이름 분리가 격리 그 자체입니다 — dev/preview 잡은 production 시크릿으로
 폴백할 수 없습니다. 이후 변경은 terraform.yml로: PR/push 자동 plan, dispatch
-저장-plan apply — main은 production environment 승인 게이트가 추가됩니다.)
+계획은 참고용이며, 적용은 같은 브랜치·SHA의 성공한 명시적 plan dispatch만 허용합니다.
+main은 production environment 승인 게이트가 추가됩니다. DNS 제한은 §5를 따릅니다.)
 
 ### 4. ECR permissions for the pin step / ci-deployer ECR 권한
 
@@ -417,9 +427,214 @@ stack's web ECR repository (plus the auth-token action it already has).
 (각 deployer 역할에 자기 스택 web ECR 스코프의 `ecr:BatchGetImage`·`ecr:PutImage`
 권한이 필요합니다.)
 
+Build checks repository availability **before** QEMU/Buildx and the image build using
+`ecr:BatchCheckLayerAvailability`, already part of its scoped push permissions, with an
+intentionally absent but valid layer digest. `LayerNotFound` is normal for this probe;
+repository-not-found or access-denied stops the build. Review/apply an `ecr-bootstrap`
+plan for a missing repository; do not disable this check or expand the role.
+
+빌드 전에 기존 push 권한으로 ECR 저장소 존재·접근을 확인합니다. 테스트용 레이어 부재는
+정상이나 저장소 부재·권한 거부는 중단 사유입니다. 저장소가 없으면 §5의 ECR 초기 계획을
+검토·적용하고, 검사나 권한 제한을 해제하지 않습니다.
+
+### 5. Deploy while DNS changes are deferred / DNS 변경 보류 상태의 배포
+
+`Terraform` dispatch defaults to `mode=plan` and `allow_dns_changes=false`.
+For a new stack, a DNS-free full plan needs two already-issued public ACM
+certificates: one in `us-east-1` covering the service and additional aliases,
+and one in the stack Region covering the origin hostname. Both must belong to
+the deployment account. CI checks validity (more than 24 hours remaining), hostname
+coverage and the public CA chain, then supplies their ARNs to Terraform. Explicit
+`existing_cf_certificate_arn` / `existing_alb_certificate_arn` inputs must identify the
+operator-selected certificates for a new DNS-free stack; the only implicit external choice
+is the certificate already attached to that stack's CloudFront/ALB. CI never lists the
+account's certificates or selects one by expiry. Explicit ARNs are verified even for
+DNS-allowed or ECR-bootstrap plans. A missing or unverifiable pair stops a DNS-free full
+dispatch; waiting for the operator's ARNs is not permission to create validation DNS.
+
+For an existing stack, CI first reads state with `terraform show -json`, without
+refresh/write/lock operations. Each certificate owned by this stack remains managed:
+CI validates it and writes **JSON null** to its external-ARN input. Never copy its ARN
+into `existing_*_certificate_arn`; that would remove its Terraform resource.
+External selection excludes all managed certificates in this state, including child modules.
+Routine CI refuses to externalize a currently managed certificate to **any** external ARN,
+even with `allow_dns_changes=true` or `plan_scope=ecr-bootstrap`. A new DNS-authorized stack
+can still create managed certificates, and ordinary managed rotations keep null inputs.
+No-DNS mode preserves `publish_service_dns=true` when service aliases already exist,
+and false for a fresh/deferred stack. It does not force existing aliases toward deletion.
+Changes in alias membership/targets or validation CNAMEs still fail the plan gate.
+The typed overrides live in `ci-deployment.tfvars.json` for that dispatch and are removed
+after planning; string `"null"` and `-var=...=null` are not equivalent to JSON null.
+The public job summary reports only `managed` or `external:<8-character suffix>` and the
+publication flag. It never renders full ARNs, account IDs or the raw override JSON.
+
+The plan gate also rejects deletion/replacement of owned `aws_route53_record.cf_validation`
+records **even when DNS is allowed**, and rejects retirement of the managed CF/ALB certificate
+outside a replacement. Validation tokens can be shared across certificates and needed for
+renewal after a cutover. Ownership migration and validation-record retirement need separate
+reviewed procedures with the certificate/DNS owners: preserve all still-required tokens,
+establish that no current or renewed certificate needs a token before retiring it, and
+obtain separate authorization. Routine deployment is not that procedure. No-op validation
+records, new CNAME creation and service A-record updates remain valid when DNS is authorized.
+
+The preflight runs only for dispatch. It does not receive the demo password secret.
+`terraform console` reads configuration/current state without refreshing or locking it;
+it has **no `-lock=false` option**. Offline backend tests verify these read-only semantics.
+
+새 스택을 DNS 변경 없이 배포하려면 이미 발급된 인증서 두 개가 필요하다.
+CI가 인증서의 계정·리전·유효 기간·호스트 이름·공개 CA 체인을 검증한다.
+서비스 A 레코드와 인증서 검증 CNAME은 모두 생성하지 않으며, 계획에 DNS
+생성·수정·삭제가 하나라도 있으면 적용을 거부한다. 내부 ALB와 HTTPS 경로는
+유지한다. 기존 스택은 상태를 읽어 관리 인증서를 JSON null로 보존하고 기존 서비스
+레코드 게시 상태도 유지한다. 새 스택은 운영자가 외부 ARN을 지정해야 하며 암묵적 재사용은
+이미 연결된 외부 인증서에 한한다. 계정 전체 검색·만료일 기준 선택은 하지 않는다.
+일반 CI는 DNS 허용 여부·계획 범위와 무관하게 관리 인증서의 외부화와 검증 CNAME 삭제·교체를
+거부한다. 소유권 이전 및 검증 레코드 폐기는 인증서·DNS 소유자와 별도로 검토·승인해야 하며,
+기존/갱신 인증서에 필요한 토큰을 보존해야 한다. 정상 관리 인증서 교체와 새 스택 생성은 유지된다.
+DNS 허용 시 CNAME 신규 생성, 서비스 A 레코드 갱신, 무변경 레코드는 허용한다.
+공개 요약에는 관리 여부/외부 인증서 마지막 8자리만 표시하며 ARN·계정 ID를 공개하지 않는다.
+사전 검사는 dispatch에서만 실행하며 demo 비밀번호를 받지 않는다.
+
+```bash
+gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
+  -f mode=plan -f plan_scope=full \
+  -f allow_dns_changes=false
+```
+
+In this no-DNS example, `publish_service_dns` is derived from state, not the dispatch input.
+For a fresh stack, also supply the operator's `existing_cf_certificate_arn` and
+`existing_alb_certificate_arn` inputs (or their reviewed stack tfvars); otherwise it stops.
+이 예제의 게시 상태는 dispatch 입력 대신 기존 상태로 결정된다. 새 스택에는 운영자가 지정한
+두 외부 ARN 입력(또는 검토된 스택 tfvars)이 추가로 필요하며 없으면 중단한다.
+
+Inspect the completed run, its resource changes and commit. Set `PLAN_RUN_ID` to
+that successful run's numeric ID, then apply its encrypted saved plan:
+
+완료된 실행의 커밋과 리소스 변경을 확인한 뒤, `PLAN_RUN_ID`에 검토한 성공
+실행의 숫자 ID를 지정하고 저장된 계획을 적용한다.
+
+```bash
+gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
+  -f mode=apply -f plan_run_id="$PLAN_RUN_ID" -f allow_dns_changes=false
+```
+
+Apply accepts only a successful explicit Terraform plan dispatch from the same
+repository, stack branch and commit. It checks the live branch again and
+rechecks DNS changes after decrypting the plan. A moved branch requires a fresh
+plan. `plan_scope=ecr-bootstrap` is available for an initial plan limited to the
+web ECR repository; the JSON gate also rejects unrelated mutations in that scope.
+Repeat the same `plan_scope` on apply; the apply gate checks that scope too.
+It needs no certificates unless external ARNs are explicitly configured.
+Apply a full reviewed plan before rolling the service.
+
+적용은 같은 저장소·스택 브랜치·커밋의 성공한 명시적 Terraform plan dispatch만
+허용한다. 브랜치가 이동하면 새 계획이 필요하다. ECR 초기 준비만 필요한
+경우 `plan_scope=ecr-bootstrap`을 사용하고, 서비스 배포 전에 전체 계획을
+별도로 검토·적용한다.
+
+**Push plans are advisory and cannot be applied.** They use the stored stack tfvars,
+so unpersisted dispatch overrides may appear to revert to managed certificates or
+published service DNS on the next push. Keep using explicit dispatch plans while DNS is
+deferred. Never use a push plan as a cutover plan.
+
+All DNS changes remain forbidden during deferral, including **certificate-validation
+CNAMEs, private namespaces and `aws_service_discovery_service`** records. First-time
+Steampipe/Cloud Map creation and steady-state Steampipe ECS changes are blocked: task
+replacement registers/deregisters private DNS even when registry configuration is unchanged.
+This includes limiter tuning, hydrate-fallback `fill_rate` remediation and rollback/disable;
+see [the quota/staleness runbook](steampipe-quota-and-staleness.md). There is no private-DNS
+exception. The HTTPS/private edge stays intact. If no trusted matching certificate
+is available, stop or perform only ECR bootstrap; there is no HTTP/public-ALB workaround.
+
+A later cutover requires separate, explicit DNS authorization. Only after that authorization:
+persist the intended certificate ownership and service-publication values in that stack's
+tfvars, create a new full dispatch plan with the authorized DNS permission and publication
+setting, review every DNS/certificate change, and apply that exact successful run at the
+same SHA. **Both plan and apply dispatches must explicitly set `allow_dns_changes=true`;**
+apply does not inherit the plan's permission. Keep external ARNs external unless a separately reviewed ownership migration
+is intended. Follow ADR-016 for alias transfer/rollback; do not treat this paragraph as
+permission to perform DNS changes during deferral.
+
+자동 push 계획은 저장된 tfvars만 반영하는 참고용이며 적용할 수 없다. DNS 보류 기간에는
+계속 명시적 dispatch를 사용한다. 사설 Cloud Map과 인증서 CNAME도 예외 없이 금지하며,
+이미 운영 중인 Steampipe의 튜닝·hydrate 폴백 대응·롤백/비활성화도 ECS task 변경으로
+사설 DNS를 바꿀 수 있어 차단된다.
+인증서가 없으면 중단하거나 ECR만 준비한다. 향후 전환은 별도 DNS 승인을 받은 뒤 스택
+tfvars에 의도한 소유권·게시 설정을 저장하고 새 전체 dispatch 계획을 검토·적용한다.
+계획과 적용 dispatch **양쪽에** `allow_dns_changes=true`를 명시해야 한다.
+아래는 향후 별도 승인 후의 예제이며 현재의 DNS 금지를 해제하지 않는다.
+
+```bash
+# FUTURE ONLY: separate DNS authorization required. Do not run during DNS deferral.
+gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
+  -f mode=plan -f plan_scope=full -f publish_service_dns=true -f allow_dns_changes=true
+# After review, set PLAN_RUN_ID to that successful same-SHA plan dispatch.
+gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
+  -f mode=apply -f plan_scope=full -f plan_run_id="$PLAN_RUN_ID" -f allow_dns_changes=true
+```
+
+External certificate owners must monitor expiry and renew/reimport ahead of time.
+CI validates availability but does not manage an external certificate's lifecycle.
+Do not remove existing validation CNAMEs or add new ones during DNS deferral.
+The supported key set is RSA 2048/3072/4096 and ECDSA P-256/P-384; see
+[AWS's certificate requirements](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html).
+외부 인증서는 소유자가 만료 감시·갱신을 담당하며, DNS 보류 중 검증 CNAME을 변경하지 않는다.
+
+Both the web rollout and manual `make deploy` invoke the shared `deployment-smoke.mjs` CLI,
+which validates destinations and passes curl arguments without shell interpolation.
+They connect to `cloudfront_domain` with curl
+`--connect-to` while requesting `public_url`. This preserves the service Host,
+SNI and certificate verification before service DNS is published. `/api/health`
+checks process liveness; complete the required database migrations and verify
+authenticated application routes separately.
+
+웹 배포 스모크 테스트는 `public_url`의 Host·SNI·인증서 검증을 유지하면서
+CloudFront 연결 주소로 요청한다. `/api/health`는 프로세스 생존 확인이므로,
+필수 DB 마이그레이션과 인증된 실제 기능 검증도 수행해야 한다.
+웹 워크플로와 `make deploy` 모두 공통 CLI로 주소를 검증하며 셸 문자열 대신 인자 배열을 사용한다.
+
+The DNS/provenance scripts run from the deployment ref. They are safety checks for reviewed
+code, not a security boundary against changes to that ref; normal review and environment
+protections remain required.
+DNS·출처 검사도 배포 ref의 코드이므로 코드 변경에 대한 보안 경계를 대신하지 않는다.
+기존 리뷰·보호 환경 절차를 계속 적용한다.
+
 ## Verification / 확인
 
-Push a trivial `web/**` change to `dev`: the run should build, pin, roll and pass
-the smoke against `awsops-dev.whchoi.net/api/health` end-to-end. For production:
-merge `dev → main`, dispatch Deploy Web from main, approve, and watch the smoke
-against the `public_url` output.
+For a provisioned dev stack, the web workflow should build, pin, roll and pass the
+Host/SNI-preserving smoke through `cloudfront_domain`, even before `public_url` resolves.
+For production, dispatch Deploy Web from the reviewed main commit through the normal
+environment approval. Health is process liveness, not proof that migrations/authenticated
+routes work. Inspect certificate preflight and plan-gate output; a DNS refusal or moved
+branch requires investigation and a fresh plan, never bypassing checks.
+
+이미 준비된 스택은 서비스 DNS 없이 CloudFront 연결 스모크를 검증할 수 있다. 실제 기능은
+마이그레이션·인증 경로까지 별도로 확인한다. DNS 차단·브랜치 이동 시 검사를 우회하지 않는다.
+
+Install test dependencies once with `python3 -m pip install -r scripts/v2/requirements-test.txt`.
+Use Node.js 20, OpenSSL, and Terraform **1.15.7**. For offline provider initialization, set
+`TF_CLI_CONFIG_FILE` to a filesystem-mirror configuration with the locked providers and no
+`direct` fallback. The checks use mocked providers and a localhost-only HTTP state backend.
+`terraform-test.sh` copies **tracked working-tree files only** into a disposable directory
+(including relative archive sources), creates a fresh `TF_DATA_DIR`, and executes
+`terraform init -backend=false -input=false -lockfile=readonly`, `validate`, then the mock
+test. It strips deployment credentials/TF variables and never copies local backend config,
+state or `.terraform`. Run these commands from the repository root:
+
+```bash
+CHECKPOINT_DISABLE=1 python3 -m unittest \
+  scripts/v2/test_ci_dns_policy.py scripts/v2/test_ci_plan_context.py \
+  scripts/v2/test_ci_deployment_workflows.py scripts/v2/test_ci_terraform_reads.py
+node --test scripts/v2/deployment-smoke.test.mjs
+bash scripts/v2/terraform-test.sh
+```
+
+테스트 의존성은 `python3 -m pip install -r scripts/v2/requirements-test.txt`로 설치한다.
+Node.js 20·OpenSSL·Terraform 1.15.7을 사용하며, 완전 오프라인 환경은 잠긴 provider가 있는
+filesystem mirror와 direct 폴백 없는 `TF_CLI_CONFIG_FILE`을 준비한다. 위 명령은 provider mock과
+localhost 상태 서버만 사용한다. Terraform 도우미는 추적된 작업 파일만 임시 디렉터리에 복사하고
+새 `TF_DATA_DIR`에서 `init -backend=false`·validate·test를 실행한다. 배포 자격증명·TF 변수와
+로컬 backend 설정·상태·`.terraform`을 사용하지 않는다.
+
+Related ADRs / 관련 ADR: **ADR-002** (edge authentication/private HTTPS boundaries),
+**ADR-016** (domain/certificate cutover). These controls add no runtime-mutation or DNS exception.

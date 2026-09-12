@@ -118,7 +118,21 @@ make upgrade            # safe release upgrade: RDS snapshot -> migrate -> deplo
 
 ## Configuration
 
-Runtime configuration is **flag-gated in Terraform** (`variables.tf`). The feature gates below all default `false`, so a fresh `plan` is a no-op. Three operational switches deliberately do NOT: `legacy_email_owner_match` (default **true** — accepts the legacy email-keyed ownership match at every `matchesIdentity()` gate — reads *and* report PATCH/DELETE via `canMutateReport()`, not reads alone; flip to `false` only after a successful `--apply` leaves zero legacy email-keyed rows, or a plan that finds none at all — a clean *plan* over rows that still need rewriting is not enough, `make backfill-owner-sub` only plans; see ADR-009's Ownership Amendment) and the pre-existing `create_network` / `allow_vpc_db_access`:
+Runtime configuration is **flag-gated in Terraform** (`variables.tf`). The feature gates below all default `false`, so their gated resources are absent from a fresh plan. Four operational switches deliberately do NOT: `legacy_email_owner_match` (default **true** — accepts the legacy email-keyed ownership match at every `matchesIdentity()` gate — reads *and* report PATCH/DELETE via `canMutateReport()`, not reads alone; flip to `false` only after a successful `--apply` leaves zero legacy email-keyed rows, or a plan that finds none at all — a clean *plan* over rows that still need rewriting is not enough, `make backfill-owner-sub` only plans; see ADR-009's Ownership Amendment), the pre-existing `create_network` / `allow_vpc_db_access`, and `publish_service_dns`:
+
+`publish_service_dns` defaults to **true**; false removes service A aliases from the desired
+configuration, but does not disable certificate validation CNAMEs. The nullable
+`existing_cf_certificate_arn` / `existing_alb_certificate_arn` inputs default to **null**
+(Terraform-managed certificates). External certificates must already be issued and trusted;
+CloudFront's must be in `us-east-1`, and the ALB's in the stack Region.
+For DNS-free deployment, an explicit dispatch preserves existing managed certificate ownership
+and service aliases. External certificates require operator-selected ARNs or already-attached
+external certificates; CI never scans the account to choose one. `allow_dns_changes` is a
+dispatch input (default **false**), separate from `publish_service_dns`; it prohibits private
+Cloud Map changes too. Routine CI cannot externalize a managed certificate or retire/replace
+its validation CNAMEs even when DNS is allowed. Automatic push plans are advisory and cannot
+be applied. See the [edge reference](docs/reference/01-edge-network.md)
+and [deployment runbook §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-changes-are-deferred--dns-변경-보류-상태의-배포).
 
 | Flag | Gates |
 |------|-------|
@@ -159,10 +173,16 @@ awsops/
 
 ## Testing
 
+Install the dependencies listed in [merge verification](docs/v2-merge-verification.md#runner-usage).
+Terraform mock tests require **1.15.7** and installed/cached providers; the helper copies only
+tracked working-tree files, runs `init -backend=false`, validates and tests without a real backend.
+
 ```bash
-bash scripts/v2/merge-verify.sh   # Python pytest (scripts/v2 + agent) + web vitest + terraform validate
+bash scripts/v2/merge-verify.sh   # isolated Python + web vitest + deployment Node tests; opportunistic TF checks
+bash scripts/v2/terraform-test.sh # isolated, backend-disabled Terraform mock tests (also required in CI)
+node --test scripts/v2/deployment-smoke.test.mjs # focused offline smoke argument tests
 bash tests/run-all.sh             # repo-wide hook/structure tests + agent Python unittests
-cd web && npx vitest run          # web unit tests only
+(cd web && npx vitest run)        # web unit tests only
 ```
 
 ## API Documentation
@@ -295,7 +315,18 @@ make upgrade             # 안전한 릴리스 업그레이드: RDS 스냅샷 ->
 
 ## 환경 설정
 
-런타임 설정은 **Terraform에서 flag-gated**(`variables.tf`)입니다. 아래 표의 feature gate 는 모두 기본값 `false`라 갓 받은 상태에서 `plan`은 no-op입니다. 다만 **의도적으로 그렇지 않은 운영 스위치가 셋** 있습니다: `legacy_email_owner_match`(기본 **true** — legacy email-keyed 소유권 매칭을 `matchesIdentity()` 를 거치는 **모든 게이트**에서 계속 수용합니다 — 읽기뿐 아니라 `canMutateReport()`(리포트 PATCH/DELETE)도 포함입니다. `make backfill-owner-sub` 는 **계획만** 만들므로 재작성이 남은 상태의 clean plan 만으로는 부족합니다 — `--apply` 가 성공하고 잔여 legacy row 가 0 인 것을 확인한 뒤(또는 애초에 legacy 행이 없어 plan 이 zero-row 인 경우)에만 `false` 로 내리세요. ADR-009 소유권 Amendment 참조)와, 기존부터 있던 `create_network` / `allow_vpc_db_access`:
+런타임 설정은 **Terraform에서 flag-gated**(`variables.tf`)입니다. 아래 표의 feature gate 는 모두 기본값 `false`라 새 계획에서 해당 리소스를 생성하지 않습니다. 다만 **의도적으로 그렇지 않은 운영 스위치가 넷** 있습니다: `legacy_email_owner_match`(기본 **true** — legacy email-keyed 소유권 매칭을 `matchesIdentity()` 를 거치는 **모든 게이트**에서 계속 수용합니다 — 읽기뿐 아니라 `canMutateReport()`(리포트 PATCH/DELETE)도 포함입니다. `make backfill-owner-sub` 는 **계획만** 만들므로 재작성이 남은 상태의 clean plan 만으로는 부족합니다 — `--apply` 가 성공하고 잔여 legacy row 가 0 인 것을 확인한 뒤(또는 애초에 legacy 행이 없어 plan 이 zero-row 인 경우)에만 `false` 로 내리세요. ADR-009 소유권 Amendment 참조)와, 기존부터 있던 `create_network` / `allow_vpc_db_access`, 그리고 `publish_service_dns`입니다.
+
+`publish_service_dns`는 기본 **true**이며 false는 서비스 A 별칭을 원하는 구성에서 제외하지만
+인증서 검증 CNAME까지 금지하지 않습니다. `existing_cf_certificate_arn` /
+`existing_alb_certificate_arn`은 기본 **null**(Terraform 관리 인증서)입니다. 외부 인증서는
+이미 발급되고 신뢰할 수 있어야 하며 CloudFront용은 `us-east-1`, ALB용은 스택 리전에 있어야 합니다.
+DNS 금지 배포는 명시적 dispatch에서 기존 관리 인증서 소유권과 서비스 별칭을 보존합니다.
+외부 인증서는 운영자가 ARN을 지정하거나 이미 연결된 외부 인증서만 재사용하며 계정 전체 검색은 하지 않습니다.
+별도 dispatch 입력인 `allow_dns_changes`는 기본 **false**로 사설 Cloud Map DNS도 금지합니다.
+DNS를 허용해도 일반 CI에서 관리 인증서를 외부화하거나 검증 CNAME을 삭제·교체할 수 없습니다.
+자동 push 계획은 참고용이며 적용할 수 없습니다. [엣지 참조](docs/reference/01-edge-network.md)와
+[배포 런북 §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-changes-are-deferred--dns-변경-보류-상태의-배포)를 참고하세요.
 
 | Flag | 게이트 대상 |
 |------|-------------|
@@ -336,10 +367,16 @@ awsops/
 
 ## 테스트
 
+[머지 검증](docs/v2-merge-verification.md#runner-usage)의 의존성을 먼저 설치하세요.
+Terraform mock 테스트에는 **1.15.7**과 설치/캐시된 provider가 필요합니다. 도우미는 추적된
+작업 파일만 복사해 `init -backend=false`, validate, test를 실행하며 실제 backend를 사용하지 않습니다.
+
 ```bash
-bash scripts/v2/merge-verify.sh   # Python pytest(scripts/v2 + agent) + web vitest + terraform validate
+bash scripts/v2/merge-verify.sh   # 격리 Python + web vitest + 배포 Node 테스트; 선택적 TF 검사
+bash scripts/v2/terraform-test.sh # 별도 복사본·backend 비활성 Terraform mock 테스트 (CI 필수)
+node --test scripts/v2/deployment-smoke.test.mjs # 오프라인 스모크 인자 집중 테스트
 bash tests/run-all.sh             # repo 전반 hook/structure 테스트 + agent Python unittest
-cd web && npx vitest run          # web 유닛 테스트만
+(cd web && npx vitest run)        # web 유닛 테스트만
 ```
 
 ## API 문서

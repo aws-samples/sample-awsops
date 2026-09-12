@@ -643,6 +643,7 @@ resource "aws_security_group" "service" {
 }
 
 resource "aws_acm_certificate" "alb" {
+  count             = var.existing_alb_certificate_arn == null ? 1 : 0
   domain_name       = var.domain_name
   validation_method = "DNS"
   lifecycle {
@@ -651,8 +652,20 @@ resource "aws_acm_certificate" "alb" {
 }
 
 resource "aws_acm_certificate_validation" "alb" {
-  certificate_arn         = aws_acm_certificate.alb.arn
+  count                   = var.existing_alb_certificate_arn == null ? 1 : 0
+  certificate_arn         = aws_acm_certificate.alb[0].arn
   validation_record_fqdns = [for r in aws_route53_record.cf_validation : r.fqdn]
+}
+
+# Preserve existing managed certificates when the optional ARN remains null.
+moved {
+  from = aws_acm_certificate.alb
+  to   = aws_acm_certificate.alb[0]
+}
+
+moved {
+  from = aws_acm_certificate_validation.alb
+  to   = aws_acm_certificate_validation.alb[0]
 }
 
 resource "aws_lb" "internal" {
@@ -687,7 +700,7 @@ resource "aws_lb_listener" "https" {
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate_validation.alb.certificate_arn
+  certificate_arn   = var.existing_alb_certificate_arn != null ? var.existing_alb_certificate_arn : aws_acm_certificate_validation.alb[0].certificate_arn
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.web.arn

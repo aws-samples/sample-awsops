@@ -6,6 +6,20 @@ Phase 1의 Steampipe 인벤토리 sync를 운영하는 절차다. Phase 1 구현
 
 This runbook operates the Phase 1 Steampipe inventory sync. Phase 1 is implemented in the repository. **The agent making this change did not run Terraform apply; the controller's actual deployment status must be verified separately.** The ops gateway's limited Aurora `inventory-read-target` currently coexists with direct domain inventory/configuration targets.
 
+**모든 DNS 변경 금지(ALLDNS)가 우선한다.** Steampipe는 Cloud Map에 등록되므로 최초 생성뿐 아니라
+운영 중 limiter 튜닝·`fill_rate` 조정·이미지/task 교체·롤백·`steampipe_enabled=false`도
+사설 DNS 등록/해제를 일으킬 수 있다. `service_registries`가 동일해도 `allow_dns_changes=false`
+계획은 해당 ECS 변경을 차단한다. 사설 DNS 예외나 수동 ECS 명령으로 우회하지 않는다.
+금지 중에는 로그·신선도 확인과 변경안 작성만 진행하고, DNS가 바뀌는 적용은 보류한다.
+[배포 런북 §5](dev-repo-setup.md#5-deploy-while-dns-changes-are-deferred--dns-변경-보류-상태의-배포)를 따른다.
+
+**ALLDNS takes precedence over this runbook's actions.** Steampipe registers with Cloud Map:
+first creation, steady-state limiter/`fill_rate` tuning, image/task changes, rollback and
+`steampipe_enabled=false` can register/deregister private DNS. The `allow_dns_changes=false`
+gate blocks those ECS changes even when `service_registries` is unchanged. There is no private-DNS
+exception or manual ECS bypass. While prohibited, inspect logs/freshness and prepare proposals;
+defer DNS-changing applies. Follow [deployment runbook §5](dev-repo-setup.md#5-deploy-while-dns-changes-are-deferred--dns-변경-보류-상태의-배포).
+
 ## 1. 변수와 기본값 / Variables and defaults
 
 | Terraform variable | Default | Allowed | Purpose |
@@ -75,6 +89,8 @@ fields @timestamp, event, max_concurrency, bucket_size, fill_rate
 ## 4. 배포 순서 / Deployment order
 
 ### 기존 활성 환경 / Existing environment (`steampipe_enabled=true`)
+
+아래 ECS 적용 단계는 ALLDNS 중 실행할 수 없다. / The ECS apply steps below are blocked under ALLDNS.
 
 1. 새 Steampipe ARM64 이미지를 기존 ECR repository에 build/push하되 ECS service를
    rolling하지 않는다.
@@ -238,7 +254,15 @@ The limited ops `inventory-read-target` already returns explicit freshness for `
 
 ## 6. 안전한 튜닝 / Safe tuning
 
-**한도를 낮추는 것은 즉시 가능하다.** throttling, sync latency 증가, 또는 service instability가 보이면 `max_concurrency`, bucket size, fill rate, 또는 reserved concurrency를 낮추고 saved plan으로 반영한다.
+throttling, sync latency 증가 또는 service instability가 보이면 `max_concurrency`, bucket size,
+fill rate 또는 reserved concurrency를 낮추는 변경안을 준비한다. **즉시 적용 가능한 예외가 아니다.**
+Steampipe ECS를 변경하는 limiter 튜닝과 hydrate-fallback의 `fill_rate` 조치는 ALLDNS 중
+차단된다. Lambda reserved concurrency만 바꾸더라도 전체 계획에 DNS 변경이 없는지 확인해야 한다.
+
+When throttling, sync latency or instability increases, prepare lower concurrency/bucket/fill-rate
+settings. **This does not authorize immediate application.** Limiter tuning and the hydrate-fallback
+`fill_rate` remedy change Steampipe ECS and are blocked under ALLDNS. Even a Lambda-only reserved
+concurrency change needs a whole-plan check showing no DNS changes.
 
 **Raising a limit requires observed production headroom.** Increase only after evidence shows the current setting has sustained headroom without AWS throttling, increased sync age, Lambda throttles, or impact to production deployment/scaling operations. Change one control at a time, observe at least a full 15-minute cycle, and retain the prior values for rollback.
 
@@ -248,6 +272,17 @@ The values are safeguards, not assertions of universal AWS quotas; service, oper
 
 롤백은 파괴적 데이터베이스 변경 없이 이전 limiter defaults 또는 AgentCore catalog를 복원하는 방식이다.
 Rollback restores prior limiter defaults or catalog state without destructive database changes.
+
+ALLDNS 중에는 이전 limiter 값으로의 ECS 롤백과 `steampipe_enabled=false` 적용도 보류한다.
+사설 Cloud Map DNS 변경이므로 동일한 계획 게이트를 적용한다. 별도 DNS 승인 이후에만 새 계획을
+검토하고 계획·적용 dispatch 양쪽에 `allow_dns_changes=true`를 명시한다. 금지 중에는 이 값을
+실행하지 않으며 사설 DNS 예외를 추가하지 않는다.
+
+Under ALLDNS, defer ECS rollback to prior limiter settings and disabling `steampipe_enabled` too:
+both can change private Cloud Map DNS and must pass the same gate. Only after separate DNS
+authorization may a fresh reviewed plan and its apply dispatch **both** set
+`allow_dns_changes=true`. Do not exercise that permission while ALLDNS is active or add a
+private-DNS exception.
 
 1. limiter/concurrency 값을 이전 보수적 값으로 되돌리거나 `steampipe_enabled=false`로 되돌린 saved plan을 만든다.
 2. controller-approved `apply tfplan`으로 적용한다.
