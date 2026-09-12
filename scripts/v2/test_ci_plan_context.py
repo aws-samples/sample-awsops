@@ -32,7 +32,7 @@ class SavedPlanContextTests(unittest.TestCase):
         )
 
     def test_accepts_successful_current_branch_plan(self):
-        for event in ("push", "workflow_dispatch"):
+        for event in ("workflow_dispatch",):
             with self.subTest(event=event):
                 data = {**RUN, "event": event}
                 result = self.invoke(data)
@@ -41,6 +41,7 @@ class SavedPlanContextTests(unittest.TestCase):
 
     def test_rejects_foreign_or_pr_workflow_runs(self):
         cases = [
+            ("event", "push", "event"),
             ("path", ".github/workflows/deploy-web.yml", "workflow"),
             ("event", "pull_request", "event"),
             ("event", "pull_request_target", "event"),

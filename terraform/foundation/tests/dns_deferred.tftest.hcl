@@ -1,4 +1,5 @@
 # Offline plans only: every provider, including us-east-1 and archive, is mocked.
+# State -> preflight -> typed inputs roundtrips are exercised in the Python CI tests.
 # Run: terraform test -filter=tests/dns_deferred.tftest.hcl
 mock_provider "aws" {
   override_during = plan
@@ -308,4 +309,20 @@ run "reject_empty_certificate_arns" {
   }
 
   expect_failures = [var.existing_cf_certificate_arn, var.existing_alb_certificate_arn]
+}
+
+run "steampipe_dns_is_still_dns_even_with_external_certificates" {
+  command = plan
+
+  variables {
+    steampipe_enabled            = true
+    publish_service_dns          = false
+    existing_cf_certificate_arn  = "arn:aws:acm:us-east-1:123456789012:certificate/33333333-3333-3333-3333-333333333333"
+    existing_alb_certificate_arn = "arn:aws:acm:ap-northeast-2:123456789012:certificate/44444444-4444-4444-4444-444444444444"
+  }
+
+  assert {
+    condition     = length(aws_service_discovery_private_dns_namespace.main) == 1 && length(aws_service_discovery_service.steampipe) == 1
+    error_message = "First-time Steampipe requires Cloud Map DNS writes; the CI all-DNS gate must reject this plan."
+  }
 }

@@ -118,7 +118,22 @@ make upgrade            # safe release upgrade: RDS snapshot -> migrate -> deplo
 
 ## Configuration
 
-Runtime configuration is **flag-gated in Terraform** (`variables.tf`). The feature gates below all default `false`, so a fresh `plan` is a no-op. Three operational switches deliberately do NOT: `legacy_email_owner_match` (default **true** — accepts the legacy email-keyed ownership match at every `matchesIdentity()` gate — reads *and* report PATCH/DELETE via `canMutateReport()`, not reads alone; flip to `false` only after a successful `--apply` leaves zero legacy email-keyed rows, or a plan that finds none at all — a clean *plan* over rows that still need rewriting is not enough, `make backfill-owner-sub` only plans; see ADR-009's Ownership Amendment) and the pre-existing `create_network` / `allow_vpc_db_access`:
+Runtime configuration is **flag-gated in Terraform** (`variables.tf`). The feature gates below all default `false`, so their gated resources are absent from a fresh plan. Four operational switches deliberately do NOT: `legacy_email_owner_match` (default **true** — accepts the legacy email-keyed ownership match at every `matchesIdentity()` gate — reads *and* report PATCH/DELETE via `canMutateReport()`, not reads alone; flip to `false` only after a successful `--apply` leaves zero legacy email-keyed rows, or a plan that finds none at all — a clean *plan* over rows that still need rewriting is not enough, `make backfill-owner-sub` only plans; see ADR-009's Ownership Amendment), the pre-existing `create_network` / `allow_vpc_db_access`, and `publish_service_dns`:
+
+`publish_service_dns` defaults to **true**; false removes service A aliases from the desired
+configuration, but does not disable certificate validation CNAMEs. The nullable
+`existing_cf_certificate_arn` / `existing_alb_certificate_arn` inputs default to **null**
+(Terraform-managed certificates). External certificates must already be issued and trusted;
+CloudFront's must be in `us-east-1`, and the ALB's in the stack Region.
+For DNS-free deployment, an explicit dispatch preserves existing managed certificate ownership
+and service aliases, and reuses verified external certificates where needed. Automatic push
+plans are advisory and cannot be applied. See the [edge reference](docs/reference/01-edge-network.md)
+and [deployment runbook §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-changes-are-deferred--dns-변경-보류-상태의-배포).
+
+`publish_service_dns`는 기본 true이며 false만으로 인증서 검증 DNS까지 금지하지 않습니다.
+외부 인증서 입력의 기본값은 null(기존 Terraform 소유권 유지)입니다. DNS 변경 금지 배포는
+명시적 dispatch에서 기존 인증서·서비스 레코드 상태를 보존하고 모든 DNS 변경을 검사합니다.
+자동 push 계획은 참고용이며 적용할 수 없습니다.
 
 | Flag | Gates |
 |------|-------|

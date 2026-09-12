@@ -110,6 +110,22 @@ jobs:
           PROJECT="${PROJECT:-awsops-v2}"   # variables.tf default
           echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
 
+      - name: Verify the web ECR repository exists before building
+        env:
+          PROJECT: ${{ steps.stack.outputs.project }}
+        run: |
+          set -euo pipefail
+          # Use an existing push permission, not DescribeRepositories. A valid,
+          # intentionally absent digest returns LayerNotFound for an existing repo.
+          # A missing repo or denied access makes the CLI fail before the build.
+          if ! aws ecr batch-check-layer-availability --region ap-northeast-2 \
+            --repository-name "${PROJECT}-web" \
+            --layer-digests "sha256:$(printf '%064d' 0)" \
+            --no-cli-pager >/dev/null; then
+            echo "::error::Cannot access the web ECR repository. Review/apply an ecr-bootstrap plan for this stack before building; retain all permission checks."
+            exit 1
+          fi
+
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 

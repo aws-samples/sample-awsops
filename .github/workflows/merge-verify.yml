@@ -29,7 +29,7 @@ jobs:
 
       - name: Install Python test dependencies
         run: |
-          python -m pip install pytest
+          python -m pip install pytest PyYAML
           python -m pip install \
             -r agent/requirements.txt \
             -r scripts/v2/incident/requirements.txt \
@@ -39,3 +39,6 @@ jobs:
 
       - name: Run merge verification
         run: bash scripts/v2/merge-verify.sh
+
+      - name: Verify deployment smoke arguments (offline)
+        run: node --test scripts/v2/deployment-smoke.test.mjs

@@ -16,8 +16,8 @@ def validate_run(run, repository, branch, commit):
         source = run.get(field)
         if not isinstance(source, dict) or source.get("full_name") != repository:
             raise ValueError("plan repository does not match the deployment repository")
-    if run.get("event") not in {"push", "workflow_dispatch"}:
-        raise ValueError("plan event must be a trusted branch push or dispatch")
+    if run.get("event") != "workflow_dispatch":
+        raise ValueError("plan event must be an explicit workflow_dispatch; push plans are advisory")
     if run.get("head_branch") != branch:
         raise ValueError("plan branch does not match the deployment stack")
     if run.get("head_sha") != commit:

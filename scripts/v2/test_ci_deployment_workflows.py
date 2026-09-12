@@ -12,6 +12,10 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SHA = "a" * 40
+CF = "arn:aws:acm:us-east-1:123456789012:certificate/11111111-2222-3333-4444-555555555555"
+ALB = CF.replace("us-east-1", "ap-northeast-2")
+CONFIG = {"domain": "dev.example.com", "aliases": [], "region": "ap-northeast-2",
+          "cf_arn": None, "alb_arn": None}
 
 
 def step(file, job, name):
@@ -20,7 +24,7 @@ def step(file, job, name):
 
 
 class DeploymentWorkflowTests(unittest.TestCase):
-    def run_step(self, script, *, changes=None, **overrides):
+    def run_step(self, script, *, changes=None, files=None, **overrides):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             working = root / "terraform/foundation"
@@ -28,9 +32,11 @@ class DeploymentWorkflowTests(unittest.TestCase):
             scripts = root / "scripts/v2"
             scripts.mkdir(parents=True)
             shutil.copyfile(ROOT / "scripts/v2/ci_dns_policy.py", scripts / "ci_dns_policy.py")
+            for name, content in (files or {}).items():
+                (working / name).write_text(content)
             binaries = root / "bin"
             binaries.mkdir()
-            for name in ("terraform", "gh", "curl"):
+            for name in ("terraform", "gh", "curl", "aws", "openssl"):
                 file = binaries / name
                 file.write_text(
                     "#!/usr/bin/env python3\n"
@@ -40,7 +46,29 @@ class DeploymentWorkflowTests(unittest.TestCase):
                     " f.write(json.dumps([name,*sys.argv[1:]])+'\\n')\n"
                     "if name=='gh': print(os.environ['CURRENT_SHA'])\n"
                     "elif name=='terraform' and sys.argv[1:3]==['show','-json']:\n"
-                    " print(os.environ['PLAN_JSON'])\n"
+                    " print(os.environ['TEST_STATE_JSON'] if len(sys.argv)==3 else os.environ['PLAN_JSON'])\n"
+                    "elif name=='terraform' and sys.argv[1]=='console':\n"
+                    " print(json.dumps(os.environ['CONFIG_JSON']))\n"
+                    "elif name=='terraform' and sys.argv[1]=='plan':\n"
+                    " p=pathlib.Path('ci-deployment.tfvars.json')\n"
+                    " if p.exists():\n"
+                    "  with open(os.environ['COMMAND_LOG'],'a') as f: f.write(json.dumps(['tfvars',json.loads(p.read_text())])+'\\n')\n"
+                    "elif name=='aws':\n"
+                    " args=sys.argv[1:]\n"
+                    " if args[:2]==['ecr','batch-check-layer-availability']:\n"
+                    "  sys.exit(int(os.environ.get('ECR_EXIT','0')))\n"
+                    " elif args[:2]==['sts','get-caller-identity']: print('{\"Account\":\"123456789012\"}')\n"
+                    " elif args[:2]==['acm','list-certificates']:\n"
+                    "  region=args[args.index('--region')+1]\n"
+                    "  arn=os.environ['CF_ARN'].replace('us-east-1',region)\n"
+                    "  print(json.dumps({'CertificateSummaryList':[] if os.environ.get('NO_CERT') else [{'CertificateArn':arn}]}))\n"
+                    " elif args[:2]==['acm','describe-certificate']:\n"
+                    "  arn=args[args.index('--certificate-arn')+1]\n"
+                    "  print(json.dumps({'Certificate':{'CertificateArn':arn,'Status':'ISSUED','Type':'IMPORTED',\n"
+                    "   'KeyAlgorithm':'EC_secp384r1','SubjectAlternativeNames':['dev.example.com'],\n"
+                    "   'NotBefore':'2020-01-01T00:00:00+00:00','NotAfter':'2099-01-01T00:00:00+00:00'}}))\n"
+                    " elif args[:2]==['acm','get-certificate']: print('{\"Certificate\":\"offline fixture\"}')\n"
+                    " else: sys.exit(98)\n"
                 )
                 file.chmod(0o755)
             log = root / "commands.jsonl"
@@ -49,6 +77,11 @@ class DeploymentWorkflowTests(unittest.TestCase):
                 "COMMAND_LOG": str(log), "CURRENT_SHA": SHA,
                 "GITHUB_SHA": SHA, "GITHUB_REPOSITORY": "example/awsops", "TARGET": "dev",
                 "ALLOW_DNS_CHANGES": "false",
+                "TEST_STATE_JSON": json.dumps({"format_version": "1.0"}),
+                "CONFIG_JSON": json.dumps(CONFIG), "CF_ARN": CF,
+                "CF_CERTIFICATE_ARN": "", "ALB_CERTIFICATE_ARN": "",
+                "PUBLISH_SERVICE_DNS": "true", "PLAN_SCOPE": "full",
+                "GITHUB_STEP_SUMMARY": str(root / "summary.md"),
                 "PLAN_JSON": json.dumps({
                     "format_version": "1.2", "planned_values": {},
                     "resource_changes": changes or [],
@@ -81,32 +114,122 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(["terraform", "apply", "-input=false", "tfplan"], commands)
 
-    def test_dns_free_bootstrap_cannot_publish_service_dns(self):
-        script = step("terraform.yml", "plan", "terraform plan")
+    def test_dns_free_bootstrap_uses_typed_overrides_without_certificate_discovery(self):
+        script = step("terraform.yml", "plan", "Check existing certificates without changing DNS")
+        script += "\n" + step("terraform.yml", "plan", "terraform plan")
         result, commands = self.run_step(
             script, DISPATCH="true", PLAN_SCOPE="ecr-bootstrap", PUBLISH_SERVICE_DNS="true",
             CF_CERTIFICATE_ARN="", ALB_CERTIFICATE_ARN="",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("-target=aws_ecr_repository.web", commands[0])
-        self.assertIn("-var=publish_service_dns=false", commands[0])
+        plan = next(c for c in commands if c[:2] == ["terraform", "plan"])
+        self.assertIn("-target=aws_ecr_repository.web", plan)
+        self.assertIn("-var-file=ci-deployment.tfvars.json", plan)
+        self.assertIn(["tfvars", {"publish_service_dns": False, "existing_cf_certificate_arn": None,
+                                 "existing_alb_certificate_arn": None}], commands)
+        self.assertFalse(any(c[:2] == ["aws", "acm"] for c in commands))
 
     def test_plan_treats_inputs_as_arguments_and_rejects_unknown_scope(self):
         script = step("terraform.yml", "plan", "terraform plan")
-        value = '$(printf injected);value'
+        value = {"publish_service_dns": False, "existing_cf_certificate_arn": None,
+                 "existing_alb_certificate_arn": ALB}
         result, commands = self.run_step(
-            script, DISPATCH="true", PLAN_SCOPE="full", PUBLISH_SERVICE_DNS="false",
-            CF_CERTIFICATE_ARN=value, ALB_CERTIFICATE_ARN="",
+            script, DISPATCH="true", PLAN_SCOPE="full",
+            files={"ci-deployment.tfvars.json": json.dumps(value)},
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("-var=existing_cf_certificate_arn=" + value, commands[0])
-        self.assertNotIn("injected", result.stdout)
+        self.assertIn(["tfvars", value], commands)
         result, commands = self.run_step(
             script, DISPATCH="true", PLAN_SCOPE="invalid", PUBLISH_SERVICE_DNS="false",
-            CF_CERTIFICATE_ARN="", ALB_CERTIFICATE_ARN="",
+            files={"ci-deployment.tfvars.json": json.dumps(value)},
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(commands, [])
+
+    def test_certificate_to_plan_roundtrip_preserves_existing_managed_stack(self):
+        script = step("terraform.yml", "plan", "Check existing certificates without changing DNS")
+        script += "\n" + step("terraform.yml", "plan", "terraform plan")
+        resources = [
+            {"address": "aws_acm_certificate." + name, "type": "aws_acm_certificate",
+             "name": name, "mode": "managed", "values": {"arn": arn}}
+            for name, arn in (("cf", CF), ("alb", ALB))
+        ]
+        resources.append({"address": 'aws_route53_record.alias["dev.example.com"]',
+                          "type": "aws_route53_record", "name": "alias", "mode": "managed",
+                          "values": {"name": "dev.example.com"}})
+        state = {"format_version": "1.0", "values": {"root_module": {"resources": resources}}}
+        result, commands = self.run_step(script, DISPATCH="true", TEST_STATE_JSON=json.dumps(state))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["tfvars", {"publish_service_dns": True, "existing_cf_certificate_arn": None,
+                                 "existing_alb_certificate_arn": None}], commands)
+        self.assertFalse(any(c[:3] == ["aws", "acm", "list-certificates"] for c in commands))
+        self.assertFalse(any("state" in c for c in commands))  # no state writes/moves/imports
+
+    def test_missing_certificate_stops_before_plan_and_explicit_input_is_never_shell_code(self):
+        script = step("terraform.yml", "plan", "Check existing certificates without changing DNS")
+        script += "\n" + step("terraform.yml", "plan", "terraform plan")
+        result, commands = self.run_step(script, DISPATCH="true", NO_CERT="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("No existing public", result.stderr)
+        self.assertFalse(any(c[:2] == ["terraform", "plan"] for c in commands))
+        result, commands = self.run_step(script, DISPATCH="true", CF_CERTIFICATE_ARN='$(printf injected);value')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(c[:2] == ["terraform", "plan"] for c in commands))
+        self.assertNotIn("injected", result.stdout)
+
+    def test_external_stack_dispatch_roundtrip_retains_attached_certificates_and_absent_aliases(self):
+        script = step("terraform.yml", "plan", "Check existing certificates without changing DNS")
+        script += "\n" + step("terraform.yml", "plan", "terraform plan")
+        state = {"format_version": "1.0", "values": {"root_module": {"resources": [
+            {"address": "aws_cloudfront_distribution.main", "type": "aws_cloudfront_distribution",
+             "name": "main", "mode": "managed", "values": {"viewer_certificate": [{"acm_certificate_arn": CF}]}},
+            {"address": "aws_lb_listener.https", "type": "aws_lb_listener",
+             "name": "https", "mode": "managed", "values": {"certificate_arn": ALB}},
+        ]}}}
+        for _ in range(2):
+            result, commands = self.run_step(script, DISPATCH="true", TEST_STATE_JSON=json.dumps(state))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(["tfvars", {"publish_service_dns": False, "existing_cf_certificate_arn": CF,
+                                     "existing_alb_certificate_arn": ALB}], commands)
+            self.assertFalse(any(c[:3] == ["aws", "acm", "list-certificates"] for c in commands))
+
+    def test_plan_dns_gate_rejects_cloudmap_service_and_unrelated_bootstrap_changes(self):
+        script = step("terraform.yml", "plan", "Check planned DNS operations")
+        for kind, scope in (("aws_service_discovery_service", "full"), ("aws_ecs_service", "ecr-bootstrap")):
+            result, commands = self.run_step(script, PLAN_SCOPE=scope, changes=[{
+                "address": kind + ".main", "type": kind, "change": {"actions": ["create"]},
+            }])
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+
+    def test_build_repository_check_fails_fast_with_existing_push_permission(self):
+        script = step("deploy-web.yml", "build", "Verify the web ECR repository exists before building")
+        for code in ("0", "254"):
+            result, commands = self.run_step(script, PROJECT="awsops-v2-dev", ECR_EXIT=code)
+            self.assertEqual(result.returncode == 0, code == "0")
+            self.assertEqual(commands[0][:3], ["aws", "ecr", "batch-check-layer-availability"])
+            self.assertIn("sha256:" + "0" * 64, commands[0])
+            self.assertIn("awsops-v2-dev-web", commands[0])
+        workflow = yaml.safe_load((ROOT / ".github/workflows/deploy-web.yml").read_text())
+        steps = workflow["jobs"]["build"]["steps"]
+        check = next(i for i, s in enumerate(steps) if s.get("name", "").startswith("Verify the web ECR"))
+        build = next(i for i, s in enumerate(steps) if s.get("uses", "").startswith("docker/build-push"))
+        self.assertLess(check, build)
+        self.assertNotIn("continue-on-error", steps[check])
+
+    def test_preflight_is_dispatch_only_and_demo_secret_stays_in_plan(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/terraform.yml").read_text())
+        self.assertNotIn("actions", workflow["permissions"])
+        self.assertEqual(workflow["jobs"]["apply"]["permissions"]["actions"], "read")
+        steps = workflow["jobs"]["plan"]["steps"]
+        cert = next(s for s in steps if s.get("id") == "dns")
+        self.assertIn("github.event_name == 'workflow_dispatch'", cert["if"])
+        self.assertNotIn("TF_VAR_demo_password", cert["env"])
+        plan = next(s for s in steps if s.get("name") == "terraform plan")
+        self.assertIn("TF_VAR_demo_password", plan["env"])
+        cleanup = next(s for s in steps if s.get("name") == "Clean sensitive files off the runner")
+        self.assertEqual(cleanup["if"], "always()")
+        self.assertIn("ci-state.json", cleanup["run"])
+        self.assertIn("ci-deployment.tfvars.json", cleanup["run"])
 
     def test_smoke_retains_host_sni_and_tls_without_service_dns(self):
         script = step("deploy-web.yml", "deploy", "Smoke test")

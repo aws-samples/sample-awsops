@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d8f83197b530 · generated-at: 2026-08-26 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ed733be63d11 · generated-at: 2026-09-12 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,6 +8,11 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 `docs/runbooks/CLAUDE.md`'s index for the current runbook list (several are marked **v1
 (legacy)** — v2 has since replaced their procedure with a different mechanism; don't treat a
 legacy runbook's steps as the current operational path).
+
+`dev-repo-setup.md` covers CI/OIDC, protected review recovery, ECR preflight, state-preserving
+DNS deferral and explicit same-SHA dispatch plans (ADR-002/016). Preserve managed certificates
+as JSON null and existing aliases; all DNS includes private Cloud Map and validation CNAMEs.
+Automatic PR/push plans are advisory; smoke keeps service Host/SNI/TLS through CloudFront.
 
 ## Conventions
 - Filename: `kebab-case.md`, domain-then-topic order.
