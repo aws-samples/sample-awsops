@@ -74,6 +74,82 @@ class DnsPolicyTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("DNS change", result.stderr)
 
+    def ecs_change(self, actions, before, after, after_unknown=None):
+        return {
+            "address": "aws_ecs_service.steampipe[0]", "type": "aws_ecs_service",
+            "change": {"actions": actions, "before": before, "after": after,
+                       "after_unknown": {} if after_unknown is None else after_unknown},
+        }
+
+    def test_registered_ecs_mutations_require_dns_permission(self):
+        registered = {"service_registries": [{"registry_arn": "arn:aws:servicediscovery:"
+                       "ap-northeast-2:123456789012:service/srv-example"}], "desired_count": 1}
+        empty = {"service_registries": []}
+        cases = [
+            (["create"], None, registered),
+            (["delete"], registered, None),
+            (["update"], registered, {**registered, "desired_count": 2}),
+            (["update"], registered, {**registered, "tags": {"Purpose": "fixture"}}),
+            (["update"], registered, empty),
+            (["update"], empty, registered),
+            (["delete", "create"], registered, registered),
+            (["create", "delete"], registered, registered),
+        ]
+        for actions, before, after in cases:
+            with self.subTest(actions=actions, before=before, after=after):
+                change = self.ecs_change(actions, before, after)
+                denied = self.check_plan([change])
+                self.assertNotEqual(denied.returncode, 0)
+                self.assertIn("DNS change", denied.stderr)
+                self.assertIn(change["address"], denied.stderr)
+                allowed = self.check_plan([change], allow=True)
+                self.assertEqual(allowed.returncode, 0, allowed.stderr)
+                self.assertEqual(json.loads(allowed.stdout)["dns_changes"], [change["address"]])
+
+    def test_ecs_unknown_registry_values_fail_closed(self):
+        for unknown in (True, None, [], "unknown",
+                        {"service_registries": True},
+                        {"service_registries": [{"registry_arn": True}]},
+                        {"service_registries": {"registry_arn": True}},
+                        {"service_registries": None}, {"service_registries": 0}):
+            with self.subTest(unknown=unknown):
+                change = self.ecs_change(["update"], {"service_registries": []}, {})
+                change["change"]["after_unknown"] = unknown
+                result = self.check_plan([change])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("DNS change", result.stderr)
+
+    def test_ecs_malformed_registry_shapes_fail_closed(self):
+        for field in ("before", "after"):
+            for value in ([], False, "invalid", {"service_registries": {}},
+                          {"service_registries": ""}, {"service_registries": False}):
+                with self.subTest(field=field, value=value):
+                    change = self.ecs_change(["update"], {"service_registries": []},
+                                             {"service_registries": []})
+                    change["change"][field] = value
+                    result = self.check_plan([change])
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("DNS change", result.stderr)
+
+    def test_ecs_empty_registry_mutations_are_allowed(self):
+        for empty in ({}, {"service_registries": []}, {"service_registries": None}):
+            for actions, before, after in ((["create"], None, empty), (["update"], empty, empty),
+                                           (["delete"], empty, None), (["delete", "create"], empty, empty)):
+                for unknown in ({}, {"task_definition": True}, {"service_registries": False},
+                                {"service_registries": []}, {"service_registries": {}}):
+                    with self.subTest(empty=empty, actions=actions, unknown=unknown):
+                        result = self.check_plan([self.ecs_change(actions, before, after, unknown)])
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(json.loads(result.stdout), {"changed_resources": 1, "dns_changes": []})
+
+    def test_registered_ecs_reads_and_noops_are_allowed(self):
+        registered = {"service_registries": [{"registry_arn": "fixture"}]}
+        for actions in (["no-op"], ["read"]):
+            with self.subTest(actions=actions):
+                result = self.check_plan([self.ecs_change(actions, registered, registered)])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), {"changed_resources": 0, "dns_changes": []})
+
     def test_supported_large_rsa_and_ec_keys(self):
         module = self.module()
         for key in ("RSA_2048", "RSA_3072", "RSA_4096", "EC_prime256v1", "EC_secp384r1"):

@@ -219,6 +219,27 @@ def certificate_overrides(configuration, state, account, allow_dns, *, publish=T
     return result
 
 
+def ecs_service_may_change_dns(change):
+    """ECS task changes can write Cloud Map DNS without changing its resources."""
+    for side in ("before", "after"):
+        values = change.get(side)
+        if values is None:  # Creation/deletion has no before/after value.
+            continue
+        if not isinstance(values, dict):
+            return True
+        registries = values.get("service_registries")
+        if registries is not None and not (isinstance(registries, list) and not registries):
+            return True
+    unknown = change.get("after_unknown", {})
+    if not isinstance(unknown, dict):
+        return True
+    registries_unknown = unknown.get("service_registries", False)
+    # Only an absent/false marker or an empty mask proves there is no unknown
+    # registry. Whole-object, nested and malformed unknown values fail closed.
+    return not (registries_unknown is False
+                or isinstance(registries_unknown, (list, dict)) and not registries_unknown)
+
+
 def check_plan(plan, allow_dns, scope="full"):
     if not isinstance(plan, dict) or not isinstance(plan.get("planned_values"), dict) or not plan.get("format_version"):
         raise ValueError("invalid Terraform plan JSON")
@@ -235,7 +256,8 @@ def check_plan(plan, allow_dns, scope="full"):
         mutations += 1
         if scope == "ecr-bootstrap" and resource["address"] != "aws_ecr_repository.web":
             raise ValueError("ECR bootstrap contains an unrelated mutation: " + resource["address"])
-        if resource["type"].startswith(("aws_route53", "aws_service_discovery")):
+        if (resource["type"].startswith(("aws_route53", "aws_service_discovery"))
+                or resource["type"] == "aws_ecs_service" and ecs_service_may_change_dns(resource["change"])):
             dns_changes.append(resource["address"])
     if dns_changes and not allow_dns:
         raise ValueError("DNS change prohibited: " + ", ".join(dns_changes))

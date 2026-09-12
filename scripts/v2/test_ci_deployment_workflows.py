@@ -105,6 +105,55 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertIn("DNS change", result.stderr)
         self.assertFalse(any(command[:2] == ["terraform", "apply"] for command in commands))
 
+    def test_plan_and_apply_block_ecs_rollout_with_unchanged_cloudmap(self):
+        # Confirmed provider plan shape: only the ECS task revision changes; ECS
+        # registers replacement task IPs even when both Cloud Map resources are no-op.
+        registry = [{"registry_arn": "arn:aws:servicediscovery:ap-northeast-2:"
+                     "123456789012:service/srv-example"}]
+        task = "arn:aws:ecs:ap-northeast-2:123456789012:task-definition/steampipe:"
+        changes = [
+            {"address": kind + "." + name, "type": kind, "change": {"actions": ["no-op"]}}
+            for kind, name in (("aws_service_discovery_private_dns_namespace", "main[0]"),
+                               ("aws_service_discovery_service", "steampipe[0]"))
+        ] + [{
+            "address": "aws_ecs_service.steampipe[0]", "type": "aws_ecs_service",
+            "change": {"actions": ["update"],
+                       "before": {"task_definition": task + "1", "service_registries": registry},
+                       "after": {"task_definition": task + "2", "service_registries": registry},
+                       "after_unknown": {}},
+        }]
+        for job, name in (("plan", "Check planned DNS operations"),
+                          ("apply", "terraform apply (exact saved plan — never re-planned)")):
+            with self.subTest(job=job):
+                result, commands = self.run_step(step("terraform.yml", job, name), changes=changes)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("DNS change", result.stderr)
+                self.assertIn("aws_ecs_service.steampipe[0]", result.stderr)
+                self.assertFalse(any(c[:2] == ["terraform", "apply"] for c in commands))
+
+    def test_apply_blocks_unknown_ecs_registries(self):
+        script = step("terraform.yml", "apply", "terraform apply (exact saved plan — never re-planned)")
+        result, commands = self.run_step(script, changes=[{
+            "address": "aws_ecs_service.steampipe[0]", "type": "aws_ecs_service",
+            "change": {"actions": ["update"], "before": {"service_registries": []},
+                       "after": {}, "after_unknown": {"service_registries": True}},
+        }])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("DNS change", result.stderr)
+        self.assertFalse(any(c[:2] == ["terraform", "apply"] for c in commands))
+
+    def test_apply_allows_web_rollout_with_empty_registries(self):
+        script = step("terraform.yml", "apply", "terraform apply (exact saved plan — never re-planned)")
+        result, commands = self.run_step(script, changes=[{
+            "address": "aws_ecs_service.web", "type": "aws_ecs_service",
+            "change": {"actions": ["update"],
+                       "before": {"task_definition": "web:1", "service_registries": []},
+                       "after": {"service_registries": []},
+                       "after_unknown": {"task_definition": True, "service_registries": []}},
+        }])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["terraform", "apply", "-input=false", "tfplan"], commands)
+
     def test_apply_rechecks_current_branch_and_uses_exact_saved_plan(self):
         script = step("terraform.yml", "apply", "terraform apply (exact saved plan — never re-planned)")
         result, commands = self.run_step(script, CURRENT_SHA="b" * 40)
