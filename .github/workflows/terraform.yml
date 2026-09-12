@@ -23,20 +23,26 @@ name: Terraform
 on:
   pull_request:
     branches: [main, dev]
-    paths: ["terraform/foundation/**"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", ".github/workflows/deploy-web.yml", "scripts/v2/ci/**", "scripts/v2/migrate*.mjs", "scripts/v2/initialize-db.mjs"]
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
     # The workflow file itself is in the path filter so a workflow change
     # self-tests with a real plan on the branch it lands on.
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci/**"]
   workflow_dispatch:
     inputs:
       plan_run_id:
         description: "Run ID of the terraform.yml run whose plan artifact to apply"
         required: true
+      reviewed_deletes:
+        description: "Explicitly reviewed all deletes/replacements in this exact saved plan (never used by staged dev CI)"
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 defaults:
@@ -63,9 +69,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Deployment guard tests
+        run: node --test ../../scripts/v2/ci/*.test.mjs
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
+          terraform_version: 1.15.7
 
       - name: Configure AWS credentials (OIDC -> ci-terraform-plan)
         uses: aws-actions/configure-aws-credentials@v4
@@ -90,6 +103,7 @@ jobs:
             echo "skip=1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          umask 077
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
           # Guard the PASSWORD only: admin_email is not a secret (and k8sgpt.tf needs it
@@ -102,7 +116,12 @@ jobs:
 
       - name: terraform init
         if: steps.restore.outputs.skip != '1'
-        run: terraform init -backend-config=backend.hcl -input=false
+        run: terraform init -backend-config=backend.hcl -input=false -lockfile=readonly
+
+      - name: Preserve the current dev stage and image revision
+        if: steps.restore.outputs.skip != '1' && env.TARGET == 'dev'
+        working-directory: .
+        run: node scripts/v2/ci/deploy-dev.mjs prepare
 
       - name: terraform plan
         if: steps.restore.outputs.skip != '1'
@@ -116,7 +135,15 @@ jobs:
         # -lock=false: the plan role is ReadOnlyAccess by design and cannot write
         # the S3 lock object (use_lockfile → <key>.tflock, s3:PutObject). A
         # read-only plan needs no lock; apply (deployer role) still locks.
-        run: terraform plan -out=tfplan -input=false -lock=false
+        run: |
+          umask 077
+          # Plan text can include non-sensitive-labelled credentials in providers;
+          # keep it local too. Publish only the authenticated encrypted artifact.
+          STAGE_ARGS=()
+          if [ "$TARGET" = dev ]; then STAGE_ARGS+=(-var-file=.build/ci/variables.tfvars.json); fi
+          terraform plan -out=tfplan -input=false -lock=false "${STAGE_ARGS[@]}" > tfplan.log 2>&1 || {
+            echo '::error::Terraform plan failed; inspect restricted runner diagnostics before cleanup'; exit 1;
+          }
 
       # A plan file embeds every input variable value in plaintext (sensitive
       # ones included), and artifacts on a public repo are downloadable by any
@@ -127,7 +154,7 @@ jobs:
           TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
         run: |
           [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::TF_PLAN_ENC_KEY secret is not set — refusing to upload a plaintext plan."; exit 1; }
-          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in tfplan -out tfplan.enc -pass env:TF_PLAN_ENC_KEY
+          node ../../scripts/v2/ci/plan-artifact.mjs seal
           rm -f tfplan
 
       - name: Upload plan artifact (encrypted)
@@ -143,13 +170,18 @@ jobs:
       # the restored config behind, whatever the outcome.
       - name: Clean sensitive files off the runner
         if: always()
-        run: rm -f tfplan tfplan.enc terraform.tfvars backend.hcl
+        run: |
+          rm -f tfplan tfplan.enc tfplan.log terraform.tfvars backend.hcl
+          rm -rf .build .terraform
 
   apply:
     name: Apply (saved plan)
     if: github.event_name == 'workflow_dispatch'
     runs-on: sample-awsops
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    concurrency:
+      group: deployment-${{ github.ref_name }}
+      cancel-in-progress: false
     env:
       TARGET: ${{ github.ref_name }}
       MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
@@ -163,9 +195,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
+          terraform_version: 1.15.7
 
       - name: Select the branch's stack (fail-closed)
         id: sel
@@ -197,6 +233,7 @@ jobs:
             echo "::error::TF backend secrets for '$TARGET' are not set — see docs/runbooks/dev-repo-setup.md."
             exit 1
           fi
+          umask 077
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
           # Guard the PASSWORD only: admin_email is not a secret (and k8sgpt.tf needs it
@@ -208,26 +245,37 @@ jobs:
           fi
 
       - name: terraform init
-        run: terraform init -backend-config=backend.hcl -input=false
+        run: terraform init -backend-config=backend.hcl -input=false -lockfile=readonly
 
       - name: Download the approved plan
         env:
           GH_TOKEN: ${{ github.token }}
+          PLAN_RUN_ID: ${{ inputs.plan_run_id }}
         run: |
-          gh run download "${{ inputs.plan_run_id }}" --repo "${{ github.repository }}" --name tfplan --dir .
+          [[ "$PLAN_RUN_ID" =~ ^[0-9]+$ ]] || { echo '::error::Invalid run ID'; exit 1; }
+          gh run download "$PLAN_RUN_ID" --repo "$GITHUB_REPOSITORY" --name tfplan --dir .
 
-      - name: Decrypt the approved plan
+      - name: Authenticate provenance and decrypt the exact approved plan
         env:
           TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+          REVIEWED_DELETES: ${{ inputs.reviewed_deletes }}
         run: |
           [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::TF_PLAN_ENC_KEY secret is not set."; exit 1; }
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in tfplan.enc -out tfplan -pass env:TF_PLAN_ENC_KEY
+          node ../../scripts/v2/ci/plan-artifact.mjs open
 
       - name: terraform apply (exact saved plan — never re-planned)
-        run: terraform apply -input=false tfplan
+        run: |
+          umask 077
+          terraform apply -input=false tfplan > tfplan.log 2>&1 || {
+            echo '::error::Saved-plan apply failed; inspect restricted runner diagnostics before cleanup'; exit 1;
+          }
 
       # The runner is persistent — never leave the decrypted plan (embeds sensitive
       # variable values in plaintext) or the restored config behind.
       - name: Clean sensitive files off the runner
         if: always()
-        run: rm -f tfplan tfplan.enc terraform.tfvars backend.hcl
+        run: |
+          rm -f tfplan tfplan.enc tfplan.log terraform.tfvars backend.hcl
+          rm -rf .build .terraform

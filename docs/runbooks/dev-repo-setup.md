@@ -4,6 +4,10 @@ Related files / 관련 파일: `.github/workflows/{deploy-web,deploy-preview,ter
 `docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
 `scripts/v2/ci_review_access.py`
 
+For ECR bootstrap, deployment before DNS delegation, and manual NS/CNAME/ALIAS
+registration, use [Staged dev deployment](ci-staged-deployment.md).
+(ECR 초기 생성, DNS 위임 전 배포 및 수동 DNS 등록은 위 단계별 배포 절차를 따릅니다.)
+
 > Historical note: this file previously described the two-repo split
 > (`Atom-oh/sample-awsops-dev`). The project consolidated into the single public
 > repo `aws-samples/sample-awsops` (all branches public by design — see

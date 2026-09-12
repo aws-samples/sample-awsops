@@ -24,22 +24,21 @@ name: Deploy Web
 # Fork PRs never reach this workflow (push/dispatch only) and GitHub denies
 # fork runs secrets and id-token anyway.
 #
-# Tag discipline: build pushes ONLY the immutable web-<sha>; the deploy job's
-# pin step is the ONLY writer of that stack's :web-latest — approval/rollout
-# is always bound to a concrete image, and ECS task churn re-resolves to the
-# last pinned image.
+# Dev provisions core first, builds immutable web/migration images using branch
+# OIDC, then migrates and pins an ECS revision by digest using environment OIDC.
+# Main/user branches retain their existing web-latest promotion procedure.
 
 on:
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
-    paths: ["web/**", "CHANGELOG.md"]
+    paths: ["web/**", "CHANGELOG.md", "terraform/foundation/**", "scripts/v2/ci/**", "scripts/v2/migrate*.mjs", "scripts/v2/initialize-db.mjs", "scripts/v2/package*.json", "scripts/v2/eks/rds-ca-bundle.pem", ".github/workflows/deploy-web.yml"]
   workflow_dispatch:
     inputs:
       image_sha:
-        description: "Full commit SHA whose web-<sha> image to promote and roll (default: the dispatched ref's HEAD)"
+        description: "SHA to promote (main/user branches). Dev accepts only the dispatched dev SHA; use a revert commit for rollback."
         required: false
       build:
-        description: "Build & push web-<HEAD sha> first, then roll it (for a stack whose image was never built / was lost). Mutually exclusive with image_sha."
+        description: "Build before rollout (main/user branches). Dev always builds or reuses this commit's immutable images."
         type: boolean
         required: false
         default: false
@@ -48,18 +47,20 @@ permissions:
   contents: read
   id-token: write
 
-# Per-job concurrency with separate build/rollout groups (a pending production
-# rollout must never be displaced by a push's build-only run). main queues;
-# every other branch is newest-wins.
+# Hold the dev lock across all three jobs and share it with manual Terraform
+# apply. Other branches retain separate build/rollout locks below.
+concurrency:
+  group: ${{ github.ref_name == 'dev' && 'deployment-dev' || format('deploy-web-run-{0}', github.run_id) }}
+  cancel-in-progress: false
 
 jobs:
   build:
     name: Build & push (arm64)
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build)
+    if: github.ref_name != 'dev' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build))
     runs-on: sample-awsops
     concurrency:
       group: deploy-web-build-${{ github.ref_name }}
-      cancel-in-progress: ${{ github.ref_name != 'main' }}
+      cancel-in-progress: false
     env:
       BRANCH: ${{ github.ref_name }}
       MAIN_ROLE: ${{ secrets.AWS_CI_BUILD_ROLE_ARN }}
@@ -138,14 +139,14 @@ jobs:
     # dev + user branches: continuous deploy right after their own build.
     needs: [build]
     if: >-
-      !cancelled() &&
+      !cancelled() && github.ref_name != 'dev' &&
       (needs.build.result == 'success' || needs.build.result == 'skipped') &&
       (github.event_name == 'workflow_dispatch' || github.ref_name != 'main')
     runs-on: sample-awsops
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     concurrency:
-      group: deploy-web-rollout-${{ github.ref_name }}
-      cancel-in-progress: ${{ github.ref_name != 'main' }}
+      group: deployment-${{ github.ref_name }}
+      cancel-in-progress: false
     env:
       BRANCH: ${{ github.ref_name }}
       MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
@@ -271,3 +272,156 @@ jobs:
 
       - name: Smoke test
         run: curl -fsS --max-time 15 "${{ steps.tf.outputs.url }}/api/health" && echo
+
+  dev-core:
+    name: Dev core before DNS
+    if: github.ref == 'refs/heads/dev'
+    runs-on: sample-awsops
+    timeout-minutes: 60
+    environment: development
+    env:
+      TF_IN_AUTOMATION: 'true'
+      TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
+      IMAGE_SHA: ${{ inputs.image_sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.7
+          terraform_wrapper: false
+      - name: Deployment guard tests
+        run: node --test scripts/v2/ci/*.test.mjs
+      - name: Restore dev config (no fallback)
+        env:
+          BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
+          TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$BACKEND_B64" && test -n "$TFVARS_B64"
+          printf '%s' "$BACKEND_B64" | base64 -d > terraform/foundation/backend.hcl
+          printf '%s' "$TFVARS_B64" | base64 -d > terraform/foundation/terraform.tfvars
+          if grep -Eq '^[[:space:]]*admin_password[[:space:]]*=' terraform/foundation/terraform.tfvars; then
+            echo '::error::Remove admin_password from tfvars'; exit 1
+          fi
+          mkdir -p terraform/foundation/.build/ci
+          chmod 700 terraform/foundation/.build/ci
+      - name: Deployer credentials (development environment OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          mask-aws-account-id: true
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          role-duration-seconds: 3600
+          aws-region: ap-northeast-2
+      - name: Initialize and provision core (saved plan)
+        run: |
+          terraform -chdir=terraform/foundation init -backend-config=backend.hcl -input=false -lockfile=readonly
+          node scripts/v2/ci/deploy-dev.mjs core
+      - name: Remove private files
+        if: always()
+        run: |
+          rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars
+          rm -rf terraform/foundation/.build terraform/foundation/.terraform
+
+  dev-images:
+    name: Dev immutable arm64 images
+    needs: [dev-core]
+    if: github.ref == 'refs/heads/dev'
+    runs-on: sample-awsops
+    timeout-minutes: 60
+    # No environment: preserve the existing refs/heads/dev build-role OIDC sub.
+    outputs:
+      web_digest: ${{ steps.images.outputs.web_digest }}
+      migration_digest: ${{ steps.images.outputs.migration_digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build credentials (ECR only)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          mask-aws-account-id: true
+          role-to-assume: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build immutable arm64 web and migration images
+        id: images
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/awsops-docker-${{ github.run_id }}
+        run: node scripts/v2/ci/deploy-dev.mjs images
+      - name: Remove build credentials and coordination files
+        if: always()
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/awsops-docker-${{ github.run_id }}
+        run: rm -rf terraform/foundation/.build "$DOCKER_CONFIG"
+
+  dev-release:
+    name: Dev migrate → private service → edge
+    needs: [dev-images]
+    if: github.ref == 'refs/heads/dev'
+    runs-on: sample-awsops
+    timeout-minutes: 120
+    environment: development
+    outputs:
+      deployment_status: ${{ steps.edge.outputs.deployment_status }}
+    env:
+      TF_IN_AUTOMATION: 'true'
+      TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
+      SMOKE_SECRET_ARN: ${{ secrets.DEV_SMOKE_SECRET_ARN }}
+      WEB_DIGEST: ${{ needs.dev-images.outputs.web_digest }}
+      MIGRATION_DIGEST: ${{ needs.dev-images.outputs.migration_digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.7
+          terraform_wrapper: false
+      - name: Restore dev config (no fallback)
+        env:
+          BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
+          TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$BACKEND_B64" && test -n "$TFVARS_B64"
+          printf '%s' "$BACKEND_B64" | base64 -d > terraform/foundation/backend.hcl
+          printf '%s' "$TFVARS_B64" | base64 -d > terraform/foundation/terraform.tfvars
+          if grep -Eq '^[[:space:]]*admin_password[[:space:]]*=' terraform/foundation/terraform.tfvars; then
+            echo '::error::Remove admin_password from tfvars'; exit 1
+          fi
+      - name: Deployer credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          mask-aws-account-id: true
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          role-duration-seconds: 3600
+          aws-region: ap-northeast-2
+      - name: Migrate in VPC then roll and verify ECS
+        run: |
+          terraform -chdir=terraform/foundation init -backend-config=backend.hcl -input=false -lockfile=readonly
+          node scripts/v2/ci/deploy-dev.mjs release
+      - name: Refresh deployer credentials before edge
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          mask-aws-account-id: true
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          role-duration-seconds: 3600
+          aws-region: ap-northeast-2
+      - name: Attach issued certificates and verify edge, or report awaiting_dns
+        id: edge
+        run: node scripts/v2/ci/deploy-dev.mjs edge
+      - name: Remove private config, plans, generated archives and registry credentials
+        if: always()
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/awsops-docker-${{ github.run_id }}
+        run: |
+          rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars
+          rm -rf terraform/foundation/.build terraform/foundation/.terraform "$DOCKER_CONFIG"

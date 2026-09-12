@@ -1,0 +1,11 @@
+FROM node:22-alpine
+WORKDIR /app
+COPY scripts/v2/package.json scripts/v2/package-lock.json ./scripts/v2/
+RUN npm ci --prefix scripts/v2 --omit=dev --no-audit
+COPY scripts/v2/migrate.mjs scripts/v2/migrate-core.mjs scripts/v2/initialize-db.mjs ./scripts/v2/
+COPY scripts/v2/eks/rds-ca-bundle.pem ./scripts/v2/eks/rds-ca-bundle.pem
+COPY terraform/foundation/data/schema.sql ./terraform/foundation/data/schema.sql
+COPY terraform/foundation/migrations ./terraform/foundation/migrations
+COPY web/package.json ./web/package.json
+USER node
+CMD ["node", "scripts/v2/migrate.mjs"]

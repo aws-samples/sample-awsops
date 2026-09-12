@@ -12,13 +12,13 @@ resource "aws_acm_certificate" "cf" {
 }
 
 resource "aws_route53_record" "cf_validation" {
-  for_each = {
+  for_each = var.dns_validation_records_enabled ? {
     for dvo in aws_acm_certificate.cf.domain_validation_options : dvo.domain_name => {
       name   = dvo.resource_record_name
       record = dvo.resource_record_value
       type   = dvo.resource_record_type
     }
-  }
+  } : {}
   zone_id         = data.aws_route53_zone.main.zone_id
   name            = each.value.name
   type            = each.value.type
@@ -28,9 +28,10 @@ resource "aws_route53_record" "cf_validation" {
 }
 
 resource "aws_acm_certificate_validation" "cf" {
+  count                   = var.edge_enabled ? 1 : 0
   provider                = aws.use1
   certificate_arn         = aws_acm_certificate.cf.arn
-  validation_record_fqdns = [for r in aws_route53_record.cf_validation : r.fqdn]
+  validation_record_fqdns = [for dvo in aws_acm_certificate.cf.domain_validation_options : dvo.resource_record_name]
 }
 
 data "aws_cloudfront_cache_policy" "disabled" {
@@ -50,6 +51,8 @@ data "aws_cloudfront_origin_request_policy" "all_viewer" {
 # (409 CannotUpdateEntityWhileInUse). create_before_destroy + a distinct name lets Terraform stand up the
 # new https-only origin, repoint the distribution, then delete the old http-only origin — the AWS-supported swap.
 resource "aws_cloudfront_vpc_origin" "alb" {
+  count      = var.edge_enabled ? 1 : 0
+  depends_on = [aws_lb_listener.https]
   vpc_origin_endpoint_config {
     name                   = "${var.project}-alb-origin-tls"
     arn                    = aws_lb.internal.arn
@@ -67,6 +70,7 @@ resource "aws_cloudfront_vpc_origin" "alb" {
 }
 
 resource "aws_cloudfront_distribution" "main" {
+  count       = var.edge_enabled ? 1 : 0
   enabled     = true
   comment     = "AWSops v2 spine — ${var.domain_name}"
   aliases     = concat([var.domain_name], var.extra_domain_aliases)
@@ -76,7 +80,7 @@ resource "aws_cloudfront_distribution" "main" {
     domain_name = var.domain_name
     origin_id   = "alb-vpc-origin"
     vpc_origin_config {
-      vpc_origin_id            = aws_cloudfront_vpc_origin.alb.id
+      vpc_origin_id            = aws_cloudfront_vpc_origin.alb[0].id
       origin_read_timeout      = 60
       origin_keepalive_timeout = 5
     }
@@ -117,20 +121,20 @@ resource "aws_cloudfront_distribution" "main" {
   }
 
   viewer_certificate {
-    acm_certificate_arn      = aws_acm_certificate_validation.cf.certificate_arn
+    acm_certificate_arn      = aws_acm_certificate_validation.cf[0].certificate_arn
     ssl_support_method       = "sni-only"
     minimum_protocol_version = "TLSv1.2_2021"
   }
 }
 
 resource "aws_route53_record" "alias" {
-  for_each = toset(concat([var.domain_name], var.extra_domain_aliases))
+  for_each = var.edge_enabled && var.dns_alias_records_enabled ? toset(concat([var.domain_name], var.extra_domain_aliases)) : toset([])
   zone_id  = data.aws_route53_zone.main.zone_id
   name     = each.value
   type     = "A"
   alias {
-    name                   = aws_cloudfront_distribution.main.domain_name
-    zone_id                = aws_cloudfront_distribution.main.hosted_zone_id
+    name                   = aws_cloudfront_distribution.main[0].domain_name
+    zone_id                = aws_cloudfront_distribution.main[0].hosted_zone_id
     evaluate_target_health = false
   }
 }
