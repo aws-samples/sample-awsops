@@ -71,7 +71,7 @@
 ## dx (1)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
-| `/api/dx` | GET | Direct Connect 커넥션/VIF/게이트웨이 목록+분석 — AWS/DX 메트릭 다운 감지·피크 사용률·BGP 라우트 가시성 (호스티드 <1G는 커넥션 레벨 Bps 미발행 → VIF 레벨). 부분 실패는 정직 강등: `degradedRegions`·`metricsDegradedRegions`·`gatewaysDegraded`·행 단위 `associationsAvailable`·`totals.gatewaysAssociationsUnknown` | verifyUser |
+| `/api/dx` | GET | Direct Connect 커넥션/VIF/게이트웨이 목록+분석 — AWS/DX 메트릭 다운 감지·피크 사용률·BGP 라우트 가시성 (호스티드 <1G는 커넥션 레벨 Bps 미발행 → VIF 레벨). `locations[]`는 `available/down` owned·hosted의 확인된 위치/리전별 집계, `totals.locations`는 고유 위치명 수. 기타·미확인 상태는 원본 목록에 남지만 위치·상태·SLA 평가에서 제외·미평가로 고지하며 SLA는 owned만 대상. / Known deployed sites only; raw inventory remains available, excluded states are unassessed. 부분 실패는 정직 강등: `degradedRegions`·`metricsDegradedRegions`·`gatewaysDegraded`·행 단위 `associationsAvailable`·`totals.gatewaysAssociationsUnknown` | verifyUser |
 
 ## ip-inventory (1)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -126,7 +126,7 @@
 | `/api/diagnosis/subscribers/test` | POST | 진단 알림 테스트 발송 — 토픽 한정 SNS Publish 1건 (admin 전용) | verifyUser |
 | `/api/diagnosis/[id]` | GET, PATCH, DELETE | 리포트 단건 조회/수정/삭제 | verifyUser |
 | `/api/diagnosis/[id]/download` | GET | 산출물(md/docx/pdf) S3 프록시 다운로드 (presign 아님) | verifyUser |
-| `/api/graph` | GET | 토폴로지 그래프 (legacy 043 — BASELINE §2 deferred 옵션, read-only) — class `flow\|infra`, `?from=`으로 서브그래프 | verifyUser |
+| `/api/graph` | GET | 읽기 전용 토폴로지 그래프 — class `flow\|infra\|trace`, `?from=`으로 서브그래프. `trace`는 `collection` 수집·보존 상태 및 관측 edge count를 노출. 큐 `meta.claimedAccountId/claimedRegion`은 보존된 행도 destination ARN에서만 재계산하고 비-ARN/누락 한정자는 null; `identityProvenance=telemetry_claim` 고정, 호출자 폴백·AWS 인벤토리 bridge 없음. 동일 ARN은 데이터소스·환경 안에서만 호출자 간 연결. / Queue claims derive only from destination ARNs; unverified, scoped by datasource/environment, never inventory authority. [계약·배포 / Contract and rollout](runbooks/source-sync-observability.md) | verifyUser |
 | `/api/health` | GET | 헬스체크 — 컨테이너/타깃그룹 health 경로와 일치 필수 | 없음 (공개) |
 | `/api/incidents` | GET, POST | 인시던트 목록 + 수동 트리거 (ADR-006[legacy 032], admin) | verifyUser |
 | `/api/incidents/prevention` | GET | 교차 인시던트 예방 인사이트 (admin, read-only) — Aurora 미설정/실패도 200 + 빈 목록 | verifyUser |

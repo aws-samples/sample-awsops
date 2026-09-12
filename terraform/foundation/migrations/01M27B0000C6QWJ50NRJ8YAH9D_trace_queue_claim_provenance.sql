@@ -1,7 +1,8 @@
 -- since: 0.9.0
 -- Queue destinations in trace graphs are telemetry claims, never verified AWS inventory.
 -- Preserve the existing view columns/grants and named-key projection. Cover retained
--- snapshots with legacy accountId/region keys without changing historical migrations.
+-- snapshots by deriving claims only from destination ARN qualifiers, never reporter keys
+-- or stored claim fields. Non-ARN/malformed destinations have no account/region claim.
 CREATE OR REPLACE VIEW sql_reader.topology_nodes
 WITH (security_invoker = false) AS
 SELECT account_id, id, kind, label, run_id, captured_at, class,
@@ -21,15 +22,14 @@ SELECT account_id, id, kind, label, run_id, captured_at, class,
   ), '{}'::jsonb)
   || CASE WHEN class = 'trace' AND kind = 'queue' THEN jsonb_build_object(
     'identityProvenance', 'telemetry_claim',
-    'claimedAccountId', CASE
-      WHEN jsonb_typeof(meta->'claimedAccountId') = 'string' AND meta->>'claimedAccountId' <> ''
-        THEN meta->'claimedAccountId'
-      WHEN jsonb_typeof(meta->'accountId') = 'string' AND meta->>'accountId' <> ''
-        THEN meta->'accountId' END,
-    'claimedRegion', CASE
-      WHEN jsonb_typeof(meta->'claimedRegion') = 'string' AND meta->>'claimedRegion' <> ''
-        THEN meta->'claimedRegion'
-      WHEN jsonb_typeof(meta->'region') = 'string' AND meta->>'region' <> ''
-        THEN meta->'region' END
+    'claimedAccountId', destination_arn.parts[2],
+    'claimedRegion', nullif(destination_arn.parts[1], '')
   ) ELSE '{}'::jsonb END AS meta
-FROM public.topology_nodes;
+FROM public.topology_nodes
+LEFT JOIN LATERAL regexp_match(
+  CASE WHEN class = 'trace' AND kind = 'queue' AND jsonb_typeof(meta->'destination') = 'string'
+    THEN btrim(meta->>'destination', E' \t\n\r\f\013') END,
+  '^arn:[a-z0-9-]+:[a-z0-9-]+:([a-z0-9-]*):([0-9]{12}):[^[:space:]]+$'
+) AS destination_arn(parts) ON true;
+
+GRANT SELECT ON sql_reader.topology_nodes TO awsops_sql_reader;

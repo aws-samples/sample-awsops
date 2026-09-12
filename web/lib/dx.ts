@@ -129,7 +129,7 @@ export interface DxAnalysis {
   connections: DxConnectionRow[];
   vifs: DxVifRow[];
   gateways: DxGatewayRow[];
-  /** 로케이션별 커넥션 집계 (이중화 분석용). */
+  /** Known sites of available/down owned + hosted connections, grouped by location/region. */
   locations: { location: string; region: string; connections: number; bandwidthBps: number }[];
   /** 리소스 목록(Describe*) 자체가 실패해 그 리전의 커넥션/VIF가 전부 빠진 리전 —
    *  singleLocation·다운 카운트·총 대역폭이 실제보다 낙관적일 수 있다(누락된 리전에
@@ -147,10 +147,12 @@ export interface DxAnalysis {
     /** association 조회 실패로 미할당 여부를 판정할 수 없는 게이트웨이 수 — >0 이면
      *  gatewaysUnassociated 는 하한(실제보다 적을 수 있음)이다. UI 타일/배너가 노출. */
     gatewaysAssociationsUnknown: number;
-    totalBandwidthBps: number; locations: number;
+    totalBandwidthBps: number;
+    /** Distinct known site names among available/down connections (not location/region rows). */
+    locations: number;
     /** VIF 피크 사용률 최댓값 (%). */
     maxUtilizationPct: number | null;
-    /** 커넥션이 있는데 로케이션이 1곳뿐 — 위치 단일 장애점. */
+    /** Exactly one known deployed site, with no deployed connection missing its location. */
     singleLocation: boolean;
   };
   rangeSec: number;

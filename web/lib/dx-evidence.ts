@@ -6,10 +6,11 @@ export function knownDxLocation(value: string | undefined): string | undefined {
   return location && location !== '?' && location.toLowerCase() !== 'unknown' ? location : undefined;
 }
 
-const NOT_DEPLOYED = new Set(['deleted', 'rejected', 'ordering', 'requested', 'pending']);
-export const isDeployedDxConnection = (c: DxConnectionRow): boolean => !NOT_DEPLOYED.has(c.state);
+// Unknown, missing and future states cannot establish a deployed connection.
+export const isDeployedDxConnection = (c: DxConnectionRow): boolean =>
+  c.state === 'available' || c.state === 'down';
 
-/** Deployed connections, including hosted. Inactive inventory cannot certify an available site.
+/** Deployed connections, including hosted. Excluded states cannot certify a deployed site.
  * SLA eligibility is a separate owned-only scope. */
 export function summarizeDxLocations(connections: DxConnectionRow[]) {
   const groups = new Map<string, { location: string; region: string; connections: number; bandwidthBps: number }>();

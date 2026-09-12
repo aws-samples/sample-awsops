@@ -58,7 +58,7 @@ describe('Direct Connect evidence presentation', () => {
     expect(health.textContent).toContain('확인 불가');
     expect(screen.getByText(/모든 VIF·BGP 정상/).textContent).toContain('확인 불가');
     expect(screen.getByText(/미연결 DX Gateway 없음/).textContent).toContain('확인 불가');
-    expect(screen.queryByText('이상 없음 — 커넥션이 2개 이상 로케이션에 분산되어 있습니다')).toBeNull();
+    expect(screen.queryByText('확인된 배포 커넥션이 2개 이상 로케이션에 분산되어 있습니다')).toBeNull();
   });
 });
 
@@ -72,25 +72,40 @@ const pageData = (connections: DxConnectionRow[]): DxAnalysis => ({
 });
 
 describe('known locations across owned and hosted connections', () => {
-  it.each(['deleted', 'rejected', 'ordering', 'requested', 'pending'])(
+  it.each(['deleted', 'rejected', 'ordering', 'requested', 'pending', 'deleting', 'unknown', 'other', '', undefined])(
     'does not use a %s connection to certify a second deployed site', async state => {
       const data = pageData([conn({}), conn({ id: 'c2', state, location: 'SEL2' })]);
       vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => data })));
       render(createElement(DirectConnectPage));
       await screen.findByText(/배포된 커넥션 정상/);
-      expect(screen.queryByText('이상 없음 — 커넥션이 2개 이상 로케이션에 분산되어 있습니다')).toBeNull();
-      expect(screen.getByText(/모든 커넥션이 단일 로케이션에 있습니다/)).toBeTruthy();
+      expect(screen.queryByText('확인된 배포 커넥션이 2개 이상 로케이션에 분산되어 있습니다')).toBeNull();
+      expect(screen.getByText(/배포된 커넥션이 단일 로케이션에 있습니다/)).toBeTruthy();
+      expect(screen.getAllByText(/제외 · 미평가.*1/).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/모든 커넥션 정상/)).toBeNull();
     },
   );
+
+  it('labels an unknown-only fleet unassessed, with no healthy or empty-fleet claim', async () => {
+    const data = pageData([conn({ state: 'unknown' })]);
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => data })));
+    render(createElement(DirectConnectPage));
+    const health = await screen.findByText(/배포된 커넥션 정상/);
+    expect(health.textContent).toContain('확인 불가');
+    expect(health.textContent).toContain('0/1');
+    expect(screen.getAllByText(/제외 · 미평가.*1/).length).toBeGreaterThan(0);
+    expect(screen.getByText('배포 확인된 커넥션 없음')).toBeTruthy();
+    expect(screen.queryByText('커넥션 없음')).toBeNull();
+    expect(screen.queryByText(/SLA 95%/)).toBeNull();
+  });
 
   it.each([null, 'partner'])('does not certify an unknown site (%s) as site two', async partnerName => {
     const data = pageData([conn({}), conn({ id: 'c2', partnerName, location: '?' })]);
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => data })));
     render(createElement(DirectConnectPage));
     await screen.findByText(/배포된 커넥션 정상/);
-    expect(screen.queryByText('이상 없음 — 커넥션이 2개 이상 로케이션에 분산되어 있습니다')).toBeNull();
+    expect(screen.queryByText('확인된 배포 커넥션이 2개 이상 로케이션에 분산되어 있습니다')).toBeNull();
     expect(screen.getAllByText(/확인 불가/).length).toBeGreaterThan(0);
-    expect(screen.queryByText(/모든 커넥션이 단일 로케이션에 있습니다/)).toBeNull();
+    expect(screen.queryByText(/배포된 커넥션이 단일 로케이션에 있습니다/)).toBeNull();
   });
 
   it.each([null, 'partner'])('keeps two verified sites plus unknown %s visible without hiding coverage', async partnerName => {
@@ -98,9 +113,9 @@ describe('known locations across owned and hosted connections', () => {
       conn({ id: 'c3', partnerName, location: '?' })]);
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => data })));
     render(createElement(DirectConnectPage));
-    expect(await screen.findByText('이상 없음 — 커넥션이 2개 이상 로케이션에 분산되어 있습니다')).toBeTruthy();
+    expect(await screen.findByText('확인된 배포 커넥션이 2개 이상 로케이션에 분산되어 있습니다')).toBeTruthy();
     expect(screen.getAllByText(/확인 불가/).length).toBeGreaterThan(0);
-    const locations = screen.getByText('이상 없음 — 커넥션이 2개 이상 로케이션에 분산되어 있습니다').parentElement!;
+    const locations = screen.getByText('확인된 배포 커넥션이 2개 이상 로케이션에 분산되어 있습니다').parentElement!;
     expect(within(locations).queryByText('?', { selector: 'td' })).toBeNull();
   });
 

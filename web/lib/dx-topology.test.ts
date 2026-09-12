@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildDxTopology, assessResiliency, layoutDxTopology } from './dx-topology';
 import type { DxAnalysis, DxConnectionRow, DxVifRow, DxGatewayRow } from './dx';
+import { isDeployedDxConnection, summarizeDxLocations } from './dx-evidence';
 
 const conn = (o: Partial<DxConnectionRow>): DxConnectionRow => ({
   id: 'dxcon-1', name: 'c1', state: 'available', region: 'ap-northeast-2', location: 'SEL1',
@@ -345,7 +346,7 @@ describe('resilience evidence coverage', () => {
     expect(check(snapshot({ connections: [conn({ awsDevice: 'a', location: '?' })] }), '디바이스 정보로')).toBeNull();
   });
 
-  it.each(['pending', 'ordering', 'requested', 'deleted', 'rejected'])('excludes %s from deployed health with explicit coverage', state => {
+  it.each(['pending', 'ordering', 'requested', 'deleted', 'rejected', 'deleting', 'unknown', 'other', '', undefined])('excludes %s from deployed health with explicit coverage', state => {
     const r = assessResiliency(snapshot({ connections: [
       conn({}), conn({ id: 'not-deployed', state, stateMetricMin: null, down: state === 'deleted' }),
     ] }));
@@ -353,6 +354,32 @@ describe('resilience evidence coverage', () => {
     expect(health.ok).toBe(true);
     expect(health.detail).toContain('1/2');
     expect(r.connectionHealthCoverage).toEqual({ total: 2, assessed: 1, excluded: 1, unknown: 0, down: 0 });
+  });
+
+  it.each(['deleting', 'unknown', 'other', '', undefined])('cannot certify locations or SLA from state %s', state => {
+    const connections = [
+      conn({ id: 'c1', awsDevice: 'a' }), conn({ id: 'c2', awsDevice: 'b' }),
+      conn({ id: 'c3', state, location: 'SEL2', awsDevice: 'c' }),
+      conn({ id: 'c4', state, location: 'SEL2', awsDevice: 'd' }),
+    ];
+    expect(isDeployedDxConnection(connections[2])).toBe(false);
+    const summary = summarizeDxLocations(connections);
+    expect(summary).toMatchObject({ knownLocations: 1, excludedConnections: 2, assessedConnections: 2 });
+    expect(summary.locations.map(l => l.location)).toEqual(['SEL1']);
+    const result = assessResiliency(snapshot({ connections }));
+    expect(result).toMatchObject({ tier: 'single', locations: 1, dualConnLocations: 1 });
+    const unassessed = assessResiliency(snapshot({ connections: connections.slice(2) }));
+    expect(unassessed).toMatchObject({ tier: 'none', slaPct: null, locations: 0 });
+    expect(unassessed.checks.find(c => c.label.startsWith('배포된 커넥션'))!.ok).toBeNull();
+  });
+
+  it.each(['available', 'down'])('keeps %s deployed for location/SLA and reports observed down health', state => {
+    const connections = [conn({}), conn({ id: 'c2', state, location: 'SEL2', down: state === 'down' })];
+    expect(isDeployedDxConnection(connections[1])).toBe(true);
+    expect(summarizeDxLocations(connections).knownLocations).toBe(2);
+    const result = assessResiliency(snapshot({ connections }));
+    expect(result.tier).toBe('high');
+    expect(result.checks.find(c => c.label.startsWith('배포된 커넥션'))!.ok).toBe(state === 'available');
   });
 
   it('supports hosted ConnectionState independently of unsupported connection throughput', () => {

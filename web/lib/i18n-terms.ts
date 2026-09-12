@@ -7,8 +7,11 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
-  '배포된 커넥션의 로케이션 분포 — 생성 중·삭제된 커넥션 제외': { en: 'Deployed connection locations — provisioning and removed connections excluded', zh: '已部署连接的位置分布 — 不含创建中及已删除的连接', ja: '配備済み接続のロケーション分布 — 作成中・削除済み接続は除外' },
+  'available/down 커넥션의 로케이션 분포 — 기타·미확인 상태는 제외·미평가': { en: 'Locations of available/down connections — other and unknown states excluded, unassessed', zh: 'available/down 连接的位置分布 — 其他及未知状态已排除、未评估', ja: 'available/down 接続のロケーション分布 — その他・不明な状態は除外・未評価' },
   '판정 범위': { en: 'Assessment coverage', zh: '评估范围', ja: '判定範囲' },
+  '제외': { en: 'Excluded', zh: '已排除', ja: '除外' },
+  '미평가': { en: 'Unassessed', zh: '未评估', ja: '未評価' },
+  '배포 확인된 커넥션 없음': { en: 'No connections confirmed deployed', zh: '没有确认已部署的连接', ja: '配備を確認できた接続なし' },
   // ---- common UI ----
   '전체': { en: 'All', zh: '全部', ja: 'すべて' },
   '전체 계정': { en: 'All accounts', zh: '全部账号', ja: '全アカウント' },
@@ -1290,8 +1293,8 @@ export const TERMS: Record<string, Pair> = {
   'VIF별 평균 트래픽 (Kbps)': { en: 'Avg traffic per VIF (Kbps)', zh: '各 VIF 平均流量（Kbps）', ja: 'VIF 別平均トラフィック（Kbps）' },
   '로케이션 이중화': { en: 'Location redundancy', zh: '位置冗余', ja: 'ロケーション冗長性' },
   'Direct Connect 로케이션별 커넥션 분포 — 위치 단일 장애점 분석': { en: 'Connection distribution per Direct Connect location — location single-point-of-failure analysis', zh: '各 Direct Connect 位置的连接分布 — 位置单点故障分析', ja: 'Direct Connect ロケーション別の接続分布 — ロケーション単一障害点分析' },
-  '모든 커넥션이 단일 로케이션에 있습니다 — 이 로케이션 장애 시 전체 DX 경로가 끊깁니다. AWS Resiliency Toolkit은 2개 이상 로케이션을 권장합니다': { en: 'All connections are in a single location — a failure of this location severs the entire DX path. The AWS Resiliency Toolkit recommends 2+ locations', zh: '所有连接都在单一位置 — 该位置故障将切断整个 DX 路径。AWS Resiliency Toolkit 建议使用 2 个以上位置', ja: 'すべての接続が単一ロケーションにあります — このロケーションの障害で DX 経路全体が切断されます。AWS Resiliency Toolkit は 2 か所以上を推奨' },
-  '이상 없음 — 커넥션이 2개 이상 로케이션에 분산되어 있습니다': { en: 'All clear — connections are spread across 2+ locations', zh: '无异常 — 连接分布在 2 个以上位置', ja: '異常なし — 接続は 2 か所以上のロケーションに分散' },
+  '배포된 커넥션이 단일 로케이션에 있습니다 — 평가 범위의 위치 단일 장애점입니다. AWS Resiliency Toolkit은 2개 이상 로케이션을 권장합니다': { en: 'Deployed connections are in a single location — a site failure affects this assessed scope. The AWS Resiliency Toolkit recommends 2+ locations', zh: '已部署连接位于单一位置 — 这是评估范围内的位置单点故障。AWS Resiliency Toolkit 建议使用 2 个以上位置', ja: '配備済み接続が単一ロケーションにあります — 評価範囲内の単一障害点です。AWS Resiliency Toolkit は 2 か所以上を推奨' },
+  '확인된 배포 커넥션이 2개 이상 로케이션에 분산되어 있습니다': { en: 'Confirmed deployed connections span 2+ locations', zh: '已确认部署的连接分布在 2 个以上位置', ja: '配備を確認できた接続は 2 か所以上のロケーションに分散' },
   '커넥션 없음': { en: 'No connections', zh: '无连接', ja: '接続なし' },
   'AWS SLA 해당 없음 (전량 호스티드)': { en: 'AWS SLA not applicable (all hosted)', zh: '不适用 AWS SLA（全部为托管连接）', ja: 'AWS SLA 対象外（全てホスト型）' },
   'AWS SLA 미확정 (배포된 owned 커넥션 없음)': { en: 'AWS SLA undetermined (no deployed owned connections)', zh: 'AWS SLA 未确定（无已部署的自有连接）', ja: 'AWS SLA 未確定（デプロイ済みの自己所有接続なし）' },
@@ -1395,7 +1398,7 @@ export const TERMS: Record<string, Pair> = {
   '단일 연결': { en: 'Single connection', zh: '单一连接', ja: '単一接続' },
   '디바이스 2개 이상 로케이션': { en: 'locations with 2+ devices', zh: '有 2+ 设备的位置', ja: 'デバイス 2 台以上のロケーション' },
   '배포된 커넥션 정상 (기간 내 다운 없음)': { en: 'Deployed connections healthy (no downs in range)', zh: '已部署连接正常（区间内无中断）', ja: '配備済み接続正常（期間内ダウンなし）' },
-  '커넥션 상태 평가 범위: 배포된 dedicated·hosted, 미배포 제외': { en: 'Connection health scope: deployed dedicated/hosted; undeployed excluded', zh: '连接健康范围：已部署专用/托管连接；排除未部署连接', ja: '接続状態の評価範囲：配備済み専用/ホスト型、未配備は除外' },
+  '커넥션 상태 평가 범위: available/down인 dedicated·hosted만 평가, 기타·미확인 상태는 제외·미평가': { en: 'Connection health scope: available/down dedicated and hosted only; other and unknown states excluded, unassessed', zh: '连接健康范围：仅评估 available/down 的专用及托管连接；其他及未知状态已排除、未评估', ja: '接続状態の評価範囲：available/down の専用・ホスト型のみ。その他・不明な状態は除外・未評価' },
   '확인된 로케이션': { en: 'Verified locations', zh: '已确认位置', ja: '確認済みロケーション' },
   'Telemetry claim · AWS identity unverified': { en: 'Telemetry claim · AWS identity unverified', zh: '遥测声明 · AWS 身份未经验证', ja: 'テレメトリの申告 · AWS ID は未検証' },
   'SLA 대상 로케이션 (배포된 owned)': { en: 'SLA locations (deployed owned)', zh: 'SLA 位置（已部署 owned）', ja: 'SLA 対象ロケーション（配備済み owned）' },

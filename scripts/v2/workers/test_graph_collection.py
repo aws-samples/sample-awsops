@@ -83,33 +83,47 @@ def test_graph_reader_exposes_only_named_evidence_after_idempotent_migration(gra
     assert "MUST_NOT_LEAK" not in json.dumps(node)
 
 
-@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("legacy", [False, True, None])
 def test_queue_claim_projection_is_constant_and_never_inventory_authority(graph_pg, legacy):
     import pg8000.exceptions
 
     migration = MIGRATION.with_name("01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql")
-    graph_pg.conn.run(migration.read_text())
-    graph_pg.conn.run(migration.read_text())
+    # Restore the view grant if it drifted; never grant direct table privileges.
+    graph_pg.conn.run("REVOKE SELECT ON sql_reader.topology_nodes FROM awsops_sql_reader")
     claim_keys = ("accountId", "region") if legacy else ("claimedAccountId", "claimedRegion")
-    meta = {
-        claim_keys[0]: "111122223333", claim_keys[1]: "us-east-1",
-        "identityProvenance": "aws_verified", "infra_ref": "inventory:queue",
-        "destination": "arn:aws:sqs:us-east-1:111122223333:orders", "sourceId": "tempo:1",
-        "row": {"secret": "MUST_NOT_LEAK"}, "claimedExtra": "MUST_NOT_LEAK",
-    }
+    cases = json.loads((Path(__file__).resolve().parents[3]
+                        / "web/lib/fixtures/trace-queue-claims.json").read_text())
+    cases.append({"account": None, "region": None})  # Retained row with no destination at all.
+    for i, case in enumerate(cases):
+        meta = {
+            **({claim_keys[0]: "444455556666", claim_keys[1]: "us-west-2"} if legacy is not None else {}),
+            **({"destination": case["destination"]} if "destination" in case else {}),
+            "identityProvenance": "aws_verified", "infra_ref": "inventory:queue",
+            "sourceId": "tempo:1", "environment": "prod",
+            "row": {"secret": "MUST_NOT_LEAK"}, "claimedExtra": "MUST_NOT_LEAK",
+        }
+        graph_pg.conn.run("""
+            INSERT INTO public.topology_nodes VALUES
+              ('self',:id,'queue','orders',:meta::jsonb,'run',now(),'trace');
+        """, id=f"queue:{i}", meta=json.dumps(meta))
     graph_pg.conn.run("""
         INSERT INTO public.topology_nodes VALUES
-          ('self','queue:one','queue','orders',:meta::jsonb,'run',now(),'trace'),
           ('self','infra:one','queue','orders',:infra::jsonb,'run',now(),'infra');
-    """, meta=json.dumps(meta), infra=json.dumps({"accountId": "111122223333", "region": "us-east-1"}))
+    """, infra=json.dumps({"accountId": "111122223333", "region": "us-east-1"}))
+    # Apply after inserting retained rows, then reapply to exercise idempotence.
+    graph_pg.conn.run(migration.read_text())
+    graph_pg.conn.run(migration.read_text())
     reader = graph_pg.connect()
     reader.run("SET ROLE awsops_sql_reader")
     reader.run("SET search_path TO sql_reader, pg_catalog")
-    queue = json.loads(reader.run("SELECT meta::text FROM topology_nodes WHERE class='trace'")[0][0])
-    assert queue == {
-        "claimedAccountId": "111122223333", "claimedRegion": "us-east-1",
-        "identityProvenance": "telemetry_claim", "destination": meta["destination"], "sourceId": "tempo:1",
-    }
+    for i, case in enumerate(cases):
+        queue = json.loads(reader.run(
+            "SELECT meta::text FROM topology_nodes WHERE id=:id", id=f"queue:{i}")[0][0])
+        assert queue == {
+            "claimedAccountId": case["account"], "claimedRegion": case["region"],
+            "identityProvenance": "telemetry_claim", "sourceId": "tempo:1", "environment": "prod",
+            **({"destination": case["destination"]} if isinstance(case.get("destination"), str) else {}),
+        }, case
     infra = json.loads(reader.run("SELECT meta::text FROM topology_nodes WHERE class='infra'")[0][0])
     assert infra == {"accountId": "111122223333", "region": "us-east-1"}
     with pytest.raises(pg8000.exceptions.DatabaseError):

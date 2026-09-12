@@ -30,7 +30,8 @@ samples의 CI·OIDC·브랜치/배포 정책과 Terraform 경로를 유지한다
 - `01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql`: collection attempts,
   explicit graph evidence counts, and projected SQL-reader views.
 - `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`: queue claimed account/region
-  and constant `telemetry_claim` provenance in the SQL-reader projection, including retained snapshots.
+  derived only from destination ARN qualifiers and constant `telemetry_claim` provenance in the
+  SQL-reader projection, including retained snapshots; idempotent view-only SELECT grant.
 - `01M27AQXZKQQ5J611R01BEFHPD_worker_jobs_lifecycle_timestamps.sql`: first worker-start and
   terminal timestamps, stamped by the existing ledger's status transitions.
 
@@ -43,6 +44,13 @@ samples 웹 배포 워크플로는 마이그레이션을 실행하지 않는다.
 기존 `make migrate`를 실행해야 새 관측 계약이 활성화된다. 적용 전에도 기존 워커는 동작하며,
 시간 값은 미확인으로 표시하고 트레이스 수집은 상태 스키마가 준비될 때까지 대기한다.
 과거 시각을 추정해 채우지 않는다.
+
+Deploy the web/graph writer and redeploy the `inventory_read_mcp` Lambda through the existing
+Terraform operator flow. `make agentcore` alone does not ship this Lambda code. The projection
+migration corrects retained-row claims at read time without requiring a graph rebuild.
+웹/그래프 writer와 `inventory_read_mcp` Lambda도 배포한다. Lambda 코드는 기존 Terraform
+운영 절차로 배포하며 `make agentcore`만으로 반영되지 않는다. projection 마이그레이션은
+그래프 재구축 없이도 보존된 행의 claim을 읽을 때 바로잡는다.
 
 After deployment, the datasource index rebuilds catalog-v3 queries to retain optional span
 metadata and metric scope labels. Before reindexing, older cached queries can provide less evidence.
@@ -75,13 +83,17 @@ metadata and metric scope labels. Before reindexing, older cached queries can pr
 ## Trace identity boundaries / 트레이스 식별 경계
 
 - Queue ARNs join across caller accounts/regions only within the same datasource/environment.
-  `claimedAccountId` and `claimedRegion` come from telemetry, with constant
+  The same ARN can therefore have separate nodes in different datasource/environment scopes.
+  `claimedAccountId` and `claimedRegion` come only from parsed destination ARN qualifiers, with constant
   `identityProvenance: telemetry_claim`; even a host-account match does not verify a claim.
+  Non-ARN broker destinations and missing qualifiers have null claims. Reporter account/region and
+  stored legacy/current claim fields are never fallbacks. The UI displays the values beside the disclaimer.
   Queues have no AWS-inventory bridge. The graph row's `account_id = self` is snapshot storage
   scope, not evidence of queue ownership. Apply the new projection migration before relying on
-  direct SQL-reader queries; the API and AI tool also relabel legacy retained queue metadata.
-- DB hostname matching retains its existing host-scope eligibility: absent account, `self`, or
-  an explicit account matching configured `HOST_ACCOUNT_ID`. Set `HOST_ACCOUNT_ID` from trusted
+  direct SQL-reader queries; the API and AI tool also rederive claims from retained destinations.
+- DB hostname matching adds a new host-configured branch: an explicit account matching
+  configured `HOST_ACCOUNT_ID`, alongside the existing absent-account and `self` branches.
+  Set `HOST_ACCOUNT_ID` from trusted
   deployment configuration for manual graph rebuilds, never from a span. The resulting DB link
   is a host-name correlation, not validation of arbitrary telemetry or a queue-identity rule.
 - Tempo search may omit leading hex zeros or return a 64-bit trace ID. Normalize trace hex up
@@ -89,15 +101,31 @@ metadata and metric scope labels. Before reindexing, older cached queries can pr
   Opaque nonhex legacy IDs stay exact. A full zero parent means no parent; zero trace/child IDs
   are invalid and contribute no graph identity.
 
-큐 ARN은 같은 데이터소스·환경에서만 호출자의 계정·리전을 넘어 연결된다. 계정·리전은
-텔레메트리가 주장한 값이며 호스트 계정과 같아도 검증되지 않는다. 큐를 AWS 인벤토리로
+큐 ARN은 같은 데이터소스·환경에서만 호출자의 계정·리전을 넘어 연결되며, 범위가 다르면
+같은 ARN도 별도 노드가 된다. 계정·리전 claim은 destination ARN을 파싱해 얻은 값만 사용한다.
+비-ARN 브로커 목적지와 누락된 한정자는 null이며 호출자 정보나 저장된 claim으로 폴백하지 않는다.
+UI는 값과 미검증 고지를 함께 표시하고, 호스트 계정과 같아도 검증되지 않는다. 큐를 AWS 인벤토리로
 연결하지 않고, 행의 `self`는 저장 범위일 뿐 소유권 증명이 아니다. 직접 SQL 조회는 새
-projection 마이그레이션을 적용해야 하며 API와 AI 도구는 이전 큐 메타데이터도 주장 값으로
-표시한다. DB 호스트명 매칭의 기존 범위(계정 부재·`self`·설정된 호스트 계정)는 유지한다.
+projection 마이그레이션을 적용해야 하며 API와 AI 도구도 보존된 destination에서 claim을 재계산한다.
+DB 호스트명 매칭에는 기존 계정 부재·`self` 분기에 더해 설정된 `HOST_ACCOUNT_ID`와
+명시적 계정이 일치하는 새 분기를 추가한다.
 수동 그래프 재구축의 `HOST_ACCOUNT_ID`는 배포 설정에서 가져오며 span에서 설정하지 않는다.
 이 DB 링크는 호스트명 상관관계이고 임의 텔레메트리 검증이나 큐 식별 규칙이 아니다.
 Tempo의 짧은 hex trace ID는 16바이트로 정규화하고 span/base64 너비 검증은 유지한다.
 비-hex 레거시 ID는 그대로 보존하며, 전체 0 부모는 부재이고 0 trace/child는 무효이다.
+
+## Direct Connect assessment scope / Direct Connect 평가 범위
+
+Only `available` and `down` establish deployed connections for health, location summaries and
+owned-only SLA counts. All other states, including `deleting`, `unknown`, missing and future values,
+are excluded and disclosed as unassessed. A deployed-scope health pass does not certify the whole
+inventory. Missing metrics, location/device evidence and failed reads retain their unknown gates;
+two observed deployed sites establish a lower bound, not complete inventory coverage.
+
+상태가 `available` 또는 `down`인 커넥션만 배포된 것으로 인정해 상태·위치·owned 전용 SLA를
+평가한다. `deleting`·`unknown`·누락·미래 값을 포함한 다른 상태는 제외·미평가로 고지한다.
+배포 범위의 정상 판정은 전체 인벤토리의 정상 증명이 아니다. 메트릭·위치·디바이스 근거 누락과
+조회 실패의 미확인 판정은 유지하며, 관측된 두 배포 위치는 하한일 뿐 전체 수집을 증명하지 않는다.
 
 ## Frozen approval contract / 동결된 승인 계약
 

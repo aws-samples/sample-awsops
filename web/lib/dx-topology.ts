@@ -173,7 +173,7 @@ export interface DxResiliency {
   noneReason: DxNoneReason | null;
   /** 일부 로케이션에서 awsDevice 정보가 없어 디바이스 이중화 여부를 확정할 수 없음. */
   deviceRedundancyUnverifiable: boolean;
-  /** ConnectionState supports dedicated AND hosted connections; excludes undeployed rows. */
+  /** ConnectionState supports dedicated AND hosted; all states except available/down are unassessed. */
   connectionHealthCoverage: { total: number; assessed: number; excluded: number; unknown: number; down: number };
   checks: DxResiliencyCheck[];
 }
@@ -185,8 +185,8 @@ export function assessResiliency(a: ResiliencyInput): DxResiliency {
   // Older callers may omit coverage; absence is not proof of a complete inventory/metric read.
   const inventoryComplete = a.degradedRegions?.length === 0;
   const metricsComplete = a.metricsDegradedRegions?.length === 0;
-  // SLA 티어는 '배포된 아키텍처'의 속성 — 삭제/거절/개통 전 커넥션은 산정에서 제외한다
-  // (잔존 deleted 행이 티어를 부풀리는 것 방지). 현재 헬스는 체크리스트가 별도 표기.
+  // Only available/down establish deployed architecture; excluded states (including
+  // unknown/missing) cannot raise the SLA tier. Current health is assessed separately.
   const deployedAll = a.connections.filter(isDeployedDxConnection);
   // AWS Direct Connect SLA(99.99%/99.9%/95%)는 owned(AWS 소유) 커넥션에만 적용된다 — 호스티드
   // (파트너 경유) 커넥션은 파트너 자신의 SLA 소관이라 AWS 티어 산정에서 완전히 제외해야 한다.

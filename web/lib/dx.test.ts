@@ -168,6 +168,16 @@ describe('parseBandwidth', () => {
 });
 
 describe('dxAnalysis', () => {
+  it.each(['deleting', 'unknown', 'other', '', undefined])('excludes state %j from API location counts', async connectionState => {
+    mockDb([]);
+    mockDc({ conns: { 'ap-northeast-2': [CONNS[0], { ...CONNS[1], connectionState, location: 'OTHER' }] } });
+    mockCw([], {});
+    const { dxAnalysis } = await import('./dx');
+    const a = await dxAnalysis(3600);
+    expect(a.totals.locations).toBe(1);
+    expect(a.locations.map(l => l.location)).toEqual(['TLS10']);
+    expect(a.connections).toHaveLength(2);
+  });
   it.each(['?', '', ' unknown '])('excludes unidentified site %j from verified API location counts', async location => {
     mockDb([]);
     mockDc({ conns: { 'ap-northeast-2': [CONNS[0], { ...CONNS[1], location }] } });

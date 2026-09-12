@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { TraceIdentity, TraceSpan, ServiceGraphCall } from './trace-source';
-import { queueClaimMeta } from './trace-evidence';
+import { queueClaimMeta, queueDestinationArn } from './trace-evidence';
 
 export interface TraceNode { id: string; kind: string; label: string; meta: Record<string, unknown> }
 export interface TraceEdge {
@@ -144,7 +144,7 @@ export function buildTraceGraph(
     }
     if (span.messagingSystem && span.messagingDestination) {
       const destination = span.messagingDestination.trim();
-      const qualified = /^arn:[a-z0-9-]+:[a-z0-9-]+:([a-z0-9-]*):(\d{12}):\S+$/.exec(destination);
+      const qualified = queueDestinationArn(destination);
       const name = `${span.messagingSystem}:${destination}`;
       if (!qualified && !span.messagingBroker) {
         unresolvedMessaging++;
@@ -154,8 +154,9 @@ export function buildTraceGraph(
       // It is telemetry, not AWS-verified attribution; never bridge queues into inventory.
       const identity = qualified ? {
         sourceId: span.sourceId, environment: span.environment,
-        region: qualified[1], accountId: qualified[2],
+        region: qualified.region ?? '', accountId: qualified.accountId,
       } : {
+        // Caller scope isolates broker observations; it is not a claim about the queue.
         ...resourceScope(span), k8sCluster: span.k8sCluster,
         // A short service DNS name is resolved relative to the workload namespace.
         k8sNamespace: span.messagingBroker?.includes('.') ? undefined : span.k8sNamespace,
@@ -165,7 +166,6 @@ export function buildTraceGraph(
           destination]));
       nodes.set(id, { id, kind: 'queue', label: name,
         meta: queueClaimMeta({ system: span.messagingSystem, destination,
-          claimedAccountId: identity.accountId ?? null, claimedRegion: identity.region || null,
           broker: qualified ? null : span.messagingBroker ?? null,
           cluster: qualified ? null : span.k8sCluster ?? null,
           sourceId: span.sourceId ?? null, environment: span.environment ?? null }) });

@@ -23,6 +23,7 @@ RDS Data API로 읽어 미사용 리소스·토폴로지 질의에 답한다. �
 import json
 import math
 import os
+import re
 import time
 from datetime import datetime, timezone
 
@@ -68,9 +69,12 @@ TRACE_TOPOLOGY_NOTE = (
     "relationships; meta.metricCount is an aggregate metric count. These are separate evidence "
     "counts, not complete traffic volume. collection describes the latest attempt and snapshot "
     "freshness; retained nodes alone do not establish that collection succeeded or is current. "
-    "Queue identities and claimedAccountId/claimedRegion are telemetry claims, not verified AWS "
-    "accounts, regions or queue inventory. identityProvenance is always telemetry_claim, even "
-    "when an ARN names the host. Shared destination ARNs join only within datasource/environment."
+    "Queue identities are telemetry claims, not verified AWS accounts, regions or queue inventory. "
+    "claimedAccountId/claimedRegion are rederived only from parsed destination ARNs, including "
+    "retained rows; non-ARN destinations and absent qualifiers have null claims, never caller "
+    "account/region fallbacks. identityProvenance is always telemetry_claim, even when an ARN "
+    "names the host; queues never bridge into inventory. Shared destination ARNs join across "
+    "callers only within datasource/environment; the same ARN can have separate nodes in each scope."
 )
 
 
@@ -221,13 +225,16 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
             if node["kind"] != "queue":
                 continue
             meta = node["meta"].copy()
-            # Also protect reads before the new SQL projection migration / graph rebuild.
-            for claimed, legacy in (("claimedAccountId", "accountId"), ("claimedRegion", "region")):
-                old = meta.pop(legacy, None)
-                value = meta.get(claimed)
-                meta[claimed] = value if isinstance(value, str) and value else (
-                    old if isinstance(old, str) and old else None)
-            meta.pop("infra_ref", None)
+            # Re-derive before/after migration: stored claim fields may name the reporter.
+            destination = meta.get("destination")
+            arn = re.fullmatch(
+                r"arn:[a-z0-9-]+:[a-z0-9-]+:([a-z0-9-]*):([0-9]{12}):\S+",
+                destination.strip(),
+            ) if isinstance(destination, str) else None
+            for key in ("accountId", "region", "infra_ref"):
+                meta.pop(key, None)
+            meta["claimedAccountId"] = arn[2] if arn else None
+            meta["claimedRegion"] = (arn[1] or None) if arn else None
             meta["identityProvenance"] = "telemetry_claim"
             node["meta"] = meta
     edges = []

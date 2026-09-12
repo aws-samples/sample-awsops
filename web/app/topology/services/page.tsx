@@ -26,6 +26,7 @@ const COLORS: Record<string, [string, string]> = {
   queue: ['#E9F5EE', '#4D906C'],
 };
 const RESOURCE = ['#EEF0F2', '#9AA6B2'] as const;
+const QUEUE_HEIGHT = 144;
 
 const relLabel: Record<string, string> = {
   calls: 'calls', queries: 'queries', runs_on: 'runs on',
@@ -80,28 +81,35 @@ export default function ServiceMapPage() {
 
   const { nodes, edges } = useMemo(() => {
     if (!visibleGraph) return { nodes: [] as Node[], edges: [] as Edge[] };
+    const queueIds = new Set(visibleGraph.nodes.filter(n => n.kind === 'queue').map(n => n.id));
     const pos = Object.fromEntries(
       layoutFlow(
         { nodes: visibleGraph.nodes as never, edges: visibleGraph.edges.map((e) => ({ id: `${e.source}->${e.target}:${e.rel}`, source: e.source, target: e.target, confidence: 'observed' })) as never },
-        { rankdir: 'LR' },
+        { rankdir: 'LR', nodeSize: id => ({ width: 240, height: queueIds.has(id) ? QUEUE_HEIGHT : 44 }) },
       ).map((p) => [p.id, p]),
     );
     const nodes: Node[] = visibleGraph.nodes.map((n) => {
       const [bg, border] = COLORS[n.kind] ?? RESOURCE;
       const p = pos[n.id] ?? { x: 0, y: 0 };
       const clickable = (n.kind === 'db' && !!infraRefOf(n.meta)) || (n.kind === 'workload' && !!clusterOf(n.meta));
+      const label = `${n.kind}: ${n.label}\n${[
+        n.meta?.environment ?? 'unknown', n.meta?.cluster, n.meta?.namespace, n.meta?.broker, n.meta?.sourceId,
+      ].filter(Boolean).join(' · ')}${n.kind === 'queue'
+        ? `\n${tt('Telemetry claim · AWS identity unverified')}\nclaimedAccountId: ${n.meta?.claimedAccountId ?? '—'}\nclaimedRegion: ${n.meta?.claimedRegion ?? '—'}`
+        : ''}`;
       return {
         id: n.id,
         position: { x: p.x, y: p.y },
-        data: { label: `${n.kind}: ${n.label}\n${[
-          n.meta?.environment ?? 'unknown', n.meta?.cluster, n.meta?.namespace, n.meta?.broker, n.meta?.sourceId,
-        ].filter(Boolean).join(' · ')}${n.kind === 'queue' ? `\n${tt('Telemetry claim · AWS identity unverified')}` : ''}` },
+        data: { label: n.kind === 'queue'
+          ? <div className="nodrag nowheel overflow-y-auto" style={{ maxHeight: QUEUE_HEIGHT - 14, overflowWrap: 'anywhere' }}>{label}</div>
+          : label },
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
         style: {
           background: bg,
           border: `1px solid ${border}`,
           borderRadius: 8, fontSize: 11, padding: 6, width: 240, color: '#16202A', whiteSpace: 'pre-line',
+          height: n.kind === 'queue' ? QUEUE_HEIGHT : undefined,
           cursor: clickable ? 'pointer' : 'default',
         },
       };

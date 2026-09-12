@@ -7,6 +7,7 @@ import os
 import json
 import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -729,6 +730,28 @@ class TestTraceTopologyCollection(unittest.TestCase):
                 "details": {"sources": [], "retainedPrevious": False} if details is None else details}
 
     def test_queue_arn_claims_remain_unverified_including_before_projection_migration(self):
+        cases = json.loads((Path(__file__).resolve().parents[2]
+                           / "web/lib/fixtures/trace-queue-claims.json").read_text())
+        for case in cases:
+            for attrs in [
+                {},
+                {"accountId": "444455556666", "region": "us-west-2"},
+                {"claimedAccountId": "777788889999", "claimedRegion": "eu-west-1"},
+            ]:
+                with self.subTest(case=case, attrs=attrs):
+                    body, _ = self._read(self._state(), nodes=[{
+                        "id": "queue:one", "kind": "queue", "label": "orders",
+                        "meta": json.dumps({**attrs, "destination": case["destination"],
+                                           "identityProvenance": "aws_verified", "infra_ref": "inventory:queue"}),
+                    }])
+                    self.assertEqual(body["nodes"][0]["meta"], {
+                        "destination": case["destination"],
+                        "claimedAccountId": case["account"], "claimedRegion": case["region"],
+                        "identityProvenance": "telemetry_claim",
+                    })
+                    self.assertIn("not verified AWS", body["note"])
+
+    def test_queue_without_destination_never_uses_legacy_reporter_claims(self):
         for attrs in [
             {"accountId": "111122223333", "region": "us-east-1"},
             {"claimedAccountId": "111122223333", "claimedRegion": "us-east-1"},
@@ -738,7 +761,7 @@ class TestTraceTopologyCollection(unittest.TestCase):
                 "meta": {**attrs, "identityProvenance": "aws_verified", "infra_ref": "inventory:queue"},
             }])
             self.assertEqual(body["nodes"][0]["meta"], {
-                "claimedAccountId": "111122223333", "claimedRegion": "us-east-1",
+                "claimedAccountId": None, "claimedRegion": None,
                 "identityProvenance": "telemetry_claim",
             })
             self.assertIn("not verified AWS", body["note"])

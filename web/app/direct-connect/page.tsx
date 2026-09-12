@@ -554,9 +554,9 @@ export default function DirectConnectPage() {
                       </div>
                     )}
                     <p className="px-4 pb-2 text-[12px] text-ink-500">
-                      {tt('커넥션 상태 평가 범위: 배포된 dedicated·hosted, 미배포 제외')}
+                      {tt('커넥션 상태 평가 범위: available/down인 dedicated·hosted만 평가, 기타·미확인 상태는 제외·미평가')}
                       {' · '}{resiliency.connectionHealthCoverage.assessed}/{resiliency.connectionHealthCoverage.total}
-                      {' · '}{tt('제외')} {resiliency.connectionHealthCoverage.excluded}
+                      {' · '}{tt('제외')} · {tt('미평가')} {resiliency.connectionHealthCoverage.excluded}
                       {' · '}{tt('확인 불가')} {resiliency.connectionHealthCoverage.unknown}
                     </p>
                     <ul className="border-t border-ink-100">
@@ -582,16 +582,16 @@ export default function DirectConnectPage() {
               </Card>
             </div>
 
-            {/* ③ 로케이션 이중화 — 전 커넥션 단일 로케이션 = 위치 장애 시 전체 DX 경로 상실 */}
+            {/* Two observed deployed sites establish a lower bound even if sibling reads failed. */}
             <Card
               title="로케이션 이중화"
-              subtitle="배포된 커넥션의 로케이션 분포 — 생성 중·삭제된 커넥션 제외"
+              subtitle="available/down 커넥션의 로케이션 분포 — 기타·미확인 상태는 제외·미평가"
               padded={false}
             >
               {locationSummary.knownLocations >= 2 ? (
                 <div className="flex items-center gap-2 px-4 py-3 text-[13px] text-emerald-700">
                   <CheckCircle2 size={15} />
-                  {tt('이상 없음 — 커넥션이 2개 이상 로케이션에 분산되어 있습니다')}
+                  {tt('확인된 배포 커넥션이 2개 이상 로케이션에 분산되어 있습니다')}
                 </div>
               ) : resourcesDegraded ? (
                 <div className="px-4 py-3 text-[13px] text-warning-text">
@@ -599,14 +599,17 @@ export default function DirectConnectPage() {
                 </div>
               ) : locationSummary.singleLocation ? (
                 <div className="px-4 pt-3 text-[12px] text-warning-text">
-                  {tt('모든 커넥션이 단일 로케이션에 있습니다 — 이 로케이션 장애 시 전체 DX 경로가 끊깁니다. AWS Resiliency Toolkit은 2개 이상 로케이션을 권장합니다')}
+                  {tt('배포된 커넥션이 단일 로케이션에 있습니다 — 평가 범위의 위치 단일 장애점입니다. AWS Resiliency Toolkit은 2개 이상 로케이션을 권장합니다')}
                 </div>
               ) : locationSummary.assessedConnections === 0 ? (
-                <div className="px-4 py-3 text-[13px] text-ink-400">{tt('커넥션 없음')}</div>
+                <div className="px-4 py-3 text-[13px] text-ink-400">
+                  {data.connections.length === 0 ? tt('커넥션 없음') : tt('배포 확인된 커넥션 없음')}
+                </div>
               ) : null}
               {locationSummary.excludedConnections > 0 && (
                 <div className="px-4 py-2 text-[12px] text-ink-500">
                   {tt('판정 범위')} {locationSummary.assessedConnections}/{data.connections.length}
+                  {' · '}{tt('제외')} · {tt('미평가')} {locationSummary.excludedConnections}
                 </div>
               )}
               {locationSummary.unknownConnections > 0 && (

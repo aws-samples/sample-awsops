@@ -22,6 +22,7 @@ function tsxUnder(dir: string): string[] {
 }
 const SURFACES = [
   'app/inventory/[type]/page.tsx',
+  'app/direct-connect/page.tsx',
   ...tsxUnder('app/integrations/datasources'),
   ...tsxUnder('components/datasources'),
 ];

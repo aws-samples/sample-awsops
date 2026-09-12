@@ -3,6 +3,7 @@ vi.mock('@/lib/datasources', () => ({}));
 vi.mock('@/lib/mcp-lambda-invoke', () => ({}));
 import { mapOtelRow, mapTempoTrace, type TraceSpan } from './trace-source';
 import { buildTraceGraph } from './trace-graph';
+import claimCases from './fixtures/trace-queue-claims.json';
 
 describe('messaging span identity', () => {
   it.each(['Producer', 'SPAN_KIND_PRODUCER', 4])('normalizes exporter span kind %s', (kind) => {
@@ -131,6 +132,34 @@ describe('qualified messaging destinations', () => {
     expect(graph.nodes.filter(n => n.kind === 'queue')).toHaveLength(2);
     expect(graph.unresolvedMessaging).toBe(1);
   });
+
+  it.each(claimCases.filter(c => typeof c.destination === 'string' && c.destination))(
+    'never turns the broker reporter account into a queue claim: $destination', ({ destination, account, region }) => {
+      const graph = buildTraceGraph([span({
+        messagingDestination: destination as string, messagingBroker: 'broker.internal:9092',
+        accountId: '444455556666', region: 'us-west-2',
+      })], [], []);
+      const queue = graph.nodes.find(n => n.kind === 'queue')!;
+      expect(queue.meta).toMatchObject({ claimedAccountId: account, claimedRegion: region,
+        identityProvenance: 'telemetry_claim' });
+      expect(queue.meta).not.toHaveProperty('infra_ref');
+      expect(queue.meta).not.toHaveProperty('accountId');
+      expect(queue.meta).not.toHaveProperty('region');
+    },
+  );
+
+  it.each([{ accountId: '444455556666' }, { region: 'eu-west-1' },
+    { sourceId: 'tempo:8' }, { environment: 'staging' }])(
+    'preserves broker scope without labeling it as queue attribution: %j', difference => {
+      const local = { messagingDestination: 'orders', messagingSystem: 'kafka', messagingBroker: 'kafka.internal:9092' };
+      const graph = buildTraceGraph([span(local), span({ ...local, spanId: 'other', ...difference })], [], []);
+      const queues = graph.nodes.filter(n => n.kind === 'queue');
+      expect(queues).toHaveLength(2);
+      for (const queue of queues) expect(queue.meta).toMatchObject({
+        claimedAccountId: null, claimedRegion: null, identityProvenance: 'telemetry_claim',
+      });
+    },
+  );
 });
 
 it('never promotes a queue ARN claiming the host account into verified AWS inventory', () => {

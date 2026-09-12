@@ -1,0 +1,16 @@
+[
+  {"destination": "arn:aws:sqs:us-east-1:111122223333:orders", "account": "111122223333", "region": "us-east-1"},
+  {"destination": " \tarn:aws-cn:sqs:cn-north-1:111122223333:orders\n", "account": "111122223333", "region": "cn-north-1"},
+  {"destination": "arn:aws:sqs::111122223333:orders", "account": "111122223333", "region": null},
+  {"destination": "orders", "account": null, "region": null},
+  {"destination": "", "account": null, "region": null},
+  {"destination": null, "account": null, "region": null},
+  {"destination": 123, "account": null, "region": null},
+  {"destination": {"arn": "arn:aws:sqs:us-east-1:111122223333:orders"}, "account": null, "region": null},
+  {"destination": "arn:aws:sqs:us-east-1::orders", "account": null, "region": null},
+  {"destination": "arn:aws:sqs:us-east-1:123:orders", "account": null, "region": null},
+  {"destination": "arn:aws:sqs:us-east-1:111122223333:", "account": null, "region": null},
+  {"destination": "arn:aws:sqs:us-east-1:111122223333:two orders", "account": null, "region": null},
+  {"destination": "arn:aws:sqs:us-east-1:111122223333:orders\nsuffix", "account": null, "region": null},
+  {"destination": "prefix:arn:aws:sqs:us-east-1:111122223333:orders", "account": null, "region": null}
+]
