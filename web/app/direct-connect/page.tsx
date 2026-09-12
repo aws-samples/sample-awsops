@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, AlertTriangle, Cable, CheckCircle2, Gauge, Network, Unplug, Waypoints, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, Cable, CheckCircle2, CircleHelp, Gauge, Network, Unplug, Waypoints, XCircle } from 'lucide-react';
 import PageHeader from '@/components/ui/PageHeader';
 import Card from '@/components/ui/Card';
 import StatTile from '@/components/ui/StatTile';
@@ -541,6 +541,11 @@ export default function DirectConnectPage() {
                         {tt('로케이션')} {resiliency.locations} · {tt('디바이스 2개 이상 로케이션')} {resiliency.dualConnLocations}
                       </span>
                     </div>
+                    {resiliency.unknownLocationConnections > 0 && (
+                      <p className="px-4 pb-2 text-[12px] text-ink-500">
+                        {tt('로케이션')} · {tt('확인 불가')} ({resiliency.unknownLocationConnections})
+                      </p>
+                    )}
                     {resiliency.hostedConnections > 0 && (
                       <div className="px-4 pb-2 text-[12px] text-ink-500">
                         {tt('호스티드 커넥션은 AWS Direct Connect SLA 적용 제외 — 파트너 SLA를 확인하세요')} ({resiliency.hostedConnections})
@@ -549,12 +554,15 @@ export default function DirectConnectPage() {
                     <ul className="border-t border-ink-100">
                       {resiliency.checks.map((c) => (
                         <li key={c.label} className="flex items-start gap-2 border-b border-ink-50 px-4 py-2 text-[12.5px] last:border-0">
-                          {c.ok
+                          {c.ok === null
+                            ? <CircleHelp size={14} className="mt-0.5 shrink-0 text-ink-400" />
+                            : c.ok
                             ? <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-600" />
                             : c.severity === 'critical'
                               ? <XCircle size={14} className="mt-0.5 shrink-0 text-rose-600" />
                               : <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-500" />}
-                          <span className={c.ok ? 'text-ink-600' : c.severity === 'critical' ? 'text-rose-700' : 'text-amber-700'}>
+                          <span className={c.ok === null ? 'text-ink-500' : c.ok ? 'text-ink-600' : c.severity === 'critical' ? 'text-rose-700' : 'text-amber-700'}>
+                            {c.ok === null && <>{tt('확인 불가')} · </>}
                             {tt(c.label)}
                             {c.detail && <span className="ml-1 text-ink-400">({c.detail})</span>}
                           </span>
@@ -578,6 +586,10 @@ export default function DirectConnectPage() {
                 // 누락된 리전이 유일한 위험 지점이었을 수 있다. 확신 있는 판정을 내지 않는다.
                 <div className="px-4 py-3 text-[13px] text-warning-text">
                   {tt('일부 리전 조회 실패로 로케이션 이중화 여부를 판단할 수 없습니다')} ({data.degradedRegions.join(', ')})
+                </div>
+              ) : resiliency && resiliency.unknownLocationConnections > 0 ? (
+                <div className="px-4 py-3 text-[13px] text-ink-500">
+                  {tt('로케이션')} · {tt('확인 불가')} ({resiliency.unknownLocationConnections})
                 </div>
               ) : t.singleLocation ? (
                 <div className="px-4 pt-3 text-[12px] text-warning-text">

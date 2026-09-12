@@ -192,6 +192,23 @@ function mapLinks(value: unknown): NonNullable<TraceSpan['links']> {
   });
 }
 
+/** Tempo supports hex IDs and protobuf JSON's padded base64 byte strings. Decode only
+ * canonical, full-width representations: Buffer's permissive base64 decoder otherwise aliases
+ * malformed values to valid identities. Opaque legacy IDs remain exact strings, never decoded. */
+function normalizeTempoId(value: unknown, bytes: 8 | 16): string | undefined {
+  const raw = text(value);
+  if (!raw) return undefined;
+  let decoded: Buffer | undefined;
+  if (raw.length === bytes * 2 && /^[0-9a-f]+$/i.test(raw)) {
+    decoded = Buffer.from(raw, 'hex');
+  } else if (raw.length === Math.ceil(bytes / 3) * 4 && /^[A-Za-z0-9+/]+={0,2}$/.test(raw)) {
+    const candidate = Buffer.from(raw, 'base64');
+    if (candidate.length === bytes && candidate.toString('base64') === raw) decoded = candidate;
+  }
+  // All-zero trace/span IDs are invalid, not shared placeholder identities.
+  return decoded ? (decoded.some(byte => byte !== 0) ? decoded.toString('hex') : undefined) : raw;
+}
+
 function otelLinks(row: Obj): unknown[] | undefined {
   if (Array.isArray(row.Links)) return row.Links;
   const nested = object(row.Links);
@@ -326,6 +343,8 @@ function parseTempoTrace(traceId: string, value: unknown): { items: TraceSpan[];
   const reasons = envelopeReasons(r);
   const items: TraceSpan[] = [];
   if (reasons.includes('query_failed')) return { items, reasons };
+  const normalizedTraceId = normalizeTempoId(traceId, 16);
+  if (!normalizedTraceId) return { items, reasons: [...reasons, 'malformed_rows'] };
   const batches = r?.batches ?? r?.resourceSpans;
   if (!Array.isArray(batches)) return { items, reasons: [...reasons, 'malformed_payload'] };
   for (const batch of batches) {
@@ -339,20 +358,26 @@ function parseTempoTrace(traceId: string, value: unknown): { items: TraceSpan[];
       if (!Array.isArray(spans)) { reasons.push('malformed_rows'); continue; }
       for (const value of spans) {
         const s = object(value);
+        const spanId = normalizeTempoId(s?.spanId, 8);
         const start = numeric(s?.startTimeUnixNano);
         const end = numeric(s?.endTimeUnixNano);
-        if (!s || !text(s.spanId) || start === undefined || end === undefined || start < 0 || end < start) {
+        if (!s || !spanId || start === undefined || end === undefined || start < 0 || end < start
+            || (s.traceId !== undefined && normalizeTempoId(s.traceId, 16) !== normalizedTraceId)) {
           reasons.push('malformed_rows');
           continue;
         }
         const attrs = otlpAttrs(s.attributes, reasons);
         const item: TraceSpan = {
-          traceId, spanId: s.spanId as string,
+          traceId: normalizedTraceId, spanId,
           service: text(resource['service.name']) ?? 'unknown',
           kind: spanKind(s.kind),
           startMs: start / 1e6, durationMs: (end - start) / 1e6,
         };
-        if (text(s.parentSpanId)) item.parentSpanId = s.parentSpanId as string;
+        if (s.parentSpanId !== undefined && s.parentSpanId !== '') {
+          const parent = normalizeTempoId(s.parentSpanId, 8);
+          if (parent) item.parentSpanId = parent;
+          else reasons.push('malformed_rows');
+        }
         if (text(s.name)) item.name = s.name as string;
         if (s.status !== undefined) {
           const statusObject = object(s.status);
@@ -361,7 +386,11 @@ function parseTempoTrace(traceId: string, value: unknown): { items: TraceSpan[];
           else reasons.push('malformed_rows');
         }
         if (s.links !== undefined) {
-          item.links = mapLinks(s.links);
+          item.links = mapLinks(s.links).flatMap(link => {
+            const traceId = normalizeTempoId(link.traceId, 16);
+            const spanId = normalizeTempoId(link.spanId, 8);
+            return traceId && spanId ? [{ traceId, spanId }] : [];
+          });
           if (!Array.isArray(s.links) || s.links.length !== item.links.length) reasons.push('malformed_rows');
         }
         spanMetadata(item, resource, attrs);
@@ -405,7 +434,7 @@ export class TempoTraceSource implements TraceSource {
     if (!Array.isArray(traces)) return readResult(sourceId, window, [], [...reasons, 'malformed_payload']);
     if (traces.length >= TEMPO_TRACE_CAP) reasons.push('cap_reached');
     const traceIds = [...new Set(traces.flatMap((t) => {
-      const id = text(object(t)?.traceID);
+      const id = normalizeTempoId(object(t)?.traceID, 16);
       if (!id) reasons.push('malformed_rows');
       return id ? [id] : [];
     }))].slice(0, TEMPO_TRACE_CAP);

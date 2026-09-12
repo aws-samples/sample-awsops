@@ -428,6 +428,28 @@ describe('trace metadata allowlist', () => {
     expect(result[0].accountId).toBeUndefined();
     expect(result[0].serviceNamespace).toBeUndefined();
   });
+
+  it('normalizes only complete valid Tempo IDs, preserving opaque legacy identifiers', () => {
+    const traceId = '00112233445566778899aabbccddeeff';
+    const spanId = '1122334455667788';
+    const mapped = mapTempoTrace(traceId.toUpperCase(), tempoTrace([tempoSpan({
+      spanId: Buffer.from(spanId, 'hex').toString('base64'),
+      parentSpanId: '8877665544332211',
+    })]));
+    expect(mapped[0]).toMatchObject({ traceId, spanId, parentSpanId: '8877665544332211' });
+    const opaque = mapTempoTrace('legacy-trace', tempoTrace([tempoSpan({
+      spanId: 'legacy-span', parentSpanId: 'legacy-parent',
+      links: [{ traceId: 'other-trace', spanId: 'other-span' }],
+    })]));
+    expect(opaque[0]).toMatchObject({ traceId: 'legacy-trace', spanId: 'legacy-span',
+      parentSpanId: 'legacy-parent', links: [{ traceId: 'other-trace', spanId: 'other-span' }] });
+  });
+
+  it('does not reassign a span from a contradictory payload trace to the requested trace', () => {
+    expect(mapTempoTrace('00112233445566778899aabbccddeeff', tempoTrace([tempoSpan({
+      traceId: 'ffeeddccbbaa99887766554433221100', spanId: '1122334455667788',
+    })]))).toEqual([]);
+  });
 });
 
 describe('SourceRead provenance and bounds', () => {
@@ -617,6 +639,19 @@ describe('SourceRead provenance and bounds', () => {
     expect(result.items).toHaveLength(1);
     expect(result.items[0].environment).toBeUndefined();
     expect(result.items[0].status).toBeUndefined();
+  });
+
+  it('reports invalid zero IDs as incomplete evidence without inventing usable identities', async () => {
+    configure('tempo');
+    invokeMcpLambdaTool.mockResolvedValueOnce({ traces: [{ traceID: '00112233445566778899aabbccddeeff' }] })
+      .mockResolvedValueOnce(tempoTrace([
+        tempoSpan({ spanId: '1122334455667788' }),
+        tempoSpan({ spanId: '0000000000000000' }),
+        tempoSpan({ spanId: 'AAAAAAAAAAA=' }),
+      ]));
+    const result = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
+    expect(result.items).toHaveLength(1);
+    expect(result).toMatchObject({ status: 'partial', reasons: ['malformed_rows'] });
   });
 
   it('Tempo does not count spans outside the shared window against the cap', async () => {

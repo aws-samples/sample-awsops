@@ -139,7 +139,8 @@ export type DxSlaTier = 'maximum' | 'high' | 'single' | 'none';
 export interface DxResiliencyCheck {
   /** 체크 라벨 (i18n 키 — 한국어 리터럴). */
   label: string;
-  ok: boolean;
+  /** null = insufficient observations; neither a pass nor an observed failure. */
+  ok: boolean | null;
   /** 심각도: critical = SLA/가용성 직접 영향, warn = 권고. */
   severity: 'critical' | 'warn';
   detail?: string;
@@ -163,6 +164,8 @@ export interface DxResiliency {
   /** 로케이션 수 / 로케이션당 '검증된' 고유 디바이스 2개 이상인 로케이션 수 (owned 커넥션 기준). */
   locations: number;
   dualConnLocations: number;
+  /** Deployed owned connections whose site cannot contribute to verified location counts. */
+  unknownLocationConnections: number;
   /** 호스티드(파트너 경유) 커넥션 수 — AWS DX SLA 적용 제외 대상 (배포 상태 커넥션 기준). */
   hostedConnections: number;
   /** tier==='none'일 때만 non-null — 위 DxNoneReason 참고. */
@@ -172,7 +175,13 @@ export interface DxResiliency {
   checks: DxResiliencyCheck[];
 }
 
-export function assessResiliency(a: Pick<DxAnalysis, 'connections' | 'vifs' | 'gateways'>): DxResiliency {
+type ResiliencyInput = Input & Partial<Pick<DxAnalysis,
+  'degradedRegions' | 'metricsDegradedRegions' | 'gatewaysDegraded'>>;
+
+export function assessResiliency(a: ResiliencyInput): DxResiliency {
+  // Older callers may omit coverage; absence is not proof of a complete inventory/metric read.
+  const inventoryComplete = a.degradedRegions?.length === 0;
+  const metricsComplete = a.metricsDegradedRegions?.length === 0;
   // SLA 티어는 '배포된 아키텍처'의 속성 — 삭제/거절/개통 전 커넥션은 산정에서 제외한다
   // (잔존 deleted 행이 티어를 부풀리는 것 방지). 현재 헬스는 체크리스트가 별도 표기.
   const NOT_DEPLOYED = new Set(['deleted', 'rejected', 'ordering', 'requested', 'pending']);
@@ -194,8 +203,13 @@ export function assessResiliency(a: Pick<DxAnalysis, 'connections' | 'vifs' | 'g
   // 집합을 만들고, 그 집합이 2개 미만인 로케이션 중 awsDevice 미노출 커넥션이 있으면
   // "확인 불가"로 별도 표시한다 — 이중화가 '없다'가 아니라 '모른다'로 정직하게 남긴다.
   const byLoc = new Map<string, { devices: Set<string>; deviceUnknown: boolean }>();
+  let unknownLocationConnections = 0;
   for (const c of deployed) {
-    const loc = c.location || 'unknown';
+    const loc = c.location?.trim() ?? '';
+    if (!loc || loc === '?' || loc.toLowerCase() === 'unknown') {
+      unknownLocationConnections++;
+      continue;
+    }
     if (!byLoc.has(loc)) byLoc.set(loc, { devices: new Set(), deviceUnknown: false });
     const entry = byLoc.get(loc)!;
     if (c.awsDevice) entry.devices.add(c.awsDevice);
@@ -225,18 +239,31 @@ export function assessResiliency(a: Pick<DxAnalysis, 'connections' | 'vifs' | 'g
   const vifsDown = a.vifs.filter((v) => v.down).length;
   const unassociated = a.gateways.filter((g) => g.unassociated).length;
   const unattachedVifs = a.vifs.filter((v) => v.type !== 'public' && !v.attachedTo).length;
+  // Positive observed failures survive incomplete sibling reads. A pass needs the evidence
+  // appropriate to that predicate; empty health observations are not healthy observations.
+  const health = (failed: boolean, complete: boolean): boolean | null => failed ? false : complete ? true : null;
+  const connectionHealthKnown = inventoryComplete && metricsComplete && totalAll > 0
+    && a.connections.every(c => c.state === 'available' && c.stateMetricMin === 1);
+  const vifHealthKnown = inventoryComplete && metricsComplete && a.vifs.length > 0
+    && a.vifs.every(v => v.state === 'available' && v.bgpStatusMin === 1
+      && Number.isSafeInteger(v.bgpPeersTotal) && v.bgpPeersTotal > 0 && v.bgpPeersUp === v.bgpPeersTotal);
+  const locationsKnown = inventoryComplete && unknownLocationConnections === 0;
+  const locationRedundancy = locations >= 2;
+  const deviceRedundancy = locationRedundancy && dualConnLocations >= 2;
+  const deviceRedundancyKnown = locationsKnown && (!locationRedundancy || !deviceRedundancyUnverifiable);
 
   const checks: DxResiliencyCheck[] = [
-    { label: '모든 커넥션 정상 (기간 내 다운 없음)', ok: connsDown === 0, severity: 'critical', detail: connsDown > 0 ? `${connsDown}/${totalAll}` : undefined },
-    { label: '모든 VIF·BGP 정상', ok: vifsDown === 0, severity: 'critical', detail: vifsDown > 0 ? `${vifsDown}/${a.vifs.length}` : undefined },
-    { label: '로케이션 이중화 — 99.9% SLA 요건 (2개 이상 로케이션, 호스티드 제외)', ok: locations >= 2, severity: 'critical', detail: `${locations}` },
-    { label: '로케이션당 디바이스 이중화 — 99.99% SLA 요건 (2개 로케이션 × 각 검증된 고유 디바이스 2개 이상)', ok: locations >= 2 && dualConnLocations >= 2, severity: 'warn', detail: `${dualConnLocations}/${locations}` },
-    { label: '디바이스 정보로 이중화 확인 가능 (일부 로케이션에 awsDevice 미노출)', ok: !deviceRedundancyUnverifiable, severity: 'warn' },
-    { label: '미연결 DX Gateway 없음', ok: unassociated === 0, severity: 'warn', detail: unassociated > 0 ? `${unassociated}` : undefined },
-    { label: '미연결 VIF 없음 (게이트웨이 attachment)', ok: unattachedVifs === 0, severity: 'warn', detail: unattachedVifs > 0 ? `${unattachedVifs}` : undefined },
+    { label: '모든 커넥션 정상 (기간 내 다운 없음)', ok: health(connsDown > 0, connectionHealthKnown), severity: 'critical', detail: connsDown > 0 ? `${connsDown}/${totalAll}` : undefined },
+    { label: '모든 VIF·BGP 정상', ok: health(vifsDown > 0, vifHealthKnown), severity: 'critical', detail: vifsDown > 0 ? `${vifsDown}/${a.vifs.length}` : undefined },
+    { label: '로케이션 이중화 — 99.9% SLA 요건 (2개 이상 로케이션, 호스티드 제외)', ok: locationRedundancy ? true : locationsKnown ? false : null, severity: 'critical', detail: `${locations}` },
+    { label: '로케이션당 디바이스 이중화 — 99.99% SLA 요건 (2개 로케이션 × 각 검증된 고유 디바이스 2개 이상)', ok: deviceRedundancy ? true : deviceRedundancyKnown ? false : null, severity: 'warn', detail: `${dualConnLocations}/${locations}` },
+    { label: '디바이스 정보로 이중화 확인 가능 (일부 로케이션에 awsDevice 미노출)', ok: locationsKnown && !deviceRedundancyUnverifiable ? true : null, severity: 'warn' },
+    { label: '미연결 DX Gateway 없음', ok: health(unassociated > 0, a.gatewaysDegraded === false && a.gateways.every(g => g.associationsAvailable === true)), severity: 'warn', detail: unassociated > 0 ? `${unassociated}` : undefined },
+    { label: '미연결 VIF 없음 (게이트웨이 attachment)', ok: health(unattachedVifs > 0, inventoryComplete), severity: 'warn', detail: unattachedVifs > 0 ? `${unattachedVifs}` : undefined },
   ];
 
-  return { tier, slaPct, locations, dualConnLocations, hostedConnections, noneReason, deviceRedundancyUnverifiable, checks };
+  return { tier, slaPct, locations, dualConnLocations, unknownLocationConnections,
+    hostedConnections, noneReason, deviceRedundancyUnverifiable, checks };
 }
 
 // ── dagre 레이아웃 (flow-layout.ts와 동일 기법 — LR 계층 배치, 중심→좌상단 변환) ──

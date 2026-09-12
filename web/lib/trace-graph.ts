@@ -45,6 +45,7 @@ export function buildTraceGraph(
   spans: TraceSpan[],
   metricCalls: ServiceGraphCall[],
   infraNodes: InfraNodeLike[],
+  trustedHostAccountId?: string,
 ) {
   const nodes = new Map<string, TraceNode>();
   const edges = new Map<string, TraceEdge>();
@@ -114,7 +115,10 @@ export function buildTraceGraph(
       const id = nodeId('db', resourceScope(span), name);
       // Infra lookup is only safe for host-scoped observations; foreign accounts must not
       // match an identically named host in the local materialized inventory.
-      const infraRef = !span.accountId || span.accountId === 'self'
+      const isHost = !span.accountId || span.accountId === 'self'
+        || (trustedHostAccountId !== undefined && /^\d{12}$/.test(trustedHostAccountId)
+          && span.accountId === trustedHostAccountId);
+      const infraRef = isHost
         ? resolveInfraRef(span.dbHost, infraNodes) : undefined;
       nodes.set(id, {
         id, kind: 'db', label: name,
@@ -138,22 +142,31 @@ export function buildTraceGraph(
       edge(sid, id, 'runs_on');
     }
     if (span.messagingSystem && span.messagingDestination) {
-      const name = `${span.messagingSystem}:${span.messagingDestination}`;
-      const qualified = /^arn:[a-z0-9-]+:[a-z0-9-]+:[a-z0-9-]*:\d{12}:.+$/.test(span.messagingDestination);
+      const destination = span.messagingDestination.trim();
+      const qualified = /^arn:[a-z0-9-]+:[a-z0-9-]+:([a-z0-9-]*):(\d{12}):\S+$/.exec(destination);
+      const name = `${span.messagingSystem}:${qualified ? destination : span.messagingDestination}`;
       if (!qualified && !span.messagingBroker) {
         unresolvedMessaging++;
         continue; // A bare topic/queue name is not evidence of a shared broker.
       }
-      const identity = qualified ? resourceScope(span) : {
+      // An ARN identifies the destination's account/region, not those of its callers.
+      // Keep datasource/environment isolation (including the service-map environment filter).
+      const identity = qualified ? {
+        sourceId: span.sourceId, environment: span.environment,
+        region: qualified[1], accountId: qualified[2],
+      } : {
         ...resourceScope(span), k8sCluster: span.k8sCluster,
         // A short service DNS name is resolved relative to the workload namespace.
         k8sNamespace: span.messagingBroker?.includes('.') ? undefined : span.k8sNamespace,
       };
       const id = nodeId('queue', identity,
-        JSON.stringify([span.messagingSystem, qualified ? null : span.messagingBroker, span.messagingDestination]));
+        JSON.stringify([span.messagingSystem, qualified ? null : span.messagingBroker,
+          qualified ? destination : span.messagingDestination]));
       nodes.set(id, { id, kind: 'queue', label: name,
-        meta: { system: span.messagingSystem, destination: span.messagingDestination,
-          broker: span.messagingBroker ?? null, cluster: span.k8sCluster ?? null,
+        meta: { system: span.messagingSystem, destination: qualified ? destination : span.messagingDestination,
+          accountId: identity.accountId ?? null, region: identity.region ?? null,
+          broker: qualified ? null : span.messagingBroker ?? null,
+          cluster: qualified ? null : span.k8sCluster ?? null,
           sourceId: span.sourceId ?? null, environment: span.environment ?? null } });
       if (span.kind === 'PRODUCER') edge(sid, id, 'publishes');
       if (span.kind === 'CONSUMER') edge(id, sid, 'consumes');

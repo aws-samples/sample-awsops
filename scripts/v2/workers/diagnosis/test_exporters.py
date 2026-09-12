@@ -48,55 +48,187 @@ def test_to_pdf_returns_pdf_bytes(pdf_browser_available):
     assert isinstance(out, (bytes, bytearray)) and bytes(out[:5]) == b"%PDF-"
 
 
+@pytest.fixture
+def pdf_resource_server():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Event, Thread
+
+    requests, connections = [], []
+    received = Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"OK")
+            received.set()
+
+        def log_message(self, *args):
+            pass
+
+    class Server(ThreadingHTTPServer):
+        def get_request(self):
+            request, address = super().get_request()
+            connections.append(address)  # Count speculative TCP connects even without HTTP.
+            return request, address
+
+    try:
+        server = Server(("127.0.0.1", 0), Handler)
+    except OSError as e:
+        pytest.skip(f"loopback server unavailable: {e}")
+    thread = Thread(target=lambda: server.serve_forever(poll_interval=0.05), daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", requests, connections, received
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 @pytest.mark.parametrize("markup", [
     "![image]({url}/markdown-image)",
     '<img src="{url}/image">',
     '<style>@import url("{url}/import.css"); body {{ background: url("{url}/background") }}</style>',
     '<iframe src="{url}/frame"></iframe>',
     '<iframe srcdoc=\'<img src="{url}/nested-image">\'></iframe>',
+    pytest.param('<link rel="prefetch" href="{url}/prefetch">', id="prefetch"),
+    pytest.param('<LiNk ReL="pre&#102;etch" HrEf="{url}/encoded">', id="encoded-prefetch"),
+    pytest.param('<link rel="preload" as="image" href="{url}/preload">', id="preload"),
+    pytest.param('<link rel="preconnect" href="{url}">', id="preconnect"),
+    pytest.param('<link rel="dns-prefetch" href="{url}">', id="dns-prefetch"),
+    pytest.param(
+        '<meta http-equiv="Content-Security-Policy" content="default-src *">'
+        '<link rel="prefetch" href="{url}/permissive-policy">',
+        id="permissive-policy-prefetch",
+    ),
+    pytest.param(
+        '<iframe srcdoc=\'<link rel="prefetch" href="{url}/nested-prefetch">\'></iframe>',
+        id="nested-prefetch",
+    ),
+    pytest.param(
+        '<script src="{url}/script.js"></script>'
+        '<img src="data:invalid" onerror="fetch(\'{url}/onerror\')">',
+        id="active-markup",
+    ),
+    pytest.param('<meta http-equiv="refresh" content="0;url={url}/refresh">', id="refresh"),
 ])
-def test_to_pdf_prevents_real_resource_requests(pdf_browser_available, markup):
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    from threading import Thread
+def test_to_pdf_prevents_real_resource_requests(pdf_browser_available, pdf_resource_server, markup):
     from playwright.sync_api import sync_playwright
 
-    requests = []
+    url, requests, connections, received = pdf_resource_server
+    # Prefetch is a positive control for the actual browser-level bypass, not just ordinary images.
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+        try:
+            browser.new_page(java_script_enabled=False).set_content(
+                f'<link rel="prefetch" href="{url}/control">')
+            assert received.wait(timeout=5), "unguarded prefetch did not reach the loopback server"
+        finally:
+            browser.close()
+    assert requests == ["/control"] and connections
+    requests.clear()
+    connections.clear()
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            requests.append(self.path)
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"/* local request probe */")
+    out = exporters.to_pdf("# Local report\n\n" + markup.format(url=url))
+    assert out.startswith(b"%PDF-")
+    assert requests == [], f"PDF renderer fetched injected resources: {requests}"
+    assert connections == [], f"PDF renderer opened speculative connections: {connections}"
 
-        def log_message(self, *args):
-            pass
 
-    try:
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    except OSError as e:
-        pytest.skip(f"loopback server unavailable: {e}")
-    thread = Thread(target=lambda: server.serve_forever(poll_interval=0.05), daemon=True)
-    thread.start()
-    url = f"http://127.0.0.1:{server.server_port}"
-    try:
-        # Positive control proves requests actually reach our local server without the renderer guard.
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
-            try:
-                browser.new_page(java_script_enabled=False).set_content(f'<img src="{url}/control">')
-            finally:
-                browser.close()
-        assert requests == ["/control"]
-        requests.clear()
+@pytest.mark.parametrize("markup", [
+    '<link rel="prefetch" href="{url}/prefetch">',
+    '</body></html><head><link rel="prefetch" href="{url}/new-head"></head>',
+    '<meta http-equiv="Content-Security-Policy" content="default-src *">'
+    '<link rel="prefetch" href="{url}/permissive-policy">',
+])
+def test_html_policy_blocks_prefetch_without_offline_or_routing(
+        pdf_browser_available, pdf_resource_server, markup):
+    from playwright.sync_api import sync_playwright
 
-        out = exporters.to_pdf("# Local report\n\n" + markup.format(url=url))
-        assert out.startswith(b"%PDF-")
-        assert requests == [], f"PDF renderer fetched injected resources: {requests}"
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+    url, requests, connections, _received = pdf_resource_server
+    # Bypass the markup filter to exercise CSP independently, with no offline mode or interception.
+    html = exporters._html("# Local report").replace("</body>", markup.format(url=url) + "</body>", 1)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+        try:
+            page = browser.new_page(java_script_enabled=False)
+            page.set_content(html)
+            assert page.pdf().startswith(b"%PDF-")
+        finally:
+            browser.close()
+    assert requests == [] and connections == []
+
+
+@pytest.mark.parametrize("markup", [
+    '<LiNk ReL="preconnect" href="{url}">'
+    '<link rel="dns-prefetch prefetch" href="{url}/hint">',
+    '<meta http-equiv="x-dns-prefetch-control" content="on">'
+    '<meta http-equiv="refresh" content="0;url={url}/refresh">'
+    '<base href="{url}/"><link rel="prefetch" href="relative">',
+    '<meta http-equiv="Content-Security-Policy" content="default-src *">'
+    '<iframe srcdoc=\'<link rel="preconnect" href="{url}">\'></iframe>',
+    '<svg><foreignObject><link rel="prefetch" href="{url}/foreign"></foreignObject></svg>'
+    '<script>document.title="active"</script><object data="{url}/object"></object>',
+    '<style>/* </style/foo><link rel="prefetch" href="{url}/raw-text"> */</style>',
+    '<a href="java&#115;cript:alert(1)" ping="{url}/ping" onclick="alert(1)">link</a>'
+    '<img src="{url}/image" srcset="{url}/srcset 2x" onerror="alert(1)">',
+])
+def test_to_pdf_removes_active_elements_before_rendering(
+        pdf_browser_available, pdf_resource_server, monkeypatch, markup):
+    from playwright.sync_api import Page
+
+    url, requests, connections, _received = pdf_resource_server
+    original_pdf = Page.pdf
+
+    def inspect_and_print(page, *args, **kwargs):
+        assert page.locator("link, base, iframe, script, object, embed, svg, math").count() == 0
+        assert page.locator("[onclick], [onerror], [srcdoc], [srcset], [ping]").count() == 0
+        assert page.locator("a[href^='javascript:'], img[src^='http']").count() == 0
+        # Only the trusted charset and CSP metadata may reach the browser.
+        assert page.locator("meta").count() == 2
+        assert page.locator("meta[http-equiv='Content-Security-Policy']").count() == 1
+        return original_pdf(page, *args, **kwargs)
+
+    monkeypatch.setattr(Page, "pdf", inspect_and_print)
+    assert exporters.to_pdf("# Local report\n\n" + markup.format(url=url)).startswith(b"%PDF-")
+    assert requests == [] and connections == []
+
+
+def test_to_pdf_preserves_inline_report_rendering(pdf_browser_available, monkeypatch):
+    from playwright.sync_api import Page
+
+    original_pdf = Page.pdf
+    inspected = []
+
+    def inspect_and_print(page, *args, **kwargs):
+        assert page.locator("h1").inner_text() == "AWS 진단 리포트"
+        assert page.locator("table td").all_text_contents() == ["a", "1"]
+        assert page.locator("h1").is_visible()
+        assert page.locator("table").evaluate("el => getComputedStyle(el).borderCollapse") == "collapse"
+        assert "Noto Sans CJK KR" in page.locator("body").evaluate("el => getComputedStyle(el).fontFamily")
+        assert page.locator("#inline").evaluate("el => getComputedStyle(el).color") == "rgb(18, 52, 86)"
+        assert page.locator("#inline").evaluate(
+            "el => getComputedStyle(el, '::after').content") == '"A & B > C"'
+        assert page.locator("#pixel").evaluate("el => el.complete && el.naturalWidth === 1")
+        assert page.locator("pre code").inner_text().strip() == '<link rel="preconnect" href="#example">'
+        assert page.locator("link").count() == 0  # A code example stays text, never a resource hint.
+        assert page.locator("a").get_attribute("href") == "#section"
+        inspected.append(True)
+        return original_pdf(page, *args, **kwargs)
+
+    # Inspect the real page at the PDF boundary, retaining its actual context and security controls.
+    monkeypatch.setattr(Page, "pdf", inspect_and_print)
+    out = exporters.to_pdf(_SAMPLE + (
+        '\n<style>#inline { color: #123456 }'
+        '#inline::after { content: "A & B > C" }</style><p id="inline">본문</p>'
+        '<img id="pixel" src="data:image/gif;base64,'
+        'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">'
+        '\n\n```html\n<link rel="preconnect" href="#example">\n```\n\n[section](#section)'
+    ))
+    assert inspected and out.startswith(b"%PDF-")
 
 
 def test_html_template_uses_system_font_no_external_import():
