@@ -151,15 +151,19 @@ SECTIONS = [
 
 # Plan 2 — intended-vs-actual drift section. Kept SEPARATE from the base SECTIONS and appended by
 # report.generate, because it consumes ONLY the deterministic verdict list (passed/severity/observed) —
-# never raw service-map edge text. invariants.py already decided pass/fail; the LLM only narrates drift.
+# never raw service-map edge text. report.render_section renders its counts and failed/unknown rows
+# deterministically, without an LLM. The prompt remains tri-state-safe for any direct prompt caller.
 INTENDED_VS_ACTUAL_SECTION = {
     "key": "intended_vs_actual", "title": "Intended vs Actual",
     "sources": ["intended_vs_actual"],
     "prompt": (
         "당신은 아키텍처 검증·드리프트 분석에 정통한 수석 아키텍트다. 아래는 운영자가 확정한 불변식(intended)을 "
-        "실제 상태(actual)와 비교한 '판정(verdict)' 목록이다. passed=false 인 항목(드리프트)을 심각도 "
-        "[Critical]/[Warning]/[Info]와 함께 표(| 불변식 | 심각도 | observed | 권고 |)로 정리하고 각 항목의 observed 근거를 명시하라. "
-        "활성 불변식이 없으면 '데이터 불가(활성 불변식 없음)'로 보고하라. "
+        "실제 상태(actual)와 비교한 '판정(verdict)' 목록이다. 전체·평가됨·통과(passed=true)·실패(passed=false)·"
+        "미평가(passed=null/None) 수를 구분하라. passed=false 와 passed=null/None 항목 모두를 심각도 "
+        "[Critical]/[Warning]/[Info]와 함께 표(| 불변식 | 판정 | 심각도 | observed 근거/미평가 사유 |)로 정리하라. "
+        "passed=null/None 은 미평가이며 observed의 unknown 사유를 그대로 명시하라. 미평가를 통과나 정상 상태로 "
+        "해석하지 마라. 실패가 0이어도 미평가가 있으면 정상/드리프트 없음으로 결론내리지 마라. "
+        "활성 불변식이 없으면 '미설정(활성 불변식 없음, 평가 미수행)'로 명시하라. "
         "데이터(verdict)에만 근거하라 — 추측/날조 금지. AWS 리소스 변경·자동 실행을 제안하지 마라(읽기 전용 진단 — 권고만)."),
 }
 

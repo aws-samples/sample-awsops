@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle, AlertTriangle, XCircle, ChevronDown, ChevronRight } from 'lucide-react';
+import { CheckCircle, AlertTriangle, XCircle, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import ReportMarkdown from './ReportMarkdown';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
@@ -49,16 +49,18 @@ export function splitSections(markdown: string): { preamble: string; sections: R
 // keywords false-positived on the prompt-mandated '심각도' table column header (every well-formed
 // Korean section read red). A degraded/failed section must never read green. Still a DISPLAY
 // heuristic, not a scored verdict — the icon tooltip says so.
-export type Severity = 'critical' | 'warning' | 'ok';
+export type Severity = 'critical' | 'warning' | 'info' | 'ok';
 export function sectionSeverity(body: string): Severity {
   if (/\[critical\]/i.test(body)) return 'critical';
   if (/\[warning\]/i.test(body) || /degraded|섹션 생성에 실패/i.test(body)) return 'warning';
+  if (/\[info\]/i.test(body)) return 'info';
   return 'ok';
 }
 
 function SeverityIcon({ severity, title }: { severity: Severity; title: string }) {
   if (severity === 'critical') return <XCircle size={15} className="shrink-0 text-red-500" aria-label={title} />;
   if (severity === 'warning') return <AlertTriangle size={15} className="shrink-0 text-amber-500" aria-label={title} />;
+  if (severity === 'info') return <Info size={15} className="shrink-0 text-sky-500" aria-label={title} />;
   return <CheckCircle size={15} className="shrink-0 text-emerald-500" aria-label={title} />;
 }
 

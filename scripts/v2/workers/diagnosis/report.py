@@ -1,5 +1,6 @@
-"""AWSops v2 — AI Diagnosis orchestrator: collect native sources → Bedrock per section →
-assemble markdown + summary. Read-only. Bedrock model from env (Sonnet for mid tier)."""
+"""AWSops v2 — AI Diagnosis orchestrator: collect native sources → render sections →
+assemble markdown + summary. Invariant verdicts render deterministically; other sections use
+Bedrock. Read-only. Bedrock model from env (Sonnet for mid tier)."""
 import json
 import os
 import re
@@ -161,7 +162,112 @@ def _normalize_headings(text):
     return re.sub(r"^#{1,6}[ \t]+(#{1,6}[ \t])", r"\1", text, flags=re.M)
 
 
+_INVARIANT_COPY = {
+    "ko": {
+        "coverage": ("전체", "평가됨", "통과", "실패", "미평가"),
+        "columns": ("불변식 ID", "종류", "대상", "심각도", "판정", "관측 근거 / 미평가 사유"),
+        "none": "활성 불변식이 설정되지 않았습니다. 평가를 수행하지 않았습니다.",
+        "pass": "설정된 모든 불변식을 평가했으며 통과했습니다.",
+        "fail": "관측된 불변식 위반과 근거를 아래에 표시합니다.",
+        "unknown": "미평가 항목이 있습니다 (degraded). 미평가는 통과나 정상 상태의 근거가 아닙니다.",
+    },
+    "en": {
+        "coverage": ("Total", "Assessed", "Passed", "Failed", "Unassessed"),
+        "columns": ("Invariant ID", "Kind", "Target", "Severity", "Verdict", "Observed evidence / reason"),
+        "none": "No active invariants are configured. No assessment was performed.",
+        "pass": "All configured invariants were assessed and passed.",
+        "fail": "Observed invariant failures and their evidence are listed below.",
+        "unknown": "Some invariants are unassessed (degraded). Unassessed is not a pass or evidence of health.",
+    },
+    "zh": {
+        "coverage": ("总数", "已评估", "通过", "失败", "未评估"),
+        "columns": ("不变量 ID", "类型", "目标", "严重程度", "判定", "观测证据 / 未评估原因"),
+        "none": "未配置活动不变量。未执行评估。",
+        "pass": "所有已配置的不变量均已评估并通过。",
+        "fail": "以下列出已观测到的不变量违规及其证据。",
+        "unknown": "部分不变量尚未评估 (degraded)。未评估不代表通过，也不是健康状态的证据。",
+    },
+    "ja": {
+        "coverage": ("合計", "評価済み", "合格", "不合格", "未評価"),
+        "columns": ("不変条件 ID", "種類", "対象", "重大度", "判定", "観測根拠 / 未評価の理由"),
+        "none": "有効な不変条件が設定されていません。評価は実施されていません。",
+        "pass": "設定されたすべての不変条件を評価し、合格しました。",
+        "fail": "観測された不変条件の違反とその根拠を以下に示します。",
+        "unknown": "未評価の不変条件があります (degraded)。未評価は合格や正常状態の根拠ではありません。",
+    },
+}
+
+
+def _invariant_coverage(verdicts):
+    """Count the evaluator's True/False/None outcomes, including an empty configured set."""
+    passed = sum(v.get("passed") is True for v in verdicts)
+    failed = sum(v.get("passed") is False for v in verdicts)
+    return {"total": len(verdicts), "assessed": passed + failed, "passed": passed,
+            "failed": failed, "unassessed": sum(v.get("passed") is None for v in verdicts)}
+
+
+def _invariant_text(value):
+    """Keep verdict values as redacted table text, never Markdown/HTML instructions.
+
+    GFM re-autolinks entity-decoded text, so use a quoted literal with a delimiter longer than
+    any input backtick run. JSON escaping keeps pipes/backslashes out of the table grammar;
+    inline literals keep URLs, tags and Markdown inert in both the app and PDF renderer.
+    Escape brackets too: the UI scans raw Markdown for trusted severity markers.
+    Structured summary verdicts retain the original observed reason.
+    """
+    text = " ".join(_redact(str(value) if value is not None else "—").split())
+    text = "".join(c if c.isprintable() else "\ufffd" for c in text)
+    literal = (json.dumps(text, ensure_ascii=False).replace("|", r"\u007c")
+               .replace("[", r"\u005b").replace("]", r"\u005d"))
+    fence = "`" * (max((len(run) for run in re.findall(r"`+", literal)), default=0) + 1)
+    return f"{fence} {literal} {fence}"
+
+
+def _render_intended_vs_actual(verdicts, lang):
+    """Render the evaluated states directly; an LLM must never reinterpret unknown as healthy."""
+    copy = _INVARIANT_COPY.get(lang, _INVARIANT_COPY["ko"])
+    counts = _invariant_coverage(verdicts)
+    # Only failed verdict severities can upgrade the trusted marker.
+    # Unknowns stay warning, while unconfigured and info-only failures use a neutral icon.
+    failed = [v for v in verdicts if v.get("passed") is False]
+    if any(v.get("severity") == "critical" for v in failed):
+        marker = "[Critical]"
+    elif counts["unassessed"] or any(v.get("severity") != "info" for v in failed):
+        marker = "[Warning]"
+    elif failed or not counts["total"]:
+        marker = "[Info]"
+    else:
+        marker = ""
+    labels = copy["coverage"]
+    lines = [marker, ""] if marker else []
+    lines += ["| " + " | ".join(labels) + " |", "| " + " | ".join(["---"] * 5) + " |",
+              "| " + " | ".join(str(counts[k]) for k in
+                                 ("total", "assessed", "passed", "failed", "unassessed")) + " |", ""]
+    if not counts["total"]:
+        lines.append(copy["none"])
+    elif counts["passed"] == counts["total"]:
+        lines.append(copy["pass"])
+    else:
+        if counts["unassessed"]:
+            lines.append(copy["unknown"])
+        if counts["failed"]:
+            lines.append(copy["fail"])
+        lines += ["", "| " + " | ".join(copy["columns"]) + " |",
+                  "| " + " | ".join(["---"] * len(copy["columns"])) + " |"]
+        for verdict in verdicts:
+            if verdict.get("passed") is True:
+                continue
+            status = labels[3] if verdict.get("passed") is False else labels[4]
+            cells = [_invariant_text(verdict.get(k)) for k in ("id", "kind", "target", "severity")]
+            lines.append("| " + " | ".join(cells + [status, _invariant_text(verdict.get("observed"))]) + " |")
+    return "\n".join(lines)
+
+
 def render_section(section, collected, model_id, max_tokens, lang="ko"):
+    if section["key"] == INTENDED_VS_ACTUAL_SECTION["key"]:
+        verdicts = collected.get("intended_vs_actual", {}).get("data", {}).get("verdicts", [])
+        return {"key": section["key"], "title": localized_title(section, lang),
+                "body": _render_intended_vs_actual(verdicts, lang)}
     # Section sees ONLY the sources it declares (least-context).
     ctx = {k: collected[k]["data"] for k in section["sources"] if k in collected}
     ctx_json = _redact(json.dumps(ctx, ensure_ascii=False, default=str))  # [GATE-FIX] redact pre-LLM
@@ -275,8 +381,8 @@ def _diff_summary(current_drift, parent_summary, verdicts=()):
 def generate(conn, account, tier="mid", report_id=None, on_progress=None, model="sonnet", scope="self",
              lang="ko"):
     """Collect → evaluate active invariants → render each section → markdown + summary.
-    Returns (markdown, summary, sources_used). Read-only throughout; the LLM sees verdict-only
-    drift, never raw untrusted edge text. `report_id` (optional) enables the parent-report diff.
+    Returns (markdown, summary, sources_used). Read-only throughout; the intended-vs-actual
+    section renders verdicts deterministically without an LLM. `report_id` enables the parent diff.
     `tier` picks the catalog (mid/light=8, deep=15; +intended-vs-actual appended → 9/16 rendered) and `model` ('sonnet'|'opus', deep-only) the
     Bedrock model + token budget. `on_progress(current, total, section, phase)` (optional, A3 / V1
     parity) is called as work advances — best-effort (a callback error never aborts the report)."""
@@ -301,10 +407,15 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     active = ddb.list_active_invariants(conn)
     verdicts = _evaluate_intent(active, actual)
     drift = _drift(verdicts)
-    # Inject ONLY the verdicts into a synthetic collector entry so render_section feeds verdict-only
-    # context to the LLM (never the raw edge dicts). The section declares sources=['intended_vs_actual'].
+    unassessed = [v for v in verdicts if v.get("passed") is None]
+    invariant_coverage = _invariant_coverage(verdicts)
+    if unassessed:
+        degraded.append("intended_vs_actual")
+    # Keep this section in the existing catalog/progress pipeline, but render its states directly.
+    # Its only input is the evaluator's verdict list, never raw edges or LLM-authored conclusions.
     collected["intended_vs_actual"] = {
-        "key": "intended_vs_actual", "ok": True, "degraded": False, "notes": "",
+        "key": "intended_vs_actual", "ok": True, "degraded": bool(unassessed),
+        "notes": _INVARIANT_COPY.get(lang, _INVARIANT_COPY["ko"])["unknown"] if unassessed else "",
         "data": {"verdicts": verdicts},
     }
 
@@ -341,7 +452,8 @@ def generate(conn, account, tier="mid", report_id=None, on_progress=None, model=
     _emit(total, "리포트 조립", "assemble", list(completed_titles))  # keep the grid populated at 100%
     md = build_markdown(rendered, account, tier, collected, lang)
     summary = {"sections": len(rendered), "sources_used": sources_used,
-               "degraded": degraded, "drift": drift}
+               "degraded": degraded, "drift": drift, "unassessed": unassessed,
+               "invariant_coverage": invariant_coverage}
 
     # --- Plan 2: report diff vs the parent report (only if this report has a parent) ---
     if report_id is not None:

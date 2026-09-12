@@ -66,9 +66,19 @@ describe('sectionSeverity', () => {
   it('a degraded/failed section body never reads green', () => {
     expect(sectionSeverity('_이 섹션 생성에 실패했습니다 (degraded): boom_')).toBe('warning');
   });
+  it('keeps explicit information neutral rather than displaying an assessed pass', () => {
+    expect(sectionSeverity('[Info] No active invariants. No assessment was performed.')).toBe('info');
+    expect(sectionSeverity('[Info] note\n[Warning] failed invariant')).toBe('warning');
+    expect(sectionSeverity('[Info] note\n[Critical] failed invariant')).toBe('critical');
+  });
 });
 
 describe('ReportSections', () => {
+  it('shows neutral information icons in both card and TOC for an unconfigured assessment', () => {
+    const { container } = render(<ReportSections markdown={'## Intended vs Actual\n\n[Info] No active invariants.'} />);
+    expect(container.querySelectorAll('svg.text-sky-500')).toHaveLength(2);
+    expect(container.querySelectorAll('svg.text-emerald-500')).toHaveLength(0);
+  });
   it('renders section cards + a TOC sidebar; collapse toggle hides the body', () => {
     render(<ReportSections markdown={MD} />);
     // TOC + card both carry the title.

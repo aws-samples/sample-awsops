@@ -41,7 +41,20 @@ connectors. No new telemetry backend or AWS-mutating tool.
 3. **Diagnosis trust / 진단 신뢰성**
    - Carry collector status into deterministic invariant evaluation.
    - Return unknown when an absence-based conclusion lacks complete evidence.
-   - Preserve positive observed violations and valid numeric zero observations.
+   - The normalized evaluator contract supports positive violations and valid numeric zero.
+     This is unit-fixture/direct-caller coverage, not live collector integration.
+   - **Pending producer integration:** current X-Ray edges contain `to_ref`, not resolved `to`,
+     and inventory has no `unencrypted` aggregate. All six live invariant kinds therefore
+     remain `unknown`; empty regressions/improvements do not certify health. The producer
+     adapters and collector-to-verdict validation are incomplete.
+   - **생성기 연결 미완료:** 현재 X-Ray의 `to_ref`는 `to`로 해석되지 않고 암호화 집계도
+     없으므로 운영 불변식 6종은 모두 `unknown`이다. 정규화된 단위 테스트가 운영 지원을
+     의미하지 않으며, 빈 회귀·개선 목록을 정상으로 해석하지 않는다.
+   - Persist assessed/unassessed counts and unknown reasons independently of the model.
+     Render Intended vs Actual deterministically in the report/export, and expose the same
+     coverage in the UI; legacy reports without coverage must remain visibly unassessed.
+   - 미평가 건수·사유를 모델과 별개로 저장하고 본문·내보내기·화면에 표시한다.
+     평가 기록이 없는 과거 보고서를 정상이나 개선으로 해석하지 않는다.
    - Treat missing confidence conservatively; keep the incident feature gate unchanged.
    - Port upstream PDF request isolation into the v2 worker.
    - Regressions: degraded/empty/partial observations and externally referenced report content.

@@ -7,6 +7,15 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '불변식 평가 범위': { en: 'Invariant assessment coverage', zh: '不变量评估覆盖范围', ja: '不変条件の評価範囲' },
+  '불변식 평가 정보 없음': { en: 'Invariant assessment unavailable', zh: '不变量评估信息不可用', ja: '不変条件の評価情報なし' },
+  '이 보고서에는 유효한 불변식 평가 범위가 기록되지 않았습니다.': { en: 'This report has no valid record of invariant assessment coverage.', zh: '此报告未记录有效的不变量评估覆盖范围。', ja: 'このレポートには有効な不変条件の評価範囲が記録されていません。' },
+  '활성 불변식 없음': { en: 'No active invariants', zh: '没有启用的不变量', ja: '有効な不変条件なし' },
+  '평가 완료': { en: 'Assessed', zh: '已评估', ja: '評価済み' },
+  '위반': { en: 'Violations', zh: '违规', ja: '違反' },
+  '불변식': { en: 'Invariant', zh: '不变量', ja: '不変条件' },
+  '근거 정보 없음': { en: 'Evidence details unavailable', zh: '证据详情不可用', ja: '根拠の詳細なし' },
+  '미평가 결과는 정상 또는 개선을 뜻하지 않습니다.': { en: 'Unassessed results do not establish health or improvement.', zh: '未评估的结果不代表正常或改善。', ja: '未評価の結果は正常性や改善を示しません。' },
   'available/down 커넥션의 로케이션 분포 — 기타·미확인 상태는 제외·미평가': { en: 'Locations of available/down connections — other and unknown states excluded, unassessed', zh: 'available/down 连接的位置分布 — 其他及未知状态已排除、未评估', ja: 'available/down 接続のロケーション分布 — その他・不明な状態は除外・未評価' },
   '판정 범위': { en: 'Assessment coverage', zh: '评估范围', ja: '判定範囲' },
   '제외': { en: 'Excluded', zh: '已排除', ja: '除外' },
