@@ -207,6 +207,25 @@ The origins case is the one worth re-running after any edit to that projection: 
 `DomainName` (the "CloudFront (empty origin)" finding reads it) while dropping
 `CustomHeaders[].HeaderValue` (an origin secret). Both halves failed at some point during review.
 
+### Trace queue projection / 트레이스 큐 투영
+
+`01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql` extends graph evidence;
+`01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql` supersedes its node projection.
+After `make migrate`, spot-check `sql_reader.topology_nodes` where `class='trace' AND kind='queue'`:
+`claimedAccountId/claimedRegion` must match only parsed destination ARN qualifiers, including
+retained rows; non-ARN/malformed destinations have null claims and no reporter fallback.
+`identityProvenance` is always `telemetry_claim`; `accountId`, `region`, `infra_ref` and whole-row
+copies stay absent for trace queues. SELECT is granted only on the view, never the base table.
+`scripts/v2/workers/test_graph_collection.py` exercises this contract on disposable PostgreSQL,
+including grant restoration, reapplication, denied base-table reads and denied view writes.
+
+그래프 근거 마이그레이션 이후 `01M27B...`가 노드 투영을 갱신한다. 적용 후 보존된 행을 포함해
+큐 claim이 destination ARN의 한정자와만 일치하는지 확인한다. 비-ARN·잘못된 ARN은 null이고
+호출자 폴백은 없어야 한다. 출처는 항상 `telemetry_claim`이며 trace 큐의 `accountId`·`region`·
+`infra_ref`·전체 행 복사본은 노출되지 않는다. SELECT는 뷰에만 부여하며 위 SQL 테스트가
+재적용·권한 복구·기본 테이블 접근 거부를 검증한다. AI 도구 반영에는 `inventory_read_mcp`
+Lambda도 배포해야 한다. [적용 절차 / Rollout](source-sync-observability.md).
+
 ## 관련 / Related
 
 - `terraform/foundation/migrations/01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql` — 롤 + 뷰 / role + views

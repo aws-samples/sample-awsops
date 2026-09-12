@@ -24,8 +24,8 @@ const KIND_DARK: Record<DxNodeKind, [string, string]> = {
   vgw: ['#0E2E1C', '#2E9E5B'], tgw: ['#241A3E', '#8A5BD0'], awspub: ['#1F262D', '#586773'],
 };
 // 상태 우선 색: down = rose, warn = amber (topology page HEALTH convention).
-const STATE_LIGHT: Record<string, [string, string]> = { down: ['#FDECE8', '#D13212'], warn: ['#FEF3E2', '#F59E0B'] };
-const STATE_DARK: Record<string, [string, string]> = { down: ['#3A1712', '#F26B4D'], warn: ['#33260C', '#F5B53C'] };
+const STATE_LIGHT: Record<string, [string, string]> = { down: ['#FDECE8', '#D13212'], warn: ['#FEF3E2', '#F59E0B'], none: ['#F1F4F6', '#8696A3'] };
+const STATE_DARK: Record<string, [string, string]> = { down: ['#3A1712', '#F26B4D'], warn: ['#33260C', '#F5B53C'], none: ['#1F262D', '#8696A3'] };
 
 const KIND_ICON: Record<DxNodeKind, LucideIcon> = {
   onprem: Building2, location: MapPin, connection: Cable, lag: Layers, vif: Waypoints,
@@ -66,6 +66,18 @@ export default function DxTopology({ data, onNodeSelect }: {
               <div className="min-w-0">
                 <div className="truncate font-medium leading-tight">{n.kind === 'onprem' || n.kind === 'awspub' ? tt(n.label) : n.label}</div>
                 <div className="truncate text-[10px] opacity-70">{tt(n.sub ?? KIND_LABEL[n.kind])}</div>
+                {n.connectionHealth && (
+                  <div className="text-[10px] leading-tight">
+                    {n.connectionHealth.down > 0 && <div>DOWN {n.connectionHealth.down}</div>}
+                    {n.connectionHealth.unknown > 0 && <div>{tt('확인 불가')} {n.connectionHealth.unknown}</div>}
+                    {n.connectionHealth.excluded > 0 && <div>{tt('미평가')} {n.connectionHealth.excluded}</div>}
+                    {n.connectionHealth.excludedObservedDown > 0 && (
+                      <div className="text-negative-text" title={tt('현재 배포 장애 판정 아님')}>
+                        {tt('기간 내 DOWN 관측')} {n.connectionHealth.excludedObservedDown}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           ),
@@ -85,7 +97,7 @@ export default function DxTopology({ data, onNodeSelect }: {
       id: e.id, source: e.source, target: e.target,
       ...(e.label ? { label: e.label, labelStyle: { fontSize: 9, fill: dark ? '#9FAEBA' : '#586773' } } : {}),
       style: {
-        ...(e.dashed ? { strokeDasharray: '4 4' } : {}),
+        ...(e.dashed || e.state === 'none' ? { strokeDasharray: '4 4' } : {}),
         ...(e.state === 'down' ? { stroke: dark ? '#F26B4D' : '#D13212' } : e.state === 'warn' ? { stroke: dark ? '#F5B53C' : '#F59E0B' } : {}),
       },
       animated: e.state === 'down',

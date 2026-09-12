@@ -878,6 +878,8 @@ resource "aws_lambda_function" "agent" {
         AURORA_SECRET_ARN             = aws_secretsmanager_secret.agent_sql_reader[0].arn
         AURORA_DATABASE               = aws_rds_cluster.aurora.database_name
         INVENTORY_STALE_AFTER_MINUTES = tostring(var.inventory_stale_after_minutes)
+        # Share the web reader's freshness cadence; zero retains the 15-minute floor.
+        GRAPH_REBUILD_INTERVAL_MINS = tostring(var.graph_rebuild_interval_mins)
       } : {},
       # rds-mcp's execute_sql resolves its Data API credential and database from env ONLY — the
       # caller-supplied secret_arn/database arguments are ignored (and removed from the tool schema).

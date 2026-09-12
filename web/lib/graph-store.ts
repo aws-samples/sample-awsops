@@ -5,6 +5,7 @@ import { buildInfraGraph, type Row } from './infra-topology';
 import type { TraceSource, TraceSpan, ServiceGraphCall, SourceRead } from './trace-source';
 import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
 import { writeGraphState, type GraphAttempt } from './graph-state';
+import { currentAccountId } from './account';
 export { resolveInfraRef } from './trace-graph';
 
 /** Structural (duck-typed) interface for a Prometheus/Mimir service-graph metrics source — matches
@@ -231,7 +232,7 @@ export async function rebuildTraceGraph(
     );
     infraNodes = result.rows as InfraNodeLike[];
   } catch { infraUnavailable = true; }
-  const graph = buildTraceGraph(spans, calls, infraNodes);
+  const graph = buildTraceGraph(spans, calls, infraNodes, currentAccountId());
   // Preserve structurally important DB/queue/workload nodes before ranking service volume.
   const rank = (kind: string) => kind === 'service' ? 0 : 1;
   const nodes = graph.nodes.sort((a, b) => rank(b.kind) - rank(a.kind)

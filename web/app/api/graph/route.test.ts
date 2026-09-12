@@ -5,6 +5,7 @@ const query = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/auth', () => ({ verifyUser: auth }));
 vi.mock('@/lib/db', () => ({ getPool: () => ({ query }) }));
 import { GET } from './route';
+import claimCases from '../../../lib/fixtures/trace-queue-claims.json';
 
 describe('graph collection evidence API', () => {
   beforeEach(() => {
@@ -44,5 +45,34 @@ describe('graph collection evidence API', () => {
     }));
     const response = await GET(new Request('http://localhost/api/graph?class=trace'));
     expect((await response.json()).edges[0].confidence).toBe('unknown');
+  });
+});
+
+describe('queue attribution on retained snapshots', () => {
+  it.each(['', '&from=queue:old'])('keeps claimed telemetry separate in trace API %s', async suffix => {
+    auth.mockResolvedValue({ sub: 'user' });
+    query.mockImplementation(async (sql: string) => ({ rows: sql.includes('FROM topology_nodes') ? [{
+      id: 'queue:old', kind: 'queue', label: 'orders', meta: {
+        accountId: '111122223333', region: 'us-east-1', identityProvenance: 'aws_verified', infra_ref: 'inventory:queue',
+      },
+    }] : [] }));
+    const body = await (await GET(new Request(`http://localhost/api/graph?class=trace${suffix}`))).json();
+    expect(body.nodes[0].meta).toEqual({ claimedAccountId: null, claimedRegion: null, identityProvenance: 'telemetry_claim' });
+  });
+
+  it.each(claimCases)('rederives retained claims from destination $destination on both reads', async ({ destination, account, region }) => {
+    auth.mockResolvedValue({ sub: 'user' });
+    query.mockImplementation(async (sql: string) => ({ rows: sql.includes('FROM topology_nodes') ? [{
+      id: 'queue:old', kind: 'queue', label: 'orders', meta: {
+        destination, accountId: '444455556666', region: 'us-west-2',
+        claimedAccountId: '777788889999', claimedRegion: 'eu-west-1', infra_ref: 'inventory:queue',
+      },
+    }] : [] }));
+    for (const suffix of ['', '&from=queue:old']) {
+      const body = await (await GET(new Request(`http://localhost/api/graph?class=trace${suffix}`))).json();
+      expect(body.nodes[0].meta).toEqual({
+        destination, claimedAccountId: account, claimedRegion: region, identityProvenance: 'telemetry_claim',
+      });
+    }
   });
 });
