@@ -433,7 +433,9 @@ jobs:
         id: panel_review
         env:
           BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
-          PANEL_TIMEOUT: "300"
+          # Codex L2 can exceed five minutes on deployment/state contracts.
+          # Match the existing Claude budget; all cells still run in parallel.
+          PANEL_TIMEOUT: "1200"
           # Both L2 and L4 have exhausted 600s attempts on large diffs. Every Claude
           # lens gets the longer budget; parallelism keeps the existing job ceiling.
           # Models, prompts, retries, and required coverage remain unchanged.
