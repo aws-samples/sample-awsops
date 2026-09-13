@@ -1253,20 +1253,26 @@ localhost 상태 서버만 사용한다. Terraform 도우미는 추적된 작업
 ### Saved-plan asset utility / 저장 계획 asset 도구
 
 **Symptom / 증상:** a saved plan references Lambda ZIPs missing from the apply runner.
-Plan-time local builds do not rerun under a saved-plan apply. 저장 계획의 ZIP이 새
+Plan-time archive-file outputs may not be recreated under a saved-plan apply. 저장 계획의 ZIP이 새
 runner에 없으면 apply 중 자동 재빌드를 기대하지 말고 준비·전달 경로를 점검합니다.
 
-The utility prepares the hash-locked pg8000 closure and authenticates the manifest with
-`TF_PLAN_ENC_KEY` HMAC. Restore binds file hashes, paths and modes to the exact plan, SHA
-and scope. The caller workflow separately encrypts `tfassets.tar.gz`; never upload it in
-plaintext. This standalone utility activates no workflow or infrastructure.
-해시 고정 의존성과 HMAC으로 plan·SHA·scope·파일을 검증합니다. 암호화는 호출 workflow의
-책임이며 평문 tar를 게시하지 않습니다. 도구만으로 workflow나 인프라가 바뀌지 않습니다.
+Both Terraform layer builds and CI preparation use the same hash-locked installer; CI-prepared
+layers are checked without reinstalling when `CI_ASSETS_READY=true`. A failed prepare invalidates
+its old marker; validation checks the import closure and all installed file hashes.
+Pack checks each ZIP against a known hash inside `terraform show -json tfplan`, then authenticates
+plan/SHA/scope, paths, modes and hashes with `TF_PLAN_ENC_KEY` HMAC. Unknown ZIP hashes fail closed.
+The 0600 `tfassets.tar.gz` is private scratch, like the plaintext plan. It can contain rendered
+Cognito signing keys and **must never be uploaded**. The utility has no upload path; the integrating
+workflow must encrypt it and clean plaintext scratch. No workflow is activated by this change.
+Terraform과 CI는 같은 해시 고정 설치기를 사용하며 CI asset은 재설치 없이 검사합니다.
+기존 marker는 변경 전에 무효화하고 설치 파일·import 의존성을 검증합니다.
+ZIP의 계획 내부 해시를 확인한 뒤 HMAC을 계산합니다. 평문 tar에는 렌더링된 서명키가 포함될
+수 있으므로 0600 비공개 임시 파일로만 취급하고 호출 workflow가 암호화·정리해야 합니다.
 
 From the repository root, test with `python3 -m pytest scripts/v2/test_ci_tf_assets.py -q`.
-CI supplies the secret without CLI arguments. Run the following from the foundation root,
+The integrating CI must supply the secret without CLI arguments. Run from the foundation root,
 with a reviewed plan/source SHA and trusted flags; pack happens after Terraform creates ZIPs:
-루트에서 위 테스트를 실행합니다. CI가 시크릿을 공급하며 plan이 ZIP을 만든 뒤 pack합니다.
+루트에서 테스트합니다. 통합 CI가 시크릿을 공급하고 plan이 ZIP을 만든 뒤 pack해야 합니다.
 
 ```bash
 cd terraform/foundation
@@ -1274,15 +1280,18 @@ cd terraform/foundation
 printf '%s' '{"steampipe_enabled":true,"workers_enabled":true}' | python3 ../../scripts/v2/ci_tf_assets.py prepare --scope full
 # After a reviewed tfplan exists; GITHUB_SHA and TF_PLAN_ENC_KEY must already be set:
 python3 ../../scripts/v2/ci_tf_assets.py pack --scope full
-# The workflow encrypts/transports/decrypts the bundle and plan before restore:
+# Only after the integrating workflow encrypts/transports/decrypts both private files:
 python3 ../../scripts/v2/ci_tf_assets.py restore --scope full
-python3 ../../scripts/v2/ci_tf_assets.py check-layer --layer inv_layer
+python3 ../../scripts/v2/ci_tf_assets.py check-layer --layer inv_layer # only if inventory is enabled
 ```
 
 Missing/mismatched authentication, plan or content requires a fresh reviewed plan/bundle,
 not rebuilding under an old approval. See `scripts/v2/ci_tf_assets.py`,
 `scripts/v2/ci/pg8000-requirements.txt` and `scripts/v2/test_ci_tf_assets.py`.
-일치하지 않는 인증·계획·내용은 새 검토 계획/bundle로 해결합니다. 관련 규율: ADR-005/016.
+Key rotation also invalidates existing signed bundles. Dependency updates must change the lock,
+its verified wheel hashes and both worker/inventory pg8000 pins; see [worker build inputs](../reference/06-workers.md).
+시크릿 교체 시 기존 bundle도 무효화됩니다. 의존성 변경은 lock·wheel 해시·두 requirements pin을
+함께 갱신하며 불일치는 새 검토 계획/bundle로 해결합니다. 제품 변경 경계는 ADR-005를 따릅니다.
 
 Related ADRs / 관련 ADR: **ADR-002** (edge authentication/private HTTPS boundaries),
 **ADR-005** (operator CI migration versus product AWS-resource mutation/autonomy), and

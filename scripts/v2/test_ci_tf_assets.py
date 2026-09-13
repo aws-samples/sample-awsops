@@ -1,5 +1,6 @@
 """Saved plans and their local Lambda files must remain inseparable."""
 import importlib.util
+import base64
 import hashlib
 import hmac
 import io
@@ -42,6 +43,13 @@ class TerraformAssetTests(unittest.TestCase):
         (build / "function.zip").write_bytes(b"exact Lambda archive")
         (build / "layer/python/module.py").write_text("VALUE = 1\n")
         self.archive = self.root / "assets.tar.gz"
+        self.plan_json = {"format_version": "1.2", "planned_values": {"root_module": {"resources": [
+            {"values": {"filename": ".build/function.zip",
+                        "source_code_hash": base64.b64encode(hashlib.sha256(b"exact Lambda archive").digest()).decode()}}
+        ]}}}
+        plan_reader = mock.patch.object(self.module, "load_plan", return_value=self.plan_json, create=True)
+        plan_reader.start()
+        self.addCleanup(plan_reader.stop)
 
     def pack(self):
         return self.module.bundle_assets(self.plan, self.archive, COMMIT, "full")
@@ -57,6 +65,16 @@ class TerraformAssetTests(unittest.TestCase):
                 member.size = len(data)
                 archive.addfile(member, io.BytesIO(data))
 
+    def prepare_fixture_layer(self):
+        def install(args, **kwargs):
+            target = Path(args[args.index("--target") + 1])
+            for name in self.module.LAYER_IMPORTS:
+                path = target / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("# synthetic installed module\n")
+        with mock.patch.object(self.module.subprocess, "run", side_effect=install):
+            self.module.prepare_layers(self.plan, {"steampipe_enabled": True, "workers_enabled": False}, "full")
+
     def test_restores_exact_plan_time_files_in_a_clean_apply_directory(self):
         (self.plan / ".build/function.zip").chmod(0o600)
         (self.plan / ".build/layer/python/module.py").chmod(0o755)
@@ -68,6 +86,41 @@ class TerraformAssetTests(unittest.TestCase):
         self.assertEqual((self.apply / ".build/function.zip").stat().st_mode & 0o777, 0o600)
         self.assertEqual((self.apply / ".build/layer/python/module.py").stat().st_mode & 0o777, 0o755)
         self.assertEqual((self.apply / ".build/function.zip").stat().st_mtime, self.module.EPOCH)
+
+    def test_zip_must_match_hash_inside_the_plan_before_pack(self):
+        (self.plan / ".build/function.zip").write_bytes(b"changed after plan")
+        with self.assertRaises(ValueError):
+            self.pack()
+        self.assertFalse(self.archive.exists())
+        (self.plan / ".build/function.zip").write_bytes(b"exact Lambda archive")
+        self.plan_json["planned_values"]["root_module"]["resources"] = []
+        with self.assertRaises(ValueError):
+            self.pack()
+
+    def test_failed_prepare_invalidates_previous_marker_before_install(self):
+        marker = self.apply / ".build/.ci-prepared.json"
+        marker.parent.mkdir()
+        marker.write_text('{"schema_version":1}')
+        with mock.patch.object(self.module.subprocess, "run", side_effect=subprocess.TimeoutExpired("pip", 180)):
+            with self.assertRaisesRegex(ValueError, "pip_timeout"):
+                self.module.prepare_layers(self.apply, {"steampipe_enabled": True, "workers_enabled": False}, "full")
+        self.assertFalse(marker.exists())
+
+    def test_pg8000_alone_cannot_certify_the_layer_closure(self):
+        layer = self.apply / ".build/inv_layer/python/pg8000"
+        layer.mkdir(parents=True)
+        (layer / "__init__.py").write_text("# incomplete installation")
+        (self.apply / ".build/.ci-prepared.json").write_text(json.dumps({
+            "schema_version": 1, "layers": ["inv_layer"], "lock_sha256": self.module.digest(self.module.LOCK),
+        }))
+        with self.assertRaises(ValueError):
+            self.module.validate_layer(self.apply, "inv_layer")
+
+    def test_embedded_secret_assets_are_private_scratch_never_public_output(self):
+        (self.plan / ".build/cognito_edge.py").write_text("SYNTHETIC_STATE_SIGNING_KEY")
+        self.pack()
+        self.assertEqual(self.archive.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn("SYNTHETIC_STATE_SIGNING_KEY", json.dumps(self.pack()))
 
     def test_wrong_plan_commit_or_scope_never_extracts(self):
         self.pack()
@@ -298,19 +351,18 @@ module.restore_assets(root, Path(sys.argv[3]), sys.argv[4], "full")
         marker.write_text(json.dumps({"schema_version": 1, "layers": ["inv_layer"], "lock_sha256": "wrong"}))
         with self.assertRaises(ValueError):
             self.module.validate_layer(self.plan, "inv_layer")
-        marker.write_text(json.dumps({
-            "schema_version": 1, "layers": ["inv_layer"], "lock_sha256": self.module.digest(self.module.LOCK),
-        }))
+        self.prepare_fixture_layer()
         self.module.validate_layer(self.plan, "inv_layer")
         with self.assertRaises(ValueError):
             self.module.validate_layer(self.plan, "pg8000_layer")
+        (self.plan / ".build/inv_layer/python/scramp/core.py").write_text("# changed after preparation")
+        with self.assertRaises(ValueError):
+            self.module.validate_layer(self.plan, "inv_layer")
 
     def test_marker_rejects_malformed_types_and_duplicate_layers(self):
-        layer = self.plan / ".build/inv_layer/python/pg8000"
-        layer.mkdir(parents=True)
-        (layer / "__init__.py").write_text("# fixture")
+        self.prepare_fixture_layer()
         marker = self.plan / ".build/.ci-prepared.json"
-        valid = {"schema_version": 1, "layers": ["inv_layer"], "lock_sha256": self.module.digest(self.module.LOCK)}
+        valid = json.loads(marker.read_text())
         for value in ([], None, "marker", 1, {**valid, "schema_version": True},
                       {**valid, "layers": "prefix-inv_layer-suffix"},
                       {**valid, "layers": ["inv_layer", "inv_layer"]},
@@ -321,20 +373,17 @@ module.restore_assets(root, Path(sys.argv[3]), sys.argv[4], "full")
                 marker.write_text(json.dumps(value))
                 self.module.validate_layer(self.plan, "inv_layer")
 
-    def test_all_five_pg8000_pin_locations_must_agree(self):
+    def test_all_three_pg8000_pin_locations_must_agree(self):
         paths = (
             "scripts/v2/ci/pg8000-requirements.txt",
             "scripts/v2/workers/requirements.txt",
             "scripts/v2/steampipe/requirements.txt",
-            "terraform/foundation/workers.tf",
-            "terraform/foundation/steampipe.tf",
         )
         repository = self.root / "repository"
         for path in paths:
             target = repository / path
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("python3 -m pip install pg8000==1.31.2 --target build\n"
-                              if path.endswith(".tf") else "pg8000==1.31.2\n")
+            target.write_text("pg8000==1.31.2\n")
         self.module.validate_dependency_pins(repository)
         for path in paths:
             target = repository / path
@@ -345,7 +394,16 @@ module.restore_assets(root, Path(sys.argv[3]), sys.argv[4], "full")
                     with self.assertRaises(ValueError):
                         self.module.validate_dependency_pins(repository)
             target.write_text(original)
-        self.module.validate_dependency_pins()  # Real committed five-way contract.
+        self.module.validate_dependency_pins()
+
+    def test_terraform_uses_the_same_builder_and_never_overwrites_verified_assets(self):
+        root = Path(__file__).resolve().parents[2]
+        for name, layer in (("workers.tf", "pg8000_layer"), ("steampipe.tf", "inv_layer")):
+            source = (root / "terraform/foundation" / name).read_text()
+            self.assertIn(f"ci_tf_assets.py build-layer --layer {layer}", source)
+            self.assertIn(f"ci_tf_assets.py check-layer --layer {layer}", source)
+            self.assertIn('filemd5("${path.module}/../../scripts/v2/ci/pg8000-requirements.txt")', source)
+            self.assertNotIn("pip install pg8000", source)
 
     def test_prepare_and_check_layer_fail_before_mutation_on_pin_drift(self):
         with mock.patch.object(self.module, "validate_dependency_pins", side_effect=ValueError("pin drift")):

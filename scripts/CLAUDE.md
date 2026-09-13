@@ -7,10 +7,15 @@ secrets-manager) — installed by `make deps`.
 
 ## Key Files
 - `v2/ci_tf_assets.py` prepares hash-locked pg8000 layers and transports plan/SHA/scope-bound
-  Lambda assets. Pack/restore require `TF_PLAN_ENC_KEY` for HMAC authentication; encryption
-  remains the caller workflow's responsibility. Never publish the plaintext tarball.
-  `v2/ci/pg8000-requirements.txt` defines the layer closure, checked against existing pins.
-  `v2/test_ci_tf_assets.py` covers authentication, paths, hashes, scope and restore recovery.
+  Lambda assets, validating paths, modes and hashes. Pack checks ZIP hashes inside the saved plan.
+  Pack/restore require `TF_PLAN_ENC_KEY` for HMAC authentication. The 0600 plaintext tarball is
+  private scratch and may contain rendered secrets; this utility cannot upload it. Callers must
+  encrypt before publication and clean plaintext files afterward.
+  `v2/ci/pg8000-requirements.txt` is the single layer-install lock. Both Terraform paths call
+  build-layer, or check-layer when CI_ASSETS_READY=true; lock/script changes trigger rebuilding.
+  Prepare invalidates old markers first; schema-2 markers bind the installed files and required
+  import closure. Bump pg8000 in this lock and both worker/inventory requirements, with new
+  verified wheel hashes. `v2/test_ci_tf_assets.py` covers these contracts and restore recovery.
 - `v2/configure.mjs` — `make configure`: interactive TUI → `terraform.tfvars` + `backend.hcl`.
   AWS access shells out to the `aws` CLI, not the SDK.
 - `v2/deploy.mjs` — `make deploy` (runs migrate first): arm64 build → ECR push →

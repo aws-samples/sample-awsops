@@ -1,5 +1,6 @@
-"""Transport local Lambda inputs with their exact encrypted Terraform plan."""
+"""Bind private Lambda asset scratch to one saved plan; callers encrypt for transport."""
 import argparse
+import base64
 import hashlib
 import hmac
 import io
@@ -22,6 +23,9 @@ LOCK = Path(__file__).parent / "ci" / "pg8000-requirements.txt"
 EPOCH = 315532800
 MANIFEST_DOMAIN = b"awsops:terraform-assets:manifest:v2\0"
 LAYERS = ("inv_layer", "pg8000_layer")
+LAYER_IMPORTS = ("pg8000/__init__.py", "pg8000/native.py", "pg8000/core.py", "pg8000/dbapi.py",
+                 "scramp/__init__.py", "scramp/core.py", "asn1crypto/__init__.py",
+                 "dateutil/__init__.py", "dateutil/parser/__init__.py", "six.py")
 
 
 def authentication_key():
@@ -51,15 +55,10 @@ def validate_dependency_pins(repository=None):
     for relative in (
         "scripts/v2/ci/pg8000-requirements.txt",
         "scripts/v2/workers/requirements.txt", "scripts/v2/steampipe/requirements.txt",
-        "terraform/foundation/workers.tf", "terraform/foundation/steampipe.tf",
     ):
         lines = [line for line in (repository / relative).read_text().splitlines()
                  if not line.lstrip().startswith(("#", "//"))]
-        if relative.endswith(".tf"):
-            lines = [line for line in lines if re.search(r"\bpip\s+install\b", line)]
-            pattern = r"\bpg8000==([A-Za-z0-9][A-Za-z0-9._+!-]*)(?=\s|[\"']|$)"
-        else:
-            pattern = r"(?m)^[ \t]*pg8000==([A-Za-z0-9][A-Za-z0-9._+!-]*)(?=\s|$)"
+        pattern = r"(?m)^[ \t]*pg8000==([A-Za-z0-9][A-Za-z0-9._+!-]*)(?=\s|$)"
         pins = re.findall(pattern, "\n".join(lines))
         if len(pins) != 1:
             raise ValueError("Each layer input must contain one exact pg8000 pin")
@@ -98,6 +97,41 @@ def safe_member(name):
             and path.as_posix() == name and not any(ord(c) < 32 for c in name))
 
 
+def load_plan(root):
+    result = subprocess.run(["terraform", "show", "-json", "tfplan"], cwd=root,
+                            check=True, capture_output=True, timeout=120)
+    if len(result.stdout) > 32 * 1024 * 1024:
+        raise ValueError("Plan projection is too large")
+    return json.loads(result.stdout, object_pairs_hook=unique_object)
+
+
+def planned_zip_hashes(root):
+    plan = load_plan(root)
+    modules = [plan["planned_values"]["root_module"]]
+    expected = {}
+    while modules:
+        module = modules.pop()
+        modules.extend(module.get("child_modules", []))
+        for resource in module.get("resources", []):
+            values = resource.get("values", {})
+            filename = values.get("filename") or values.get("output_path")
+            encoded = values.get("source_code_hash") or values.get("output_base64sha256")
+            if not isinstance(filename, str) or not filename.endswith(".zip") or encoded is None:
+                continue  # Deferred archives must be generated from the verified directory at apply.
+            path = Path(filename)
+            try:
+                name = (path if path.is_absolute() else root / path).resolve().relative_to(root.resolve()).as_posix()
+            except ValueError:
+                continue
+            if not safe_member(name):
+                continue
+            value = base64.b64decode(encoded, validate=True)
+            if len(value) != 32 or name in expected and expected[name] != value.hex():
+                raise ValueError("Ambiguous planned archive hash")
+            expected[name] = value.hex()
+    return expected
+
+
 def bundle_assets(root, output, commit, scope):
     validate_context(commit, scope)
     key = authentication_key()
@@ -106,6 +140,8 @@ def bundle_assets(root, output, commit, scope):
     build = root / ".build"
     if build.is_symlink() or not build.is_dir():
         raise ValueError("Prepared .build directory is required")
+    plan_hash = digest(root / "tfplan")
+    expected_zips = planned_zip_hashes(root)
     files, total = {}, 0
     for path in sorted(build.rglob("*")):
         if path.is_symlink() or not (path.is_file() or path.is_dir()):
@@ -118,14 +154,20 @@ def bundle_assets(root, output, commit, scope):
         if not safe_member(name) or total > MAX_BYTES or len(files) >= MAX_FILES:
             raise ValueError("Asset size or path limit exceeded")
         files[name] = {"sha256": digest(path), "mode": stat.S_IMODE(info.st_mode) & 0o777}
+        if path.suffix == ".zip" and expected_zips.get(name) != files[name]["sha256"]:
+            raise ValueError("Archive does not match a known hash inside the saved plan")
+    if digest(root / "tfplan") != plan_hash:
+        raise ValueError("Plan changed during asset validation")
     manifest = {
         "schema_version": 2, "commit": commit, "scope": scope,
-        "tfplan_sha256": digest(root / "tfplan"), "files": files,
+        "tfplan_sha256": plan_hash, "files": files,
     }
     manifest["hmac_sha256"] = manifest_mac(manifest, key)
     payload = json.dumps(manifest, sort_keys=True).encode()
     if len(payload) > 4 * 1024 * 1024:
         raise ValueError("Asset manifest is too large")
+    # Private 0600 scratch, like tfplan itself. This utility has no upload path.
+    # The caller must encrypt before publication; archives can contain rendered secrets.
     fd, temporary = tempfile.mkstemp(prefix=".assets-", dir=output.parent)
     os.close(fd)
     try:
@@ -224,6 +266,57 @@ def restore_assets(root, bundle, commit, scope):
             shutil.rmtree(staging, ignore_errors=True)
 
 
+def layer_hash(target):
+    if target.is_symlink() or not target.is_dir():
+        raise ValueError("Layer directory must be real")
+    if any(not (target / "python" / name).is_file() for name in LAYER_IMPORTS):
+        raise ValueError("Layer import closure is incomplete")
+    files, total = {}, 0
+    for path in sorted(target.rglob("*")):
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            raise ValueError("Layer contains a link or special file")
+        if path.is_file():
+            total += path.stat().st_size
+            if total > MAX_BYTES or len(files) >= MAX_FILES:
+                raise ValueError("Layer size limit exceeded")
+            files[path.relative_to(target).as_posix()] = [digest(path), stat.S_IMODE(path.stat().st_mode)]
+    return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+
+
+def build_layer(root, folder):
+    if folder not in LAYERS:
+        raise ValueError("Invalid layer")
+    validate_dependency_pins()
+    build = Path(root) / ".build"
+    validate_destination(build)
+    build.mkdir(mode=0o700, exist_ok=True)
+    (build / ".ci-prepared.json").unlink(missing_ok=True)  # Invalidate before any layer mutation.
+    target = build / folder
+    validate_destination(target)
+    if target.exists():
+        shutil.rmtree(target)
+    python = target / "python"
+    python.mkdir(parents=True, mode=0o755)
+    try:
+        subprocess.run([
+            sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+            "--no-cache-dir", "--no-compile", "--only-binary=:all:", "--require-hashes",
+            "--index-url", "https://pypi.org/simple", "-r", str(LOCK), "--target", str(python),
+        ], check=True, capture_output=True, timeout=180, env={
+            "PATH": os.environ.get("PATH", ""), "LANG": "C", "LC_ALL": "C", "PIP_CONFIG_FILE": os.devnull,
+        })
+    except subprocess.TimeoutExpired:
+        raise ValueError("pip_timeout") from None
+    except (subprocess.SubprocessError, OSError):
+        raise ValueError("pip_install_failed") from None
+    for path in [target, *target.rglob("*")]:
+        if path.is_symlink():
+            raise ValueError("Layer dependencies must not contain links")
+        path.chmod(0o755 if path.is_dir() else 0o644)
+        os.utime(path, (EPOCH, EPOCH))
+    return layer_hash(target)
+
+
 def prepare_layers(root, flags, scope):
     root = Path(root)
     if scope not in SCOPES or not isinstance(flags, dict):
@@ -236,40 +329,19 @@ def prepare_layers(root, flags, scope):
     if build.is_symlink():
         raise ValueError("Asset directory must not be a symlink")
     build.mkdir(mode=0o700, exist_ok=True)
+    marker = build / ".ci-prepared.json"
+    marker.unlink(missing_ok=True)
     built = []
+    hashes = {}
     if scope == "full":
         for flag, folder in (("steampipe_enabled", "inv_layer"), ("workers_enabled", "pg8000_layer")):
             if not flags[flag]:
                 continue
-            target = build / folder
-            if target.is_symlink():
-                raise ValueError("Layer directory must not be a symlink")
-            if target.exists():
-                shutil.rmtree(target)
-            python = target / "python"
-            python.mkdir(parents=True, mode=0o755)
-            try:
-                subprocess.run([
-                    sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
-                    "--no-cache-dir", "--no-compile", "--only-binary=:all:", "--require-hashes",
-                    "--index-url", "https://pypi.org/simple", "-r", str(LOCK), "--target", str(python),
-                ], check=True, capture_output=True, timeout=180, env={
-                    "PATH": os.environ.get("PATH", ""), "LANG": "C", "LC_ALL": "C",
-                    "PIP_CONFIG_FILE": os.devnull,
-                })
-            except subprocess.TimeoutExpired:
-                raise ValueError("pip_timeout") from None
-            except (subprocess.SubprocessError, OSError):
-                raise ValueError("pip_install_failed") from None
-            for path in [target, *target.rglob("*")]:
-                if path.is_symlink():
-                    raise ValueError("Layer dependencies must not contain links")
-                path.chmod(0o755 if path.is_dir() else 0o644)
-                os.utime(path, (EPOCH, EPOCH))
+            hashes[folder] = build_layer(root, folder)
             built.append(folder)
-    marker = build / ".ci-prepared.json"
-    marker.write_text(json.dumps({"schema_version": 1, "layers": built, "lock_sha256": digest(LOCK)}))
-    marker.chmod(0o600)
+    fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as output:
+        json.dump({"schema_version": 2, "layers": built, "lock_sha256": digest(LOCK), "file_sha256": hashes}, output)
     return {"prepared_layers": built}
 
 
@@ -278,21 +350,26 @@ def validate_layer(root, layer):
     root = Path(root)
     if layer not in LAYERS or (root / ".build").is_symlink():
         raise ValueError("Invalid prepared layer")
-    marker = json.loads((root / ".build/.ci-prepared.json").read_text(), object_pairs_hook=unique_object)
-    if (not isinstance(marker, dict) or set(marker) != {"schema_version", "layers", "lock_sha256"}
-            or type(marker.get("schema_version")) is not int or marker["schema_version"] != 1
+    marker_file = root / ".build/.ci-prepared.json"
+    if marker_file.is_symlink():
+        raise ValueError("Invalid layer marker")
+    marker = json.loads(marker_file.read_text(), object_pairs_hook=unique_object)
+    if (not isinstance(marker, dict) or set(marker) != {"schema_version", "layers", "lock_sha256", "file_sha256"}
+            or type(marker.get("schema_version")) is not int or marker["schema_version"] != 2
             or not isinstance(marker.get("layers"), list)
             or any(not isinstance(item, str) or item not in LAYERS for item in marker["layers"])
             or len(set(marker["layers"])) != len(marker["layers"]) or layer not in marker["layers"]
             or not isinstance(marker.get("lock_sha256"), str)
             or marker.get("lock_sha256") != digest(LOCK)
-            or not (root / ".build" / layer / "python/pg8000/__init__.py").is_file()):
+            or not isinstance(marker.get("file_sha256"), dict)
+            or set(marker["file_sha256"]) != set(marker["layers"])
+            or marker["file_sha256"].get(layer) != layer_hash(root / ".build" / layer)):
         raise ValueError("Prepared layer does not match the locked build inputs")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "pack", "restore", "check-layer"))
+    parser.add_argument("command", choices=("prepare", "build-layer", "pack", "restore", "check-layer"))
     parser.add_argument("--layer", choices=("inv_layer", "pg8000_layer"))
     parser.add_argument("--scope", choices=SCOPES, default=os.environ.get("PLAN_SCOPE", "full") or "full")
     args = parser.parse_args()
@@ -305,6 +382,9 @@ def main():
         if args.command == "check-layer":
             validate_layer(root, args.layer)
             result = {"prepared_layer_verified": True}
+        elif args.command == "build-layer":
+            build_layer(root, args.layer)
+            result = {"built_layer": args.layer}
         elif args.command == "prepare":
             flags = json.load(sys.stdin)
             if isinstance(flags, str):
@@ -314,7 +394,7 @@ def main():
             fn = bundle_assets if args.command == "pack" else restore_assets
             result = fn(root, root / "tfassets.tar.gz", os.environ.get("GITHUB_SHA", ""), args.scope)
         print(json.dumps(result))
-    except (ValueError, TypeError, OSError, subprocess.SubprocessError) as error:
+    except (ValueError, TypeError, KeyError, OSError, tarfile.TarError, subprocess.SubprocessError) as error:
         category = str(error) if str(error) in ("pip_timeout", "pip_install_failed") else "asset_verification_failed"
         print(f"Terraform assets failed ({category}); no unverified assets may be applied.", file=sys.stderr)
         return 1

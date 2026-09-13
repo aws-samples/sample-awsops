@@ -136,6 +136,14 @@ These are reuse-critical — re-read before extending the backbone.
 - **`pg8000` is vendored as a Lambda layer** (pure-python, arch-agnostic) — attached to
   worker/status/reaper only; dispatcher needs no DB. / `pg8000`은 Lambda 레이어로 벤더링(순수 파이썬,
   아키텍처 무관); 디스패처는 DB 불요.
+- Both worker and inventory Lambda layers use `scripts/v2/ci_tf_assets.py build-layer` and
+  the authoritative `scripts/v2/ci/pg8000-requirements.txt` lock: wheel hashes, no bytecode,
+  normalized modes/timestamps. `CI_ASSETS_READY=true` validates the restored layer instead.
+  Prepare invalidates old markers and records installed-file hashes plus the import closure.
+  To bump pg8000, update the lock, verified wheel hashes and both worker/inventory requirements;
+  Terraform rebuild triggers include the lock and installer. No bare-pip fallback remains.
+  워커·인벤토리 레이어는 같은 lock과 설치기를 사용하며 CI 복원본은 재설치하지 않고 검사합니다.
+  버전 변경은 lock·검증된 wheel 해시·두 requirements를 함께 수정합니다.
 - **Reuse the existing `aws_security_group.service`** for the worker Lambdas + Fargate. The P1c
   Aurora SG uses inline ingress that already allows `service`; adding a standalone SG/ingress rule
   causes a perpetual diff. / 기존 `aws_security_group.service` 재사용 — Aurora SG 인라인 ingress가
