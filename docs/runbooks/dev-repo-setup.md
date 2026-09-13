@@ -1292,8 +1292,8 @@ Real targeted plans omit untargeted Lambda resources from planned_values even wh
 retains them; their old ZIPs are not required. Keep the known-planned-ZIP completeness check.
 The 0600 `tfassets.tar.gz` is private scratch, like the plaintext plan. It can contain rendered
 Cognito signing keys and **must never be uploaded**. The utility has no upload path; the integrating
-workflow must encrypt it and clean plaintext scratch. Pack/restore is not wired to a workflow
-by this change; existing Terraform layer provisioners do use the locked installer.
+Terraform workflow encrypts it and cleans plaintext scratch; plan/apply now wire pack/restore,
+and Terraform layer provisioners use the locked installer.
 Terraform과 CI는 같은 해시 고정 설치기를 사용하며 CI asset은 재설치 없이 검사합니다.
 기존 marker는 변경 전에 무효화하고 이전 ZIP을 제거하며 ZIP 심볼릭 링크를 거부합니다.
 설치 파일 해시와 고정 import 목록을 검증합니다.
@@ -1303,7 +1303,7 @@ GitHub에서는 push·pull_request·workflow_dispatch만 허용하며 Python API
 ZIP은 요구하지 않으며, 실제 계획에 알려진 ZIP의 누락 검사는 유지합니다.
 ZIP을 확인한 뒤 HMAC을 계산합니다. 평문 tar에는 렌더링된 서명키가 포함될
 수 있으므로 0600 비공개 임시 파일로만 취급하고 호출 workflow가 암호화·정리해야 합니다.
-pack/restore의 workflow 연결은 별도이며 기존 Terraform 레이어 설치기는 이미 공통 lock을 사용합니다.
+Terraform plan/apply가 pack/restore를 연결하며 레이어 설치기도 같은 lock을 사용합니다.
 
 From the repository root, test with `python3 -m pytest scripts/v2/test_ci_tf_assets.py -q`.
 The Terraform workflow supplies the secret without CLI arguments. Run from the foundation root,

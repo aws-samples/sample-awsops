@@ -29,6 +29,8 @@ gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev -f mode=pla
 ```
 Host-only removes only collector AssumeRole; Agent MCP grants remain. IAM regions reflect opt-ins at apply time, so update IAM before collection in newly enabled regions.
 호스트 모드는 수집기 AssumeRole만 제외한다. 새 리전 수집 전에는 IAM을 다시 적용한다.
+The digest/host-preflight profile is dev-only. Preview retains operator-configured mutable tags or digests and multi-account scope, without dev host verification; account/role and private-DNS ownership checks still apply.
+digest·호스트 사전 검증은 dev 프로필 전용이다. preview는 운영자 설정 태그/digest·다중 계정 범위를 유지하며 계정·역할·사설 DNS 소유권만 공통으로 검증한다.
 
 ## Retirement / 종료
 Normal rollback retains runtime and restores reviewed prior digests/settings. Full dev retirement is destructive: disable the profile, use full `runtime_retire=true` with DNS permission, and review queue contents, images/data and every deletion. Replacements/forget and shared/public infrastructure changes remain prohibited.

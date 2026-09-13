@@ -237,12 +237,12 @@ def _configuration(plan, address):
 
 def _core_gated(plan, address):
     resource = _configuration(plan, address)
-    gates = {"local.sp", "local.we", "local.ac_count", "local.core_runtime_enabled",
+    gates = {"local.sp", "local.we", "local.ac_count", "local.core_runtime_enabled", "local.agent_lambdas",
              "var.steampipe_enabled", "var.workers_enabled", "var.agentcore_enabled"}
     for key in ("count_expression", "for_each_expression"):
         refs = resource.get(key, {}).get("references", [])
         if isinstance(refs, list) and refs and all(isinstance(r, str) for r in refs):
-            if set(refs) <= gates | {"local.agent_lambdas"} and set(refs) & gates:
+            if set(refs) <= gates:
                 return True
     return False
 
@@ -289,7 +289,8 @@ def _web_environment_cleanup(resource, project):
             a, b = {}, {}
             for source, result in ((previous, a), (following, b)):
                 for entry in source.get("environment", []):
-                    if set(entry) != {"name", "value"} or entry["name"] in result:
+                    if set(entry) != {"name", "value"} or (
+                            entry["name"] in result and result[entry["name"]] != entry["value"]):
                         return False
                     result[entry["name"]] = entry["value"]
             differences = {k for k in a.keys() | b.keys() if a.get(k) != b.get(k)}

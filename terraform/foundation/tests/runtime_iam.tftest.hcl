@@ -53,14 +53,7 @@ variables {
 run "defaults_remain_dark" {
   command = plan
   assert {
-    condition = (
-      length(aws_iam_role_policy.agentcore) == 0 &&
-      length(aws_iam_role_policy.official_mcp_credentials) == 0 &&
-      length(aws_iam_role_policy.steampipe_task) == 0 &&
-      length(aws_iam_role_policy.worker_lambda) == 0 &&
-      !var.inventory_host_only && var.steampipe_image_digest == null && var.worker_image_digest == null &&
-      !var.remediation_enabled && !var.diagnosis_notify_enabled && !var.integrations_write_enabled
-    )
+    condition     = (length(aws_iam_role_policy.agentcore) == 0 && length(aws_iam_role_policy.official_mcp_credentials) == 0 && length(aws_iam_role_policy.steampipe_task) == 0 && length(aws_iam_role_policy.worker_lambda) == 0 && !var.inventory_host_only && var.steampipe_image_digest == null && var.worker_image_digest == null && !var.remediation_enabled && !var.diagnosis_notify_enabled && !var.integrations_write_enabled)
     error_message = "Core runtime and host/image overrides must remain opt-in."
   }
 }
@@ -94,14 +87,7 @@ run "host_core_permissions_and_digest_binding" {
     error_message = "Runtime must not receive provisioner/control-plane or ForUserId authority."
   }
   assert {
-    condition = (
-      toset(one([for s in jsondecode(aws_iam_role_policy.agentcore[0].policy).Statement : s.Resource if s.Sid == "RuntimeWorkloadToken"])) == toset([
-        "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:workload-identity-directory/default",
-        "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:workload-identity-directory/default/workload-identity/awsops_v2_agent-*",
-      ]) &&
-      one([for s in jsondecode(aws_iam_role_policy.agentcore[0].policy).Statement : s.Resource if s.Sid == "InvokeOwnGateways"]) ==
-      "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:gateway/*"
-    )
+    condition     = (toset(one([for s in jsondecode(aws_iam_role_policy.agentcore[0].policy).Statement : s.Resource if s.Sid == "RuntimeWorkloadToken"])) == toset(["arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:workload-identity-directory/default", "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:workload-identity-directory/default/workload-identity/awsops_v2_agent-*", ]) && one([for s in jsondecode(aws_iam_role_policy.agentcore[0].policy).Statement : s.Resource if s.Sid == "InvokeOwnGateways"]) == "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:gateway/*")
     error_message = "Runtime identity must retain the fixed product name and own account/region."
   }
   assert {
@@ -124,11 +110,7 @@ run "host_core_permissions_and_digest_binding" {
     error_message = "Every newly activated bare-wildcard statement needs an applicable region condition."
   }
   assert {
-    condition = (
-      toset(local.runtime_read_regions) == toset(["ap-northeast-2", "eu-west-1", "us-east-1"]) &&
-      toset(jsondecode(aws_iam_role_policy.steampipe_task[0].policy).Statement[0].Condition.StringEquals["aws:RequestedRegion"]) == toset(local.runtime_read_regions) &&
-      contains(jsondecode(aws_iam_role_policy.steampipe_task[0].policy).Statement[0].Action, "iam:GenerateCredentialReport")
-    )
+    condition     = (toset(local.runtime_read_regions) == toset(["ap-northeast-2", "eu-west-1", "us-east-1"]) && toset(jsondecode(aws_iam_role_policy.steampipe_task[0].policy).Statement[0].Condition.StringEquals["aws:RequestedRegion"]) == toset(local.runtime_read_regions) && contains(jsondecode(aws_iam_role_policy.steampipe_task[0].policy).Statement[0].Action, "iam:GenerateCredentialReport"))
     error_message = "Host reads retain enabled regions/global endpoints and the existing credential-report permission."
   }
   assert {
@@ -144,12 +126,7 @@ run "host_core_permissions_and_digest_binding" {
     error_message = "Worker task definitions must only be launched in the own cluster."
   }
   assert {
-    condition = (
-      jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].image == "${aws_ecr_repository.steampipe[0].repository_url}@${var.steampipe_image_digest}" &&
-      jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].image == "${aws_ecr_repository.worker[0].repository_url}@${var.worker_image_digest}" &&
-      { for e in jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].environment : e.name => e.value }["INVENTORY_HOST_ONLY"] == "true" &&
-      { for e in jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].environment : e.name => e.value }["EXPECTED_HOST_ACCOUNT_ID"] == "123456789012"
-    )
+    condition     = (jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].image == "${aws_ecr_repository.steampipe[0].repository_url}@${var.steampipe_image_digest}" && jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].image == "${aws_ecr_repository.worker[0].repository_url}@${var.worker_image_digest}" && { for e in jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].environment : e.name => e.value }["INVENTORY_HOST_ONLY"] == "true" && { for e in jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].environment : e.name => e.value }["EXPECTED_HOST_ACCOUNT_ID"] == "123456789012")
     error_message = "Runtime tasks must bind supplied digests and explicitly enable the verified host guard."
   }
   assert {
@@ -173,12 +150,7 @@ run "legacy_tag_and_scope_behavior" {
     steampipe_enabled    = true
   }
   assert {
-    condition = (
-      jsondecode(aws_iam_role_policy.official_mcp_credentials[0].policy).Statement[0].Action == ["bedrock-agentcore:GetResourceApiKey"] &&
-      length(jsondecode(aws_iam_role_policy.official_mcp_credentials[0].policy).Statement[0].Resource) == 7 &&
-      contains(jsondecode(aws_iam_role_policy.official_mcp_credentials[0].policy).Statement[0].Resource,
-      "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:token-vault/default/apikeycredentialprovider/awsops-v2-datadog-mcp")
-    )
+    condition     = (jsondecode(aws_iam_role_policy.official_mcp_credentials[0].policy).Statement[0].Action == ["bedrock-agentcore:GetResourceApiKey"] && length(jsondecode(aws_iam_role_policy.official_mcp_credentials[0].policy).Statement[0].Resource) == 7 && contains(jsondecode(aws_iam_role_policy.official_mcp_credentials[0].policy).Statement[0].Resource, "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:token-vault/default/apikeycredentialprovider/awsops-v2-datadog-mcp"))
     error_message = "Official MCP must retain scoped API-key use without control-plane authority."
   }
   assert {
@@ -192,17 +164,7 @@ run "legacy_tag_and_scope_behavior" {
     error_message = "Official MCP needs only its own gateway workload-token identity, not runtime/global token authority."
   }
   assert {
-    condition = (
-      jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].image == "${aws_ecr_repository.steampipe[0].repository_url}:${var.steampipe_image_tag}" &&
-      jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].image == "${aws_ecr_repository.worker[0].repository_url}:${var.worker_image_tag}" &&
-      !contains([for e in jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].environment : e.name], "INVENTORY_HOST_ONLY") &&
-      !contains([for e in jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].environment : e.name], "EXPECTED_HOST_ACCOUNT_ID") &&
-      alltrue([for p in [
-        aws_iam_role_policy.steampipe_task[0].policy,
-        aws_iam_role_policy.agent_lambda_read[0].policy,
-        aws_iam_role_policy.agent_lambda_reader_scoped[0].policy,
-      ] : contains(flatten([for s in jsondecode(p).Statement : s.Action]), "sts:AssumeRole")])
-    )
+    condition     = (jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].image == "${aws_ecr_repository.steampipe[0].repository_url}:${var.steampipe_image_tag}" && jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].image == "${aws_ecr_repository.worker[0].repository_url}:${var.worker_image_tag}" && !contains([for e in jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].environment : e.name], "INVENTORY_HOST_ONLY") && !contains([for e in jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].environment : e.name], "EXPECTED_HOST_ACCOUNT_ID") && alltrue([for p in [aws_iam_role_policy.steampipe_task[0].policy, aws_iam_role_policy.agent_lambda_read[0].policy, aws_iam_role_policy.agent_lambda_reader_scoped[0].policy, ] : contains(flatten([for s in jsondecode(p).Statement : s.Action]), "sts:AssumeRole")]))
     error_message = "Null digests and host-only=false must preserve legacy behavior."
   }
 }

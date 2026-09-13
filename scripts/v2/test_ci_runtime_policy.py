@@ -240,6 +240,12 @@ class RuntimePolicyTests(unittest.TestCase):
             "count_expression": {"references": ["local.we"]},
         }]}}
         self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        agent = self.change('aws_lambda_function.agent["inventory-read"]', "aws_lambda_function", None, ["delete"])
+        agent["change"]["before"] = {"arn": f"arn:aws:lambda:ap-northeast-2:{ACCOUNT}:function:awsops-dev-inventory-read"}
+        agent_plan = self.plan([agent], retire=True)
+        agent_plan["configuration"] = {"root_module": {"resources": [{
+            "address": "aws_lambda_function.agent", "for_each_expression": {"references": ["local.agent_lambdas"]}}]}}
+        self.module.check_plan(agent_plan, "dev", "full", ACCOUNT)
         for kind in ("aws_ecs_service", "aws_rds_cluster"):
             unrelated = self.change(f"{kind}.unrelated[0]", kind, None, ["delete"])
             unrelated["change"]["before"] = {"service_registries": [{"registry_arn": "foreign"}]}
@@ -256,18 +262,26 @@ class RuntimePolicyTests(unittest.TestCase):
             "container_definitions": json.dumps([{"name": "web", "image": "reviewed-image", "environment": [
                 {"name": "HOSTNAME", "value": "0.0.0.0"}, {"name": "INV_SYNC_FUNCTION", "value": "awsops-dev-inv-sync"},
                 {"name": "INVENTORY_HOST_ONLY", "value": "true"}, {"name": "JOBS_QUEUE_URL", "value": "old-queue"},
+                {"name": "PROJECT", "value": "awsops-dev"}, {"name": "PROJECT", "value": "awsops-dev"},
             ]}]),
         }
         after = copy.deepcopy(before)
         containers = json.loads(after["container_definitions"])
         containers[0]["environment"] = [
             {"name": "HOSTNAME", "value": "0.0.0.0"}, {"name": "INV_SYNC_FUNCTION", "value": ""},
+            {"name": "PROJECT", "value": "awsops-dev"},
         ]
         after["container_definitions"] = json.dumps(containers)
         change = self.change("aws_ecs_task_definition.web", "aws_ecs_task_definition", after, ["create", "delete"])
         change["change"]["before"] = before
         plan = self.plan([change], retire=True)
         self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        bad = copy.deepcopy(plan)
+        data = json.loads(bad["resource_changes"][0]["change"]["before"]["container_definitions"])
+        data[0]["environment"][-2]["value"] = "conflicting-project"
+        bad["resource_changes"][0]["change"]["before"]["container_definitions"] = json.dumps(data)
+        with self.assertRaises(ValueError):
+            self.module.check_plan(bad, "dev", "full", ACCOUNT)
         cluster = f"arn:aws:ecs:ap-northeast-2:{ACCOUNT}:cluster/awsops-dev"
         plan["planned_values"]["root_module"]["resources"].append({
             "address": "aws_ecs_cluster.main", "values": {"arn": cluster}})
