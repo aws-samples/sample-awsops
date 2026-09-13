@@ -359,6 +359,45 @@ class DnsPolicyTests(unittest.TestCase):
             self.assertEqual(aws.call_count, 1)
             self.assertEqual(aws.call_args.args[:2], ("acm", "describe-certificate"))
 
+    def test_selected_certificate_reports_the_failed_requirement(self):
+        cases = [
+            ({"Status": "PENDING_VALIDATION"}, "status is not ISSUED"),
+            ({"KeyAlgorithm": "RSA_1024"}, "unsupported key algorithm"),
+            ({"Type": "PRIVATE"}, "not a public certificate"),
+            ({"CertificateAuthorityArn": "private-ca"}, "not a public certificate"),
+            ({"NotBefore": "2027-01-01T00:00:00+00:00"}, "not yet valid"),
+            ({"NotAfter": "2026-09-13T00:00:00+00:00"}, "remaining validity is 24 hours or less"),
+            ({"NotAfter": None}, "invalid validity timestamps"),
+            ({"SubjectAlternativeNames": ["other.invalid"]}, "SAN coverage"),
+            ({"CertificateArn": ARN.replace("11111111", "99999999")}, "different certificate"),
+        ]
+        for override, reason in cases:
+            with self.subTest(reason=reason):
+                module = self.module()
+                with patch.object(module, "datetime", wraps=datetime) as clock, \
+                        patch.object(module, "aws", return_value={
+                            "Certificate": {**CERTIFICATE, **override},
+                        }) as aws:
+                    clock.now.return_value = NOW
+                    with self.assertRaises(ValueError) as failure:
+                        module.find_certificate(["dev.example.com"], "us-east-1", ACCOUNT, ARN)
+                self.assertIn(reason, str(failure.exception))
+                self.assertIn("do not change validation DNS", str(failure.exception))
+                self.assertNotIn(ARN, str(failure.exception))
+                self.assertNotIn("other.invalid", str(failure.exception))
+                self.assertEqual(aws.call_count, 1)
+
+    def test_selected_certificate_distinguishes_trust_failure_from_acm_metadata(self):
+        module = self.module()
+        with patch.object(module, "datetime", wraps=datetime) as clock, \
+                patch.object(module, "aws", side_effect=[
+                    {"Certificate": CERTIFICATE},
+                    {"Certificate": "leaf", "CertificateChain": "chain"},
+                ]), patch.object(module, "verify_chain", return_value=False):
+            clock.now.return_value = NOW
+            with self.assertRaisesRegex(ValueError, "public trust or TLS hostname verification failed"):
+                module.find_certificate(["dev.example.com"], "us-east-1", ACCOUNT, ARN)
+
     def test_invalid_explicit_arn_is_rejected_before_aws(self):
         module = self.module()
         for arn in ("garbage", "$(printf injected)", ARN.replace(ACCOUNT, "999999999999"),

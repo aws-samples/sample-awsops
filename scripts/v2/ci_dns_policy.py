@@ -59,26 +59,36 @@ def timestamp(value):
     return parsed
 
 
-def eligible_certificate(cert, domains, region, account, now):
+def certificate_problem(cert, domains, region, account, now):
+    """Return only fixed diagnostic text; never echo unrelated ACM metadata."""
     try:
         validate_arn(cert.get("CertificateArn"), region, account)
     except ValueError:
-        return False
-    if cert.get("Status") != "ISSUED" or cert.get("KeyAlgorithm") not in KEY_TYPES:
-        return False
+        return "certificate ARN does not match the deployment account or Region"
+    if cert.get("Status") != "ISSUED":
+        return "certificate status is not ISSUED"
+    if cert.get("KeyAlgorithm") not in KEY_TYPES:
+        return "unsupported key algorithm"
     if cert.get("Type") not in {"AMAZON_ISSUED", "IMPORTED"} or cert.get("CertificateAuthorityArn"):
-        return False
+        return "not a public certificate"
     try:
-        if not (timestamp(cert.get("NotBefore")) <= now
-                and now + MIN_REMAINING < timestamp(cert.get("NotAfter"))):
-            return False
+        if timestamp(cert.get("NotBefore")) > now:
+            return "certificate is not yet valid"
+        if now + MIN_REMAINING >= timestamp(cert.get("NotAfter")):
+            return "remaining validity is 24 hours or less"
     except (ValueError, TypeError, AttributeError, OverflowError):
-        return False
+        return "missing or invalid validity timestamps"
     names = cert.get("SubjectAlternativeNames", [])
-    return isinstance(names, list) and all(
+    if not (isinstance(names, list) and all(
         any(isinstance(name, str) and domain_matches(name, host) for name in names)
         for host in domains
-    )
+    )):
+        return "SAN coverage does not include all configured hostnames"
+    return None
+
+
+def eligible_certificate(cert, domains, region, account, now):
+    return certificate_problem(cert, domains, region, account, now) is None
 
 
 def aws(*arguments):
@@ -123,7 +133,9 @@ def find_certificate(domains, region, account, explicit_arn="", *, excluded=(), 
     if arn in excluded:
         raise ValueError("Certificate is Terraform-managed; leave its external ARN input unset (JSON null).")
     cert = aws("acm", "describe-certificate", "--region", region, "--certificate-arn", arn)["Certificate"]
-    if cert.get("CertificateArn") == arn and eligible_certificate(cert, domains, region, account, datetime.now(timezone.utc)):
+    problem = ("ACM returned a different certificate" if cert.get("CertificateArn") != arn else
+               certificate_problem(cert, domains, region, account, datetime.now(timezone.utc)))
+    if problem is None:
         response = aws(
             "acm", "get-certificate", "--region", region, "--certificate-arn", arn,
         )
@@ -131,9 +143,9 @@ def find_certificate(domains, region, account, explicit_arn="", *, excluded=(), 
             print(f"Verified certificate suffix {arn[-8:]} ({cert['KeyAlgorithm']}); "
                   f"expires {cert['NotAfter']}", file=sys.stderr)
             return arn
+        problem = "public trust or TLS hostname verification failed"
     raise ValueError(
-        f"Selected certificate is not public, issued and matching in {region} for {', '.join(domains)}; "
-        "at least 24 hours of validity and a trusted chain are required. "
+        f"Selected certificate rejected in {region} for {', '.join(domains)}: {problem}. "
         "Resolve the selected certificate's availability or defer HTTPS deployment; "
         "do not change validation DNS."
     )
