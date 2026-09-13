@@ -92,6 +92,7 @@ class DatabaseDiagnosticsTests(unittest.TestCase):
         account = self.config()["account"]
         documents = {
             "rds": {"DBClusters": [{"Status": "available", "IAMDatabaseAuthenticationEnabled": True,
+                "ServerlessV2ScalingConfiguration": {"MinCapacity": 0.5, "MaxCapacity": 2},
                 "Endpoint": "PRIVATE_ENDPOINT", "DatabaseName": "awsops", "DbClusterResourceId": "cluster-example",
                 "VpcSecurityGroups": [{"VpcSecurityGroupId": "sg-db"}]}]},
             "ecs": {"services": [{"taskDefinition": "PRIVATE_DEFINITION", "runningCount": 1,
@@ -141,6 +142,7 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
             ]},
             ("rds", "describe-db-clusters"): {"DBClusters": [{
                 "Status": "available", "IAMDatabaseAuthenticationEnabled": True,
+                "ServerlessV2ScalingConfiguration": {"MinCapacity": 0.5, "MaxCapacity": 2},
                 "Endpoint": self.private, "DatabaseName": "awsops",
                 "DbClusterResourceId": "cluster-example",
                 "VpcSecurityGroups": [{"VpcSecurityGroupId": "sg-db"}],
@@ -180,6 +182,12 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
                                'FATAL: role "awsops_web" no pg_hba.conf entry, SSL off PRIVATE_FIXTURE_VALUE\n',
                 "Marker": "opaque-tail-position", "AdditionalDataPending": False,
             },
+            ("cloudwatch", "get-metric-data"): {"MetricDataResults": [
+                {"Id": key, "StatusCode": "Complete", "Timestamps": [], "Values": []}
+                for key in ("iam_requests", "iam_success", "iam_failure", "iam_invalid_token",
+                            "iam_permissions", "iam_throttling", "iam_server_error",
+                            "cpu", "free_memory", "capacity")
+            ]},
         }
 
     def failed_read(self, operation, code="AccessDenied"):
@@ -674,3 +682,172 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
             else:
                 self.fail("Read-only violation was swallowed as unavailable metadata")
             process.assert_not_called()
+
+    def test_rds_metrics_single_bounded_request_preserves_exact_series(self):
+        documents = self.documents[("cloudwatch", "get-metric-data")]["MetricDataResults"]
+        for item in documents:
+            item.update(Timestamps=["1970-01-01T00:23:00Z", 1440], Values=[1, 2],
+                        Label=self.private, Messages=[])
+        result, _ = self.invoke()
+        self.assertIn("rds_metrics", result)
+        metrics = result["rds_metrics"]
+        self.assertEqual(metrics["status"], "available")
+        self.assertEqual((metrics["window_start_ms"], metrics["window_end_ms"]), (1_380_000, 4_980_000))
+        self.assertEqual(metrics["probe_outcome"], "unknown")
+        self.assertTrue(metrics["no_error_inference"])
+        self.assertEqual(metrics["series"]["iam_requests"]["points"],
+                         [{"timestamp_ms": 1_380_000, "value": 1}, {"timestamp_ms": 1_440_000, "value": 2}])
+        calls = [argv for argv in self.calls if argv[1:3] == ["cloudwatch", "get-metric-data"]]
+        self.assertEqual(len(calls), 1)
+        argv = calls[0]
+        self.assertIn("--no-paginate", argv)
+        self.assertNotIn("--next-token", argv)
+        self.assertEqual(argv[argv.index("--max-datapoints") + 1], "1000")
+        queries = json.loads(argv[argv.index("--metric-data-queries") + 1])
+        expected = {
+            "iam_requests": ("IamDbAuthConnectionRequests", "Sum"),
+            "iam_success": ("IamDbAuthConnectionSuccess", "Sum"),
+            "iam_failure": ("IamDbAuthConnectionFailure", "Sum"),
+            "iam_invalid_token": ("IamDbAuthConnectionFailureInvalidToken", "Sum"),
+            "iam_permissions": ("IamDbAuthConnectionFailureInsufficientPermissions", "Sum"),
+            "iam_throttling": ("IamDbAuthConnectionFailureThrottling", "Sum"),
+            "iam_server_error": ("IamDbAuthConnectionFailureServerError", "Sum"),
+            "cpu": ("CPUUtilization", "Average"), "free_memory": ("FreeableMemory", "Minimum"),
+            "capacity": ("ServerlessDatabaseCapacity", "Average"),
+        }
+        self.assertEqual({q["Id"]: (q["MetricStat"]["Metric"]["MetricName"], q["MetricStat"]["Stat"])
+                          for q in queries}, expected)
+        for query in queries:
+            stat = query["MetricStat"]
+            self.assertEqual(stat["Period"], 60)
+            self.assertEqual(stat["Metric"]["Namespace"], "AWS/RDS")
+            self.assertEqual(stat["Metric"]["Dimensions"],
+                             [{"Name": "DBInstanceIdentifier", "Value": "awsops-dev-aurora-1"}])
+
+    def test_missing_empty_and_failed_metrics_never_imply_healthy(self):
+        response = self.documents[("cloudwatch", "get-metric-data")]
+        response["MetricDataResults"] = [
+            {"Id": "iam_requests", "StatusCode": "Complete", "Timestamps": [], "Values": []},
+            {"Id": "iam_success", "StatusCode": "Forbidden", "Timestamps": [], "Values": [],
+             "Messages": [{"Code": self.private, "Value": self.private}]},
+            {"Id": "cpu", "StatusCode": "Complete", "Timestamps": [1440], "Values": [0]},
+        ]
+        result, _ = self.invoke()
+        self.assertIn("rds_metrics", result)
+        metrics = result["rds_metrics"]
+        self.assertEqual(metrics["status"], "partial")
+        self.assertTrue(metrics["series"]["iam_requests"]["missing"])
+        self.assertEqual(metrics["series"]["iam_requests"]["status_code"], "Complete")
+        self.assertEqual(metrics["series"]["iam_success"]["status_code"], "Forbidden")
+        self.assertTrue(metrics["series"]["iam_success"]["messages_present"])
+        self.assertIsNone(metrics["series"]["iam_failure"]["status_code"])
+        self.assertFalse(metrics["series"]["cpu"]["missing"])
+        self.assertEqual(metrics["series"]["cpu"]["points"][0]["value"], 0)
+        self.assertEqual(metrics["probe_outcome"], "unknown")
+        op = ("cloudwatch", "get-metric-data")
+        self.documents[op] = self.failed_read(op)
+        result, _ = self.invoke()
+        self.assertEqual(result["rds_metrics"]["status"], "unavailable")
+        self.assertEqual(result["logs"]["events"], 1)
+        self.assertTrue(result["configuration"]["user_matches"])
+
+    def test_metric_pagination_status_and_messages_are_projected_without_raw_data(self):
+        self.documents[("cloudwatch", "get-metric-data")] = {
+            "NextToken": self.private, "Messages": [{"Value": self.private}],
+            "MetricDataResults": [
+                {"Id": "iam_failure", "StatusCode": "PartialData", "Timestamps": [1440], "Values": [1],
+                 "Label": self.private},
+                {"Id": "iam_server_error", "StatusCode": "InternalError", "Timestamps": [], "Values": []},
+                {"Id": "iam_success", "StatusCode": self.private, "Timestamps": [], "Values": []},
+                {"Id": self.private, "StatusCode": "Complete", "Timestamps": [1440], "Values": [1]},
+            ]}
+        result, _ = self.invoke()
+        self.assertIn("rds_metrics", result)
+        metrics = result["rds_metrics"]
+        self.assertTrue(metrics["truncated"])
+        self.assertTrue(metrics["messages_present"])
+        self.assertEqual(metrics["unexpected_results"], 1)
+        self.assertEqual(metrics["series"]["iam_failure"]["status_code"], "PartialData")
+        self.assertEqual(metrics["series"]["iam_failure"]["status"], "partial")
+        self.assertEqual(metrics["series"]["iam_server_error"]["status_code"], "InternalError")
+        self.assertEqual(metrics["series"]["iam_success"]["status_code"], "Unknown")
+        self.assertEqual(sum(argv[1:3] == ["cloudwatch", "get-metric-data"] for argv in self.calls), 1)
+
+    def test_malformed_metric_points_are_not_guessed_or_published(self):
+        self.documents[("cloudwatch", "get-metric-data")] = {"MetricDataResults": [
+            {"Id": "iam_requests", "StatusCode": "Complete",
+             "Timestamps": [1440, 1500, 1560, 1620, 1680, 1740],
+             "Values": [1, float("nan"), -1, True, self.private, float("inf")]},
+            {"Id": "iam_success", "StatusCode": "Complete", "Timestamps": [1440, 1500], "Values": [1]},
+            {"Id": "iam_failure", "StatusCode": "Complete", "Timestamps": [0, 4980, 1440], "Values": [1, 1, 2]},
+        ]}
+        result, _ = self.invoke()
+        self.assertIn("rds_metrics", result)
+        series = result["rds_metrics"]["series"]
+        self.assertEqual(series["iam_requests"]["points"], [{"timestamp_ms": 1_440_000, "value": 1}])
+        self.assertTrue(series["iam_requests"]["invalid_data"])
+        self.assertEqual(series["iam_success"]["points"], [])
+        self.assertTrue(series["iam_success"]["invalid_data"])
+        self.assertEqual(series["iam_failure"]["points"], [{"timestamp_ms": 1_440_000, "value": 2}])
+        self.assertEqual(result["rds_metrics"]["status"], "partial")
+
+    def test_metric_point_count_and_duplicate_ids_fail_partial(self):
+        points = list(range(1380, 4980, 60))
+        self.documents[("cloudwatch", "get-metric-data")] = {"MetricDataResults": [
+            {"Id": "iam_requests", "StatusCode": "Complete", "Timestamps": points + points, "Values": [1] * 120},
+            {"Id": "iam_requests", "StatusCode": "Complete", "Timestamps": [1440], "Values": [99]},
+        ]}
+        result, _ = self.invoke()
+        self.assertIn("rds_metrics", result)
+        item = result["rds_metrics"]["series"]["iam_requests"]
+        self.assertLessEqual(len(item["points"]), 60)
+        self.assertTrue(item["invalid_data"])
+        self.assertEqual(result["rds_metrics"]["status"], "partial")
+
+    def test_serverless_capacity_bounds_are_numeric_or_unknown(self):
+        result, _ = self.invoke()
+        config = result["configuration"]
+        self.assertEqual(config.get("serverless_min_acu"), 0.5)
+        self.assertEqual(config.get("serverless_max_acu"), 2)
+        scaling = self.documents[("rds", "describe-db-clusters")]["DBClusters"][0]["ServerlessV2ScalingConfiguration"]
+        scaling.update(MinCapacity=self.private, MaxCapacity=float("inf"))
+        result, _ = self.invoke()
+        self.assertIsNone(result["configuration"]["serverless_min_acu"])
+        self.assertIsNone(result["configuration"]["serverless_max_acu"])
+
+    def test_server_lifecycle_only_accepts_anchored_messages_with_web_identity(self):
+        prefix = "2026-09-13 12:00:00 UTC:client:awsops_web@awsops:[7]:"
+        self.documents[("rds", "download-db-log-file-portion")]["LogFileData"] = "\n".join([
+            prefix + 'LOG: connection authenticated: identity="awsops_web" method=pam',
+            prefix + "LOG: connection authorized: user=awsops_web database=awsops",
+            prefix + "FATAL: client disconnected during authentication",
+            prefix + "LOG: could not send data to client: Broken pipe",
+            prefix + "LOG: could not receive data from client: Connection reset by peer",
+        ])
+        result, _ = self.invoke()
+        server = result["server_logs"]
+        self.assertIn("lifecycle_counts", server)
+        self.assertEqual(server["lifecycle_counts"], {
+            "authenticated": 1, "authorized": 1, "client_disconnected_during_auth": 1,
+            "broken_pipe": 1, "connection_reset": 1})
+        self.assertEqual(server["matching_lines"], 1)
+        self.assertEqual(server["probe_outcome"], "unknown")
+
+    def test_sql_context_tokens_and_other_users_cannot_fabricate_lifecycle_outcomes(self):
+        prefix = "2026-09-13 12:00:00 UTC:client:awsops_web@awsops:[7]:"
+        self.documents[("rds", "download-db-log-file-portion")]["LogFileData"] = "\n".join([
+            prefix + "LOG: statement: SELECT 'connection authorized: user=awsops_web'",
+            prefix + 'CONTEXT: connection authenticated: identity="awsops_web" method=pam',
+            prefix + 'ERROR: syntax error at or near "client disconnected during authentication"',
+            prefix + "LOG: statement: SELECT 'could not send data to client: Broken pipe'",
+            prefix.replace("awsops_web@", "another_role@") + 'LOG: could not receive data from client: Connection reset by peer',
+            prefix + 'LOG: connection authorized: user=another_role database=awsops',
+            prefix + 'LOG: connection authenticated: identity="another_role" method=pam',
+            "LOG: statement: SELECT 'awsops_web connection authorized'",
+            "LOG: connection authorized: user=awsops_web database=awsops",
+            'LOG: connection authenticated: identity="awsops_web" method=pam',
+            prefix + "LOG: statement: SELECT E'line one\nLOG: connection authorized: user=awsops_web database=awsops'",
+        ])
+        result, _ = self.invoke()
+        self.assertIn("lifecycle_counts", result["server_logs"])
+        self.assertEqual(result["server_logs"]["lifecycle_counts"], {})

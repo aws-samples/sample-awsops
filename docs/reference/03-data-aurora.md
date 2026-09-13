@@ -120,6 +120,13 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   제한된 웹 오류/timing, 서비스 대상 구성 비교, 최근 PostgreSQL 파일 최대 2개의 severity-filtered
   tail을 고정된 안전한 JSON으로 공개 Actions 로그/요약에 게시한다. 부분/실패 조회는 참고용이며
   독립 결과를 유지한다. ADR-005 읽기 전용 범위로 DB 연결·새 IAM 권한·AWS 변경·준비 검사 우회가 없다.
+  The same optional read projection batches seven IAM-auth outcome metrics and three pressure
+  metrics for the configured writer in one bounded request; metadata exposes configured min/max
+  ACUs. Anchored server lifecycle counts remain separate from error counts. Missing data and
+  individual-probe outcomes stay unknown; no timeout/auth/capacity setting is changed.
+  같은 선택적 읽기 투영에서 writer IAM 인증 지표 7개·부하 지표 3개를 제한된 단일 요청으로 읽고
+  설정된 최소/최대 ACU를 표시한다. 고정 메시지 시작 패턴의 서버 lifecycle 건수는 오류 건수와
+  구분한다. 누락 데이터·개별 probe 결과는 미확인이며 timeout·인증·용량 설정은 바꾸지 않는다.
 - `terraform/foundation/ci-migrations.tf`, `.github/workflows/deploy-migrations.yml`,
   `scripts/v2/ci/run-migration.mjs` — default-off manual development migration task,
   scoped secret-read IAM and verified private execution (ADR-005 operator boundary).

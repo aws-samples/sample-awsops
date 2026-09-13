@@ -38,7 +38,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   Only this optional step tolerates failure; DNS/CI/readiness gates remain required.
   Retain web-log/configuration/server-tail results independently with unavailable/partial flags.
   Distinguish unavailable sources from unknown derived comparisons; early input/context/identity
-  failure returns only `{"status":"unavailable"}`, not three empty sections.
+  failure returns only `{"status":"unavailable"}`, not fabricated empty sections.
   Empty samples explicitly expose `no_matching_events` and `no_error_inference`; zero counts
   in any status are not health proof. Interpretation requires a known probe in the returned window.
   Successful task-definition reads stay source-available for missing/malformed web containers;
@@ -52,6 +52,11 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   exactly non-error-severity lines mentioning `awsops_web`; lines for other database roles are
   ignored. Capped/failed reads retaining evidence are partial; download failure retains metadata.
   Discarded milestones and regex text shortened to 4,096 characters also mark samples partial.
+  The same opt-in batches IAM-auth outcome and pressure metrics in one bounded read for the
+  configured first instance; preserve IDs/status/missing data and configured numeric ACU bounds.
+  Every lifecycle observation needs the web user in a recognized RDS prefix and an anchored
+  message, separately from error counts. Metrics
+  aggregate IAM clients and never prove an individual probe outcome or authorize tuning.
   Publish fixed projections only, including on Terraform/AWS failures; never raw logs/filenames.
   Service-target/declaration comparisons and error categories are hypotheses, not proof of
   running revisions, effective access, runtime credentials, connectivity or readiness.
@@ -79,7 +84,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   blocked too. No private-DNS exception. Future authorized cutovers explicitly set
   `allow_dns_changes=true` on both plan and apply dispatches; examples do not grant permission.
 - Public summaries include managed/external certificate suffixes, publication, change counts/
-  addresses and active-rollout public zone name/ID/NS. Never expose full ARNs, account IDs or
+  addresses and active-rollout public zone name/ID/NS; diagnostics additionally permit bounded
+  metric values. Never expose full ARNs, account IDs or
   raw configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
   CLI; health is liveness only. DB/auth checks precede service A publication.
 - Offline Terraform checks use `bash scripts/v2/terraform-test.sh` from the repo root:

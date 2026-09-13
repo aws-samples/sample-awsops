@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Web database connection-phase diagnostics: failed physical connections log only the current phase and elapsed milestone timings across TCP, TLS, IAM token generation and PostgreSQL authentication, with required PostgreSQL/TLS regression coverage.
+- Web database connection-phase diagnostics: failed physical connections log only the current phase and elapsed milestone timings across TCP, TLS, IAM token generation and PostgreSQL authentication, with required PostgreSQL/TLS regression coverage. Optional manual dev diagnostics add bounded writer IAM-auth and pressure metrics, configured ACU bounds and fixed server lifecycle observations; missing data and individual-probe outcomes remain unknown.
 - Deferred-DNS deployment: explicit same-branch/SHA saved plans preserve existing certificate ownership and service records, verify operator-selected or attached external certificates without account-wide selection, block all public/private DNS changes and routine validation-CNAME retirement, check ECR before builds, and share Host/SNI-preserving smoke tests before service DNS publication. Optional development verification resolves effective credentials privately and requires successful Cognito login plus an authenticated database response.
 - Private database migration runtime: verified RDS TLS, in-memory credentials, atomic one-shot empty-database initialization and immutable baseline/ULID checksums. Migration audit notices and repair guidance remain readable without exposing connection or credential errors. Failed reader-output lookup, enabled sync with a missing role, elevated reader attributes, and connection/cleanup errors block migration and deployment.
   A default-off manual development workflow builds a reviewed ARM64 image, runs one private Fargate task and verifies the stopped task, image digest and successful exit.
@@ -647,7 +647,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 
 ### Added
 
-- 웹 DB 연결 단계 진단: 물리 연결 실패 시 TCP·TLS·IAM 토큰 생성·PostgreSQL 인증의 현재 단계와 단계별 경과 시간만 기록하며, 필수 PostgreSQL/TLS 회귀 테스트로 검증합니다.
+- 웹 DB 연결 단계 진단: 물리 연결 실패 시 TCP·TLS·IAM 토큰 생성·PostgreSQL 인증의 현재 단계와 단계별 경과 시간만 기록하며, 필수 PostgreSQL/TLS 회귀 테스트로 검증합니다. 선택적 수동 dev 진단에 제한된 writer IAM 인증·부하 지표, 설정된 ACU 범위와 고정 서버 lifecycle 관측을 추가하며, 누락 데이터와 개별 probe 결과는 미확인으로 유지합니다.
 - DNS 보류 배포: 같은 브랜치·SHA의 명시적 저장 계획으로 기존 인증서 소유권과 서비스 레코드를 보존하고, 계정 전체 검색 없이 운영자가 지정했거나 이미 연결된 외부 인증서를 검증합니다. 모든 공용·사설 DNS 변경 및 일반 배포의 검증 CNAME 삭제·교체를 차단하고, 빌드 전 ECR 확인과 서비스 DNS 게시 전 Host·SNI를 유지하는 공통 스모크 테스트를 제공합니다. 개발 환경의 선택적 검증은 유효 자격증명을 비공개로 평가하고 실제 Cognito 로그인과 인증된 DB 응답까지 확인합니다.
 - Private DB migration runtime: RDS TLS 검증·메모리 내 자격증명·빈 DB의 원자적 일회성 초기화·불변 baseline/ULID checksum을 제공합니다. 연결·자격증명 오류 원문을 노출하지 않으면서 migration 감사 notice와 복구 안내를 보존합니다. reader output 조회 실패·동기화 활성 상태의 롤 부재·elevated reader 속성·연결 및 정리 오류는 migration과 배포를 차단합니다.
   기본 비활성 수동 개발 워크플로는 검토된 ARM64 이미지를 빌드하고 사설 Fargate task 하나를 실행하며 종료 상태·이미지 digest·성공 종료 코드를 확인합니다.

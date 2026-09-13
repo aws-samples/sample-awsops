@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7670ff5b55cf · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f65576368385 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -41,6 +41,15 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   definition, not running revisions; credential declarations do not prove runtime values.
   Exact inline-Allow/SG comparisons do not prove effective access or connectivity. Never
   waive authenticated DB/login readiness or expose Terraform/AWS error details.
+
+- The existing manual diagnostics batches seven IAM-auth Sum metrics plus CPU Average,
+  free-memory Minimum and capacity Average in one bounded CloudWatch read for the configured
+  first instance. Preserve fixed IDs, status/missing/invalid data and at most 60 minute points
+  per series; never remote labels/messages/tokens. Configured min/max ACUs are numeric or null.
+  Metrics aggregate IAM clients: individual probe outcomes remain unknown; no tuning is authorized.
+  Server lifecycle counts need both a recognized RDS prefix identifying the web user and an
+  anchored message. Bare LOG/SQL/DETAIL/CONTEXT text cannot fabricate lifecycle observations;
+  lifecycle observations remain separate from existing error counters and never prove one probe.
 - `ci_plan_context.py` accepts only successful explicit same-repo/branch/SHA plan dispatches.
   PR/push plans are advisory. `ci_dns_policy.py` preserves managed certificate ownership and
   service aliases; blocks all public/private DNS mutations unless authorized, including Cloud

@@ -1,5 +1,6 @@
 """Advisory dev diagnostics: project read responses into a fixed public schema."""
 from collections import Counter
+from datetime import datetime, timezone
 import json
 import math
 import os
@@ -20,7 +21,20 @@ READ_OPERATIONS = frozenset({
     ("ecs", "describe-task-definition"), ("ec2", "describe-security-groups"),
     ("iam", "get-role-policy"),
     ("rds", "describe-db-log-files"), ("rds", "download-db-log-file-portion"),
+    ("cloudwatch", "get-metric-data"),
 })
+RDS_METRICS = {
+    "iam_requests": ("IamDbAuthConnectionRequests", "Sum"),
+    "iam_success": ("IamDbAuthConnectionSuccess", "Sum"),
+    "iam_failure": ("IamDbAuthConnectionFailure", "Sum"),
+    "iam_invalid_token": ("IamDbAuthConnectionFailureInvalidToken", "Sum"),
+    "iam_permissions": ("IamDbAuthConnectionFailureInsufficientPermissions", "Sum"),
+    "iam_throttling": ("IamDbAuthConnectionFailureThrottling", "Sum"),
+    "iam_server_error": ("IamDbAuthConnectionFailureServerError", "Sum"),
+    "cpu": ("CPUUtilization", "Average"),
+    "free_memory": ("FreeableMemory", "Minimum"),
+    "capacity": ("ServerlessDatabaseCapacity", "Average"),
+}
 READ_ERRORS = (ValueError, TypeError, AttributeError, KeyError, IndexError,
                StopIteration, OSError, subprocess.SubprocessError)
 CREDENTIAL_NAMES = frozenset({
@@ -56,6 +70,128 @@ CONNECTION_MILESTONES = (
 
 def valid_duration(value):
     return type(value) in (int, float) and 0 <= value <= 3_600_000 and math.isfinite(value)
+
+
+def bounded_number(value, maximum=1e15):
+    return type(value) in (int, float) and 0 <= value <= maximum and math.isfinite(value)
+
+
+def metric_timestamp_ms(value):
+    try:
+        if isinstance(value, str) and len(value) <= 40:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return None
+            value = parsed.timestamp()
+        return round(value * 1000) if bounded_number(value) else None
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+
+
+def rds_metric_snapshot(config, aws, now_ms):
+    # Complete minute boundaries avoid comparing a partly elapsed resource bucket.
+    end_ms = now_ms // 60_000 * 60_000
+    start_ms = max(0, end_ms - 3_600_000)
+    series = {
+        key: {"metric_name": name, "statistic": stat, "status": "unavailable",
+              "status_code": None, "missing": True, "messages_present": False,
+              "invalid_data": False, "points": []}
+        for key, (name, stat) in RDS_METRICS.items()
+    }
+    summary = {
+        "status": "unavailable", "scope": "configured_instance_all_iam_clients",
+        "window_start_ms": start_ms, "window_end_ms": end_ms, "period_seconds": 60,
+        "no_error_inference": True, "probe_outcome": "unknown", "truncated": False,
+        "messages_present": False, "unexpected_results": 0, "series": series,
+    }
+    queries = [{
+        "Id": key, "ReturnData": True, "MetricStat": {
+            "Metric": {"Namespace": "AWS/RDS", "MetricName": name,
+                       "Dimensions": [{"Name": "DBInstanceIdentifier",
+                                       "Value": f"{config['project']}-aurora-1"}]},
+            "Period": 60, "Stat": stat,
+        },
+    } for key, (name, stat) in RDS_METRICS.items()]
+    try:
+        response = aws([
+            "cloudwatch", "get-metric-data", "--metric-data-queries", json.dumps(queries),
+            "--start-time", datetime.fromtimestamp(start_ms / 1000, timezone.utc).isoformat(),
+            "--end-time", datetime.fromtimestamp(end_ms / 1000, timezone.utc).isoformat(),
+            "--scan-by", "TimestampAscending", "--max-datapoints", "1000",
+        ])
+        results = response["MetricDataResults"]
+        if not isinstance(results, list):
+            raise ValueError("Invalid metric results")
+        summary["truncated"] = bool(response.get("NextToken")) or len(results) > 20
+        summary["messages_present"] = bool(response.get("Messages"))
+    except READ_ERRORS:
+        return summary
+    seen = set()
+    for result in results[:20]:
+        key = result.get("Id") if isinstance(result, dict) else None
+        if not isinstance(key, str) or key not in series:
+            summary["unexpected_results"] += 1
+            continue
+        item = series[key]
+        if key in seen:
+            item["invalid_data"] = True
+            summary["unexpected_results"] += 1
+            continue
+        seen.add(key)
+        code = result.get("StatusCode")
+        item["status_code"] = code if code in ("Complete", "PartialData", "InternalError", "Forbidden") else "Unknown"
+        item["invalid_data"] = item["status_code"] == "Unknown"
+        item["messages_present"] = bool(result.get("Messages"))
+        stamps, values = result.get("Timestamps"), result.get("Values")
+        if not isinstance(stamps, list) or not isinstance(values, list) or len(stamps) != len(values):
+            item["invalid_data"] = True
+            continue
+        item["invalid_data"] |= len(stamps) > 60
+        timestamps = set()
+        for stamp, value in zip(stamps[:60], values[:60]):
+            timestamp = metric_timestamp_ms(stamp)
+            maximum = 100 if key == "cpu" else 1024 if key == "capacity" else 1e15
+            if (timestamp is None or not start_ms <= timestamp < end_ms or timestamp % 60_000
+                    or timestamp in timestamps or not bounded_number(value, maximum)):
+                item["invalid_data"] = True
+                continue
+            timestamps.add(timestamp)
+            item["points"].append({"timestamp_ms": timestamp, "value": value})
+        item["points"].sort(key=lambda point: point["timestamp_ms"])
+    for item in series.values():
+        item["missing"] = not item["points"]
+        if item["points"]:
+            item["status"] = ("available" if item["status_code"] == "Complete"
+                              and not item["invalid_data"] and not item["messages_present"]
+                              else "partial")
+    if any(item["points"] for item in series.values()):
+        summary["status"] = ("available" if all(item["status"] == "available" for item in series.values())
+                             and not summary["truncated"] and not summary["messages_present"]
+                             and not summary["unexpected_results"] else "partial")
+    return summary
+
+
+def server_lifecycle(line, severity):
+    """Recognize message starts, never keywords inside SQL/DETAIL/CONTEXT text."""
+    if severity is None or severity[1] not in ("LOG", "FATAL"):
+        return None
+    message = line[severity.end():].strip()
+    prefix = line[:severity.start(1)]
+    user = re.search(r":([^:\s@]+)@[^:\s]+:\[\d+\]:\s*$", prefix)
+    if not user or user[1] != "awsops_web":
+        return None
+    if severity[1] == "LOG":
+        if re.match(r"connection authorized:\s+user=awsops_web(?:\s|$)", message):
+            return "authorized"
+        if re.match(r'connection authenticated:\s+(?:identity|user)=(?:"awsops_web"|awsops_web)(?:\s|$)', message):
+            return "authenticated"
+    if re.match(r"client disconnected during authentication(?:\s|$)", message):
+        return "client_disconnected_during_auth"
+    if re.match(r"could not send data to client:\s*Broken pipe(?:\s|$)", message):
+        return "broken_pipe"
+    if re.match(r"could not receive data from client:\s*Connection reset by peer(?:\s|$)", message):
+        return "connection_reset"
+    return None
 
 
 def connection_timing(record, timestamp):
@@ -217,6 +353,7 @@ def configuration_snapshot(config, aws):
         "credential_check_basis": "declarations_only_not_runtime",
         **dict.fromkeys((
             "cluster_available", "iam_database_auth_enabled", "service_running_count", "web_container_found",
+            "serverless_min_acu", "serverless_max_acu",
             "endpoint_matches_cluster", "database_matches", "user_matches", "region_matches",
             "task_role_matches", "credential_env_override_declared", "credential_secret_override_declared",
             "environment_files_declared", "db_ingress_from_web_groups",
@@ -225,6 +362,11 @@ def configuration_snapshot(config, aws):
     if cluster is not None:
         snapshot["cluster_available"] = cluster.get("Status") == "available"
         snapshot["iam_database_auth_enabled"] = cluster.get("IAMDatabaseAuthenticationEnabled") is True
+        scaling = cluster.get("ServerlessV2ScalingConfiguration")
+        if isinstance(scaling, dict):
+            minimum, maximum = scaling.get("MinCapacity"), scaling.get("MaxCapacity")
+            if bounded_number(minimum, 1024) and bounded_number(maximum, 1024) and minimum <= maximum:
+                snapshot["serverless_min_acu"], snapshot["serverless_max_acu"] = minimum, maximum
     if service is not None and type(service.get("runningCount")) is int:
         snapshot["service_running_count"] = service["runningCount"]
     try:
@@ -292,6 +434,7 @@ def server_log_snapshot(config, aws):
         "listing_pages_read": 0, "tail_line_limit": 500, "lines_examined": 0,
         "matching_lines": 0, "category_counts": {}, "selected_last_written_ms": None,
         "benign_role_mentions": 0, "files_selected": 0, "files_downloaded": 0, "tail_unavailable": True,
+        "lifecycle_counts": {}, "probe_outcome": "unknown",
     }
     instance = f"{config['project']}-aurora-1"
     candidates, marker = {}, None
@@ -326,7 +469,7 @@ def server_log_snapshot(config, aws):
     summary["files_selected"] = len(selected)
     summary["selected_last_written_ms"] = candidates[selected[0]]
     summary["tail_unavailable"] = False
-    counts = Counter()
+    counts, lifecycle_counts = Counter(), Counter()
     for name in selected:
         try:
             # Omitting Marker requests each file's most recent tail.
@@ -347,6 +490,9 @@ def server_log_snapshot(config, aws):
                 severity = re.search(
                     r"(?:^|[\s:])(DEBUG[1-5]?|INFO|NOTICE|WARNING|LOG|FATAL|ERROR|PANIC|DETAIL|HINT|CONTEXT|STATEMENT):",
                     line)
+                lifecycle = server_lifecycle(line, severity)
+                if lifecycle:
+                    lifecycle_counts[lifecycle] += 1
                 if not severity or severity[1] not in ("FATAL", "ERROR", "PANIC"):
                     summary["benign_role_mentions"] += 1
                     continue
@@ -357,6 +503,7 @@ def server_log_snapshot(config, aws):
         except READ_ERRORS:
             summary["tail_unavailable"] = True
     summary["category_counts"] = dict(sorted(counts.items()))
+    summary["lifecycle_counts"] = dict(sorted(lifecycle_counts.items()))
     summary["status"] = ("partial" if summary["listing_truncated"] or summary["tail_unavailable"]
                          or summary["tail_truncated"] else "available")
     return summary
@@ -371,9 +518,11 @@ def main():
     if isinstance(config, str):
         config = json.loads(config)
 
-    result = {"logs": collect(config, aws_read, int(time.time() * 1000))}
+    now_ms = int(time.time() * 1000)
+    result = {"logs": collect(config, aws_read, now_ms)}
     result["configuration"] = configuration_snapshot(config, aws_read)
     result["server_logs"] = server_log_snapshot(config, aws_read)
+    result["rds_metrics"] = rds_metric_snapshot(config, aws_read, now_ms)
     print(json.dumps(result, indent=2))
 
 
