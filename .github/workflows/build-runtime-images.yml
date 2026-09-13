@@ -34,7 +34,6 @@ jobs:
     needs: [guard]
     runs-on: sample-awsops
     timeout-minutes: 60
-    environment: development
     permissions:
       contents: read
       id-token: write

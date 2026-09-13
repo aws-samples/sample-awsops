@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f967afe7310d · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: accb69b66f50 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -46,11 +46,14 @@ terraform -chdir=terraform/foundation validate
 terraform -chdir=terraform/foundation plan -out tfplan   # controller runs `apply tfplan`
 
 # Makefile
-make migrate     # ULID migrations + awsops_sql_reader password sync — REQUIRED before agentcore
+make migrate     # CLI/private-host migrations + reader sync, before make agentcore
 make deploy      # migrate → buildx arm64 → ECR push → ECS roll → wait stable → smoke /api/health
 make agentcore   # arm64 agent image + idempotent AgentCore provisioner (MCP Lambda code ships via terraform apply, NOT this)
 make workers     # arm64 worker image push (after apply with workers_enabled=true)
 ```
+Dev Deploy AgentCore runs reusable private `deploy-migrations.yml` before its split build/provision
+phases. Main/preview and direct private-host CLI retain `make migrate` before `make agentcore`.
+Migrations and reader password sync always precede AgentCore provisioning.
 Private migration offline `scripts/v2/ci/*.test.mjs` fixtures require locked Node dependencies, Python PyYAML and boto3/botocore (`pip install -r agent/requirements.txt`), and Terraform 1.15.7; runtime/controller/workflow and mock-plan checks make no AWS calls. Both `scripts/v2/ci/migration.itest.mjs` and `scripts/v2/ci/web-db-connection.itest.mjs` require bare `docker` on PATH, a reachable daemon and OpenSSL, with no automatic `sudo`/`DOCKER` override. The web connection-phase suite additionally uses the locked web driver and TypeScript dependencies. Both PostgreSQL suites are fail-hard exceptions to legacy optional `scripts/v2/*.itest.mjs`; missing Docker is never a skip.
 
 No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scripts/v2/package.json` (`make deps` runs `npm ci --prefix scripts/v2`). `next build` fails on app-level type errors but `*.test.ts(x)` type noise is non-blocking.

@@ -31,6 +31,10 @@ test('backend builds are manual dev only, component-limited and hand off no acco
   assert.deepEqual(w.jobs.build.needs, ['guard']);
   assert.equal(w.jobs.build.env.AWS_ACCOUNT_ID_DEV, '${{ secrets.AWS_ACCOUNT_ID_DEV }}');
   assert.equal(w.jobs.build.env.RUNTIME_ROLE_ARN, '${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}');
+  const migration = workflow('deploy-migrations.yml');
+  assert.equal(w.jobs.build.environment, undefined, 'The build role requires a branch-ref OIDC subject');
+  assert.equal(migration.jobs.build.environment, undefined);
+  assert.equal(migration.jobs.migrate.environment, 'development', 'Deployer environment protection remains');
   const base = { GITHUB_REPOSITORY: 'aws-samples/sample-awsops', GITHUB_REF: 'refs/heads/dev',
     GITHUB_EVENT_NAME: 'workflow_dispatch', COMPONENT: 'worker' };
   for (const change of [{}, { GITHUB_REF: 'refs/heads/main' }, { COMPONENT: 'agent' },
