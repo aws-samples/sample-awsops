@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9d1feacf73dd · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4ac19e8a1a16 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -17,7 +17,8 @@ Docker image must be arm64 (`docker buildx --platform linux/arm64`), Python 3.11
 port 8080.
 
 ## Architectural boundaries
-- The early `deployment_readiness` mode in `readiness.py` verifies runtime STS identity,
+- `readiness.py` requires `DEPLOYMENT_READINESS_ENABLED=true` (default off; never payload-controlled).
+  Its `deployment_readiness` mode verifies runtime STS identity,
   curated inventory tools through the existing Ops gateway, a known fresh CloudFront record
   and a bounded model call. Return nonce/account-bound evidence, never normal chat/fallback
   success. Do not send inventory data to this model probe or equate non-discovery with absence.

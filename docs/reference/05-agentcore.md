@@ -157,3 +157,20 @@ Consolidates three source docs (now archived):
 
 Review: `v2-p1f-scope-architecture-review` (private upstream repo)
 (3-AI cross review — MID-minus scope decision, least-privilege roles, SSM-not-valueFrom).
+
+## Deployment readiness mode / 배포 검증 모드
+
+`mode=deployment_readiness` is a bounded permission/data probe implemented by `agent/readiness.py`.
+It is default off through `DEPLOYMENT_READINESS_ENABLED`; release provisioning must explicitly
+enable it. It uses fixed Ops gateway tools, producer freshness and a bounded model request;
+missing attribute evidence remains unassessed, not a healthy zero. Caller identity and nonce
+are bound to the response; timeout retains completed checks. App access requires admin or a
+separately provisioned deployment-verifiers membership and process cooldown. Runtime discovery
+rejects PENDING/malformed ARNs before caching; an explicitly empty runtime parameter disables
+discovery. Resource reads remain behind MCP tools.
+
+이 모드는 기본 비활성 환경 플래그로 제한된 권한·데이터 검증을 수행합니다. 배포 시
+명시적으로 활성화해야 하며 지정 도구·원본 신선도 기준·제한된 모델 요청만 사용합니다.
+누락 속성은 정상 0으로 바꾸지 않고 미평가로 남깁니다. 타임아웃에도 완료된 증거를
+보존하며 앱 호출에는 관리자 또는 별도로 준비된 verifier 권한과 호출 간격이 필요합니다.
+PENDING·잘못된 ARN은 캐시하지 않고 빈 런타임 파라미터는 조회를 비활성화합니다.

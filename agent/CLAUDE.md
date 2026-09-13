@@ -4,7 +4,8 @@
 Strands Agent for AgentCore Runtime. Connects to 9 domain gateways via MCP protocol.
 
 ## Key Files
-- `readiness.py` — the early `deployment_readiness` mode checks the runtime STS account,
+- `readiness.py` — default off unless `DEPLOYMENT_READINESS_ENABLED=true`; payloads cannot enable it.
+  The early `deployment_readiness` mode checks the runtime STS account,
   curated inventory tools through the existing Ops gateway, a known fresh CloudFront record
   and a bounded model call. It returns strict nonce/account-bound evidence, never ordinary
   chat text or fallback success. Inventory data is not sent to the model for this probe.

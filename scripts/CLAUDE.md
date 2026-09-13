@@ -19,7 +19,7 @@ secrets-manager) — installed by `make deps`.
 - `v2/authenticated-smoke.mjs` — login plus edge-authenticated `/api/db` verification. Preserve
   Host/SNI/TLS; report only the phase and validated HTTP status, never bodies/cookies/passwords.
   The CLI keeps HTTP scratch files under the prepared credential directory so the workflow's
-  always-cleanup owns them; standalone calls prefer RUNNER_TEMP. Response files are capped at 64 KiB.
+  always-cleanup owns them; standalone calls prefer RUNNER_TEMP. Response files default to 64 KiB; only the bounded CloudFront inventory leg permits 2 MiB.
 - `v2/ci_dns_policy.py` — reads Terraform state to preserve managed certificate ownership
   (JSON null) and existing service aliases; verifies operator-selected/attached certificates
   without account-wide selection. Redacts public summaries. Blocks all Route53/Cloud Map
@@ -154,3 +154,9 @@ secrets-manager) — installed by `make deps`.
   `terraform -chdir=terraform/foundation output`) — prefer the Makefile targets over running
   scripts directly.
 - For the emergency IAM `put-role-policy` convention, see `terraform/CLAUDE.md`.
+
+`v2/runtime-smoke.mjs` accepts explicit private prepare/verify configuration. Prepare
+checks the host registry; optional hostOnly rejects members. Verify requires complete
+fresh collection, real web-role runtime evidence and owned worker completion. The file
+is at most 16 KiB, collectionStartedAt at most 30 minutes old, and queued types unique
+with cloudfront included. The utility alone does not wire a deployment workflow.

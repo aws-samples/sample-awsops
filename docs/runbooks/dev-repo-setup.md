@@ -1132,7 +1132,8 @@ branch requires investigation and a fresh plan, never bypassing checks.
 The authenticated smoke utility accepts `SMOKE_RUNTIME_CONFIG_FILE`: an absolute 0600 JSON
 file beside `SMOKE_CREDENTIAL_FILE` in the same 0700 directory. Cleanup covers both. Current
 Deploy Web wiring supplies only database verification; the full release controller must
-supply this file before claiming runtime readiness. Never guess a dispatch acknowledgement.
+supply this file before claiming runtime readiness. Never guess a dispatch acknowledgement. The private file is capped at 16 KiB; verify requires
+a start within 30 minutes and a unique queued-type list containing cloudfront.
 
 `schemaVersion: 1`, `mode: "prepare"`, and `expectedAccountId` check login/DB and the enabled
 host registry. Optional `hostOnly: true` additionally rejects enabled member accounts for
@@ -1140,11 +1141,13 @@ host-only activation. Verify mode adds `expectedCloudfrontId`, all acknowledged
 `expectedQueuedTypes`, and `collectionStartedAt` captured before dispatch. The controller
 must derive these from the applied deployment and the owned Lambda response. Verification
 requires fresh completed collection, actual web SSM/runtime calls and succeeded owned
-Lambda/Fargate jobs. Missing/partial/stale evidence is never healthy zero.
+Lambda/Fargate jobs. Missing/partial/stale evidence is never healthy zero. Deploy the updated inventory-reader
+Lambda through Terraform so legacy NULL attribute coverage is reported as incomplete.
 
 `POST /api/deployment/readiness` requires an administrator or `deployment-verifiers` membership.
-The optional Terraform CI capability grants the managed demo user only that verifier group;
-it grants no administrator or IAM role. Use a fresh login after membership changes. The probe
+This application change does not provision that group. Release infrastructure must create
+it and grant the CI identity only verifier membership, never administrator or IAM authority.
+Use a fresh login after membership changes. The probe
 permits one in-flight call and a 60-second process-wide cooldown (429 with Retry-After).
 
 스모크 도구는 자격증명 파일과 같은 0700 디렉터리의 0600 JSON을
@@ -1152,8 +1155,8 @@ permits one in-flight call and a 60-second process-wide cooldown (429 with Retry
 연결합니다. 전체 검증 controller가 실제 배포·Lambda 응답으로 파일을 생성해야 합니다.
 prepare는 로그인·DB·활성 호스트를 확인하고 `hostOnly: true`일 때 외부 활성 계정을
 거부합니다. verify는 위 추가 필드로 최신 수집·실제 SSM/runtime·두 워커 완료를 검증합니다.
-검증 API는 관리자 또는 전용 verifier 그룹만 허용합니다. CI 기능은 demo를 verifier에만
-연결하며 관리자·IAM 역할을 주지 않습니다. 그룹 변경 후 새 로그인과 호출 간격이 필요합니다.
+검증 API는 관리자 또는 전용 verifier 그룹만 허용합니다. 이 앱 변경은 그룹을 만들지 않습니다. 배포 인프라가 CI 사용자를 verifier에만
+연결해야 하며 관리자·IAM 역할을 주지 않습니다. 그룹 변경 후 새 로그인과 호출 간격이 필요합니다.
 
 ### Authenticated database verification / 인증된 DB 검증
 
