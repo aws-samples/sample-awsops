@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: fee0bd43cbde · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7b1e276f043f · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -10,6 +10,10 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
+- `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is default-off. The manual
+  `deploy-migrations.yml` + `run-migration.mjs` controller starts one verified private
+  ARM64 task. Its IAM reads exact Aurora secrets; DB DDL uses those credentials.
+  It enables no product AWS-resource mutation/autonomy (ADR-005).
 - `dev-repo-setup.md` covers CI/OIDC, protected review recovery, ECR preflight and explicit
   same-branch/SHA dispatch plans. PR/push plans are advisory.
 - `dev-domain-rollout.md` covers unpublished/same-domain dev stages only. Every domain-stage

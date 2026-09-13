@@ -3,19 +3,31 @@
 // Secret, connection and reader-sync errors never expose remote free text.
 export class MigrationError extends Error {}
 
-const recognizedCodes = new Set([
-  'AccessDeniedException', 'DecryptionFailure', 'EncryptionFailure',
-  'InternalServiceError', 'InternalServiceErrorException', 'InvalidParameterException',
-  'InvalidRequestException', 'ResourceNotFoundException', 'ThrottlingException',
-  'TooManyRequestsException', 'UnrecognizedClientException', 'ExpiredTokenException',
-  'InvalidSignatureException', 'CredentialsProviderError', 'TokenProviderError',
-  'TimeoutError', 'RequestTimeout', 'AbortError', 'NetworkingError',
-  'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT',
-  'ENOENT', 'EACCES', 'EPERM', 'EPIPE', 'EBUSY',
-  'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN',
-  'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
-  'ERR_TLS_CERT_ALTNAME_INVALID',
-]);
+// Shared with the CI classifier. Freeze both levels so consumers cannot expand
+// the safe logging allowlist or inject labels into public diagnostics.
+export const diagnosticCodeGroups = Object.freeze({
+  'transport connectivity': Object.freeze([
+    'TimeoutError', 'RequestTimeout', 'AbortError', 'NetworkingError',
+    'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'EPIPE',
+  ]),
+  'transport TLS': Object.freeze([
+    'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN',
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+    'ERR_TLS_CERT_ALTNAME_INVALID',
+  ]),
+  'AWS access/decryption': Object.freeze([
+    'AccessDeniedException', 'DecryptionFailure', 'EncryptionFailure',
+    'UnrecognizedClientException', 'ExpiredTokenException', 'InvalidSignatureException',
+    'CredentialsProviderError', 'TokenProviderError',
+  ]),
+  'AWS missing resource': Object.freeze(['ResourceNotFoundException']),
+  'AWS throttling': Object.freeze(['ThrottlingException', 'TooManyRequestsException']),
+  'AWS service/request': Object.freeze([
+    'InternalServiceError', 'InternalServiceErrorException', 'InvalidParameterException', 'InvalidRequestException',
+  ]),
+  'filesystem': Object.freeze(['ENOENT', 'EACCES', 'EPERM', 'EBUSY']),
+});
+const recognizedCodes = new Set(Object.values(diagnosticCodeGroups).flat());
 
 export function diagnosticCodes(error) {
   const codes = [...new Set([error?.name, error?.code].filter(value => recognizedCodes.has(value)))];

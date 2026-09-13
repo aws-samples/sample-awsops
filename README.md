@@ -121,7 +121,7 @@ make upgrade            # safe release upgrade: RDS snapshot -> migrate -> deplo
 
 ## Configuration
 
-Runtime configuration is **flag-gated in Terraform** (`variables.tf`). The feature gates below all default `false`, so their gated resources are absent from a fresh plan. Four operational switches deliberately do NOT: `legacy_email_owner_match` (default **true** — accepts the legacy email-keyed ownership match at every `matchesIdentity()` gate — reads *and* report PATCH/DELETE via `canMutateReport()`, not reads alone; flip to `false` only after a successful `--apply` leaves zero legacy email-keyed rows, or a plan that finds none at all — a clean *plan* over rows that still need rewriting is not enough, `make backfill-owner-sub` only plans; see ADR-009's Ownership Amendment), the pre-existing `create_network` / `allow_vpc_db_access`, and `publish_service_dns`:
+Runtime configuration is **flag-gated in the Terraform foundation root** (`variables.tf`, `ai.tf`, and `ci-migrations.tf`). The feature gates below all default `false`, so their gated resources are absent from a fresh plan. Four operational switches deliberately do NOT: `legacy_email_owner_match` (default **true** — accepts the legacy email-keyed ownership match at every `matchesIdentity()` gate — reads *and* report PATCH/DELETE via `canMutateReport()`, not reads alone; flip to `false` only after a successful `--apply` leaves zero legacy email-keyed rows, or a plan that finds none at all — a clean *plan* over rows that still need rewriting is not enough, `make backfill-owner-sub` only plans; see ADR-009's Ownership Amendment), the pre-existing `create_network` / `allow_vpc_db_access`, and `publish_service_dns`:
 
 `publish_service_dns` defaults to **true**; false removes service A aliases from the desired
 configuration, but does not disable certificate validation CNAMEs. The nullable
@@ -148,6 +148,7 @@ and [deployment runbook §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-
 | `agentcore_enabled` | 21 of the AgentCore Lambda slices |
 | `integrations_enabled` | remaining 6 AgentCore Lambda slices |
 | `workers_enabled` | the async worker tier (SQS/SFN/Lambda/Fargate) |
+| `ci_migrations_enabled` | Default-off operator capability: private migration task template, exact-secret task role/policy and 14-day logs. Manual dev CI only; no service or scheduler. Disabling deletes the log group/history. |
 | `steampipe_enabled` | the Steampipe inventory-sync data layer |
 | `finops_baseline_enabled` | the FinOps baseline-recommendations engine (ADR-020): a daily Fargate rule batch (unattached EBS volumes; EC2/RDS rightsizing via Compute Optimizer) writing to `finops_findings`, read-only, rendered on `/cost`. Requires `workers_enabled` only at the Terraform level — but the EBS rule additionally needs a fresh `steampipe_enabled=true` inventory sync at runtime; without it, that rule honestly reports `partial` (EC2/RDS rightsizing still work) |
 | `official_mcp_enabled` | ADR-017 curated official-vendor MCP presets — the **3 vendor-hosted** ones (Datadog·Dynatrace·New Relic) as external-obs `mcpServer` targets. (The runtime fail-closed tool allowlist is NOT gated by this flag — it is written on every provisioner run and enforced unconditionally; that unconditionality is the fail-closed property.) Operator notes: Dynatrace ships with a deliberately EMPTY allowlist (zero tools until its hosted tool list is transcribed into catalog.py); `make agentcore` waits for runtime READY (default 300s, `AGENTCORE_RUNTIME_READY_TIMEOUT`) and a failed/slow rollout temporarily retires eligible live targets until the next successful run. |
@@ -199,6 +200,9 @@ node --test scripts/v2/deployment-smoke.test.mjs # focused offline smoke argumen
 bash tests/run-all.sh             # repo-wide hook/structure tests + agent Python unittests
 (cd web && npx vitest run)        # web unit tests only
 ```
+
+The private migration fixture command includes runtime, controller, workflow and mocked-plan
+checks. Controller/workflow checks also require Python 3 with PyYAML and Terraform **1.15.7**.
 
 ## API Documentation
 
@@ -333,7 +337,7 @@ make upgrade             # 안전한 릴리스 업그레이드: RDS 스냅샷 ->
 
 ## 환경 설정
 
-런타임 설정은 **Terraform에서 flag-gated**(`variables.tf`)입니다. 아래 표의 feature gate 는 모두 기본값 `false`라 새 계획에서 해당 리소스를 생성하지 않습니다. 다만 **의도적으로 그렇지 않은 운영 스위치가 넷** 있습니다: `legacy_email_owner_match`(기본 **true** — legacy email-keyed 소유권 매칭을 `matchesIdentity()` 를 거치는 **모든 게이트**에서 계속 수용합니다 — 읽기뿐 아니라 `canMutateReport()`(리포트 PATCH/DELETE)도 포함입니다. `make backfill-owner-sub` 는 **계획만** 만들므로 재작성이 남은 상태의 clean plan 만으로는 부족합니다 — `--apply` 가 성공하고 잔여 legacy row 가 0 인 것을 확인한 뒤(또는 애초에 legacy 행이 없어 plan 이 zero-row 인 경우)에만 `false` 로 내리세요. ADR-009 소유권 Amendment 참조)와, 기존부터 있던 `create_network` / `allow_vpc_db_access`, 그리고 `publish_service_dns`입니다.
+런타임 설정은 **Terraform foundation 루트에서 flag-gated**(`variables.tf`, `ai.tf`, `ci-migrations.tf`)입니다. 아래 표의 feature gate 는 모두 기본값 `false`라 새 계획에서 해당 리소스를 생성하지 않습니다. 다만 **의도적으로 그렇지 않은 운영 스위치가 넷** 있습니다: `legacy_email_owner_match`(기본 **true** — legacy email-keyed 소유권 매칭을 `matchesIdentity()` 를 거치는 **모든 게이트**에서 계속 수용합니다 — 읽기뿐 아니라 `canMutateReport()`(리포트 PATCH/DELETE)도 포함입니다. `make backfill-owner-sub` 는 **계획만** 만들므로 재작성이 남은 상태의 clean plan 만으로는 부족합니다 — `--apply` 가 성공하고 잔여 legacy row 가 0 인 것을 확인한 뒤(또는 애초에 legacy 행이 없어 plan 이 zero-row 인 경우)에만 `false` 로 내리세요. ADR-009 소유권 Amendment 참조)와, 기존부터 있던 `create_network` / `allow_vpc_db_access`, 그리고 `publish_service_dns`입니다.
 
 `publish_service_dns`는 기본 **true**이며 false는 서비스 A 별칭을 원하는 구성에서 제외하지만
 인증서 검증 CNAME까지 금지하지 않습니다. `existing_cf_certificate_arn` /
@@ -355,6 +359,7 @@ apply에서 바꿀 수 없습니다. 기본 false인 일반 full 계획도 DNS �
 | `agentcore_enabled` | AgentCore Lambda 슬라이스 21개 |
 | `integrations_enabled` | 나머지 AgentCore Lambda 슬라이스 6개 |
 | `workers_enabled` | 비동기 워커 계층(SQS/SFN/Lambda/Fargate) |
+| `ci_migrations_enabled` | 기본 비활성 운영 기능: 사설 migration 태스크 템플릿·정확한 시크릿 읽기 역할/정책·14일 로그. dev CI 수동 실행 전용이며 서비스·스케줄러는 없다. 비활성화하면 로그 그룹/이력이 삭제된다. |
 | `steampipe_enabled` | Steampipe 인벤토리 sync 데이터 계층 |
 | `finops_baseline_enabled` | FinOps 기본 권장 엔진(ADR-020): 일별 Fargate 룰 배치(미사용 EBS 볼륨; Compute Optimizer 기반 EC2/RDS rightsizing)가 `finops_findings`에 적재, read-only, `/cost`에 렌더. terraform 레벨로는 `workers_enabled`만 선행 — 단 EBS 룰은 런타임에 `steampipe_enabled=true`의 최신 동기화가 있어야 동작하고, 없으면 그 룰만 정직하게 `partial`로 표면화(EC2/RDS는 무관하게 동작) |
 | `official_mcp_enabled` | ADR-017 큐레이션 공식 벤더 MCP 프리셋 — **벤더 호스팅 3종**(Datadog·Dynatrace·New Relic)을 external-obs `mcpServer` target으로 등록. (런타임 fail-closed 툴 allowlist는 이 플래그와 무관하게 매 provisioner run에 기록·무조건 강제된다 — 그 무조건성이 fail-closed의 본체) 운영 주의: Dynatrace는 hosted 툴 목록 전사 전까지 의도적으로 툴 0개; `make agentcore`는 런타임 READY를 대기(기본 300s, `AGENTCORE_RUNTIME_READY_TIMEOUT`)하며 롤아웃 실패/지연 시 자격을 갖춘 live target을 다음 성공 run까지 일시 회수한다 |
@@ -406,6 +411,9 @@ node --test scripts/v2/deployment-smoke.test.mjs # 오프라인 스모크 인자
 bash tests/run-all.sh             # repo 전반 hook/structure 테스트 + agent Python unittest
 (cd web && npx vitest run)        # web 유닛 테스트만
 ```
+
+위 private migration fixture 명령은 runtime·controller·workflow·모의 계획 검사를 포함합니다.
+controller/workflow 검사에는 Python 3·PyYAML·Terraform **1.15.7**도 필요합니다.
 
 ## API 문서
 

@@ -16,7 +16,10 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
   already-committed copy under a different filename.
 - `backend.hcl.example` / `terraform.tfvars.example` — committable templates.
 - `variables.tf` — most flags are declared here, but `agentcore_enabled`/`integrations_enabled`
-  are declared at the top of `ai.tf`.
+  are declared at the top of `ai.tf`; `ci_migrations_enabled` is declared in `ci-migrations.tf`.
+- `ci-migrations.tf` — default-off operator migration task template, exact-secret task IAM,
+  14-day log group and `migration_job` output. The manual development CI controller owns
+  launch/cleanup; no app service or scheduler starts it. Disabling deletes retained logs.
 - `migrations/*.sql` — DB migrations, applied by `make migrate` (scripts/v2), not Terraform.
   Baseline is `data/schema.sql` (v9, frozen) — schema changes always go into a new migration
   file.
