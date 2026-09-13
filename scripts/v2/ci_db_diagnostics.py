@@ -62,6 +62,41 @@ def collect(config, aws, now_ms):
     return {"events": count, "categories": sorted(categories), "unparsed": unparsed,
             "latest_timestamp": latest, "truncated": bool(token)}
 
+def configuration_snapshot(config, aws):
+    project, region, account = (config[key] for key in ("project", "region", "account"))
+    cluster = aws(["rds", "describe-db-clusters", "--db-cluster-identifier", f"{project}-aurora"])["DBClusters"][0]
+    service = aws(["ecs", "describe-services", "--cluster", project, "--services", f"{project}-web"])["services"][0]
+    definition = aws(["ecs", "describe-task-definition", "--task-definition", service["taskDefinition"]])["taskDefinition"]
+    container = next(c for c in definition["containerDefinitions"] if c["name"] == "web")
+    env = {entry["name"]: entry["value"] for entry in container.get("environment", [])}
+    net = service["networkConfiguration"]["awsvpcConfiguration"]
+    db_groups = [group["VpcSecurityGroupId"] for group in cluster["VpcSecurityGroups"]]
+    groups = aws(["ec2", "describe-security-groups", "--group-ids", *db_groups])["SecurityGroups"]
+    ingress = any(rule.get("IpProtocol") in ("tcp", "-1")
+                  and (rule.get("IpProtocol") == "-1" or rule.get("FromPort", 65536) <= 5432 <= rule.get("ToPort", -1))
+                  and any(pair.get("GroupId") in net["securityGroups"] for pair in rule.get("UserIdGroupPairs", []))
+                  for group in groups for rule in group.get("IpPermissions", []))
+    policy = aws(["iam", "get-role-policy", "--role-name", f"{project}-task",
+                  "--policy-name", f"{project}-web-rds-iam-auth"])["PolicyDocument"]
+    expected = f"arn:aws:rds-db:{region}:{account}:dbuser:{cluster['DbClusterResourceId']}/awsops_web"
+    as_list = lambda value: value if isinstance(value, list) else [value]
+    connect_allow = any(s.get("Effect") == "Allow" and not s.get("Condition")
+                        and "rds-db:connect" in as_list(s.get("Action"))
+                        and expected in as_list(s.get("Resource")) for s in policy.get("Statement", []))
+    return {
+        "cluster_available": cluster.get("Status") == "available",
+        "iam_database_auth_enabled": cluster.get("IAMDatabaseAuthenticationEnabled") is True,
+        "web_running_count": service.get("runningCount") if type(service.get("runningCount")) is int else None,
+        "endpoint_matches_cluster": bool(cluster.get("Endpoint")) and env.get("AURORA_ENDPOINT") == cluster.get("Endpoint"),
+        "database_matches": env.get("AURORA_DATABASE") == cluster.get("DatabaseName") == "awsops",
+        "user_matches": env.get("AURORA_USER") == "awsops_web",
+        "region_matches": env.get("AWS_REGION") == region,
+        "task_role_matches": definition.get("taskRoleArn") == f"arn:aws:iam::{account}:role/{project}-task",
+        "explicit_credential_override": any(key in env for key in ("AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")),
+        "db_ingress_from_web_groups": ingress,
+        "identity_policy_has_expected_connect_allow": connect_allow,
+    }
+
 
 def main():
     config = json.load(sys.stdin)
@@ -75,12 +110,14 @@ def main():
             timeout=30, env={**os.environ, "AWS_PAGER": "", "AWS_MAX_ATTEMPTS": "2"})
         return json.loads(result.stdout)
 
-    print(json.dumps(collect(config, aws, int(time.time() * 1000))))
+    result = collect(config, aws, int(time.time() * 1000))
+    result["configuration"] = configuration_snapshot(config, aws)
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, TypeError, AttributeError, OSError, subprocess.SubprocessError):
+    except (ValueError, TypeError, AttributeError, KeyError, IndexError, StopIteration, OSError, subprocess.SubprocessError):
         print("Development database diagnostics unavailable (details withheld)", file=sys.stderr)
         sys.exit(1)

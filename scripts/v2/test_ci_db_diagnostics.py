@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 import yaml
-from ci_db_diagnostics import collect
+from ci_db_diagnostics import collect, configuration_snapshot
 
 
 class DatabaseDiagnosticsTests(unittest.TestCase):
@@ -73,3 +73,36 @@ class DatabaseDiagnosticsTests(unittest.TestCase):
         self.assertIn("vars.CI_DB_DIAGNOSTICS_DEV == 'true'", diag["if"])
         self.assertNotIn("secrets.", json.dumps(diag))
         self.assertFalse(any(step.get("name") == diag["name"] for step in workflow["jobs"]["apply"]["steps"]))
+
+    def test_configuration_projection_exposes_booleans_not_resource_values(self):
+        account = self.config()["account"]
+        documents = {
+            "rds": {"DBClusters": [{"Status": "available", "IAMDatabaseAuthenticationEnabled": True,
+                "Endpoint": "PRIVATE_ENDPOINT", "DatabaseName": "awsops", "DbClusterResourceId": "cluster-example",
+                "VpcSecurityGroups": [{"VpcSecurityGroupId": "sg-db"}]}]},
+            "ecs": {"services": [{"taskDefinition": "PRIVATE_DEFINITION", "runningCount": 1,
+                "networkConfiguration": {"awsvpcConfiguration": {"securityGroups": ["sg-web"]}}}]},
+            "definition": {"taskDefinition": {"taskRoleArn": f"arn:aws:iam::{account}:role/awsops-dev-task",
+                "containerDefinitions": [{"name": "web", "environment": [
+                    {"name": name, "value": value} for name, value in {
+                        "AURORA_ENDPOINT": "PRIVATE_ENDPOINT", "AURORA_DATABASE": "awsops",
+                        "AURORA_USER": "awsops_web", "AWS_REGION": "ap-northeast-2",
+                    }.items()]}]}},
+            "ec2": {"SecurityGroups": [{"IpPermissions": [{"IpProtocol": "tcp", "FromPort": 5432,
+                "ToPort": 5432, "UserIdGroupPairs": [{"GroupId": "sg-web"}]}]}]},
+            "iam": {"PolicyDocument": {"Statement": [{"Effect": "Allow", "Action": ["rds-db:connect"],
+                "Resource": f"arn:aws:rds-db:ap-northeast-2:{account}:dbuser:cluster-example/awsops_web"}]}},
+        }
+        def aws(args):
+            return documents["definition" if args[1] == "describe-task-definition" else args[0]]
+        result = configuration_snapshot(self.config(), aws)
+        self.assertTrue(all(value is True for key, value in result.items()
+                            if key not in {"explicit_credential_override", "web_running_count"}))
+        self.assertFalse(result["explicit_credential_override"])
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertNotIn(account, json.dumps(result))
+        documents["ec2"]["SecurityGroups"][0]["IpPermissions"] = []
+        documents["iam"]["PolicyDocument"]["Statement"][0]["Resource"] = "different"
+        result = configuration_snapshot(self.config(), aws)
+        self.assertFalse(result["db_ingress_from_web_groups"])
+        self.assertFalse(result["identity_policy_has_expected_connect_allow"])

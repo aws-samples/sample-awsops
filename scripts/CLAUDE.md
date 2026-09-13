@@ -36,7 +36,9 @@ secrets-manager) — installed by `make deps`.
 - `v2/ci_db_diagnostics.py` — optional dev-only CI plan diagnostics (`CI_DB_DIAGNOSTICS_DEV=true`).
   With the existing read-only plan role, verify the state account and read the selected web log
   group for one hour (at most three pages). Emit only fixed DB error categories/counts, never
-  raw log messages, credentials or ARNs. Unset/false is off; no resource writes or new IAM grants.
+  raw log messages, credentials or ARNs. Also compare live ECS/RDS config, DB SG ingress and
+  the expected inline IAM connect allow, emitting only booleans/counts. These do not prove
+  effective access under SCPs/boundaries. Unset/false is off; no writes or new IAM grants.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
 - `v2/test_ci_{dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads}.py` —
