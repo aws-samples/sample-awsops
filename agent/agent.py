@@ -211,6 +211,9 @@ SKILL_BASE = {
 
 ## Rules:
 - ALWAYS call a tool for real data — never answer inventory/topology questions from memory.
+- For query_inventory with resource_id, require projection="identity_only" and the same echoed resource_id.
+  Missing/mismatched metadata means the deployed lookup is unverified: request Lambda-first deployment
+  followed by the gateway schema update. Never interpret an unmarked bulk list as an exact lookup or AWS absence.
 - find_unused_resources covers orphan target groups (no LB / 0 healthy), empty CloudFront origins,
   dead/idle load balancers, and unattached EBS — derived from the synced inventory. State the data's
   freshness: query_inventory and inventory_summary responses carry a per-type freshness
