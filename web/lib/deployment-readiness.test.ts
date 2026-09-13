@@ -105,10 +105,60 @@ describe('deployment readiness under the web task role', () => {
       const pending = deploymentReadiness(input);
       await vi.advanceTimersByTimeAsync(0);
       expect(invoke).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(55_001);
+      await vi.advanceTimersByTimeAsync(50_001);
       expect((await pending).status).toBe('not_ready');
       expect(body.destroyed).toBe(true);
     } finally { vi.useRealTimers(); }
+  });
+  it('uses one 50-second deadline including STS/SSM preflight and the runtime stream', async () => {
+    vi.useFakeTimers();
+    const body = new Readable({ read() {} });
+    sts.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve({
+      Account: account, Arn: `arn:aws:sts::${account}:assumed-role/awsops-dev-task/session`,
+    }), 4000)));
+    ssm.mockImplementation(({ input: command }) => new Promise(resolve => setTimeout(() => resolve({
+      Parameter: { Value: command.Name.endsWith('runtime_arn') ? arn : command.Name.endsWith('memory_id')
+        ? 'awsops_v2_memory-abcdefghij' : 'awsops_v2_code_interpreter-abcdefghij' },
+    }), 4000)));
+    invoke.mockResolvedValue({ contentType: 'text/event-stream', response: body });
+    try {
+      const { deploymentReadiness } = await import('./deployment-readiness');
+      const pending = deploymentReadiness(input);
+      await vi.advanceTimersByTimeAsync(16_000);
+      expect(invoke).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(34_001);
+      const result = await pending;
+      expect(result.reason).toBe('timeout');
+      expect(result.webIdentity).toBe(true);
+      expect(Object.values(result.parameters)).toEqual(['ready', 'ready', 'ready']);
+      expect(body.destroyed).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+  it('returns partial parameter evidence at the deadline even if an SDK promise ignores abort', async () => {
+    vi.useFakeTimers();
+    let finish: (value: unknown) => void = () => {};
+    ssm.mockResolvedValueOnce({ Parameter: { Value: arn } })
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    try {
+      const { deploymentReadiness } = await import('./deployment-readiness');
+      const pending = deploymentReadiness(input);
+      await vi.advanceTimersByTimeAsync(50_001);
+      const result = await pending;
+      expect(result.reason).toBe('timeout');
+      expect(result.parameters).toEqual({ runtime_arn: 'ready', interpreter_id: 'unavailable', memory_id: 'uninspected' });
+      const saved = JSON.stringify(result);
+      finish({ Parameter: { Value: 'awsops_v2_code_interpreter-abcdefghij' } });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(JSON.stringify(result)).toBe(saved);
+      expect(ssm).toHaveBeenCalledTimes(2);
+      expect(invoke).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+  it.each(['disabled', 'inventory_incomplete'])('retains the structured runtime %s reason', async reason => {
+    invoke.mockResolvedValue(response({ ...agentResult(), status: 'not_ready', reason,
+      inventory: { count: null, ageMinutes: null } }));
+    const { deploymentReadiness } = await import('./deployment-readiness');
+    expect((await deploymentReadiness(input)).reason).toBe(reason);
   });
   it.each([
     (json: string) => `: keepalive\nevent: readiness\nid: 42\ndata:${json}\n\ndata: [DONE]\n\n`,

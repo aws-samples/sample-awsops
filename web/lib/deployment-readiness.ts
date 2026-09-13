@@ -8,8 +8,8 @@ export interface ReadinessInput { nonce: string; expectedAccountId: string; expe
 type ParameterState = 'uninspected' | 'ready' | 'disabled' | 'pending' | 'missing' | 'denied' | 'invalid' | 'unavailable';
 const keys = ['runtime_arn', 'interpreter_id', 'memory_id'] as const;
 const checks = ['identity', 'inventorySummary', 'inventoryQuery', 'knownResource', 'freshInventory', 'model'] as const;
-const agentReasons = ['ok', 'invalid_request', 'identity_failed', 'account_mismatch', 'gateway_unavailable',
-  'tools_unavailable', 'inventory_unavailable', 'inventory_stale', 'known_resource_missing', 'model_failed', 'timeout'] as const;
+const agentReasons = ['ok', 'disabled', 'invalid_request', 'identity_failed', 'account_mismatch', 'gateway_unavailable',
+  'tools_unavailable', 'inventory_unavailable', 'inventory_incomplete', 'inventory_stale', 'known_resource_missing', 'model_failed', 'timeout'] as const;
 type AgentReason = typeof agentReasons[number];
 export interface AgentReadiness {
   schemaVersion: 1; mode: 'deployment_readiness'; nonce: string; accountId: string;
@@ -34,7 +34,7 @@ const count = (n: unknown) => n === null || (Number.isSafeInteger(n) && Number(n
 function validAgentEvent(v: unknown, input: ReadinessInput): v is AgentReadiness {
   if (!record(v) || !exactKeys(v, ['schemaVersion', 'mode', 'nonce', 'accountId', 'status', 'reason', 'checks', 'inventory'])
       || v.schemaVersion !== 1 || v.mode !== 'deployment_readiness' || v.nonce !== input.nonce
-      || v.accountId !== input.expectedAccountId || !['ready', 'not_ready'].includes(String(v.status))
+      || v.accountId !== input.expectedAccountId || (v.status !== 'ready' && v.status !== 'not_ready')
       || !agentReasons.some(r => r === v.reason)) return false;
   const evidence = v.checks;
   const inventory = v.inventory;
@@ -100,16 +100,32 @@ export async function deploymentReadiness(input: ReadinessInput): Promise<Deploy
   if (runtimeParameter() !== `${prefix}runtime_arn`
       || (process.env.SSM_INTERPRETER_ID_PARAM ?? `${prefix}interpreter_id`) !== `${prefix}interpreter_id`
       || (process.env.SSM_MEMORY_ID_PARAM ?? `${prefix}memory_id`) !== `${prefix}memory_id`) return result;
+  // One deadline covers identity, every parameter read, invocation and its stream.
+  const controller = new AbortController();
+  let destroy: (() => void) | undefined;
+  const closeBody = () => { try { destroy?.(); } catch { /* Cleanup must not hide timeout evidence. */ } };
+  let rejectDeadline: (error: Error) => void = () => {};
+  const expired = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
+  const timer = setTimeout(() => {
+    controller.abort();
+    closeBody();
+    rejectDeadline(new Error('readiness_deadline'));
+  }, 50_000);
+  const within = <T>(operation: () => Promise<T>): Promise<T> => {
+    if (controller.signal.aborted) return Promise.reject(new Error('readiness_deadline'));
+    return Promise.race([operation(), expired]);
+  };
   try {
     result.reason = 'identity_failed';
-    const identity = await sts.send(new GetCallerIdentityCommand({}), { abortSignal: AbortSignal.timeout(5000) });
+    const identity = await within(() => sts.send(new GetCallerIdentityCommand({}), { abortSignal: controller.signal }));
     const expected = `arn:aws:sts::${host}:assumed-role/${project}-task/`;
     if (identity.Account !== host || !identity.Arn?.startsWith(expected) || identity.Arn.length <= expected.length) return result;
     result.webIdentity = true;
     const values: Partial<Record<typeof keys[number], string>> = {};
     for (const key of keys) {
       try {
-        const response = await ssm.send(new GetParameterCommand({ Name: `${prefix}${key}` }), { abortSignal: AbortSignal.timeout(5000) });
+        const response = await within(() => ssm.send(new GetParameterCommand({ Name: `${prefix}${key}` }),
+          { abortSignal: controller.signal }));
         const value = response.Parameter?.Value;
         const valid = typeof value === 'string' && (key === 'runtime_arn'
           ? validRuntimeArn(value, region, host)
@@ -117,6 +133,10 @@ export async function deploymentReadiness(input: ReadinessInput): Promise<Deploy
         result.parameters[key] = !value ? 'missing' : value === 'PENDING' ? 'pending' : valid ? 'ready' : 'invalid';
         if (valid) values[key] = value;
       } catch (error) {
+        if (controller.signal.aborted) {
+          result.parameters[key] = 'unavailable';
+          throw error;
+        }
         const name = error instanceof Error ? error.name : '';
         result.parameters[key] = name === 'ParameterNotFound' ? 'missing'
           : ['AccessDeniedException', 'AccessDenied'].includes(name) ? 'denied' : 'unavailable';
@@ -125,18 +145,23 @@ export async function deploymentReadiness(input: ReadinessInput): Promise<Deploy
     result.reason = 'parameters_not_ready';
     if (!keys.every(k => result.parameters[k] === 'ready')) return result;
     result.reason = 'runtime_unavailable';
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 55_000);
-    let destroy: (() => void) | undefined;
-    const abort = () => destroy?.();
-    controller.signal.addEventListener('abort', abort, { once: true });
     try {
-      const response = await runtime.send(new InvokeAgentRuntimeCommand({
+      const response = await within(() => runtime.send(new InvokeAgentRuntimeCommand({
         agentRuntimeArn: values.runtime_arn, qualifier: 'DEFAULT',
         runtimeSessionId: `readiness-${randomUUID()}`,
         contentType: 'application/json', accept: 'text/event-stream',
         payload: new TextEncoder().encode(JSON.stringify({ mode: 'deployment_readiness', ...input })),
-      }), { abortSignal: controller.signal });
+      }), { abortSignal: controller.signal }).then(response => {
+        // A late SDK response must not leave an open stream after the deadline.
+        if (controller.signal.aborted) {
+          const late = response.response;
+          if (late && 'destroy' in late && typeof late.destroy === 'function') {
+            try { late.destroy(); } catch { /* No response text is exposed. */ }
+          }
+          throw new Error('readiness_deadline');
+        }
+        return response;
+      }));
       const body = response.response;
       result.reason = 'runtime_protocol';
       if (!body || !(Symbol.asyncIterator in body)) throw new Error();
@@ -148,27 +173,32 @@ export async function deploymentReadiness(input: ReadinessInput): Promise<Deploy
         if (!response.contentType?.startsWith('text/event-stream')) throw new Error();
         if (controller.signal.aborted) throw new Error();
         result.reason = 'runtime_unavailable';
-        const chunks: Uint8Array[] = [];
-        let bytes = 0;
-        for await (const chunk of body) {
-          const value = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
-          bytes += value.byteLength;
-          if (bytes > 16_384) { result.reason = 'runtime_protocol'; throw new Error(); }
-          if (controller.signal.aborted) throw new Error();
-          chunks.push(value);
-        }
+        const raw = await within(async () => {
+          const chunks: Uint8Array[] = [];
+          let bytes = 0;
+          for await (const chunk of body) {
+            if (controller.signal.aborted) throw new Error('readiness_deadline');
+            const value = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+            bytes += value.byteLength;
+            if (bytes > 16_384) { result.reason = 'runtime_protocol'; throw new Error(); }
+            chunks.push(value);
+          }
+          return Buffer.concat(chunks).toString('utf8');
+        });
         if (controller.signal.aborted) throw new Error();
         result.reason = 'runtime_protocol';
-        result.agent = parseReadinessEvent(Buffer.concat(chunks).toString('utf8'), input);
-      } finally { destroy?.(); }
+        result.agent = parseReadinessEvent(raw, input);
+      } finally { closeBody(); }
       result.status = result.agent.status;
       result.reason = result.agent.reason;
     } catch {
       if (controller.signal.aborted) result.reason = 'timeout';
-    } finally {
-      clearTimeout(timer);
-      controller.signal.removeEventListener('abort', abort);
     }
-  } catch { /* Only fixed stage codes cross the authenticated boundary. */ }
+  } catch {
+    if (controller.signal.aborted) result.reason = 'timeout';
+  } finally {
+    clearTimeout(timer);
+    closeBody();
+  }
   return result;
 }

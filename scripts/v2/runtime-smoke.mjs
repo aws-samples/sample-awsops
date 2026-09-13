@@ -54,7 +54,7 @@ const freshTime = (value, start, now) => typeof value === 'string' && Number.isF
   && Date.parse(value) >= start && Date.parse(value) <= now + 60_000;
 const failureReasons = new Set(['configuration_invalid', 'disabled', 'identity_failed', 'parameters_not_ready',
   'runtime_unavailable', 'runtime_protocol', 'invalid_request', 'account_mismatch', 'gateway_unavailable',
-  'tools_unavailable', 'inventory_unavailable', 'inventory_stale', 'known_resource_missing', 'model_failed', 'timeout']);
+  'tools_unavailable', 'inventory_unavailable', 'inventory_incomplete', 'inventory_stale', 'known_resource_missing', 'model_failed', 'timeout']);
 const parameterKeys = ['runtime_arn', 'interpreter_id', 'memory_id'];
 const parameterStates = new Set(['uninspected', 'ready', 'disabled', 'pending', 'missing', 'denied', 'invalid', 'unavailable']);
 function readinessFailure(value, nonce, account) {
@@ -98,6 +98,9 @@ export async function verifyRuntimeSmoke(configuration, request, {
       const rows = c.runs.filter(r => r?.type === type && r.accountId === 'self');
       if (rows.length !== 1) return false;
       const row = rows[0];
+      if (row.status === 'succeeded' && freshTime(row.started_at, started, now())
+          && freshTime(row.last_success_at, started, now())
+          && (row.unknown_attribute_count !== 0 || row.unknown_attributes !== false)) fail('inventory_incomplete');
       return row.status === 'succeeded' && finiteCount(row.row_count)
         && row.unknown_attribute_count === 0 && row.unknown_attributes === false
         && freshTime(row.started_at, started, now()) && freshTime(row.last_success_at, started, now());

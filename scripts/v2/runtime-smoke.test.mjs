@@ -116,7 +116,7 @@ test('missing/partial/stale/unknown collection cannot pass or be treated as zero
       row_count: 0, started_at: start, last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false, ...change }));
     await assert.rejects(fixture({
       '/api/inventory/summary?accounts=self': () => ({ collection: { configured: true, readOk: true, runs } }),
-    }).run(), /collection_timeout/);
+    }).run(), Object.hasOwn(change, 'unknown_attribute_count') ? /inventory_incomplete/ : /collection_timeout/);
   }
 });
 test('queued delivery and wrong runtime never count as terminal worker proof', async () => {

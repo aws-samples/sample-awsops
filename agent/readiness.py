@@ -3,6 +3,7 @@ import asyncio
 import copy
 import functools
 import json
+import os
 import re
 import threading
 import time
@@ -115,6 +116,9 @@ def check_readiness(payload, gateway_url, mcp_factory, region, model_id, *, prog
     progress = progress or _Progress(payload)
     if not _valid(payload):
         return progress.snapshot()
+    if os.environ.get("DEPLOYMENT_READINESS_ENABLED") != "true":
+        progress.record(reason="disabled")
+        return progress.snapshot()
     try:
         # Only the existing Ops map supplies this URL, never the request payload.
         progress.record(reason="gateway_unavailable")
@@ -172,9 +176,13 @@ def check_readiness(payload, gateway_url, mcp_factory, region, model_id, *, prog
                     or not all(isinstance(row, dict) for row in resources) or len(resources) > 500
                     or type(inventory.get("count")) is not int or inventory["count"] != len(resources)):
                 return progress.snapshot()
-            progress.record(reason="inventory_stale", checks={"inventoryQuery": True},
+            progress.record(reason="inventory_incomplete", checks={"inventoryQuery": True},
                             inventory={"count": len(resources)})  # bounded sample, not a fleet total
             fresh = inventory.get("freshness")
+            if any(not isinstance(value, dict) or type(value.get("unknown_attribute_count")) is not int
+                   or value["unknown_attribute_count"] != 0 for value in (rows[0], fresh)):
+                return progress.snapshot()
+            progress.record(reason="inventory_stale")
             if not _fresh(rows[0]) or not _fresh(fresh):
                 return progress.snapshot()
             progress.record(reason="known_resource_missing", checks={"freshInventory": True},
@@ -213,6 +221,11 @@ def check_readiness(payload, gateway_url, mcp_factory, region, model_id, *, prog
 
 async def handle_readiness(payload, gateway_url, mcp_factory, region, model_id):
     progress = _Progress(payload)  # Queueing the worker also consumes the same work budget.
+    if not _valid(payload):
+        return progress.snapshot()
+    if os.environ.get("DEPLOYMENT_READINESS_ENABLED") != "true":
+        progress.record(reason="disabled")
+        return progress.snapshot()
     try:
         return await asyncio.wait_for(asyncio.to_thread(
             check_readiness, payload, gateway_url, mcp_factory, region, model_id, progress=progress), timeout=45)

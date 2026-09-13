@@ -1,5 +1,6 @@
 """Offline readiness protocol tests; no SDK client or credential discovery."""
 import json
+import os
 import asyncio
 import copy
 import threading
@@ -45,6 +46,9 @@ class Client:
 
 class ReadinessTest(unittest.TestCase):
     def setUp(self):
+        enabled = patch.dict(os.environ, {"DEPLOYMENT_READINESS_ENABLED": "true"})
+        enabled.start()
+        self.addCleanup(enabled.stop)
         self.client = Client()
         self.sts = SimpleNamespace(get_caller_identity=lambda: {"Account": ACCOUNT})
         self.bedrock = SimpleNamespace(converse=lambda **kwargs: {
@@ -85,13 +89,39 @@ class ReadinessTest(unittest.TestCase):
             self.assertEqual(self.run_probe()["reason"], "tools_unavailable")
 
     def test_unknown_stale_failed_and_absent_data_are_not_ready(self):
-        for changes in [dict(status="running"), dict(freshness="stale"), dict(age_minutes=31),
-                        dict(unknown_attribute_count=None), dict(unknown_attribute_count=1)]:
+        for changes in [dict(status="running"), dict(freshness="stale"), dict(age_minutes=31)]:
             self.client.query["freshness"] = {**freshness(), **changes}
             self.assertEqual(self.run_probe()["reason"], "inventory_stale")
         self.client.query["freshness"] = freshness()
         self.client.query["resources"] = [{"id": "FOREIGN"}]
         self.assertEqual(self.run_probe()["reason"], "known_resource_missing")
+
+    def test_unknown_or_nonzero_attribute_coverage_is_incomplete_not_stale(self):
+        for source in ("summary", "query"):
+            for value in (None, 1):
+                self.client = Client()
+                row = self.client.summary["sync"][0] if source == "summary" else self.client.query["freshness"]
+                row["unknown_attribute_count"] = value
+                result = self.run_probe()
+                self.assertEqual(result["reason"], "inventory_incomplete")
+                self.assertFalse(result["checks"]["freshInventory"])
+                self.assertFalse(result["checks"]["model"])
+
+    def test_default_off_valid_requests_return_disabled_without_sdk_or_gateway(self):
+        for value in (None, "false", "TRUE"):
+            with patch.dict(os.environ, {}, clear=True), patch.object(readiness, "_client") as sdk:
+                if value is not None:
+                    os.environ["DEPLOYMENT_READINESS_ENABLED"] = value
+                factory = unittest.mock.Mock()
+                result = readiness.check_readiness(PAYLOAD, GATEWAY, factory, "ap-northeast-2", "model")
+                self.assertEqual(result["reason"], "disabled")
+                self.assertEqual(result["nonce"], PAYLOAD["nonce"])
+                self.assertFalse(any(result["checks"].values()))
+                self.assertIsNone(result["inventory"]["count"])
+                result = asyncio.run(readiness.handle_readiness(PAYLOAD, GATEWAY, factory, "ap-northeast-2", "model"))
+                self.assertEqual(result["reason"], "disabled")
+                sdk.assert_not_called()
+                factory.assert_not_called()
 
     def test_model_failure_or_chat_prose_is_not_success(self):
         for response in [{"role": "assistant"}, {"error": "role ready"},
