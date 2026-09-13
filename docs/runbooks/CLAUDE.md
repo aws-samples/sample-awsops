@@ -24,11 +24,15 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC and protected review recovery; ECR preflight; state-preserving DNS deferral, certificate ownership, dispatch-only same-SHA saved plans and private authenticated assets, Host/SNI smoke, default-off manual private DB migration, opt-in authenticated verification and manual opt-in advisory read-only DB diagnostics (ADR-002/005/016) |
+| [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; explicit saved-plan domain scope, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
 | [steampipe-quota-and-staleness.md](steampipe-quota-and-staleness.md) | Steampipe quota guard — rate limiter knobs, partial runs, freshness ledger/staleness response |
 | [agent-sql-reader.md](agent-sql-reader.md) | `execute_sql`/`inventory-read` Data API auth failures — `awsops_sql_reader` role/password sync (`apply → make migrate → make agentcore`) |
 
 ## Deployment invariants
+- `runtime-foundation.md` covers account-bound default-off activation and saved-plan assets. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
+- The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
+- Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
 - `scripts/v2/ci_tf_assets.py` shares one locked pg8000 installer with Terraform.
   Prepare invalidates markers and removes stale regular ZIPs, rejecting ZIP symlinks.
   Pack requires known planned ZIPs and binds plan/SHA/scope, paths, modes and hashes with
@@ -36,7 +40,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   in GitHub, or explicit local commits without an event; other events fail before work.
   Targeted plans omit untargeted Lambda resources from planned_values; preserve the ZIP check.
   The 0600 tarball can contain signing keys. The integrating workflow must encrypt it before
-  upload and clean its own plaintext/staging; pack/restore has no workflow caller yet.
+  upload and clean its own plaintext/staging; Terraform plan/apply now wire pack/restore.
   `CI_ASSETS_READY=true` makes layer provisioners validate restored files without reinstalling.
   See `scripts/v2/ci/pg8000-requirements.txt`, `scripts/v2/test_ci_tf_assets.py` and
   `docs/reference/06-workers.md`. Key rotation invalidates prior signed bundles.

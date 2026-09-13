@@ -237,7 +237,7 @@ def certificate_overrides(configuration, state, account, allow_dns, *, publish=T
     )}
     # An ECR-only saved plan cannot mutate certificates; check_plan enforces
     # its sole-resource allowlist again before apply.
-    if not advisory and certificate_mode == "managed" and scope != "ecr-bootstrap" and any(
+    if not advisory and certificate_mode == "managed" and scope not in {"ecr-bootstrap", "runtime-ecr-bootstrap"} and any(
         not own("aws_acm_certificate", key).get("arn") for key in ("cf", "alb")
     ):
         if scope != "full" or not allow_dns:
@@ -312,6 +312,8 @@ def ecs_service_may_change_dns(change):
 
 
 def check_plan(plan, allow_dns, scope="full", *, target="", advisory=False):
+    if scope == "runtime-ecr-bootstrap" and target != "dev":
+        raise ValueError("Runtime ECR bootstrap is dev-only")
     if not isinstance(plan, dict) or not isinstance(plan.get("planned_values"), dict) or not plan.get("format_version"):
         raise ValueError("invalid Terraform plan JSON")
     rollout = plan_rollout(plan, target, scope)
@@ -354,6 +356,10 @@ def check_plan(plan, allow_dns, scope="full", *, target="", advisory=False):
         mutations += 1
         if scope == "ecr-bootstrap" and resource["address"] != "aws_ecr_repository.web":
             raise ValueError("ECR bootstrap contains an unrelated mutation: " + resource["address"])
+        if scope == "runtime-ecr-bootstrap" and resource["address"] not in {
+            "aws_ecr_repository.steampipe[0]", "aws_ecr_repository.agentcore[0]", "aws_ecr_repository.worker[0]",
+        }:
+            raise ValueError("Runtime ECR bootstrap contains an unrelated mutation: " + resource["address"])
         if (resource["type"].startswith(("aws_route53", "aws_service_discovery"))
                 or resource["type"] == "aws_ecs_service" and ecs_service_may_change_dns(resource["change"])):
             dns_changes.append(resource["address"])
@@ -385,7 +391,7 @@ def main():
     commands.add_parser("summary")
     check = commands.add_parser("check-plan")
     check.add_argument("--allow-dns", choices=("true", "false"), required=True)
-    check.add_argument("--scope", choices=("full", "ecr-bootstrap"), default="full")
+    check.add_argument("--scope", choices=("full", "ecr-bootstrap", "runtime-ecr-bootstrap"), default="full")
     check.add_argument("--target", default="")
     check.add_argument("--advisory", choices=("true", "false"), default="false")
     certificates = commands.add_parser("certificates")
@@ -394,7 +400,7 @@ def main():
     certificates.add_argument("--state", type=Path, required=True)
     certificates.add_argument("--allow-dns", choices=("true", "false"), required=True)
     certificates.add_argument("--publish", choices=("true", "false"), required=True)
-    certificates.add_argument("--scope", choices=("full", "ecr-bootstrap"), required=True)
+    certificates.add_argument("--scope", choices=("full", "ecr-bootstrap", "runtime-ecr-bootstrap"), required=True)
     certificates.add_argument("--certificate-mode", choices=("preserve", "managed"), default="preserve")
     certificates.add_argument("--target", default="")
     certificates.add_argument("--advisory", choices=("true", "false"), default="false")

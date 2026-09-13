@@ -412,7 +412,7 @@ Then register the generated files (base64) as repo secrets:
 |---|---|
 | all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (plan-artifact encryption and private asset HMAC; rotation invalidates signed bundles) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
 | production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` |
-| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` |
+| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` / `AWS_ACCOUNT_ID_DEV` |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
 
 ```bash
@@ -422,12 +422,24 @@ gh secret set TF_TFVARS_DEV -R aws-samples/sample-awsops \
   --body "$(base64 -w0 terraform/foundation/terraform.tfvars)"
 ```
 
+The secret `AWS_ACCOUNT_ID_DEV` is required for configured development and preview stacks.
+The configured role and STS caller must match it before AWS reads/writes. A missing backend
+may skip an advisory plan; missing account verification on a configured stack fails.
+개발·preview 스택이 구성되어 있으면 `AWS_ACCOUNT_ID_DEV` 시크릿이 필수입니다.
+backend 미설정 계획은 생략할 수 있지만 구성된 스택의 계정 검증 누락은 실패합니다.
+
 #### Development variable catalog / 개발 변수 목록
 
 Nonsecret dev repository variables are `DOMAIN_NAME_DEV` / `HOSTED_ZONE_NAME_DEV` (paired names),
 `CERTIFICATE_MODE_DEV` (`preserve` by default), `CI_MIGRATIONS_ENABLED_DEV` (`false` by default),
 and `CI_DB_DIAGNOSTICS_DEV` (`false`/unset by default; manual advisory read-only diagnostics only).
-These select reviewed deployment behavior or optional observations; credentials stay in the secrets above.
+Runtime activation also uses default-off `CI_READONLY_RUNTIME_DEV` and verified
+`STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV`. These select reviewed deployment
+behavior; account identifiers and credentials stay in secrets. Full activation requires
+real login/DB/host-registry preflight. Verifier-group provisioning belongs to the later
+full-release integration and is not granted by this foundation change.
+런타임 활성화에는 기본 비활성 `CI_READONLY_RUNTIME_DEV`와 검증된 두 이미지 digest
+변수를 추가로 사용하며 계정 식별자와 자격증명은 시크릿에 둡니다.
 dev의 일반 저장소 변수는 도메인/존 이름 쌍, 기본 `preserve`인 인증서 모드, 기본 `false`인
 `CI_MIGRATIONS_ENABLED_DEV`, 기본 `false`/미설정인 참고용 읽기 전용 진단 변수
 `CI_DB_DIAGNOSTICS_DEV`이다. 배포·관측 선택값이며 자격증명은 위 시크릿에 유지한다.
@@ -773,7 +785,8 @@ plan for a missing repository; do not disable this check or expand the role.
 ### 5. Deploy while DNS changes are deferred / DNS 변경 보류 상태의 배포
 
 `Terraform` dispatch defaults to `mode=plan`, `allow_dns_changes=false` and
-`domain_rollout=false`. Ordinary full plans keep the existing broad DNS policy:
+`domain_rollout=false`, `runtime_rollout=false`; manual dev/preview core teardown remains blocked (no retirement mode). See [runtime activation](runtime-foundation.md)
+for the separate dev private-DNS profile. Ordinary full plans keep the existing broad DNS policy:
 Cloud Map/registered ECS changes require explicit DNS permission on both plan and apply.
 For a dev service-domain rollout, use the [staged domain runbook](dev-domain-rollout.md)
 and set **`domain_rollout=true` on every domain-stage plan dispatch** (`dev` / `full` only).
@@ -782,7 +795,8 @@ in the saved plan; apply derives scoping from that marker, not current repositor
 variables or an apply input. The scoped policy allows only the selected zone's configured
 service A/ACM CNAME records; it does not authorize old/parent DNS or Cloud Map changes.
 
-dispatch 기본값은 `mode=plan`, DNS 허용 false, `domain_rollout=false`다. 일반 full 계획의
+dispatch 기본값은 `mode=plan`, DNS 허용 false, `domain_rollout=false`,
+`runtime_rollout=false`다. 사설 DNS 활성화는 별도 runtime 런북을 따른다. 일반 full 계획의
 Cloud Map/등록된 ECS 변경에는 plan/apply 양쪽의 DNS 승인이 필요하다. dev 도메인 전환은
 연결된 런북을 따라 모든 도메인 단계 plan에서 `domain_rollout=true`로 설정한다.
 범위는 저장된 `ci_domain_rollout` 메타데이터로 결정하며 apply 입력으로 바뀌지 않는다.
@@ -886,7 +900,13 @@ repository, stack branch and commit. It checks the live branch again and
 rechecks DNS changes after decrypting the plan. A moved branch requires a fresh
 plan. `plan_scope=ecr-bootstrap`, with `domain_rollout=false`, is available for an initial plan limited to the
 web ECR repository; the JSON gate also rejects unrelated mutations in that scope.
-Repeat the same `plan_scope` on apply; the apply gate checks that scope too.
+Dev `plan_scope=runtime-ecr-bootstrap` targets only three runtime repositories; it needs no
+images yet. Repeat the same scope on apply. Saved plans now require both encrypted `tfplan.enc`
+and `tfassets.enc`, with asset hashes bound to that plan/SHA/scope. Old or missing bundles require
+a fresh reviewed plan; never rebuild assets during apply.
+dev runtime ECR bootstrap은 저장소 세 개만 대상으로 하며 이미지가 아직 없어도 됩니다.
+apply에도 같은 scope를 쓰고 두 암호화 artifact를 함께 전달합니다. 이전 형식·누락
+bundle은 새 계획으로 대체하며 apply 중 재빌드하지 않습니다.
 It needs no certificates unless external ARNs are explicitly configured.
 Apply a full reviewed plan before rolling the service.
 
@@ -1310,8 +1330,8 @@ Real targeted plans omit untargeted Lambda resources from planned_values even wh
 retains them; their old ZIPs are not required. Keep the known-planned-ZIP completeness check.
 The 0600 `tfassets.tar.gz` is private scratch, like the plaintext plan. It can contain rendered
 Cognito signing keys and **must never be uploaded**. The utility has no upload path; the integrating
-workflow must encrypt it and clean plaintext scratch. Pack/restore is not wired to a workflow
-by this change; existing Terraform layer provisioners do use the locked installer.
+Terraform workflow encrypts it and cleans plaintext scratch; plan/apply now wire pack/restore,
+and Terraform layer provisioners use the locked installer.
 Terraform과 CI는 같은 해시 고정 설치기를 사용하며 CI asset은 재설치 없이 검사합니다.
 기존 marker는 변경 전에 무효화하고 이전 ZIP을 제거하며 ZIP 심볼릭 링크를 거부합니다.
 설치 파일 해시와 고정 import 목록을 검증합니다.
@@ -1321,10 +1341,10 @@ GitHub에서는 push·pull_request·workflow_dispatch만 허용하며 Python API
 ZIP은 요구하지 않으며, 실제 계획에 알려진 ZIP의 누락 검사는 유지합니다.
 ZIP을 확인한 뒤 HMAC을 계산합니다. 평문 tar에는 렌더링된 서명키가 포함될
 수 있으므로 0600 비공개 임시 파일로만 취급하고 호출 workflow가 암호화·정리해야 합니다.
-pack/restore의 workflow 연결은 별도이며 기존 Terraform 레이어 설치기는 이미 공통 lock을 사용합니다.
+Terraform plan/apply가 pack/restore를 연결하며 레이어 설치기도 같은 lock을 사용합니다.
 
 From the repository root, test with `python3 -m pytest scripts/v2/test_ci_tf_assets.py -q`.
-The integrating CI must supply the secret without CLI arguments. Run from the foundation root,
+The Terraform workflow supplies the secret without CLI arguments. Run from the foundation root,
 with a reviewed plan/source SHA and trusted flags; pack happens after Terraform creates ZIPs:
 루트에서 테스트합니다. 통합 CI가 시크릿을 공급하고 plan이 ZIP을 만든 뒤 pack해야 합니다.
 
@@ -1334,13 +1354,13 @@ cd terraform/foundation
 printf '%s' '{"steampipe_enabled":true,"workers_enabled":true}' | python3 ../../scripts/v2/ci_tf_assets.py prepare --scope full
 # After a reviewed tfplan exists; GITHUB_SHA and TF_PLAN_ENC_KEY must already be set:
 python3 ../../scripts/v2/ci_tf_assets.py pack --scope full
-# Only after the integrating workflow encrypts/transports/decrypts both private files:
+# After the Terraform workflow encrypts/transports/decrypts both private files:
 python3 ../../scripts/v2/ci_tf_assets.py restore --scope full
 python3 ../../scripts/v2/ci_tf_assets.py check-layer --layer inv_layer # only if inventory is enabled
 python3 ../../scripts/v2/ci_tf_assets.py check-layer --layer pg8000_layer # only if workers are enabled
 # Controller only, after the existing identity/review/DNS gates approve this saved plan:
 CI_ASSETS_READY=true terraform apply -input=false tfplan
-# The integrating workflow's always-cleanup must remove its own plaintext plan/bundle/staging.
+# The Terraform workflow's always-cleanup removes its own plaintext plan/bundle/staging.
 ```
 
 Missing/mismatched authentication, plan or content requires a fresh reviewed plan/bundle,

@@ -114,7 +114,7 @@ resource "aws_iam_role_policy" "steampipe_task" {
   # APIs don't support resource-level scoping. Far narrower than ReadOnlyAccess.
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
+    Statement = concat([{
       Effect = "Allow"
       Action = [
         "ec2:Describe*", "sts:GetCallerIdentity",
@@ -140,15 +140,8 @@ resource "aws_iam_role_policy" "steampipe_task" {
         "cloudtrail:Describe*", "cloudtrail:List*", "cloudtrail:GetTrailStatus", "cloudtrail:GetEventSelectors", "cloudtrail:GetInsightSelectors",
         "route53:List*", "route53:Get*"
       ]
-      Resource = "*"
-      },
-      # Cross-account read-only fan-out: the aws.spc connections assume each target account's
-      # AWSopsReadOnlyRole (1st-party: no ExternalId; 3rd-party: trust enforces it). Scoped to the
-      # role NAME (route.ts hard-pins it) — never an arbitrary role.
-      {
-        Effect   = "Allow"
-        Action   = ["sts:AssumeRole"]
-        Resource = "arn:aws:iam::*:role/AWSopsReadOnlyRole"
+      Resource  = "*"
+      Condition = local.runtime_read_condition
       },
       # M1: IAM database auth — generate a short-lived signed token to connect to Aurora as the
       # dedicated least-privilege `steampipe_reader` role (SELECT-only on accounts/account_regions;
@@ -158,7 +151,12 @@ resource "aws_iam_role_policy" "steampipe_task" {
         Effect   = "Allow"
         Action   = ["rds-db:connect"]
         Resource = "arn:aws:rds-db:${var.region}:${data.aws_caller_identity.current.account_id}:dbuser:${aws_rds_cluster.aurora.cluster_resource_id}/steampipe_reader"
-    }]
+        }], var.inventory_host_only ? [] : [{
+        # Legacy multi-account mode only. Verified host inventory never self-assumes.
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole"]
+        Resource = "arn:aws:iam::*:role/AWSopsReadOnlyRole"
+    }])
   })
 }
 
@@ -178,10 +176,10 @@ resource "aws_ecs_task_definition" "steampipe" {
   }
   container_definitions = jsonencode([{
     name         = "steampipe"
-    image        = "${aws_ecr_repository.steampipe[0].repository_url}:${var.steampipe_image_tag}"
+    image        = var.steampipe_image_digest != null ? "${aws_ecr_repository.steampipe[0].repository_url}@${var.steampipe_image_digest}" : "${aws_ecr_repository.steampipe[0].repository_url}:${var.steampipe_image_tag}"
     essential    = true
     portMappings = [{ containerPort = 9193, protocol = "tcp" }]
-    environment = [
+    environment = concat([
       { name = "AWS_REGION", value = var.region },
       # boot-time aws.spc generator reaches Aurora to read accounts ⋈ account_regions via IAM
       # database auth (M1): AURORA_USER is a dedicated least-privilege role name — not a secret —
@@ -193,7 +191,10 @@ resource "aws_ecs_task_definition" "steampipe" {
       { name = "STEAMPIPE_AWS_MAX_CONCURRENCY", value = tostring(var.steampipe_aws_max_concurrency) },
       { name = "STEAMPIPE_AWS_BUCKET_SIZE", value = tostring(var.steampipe_aws_bucket_size) },
       { name = "STEAMPIPE_AWS_FILL_RATE", value = tostring(var.steampipe_aws_fill_rate) },
-    ]
+      ], var.inventory_host_only ? [
+      { name = "INVENTORY_HOST_ONLY", value = "true" },
+      { name = "EXPECTED_HOST_ACCOUNT_ID", value = data.aws_caller_identity.current.account_id },
+    ] : [])
     secrets = [
       { name = "STEAMPIPE_DATABASE_PASSWORD", valueFrom = aws_secretsmanager_secret.steampipe[0].arn },
     ]
@@ -325,16 +326,16 @@ resource "aws_iam_role_policy" "inv_sync" {
       { Effect = "Allow", Action = ["lambda:InvokeFunction"], Resource = aws_lambda_function.inv_sync[0].arn },
       # SDK-sourced cloudfront_vpc_origin sync (Steampipe omits VpcOriginConfig): read-only CloudFront
       # list/get for VPC origins + per-distribution config. Read-only; no mutation.
-      { Effect = "Allow", Action = ["cloudfront:ListVpcOrigins", "cloudfront:GetVpcOrigin", "cloudfront:ListDistributions", "cloudfront:GetDistributionConfig"], Resource = "*" },
+      { Effect = "Allow", Action = ["cloudfront:ListVpcOrigins", "cloudfront:GetVpcOrigin", "cloudfront:ListDistributions", "cloudfront:GetDistributionConfig"], Resource = "*", Condition = local.runtime_read_condition },
       # SDK-sourced s3_public_access sync (Steampipe aws_s3_bucket public-access columns fail the whole
       # query on one denied bucket): read-only per-bucket public-access flags. Read-only; no mutation.
-      { Effect = "Allow", Action = ["s3:ListAllMyBuckets", "s3:GetBucketLocation", "s3:GetBucketPolicyStatus", "s3:GetBucketPublicAccessBlock", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketLogging", "s3:GetBucketTagging"], Resource = "*" },
+      { Effect = "Allow", Action = ["s3:ListAllMyBuckets", "s3:GetBucketLocation", "s3:GetBucketPolicyStatus", "s3:GetBucketPublicAccessBlock", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketLogging", "s3:GetBucketTagging"], Resource = "*", Condition = local.runtime_read_condition },
       # SDK-sourced alb_listener_rule sync (Steampipe rule table needs a per-listener qualifier):
       # read-only ELBv2 describe for LBs/listeners/rules. Read-only; no mutation.
-      { Effect = "Allow", Action = ["elasticloadbalancing:DescribeLoadBalancers", "elasticloadbalancing:DescribeListeners", "elasticloadbalancing:DescribeRules"], Resource = "*" },
+      { Effect = "Allow", Action = ["elasticloadbalancing:DescribeLoadBalancers", "elasticloadbalancing:DescribeListeners", "elasticloadbalancing:DescribeRules"], Resource = "*", Condition = local.runtime_read_condition },
       # SDK-sourced opensearch_serverless sync (pinned Steampipe plugin lacks the AOSS table):
       # read-only collection list/detail. Read-only; no mutation.
-      { Effect = "Allow", Action = ["aoss:ListCollections", "aoss:BatchGetCollection"], Resource = "*" }
+      { Effect = "Allow", Action = ["aoss:ListCollections", "aoss:BatchGetCollection"], Resource = "*", Condition = local.runtime_read_condition }
       # NOTE (M2, round 5): the "0-row account" reachability probe queries the account's OWN
       # Steampipe connection directly (data path) instead of doing an independent sts:AssumeRole
       # from this Lambda — an AssumeRole only proves the IAM trust policy is intact, not that the

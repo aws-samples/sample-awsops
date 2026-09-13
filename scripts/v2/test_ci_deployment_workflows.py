@@ -54,6 +54,7 @@ class DeploymentWorkflowTests(unittest.TestCase):
             scripts.mkdir(parents=True)
             shutil.copyfile(ROOT / "scripts/v2/ci_dns_policy.py", scripts / "ci_dns_policy.py")
             shutil.copyfile(ROOT / "scripts/v2/ci_dev_domain.py", scripts / "ci_dev_domain.py")
+            shutil.copyfile(ROOT / "scripts/v2/ci_runtime_policy.py", scripts / "ci_runtime_policy.py")
             shutil.copyfile(ROOT / "scripts/v2/deployment-smoke.mjs", scripts / "deployment-smoke.mjs")
             subprocess.run(["git", "init", "-q", str(root)], check=True)
             for name, content in (files or {}).items():
@@ -108,6 +109,7 @@ class DeploymentWorkflowTests(unittest.TestCase):
                 "COMMAND_LOG": str(log), "CURRENT_SHA": SHA,
                 "GITHUB_SHA": SHA, "GITHUB_REPOSITORY": "example/awsops", "TARGET": "dev",
                 "ALLOW_DNS_CHANGES": "false",
+                "AWS_ACCOUNT_ID_DEV": "123456789012",
                 "TEST_STATE_JSON": json.dumps({"format_version": "1.0"}),
                 "CONFIG_JSON": json.dumps(CONFIG), "CF_ARN": CF,
                 "CF_CERTIFICATE_ARN": "", "ALB_CERTIFICATE_ARN": "",
@@ -203,13 +205,25 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertEqual(ignored.returncode, 0, ignored.stderr)
 
     def test_apply_scope_is_pinned_to_plan_not_current_domain_env(self):
-        change = {"address": "aws_service_discovery_service.steampipe", "type": "aws_service_discovery_service",
-                  "change": {"actions": ["create"]}}
+        change = {"address": "aws_service_discovery_service.steampipe[0]", "type": "aws_service_discovery_service",
+                  "change": {"actions": ["create"], "before": None,
+                             "after": {"name": "steampipe", "dns_config": [{"namespace_id": "ns-owned"}]}}}
         script = step("terraform.yml", "apply", "terraform apply (exact saved plan — never re-planned)")
         for rollout in (False, True):
             for allow in (False, True):
+                plan = plan_fixture([change], rollout=rollout)
+                plan["variables"]["ci_runtime_rollout"]["value"] = True
+                plan["planned_values"]["root_module"]["resources"].append({
+                    "address": "aws_service_discovery_private_dns_namespace.main[0]",
+                    "type": "aws_service_discovery_private_dns_namespace", "mode": "managed",
+                    "values": {"id": "ns-owned", "name": "awsops-dev.internal", "vpc": "vpc-0123"},
+                })
+                plan["planned_values"]["root_module"]["resources"].append({
+                    "address": "aws_vpc.main[0]", "type": "aws_vpc", "mode": "managed",
+                    "values": {"id": "vpc-0123"},
+                })
                 result, commands = self.run_step(
-                    script, PLAN_JSON=json.dumps(plan_fixture([change], rollout=rollout)),
+                    script, PLAN_JSON=json.dumps(plan),
                     ALLOW_DNS_CHANGES=str(allow).lower(), DOMAIN_ROLLOUT=str(not rollout).lower(),
                     DOMAIN_NAME_DEV="changed.example.net", HOSTED_ZONE_NAME_DEV="example.net",
                 )

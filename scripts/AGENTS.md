@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8a292bbd3640 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ee90eff47d30 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,7 +8,9 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
-
+- `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
+- Dev/preview private discovery requires explicit full-plan rollout and preserves public DNS/certificates. `runtime-ecr-bootstrap` permits exactly three repositories. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy.
+- `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-registry proof before manual full dev activation plans; apply rechecks the approved profile. Automatic PR/push plans never receive the host-probe credential. Database-only proof is rejected; credentials stay private and failures use a fixed code. Flags/policy checks do not prove live access.
 - `v2/ci_db_diagnostics.py` is default-off manual dev-plan diagnostics. Both workflow and helper
   require `workflow_dispatch`, literal `CI_DB_DIAGNOSTICS_DEV=true`, and `--target dev`;
   region is fixed to `ap-northeast-2`. Invalid invocation context causes no AWS calls.
@@ -104,7 +106,7 @@ They use TF_PLAN_ENC_KEY HMAC.
 The 0600 tarball is private secret-bearing scratch, with no upload path;
 callers must encrypt before publication and clean plaintext files.
 Both Terraform layer paths use the same locked build-layer command, or check-layer for
-CI_ASSETS_READY=true. Prepare invalidates markers, removes stale regular ZIPs and rejects ZIP
+CI_ASSETS_READY=true, also exported by plan/apply. Prepare invalidates markers, removes stale regular ZIPs and rejects ZIP
 symlinks. Schema-2 markers bind file hashes; validation checks a fixed required-import list.
 The pin gate covers `v2/ci/pg8000-requirements.txt` and the four requirements
 under workers, steampipe, incident and remediation; update all with verified wheel hashes.

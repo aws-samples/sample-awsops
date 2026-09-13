@@ -26,4 +26,4 @@ cd "$scratch/terraform/foundation"
 export TF_DATA_DIR="$scratch/.terraform"
 terraform init -backend=false -input=false -lockfile=readonly -no-color
 terraform validate -no-color
-terraform test -filter=tests/dns_deferred.tftest.hcl -no-color
+terraform test -filter=tests/dns_deferred.tftest.hcl -filter=tests/runtime_iam.tftest.hcl -no-color

@@ -6,6 +6,9 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
+- `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
+- Dev/preview private discovery requires explicit full-plan rollout and preserves public DNS/certificates. `runtime-ecr-bootstrap` permits exactly three repositories. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy.
+- `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-registry proof before manual full dev activation plans; apply rechecks the approved profile. Automatic PR/push plans never receive the host-probe credential. Database-only proof is rejected; credentials stay private and failures use a fixed code. Flags/policy checks do not prove live access.
 - `v2/agentcore/provision.py` maps the applied `agentcore.deployment_readiness_enabled` boolean
   to `DEPLOYMENT_READINESS_ENABLED`; missing/false is off and shell overrides are ignored.
 
@@ -26,6 +29,7 @@ secrets-manager) — installed by `make deps`.
   verified wheel hashes. The separate Steampipe container's `v2/steampipe/Dockerfile` pin and
   installer are outside the Lambda lock/validator. `v2/test_ci_tf_assets.py` covers these
   contracts and restore recovery.
+  Plan/apply export literal `CI_ASSETS_READY=true` for the same verification contract.
 - `v2/configure.mjs` — `make configure`: interactive TUI → `terraform.tfvars` + `backend.hcl`.
   AWS access shells out to the `aws` CLI, not the SDK.
 - `v2/deploy.mjs` — `make deploy` (runs migrate first): arm64 build → ECR push →
