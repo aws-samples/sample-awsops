@@ -52,7 +52,7 @@ def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest
         return {"ci_runtime_rollout": False}
     account_id(expected_account)
     result = {key: True for key in (
-        "agentcore_enabled", "workers_enabled", "steampipe_enabled", "inventory_host_only",
+        "agentcore_enabled", "workers_enabled", "steampipe_enabled", "inventory_host_only", "ci_readiness_enabled",
     )}
     result["ci_runtime_rollout"] = rollout
     for key, value in (("steampipe_image_digest", steampipe_digest), ("worker_image_digest", worker_digest)):

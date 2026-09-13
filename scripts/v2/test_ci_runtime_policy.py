@@ -37,7 +37,7 @@ class RuntimePolicyTests(unittest.TestCase):
         value = self.module.runtime_overrides("dev", "true", ACCOUNT, "runtime-ecr-bootstrap", "", "", False)
         self.assertEqual(value, {
             "agentcore_enabled": True, "workers_enabled": True, "steampipe_enabled": True,
-            "inventory_host_only": True, "ci_runtime_rollout": False,
+            "inventory_host_only": True, "ci_readiness_enabled": True, "ci_runtime_rollout": False,
         })
 
     def test_full_activation_requires_both_immutable_digests(self):

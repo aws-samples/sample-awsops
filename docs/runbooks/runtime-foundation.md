@@ -35,7 +35,9 @@ mock 검사는 실제 backend를 사용하지 않습니다. 설정은 실제 권
    plan; a configured stack without the expected account fails before AWS access.
 2. For an authorized dev activation, set `CI_READONLY_RUNTIME_DEV=true`.
    `runtime-ecr-bootstrap` sets the core flags in generated inputs but targets only
-   three ECR repositories. Build verified ARM64 images before setting
+   three ECR repositories. Full activation also enables `ci_readiness_enabled`, assigning
+   the managed demo identity only to deployment-verifiers (no admin/IAM role).
+   Build verified ARM64 images before setting
    `STEAMPIPE_IMAGE_DIGEST_DEV` and `WORKER_IMAGE_DIGEST_DEV` to their digests.
 3. Prepare exactly one enabled, real-ID host registry row before host-only collection.
    The renderer verifies STS; Terraform removes only the collector's cross-account
@@ -58,7 +60,8 @@ mock 검사는 실제 backend를 사용하지 않습니다. 설정은 실제 권
    일치해야 합니다. backend 미설정 계획은 생략할 수 있지만 계정 검증 누락은 거부합니다.
 2. 승인된 dev 활성화에서만 `CI_READONLY_RUNTIME_DEV=true`를 설정합니다. runtime ECR
    bootstrap은 입력의 기능 플래그를 켜되 저장소 세 개만 대상으로 합니다. ARM64 빌드 후
-   두 이미지 digest 변수를 검증된 값으로 설정합니다.
+   두 이미지 digest 변수를 검증된 값으로 설정합니다. 전체 활성화는 demo에 검증
+   전용 그룹만 연결하며 관리자·IAM 역할을 부여하지 않습니다.
 3. 실제 계정 ID의 활성 호스트 행 하나를 준비합니다. renderer는 STS를 검증하고
    Terraform은 수집기 AssumeRole만 제외합니다. Agent MCP의 기존 다중 계정 읽기는
    유지합니다. 새 리전 opt-in 후에는 수집 전에 IAM을 다시 적용합니다.

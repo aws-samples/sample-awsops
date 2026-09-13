@@ -433,7 +433,9 @@ Nonsecret dev repository variables are `DOMAIN_NAME_DEV` / `HOSTED_ZONE_NAME_DEV
 and `CI_DB_DIAGNOSTICS_DEV` (`false`/unset by default; manual advisory read-only diagnostics only).
 Runtime activation also uses default-off `CI_READONLY_RUNTIME_DEV` and verified
 `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV`. These select reviewed deployment
-behavior; account identifiers and credentials stay in secrets.
+behavior; account identifiers and credentials stay in secrets. Runtime activation grants
+only the deployment-verifiers app capability to the managed demo identity, never admins or
+an IAM role. A fresh login is needed for updated group claims.
 런타임 활성화에는 기본 비활성 `CI_READONLY_RUNTIME_DEV`와 검증된 두 이미지 digest
 변수를 추가로 사용하며 계정 식별자와 자격증명은 시크릿에 둡니다.
 dev의 일반 저장소 변수는 도메인/존 이름 쌍, 기본 `preserve`인 인증서 모드, 기본 `false`인

@@ -106,6 +106,8 @@ run "defaults_remain_dark" {
       length(aws_iam_role_policy.agentcore) == 0 &&
       length(aws_iam_role_policy.steampipe_task) == 0 &&
       length(aws_iam_role_policy.worker_lambda) == 0 &&
+      length(aws_cognito_user_group.deployment_verifiers) == 0 &&
+      length(aws_cognito_user_in_group.demo_readiness) == 0 &&
       !var.inventory_host_only && var.steampipe_image_digest == null && var.worker_image_digest == null &&
       !var.remediation_enabled && !var.diagnosis_notify_enabled && !var.integrations_write_enabled
     )
@@ -117,11 +119,25 @@ run "host_core_permissions_and_digest_binding" {
   command = plan
   variables {
     agentcore_enabled      = true
+    ci_readiness_enabled   = true
+    create_demo_user       = true
+    demo_email             = "fixture@example.test"
+    demo_password          = "OfflineFixture1!" # Mocked plans only; never a deployed credential.
     workers_enabled        = true
     steampipe_enabled      = true
     inventory_host_only    = true
     steampipe_image_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     worker_image_digest    = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+  assert {
+    condition = (
+      aws_cognito_user_group.deployment_verifiers[0].name == "deployment-verifiers" &&
+      aws_cognito_user_group.deployment_verifiers[0].role_arn == null &&
+      length(aws_cognito_user_in_group.demo_readiness) == 1 &&
+      alltrue([for membership in aws_cognito_user_in_group.demo_readiness :
+      membership.group_name == "deployment-verifiers" && membership.username == var.demo_email])
+    )
+    error_message = "CI readiness may grant only its dedicated app capability, never admins or an IAM role."
   }
   assert {
     condition = toset(jsondecode(aws_iam_role_policy.task_agentcore_ssm[0].policy).Statement[0].Resource) == toset([

@@ -100,7 +100,7 @@ resource "aws_cognito_user_group" "admins" {
   description  = "Admins — IAM-related views are visible only to this group"
 }
 
-# Regular demo user — carries no group, so IAM views stay hidden. Gated so a stack
+# Regular demo user — never receives admins; IAM views stay hidden. Gated so a stack
 # (e.g. production) can refuse the shared demo credential entirely.
 resource "aws_cognito_user" "demo" {
   count        = var.create_demo_user ? 1 : 0
@@ -117,6 +117,21 @@ resource "aws_cognito_user" "demo" {
       error_message = "create_demo_user=true requires demo_password (TF_VAR_DEMO_PASSWORD secret in CI, or a per-stack tfvars override)."
     }
   }
+}
+
+# Application capability only: no IAM role and no administrator membership.
+resource "aws_cognito_user_group" "deployment_verifiers" {
+  count        = var.ci_readiness_enabled ? 1 : 0
+  name         = "deployment-verifiers"
+  user_pool_id = aws_cognito_user_pool.main.id
+  description  = "May invoke the bounded deployment readiness probe"
+}
+
+resource "aws_cognito_user_in_group" "demo_readiness" {
+  count        = var.ci_readiness_enabled && var.create_demo_user ? 1 : 0
+  user_pool_id = aws_cognito_user_pool.main.id
+  group_name   = aws_cognito_user_group.deployment_verifiers[0].name
+  username     = aws_cognito_user.demo[0].username
 }
 
 # Admin users are deliberately NOT managed by Terraform. A TF-managed admin would need a
