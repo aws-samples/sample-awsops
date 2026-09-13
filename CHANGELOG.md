@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Deployment dependency readiness: authenticated probes verify the actual web-role account and fresh AgentCore SSM reads, then require a nonce-bound runtime response proving curated inventory access, a known fresh CloudFront record and a bounded model call. Private smoke verification distinguishes missing/failed collection from empty results and waits for owned Lambda and Fargate jobs to finish; login or enqueue acknowledgement alone is insufficient.
+- Deployment dependency readiness: authenticated probes verify the actual web-role account and fresh AgentCore SSM reads, then require a nonce-bound runtime response proving curated inventory access, a known fresh CloudFront record and a bounded model call. With an explicit private runtime configuration, the smoke utility checks collection and owned Lambda/Fargate completion. Current Deploy Web wiring still supplies only database verification; full runtime gating requires the release controller. The billed probe is restricted to administrators or deployment-verifiers, with one in-flight call and a per-process cooldown.
 
 - Web database connection-phase diagnostics: failed physical connections log only the current phase and elapsed milestone timings across TCP, TLS, IAM token generation and PostgreSQL authentication, with required PostgreSQL/TLS regression coverage. Optional manual dev diagnostics add bounded IAM-auth and pressure metrics for the configured instance, ACU bounds and advisory server lifecycle text; empty reads remain distinct from failures, and individual-probe outcomes remain unknown.
 - Deferred-DNS deployment: explicit same-branch/SHA saved plans preserve existing certificate ownership and service records, verify operator-selected or attached external certificates without account-wide selection, block all public/private DNS changes and routine validation-CNAME retirement, check ECR before builds, and share Host/SNI-preserving smoke tests before service DNS publication. Optional development verification resolves effective credentials privately and requires successful Cognito login plus an authenticated database response.
@@ -649,7 +649,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 
 ### Added
 
-- 배포 의존성 검증: 인증된 요청으로 실제 웹 역할의 계정과 최신 AgentCore SSM 조회를 확인하고, nonce로 연결된 런타임 응답에서 지정 인벤토리 도구 접근·알려진 최신 CloudFront 레코드·제한된 모델 호출의 성공을 검증합니다. 비공개 스모크 검사는 수집 누락·실패와 정상 빈 결과를 구분하고 사용자 소유 Lambda·Fargate 작업의 완료를 기다립니다. 로그인이나 작업 접수 응답만으로 성공을 판정하지 않습니다.
+- 배포 의존성 검증: 인증된 요청으로 실제 웹 역할의 계정과 최신 AgentCore SSM 조회를 확인하고, nonce로 연결된 런타임 응답에서 지정 인벤토리 도구 접근·알려진 최신 CloudFront 레코드·제한된 모델 호출의 성공을 검증합니다. 명시적 비공개 런타임 설정을 전달하면 스모크 도구가 수집과 사용자 소유 Lambda·Fargate 완료를 검사합니다. 현재 Deploy Web은 DB 검증만 연결하며 전체 검증에는 release controller가 필요합니다. 유료 probe는 관리자·deployment-verifiers로 제한하고 프로세스별 단일 실행·호출 간격을 적용합니다.
 
 - 웹 DB 연결 단계 진단: 물리 연결 실패 시 TCP·TLS·IAM 토큰 생성·PostgreSQL 인증의 현재 단계와 단계별 경과 시간만 기록하며, 필수 PostgreSQL/TLS 회귀 테스트로 검증합니다. 선택적 수동 dev 진단에 설정된 인스턴스의 제한된 IAM 인증·부하 지표, ACU 범위와 참고용 서버 lifecycle 텍스트를 추가하며, 빈 조회와 실패를 구분하고 개별 probe 결과는 미확인으로 유지합니다.
 - DNS 보류 배포: 같은 브랜치·SHA의 명시적 저장 계획으로 기존 인증서 소유권과 서비스 레코드를 보존하고, 계정 전체 검색 없이 운영자가 지정했거나 이미 연결된 외부 인증서를 검증합니다. 모든 공용·사설 DNS 변경 및 일반 배포의 검증 CNAME 삭제·교체를 차단하고, 빌드 전 ECR 확인과 서비스 DNS 게시 전 Host·SNI를 유지하는 공통 스모크 테스트를 제공합니다. 개발 환경의 선택적 검증은 유효 자격증명을 비공개로 평가하고 실제 Cognito 로그인과 인증된 DB 응답까지 확인합니다.

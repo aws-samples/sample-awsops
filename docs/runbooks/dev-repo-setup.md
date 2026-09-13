@@ -1127,6 +1127,34 @@ branch requires investigation and a fresh plan, never bypassing checks.
 이미 준비된 스택은 서비스 DNS 없이 CloudFront 연결 스모크를 검증할 수 있다. 실제 기능은
 마이그레이션·인증 경로까지 별도로 확인한다. DNS 차단·브랜치 이동 시 검사를 우회하지 않는다.
 
+### Runtime probe capability / 런타임 검증 기능
+
+The authenticated smoke utility accepts `SMOKE_RUNTIME_CONFIG_FILE`: an absolute 0600 JSON
+file beside `SMOKE_CREDENTIAL_FILE` in the same 0700 directory. Cleanup covers both. Current
+Deploy Web wiring supplies only database verification; the full release controller must
+supply this file before claiming runtime readiness. Never guess a dispatch acknowledgement.
+
+`schemaVersion: 1`, `mode: "prepare"`, and `expectedAccountId` check login/DB and the enabled
+host registry. Optional `hostOnly: true` additionally rejects enabled member accounts for
+host-only activation. Verify mode adds `expectedCloudfrontId`, all acknowledged
+`expectedQueuedTypes`, and `collectionStartedAt` captured before dispatch. The controller
+must derive these from the applied deployment and the owned Lambda response. Verification
+requires fresh completed collection, actual web SSM/runtime calls and succeeded owned
+Lambda/Fargate jobs. Missing/partial/stale evidence is never healthy zero.
+
+`POST /api/deployment/readiness` requires an administrator or `deployment-verifiers` membership.
+The optional Terraform CI capability grants the managed demo user only that verifier group;
+it grants no administrator or IAM role. Use a fresh login after membership changes. The probe
+permits one in-flight call and a 60-second process-wide cooldown (429 with Retry-After).
+
+스모크 도구는 자격증명 파일과 같은 0700 디렉터리의 0600 JSON을
+`SMOKE_RUNTIME_CONFIG_FILE`로 받으며 함께 정리합니다. 현재 Deploy Web은 DB 검증만
+연결합니다. 전체 검증 controller가 실제 배포·Lambda 응답으로 파일을 생성해야 합니다.
+prepare는 로그인·DB·활성 호스트를 확인하고 `hostOnly: true`일 때 외부 활성 계정을
+거부합니다. verify는 위 추가 필드로 최신 수집·실제 SSM/runtime·두 워커 완료를 검증합니다.
+검증 API는 관리자 또는 전용 verifier 그룹만 허용합니다. CI 기능은 demo를 verifier에만
+연결하며 관리자·IAM 역할을 주지 않습니다. 그룹 변경 후 새 로그인과 호출 간격이 필요합니다.
+
 ### Authenticated database verification / 인증된 DB 검증
 
 After the required database migrations succeed, run **Deploy Web** on `dev` with

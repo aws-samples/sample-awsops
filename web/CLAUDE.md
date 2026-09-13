@@ -4,7 +4,8 @@
 Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/api/*`. Standalone build deployed as an arm64 container to ECS Fargate. Heavy or long-running work is never run inline — it's enqueued to the worker tier. The generic `POST /api/jobs` accepts only allowlisted (`noop`-family) job types; domain jobs like `report`/`compliance` go through their own ownership-checked dedicated routes instead (ADR-009).
 
 ## Key Files
-- `app/api/deployment/readiness/route.ts` — authenticated, bounded POST for deployment checks.
+- `app/api/deployment/readiness/route.ts` — authenticated POST limited to administrators or `deployment-verifiers`,
+  with one in-flight probe and a process-wide 60-second cooldown.
   `lib/deployment-readiness.ts` verifies the actual web-role STS identity, three fresh SSM reads
   and a nonce/account-bound AgentCore response. Disabled, pending, denied and missing
   dependencies return safe structured failure; chat fallback is never readiness proof.
@@ -12,8 +13,8 @@ Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/a
   `SSM_RUNTIME_ARN_PARAM` disables discovery; undefined retains the legacy project fallback.
 - `lib/inventory-collection.ts` — account-wide collection ledger metadata added to inventory
   summaries. Missing runs and unknown attributes remain unknown, separately from regional counts.
-  The private `scripts/v2/runtime-smoke.mjs` prepare/verify modes consume this metadata; the
-  workflow must supply verify mode for full collection and Lambda/Fargate completion checks.
+  The private `scripts/v2/runtime-smoke.mjs` prepare mode checks the host registry; verify
+  consumes collection metadata and requires Lambda/Fargate completion checks.
 - `middleware.ts` — global 2MB body cap over all of `/api/*` (defense-in-depth above each route's own `readJsonBounded`).
 - `instrumentation.ts` — server-boot hook: runs the periodic graph rebuild, default off (`GRAPH_REBUILD_INTERVAL_MINS`).
 - `next.config.mjs` — `output: 'standalone'` + `experimental.instrumentationHook` + legacy-path redirects (`/ec2`, `/opencost`).

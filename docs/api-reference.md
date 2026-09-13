@@ -29,7 +29,7 @@
 | `/api/inventory/cloudtrail/events` | GET | CloudTrail `LookupEvents` 조회 — 드릴다운(`raw`+`accessKeyId`)은 admin 전용 subset, 그 외 사용자는 flat 필드만 | verifyUser |
 | `/api/inventory/ebs_volume/related` | GET | 볼륨 드릴다운 — 스냅샷 20개 + 연결 EC2 enrichment (Aurora 교차조회, 계정 스코프) | verifyUser |
 | `/api/inventory/security_group/inbound` | GET | SG 인바운드 규칙 체이닝 — 첨부 SG(≤20)의 인바운드 규칙 파싱 (Aurora 교차조회, 계정 스코프) | verifyUser |
-| `/api/inventory/summary` | GET | 타입/카테고리별 카운트 + 보안 분할(ec2 running, 미암호화 EBS 등) — `regions`/`includeGlobal` 스코프 반영(홈 대시보드 카운트 포함) | verifyUser |
+| `/api/inventory/summary` | GET | 타입/카테고리별 카운트·보안 분할은 리전 스코프 반영. `collection`은 수집 원장의 configured/readOk/runs이며 누락·실패·unknown 속성을 보존 / collection ledger evidence | verifyUser |
 | `/api/inventory/trend` | GET | 일별 리소스 카운트 추세 (`inventory_snapshots`, 기본 14일/최대 90일) — `accounts` 스코프(기본 self, `__all__`은 서버에서 self+스캔 스코프 내 활성 멤버[all_regions 또는 활성 리전 ≥1]로 해석, 검증된 CSV; 리전 차원 없음) + (일자, 타입)별 계정 커버리지·해석된 계정 목록(`accounts`)·계정 레지스트리 조회 실패 시 `degraded: true` 반환, 파생 보안 시리즈(public_s3_buckets 등)는 total에서 제외 | verifyUser |
 
 ## eks (10)
@@ -137,6 +137,7 @@
 | `/api/integrations` | GET, POST, PUT | 통합 등록 — egress 커넥터 + ingress 웹훅 소스 (ADR-007[legacy 039], admin, SSRF 가드) | verifyUser |
 | `/api/integrations/credential` | GET, PUT | 통합 크리덴셜 저장 — 단일 Secrets Manager secret에 slug(kind) 키 (admin) | verifyUser |
 | `/api/integrations/schema` | GET, POST | 인스턴스 스키마 introspect/캐시 (admin) | verifyUser |
+| `/api/deployment/readiness` | POST | 실제 웹 역할·SSM·AgentCore·인벤토리·모델 검증. nonce/account/known CloudFront 입력, no-store, 401/403/429/503. 프로세스당 단일 실행·60초 제한 / bounded deployment evidence | verifyUser + admin or deployment-verifiers |
 | `/api/jobs` | GET, POST | 비동기 작업 enqueue/목록 (P2 — `worker_jobs` + SQS) | verifyUser |
 | `/api/jobs/[id]` | GET | 작업 상태 단건 조회 — UUID 검증 + 소유자 또는 관리자 / owner-or-admin | verifyUser |
 | `/api/jobs/observability` | GET | 접수 기간별 작업 시간·완료 목표: `windowHours` 1–168, 선택적 `type` 및 `targetMs` 1–86400000. 소유자/관리자 범위, 최대 2000건 표본·최근 50건 상세, 누락·잘림 시 미확정 / ownership-scoped workload observations | verifyUser |
