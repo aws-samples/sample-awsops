@@ -167,12 +167,28 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
             return [{"data": {"id": row["id"]}} for row in fleet if row["id"] == values["rid"]]
         inv._execute_override = fake
         with mock.patch.object(inv, "_freshness_for_type", return_value={}):
+            bulk = inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
+                "resource_type": "cloudfront", "resource_id": None, "limit": 500}}, None)
+            bulk_body = json.loads(bulk["body"])
+            self.assertEqual(len(bulk_body["resources"]), 500)
+            self.assertNotIn(expected, [row["id"] for row in bulk_body["resources"]])
+            self.assertNotIn("projection", bulk_body)
             result = inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
                 "resource_type": "cloudfront", "resource_id": expected, "limit": 500}}, None)
         body = json.loads(result["body"])
         self.assertEqual(body["resources"], [{"id": expected}])
         self.assertEqual(body["count"], 1)
         self.assertEqual((body["projection"], body["resource_id"]), ("identity_only", expected))
+
+    def test_null_optional_identity_preserves_other_resource_lists(self):
+        inv._execute_override = lambda sql, params=None: [{"data": {"instance_id": "fixture"}}]
+        with mock.patch.object(inv, "_freshness_for_type", return_value={}):
+            for optional in ({}, {"resource_id": None}):
+                result = inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
+                    "resource_type": "ec2", **optional}}, None)
+                body = json.loads(result["body"])
+                self.assertEqual(body["resources"], [{"instance_id": "fixture"}])
+                self.assertNotIn("projection", body)
 
     def test_identity_lookup_rejects_other_types_and_invalid_ids_before_sql(self):
         with mock.patch.object(inv, "_execute") as execute:

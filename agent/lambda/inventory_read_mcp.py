@@ -573,7 +573,7 @@ def lambda_handler(event, context):
         if not rtype:
             return {"statusCode": 400, "body": json.dumps({"error": "resource_type required"})}
         resource_id = arguments.get("resource_id")
-        if "resource_id" in arguments and (rtype != "cloudfront" or not isinstance(resource_id, str)
+        if resource_id is not None and (rtype != "cloudfront" or not isinstance(resource_id, str)
                                             or not re.fullmatch(r"[A-Z0-9]{5,32}", resource_id)):
             return {"statusCode": 400, "body": json.dumps({"error": "valid CloudFront resource_id required"})}
         try:
