@@ -184,7 +184,9 @@ The required private PostgreSQL suite fails if Docker is missing; it uses bare `
 Authenticated deployment smoke tests require Python 3 with PyYAML and Terraform **1.15.7**;
 their offline variable fixture needs no providers. Terraform mock tests also require installed/cached
 providers; the helper copies only tracked working-tree files, runs `init -backend=false`, validates
-and tests without a real backend.
+and tests without a real backend. The command comment’s “opportunistic TF checks” refers only
+to its final fmt/validate diagnostics; the deployment Node suite always requires PyYAML and
+Terraform 1.15.7 and fails if either is missing.
 
 ```bash
 bash scripts/v2/merge-verify.sh   # isolated Python + web vitest + deployment Node tests; opportunistic TF checks
