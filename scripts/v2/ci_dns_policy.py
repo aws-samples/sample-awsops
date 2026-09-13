@@ -11,9 +11,12 @@ import tempfile
 
 # CloudFront supports RSA through 4096 and ECDSA P-256/P-384; retain an RSA 2048 floor.
 # https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html
-# ACM KeyAlgorithm uses underscores (not the display form "RSA-2048"):
+# ACM's API model lists underscore enums, while describe-certificate CLI output
+# also uses hyphens (e.g. RSA-2048). Accept both spellings of the same RSA sizes.
 # https://docs.aws.amazon.com/acm/latest/APIReference/API_CertificateDetail.html
-KEY_TYPES = ("RSA_2048", "RSA_3072", "RSA_4096", "EC_prime256v1", "EC_secp384r1")
+# https://docs.aws.amazon.com/cli/latest/reference/acm/describe-certificate.html
+KEY_TYPES = ("RSA_2048", "RSA_3072", "RSA_4096", "RSA-2048", "RSA-3072", "RSA-4096",
+             "EC_prime256v1", "EC_secp384r1")
 MIN_REMAINING = timedelta(hours=24)
 CERTIFICATE_ARN = re.compile(
     r"arn:aws:acm:([a-z]{2}(?:-[a-z]+)+-[0-9]):([0-9]{12}):certificate/"
