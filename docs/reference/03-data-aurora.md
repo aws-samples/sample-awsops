@@ -106,6 +106,18 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
 
 ## Key files / 핵심 파일
 
+- `scripts/v2/ci_db_diagnostics.py`, `.github/workflows/terraform.yml`,
+  `scripts/v2/test_ci_db_diagnostics.py` — default-off manual dev-plan diagnostics
+  (`CI_DB_DIAGNOSTICS_DEV=true`, `workflow_dispatch`, `ap-northeast-2`), after encrypted plan upload.
+  Publishes a fixed safe JSON projection to the public Actions log/summary: bounded web errors
+  and connection timings, service-target configuration comparisons, and severity-filtered tails
+  from at most two recent PostgreSQL files. Partial/unavailable reads are advisory and retain
+  independent evidence; no DB connection, new IAM grants, AWS writes or readiness bypass
+  (ADR-005 read-only boundary). See [activation, fields and limits](../runbooks/dev-repo-setup.md#dev-db-diagnostics).
+  기본 비활성 수동 dev plan 진단이며 같은 플래그·이벤트·리전 조건으로 암호화 plan 업로드 후 실행한다.
+  제한된 웹 오류/timing, 서비스 대상 구성 비교, 최근 PostgreSQL 파일 최대 2개의 severity-filtered
+  tail을 고정된 안전한 JSON으로 공개 Actions 로그/요약에 게시한다. 부분/실패 조회는 참고용이며
+  독립 결과를 유지한다. ADR-005 읽기 전용 범위로 DB 연결·새 IAM 권한·AWS 변경·준비 검사 우회가 없다.
 - `terraform/foundation/ci-migrations.tf`, `.github/workflows/deploy-migrations.yml`,
   `scripts/v2/ci/run-migration.mjs` — default-off manual development migration task,
   scoped secret-read IAM and verified private execution (ADR-005 operator boundary).

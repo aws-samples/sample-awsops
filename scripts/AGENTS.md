@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a7585dcee471 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: adabd707b9b4 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -9,23 +9,30 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 
 ## Diagnostic and deployment boundaries
 
-- `v2/ci_db_diagnostics.py` is default-off advisory dev-plan diagnostics, enabled only by
-  `CI_DB_DIAGNOSTICS_DEV=true`. Require `--target dev`, verify the state account, use the
-  existing read-only role and exact CLI verb allowlist; no new grants, AWS writes or DB connection.
-- Preserve independent web-log/configuration/server-tail results and unavailable/partial flags.
-  Web logs select `db_ping_failed` OR `db_connection_failed` using JSON `evt`; fixed one-hour
-  bounds, oldest-first, at most 3 × 100 events, actual `--next-token`/`--limit` pagination.
-  Only fixed phase/milestone keys and finite 0–3,600,000 ms durations may be emitted;
-  milestones cannot exceed elapsed. Latest timing is only the latest valid returned sample.
-- RDS server logs use the configured first Aurora instance, at most three listing pages and
-  the latest observed PostgreSQL file. Download newest 500 lines without Marker (1 MiB cap).
-  Count only web-role lines; never publish filenames/raw lines. HBA is distinct from TLS.
-- Metadata describes the service target definition, not every running revision. Credential
-  environment/secrets names and environment-file presence are declarations only. SG and
-  inline connect-Allow matches do not prove effective access under SCPs/permission boundaries.
-- Emit fixed projections only; withhold raw logs, credentials, ARNs and Terraform/AWS errors.
-  Only the optional diagnostics step tolerates failure, with an eight-minute limit.
-  DNS/CI/readiness gates stay required. No result waives authenticated login/DB verification.
+- `v2/ci_db_diagnostics.py` is default-off manual dev-plan diagnostics. Both workflow and helper
+  require `workflow_dispatch`, literal `CI_DB_DIAGNOSTICS_DEV=true`, and `--target dev`;
+  region is fixed to `ap-northeast-2`. Invalid invocation context causes no AWS calls.
+  State-account/STS consistency does not authorize access or detect the wrong same-account stack.
+  Existing read-only grants and the exact CLI verb allowlist remain; no new grants/writes/DB connection.
+- Run only after encrypted plan upload. Opt-in publishes fenced safe JSON, including posture
+  booleans, to the public Actions log and step summary. Only this optional step tolerates
+  failure (eight-minute limit); DNS/CI/readiness gates remain required.
+- Retain independent web-log/configuration/server-tail evidence. Capped/failed reads with
+  retained evidence are partial; distinguish unavailable source reads from unknown derived
+  fields. Early context/input/identity failure returns only `{"status":"unavailable"}`.
+- Web logs use JSON `evt` OR for ping errors and connection-stage observations: fixed one-hour
+  bounds, oldest-first, at most 3 × 100 with `--next-token`/`--limit`. Only fixed phases/milestones
+  and finite 0–3,600,000 ms durations are emitted; milestones cannot exceed elapsed. Latest
+  timing describes the returned sample. Count invalid timings/discarded milestones explicitly.
+- RDS reads at most two latest observed PostgreSQL files from at most three listing pages.
+  Each download is newest 500 lines without Marker (1 MiB cap per file). FATAL/ERROR/PANIC
+  web-role lines count as errors; other role mentions are counted separately. Never print
+  filenames/raw lines. Failed downloads retain listing metadata as partial.
+- Pool-acquire timeouts, unexpected connection loss, HBA rejection, TLS errors and PostgreSQL
+  client/slot limits have distinct fixed categories. Metadata describes the service target
+  definition, not running revisions; credential declarations do not prove runtime values.
+  Exact inline-Allow/SG comparisons do not prove effective access or connectivity. Never
+  waive authenticated DB/login readiness or expose Terraform/AWS error details.
 - `ci_plan_context.py` accepts only successful explicit same-repo/branch/SHA plan dispatches.
   PR/push plans are advisory. `ci_dns_policy.py` preserves managed certificate ownership and
   service aliases; blocks all public/private DNS mutations unless authorized, including Cloud

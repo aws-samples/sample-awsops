@@ -24,6 +24,11 @@ class DatabaseDiagnosticsTests(unittest.TestCase):
             ("role \"awsops_web\" does not exist", "web_role_missing"),
             ("permission denied for table SECRET", "database_permission"),
             ("Connection terminated due to connection timeout", "connection_timeout"),
+            ("timeout exceeded when trying to connect", "connection_timeout"),
+            ("Connection terminated unexpectedly", "connection_lost"),
+            ("sorry, too many clients already", "connection_limit"),
+            ("remaining connection slots are reserved for non-replication superuser connections", "connection_limit"),
+            ("too many connections for role awsops_web", "connection_limit"),
             ("getaddrinfo ENOTFOUND SECRET", "database_dns"),
             ("connect ECONNREFUSED SECRET", "connection_refused"),
             ("Could not load credentials from any providers SECRET", "aws_credentials"),
@@ -69,6 +74,7 @@ class DatabaseDiagnosticsTests(unittest.TestCase):
 
         result = collect(self.config(), aws, 5_000_000)
         self.assertTrue(result["truncated"])
+        self.assertEqual(result["status"], "partial")
         self.assertEqual(result["events"], 0)
         self.assertEqual(len(calls), 4)
 
@@ -166,7 +172,6 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
                 "Resource": "arn:aws:rds-db:ap-northeast-2:123456789012:dbuser:cluster-example/awsops_web",
             }]}},
             ("rds", "describe-db-log-files"): {"DescribeDBLogFiles": [
-                {"LogFileName": "error/postgresql.log.old", "LastWritten": 4_000_000, "Size": 100},
                 {"LogFileName": "error/postgresql.log.latest", "LastWritten": 4_900_000, "Size": 1000},
             ]},
             ("rds", "download-db-log-file-portion"): {
@@ -194,10 +199,12 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
             raise document
         return subprocess.CompletedProcess(argv, 0, json.dumps(document), self.private)
 
-    def invoke(self, arguments=("--target", "dev")):
+    def invoke(self, arguments=("--target", "dev"), environment=None):
         stdout, stderr = io.StringIO(), io.StringIO()
         exit_code = 0
-        with patch("sys.argv", ["ci_db_diagnostics.py", *arguments]), \
+        env = {"GITHUB_EVENT_NAME": "workflow_dispatch", "CI_DB_DIAGNOSTICS_DEV": "true",
+               **(environment or {})}
+        with patch.dict(os.environ, env), patch("sys.argv", ["ci_db_diagnostics.py", *arguments]), \
                 patch("sys.stdin", io.StringIO(json.dumps(json.dumps(self.config)))), \
                 patch("subprocess.run", side_effect=self.aws_process), \
                 patch("time.time", return_value=5000), \
@@ -242,6 +249,9 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
         self.assertTrue(result["configuration"]["sources_unavailable"]["cluster"])
         self.assertIsNone(result["configuration"]["endpoint_matches_cluster"])
         self.assertTrue(result["configuration"]["user_matches"])
+        self.assertFalse(result["configuration"]["sources_unavailable"]["identity_policy"])
+        self.assertIn("derived_unavailable", result["configuration"])
+        self.assertTrue(result["configuration"]["derived_unavailable"]["identity_policy_has_expected_connect_allow"])
 
     def test_missing_service_response_keeps_cluster_and_logs(self):
         self.documents[("ecs", "describe-services")] = {
@@ -252,6 +262,9 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
         self.assertTrue(result["configuration"]["cluster_available"])
         self.assertIsNone(result["configuration"]["user_matches"])
         self.assertTrue(result["configuration"]["sources_unavailable"]["service_target_definition"])
+        self.assertFalse(result["configuration"]["sources_unavailable"]["db_security_groups"])
+        self.assertIn("derived_unavailable", result["configuration"])
+        self.assertTrue(result["configuration"]["derived_unavailable"]["db_ingress_from_web_groups"])
 
     def test_second_page_failure_retains_first_page_and_actual_window(self):
         first = copy.deepcopy(self.documents[("logs", "filter-log-events")])
@@ -322,7 +335,8 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
         self.assertNotIn("web_running_count", config)
 
     def test_explicit_dev_target_is_required_before_any_aws_read(self):
-        for argv in [(), ("--target", "main"), ("--target", self.private)]:
+        for argv in [(), ("--target", "main"), ("--target", self.private),
+                     ("--target", "dev", "--profile", self.private)]:
             self.calls.clear()
             result, code = self.invoke(argv)
             self.assertNotEqual(code, 0)
@@ -350,6 +364,9 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
         steps = workflow["jobs"]["plan"]["steps"]
         diag = next(s for s in steps if s.get("name") == "Read safe development database diagnostics")
         self.assertIs(diag.get("continue-on-error"), True)
+        self.assertIn("github.event_name == 'workflow_dispatch'", diag["if"])
+        self.assertGreater(steps.index(diag), next(i for i, s in enumerate(steps)
+                                                if s.get("name") == "Upload plan artifact (encrypted)"))
         for name in ["terraform plan", "Check planned DNS operations", "Encrypt plan artifact"]:
             step = next(s for s in steps if s.get("name") == name)
             self.assertFalse(step.get("continue-on-error", False))
@@ -360,10 +377,12 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
             ["bash", "--noprofile", "--norc", "-c", fixture + diag["run"]],
             cwd=root / "terraform/foundation", capture_output=True, text=True, timeout=10,
             env={**os.environ, "PRIVATE_TEST_VALUE": self.private, "TARGET": "dev",
+                 "GITHUB_EVENT_NAME": "workflow_dispatch", "CI_DB_DIAGNOSTICS_DEV": "true",
                  "GITHUB_STEP_SUMMARY": "/dev/null", "PYTHONDONTWRITEBYTECODE": "1"})
         self.assertNotIn(self.private, process.stdout + process.stderr)
         self.assertNotIn("Traceback", process.stdout + process.stderr)
         self.assertIn("unavailable", process.stdout + process.stderr)
+        self.assertIn('```json\n{"status": "unavailable"}\n```', process.stdout)
 
     def test_rds_server_tail_uses_latest_discovered_file_without_download_marker(self):
         result, _ = self.invoke()
@@ -412,7 +431,8 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
                 result, _ = self.invoke()
                 self.documents[op] = saved
                 self.assertIn("server_logs", result)
-                self.assertEqual(result["server_logs"]["status"], "unavailable")
+                self.assertEqual(result["server_logs"]["status"],
+                                 "partial" if op[1] == "download-db-log-file-portion" else "unavailable")
                 self.assertEqual(result["logs"]["events"], 1)
                 self.assertTrue(result["configuration"]["endpoint_matches_cluster"])
 
@@ -455,6 +475,7 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
                               "token_ready": 999, "authenticated": 1000},
         })
         self.assertEqual(logs["ignored"], 1)
+        self.assertEqual(logs.get("invalid_timing"), 1)
         log_call = next(argv for argv in self.calls if argv[1] == "logs")
         self.assertEqual(log_call[log_call.index("--filter-pattern") + 1],
                          '{ ($.evt = "db_ping_failed") || ($.evt = "db_connection_failed") }')
@@ -479,6 +500,7 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
         self.assertEqual(logs["latest_connection"]["milestones_ms"], {"token_started": 0})
         self.assertEqual(logs["events"], 1)
         self.assertEqual(logs["ignored"], len(invalid))
+        self.assertEqual(logs.get("discarded_milestones"), 8)
 
     def test_nonobject_milestones_and_out_of_order_events_keep_safe_latest_phase(self):
         self.documents[("logs", "filter-log-events")] = {"events": [
@@ -497,3 +519,93 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
         self.assertEqual(logs["latest_connection"], {
             "phase": "iam_token", "timestamp_ms": 4_999_002, "elapsed_ms": 0, "milestones_ms": {}})
         self.assertEqual(logs["events"], 2)
+
+    def test_wrong_source_or_flag_causes_zero_aws_calls(self):
+        for environment in [
+            {"GITHUB_EVENT_NAME": "push"}, {"GITHUB_EVENT_NAME": "pull_request"},
+            {"GITHUB_EVENT_NAME": ""}, {"GITHUB_EVENT_NAME": self.private},
+            {"CI_DB_DIAGNOSTICS_DEV": "false"}, {"CI_DB_DIAGNOSTICS_DEV": ""},
+            {"CI_DB_DIAGNOSTICS_DEV": "True"}, {"CI_DB_DIAGNOSTICS_DEV": self.private},
+        ]:
+            with self.subTest(environment=environment):
+                self.calls.clear()
+                result, code = self.invoke(environment=environment)
+                self.assertNotEqual(code, 0)
+                self.assertEqual(self.calls, [])
+                self.assertEqual(result, {"status": "unavailable"})
+
+    def test_single_statement_object_can_prove_only_the_exact_allow(self):
+        policy = self.documents[("iam", "get-role-policy")]["PolicyDocument"]
+        policy["Statement"] = policy["Statement"][0]
+        result, _ = self.invoke()
+        self.assertTrue(result["configuration"]["identity_policy_has_expected_connect_allow"])
+        self.assertFalse(result["configuration"]["derived_unavailable"]["identity_policy_has_expected_connect_allow"])
+
+    def test_server_logs_separate_benign_mentions_from_error_severities(self):
+        tail = self.documents[("rds", "download-db-log-file-portion")]
+        tail["LogFileData"] = "\n".join([
+            "2026-09-13 UTC [1] LOG: connection authorized: user=awsops_web SSL enabled (TLSv1.3)",
+            "2026-09-13 UTC [2] LOG: statement: SELECT 'ERROR: awsops_web SSL'",
+            "2026-09-13 UTC [3] DETAIL: awsops_web failed earlier",
+            "2026-09-13 UTC [4] FATAL: awsops_web PAM authentication failed",
+            "2026-09-13 UTC [5] ERROR: awsops_web password authentication failed",
+            "2026-09-13 UTC [6] PANIC: awsops_web unknown failure",
+        ])
+        result, _ = self.invoke()
+        server = result["server_logs"]
+        self.assertEqual(server["category_counts"], {
+            "iam_database_auth": 1, "database_auth": 1, "unclassified": 1})
+        self.assertEqual(server["matching_lines"], 3)
+        self.assertEqual(server.get("benign_role_mentions"), 3)
+
+    def test_previous_rotated_file_is_sampled_with_at_most_two_downloads(self):
+        self.documents[("rds", "describe-db-log-files")] = {"DescribeDBLogFiles": [
+            {"LogFileName": "postgresql.old", "LastWritten": 1, "Size": 30},
+            {"LogFileName": "postgresql.previous", "LastWritten": 2, "Size": 30},
+            {"LogFileName": "postgresql.current", "LastWritten": 3, "Size": 30},
+        ]}
+        def tail(argv):
+            name = argv[argv.index("--log-file-name") + 1]
+            return {"LogFileData": "FATAL: awsops_web PAM authentication failed"
+                    if name == "postgresql.previous" else "LOG: awsops_web SSL enabled",
+                    "AdditionalDataPending": False, "Marker": "opaque"}
+        self.documents[("rds", "download-db-log-file-portion")] = tail
+        result, _ = self.invoke()
+        server = result["server_logs"]
+        self.assertEqual(server["category_counts"], {"iam_database_auth": 1})
+        calls = [argv for argv in self.calls if argv[2] == "download-db-log-file-portion"]
+        self.assertEqual([argv[argv.index("--log-file-name") + 1] for argv in calls],
+                         ["postgresql.current", "postgresql.previous"])
+        self.assertEqual(server.get("files_selected"), 2)
+        self.assertEqual(server.get("files_downloaded"), 2)
+        self.assertNotIn("postgresql.", json.dumps(result))
+
+    def test_postgres_messages_are_individually_classified_without_inventing_timeout(self):
+        for message, category in [
+            ("timeout exceeded when trying to connect", "connection_timeout"),
+            ("Connection terminated unexpectedly", "connection_lost"),
+            ("server closed the connection unexpectedly", "connection_lost"),
+            ("sorry, too many clients already", "connection_limit"),
+            ("remaining connection slots are reserved for roles with privileges", "connection_limit"),
+            ("too many connections for role awsops_web", "connection_limit"),
+        ]:
+            with self.subTest(category=category):
+                self.assertEqual(diagnostics.classify(message), {category})
+
+    def test_wrong_workflow_context_stops_before_terraform_or_helper_execution(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = yaml.safe_load((root / ".github/workflows/terraform.yml").read_text())
+        step = next(s for s in workflow["jobs"]["plan"]["steps"]
+                    if s.get("name") == "Read safe development database diagnostics")
+        fixture = 'terraform() { echo UNEXPECTED_EXTERNAL_READ >&2; return 1; }\n'
+        for override in [{"GITHUB_EVENT_NAME": "push"}, {"GITHUB_EVENT_NAME": "pull_request"},
+                         {"CI_DB_DIAGNOSTICS_DEV": "false"}, {"CI_DB_DIAGNOSTICS_DEV": ""},
+                         {"TARGET": "main"}]:
+            result = subprocess.run(
+                ["bash", "--noprofile", "--norc", "-c", fixture + step["run"]],
+                cwd=root / "terraform/foundation", capture_output=True, text=True, timeout=10,
+                env={**os.environ, "TARGET": "dev", "GITHUB_EVENT_NAME": "workflow_dispatch",
+                     "CI_DB_DIAGNOSTICS_DEV": "true", "GITHUB_STEP_SUMMARY": "/dev/null", **override})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("UNEXPECTED_EXTERNAL_READ", result.stdout + result.stderr)
+            self.assertIn('```json\n{"status": "unavailable"}\n```', result.stdout)

@@ -225,16 +225,6 @@ jobs:
           esac
           terraform plan "${args[@]}"
 
-      - name: Read safe development database diagnostics
-        if: steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_DB_DIAGNOSTICS_DEV == 'true'
-        continue-on-error: true
-        timeout-minutes: 8
-        run: |
-          set -euo pipefail
-          terraform console -no-color 2>/dev/null \
-            <<<'jsonencode({project=var.project, region=var.region, account=data.aws_caller_identity.current.account_id})' |
-            python3 ../../scripts/v2/ci_db_diagnostics.py --target "$TARGET" | tee -a "$GITHUB_STEP_SUMMARY"
-
       - name: Check planned DNS operations
         if: steps.restore.outputs.skip != '1'
         env:
@@ -269,6 +259,30 @@ jobs:
           name: tfplan
           path: terraform/foundation/tfplan.enc
           retention-days: 5
+
+      - name: Read safe development database diagnostics
+        if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_DB_DIAGNOSTICS_DEV == 'true'
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          CI_DB_DIAGNOSTICS_DEV: ${{ vars.CI_DB_DIAGNOSTICS_DEV }}
+        # Explicit opt-in publishes only the safe projection to the public log/summary.
+        run: |
+          set -euo pipefail
+          {
+            printf '%s\n' '### Development database diagnostics' '```json'
+            diagnostic_status=0
+            if [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ] && [ "${TARGET:-}" = dev ] && [ "${CI_DB_DIAGNOSTICS_DEV:-}" = true ]; then
+              terraform console -no-color 2>/dev/null \
+                <<<'jsonencode({project=var.project, region=var.region, account=data.aws_caller_identity.current.account_id})' |
+                python3 ../../scripts/v2/ci_db_diagnostics.py --target "$TARGET" || diagnostic_status=$?
+            else
+              printf '%s\n' '{"status": "unavailable"}'
+              diagnostic_status=1
+            fi
+            printf '%s\n' '```'
+            exit "$diagnostic_status"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # Same principle as the apply job: the runner is persistent and shared —
       # never leave the plaintext plan (an encrypt-step failure strands it) or

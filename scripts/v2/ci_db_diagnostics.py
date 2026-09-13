@@ -30,13 +30,14 @@ ERROR_PATTERNS = {
     "database_auth": r"password authentication failed",
     "web_role_missing": r'role .*awsops_web.*does not exist',
     "database_permission": r"permission denied",
-    "connection_timeout": r"connection timeout|timeout expired|ETIMEDOUT",
+    "connection_timeout": r"connection timeout|timeout expired|ETIMEDOUT|timeout exceeded when trying to connect",
+    "connection_lost": r"connection terminated unexpectedly|server closed the connection unexpectedly|ECONNRESET",
     "database_dns": r"getaddrinfo|ENOTFOUND|EAI_AGAIN",
     "connection_refused": r"ECONNREFUSED",
     "aws_credentials": r"Could not load credentials|CredentialsProviderError",
     "tls": r"certificate|SSL|TLS",
     "token_type": r"password must be a string",
-    "connection_limit": r"too many connections",
+    "connection_limit": r"too many connections|too many clients already|remaining connection slots are reserved",
 }
 CONNECTION_PHASES = frozenset({
     "dns_tcp_connect", "tcp_connect", "tls_negotiation", "tls_handshake",
@@ -100,6 +101,7 @@ def collect(config, aws, now_ms):
         "latest_timestamp_ms": None, "truncated": False,
         "event_counts": {"db_ping_failed": 0, "db_connection_failed": 0},
         "phase_counts": {}, "latest_connection": None,
+        "invalid_timing": 0, "discarded_milestones": 0,
     }
     counts, phase_counts = Counter(), Counter()
     token = None
@@ -142,7 +144,13 @@ def collect(config, aws, now_ms):
                 timing = connection_timing(record, timestamp)
                 if timing is None:
                     summary["ignored"] += 1
+                    summary["invalid_timing"] += 1
                     continue
+                declared = record.get("milestones_ms")
+                if isinstance(declared, dict):
+                    summary["discarded_milestones"] += len(declared) - len(timing["milestones_ms"])
+                elif declared is not None:
+                    summary["discarded_milestones"] += 1
                 phase_counts[timing["phase"]] += 1
                 previous = summary["latest_connection"]
                 if previous is None or timestamp >= previous["timestamp_ms"]:
@@ -160,6 +168,9 @@ def collect(config, aws, now_ms):
     summary["categories"] = sorted(counts)
     summary["category_counts"] = dict(sorted(counts.items()))
     summary["phase_counts"] = dict(sorted(phase_counts.items()))
+    if summary["status"] == "available" and (
+            summary["truncated"] or summary["unparsed"] or summary["invalid_timing"]):
+        summary["status"] = "partial"
     return summary
 
 
@@ -226,13 +237,15 @@ def configuration_snapshot(config, aws):
         if not db_groups:
             raise ValueError("Missing database security groups")
         groups = aws(["ec2", "describe-security-groups", "--group-ids", *db_groups])["SecurityGroups"]
+        if not isinstance(groups, list):
+            raise ValueError("Invalid security group response")
+        unavailable["db_security_groups"] = False
         net = service["networkConfiguration"]["awsvpcConfiguration"]
         snapshot["db_ingress_from_web_groups"] = any(
             rule.get("IpProtocol") in ("tcp", "-1")
             and (rule.get("IpProtocol") == "-1" or rule.get("FromPort", 65536) <= 5432 <= rule.get("ToPort", -1))
             and any(pair.get("GroupId") in net["securityGroups"] for pair in rule.get("UserIdGroupPairs", []))
             for group in groups for rule in group.get("IpPermissions", []))
-        unavailable["db_security_groups"] = False
     except READ_ERRORS:
         pass
     try:
@@ -241,11 +254,16 @@ def configuration_snapshot(config, aws):
         snapshot["identity_policy_has_expected_connect_allow"] = any(
             s.get("Effect") == "Allow" and not s.get("Condition")
             and "rds-db:connect" in as_list(s.get("Action"))
-            and expected in as_list(s.get("Resource")) for s in policy["Statement"])
+            and expected in as_list(s.get("Resource")) for s in as_list(policy["Statement"]))
     except READ_ERRORS:
         pass
-    snapshot["status"] = ("unavailable" if all(unavailable.values()) else
-                          "partial" if any(unavailable.values()) else "available")
+    snapshot["derived_unavailable"] = {
+        key: value is None for key, value in snapshot.items()
+        if key not in ("sources_unavailable", "definition_basis", "credential_check_basis")
+    }
+    snapshot["status"] = ("unavailable" if all(unavailable.values()) else "partial"
+                          if any(unavailable.values()) or any(snapshot["derived_unavailable"].values())
+                          else "available")
     return snapshot
 
 
@@ -254,9 +272,10 @@ def server_log_snapshot(config, aws):
         "status": "unavailable", "listing_truncated": False, "tail_truncated": None,
         "listing_pages_read": 0, "tail_line_limit": 500, "lines_examined": 0,
         "matching_lines": 0, "category_counts": {}, "selected_last_written_ms": None,
+        "benign_role_mentions": 0, "files_selected": 0, "files_downloaded": 0, "tail_unavailable": True,
     }
     instance = f"{config['project']}-aurora-1"
-    selected, marker = None, None
+    candidates, marker = {}, None
     try:
         for _ in range(3):
             args = ["rds", "describe-db-log-files", "--db-instance-identifier", instance,
@@ -271,8 +290,8 @@ def server_log_snapshot(config, aws):
                 name, written = item["LogFileName"], item["LastWritten"]
                 if not isinstance(name, str) or type(written) is not int or written < 0:
                     raise ValueError("Invalid server log metadata")
-                if "postgresql" in name and (selected is None or written > selected[0]):
-                    selected = (written, name)
+                if "postgresql" in name:
+                    candidates[name] = max(written, candidates.get(name, 0))
             summary["listing_pages_read"] += 1
             marker = page.get("Marker")
             if marker is not None and not isinstance(marker, str):
@@ -282,34 +301,50 @@ def server_log_snapshot(config, aws):
         summary["listing_truncated"] = bool(marker)
     except READ_ERRORS:
         summary["listing_truncated"] = True
-    if selected is None:
+    selected = sorted(candidates, key=candidates.get, reverse=True)[:2]
+    if not selected:
         return summary
-    summary["selected_last_written_ms"] = selected[0]
-    try:
-        # Omitting Marker requests the most recent tail, not the file's beginning.
-        tail = aws(["rds", "download-db-log-file-portion", "--db-instance-identifier", instance,
-                    "--log-file-name", selected[1], "--number-of-lines", "500"])
-        data, pending = tail["LogFileData"], tail["AdditionalDataPending"]
-        if not isinstance(data, str) or type(pending) is not bool:
-            raise ValueError("Invalid server log tail")
-        lines = data.splitlines()
-        summary["tail_truncated"] = pending or len(lines) >= 500 or len(data.encode("utf-8")) >= 1_048_576
-        counts = Counter()
-        for line in lines:
-            if re.search(r"\bawsops_web\b", line):
+    summary["files_selected"] = len(selected)
+    summary["selected_last_written_ms"] = candidates[selected[0]]
+    summary["tail_unavailable"] = False
+    counts = Counter()
+    for name in selected:
+        try:
+            # Omitting Marker requests each file's most recent tail.
+            tail = aws(["rds", "download-db-log-file-portion", "--db-instance-identifier", instance,
+                        "--log-file-name", name, "--number-of-lines", "500"])
+            data, pending = tail["LogFileData"], tail["AdditionalDataPending"]
+            if not isinstance(data, str) or type(pending) is not bool:
+                raise ValueError("Invalid server log tail")
+            lines = data.splitlines()
+            summary["tail_truncated"] = bool(summary["tail_truncated"] or pending or len(lines) >= 500
+                                             or len(data.encode("utf-8")) >= 1_048_576)
+            for line in lines:
+                if not re.search(r"\bawsops_web\b", line):
+                    continue
+                severity = re.search(
+                    r"(?:^|[\s:])(DEBUG[1-5]?|INFO|NOTICE|WARNING|LOG|FATAL|ERROR|PANIC|DETAIL|HINT|CONTEXT|STATEMENT):",
+                    line)
+                if not severity or severity[1] not in ("FATAL", "ERROR", "PANIC"):
+                    summary["benign_role_mentions"] += 1
+                    continue
                 summary["matching_lines"] += 1
                 counts.update(classify(line))
-        summary["lines_examined"] = len(lines)
-        summary["category_counts"] = dict(sorted(counts.items()))
-        summary["status"] = "partial" if summary["listing_truncated"] else "available"
-    except READ_ERRORS:
-        pass
+            summary["lines_examined"] += len(lines)
+            summary["files_downloaded"] += 1
+        except READ_ERRORS:
+            summary["tail_unavailable"] = True
+    summary["category_counts"] = dict(sorted(counts.items()))
+    summary["status"] = ("partial" if summary["listing_truncated"] or summary["tail_unavailable"]
+                         or summary["tail_truncated"] else "available")
     return summary
 
 
 def main():
-    if sys.argv[1:] != ["--target", "dev"]:
-        raise ValueError("Explicit development target is required")
+    if (sys.argv[1:] != ["--target", "dev"]
+            or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+            or os.environ.get("CI_DB_DIAGNOSTICS_DEV") != "true"):
+        raise ValueError("Enabled manual development diagnostics are required")
     config = json.load(sys.stdin)
     if isinstance(config, str):
         config = json.loads(config)
@@ -317,7 +352,7 @@ def main():
     result = {"logs": collect(config, aws_read, int(time.time() * 1000))}
     result["configuration"] = configuration_snapshot(config, aws_read)
     result["server_logs"] = server_log_snapshot(config, aws_read)
-    print(json.dumps(result))
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
