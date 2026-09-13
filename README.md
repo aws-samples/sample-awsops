@@ -186,7 +186,7 @@ tracked working-tree files, runs `init -backend=false`, validates and tests with
 
 ```bash
 bash scripts/v2/merge-verify.sh   # isolated Python + web vitest + deployment Node tests; opportunistic TF checks
-node --test scripts/v2/ci/*.test.mjs # offline private migration runtime/controller fixtures (CI required)
+node --test scripts/v2/ci/*.test.mjs # offline private migration runtime fixtures (CI required)
 node --test scripts/v2/ci/migration.itest.mjs # real PostgreSQL initializer/runner regressions (CI required)
 bash scripts/v2/terraform-test.sh # isolated, backend-disabled Terraform mock tests (also required in CI)
 node --test scripts/v2/deployment-smoke.test.mjs # focused offline smoke argument tests
@@ -389,7 +389,7 @@ Terraform mock 테스트에는 **1.15.7**과 설치/캐시된 provider가 필요
 
 ```bash
 bash scripts/v2/merge-verify.sh   # 격리 Python + web vitest + 배포 Node 테스트; 선택적 TF 검사
-node --test scripts/v2/ci/*.test.mjs # private migration runtime/controller 오프라인 fixture (CI 필수)
+node --test scripts/v2/ci/*.test.mjs # private migration runtime 오프라인 fixture (CI 필수)
 node --test scripts/v2/ci/migration.itest.mjs # 실제 PG initializer/runner 회귀 테스트 (CI 필수)
 bash scripts/v2/terraform-test.sh # 별도 복사본·backend 비활성 Terraform mock 테스트 (CI 필수)
 node --test scripts/v2/deployment-smoke.test.mjs # 오프라인 스모크 인자 집중 테스트

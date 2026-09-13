@@ -3,7 +3,7 @@ import { MigrationError } from './migration-errors.mjs';
 
 // The caller holds migrate.mjs's session advisory lock across this operation
 // AND the subsequent ULIDs. A missing ledger alone is never proof of emptiness.
-export async function initializeEmptyDatabase(client, schema, appVersion) {
+export async function initializeEmptyDatabase(client, schema, appVersion, executeSql = sql => client.query(sql)) {
   const { rows: [state] } = await client.query("SELECT to_regclass('public.schema_migrations') AS ledger");
   if (state.ledger) return false;
 
@@ -29,6 +29,9 @@ export async function initializeEmptyDatabase(client, schema, appVersion) {
     UNION ALL
     SELECT 1 FROM pg_publication
     UNION ALL
+    SELECT 1 FROM pg_subscription
+    WHERE subdbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+    UNION ALL
     SELECT 1 FROM pg_default_acl
   ) AS occupied`);
   if (stateWithoutLedger.occupied) {
@@ -45,7 +48,7 @@ export async function initializeEmptyDatabase(client, schema, appVersion) {
   const baseline = schema.replace(wrapper, '');
   await client.query('BEGIN');
   try {
-    await client.query(baseline);
+    await executeSql(baseline);
     await client.query('ALTER TABLE public.schema_migrations ALTER COLUMN version TYPE TEXT USING version::text');
     await client.query('ALTER TABLE public.schema_migrations ADD COLUMN checksum TEXT, ADD COLUMN app_version TEXT');
     await client.query(`INSERT INTO public.schema_migrations(version, description, checksum, app_version)

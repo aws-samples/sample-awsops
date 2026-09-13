@@ -10,7 +10,7 @@ import { initializeEmptyDatabase } from '../initialize-db.mjs';
 import { disposablePostgres, waitForQuery } from './postgres-test-fixture.mjs';
 
 const root = new URL('../../../', import.meta.url);
-const schema = readFileSync(new URL('terraform/foundation/data/schema.sql', root), 'utf8');
+const schema = readFileSync(new URL('terraform/foundation/data/schema.sql', root), 'utf8').replace(/\r\n/g, '\n');
 const migrationDirectory = new URL('terraform/foundation/migrations/', root);
 const migrationFiles = readdirSync(migrationDirectory).filter(name => name.endsWith('.sql')).sort();
 const hash = text => createHash('sha256').update(text.replace(/\r\n/g, '\n')).digest('hex');
@@ -89,9 +89,9 @@ test('both first-run initialization and ULIDs wait behind the same advisory lock
   });
 });
 
-test('concurrent initializers apply each migration once', async () => {
+test('concurrent initializers apply each migration once', { timeout: 45_000 }, async () => {
   const database = await postgres.database();
-  await Promise.all([run(database), run(database)]);
+  await Promise.all([run(database, {}, lockRunnerOptions), run(database, {}, lockRunnerOptions)]);
   assert.equal((await inspect(database, ledger)).length, migrationFiles.length + 10);
 });
 
@@ -211,19 +211,113 @@ test('reader secret failures identify the purpose without exposing remote messag
   });
 });
 
-test('server notices and migration failures retain SQLSTATE without arbitrary server text', async () => {
+test('reviewed SQL notices preserve bounded, encoded audit text; other error text stays hidden', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'awsops-sql-errors-'));
   const messages = [];
   try {
     writeFileSync(join(directory, `${testId}_failure.sql`),
-      "DO $$ BEGIN RAISE NOTICE 'do-not-echo-secret'; RAISE EXCEPTION 'do-not-echo-secret' USING ERRCODE='42501'; END $$;");
+      "DO $$ BEGIN RAISE NOTICE 'audit row=%', E'row-42\\nforged\\r\\x1b[31m\\u2028' || repeat('x', 10000); RAISE EXCEPTION 'do-not-echo-secret' USING ERRCODE='42501'; END $$;");
     await assert.rejects(run(await postgres.database(), { migrationDir: directory,
       logger: { log: text => messages.push(text) } }), error => {
       assert.match(error.message, /rolled back.*SQLSTATE=42501/);
+      const audit = messages.find(text => text.includes('audit row='));
+      assert.ok(audit, 'reviewed SQL notice must reach the operator');
+      assert.match(audit, /severity=NOTICE/);
+      assert.match(audit, /row-42\\nforged\\r\\u001b.*\\u2028/);
+      assert.doesNotMatch(audit, /[\r\n\u001b\u2028]/);
+      assert.ok(audit.length < 5000);
       assert.doesNotMatch(error.message + messages.join(''), /do-not-echo-secret/);
       return true;
     });
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('the shipped schedule migration logs each disabled row and structured unique failures', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'awsops-schedule-audit-'));
+  const file = '01KZ3C7Q5SH0ZY5W7X1D2EFGKM_report_schedules_one_active_per_user.sql';
+  const database = await postgres.database();
+  const messages = [];
+  try {
+    await run(database, { migrationDir: directory });
+    await inspect(database, db => db.query(`INSERT INTO report_schedules
+      (id, user_sub, schedule_type, enabled, next_run_at) VALUES
+      (41, 'owner', 'weekly', true, now()), (42, 'owner', 'monthly', true, now());`));
+    writeFileSync(join(directory, file), readFileSync(new URL(file, migrationDirectory)));
+    await run(database, { migrationDir: directory, logger: { log: text => messages.push(text) } });
+    for (const id of [41, 42]) {
+      assert.ok(messages.some(text => text.includes(`disabled report_schedules id=${id}`)), messages.join('\n'));
+    }
+    await inspect(database, async db => {
+      assert.equal((await db.query('SELECT * FROM report_schedules WHERE enabled')).rowCount, 0);
+    });
+    writeFileSync(join(directory, `${testId}_constraint.sql`),
+      "INSERT INTO report_schedules (user_sub,schedule_type,enabled,next_run_at) VALUES ('duplicate-secret','weekly',true,now()), ('duplicate-secret','monthly',true,now());");
+    await assert.rejects(run(database, { migrationDir: directory }), error => {
+      assert.match(error.message, /SQLSTATE=23505/);
+      for (const field of ['severity=ERROR', 'schema=public', 'table=report_schedules', 'constraint=uq_schedule_one_active']) {
+        assert.ok(error.message.includes(field), error.message);
+      }
+      assert.doesNotMatch(error.message, /duplicate-secret|Key \(/);
+      return true;
+    });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('the shipped P0001 reader guard preserves its repair guidance, without changing SQL', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'awsops-repair-guidance-'));
+  const file = '01KZ87KAJFA2Y27KY0QSMVBBDS_agent_sql_reader_elevated_attr_guard.sql';
+  const database = await postgres.database();
+  try {
+    await run(database, { migrationDir: directory });
+    writeFileSync(join(directory, file), readFileSync(new URL(file, migrationDirectory)));
+    await inspect(database, db => db.query(`DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='awsops_sql_reader') THEN
+        CREATE ROLE awsops_sql_reader;
+      END IF; END $$;`));
+    await inspect(database, db => db.query('ALTER ROLE awsops_sql_reader BYPASSRLS'));
+    await assert.rejects(run(database, { migrationDir: directory }), error => {
+      assert.match(error.message, /SQLSTATE=P0001/);
+      assert.match(error.message, /Do NOT drop|Do NOT drop.*recreate/);
+      assert.match(error.message, /DROP OWNED BY awsops_sql_reader.*DROP ROLE/);
+      assert.match(error.message, /docs\/runbooks\/agent-sql-reader.md/);
+      return true;
+    });
+  } finally {
+    await inspect(database, db => db.query('ALTER ROLE awsops_sql_reader NOBYPASSRLS'));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('the shipped view-refresh notice remains visible when reader views are absent', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'awsops-view-notice-'));
+  const file = '01M1E9JZKCMXT1CW152R6QQQXD_compliance_results_description.sql';
+  const database = await postgres.database();
+  const messages = [];
+  try {
+    await run(database, { migrationDir: directory });
+    await inspect(database, db => db.query('CREATE TABLE compliance_results(id text)'));
+    writeFileSync(join(directory, file), readFileSync(new URL(file, migrationDirectory)));
+    await run(database, { migrationDir: directory, logger: { log: text => messages.push(text) } });
+    assert.ok(messages.some(text => text.includes('awsops_sql_reader/sql_reader absent - view refresh skipped')));
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('a real idle disconnect aborts a pending secret read and reports no success', { timeout: 5000 }, async () => {
+  const database = await postgres.database();
+  await run(database);
+  const messages = [];
+  const client = postgres.client(database);
+  await inspect(database, async observer => {
+    await assert.rejects(runner.migrateDatabase(client, {
+      env: { SQL_READER_SYNC_MODE: 'secret', SQL_READER_SECRET_ARN: 'reader' },
+      logger: { log: text => messages.push(text) },
+      readSecret: async () => {
+        await observer.query('SELECT pg_terminate_backend($1)', [client.processID]);
+        return new Promise(() => {});
+      },
+    }), /Aurora connection error.*SQLSTATE=57P01/);
+  });
+  assert.doesNotMatch(messages.join('\n'), /up to date|password synced|applied \d+ migration/);
 });
 
 test('legacy ledger conversion rolls back atomically when baseline stamping fails', async () => {
@@ -371,16 +465,19 @@ async function withDatabase(fn) {
   });
 }
 
-test('empty initialization atomically creates v1-v9 plus a TEXT ledger with a baseline checksum', () => withDatabase(async db => {
-  assert.equal(await initializeEmptyDatabase(db, schema, 'integration-version'), true);
-  const first = (await db.query('SELECT * FROM schema_migrations ORDER BY version')).rows;
-  assert.deepEqual(first.map(row => row.version), ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'baseline']);
-  assert.equal(first.at(-1).checksum, createHash('sha256').update(schema).digest('hex'));
-  assert.equal(first.at(-1).app_version, 'integration-version');
-  assert.equal((await db.query("SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='schema_migrations' AND column_name='version'")).rows[0].data_type, 'text');
-  assert.equal(await initializeEmptyDatabase(db, 'SELECT nonexistent_function()', 'changed'), false);
-  assert.deepEqual((await db.query('SELECT * FROM schema_migrations ORDER BY version')).rows, first);
-}));
+for (const ending of ['LF', 'CRLF']) {
+  test(`empty initialization atomically stamps v1-v9 and an LF-normalized baseline (${ending})`, () => withDatabase(async db => {
+    const input = schema.replace(/\n/g, ending === 'CRLF' ? '\r\n' : '\n');
+    assert.equal(await initializeEmptyDatabase(db, input, 'integration-version'), true);
+    const first = (await db.query('SELECT * FROM schema_migrations ORDER BY version')).rows;
+    assert.deepEqual(first.map(row => row.version), ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'baseline']);
+    assert.equal(first.at(-1).checksum, hash(schema));
+    assert.equal(first.at(-1).app_version, 'integration-version');
+    assert.equal((await db.query("SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='schema_migrations' AND column_name='version'")).rows[0].data_type, 'text');
+    assert.equal(await initializeEmptyDatabase(db, 'SELECT nonexistent_function()', 'changed'), false);
+    assert.deepEqual((await db.query('SELECT * FROM schema_migrations ORDER BY version')).rows, first);
+  }));
+}
 
 for (const [kind, sql] of [
   ['table', 'CREATE TABLE marker (id int)'],
@@ -392,6 +489,7 @@ for (const [kind, sql] of [
   ['collation', 'CREATE COLLATION marker FROM "C"'],
   ['large object', 'SELECT lo_create(0)'],
   ['foreign data wrapper', 'CREATE FOREIGN DATA WRAPPER marker'],
+  ['subscription', "CREATE SUBSCRIPTION marker CONNECTION 'host=127.0.0.1 dbname=unused' PUBLICATION unused WITH (connect=false)"],
   ['global default ACL', 'ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO PUBLIC'],
   ['non-public table', 'CREATE SCHEMA other; CREATE TABLE other.marker (id int)'],
 ]) {

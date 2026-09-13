@@ -37,13 +37,15 @@ secrets-manager) — installed by `make deps`.
   bundled RDS CA and hostname. `initialize-db.mjs` atomically initializes only a verified-empty
   DB with one-shot INITIALIZE_EMPTY_DB=1; existing integer ledgers still require BOOTSTRAP=1.
   Non-null baseline/ULID checksums are immutable. Reader elevation is checked even in disabled
-  mode; enabled sync with a missing role fails. `migration-errors.mjs` emits fixed purpose,
-  recognized codes/status and normalized booleans, never remote error text or secret bodies.
+  mode; enabled sync with a missing role fails. `migration-errors.mjs` preserves bounded,
+  encoded NOTICE/P0001 text and validated identifiers only during reviewed baseline/ULID SQL.
+  Secret/connection/reader-sync phases expose only safe codes/context, never secret bodies.
+  Client error events and cleanup failures fail closed; success follows connection cleanup.
   `v2/ci/Dockerfile.migration` is the ARM64 nonroot/read-only-filesystem runtime, using CMD.
 - `v2/agentcore.mjs` + `agentcore/` — `make agentcore`: arm64 agent image + idempotent
   provisioner, writes to SSM.
 - `v2/*.itest.mjs` — migration integration tests against a disposable PostgreSQL 17 container.
-- `v2/ci/*.test.mjs` — offline migration runtime/controller tests; install locked scripts/v2
+- `v2/ci/*.test.mjs` — offline migration runtime tests (controller coverage is not present); install locked scripts/v2
   dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`.
   `v2/ci/migration.itest.mjs` includes initializer regressions and is a **required fail-hard
   exception** to the legacy optional itest convention: bare `docker` on PATH, OpenSSL,

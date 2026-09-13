@@ -43,12 +43,12 @@ DO NOTHING`. Concurrent branches kept **preempting the same integer** (manual re
 From an approved host with private Aurora connectivity, use `INITIALIZE_EMPTY_DB=1 make migrate`
 once for a new, empty database. This is a one-shot operator choice, not a standing task setting.
 The initializer refuses an absent ledger if any user object exists, including global default ACLs,
-custom schemas, routines, extensions, large objects or foreign wrappers. Investigate or restore such
+custom schemas, routines, extensions, large objects, foreign wrappers or subscriptions in this database. Investigate or restore such
 a database; do not delete objects/ledger rows to force the guard through.
 
 Aurora에 사설 연결 가능한 승인된 호스트에서 새 빈 DB에 한해
 `INITIALIZE_EMPTY_DB=1 make migrate`를 한 번 실행한다. 태스크의 상시 환경변수로 두지 않는다.
-원장이 없어도 사용자 객체(전역 default ACL·스키마·함수·확장·large object 등)가 있으면 거부한다.
+원장이 없어도 사용자 객체(전역 default ACL·스키마·함수·확장·large object·해당 DB의 subscription 등)가 있으면 거부한다.
 강제로 통과시키려고 객체나 원장 행을 지우지 말고 상태를 조사하거나 복원한다.
 
 The frozen baseline's one legacy BEGIN/COMMIT pair is removed **only in memory**. All baseline
@@ -96,16 +96,20 @@ reader output이 정의된 빈 문자열이면 비밀번호 동기화를 끄지�
 | `APP_VERSION` | Optional release stamp fallback; otherwise `web/package.json`; `-- since:` takes precedence / release 기록 |
 | `STATUS`, `DRY_RUN`, `OFFLINE` | `1` enables the inspection modes described above / 위 조회 모드 |
 
-These names are the migration/controller interface. `AURORA_SECRET_ARN` means the **master** here;
+These names define the runtime interface for a future deployment controller. `AURORA_SECRET_ARN` means the **master** here;
 the agent's `AURORA_SQL_READER_SECRET_ARN` is not an alias for `SQL_READER_SECRET_ARN`.
 Do not copy the agent's environment block. Role elevation is checked on every non-preview run when
 the role exists, **including disabled mode**. Disabled permits an absent role and skips only the
 reader secret fetch/password alteration; it does not repair a missing role or password mismatch.
+After a disabled-mode installation, run `make migrate` with reader sync enabled successfully
+before `make agentcore`; otherwise `execute_sql`/inventory-read can fail Data API authentication.
 See `docs/runbooks/agent-sql-reader.md` for recovery and safe diagnostic codes.
 
-이 이름은 migration/controller 공통 계약이다. 에이전트 환경변수를 복사하지 않는다.
+이 이름은 향후 deployment controller가 사용할 runtime 계약이다. 에이전트 환경변수를 복사하지 않는다.
 `disabled`에서도 존재하는 reader 롤의 elevated 속성을 검사한다. 부재한 롤은 허용하고
 reader 시크릿 조회/비밀번호 변경만 생략한다. 활성 에이전트의 장애 우회책으로 disabled를 쓰지 않는다.
+disabled로 설치했다면 `make agentcore` 전에 reader 동기화를 활성화한 `make migrate`를
+성공시켜야 한다. 생략하면 `execute_sql`/inventory-read의 Data API 인증이 실패할 수 있다.
 
 ### ARM64 image and private execution / ARM64 이미지·사설 실행
 
@@ -123,15 +127,15 @@ docker run --rm --network none --read-only awsops-migration:local \
   node scripts/v2/migrate.mjs --status
 ```
 
-For a reviewed deployment, the controller builds/pushes to the selected private ECR repository,
-selects the exact image digest, and executes the image's default CMD in a private ARM64 Fargate
+The deployment controller is not implemented by this runtime change. A future reviewed controller must build/push to the selected private ECR repository,
+select the exact image digest, and execute the image's default CMD in a private ARM64 Fargate
 task. This runtime change alone provisions no task or IAM and enables no deployment gate.
 Task completion must include the migration container's numeric exit code `0`; status output alone
 is not a successful migration. Supply the required identifiers/mode above (plus reader ARN
 only in secret mode) as nonsecret environment settings; never inject passwords/secret bodies or
 put `INITIALIZE_EMPTY_DB=1` in a reusable template.
 
-검토된 배포에서 controller가 선택한 private ECR에 빌드/푸시하고 정확한 digest로 private ARM64
+이 runtime 변경에는 deployment controller 구현이 없다. 향후 검토된 controller가 선택한 private ECR에 빌드/푸시하고 정확한 digest로 private ARM64
 Fargate 태스크의 기본 CMD를 실행한다. 런타임만으로 태스크/IAM/배포 gate가 생성되지 않는다.
 성공은 migration 컨테이너의 숫자 exit code `0`까지 확인해야 한다. 환경에는 위 식별자/모드만
 전달하고 비밀번호·시크릿 본문·상시 초기화 설정을 넣지 않는다.

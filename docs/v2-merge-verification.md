@@ -37,7 +37,7 @@ gated files (measured), but narrowing the check to top-level attributes only is 
 | --- | --- | --- | --- | --- |
 | S1 | Frozen and gated Terraform resources stay default-off, gated by `count` or `for_each`, and tracked tfvars do not enable gated flags. | `docs/decisions/BASELINE.md`, ADR-005, ADR-006, ADR-007 | `scripts/v2/test_merge_invariants.py`, `scripts/v2/merge_invariants.py` | `python3 -m pytest scripts/v2/test_merge_invariants.py -q` |
 | S2 | The 9 routed sections align across AgentCore catalog, web sections, route rules, and the `observability` to `external-obs` alias; v1 `/awsops/` route literals do not leak into v2 web sources. | ADR-004, ADR-038 | `web/lib/merge-invariants.test.ts`, `web/lib/merge-invariants.ts` | `cd web && npx vitest run lib/merge-invariants.test.ts` |
-| S3 | Isolated Python, web vitest, deployment Node tests, offline migration tests, real PostgreSQL runner tests and backend-disabled Terraform mock tests. | 2026-07-05 v2 merge verification plan; private migration runtime | `scripts/v2/merge-verify.sh`, `scripts/v2/ci/`, `scripts/v2/terraform-test.sh`, `.github/workflows/merge-verify.yml` | All four commands below |
+| S3 | Isolated Python, web vitest, deployment Node tests, offline migration tests, real PostgreSQL runner tests and backend-disabled Terraform mock tests. | 2026-07-05 v2 merge verification plan; root `CLAUDE.md` required-test rule | `scripts/v2/merge-verify.sh`, `scripts/v2/ci/`, `scripts/v2/terraform-test.sh`, `.github/workflows/merge-verify.yml` | All four commands below |
 
 ## Runner Usage
 
@@ -139,7 +139,7 @@ aggregate-run false failures.
 3. Run `bash scripts/v2/merge-verify.sh`: file-isolated pytest (including workflow fixtures and
    the localhost Terraform state-read test), web vitest, deployment Node tests and opportunistic TF checks.
 4. Install locked `scripts/v2` dependencies with `--ignore-scripts` and run
-   `node --test scripts/v2/ci/*.test.mjs` (runtime and, when present, controller/workflow fixtures).
+   `node --test scripts/v2/ci/*.test.mjs` (runtime fixtures; deployment-controller coverage is not present).
 5. Run `node --test scripts/v2/ci/migration.itest.mjs` against disposable PostgreSQL:
    real initialization/ULIDs, rollback/retry/checksums, lock serialization, reader guards,
    permission denial, password rotation and TLS rejection. Docker failure is a gate failure.
@@ -153,13 +153,16 @@ backend 비활성 Terraform validate/mock 테스트 모두 필수다.
 
 These PR-authored tests run only under `pull_request` with `contents: read`, no deployment
 credentials, secrets or OIDC permissions. They must not move to `pull_request_target` or gain
-secret access. A runtime image build can additionally be checked locally using the
-[migration guide](../terraform/foundation/migrations/README.md); CI does not currently build it.
+secret access.
 PR 코드는 `pull_request`·`contents: read`에서 배포 자격증명·시크릿·OIDC 없이 검사한다.
-`pull_request_target` 전환이나 secret 접근을 추가하지 않는다. 이미지 빌드는 migration 안내대로
-별도 검증하며 현재 이 CI에는 포함되지 않는다.
+`pull_request_target` 전환이나 secret 접근을 추가하지 않는다. 현재 private migration 검사는
+runtime 범위이며 deployment-controller 검증은 포함하지 않는다.
 
 ## Manual Gates Outside CI
+
+A runtime image build can be checked locally using the
+[migration guide](../terraform/foundation/migrations/README.md); CI does not currently build it.
+이미지 빌드는 migration 안내대로 별도 검증하며 현재 이 CI에는 포함되지 않는다.
 
 Before the final merge, run the routing accuracy gate against real Bedrock:
 This is a live manual gate, separate from the offline commands above; it requires the intended

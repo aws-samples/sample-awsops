@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 23616e58b0fb · generated-at: 2026-09-02 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 6c0164d5195b · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -31,6 +31,11 @@ v2 = ops dashboard + AI diagnosis. **Current form = diagnosis + remediation *pro
 cd web && npm ci && npm run build       # next build (standalone)
 cd web && npx vitest run                 # web test suite (vitest)
 
+# Required private migration runtime tests (no AWS credentials/OIDC)
+npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund
+node --test scripts/v2/ci/*.test.mjs
+node --test scripts/v2/ci/migration.itest.mjs  # Docker + OpenSSL; fail hard, never skip
+
 # agent (Python)
 cd agent && python3 -m pytest test_agent.py -q
 
@@ -45,6 +50,8 @@ make deploy      # migrate → buildx arm64 → ECR push → ECS roll → wait s
 make agentcore   # arm64 agent image + idempotent AgentCore provisioner (MCP Lambda code ships via terraform apply, NOT this)
 make workers     # arm64 worker image push (after apply with workers_enabled=true)
 ```
+Private migration `scripts/v2/ci/` tests are required: bare `docker` on PATH, reachable daemon and OpenSSL; no automatic `sudo`/`DOCKER` override. This is the fail-hard exception to legacy optional `scripts/v2/*.itest.mjs`. Coverage is runtime-only; deployment-controller tests are not present.
+
 No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scripts/v2/package.json` (`make deps` runs `npm ci --prefix scripts/v2`). `next build` fails on app-level type errors but `*.test.ts(x)` type noise is non-blocking.
 
 ## BANNED PATTERNS (enforce in review)

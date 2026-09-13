@@ -233,6 +233,125 @@ test('database diagnostics reject arbitrary SQLSTATE text and non-Error throws',
   }).message, /ERR_TLS_CERT_ALTNAME_INVALID/);
 });
 
+test('filesystem errors retain safe errno without paths or SQLSTATE misclassification', () => {
+  for (const code of ['ENOENT', 'EACCES', 'EPERM', 'EPIPE', 'EBUSY']) {
+    const error = databaseFailure('Read frozen baseline failed', {
+      code, message: 'do-not-echo-secret', path: '/do-not-echo-secret',
+    });
+    assert.ok(error.message.includes(code), error.message);
+    assert.doesNotMatch(error.message, /SQLSTATE|do-not-echo-secret/);
+  }
+});
+
+test('only reviewed SQL failures expose validated identifiers and P0001 guidance', () => {
+  const raw = { code: 'P0001', severity: 'ERROR', schema: 'public', table: 'report_schedules',
+    column: 'user_sub', constraint: 'uq_schedule_one_active', message: 'repair\nnext\u001b[31m',
+    detail: 'do-not-echo-secret', hint: 'do-not-echo-secret', where: 'do-not-echo-secret' };
+  const safe = databaseFailure('Migration failed', raw, { migrationSql: true }).message;
+  for (const field of ['severity', 'schema', 'table', 'column', 'constraint']) {
+    assert.ok(safe.includes(`${field}=${raw[field]}`), safe);
+    for (const invalid of ['do-not-echo-secret\n', 'x'.repeat(64), {}, 'bad name']) {
+      assert.doesNotMatch(databaseFailure('Migration failed', { ...raw, [field]: invalid },
+        { migrationSql: true }).message, new RegExp(`${field}=`));
+    }
+  }
+  assert.match(safe, /repair\\nnext\\u001b/);
+  assert.doesNotMatch(safe, /[\r\n\u001b]|do-not-echo-secret/);
+  assert.ok(databaseFailure('Migration failed', { ...raw, message: 'x'.repeat(100_000) },
+    { migrationSql: true }).message.length < 5000);
+  for (const purpose of ['Connect to Aurora failed', 'sql-reader: password synchronization failed']) {
+    const hidden = databaseFailure(purpose, raw).message;
+    assert.match(hidden, /SQLSTATE=P0001/);
+    assert.doesNotMatch(hidden, /repair|severity=|schema=|table=|column=|constraint=/);
+  }
+});
+
+// Child processes reproduce EventEmitter's uncaught-error exit without crashing
+// the test harness. Only the socket/secret transport is replaced.
+for (const phase of ['connect', 'idle-secret', 'reader-event', 'reader-reject',
+  'unlock-event', 'end-event', 'unlock-reject', 'end-reject']) {
+  test(`connection lifecycle fails closed without raw output: ${phase}`, () => {
+    const directory = mkdtempSync(join(tmpdir(), 'awsops-lifecycle-'));
+    try {
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        import { EventEmitter } from 'node:events';
+        import { setImmediate } from 'node:timers/promises';
+        import pg from ${JSON.stringify(import.meta.resolve('pg'))};
+        import { migrateDatabase } from './scripts/v2/migrate.mjs';
+        const phase = ${JSON.stringify(phase)};
+        const raw = () => Object.assign(new Error('do-not-echo-secret'), {
+          code: 'P0001', detail: 'do-not-echo-secret', where: 'ALTER ROLE PASSWORD do-not-echo-secret',
+          schema: 'do_not_echo_secret', severity: 'ERROR',
+        });
+        class Client extends EventEmitter {
+          escapeLiteral(value) { return pg.escapeLiteral(value); }
+          fail() {
+            return new Promise(resolve => setTimeout(() => {
+              this.emit('error', raw()); resolve();
+            }, 0));
+          }
+          async connect() {
+            await setImmediate();
+            this.emit('notice', raw());
+            if (phase === 'connect') await this.fail();
+          }
+          async query(sql) {
+            if (sql.startsWith('ALTER ROLE')) {
+              this.emit('notice', raw());
+              if (phase === 'reader-event') await this.fail();
+              if (phase === 'reader-reject') throw raw();
+            }
+            if (sql.includes('pg_advisory_unlock')) {
+              await setImmediate();
+              this.emit('notice', raw());
+              if (phase === 'unlock-event') await this.fail();
+              if (phase === 'unlock-reject') throw raw();
+            }
+            if (sql.includes('information_schema.columns')) return { rows: [
+              { column_name: 'version', data_type: 'text' },
+              { column_name: 'checksum', data_type: 'text' },
+            ] };
+            if (sql.includes('FROM pg_roles')) return { rows: [
+              { rolsuper: false, rolreplication: false, rolbypassrls: false },
+            ] };
+            return { rows: [] };
+          }
+          async end() {
+            await setImmediate();
+            this.emit('notice', raw());
+            if (phase === 'end-event') await this.fail();
+            if (phase === 'end-reject') throw raw();
+          }
+        }
+        const client = new Client();
+        const watchdog = setTimeout(() => { console.error('lifecycle did not settle'); process.exit(2); }, 2000);
+        try {
+          await migrateDatabase(client, {
+            migrationDir: ${JSON.stringify(directory)},
+            env: { SQL_READER_SYNC_MODE: 'secret', SQL_READER_SECRET_ARN: 'reader' },
+            readSecret: async () => {
+              await setImmediate();
+              client.emit('notice', raw());
+              if (phase === 'idle-secret') {
+                await client.fail();
+                return new Promise(() => {});
+              }
+              return { username: 'awsops_sql_reader', password: 'local-only' };
+            },
+          });
+          console.log('RUN SUCCEEDED');
+        } catch (error) { console.error(error.message); process.exitCode = 1; }
+        finally { clearTimeout(watchdog); }
+      `], { cwd: root, env: { PATH: '/no-external-tools' }, encoding: 'utf8', timeout: 5000 });
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /Aurora connection error|advisory unlock|connection cleanup|password synchronization failed/);
+      assert.match(result.stderr, /SQLSTATE=P0001/);
+      assert.doesNotMatch(result.stdout + result.stderr,
+        /do.not.echo.secret|RUN SUCCEEDED|up to date|applied \d+ migration|lifecycle did not settle/);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+}
+
 test('master secret failures identify their purpose and recognized SDK code safely', async () => {
   await assert.rejects(runner.loadCredentials(runtimeEnv, {
     terraformOutput: noTerraform,

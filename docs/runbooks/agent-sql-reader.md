@@ -186,13 +186,18 @@ cross-account and caller-supplied `secret_arn`/`database` are fail-closed.
 
 ### 안전한 오류 진단 / Safe failure diagnostics
 
-로그는 고정 작업/목적, 허용된 SDK code/name, 숫자 HTTP 상태, SQLSTATE, 정규화된 boolean만
-남긴다. 시크릿 본문·비밀번호·임의의 원격 오류 message/name·Terraform stderr는 출력하지 않는다.
+로그는 고정 작업/목적, 허용된 SDK code/name, 숫자 HTTP 상태, SQLSTATE, 정규화된 boolean을
+남긴다. 검토된 baseline/마이그레이션 SQL 실행 중에만 NOTICE 감사 내용과 P0001 복구 안내
+(입력 2048자 제한, JSON 인코딩·제어 문자 이스케이프), 검증된 severity/schema/table/column/constraint를
+보존한다. 연결·시크릿·reader 동기화 단계의 임의 오류 원문, 시크릿 본문·비밀번호·Terraform stderr는 출력하지 않는다.
 출력되지 않는 원문을 얻으려고 secret dump나 SDK 디버그 로깅을 켜지 않는다.
 
 Logs retain fixed operation/purpose context, recognized SDK identifiers, numeric HTTP status,
-SQLSTATE and normalized booleans. They exclude secret bodies/passwords, arbitrary remote
-message/name fields and Terraform stderr. Do not dump secrets or enable SDK debug logging
+SQLSTATE and normalized booleans. Only while executing reviewed baseline/migration SQL do they
+retain NOTICE audit content, P0001 repair guidance (2048 input characters, JSON-encoded with
+control characters escaped), and validated severity/schema/table/column/constraint fields.
+Connection, secret and reader-sync phases suppress arbitrary error text; secret bodies/passwords,
+detail/hint/where/query fields and Terraform stderr remain excluded. Do not dump secrets or enable SDK debug logging
 to recover suppressed text.
 
 | Safe diagnostic / 안전한 진단 | Action / 조치 |
@@ -203,17 +208,23 @@ to recover suppressed text.
 | `sql-reader: password synchronization failed: SQLSTATE=42501` | Connected DB user lacks role authority; inspect approved grants and elevated attributes / DB 사용자 권한·elevated 속성 확인 |
 | `elevated attributes (rolsuper=…, rolreplication=…, rolbypassrls=…)` | Stop; use the reviewed role-repair path above. `true` identifies the attribute; disabled mode cannot bypass it / 중단 후 검토된 롤 복구, disabled 우회 불가 |
 | `Connect to Aurora failed` + TLS code | Check private endpoint, CA and hostname; retain verification / 사설 endpoint·CA·호스트 검증 유지 |
+| `Aurora connection error` / `Aurora connection cleanup failed` | Run failed, including idle secret-fetch or cleanup errors; inspect connectivity before retrying / 시크릿 조회 대기·정리 중 오류도 실패이며 연결 상태 확인 후 재시도 |
+| `ENOENT` / `EACCES` | Check runtime SQL/CA assets and file permissions for the named operation / 표시된 작업의 SQL·CA 파일 및 읽기 권한 확인 |
 | `Acquire migration advisory lock failed: SQLSTATE=55P03` | Inspect the existing migration session before retrying; do not bypass its lock / 실행 중 세션 확인 후 재시도 |
 | `Terraform output … unavailable (category=backend-initialization, exit=…)` | Initialize the intended backend under the normal operator procedure / 승인된 backend 초기화 절차 |
 | `category=missing-output` / `executable-unavailable` / `command-failed` / `command-terminated` | Check state/output version, installed Terraform, approved backend access or termination; exit is numeric when available / 상태·output 버전·Terraform 설치·backend 접근·중단 확인 |
 
 `unclassified error` means no recognized safe code was available; the operation/purpose remains.
-Migration failure output includes rollback vs non-transactional status and SQLSTATE. Notices also
-omit arbitrary server text. Test fixtures reproduce a non-superuser role-authority denial and
+Migration failure output includes rollback vs non-transactional status and SQLSTATE. Reviewed SQL
+notices retain disabled schedule row IDs and skipped view-refresh audit records. Connection error
+events are handled throughout cleanup; the runner reports success only after cleanup completes.
+Test fixtures reproduce a non-superuser role-authority denial and
 successful synchronization after explicit authorization; they do not emulate all Aurora managed roles.
 
 `unclassified error`는 안전하게 분류 가능한 code가 없다는 뜻이며 작업 목적은 남는다.
-마이그레이션 오류는 rollback 여부·SQLSTATE를 남기고 notice 원문도 생략한다. 로컬 테스트는
+마이그레이션 오류는 rollback 여부·SQLSTATE를 남기고 검토된 SQL notice에는 disabled schedule
+행 ID·view 갱신 생략 기록을 보존한다. 연결 오류 이벤트는 정리 완료까지 처리하며 완료 후에만
+성공을 보고한다. 로컬 테스트는
 non-superuser 권한 거부와 명시적 권한 부여 후 동기화를 재현하며 Aurora 관리 롤 전체를 모사하지 않는다.
 
 ## 실제 Postgres 17 로 검증함 / Verified against a real Postgres 17

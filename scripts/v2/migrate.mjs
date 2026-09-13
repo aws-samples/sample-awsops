@@ -13,7 +13,7 @@ import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-sec
 import { hasRuntimeDatabaseConfig, sqlReaderConfiguration } from './sql-reader-config.mjs';
 import { initializeEmptyDatabase } from './initialize-db.mjs';
 import {
-  MigrationError, databaseFailure, diagnosticCodes, secretFailure,
+  MigrationError, databaseFailure, migrationNotice, secretFailure,
   readSecretForPurpose, terraformFailure,
 } from './migration-errors.mjs';
 import {
@@ -140,7 +140,33 @@ export async function migrateDatabase(client, {
   const version = appVersion(env);
   let locked = false;
   let operation = 'Prepare migrations';
-  const notice = message => logger.log(`  [db] notice (${diagnosticCodes(message)})`);
+  let failure, connectionError, completion;
+  let migrationSql = false;
+  let rejectConnection;
+  const disconnected = new Promise((_, reject) => { rejectConnection = reject; });
+  disconnected.catch(() => {}); // also handled when emitted during cleanup
+  const onError = error => {
+    connectionError ??= databaseFailure('Aurora connection error', error);
+    rejectConnection(connectionError); // never throw from an EventEmitter
+  };
+  client.on('error', onError); // before connect; kept through end and late close events
+  const checked = async action => {
+    if (connectionError) throw connectionError;
+    const result = await Promise.race([action(), disconnected]);
+    if (connectionError) throw connectionError;
+    return result;
+  };
+  const db = {
+    query: (...args) => checked(() => client.query(...args)),
+    escapeLiteral: value => client.escapeLiteral(value),
+  };
+  const executeSql = async sql => {
+    migrationSql = true;
+    try { return await db.query(sql); }
+    catch (error) { throw databaseFailure('Reviewed SQL failed', error, { migrationSql: true }); }
+    finally { migrationSql = false; }
+  };
+  const notice = message => { if (migrationSql) logger.log(migrationNotice(message)); };
   try {
     if (initialize && dry) throw new MigrationError('INITIALIZE_EMPTY_DB cannot be combined with DRY_RUN');
     const migrations = loadMigrations(migrationDir);
@@ -153,25 +179,27 @@ export async function migrateDatabase(client, {
     }
     client.on('notice', notice);
     operation = 'Connect to Aurora';
-    await client.connect();
+    await checked(() => client.connect());
     operation = 'Acquire migration advisory lock';
-    await client.query('SELECT pg_advisory_lock($1)', [LOCK_KEY]);
+    await db.query('SELECT pg_advisory_lock($1)', [LOCK_KEY]);
     locked = true;
     if (initialize) {
+      operation = 'Read frozen baseline schema.sql';
+      const schema = readFileSync(SCHEMA, 'utf8');
       operation = 'Initialize empty database';
-      const initialized = await initializeEmptyDatabase(client, readFileSync(SCHEMA, 'utf8'), version);
+      const initialized = await initializeEmptyDatabase(db, schema, version, executeSql);
       if (initialized) logger.log('initialized empty database from frozen baseline');
     }
 
     operation = 'Read migration ledger';
-    const { rows: columns } = await client.query(
+    const { rows: columns } = await db.query(
       `SELECT column_name, data_type FROM information_schema.columns
        WHERE table_schema='public' AND table_name='schema_migrations'`,
     );
     const versionType = columns.find(column => column.column_name === 'version')?.data_type;
     if (!versionType) throw new MigrationError('schema_migrations missing; INITIALIZE_EMPTY_DB=1 is required for an empty database');
     const hasChecksum = columns.some(column => column.column_name === 'checksum');
-    const { rows: appliedRows } = await client.query(
+    const { rows: appliedRows } = await db.query(
       hasChecksum ? 'SELECT version, checksum FROM public.schema_migrations'
         : 'SELECT version, NULL AS checksum FROM public.schema_migrations',
     );
@@ -179,6 +207,7 @@ export async function migrateDatabase(client, {
     const pending = computePending(migrations.map(migration => migration.id), [...applied.keys()]);
 
     // Check before any ledger alteration or password synchronization.
+    operation = 'Read frozen baseline schema.sql and verify checksums';
     const baselineChecksum = applied.get('baseline');
     if (baselineChecksum != null && baselineChecksum !== sha256(readFileSync(SCHEMA, 'utf8'))) {
       throw new MigrationError('checksum drift: applied baseline differs from frozen schema.sql — baseline is immutable');
@@ -198,60 +227,61 @@ export async function migrateDatabase(client, {
       logger.log('[bootstrap] ALTER version to TEXT + metadata + baseline marker');
       if (!dry) {
         try {
-          await client.query('BEGIN');
-          await client.query('ALTER TABLE public.schema_migrations ALTER COLUMN version TYPE TEXT USING version::text');
-          await client.query('ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT');
-          await client.query('ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS app_version TEXT');
-          await client.query(`INSERT INTO public.schema_migrations(version, applied_at, description, app_version)
+          await db.query('BEGIN');
+          await db.query('ALTER TABLE public.schema_migrations ALTER COLUMN version TYPE TEXT USING version::text');
+          await db.query('ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT');
+          await db.query('ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS app_version TEXT');
+          await db.query(`INSERT INTO public.schema_migrations(version, applied_at, description, app_version)
             VALUES ('baseline', now(), 'schema.sql baseline; future migrations are ULID files', $1)
             ON CONFLICT (version) DO NOTHING`, [version]);
-          await client.query('COMMIT');
+          await db.query('COMMIT');
         } catch (error) {
-          await client.query('ROLLBACK').catch(() => {});
+          await db.query('ROLLBACK').catch(() => {});
           throw databaseFailure('bootstrap failed (rolled back to INTEGER)', error);
         }
       }
     } else if (!dry && pending.length > 0) {
       operation = 'Upgrade migration ledger metadata';
-      await client.query('ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT');
-      await client.query('ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS app_version TEXT');
+      await db.query('ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT');
+      await db.query('ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS app_version TEXT');
     }
 
-    operation = 'Validate and synchronize sql-reader';
-    if (pending.length === 0) {
-      logger.log('up to date — no pending migrations');
-      if (!dry) await syncSqlReaderPassword(client, reader, readSecret, logger);
-      return;
-    }
-    logger.log(`pending (${pending.length}): ${pending.join(', ')}`);
+    if (pending.length) logger.log(`pending (${pending.length}): ${pending.join(', ')}`);
     for (const id of pending) {
       const migration = migrations.find(entry => entry.id === id);
       if (dry) { logger.log(`\n--- ${migration.file} ---\n${migration.sql}`); continue; }
       const noTransaction = hasNoTxnFlag(migration.sql);
       try {
-        if (!noTransaction) await client.query('BEGIN');
-        await client.query(migration.sql);
-        await client.query(`INSERT INTO public.schema_migrations(version, applied_at, description, checksum, app_version)
+        if (!noTransaction) await db.query('BEGIN');
+        await executeSql(migration.sql);
+        await db.query(`INSERT INTO public.schema_migrations(version, applied_at, description, checksum, app_version)
           VALUES ($1, now(), $2, $3, $4)`,
         [migration.id, migration.name, sha256(migration.sql), migration.since ?? version]);
-        if (!noTransaction) await client.query('COMMIT');
+        if (!noTransaction) await db.query('COMMIT');
         logger.log(`  applied ${migration.file}`);
       } catch (error) {
-        if (!noTransaction) await client.query('ROLLBACK').catch(() => {});
+        if (!noTransaction) await db.query('ROLLBACK').catch(() => {});
         throw databaseFailure(`migration ${migration.file} failed (${noTransaction ? 'non-transactional; inspect partial changes' : 'rolled back'})`, error);
       }
     }
-    if (!dry) await syncSqlReaderPassword(client, reader, readSecret, logger);
-    logger.log(dry ? `preview only — ${pending.length} migration(s) pending, nothing applied`
-      : `applied ${pending.length} migration(s)`);
+    operation = 'Validate and synchronize sql-reader';
+    if (!dry) await syncSqlReaderPassword(db, reader, arn => checked(() => readSecret(arn)), logger);
+    completion = !pending.length ? 'up to date — no pending migrations'
+      : dry ? `preview only — ${pending.length} migration(s) pending, nothing applied`
+        : `applied ${pending.length} migration(s)`;
   } catch (error) {
-    if (error instanceof MigrationError) throw error;
-    throw databaseFailure(`${operation} failed`, error);
+    failure = error instanceof MigrationError ? error : databaseFailure(`${operation} failed`, error);
   } finally {
-    if (locked) await client.query('SELECT pg_advisory_unlock($1)', [LOCK_KEY]).catch(() => {});
+    if (locked && !connectionError) {
+      try { await client.query('SELECT pg_advisory_unlock($1)', [LOCK_KEY]); }
+      catch (error) { failure ??= databaseFailure('Migration advisory unlock failed', error); }
+    }
     client.removeListener('notice', notice);
-    await client.end().catch(() => {});
+    try { await client.end(); }
+    catch (error) { failure ??= databaseFailure('Aurora connection cleanup failed', error); }
   }
+  if (failure || connectionError) throw failure || connectionError;
+  logger.log(completion); // success only after unlock and connection cleanup
 }
 
 async function cli() {
