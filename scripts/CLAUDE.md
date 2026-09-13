@@ -26,10 +26,20 @@ secrets-manager) — installed by `make deps`.
   mutations when DNS is prohibited (including private DNS, validation and registered ECS).
   Routine CI always blocks managed-certificate externalization and owned validation-CNAME
   retirement/replacement, regardless of DNS permission.
+- `v2/ci_dev_domain.py` — dev repo names/mode plus explicit `domain_rollout` dispatch input.
+  Generates gitignored `ci-domain.auto.tfvars.json` for console/plan; the workflow rejects
+  tracked overrides. `ci_domain_rollout` is declared default-false metadata in the saved plan:
+  only true dev/full plans narrow DNS to configured A/ACM CNAME owners in the selected zone.
+  Ordinary full plans retain broad DNS behavior with explicit permission. Apply reads only
+  the saved marker. Dev advisory preflight preserves ownership from state without live
+  certificate validation; advisory DNS allowance is reporting only.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
-- `v2/test_ci_{dns_policy,plan_context,deployment_workflows,terraform_reads}.py` — local fixtures
-  and a localhost-only state backend verify deployment gates without AWS calls.
+- `v2/test_ci_{dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads}.py` —
+  workflow fixtures, real no-provider plans and a localhost state backend verify deployment
+  gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
+  Summaries allow certificate suffixes/publication/change counts and addresses, plus active
+  rollout's public zone name/ID/NS; never raw configuration, ARNs, account IDs, state or plans.
 - `v2/terraform-test.sh` — Terraform 1.15.7 validate/mock tests in a disposable tracked-file
   copy, `init -backend=false`, fresh data dir, no deployment credentials or real backend.
   `v2/requirements-test.txt` declares pytest/PyYAML; the shared merge script runs Node smoke tests.
@@ -43,18 +53,23 @@ secrets-manager) — installed by `make deps`.
   fallback), requiring AWS_REGION and SQL_READER_SYNC_MODE=secret|disabled; secret mode also
   requires SQL_READER_SECRET_ARN. AURORA_SECRET_ARN means master here. TLS verifies the
   bundled RDS CA and hostname. `initialize-db.mjs` atomically initializes only a verified-empty
-  DB with one-shot INITIALIZE_EMPTY_DB=1; existing integer ledgers still require BOOTSTRAP=1.
+  DB with INITIALIZE_EMPTY_DB=1 (one-shot host command; manual CI template retains the
+  guarded flag). Existing integer ledgers still require BOOTSTRAP=1.
   Non-null baseline/ULID checksums are immutable. Reader elevation is checked even in disabled
   mode; enabled sync with a missing role fails. `migration-errors.mjs` preserves bounded,
   encoded NOTICE/P0001 text and validated identifiers only during reviewed baseline/ULID SQL.
   Secret/connection/reader-sync phases expose only safe codes/context, never secret bodies.
   Client error events and cleanup failures fail closed; success follows connection cleanup.
   `v2/ci/Dockerfile.migration` is the ARM64 nonroot/read-only-filesystem runtime, using CMD.
+- `v2/ci/run-migration.mjs` — manual development controller used by
+  `.github/workflows/deploy-migrations.yml`: clone the reviewed ARM64 template with an
+  immutable image digest, run one private task, verify ownership/exit, and clean up only that run.
+  Read retries are bounded; public failure categories use the runtime diagnostic contract.
 - `v2/agentcore.mjs` + `agentcore/` — `make agentcore`: arm64 agent image + idempotent
   provisioner, writes to SSM.
 - `v2/*.itest.mjs` — migration integration tests against a disposable PostgreSQL 17 container.
-- `v2/ci/*.test.mjs` — offline migration runtime tests (controller coverage is not present); install locked scripts/v2
-  dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`.
+- `v2/ci/*.test.mjs` — migration runtime/controller/workflow tests and mocked Terraform plans; install locked scripts/v2
+  dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`; PyYAML and Terraform 1.15.7 are also required.
   `v2/ci/migration.itest.mjs` includes initializer regressions and is a **required fail-hard
   exception** to the legacy optional itest convention: bare `docker` on PATH, OpenSSL,
   postgres:17, no automatic sudo/DOCKER override, no skip if Docker is unavailable.

@@ -16,7 +16,10 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
   already-committed copy under a different filename.
 - `backend.hcl.example` / `terraform.tfvars.example` — committable templates.
 - `variables.tf` — most flags are declared here, but `agentcore_enabled`/`integrations_enabled`
-  are declared at the top of `ai.tf`.
+  are declared at the top of `ai.tf`; `ci_migrations_enabled` is declared in `ci-migrations.tf`.
+- `ci-migrations.tf` — default-off operator migration task template, exact-secret task IAM,
+  14-day log group and `migration_job` output. The manual development CI controller owns
+  launch/cleanup; no app service or scheduler starts it. Disabling deletes retained logs.
 - `migrations/*.sql` — DB migrations, applied by `make migrate` (scripts/v2), not Terraform.
   Baseline is `data/schema.sql` (v9, frozen) — schema changes always go into a new migration
   file.
@@ -33,6 +36,12 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
   permission; each requires a separate reviewed procedure. Ordinary managed rotations remain valid.
 - `publish_service_dns` defaults true; it is separate from the CI `allow_dns_changes` input
   (default false), which gates all public/private DNS and registered ECS changes.
+- `ci_domain_rollout` is default-false CI metadata, not an infrastructure feature flag.
+  An explicit dev/full plan dispatch pins it true for scoped service A/ACM CNAME rollout;
+  apply checks the saved marker. Ordinary full plans retain broad DNS behavior with explicit
+  permission. Dev repo name overrides feed console/plan through gitignored auto-tfvars;
+  tracked overrides are rejected. Advisory plans cannot be applied and use offline
+  ownership preservation without live certificate/SAN checks.
 - All large features are flag-gated, **default false** → `plan` = No changes, $0:
   `agentcore_enabled`, `integrations_enabled`, `steampipe_enabled`, `workers_enabled`, and
   others.

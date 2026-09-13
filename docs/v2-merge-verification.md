@@ -150,7 +150,7 @@ aggregate-run false failures.
    the localhost Terraform state-read test), web vitest, required deployment Node tests
    (PyYAML and Terraform 1.15.7), then informational fmt/validate diagnostics.
 4. Install locked `scripts/v2` dependencies with `--ignore-scripts` and run
-   `node --test scripts/v2/ci/*.test.mjs` (runtime fixtures; deployment-controller coverage is not present).
+   `node --test scripts/v2/ci/*.test.mjs` (runtime/controller/workflow fixtures and mocked Terraform plans).
 5. Run `node --test scripts/v2/ci/migration.itest.mjs` against disposable PostgreSQL:
    real initialization/ULIDs, rollback/retry/checksums, lock serialization, reader guards,
    permission denial, password rotation and TLS rejection. Docker failure is a gate failure.
@@ -166,14 +166,16 @@ These PR-authored tests run only under `pull_request` with `contents: read`, no 
 credentials, secrets or OIDC permissions. They must not move to `pull_request_target` or gain
 secret access.
 PR 코드는 `pull_request`·`contents: read`에서 배포 자격증명·시크릿·OIDC 없이 검사한다.
-`pull_request_target` 전환이나 secret 접근을 추가하지 않는다. 현재 private migration 검사는
-runtime 범위이며 deployment-controller 검증은 포함하지 않는다.
+`pull_request_target` 전환이나 secret 접근을 추가하지 않는다. private migration 검사는
+runtime·controller·workflow와 모의 Terraform 계획을 포함하며 실제 AWS는 호출하지 않는다.
 
 ## Manual Gates Outside CI
 
 A runtime image build can be checked locally using the
-[migration guide](../terraform/foundation/migrations/README.md); CI does not currently build it.
-이미지 빌드는 migration 안내대로 별도 검증하며 현재 이 CI에는 포함되지 않는다.
+[migration guide](../terraform/foundation/migrations/README.md). Merge Verify does not build it;
+the manually dispatched Migrate Development Database workflow builds the ARM64 image before execution.
+Merge Verify는 이미지를 빌드하지 않는다. 수동 Migrate Development Database 워크플로는
+실행 전에 ARM64 이미지를 빌드하며 로컬 검증 방법은 migration 안내를 따른다.
 
 Before the final merge, run the routing accuracy gate against real Bedrock:
 This is a live manual gate, separate from the offline commands above; it requires the intended

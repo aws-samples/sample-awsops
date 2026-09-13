@@ -4,7 +4,10 @@ name: Terraform
 # `make configure` — gitignored, never committed. CI reconstructs it from
 # base64 REPO-LEVEL secrets, one distinctly-named pair per stack:
 #   main -> TF_BACKEND_HCL     / TF_TFVARS      (production stack)
-#   dev  -> TF_BACKEND_HCL_DEV / TF_TFVARS_DEV  (dev stack, awsops-dev.whchoi.net)
+#   dev  -> TF_BACKEND_HCL_DEV / TF_TFVARS_DEV  (dev stack)
+# Optional nonsecret repo variables DOMAIN_NAME_DEV / HOSTED_ZONE_NAME_DEV
+# override only dev (including PR base dev); CERTIFICATE_MODE_DEV defaults to
+# preserve. See docs/runbooks/dev-domain-rollout.md for the staged DNS gate.
 # Repo-level, not environment-scoped: the automatic plan job must run ungated
 # on PRs/pushes. Environments gate ONLY the dispatch-time apply. Until a
 # stack's secrets are populated, its plan skips with a warning.
@@ -24,12 +27,12 @@ name: Terraform
 on:
   pull_request:
     branches: [main, dev]
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_dns_policy.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/test_ci_*.py"]
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
     # The workflow file itself is in the path filter so a workflow change
     # self-tests with a real plan on the branch it lands on.
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/test_ci_*.py"]
   workflow_dispatch:
     inputs:
       mode:
@@ -42,6 +45,10 @@ on:
         type: choice
         options: [full, ecr-bootstrap]
         default: full
+      domain_rollout:
+        description: "Plan only: scope dev/full DNS to the configured service and validation records"
+        type: boolean
+        default: false
       publish_service_dns:
         description: "Publish service A records (preserve current state when DNS changes are prohibited)"
         type: boolean
@@ -79,6 +86,7 @@ jobs:
     # plan is automatic and read-only — it must never sit behind any gate.
     env:
       TARGET: ${{ github.base_ref || github.ref_name }}
+      TF_VAR_ci_migrations_enabled: ${{ (github.base_ref || github.ref_name) == 'dev' && vars.CI_MIGRATIONS_ENABLED_DEV || 'false' }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
       DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
@@ -126,19 +134,39 @@ jobs:
             exit 1
           fi
 
+      - name: Configure dev domain overrides
+        id: domain
+        if: steps.restore.outputs.skip != '1'
+        env:
+          DOMAIN_NAME_DEV: ${{ vars.DOMAIN_NAME_DEV }}
+          HOSTED_ZONE_NAME_DEV: ${{ vars.HOSTED_ZONE_NAME_DEV }}
+          CERTIFICATE_MODE_DEV: ${{ vars.CERTIFICATE_MODE_DEV }}
+          DOMAIN_ROLLOUT: ${{ github.event_name == 'workflow_dispatch' && inputs.domain_rollout }}
+          PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
+        run: |
+          set -euo pipefail
+          # Never rewrite TF_TFVARS_DEV. Auto tfvars reach BOTH console and plan;
+          # certificate choices stay in the later, explicitly passed var-file.
+          tracked=$(git ls-files -- ci-domain.auto.tfvars.json)
+          [ -z "$tracked" ] || { echo "::error::ci-domain.auto.tfvars.json is tracked; remove it from version control before planning"; exit 1; }
+          rm -f ci-deployment.tfvars.json
+          python3 ../../scripts/v2/ci_dev_domain.py overrides
+
       - name: terraform init
         if: steps.restore.outputs.skip != '1'
         run: terraform init -backend-config=backend.hcl -input=false
 
       - name: Check existing certificates without changing DNS
         id: dns
-        if: steps.restore.outputs.skip != '1' && github.event_name == 'workflow_dispatch'
+        if: steps.restore.outputs.skip != '1' && (github.event_name == 'workflow_dispatch' || env.TARGET == 'dev')
         env:
           CF_CERTIFICATE_ARN: ${{ inputs.existing_cf_certificate_arn }}
           ALB_CERTIFICATE_ARN: ${{ inputs.existing_alb_certificate_arn }}
-          ALLOW_DNS_CHANGES: ${{ inputs.allow_dns_changes }}
-          PUBLISH_SERVICE_DNS: ${{ inputs.publish_service_dns }}
-          PLAN_SCOPE: ${{ inputs.plan_scope }}
+          ALLOW_DNS_CHANGES: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_dns_changes }}
+          PUBLISH_SERVICE_DNS: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_service_dns }}
+          PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
+          CERTIFICATE_MODE: ${{ steps.domain.outputs.certificate_mode }}
+          ADVISORY: ${{ github.event_name != 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           umask 077
@@ -148,11 +176,13 @@ jobs:
           # console does NOT support -lock=false; verified against an offline backend.
           terraform show -json > "$STATE_JSON"
           terraform console -no-color \
-            <<<'jsonencode({domain = var.domain_name, aliases = var.extra_domain_aliases, region = var.region, cf_arn = var.existing_cf_certificate_arn, alb_arn = var.existing_alb_certificate_arn})' |
+            <<<'jsonencode({domain = var.domain_name, zone = var.hosted_zone_name, aliases = var.extra_domain_aliases, region = var.region, cf_arn = var.existing_cf_certificate_arn, alb_arn = var.existing_alb_certificate_arn, domain_rollout = var.ci_domain_rollout})' |
             python3 ../../scripts/v2/ci_dns_policy.py certificates \
               --state "$STATE_JSON" --allow-dns "$ALLOW_DNS_CHANGES" \
               --publish "$PUBLISH_SERVICE_DNS" --scope "$PLAN_SCOPE" \
               --cf-arn "$CF_CERTIFICATE_ARN" --alb-arn "$ALB_CERTIFICATE_ARN" \
+              --target "$TARGET" --certificate-mode "${CERTIFICATE_MODE:-preserve}" \
+              --advisory "$ADVISORY" \
               > ci-deployment.tfvars.json
           # JSON null preserves Terraform certificate ownership; "-var=...=null"
           # would instead pass the literal string "null" to a string variable.
@@ -177,27 +207,38 @@ jobs:
         run: |
           set -euo pipefail
           args=(-out=tfplan -input=false -lock=false)
-          if [ "$DISPATCH" = "true" ]; then
+          if [ "$DISPATCH" = "true" ] || [ "$TARGET" = "dev" ]; then
             [ -s ci-deployment.tfvars.json ] || { echo "::error::verified deployment inputs are missing"; exit 1; }
             args+=(-var-file=ci-deployment.tfvars.json)
+          fi
+          if [ "$DISPATCH" = "true" ]; then
             case "$PLAN_SCOPE" in
               full) ;;
               ecr-bootstrap) args+=(-target=aws_ecr_repository.web);;
               *) echo "::error::unsupported plan scope"; exit 1;;
             esac
           fi
+          # Append last so no restored or generated var-file can override the CI flag.
+          case "${TF_VAR_ci_migrations_enabled:-false}" in
+            true|false) args+=("-var=ci_migrations_enabled=${TF_VAR_ci_migrations_enabled:-false}");;
+            *) echo "::error::CI_MIGRATIONS_ENABLED_DEV must be true or false"; exit 1;;
+          esac
           terraform plan "${args[@]}"
 
       - name: Check planned DNS operations
         if: steps.restore.outputs.skip != '1'
         env:
+          # Advisory DNS allowance is reporting only; these plans cannot be applied.
+          # Dispatch plans need explicit permission independently of domain scoping.
           ALLOW_DNS_CHANGES: ${{ github.event_name != 'workflow_dispatch' || inputs.allow_dns_changes }}
           PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
+          ADVISORY: ${{ github.event_name != 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           terraform show -json tfplan |
             python3 ../../scripts/v2/ci_dns_policy.py check-plan \
-              --allow-dns "$ALLOW_DNS_CHANGES" --scope "$PLAN_SCOPE" | tee -a "$GITHUB_STEP_SUMMARY"
+              --allow-dns "$ALLOW_DNS_CHANGES" --scope "$PLAN_SCOPE" \
+              --target "$TARGET" --advisory "$ADVISORY" | tee -a "$GITHUB_STEP_SUMMARY"
 
       # A plan file embeds every input variable value in plaintext (sensitive
       # ones included), and artifacts on a public repo are downloadable by any
@@ -224,7 +265,12 @@ jobs:
       # the restored config behind, whatever the outcome.
       - name: Clean sensitive files off the runner
         if: always()
-        run: rm -f tfplan tfplan.enc terraform.tfvars backend.hcl ci-deployment.tfvars.json ci-state.json
+        run: |
+          set -euo pipefail
+          rm -f tfplan tfplan.enc terraform.tfvars backend.hcl ci-deployment.tfvars.json ci-state.json
+          # Preserve a tracked override for diagnosis if the generation guard refused it.
+          tracked=$(git ls-files -- ci-domain.auto.tfvars.json)
+          if [ -z "$tracked" ]; then rm -f ci-domain.auto.tfvars.json; fi
 
   apply:
     name: Apply (saved plan)
@@ -339,7 +385,7 @@ jobs:
           set -euo pipefail
           terraform show -json tfplan |
             python3 ../../scripts/v2/ci_dns_policy.py check-plan \
-              --allow-dns "$ALLOW_DNS_CHANGES" --scope "$PLAN_SCOPE"
+              --allow-dns "$ALLOW_DNS_CHANGES" --scope "$PLAN_SCOPE" --target "$TARGET"
           terraform apply -input=false tfplan
 
       # The runner is persistent — never leave the decrypted plan (embeds sensitive

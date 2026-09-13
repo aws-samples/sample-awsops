@@ -1,11 +1,12 @@
 # CI/OIDC bring-up (single repo) / CI·OIDC 활성화 (단일 리포)
 
-Related files / 관련 파일: `.github/workflows/{deploy-web,deploy-preview,terraform,deploy-agentcore}.yml`,
+Related files / 관련 파일: `.github/workflows/{deploy-web,terraform,deploy-agentcore,deploy-migrations}.yml`,
 `docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
 `scripts/v2/ci_review_access.py`, `scripts/v2/ci_dns_policy.py`, `scripts/v2/ci_plan_context.py`,
 `scripts/v2/deploy.mjs`, `scripts/v2/deployment-smoke.mjs`,
 `scripts/v2/prepare-smoke-credentials.mjs`, `scripts/v2/authenticated-smoke.mjs`,
 `terraform/foundation/outputs.tf` (`demo_username`),
+`scripts/v2/ci/run-migration.mjs`, `terraform/foundation/ci-migrations.tf`,
 `terraform/foundation/tests/dns_deferred.tftest.hcl`, `docs/reference/01-edge-network.md`
 
 > Historical note: this file previously described the two-repo split
@@ -413,6 +414,12 @@ gh secret set TF_TFVARS_DEV -R aws-samples/sample-awsops \
   --body "$(base64 -w0 terraform/foundation/terraform.tfvars)"
 ```
 
+Nonsecret dev repository variables are `DOMAIN_NAME_DEV` / `HOSTED_ZONE_NAME_DEV` (paired names),
+`CERTIFICATE_MODE_DEV` (`preserve` by default), and `CI_MIGRATIONS_ENABLED_DEV` (`false` by default).
+These select reviewed deployment behavior; credentials stay in the secrets above.
+dev의 일반 저장소 변수는 도메인/존 이름 쌍, 기본 `preserve`인 인증서 모드, 기본 `false`인
+`CI_MIGRATIONS_ENABLED_DEV`이다. 배포 선택값이며 자격증명은 위 시크릿에 유지한다.
+
 The distinct NAMES are the isolation: a dev/preview job can never fall back to the
 production pair. From then on, terraform changes flow through `terraform.yml`.
 Automatic PR/push plans are advisory. Apply requires a successful explicit `mode=plan`
@@ -444,7 +451,22 @@ plan for a missing repository; do not disable this check or expand the role.
 
 ### 5. Deploy while DNS changes are deferred / DNS 변경 보류 상태의 배포
 
-`Terraform` dispatch defaults to `mode=plan` and `allow_dns_changes=false`.
+`Terraform` dispatch defaults to `mode=plan`, `allow_dns_changes=false` and
+`domain_rollout=false`. Ordinary full plans keep the existing broad DNS policy:
+Cloud Map/registered ECS changes require explicit DNS permission on both plan and apply.
+For a dev service-domain rollout, use the [staged domain runbook](dev-domain-rollout.md)
+and set **`domain_rollout=true` on every domain-stage plan dispatch** (`dev` / `full` only).
+The declared default-false Terraform metadata variable `ci_domain_rollout` is embedded
+in the saved plan; apply derives scoping from that marker, not current repository
+variables or an apply input. The scoped policy allows only the selected zone's configured
+service A/ACM CNAME records; it does not authorize old/parent DNS or Cloud Map changes.
+
+dispatch 기본값은 `mode=plan`, DNS 허용 false, `domain_rollout=false`다. 일반 full 계획의
+Cloud Map/등록된 ECS 변경에는 plan/apply 양쪽의 DNS 승인이 필요하다. dev 도메인 전환은
+연결된 런북을 따라 모든 도메인 단계 plan에서 `domain_rollout=true`로 설정한다.
+범위는 저장된 `ci_domain_rollout` 메타데이터로 결정하며 apply 입력으로 바뀌지 않는다.
+범위 제한 전환은 선택 존의 서비스 A/ACM CNAME만 허용하며 이전/상위 DNS 권한은 포함하지 않는다.
+
 For a new stack, a DNS-free full plan needs two already-issued public ACM
 certificates: one in `us-east-1` covering the service and additional aliases,
 and one in the stack Region covering the origin hostname. Both must belong to
@@ -468,10 +490,17 @@ can still create managed certificates, and ordinary managed rotations keep null 
 No-DNS mode preserves `publish_service_dns=true` when service aliases already exist,
 and false for a fresh/deferred stack. It does not force existing aliases toward deletion.
 Changes in alias membership/targets or validation CNAMEs still fail the plan gate.
-The typed overrides live in `ci-deployment.tfvars.json` for that dispatch and are removed
-after planning; string `"null"` and `-var=...=null` are not equivalent to JSON null.
-The public job summary reports only `managed` or `external:<8-character suffix>` and the
-publication flag. It never renders full ARNs, account IDs or the raw override JSON.
+The typed overrides live in `ci-deployment.tfvars.json` for dispatch and dev advisory
+plans and are removed after planning; string `"null"` and `-var=...=null` are not JSON null.
+Optional repo variables `DOMAIN_NAME_DEV` / `HOSTED_ZONE_NAME_DEV` feed a gitignored
+`ci-domain.auto.tfvars.json` before both console and plan (only dev reads the name overrides).
+Generation rejects a tracked override instead of deleting it. `CERTIFICATE_MODE_DEV`
+defaults to `preserve`; `managed` retains null external inputs and refuses conflicting
+ARNs in tfvars/dispatch. The domain runbook defines supported transitions.
+The public summaries report `managed` or `external:<8-character suffix>`, the publication
+flag, resource-change counts/addresses, and, for active domain rollout, `public_zone`
+(`name`, `zone_id`, `name_servers`). This public delegation projection is intentional.
+Full ARNs, account IDs, raw configuration/overrides/state/plan JSON remain excluded.
 
 The plan gate also rejects deletion/replacement of owned `aws_route53_record.cf_validation`
 records **even when DNS is allowed**, and rejects retirement of the managed CF/ALB certificate
@@ -482,7 +511,11 @@ establish that no current or renewed certificate needs a token before retiring i
 obtain separate authorization. Routine deployment is not that procedure. No-op validation
 records, new CNAME creation and service A-record updates remain valid when DNS is authorized.
 
-The preflight runs only for dispatch. It does not receive the demo password secret.
+Live certificate validation runs only for dispatch. Dev PR/push plans use an offline
+ownership/publication preflight reading existing state and configuration: no STS/ACM
+lookup, SAN, expiry or trust-chain gate during bootstrap/rollout. Their DNS allowance is
+reporting only; ownership/retirement checks still run and the artifacts cannot be applied.
+The preflight does not receive the demo password secret.
 `terraform console` reads configuration/current state without refreshing or locking it;
 it has **no `-lock=false` option**. Offline backend tests verify these read-only semantics.
 
@@ -497,8 +530,12 @@ CI가 인증서의 계정·리전·유효 기간·호스트 이름·공개 CA �
 거부한다. 소유권 이전 및 검증 레코드 폐기는 인증서·DNS 소유자와 별도로 검토·승인해야 하며,
 기존/갱신 인증서에 필요한 토큰을 보존해야 한다. 정상 관리 인증서 교체와 새 스택 생성은 유지된다.
 DNS 허용 시 CNAME 신규 생성, 서비스 A 레코드 갱신, 무변경 레코드는 허용한다.
-공개 요약에는 관리 여부/외부 인증서 마지막 8자리만 표시하며 ARN·계정 ID를 공개하지 않는다.
-사전 검사는 dispatch에서만 실행하며 demo 비밀번호를 받지 않는다.
+dev 저장소 이름 변수는 console과 plan이 함께 읽는 gitignored 자동 tfvars에 반영된다.
+추적된 자동 파일은 덮어쓰지 않고 거부한다. `managed` 모드는 충돌 ARN을 거부하고 null을 유지한다.
+공개 요약은 인증서 관리 여부/외부 ARN 마지막 8자리, 게시 플래그, 변경 수/주소와 활성 전환의
+public 존 이름·ID·NS만 포함한다. 전체 ARN·계정 ID·원본 설정/상태/계획은 공개하지 않는다.
+실제 인증서 검증은 dispatch에서만 실행한다. dev PR/push는 상태 기반 소유권·게시를 보존하되
+STS/ACM·SAN·만료·신뢰 체인 검증 없이 참고 계획을 만든다. 적용할 수 없으며 demo 비밀번호도 받지 않는다.
 
 ```bash
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
@@ -526,7 +563,7 @@ gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
 Apply accepts only a successful explicit Terraform plan dispatch from the same
 repository, stack branch and commit. It checks the live branch again and
 rechecks DNS changes after decrypting the plan. A moved branch requires a fresh
-plan. `plan_scope=ecr-bootstrap` is available for an initial plan limited to the
+plan. `plan_scope=ecr-bootstrap`, with `domain_rollout=false`, is available for an initial plan limited to the
 web ECR repository; the JSON gate also rejects unrelated mutations in that scope.
 Repeat the same `plan_scope` on apply; the apply gate checks that scope too.
 It needs no certificates unless external ARNs are explicitly configured.
@@ -537,10 +574,12 @@ Apply a full reviewed plan before rolling the service.
 경우 `plan_scope=ecr-bootstrap`을 사용하고, 서비스 배포 전에 전체 계획을
 별도로 검토·적용한다.
 
-**Push plans are advisory and cannot be applied.** They use the stored stack tfvars,
-so unpersisted dispatch overrides may appear to revert to managed certificates or
-published service DNS on the next push. Keep using explicit dispatch plans while DNS is
-deferred. Never use a push plan as a cutover plan.
+**PR/push plans are advisory and cannot be applied.** They read stored stack tfvars;
+dev also loads repo domain overrides and state-preserving certificate/publication inputs.
+`CERTIFICATE_MODE_DEV=managed` is reflected without live certificate validation. Other
+targets keep the stored tfvars behavior. DNS changes are reported without requiring a
+dispatch permission toggle; this grants no apply authority. Use a new explicit dispatch
+for any cutover or deployment.
 
 All DNS changes remain forbidden during deferral, including **certificate-validation
 CNAMEs, private namespaces and `aws_service_discovery_service`** records. First-time
@@ -551,28 +590,32 @@ see [the quota/staleness runbook](steampipe-quota-and-staleness.md). There is no
 exception. The HTTPS/private edge stays intact. If no trusted matching certificate
 is available, stop or perform only ECR bootstrap; there is no HTTP/public-ALB workaround.
 
-A later cutover requires separate, explicit DNS authorization. Only after that authorization:
-persist the intended certificate ownership and service-publication values in that stack's
-tfvars, create a new full dispatch plan with the authorized DNS permission and publication
-setting, review every DNS/certificate change, and apply that exact successful run at the
-same SHA. **Both plan and apply dispatches must explicitly set `allow_dns_changes=true`;**
-apply does not inherit the plan's permission. Keep external ARNs external unless a separately reviewed ownership migration
-is intended. Follow ADR-016 for alias transfer/rollback; do not treat this paragraph as
-permission to perform DNS changes during deferral.
+A later cutover requires separate, explicit DNS authorization. For dev, keep domain/mode
+in the repo variables and follow the domain runbook's unpublished/same-domain stages;
+do not rewrite protected tfvars to defeat those overrides. Other targets use reviewed
+stack tfvars. Review every DNS/certificate change in a fresh full dispatch plan and apply
+that exact successful run at the same SHA. **Both plan and apply must explicitly set
+`allow_dns_changes=true`;** apply does not inherit permission. Routine deployment cannot
+externalize managed certificates or retire validation records. Published old-domain
+retirement requires a separate expressly authorized plan under the old configuration;
+the new-domain rollout does not authorize it. Follow ADR-016 for alias transfer/rollback.
 
-자동 push 계획은 저장된 tfvars만 반영하는 참고용이며 적용할 수 없다. DNS 보류 기간에는
-계속 명시적 dispatch를 사용한다. 사설 Cloud Map과 인증서 CNAME도 예외 없이 금지하며,
+자동 PR/push 계획은 참고용이며 적용할 수 없다. dev는 저장 tfvars에 저장소 이름/모드와
+상태 기반 인증서·게시 입력도 반영하며 실시간 인증서 검증 없이 DNS 변경을 보고한다.
+배포에는 명시적 dispatch를 사용한다. DNS 보류 중 사설 Cloud Map과 인증서 CNAME도 금지하며,
 이미 운영 중인 Steampipe의 튜닝·hydrate 폴백 대응·롤백/비활성화도 ECS task 변경으로
 사설 DNS를 바꿀 수 있어 차단된다.
-인증서가 없으면 중단하거나 ECR만 준비한다. 향후 전환은 별도 DNS 승인을 받은 뒤 스택
-tfvars에 의도한 소유권·게시 설정을 저장하고 새 전체 dispatch 계획을 검토·적용한다.
+인증서가 없으면 dispatch를 중단하거나 ECR만 준비한다. 별도 승인된 dev 전환은 저장소 변수와
+미게시/동일 도메인 런북을 사용하고 다른 대상은 검토된 tfvars를 사용한다. 이전 도메인 삭제는
+이전 설정의 별도 명시적 승인 계획이 필요하며 새 도메인 권한에 포함되지 않는다.
 계획과 적용 dispatch **양쪽에** `allow_dns_changes=true`를 명시해야 한다.
 아래는 향후 별도 승인 후의 예제이며 현재의 DNS 금지를 해제하지 않는다.
 
 ```bash
-# FUTURE ONLY: separate DNS authorization required. Do not run during DNS deferral.
+# FUTURE domain rollout ONLY: separate DNS authorization required; unpublished/same-domain cases.
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
-  -f mode=plan -f plan_scope=full -f publish_service_dns=true -f allow_dns_changes=true
+  -f mode=plan -f plan_scope=full -f domain_rollout=true \
+  -f publish_service_dns=true -f allow_dns_changes=true
 # After review, set PLAN_RUN_ID to that successful same-SHA plan dispatch.
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
   -f mode=apply -f plan_scope=full -f plan_run_id="$PLAN_RUN_ID" -f allow_dns_changes=true
@@ -585,13 +628,17 @@ The supported key set is RSA 2048/3072/4096 and ECDSA P-256/P-384; see
 [AWS's certificate requirements](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html).
 외부 인증서는 소유자가 만료 감시·갱신을 담당하며, DNS 보류 중 검증 CNAME을 변경하지 않는다.
 
-Both the web rollout and manual `make deploy` invoke the shared `deployment-smoke.mjs` CLI,
+[Deploy Web's `deploy` / `Smoke test`](../../.github/workflows/deploy-web.yml) and manual
+`make deploy` invoke the shared [deployment-smoke.mjs](../../scripts/v2/deployment-smoke.mjs) CLI,
 which validates destinations and passes curl arguments without shell interpolation.
 They connect to `cloudfront_domain` with curl
 `--connect-to` while requesting `public_url`. This preserves the service Host,
 SNI and certificate verification before service DNS is published. `/api/health`
 checks process liveness; complete the required database migrations and verify
 authenticated application routes separately.
+For an authorized AgentCore deployment, [Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml)
+runs `make migrate` first and offers `smoke=true` for an agent invocation; neither that
+invocation nor `/api/health` substitutes for a web-login/database check before service A publication.
 
 웹 배포 스모크 테스트는 `public_url`의 Host·SNI·인증서 검증을 유지하면서
 CloudFront 연결 주소로 요청한다. `/api/health`는 프로세스 생존 확인이므로,
@@ -603,6 +650,137 @@ code, not a security boundary against changes to that ref; normal review and env
 protections remain required.
 DNS·출처 검사도 배포 ref의 코드이므로 코드 변경에 대한 보안 경계를 대신하지 않는다.
 기존 리뷰·보호 환경 절차를 계속 적용한다.
+
+## Private development database migration / 비공개 개발 DB 마이그레이션
+
+**Symptom / 증상:** a newly provisioned private Aurora has no application tables, or the
+external Actions runner cannot connect to its private endpoint. Deploy Web does not initialize
+the database. Use **Migrate Development Database** (`deploy-migrations.yml`), a manual-only
+workflow restricted to this samples repository's `dev` branch. It builds an ARM64 image and
+runs one Fargate task in the existing private subnets with the existing service security group.
+
+새 Aurora에 앱 테이블이 없거나 외부 Actions runner가 비공개 endpoint에 연결하지 못하면
+`dev` 전용 **Migrate Development Database**를 사용한다. Deploy Web은 DB 초기화를 하지 않는다.
+마이그레이션은 기존 private subnet·서비스 SG를 재사용하는 일회성 ARM64 Fargate task에서 실행한다.
+
+**Preparation / 준비:**
+
+1. After reviewing the migration change, set the **nonsecret repository variable**
+   `CI_MIGRATIONS_ENABLED_DEV` to the literal `true`. Its default is `false`.
+   Terraform plans use `github.base_ref` for PRs and the current branch otherwise;
+   only a `dev` target reads this variable. Other targets explicitly use `false`.
+   The plan passes the value as `-var` as well as `TF_VAR_ci_migrations_enabled`, so
+   a restored tfvars assignment cannot override the repository setting. Apply uses
+   the value already captured in the approved saved plan.
+2. Dispatch the existing **Terraform** workflow in `plan` mode on the reviewed `dev`
+   commit, with DNS changes prohibited. Review that only the intended gated migration
+   resources are added, then use its existing saved-plan `apply` dispatch. Keep the
+   current DNS, edge, authentication, web task image and desired count intact.
+3. Confirm the existing dev build/deployer OIDC roles and backend secrets are configured.
+   `TF_TFVARS_DEV` accepts at most one literal, single-line `project = "…"` assignment.
+   If absent (including `make configure` output), the foundation default `awsops-v2` is used;
+   the applied migration output must still match that project/account/region.
+   This workflow accepts the existing `ap-northeast-2` deployment region only, without
+   cross-stack fallback. The SQL reader sync is enabled only when AgentCore is enabled.
+4. Dispatch **Migrate Development Database** from the current `dev` HEAD. It accepts no
+   image, role, task, template or repository override. If the branch moves before launch,
+   dispatch again from the new reviewed HEAD.
+
+리뷰 후 일반 저장소 변수 `CI_MIGRATIONS_ENABLED_DEV=true`를 설정하고 기존 Terraform의
+명시적 plan → 저장된 plan apply 절차로만 인프라를 준비한다. PR은 base branch가 `dev`일 때만
+해당 변수를 읽고 다른 스택에는 전달하지 않는다. tfvars보다 CI 플래그가 우선하며 apply는 저장된
+값을 사용한다. DNS·edge·인증·웹 이미지·desired count를 유지한다. 개발 OIDC 역할과 backend
+secret을 준비한다. `TF_TFVARS_DEV`의 project 문자열은 최대 한 번만 지정하며,
+생략하면 `make configure`와 동일하게 foundation 기본값 `awsops-v2`를 사용한다.
+적용된 output의 프로젝트·계정·리전 일치는 계속 필수다.
+이후 현재 `dev` HEAD에서 마이그레이션을 dispatch한다. 브랜치가 이동하면 새 HEAD로 다시 실행한다.
+
+For a controller reviewing a local Terraform plan, the equivalent opt-in is:
+
+```bash
+TF_VAR_ci_migrations_enabled=true terraform -chdir=terraform/foundation plan -out=tfplan
+```
+
+The `TF_VAR_` local form follows normal Terraform variable precedence; remove conflicting
+local tfvars entries or pass `-var=ci_migrations_enabled=true` explicitly. The new migration
+workflow itself only initializes the dev backend and reads `migration_job`; it never plans
+or applies infrastructure. The gated resources are one task role/policy, one log group, and
+one task-definition template. `migration_job` is absent/null while disabled.
+
+로컬 plan 검토 시 위 환경변수로 동일 기능을 선택할 수 있다. 로컬 tfvars에 충돌 값이 있으면
+제거하거나 명시적 `-var`를 사용한다. 새 워크플로는 backend 초기화·`migration_job` 읽기만 하며
+Terraform plan/apply를 수행하지 않는다. 비활성 상태에는 해당 출력과 마이그레이션 리소스가 없다.
+
+**Privilege review / 권한 검토:** CI roles are existing, separately managed prerequisites;
+this feature does not broaden them automatically. Verify the following grants before execution.
+An access denial is a failed run, never permission to substitute a more privileged role.
+
+| Principal / 주체 | Required scope / 필요한 범위 |
+|---|---|
+| Dev build role | Push only to the selected project's existing private `-web` ECR repository; retain the existing ECR login permission. Only `migration-<full commit SHA>` is written. |
+| Dev deployer role | Read the dev state backend and selected ECR image; register/describe the project's `-migration` family; run only that family on the project's cluster. Where an ECS API requires wildcard resource access, constrain the requested region and use supported action-specific conditions. |
+| Dev deployer `iam:PassRole` | Exactly the project's `-task-execution` and `-migration-task` roles, with `iam:PassedToService = ecs-tasks.amazonaws.com`; no arbitrary role pass. |
+| Dev deployer cleanup | `ecs:DescribeTasks` / `ecs:StopTask` limited to the project's task ARN prefix and cluster; `ecs:ListTasks` constrained to that cluster. The controller additionally checks run identity, exact registered revision and task ARN before stopping. |
+| Optional failure-log reader | `logs:GetLogEvents` only for `/ecs/<project>-migration`, stream prefix `migration/migration/`. No log-wide search is needed. |
+| Migration task role | `secretsmanager:GetSecretValue` for this Aurora master secret, plus the project's SQL reader secret only when AgentCore is enabled. Aurora CMK `kms:Decrypt` requires Secrets Manager and the master secret's encryption context. No AWS-side mutation permissions (ECS/ECR/IAM/DNS/secret writes); schema DDL uses the database credentials. |
+| Existing execution role | Existing private ECR pull and CloudWatch log delivery. Database credentials are fetched by the task role at runtime, never through ECS environment/secrets injection. |
+
+기존 CI 역할의 ECR·ECS·PassRole·backend·로그 권한을 위 범위로 확인한다. 거부되면 실행 실패로
+처리하며 다른 고권한 역할로 대체하지 않는다. DB task 역할은 해당 secret 읽기와 제한된 KMS
+복호화만 가능하다. 암호는 컨테이너 메모리에서 읽으며 환경변수나 공개 로그에 넣지 않는다.
+
+**Verification and recovery / 확인·복구:** the controller refuses the `migration-unbuilt`
+template image and clones only approved fields using this run's immutable build digest.
+Only project and digest cross the build-job boundary; a masked registry/account value is
+not a job output. The controller verifies the digest in the expected ECR repository,
+checks current `dev` SHA immediately before `RunTask`, and requires task **STOPPED**,
+the same running-image digest, and the migration container's **numeric `exitCode: 0`**.
+Missing/string/null exit codes cannot pass.
+
+Migration logs retain 14 days; disabling the flag destroys the log group and its retained history.
+After changing AgentCore/reader settings, review and apply the migration template before dispatch.
+로그 보존은 14일이며 플래그 비활성화 시 로그 그룹과 이력이 삭제된다. AgentCore/reader 설정을
+바꾸면 migration 템플릿을 검토·적용한 후 dispatch한다.
+
+The migration wait is at most 20 minutes plus a bounded in-flight API request. Each CLI call
+is capped at 20 seconds; cleanup polls for at most two minutes plus bounded in-flight calls.
+Timeout/cancellation cleanup checks only this run's recorded task; if a launch response was
+lost, it discovers by this run's unique `startedBy` and verifies the exact clone before stopping.
+Temporary config, Terraform backend data and the run journal are removed by workflow cleanup.
+If the runner is killed or cleanup cannot verify STOPPED, inspect that run's task before retrying;
+do not stop other tasks. Registered clone revisions are retained for audit; no service is updated.
+
+Failure-log reads are best effort and do not replace the primary error. Public output contains
+fixed diagnostic categories only. In the private migration log stream, inspect the retained
+operation/purpose, SDK code and HTTP status, SQLSTATE and role booleans described in the
+[safe diagnostic table](agent-sql-reader.md#안전한-오류-진단--safe-failure-diagnostics).
+Raw remote error text is discarded before logging. Empty-DB bootstrap and ULID migrations run under the migration advisory lock;
+an occupied database without a ledger is refused. Retry only after identifying the failure,
+and preserve all existing migration checksums and `-- since:` headers.
+
+컨트롤러는 템플릿을 직접 실행하지 않고 이번 빌드 digest로 제한된 필드만 복제한다. ECR·브랜치
+SHA·실행 이미지 digest를 검증하며 실제 STOPPED와 숫자 0 종료 코드가 모두 필요하다.
+대기는 20분, 정리는 2분에 진행 중인 제한된 API 호출 시간을 더한 범위 안에서 종료한다.
+취소·시간초과 시 이번 실행 소유 task만 검증 후 중지한다. 응답 유실 시에도 run별 `startedBy`와
+정확한 revision을 검사한다. runner 강제 종료나 정리 실패 시 다른 task를 중지하지 말고 해당
+task 상태를 확인한 뒤 재시도한다. 비공개 로그에서는 보존된 작업·목적, SDK 코드·HTTP 상태,
+SQLSTATE·롤 속성을 [안전한 진단 표](agent-sql-reader.md#안전한-오류-진단--safe-failure-diagnostics)와 대조한다.
+원격 오류 원문은 로그에 남기지 않으며 공개 로그에는 고정된 분류만 표시한다.
+기존 schema·ULID checksum·since 헤더는 변경하지 않는다.
+
+After a successful migration, deploy the reviewed web image and verify authenticated database access before publishing service DNS.
+마이그레이션 성공 후 검토한 웹 이미지를 배포하고 인증된 DB 접근을 확인한 뒤 서비스 DNS를 게시한다.
+
+Offline controller checks require Node 20, Python 3 with PyYAML, Terraform 1.15.7 and cached providers:
+오프라인 controller 검사는 Node 20·Python 3/PyYAML·Terraform 1.15.7·캐시된 provider가 필요하다.
+
+```bash
+node --test scripts/v2/ci/run-migration*.test.mjs
+```
+
+Merge Verify also runs the required runtime tests and disposable PostgreSQL integration suite.
+The manual controller adds no product autonomy or DNS exception.
+필수 runtime·PostgreSQL 통합 검사도 Merge Verify에서 실행하며 제품 자율 실행·DNS 예외는 추가하지 않는다.
 
 ## Verification / 확인
 
@@ -727,9 +905,7 @@ test. It strips deployment credentials/TF variables and never copies local backe
 state or `.terraform`. Run these commands from the repository root:
 
 ```bash
-CHECKPOINT_DISABLE=1 python3 -m unittest \
-  scripts/v2/test_ci_dns_policy.py scripts/v2/test_ci_plan_context.py \
-  scripts/v2/test_ci_deployment_workflows.py scripts/v2/test_ci_terraform_reads.py
+CHECKPOINT_DISABLE=1 python3 -m pytest -q scripts/v2/test_ci_*.py
 node --test scripts/v2/deployment-smoke.test.mjs
 bash scripts/v2/terraform-test.sh
 ```
@@ -742,4 +918,8 @@ localhost 상태 서버만 사용한다. Terraform 도우미는 추적된 작업
 로컬 backend 설정·상태·`.terraform`을 사용하지 않는다.
 
 Related ADRs / 관련 ADR: **ADR-002** (edge authentication/private HTTPS boundaries),
-**ADR-016** (domain/certificate cutover). These controls add no runtime-mutation or DNS exception.
+**ADR-005** (operator CI migration versus product AWS-resource mutation/autonomy), and
+**ADR-016** (domain/certificate cutover). Manual CI writes the database schema using its
+scoped credentials; it enables no product AWS-resource mutation/autonomy or DNS exception.
+수동 CI는 제한된 자격증명으로 DB schema를 변경하며 제품의 AWS 리소스 변경·자율 실행이나
+DNS 예외를 활성화하지 않는다.
