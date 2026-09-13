@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f42d7573b522 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4919b75edf91 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -10,6 +10,17 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
+- `CI_DB_DIAGNOSTICS_DEV` is default-off, dev-plan-only and advisory. The helper requires
+  `--target dev`, verifies the state account and uses an exact read-only CLI verb allowlist.
+  Only its optional step tolerates failure; DNS/CI/readiness gates remain required.
+  Retain web logs, configuration and RDS server tails independently with unavailable/partial
+  flags. Web logs are oldest-first, fixed one-hour bounds, at most 3 × 100 events; disclose
+  counts/truncation. JSON `evt` OR accepts ping errors and connection-stage observations;
+  only fixed phases/milestones and finite 0–3,600,000 ms timings may reach public output.
+  RDS uses the configured first instance, at most three file-list pages and a newest-500-line
+  tail without a download Marker. Never publish filenames, raw logs or Terraform/AWS errors.
+  Service-target/declaration comparisons are hypotheses, not proof of running revisions,
+  runtime credentials, effective access or connectivity. See the dev runbook's variable catalog.
 - `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is default-off. The manual
   `deploy-migrations.yml` + `run-migration.mjs` controller starts one verified private
   ARM64 task. Its IAM reads exact Aurora secrets; DB DDL uses those credentials.

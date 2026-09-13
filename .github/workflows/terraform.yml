@@ -227,11 +227,13 @@ jobs:
 
       - name: Read safe development database diagnostics
         if: steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_DB_DIAGNOSTICS_DEV == 'true'
+        continue-on-error: true
+        timeout-minutes: 8
         run: |
           set -euo pipefail
-          terraform console -no-color \
+          terraform console -no-color 2>/dev/null \
             <<<'jsonencode({project=var.project, region=var.region, account=data.aws_caller_identity.current.account_id})' |
-            python3 ../../scripts/v2/ci_db_diagnostics.py | tee -a "$GITHUB_STEP_SUMMARY"
+            python3 ../../scripts/v2/ci_db_diagnostics.py --target "$TARGET" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Check planned DNS operations
         if: steps.restore.outputs.skip != '1'

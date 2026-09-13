@@ -34,11 +34,24 @@ secrets-manager) — installed by `make deps`.
   the saved marker. Dev advisory preflight preserves ownership from state without live
   certificate validation; advisory DNS allowance is reporting only.
 - `v2/ci_db_diagnostics.py` — optional dev-only CI plan diagnostics (`CI_DB_DIAGNOSTICS_DEV=true`).
-  With the existing read-only plan role, verify the state account and read the selected web log
-  group for one hour (at most three pages). Emit only fixed DB error categories/counts, never
-  raw log messages, credentials or ARNs. Also compare live ECS/RDS config, DB SG ingress and
-  the expected inline IAM connect allow, emitting only booleans/counts. These do not prove
-  effective access under SCPs/boundaries. Unset/false is off; no writes or new IAM grants.
+  Require `--target dev` and verify the state account; use only the fixed read-only CLI verbs.
+  Independently retain web logs, configuration comparisons and an RDS server-log tail with
+  partial/unavailable markers; missing resources/permissions are advisory, not readiness gates.
+  Web logs use a fixed one-hour `[start,end)` window, oldest-first, at most three pages of 100
+  using `--next-token`/`--limit`; disclose bounds, category counts, ignored/unparsed and truncation.
+  JSON `evt` OR selects `db_ping_failed` plus `db_connection_failed`; the latter exposes only
+  seven allowed phases, eight milestone keys and finite 0–3,600,000 ms durations (milestones
+  cannot exceed elapsed). Count phases and retain the latest valid timing in the sample.
+  Server logs select the latest observed PostgreSQL filename from at most three listing pages
+  for `<project>-aurora-1`; download the newest 500 lines without Marker (1 MiB API cap), count
+  only `awsops_web` lines, never print names/lines. Tail/listing truncation is independent.
+  HBA failures are distinct from TLS. Metadata is the service target definition, not running
+  revision proof; credential env/secrets names and environment-file presence are declarations
+  only. SG/inline connect-Allow matches do not prove effective access under SCPs/boundaries.
+  Emit fixed categories/counts/timestamps/booleans/nulls only; withhold raw messages, credentials
+  and ARNs, including Terraform stderr. Unset/false is off; no writes or new IAM grants.
+  Only this optional workflow step tolerates failure (eight-minute timeout); DNS/CI/readiness
+  gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
 - `v2/test_ci_{dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads}.py` —

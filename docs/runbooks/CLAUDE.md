@@ -23,12 +23,25 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
-| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC and protected review recovery; ECR preflight; state-preserving DNS deferral, certificate ownership, dispatch-only same-SHA saved plans, Host/SNI smoke and default-off manual private DB migration and opt-in authenticated verification (ADR-002/005/016) |
+| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC and protected review recovery; ECR preflight; state-preserving DNS deferral, certificate ownership, dispatch-only same-SHA saved plans, Host/SNI smoke, default-off private DB migration, authenticated verification and advisory read-only DB diagnostics (ADR-002/005/016) |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; explicit saved-plan domain scope, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
 | [steampipe-quota-and-staleness.md](steampipe-quota-and-staleness.md) | Steampipe quota guard — rate limiter knobs, partial runs, freshness ledger/staleness response |
 | [agent-sql-reader.md](agent-sql-reader.md) | `execute_sql`/`inventory-read` Data API auth failures — `awsops_sql_reader` role/password sync (`apply → make migrate → make agentcore`) |
 
 ## Deployment invariants
+- `CI_DB_DIAGNOSTICS_DEV` is false/unset by default; only literal `true` enables advisory dev
+  plan diagnostics. Require `--target dev`, verify the state account, and use existing read-only
+  grants plus an exact CLI verb allowlist. No IAM/resource writes or DB connection.
+  Only this optional step tolerates failure; DNS/CI/readiness gates remain required.
+  Retain web-log/configuration/server-tail results independently with unavailable/partial flags.
+  Web logs cover a fixed one-hour window, oldest-first, at most 3 × 100 events; disclose actual
+  bounds, truncation and count meanings. JSON `evt` OR selects ping errors and connection-stage
+  observations; phase/milestone names are fixed, durations finite and bounded to one hour,
+  and latest timing describes only the returned sample. RDS lists at most three PostgreSQL-file pages for the
+  configured first Aurora instance and reads a newest-500-line tail without a download Marker.
+  Publish fixed projections only, including on Terraform/AWS failures; never raw logs/filenames.
+  Service-target/declaration comparisons and error categories are hypotheses, not proof of
+  running revisions, effective access, runtime credentials, connectivity or readiness.
 - `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is a default-off operator capability.
   `deploy-migrations.yml` builds an ARM64 image and `run-migration.mjs` launches/verifies one
   private task. The task role reads exact Aurora secrets; DDL uses DB credentials. This is
