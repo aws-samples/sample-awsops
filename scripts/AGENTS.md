@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4d9ff3ca4a55 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7670ff5b55cf · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -60,7 +60,16 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 ```bash
 python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py
 python3 -m pytest -q scripts/v2/test_ci_*.py
+npm ci --prefix web
+npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund
+node --test scripts/v2/ci/*.test.mjs
+node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs
 ```
+
+Both PostgreSQL suites are required and fail rather than skip when prerequisites are missing.
+They require bare `docker` on PATH, a reachable daemon, OpenSSL and `postgres:17`, without an
+automatic `sudo`/`DOCKER` override. The web connection suite uses the locked web driver and
+TypeScript, covering phase/timing logs, asynchronous passwords and original error propagation.
 
 The CI fixtures use mocked AWS responses or local Terraform backends, not live AWS. Terraform
 checks use 1.15.7 with isolated data and mocked providers; dependencies are declared in

@@ -105,10 +105,15 @@ secrets-manager) — installed by `make deps`.
 - `v2/*.itest.mjs` — migration integration tests against a disposable PostgreSQL 17 container.
 - `v2/ci/*.test.mjs` — migration runtime/controller/workflow tests and mocked Terraform plans; install locked scripts/v2
   dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`; PyYAML and Terraform 1.15.7 are also required.
-  `v2/ci/migration.itest.mjs` includes initializer regressions and is a **required fail-hard
-  exception** to the legacy optional itest convention: bare `docker` on PATH, OpenSSL,
-  postgres:17, no automatic sudo/DOCKER override, no skip if Docker is unavailable.
+  `v2/ci/migration.itest.mjs` includes initializer regressions. It and
+  `v2/ci/web-db-connection.itest.mjs` are **required fail-hard exceptions** to the legacy
+  optional itest convention: bare `docker` on PATH, OpenSSL, postgres:17,
+  no automatic sudo/DOCKER override, no skip if Docker is unavailable.
   See `docs/v2-merge-verification.md`; PR fixtures must remain without AWS credentials/OIDC.
+- `v2/ci/web-db-connection.itest.mjs` — real PostgreSQL/verified-TLS regressions for the
+  web connection observer's phase/timing logs, async password resolution and error propagation.
+  Uses the locked web driver and TypeScript via `npm ci --prefix web`, plus scripts/v2
+  dependencies for the disposable fixture. Merge Verify runs it alongside all migration cases.
 - `v2/upgrade.sh` — `make upgrade`: RDS snapshot → migrate → deploy. Previews unless
   `CONFIRM=go`.
 - `pr-review/` — lens×model review panel: `run-panel.sh` (parallel fan-out, one `*.txt` prompt

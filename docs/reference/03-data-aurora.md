@@ -29,7 +29,9 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   (`storage_encrypted`) and the master-user secret.
 - **Credentials**: RDS-managed master secret (`manage_master_user_password = true`,
   master username `awsops_admin`) in Secrets Manager — exposed as output
-  `aurora_secret_arn`. The app reads this in P1d.
+  `aurora_secret_arn` for operator migrations. The web pool uses the separate `awsops_web`
+  IAM-authenticated database role, not this master secret.
+  마스터 시크릿은 운영자 마이그레이션용이며 웹 풀은 별도 `awsops_web` IAM DB 역할을 사용한다.
 - **Network**: lives in the reused `mgmt-vpc` private subnets (DB subnet group
   `awsops-v2-aurora`). SG `awsops-v2-aurora-sg` allows **:5432 from the app/Fargate
   service SG**, plus an optional VPC-CIDR ingress (gated by `var.allow_vpc_db_access`)

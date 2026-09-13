@@ -7,14 +7,14 @@
 AWSops is a real-time AWS/Kubernetes operations dashboard. v2 rebuilds v1's single-EC2 monolith as a **Terraform-based MSA**: private edge (CloudFront VPC Origin → internal ALB → Fargate), Cognito Lambda@Edge auth, Aurora persistent state, AgentCore section agents (live AWS queries), and an OOM-safe async worker tier.
 
 ## Commands (web/, day-to-day dev)
-All app code/tests live under `web/` — there is no root `package.json`. See `web/CLAUDE.md` for the `npm` build/test invocations.
+App code and unit tests live under `web/`; required database integration tests are listed below. There is no root `package.json`. See `web/CLAUDE.md` for the `npm` build/test invocations.
 ```
 npx vitest run lib/anfw.test.ts          # a single test file
 npx vitest run -t "test name substring"  # filter by test name
 npx tsc --noEmit -p .                    # typecheck — no npm script wraps this; run directly
 ```
 No lint script/config exists (no ESLint) — don't go looking for one. Integration tests for the migration/backfill scripts live outside `web/` as `scripts/v2/*.itest.mjs`, run directly with `node scripts/v2/<name>.itest.mjs` — each spins up a disposable `postgres:17` container via `sudo docker` (skips cleanly if Docker is unreachable), not the live Aurora instance.
-**Required private-migration exception:** install locked dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`, then run `node --test scripts/v2/ci/*.test.mjs` (runtime/controller/workflow fixtures and mocked Terraform plans) and `node --test scripts/v2/ci/migration.itest.mjs` (real PostgreSQL 17, including initializer tests). The fixtures require Node, PyYAML and Terraform 1.15.7; the PostgreSQL suite requires bare `docker` on PATH, a reachable daemon and OpenSSL. Missing prerequisites fail hard, never skip, with no automatic `sudo`/`DOCKER` override. No AWS credentials/OIDC or live AWS calls.
+**Required database CI exception:** from the repo root, install locked dependencies with `npm ci --prefix web` and `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`. Run `node --test scripts/v2/ci/*.test.mjs` (migration runtime/controller/workflow fixtures and mocked Terraform plans), then `node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs` (real PostgreSQL 17 initializer/runner and web connection-phase regressions). The offline fixtures require Node, PyYAML and Terraform 1.15.7. Both PostgreSQL suites require bare `docker` on PATH, a reachable daemon and OpenSSL; the web connection suite uses the locked web driver and TypeScript dependencies. Missing prerequisites fail hard, never skip, with no automatic `sudo`/`DOCKER` override. No AWS credentials/OIDC or live AWS calls.
 
 ## Architecture (v2)
 - **IaC**: **Terraform** (CDK retired). Single root at `terraform/foundation/`, **partial S3 backend** (`backend.hcl`, `awsops-v2-tfstate`, `use_lockfile` — no DynamoDB). TF ≥1.15, provider `~>6.0`.
@@ -56,7 +56,8 @@ Live environment: account `<ACCOUNT_ID>`, domain `awsops-v2.atomai.click`, reusi
 
 ### Data / Config
 - App state lives in **Aurora** (node-pg). Not `data/*.json` (the v1 pattern). Schema = `terraform/foundation/data/schema.sql` + `schema_migrations`.
-- ECS `secrets` valueFrom (Aurora secret) requires **execution-role** permissions (not the task role) — otherwise `ResourceInitializationError`.
+- The web pool (`web/lib/db.ts`) authenticates as `awsops_web` using task-role `rds-db:connect` and a fresh IAM token per physical connection; no Aurora master password is injected into the web task.
+- ECS `secrets` valueFrom (where used, e.g. optional Steampipe) requires **execution-role** permissions (not the task role) — otherwise `ResourceInitializationError`.
 - AgentCore config's **source of truth is SSM** (provision.py writes it → the web BFF reads it at runtime). No valueFrom (avoids a race).
 
 ### Containers / Deployment
