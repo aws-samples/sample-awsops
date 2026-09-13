@@ -101,7 +101,10 @@ class HostScopeError(ValueError):
 @lru_cache(maxsize=2)
 def _host_sts_client(region):
     return boto3.client("sts", region_name=region, config=Config(
-        connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 1}))
+        # Bound transient transport/throttle retries inside identity verification.
+        # Exhaustion still raises HostScopeError; it never keeps an unverified scope.
+        connect_timeout=3, read_timeout=5,
+        retries={"total_max_attempts": 3, "mode": "standard"}))
 
 
 def _validate_host_scope(rows):
@@ -194,7 +197,21 @@ def _on_signal(signum: int, _frame: object, proc_ref: list, stop: "threading.Eve
     sys.exit(0)
 
 
-def _restart_steampipe(proc_ref: list, restart_lock: threading.Lock, old: "subprocess.Popen[bytes]") -> None:
+def _terminate_steampipe(proc: "subprocess.Popen[bytes]") -> None:
+    """Reap the foreground child, then stop the embedded service, on every shutdown path."""
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=30)
+    finally:
+        _stop_steampipe_service()
+
+
+def _restart_steampipe(proc_ref: list, restart_lock: threading.Lock, old: "subprocess.Popen[bytes]",
+                       stop: "threading.Event" = None) -> bool:
     """The FULL restart sequence — terminate the old process, guarantee a clean service stop, and
     start a new one — run under `restart_lock` from start to finish (M-1 fix, round 8).
 
@@ -220,16 +237,14 @@ def _restart_steampipe(proc_ref: list, restart_lock: threading.Lock, old: "subpr
     the FIRST caller just started. The guard makes a losing caller a true no-op: the desired new
     state (whatever the winner produced) is already in place."""
     with restart_lock:
-        if proc_ref[0] is not old:
-            return  # someone else already restarted while we waited for the lock — nothing to do
-        old.terminate()
-        try:
-            old.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            old.kill()
-            old.wait()
-        _stop_steampipe_service()
+        if (stop is not None and stop.is_set()) or proc_ref[0] is not old:
+            return False
+        _terminate_steampipe(old)
+        # Signal handlers set stop without taking this lock.
+        if stop is not None and stop.is_set():
+            return False
         proc_ref[0] = _start_steampipe()
+        return True
 
 
 def _scope_watchdog(
@@ -237,6 +252,7 @@ def _scope_watchdog(
     proc_ref: list,
     restart_lock: threading.Lock,
     stop: threading.Event,
+    fatal: "threading.Event" = None,
 ) -> None:
     """Background thread: re-query Aurora every SCOPE_WATCH_INTERVAL seconds. If the rendered
     aws.spc changes (account added/removed/disabled, region scope updated), write the new config
@@ -252,18 +268,23 @@ def _scope_watchdog(
             write_spc(new_spc)
             current = new_spc
             old = proc_ref[0]
-            _restart_steampipe(proc_ref, restart_lock, old)
-            print("[gen-spc] steampipe restarted with updated scope", file=sys.stderr)
+            if _restart_steampipe(proc_ref, restart_lock, old, stop):
+                print("[gen-spc] steampipe restarted with updated scope", file=sys.stderr)
         except HostScopeError as e:
             # A revoked/foreign scope must stop collection, not leave the last
             # accepted configuration running while the watchdog reports an error.
             print(f"[gen-spc] FATAL: {e}", file=sys.stderr)
-            stop.set()
+            if fatal is not None:
+                fatal.set()  # Preserve failure classification even if SIGTERM arrives during teardown.
             with restart_lock:
+                # Publish shutdown under the same lock as process launch. A queued
+                # crash/scope restart must observe stop before starting another child.
+                stop.set()
                 try:
-                    proc_ref[0].terminate()
+                    if proc_ref[0] is not None:
+                        _terminate_steampipe(proc_ref[0])
                 finally:
-                    _stop_steampipe_service()
+                    proc_ref[0] = None
             return
         except Exception as e:  # noqa: BLE001
             print(f"[gen-spc] scope watchdog error (non-fatal): {e}", file=sys.stderr)
@@ -311,6 +332,7 @@ def main() -> None:
     restart_lock = threading.Lock()
     proc_ref = [_start_steampipe()]
     stop = threading.Event()
+    fatal = threading.Event()
 
     # Signal handler is lock-free (M3) — see _on_signal's docstring for why.
     signal.signal(signal.SIGTERM, lambda signum, frame: _on_signal(signum, frame, proc_ref, stop))
@@ -319,7 +341,7 @@ def main() -> None:
     # Start scope watchdog (daemon — exits with the supervisor).
     threading.Thread(
         target=_scope_watchdog,
-        args=(spc, proc_ref, restart_lock, stop),
+        args=(spc, proc_ref, restart_lock, stop, fatal),
         daemon=True,
     ).start()
 
@@ -328,34 +350,45 @@ def main() -> None:
     # (e.g. bad config, port conflict), which would otherwise spin the CPU and flood logs.
     rapid_restart_count = 0
     last_restart_time = 0.0
-    while not stop.is_set():
-        current = proc_ref[0]  # a single list-index read is atomic under the GIL; no lock needed
-        code = current.wait()
-        if stop.is_set():
-            break
-        if proc_ref[0] is not current:
-            # The watchdog already replaced it (this exit was its terminate(), not a crash).
-            continue
-        # Unexpected exit — apply exponential backoff for rapid crashes. This sleep runs BEFORE
-        # acquiring restart_lock: it is UNBOUNDED/growing (up to 60s per rapid crash), unlike the
-        # bounded terminate->wait->stop->start sequence in _restart_steampipe, which DOES need to
-        # hold restart_lock for its whole duration (M-1 fix) — see that function's docstring.
-        elapsed = time.time() - last_restart_time
-        if elapsed < 30:
-            rapid_restart_count += 1
-            delay = min(2 ** rapid_restart_count, 60)
-            print(f"[gen-spc] steampipe exited (code {code}) — backoff {delay}s "
-                  f"(rapid restart #{rapid_restart_count})", file=sys.stderr)
-            time.sleep(delay)
-        else:
-            rapid_restart_count = 0
-            print(f"[gen-spc] steampipe exited unexpectedly (code {code}) — restarting",
-                  file=sys.stderr)
-        last_restart_time = time.time()
-        # _restart_steampipe's own `proc_ref[0] is not old` guard (checked under restart_lock)
-        # handles the case where the watchdog raced in and already restarted during our backoff
-        # sleep above — no separate re-check needed here.
-        _restart_steampipe(proc_ref, restart_lock, current)
+    try:
+        while not stop.is_set():
+            with restart_lock:
+                if stop.is_set():
+                    break
+                current = proc_ref[0]
+            code = current.wait()
+            if stop.is_set():
+                break
+            if proc_ref[0] is not current:
+                # The watchdog already replaced it; this exit was not a crash.
+                continue
+            elapsed = time.time() - last_restart_time
+            if elapsed < 30:
+                rapid_restart_count += 1
+                delay = min(2 ** rapid_restart_count, 60)
+                print(f"[gen-spc] steampipe exited (code {code}) — backoff {delay}s "
+                      f"(rapid restart #{rapid_restart_count})", file=sys.stderr)
+                # Keep backoff outside the lock, but interrupt it on fatal/graceful stop.
+                if stop.wait(delay):
+                    break
+            else:
+                rapid_restart_count = 0
+                print(f"[gen-spc] steampipe exited unexpectedly (code {code}) — restarting",
+                      file=sys.stderr)
+            last_restart_time = time.time()
+            _restart_steampipe(proc_ref, restart_lock, current, stop)
+    finally:
+        try:
+            with restart_lock:
+                stop.set()
+                if proc_ref[0] is not None:
+                    try:
+                        _terminate_steampipe(proc_ref[0])
+                    finally:
+                        proc_ref[0] = None
+        finally:
+            if fatal.is_set():
+                sys.exit(1)
 
 
 if __name__ == "__main__":
