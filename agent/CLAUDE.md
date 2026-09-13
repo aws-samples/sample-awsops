@@ -44,6 +44,9 @@ re-introduce a hand-maintained table that goes stale again, read the actual sour
 - Real-time response delivery via SSE streaming.
 
 ## Rules
+- Offline checks: `cd agent && python3 -m pytest test_agent.py test_readiness.py -q`.
+- Workload inventory reads go through MCP tools. Readiness directly checks only execution
+  identity and model permission; it sends no inventory data to the model.
 - Docker image must be arm64 (`docker buildx --platform linux/arm64`).
 - Gateway URL is selected dynamically from the `GATEWAYS` dict based on the payload.
 - The system prompt is role-specific, one per domain gateway.
