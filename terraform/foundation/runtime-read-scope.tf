@@ -1,9 +1,15 @@
 # Runtime activation is opt-in. Host inventory retains its all-enabled-region
 # scan; global IAM/CloudFront/Route53 endpoints also require us-east-1.
-variable "ci_readiness_enabled" {
+variable "ci_runtime_profile_enabled" {
   type        = bool
   default     = false
-  description = "Grant the managed demo identity only the deployment readiness application capability."
+  description = "Saved metadata that the explicit dev runtime profile generated these inputs."
+}
+
+variable "ci_runtime_retire" {
+  type        = bool
+  default     = false
+  description = "Saved-plan intent for manual dev/full core-runtime retirement; excludes activation and replacements."
 }
 
 variable "ci_runtime_rollout" {
