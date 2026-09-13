@@ -1250,6 +1250,40 @@ localhost 상태 서버만 사용한다. Terraform 도우미는 추적된 작업
 새 `TF_DATA_DIR`에서 `init -backend=false`·validate·test를 실행한다. 배포 자격증명·TF 변수와
 로컬 backend 설정·상태·`.terraform`을 사용하지 않는다.
 
+### Saved-plan asset utility / 저장 계획 asset 도구
+
+**Symptom / 증상:** a saved plan references Lambda ZIPs missing from the apply runner.
+Plan-time local builds do not rerun under a saved-plan apply. 저장 계획의 ZIP이 새
+runner에 없으면 apply 중 자동 재빌드를 기대하지 말고 준비·전달 경로를 점검합니다.
+
+The utility prepares the hash-locked pg8000 closure and authenticates the manifest with
+`TF_PLAN_ENC_KEY` HMAC. Restore binds file hashes, paths and modes to the exact plan, SHA
+and scope. The caller workflow separately encrypts `tfassets.tar.gz`; never upload it in
+plaintext. This standalone utility activates no workflow or infrastructure.
+해시 고정 의존성과 HMAC으로 plan·SHA·scope·파일을 검증합니다. 암호화는 호출 workflow의
+책임이며 평문 tar를 게시하지 않습니다. 도구만으로 workflow나 인프라가 바뀌지 않습니다.
+
+From the repository root, test with `python3 -m pytest scripts/v2/test_ci_tf_assets.py -q`.
+CI supplies the secret without CLI arguments. Run the following from the foundation root,
+with a reviewed plan/source SHA and trusted flags; pack happens after Terraform creates ZIPs:
+루트에서 위 테스트를 실행합니다. CI가 시크릿을 공급하며 plan이 ZIP을 만든 뒤 pack합니다.
+
+```bash
+cd terraform/foundation
+# Trusted configuration, before plan:
+printf '%s' '{"steampipe_enabled":true,"workers_enabled":true}' | python3 ../../scripts/v2/ci_tf_assets.py prepare --scope full
+# After a reviewed tfplan exists; GITHUB_SHA and TF_PLAN_ENC_KEY must already be set:
+python3 ../../scripts/v2/ci_tf_assets.py pack --scope full
+# The workflow encrypts/transports/decrypts the bundle and plan before restore:
+python3 ../../scripts/v2/ci_tf_assets.py restore --scope full
+python3 ../../scripts/v2/ci_tf_assets.py check-layer --layer inv_layer
+```
+
+Missing/mismatched authentication, plan or content requires a fresh reviewed plan/bundle,
+not rebuilding under an old approval. See `scripts/v2/ci_tf_assets.py`,
+`scripts/v2/ci/pg8000-requirements.txt` and `scripts/v2/test_ci_tf_assets.py`.
+일치하지 않는 인증·계획·내용은 새 검토 계획/bundle로 해결합니다. 관련 규율: ADR-005/016.
+
 Related ADRs / 관련 ADR: **ADR-002** (edge authentication/private HTTPS boundaries),
 **ADR-005** (operator CI migration versus product AWS-resource mutation/autonomy), and
 **ADR-016** (domain/certificate cutover). Manual CI writes the database schema using its
@@ -1260,16 +1294,3 @@ The separately opted-in manual diagnostics step is read-only under ADR-005: no d
 connection, AWS-resource mutation, autonomous remediation, or relaxation of readiness gates.
 별도로 선택한 수동 진단은 ADR-005의 읽기 전용 범위이며 DB 연결·AWS 리소스 변경·자율 복구나
 준비 상태 검사 완화를 허용하지 않는다.
-
-### Saved-plan asset utility / 저장 계획 asset 도구
-
-`scripts/v2/ci_tf_assets.py` prepares hash-locked pg8000 layers, packs generated Lambda
-assets with plan/SHA/scope hashes and validates paths, modes and hashes before restore.
-The utility alone neither changes the current workflow nor applies infrastructure;
-workflow integration must require the encrypted bundle beside the reviewed saved plan.
-Missing or mismatched bundles require a fresh plan, not an apply-time rebuild.
-
-이 도구는 pg8000 의존성을 해시로 고정하고 Lambda asset을 plan·SHA·scope에 결합해
-복원 전에 경로·권한·해시를 검증합니다. 도구만으로 현재 workflow나 인프라가 바뀌지
-않습니다. 연동 workflow는 저장 계획과 암호화 bundle을 함께 요구해야 하며 누락·불일치는
-apply 중 재빌드 대신 새 계획으로 해결합니다.

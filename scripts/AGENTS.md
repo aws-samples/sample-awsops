@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4bed1273dc07 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3cec1abd2845 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -86,3 +86,11 @@ TypeScript, covering phase/timing logs, asynchronous passwords and original erro
 The CI fixtures use mocked AWS responses or local Terraform backends, not live AWS. Terraform
 checks use 1.15.7 with isolated data and mocked providers; dependencies are declared in
 `v2/requirements-test.txt`. Do not initialize a real backend for tests.
+
+## Plan asset utility
+
+`v2/ci_tf_assets.py` prepares the hash-locked pg8000 closure and validates plan/SHA/scope,
+paths, modes and hashes during transport/restore. Pack/restore authenticate with
+TF_PLAN_ENC_KEY HMAC; the workflow must encrypt the plaintext tarball before publication.
+The lock is `v2/ci/pg8000-requirements.txt`; `v2/test_ci_tf_assets.py` covers integrity,
+context and restore recovery.

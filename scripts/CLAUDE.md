@@ -6,6 +6,11 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
+- `v2/ci_tf_assets.py` prepares hash-locked pg8000 layers and transports plan/SHA/scope-bound
+  Lambda assets. Pack/restore require `TF_PLAN_ENC_KEY` for HMAC authentication; encryption
+  remains the caller workflow's responsibility. Never publish the plaintext tarball.
+  `v2/ci/pg8000-requirements.txt` defines the layer closure, checked against existing pins.
+  `v2/test_ci_tf_assets.py` covers authentication, paths, hashes, scope and restore recovery.
 - `v2/configure.mjs` — `make configure`: interactive TUI → `terraform.tfvars` + `backend.hcl`.
   AWS access shells out to the `aws` CLI, not the SDK.
 - `v2/deploy.mjs` — `make deploy` (runs migrate first): arm64 build → ECR push →
@@ -84,7 +89,7 @@ secrets-manager) — installed by `make deps`.
   gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
-- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads}.py` —
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads,tf_assets}.py` —
   workflow fixtures, real no-provider plans and a localhost state backend verify deployment
   gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active
