@@ -1223,12 +1223,13 @@ def smoke(ac, runtime_arn):
     protocol = ac.get("readiness_protocol_available") is True
     configured = bool(re.fullmatch(r"[A-Z0-9]{5,32}", ac.get("readiness_cloudfront_id") or ""))
     inventory = ac.get("readiness_inventory_enabled")
-    structured = protocol and configured and inventory is True
+    enabled = ac.get("deployment_readiness_enabled") is True
+    structured = enabled and protocol and configured and inventory is True
     if not valid_runtime_arn(ac, runtime_arn):
         log("smoke", "ERR", "runtime_unavailable")
         return
     if strict and not structured:
-        code = ("readiness_protocol_unavailable" if not protocol else
+        code = ("disabled" if not enabled else "readiness_protocol_unavailable" if not protocol else
                 "readiness_configuration_unavailable" if not configured else
                 "inventory_disabled" if inventory is False else "inventory_configuration_unavailable")
         log("smoke", "ERR", code)
@@ -1270,7 +1271,7 @@ def smoke(ac, runtime_arn):
             try:
                 body.close()
             except Exception:
-                code = "response_close_failed"
+                pass  # Cleanup is not evidence and must preserve the classified result.
     status = "OK" if code == "readiness_confirmed" else "ERR" if strict or failed_transport else "WARN"
     log("smoke", status, code)
 

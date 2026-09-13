@@ -20,6 +20,7 @@ AC = {
     "ecr_uri": f"{ACCOUNT}.dkr.ecr.ap-northeast-2.amazonaws.com/awsops-dev-agentcore",
     "readiness_cloudfront_id": "E123EXAMPLE",
     "readiness_protocol_available": True, "readiness_inventory_enabled": True,
+    "deployment_readiness_enabled": True,
 }
 RID = "awsops_v2_agent-AbCd123456"
 ARN = f"arn:aws:bedrock-agentcore:ap-northeast-2:{ACCOUNT}:runtime/{RID}"
@@ -93,8 +94,9 @@ class RuntimeImageTest(unittest.TestCase):
             self.assertEqual(ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"]["DEPLOYMENT_READINESS_ENABLED"],
                              "true" if value is True else "false")
         ctrl.reset_mock()
+        missing = {key: value for key, value in AC.items() if key != "deployment_readiness_enabled"}
         with mock.patch.object(provision, "_wait_runtime_ready", return_value=True):
-            provision.ensure_runtime(ctrl, AC, {})
+            provision.ensure_runtime(ctrl, missing, {})
         self.assertEqual(ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"]["DEPLOYMENT_READINESS_ENABLED"], "false")
 
     def test_pending_or_foreign_runtime_is_not_reported_ready(self):
@@ -184,6 +186,48 @@ class RuntimeImageTest(unittest.TestCase):
             provision.smoke(AC, ARN)
             self.assertTrue(streams[0].closed)
             self.assertEqual(log.call_args.args, ("smoke", "OK", "readiness_confirmed"))
+
+    def test_close_failure_preserves_confirmed_failed_and_transport_results(self):
+        for expected in ("readiness_confirmed", "inventory_stale", "invoke_timeout"):
+            with mock.patch.dict(os.environ, {"TARGET": "dev"}), \
+                    mock.patch.object(provision, "boto3") as sdk, mock.patch.object(provision, "log") as log:
+                body = mock.Mock()
+                body.close.side_effect = OSError("PRIVATE cleanup failure")
+
+                def invoke(**kwargs):
+                    value = {**ready(), "nonce": json.loads(kwargs["payload"])["nonce"]}
+                    if expected == "inventory_stale":
+                        value.update(status="not_ready", reason=expected)
+                    body.read.return_value = frame(value)
+                    if expected == "invoke_timeout":
+                        body.read.side_effect = ReadTimeoutError(endpoint_url="https://example.test")
+                    return {"response": body, "contentType": "text/event-stream"}
+
+                sdk.client.return_value.invoke_agent_runtime.side_effect = invoke
+                provision.smoke(AC, ARN)
+                body.close.assert_called_once()
+                status = "OK" if expected == "readiness_confirmed" else "ERR"
+                self.assertEqual(log.call_args.args, ("smoke", status, expected))
+
+    def test_smoke_requires_applied_true_and_retains_nondev_compatibility(self):
+        for value in (False, None, "true", 1, "missing"):
+            ac = {**AC, "deployment_readiness_enabled": value}
+            if value == "missing":
+                ac.pop("deployment_readiness_enabled")
+            for target in ("dev", "main"):
+                with mock.patch.dict(os.environ, {"TARGET": target, "DEPLOYMENT_READINESS_ENABLED": "true"}), \
+                        mock.patch.object(provision, "boto3") as sdk, mock.patch.object(provision, "log") as log:
+                    sdk.client.return_value.invoke_agent_runtime.return_value = {
+                        "response": io.BytesIO(b"PRIVATE"), "contentType": "text/event-stream"}
+                    provision.smoke(ac, ARN)
+                    if target == "dev":
+                        sdk.client.assert_not_called()
+                        self.assertEqual(log.call_args.args, ("smoke", "ERR", "disabled"))
+                    else:
+                        call = sdk.client.return_value.invoke_agent_runtime
+                        call.assert_called_once()
+                        self.assertEqual(json.loads(call.call_args.kwargs["payload"])["gateway"], "security")
+                        self.assertEqual(log.call_args.args, ("smoke", "WARN", "legacy_invocation_only"))
 
     def test_legacy_smoke_without_development_metadata_is_advisory_and_still_invokes(self):
         legacy = {**AC, "readiness_cloudfront_id": None, "readiness_protocol_available": False}

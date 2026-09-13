@@ -110,6 +110,10 @@ function fixture(overrides = {}) {
     }
     if (args[1] === 'batch-get-image') return JSON.stringify(remote(p));
     if (args[0] === 'buildx') {
+      if (overrides.requireUserPlugin) {
+        assert.ok(existsSync(join(options.env.DOCKER_CONFIG, 'cli-plugins/docker-buildx')),
+          'buildx is installed only in the original Docker configuration');
+      }
       for (const name of ['action_catalog.py', 'remediation_executor.py', 'remediation_executor_cli.py']) {
         assert.ok(existsSync(join(args.at(-1), name)));
       }
@@ -121,9 +125,12 @@ function fixture(overrides = {}) {
 }
 
 test('worker build stages required modules and verifies image before returning digest-only handoff', () => {
-  const f = fixture();
+  const f = fixture({ requireUserPlugin: true });
   try {
-    const result = buildImage({ env: { ...env, RUNNER_TEMP: f.dir }, project: 'awsops-dev',
+    const originalConfig = join(f.dir, 'original-docker');
+    mkdirSync(join(originalConfig, 'cli-plugins'), { recursive: true });
+    writeFileSync(join(originalConfig, 'cli-plugins/docker-buildx'), 'fixture plugin');
+    const result = buildImage({ env: { ...env, RUNNER_TEMP: f.dir, DOCKER_CONFIG: originalConfig }, project: 'awsops-dev',
       component: 'worker', root: f.dir, run: f.run });
     assert.deepEqual(result, { project: 'awsops-dev', digest, architecture: 'arm64' });
     const build = f.calls.find(c => c.args[0] === 'buildx');
@@ -137,7 +144,15 @@ test('worker build stages required modules and verifies image before returning d
     assert.deepEqual(f.calls.find(c => c.args[0] === 'push').args, ['push', `${f.p.uri}:${f.p.tag}`]);
     assert.equal(f.calls.find(c => c.args[0] === 'login').options.input, 'SECRET_PASSWORD');
     assert.ok(!existsSync(build.args.at(-1)));
-    assert.ok(!existsSync(build.options.env.DOCKER_CONFIG));
+    const auth = f.calls.filter(c => c.command === 'docker' && ['login', 'push'].includes(c.args[0]));
+    assert.equal(auth.length, 2);
+    assert.equal(auth[0].options.env.DOCKER_CONFIG, auth[1].options.env.DOCKER_CONFIG);
+    assert.notEqual(auth[0].options.env.DOCKER_CONFIG, originalConfig);
+    assert.ok(!existsSync(auth[0].options.env.DOCKER_CONFIG));
+    assert.ok(existsSync(join(originalConfig, 'cli-plugins/docker-buildx')));
+    for (const call of f.calls.filter(c => c.command === 'docker' && !auth.includes(c))) {
+      assert.equal(call.options.env.DOCKER_CONFIG, originalConfig);
+    }
   } finally { f.cleanup(); }
 });
 

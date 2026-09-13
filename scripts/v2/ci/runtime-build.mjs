@@ -142,18 +142,18 @@ export function buildImage({ env = process.env, project, component, root = ROOT,
   let docker;
   try {
     enter('repository');
-    // BatchGetImage is already required for digest verification. ImageNotFound
-    // confirms access to the existing repository without another IAM action.
+    // The caller needs repository-scoped BatchGetImage for preflight and digest
+    // verification. ImageNotFound confirms access; this helper creates no grants.
     verifyRepository(plan, json(aws(['ecr', 'batch-get-image', '--registry-id', plan.account,
       '--repository-name', plan.repository, '--image-ids', `imageTag=${plan.tag}`])));
     scratch = mkdtempSync(join(env.RUNNER_TEMP || tmpdir(), 'runtime-image-'));
     const dockerEnv = { ...env, DOCKER_CONFIG: join(scratch, 'docker') };
-    docker = (args, options = {}) => bounded('docker', args, { env: dockerEnv, ...options });
+    docker = (args, options = {}) => bounded('docker', args, { env, ...options });
     // get-login-password emits text, not JSON. Keep it only in memory/stdin.
     enter('login');
     const password = bounded('aws', ['ecr', 'get-login-password', '--region', REGION, '--no-cli-pager'],
       { env, timeout: TIMEOUTS.read });
-    docker(['login', '--username', 'AWS', '--password-stdin', plan.registry], { input: password });
+    docker(['login', '--username', 'AWS', '--password-stdin', plan.registry], { env: dockerEnv, input: password });
     let context = join(root, component === 'agent' ? 'agent' : `scripts/v2/${component === 'worker' ? 'workers' : 'steampipe'}`);
     if (component === 'worker') {
       // Existing worker Dockerfile stages these retained dark modules; no flag is enabled.
@@ -173,7 +173,7 @@ export function buildImage({ env = process.env, project, component, root = ROOT,
     requireValue(Array.isArray(images) && images.length === 1 && images[0].Architecture === 'arm64' &&
       images[0].Os === 'linux' && DIGEST.test(images[0].Id || ''), 'built_image_not_arm64');
     enter('push');
-    docker(['push', reference], { timeout: TIMEOUTS.transfer });
+    docker(['push', reference], { env: dockerEnv, timeout: TIMEOUTS.transfer });
     enter('verify');
     const response = json(aws(['ecr', 'batch-get-image', '--registry-id', plan.account,
       '--repository-name', plan.repository, '--image-ids', `imageTag=${plan.tag}`,
