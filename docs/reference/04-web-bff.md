@@ -6,6 +6,15 @@
 
 **KO** — v2 웹 계층은 의도적으로 **얇은** BFF다. UI(SSR)와 가벼운 `/api/*` 계층만 담당하고 무거운 작업은 하지 않는다. 장시간·고메모리·팬아웃 작업은 요청 경로에서 인라인 실행하지 않고 **잡(job)으로 큐잉**하여, 웹 컨테이너를 가볍고 빠르게 롤아웃 가능한 상태로 유지한다.
 
+Bounded operator readiness waits for AgentCore, as existing chat streaming does; heavy work
+remains in the worker tier. `POST /api/deployment/readiness` permits admins or deployment-verifiers,
+uses one in-flight probe and a 60-second process cooldown, and verifies actual identity/SSM/runtime
+permissions. Resource reads stay behind the curated MCP tools.
+
+제한된 운영 검증은 채팅 스트리밍처럼 AgentCore 응답을 기다리며 무거운 작업은 워커에 둡니다.
+검증 API는 관리자·전용 verifier만 허용하고 단일 실행·60초 간격으로 실제 권한을 확인합니다.
+리소스 읽기는 지정 MCP 도구를 통합니다.
+
 ## Current design / 현행 설계
 
 **EN**

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7d6bf6646dab · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 21c5e3f1939e · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -10,6 +10,16 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
+- `scripts/v2/ci_tf_assets.py` shares Terraform's locked layer installer. Prepare invalidates
+  markers, removes stale regular ZIPs and rejects ZIP links. Pack requires known planned ZIPs;
+  untargeted Lambdas are absent from targeted planned_values. TF_PLAN_ENC_KEY HMAC binds plan/SHA/scope and
+  file paths/modes/hashes. Both APIs permit push/pull_request/workflow_dispatch, or explicit
+  local commits without an event. Key rotation invalidates signed bundles.
+  The 0600 archive may contain signing keys; integrating callers must encrypt before upload
+  and clean their plaintext/staging. Pack/restore has no workflow caller yet.
+  CI_ASSETS_READY=true validates restored layers without reinstalling. See
+  `scripts/v2/ci/pg8000-requirements.txt`, `scripts/v2/test_ci_tf_assets.py` and
+  `docs/reference/06-workers.md`.
 - `CI_DB_DIAGNOSTICS_DEV` is default-off and advisory, enabled only by manual `workflow_dispatch`
   dev plans with literal flag `true`, `--target dev`, and region `ap-northeast-2`. Invalid context
   causes no reads; state-account/STS is consistency only, not authorization or stack isolation.
@@ -96,6 +106,18 @@ legacy runbook's steps as the current operational path).
   (ADR-016), not stale content to delete outright.
 
 ## Authenticated development verification
+- Apply both `agentcore_enabled` and `ci_readiness_enabled`, then provision AgentCore.
+  Verify also requires active inventory/dispatch, `workers_enabled=true` and deployed ARM64 worker images.
+  Only that output boolean enables `DEPLOYMENT_READINESS_ENABLED`; no shell override or
+  Cognito membership grant. False/missing reports `runtime_disabled`. Capped samples cannot
+  prove absence; missing ledger, partial/failed runs and unknown attributes remain failed readiness.
+- The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
+  credentials. Prepare checks host registration (optional hostOnly); verify additionally
+  requires applied CloudFront identity, complete queued types and pre-dispatch timestamp,
+  fresh collection, web-role SSM/AgentCore proof and Lambda/Fargate completion. Current Deploy
+  Web remains DB-only until the release controller supplies this file. The billed readiness
+  route requires admin or deployment-verifiers, one in-flight call and a 60-second cooldown.
+
 - Dev-only `verify_database=true` prepares effective demo credentials privately before rollout,
   then verifies login and edge-authenticated `/api/db`; positive table count is not a ledger audit.
 - Unwrapped Terraform and private 0600/0700 files are required. The CLI's HTTP scratch shares

@@ -96,3 +96,6 @@ Architecture decision records (ADRs 001–021 + the BASELINE invariant register)
 Per-layer implementation references live under `docs/reference/` (index: [README](docs/reference/README.md)) — [01 Edge Network](docs/reference/01-edge-network.md) · [02 Auth](docs/reference/02-auth.md) · [03 Aurora Data](docs/reference/03-data-aurora.md) · [04 Web BFF](docs/reference/04-web-bff.md) · [05 AgentCore](docs/reference/05-agentcore.md) · [06 Workers](docs/reference/06-workers.md) · [07 EKS](docs/reference/07-eks.md).
 Full overview: [docs/architecture.md](docs/architecture.md) (bilingual + mermaid) · New joiners: [docs/onboarding.md](docs/onboarding.md) · Full API index (99 routes): [docs/api-reference.md](docs/api-reference.md) · Operations: [docs/runbooks/](docs/runbooks/).
 <!-- /AUTO-MANAGED:references -->
+
+Agent readiness changes require `cd agent && python3 -m pytest test_agent.py test_readiness.py -q`.
+Bounded operator permission probes wait for AgentCore; heavy domain work remains queued.

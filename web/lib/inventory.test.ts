@@ -10,6 +10,19 @@ vi.mock('@aws-sdk/client-lambda', () => ({
 beforeEach(() => { query.mockReset(); lambdaSend.mockReset(); process.env.INV_SYNC_FUNCTION = 'fn'; });
 
 describe('readResources', () => {
+  it('uses timestamp plus the full scoped primary key for stable five-row pagination', async () => {
+    query.mockResolvedValue({ rows: [] });
+    const { readResources } = await import('./inventory');
+    for (const offset of [0, 5, 10]) {
+      await readResources('cloudfront', { limit: 5, offset, accounts: '__all__' });
+    }
+    for (const [sql, params] of query.mock.calls.filter(([sql]) => String(sql).includes('FROM inventory_resources'))) {
+      expect(sql).toMatch(/ORDER BY captured_at DESC, account_id ASC, region ASC, resource_id ASC LIMIT/);
+      expect(params.at(-2)).toBe(5);
+    }
+    expect(query.mock.calls.filter(([sql]) => String(sql).includes('FROM inventory_resources'))
+      .map(([, params]) => params.at(-1))).toEqual([0, 5, 10]);
+  });
   it('returns rows + run status', async () => {
     query.mockResolvedValueOnce({ rows: [{ resource_id: 'i-1', data: { instance_type: 't3.micro' }, captured_at: 't' }] })
          .mockResolvedValueOnce({ rows: [{ status: 'succeeded', finished_at: 't', row_count: 1 }] });

@@ -6,6 +6,8 @@
 `docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
 `scripts/v2/ci_review_access.py`, `scripts/v2/ci_dns_policy.py`, `scripts/v2/ci_plan_context.py`,
 `scripts/v2/ci_db_diagnostics.py`, `scripts/v2/test_ci_db_diagnostics.py`,
+`scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/pg8000-requirements.txt`,
+`scripts/v2/test_ci_tf_assets.py`, `docs/reference/06-workers.md`,
 `scripts/v2/deploy.mjs`, `scripts/v2/deployment-smoke.mjs`,
 `scripts/v2/prepare-smoke-credentials.mjs`, `scripts/v2/authenticated-smoke.mjs`,
 `terraform/foundation/outputs.tf` (`demo_username`),
@@ -408,7 +410,7 @@ Then register the generated files (base64) as repo secrets:
 
 | Stack | Secrets |
 |---|---|
-| all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (plan-artifact encryption) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
+| all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (plan-artifact encryption and private asset HMAC; rotation invalidates signed bundles) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
 | production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` |
 | dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` / `AWS_ACCOUNT_ID_DEV` (required configured account for migrations, runtime image builds and provisioning; secret, not variable) |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
@@ -1222,6 +1224,44 @@ branch requires investigation and a fresh plan, never bypassing checks.
 이미 준비된 스택은 서비스 DNS 없이 CloudFront 연결 스모크를 검증할 수 있다. 실제 기능은
 마이그레이션·인증 경로까지 별도로 확인한다. DNS 차단·브랜치 이동 시 검사를 우회하지 않는다.
 
+### Runtime probe capability / 런타임 검증 기능
+
+For verify, apply `agentcore_enabled=true` and `ci_readiness_enabled=true`, then provision AgentCore.
+Only applied output sets `DEPLOYMENT_READINESS_ENABLED`; false/missing yields `runtime_disabled`, ignoring shell overrides.
+Also enable `steampipe_enabled=true`, `workers_enabled=true` and dispatch, and deploy inventory/ARM64
+worker images as described in [worker deployment](../reference/06-workers.md).
+검증 전 두 플래그를 적용하고 프로비저닝합니다. 환경변수 덮어쓰기나 그룹 권한은 부여하지 않습니다.
+수집·워커 플래그와 디스패치를 활성화하고 인벤토리·ARM64 워커 이미지를 먼저 배포해야 합니다.
+
+Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway schema first.
+The web API scan remains capped at 500 rows. Failures distinguish `known_resource_unverified`,
+`collection_partial`, `collection_failed`, `collection_missing` after waiting, and `inventory_incomplete`.
+Degraded inventory never passes release readiness. 미발견은 부재 증명이 아니며 런타임은 지정 ID만 조회합니다.
+웹 표본은 500행 제한이고 모든 수집 타입의 부분 실패·원장 누락·속성 미확인을 통과시키지 않습니다.
+
+`SMOKE_RUNTIME_CONFIG_FILE` is an absolute 0600 JSON file beside credentials in the same 0700 directory;
+cleanup covers both. Its 16 KiB cap, 30-minute verify window and unique type list including cloudfront are required.
+The release controller must supply actual deployment/dispatch evidence; current Deploy Web remains DB-only.
+
+`schemaVersion: 1`, `mode: "prepare"` and `expectedAccountId` check login/DB and the enabled host.
+Optional `hostOnly: true` also rejects enabled members. Verify adds `expectedCloudfrontId`,
+all acknowledged `expectedQueuedTypes` and the pre-dispatch `collectionStartedAt`, from applied
+deployment and owned Lambda evidence. It requires fresh complete collection, web SSM/runtime calls
+and succeeded Lambda/Fargate jobs. Missing/partial/stale is never healthy zero; deploy the updated
+inventory-reader Lambda so legacy NULL attribute coverage is disclosed as incomplete.
+
+`POST /api/deployment/readiness` requires an administrator or separately provisioned `deployment-verifiers`.
+Release infrastructure grants the CI identity only verifier membership, never admin/IAM authority.
+Use a fresh login after membership changes; one in-flight call and a 60-second process cooldown apply.
+
+스모크 도구는 자격증명 파일과 같은 0700 디렉터리의 0600 JSON을
+`SMOKE_RUNTIME_CONFIG_FILE`로 받으며 함께 정리합니다. 현재 Deploy Web은 DB 검증만
+연결합니다. 전체 검증 controller가 실제 배포·Lambda 응답으로 파일을 생성해야 합니다.
+prepare는 로그인·DB·활성 호스트를 확인하고 `hostOnly: true`일 때 외부 활성 계정을
+거부합니다. verify는 위 추가 필드로 최신 수집·실제 SSM/runtime·두 워커 완료를 검증합니다.
+검증 API는 관리자 또는 전용 verifier 그룹만 허용합니다. 이 앱 변경은 그룹을 만들지 않습니다. 배포 인프라가 CI 사용자를 verifier에만
+연결해야 하며 관리자·IAM 역할을 주지 않습니다. 그룹 변경 후 새 로그인과 호출 간격이 필요합니다.
+
 ### Authenticated database verification / 인증된 DB 검증
 
 After the required database migrations succeed, run **Deploy Web** on `dev` with
@@ -1344,6 +1384,77 @@ filesystem mirror와 direct 폴백 없는 `TF_CLI_CONFIG_FILE`을 준비한다. 
 localhost 상태 서버만 사용한다. Terraform 도우미는 추적된 작업 파일만 임시 디렉터리에 복사하고
 새 `TF_DATA_DIR`에서 `init -backend=false`·validate·test를 실행한다. 배포 자격증명·TF 변수와
 로컬 backend 설정·상태·`.terraform`을 사용하지 않는다.
+
+### Saved-plan asset utility / 저장 계획 asset 도구
+
+**Symptom / 증상:** a saved plan references Lambda ZIPs missing from the apply runner.
+Plan-time archive-file outputs may not be recreated under a saved-plan apply. 저장 계획의 ZIP이 새
+runner에 없으면 apply 중 자동 재빌드를 기대하지 말고 준비·전달 경로를 점검합니다.
+
+Both Terraform layer builds and CI preparation use the same hash-locked installer; CI-prepared
+layers are checked without reinstalling when `CI_ASSETS_READY=true`. Prepare invalidates its old
+marker and removes stale ZIP files before planning, rejecting ZIP symlinks. Validation checks
+the fixed required-import list and all installed file hashes.
+Pack requires every ZIP with a known hash inside `terraform show -json tfplan`, verifies its bytes,
+then authenticates plan/SHA/scope, paths, modes and hashes with `TF_PLAN_ENC_KEY` HMAC.
+Missing planned ZIPs and unknown ZIP hashes fail closed; deferred archives without known hashes
+are excluded. Pack/restore accept only push, pull_request and workflow_dispatch GitHub events,
+including when called as Python APIs; local callers supply an explicit commit without an event.
+Other events fail before work. Existing explicit plan/apply dispatches retain their SHA binding.
+Real targeted plans omit untargeted Lambda resources from planned_values even when prior_state
+retains them; their old ZIPs are not required. Keep the known-planned-ZIP completeness check.
+The 0600 `tfassets.tar.gz` is private scratch, like the plaintext plan. It can contain rendered
+Cognito signing keys and **must never be uploaded**. The utility has no upload path; the integrating
+workflow must encrypt it and clean plaintext scratch. Pack/restore is not wired to a workflow
+by this change; existing Terraform layer provisioners do use the locked installer.
+Terraform과 CI는 같은 해시 고정 설치기를 사용하며 CI asset은 재설치 없이 검사합니다.
+기존 marker는 변경 전에 무효화하고 이전 ZIP을 제거하며 ZIP 심볼릭 링크를 거부합니다.
+설치 파일 해시와 고정 import 목록을 검증합니다.
+계획 내부 해시가 알려진 ZIP은 모두 존재하고 일치해야 하며, 해시 미확정 지연 archive는 제외합니다.
+GitHub에서는 push·pull_request·workflow_dispatch만 허용하며 Python API에도 같은 규칙을 적용합니다.
+로컬 호출은 이벤트 없이 명시적 커밋을 전달합니다. 타깃 계획의 planned_values에 없는 기존 Lambda의
+ZIP은 요구하지 않으며, 실제 계획에 알려진 ZIP의 누락 검사는 유지합니다.
+ZIP을 확인한 뒤 HMAC을 계산합니다. 평문 tar에는 렌더링된 서명키가 포함될
+수 있으므로 0600 비공개 임시 파일로만 취급하고 호출 workflow가 암호화·정리해야 합니다.
+pack/restore의 workflow 연결은 별도이며 기존 Terraform 레이어 설치기는 이미 공통 lock을 사용합니다.
+
+From the repository root, test with `python3 -m pytest scripts/v2/test_ci_tf_assets.py -q`.
+The integrating CI must supply the secret without CLI arguments. Run from the foundation root,
+with a reviewed plan/source SHA and trusted flags; pack happens after Terraform creates ZIPs:
+루트에서 테스트합니다. 통합 CI가 시크릿을 공급하고 plan이 ZIP을 만든 뒤 pack해야 합니다.
+
+```bash
+cd terraform/foundation
+# Trusted configuration, before plan:
+printf '%s' '{"steampipe_enabled":true,"workers_enabled":true}' | python3 ../../scripts/v2/ci_tf_assets.py prepare --scope full
+# After a reviewed tfplan exists; GITHUB_SHA and TF_PLAN_ENC_KEY must already be set:
+python3 ../../scripts/v2/ci_tf_assets.py pack --scope full
+# Only after the integrating workflow encrypts/transports/decrypts both private files:
+python3 ../../scripts/v2/ci_tf_assets.py restore --scope full
+python3 ../../scripts/v2/ci_tf_assets.py check-layer --layer inv_layer # only if inventory is enabled
+python3 ../../scripts/v2/ci_tf_assets.py check-layer --layer pg8000_layer # only if workers are enabled
+# Controller only, after the existing identity/review/DNS gates approve this saved plan:
+CI_ASSETS_READY=true terraform apply -input=false tfplan
+# The integrating workflow's always-cleanup must remove its own plaintext plan/bundle/staging.
+```
+
+Missing/mismatched authentication, plan or content requires a fresh reviewed plan/bundle,
+not rebuilding under an old approval. See `scripts/v2/ci_tf_assets.py`,
+`scripts/v2/ci/pg8000-requirements.txt` and `scripts/v2/test_ci_tf_assets.py`.
+Key rotation also invalidates existing signed bundles. Dependency updates must change the lock,
+its verified wheel hashes and the four shared-layer pins in
+`scripts/v2/{workers,steampipe,incident,remediation}/requirements.txt`; the validator checks all five.
+The separate `scripts/v2/steampipe/Dockerfile` image pin/installer is outside the Lambda lock.
+See [worker build inputs](../reference/06-workers.md).
+Check `LAYER_IMPORTS` when updating wheels. A killed restore may retain a private previous-build
+directory; retrying a verified restore is safe. Its integrating job owns later cleanup, after
+the retained copy is no longer needed. Never blindly delete another job's staging directory.
+시크릿 교체 시 기존 bundle도 무효화됩니다. 의존성 변경은 lock·wheel 해시와
+workers/steampipe/incident/remediation의 네 requirements pin을 함께 갱신하며 다섯 pin을 검사합니다.
+별도 Steampipe Dockerfile의 이미지 pin·설치기는 Lambda lock 밖입니다.
+불일치는 새 검토 계획/bundle로 해결합니다. 제품 변경 경계는 ADR-005를 따릅니다.
+wheel 변경 때 LAYER_IMPORTS도 확인합니다. 중단된 복원의 비공개 백업은 검증된 재시도로 복구할 수
+있으며, 더 이상 필요 없을 때 해당 작업이 정리합니다. 다른 작업의 staging은 임의로 삭제하지 않습니다.
 
 Related ADRs / 관련 ADR: **ADR-002** (edge authentication/private HTTPS boundaries),
 **ADR-005** (operator CI migration versus product AWS-resource mutation/autonomy), and

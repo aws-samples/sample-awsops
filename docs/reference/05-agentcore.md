@@ -63,6 +63,24 @@ row를 가리지 않는다. Phase 2가
 domain-aware coverage를 확장하고 parity 뒤 direct target을 retirement하므로 Aurora-only는
 아직 live가 아니다. Phase 3 cache도 pending이며 ADR-005 FROZEN은 바뀌지 않는다.
 
+For CloudFront, optional `query_inventory.resource_id` performs a validated, parameterized
+identity lookup (one row, no origins/aliases). Responses mark `projection=identity_only` and
+echo the ID; omitted attributes are outside this projection. **Deployment gate:** first apply the
+reviewed Terraform plan for the inventory Lambda, then run AgentCore deployment (`make agentcore`)
+to update the gateway schema. `make agentcore` does not ship Lambda code. Schema-first rollout lets
+the old Lambda ignore the ID and return an unmarked bulk list. Consumers must require
+`projection=identity_only` and a matching echoed ID; missing/mismatched metadata means unverified,
+never an exact result or absence proof. Existing sql_reader views/grants suffice; no mutation or migration is added.
+A miss includes a fixed note directing readers to freshness/direct reads, not an AWS-absence verdict.
+
+CloudFront의 선택적 `resource_id`는 검증·바인딩된 ID 한 행만 조회합니다. 응답은
+identity-only projection과 ID를 명시하므로 속성 누락을 부재로 판단하지 않습니다.
+먼저 검토한 Terraform 계획으로 Lambda를 배포하고, 이후 AgentCore 배포(`make agentcore`)로 Gateway
+스키마를 갱신한다. 순서를 바꾸면 이전 Lambda가 ID를 무시하고 일반 목록을 반환할 수 있다.
+클라이언트는 projection과 ID 일치를 확인하며 누락·불일치는 미확인으로 처리한다.
+origin/alias는 이 projection에 없으며 기존 읽기 뷰/권한을 사용한다. AWS 변경·migration은 추가하지 않는다.
+미발견 응답은 신선도·직접 조회를 확인하도록 명시하며 AWS에서 리소스가 없다는 뜻이 아닙니다.
+
 **Provisioner:** `scripts/v2/agentcore/{catalog.py, provision.py, provision_report.py}` — `catalog.py` holds
 the 9 gateway names + the target tool schemas; `provision.py` does boto3 `list →
 create/update` for Runtime, the 9 gateways, the target slices, Memory, and the Code
@@ -88,7 +106,8 @@ advisory structured checks when available. Invocation transport failures still f
 
 The structured check traverses the Ops inventory tools and the model through the producer.
 It accepts one SSE payload (optional data spacing, event/id/comments and `[DONE]`), checks
-nonce/account and fixed booleans, and treats `count` as a capped 1–500 sample.
+nonce/account and fixed booleans, and retains a count protocol cap of 500. The current
+exact lookup reports zero or one identity match; success requires a positive count.
 `ageMinutes` is bounded to 0–1440 for validation; freshness comes from the MCP producer's
 `stale_after_minutes` classifier, not a hard 15-minute client threshold.
 This optional CLI smoke is not the full web/worker release gate or a Memory/Code Interpreter test.
@@ -104,7 +123,8 @@ inventory가 필요하고, 다른 스택은 참고용 호환 검사를 유지한
 provisioner가 이를 `DEPLOYMENT_READINESS_ENABLED`로 전달하며, 누락·false는 주변 환경변수가
 true여도 검증 모드를 비활성화한다.
 구조화 검사는 Ops inventory 도구와 모델을 거치며 SSE payload 하나·nonce/계정·고정 boolean을
-검증한다. count는 최대 500개 표본이고 ageMinutes 0–1440은 검증 범위다. 실제 freshness는
+검증한다. count의 프로토콜 상한은 500이지만 현재 정확한 ID 조회는 0 또는 1개 일치를 반환하며,
+성공에는 양수 count가 필요하다. ageMinutes 0–1440은 검증 범위다. 실제 freshness는
 MCP의 `stale_after_minutes` 분류를 따르며 15분 하드코딩이 아니다. 전체 웹/워커 배포 gate나
 Memory/Code Interpreter 기능 검증을 대신하지 않는다.
 
@@ -192,3 +212,14 @@ Consolidates three source docs (now archived):
 
 Review: `v2-p1f-scope-architecture-review` (private upstream repo)
 (3-AI cross review — MID-minus scope decision, least-privilege roles, SSM-not-valueFrom).
+
+## Deployment readiness mode / 배포 검증 모드
+
+`agent/readiness.py` implements bounded, default-off `mode=deployment_readiness`. Apply `ci_readiness_enabled=true` with AgentCore enabled, then provision.
+Only the applied `agentcore.deployment_readiness_enabled` sets `DEPLOYMENT_READINESS_ENABLED`; shell overrides are ignored.
+Fixed MCP tools read one CloudFront identity; producer freshness and bounded inference leave unknown attributes unassessed.
+Nonce/account-bound responses retain completed checks on timeout; admin or separately provisioned deployment-verifiers and process cooldown are required.
+Invocation discovery rejects PENDING/malformed ARNs before caching and stops on an explicitly empty runtime parameter.
+
+기본 비활성 모드이며 `ci_readiness_enabled=true`를 적용한 output으로 프로비저닝합니다. 환경변수 덮어쓰기는 무시하고 MCP 지정 ID·원본 신선도·제한된 모델 요청만 사용합니다.
+누락 속성은 미평가이며 타임아웃에도 완료 증거를 보존합니다. 관리자/별도 verifier와 호출 간격이 필요하고 PENDING·잘못된 ARN은 캐시하지 않으며 빈 런타임 경로는 호출 조회를 비활성화합니다.

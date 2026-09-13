@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f2b397bd1048 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f967afe7310d · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -38,7 +38,7 @@ node --test scripts/v2/ci/*.test.mjs
 node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs
 
 # agent (Python)
-cd agent && python3 -m pytest test_agent.py -q
+cd agent && python3 -m pytest test_agent.py test_readiness.py -q
 
 # Terraform (controller runs apply on shared infra; agents do NOT auto-approve)
 terraform -chdir=terraform/foundation init -backend-config=backend.hcl

@@ -1,5 +1,21 @@
 # Runbook — Steampipe 쿼터 및 인벤토리 신선도 / Steampipe Quota and Inventory Staleness
 
+## Optional host scope / 선택적 호스트 범위
+
+`INVENTORY_HOST_ONLY=true` requires `EXPECTED_HOST_ACCOUNT_ID` and exactly one enabled
+host row matching fresh STS identity. Wrong scope or exhausted identity retries prevents
+startup or stops collection with exit 1. Transient STS calls get three total attempts;
+ordinary SIGTERM remains a graceful exit. Stop and restart share a lock, and crash backoff
+is interruptible. Defaults preserve the existing multi-account renderer. Before enabling,
+prepare the host registry and ensure the account-management path enforces the intended scope.
+
+`INVENTORY_HOST_ONLY=true`에서는 예상 계정과 활성 호스트 행 하나가 STS 식별자와
+일치해야 합니다. 잘못된 범위나 재시도 소진은 시작을 막거나 종료 코드 1로 수집을
+중단합니다. 일시적 STS 실패는 총 3회까지만 시도하며 일반 SIGTERM은 정상 종료입니다.
+종료와 재시작은 같은 잠금을 사용하고 backoff도 중단됩니다. 기본 다중 계정 동작은
+유지하며, 활성화 전에 호스트 행과 계정 관리 경로의 범위 제어를 준비합니다.
+
+
 > Data-flow diagram / 데이터 흐름 다이어그램: [`docs/diagrams/inventory-freshness-dataflow.html`](../diagrams/inventory-freshness-dataflow.html) (archify — collector → guard → ledger → freshness disclosure)
 
 Phase 1의 Steampipe 인벤토리 sync를 운영하는 절차다. Phase 1 구현은 저장소에 있다. **이 변경을 수행한 에이전트는 Terraform apply를 실행하지 않았으며, controller의 실제 배포 상태는 별도로 확인해야 한다.** 현재 ops gateway의 제한된 Aurora `inventory-read-target`은 direct domain inventory/configuration target과 공존한다.
@@ -221,8 +237,14 @@ In Aurora, `inventory_sync_runs` is the per-type current-run ledger; `last_succe
 
 - `unavailable`: no durable last success, including a first failed/partial run with current rows.
 - `stale`: effective data age is greater than `inventory_stale_after_minutes` (default 30).
-- `degraded`: current status is `partial`, `failed`, or `running`, while effective data is still within the threshold — or current status is `succeeded` with `unknown_attribute_count > 0`.
-- `healthy`: current status is `succeeded`, `unknown_attribute_count` is 0/null, and effective data is within the threshold.
+- `degraded`: current status is `partial`, `failed`, or `running`, while effective data is still within the threshold — or current status is `succeeded` with `unknown_attribute_count` null or > 0.
+- `healthy`: current status is `succeeded`, `unknown_attribute_count` is exactly 0, and effective data is within the threshold.
+
+NULL means unmeasured coverage, including older runs; only a new measured sync can establish zero.
+The deployment probe requires complete evidence for every acknowledged type. Hydrate fallback remains
+valid degraded inventory for ordinary readers, but fails that stricter probe as `inventory_incomplete`.
+NULL은 과거 실행을 포함한 미측정 상태이며 새 수집으로 확인해야 0으로 판단합니다.
+일반 조회에서 허용하는 하이드레이트 폴백도 모든 타입의 완전한 증거를 요구하는 배포 검증은 통과하지 않습니다.
 
 `unknown_attribute_count`는 steady-state denial(예: SCP로 막힌 bucket의 PAB/policy-status/versioning/encryption/logging 읽기)로 blind 처리된 attribute read 수다. 이 값은 공개되는 freshness를 degrade시키지만 stale row pruning이나 durable `last_success_at`을 막지 않는다 — 하나의 denied bucket이 pruning을 영구히 비활성화하면 안 되기 때문이다. 반대로 transient 실패(throttle 등)로 일부 attribute가 unknown이 된 rec은 아예 upsert하지 않고 건너뛴다: upsert는 `sdk_partial`이 prune을 막기 *전에* 실행되므로, 쓰면 이미 알고 있던 값이 NULL로 덮이면서 `captured_at`은 최신으로 갱신된다. rec을 건너뛰면 counted failure가 run을 partial로 유지하고, 건너뛴 prune이 그 row의 last-known-good 내용을 그대로 보존한다. CloudFront VPC origin의 `get_distribution_config` 실패도 모든 row의 origin-ref 귀속을 불완전하게 만들므로 같은 이유로 rows 전체를 버린다.
 

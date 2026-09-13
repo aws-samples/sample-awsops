@@ -106,6 +106,11 @@ run "deferred_service_dns_keeps_tls_and_validation" {
   }
 
   assert {
+    condition     = !var.ci_readiness_enabled && output.agentcore == null
+    error_message = "Readiness defaults off and disabled AgentCore has no provisioning output."
+  }
+
+  assert {
     condition     = length(aws_route53_record.alias) == 0
     error_message = "Deferred service DNS must plan no public service A records."
   }
@@ -133,6 +138,23 @@ run "deferred_service_dns_keeps_tls_and_validation" {
   assert {
     condition     = aws_acm_certificate_validation.cf[0].validation_record_fqdns == toset(["_primary.dev.example.com.", "_extra.extra.example.com."]) && aws_acm_certificate_validation.alb[0].validation_record_fqdns == toset(["_primary.dev.example.com.", "_extra.extra.example.com."])
     error_message = "Both managed certificates must share the existing validation record owner."
+  }
+}
+
+run "readiness_flag_reaches_provisioning" {
+  command = plan
+  variables {
+    agentcore_enabled    = true
+    ci_readiness_enabled = true
+  }
+  override_resource {
+    target          = aws_ecr_repository.agentcore[0]
+    override_during = plan
+    values          = { repository_url = "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/fixture-agent" }
+  }
+  assert {
+    condition     = output.agentcore.deployment_readiness_enabled == true
+    error_message = "The applied readiness flag must reach the provisioner without an environment override."
   }
 }
 

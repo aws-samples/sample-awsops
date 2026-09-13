@@ -59,7 +59,7 @@ COVERAGE_NOTE = ("Derived from the synced Aurora inventory (inventory_resources)
                  "here. query_inventory and inventory_summary carry a per-type freshness block "
                  "(healthy | degraded | stale | unavailable) classified from the durable "
                  "last_success_at and the oldest captured_at of current rows; degraded also covers "
-                 "succeeded runs with attribute blind spots (unknown_attribute_count > 0). For this "
+                 "succeeded runs with unknown attribute coverage (unknown_attribute_count null or > 0). For this "
                  "tool's data, call inventory_summary().")
 
 TRACE_TOPOLOGY_NOTE = (
@@ -401,7 +401,7 @@ def _fetch_by_type(types):
     return out
 
 
-def _fetch_one_type(rtype, limit):
+def _fetch_one_type(rtype, limit, resource_id=None):
     """Backs `query_inventory`, the one tool where the model picks `rtype` — so unlike
     `_fetch_by_type` (called only with the fixed TOPOLOGY_TYPES set), this can be asked about a type
     with no PROJECTIONS entry.
@@ -415,9 +415,16 @@ def _fetch_one_type(rtype, limit):
     way) does not fix the incompleteness by itself; the honesty fix is the `limited` flag the caller
     surfaces so nothing downstream mistakes a partial object for a complete one.
     """
-    rows = _execute("SELECT " + _projected_select(rtype) + " AS data FROM inventory_resources "
-                    "WHERE account_id = 'self' AND resource_type = :rt LIMIT " + str(int(limit)),
-                    params=[{"name": "rt", "value": {"stringValue": rtype}}])
+    params = [{"name": "rt", "value": {"stringValue": rtype}}]
+    predicate, projection = "", _projected_select(rtype)
+    if resource_id is not None:
+        predicate = " AND resource_id = :rid"
+        params.append({"name": "rid", "value": {"stringValue": resource_id}})
+        projection, limit = "jsonb_build_object('id', resource_id)", 1
+    rows = _execute("SELECT " + projection + " AS data FROM inventory_resources "
+                    "WHERE account_id = 'self' AND resource_type = :rt" + predicate
+                    + " ORDER BY captured_at DESC, account_id, region, resource_id LIMIT " + str(int(limit)),
+                    params=params)
     return [_coerce(r.get("data")) for r in rows]
 
 
@@ -428,8 +435,8 @@ def _sync_freshness(resource_type=None):
     rows behind newer rows. When no rows exist, the durable last_success_at keeps a genuine
     zero-row success visible across later running/failed/partial attempts.
 
-    A succeeded run with attribute blind spots (unknown_attribute_count > 0 — attribute reads
-    denied in steady state) reports 'degraded', not 'healthy': the denial must not block pruning
+    A succeeded run with unknown coverage (unknown_attribute_count null or > 0 — unmeasured or
+    denied attribute reads) reports 'degraded', not 'healthy': this must not block pruning
     or last_success_at, but the reader must not be told the sweep saw everything either.
     """
     stale_after = _inventory_stale_after_minutes()
@@ -478,7 +485,7 @@ def _sync_freshness(resource_type=None):
         "WHEN latest_success_at < CURRENT_TIMESTAMP - "
         "(:stale_after_minutes * INTERVAL '1 minute') THEN 'stale' "
         "WHEN status IN ('partial', 'failed', 'running') THEN 'degraded' "
-        "WHEN status = 'succeeded' AND COALESCE(unknown_attribute_count, 0) > 0 THEN 'degraded' "
+        "WHEN status = 'succeeded' AND (unknown_attribute_count IS NULL OR unknown_attribute_count > 0) THEN 'degraded' "
         "WHEN status = 'succeeded' THEN 'healthy' "
         "ELSE 'unavailable' END AS freshness, "
         "CASE WHEN latest_success_at IS NULL THEN NULL ELSE "
@@ -566,17 +573,26 @@ def lambda_handler(event, context):
         rtype = arguments.get("resource_type") if isinstance(arguments, dict) else None
         if not rtype:
             return {"statusCode": 400, "body": json.dumps({"error": "resource_type required"})}
+        resource_id = arguments.get("resource_id")
+        if resource_id is not None and (rtype != "cloudfront" or not isinstance(resource_id, str)
+                                            or not re.fullmatch(r"[A-Z0-9]{5,32}", resource_id)):
+            return {"statusCode": 400, "body": json.dumps({"error": "valid CloudFront resource_id required"})}
         try:
             limit = min(int(arguments.get("limit", 200)), 500) if isinstance(arguments, dict) else 200
         except (TypeError, ValueError):
             limit = 200  # a hallucinated non-numeric limit must not 500
-        rows = _fetch_one_type(rtype, limit)
+        rows = _fetch_one_type(rtype, limit, resource_id)
         result = {
             "resource_type": rtype,
             "count": len(rows),
             "resources": rows,
             "freshness": _freshness_for_type(rtype),
         }
+        if resource_id is not None:
+            result.update(projection="identity_only", resource_id=resource_id)
+            if not rows:
+                result["note"] = ("No matching identity was observed in the host/self synced inventory. "
+                                  "This is not evidence of absence in AWS; check freshness or a direct CloudFront read.")
         if rtype not in PROJECTIONS:
             # PR #197 review MAJOR: an unregistered type's `resources` entries only carry whatever
             # keys happen to be on SOME other type's projection allowlist — genuinely absent fields

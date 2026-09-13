@@ -6,6 +6,26 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
+- `v2/agentcore/provision.py` maps the applied `agentcore.deployment_readiness_enabled` boolean
+  to `DEPLOYMENT_READINESS_ENABLED`; missing/false is off and shell overrides are ignored.
+
+- `v2/ci_tf_assets.py` prepares hash-locked pg8000 layers and transports plan/SHA/scope-bound
+  Lambda assets, validating paths, modes and hashes. Pack requires every ZIP with a known
+  saved-plan hash and verifies its bytes; deferred archives without known hashes are excluded.
+  Pack/restore share an event allowlist: push, pull_request or workflow_dispatch in GitHub;
+  local callers supply an explicit commit without a GitHub event. Other events fail before work.
+  Pack/restore require `TF_PLAN_ENC_KEY` for HMAC authentication. The 0600 plaintext tarball is
+  private scratch and may contain rendered secrets; this utility cannot upload it. Callers must
+  encrypt before publication and clean plaintext files afterward.
+  `v2/ci/pg8000-requirements.txt` is the single layer-install lock. Both Terraform paths call
+  build-layer, or check-layer when CI_ASSETS_READY=true; lock/script changes trigger rebuilding.
+  Prepare invalidates old markers and removes stale regular ZIPs before building; it rejects
+  ZIP symlinks. Schema-2 markers bind installed-file hashes; validation also checks the fixed
+  required-import list. The pin validator checks this lock and all four shared-layer consumers:
+  `v2/{workers,steampipe,incident,remediation}/requirements.txt`. Update these together with
+  verified wheel hashes. The separate Steampipe container's `v2/steampipe/Dockerfile` pin and
+  installer are outside the Lambda lock/validator. `v2/test_ci_tf_assets.py` covers these
+  contracts and restore recovery.
 - `v2/configure.mjs` — `make configure`: interactive TUI → `terraform.tfvars` + `backend.hcl`.
   AWS access shells out to the `aws` CLI, not the SDK.
 - `v2/deploy.mjs` — `make deploy` (runs migrate first): arm64 build → ECR push →
@@ -19,7 +39,7 @@ secrets-manager) — installed by `make deps`.
 - `v2/authenticated-smoke.mjs` — login plus edge-authenticated `/api/db` verification. Preserve
   Host/SNI/TLS; report only the phase and validated HTTP status, never bodies/cookies/passwords.
   The CLI keeps HTTP scratch files under the prepared credential directory so the workflow's
-  always-cleanup owns them; standalone calls prefer RUNNER_TEMP. Response files are capped at 64 KiB.
+  always-cleanup owns them; standalone calls prefer RUNNER_TEMP. Response files default to 64 KiB; only the bounded CloudFront inventory leg permits 2 MiB.
 - `v2/ci_dns_policy.py` — reads Terraform state to preserve managed certificate ownership
   (JSON null) and existing service aliases; verifies operator-selected/attached certificates
   without account-wide selection. Redacts public summaries. Blocks all Route53/Cloud Map
@@ -84,7 +104,7 @@ secrets-manager) — installed by `make deps`.
   gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
-- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads}.py` —
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads,tf_assets}.py` —
   workflow fixtures, real no-provider plans and a localhost state backend verify deployment
   gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active
@@ -138,12 +158,10 @@ secrets-manager) — installed by `make deps`.
   preserves child failure exit codes. Optional smoke runs after provisioning: strict on dev;
   elsewhere compatible invocation/advisory checks remain and transport errors still fail.
   Structured mode needs the readiness producer, runtime_deployment and enabled inventory.
-  Applied `agentcore.deployment_readiness_enabled` must be literal boolean true to enable
-  the runtime probe. Missing/false values disable it; ambient DEPLOYMENT_READINESS_ENABLED
-  cannot override the applied output.
   Accept one real SSE payload after optional data spacing, event/id/comments and [DONE].
-  Match nonce/account/fixed checks; count is a capped sample (1–500), ageMinutes 0–1440 is
-  only a validation bound. Freshness uses the producer's MCP stale_after_minutes classifier,
+  Match nonce/account/fixed checks; the count protocol cap is 500, while the current exact
+  lookup reports zero or one identity match. Success requires a positive count. AgeMinutes
+  0–1440 is only a validation bound. Freshness uses the producer's MCP stale_after_minutes classifier,
   never a local hard 15-minute threshold. Missing dev prerequisites are coded smoke failures,
   not pre-provision blockers on production. CLI smoke does not prove Memory/Interpreter use
   or the full authenticated web/collection/worker release gate.
@@ -185,3 +203,9 @@ secrets-manager) — installed by `make deps`.
   `terraform -chdir=terraform/foundation output`) — prefer the Makefile targets over running
   scripts directly.
 - For the emergency IAM `put-role-policy` convention, see `terraform/CLAUDE.md`.
+
+`v2/runtime-smoke.mjs` accepts explicit private prepare/verify configuration. Prepare
+checks the host registry; optional hostOnly rejects members. Verify requires complete
+fresh collection, real web-role runtime evidence and owned worker completion. The file
+is at most 16 KiB, collectionStartedAt at most 30 minutes old, and queued types unique
+with cloudfront included. The utility alone does not wire a deployment workflow.
