@@ -93,7 +93,7 @@ reader output이 정의된 빈 문자열이면 비밀번호 동기화를 끄지�
 | `AURORA_SECRET_ARN` | Required **master** secret identifier; JSON `username` must be `awsops_admin`, password a nonempty string / `awsops_admin` master 시크릿 |
 | `SQL_READER_SYNC_MODE` | Explicit `secret` or `disabled`; no runtime `terraform` mode / 명시적 모드 필수 |
 | `SQL_READER_SECRET_ARN` | Required only with `secret`; omit or empty with `disabled`. JSON username must be exactly `awsops_sql_reader`, password a nonempty string / reader 전용 시크릿 |
-| `INITIALIZE_EMPTY_DB` | Optional one-shot `1` for verified empty DB / 최초 빈 DB 초기화 |
+| `INITIALIZE_EMPTY_DB` | Optional `1` for verified empty DB; one-shot host command, retained in the manual CI template / 최초 빈 DB 초기화; 수동 CI 템플릿 예외는 위 설명 참조 |
 | `BOOTSTRAP` | Optional controller-confirmed `1` for legacy INTEGER ledger / 기존 INTEGER 원장 전환 |
 | `APP_VERSION` | Optional release stamp fallback; otherwise `web/package.json`; `-- since:` takes precedence / release 기록 |
 | `STATUS`, `DRY_RUN`, `OFFLINE` | `1` enables the inspection modes described above / 위 조회 모드 |

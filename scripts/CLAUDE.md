@@ -45,13 +45,18 @@ secrets-manager) — installed by `make deps`.
   fallback), requiring AWS_REGION and SQL_READER_SYNC_MODE=secret|disabled; secret mode also
   requires SQL_READER_SECRET_ARN. AURORA_SECRET_ARN means master here. TLS verifies the
   bundled RDS CA and hostname. `initialize-db.mjs` atomically initializes only a verified-empty
-  DB with one-shot INITIALIZE_EMPTY_DB=1; existing integer ledgers still require BOOTSTRAP=1.
+  DB with INITIALIZE_EMPTY_DB=1 (one-shot host command; manual CI template retains the
+  guarded flag). Existing integer ledgers still require BOOTSTRAP=1.
   Non-null baseline/ULID checksums are immutable. Reader elevation is checked even in disabled
   mode; enabled sync with a missing role fails. `migration-errors.mjs` preserves bounded,
   encoded NOTICE/P0001 text and validated identifiers only during reviewed baseline/ULID SQL.
   Secret/connection/reader-sync phases expose only safe codes/context, never secret bodies.
   Client error events and cleanup failures fail closed; success follows connection cleanup.
   `v2/ci/Dockerfile.migration` is the ARM64 nonroot/read-only-filesystem runtime, using CMD.
+- `v2/ci/run-migration.mjs` — manual development controller used by
+  `.github/workflows/deploy-migrations.yml`: clone the reviewed ARM64 template with an
+  immutable image digest, run one private task, verify ownership/exit, and clean up only that run.
+  Read retries are bounded; public failure categories use the runtime diagnostic contract.
 - `v2/agentcore.mjs` + `agentcore/` — `make agentcore`: arm64 agent image + idempotent
   provisioner, writes to SSM.
 - `v2/*.itest.mjs` — migration integration tests against a disposable PostgreSQL 17 container.

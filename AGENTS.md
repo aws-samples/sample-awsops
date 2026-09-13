@@ -50,7 +50,7 @@ make deploy      # migrate → buildx arm64 → ECR push → ECS roll → wait s
 make agentcore   # arm64 agent image + idempotent AgentCore provisioner (MCP Lambda code ships via terraform apply, NOT this)
 make workers     # arm64 worker image push (after apply with workers_enabled=true)
 ```
-Private migration `scripts/v2/ci/` tests are required: bare `docker` on PATH, reachable daemon and OpenSSL; no automatic `sudo`/`DOCKER` override. This is the fail-hard exception to legacy optional `scripts/v2/*.itest.mjs`. Runtime/controller/workflow fixtures and mocked Terraform plans are included; PyYAML and Terraform 1.15.7 are required in addition to locked Node dependencies.
+Private migration offline `scripts/v2/ci/*.test.mjs` fixtures require locked Node dependencies, PyYAML and Terraform 1.15.7; runtime/controller/workflow and mock-plan checks make no AWS calls. The separate `scripts/v2/ci/migration.itest.mjs` suite additionally requires bare `docker` on PATH, a reachable daemon and OpenSSL, with no automatic `sudo`/`DOCKER` override. That PostgreSQL suite is the fail-hard exception to legacy optional `scripts/v2/*.itest.mjs`.
 
 No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scripts/v2/package.json` (`make deps` runs `npm ci --prefix scripts/v2`). `next build` fails on app-level type errors but `*.test.ts(x)` type noise is non-blocking.
 

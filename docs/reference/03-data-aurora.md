@@ -106,6 +106,10 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
 
 ## Key files / 핵심 파일
 
+- `terraform/foundation/ci-migrations.tf`, `.github/workflows/deploy-migrations.yml`,
+  `scripts/v2/ci/run-migration.mjs` — default-off manual development migration task,
+  scoped secret-read IAM and verified private execution (ADR-005 operator boundary).
+  기본 비활성 수동 개발 migration·시크릿 한정 IAM·검증된 사설 실행을 담당한다.
 - `terraform/foundation/data.tf` — KMS key + alias, DB subnet group, SG,
   Aurora cluster + writer instance, RDS-managed master secret.
 - `terraform/foundation/data/schema.sql` — ADR-001 7-table schema + `schema_migrations`

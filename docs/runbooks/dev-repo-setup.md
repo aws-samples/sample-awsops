@@ -1,9 +1,10 @@
 # CI/OIDC bring-up (single repo) / CI·OIDC 활성화 (단일 리포)
 
-Related files / 관련 파일: `.github/workflows/{deploy-web,deploy-preview,terraform,deploy-agentcore}.yml`,
+Related files / 관련 파일: `.github/workflows/{deploy-web,terraform,deploy-agentcore,deploy-migrations}.yml`,
 `docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
 `scripts/v2/ci_review_access.py`, `scripts/v2/ci_dns_policy.py`, `scripts/v2/ci_plan_context.py`,
 `scripts/v2/deploy.mjs`, `scripts/v2/deployment-smoke.mjs`,
+`scripts/v2/ci/run-migration.mjs`, `terraform/foundation/ci-migrations.tf`,
 `terraform/foundation/tests/dns_deferred.tftest.hcl`, `docs/reference/01-edge-network.md`
 
 > Historical note: this file previously described the two-repo split
@@ -408,6 +409,12 @@ gh secret set TF_TFVARS_DEV -R aws-samples/sample-awsops \
   --body "$(base64 -w0 terraform/foundation/terraform.tfvars)"
 ```
 
+Nonsecret dev repository variables are `DOMAIN_NAME_DEV` / `HOSTED_ZONE_NAME_DEV` (paired names),
+`CERTIFICATE_MODE_DEV` (`preserve` by default), and `CI_MIGRATIONS_ENABLED_DEV` (`false` by default).
+These select reviewed deployment behavior; credentials stay in the secrets above.
+dev의 일반 저장소 변수는 도메인/존 이름 쌍, 기본 `preserve`인 인증서 모드, 기본 `false`인
+`CI_MIGRATIONS_ENABLED_DEV`이다. 배포 선택값이며 자격증명은 위 시크릿에 유지한다.
+
 The distinct NAMES are the isolation: a dev/preview job can never fall back to the
 production pair. From then on, terraform changes flow through `terraform.yml`.
 Automatic PR/push plans are advisory. Apply requires a successful explicit `mode=plan`
@@ -665,7 +672,9 @@ runs one Fargate task in the existing private subnets with the existing service 
    resources are added, then use its existing saved-plan `apply` dispatch. Keep the
    current DNS, edge, authentication, web task image and desired count intact.
 3. Confirm the existing dev build/deployer OIDC roles and backend secrets are configured.
-   `TF_TFVARS_DEV` must contain exactly one literal, single-line `project = "…"` assignment.
+   `TF_TFVARS_DEV` accepts at most one literal, single-line `project = "…"` assignment.
+   If absent (including `make configure` output), the foundation default `awsops-v2` is used;
+   the applied migration output must still match that project/account/region.
    This workflow accepts the existing `ap-northeast-2` deployment region only, without
    cross-stack fallback. The SQL reader sync is enabled only when AgentCore is enabled.
 4. Dispatch **Migrate Development Database** from the current `dev` HEAD. It accepts no
@@ -676,7 +685,9 @@ runs one Fargate task in the existing private subnets with the existing service 
 명시적 plan → 저장된 plan apply 절차로만 인프라를 준비한다. PR은 base branch가 `dev`일 때만
 해당 변수를 읽고 다른 스택에는 전달하지 않는다. tfvars보다 CI 플래그가 우선하며 apply는 저장된
 값을 사용한다. DNS·edge·인증·웹 이미지·desired count를 유지한다. 개발 OIDC 역할과 backend
-secret을 준비하고, `TF_TFVARS_DEV`에 명시적 project 문자열과 지원 리전을 사용한다.
+secret을 준비한다. `TF_TFVARS_DEV`의 project 문자열은 최대 한 번만 지정하며,
+생략하면 `make configure`와 동일하게 foundation 기본값 `awsops-v2`를 사용한다.
+적용된 output의 프로젝트·계정·리전 일치는 계속 필수다.
 이후 현재 `dev` HEAD에서 마이그레이션을 dispatch한다. 브랜치가 이동하면 새 HEAD로 다시 실행한다.
 
 For a controller reviewing a local Terraform plan, the equivalent opt-in is:
@@ -706,7 +717,7 @@ An access denial is a failed run, never permission to substitute a more privileg
 | Dev deployer `iam:PassRole` | Exactly the project's `-task-execution` and `-migration-task` roles, with `iam:PassedToService = ecs-tasks.amazonaws.com`; no arbitrary role pass. |
 | Dev deployer cleanup | `ecs:DescribeTasks` / `ecs:StopTask` limited to the project's task ARN prefix and cluster; `ecs:ListTasks` constrained to that cluster. The controller additionally checks run identity, exact registered revision and task ARN before stopping. |
 | Optional failure-log reader | `logs:GetLogEvents` only for `/ecs/<project>-migration`, stream prefix `migration/migration/`. No log-wide search is needed. |
-| Migration task role | `secretsmanager:GetSecretValue` for this Aurora master secret, plus the project's SQL reader secret only when AgentCore is enabled. Aurora CMK `kms:Decrypt` requires Secrets Manager and the master secret's encryption context. No ECS, ECR, IAM, DNS, secret-write or application mutation permissions. |
+| Migration task role | `secretsmanager:GetSecretValue` for this Aurora master secret, plus the project's SQL reader secret only when AgentCore is enabled. Aurora CMK `kms:Decrypt` requires Secrets Manager and the master secret's encryption context. No AWS-side mutation permissions (ECS/ECR/IAM/DNS/secret writes); schema DDL uses the database credentials. |
 | Existing execution role | Existing private ECR pull and CloudWatch log delivery. Database credentials are fetched by the task role at runtime, never through ECS environment/secrets injection. |
 
 기존 CI 역할의 ECR·ECS·PassRole·backend·로그 권한을 위 범위로 확인한다. 거부되면 실행 실패로
@@ -720,6 +731,11 @@ not a job output. The controller verifies the digest in the expected ECR reposit
 checks current `dev` SHA immediately before `RunTask`, and requires task **STOPPED**,
 the same running-image digest, and the migration container's **numeric `exitCode: 0`**.
 Missing/string/null exit codes cannot pass.
+
+Migration logs retain 14 days; disabling the flag destroys the log group and its retained history.
+After changing AgentCore/reader settings, review and apply the migration template before dispatch.
+로그 보존은 14일이며 플래그 비활성화 시 로그 그룹과 이력이 삭제된다. AgentCore/reader 설정을
+바꾸면 migration 템플릿을 검토·적용한 후 dispatch한다.
 
 The migration wait is at most 20 minutes plus a bounded in-flight API request. Each CLI call
 is capped at 20 seconds; cleanup polls for at most two minutes plus bounded in-flight calls.
@@ -751,6 +767,7 @@ After a successful migration, deploy the reviewed web image and verify authentic
 마이그레이션 성공 후 검토한 웹 이미지를 배포하고 인증된 DB 접근을 확인한 뒤 서비스 DNS를 게시한다.
 
 Offline controller checks require Node 20, Python 3 with PyYAML, Terraform 1.15.7 and cached providers:
+오프라인 controller 검사는 Node 20·Python 3/PyYAML·Terraform 1.15.7·캐시된 provider가 필요하다.
 
 ```bash
 node --test scripts/v2/ci/run-migration*.test.mjs
@@ -796,4 +813,8 @@ localhost 상태 서버만 사용한다. Terraform 도우미는 추적된 작업
 로컬 backend 설정·상태·`.terraform`을 사용하지 않는다.
 
 Related ADRs / 관련 ADR: **ADR-002** (edge authentication/private HTTPS boundaries),
-**ADR-016** (domain/certificate cutover). These controls add no runtime-mutation or DNS exception.
+**ADR-005** (operator CI migration versus product AWS-resource mutation/autonomy), and
+**ADR-016** (domain/certificate cutover). Manual CI writes the database schema using its
+scoped credentials; it enables no product AWS-resource mutation/autonomy or DNS exception.
+수동 CI는 제한된 자격증명으로 DB schema를 변경하며 제품의 AWS 리소스 변경·자율 실행이나
+DNS 예외를 활성화하지 않는다.

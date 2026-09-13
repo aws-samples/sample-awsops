@@ -121,6 +121,7 @@ Single Terraform root `terraform/foundation/` — partial S3 backend (`backend.h
 | `auth.tf` + `edge-lambda/` | Cognito User Pool/client/domain + Lambda@Edge (RS256, templated Python) |
 | `data.tf` + `data/schema.sql` + `migrations/` | Aurora Serverless v2 + baseline schema + ULID migrations |
 | `workload.tf` | ECS cluster/service/task definition (web) |
+| `ci-migrations.tf` | Default-off `ci_migrations_enabled`: private ARM64 migration template, exact-secret IAM and logs; launched only by the manual development CI controller, never an app service/scheduler |
 | `ecr.tf` | Dual-tier ECR (dev-private + prod-public) |
 | `ai.tf` | AgentCore ECR + IAM + agent Lambda slices + SSM (21 gated on `agentcore_enabled`, 6 on `integrations_enabled`) |
 | `workers.tf` | SQS + ESM + dispatcher/worker/status_updater/reaper Lambda + Step Functions + Fargate worker (`workers_enabled`) |
@@ -290,6 +291,7 @@ flowchart LR
 | `auth.tf` + `edge-lambda/` | Cognito User Pool/클라이언트/도메인 + Lambda@Edge(RS256, 템플릿 Python) |
 | `data.tf` + `data/schema.sql` + `migrations/` | Aurora Serverless v2 + 베이스라인 스키마 + ULID 마이그레이션 |
 | `workload.tf` | ECS 클러스터/서비스/태스크 정의(web) |
+| `ci-migrations.tf` | 기본 비활성 `ci_migrations_enabled`: 사설 ARM64 migration 템플릿·시크릿 한정 IAM·로그. 수동 개발 CI 컨트롤러만 실행하며 앱 서비스/스케줄러는 없음 |
 | `ecr.tf` | 듀얼 티어 ECR(dev-private + prod-public) |
 | `ai.tf` | AgentCore ECR + IAM + 에이전트 Lambda 슬라이스 + SSM(21개 `agentcore_enabled`, 6개 `integrations_enabled` 게이트) |
 | `workers.tf` | SQS + ESM + dispatcher/worker/status_updater/reaper Lambda + Step Functions + Fargate 워커(`workers_enabled`) |
