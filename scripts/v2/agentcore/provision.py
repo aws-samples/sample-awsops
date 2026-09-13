@@ -15,13 +15,16 @@ import copy
 import ipaddress
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+import uuid
 from urllib.parse import urlparse
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 import catalog  # same directory
 
@@ -36,7 +39,54 @@ report = []  # (resource, status, detail)
 
 def log(resource, status, detail=""):
     report.append((resource, status, detail))
+    if development_run():
+        # Resource names and SDK exception details are not public CI output.
+        print(f"  provision_action={'failed' if status == 'ERR' else 'recorded'}")
+        return
     print(f"  [{status:8}] {resource}  {detail}")
+
+
+def development_run():
+    return os.environ.get("TARGET") == "dev" or os.environ.get("GITHUB_REF") == "refs/heads/dev"
+
+
+def runtime_image(ac):
+    digest = os.environ.get("AGENT_IMAGE_DIGEST")
+    if digest is not None or development_run():
+        if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ValueError("invalid_agent_image_digest")
+        return f"{ac['ecr_uri']}@{digest}"
+    return f"{ac['ecr_uri']}:{IMAGE_TAG}"
+
+
+def validate_dev_deployment(ac):
+    """Bind direct provisioner invocation too; no writes before independent STS proof."""
+    if not development_run():
+        return
+    env = os.environ
+    account = env.get("AWS_ACCOUNT_ID_DEV", "")
+    role = re.fullmatch(r"arn:aws:iam::([0-9]{12}):role/((?:[\x21-\x7e]+/)?)([A-Za-z0-9+=,.@_-]{1,64})",
+                        env.get("RUNTIME_ROLE_ARN", "").strip())
+    project = ac.get("project", "")
+    sha = env.get("GITHUB_SHA", "")
+    if not (env.get("GITHUB_REPOSITORY") == "aws-samples/sample-awsops"
+            and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and env.get("GITHUB_REF") == "refs/heads/dev"
+            and re.fullmatch(r"[0-9a-f]{40}", sha)
+            and env.get("AGENT_IMAGE_TAG") == f"agent-{sha}"
+            and re.fullmatch(r"[0-9]{12}", account) and role and role[1] == account
+            and len(role[2]) <= 511 and re.fullmatch(r"[a-z][a-z0-9-]{1,39}", project)
+            and env.get("AWS_REGION") == ac.get("region") == "ap-northeast-2"
+            and ac.get("ecr_uri") == f"{account}.dkr.ecr.ap-northeast-2.amazonaws.com/{project}-agentcore"
+            and re.fullmatch(rf"arn:aws:iam::{account}:role/[A-Za-z0-9+=,.@_/-]+", ac.get("role_arn", ""))):
+        raise ValueError("invalid_dev_deployment")
+    runtime_image(ac)
+    caller = boto3.client("sts", region_name=ac["region"], config=Config(
+        connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 1})).get_caller_identity()
+    if (caller.get("Account") != account or not re.fullmatch(
+            rf"arn:aws:sts::{account}:assumed-role/{re.escape(role[3])}/[A-Za-z0-9+=,.@_-]{{2,64}}",
+            caller.get("Arn", ""))):
+        raise ValueError("actual_dev_caller_mismatch")
 
 
 def tf_outputs():
@@ -44,7 +94,10 @@ def tf_outputs():
     data = json.loads(raw)
     if "agentcore" not in data or data["agentcore"]["value"] is None:
         sys.exit("agentcore output is null — set agentcore_enabled=true and `terraform apply` first.")
-    return data["agentcore"]["value"]
+    ac = data["agentcore"]["value"]
+    deployment = (data.get("runtime_deployment") or {}).get("value") or {}
+    ac["readiness_cloudfront_id"] = (deployment.get("known") or {}).get("cloudfront_distribution_id")
+    return ac
 
 
 def _items(resp):
@@ -985,7 +1038,11 @@ def ensure_interpreter(ctrl):
 def ensure_runtime(ctrl, ac, gw_ids):
     region = ac["region"]
     gateways_json = json.dumps({k: gateway_url(v, region) for k, v in gw_ids.items()})
-    artifact = {"containerConfiguration": {"containerUri": f"{ac['ecr_uri']}:{IMAGE_TAG}"}}
+    try:
+        artifact = {"containerConfiguration": {"containerUri": runtime_image(ac)}}
+    except (ValueError, KeyError):
+        log("runtime", "ERR", "invalid_agent_image_digest")
+        return ""
     # VPC mode when the TF output supplies subnets+SGs (Pattern 2: ENIs in our VPC so agents reach
     # private Aurora/EKS; egress to Bedrock/AgentCore still works via the subnets' NAT). Falls back
     # to PUBLIC otherwise. networkMode/networkModeConfig flip in-place (no interruption).
@@ -1051,6 +1108,9 @@ def ensure_runtime(ctrl, ac, gw_ids):
         # exactly this reason; this middle block was the remaining gap).
         log("runtime", "ERR", f"{type(e).__name__}: {str(e)[:150]}")
         return ""
+    if not arn or arn == "PENDING" or (os.environ.get("AGENT_IMAGE_DIGEST") and not valid_runtime_arn(ac, arn, rid)):
+        log("runtime", "ERR", "runtime_identity_unconfirmed")
+        return ""
     # review MAJOR (follow-up): the request above is only ACCEPTED, not live — a caller treating a
     # non-empty ARN as "safe to expose new gateway targets" (main() does, via the ensure_runtime ->
     # ensure_mcp_server_targets ordering) would otherwise race the new revision's actual rollout.
@@ -1081,29 +1141,87 @@ def write_ssm(ac, runtime_arn, interpreter_id, memory_id):
         log(f"ssm:{pname}", "WROTE", val[:60])
 
 
-def smoke(ac, runtime_arn):
-    if not runtime_arn:
-        log("smoke", "ERR", "no runtime arn")
-        return
-    data = boto3.client("bedrock-agentcore", region_name=ac["region"])
-    payload = json.dumps({"gateway": "security", "prompt": "List the IAM roles in this account. Use the list_roles tool."}).encode()
+def valid_runtime_arn(ac, arn, rid=None):
+    account = ac.get("role_arn", "").split(":")[4:5]
+    pattern = (rf"arn:aws:bedrock-agentcore:{re.escape(ac['region'])}:"
+               rf"{re.escape(account[0]) if account else 'INVALID'}:runtime/(awsops_v2_agent-[A-Za-z0-9]{{1,64}})")
+    match = re.fullmatch(pattern, arn) if isinstance(arn, str) else None
+    return bool(match and (rid is None or match[1] == rid))
+
+
+def valid_readiness_response(raw, request):
+    """Version-1 protocol shared with agent/readiness.py; no prose/partial success proof."""
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError()
+            result[key] = value
+        return result
     try:
+        if not isinstance(raw, bytes) or len(raw) > 16384:
+            return False
+        frames = [f for f in raw.decode("utf-8").replace("\r\n", "\n").split("\n\n") if f.strip()]
+        if len(frames) != 1:
+            return False
+        lines = [line for line in frames[0].split("\n") if line and not line.startswith(":")]
+        if len(lines) != 1 or not lines[0].startswith("data: "):
+            return False
+        value = json.loads(lines[0][6:], object_pairs_hook=unique_object)
+        checks = ("identity", "inventorySummary", "inventoryQuery", "knownResource", "freshInventory", "model")
+        inventory = value.get("inventory") if isinstance(value, dict) else None
+        return (isinstance(value, dict) and set(value) == {
+                    "schemaVersion", "mode", "nonce", "accountId", "status", "reason", "checks", "inventory"}
+                and type(value["schemaVersion"]) is int and value["schemaVersion"] == 1
+                and value["mode"] == "deployment_readiness" and value["nonce"] == request["nonce"]
+                and value["accountId"] == request["expectedAccountId"]
+                and value["status"] == "ready" and value["reason"] == "ok"
+                and isinstance(value["checks"], dict) and set(value["checks"]) == set(checks)
+                and all(value["checks"][key] is True for key in checks)
+                and isinstance(inventory, dict) and set(inventory) == {"count", "ageMinutes"}
+                and type(inventory["count"]) is int and 1 <= inventory["count"] <= 500
+                and type(inventory["ageMinutes"]) is int and 0 <= inventory["ageMinutes"] <= 15)
+    except (ValueError, KeyError, TypeError, UnicodeError):
+        return False
+
+
+def smoke(ac, runtime_arn):
+    confirmed = False
+    body = None
+    try:
+        if not valid_runtime_arn(ac, runtime_arn) or not re.fullmatch(
+                r"[A-Z0-9]{5,32}", ac.get("readiness_cloudfront_id") or ""):
+            raise ValueError()
+        payload = dict(mode="deployment_readiness", nonce=uuid.uuid4().hex,
+                       expectedAccountId=ac["role_arn"].split(":")[4],
+                       expectedCloudfrontId=ac["readiness_cloudfront_id"])
+        data = boto3.client("bedrock-agentcore", region_name=ac["region"], config=Config(
+            connect_timeout=3, read_timeout=60, retries={"total_max_attempts": 1}))
         resp = data.invoke_agent_runtime(agentRuntimeArn=runtime_arn, qualifier="DEFAULT",
-                                         runtimeSessionId="p1f-smoke-session-000000000000000000000000000000000",
-                                         payload=payload)
-        body = resp["response"].read().decode() if hasattr(resp.get("response"), "read") else str(resp.get("response"))
-        ok = "role" in body.lower()
-        log("smoke", "OK" if ok else "WARN", body[:160])
-    except ClientError as e:
-        log("smoke", "ERR", str(e)[:160])
+                                         runtimeSessionId=f"readiness-{uuid.uuid4()}",
+                                         contentType="application/json", accept="text/event-stream",
+                                         payload=json.dumps(payload).encode())
+        body = resp.get("response")
+        if not hasattr(body, "read") or not str(resp.get("contentType", "")).startswith("text/event-stream"):
+            raise ValueError()
+        confirmed = valid_readiness_response(body.read(16385), payload)
+    except (BotoCoreError, ClientError, ValueError, KeyError, TypeError):
+        pass  # Fixed outcome only; never return remote text, SDK errors or tool payloads.
+    finally:
+        if hasattr(body, "close"):
+            body.close()
+    log("smoke", "OK" if confirmed else "ERR", "readiness_confirmed" if confirmed else "readiness_unconfirmed")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--smoke", action="store_true", help="invoke the runtime through one gateway after provisioning")
+    ap.add_argument("--smoke", action="store_true", help="require nonce-bound runtime readiness after provisioning")
     args = ap.parse_args()
 
     ac = tf_outputs()
+    validate_dev_deployment(ac)
+    if args.smoke and not re.fullmatch(r"[A-Z0-9]{5,32}", ac.get("readiness_cloudfront_id") or ""):
+        sys.exit("readiness_cloudfront_id_required")
     region = ac["region"]
     ctrl = boto3.client("bedrock-agentcore-control", region_name=region)
 
@@ -1152,4 +1270,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        if not development_run():
+            raise
+        sys.exit("agentcore_provisioning_failed")

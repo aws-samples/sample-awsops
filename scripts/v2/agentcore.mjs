@@ -1,36 +1,54 @@
 #!/usr/bin/env node
-// AWSops v2 P1f: build arm64 agent image -> push ECR -> run idempotent boto3 provisioner.
-// Run AFTER `terraform apply` (with agentcore_enabled=true) AND AFTER `make migrate`.
-// `make migrate` is what creates the awsops_sql_reader DB role and syncs its password from Secrets
-// Manager; this script does neither. Skipping it leaves execute_sql and inventory-read failing Data
-// API auth, which looks like a credential problem rather than a missing migration
-// (docs/runbooks/agent-sql-reader.md). Pass --smoke to invoke after provisioning.
+// Build/provision only after migrations: private reusable task on dev, make migrate elsewhere.
 import { execSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { buildImage, checkRole, command, imagePlan, RuntimeBuildError } from './ci/runtime-build.mjs';
 
-const REGION = process.env.AWS_REGION || 'ap-northeast-2';
-const CHDIR = 'terraform/foundation';
-const TAG = process.env.AGENT_IMAGE_TAG || 'agent-latest';
-const DOCKER = process.env.DOCKER || 'sudo docker';
-const SMOKE = process.argv.includes('--smoke') ? '--smoke' : '';
-
-const tfJson = () => JSON.parse(execSync(`terraform -chdir=${CHDIR} output -json`, { encoding: 'utf8' }));
-const sh = (cmd) => execSync(cmd, { stdio: 'inherit', shell: '/bin/bash' });
-
-const ac = tfJson().agentcore?.value;
-if (!ac) {
-  console.error('agentcore output is null — set agentcore_enabled=true in terraform.tfvars and `terraform apply` first.');
-  process.exit(1);
+export function deployAgent({ env = process.env, run = command, build = buildImage, smoke = false } = {}) {
+  const dev = env.TARGET === 'dev' || env.GITHUB_REF === 'refs/heads/dev';
+  if (dev) {
+    checkRole(env);
+    if (env.DOCKER !== 'docker' || env.AGENT_IMAGE_TAG !== `agent-${env.GITHUB_SHA}`) {
+      throw new RuntimeBuildError('invalid_dev_image_build_configuration');
+    }
+  }
+  const ac = JSON.parse(run('terraform', [
+    '-chdir=terraform/foundation', 'output', '-json', 'agentcore',
+  ], { env }));
+  if (!ac) throw new RuntimeBuildError('agentcore_output_unavailable');
+  if (dev) {
+    const plan = imagePlan(env, ac.project, 'agent');
+    if (ac.region !== env.AWS_REGION || ac.ecr_uri !== plan.uri ||
+        !new RegExp(`^arn:aws:iam::${plan.account}:role/[A-Za-z0-9+=,.@_/-]+$`).test(ac.role_arn || '')) {
+      throw new RuntimeBuildError('agentcore_output_identity_mismatch');
+    }
+    const image = build({ env, project: ac.project, component: 'agent' });
+    if (!/^sha256:[0-9a-f]{64}$/.test(image.digest || '') || image.architecture !== 'arm64') {
+      throw new RuntimeBuildError('agent_image_not_verified');
+    }
+    // Captured tool output never enters public CI logs; failure exposes a fixed code.
+    run('python3', ['scripts/v2/agentcore/provision.py', ...(smoke ? ['--smoke'] : [])], {
+      env: { ...env, AGENT_IMAGE_DIGEST: image.digest },
+    });
+    return { project: ac.project, digest: image.digest, architecture: 'arm64' };
+  }
+  // Existing main/preview deployment behavior and tags stay intact.
+  const region = ac.region || env.AWS_REGION || 'ap-northeast-2';
+  const tag = env.AGENT_IMAGE_TAG || 'agent-latest';
+  const docker = env.DOCKER || 'sudo docker';
+  const sh = cmd => execSync(cmd, { stdio: 'inherit', shell: '/bin/bash', env });
+  sh(`aws ecr get-login-password --region ${region} | ${docker} login --username AWS --password-stdin ${ac.ecr_uri.split('/')[0]}`);
+  sh(`${docker} buildx build --platform linux/arm64 -t ${ac.ecr_uri}:${tag} --push agent/`);
+  sh(`python3 scripts/v2/agentcore/provision.py ${smoke ? '--smoke' : ''}`.trim());
+  return { project: ac.project };
 }
-const repo = ac.ecr_uri;
-const registry = repo.split('/')[0];
 
-console.log(`\n[1/3] ECR login -> ${registry}`);
-sh(`aws ecr get-login-password --region ${ac.region || REGION} | ${DOCKER} login --username AWS --password-stdin ${registry}`);
-
-console.log(`\n[2/3] build + push arm64 agent image -> ${repo}:${TAG}`);
-sh(`${DOCKER} buildx build --platform linux/arm64 -t ${repo}:${TAG} --push agent/`);
-
-console.log(`\n[3/3] idempotent AgentCore provision (Runtime/Gateways/Targets/Memory/Interpreter -> SSM)`);
-sh(`python3 scripts/v2/agentcore/provision.py ${SMOKE}`.trim());
-
-console.log('\n✅ make agentcore complete');
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    const result = deployAgent({ smoke: process.argv.includes('--smoke') });
+    console.log(JSON.stringify({ status: 'provisioned', ...result }));
+  } catch (error) {
+    console.error(`::error::${error instanceof RuntimeBuildError ? error.message : 'agentcore_deployment_failed'}`);
+    process.exitCode = 1;
+  }
+}
