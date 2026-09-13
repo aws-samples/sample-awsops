@@ -63,7 +63,7 @@ No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scr
 - **arm64 required** for web/agent/worker images (`buildx --platform linux/arm64`).
 - **`HOSTNAME=0.0.0.0` must be a runtime env** (task-def `environment`) for Next standalone — image ENV is insufficient (ECS overwrites → health check UNHEALTHY).
 - **Fargate worker Dockerfiles use `CMD`, not exec-form `ENTRYPOINT`** (SFN `containerOverrides.command` appends to ENTRYPOINT → argv doubles).
-- **ECS `secrets` valueFrom needs execution-role perms** (not task role) — else `ResourceInitializationError`.
+- **Where ECS `secrets`/`valueFrom` is used (e.g. optional Steampipe), execution-role permissions are required**, otherwise `ResourceInitializationError`. The web pool instead uses task-role `rds-db:connect` as `awsops_web`; it receives no Aurora master password.
 - **No `-auto-approve` on shared infra** — saved `tfplan` only; long applies run by the controller.
 - **Flag-gate large new features** (`agentcore_enabled`, `workers_enabled`, `steampipe_enabled`, `hybrid_routing_enabled`, `finops_baseline_enabled` — default false → `plan` = No changes, $0).
 

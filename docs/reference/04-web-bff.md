@@ -63,6 +63,18 @@ standalone 웹 배포와 IAM DB 인증이 구현돼 있다. `/api/health`는 프
 
 ## Learnings & gotchas / 학습·함정
 
+Reuse-critical, in priority order:
+
+1. **`HOSTNAME=0.0.0.0` must be a runtime env in the ECS task def — not just an image ENV.** An image-level `ENV HOSTNAME=0.0.0.0` is **overwritten by ECS** with the container's ENI IP. Next.js standalone then binds **only the ENI IP**, so the `127.0.0.1` container healthcheck fails → circuit-breaker rolls the deploy back. Set `HOSTNAME=0.0.0.0` explicitly in the task definition's container `environment`.
+   - **KO** — 이미지 레벨 `ENV HOSTNAME`은 ECS가 컨테이너 ENI IP로 덮어쓴다. standalone이 ENI IP에만 바인딩 → `127.0.0.1` 컨테이너 헬스체크 실패 → 서킷 브레이커 롤백. **task def `environment`에 `HOSTNAME=0.0.0.0`를 명시**해야 한다.
+
+2. **Health path must be `/api/health` in BOTH places** — the container healthcheck command AND the ALB target-group health path. A mismatch fails health checks and circuit-breaker-loops the rollout.
+
+3. **For consumers that use ECS `secrets`/`valueFrom` (such as the optional Steampipe task), permissions belong on the execution role.** Missing `secretsmanager:GetSecretValue` / `kms:Decrypt` causes `ResourceInitializationError`. The web pool instead uses IAM DB authentication; its task role needs `rds-db:connect`, and no Aurora master password is injected.
+   - **KO** — 선택적 Steampipe처럼 ECS 시크릿 주입을 사용하는 소비자는 실행 역할 권한이 필요하다. 웹 풀은 시크릿 주입 대신 태스크 역할의 `rds-db:connect`로 IAM DB 인증하며 마스터 비밀번호를 주입하지 않는다.
+
+4. **`web/` was previously a Docusaurus guide site.** It was relocated to `docs-site/` before the v2 web app went in. Always `ls` a directory before declaring it "new" — the original plan hadn't inspected `web/`, which forced an unplanned relocation task.
+
 ### Connection failure phases / 연결 실패 단계
 
 `db_connection_failed` records one failed physical connection's `phase`, `elapsed_ms` and
@@ -89,19 +101,6 @@ required PostgreSQL suite covers async credentials, authentication rejection and
 `tls_connected`는 설정된 정책 아래 handshake 완료를 뜻하며 인증서 신뢰 검증을 보장하지 않는다.
 직접 PostgreSQL 테스트 fixture는 인증서를 검증하고, 웹 socket 테스트는 TLS 경계를 검사한다.
 필수 PostgreSQL suite는 비동기 자격증명·인증 거부·오류 동일성을 검사한다.
-
-
-Reuse-critical, in priority order:
-
-1. **`HOSTNAME=0.0.0.0` must be a runtime env in the ECS task def — not just an image ENV.** An image-level `ENV HOSTNAME=0.0.0.0` is **overwritten by ECS** with the container's ENI IP. Next.js standalone then binds **only the ENI IP**, so the `127.0.0.1` container healthcheck fails → circuit-breaker rolls the deploy back. Set `HOSTNAME=0.0.0.0` explicitly in the task definition's container `environment`.
-   - **KO** — 이미지 레벨 `ENV HOSTNAME`은 ECS가 컨테이너 ENI IP로 덮어쓴다. standalone이 ENI IP에만 바인딩 → `127.0.0.1` 컨테이너 헬스체크 실패 → 서킷 브레이커 롤백. **task def `environment`에 `HOSTNAME=0.0.0.0`를 명시**해야 한다.
-
-2. **Health path must be `/api/health` in BOTH places** — the container healthcheck command AND the ALB target-group health path. A mismatch fails health checks and circuit-breaker-loops the rollout.
-
-3. **For consumers that use ECS `secrets`/`valueFrom` (such as the optional Steampipe task), permissions belong on the execution role.** Missing `secretsmanager:GetSecretValue` / `kms:Decrypt` causes `ResourceInitializationError`. The web pool instead uses IAM DB authentication; its task role needs `rds-db:connect`, and no Aurora master password is injected.
-   - **KO** — 선택적 Steampipe처럼 ECS 시크릿 주입을 사용하는 소비자는 실행 역할 권한이 필요하다. 웹 풀은 시크릿 주입 대신 태스크 역할의 `rds-db:connect`로 IAM DB 인증하며 마스터 비밀번호를 주입하지 않는다.
-
-4. **`web/` was previously a Docusaurus guide site.** It was relocated to `docs-site/` before the v2 web app went in. Always `ls` a directory before declaring it "new" — the original plan hadn't inspected `web/`, which forced an unplanned relocation task.
 
 ## Source / 출처
 
