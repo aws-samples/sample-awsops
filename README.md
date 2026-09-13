@@ -181,7 +181,7 @@ Private migration tests require `npm ci --prefix scripts/v2 --ignore-scripts --n
 (`pg` + AWS SDK), OpenSSL and a reachable Docker daemon for `postgres:17`.
 The required private PostgreSQL suite fails if Docker is missing; it uses bare `docker` on PATH
 (the documented exception to optional legacy itests). Its offline companion uses no AWS credentials.
-Authenticated deployment smoke tests require Python 3 with PyYAML and Terraform **1.15.7**;
+Authenticated deployment smoke tests require curl, OpenSSL, Python 3 with PyYAML and Terraform **1.15.7**;
 their offline variable fixture needs no providers. Terraform mock tests require **1.15.7** and installed/cached
 providers; the helper copies only tracked working-tree files, runs `init -backend=false`, validates
 and tests without a real backend. Missing deployment-suite prerequisites fail the shared runner;
@@ -387,7 +387,7 @@ Private migration 테스트는 `npm ci --prefix scripts/v2 --ignore-scripts --no
 `pg`·AWS SDK를 설치하며 PostgreSQL 테스트에는 OpenSSL·접근 가능한 Docker·`postgres:17`이
 필요합니다. 레거시 선택적 itest와 달리 Docker 부재 시 필수 gate가 실패하고 PATH의 `docker`를
 직접 사용합니다. 오프라인 companion은 AWS 자격증명을 사용하지 않습니다.
-인증 배포 smoke 테스트는 Python 3·PyYAML·Terraform **1.15.7**을 필수로 요구하며,
+인증 배포 smoke 테스트는 curl·OpenSSL·Python 3·PyYAML·Terraform **1.15.7**을 필수로 요구하며,
 누락 시 공통 러너도 실패합니다. 오프라인 변수 fixture에는 provider가 필요하지 않습니다.
 마지막 fmt/validate 진단만 참고용입니다. Terraform mock 테스트에는 **1.15.7**과
 설치/캐시된 provider가 필요합니다. 도우미는 추적된

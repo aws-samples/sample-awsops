@@ -4,6 +4,8 @@ Related files / 관련 파일: `.github/workflows/{deploy-web,deploy-preview,ter
 `docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
 `scripts/v2/ci_review_access.py`, `scripts/v2/ci_dns_policy.py`, `scripts/v2/ci_plan_context.py`,
 `scripts/v2/deploy.mjs`, `scripts/v2/deployment-smoke.mjs`,
+`scripts/v2/prepare-smoke-credentials.mjs`, `scripts/v2/authenticated-smoke.mjs`,
+`terraform/foundation/outputs.tf` (`demo_username`),
 `terraform/foundation/tests/dns_deferred.tftest.hcl`, `docs/reference/01-edge-network.md`
 
 > Historical note: this file previously described the two-repo split
@@ -25,10 +27,12 @@ Related files / 관련 파일: `.github/workflows/{deploy-web,deploy-preview,ter
 - `Deployment preflight refused`, `DNS change prohibited`, or an unavailable certificate stops
   a dispatch (§5), or
 - saved-plan apply reports `branch moved` / an advisory push-plan event (§5), or
-- the build reports `Cannot access the web ECR repository` (§4–5).
+- the build reports `Cannot access the web ECR repository` (§4–5), or
+- `Demo credential preparation` or `Authenticated smoke` fails (see authenticated database verification).
 
 (dev push 런이 자격증명/시크릿/ECR pin 단계에서 실패하는 경우 — 아래 1회성 작업이
-아직 안 된 것입니다. AI 리뷰가 보호 환경 승인 대기 또는 역할 인증 실패로 멈추는 경우도 포함합니다.)
+아직 안 된 것입니다. AI 리뷰가 보호 환경 승인 대기 또는 역할 인증 실패로 멈추는 경우도 포함합니다.
+`Demo credential preparation`·`Authenticated smoke` 실패는 아래 인증된 DB 검증 절을 참고합니다.)
 
 ## Cause / 원인
 
@@ -632,14 +636,17 @@ Before image pinning or ECS rollout, preparation rejects missing/malformed confi
 disabled demo users, missing/invalid applied output, identity mismatch and empty/invalid
 credentials. Terraform stdout/stderr stay private; inherited `TF_LOG*` and `TF_CLI_ARGS*`
 are removed from preparation subprocesses. Only a path crosses steps: the credential
-file is `0600` inside a `0700` temporary directory and is removed after use or by
-always-run cleanup if rollout fails or is cancelled.
+file is `0600` inside a `0700` directory under `RUNNER_TEMP` and is removed after use or by
+always-run cleanup if rollout fails or is cancelled. The CLI creates its login-body, cookie and
+response scratch files inside that same directory, so the cleanup also covers a killed smoke.
+Standalone smoke calls prefer `RUNNER_TEMP` as well. Only validated numeric HTTP statuses
+may accompany phase errors; response bodies, cookies and Terraform diagnostics stay private.
 
 ```bash
 # After successful migration; use the already-built image for this reviewed dev HEAD:
-gh workflow run deploy-web.yml --ref dev -f verify_database=true
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f verify_database=true
 # If this HEAD's web image still needs building, use this instead:
-gh workflow run deploy-web.yml --ref dev -f build=true -f verify_database=true
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true -f verify_database=true
 ```
 
 Require ECS stability and the normal `/api/health` smoke, then **POST `/api/auth/login`**
@@ -670,7 +677,9 @@ Terraform **1.15.7**이 변수 우선순위를 직접 평가한다. 저장소 �
 대체하지 않는다. 설정 오류·demo 비활성·적용 출력 누락·사용자 불일치·빈/잘못된 암호는 이미지
 pin·ECS rollout 전에 실패한다. Terraform 출력과 오류는 비공개로 처리하고 `TF_LOG*`·
 `TF_CLI_ARGS*`를 제거한다. 단계 간에는 경로만 전달하며 `0700` 디렉터리의 `0600` 암호 파일은
-사용 후 또는 실패·취소 시 항상 실행되는 cleanup으로 삭제한다.
+사용 후 또는 실패·취소 시 항상 실행되는 cleanup으로 삭제한다. CLI의 로그인 본문·쿠키·응답
+임시 파일도 같은 디렉터리 안에 두므로 smoke가 강제 종료돼도 해당 정리 범위에 포함된다.
+독립 smoke 실행도 `RUNNER_TEMP`를 우선하며 공개 오류에는 단계와 검증된 HTTP 상태만 표시한다.
 
 ECS 안정화와 `/api/health` 성공에 이어 실제 `POST /api/auth/login`의 HTTP 200,
 `ok: true`, 유효한 secure·호스트 전용 `awsops_token` cookie를 요구한다. 그 cookie로
@@ -681,7 +690,20 @@ ECS 안정화와 `/api/health` 성공에 이어 실제 `POST /api/auth/login`의
 암호 공급원을 비공개로 확인하고, **검사를 통과시키려고 기존 사용자 암호를 재설정하지 않는다.**
 이 워크플로는 사용자를 생성하거나 암호를 설정하지 않는다.
 
-Offline checks for this path (Node 20, Python 3 with PyYAML, and Terraform 1.15.7):
+Troubleshoot by phase and safe status: login 401 points to the configured credential; 403 to
+Cognito user/challenge state; 502 to its upstream connection. Database 503 points to missing
+service configuration; 500 to database credentials, IAM or connectivity. A transport/TLS failure
+may have no HTTP response. Inspect private application logs; never print response bodies or
+reset a password to make a check pass. Opt-in preparation performs its own bounded private
+Terraform init (10 minutes) before output/console (2 minutes each); it must finish before
+image pinning or rollout.
+로그인 401은 설정된 자격증명, 403은 Cognito 사용자/인증 상태, 502는 상위 연결을 확인한다.
+DB 503은 서비스 설정, 500은 DB 자격증명·IAM·연결을 확인한다. 전송/TLS 오류에는 HTTP
+응답이 없을 수 있다. 비공개 앱 로그로 조사하고 응답 본문을 출력하거나 암호를 재설정하지 않는다.
+선택적 준비 단계는 비공개 Terraform init을 10분 내 완료한 뒤 output/console을 각각 2분 내 읽으며,
+이미지 pin·rollout은 그 이후에만 진행한다.
+
+Offline checks for this path (Node 20, curl, OpenSSL, Python 3 with PyYAML, and Terraform 1.15.7):
 
 ```bash
 node --test scripts/v2/deployment-smoke.test.mjs

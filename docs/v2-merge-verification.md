@@ -42,10 +42,10 @@ gated files (measured), but narrowing the check to top-level attributes only is 
 
 ## Runner Usage
 
-Use Node.js 20 (CI; runtime image uses 22), Python 3.12, OpenSSL, Terraform **1.15.7**
+Use Node.js 20 (CI; runtime image uses 22), Python 3.12, curl, OpenSSL, Terraform **1.15.7**
 and a reachable Docker daemon. Install dependencies from the repository root. The private
 migration suites use locked `pg` and AWS SDK dependencies from `scripts/v2/package-lock.json`.
-CI Node 20(런타임 이미지 22)·Python 3.12·OpenSSL·Terraform **1.15.7**·접근 가능한 Docker를
+CI Node 20(런타임 이미지 22)·Python 3.12·curl·OpenSSL·Terraform **1.15.7**·접근 가능한 Docker를
 준비한다. private migration 테스트는 `scripts/v2`의 잠긴 `pg`·AWS SDK 의존성을 사용한다.
 
 ```bash
@@ -105,7 +105,8 @@ node --test scripts/v2/deployment-smoke.test.mjs
 ```
 
 This required deployment suite loads workflow YAML using Python 3 with **PyYAML** and evaluates
-an offline variable fixture with Terraform **1.15.7**. Missing prerequisites fail the suite and
+an offline variable fixture with Terraform **1.15.7**. Real curl/HTTPS cases also require curl and
+OpenSSL; they use only a loopback server and local test certificates. Missing prerequisites fail the suite and
 the shared runner; these tests never skip. The fixture uses no providers, deployment backend or AWS.
 
 The script's later formatting/validation diagnostics remain informational: it runs
@@ -120,7 +121,8 @@ AWS/DNS API is called. Local `.terraform`, backend config, tfvars and state are 
 Initialization installs locked providers; for fully offline use, point `TF_CLI_CONFIG_FILE`
 at an existing filesystem mirror containing them with no `direct` fallback.
 
-배포 Node 테스트는 Python 3·PyYAML·Terraform **1.15.7**을 필수로 요구한다. 누락하면
+배포 Node 테스트는 curl·OpenSSL·Python 3·PyYAML·Terraform **1.15.7**을 필수로 요구한다.
+HTTPS 사례는 loopback 서버와 로컬 테스트 인증서만 사용한다. 의존성이 누락하면
 공통 러너도 실패하며 skip하지 않는다. 변수 fixture는 provider·배포 backend·AWS를 사용하지 않는다.
 마지막 fmt/validate 참고용 진단과 CI 필수 mock 검사는 별개이며 참고 진단의 SKIP으로
 필수 의존성을 생략할 수 없다. `terraform-test.sh`는
