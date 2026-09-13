@@ -1260,3 +1260,16 @@ The separately opted-in manual diagnostics step is read-only under ADR-005: no d
 connection, AWS-resource mutation, autonomous remediation, or relaxation of readiness gates.
 별도로 선택한 수동 진단은 ADR-005의 읽기 전용 범위이며 DB 연결·AWS 리소스 변경·자율 복구나
 준비 상태 검사 완화를 허용하지 않는다.
+
+### Saved-plan asset utility / 저장 계획 asset 도구
+
+`scripts/v2/ci_tf_assets.py` prepares hash-locked pg8000 layers, packs generated Lambda
+assets with plan/SHA/scope hashes and validates paths, modes and hashes before restore.
+The utility alone neither changes the current workflow nor applies infrastructure;
+workflow integration must require the encrypted bundle beside the reviewed saved plan.
+Missing or mismatched bundles require a fresh plan, not an apply-time rebuild.
+
+이 도구는 pg8000 의존성을 해시로 고정하고 Lambda asset을 plan·SHA·scope에 결합해
+복원 전에 경로·권한·해시를 검증합니다. 도구만으로 현재 workflow나 인프라가 바뀌지
+않습니다. 연동 workflow는 저장 계획과 암호화 bundle을 함께 요구해야 하며 누락·불일치는
+apply 중 재빌드 대신 새 계획으로 해결합니다.
