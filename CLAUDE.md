@@ -56,7 +56,7 @@ Live environment: account `<ACCOUNT_ID>`, domain `awsops-v2.atomai.click`, reusi
 
 ### Data / Config
 - App state lives in **Aurora** (node-pg). Not `data/*.json` (the v1 pattern). Schema = `terraform/foundation/data/schema.sql` + `schema_migrations`.
-- ECS `secrets` valueFrom (Aurora secret) requires **execution-role** permissions (not the task role) — otherwise `ResourceInitializationError`.
+- ECS `secrets` valueFrom (where used, e.g. optional Steampipe) requires **execution-role** permissions (not the task role) — otherwise `ResourceInitializationError`.
 - AgentCore config's **source of truth is SSM** (provision.py writes it → the web BFF reads it at runtime). No valueFrom (avoids a race).
 
 ### Containers / Deployment

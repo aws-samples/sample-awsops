@@ -49,18 +49,21 @@
 | `web/app/api/compliance/run/route.ts` | CIS compliance scan job submission — computes `requestedBy` server-side, not client-supplied |
 | `web/lib/db.ts` / `db-connection.ts` | Shared IAM-authenticated pool and redacted physical-connection phase observer / IAM 공유 풀·연결 단계 계측 |
 | `web/Dockerfile` | Multi-stage standalone arm64 build (sets `HOSTNAME=0.0.0.0`) |
-| `terraform/foundation/workload.tf` | ECS cluster/service/task def, ALB, TG, IAM roles, secret injection |
+| `terraform/foundation/workload.tf` | ECS cluster/service/task definition, ALB, target group and IAM database-connect permissions |
 | `terraform/foundation/ecr.tf` | Dual-tier ECR (dev-private repo + prod-public repo) |
 | `scripts/v2/deploy.mjs` | `make deploy` loop: build → push → roll → wait → smoke |
 
 ## Status / 상태
 
-The implementation supports standalone web deployment and IAM database authentication.
+**P1d implementation milestone complete.** The implementation supports standalone web deployment
+and IAM database authentication.
 `/api/health` proves liveness only; deployment-specific login/database readiness must be verified.
 standalone 웹 배포와 IAM DB 인증이 구현돼 있다. `/api/health`는 프로세스 생존만 확인하므로
 각 배포의 로그인·DB 준비 상태는 별도로 검증한다.
 
-## Connection failure phases / 연결 실패 단계
+## Learnings & gotchas / 학습·함정
+
+### Connection failure phases / 연결 실패 단계
 
 `db_connection_failed` records one failed physical connection's `phase`, `elapsed_ms` and
 `milestones_ms`; it contains no endpoint, user, credentials, token, SQL or raw error. The
@@ -77,17 +80,16 @@ where progress stopped, not its root cause. A pool-slot wait creates no new phys
 | `tls_handshake` | SSL accepted; TLS handshake not complete / SSL 수락, TLS handshake 미완료 |
 | `postgres_startup` | Waiting for PostgreSQL protocol progress / PostgreSQL 프로토콜 진행 대기 |
 | `iam_token` | Password requested; signing/credential resolution pending / 비밀번호 요청 후 서명·자격증명 준비 대기 |
-| `postgres_authentication` | Token ready; authentication pending or rejected / 토큰 준비 후 인증 대기·거부 |
+| `postgres_authentication` | Password challenge/authentication phase; use `token_ready` to confirm signing completed / 비밀번호 요청·인증 단계이며 서명 완료는 `token_ready`로 확인 |
 
 `tls_connected` proves handshake completion under the configured TLS policy, not certificate
-trust verification. Production retains its existing policy; the direct PostgreSQL test fixture
+trust verification. Production retains `rejectUnauthorized: false`; the direct PostgreSQL test fixture
 verifies certificates. Web socket tests cover negotiation/handshake boundaries, while the
 required PostgreSQL suite covers async credentials, authentication rejection and error identity.
 `tls_connected`는 설정된 정책 아래 handshake 완료를 뜻하며 인증서 신뢰 검증을 보장하지 않는다.
 직접 PostgreSQL 테스트 fixture는 인증서를 검증하고, 웹 socket 테스트는 TLS 경계를 검사한다.
 필수 PostgreSQL suite는 비동기 자격증명·인증 거부·오류 동일성을 검사한다.
 
-## Learnings & gotchas / 학습·함정
 
 Reuse-critical, in priority order:
 
@@ -96,7 +98,8 @@ Reuse-critical, in priority order:
 
 2. **Health path must be `/api/health` in BOTH places** — the container healthcheck command AND the ALB target-group health path. A mismatch fails health checks and circuit-breaker-loops the rollout.
 
-3. **ECS `secrets` `valueFrom` needs perms on the EXECUTION role, not the task role.** The execution role resolves secrets at task start; missing `secretsmanager:GetSecretValue` / `kms:Decrypt` there causes `ResourceInitializationError`.
+3. **For consumers that use ECS `secrets`/`valueFrom` (such as the optional Steampipe task), permissions belong on the execution role.** Missing `secretsmanager:GetSecretValue` / `kms:Decrypt` causes `ResourceInitializationError`. The web pool instead uses IAM DB authentication; its task role needs `rds-db:connect`, and no Aurora master password is injected.
+   - **KO** — 선택적 Steampipe처럼 ECS 시크릿 주입을 사용하는 소비자는 실행 역할 권한이 필요하다. 웹 풀은 시크릿 주입 대신 태스크 역할의 `rds-db:connect`로 IAM DB 인증하며 마스터 비밀번호를 주입하지 않는다.
 
 4. **`web/` was previously a Docusaurus guide site.** It was relocated to `docs-site/` before the v2 web app went in. Always `ls` a directory before declaring it "new" — the original plan hadn't inspected `web/`, which forced an unplanned relocation task.
 
