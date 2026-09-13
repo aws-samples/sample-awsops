@@ -33,9 +33,44 @@ secrets-manager) — installed by `make deps`.
   Ordinary full plans retain broad DNS behavior with explicit permission. Apply reads only
   the saved marker. Dev advisory preflight preserves ownership from state without live
   certificate validation; advisory DNS allowance is reporting only.
+- `v2/ci_db_diagnostics.py` — manual opt-in dev CI plan diagnostics (`CI_DB_DIAGNOSTICS_DEV=true`).
+  Require `workflow_dispatch`, literal flag `true`, `--target dev`, and region `ap-northeast-2`.
+  Wrong invocation context is rejected before any AWS read. The state-account/STS comparison
+  is a consistency check, not authorization or same-account stack validation.
+  Use only the fixed read-only CLI verbs. Run after encrypted plan upload; publish fenced safe
+  JSON (including posture booleans) to the public Actions log/step summary.
+  Independently retain web logs, configuration comparisons and an RDS server-log tail with
+  partial/unavailable markers; missing resources/permissions are advisory, not readiness gates.
+  `no_matching_events` labels empty accepted samples; `no_error_inference=true` prohibits health
+  conclusions from any status's zero counts. Interpretation requires a known DB probe within
+  the returned one-hour window. A successful task-definition read stays source-available even
+  if its web container is missing/malformed; use `web_container_found` and derived-unknown flags.
+  Web logs use a fixed one-hour `[start,end)` window, oldest-first, at most three pages of 100
+  using `--next-token`/`--limit`; disclose bounds, category counts, ignored/unparsed and truncation.
+  JSON `evt` OR selects `db_ping_failed` plus `db_connection_failed`; the latter exposes only
+  seven allowed phases, eight milestone keys and finite 0–3,600,000 ms durations (milestones
+  cannot exceed elapsed). Count phases and retain the latest valid timing in the sample.
+  Server logs select the latest two observed PostgreSQL filenames from at most three listing
+  pages for `<project>-aurora-1`; at most two downloads of 500 newest lines without Marker
+  (1 MiB cap per file). Count only FATAL/ERROR/PANIC web-role lines as errors.
+  `benign_role_mentions` counts exactly non-error-severity lines mentioning `awsops_web`;
+  lines for other database roles are ignored. Never print names/lines. Tail/listing truncation is independent;
+  failed downloads retain listing metadata as partial. Capped web samples are also partial.
+  Sources and unknown derived fields have separate flags. Accept single-object IAM Statement.
+  HBA failures are distinct from TLS; pool-acquire timeout differs from unexpected connection
+  loss, and PostgreSQL slot/client limits are recognized. Metadata is the service target definition, not running
+  revision proof; credential env/secrets names and environment-file presence are declarations
+  only. SG/inline connect-Allow matches do not prove effective access under SCPs/boundaries.
+  Emit fixed categories/counts/timestamps/booleans/nulls only; withhold raw messages, credentials
+  and ARNs, including Terraform stderr. Unset/false is off; no writes or new IAM grants.
+  Early input/context/identity failure returns only `{"status":"unavailable"}` with nonzero exit.
+  Discarded milestones or regex inputs shortened to 4,096 characters mark samples partial.
+  Read-only violations escape partial-read handlers and fail with a fixed reason, never raw args.
+  Only this optional workflow step tolerates failure (eight-minute timeout); DNS/CI/readiness
+  gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
-- `v2/test_ci_{dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads}.py` —
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads}.py` —
   workflow fixtures, real no-provider plans and a localhost state backend verify deployment
   gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active

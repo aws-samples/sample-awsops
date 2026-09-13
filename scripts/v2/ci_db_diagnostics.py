@@ -1,0 +1,389 @@
+"""Advisory dev diagnostics: project read responses into a fixed public schema."""
+from collections import Counter
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import time
+
+
+class ReadOnlyViolation(RuntimeError):
+    """Programming violation: never downgrade to an unavailable source."""
+
+
+REGEX_TEXT_LIMIT = 4096
+READ_OPERATIONS = frozenset({
+    ("sts", "get-caller-identity"), ("logs", "filter-log-events"),
+    ("rds", "describe-db-clusters"), ("ecs", "describe-services"),
+    ("ecs", "describe-task-definition"), ("ec2", "describe-security-groups"),
+    ("iam", "get-role-policy"),
+    ("rds", "describe-db-log-files"), ("rds", "download-db-log-file-portion"),
+})
+READ_ERRORS = (ValueError, TypeError, AttributeError, KeyError, IndexError,
+               StopIteration, OSError, subprocess.SubprocessError)
+CREDENTIAL_NAMES = frozenset({
+    "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+})
+ERROR_PATTERNS = {
+    "iam_database_auth": r"PAM authentication failed",
+    "database_auth": r"password authentication failed",
+    "web_role_missing": r'\brole\s+"?awsops_web"?\s+does not exist\b',
+    "database_permission": r"permission denied",
+    "connection_timeout": r"connection timeout|timeout expired|ETIMEDOUT|timeout exceeded when trying to connect",
+    "connection_lost": r"connection terminated unexpectedly|server closed the connection unexpectedly|ECONNRESET",
+    "database_dns": r"getaddrinfo|ENOTFOUND|EAI_AGAIN",
+    "connection_refused": r"ECONNREFUSED",
+    "aws_credentials": r"Could not load credentials|CredentialsProviderError",
+    "tls": r"certificate|SSL|TLS",
+    "token_type": r"password must be a string",
+    "connection_limit": r"too many connections|too many clients already|remaining connection slots are reserved",
+}
+CONNECTION_PHASES = frozenset({
+    "dns_tcp_connect", "tcp_connect", "tls_negotiation", "tls_handshake",
+    "postgres_startup", "iam_token", "postgres_authentication",
+})
+CONNECTION_MILESTONES = (
+    "dns_resolved", "tcp_connected", "ssl_accepted", "tls_connected",
+    "password_requested", "token_started", "token_ready", "authenticated",
+)
+
+
+def valid_duration(value):
+    return type(value) in (int, float) and 0 <= value <= 3_600_000 and math.isfinite(value)
+
+
+def connection_timing(record, timestamp):
+    phase, elapsed = record.get("phase"), record.get("elapsed_ms")
+    if not isinstance(phase, str) or phase not in CONNECTION_PHASES or not valid_duration(elapsed):
+        return None
+    declared = record.get("milestones_ms")
+    milestones = {} if not isinstance(declared, dict) else {
+        key: declared[key] for key in CONNECTION_MILESTONES
+        if valid_duration(declared.get(key)) and declared[key] <= elapsed
+    }
+    return {"phase": phase, "elapsed_ms": elapsed, "timestamp_ms": timestamp, "milestones_ms": milestones}
+
+
+def aws_read(args):
+    if tuple(args[:2]) not in READ_OPERATIONS:
+        raise ReadOnlyViolation("Diagnostic operation is not allowed")
+    result = subprocess.run(
+        ["aws", *args, "--region", "ap-northeast-2", "--output", "json",
+         "--no-cli-pager", "--no-paginate"], check=True, capture_output=True, text=True,
+        timeout=30, env={**os.environ, "AWS_PAGER": "", "AWS_MAX_ATTEMPTS": "2"})
+    return json.loads(result.stdout)
+
+
+def classify(message):
+    if not isinstance(message, str):
+        return {"unclassified"}
+    message = message[:REGEX_TEXT_LIMIT]
+    # "SSL off"/"no encryption" describe an HBA rejection, not a TLS diagnosis.
+    if re.search(r"no pg_hba\.conf entry", message, re.I):
+        return {"database_hba"}
+    return {label for label, pattern in ERROR_PATTERNS.items()
+            if re.search(pattern, message, re.I)} or {"unclassified"}
+
+
+def collect(config, aws, now_ms):
+    if (not isinstance(config, dict) or set(config) != {"project", "region", "account"}
+            or not re.fullmatch(r"[a-z][a-z0-9-]{1,39}", str(config.get("project", "")))
+            or config.get("region") != "ap-northeast-2"
+            or not re.fullmatch(r"[0-9]{12}", str(config.get("account", "")))):
+        raise ValueError("Invalid development diagnostic scope")
+    if aws(["sts", "get-caller-identity"]).get("Account") != config["account"]:
+        raise ValueError("Development diagnostic account mismatch")
+    summary = {
+        "status": "unavailable", "scan_order": "oldest_first",
+        "window_start_ms": max(0, now_ms - 3_600_000), "window_end_ms": now_ms,
+        "pages_read": 0, "events": 0, "ignored": 0, "unparsed": 0,
+        "categories": [], "category_counts": {}, "earliest_timestamp_ms": None,
+        "latest_timestamp_ms": None, "truncated": False,
+        "event_counts": {"db_ping_failed": 0, "db_connection_failed": 0},
+        "phase_counts": {}, "latest_connection": None,
+        "invalid_timing": 0, "discarded_milestones": 0,
+        "no_matching_events": None, "no_error_inference": True, "classification_truncated": False,
+    }
+    counts, phase_counts = Counter(), Counter()
+    token = None
+    for _ in range(3):
+        args = ["logs", "filter-log-events", "--log-group-name", f"/ecs/{config['project']}-web",
+                "--start-time", str(summary["window_start_ms"]), "--end-time", str(now_ms),
+                "--filter-pattern", '{ ($.evt = "db_ping_failed") || ($.evt = "db_connection_failed") }',
+                "--limit", "100"]
+        if token:
+            args += ["--next-token", token]
+        try:
+            result = aws(args)
+            events = result["events"]
+            if not isinstance(events, list):
+                raise ValueError("Invalid log page")
+            token = result.get("nextToken")
+            if token is not None and not isinstance(token, str):
+                raise ValueError("Invalid diagnostic pagination")
+        except READ_ERRORS:
+            summary["status"] = "partial" if summary["pages_read"] else "unavailable"
+            summary["truncated"] = True
+            break
+        summary["pages_read"] += 1
+        summary["status"] = "available"
+        for event in events:
+            try:
+                timestamp = event["timestamp"]
+                if type(timestamp) is not int:
+                    raise ValueError("Invalid event timestamp")
+                record = json.loads(re.sub(r"\x1b\[[0-9;]*m", "", event.get("message", "")).strip())
+            except READ_ERRORS:
+                summary["unparsed"] += 1
+                continue
+            if (not isinstance(record, dict) or record.get("evt") not in ("db_ping_failed", "db_connection_failed")
+                    or not summary["window_start_ms"] <= timestamp < now_ms):
+                summary["ignored"] += 1
+                continue
+            event_type = record["evt"]
+            if event_type == "db_connection_failed":
+                timing = connection_timing(record, timestamp)
+                if timing is None:
+                    summary["ignored"] += 1
+                    summary["invalid_timing"] += 1
+                    continue
+                declared = record.get("milestones_ms")
+                if isinstance(declared, dict):
+                    summary["discarded_milestones"] += len(declared) - len(timing["milestones_ms"])
+                elif declared is not None:
+                    summary["discarded_milestones"] += 1
+                phase_counts[timing["phase"]] += 1
+                previous = summary["latest_connection"]
+                if previous is None or timestamp >= previous["timestamp_ms"]:
+                    summary["latest_connection"] = timing
+            else:
+                message = record.get("err")
+                if isinstance(message, str) and len(message) > REGEX_TEXT_LIMIT:
+                    summary["classification_truncated"] = True
+                counts.update(classify(message))
+            summary["events"] += 1
+            summary["event_counts"][event_type] += 1
+            earliest, latest = summary["earliest_timestamp_ms"], summary["latest_timestamp_ms"]
+            summary["earliest_timestamp_ms"] = timestamp if earliest is None else min(earliest, timestamp)
+            summary["latest_timestamp_ms"] = timestamp if latest is None else max(latest, timestamp)
+        summary["truncated"] = bool(token)
+        if not token:
+            break
+    summary["categories"] = sorted(counts)
+    summary["category_counts"] = dict(sorted(counts.items()))
+    summary["phase_counts"] = dict(sorted(phase_counts.items()))
+    if summary["pages_read"]:
+        summary["no_matching_events"] = summary["events"] == 0
+    if summary["status"] == "available" and (
+            summary["truncated"] or summary["unparsed"] or summary["invalid_timing"]
+            or summary["discarded_milestones"] or summary["classification_truncated"]):
+        summary["status"] = "partial"
+    return summary
+
+
+def configuration_snapshot(config, aws):
+    project, region, account = (config[key] for key in ("project", "region", "account"))
+    unavailable = dict.fromkeys(
+        ("cluster", "service", "service_target_definition", "db_security_groups", "identity_policy"), True)
+
+    def read(source, loader):
+        try:
+            value = loader()
+            if not isinstance(value, dict):
+                raise ValueError("Invalid metadata object")
+        except READ_ERRORS:
+            return None
+        unavailable[source] = False
+        return value
+
+    cluster = read("cluster", lambda: aws([
+        "rds", "describe-db-clusters", "--db-cluster-identifier", f"{project}-aurora"])["DBClusters"][0])
+    service = read("service", lambda: aws([
+        "ecs", "describe-services", "--cluster", project, "--services", f"{project}-web"])["services"][0])
+    definition = read("service_target_definition", lambda: aws([
+        "ecs", "describe-task-definition", "--task-definition", service["taskDefinition"]])["taskDefinition"])
+    policy = read("identity_policy", lambda: aws([
+        "iam", "get-role-policy", "--role-name", f"{project}-task",
+        "--policy-name", f"{project}-web-rds-iam-auth"])["PolicyDocument"])
+    snapshot = {
+        "sources_unavailable": unavailable,
+        "definition_basis": "service_target_not_running_tasks",
+        "credential_check_basis": "declarations_only_not_runtime",
+        **dict.fromkeys((
+            "cluster_available", "iam_database_auth_enabled", "service_running_count", "web_container_found",
+            "endpoint_matches_cluster", "database_matches", "user_matches", "region_matches",
+            "task_role_matches", "credential_env_override_declared", "credential_secret_override_declared",
+            "environment_files_declared", "db_ingress_from_web_groups",
+            "identity_policy_has_expected_connect_allow")),
+    }
+    if cluster is not None:
+        snapshot["cluster_available"] = cluster.get("Status") == "available"
+        snapshot["iam_database_auth_enabled"] = cluster.get("IAMDatabaseAuthenticationEnabled") is True
+    if service is not None and type(service.get("runningCount")) is int:
+        snapshot["service_running_count"] = service["runningCount"]
+    try:
+        containers = definition["containerDefinitions"]
+        if not isinstance(containers, list):
+            raise ValueError("Malformed container definitions")
+        container = next((c for c in containers if isinstance(c, dict) and c.get("name") == "web"), None)
+        snapshot["web_container_found"] = container is not None
+        if container is None:
+            raise ValueError("Web container is absent")
+        env = {entry["name"]: entry["value"] for entry in container.get("environment", [])}
+        secrets = {entry["name"] for entry in container.get("secrets", [])}
+        snapshot.update({
+            "user_matches": env.get("AURORA_USER") == "awsops_web",
+            "region_matches": env.get("AWS_REGION") == region,
+            "task_role_matches": definition.get("taskRoleArn") == f"arn:aws:iam::{account}:role/{project}-task",
+            "credential_env_override_declared": bool(CREDENTIAL_NAMES.intersection(env)),
+            "credential_secret_override_declared": bool(CREDENTIAL_NAMES.intersection(secrets)),
+            "environment_files_declared": bool(container.get("environmentFiles")),
+        })
+        if cluster is not None:
+            snapshot["endpoint_matches_cluster"] = (
+                bool(cluster.get("Endpoint")) and env.get("AURORA_ENDPOINT") == cluster.get("Endpoint"))
+            snapshot["database_matches"] = env.get("AURORA_DATABASE") == cluster.get("DatabaseName") == "awsops"
+    except READ_ERRORS:
+        pass
+    try:
+        db_groups = [group["VpcSecurityGroupId"] for group in cluster["VpcSecurityGroups"]]
+        if not db_groups:
+            raise ValueError("Missing database security groups")
+        groups = aws(["ec2", "describe-security-groups", "--group-ids", *db_groups])["SecurityGroups"]
+        if not isinstance(groups, list):
+            raise ValueError("Invalid security group response")
+        unavailable["db_security_groups"] = False
+        net = service["networkConfiguration"]["awsvpcConfiguration"]
+        snapshot["db_ingress_from_web_groups"] = any(
+            rule.get("IpProtocol") in ("tcp", "-1")
+            and (rule.get("IpProtocol") == "-1" or rule.get("FromPort", 65536) <= 5432 <= rule.get("ToPort", -1))
+            and any(pair.get("GroupId") in net["securityGroups"] for pair in rule.get("UserIdGroupPairs", []))
+            for group in groups for rule in group.get("IpPermissions", []))
+    except READ_ERRORS:
+        pass
+    try:
+        expected = f"arn:aws:rds-db:{region}:{account}:dbuser:{cluster['DbClusterResourceId']}/awsops_web"
+        as_list = lambda value: value if isinstance(value, list) else [value]
+        snapshot["identity_policy_has_expected_connect_allow"] = any(
+            s.get("Effect") == "Allow" and not s.get("Condition")
+            and "rds-db:connect" in as_list(s.get("Action"))
+            and expected in as_list(s.get("Resource")) for s in as_list(policy["Statement"]))
+    except READ_ERRORS:
+        pass
+    snapshot["derived_unavailable"] = {
+        key: value is None for key, value in snapshot.items()
+        if key not in ("sources_unavailable", "definition_basis", "credential_check_basis")
+    }
+    snapshot["status"] = ("unavailable" if all(unavailable.values()) else "partial"
+                          if any(unavailable.values()) or any(snapshot["derived_unavailable"].values())
+                          else "available")
+    return snapshot
+
+
+def server_log_snapshot(config, aws):
+    summary = {
+        "status": "unavailable", "listing_truncated": False, "tail_truncated": None,
+        "listing_pages_read": 0, "tail_line_limit": 500, "lines_examined": 0,
+        "matching_lines": 0, "category_counts": {}, "selected_last_written_ms": None,
+        "benign_role_mentions": 0, "files_selected": 0, "files_downloaded": 0, "tail_unavailable": True,
+    }
+    instance = f"{config['project']}-aurora-1"
+    candidates, marker = {}, None
+    try:
+        for _ in range(3):
+            args = ["rds", "describe-db-log-files", "--db-instance-identifier", instance,
+                    "--filename-contains", "postgresql", "--max-records", "100"]
+            if marker:
+                args += ["--marker", marker]
+            page = aws(args)
+            files = page["DescribeDBLogFiles"]
+            if not isinstance(files, list):
+                raise ValueError("Invalid server log listing")
+            for item in files:
+                name, written = item["LogFileName"], item["LastWritten"]
+                if not isinstance(name, str) or type(written) is not int or written < 0:
+                    raise ValueError("Invalid server log metadata")
+                if "postgresql" in name:
+                    candidates[name] = max(written, candidates.get(name, 0))
+            summary["listing_pages_read"] += 1
+            marker = page.get("Marker")
+            if marker is not None and not isinstance(marker, str):
+                raise ValueError("Invalid server log pagination")
+            if not marker:
+                break
+        summary["listing_truncated"] = bool(marker)
+    except READ_ERRORS:
+        summary["listing_truncated"] = True
+    selected = sorted(candidates, key=candidates.get, reverse=True)[:2]
+    if not selected:
+        return summary
+    summary["files_selected"] = len(selected)
+    summary["selected_last_written_ms"] = candidates[selected[0]]
+    summary["tail_unavailable"] = False
+    counts = Counter()
+    for name in selected:
+        try:
+            # Omitting Marker requests each file's most recent tail.
+            tail = aws(["rds", "download-db-log-file-portion", "--db-instance-identifier", instance,
+                        "--log-file-name", name, "--number-of-lines", "500"])
+            data, pending = tail["LogFileData"], tail["AdditionalDataPending"]
+            if not isinstance(data, str) or type(pending) is not bool:
+                raise ValueError("Invalid server log tail")
+            lines = data.splitlines()
+            summary["tail_truncated"] = bool(summary["tail_truncated"] or pending or len(lines) >= 500
+                                             or len(data.encode("utf-8")) >= 1_048_576)
+            for line in lines:
+                if len(line) > REGEX_TEXT_LIMIT:
+                    summary["tail_truncated"] = True
+                line = line[:REGEX_TEXT_LIMIT]
+                if not re.search(r"\bawsops_web\b", line):
+                    continue
+                severity = re.search(
+                    r"(?:^|[\s:])(DEBUG[1-5]?|INFO|NOTICE|WARNING|LOG|FATAL|ERROR|PANIC|DETAIL|HINT|CONTEXT|STATEMENT):",
+                    line)
+                if not severity or severity[1] not in ("FATAL", "ERROR", "PANIC"):
+                    summary["benign_role_mentions"] += 1
+                    continue
+                summary["matching_lines"] += 1
+                counts.update(classify(line))
+            summary["lines_examined"] += len(lines)
+            summary["files_downloaded"] += 1
+        except READ_ERRORS:
+            summary["tail_unavailable"] = True
+    summary["category_counts"] = dict(sorted(counts.items()))
+    summary["status"] = ("partial" if summary["listing_truncated"] or summary["tail_unavailable"]
+                         or summary["tail_truncated"] else "available")
+    return summary
+
+
+def main():
+    if (sys.argv[1:] != ["--target", "dev"]
+            or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+            or os.environ.get("CI_DB_DIAGNOSTICS_DEV") != "true"):
+        raise ValueError("Enabled manual development diagnostics are required")
+    config = json.load(sys.stdin)
+    if isinstance(config, str):
+        config = json.loads(config)
+
+    result = {"logs": collect(config, aws_read, int(time.time() * 1000))}
+    result["configuration"] = configuration_snapshot(config, aws_read)
+    result["server_logs"] = server_log_snapshot(config, aws_read)
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except ReadOnlyViolation:
+        print(json.dumps({"status": "unavailable", "reason": "read_only_violation"}))
+        sys.exit(1)
+    except Exception:
+        # This advisory tool never reports exception text, including unexpected failures.
+        print(json.dumps({"status": "unavailable"}))
+        sys.exit(1)

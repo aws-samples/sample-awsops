@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f42d7573b522 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b33272d08033 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -10,6 +10,30 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
+- `CI_DB_DIAGNOSTICS_DEV` is default-off and advisory, enabled only by manual `workflow_dispatch`
+  dev plans with literal flag `true`, `--target dev`, and region `ap-northeast-2`. Invalid context
+  causes no reads; state-account/STS is consistency only, not authorization or stack isolation.
+  Run after encrypted plan upload. Opt-in publishes fenced safe JSON including posture booleans
+  to the public Actions log/summary; only this optional step tolerates failure.
+  Keep DNS/CI/readiness gates required and the exact existing read-only CLI verb allowlist.
+  Retain log/config/server evidence independently: partial for retained capped/failed reads,
+  separate unavailable source and unknown derived fields. Early failure is only
+  `{"status":"unavailable"}`. Never publish raw logs/filenames or Terraform/AWS errors.
+  Web logs use a fixed one-hour oldest-first 3 × 100 sample and JSON `evt` OR; timing keys are
+  fixed, durations finite and bounded, and latest means latest valid returned observation.
+  RDS selects at most two latest observed files and downloads newest 500 lines each without
+  Marker. Only FATAL/ERROR/PANIC web-role lines are errors. `benign_role_mentions` counts exactly
+  non-error-severity lines mentioning `awsops_web`; lines for other database roles are ignored.
+  Pool timeout is distinct from lost connection, HBA and PostgreSQL capacity failures.
+  Service-target/declaration/inline-Allow comparisons are hypotheses, not runtime/access proof.
+  The dev runbook's Development variable catalog and Aurora component reference register this path.
+
+- `no_matching_events` labels empty accepted samples; `no_error_inference=true` prohibits
+  no-error/healthy conclusions from zero counts in every status. A known authenticated DB
+  probe must fall within the returned one-hour window before interpreting the sample.
+  Successful task-definition reads remain source-available for missing/malformed web containers;
+  use `web_container_found` and derived-unknown flags. Discarded milestones and regex inputs
+  shortened to 4,096 characters make samples partial; read-only violations are not swallowed.
 - `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is default-off. The manual
   `deploy-migrations.yml` + `run-migration.mjs` controller starts one verified private
   ARM64 task. Its IAM reads exact Aurora secrets; DB DDL uses those credentials.
