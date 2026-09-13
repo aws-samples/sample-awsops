@@ -52,10 +52,14 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   exactly non-error-severity lines mentioning `awsops_web`; lines for other database roles are
   ignored. Capped/failed reads retaining evidence are partial; download failure retains metadata.
   Discarded milestones and regex text shortened to 4,096 characters also mark samples partial.
-  The same opt-in batches IAM-auth outcome and pressure metrics in one bounded read for the
-  configured first instance; preserve IDs/status/missing data and configured numeric ACU bounds.
+  The same opt-in uses one bounded CloudWatch get-metric-data read for the configured first
+  instance: seven IAM-auth Sum metrics, CPU Average, free-memory Minimum and capacity Average.
+  Preserve fixed IDs/status/missing/invalid flags and at most 60 minute points per series;
+  never emit remote labels, messages or pagination tokens. Configured min/max ACUs are numeric
+  or null; no capacity, authentication or timeout tuning is authorized.
   Separate read status from data presence: clean Complete+empty is available with missing=true;
   Forbidden/InternalError is unavailable; PartialData/malformed/degraded reads are partial.
+  `read_ok` describes an accepted response envelope, not an authentication outcome.
   Every lifecycle observation needs the web user in a recognized RDS prefix and an anchored
   message, separately from error counts. Full-prefix SQL continuations and RAISE LOG can forge
   matching text: lifecycle_source_integrity stays unverified_text, lifecycle_injection_possible

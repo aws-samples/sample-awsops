@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b0849ef85ca9 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4bed1273dc07 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -42,18 +42,17 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   Exact inline-Allow/SG comparisons do not prove effective access or connectivity. Never
   waive authenticated DB/login readiness or expose Terraform/AWS error details.
 
-- The existing manual diagnostics batches seven IAM-auth Sum metrics plus CPU Average,
-  free-memory Minimum and capacity Average in one bounded CloudWatch read for the configured
-  first instance. Preserve fixed IDs, status/missing/invalid flags and at most 60 minute points.
-  Read status is separate from presence: clean Complete+empty is available with missing=true;
-  Forbidden/InternalError is unavailable and PartialData/malformed/degraded reads are partial.
-  `read_ok` describes an accepted response envelope. Never emit remote labels/messages/tokens.
-  Configured min/max ACUs are numeric or null. Metrics cannot attribute an individual probe.
-  Lifecycle prefixes/message starts reject bare or mid-line tokens, but full-prefix SQL
-  continuations and RAISE LOG can forge matching text. Always expose lifecycle_source_integrity=unverified_text,
-  lifecycle_injection_possible=true, and unknown probe outcome; counts remain advisory.
-  Authenticated/authorized logs require log_connections (PostgreSQL default off, not enabled
-  here). The helper does not inspect the live setting: log_connections_enabled=null is unknown.
+- `rds_metrics` adds one bounded CloudWatch get-metric-data request for the configured first
+  instance: seven IAM-auth Sum series, CPU Average, free-memory Minimum and capacity Average.
+  Preserve fixed IDs, status/missing/invalid flags and at most 60 minute points per series;
+  never publish remote labels/messages/tokens. Configured min/max ACUs are numeric or null.
+  Clean Complete+empty is an available read with missing=true; Forbidden/InternalError is
+  unavailable and PartialData or malformed/degraded reads are partial. `read_ok` describes
+  the response envelope only. Instance metrics cannot attribute a probe outcome or authorize tuning.
+  Prefix/message filters reject bare and mid-line tokens, but full-prefix SQL continuations
+  and RAISE LOG can forge lifecycle text. Keep lifecycle_source_integrity=unverified_text,
+  lifecycle_injection_possible=true and unknown probe outcome. Auth-success messages need
+  log_connections (PostgreSQL default off, not enabled here); the uninspected setting stays null.
 - `ci_plan_context.py` accepts only successful explicit same-repo/branch/SHA plan dispatches.
   PR/push plans are advisory. `ci_dns_policy.py` preserves managed certificate ownership and
   service aliases; blocks all public/private DNS mutations unless authorized, including Cloud

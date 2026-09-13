@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5b281f014f6a · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ab745aab3f81 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -35,18 +35,18 @@ legacy runbook's steps as the current operational path).
   use `web_container_found` and derived-unknown flags. Discarded milestones and regex inputs
   shortened to 4,096 characters make samples partial; read-only violations are not swallowed.
 
-- The existing manual diagnostics batches seven IAM-auth Sum metrics plus CPU Average,
-  free-memory Minimum and capacity Average in one bounded CloudWatch read for the configured
-  first instance. Preserve fixed IDs, status/missing/invalid flags and at most 60 minute points.
-  Read status is separate from presence: clean Complete+empty is available with missing=true;
-  Forbidden/InternalError is unavailable and PartialData/malformed/degraded reads are partial.
-  `read_ok` describes an accepted response envelope. Never emit remote labels/messages/tokens.
-  Configured min/max ACUs are numeric or null. Metrics cannot attribute an individual probe.
-  Lifecycle prefixes/message starts reject bare or mid-line tokens, but full-prefix SQL
-  continuations and RAISE LOG can forge matching text. Always expose lifecycle_source_integrity=unverified_text,
-  lifecycle_injection_possible=true, and unknown probe outcome; counts remain advisory.
-  Authenticated/authorized logs require log_connections (PostgreSQL default off, not enabled
-  here). The helper does not inspect the live setting: log_connections_enabled=null is unknown.
+- The configured first instance's metrics are an optional manual-plan read, not a tuning action.
+  Its single CloudWatch get-metric-data batch contains seven IAM-auth Sum metrics and CPU
+  Average, free-memory Minimum, capacity Average. Limit each series to 60 minute points and
+  expose fixed IDs/status/missing/invalid flags; suppress remote labels/messages/page tokens.
+  Show configured ACU minimum/maximum as numbers or null. `read_ok` means an accepted envelope.
+  Available/partial/unavailable describes the read independently of data presence: clean
+  Complete+empty is available/missing, Forbidden/InternalError unavailable, degraded reads partial.
+  Lifecycle counts have no provenance guarantee: full-prefix SQL and RAISE LOG can forge them.
+  Always mark lifecycle_source_integrity=unverified_text, lifecycle_injection_possible=true
+  and unknown probe outcome.
+  Genuine auth-success logging needs log_connections, which defaults off in PostgreSQL and
+  is not enabled here. Its effective value is uninspected and reported as null. Never tune from these counts.
 - `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is default-off. The manual
   `deploy-migrations.yml` + `run-migration.mjs` controller starts one verified private
   ARM64 task. Its IAM reads exact Aurora secrets; DB DDL uses those credentials.

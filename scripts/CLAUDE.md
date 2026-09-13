@@ -73,7 +73,7 @@ secrets-manager) — installed by `make deps`.
   Metric read status is separate from presence: clean Complete+empty is available/missing;
   Forbidden/InternalError is unavailable, PartialData or malformed/degraded reads are partial.
   `read_ok` describes the response envelope, not an auth outcome.
-  Expose numeric configured min/max ACUs only; change no capacity/auth/timeout setting.
+  Expose configured min/max ACUs as bounded numbers or null; change no capacity/auth/timeout setting.
   Every server lifecycle count requires the web user in a recognized RDS prefix and anchored
   PG messages, separately from error categories. This rejects bare/mid-line tokens, but
   multiline SQL with a full prefix and RAISE LOG can forge matching text. Always retain
