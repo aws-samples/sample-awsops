@@ -88,14 +88,17 @@ terraform -chdir=terraform/foundation init -backend-config=backend.hcl
 terraform -chdir=terraform/foundation plan -out tfplan
 terraform -chdir=terraform/foundation apply tfplan
 
-# Build + push the web image, roll ECS, wait for /api/health
+# New, verified-empty DB only, from an approved host with private Aurora connectivity:
+INITIALIZE_EMPTY_DB=1 make migrate
+# For an existing ledger use make migrate; INTEGER ledgers need the separate BOOTSTRAP gate.
+# See terraform/foundation/migrations/README.md for runtime image/env/IAM/TLS and recovery.
+
+# Build + push web, roll ECS and wait for /api/health (reruns migrate first; any failure blocks deploy)
 make deploy
 
-# After apply: apply DB migrations FIRST (creates the awsops_sql_reader role and syncs its
-# password — make agentcore does neither, and skipping it leaves execute_sql and inventory-read
-# failing Data API auth). See docs/runbooks/agent-sql-reader.md.
-make migrate
-# then build/push the agent image and run the idempotent AgentCore provisioner
+# After migrations: build/push the agent image and run the idempotent provisioner.
+# make agentcore does not create the reader role or sync its password.
+# See docs/runbooks/agent-sql-reader.md.
 make agentcore
 
 # After apply with workers_enabled=true: build/push the worker image
@@ -106,7 +109,7 @@ make workers
 
 ```bash
 make help              # list all available targets
-make migrate-status    # offline: app version + each pending migration's release
+make migrate-status    # offline: app version + each on-disk migration's release
 make backfill-owner-sub # PLAN the legacy email-keyed requested_by -> Cognito sub rewrite (changes
                         # nothing). Review the plan, delete entries you cannot vouch for, then
                         # `node scripts/v2/backfill-owner-sub.mjs --apply <plan.json>`. Quiesce the
@@ -174,11 +177,17 @@ awsops/
 ## Testing
 
 Install the dependencies listed in [merge verification](docs/v2-merge-verification.md#runner-usage).
+Private migration tests require `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`
+(`pg` + AWS SDK), OpenSSL and a reachable Docker daemon for `postgres:17`.
+The required private PostgreSQL suite fails if Docker is missing; it uses bare `docker` on PATH
+(the documented exception to optional legacy itests). Its offline companion uses no AWS credentials.
 Terraform mock tests require **1.15.7** and installed/cached providers; the helper copies only
 tracked working-tree files, runs `init -backend=false`, validates and tests without a real backend.
 
 ```bash
 bash scripts/v2/merge-verify.sh   # isolated Python + web vitest + deployment Node tests; opportunistic TF checks
+node --test scripts/v2/ci/*.test.mjs # offline private migration runtime fixtures (CI required)
+node --test scripts/v2/ci/migration.itest.mjs # real PostgreSQL initializer/runner regressions (CI required)
 bash scripts/v2/terraform-test.sh # isolated, backend-disabled Terraform mock tests (also required in CI)
 node --test scripts/v2/deployment-smoke.test.mjs # focused offline smoke argument tests
 bash tests/run-all.sh             # repo-wide hook/structure tests + agent Python unittests
@@ -285,14 +294,17 @@ terraform -chdir=terraform/foundation init -backend-config=backend.hcl
 terraform -chdir=terraform/foundation plan -out tfplan
 terraform -chdir=terraform/foundation apply tfplan
 
-# web 이미지 빌드+푸시, ECS 롤링, /api/health 대기
+# Aurora 사설 연결이 가능한 승인된 호스트에서 새 빈 DB에 한해서만:
+INITIALIZE_EMPTY_DB=1 make migrate
+# 기존 원장이 있으면 make migrate; INTEGER 원장은 별도 BOOTSTRAP gate 필요.
+# runtime 이미지/env/IAM/TLS/복구: terraform/foundation/migrations/README.md
+
+# web 빌드+푸시, ECS 롤링, /api/health 대기 (migrate 재실행, 실패 시 deploy 중단)
 make deploy
 
-# apply 이후: 먼저 DB 마이그레이션 (awsops_sql_reader 롤 생성 + 비밀번호 동기화 —
-# make agentcore는 둘 다 하지 않으므로 생략하면 execute_sql·inventory-read가 Data API auth 실패).
+# 마이그레이션 이후 agent 이미지 빌드+푸시, 멱등 provisioner 실행.
+# make agentcore는 reader 롤 생성/비밀번호 동기화를 하지 않는다.
 # docs/runbooks/agent-sql-reader.md 참조.
-make migrate
-# 그 다음 agent 이미지 빌드+푸시, 멱등 AgentCore provisioner 실행
 make agentcore
 
 # workers_enabled=true로 apply 이후: worker 이미지 빌드+푸시
@@ -303,7 +315,7 @@ make workers
 
 ```bash
 make help               # 사용 가능한 전체 타겟 목록
-make migrate-status     # 오프라인: 앱 버전 + 각 미적용 마이그레이션의 release
+make migrate-status     # 오프라인: 앱 버전 + 디스크에 있는 마이그레이션별 release
 make backfill-owner-sub # legacy email-keyed requested_by -> Cognito sub 재작성 '계획'만 생성(변경 없음).
                         # 계획을 검토해 확신 못 하는 항목을 지운 뒤
                         # `node scripts/v2/backfill-owner-sub.mjs --apply <plan.json>`.
@@ -368,11 +380,17 @@ awsops/
 ## 테스트
 
 [머지 검증](docs/v2-merge-verification.md#runner-usage)의 의존성을 먼저 설치하세요.
+Private migration 테스트는 `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`로
+`pg`·AWS SDK를 설치하며 PostgreSQL 테스트에는 OpenSSL·접근 가능한 Docker·`postgres:17`이
+필요합니다. 레거시 선택적 itest와 달리 Docker 부재 시 필수 gate가 실패하고 PATH의 `docker`를
+직접 사용합니다. 오프라인 companion은 AWS 자격증명을 사용하지 않습니다.
 Terraform mock 테스트에는 **1.15.7**과 설치/캐시된 provider가 필요합니다. 도우미는 추적된
 작업 파일만 복사해 `init -backend=false`, validate, test를 실행하며 실제 backend를 사용하지 않습니다.
 
 ```bash
 bash scripts/v2/merge-verify.sh   # 격리 Python + web vitest + 배포 Node 테스트; 선택적 TF 검사
+node --test scripts/v2/ci/*.test.mjs # private migration runtime 오프라인 fixture (CI 필수)
+node --test scripts/v2/ci/migration.itest.mjs # 실제 PG initializer/runner 회귀 테스트 (CI 필수)
 bash scripts/v2/terraform-test.sh # 별도 복사본·backend 비활성 Terraform mock 테스트 (CI 필수)
 node --test scripts/v2/deployment-smoke.test.mjs # 오프라인 스모크 인자 집중 테스트
 bash tests/run-all.sh             # repo 전반 hook/structure 테스트 + agent Python unittest

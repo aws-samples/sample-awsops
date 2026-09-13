@@ -37,8 +37,11 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
 - **Backups**: 7-day retention. `deletion_protection = false` + `skip_final_snapshot = true`
   (dev-only — flip both for prod).
 - **Schema**: the **ADR-001 baseline schema** (Phase-1 7-table baseline, **frozen**; expanded since via ULID `migrations/*` — current table count per `schema.sql`, incl. incident/k8s/integrations/topology/ai_usage/accounts) + a P2 `worker_jobs` table, applied via
-  `psql` from an in-VPC deploy host. Tracked by a `schema_migrations` table.
-  Idempotent (`CREATE TABLE IF NOT EXISTS` throughout).
+  `make migrate` from an approved in-VPC host or the private migration runtime. A new empty DB
+  requires one-shot `INITIALIZE_EMPTY_DB=1`; the baseline plus ledger conversion/checksum commit
+  atomically before ULIDs. Any user object without a ledger prevents initialization.
+  새 빈 DB는 일회성 초기화가 필요하며 baseline·원장 변환·checksum은 원자적으로 적용한다.
+  원장 없이 사용자 객체가 있으면 초기화를 거부한다.
 - **App access**: **node-pg** (`web/lib/db.ts`). No *live* Steampipe in v2 — live AWS
   queries go through AgentCore MCP Lambda tools; the ops gateway already has a limited
   Aurora-backed `inventory-read-target`, while direct domain API targets remain registered.
@@ -102,6 +105,11 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   Aurora cluster + writer instance, RDS-managed master secret.
 - `terraform/foundation/data/schema.sql` — ADR-001 7-table schema + `schema_migrations`
   + P2 `worker_jobs` (idempotent).
+- `scripts/v2/migrate.mjs`, `initialize-db.mjs` — atomic empty-DB baseline and checksum-verified
+  ULIDs; `scripts/v2/eks/rds-ca-bundle.pem` is the shared migration TLS trust bundle despite
+  the historical `eks/` path. See [migration operations](../../terraform/foundation/migrations/README.md)
+  for build/run/env/IAM/network requirements.
+  초기화·ULID 적용·TLS는 migration runtime이 담당하며 `eks/`의 CA bundle을 공용 사용한다.
 - `terraform/foundation/migrations/01M1B3NB288P56BDR1GMEN9GH9_inventory_sync_freshness.sql`
   — additive durable inventory success fields, `partial` status, and the safe explicit-column
   `sql_reader.inventory_sync_runs` view.
@@ -136,9 +144,11 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   flip both (and set `final_snapshot_identifier`) for prod.
 - A **pre-upgrade manual snapshot is the rollback anchor** — a major in-place
   *downgrade* is impossible.
-- The schema is idempotent and applied via `psql` from an in-VPC deploy host; if
-  the host can't reach Aurora, confirm the VPC-CIDR ingress + that the host is in
-  `mgmt-vpc`.
+- Use the migration runner with private connectivity and verified RDS CA/hostname. Check the
+  approved host/task SG and private endpoint when connectivity fails; do not broaden ingress
+  or bypass TLS. Existing INTEGER ledgers use the separate controller-confirmed BOOTSTRAP gate.
+  승인된 사설 SG/endpoint를 확인하고 TLS/ingress 보호를 완화하지 않는다.
+  기존 INTEGER 원장은 controller가 확인한 별도 BOOTSTRAP 절차로 전환한다.
 
 ## Source / 출처
 

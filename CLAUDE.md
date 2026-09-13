@@ -14,6 +14,7 @@ npx vitest run -t "test name substring"  # filter by test name
 npx tsc --noEmit -p .                    # typecheck — no npm script wraps this; run directly
 ```
 No lint script/config exists (no ESLint) — don't go looking for one. Integration tests for the migration/backfill scripts live outside `web/` as `scripts/v2/*.itest.mjs`, run directly with `node scripts/v2/<name>.itest.mjs` — each spins up a disposable `postgres:17` container via `sudo docker` (skips cleanly if Docker is unreachable), not the live Aurora instance.
+**Required private-migration exception:** install locked dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`, then run `node --test scripts/v2/ci/*.test.mjs` (offline runtime tests) and `node --test scripts/v2/ci/migration.itest.mjs` (real PostgreSQL 17, including initializer tests). This suite requires bare `docker` on PATH, a reachable daemon and OpenSSL; missing prerequisites fail hard, never skip, with no automatic `sudo`/`DOCKER` override. These are runtime-only CI checks; deployment-controller coverage is not present here. No AWS credentials/OIDC or live AWS calls.
 
 ## Architecture (v2)
 - **IaC**: **Terraform** (CDK retired). Single root at `terraform/foundation/`, **partial S3 backend** (`backend.hcl`, `awsops-v2-tfstate`, `use_lockfile` — no DynamoDB). TF ≥1.15, provider `~>6.0`.
