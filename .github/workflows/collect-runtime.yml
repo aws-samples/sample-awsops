@@ -1,0 +1,126 @@
+name: Prepare or Verify Development Collection
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Prepare the host registry before backend activation, or collect and verify deployed runtimes
+        required: true
+        type: choice
+        options: [prepare, collect]
+      image_sha:
+        description: Reviewed deployed web image SHA (required for collect; leave empty for prepare)
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-web-rollout-dev
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate manual development operation
+        env:
+          MODE: ${{ inputs.mode }}
+          IMAGE_SHA: ${{ inputs.image_sha }}
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REPOSITORY" = "aws-samples/sample-awsops" ] &&
+          [ "$GITHUB_REF" = "refs/heads/dev" ] &&
+          [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || exit 1
+          if [ "$MODE" = "prepare" ]; then
+            [ -z "$IMAGE_SHA" ] || exit 1
+          elif [ "$MODE" = "collect" ]; then
+            [[ "$IMAGE_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
+          else
+            exit 1
+          fi
+
+  verify:
+    needs: [guard]
+    runs-on: sample-awsops
+    environment: development
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TARGET: dev
+      AWS_REGION: ap-northeast-2
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      CI_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+      RUNTIME_MODE: ${{ inputs.mode }}
+      PIN_SHA: ${{ inputs.image_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.7
+          terraform_wrapper: false
+      - name: Validate configured development account
+        run: python3 scripts/v2/ci_runtime_policy.py verify-role
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+      - name: Verify actual development caller
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            python3 scripts/v2/ci_runtime_policy.py verify-caller
+      - name: Restore private development inputs
+        env:
+          BACKEND: ${{ secrets.TF_BACKEND_HCL_DEV }}
+          TFVARS: ${{ secrets.TF_TFVARS_DEV }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [ -n "$BACKEND" ] && [ -n "$TFVARS" ] || exit 1
+          rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars
+          set -o noclobber
+          printf '%s' "$BACKEND" | base64 --decode > terraform/foundation/backend.hcl
+          printf '%s' "$TFVARS" | base64 --decode > terraform/foundation/terraform.tfvars
+      - name: Prepare configured demo credentials
+        id: demo
+        working-directory: terraform/foundation
+        env:
+          TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
+        run: node ../../scripts/v2/prepare-smoke-credentials.mjs
+      - name: Capture current development outputs
+        id: runtime
+        env:
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/foundation output -json runtime_deployment 2>/dev/null |
+            node scripts/v2/ci/runtime-release.mjs capture
+          echo "url=$(terraform -chdir=terraform/foundation output -raw public_url)" >> "$GITHUB_OUTPUT"
+          echo "cloudfront_domain=$(terraform -chdir=terraform/foundation output -raw cloudfront_domain)" >> "$GITHUB_OUTPUT"
+      - name: Run development collection operation
+        timeout-minutes: 30
+        env:
+          PUBLIC_URL: ${{ steps.runtime.outputs.url }}
+          CLOUDFRONT_DOMAIN: ${{ steps.runtime.outputs.cloudfront_domain }}
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+          RUNTIME_DEPLOYMENT_FILE: ${{ steps.runtime.outputs.deployment_file }}
+        run: node scripts/v2/ci/runtime-release.mjs run
+      - name: Clean private development files
+        if: always()
+        env:
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+        run: |
+          set -euo pipefail
+          rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars
+          node scripts/v2/prepare-smoke-credentials.mjs --cleanup

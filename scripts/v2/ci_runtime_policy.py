@@ -30,7 +30,7 @@ CORE = set(REPOSITORIES) | PRIVATE_DNS | {
     "aws_sfn_state_machine.workers[0]", "aws_lambda_event_source_mapping.dispatcher[0]",
 }
 OVERRIDES = Path("ci-runtime.auto.tfvars.json")
-RUNTIME_FLAGS = ("agentcore_enabled", "workers_enabled", "steampipe_enabled", "inventory_host_only")
+RUNTIME_FLAGS = ("agentcore_enabled", "workers_enabled", "steampipe_enabled", "inventory_host_only", "ci_readiness_enabled")
 NETWORK_TYPES = {
     "aws_vpc", "aws_subnet", "aws_nat_gateway", "aws_internet_gateway",
     "aws_route", "aws_route_table", "aws_route_table_association",

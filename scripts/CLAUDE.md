@@ -184,3 +184,12 @@ checks the host registry; optional hostOnly rejects members. Verify requires com
 fresh collection, real web-role runtime evidence and owned worker completion. The file
 is at most 16 KiB, collectionStartedAt at most 30 minutes old, and queued types unique
 with cloudfront included. The utility alone does not wire a deployment workflow.
+
+## Development release controller
+
+`v2/ci/runtime-release.mjs` validates account/role, running web revision/digest/ARM64 and
+owned inventory Lambda code before dispatch. Every dev Deploy Web release requires its
+private hostOnly verify configuration, fresh collection and actual web-role/runtime/worker
+proof. Manual collect-runtime prepare accepts disabled backends and reports prepared,
+never ready. Typed authenticated-smoke failures retain sanitized diagnostics; other errors
+remain generic. All private credentials/configuration/scratch are covered by cleanup.

@@ -44,7 +44,7 @@ on:
         required: false
         default: false
       verify_database:
-        description: "After deployment, sign in as the configured dev demo user and verify /api/db (dev branch only)."
+        description: "Compatibility input: dev always requires full authenticated runtime readiness, regardless of this value."
         type: boolean
         required: false
         default: false
@@ -67,6 +67,10 @@ jobs:
       cancel-in-progress: ${{ github.ref_name != 'main' }}
     env:
       BRANCH: ${{ github.ref_name }}
+      TARGET: ${{ github.ref_name }}
+      AWS_REGION: ap-northeast-2
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      CI_ROLE_ARN: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
       MAIN_ROLE: ${{ secrets.AWS_CI_BUILD_ROLE_ARN }}
       DEV_ROLE: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
@@ -95,12 +99,24 @@ jobs:
           [ -n "$ROLE" ] || { echo "::error::build role variable for '$BRANCH' is not set"; exit 1; }
           echo "role=$ROLE" >> "$GITHUB_OUTPUT"
 
+      - name: Validate configured development build account
+        if: github.ref == 'refs/heads/dev'
+        run: python3 scripts/v2/ci_runtime_policy.py verify-role
+
       - name: Configure AWS credentials (OIDC -> ci-build)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           mask-aws-account-id: true
           role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
+          unset-current-credentials: true
+
+      - name: Verify actual development build caller
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            python3 scripts/v2/ci_runtime_policy.py verify-caller
 
       # The build job needs exactly one stack fact — the web ECR repository —
       # and derives it WITHOUT reading Terraform state (the ci-build role is
@@ -178,6 +194,12 @@ jobs:
       cancel-in-progress: ${{ github.ref_name != 'main' }}
     env:
       BRANCH: ${{ github.ref_name }}
+      TARGET: ${{ github.ref_name }}
+      AWS_REGION: ap-northeast-2
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      CI_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+      RUNTIME_MODE: collect
+      PIN_SHA: ${{ inputs.image_sha || github.sha }}
       MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
       DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
@@ -218,12 +240,24 @@ jobs:
           [ -n "$ROLE" ] || { echo "::error::deployer role variable for '$BRANCH' is not set"; exit 1; }
           echo "role=$ROLE" >> "$GITHUB_OUTPUT"
 
+      - name: Validate configured development deploy account
+        if: github.ref == 'refs/heads/dev'
+        run: python3 scripts/v2/ci_runtime_policy.py verify-role
+
       - name: Configure AWS credentials (OIDC -> ci-deployer)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           mask-aws-account-id: true
           role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
+          unset-current-credentials: true
+
+      - name: Verify actual development deploy caller
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            python3 scripts/v2/ci_runtime_policy.py verify-caller
 
       - name: Restore terraform.foundation backend
         working-directory: terraform/foundation
@@ -246,12 +280,12 @@ jobs:
           set -o noclobber
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
-          if [ "$VERIFY_DATABASE" != "true" ]; then
+          if [ "$BRANCH" != "dev" ]; then
             terraform init -backend-config=backend.hcl -input=false
           fi
 
       - name: Prepare configured demo credentials
-        if: github.event_name == 'workflow_dispatch' && inputs.verify_database
+        if: github.ref == 'refs/heads/dev'
         id: demo
         working-directory: terraform/foundation
         env:
@@ -269,6 +303,17 @@ jobs:
           echo "url=$(terraform output -raw public_url)" >> "$GITHUB_OUTPUT"
           echo "cloudfront_domain=$(terraform output -raw cloudfront_domain)" >> "$GITHUB_OUTPUT"
           echo "ecr_repo=$(terraform output -raw ecr_web_uri | sed 's|^[^/]*/||')" >> "$GITHUB_OUTPUT"
+
+      - name: Capture development runtime contract
+        if: github.ref == 'refs/heads/dev'
+        id: runtime
+        timeout-minutes: 3
+        env:
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/foundation output -json runtime_deployment 2>/dev/null |
+            node scripts/v2/ci/runtime-release.mjs capture
 
       # The runner is persistent and shared — never leave the restored stack
       # config behind, whatever the outcome.
@@ -343,18 +388,20 @@ jobs:
           node scripts/v2/deployment-smoke.mjs "$PUBLIC_URL" "$CLOUDFRONT_DOMAIN"
           echo
 
-      - name: Authenticated database smoke
-        if: github.event_name == 'workflow_dispatch' && inputs.verify_database
+      - name: Authenticated development runtime readiness
+        if: github.ref == 'refs/heads/dev'
+        timeout-minutes: 30
         env:
           PUBLIC_URL: ${{ steps.tf.outputs.url }}
           CLOUDFRONT_DOMAIN: ${{ steps.tf.outputs.cloudfront_domain }}
           SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+          RUNTIME_DEPLOYMENT_FILE: ${{ steps.runtime.outputs.deployment_file }}
         run: |
           set -euo pipefail
-          node scripts/v2/authenticated-smoke.mjs
+          node scripts/v2/ci/runtime-release.mjs run
 
       - name: Clean prepared demo credentials off the runner
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.verify_database
+        if: always() && github.ref == 'refs/heads/dev'
         env:
           SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
         run: node scripts/v2/prepare-smoke-credentials.mjs --cleanup

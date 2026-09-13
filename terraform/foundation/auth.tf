@@ -100,7 +100,7 @@ resource "aws_cognito_user_group" "admins" {
   description  = "Admins — IAM-related views are visible only to this group"
 }
 
-# Regular demo user — carries no group, so IAM views stay hidden. Gated so a stack
+# Regular demo user — never receives admins; IAM views stay hidden. Gated so a stack
 # (e.g. production) can refuse the shared demo credential entirely.
 resource "aws_cognito_user" "demo" {
   count        = var.create_demo_user ? 1 : 0

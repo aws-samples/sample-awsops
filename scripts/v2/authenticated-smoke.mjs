@@ -14,7 +14,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 const execute = promisify(execFile);
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_INVENTORY_RESPONSE_BYTES = 2 * 1024 * 1024;
-class SmokeError extends Error {}
+// Only fixed or validated diagnostic messages are passed to this class.
+export class SmokeError extends Error {}
 
 function readPrivateResponse(file, limit = MAX_RESPONSE_BYTES) {
   const fd = openSync(file, 'r');

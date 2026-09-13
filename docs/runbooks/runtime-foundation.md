@@ -43,7 +43,41 @@ Retain runtime resources and restore reviewed prior digests/settings. Manual dev
 Sequence: merge reviewed code to dev → reviewed dev apply and full live readiness → main promotion → reviewed production apply. Do not promote this IAM narrowing until live dev exercises verify gateway-backed chat, worker diagnosis, and an SFN/Fargate run with managed tags. Record actual identities, outcomes and denied operations privately; a mock plan or IAM document alone cannot satisfy this promotion gate. This dev PR is the prerequisite for that evidence, not production deployment authorization.
 순서: 검토된 dev 코드 머지 → 검토된 dev apply와 전체 실제 준비 상태 검증 → main 승격 → 검토된 운영 apply. 실제 dev gateway 경유 채팅·워커 진단·관리 태그를 포함한 SFN/Fargate 실행을 검증하기 전에는 이 IAM 축소를 main으로 승격하지 않는다. 실제 신원·결과·거부 작업의 증거를 비공개로 기록한다. Mock 계획이나 IAM 문서만으로 승격 조건을 충족할 수 없으며 이 dev PR은 증거 수집의 선행 조건이지 운영 배포 승인이 아니다.
 
+## Required development release check / 개발 배포 필수 검증
+
+Every dev Deploy Web release now verifies the running web role/revision/digest, the owned
+inventory Lambda code, fresh completed collection, actual SSM/AgentCore/model access and
+owned Lambda/Fargate job completion. `verify_database` cannot disable this gate.
+The dev runtime profile also enables `ci_readiness_enabled`; Terraform creates only the
+verifier application group and the managed demo membership, with no admin/IAM role.
+
+모든 dev Deploy Web 배포는 실제 웹 역할·revision·digest, 수집 Lambda 코드, 최신 수집,
+SSM·AgentCore·모델 권한과 두 워커 완료를 검증합니다. 기존 입력으로 생략할 수 없습니다.
+프로필은 검증 플래그도 켜며, Terraform은 관리자·IAM 역할 없이 검증 그룹과 관리 demo의
+멤버십만 생성합니다.
+
+For a new inactive stack, first apply the reviewed base plan so runtime_deployment exists;
+never disable an already-active profile to repeat bootstrap. Prepare the existing host,
+bootstrap/build the three runtime repositories and verified images, then review/apply the
+full private-DNS runtime plan. Provision AgentCore after its private migration, then deploy:
+신규 비활성 스택만 기본 계획을 먼저 적용합니다. 기존 호스트 준비, 저장소·이미지 준비,
+전체 런타임 계획, 사설 migration·AgentCore provisioning 순서 후 배포합니다.
+
+```bash
+gh workflow run collect-runtime.yml -R aws-samples/sample-awsops --ref dev -f mode=prepare
+# After verified images and the reviewed full runtime apply:
+gh workflow run deploy-agentcore.yml -R aws-samples/sample-awsops --ref dev -f smoke=false
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true
+```
+
+Prepare accepts disabled backends and reports prepared, not ready. Manual collect additionally
+requires the exact deployed image_sha. Keep credentials unchanged; never reset a password or
+promote the user to admin. Runtime retirement remains unsupported by this workflow.
+prepare는 배포 성공이 아니며 수동 collect에는 배포된 image_sha가 필요합니다. 암호·관리자
+권한을 변경해 검증을 통과시키지 않습니다. 이 워크플로는 런타임 삭제를 지원하지 않습니다.
+
 ## Related / 관련
+
 [CI setup/assets](dev-repo-setup.md) · [SQL reader](agent-sql-reader.md) · [Multi-account](onboard-target-account.md) · [Inventory rollback](steampipe-quota-and-staleness.md).
-Sources: `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `terraform/foundation/runtime-read-scope.tf`, `.github/workflows/terraform.yml`.
-ADRs: 001, 005, 007, 011, 016. Infrastructure apply is not live readiness proof. 인프라 적용만으로 실제 권한·수집·워커 검증을 통과한 것으로 처리하지 않는다.
+Sources: `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `scripts/v2/ci/runtime-release.mjs`, `terraform/foundation/runtime-read-scope.tf`, `terraform/foundation/controller-readiness.tf`, `.github/workflows/terraform.yml`, `.github/workflows/collect-runtime.yml`, `.github/workflows/deploy-web.yml`.
+ADRs: 001, 002, 005, 007, 011, 016. Infrastructure apply is not live readiness proof. 인프라 적용만으로 실제 권한·수집·워커 검증을 통과한 것으로 처리하지 않는다.

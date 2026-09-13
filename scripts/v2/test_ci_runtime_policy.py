@@ -36,7 +36,7 @@ class RuntimePolicyTests(unittest.TestCase):
         value = self.module.runtime_overrides("dev", "true", ACCOUNT, "runtime-ecr-bootstrap", "", "", False)
         self.assertEqual(value, {
             "agentcore_enabled": True, "workers_enabled": True, "steampipe_enabled": True,
-            "inventory_host_only": True, "ci_runtime_profile_enabled": True,
+            "inventory_host_only": True, "ci_readiness_enabled": True, "ci_runtime_profile_enabled": True,
             "ci_runtime_rollout": False,
         })
 
@@ -84,7 +84,7 @@ class RuntimePolicyTests(unittest.TestCase):
             "ci_runtime_rollout": rollout, "ci_domain_rollout": False,
             "ci_runtime_profile_enabled": profile,
             "agentcore_enabled": False, "workers_enabled": False,
-            "steampipe_enabled": False, "inventory_host_only": False,
+            "steampipe_enabled": False, "inventory_host_only": False, "ci_readiness_enabled": False,
             "remediation_enabled": False, "integrations_write_enabled": False,
             "rca_writeback_enabled": False, "diagnosis_notify_enabled": False,
             "create_network": True,

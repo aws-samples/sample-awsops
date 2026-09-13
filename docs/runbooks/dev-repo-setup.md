@@ -1155,7 +1155,7 @@ For verify, apply `agentcore_enabled=true` and `ci_readiness_enabled=true`, then
 Only applied output sets `DEPLOYMENT_READINESS_ENABLED`; false/missing yields `runtime_disabled`, ignoring shell overrides.
 Also enable `steampipe_enabled=true`, `workers_enabled=true` and dispatch, and deploy inventory/ARM64
 worker images as described in [worker deployment](../reference/06-workers.md).
-검증 전 두 플래그를 적용하고 프로비저닝합니다. 환경변수 덮어쓰기나 그룹 권한은 부여하지 않습니다.
+검증 전 두 플래그를 적용하고 프로비저닝합니다. 런타임 플래그는 적용된 출력만 사용하며, 전용 그룹 권한은 별도 Terraform 리소스로 부여합니다.
 수집·워커 플래그와 디스패치를 활성화하고 인벤토리·ARM64 워커 이미지를 먼저 배포해야 합니다.
 
 Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway schema first.
@@ -1166,7 +1166,8 @@ Degraded inventory never passes release readiness. 미발견은 부재 증명이
 
 `SMOKE_RUNTIME_CONFIG_FILE` is an absolute 0600 JSON file beside credentials in the same 0700 directory;
 cleanup covers both. Its 16 KiB cap, 30-minute verify window and unique type list including cloudfront are required.
-The release controller must supply actual deployment/dispatch evidence; current Deploy Web remains DB-only.
+Every dev Deploy Web release invokes the controller with applied deployment and actual dispatch evidence.
+The legacy verify_database input cannot skip this gate.
 
 `schemaVersion: 1`, `mode: "prepare"` and `expectedAccountId` check login/DB and the enabled host.
 Optional `hostOnly: true` also rejects enabled members. Verify adds `expectedCloudfrontId`,
@@ -1176,21 +1177,22 @@ and succeeded Lambda/Fargate jobs. Missing/partial/stale is never healthy zero; 
 inventory-reader Lambda so legacy NULL attribute coverage is disclosed as incomplete.
 
 `POST /api/deployment/readiness` requires an administrator or separately provisioned `deployment-verifiers`.
-Release infrastructure grants the CI identity only verifier membership, never admin/IAM authority.
+When ci_readiness_enabled=true, controller-readiness.tf creates the verifier group and, if the managed
+demo user is enabled, its membership. It grants no admin or IAM authority.
 Use a fresh login after membership changes; one in-flight call and a 60-second process cooldown apply.
 
 스모크 도구는 자격증명 파일과 같은 0700 디렉터리의 0600 JSON을
-`SMOKE_RUNTIME_CONFIG_FILE`로 받으며 함께 정리합니다. 현재 Deploy Web은 DB 검증만
-연결합니다. 전체 검증 controller가 실제 배포·Lambda 응답으로 파일을 생성해야 합니다.
+`SMOKE_RUNTIME_CONFIG_FILE`로 받으며 함께 정리합니다. 모든 dev Deploy Web 배포는
+실제 배포·Lambda 응답으로 생성한 전체 검증 설정을 사용하며 verify_database로 생략할 수 없습니다.
 prepare는 로그인·DB·활성 호스트를 확인하고 `hostOnly: true`일 때 외부 활성 계정을
 거부합니다. verify는 위 추가 필드로 최신 수집·실제 SSM/runtime·두 워커 완료를 검증합니다.
-검증 API는 관리자 또는 전용 verifier 그룹만 허용합니다. 이 앱 변경은 그룹을 만들지 않습니다. 배포 인프라가 CI 사용자를 verifier에만
-연결해야 하며 관리자·IAM 역할을 주지 않습니다. 그룹 변경 후 새 로그인과 호출 간격이 필요합니다.
+검증 API는 관리자 또는 전용 verifier 그룹만 허용합니다. ci_readiness_enabled가 켜지면 Terraform이 그룹과 활성 관리 demo의 verifier 멤버십만
+만듭니다. 관리자·IAM 역할을 주지 않습니다. 그룹 변경 후 새 로그인과 호출 간격이 필요합니다.
 
 ### Authenticated database verification / 인증된 DB 검증
 
-After the required database migrations succeed, run **Deploy Web** on `dev` with
-`verify_database=true`. Before dispatch, ensure the reviewed Terraform saved-plan apply
+After the required database migrations succeed, run **Deploy Web** on `dev`; full runtime
+verification is mandatory regardless of the legacy verify_database input. Before dispatch, ensure the reviewed Terraform saved-plan apply
 has persisted the new **`demo_username` output** in dev state. A plan alone does not
 persist it. The restored `TF_TFVARS_DEV` must enable `create_demo_user=true`, and its
 effective `demo_email` must exactly match that applied username.
@@ -1226,8 +1228,7 @@ with HTTP **200**, boolean **`ok: true`** and a usable secure host-specific
 **200**, **`status: "ok"`** and a **positive safe-integer `public_tables`**. Both requests
 retain service Host/SNI and TLS verification through CloudFront; neither follows
 redirects. These checks verify login and the BFF's database connection/table presence,
-not the entire migration ledger. `verify_database=false` retains the ordinary health-only
-deployment path.
+not the entire migration ledger. Dev deployments additionally require full runtime verification regardless of verify_database.
 
 A configured credential can still be stale: only the post-rollout login validates the
 actual password. If login fails, inspect the existing identity and protected credential
@@ -1256,7 +1257,7 @@ ECS 안정화와 `/api/health` 성공에 이어 실제 `POST /api/auth/login`의
 `ok: true`, 유효한 secure·호스트 전용 `awsops_token` cookie를 요구한다. 그 cookie로
 `GET /api/db`가 HTTP 200, `status: "ok"`, 양의 안전 정수 `public_tables`를 반환해야
 완료된다. CloudFront 연결에서도 Host/SNI·TLS 검증을 유지하며 redirect를 따라가지 않는다.
-전체 migration ledger 검증은 아니며 기본 `verify_database=false` 배포는 기존 health 검사만
+전체 migration ledger 검증은 아니며 dev 배포는 verify_database 값과 무관하게 전체 런타임 검증을
 수행한다. 실제 암호의 유효성은 rollout 후 로그인에서 확인한다. 실패하면 기존 사용자와 보호된
 암호 공급원을 비공개로 확인하고, **검사를 통과시키려고 기존 사용자 암호를 재설정하지 않는다.**
 이 워크플로는 사용자를 생성하거나 암호를 설정하지 않는다.

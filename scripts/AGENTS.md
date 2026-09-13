@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ee90eff47d30 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d3615469e155 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -112,3 +112,11 @@ The pin gate covers `v2/ci/pg8000-requirements.txt` and the four requirements
 under workers, steampipe, incident and remediation; update all with verified wheel hashes.
 The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and validator.
 `v2/test_ci_tf_assets.py` covers these contracts and recovery.
+
+## Development release controller
+
+`v2/ci/runtime-release.mjs` checks account/role, running web revision/digest/ARM64 and
+inventory Lambda code before dispatch. Every dev Deploy Web release requires private
+hostOnly verification of fresh collection and real runtime/worker completion. Manual
+prepare accepts disabled backends and reports prepared, not ready. Typed smoke errors
+retain sanitized diagnostics; other errors remain generic. Cleanup covers private files.
