@@ -22,14 +22,18 @@ quota posture a task actually started with is visible in its logs.
 """
 import json
 import os
+import re
 import signal
 import ssl
 import subprocess
 import sys
 import threading
 import time
+from functools import lru_cache
 
 import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 import pg8000.native
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -90,7 +94,40 @@ def fetch_rows():
         conn.close()
 
 
+class HostScopeError(ValueError):
+    """Fixed, safe failure codes for the opt-in host inventory boundary."""
+
+
+@lru_cache(maxsize=2)
+def _host_sts_client(region):
+    return boto3.client("sts", region_name=region, config=Config(
+        connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 1}))
+
+
+def _validate_host_scope(rows):
+    mode = os.environ.get("INVENTORY_HOST_ONLY", "false")
+    if mode not in ("false", "true"):
+        raise HostScopeError("invalid_host_scope_mode")
+    if mode == "false":
+        return
+    expected = os.environ.get("EXPECTED_HOST_ACCOUNT_ID", "")
+    if not re.fullmatch(r"[0-9]{12}", expected):
+        raise HostScopeError("expected_host_account_required")
+    # QUERY returns enabled accounts only. Even an unrenderable foreign row is
+    # a scope conflict, not a row to silently discard.
+    if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+            or rows[0].get("account_id") != expected or rows[0].get("is_host") is not True):
+        raise HostScopeError("invalid_enabled_host_scope")
+    try:
+        caller = _host_sts_client(os.environ.get("AWS_REGION", "ap-northeast-2")).get_caller_identity()
+    except (BotoCoreError, ClientError):
+        raise HostScopeError("host_identity_unavailable") from None
+    if not isinstance(caller, dict) or caller.get("Account") != expected:
+        raise HostScopeError("actual_host_account_mismatch")
+
+
 def _render_spc(rows):
+    _validate_host_scope(rows)
     limiter = limiter_config_from_env()
     print(json.dumps({
         "event": "steampipe_limiter_config",
@@ -217,6 +254,17 @@ def _scope_watchdog(
             old = proc_ref[0]
             _restart_steampipe(proc_ref, restart_lock, old)
             print("[gen-spc] steampipe restarted with updated scope", file=sys.stderr)
+        except HostScopeError as e:
+            # A revoked/foreign scope must stop collection, not leave the last
+            # accepted configuration running while the watchdog reports an error.
+            print(f"[gen-spc] FATAL: {e}", file=sys.stderr)
+            stop.set()
+            with restart_lock:
+                try:
+                    proc_ref[0].terminate()
+                finally:
+                    _stop_steampipe_service()
+            return
         except Exception as e:  # noqa: BLE001
             print(f"[gen-spc] scope watchdog error (non-fatal): {e}", file=sys.stderr)
 
@@ -251,7 +299,11 @@ def main() -> None:
               f"failing closed: {last}", file=sys.stderr)
         sys.exit(1)
 
-    spc = _render_spc(rows)
+    try:
+        spc = _render_spc(rows)
+    except HostScopeError as e:
+        print(f"[gen-spc] FATAL: {e}", file=sys.stderr)
+        sys.exit(1)
     write_spc(spc)
     print(f"[gen-spc] wrote {SPC_PATH} for {len(rows)} enabled account(s)", file=sys.stderr)
 
