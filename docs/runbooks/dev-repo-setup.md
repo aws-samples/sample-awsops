@@ -410,7 +410,7 @@ Then register the generated files (base64) as repo secrets:
 |---|---|
 | all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (plan-artifact encryption) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
 | production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` |
-| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` |
+| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` / `AWS_ACCOUNT_ID_DEV` (required configured account for migrations, runtime image builds and provisioning; secret, not variable) |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
 
 ```bash
@@ -424,13 +424,18 @@ gh secret set TF_TFVARS_DEV -R aws-samples/sample-awsops \
 
 Nonsecret dev repository variables are `DOMAIN_NAME_DEV` / `HOSTED_ZONE_NAME_DEV` (paired names),
 `CERTIFICATE_MODE_DEV` (`preserve` by default), `CI_MIGRATIONS_ENABLED_DEV` (`false` by default),
-`AWS_ACCOUNT_ID_DEV` (required independent target-account check for runtime builds/provisioning),
 and `CI_DB_DIAGNOSTICS_DEV` (`false`/unset by default; manual advisory read-only diagnostics only).
 These select reviewed deployment behavior or optional observations; credentials stay in the secrets above.
 dev의 일반 저장소 변수는 도메인/존 이름 쌍, 기본 `preserve`인 인증서 모드, 기본 `false`인
-`CI_MIGRATIONS_ENABLED_DEV`, 런타임 빌드·provisioning 대상 계정을 검증하는 필수
-`AWS_ACCOUNT_ID_DEV`, 기본 `false`/미설정인 참고용 읽기 전용 진단 변수
+`CI_MIGRATIONS_ENABLED_DEV`, 기본 `false`/미설정인 참고용 읽기 전용 진단 변수
 `CI_DB_DIAGNOSTICS_DEV`이다. 배포·관측 선택값이며 자격증명은 위 시크릿에 유지한다.
+`AWS_ACCOUNT_ID_DEV` is a required repository **secret** for both migration jobs,
+runtime image builds and dev AgentCore provisioning. No variable/default-account fallback exists.
+It must match the configured role accounts and actual STS callers; this agreement is not proof
+of effective permissions or an independent classification of the account as development.
+`AWS_ACCOUNT_ID_DEV`는 migration 양쪽 job·런타임 이미지 빌드·dev AgentCore provisioning의
+필수 저장소 **시크릿**이다. 변수나 기본 계정으로 대체하지 않는다. 설정 역할과 실제 STS
+계정이 일치해야 하며, 일치 자체가 유효 권한이나 개발 계정 여부를 증명하지는 않는다.
 
 The distinct NAMES are the isolation: a dev/preview job can never fall back to the
 production pair. From then on, terraform changes flow through `terraform.yml`.
@@ -959,9 +964,12 @@ checks process liveness; complete the required database migrations and verify
 authenticated application routes separately.
 For an authorized AgentCore deployment, [Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml)
 first runs the private reusable migration workflow on `dev`; other branches retain
-`make migrate`. Optional `smoke=true` requires the structured readiness protocol, including
-fresh inventory and a bounded model call. It needs the matching agent readiness implementation
-and `runtime_deployment` output. Neither it nor `/api/health` substitutes for a web-role
+`make migrate`. Optional `smoke=true` runs after provisioning. On dev it requires the matching
+readiness producer, `runtime_deployment`, enabled inventory and producer-classified freshness.
+Missing prerequisites fail the optional dev smoke with a fixed code, not before provisioning.
+Other stacks retain advisory invocation behavior when readiness is unavailable; structured
+checks are advisory there when available, while invocation transport failures still fail.
+Neither AgentCore smoke nor `/api/health` substitutes for a web-role
 permission, login/database or full collection/worker check.
 
 웹 배포 스모크 테스트는 `public_url`의 Host·SNI·인증서 검증을 유지하면서
@@ -969,43 +977,62 @@ CloudFront 연결 주소로 요청한다. `/api/health`는 프로세스 생존 �
 필수 DB 마이그레이션과 인증된 실제 기능 검증도 수행해야 한다.
 웹 워크플로와 `make deploy` 모두 공통 CLI로 주소를 검증하며 셸 문자열 대신 인자 배열을 사용한다.
 dev AgentCore는 사설 재사용 migration workflow를 먼저 실행하며 다른 브랜치는
-`make migrate`를 유지한다. 선택적 `smoke=true`는 최신 인벤토리와 제한된 모델 호출을
-포함한 구조화된 응답을 요구하므로 대응하는 에이전트 구현과 `runtime_deployment`
-output이 필요하다. 웹 역할 권한·로그인·DB·전체 수집·워커 검증을 대체하지 않는다.
-
-### Runtime images / 런타임 이미지
-
-After the reviewed Terraform ECR bootstrap, dispatch **Build Development Runtime Image**
-(`build-runtime-images.yml`) on `dev` with `component=steampipe` or `component=worker`.
-The repository must already exist. The helper checks the independently configured account,
-configured CI role and actual STS identity before writes; it never creates repositories.
-It builds one Linux/ARM64 manifest, verifies the uploaded configuration and manifest hashes,
-and returns the project and immutable digest. Record those verified digests for the full
-infrastructure plan; the build itself deploys no service.
-
-검토된 Terraform ECR bootstrap 후 dev에서 **Build Development Runtime Image**를
-`component=steampipe` 또는 `component=worker`로 실행한다. 저장소는 미리 존재해야 한다.
-helper는 쓰기 전에 독립 설정 계정·CI 역할·실제 STS 식별자를 검증하며 저장소를 생성하지
-않는다. Linux/ARM64 단일 manifest와 업로드 해시를 검증하고 project·digest를 반환한다.
-이 digest를 전체 인프라 계획에 사용하며 이미지 빌드만으로 서비스가 배포되지는 않는다.
-
-Dev AgentCore follows the same account/digest checks using an `agent-<commit SHA>` tag.
-Provisioning repeats the identity check and uses the verified digest. Docker credential
-scratch is private and cleaned. Leave optional AgentCore smoke off during first provisioning
-until inventory has been collected, then run the full application release verification.
-Never count successful provisioning alone as application readiness.
-
-dev AgentCore도 `agent-<commit SHA>` 태그와 같은 계정·digest 검증을 사용한다.
-provisioning에서도 식별자를 다시 확인하고 검증된 digest를 사용한다. Docker 자격증명
-임시 파일은 비공개로 만들고 정리한다. 최초 provisioning에서는 수집 전 선택적 AgentCore
-smoke를 끄고, 수집 후 전체 앱 배포 검증을 실행한다. provisioning 성공만으로 앱을
-정상 판정하지 않는다.
+`make migrate`를 유지한다. 선택적 `smoke=true`는 provisioning 후 실행한다. dev에서는
+대응 producer·`runtime_deployment`·활성 inventory와 producer의 freshness 판정이 필수다.
+누락은 provisioning 이전 차단이 아니라 dev smoke의 고정 오류 코드로 보고한다.
+다른 스택은 readiness가 없으면 기존 참고용 호출을 유지하며, 사용 가능한 구조화 검사도
+참고용이다. 호출 전송 실패는 계속 실패한다. 웹 역할·로그인·DB·전체 수집·워커 검증을 대체하지 않는다.
 
 The DNS/provenance scripts run from the deployment ref. They are safety checks for reviewed
 code, not a security boundary against changes to that ref; normal review and environment
 protections remain required.
 DNS·출처 검사도 배포 ref의 코드이므로 코드 변경에 대한 보안 경계를 대신하지 않는다.
 기존 리뷰·보호 환경 절차를 계속 적용한다.
+
+#### Runtime images / 런타임 이미지
+
+After the reviewed Terraform ECR bootstrap, dispatch **Build Development Runtime Image**
+(`build-runtime-images.yml`) on `dev` with `component=steampipe` or `component=worker`.
+The repository must already exist: `steampipe_enabled`, `workers_enabled` and `agentcore_enabled`
+gate the respective `-steampipe`, `-worker` and `-agentcore` repositories.
+The helper checks the independently configured secret account,
+configured CI role and actual STS identity before writes; it never creates repositories.
+It builds one Linux/ARM64 manifest, verifies the uploaded configuration and manifest hashes,
+and returns the project and immutable digest. Record those verified digests for the full
+infrastructure plan; the build itself deploys no service.
+Repository preflight uses the already-required `ecr:BatchGetImage`; an expected ImageNotFound
+for the commit tag is acceptable. Repository-not-found and access denial fail; no
+DescribeRepositories grant or automatic repository creation is added.
+
+검토된 Terraform ECR bootstrap 후 dev에서 **Build Development Runtime Image**를
+`component=steampipe` 또는 `component=worker`로 실행한다. 저장소는 미리 존재해야 한다.
+helper는 쓰기 전에 독립 설정 계정·CI 역할·실제 STS 식별자를 검증하며 저장소를 생성하지
+않는다. Linux/ARM64 단일 manifest와 업로드 해시를 검증하고 project·digest를 반환한다.
+이 digest를 전체 인프라 계획에 사용하며 이미지 빌드만으로 서비스가 배포되지는 않는다.
+각 저장소는 해당 `steampipe_enabled`·`workers_enabled`·`agentcore_enabled`에 의해 생성된다.
+사전 검사는 기존 `ecr:BatchGetImage` 권한만 사용한다. 커밋 태그의 ImageNotFound는 허용하지만
+저장소 부재·접근 거부는 실패하며 DescribeRepositories 권한이나 자동 생성을 추가하지 않는다.
+
+Dev AgentCore follows the same account/digest checks using an `agent-<commit SHA>` tag.
+Provisioning repeats the identity check and uses the verified digest. Docker credential
+scratch is private and cleaned. Leave optional AgentCore smoke off during first provisioning
+until inventory has been collected, then run the full application release verification.
+Never count successful provisioning alone as application readiness.
+Short CLI/Terraform operations have a two-minute process limit; dev build, image push and
+provisioning have separate 60/30/120-minute limits. These do not renew AWS role sessions.
+Public diagnostics retain fixed stages/codes, catalog keys and status counts, at most 240
+resource events with an explicit dropped count. Child failure exit codes are preserved;
+ARNs, credentials, endpoints and raw SDK errors are not relayed.
+
+dev AgentCore도 `agent-<commit SHA>` 태그와 같은 계정·digest 검증을 사용한다.
+provisioning에서도 식별자를 다시 확인하고 검증된 digest를 사용한다. Docker 자격증명
+임시 파일은 비공개로 만들고 정리한다. 최초 provisioning에서는 수집 전 선택적 AgentCore
+smoke를 끄고, 수집 후 전체 앱 배포 검증을 실행한다. provisioning 성공만으로 앱을
+정상 판정하지 않는다.
+짧은 CLI/Terraform 호출은 2분, dev 빌드·push·provisioning은 각각 60/30/120분으로 제한하며
+역할 세션을 갱신하지 않는다. 공개 진단은 고정 단계/코드·catalog key·상태별 개수를 보존하고
+resource event 240개 초과는 dropped 개수로 알린다. 자식 종료 코드는 보존하며 ARN·자격증명·
+endpoint·SDK 오류 원문은 전달하지 않는다.
 
 ## Private development database migration / 비공개 개발 DB 마이그레이션
 
@@ -1034,7 +1061,9 @@ runs one Fargate task in the existing private subnets with the existing service 
    commit, with DNS changes prohibited. Review that only the intended gated migration
    resources are added, then use its existing saved-plan `apply` dispatch. Keep the
    current DNS, edge, authentication, web task image and desired count intact.
-3. Confirm the existing dev build/deployer OIDC roles and backend secrets are configured.
+3. Configure repository secret **`AWS_ACCOUNT_ID_DEV`** and confirm the existing dev
+   build/deployer OIDC roles and backend secrets. The account secret is mandatory for
+   both build and migrate jobs, including reusable AgentCore invocation.
    `TF_TFVARS_DEV` accepts at most one literal, single-line `project = "…"` assignment.
    If absent (including `make configure` output), the foundation default `awsops-v2` is used;
    the applied migration output must still match that project/account/region.
@@ -1048,7 +1077,9 @@ runs one Fargate task in the existing private subnets with the existing service 
 명시적 plan → 저장된 plan apply 절차로만 인프라를 준비한다. PR은 base branch가 `dev`일 때만
 해당 변수를 읽고 다른 스택에는 전달하지 않는다. tfvars보다 CI 플래그가 우선하며 apply는 저장된
 값을 사용한다. DNS·edge·인증·웹 이미지·desired count를 유지한다. 개발 OIDC 역할과 backend
-secret을 준비한다. `TF_TFVARS_DEV`의 project 문자열은 최대 한 번만 지정하며,
+secret과 필수 저장소 시크릿 `AWS_ACCOUNT_ID_DEV`를 준비한다. 재사용 AgentCore 호출을
+포함해 build/migrate 양쪽 job 모두 이 계정 시크릿을 요구한다.
+`TF_TFVARS_DEV`의 project 문자열은 최대 한 번만 지정하며,
 생략하면 `make configure`와 동일하게 foundation 기본값 `awsops-v2`를 사용한다.
 적용된 output의 프로젝트·계정·리전 일치는 계속 필수다.
 이후 현재 `dev` HEAD에서 마이그레이션을 dispatch한다. 브랜치가 이동하면 새 HEAD로 다시 실행한다.
@@ -1070,16 +1101,18 @@ one task-definition template. `migration_job` is absent/null while disabled.
 Terraform plan/apply를 수행하지 않는다. 비활성 상태에는 해당 출력과 마이그레이션 리소스가 없다.
 
 The migration workflow uses the existing `AWS_CI_BUILD_DEV_ROLE_ARN` and
-`AWS_CI_DEPLOYER_DEV_ROLE_ARN` secrets. Role names in the setup matrix are conventions;
+`AWS_CI_DEPLOYER_DEV_ROLE_ARN` secrets, plus required account secret `AWS_ACCOUNT_ID_DEV`.
+Role names in the setup matrix are conventions;
 operators do not need to rename an existing role. Valid IAM paths and surrounding input
-whitespace are supported. Both selected roles must belong to the same account. The workflow
+whitespace are supported. Both selected roles must belong to that configured account. The workflow
 checks the actual build STS identity before ECR access, and the controller checks the exact
 configured deploy role identity before ECR/ECS access and cleanup. Account/region/backend,
 private-network, task-family, digest and current-commit checks still apply. There is no
 production-secret fallback, new role input or IAM permission change.
-마이그레이션은 기존 개발용 역할 ARN 시크릿을 사용한다. 설정 표의 역할명은 명명 관례이며
+마이그레이션은 기존 개발용 역할 ARN 시크릿과 필수 `AWS_ACCOUNT_ID_DEV` 시크릿을 사용한다.
+설정 표의 역할명은 명명 관례이며
 기존 역할을 바꿀 필요가 없다. IAM 경로와 입력 앞뒤 공백을 지원하되 두 역할의 계정은 같아야
-한다. ECR 접근 전 실제 build STS 주체를, 실행·정리 전 설정된 deploy 역할과 실제 주체를
+하며 필수 계정 시크릿과도 같아야 한다. ECR 접근 전 실제 build STS 주체를, 실행·정리 전 설정된 deploy 역할과 실제 주체를
 대조한다. 계정·리전·backend·사설 네트워크·태스크 family·digest·커밋 검증은 유지하며
 production 시크릿 폴백, 추가 역할 입력, IAM 권한 변경은 없다.
 
@@ -1143,8 +1176,10 @@ SQLSTATE·롤 속성을 [안전한 진단 표](agent-sql-reader.md#안전한-오
 After a successful migration, deploy the reviewed web image and verify authenticated database access before publishing service DNS.
 마이그레이션 성공 후 검토한 웹 이미지를 배포하고 인증된 DB 접근을 확인한 뒤 서비스 DNS를 게시한다.
 
-Offline controller checks require Node 20, Python 3 with PyYAML, Terraform 1.15.7 and cached providers:
-오프라인 controller 검사는 Node 20·Python 3/PyYAML·Terraform 1.15.7·캐시된 provider가 필요하다.
+Offline controller checks require Node 20, Python 3 with PyYAML and boto3/botocore,
+Terraform 1.15.7 and cached providers (`pip install -r agent/requirements.txt` supplies the SDK):
+오프라인 controller 검사는 Node 20·Python 3/PyYAML·boto3/botocore·Terraform 1.15.7·캐시된
+provider가 필요하다. SDK는 `pip install -r agent/requirements.txt`로 설치한다.
 
 ```bash
 node --test scripts/v2/ci/run-migration*.test.mjs

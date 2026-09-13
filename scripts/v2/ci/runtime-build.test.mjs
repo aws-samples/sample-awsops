@@ -99,9 +99,11 @@ function fixture(overrides = {}) {
   const run = (command, args, options = {}) => {
     calls.push({ command, args, options });
     if (args[0] === 'sts') return JSON.stringify(overrides.caller || caller);
-    if (args[1] === 'describe-repositories') return JSON.stringify({ repositories: [{
-      registryId: account, repositoryName: p.repository, repositoryUri: p.uri,
-    }] });
+    if (args[1] === 'batch-get-image' && !args.includes('--accepted-media-types')) {
+      return JSON.stringify({ images: [], failures: [{
+        imageId: { imageTag: p.tag }, failureCode: 'ImageNotFound',
+      }] });
+    }
     if (args[1] === 'get-login-password') return 'SECRET_PASSWORD';
     if (args[0] === 'image' && args[1] === 'inspect') {
       return JSON.stringify([{ Id: configDigest, Architecture: overrides.arch || 'arm64', Os: 'linux' }]);
@@ -129,8 +131,9 @@ test('worker build stages required modules and verifies image before returning d
     assert.ok(build.args.includes('--provenance=false'));
     assert.ok(build.args.includes('--sbom=false'));
     assert.ok(build.args.includes('linux/arm64'));
+    assert.ok(build.options.timeout > 20 * 60_000);
     assert.ok(build.args.at(-1).startsWith(f.dir));
-    assert.ok(!f.calls.some(c => c.args.some(a => /create-repository|put-role|:latest$/.test(a))));
+    assert.ok(!f.calls.some(c => c.args.some(a => /describe-repositories|create-repository|put-role|:latest$/.test(a))));
     assert.deepEqual(f.calls.find(c => c.args[0] === 'push').args, ['push', `${f.p.uri}:${f.p.tag}`]);
     assert.equal(f.calls.find(c => c.args[0] === 'login').options.input, 'SECRET_PASSWORD');
     assert.ok(!existsSync(build.args.at(-1)));

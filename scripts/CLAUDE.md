@@ -115,11 +115,31 @@ secrets-manager) — installed by `make deps`.
   `.github/workflows/deploy-migrations.yml`: clone the reviewed ARM64 template with an
   immutable image digest, run one private task, verify ownership/exit, and clean up only that run.
   Read retries are bounded; public failure categories use the runtime diagnostic contract.
+- `v2/ci/runtime-build.mjs` — manual dev-only transport for existing Steampipe/worker
+  repositories and dev AgentCore images. Required repository secret `AWS_ACCOUNT_ID_DEV`
+  must match configured role and actual STS identity; both private migration jobs require
+  it too. BatchGetImage preflight accepts the expected missing commit tag, never a missing
+  repository/access denial. No DescribeRepositories grant, repository creation or latest-tag
+  write. Verify Linux/ARM64 configuration and uploaded single-manifest digest. Limits:
+  short CLI/TF 2 minutes, dev build 60, push 30, provision 120; role sessions are not renewed.
 - `v2/agentcore.mjs` + `agentcore/` — `make agentcore`: arm64 agent image + idempotent
-  provisioner, writes to SSM.
+  provisioner, writes to SSM. Dev uses an immutable digest and reusable private migration;
+  main/preview retain legacy migration/tag behavior. `provision_report.py` emits fixed stages,
+  error codes, catalog keys and status counts; at most 240 resource events plus a dropped
+  count, no raw errors/ARNs/credentials. Node relays only bounded structured records and
+  preserves child failure exit codes. Optional smoke runs after provisioning: strict on dev;
+  elsewhere compatible invocation/advisory checks remain and transport errors still fail.
+  Structured mode needs the readiness producer, runtime_deployment and enabled inventory.
+  Accept one real SSE payload after optional data spacing, event/id/comments and [DONE].
+  Match nonce/account/fixed checks; count is a capped sample (1–500), ageMinutes 0–1440 is
+  only a validation bound. Freshness uses the producer's MCP stale_after_minutes classifier,
+  never a local hard 15-minute threshold. Missing dev prerequisites are coded smoke failures,
+  not pre-provision blockers on production. CLI smoke does not prove Memory/Interpreter use
+  or the full authenticated web/collection/worker release gate.
 - `v2/*.itest.mjs` — migration integration tests against a disposable PostgreSQL 17 container.
 - `v2/ci/*.test.mjs` — migration runtime/controller/workflow tests and mocked Terraform plans; install locked scripts/v2
-  dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`; PyYAML and Terraform 1.15.7 are also required.
+  dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`; Python PyYAML,
+  boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform 1.15.7 are also required.
   `v2/ci/migration.itest.mjs` includes initializer regressions. It and
   `v2/ci/web-db-connection.itest.mjs` are **required fail-hard exceptions** to the legacy
   optional itest convention: bare `docker` on PATH, OpenSSL, postgres:17,

@@ -201,8 +201,10 @@ flowchart LR
 
 ```bash
 make agentcore          # build/push arm64 agent image + idempotent provisioner
-make agentcore --smoke  # additionally validate with an invocation
+make agentcore SMOKE=1  # additionally validate with an invocation
 ```
+
+`SMOKE=1` runs after provisioning. Dev requires the matching readiness producer, `runtime_deployment` and enabled/collected inventory; other stacks keep advisory compatibility checks. It does not verify Memory or Code Interpreter features. The dev workflow first reuses private migration; other stacks run `make migrate` first.
 
 The provisioner is idempotent, so it is safe to re-run (e.g., when the first Target creation failed because the gateway was not yet ready).
 

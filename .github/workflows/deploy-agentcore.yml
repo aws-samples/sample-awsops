@@ -3,14 +3,14 @@ name: Deploy AgentCore
 # workflow_dispatch-only; the dispatched branch selects the stack —
 # main -> production (environment-gated), dev -> development. Dev reuses the private
 # migration task; main/previews retain `make migrate` before `make agentcore`.
-# ("make migrate -> make agentcore, order preserved"). Never reversed:
-# AgentCore's Data API auth assumes migrations are already applied.
+# Migrations establish awsops_sql_reader and its secret before the Data API tools.
+# See docs/runbooks/agent-sql-reader.md.
 
 on:
   workflow_dispatch:
     inputs:
       smoke:
-        description: "Require structured deployment readiness (inventory must already be collected)"
+        description: "Post-provision smoke: strict dev readiness; advisory compatibility on other stacks"
         type: boolean
         default: false
 
@@ -36,12 +36,12 @@ jobs:
       ((github.ref == 'refs/heads/dev' && needs.migrate-dev.result == 'success') ||
        (github.ref != 'refs/heads/dev' && needs.migrate-dev.result == 'skipped'))
     runs-on: sample-awsops
-    timeout-minutes: 45
+    timeout-minutes: 240
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
       TARGET: ${{ github.ref_name }}
       AWS_REGION: ap-northeast-2
-      AWS_ACCOUNT_ID_DEV: ${{ vars.AWS_ACCOUNT_ID_DEV }}
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
       RUNTIME_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       DOCKER: ${{ github.ref == 'refs/heads/dev' && 'docker' || 'sudo docker' }}
       AGENT_IMAGE_TAG: ${{ github.ref == 'refs/heads/dev' && format('agent-{0}', github.sha) || 'agent-latest' }}

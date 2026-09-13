@@ -221,14 +221,18 @@ using [deployment-smoke.mjs](../../scripts/v2/deployment-smoke.mjs): `/api/healt
 through CloudFront with the service Host/SNI/TLS preserved. This proves liveness,
 **not DB or authentication readiness**. Complete migrations and authenticated route
 checks separately before A publication. If AgentCore deployment is in scope,
-[Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml) runs `make migrate`
-before deployment and supports `smoke=true` for an agent invocation; it is not a
+[Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml) runs the reusable private
+migration on dev; main/preview retain `make migrate`. Optional post-provision `smoke=true`
+requires deployed readiness/inventory dependencies on dev and remains advisory on other stacks.
+It is not a
 web-login test. These live actions need their own existing authorization.
 
 발급 단계는 A 미게시 상태로 CNAME·TLS를 변경한다. 이후 Deploy Web의 `Smoke test`는
 Host/SNI/TLS를 유지한 `/api/health` 생존 확인이며 **DB·인증 준비 완료 증거가 아니다**.
 상위 운영자는 마이그레이션·인증 경로를 별도로 검증한 뒤 A를 게시한다. AgentCore가 범위에
-포함되면 해당 workflow의 migrate→배포 및 `smoke=true`를 사용한다. 별도 실행 승인은 필요하다.
+포함되면 dev의 사설 재사용 migration→배포를 사용한다(main/preview는 `make migrate` 유지).
+`smoke=true`는 provisioning 후 실행하며 dev에서는 배포된 readiness/inventory 의존성이
+필수이고 다른 스택에서는 참고용이다. 별도 실행 승인은 필요하다.
 
 ## Boundaries and recovery / 제한과 복구
 

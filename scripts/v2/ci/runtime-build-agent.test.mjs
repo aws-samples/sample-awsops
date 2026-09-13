@@ -38,13 +38,15 @@ test('dev binds the verified digest into provisioner environment and captures it
     build: options => { assert.equal(options.component, 'agent'); return { digest, architecture: 'arm64' }; },
     run: (cmd, args, options) => {
       calls.push({ cmd, args, options });
-      return cmd === 'terraform' ? JSON.stringify(ac) : 'PRIVATE_TOOL_OUTPUT';
+      return cmd === 'terraform' ? JSON.stringify(ac) : JSON.stringify({
+        event: 'agentcore_provision_summary', stage: 'complete', counts: { ERR: 0 }, dropped: 0,
+      });
     } });
   assert.equal(result.digest, digest);
   const provision = calls.find(c => c.cmd === 'python3');
   assert.equal(provision.options.env.AGENT_IMAGE_DIGEST, digest);
   assert.deepEqual(provision.args, ['scripts/v2/agentcore/provision.py']);
-  assert.notEqual(provision.options.stdio, 'inherit');
+  assert.deepEqual(provision.options.stdio, ['pipe', 'pipe', 'pipe']);
   assert.equal(calls.filter(c => c.cmd === 'terraform').length, 1);
   assert.deepEqual(calls[0].args.slice(-3), ['output', '-json', 'agentcore']);
 });

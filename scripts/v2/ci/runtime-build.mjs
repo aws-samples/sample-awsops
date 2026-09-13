@@ -11,7 +11,16 @@ import { selectProject } from './run-migration.mjs';
 const REGION = 'ap-northeast-2';
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
-export class RuntimeBuildError extends Error {}
+export const TIMEOUTS = Object.freeze({
+  read: 2 * 60_000, build: 60 * 60_000, transfer: 30 * 60_000, provision: 120 * 60_000,
+});
+export class RuntimeBuildError extends Error {
+  constructor(code, { exitCode = 1, output = '' } = {}) {
+    super(code);
+    this.exitCode = Number.isInteger(exitCode) && exitCode > 0 && exitCode <= 255 ? exitCode : 1;
+    this.output = typeof output === 'string' ? output.slice(0, 128 * 1024) : '';
+  }
+}
 function requireValue(ok, code) { if (!ok) throw new RuntimeBuildError(code); }
 
 export function checkRole(env) {
@@ -69,35 +78,73 @@ export function verifyManifest(plan, response, configDigest) {
   return digest;
 }
 
-export function command(commandName, args, options = {}) {
-  const result = spawnSync(commandName, args, {
-    encoding: 'utf8', timeout: 20 * 60_000, maxBuffer: 32 * 1024 * 1024,
+export function verifyRepository(plan, response) {
+  requireValue(Array.isArray(response?.images) && Array.isArray(response.failures),
+    'repository_preflight_invalid');
+  if (response.images.length === 0) {
+    const failure = response.failures[0];
+    requireValue(response.failures.length === 1 && failure?.failureCode === 'ImageNotFound' &&
+      failure.imageId?.imageTag === plan.tag, 'repository_preflight_failed');
+  } else {
+    const image = response.images[0];
+    requireValue(response.images.length === 1 && response.failures.length === 0 &&
+      image.registryId === plan.account && image.repositoryName === plan.repository &&
+      image.imageId?.imageTag === plan.tag && DIGEST.test(image.imageId?.imageDigest || ''),
+    'repository_preflight_invalid');
+  }
+}
+
+export function command(commandName, args, { spawn = spawnSync, ...options } = {}) {
+  const result = spawn(commandName, args, {
+    encoding: 'utf8', timeout: TIMEOUTS.read, maxBuffer: 32 * 1024 * 1024,
     stdio: ['pipe', 'pipe', 'pipe'], ...options,
   });
   // Tool stdout/stderr can contain tokens, repository identities or arbitrary build output.
-  requireValue(!result.error && result.status === 0, 'tool_execution_failed');
+  if (result.error || result.status !== 0) {
+    let code = result.error?.code === 'ETIMEDOUT' ? 'tool_timeout'
+      : result.error?.code === 'ENOBUFS' ? 'tool_output_limit' : 'tool_execution_failed';
+    if (!result.error && commandName === 'aws') {
+      const stderr = String(result.stderr || '');
+      for (const [pattern, label] of [
+        [/\((AccessDenied|AccessDeniedException|UnauthorizedException)\)/, 'aws_access_denied'],
+        [/\((ExpiredToken|ExpiredTokenException|InvalidClientTokenId)\)/, 'aws_credentials_expired'],
+        [/\((Throttling|ThrottlingException|TooManyRequestsException)\)/, 'aws_throttled'],
+        [/\(RepositoryNotFoundException\)/, 'repository_missing'],
+      ]) if (pattern.test(stderr)) { code = label; break; }
+    }
+    throw new RuntimeBuildError(code, {
+      exitCode: code === 'tool_timeout' ? 124 : result.status, output: result.stdout,
+    });
+  }
   return result.stdout;
 }
 
-export function buildImage({ env = process.env, project, component, root = ROOT, run = command }) {
+export function buildImage({ env = process.env, project, component, root = ROOT, run = command,
+  emit = value => console.log(JSON.stringify(value)) }) {
   const plan = imagePlan(env, project, component); // No tools before these guards.
-  const aws = args => run('aws', [...args, '--region', REGION, '--output', 'json', '--no-cli-pager'], { env });
+  const aws = args => run('aws', [...args, '--region', REGION, '--output', 'json', '--no-cli-pager'],
+    { env, timeout: TIMEOUTS.read });
+  let stage = 'caller';
+  const enter = value => { stage = value; emit({ event: 'runtime_build_stage', stage, component }); };
+  enter(stage);
   verifyCaller(env, json(aws(['sts', 'get-caller-identity'])));
   let scratch;
   let localImage = false;
   const reference = `${plan.uri}:${plan.tag}`;
   let docker;
   try {
-    const repos = json(aws(['ecr', 'describe-repositories', '--registry-id', plan.account,
-      '--repository-names', plan.repository]));
-    requireValue(repos.repositories?.length === 1 && repos.repositories[0].registryId === plan.account &&
-      repos.repositories[0].repositoryName === plan.repository && repos.repositories[0].repositoryUri === plan.uri,
-    'expected_repository_missing');
+    enter('repository');
+    // BatchGetImage is already required for digest verification. ImageNotFound
+    // confirms access to the existing repository without another IAM action.
+    verifyRepository(plan, json(aws(['ecr', 'batch-get-image', '--registry-id', plan.account,
+      '--repository-name', plan.repository, '--image-ids', `imageTag=${plan.tag}`])));
     scratch = mkdtempSync(join(env.RUNNER_TEMP || tmpdir(), 'runtime-image-'));
     const dockerEnv = { ...env, DOCKER_CONFIG: join(scratch, 'docker') };
     docker = (args, options = {}) => run('docker', args, { env: dockerEnv, ...options });
     // get-login-password emits text, not JSON. Keep it only in memory/stdin.
-    const password = run('aws', ['ecr', 'get-login-password', '--region', REGION, '--no-cli-pager'], { env });
+    enter('login');
+    const password = run('aws', ['ecr', 'get-login-password', '--region', REGION, '--no-cli-pager'],
+      { env, timeout: TIMEOUTS.read });
     docker(['login', '--username', 'AWS', '--password-stdin', plan.registry], { input: password });
     let context = join(root, component === 'agent' ? 'agent' : `scripts/v2/${component === 'worker' ? 'workers' : 'steampipe'}`);
     if (component === 'worker') {
@@ -110,12 +157,16 @@ export function buildImage({ env = process.env, project, component, root = ROOT,
       context = staged;
     }
     localImage = true;
+    enter('build');
     docker(['buildx', 'build', '--platform', 'linux/arm64', '--provenance=false', '--sbom=false',
-      '--load', '-t', reference, context]);
+      '--load', '-t', reference, context], { timeout: TIMEOUTS.build });
+    enter('inspect');
     const images = json(docker(['image', 'inspect', reference]));
     requireValue(Array.isArray(images) && images.length === 1 && images[0].Architecture === 'arm64' &&
       images[0].Os === 'linux' && DIGEST.test(images[0].Id || ''), 'built_image_not_arm64');
-    docker(['push', reference]);
+    enter('push');
+    docker(['push', reference], { timeout: TIMEOUTS.transfer });
+    enter('verify');
     const response = json(aws(['ecr', 'batch-get-image', '--registry-id', plan.account,
       '--repository-name', plan.repository, '--image-ids', `imageTag=${plan.tag}`,
       '--accepted-media-types', 'application/vnd.docker.distribution.manifest.v2+json',
@@ -123,7 +174,9 @@ export function buildImage({ env = process.env, project, component, root = ROOT,
     const digest = verifyManifest(plan, response, images[0].Id);
     return { project: plan.project, digest, architecture: 'arm64' };
   } catch (error) {
-    throw error instanceof RuntimeBuildError ? error : new RuntimeBuildError('image_build_failed');
+    const failure = error instanceof RuntimeBuildError ? error : new RuntimeBuildError('image_build_failed');
+    failure.stage = stage;
+    throw failure;
   } finally {
     if (localImage) {
       try { docker(['image', 'rm', reference]); } catch { /* No broad daemon prune. */ }
@@ -138,9 +191,9 @@ function main() {
   else if (mode === 'verify-role') verifyCaller(process.env, json(readFileSync(0, 'utf8')));
   else if (mode === 'build') {
     requireValue(['steampipe', 'worker'].includes(process.env.RUNTIME_COMPONENT), 'invalid_component');
+    requireValue(Boolean(process.env.GITHUB_OUTPUT), 'output_path_required');
     const project = selectProject(readFileSync(0, 'utf8'));
     const result = buildImage({ project, component: process.env.RUNTIME_COMPONENT });
-    requireValue(Boolean(process.env.GITHUB_OUTPUT), 'output_path_required');
     appendFileSync(process.env.GITHUB_OUTPUT, `project=${result.project}\ndigest=${result.digest}\n`);
     console.log(JSON.stringify(result));
     if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
@@ -150,7 +203,7 @@ function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try { main(); } catch (error) {
-    console.error(`::error::${error instanceof RuntimeBuildError ? error.message : 'runtime_build_failed'}`);
-    process.exitCode = 1;
+    console.error(`::error::${error instanceof RuntimeBuildError ? `${error.stage || 'validation'}:${error.message}` : 'runtime_build_failed'}`);
+    process.exitCode = error instanceof RuntimeBuildError ? error.exitCode : 1;
   }
 }

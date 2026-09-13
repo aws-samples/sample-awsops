@@ -14,7 +14,7 @@ function credentialsIndex(steps) {
   return steps.findIndex(s => s.uses?.startsWith('aws-actions/configure-aws-credentials'));
 }
 function assertAccountGuards(job) {
-  assert.equal(job.env.AWS_ACCOUNT_ID_DEV, '${{ vars.AWS_ACCOUNT_ID_DEV }}');
+  assert.equal(job.env.AWS_ACCOUNT_ID_DEV, '${{ secrets.AWS_ACCOUNT_ID_DEV }}');
   const steps = job.steps;
   const before = steps.findIndex(s => s.run?.includes('runtime-build.mjs check-role'));
   const after = steps.findIndex(s => s.run?.includes('runtime-build.mjs verify-role'));
@@ -29,7 +29,7 @@ test('backend builds are manual dev only, component-limited and hand off no acco
   assert.deepEqual(w.on.workflow_dispatch.inputs.component.options, ['steampipe', 'worker']);
   assert.deepEqual(Object.keys(w.jobs.build.outputs).sort(), ['digest', 'project']);
   assert.deepEqual(w.jobs.build.needs, ['guard']);
-  assert.equal(w.jobs.build.env.AWS_ACCOUNT_ID_DEV, '${{ vars.AWS_ACCOUNT_ID_DEV }}');
+  assert.equal(w.jobs.build.env.AWS_ACCOUNT_ID_DEV, '${{ secrets.AWS_ACCOUNT_ID_DEV }}');
   assert.equal(w.jobs.build.env.RUNTIME_ROLE_ARN, '${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}');
   const base = { GITHUB_REPOSITORY: 'aws-samples/sample-awsops', GITHUB_REF: 'refs/heads/dev',
     GITHUB_EVENT_NAME: 'workflow_dispatch', COMPONENT: 'worker' };

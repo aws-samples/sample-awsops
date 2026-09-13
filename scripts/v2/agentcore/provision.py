@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 import uuid
+from pathlib import Path
 from urllib.parse import urlparse
 
 import boto3
@@ -27,6 +28,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 import catalog  # same directory
+import provision_report as diagnostics
 
 TFDIR = "terraform/foundation"
 RUNTIME_NAME = "awsops_v2_agent"                 # underscores only
@@ -39,11 +41,7 @@ report = []  # (resource, status, detail)
 
 def log(resource, status, detail=""):
     report.append((resource, status, detail))
-    if development_run():
-        # Resource names and SDK exception details are not public CI output.
-        print(f"  provision_action={'failed' if status == 'ERR' else 'recorded'}")
-        return
-    print(f"  [{status:8}] {resource}  {detail}")
+    diagnostics.result(resource, status, detail)
 
 
 def development_run():
@@ -90,13 +88,16 @@ def validate_dev_deployment(ac):
 
 
 def tf_outputs():
-    raw = subprocess.check_output(["terraform", f"-chdir={TFDIR}", "output", "-json"], text=True)
+    raw = subprocess.check_output(["terraform", f"-chdir={TFDIR}", "output", "-json"],
+                                  text=True, stderr=subprocess.DEVNULL, timeout=120)
     data = json.loads(raw)
     if "agentcore" not in data or data["agentcore"]["value"] is None:
-        sys.exit("agentcore output is null — set agentcore_enabled=true and `terraform apply` first.")
+        raise ValueError("agentcore_output_unavailable")
     ac = data["agentcore"]["value"]
     deployment = (data.get("runtime_deployment") or {}).get("value") or {}
     ac["readiness_cloudfront_id"] = (deployment.get("known") or {}).get("cloudfront_distribution_id")
+    ac["readiness_inventory_enabled"] = (deployment.get("features") or {}).get("inventory")
+    ac["readiness_protocol_available"] = Path("agent/readiness.py").is_file()
     return ac
 
 
@@ -1144,13 +1145,13 @@ def write_ssm(ac, runtime_arn, interpreter_id, memory_id):
 def valid_runtime_arn(ac, arn, rid=None):
     account = ac.get("role_arn", "").split(":")[4:5]
     pattern = (rf"arn:aws:bedrock-agentcore:{re.escape(ac['region'])}:"
-               rf"{re.escape(account[0]) if account else 'INVALID'}:runtime/(awsops_v2_agent-[A-Za-z0-9]{{1,64}})")
+               rf"{re.escape(account[0]) if account else 'INVALID'}:runtime/({re.escape(RUNTIME_NAME)}-[A-Za-z0-9]{{1,64}})")
     match = re.fullmatch(pattern, arn) if isinstance(arn, str) else None
     return bool(match and (rid is None or match[1] == rid))
 
 
-def valid_readiness_response(raw, request):
-    """Version-1 protocol shared with agent/readiness.py; no prose/partial success proof."""
+def readiness_code(raw, request):
+    """One bounded SSE payload; freshness is classified by the producer, not a local timer."""
     def unique_object(pairs):
         result = {}
         for key, value in pairs:
@@ -1160,41 +1161,83 @@ def valid_readiness_response(raw, request):
         return result
     try:
         if not isinstance(raw, bytes) or len(raw) > 16384:
-            return False
-        frames = [f for f in raw.decode("utf-8").replace("\r\n", "\n").split("\n\n") if f.strip()]
-        if len(frames) != 1:
-            return False
-        lines = [line for line in frames[0].split("\n") if line and not line.startswith(":")]
-        if len(lines) != 1 or not lines[0].startswith("data: "):
-            return False
-        value = json.loads(lines[0][6:], object_pairs_hook=unique_object)
+            return "protocol_invalid"
+        payloads = []
+        for frame in raw.decode("utf-8").replace("\r\n", "\n").split("\n\n"):
+            data = []
+            for line in frame.split("\n"):
+                if not line or line.startswith((":", "event:", "id:")):
+                    continue
+                if not line.startswith("data:"):
+                    return "protocol_invalid"
+                data.append(line[5:].removeprefix(" "))
+            payload = "\n".join(data).strip()
+            if payload and payload != "[DONE]":
+                payloads.append(payload)
+        if len(payloads) != 1:
+            return "protocol_invalid"
+        value = json.loads(payloads[0], object_pairs_hook=unique_object)
         checks = ("identity", "inventorySummary", "inventoryQuery", "knownResource", "freshInventory", "model")
         inventory = value.get("inventory") if isinstance(value, dict) else None
-        return (isinstance(value, dict) and set(value) == {
+        valid = (isinstance(value, dict) and set(value) == {
                     "schemaVersion", "mode", "nonce", "accountId", "status", "reason", "checks", "inventory"}
                 and type(value["schemaVersion"]) is int and value["schemaVersion"] == 1
-                and value["mode"] == "deployment_readiness" and value["nonce"] == request["nonce"]
-                and value["accountId"] == request["expectedAccountId"]
-                and value["status"] == "ready" and value["reason"] == "ok"
+                and value["mode"] == "deployment_readiness"
+                and value["status"] in ("ready", "not_ready")
                 and isinstance(value["checks"], dict) and set(value["checks"]) == set(checks)
-                and all(value["checks"][key] is True for key in checks)
+                and all(type(value["checks"][key]) is bool for key in checks)
                 and isinstance(inventory, dict) and set(inventory) == {"count", "ageMinutes"}
-                and type(inventory["count"]) is int and 1 <= inventory["count"] <= 500
-                and type(inventory["ageMinutes"]) is int and 0 <= inventory["ageMinutes"] <= 15)
+                and (inventory["count"] is None or (type(inventory["count"]) is int and 0 <= inventory["count"] <= 500))
+                and (inventory["ageMinutes"] is None or (type(inventory["ageMinutes"]) is int and 0 <= inventory["ageMinutes"] <= 1440)))
+        if not valid:
+            return "protocol_invalid"
+        if value["nonce"] != request["nonce"] or value["accountId"] != request["expectedAccountId"]:
+            return "response_identity_mismatch"
+        failures = {"invalid_request", "identity_failed", "account_mismatch", "gateway_unavailable",
+                    "tools_unavailable", "inventory_unavailable", "inventory_stale",
+                    "known_resource_missing", "model_failed", "timeout"}
+        if value["status"] == "not_ready":
+            return value["reason"] if value["reason"] in failures else "protocol_invalid"
+        if value["reason"] != "ok":
+            return "protocol_invalid"
+        if not all(value["checks"].values()):
+            return "checks_failed"
+        if inventory["count"] is None or inventory["count"] < 1:
+            return "inventory_empty"
+        if inventory["ageMinutes"] is None:
+            return "protocol_invalid"
+        return "readiness_confirmed"
     except (ValueError, KeyError, TypeError, UnicodeError):
-        return False
+        return "protocol_invalid"
+
+
+def valid_readiness_response(raw, request):
+    return readiness_code(raw, request) == "readiness_confirmed"
 
 
 def smoke(ac, runtime_arn):
-    confirmed = False
+    strict = development_run()
+    protocol = ac.get("readiness_protocol_available") is True
+    configured = bool(re.fullmatch(r"[A-Z0-9]{5,32}", ac.get("readiness_cloudfront_id") or ""))
+    inventory = ac.get("readiness_inventory_enabled")
+    structured = protocol and configured and inventory is True
+    if not valid_runtime_arn(ac, runtime_arn):
+        log("smoke", "ERR", "runtime_unavailable")
+        return
+    if strict and not structured:
+        code = ("readiness_protocol_unavailable" if not protocol else
+                "readiness_configuration_unavailable" if not configured else
+                "inventory_disabled" if inventory is False else "inventory_configuration_unavailable")
+        log("smoke", "ERR", code)
+        return
+    code = "invoke_failed"
+    failed_transport = False
     body = None
     try:
-        if not valid_runtime_arn(ac, runtime_arn) or not re.fullmatch(
-                r"[A-Z0-9]{5,32}", ac.get("readiness_cloudfront_id") or ""):
-            raise ValueError()
-        payload = dict(mode="deployment_readiness", nonce=uuid.uuid4().hex,
+        payload = (dict(mode="deployment_readiness", nonce=uuid.uuid4().hex,
                        expectedAccountId=ac["role_arn"].split(":")[4],
-                       expectedCloudfrontId=ac["readiness_cloudfront_id"])
+                       expectedCloudfrontId=ac["readiness_cloudfront_id"]) if structured else
+                   {"gateway": "security", "prompt": "List the IAM roles in this account. Use the list_roles tool."})
         data = boto3.client("bedrock-agentcore", region_name=ac["region"], config=Config(
             connect_timeout=3, read_timeout=60, retries={"total_max_attempts": 1}))
         resp = data.invoke_agent_runtime(agentRuntimeArn=runtime_arn, qualifier="DEFAULT",
@@ -1202,37 +1245,50 @@ def smoke(ac, runtime_arn):
                                          contentType="application/json", accept="text/event-stream",
                                          payload=json.dumps(payload).encode())
         body = resp.get("response")
-        if not hasattr(body, "read") or not str(resp.get("contentType", "")).startswith("text/event-stream"):
-            raise ValueError()
-        confirmed = valid_readiness_response(body.read(16385), payload)
-    except (BotoCoreError, ClientError, ValueError, KeyError, TypeError):
-        pass  # Fixed outcome only; never return remote text, SDK errors or tool payloads.
+        if not structured:
+            if hasattr(body, "read"):
+                body.read(16385)
+            code = "legacy_invocation_only"  # Advisory, never inspect text for a success substring.
+        elif not str(resp.get("contentType", "")).startswith("text/event-stream"):
+            code = "not_event_stream"
+        elif not hasattr(body, "read"):
+            code = "protocol_invalid"
+        else:
+            code = readiness_code(body.read(16385), payload)
+    except (BotoCoreError, ClientError) as error:
+        failed_transport = True
+        code = {"aws_access_denied": "invoke_access_denied", "aws_throttled": "invoke_throttled",
+                "aws_credentials_expired": "invoke_credentials_expired",
+                "read_timeout": "invoke_timeout"}.get(diagnostics.error_code(error), "invoke_failed")
+    except (ValueError, KeyError, TypeError):
+        code = "protocol_invalid"
     finally:
         if hasattr(body, "close"):
-            body.close()
-    log("smoke", "OK" if confirmed else "ERR", "readiness_confirmed" if confirmed else "readiness_unconfirmed")
+            try:
+                body.close()
+            except Exception:
+                code = "response_close_failed"
+    status = "OK" if code == "readiness_confirmed" else "ERR" if strict or failed_transport else "WARN"
+    log("smoke", status, code)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--smoke", action="store_true", help="require nonce-bound runtime readiness after provisioning")
-    args = ap.parse_args()
-
+def _provision(args):
     ac = tf_outputs()
+    diagnostics.stage("identity")
     validate_dev_deployment(ac)
-    if args.smoke and not re.fullmatch(r"[A-Z0-9]{5,32}", ac.get("readiness_cloudfront_id") or ""):
-        sys.exit("readiness_cloudfront_id_required")
     region = ac["region"]
     ctrl = boto3.client("bedrock-agentcore-control", region_name=region)
 
-    print(f"\n=== AWSops v2 AgentCore provisioner (region={region}) ===")
+    diagnostics.stage("gateways")
     gw_ids = ensure_gateways(ctrl, ac)
     # Load the ADR-017 credentials secret ONCE and share it with both calls below — also lets
     # ensure_targets know which legacy lambda targets ensure_mcp_server_targets owns this run (see
     # ensure_targets' skip_names docstring: without this a legacy target flaps every run).
+    diagnostics.stage("credentials")
     secrets, secrets_read_ok = _load_official_mcp_secret(ac)
     legacy_skip = {catalog.legacy_target_name(pk) for pk in _cutover_preset_keys(ac, secrets, secrets_read_ok)}
     legacy_skip.discard(None)
+    diagnostics.stage("lambda_targets")
     ensure_targets(ctrl, ac, gw_ids, skip_names=legacy_skip)
     # ensure_runtime BEFORE ensure_mcp_server_targets (review MAJOR L3-1): a gateway mcpServer target
     # is exposed to whatever runtime revision is currently serving the instant it's created. Creating
@@ -1243,6 +1299,7 @@ def main():
     # catalog.MCP_SERVER_TARGETS directly, not from anything ensure_mcp_server_targets produces), so
     # reordering is a pure reorder — the new runtime revision (allowlist included) is live before any
     # mcpServer target that depends on it can exist.
+    diagnostics.stage("runtime")
     runtime_arn = ensure_runtime(ctrl, ac, gw_ids)
     # review MAJOR (follow-up): the reorder above closes the WINDOW between target-creation and
     # allowlist-deployment, but ensure_runtime can still fail outright, or accept the request
@@ -1251,28 +1308,44 @@ def main():
     # ensure_mcp_server_targets call on runtime_arn being falsy would ALSO block its teardown paths
     # (an operator revoking an ack specifically to shut a live target off) — so the call always
     # runs; only its internal create/update/sync path is gated on allow_provision.
+    diagnostics.stage("mcp_targets")
     ensure_mcp_server_targets(ctrl, ac, gw_ids, secrets=secrets, secrets_read_ok=secrets_read_ok,
                                allow_provision=bool(runtime_arn))  # ADR-017 curated official-vendor MCP presets
+    diagnostics.stage("prune")
     prune_moved_targets(ctrl, gw_ids)  # remove split-brain orphans after a catalog gateway move
+    diagnostics.stage("memory")
     memory_id = ensure_memory(ctrl)
+    diagnostics.stage("interpreter")
     interpreter_id = ensure_interpreter(ctrl)
+    diagnostics.stage("ssm")
     write_ssm(ac, runtime_arn, interpreter_id, memory_id)
 
     if args.smoke:
-        print("\n=== smoke (runtime -> gateway -> tool) ===")
+        diagnostics.stage("smoke")
         # the runtime may need a few seconds after create/update to become invokable
         time.sleep(10)
         smoke(ac, runtime_arn)
 
     errs = [r for r in report if r[1] == "ERR"]
-    print(f"\n=== report: {len(report)} actions, {len(errs)} errors ===")
-    sys.exit(1 if errs else 0)
+    return 1 if errs else 0
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--smoke", action="store_true", help="post-provision smoke; strict readiness on dev, advisory on other stacks")
+    args = ap.parse_args()
+    report.clear()
+    diagnostics.reset()
+    diagnostics.stage("configuration")
+    try:
+        result = _provision(args)
+    except Exception as error:
+        log("operation", "ERR", diagnostics.error_code(error))
+        result = 1
+    diagnostics.stage("complete")
+    diagnostics.summary()
+    sys.exit(result)
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        if not development_run():
-            raise
-        sys.exit("agentcore_provisioning_failed")
+    main()

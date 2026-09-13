@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4bed1273dc07 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4175d81bd3d0 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -69,6 +69,20 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 
 ## Local verification
 
+Runtime image/provisioning review: the manual dev helper and both private migration jobs
+require repository secret `AWS_ACCOUNT_ID_DEV`, matching configured roles and actual STS.
+Use existing BatchGetImage permission for repository preflight, no DescribeRepositories
+grant or repository creation; retain ARM64 digest verification. Short CLI/TF operations
+have 2-minute limits, dev build/push/provision use 60/30/120 minutes without role renewal.
+Dev reuses private migration and immutable images; main/preview retain legacy migration/tags.
+Provision diagnostics expose fixed stages/codes, catalog keys, status counts and dropped
+events (240 resource-event cap), never raw errors/ARNs/credentials; child exit codes survive.
+Smoke is post-provision and strict on dev; other stacks keep advisory compatibility,
+with transport failures still fatal. Structured mode needs the producer, runtime_deployment
+and enabled inventory. Accept one SSE payload after metadata/comments/[DONE]; bind nonce,
+account and checks. The count is a 1–500 sample; age 0–1440 is a validation bound and actual
+freshness follows MCP stale_after_minutes. Do not claim Memory/Interpreter or full release proof.
+
 ```bash
 python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py
 python3 -m pytest -q scripts/v2/test_ci_*.py
@@ -83,6 +97,7 @@ They require bare `docker` on PATH, a reachable daemon, OpenSSL and `postgres:17
 automatic `sudo`/`DOCKER` override. The web connection suite uses the locked web driver and
 TypeScript, covering phase/timing logs, asynchronous passwords and original error propagation.
 
+The CI glob also needs Python boto3/botocore (`pip install -r agent/requirements.txt`).
 The CI fixtures use mocked AWS responses or local Terraform backends, not live AWS. Terraform
 checks use 1.15.7 with isolated data and mocked providers; dependencies are declared in
 `v2/requirements-test.txt`. Do not initialize a real backend for tests.

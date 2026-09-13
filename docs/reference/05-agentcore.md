@@ -63,17 +63,39 @@ row를 가리지 않는다. Phase 2가
 domain-aware coverage를 확장하고 parity 뒤 direct target을 retirement하므로 Aurora-only는
 아직 live가 아니다. Phase 3 cache도 pending이며 ADR-005 FROZEN은 바뀌지 않는다.
 
-**Provisioner:** `scripts/v2/agentcore/{catalog.py, provision.py}` — `catalog.py` holds
+**Provisioner:** `scripts/v2/agentcore/{catalog.py, provision.py, provision_report.py}` — `catalog.py` holds
 the 9 gateway names + the target tool schemas; `provision.py` does boto3 `list →
 create/update` for Runtime, the 9 gateways, the target slices, Memory, and the Code
-Interpreter, then writes ARNs to SSM and prints a per-resource diff report
-(CREATED/EXISTS/UPDATED/ERR). `make migrate` must run FIRST — it creates the `awsops_sql_reader` role and syncs its password, and
+Interpreter, then writes ARNs to SSM. Public output contains fixed stages/reason codes,
+catalog resource keys, status counts and an explicit dropped-event count; no ARNs or raw errors.
+Migrations must run FIRST — they create the `awsops_sql_reader` role and sync its password, and
 `make agentcore` does neither; skipping it leaves `execute_sql` and `inventory-read` failing Data API
-auth (see `docs/runbooks/agent-sql-reader.md`). Then `make agentcore` (via
+auth (see [agent-sql-reader](../runbooks/agent-sql-reader.md)). Dev's workflow reuses the private
+migration task; main/preview retain `make migrate`. Then `make agentcore` (via
 `scripts/v2/agentcore.mjs`) builds +
 pushes the **arm64** agent image, then runs the provisioner; `make agentcore SMOKE=1`
-also invokes the runtime end-to-end. **Everything is gated by `agentcore_enabled`**
+checks after provisioning. Dev requires the matching readiness producer and `runtime_deployment`
+output with inventory enabled; these producer dependencies must land before selecting smoke.
+Other stacks retain advisory compatibility invocation when readiness is unavailable, and
+advisory structured checks when available. Invocation transport failures still fail.
+**Everything is gated by `agentcore_enabled`**
 (default `false` → `count`/`for_each` = 0, a no-op).
+
+The structured check traverses the Ops inventory tools and the model through the producer.
+It accepts one SSE payload (optional data spacing, event/id/comments and `[DONE]`), checks
+nonce/account and fixed booleans, and treats `count` as a capped 1–500 sample.
+`ageMinutes` is bounded to 0–1440 for validation; freshness comes from the MCP producer's
+`stale_after_minutes` classifier, not a hard 15-minute client threshold.
+This optional CLI smoke is not the full web/worker release gate or a Memory/Code Interpreter test.
+
+공개 provisioning 출력은 고정 단계/코드·catalog key·상태별 개수와 dropped 개수만 보존한다.
+dev는 사설 migration을 재사용하며 main/preview는 `make migrate`를 먼저 실행한다.
+`SMOKE=1`은 provisioning 후 실행한다. dev는 대응 producer·`runtime_deployment`·활성
+inventory가 필요하고, 다른 스택은 참고용 호환 검사를 유지한다. 전송 실패는 계속 실패한다.
+구조화 검사는 Ops inventory 도구와 모델을 거치며 SSE payload 하나·nonce/계정·고정 boolean을
+검증한다. count는 최대 500개 표본이고 ageMinutes 0–1440은 검증 범위다. 실제 freshness는
+MCP의 `stale_after_minutes` 분류를 따르며 15분 하드코딩이 아니다. 전체 웹/워커 배포 gate나
+Memory/Code Interpreter 기능 검증을 대신하지 않는다.
 
 **Terraform-owned parts** (`terraform/foundation/ai.tf`): dual-tier ECR
 (`awsops-v2-agentcore`), the AgentCore IAM role (Runtime + gateways), the agent Lambda
@@ -83,19 +105,19 @@ resources are **not** Terraform-native, so they live in `provision.py`.
 
 **Config source of truth = SSM**, at `/ops/awsops-v2/agentcore/{runtime_arn,
 interpreter_id, memory_id}`. The web BFF reads these at **runtime** via the task role —
-**not** ECS `valueFrom** — to avoid a task-start race. Placeholders are written by
+**not** ECS `valueFrom` — to avoid a task-start race. Placeholders are written by
 Terraform; `provision.py` overwrites with real values.
 
 ## Decisions (ADRs) / 결정
 
 - **ADR-004** — AgentCore gateways & runtime, incl. runtime-customizable agents & skills
   (Aurora catalog + resolver + registry-agnostic `agent.py`; built-in vs custom tiers;
-  per-account Agent Spaces; BYO-MCP). [`../decisions/004-agentcore-gateways-runtime.md`](../decisions/004-agentcore-gateways-runtime.md)
+  per-account Agent Spaces; BYO-MCP). ADR-004 (private upstream decision)
 - **ADR-004** — gateway role split (note the **2026-06-03 correction: 7 → 8 gateways**).
-  [`../decisions/004-agentcore-gateways-runtime.md`](../decisions/004-agentcore-gateways-runtime.md)
+  ADR-004 (private upstream decision)
 - **ADR-003** — AI agent routing (hybrid routing & multi-route parallel synthesis; the
   classifier picks built-in routes + enabled custom agents).
-  [`../decisions/003-ai-agent-routing.md`](../decisions/003-ai-agent-routing.md)
+  ADR-003 (private upstream decision)
 - **ADR-021** — quota-isolated inventory reads; Phase 1 repository implementation complete,
   limited ops Aurora reader coexists with direct targets, Phase 2/3 cutover pending.
   ADR-021 (private upstream decision)
@@ -107,7 +129,9 @@ Terraform; `provision.py` overwrites with real values.
 | `terraform/foundation/ai.tf` | TF-owned ECR/IAM/Lambda-slice/SSM/web-grant (gated on `agentcore_enabled`) |
 | `scripts/v2/agentcore.mjs` | `make agentcore` entry — build+push arm64 image → run provisioner |
 | `scripts/v2/agentcore/catalog.py` | 9 gateway names + GW descriptions + target tool schemas |
-| `scripts/v2/agentcore/provision.py` | Idempotent boto3 provisioner (Runtime/Gateways/Targets/Memory/Interpreter), SSM write, diff report, `--smoke` |
+| `scripts/v2/agentcore/provision.py` | Idempotent provisioner, SSM writes and post-provision smoke (strict on dev; advisory elsewhere) |
+| `scripts/v2/agentcore/provision_report.py` | Fixed stage/error codes, catalog keys and bounded status counts; no raw resource/error output |
+| `scripts/v2/ci/runtime-build.mjs` | Dev account checks, BatchGetImage repository preflight, bounded ARM64 build/push and digest verification |
 | `agent/agent.py` | Strands agent (reused as-is; receives `GATEWAYS_JSON`) |
 | `agent/lambda/` | Agent tool Lambda sources — full fleet (30 slices; e.g. `aws_iam_mcp.py`, `flowmonitor.py`, connector lambdas, `cross_account.py`) |
 
@@ -116,8 +140,8 @@ Terraform; `provision.py` overwrites with real values.
 **P1f ✅ — A7 GREEN** (historical milestone record — the provisioner's *first* verified
 run, back when only the 2 bootstrap slices existed; see Current design above for the
 fleet's present size).
-- `provision` first run: 0 errors; smoke OK (runtime → security gateway → `list_roles` →
-  real IAM data).
+- `provision` first run: 0 errors; historical smoke invoked runtime → security gateway →
+  `list_roles`. This historical record is not the current structured-readiness contract.
 - Idempotent re-run: every resource `EXISTS`, Runtime `UPDATED` (the update path
   re-passes `roleArn` + `networkConfiguration` — proves the v1 quirk is handled, not a
   ConflictException).

@@ -201,8 +201,10 @@ flowchart LR
 
 ```bash
 make agentcore          # arm64 agent イメージのビルド/プッシュ + 冪等 provisioner
-make agentcore --smoke  # 追加で呼び出し検証
+make agentcore SMOKE=1  # 追加で呼び出し検証
 ```
+
+`SMOKE=1` は provisioning 後に実行します。dev は対応する readiness producer、`runtime_deployment`、有効で収集済みの inventory が必要で、他の環境は参考用の互換チェックを維持します。Memory や Code Interpreter の機能検証ではありません。dev workflow は先に非公開 migration を再利用し、他の環境は先に `make migrate` を実行します。
 
 provisioner は冪等なので、安全に再実行できます（例：最初の Target 作成がゲートウェイ未準備で失敗した場合）。
 

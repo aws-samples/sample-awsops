@@ -36,7 +36,7 @@ jobs:
       id-token: write
     env:
       AWS_REGION: ap-northeast-2
-      AWS_ACCOUNT_ID_DEV: ${{ vars.AWS_ACCOUNT_ID_DEV }}
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
       RUNTIME_ROLE_ARN: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
     outputs:
       project: ${{ steps.project.outputs.project }}
@@ -136,7 +136,7 @@ jobs:
       id-token: write
     env:
       AWS_REGION: ap-northeast-2
-      AWS_ACCOUNT_ID_DEV: ${{ vars.AWS_ACCOUNT_ID_DEV }}
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
       RUNTIME_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       MIGRATION_PROJECT: ${{ needs.build.outputs.project }}
       MIGRATION_DIGEST: ${{ needs.build.outputs.digest }}

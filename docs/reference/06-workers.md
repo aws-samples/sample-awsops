@@ -108,6 +108,7 @@ ledger 행을 먼저 쓰고(권위), 그 다음 best-effort SQS send. 디스패�
 | `web/lib/jobs.ts` | Shared `enqueueJob()` (ledger insert + SQS send; `ON CONFLICT` idempotency dedup) — used by `/api/jobs`, `/api/diagnosis`, `/api/compliance/run` |
 | `web/lib/db.ts` | Shared `getPool()` (node-postgres) used by jobs routes |
 | `scripts/v2/workers.mjs` | `make workers`: build+push the arm64 Fargate worker image |
+| `.github/workflows/build-runtime-images.yml` + `scripts/v2/ci/runtime-build.mjs` | Manual dev worker image build: configured secret account, existing repository, ARM64 digest verification |
 
 ## Status / 상태
 
