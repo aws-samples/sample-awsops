@@ -8,6 +8,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { smokeArgs } from './deployment-smoke.mjs';
+// The required merge verifier enters through this file, so runtime checks cannot be skipped.
+import './runtime-smoke.test.mjs';
 
 test('smoke uses service Host/SNI and verified TLS via the CloudFront connection', () => {
   assert.deepEqual(smokeArgs('https://dev.example.com', 'd123.cloudfront.net'), [
@@ -510,6 +512,11 @@ for (const fail of [false, true]) {
 
 test('always cleanup removes killed-smoke scratch only beneath this run credential directory', t => {
   const fixture = cliFixture(t, { killSmoke: true });
+  const runtimeFile = join(dirname(fixture.credentialFile), 'runtime.json');
+  writeFileSync(runtimeFile, JSON.stringify({
+    schemaVersion: 1, mode: 'prepare', expectedAccountId: '123456789012',
+  }), { mode: 0o600 });
+  fixture.env.SMOKE_RUNTIME_CONFIG_FILE = runtimeFile;
   const other = join(fixture.temporary, 'awsops-smoke-credentials-otherJob');
   mkdirSync(other, { mode: 0o700 });
   writeFileSync(join(other, 'credentials.json'), 'other-job-sentinel', { mode: 0o600 });
@@ -518,6 +525,7 @@ test('always cleanup removes killed-smoke scratch only beneath this run credenti
   });
   assert.equal(killed.signal, 'SIGKILL');
   assert.ok(existsSync(fixture.credentialFile));
+  assert.ok(existsSync(runtimeFile));
   const call = JSON.parse(readFileSync(fixture.commands, 'utf8').trim());
   const output = call.args[call.args.indexOf('--output') + 1];
   assert.ok(existsSync(join(dirname(output), 'login.json')));
@@ -528,6 +536,7 @@ test('always cleanup removes killed-smoke scratch only beneath this run credenti
     cwd: root, env: fixture.env, encoding: 'utf8', timeout: 5000,
   });
   assert.equal(cleaned.status, 0, cleaned.stderr);
+  assert.ok(!existsSync(runtimeFile));
   assert.ok(!existsSync(dirname(output)), 'always cleanup must own the killed smoke scratch');
   assert.deepEqual(readdirSync(fixture.unmanaged), []);
   assert.equal(readFileSync(join(other, 'credentials.json'), 'utf8'), 'other-job-sentinel');

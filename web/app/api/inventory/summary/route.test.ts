@@ -7,6 +7,20 @@ const req = (q = '', cookie = 'awsops_token=t') => new Request(`http://x/api/inv
 beforeEach(() => { verifyUser.mockReset(); query.mockReset(); });
 
 describe('GET /api/inventory/summary', () => {
+  it('returns safe account-scoped collection evidence without ledger error text', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    query.mockImplementation(async (sql: string) => ({
+      rows: sql.includes('unknown_attribute_count') ? [{
+        resource_type: 'cloudfront', account_id: 'self', status: 'succeeded', row_count: 0,
+        last_success_at: '2026-09-13T14:00:00Z', unknown_attribute_count: 0, error: 'PRIVATE ERROR',
+      }] : [],
+    }));
+    const { GET } = await import('./route');
+    const body = await (await GET(req())).json();
+    expect(body.collection.readOk).toBe(true);
+    expect(body.collection.runs[0]).toMatchObject({ type: 'cloudfront', status: 'succeeded', row_count: 0, unknown_attributes: false });
+    expect(JSON.stringify(body.collection)).not.toContain('PRIVATE');
+  });
   it('401 unauth', async () => {
     verifyUser.mockResolvedValue(null);
     const { GET } = await import('./route');

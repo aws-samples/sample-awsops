@@ -2,6 +2,7 @@ import { verifyUser } from '@/lib/auth';
 import { getPool } from '@/lib/db';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { PUBLIC_S3_WHERE } from '@/lib/security-findings';
+import { readCollectionStatus } from '@/lib/inventory-collection';
 
 export const dynamic = 'force-dynamic';
 
@@ -190,7 +191,8 @@ export async function GET(request: Request) {
       // freshness omitted — non-fatal.
     }
 
-    return Response.json({ byType, byCategory, total, splits: splitsOk ? splits : null, ec2Types, lastSyncAt });
+    const collection = await readCollectionStatus(pool, accounts);
+    return Response.json({ byType, byCategory, total, splits: splitsOk ? splits : null, ec2Types, lastSyncAt, collection });
   } catch (e) {
     return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }
