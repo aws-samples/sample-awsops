@@ -27,12 +27,12 @@ name: Terraform
 on:
   pull_request:
     branches: [main, dev]
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/test_ci_*.py"]
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
     # The workflow file itself is in the path filter so a workflow change
     # self-tests with a real plan on the branch it lands on.
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/test_ci_*.py"]
   workflow_dispatch:
     inputs:
       mode:
@@ -224,6 +224,14 @@ jobs:
             *) echo "::error::CI_MIGRATIONS_ENABLED_DEV must be true or false"; exit 1;;
           esac
           terraform plan "${args[@]}"
+
+      - name: Read safe development database diagnostics
+        if: steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_DB_DIAGNOSTICS_DEV == 'true'
+        run: |
+          set -euo pipefail
+          terraform console -no-color \
+            <<<'jsonencode({project=var.project, region=var.region, account=data.aws_caller_identity.current.account_id})' |
+            python3 ../../scripts/v2/ci_db_diagnostics.py | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Check planned DNS operations
         if: steps.restore.outputs.skip != '1'

@@ -431,6 +431,19 @@ for DNS restrictions; the manual Terraform commands above alone do not enforce t
 계획은 참고용이며, 적용은 같은 브랜치·SHA의 성공한 명시적 plan dispatch만 허용합니다.
 main은 production environment 승인 게이트가 추가됩니다. DNS 제한은 §5를 따릅니다.)
 
+For a failed authenticated DB check, temporarily set the nonsecret dev variable
+`CI_DB_DIAGNOSTICS_DEV=true` and run a Terraform **plan**. An optional dev-only step uses the
+existing read-only plan role to verify the state account and inspect the selected web log group
+for `db_ping_failed` events over the last hour (at most three pages of 100). It publishes only
+fixed categories, counts and timestamps, labeling truncated/unparsed results; no raw messages,
+credentials or ARNs are emitted. No IAM/resource write or apply step is added. Unset the variable
+or set it to `false` after diagnosis. A diagnostic result never waives login/DB readiness checks.
+인증된 DB 검사 실패 시 일반 dev 변수 `CI_DB_DIAGNOSTICS_DEV=true`를 임시로 설정하고
+Terraform **plan**을 실행한다. 기존 읽기 전용 plan 역할로 상태 계정을 확인하고 해당 웹 로그의
+최근 1시간 `db_ping_failed` 이벤트를 최대 100개씩 3페이지 조회한다. 고정 분류·건수·시각과
+잘림/파싱 불가 여부만 공개하며 로그 원문·자격증명·ARN은 출력하지 않는다. IAM·리소스 변경이나
+apply 단계는 추가하지 않는다. 진단 후 변수를 지우거나 `false`로 바꾸며 준비 상태 검사는 유지한다.
+
 ### 4. ECR permissions for the pin step / ci-deployer ECR 권한
 
 The deploy jobs re-point `:web-latest` at the approved `web-<sha>` before rolling,
