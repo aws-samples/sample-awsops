@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9c99f308ab36 · generated-at: 2026-08-26 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 6c22fa8c1a47 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -17,6 +17,10 @@ Docker image must be arm64 (`docker buildx --platform linux/arm64`), Python 3.11
 port 8080.
 
 ## Architectural boundaries
+- The early `deployment_readiness` mode in `readiness.py` verifies runtime STS identity,
+  curated inventory tools through the existing Ops gateway, a known fresh CloudFront record
+  and a bounded model call. Return nonce/account-bound evidence, never normal chat/fallback
+  success. Do not send inventory data to this model probe or equate non-discovery with absence.
 - Live AWS queries always go through the AgentCore MCP Lambda tools (`agent/lambda/*.py`),
   never inline in `agent.py` or the web BFF.
 - The gateway/tool inventory and the chat routing-key list are **not** hand-maintained in this
@@ -24,8 +28,8 @@ port 8080.
   `scripts/v2/agentcore/catalog.py` (provisioner catalog), `ai.tf`'s `local.agent_lambdas`, and
   `web/lib/route.ts`'s `RULES`.
 - The system prompt is role-specific, one per domain gateway.
-- Fallback: if the MCP connection fails, run without tools — direct Bedrock call, never a hard
-  failure.
+- Normal chat fallback: if the MCP connection fails, run without tools through a direct
+  Bedrock call. Deployment readiness instead returns failed evidence.
 
 ## Do-not-"fix" traps
 - **Gateway key-derivation mismatch** (`_resolve_gateway_key`): key discovery can yield a

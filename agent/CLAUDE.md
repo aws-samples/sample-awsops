@@ -4,6 +4,11 @@
 Strands Agent for AgentCore Runtime. Connects to 9 domain gateways via MCP protocol.
 
 ## Key Files
+- `readiness.py` — the early `deployment_readiness` mode checks the runtime STS account,
+  curated inventory tools through the existing Ops gateway, a known fresh CloudFront record
+  and a bounded model call. It returns strict nonce/account-bound evidence, never ordinary
+  chat text or fallback success. Inventory data is not sent to the model for this probe.
+  A readiness failure is not proof that an undiscovered resource does not exist.
 - `agent.py` — Main entrypoint: dynamic Gateway selection via the `payload.gateway` parameter;
   `_resolve_gateway_key`/`_GATEWAY_ALIAS` handle the `observability`→`external-obs` chat-key
   alias and the canonical-vs-`v2-`-prefixed key coexistence shim (see the do-not-"fix" note in
@@ -42,6 +47,7 @@ re-introduce a hand-maintained table that goes stale again, read the actual sour
 - Docker image must be arm64 (`docker buildx --platform linux/arm64`).
 - Gateway URL is selected dynamically from the `GATEWAYS` dict based on the payload.
 - The system prompt is role-specific, one per domain gateway.
-- Fallback: if the MCP connection fails, run without tools — direct Bedrock call.
+- Normal chat fallback: if the MCP connection fails, run without tools — direct Bedrock call.
+  Deployment readiness instead returns failed evidence.
 - Never embed secrets, AWS account IDs, ARNs, or live domains in source — they belong in
   SSM/Secrets Manager and runtime env.
