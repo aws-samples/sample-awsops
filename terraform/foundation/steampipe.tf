@@ -261,18 +261,20 @@ resource "aws_cloudwatch_metric_alarm" "steampipe_down" {
 
 # ---- sync Lambda (VPC, pg8000 layer; queries Steampipe + writes Aurora) ----
 resource "terraform_data" "inv_pg8000_build" {
-  count            = local.sp
-  triggers_replace = filemd5("${path.module}/../../scripts/v2/steampipe/requirements.txt")
+  count = local.sp
+  triggers_replace = [
+    filemd5("${path.module}/../../scripts/v2/steampipe/requirements.txt"),
+    filemd5("${path.module}/../../scripts/v2/ci/pg8000-requirements.txt"),
+    filemd5("${path.module}/../../scripts/v2/ci_tf_assets.py"),
+  ]
   provisioner "local-exec" {
     command = <<-EOT
       set -e
       if [ "$${CI_ASSETS_READY:-}" = "true" ]; then
         python3 ${path.module}/../../scripts/v2/ci_tf_assets.py check-layer --layer inv_layer
-        exit 0
+      else
+        python3 ${path.module}/../../scripts/v2/ci_tf_assets.py build-layer --layer inv_layer
       fi
-      rm -rf ${path.module}/.build/inv_layer
-      mkdir -p ${path.module}/.build/inv_layer/python
-      python3 -m pip install pg8000==1.31.2 --target ${path.module}/.build/inv_layer/python
     EOT
   }
 }

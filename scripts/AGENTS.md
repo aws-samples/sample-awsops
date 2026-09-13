@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: eb8834942323 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: c85edd3815ef · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -17,12 +17,6 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 - `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-only registry proof before
   full dev activation plans; apply rechecks using the approved profile. Database-only success is rejected.
   Credentials stay private and failures use a fixed code.
-- `v2/ci_tf_assets.py` prepares hash-locked pg8000 layers and carries generated Lambda assets
-  with the encrypted saved plan. Restore checks plan hash, commit, scope, paths, types, modes
-  and content hashes; missing or mismatched assets fail. The dependency closure is
-  `v2/ci/pg8000-requirements.txt`.
-  Plan/apply and both Terraform layer guards use literal `CI_ASSETS_READY=true`.
-
 - `v2/ci_db_diagnostics.py` is default-off manual dev-plan diagnostics. Both workflow and helper
   require `workflow_dispatch`, literal `CI_DB_DIAGNOSTICS_DEV=true`, and `--target dev`;
   region is fixed to `ap-northeast-2`. Invalid invocation context causes no AWS calls.
@@ -100,3 +94,20 @@ TypeScript, covering phase/timing logs, asynchronous passwords and original erro
 The CI fixtures use mocked AWS responses or local Terraform backends, not live AWS. Terraform
 checks use 1.15.7 with isolated data and mocked providers; dependencies are declared in
 `v2/requirements-test.txt`. Do not initialize a real backend for tests.
+
+## Plan asset utility
+
+`v2/ci_tf_assets.py` prepares the hash-locked pg8000 closure and validates plan/SHA/scope,
+paths, modes and hashes; every ZIP with a known saved-plan hash must be present and match.
+Deferred archives without known hashes are excluded. Both pack/restore APIs allow GitHub
+push, pull_request and workflow_dispatch only, or explicit local commits without a GitHub event.
+They use TF_PLAN_ENC_KEY HMAC.
+The 0600 tarball is private secret-bearing scratch, with no upload path;
+callers must encrypt before publication and clean plaintext files.
+Both Terraform layer paths use the same locked build-layer command, or check-layer for
+CI_ASSETS_READY=true, also exported by plan/apply. Prepare invalidates markers, removes stale regular ZIPs and rejects ZIP
+symlinks. Schema-2 markers bind file hashes; validation checks a fixed required-import list.
+The pin gate covers `v2/ci/pg8000-requirements.txt` and the four requirements
+under workers, steampipe, incident and remediation; update all with verified wheel hashes.
+The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and validator.
+`v2/test_ci_tf_assets.py` covers these contracts and recovery.

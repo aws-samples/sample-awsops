@@ -16,11 +16,24 @@ secrets-manager) — installed by `make deps`.
 - `v2/ci/prepare-runtime-host.mjs` verifies actual login, DB and the enabled host-only registry
   before full dev activation plans. Apply uses the approved profile marker to require a fresh check.
   It uses private existing credentials, rejects database-only proof and reports a fixed failure code.
-- `v2/ci_tf_assets.py` — prepares hash-locked pg8000 layers and carries generated Lambda assets
-  with the encrypted saved plan. Restore checks the plan hash, commit, scope, member paths,
-  types, modes and content hashes before apply; missing or mismatched assets fail.
-  Plan/apply and both Terraform layer guards share literal `CI_ASSETS_READY=true`.
-  `v2/ci/pg8000-requirements.txt` is the locked dependency closure.
+- `v2/ci_tf_assets.py` prepares hash-locked pg8000 layers and transports plan/SHA/scope-bound
+  Lambda assets, validating paths, modes and hashes. Pack requires every ZIP with a known
+  saved-plan hash and verifies its bytes; deferred archives without known hashes are excluded.
+  Pack/restore share an event allowlist: push, pull_request or workflow_dispatch in GitHub;
+  local callers supply an explicit commit without a GitHub event. Other events fail before work.
+  Pack/restore require `TF_PLAN_ENC_KEY` for HMAC authentication. The 0600 plaintext tarball is
+  private scratch and may contain rendered secrets; this utility cannot upload it. Callers must
+  encrypt before publication and clean plaintext files afterward.
+  `v2/ci/pg8000-requirements.txt` is the single layer-install lock. Both Terraform paths call
+  build-layer, or check-layer when CI_ASSETS_READY=true; lock/script changes trigger rebuilding.
+  Prepare invalidates old markers and removes stale regular ZIPs before building; it rejects
+  ZIP symlinks. Schema-2 markers bind installed-file hashes; validation also checks the fixed
+  required-import list. The pin validator checks this lock and all four shared-layer consumers:
+  `v2/{workers,steampipe,incident,remediation}/requirements.txt`. Update these together with
+  verified wheel hashes. The separate Steampipe container's `v2/steampipe/Dockerfile` pin and
+  installer are outside the Lambda lock/validator. `v2/test_ci_tf_assets.py` covers these
+  contracts and restore recovery.
+  Plan/apply export literal `CI_ASSETS_READY=true` for the same verification contract.
 - `v2/configure.mjs` — `make configure`: interactive TUI → `terraform.tfvars` + `backend.hcl`.
   AWS access shells out to the `aws` CLI, not the SDK.
 - `v2/deploy.mjs` — `make deploy` (runs migrate first): arm64 build → ECR push →
@@ -99,7 +112,7 @@ secrets-manager) — installed by `make deps`.
   gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
-- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads}.py` —
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads,tf_assets}.py` —
   workflow fixtures, real no-provider plans and a localhost state backend verify deployment
   gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active

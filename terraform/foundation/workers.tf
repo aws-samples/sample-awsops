@@ -192,18 +192,20 @@ data "archive_file" "workers_src" {
 
 # pg8000 (pure-Python; works on any arch incl. arm64 Lambda). Rebuilt only when requirements change.
 resource "terraform_data" "pg8000_layer_build" {
-  count            = local.we
-  triggers_replace = filemd5("${local.workers_src}/requirements.txt")
+  count = local.we
+  triggers_replace = [
+    filemd5("${local.workers_src}/requirements.txt"),
+    filemd5("${path.module}/../../scripts/v2/ci/pg8000-requirements.txt"),
+    filemd5("${path.module}/../../scripts/v2/ci_tf_assets.py"),
+  ]
   provisioner "local-exec" {
     command = <<-EOT
       set -e
       if [ "$${CI_ASSETS_READY:-}" = "true" ]; then
         python3 ${path.module}/../../scripts/v2/ci_tf_assets.py check-layer --layer pg8000_layer
-        exit 0
+      else
+        python3 ${path.module}/../../scripts/v2/ci_tf_assets.py build-layer --layer pg8000_layer
       fi
-      rm -rf ${path.module}/.build/pg8000_layer
-      mkdir -p ${path.module}/.build/pg8000_layer/python
-      python3 -m pip install pg8000==1.31.2 --target ${path.module}/.build/pg8000_layer/python
     EOT
   }
 }
