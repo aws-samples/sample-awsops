@@ -56,8 +56,9 @@ async function prepareCredentials() {
       .filter(([key]) => !key.startsWith('TF_LOG') && !key.startsWith('TF_CLI_ARGS')));
     const terraform = (args, input = '') => new Promise((accept, reject) => {
       const child = execFile('terraform', args, {
-        env, encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024,
-        signal: controller.signal, stdio: ['pipe', 'pipe', 'pipe'],
+        // Cold provider downloads get ten minutes; state reads stay at two.
+        env, encoding: 'utf8', timeout: args[0] === 'init' ? 600_000 : 120_000,
+        maxBuffer: 1024 * 1024, signal: controller.signal,
       }, (error, stdout) => {
         if (error || controller.signal.aborted) reject(new Error());
         else accept(stdout);

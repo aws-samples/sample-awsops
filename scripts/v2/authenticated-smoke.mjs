@@ -1,22 +1,41 @@
 // Authenticate through the deployed BFF/edge, retaining service Host/SNI/TLS
 // while service DNS is deferred. curl receives private filenames, never secrets.
 import { execFile } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, fstatSync, mkdtempSync, openSync, readSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { smokeArgs } from './deployment-smoke.mjs';
+import { smokeConnectionArgs } from './deployment-smoke.mjs';
 import { cleanupSmokeCredentials, readSmokeCredentials } from './prepare-smoke-credentials.mjs';
 
 const execute = promisify(execFile);
+const MAX_RESPONSE_BYTES = 64 * 1024;
 class SmokeError extends Error {}
+
+function readPrivateResponse(file) {
+  const fd = openSync(file, 'r');
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile() || info.size > MAX_RESPONSE_BYTES) throw new Error();
+    // Bound the read itself as well, including a file that grows after fstat.
+    const contents = Buffer.alloc(MAX_RESPONSE_BYTES + 1);
+    let length = 0, count;
+    while (length < contents.length
+        && (count = readSync(fd, contents, length, contents.length - length, null)) > 0) length += count;
+    if (length > MAX_RESPONSE_BYTES) throw new Error();
+    return contents.subarray(0, length).toString('utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
 
 function hasSessionCookie(contents, hostname) {
   return contents.split(/\r?\n/).some(line => {
-    // curl retains HttpOnly cookies as specially prefixed Netscape jar rows.
-    if (line.startsWith('#HttpOnly_')) line = line.slice('#HttpOnly_'.length);
-    else if (line.startsWith('#')) return false;
+    // web/lib/login.ts issues a host-only, Path=/, Secure + HttpOnly cookie.
+    // curl represents HttpOnly using this Netscape jar prefix.
+    if (!line.startsWith('#HttpOnly_')) return false;
+    line = line.slice('#HttpOnly_'.length);
     const [domain, subdomains, path, secure, expires, name, value, extra] = line.split('\t');
     const expiry = Number(expires);
     return domain === hostname && subdomains === 'FALSE' && path === '/'
@@ -28,7 +47,7 @@ function hasSessionCookie(contents, hostname) {
 
 export async function authenticatedSmoke(
   { publicUrl, cloudfrontDomain, email, password },
-  { runCurl = execute, tempRoot = tmpdir() } = {},
+  { runCurl = execute, tempRoot = resolve(process.env.RUNNER_TEMP || tmpdir()) } = {},
 ) {
   let directory;
   let previousUmask;
@@ -37,7 +56,7 @@ export async function authenticatedSmoke(
   const cancel = () => controller.abort();
   const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
   try {
-    const healthArgs = smokeArgs(publicUrl, cloudfrontDomain);
+    const connectionArgs = smokeConnectionArgs(publicUrl, cloudfrontDomain);
     const url = new URL(publicUrl);
     failure = 'requires a configured demo username';
     if (typeof email !== 'string' || !email.trim() || email.length > 254 || /[\r\n]/.test(email)) {
@@ -56,26 +75,39 @@ export async function authenticatedSmoke(
     chmodSync(directory, 0o700);
     const payload = join(directory, 'login.json');
     const jar = join(directory, 'cookies.txt');
-    const response = join(directory, 'response.json');
     for (const [file, contents] of [
-      [payload, JSON.stringify({ email, password })], [jar, ''], [response, ''],
+      [payload, JSON.stringify({ email, password })], [jar, ''],
     ]) {
       writeFileSync(file, contents, { mode: 0o600, flag: 'wx' });
     }
     const commonArgs = [
-      '-q', ...healthArgs.slice(0, -1), '--proto', '=https', '--max-redirs', '0',
-      '--output', response, '--write-out', '%{http_code}',
+      '-q', '-sS', ...connectionArgs, '--proto', '=https', '--max-redirs', '0',
+      '--max-filesize', String(MAX_RESPONSE_BYTES), '--write-out', '%{http_code}',
     ];
     const options = {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 35_000,
+      encoding: 'utf8', timeout: 35_000,
       maxBuffer: 64 * 1024, signal: controller.signal,
       // Do not pass the step's password or other deployment secrets to curl.
       env: { PATH: process.env.PATH, LANG: 'C', LC_ALL: 'C' },
     };
+    const recordStatus = stdout => {
+      if (typeof stdout === 'string' && /^[1-5][0-9]{2}$/.test(stdout)) failure += `; HTTP status ${stdout}`;
+    };
     const request = async (args, path) => {
-      const { stdout } = await runCurl('curl', [...commonArgs, ...args, `${url.origin}${path}`], options);
+      const response = join(directory, path === '/api/auth/login' ? 'login-response.json' : 'db-response.json');
+      writeFileSync(response, '', { mode: 0o600, flag: 'wx' });
+      let stdout;
+      try {
+        ({ stdout } = await runCurl('curl', [
+          ...commonArgs, '--output', response, ...args, `${url.origin}${path}`,
+        ], options));
+      } catch (error) {
+        recordStatus(error?.stdout);
+        throw new Error();
+      }
+      recordStatus(stdout);
       if (controller.signal.aborted || stdout !== '200') throw new Error();
-      return JSON.parse(readFileSync(response, 'utf8'));
+      return JSON.parse(readPrivateResponse(response));
     };
     failure = 'login failed (expected HTTP 200 and ok=true)';
     const login = await request([
@@ -84,7 +116,7 @@ export async function authenticatedSmoke(
     ], '/api/auth/login');
     if (login?.ok !== true) throw new Error();
     failure = 'login did not set a usable session cookie';
-    if (!hasSessionCookie(readFileSync(jar, 'utf8'), url.hostname)) throw new Error();
+    if (!hasSessionCookie(readPrivateResponse(jar), url.hostname)) throw new Error();
 
     failure = 'database verification failed (expected HTTP 200, status=ok and positive safe-integer public_tables)';
     const database = await request(['--request', 'GET', '--cookie', jar], '/api/db');
@@ -124,6 +156,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       cloudfrontDomain: process.env.CLOUDFRONT_DOMAIN,
       email: credentials?.email,
       password: credentials?.password,
+    }, {
+      // The existing always() credential cleanup also owns scratch after SIGKILL.
+      tempRoot: dirname(file),
     });
   } catch (error) {
     console.error(error instanceof SmokeError ? error.message : 'Authenticated smoke: failed');

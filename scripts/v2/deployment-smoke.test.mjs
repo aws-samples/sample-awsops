@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { smokeArgs } from './deployment-smoke.mjs';
 
 test('smoke uses service Host/SNI and verified TLS via the CloudFront connection', () => {
@@ -40,7 +42,7 @@ const configuration = {
 async function scenario(t, {
   config = {}, loginStatus = '200', loginBody = '{"ok":true,"redirect":"/"}',
   dbStatus = '200', dbBody = '{"status":"ok","public_tables":42}',
-  jar = cookie, failureAt, interruptAt,
+  jar = cookie, failureAt, interruptAt, emptyDbOutput = false,
 } = {}) {
   const moduleUrl = new URL('./authenticated-smoke.mjs', import.meta.url);
   assert.ok(existsSync(moduleUrl), 'authenticated smoke implementation is missing');
@@ -60,7 +62,7 @@ async function scenario(t, {
       jar: readFileSync(jarPath, 'utf8'),
     });
     if (calls.length === 1 && jar !== undefined) writeFileSync(jarPath, jar);
-    writeFileSync(output, calls.length === 1 ? loginBody : dbBody);
+    if (calls.length === 1 || !emptyDbOutput) writeFileSync(output, calls.length === 1 ? loginBody : dbBody);
     if (calls.length === interruptAt) {
       const aborted = new Promise((_, reject) => {
         options.signal.addEventListener('abort', () => reject(new Error(password + token)), { once: true });
@@ -92,7 +94,6 @@ async function scenario(t, {
       assert.ok(!JSON.stringify(call.args).includes(secret), 'curl argv must not contain credentials/cookies');
       assert.ok(!JSON.stringify(call.options.env).includes(secret), 'curl env must not inherit credentials');
     }
-    assert.deepEqual(call.options.stdio, ['ignore', 'pipe', 'pipe']);
   }
   if (error) {
     assert.ok(!String(error.stack).includes(password));
@@ -124,6 +125,12 @@ test('authenticated smoke logs in and queries DB with a private cookie jar and v
   }
   assert.ok(calls[0].args.includes('Content-Type: application/json'));
   assert.ok(!calls[1].args.includes('--data-binary'));
+  assert.notEqual(calls[0].args[calls[0].args.indexOf('--output') + 1],
+    calls[1].args[calls[1].args.indexOf('--output') + 1], 'responses must not share stale contents');
+  for (const call of calls) {
+    assert.equal(call.args[call.args.indexOf('--max-filesize') + 1], '65536');
+    assert.ok(!call.args.some(arg => ['-f', '-fsS', '--fail', '--fail-with-body'].includes(arg)));
+  }
 });
 
 for (const [name, fixture, callCount] of [
@@ -147,6 +154,7 @@ for (const [name, fixture, callCount] of [
   ['foreign cookie host', { jar: cookie.replace('dev.example.com', 'other.example.com') }, 1],
   ['wrong cookie path', { jar: cookie.replace('\t/\t', '\t/login\t') }, 1],
   ['insecure cookie', { jar: cookie.replace('\tTRUE\t', '\tFALSE\t') }, 1],
+  ['non-HttpOnly cookie', { jar: cookie.replace('#HttpOnly_', '') }, 1],
   ['expired cookie', { jar: cookie.replace('\t0\t', '\t1\t') }, 1],
   ['malformed DB JSON', { dbBody: password + token }, 2],
   ['DB null', { dbBody: 'null' }, 2],
@@ -166,6 +174,140 @@ for (const [name, fixture, callCount] of [
     assert.equal(calls.length, callCount);
   });
 }
+
+test('empty database output cannot reuse a successful login body', async t => {
+  const { error, calls } = await scenario(t, {
+    loginBody: '{"ok":true,"status":"ok","public_tables":42}', emptyDbOutput: true,
+  });
+  assert.ok(error);
+  assert.match(error.message, /database verification failed/);
+  assert.equal(calls.length, 2);
+});
+
+test('response reads reject bodies over 64 KiB even if the transport fails to enforce the limit', async t => {
+  for (const phase of ['login', 'db']) {
+    const body = phase === 'login' ? '{"ok":true}' : '{"status":"ok","public_tables":42}';
+    const { error } = await scenario(t, { [`${phase}Body`]: body.padEnd(65537, ' ') });
+    assert.ok(error);
+    assert.match(error.message, phase === 'login' ? /login failed/ : /database verification failed/);
+  }
+  const { error } = await scenario(t, {
+    loginBody: '{"ok":true}'.padEnd(65536, ' '),
+    dbBody: '{"status":"ok","public_tables":42}'.padEnd(65536, ' '),
+  });
+  assert.ifError(error);
+});
+
+test('phase errors admit only a valid three-digit HTTP status', async t => {
+  for (const status of ['401', '403', '502']) {
+    const { error } = await scenario(t, { loginStatus: status });
+    assert.match(error.message, new RegExp(`login failed.*HTTP status ${status}$`));
+  }
+  for (const status of ['000', '999', '200\n', '401 SECRET', '::error::401', '', undefined]) {
+    const { error } = await scenario(t, { loginStatus: status === undefined ? null : status });
+    assert.ok(error);
+    assert.doesNotMatch(error.message, /HTTP status|SECRET|::error::/);
+  }
+});
+
+test('authenticated smoke defaults scratch to RUNNER_TEMP', async t => {
+  const { authenticatedSmoke } = await import('./authenticated-smoke.mjs');
+  const temporary = mkdtempSync(join(tmpdir(), 'smoke-runner-temp-'));
+  const previous = process.env.RUNNER_TEMP;
+  t.after(() => rmSync(temporary, { recursive: true, force: true }));
+  let output;
+  try {
+    process.env.RUNNER_TEMP = temporary;
+    await assert.rejects(authenticatedSmoke(configuration, {
+      runCurl: async (_file, args) => {
+        output = args[args.indexOf('--output') + 1];
+        throw new Error('fixture transport failure');
+      },
+    }));
+    assert.equal(dirname(dirname(output)), temporary);
+    assert.deepEqual(readdirSync(temporary), []);
+  } finally {
+    if (previous === undefined) delete process.env.RUNNER_TEMP;
+    else process.env.RUNNER_TEMP = previous;
+  }
+});
+
+test('real curl preserves HTTP phase/status, TLS, cookies and bounded response handling', async t => {
+  const { authenticatedSmoke } = await import('./authenticated-smoke.mjs');
+  const directory = mkdtempSync(join(tmpdir(), 'smoke-real-curl-'));
+  const cert = join(directory, 'cert.pem');
+  const key = join(directory, 'key.pem');
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+    '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=dev.example.com',
+    '-addext', 'subjectAltName=DNS:dev.example.com'], { stdio: 'pipe' });
+  let current, requests;
+  const server = createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (req, res) => {
+    requests.push({ path: req.url, host: req.headers.host, sni: req.socket.servername, cookie: req.headers.cookie });
+    req.resume();
+    const login = req.url === '/api/auth/login';
+    const status = (login ? current.loginStatus : current.dbStatus) ?? 200;
+    const body = current.largeBody
+      ? '{"ok":true,"status":"ok","public_tables":42}'.padEnd(current.largeBody, ' ')
+      : status === 200 ? login ? '{"ok":true}' : '{"status":"ok","public_tables":42}' : password + token;
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      ...(current.chunked ? {} : { 'Content-Length': Buffer.byteLength(body) }),
+      ...(login ? { 'Set-Cookie': `awsops_token=${token}; Path=/; Secure; HttpOnly` } : {}),
+      ...(status === 302 ? { Location: '/must-not-follow' } : {}),
+    });
+    if (current.chunked) res.write(body.slice(0, 10));
+    res.end(current.chunked ? body.slice(10) : body);
+  });
+  await new Promise((accept, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', accept); });
+  const execute = promisify(execFile);
+  try {
+    for (const [name, fixture, phase, status] of [
+      ['login unauthorized', { loginStatus: 401 }, 'login', 401],
+      ['login challenge', { loginStatus: 403 }, 'login', 403],
+      ['login gateway error', { loginStatus: 502 }, 'login', 502],
+      ['database server error', { dbStatus: 500 }, 'database verification', 500],
+      ['database unconfigured', { dbStatus: 503 }, 'database verification', 503],
+      ['login redirect', { loginStatus: 302 }, 'login', 302],
+      ['database redirect', { dbStatus: 302 }, 'database verification', 302],
+      ['oversized content length', { largeBody: 65537 }, 'login'],
+      ['oversized chunked response', { largeBody: 65537, chunked: true }, 'login'],
+      ['exact 64 KiB response', { largeBody: 65536 }],
+      ['normal success', {}],
+    ]) await t.test(name, async () => {
+      current = fixture;
+      requests = [];
+      const runCurl = (file, args, options) => {
+        const localArgs = [...args];
+        localArgs[localArgs.indexOf('--connect-to') + 1] = `dev.example.com:443:127.0.0.1:${server.address().port}`;
+        // Only destination and local certificate trust differ from production.
+        localArgs.splice(-1, 0, '--cacert', cert);
+        return execute(file, localArgs, options);
+      };
+      if (phase) {
+        await assert.rejects(authenticatedSmoke(configuration, { runCurl, tempRoot: directory }), error => {
+          assert.match(error.message, new RegExp(`${phase} failed`));
+          if (status) assert.match(error.message, new RegExp(`HTTP status ${status}$`));
+          for (const secret of [email, password, token]) assert.ok(!String(error.stack).includes(secret));
+          return true;
+        });
+      } else {
+        assert.deepEqual(await authenticatedSmoke(configuration, { runCurl, tempRoot: directory }),
+          { status: 'ok', public_tables: 42 });
+      }
+      assert.equal(requests.length, phase === 'login' ? 1 : 2);
+      for (const req of requests) {
+        assert.equal(req.host, 'dev.example.com');
+        assert.equal(req.sni, 'dev.example.com');
+      }
+      if (requests.length === 2) assert.equal(requests[1].cookie, `awsops_token=${token}`);
+      assert.deepEqual(readdirSync(directory).sort(), ['cert.pem', 'key.pem']);
+    });
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
 
 for (const [name, config] of [
   ['HTTP URL', { publicUrl: 'http://dev.example.com' }],
@@ -211,6 +353,18 @@ test('authenticated smoke aborts and removes private files on runner cancellatio
 });
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
+test('the actual edge public-path function keeps DB authenticated and health public', () => {
+  const result = JSON.parse(execFileSync('python3', ['-c', [
+    'import ast,json,pathlib,sys',
+    'path=pathlib.Path(sys.argv[1])',
+    'function=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.FunctionDef) and n.name=="is_public")',
+    'namespace={}',
+    'exec(compile(ast.Module(body=[function],type_ignores=[]),str(path),"exec"),namespace)',
+    'print(json.dumps({p:namespace["is_public"](p) for p in ["/api/db","/api/health"]}))',
+  ].join('\n'), join(root, 'terraform/foundation/edge-lambda/cognito_edge.py.tftpl')], { encoding: 'utf8' }));
+  assert.deepEqual(result, { '/api/db': false, '/api/health': true });
+});
+
 // PyYAML is already installed by Merge Verify for the workflow fixture suite.
 const workflow = JSON.parse(execFileSync('python3', ['-c', [
   'import json,sys,yaml',
@@ -282,11 +436,13 @@ test('Deploy Web rejects unsupported verification refs before any build or deplo
   }
 });
 
-function cliFixture(t, { fail = false, preparedFile } = {}) {
+function cliFixture(t, { fail = false, preparedFile, killSmoke = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'authenticated-cli-test-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const temporary = preparedFile ? dirname(dirname(preparedFile)) : join(directory, 'private');
   mkdirSync(temporary, { mode: 0o700, recursive: true });
+  const unmanaged = join(directory, 'unmanaged');
+  mkdirSync(unmanaged, { mode: 0o700 });
   const commands = join(directory, 'commands.jsonl');
   writeFileSync(join(directory, 'curl'), `#!${process.execPath}
 const fs = require('node:fs');
@@ -307,6 +463,10 @@ if (login) {
   process.exit(92);
 }
 fs.writeFileSync(output, login ? '{"ok":true}' : '{"status":"ok","public_tables":42}');
+if (${killSmoke}) {
+  process.kill(process.ppid, 'SIGKILL');
+  process.exit(0);
+}
 if (${fail}) {
   process.stdout.write(${JSON.stringify(password)});
   process.stderr.write(${JSON.stringify(token)});
@@ -317,10 +477,10 @@ process.stdout.write('200');
   const credentialFile = preparedFile || join(mkdtempSync(join(temporary, 'awsops-smoke-credentials-')), 'credentials.json');
   if (!preparedFile) writeFileSync(credentialFile, JSON.stringify({ email, password }), { mode: 0o600 });
   return {
-    temporary, commands,
+    temporary, unmanaged, commands,
     credentialFile,
     env: {
-      PATH: `${directory}:${process.env.PATH}`, TMPDIR: temporary,
+      PATH: `${directory}:${process.env.PATH}`, TMPDIR: unmanaged, RUNNER_TEMP: temporary,
       PUBLIC_URL: configuration.publicUrl, CLOUDFRONT_DOMAIN: configuration.cloudfrontDomain,
       SMOKE_CREDENTIAL_FILE: credentialFile,
     },
@@ -337,14 +497,42 @@ for (const fail of [false, true]) {
     assert.match(result.stdout + result.stderr, fail ? /Authenticated smoke:/ : /Authenticated database smoke passed/);
     for (const secret of [email, password, token]) assert.ok(!(result.stdout + result.stderr).includes(secret));
     assert.deepEqual(readdirSync(fixture.temporary), []);
+    assert.deepEqual(readdirSync(fixture.unmanaged), []);
     assert.ok(existsSync(fixture.commands), 'CLI must actually invoke curl');
     const calls = readFileSync(fixture.commands, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     assert.equal(calls.length, fail ? 1 : 2);
     for (const call of calls) {
+      assert.equal(dirname(dirname(call.args[call.args.indexOf('--output') + 1])), dirname(fixture.credentialFile));
       for (const secret of [email, password, token]) assert.ok(!JSON.stringify(call).includes(secret));
     }
   });
 }
+
+test('always cleanup removes killed-smoke scratch only beneath this run credential directory', t => {
+  const fixture = cliFixture(t, { killSmoke: true });
+  const other = join(fixture.temporary, 'awsops-smoke-credentials-otherJob');
+  mkdirSync(other, { mode: 0o700 });
+  writeFileSync(join(other, 'credentials.json'), 'other-job-sentinel', { mode: 0o600 });
+  const killed = spawnSync(process.execPath, [join(root, 'scripts/v2/authenticated-smoke.mjs')], {
+    encoding: 'utf8', env: fixture.env, timeout: 5000,
+  });
+  assert.equal(killed.signal, 'SIGKILL');
+  assert.ok(existsSync(fixture.credentialFile));
+  const call = JSON.parse(readFileSync(fixture.commands, 'utf8').trim());
+  const output = call.args[call.args.indexOf('--output') + 1];
+  assert.ok(existsSync(join(dirname(output), 'login.json')));
+  assert.ok(readFileSync(join(dirname(output), 'cookies.txt'), 'utf8').includes(token));
+  const cleanup = stepNamed(deploySteps, 'Clean prepared demo credentials off the runner');
+  assert.match(cleanup.if, /always\(\)/);
+  const cleaned = spawnSync('bash', ['-euo', 'pipefail', '-c', cleanup.run], {
+    cwd: root, env: fixture.env, encoding: 'utf8', timeout: 5000,
+  });
+  assert.equal(cleaned.status, 0, cleaned.stderr);
+  assert.ok(!existsSync(dirname(output)), 'always cleanup must own the killed smoke scratch');
+  assert.deepEqual(readdirSync(fixture.unmanaged), []);
+  assert.equal(readFileSync(join(other, 'credentials.json'), 'utf8'), 'other-job-sentinel');
+  assert.deepEqual(readdirSync(fixture.temporary), ['awsops-smoke-credentials-otherJob']);
+});
 
 test('authenticated smoke CLI rejects missing credentials and unexpected arguments without curl', t => {
   for (const [contents, overrides, args, message] of [
@@ -574,6 +762,34 @@ test('credential preparation removes the file if path publication fails', t => {
   assert.deepEqual(readdirSync(fixture.temporary), []);
 });
 
+test('private Terraform init has a ten-minute budget while output and console retain two minutes', t => {
+  const fixture = preparationFixture(t, { shared: password });
+  const capture = join(fixture.directory, 'child-options.jsonl');
+  const hook = join(fixture.directory, 'capture-child-options.mjs');
+  writeFileSync(hook, `
+import childProcess from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const original = childProcess.execFile;
+childProcess.execFile = function(file, args, options, callback) {
+  if (file === 'terraform') appendFileSync(${JSON.stringify(capture)},
+    JSON.stringify({ command: args[0], timeout: options.timeout, ignoredStdio: 'stdio' in options }) + '\\n');
+  return original.call(this, file, args, options, callback);
+};
+syncBuiltinESMExports();
+`);
+  fixture.env.NODE_OPTIONS = `--import=${hook}`;
+  const result = fixture.run(stepNamed(deploySteps, 'Prepare configured demo credentials'));
+  fixture.safe(result);
+  assert.equal(result.status, 0, result.stderr);
+  const calls = readFileSync(capture, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(calls, [
+    { command: 'init', timeout: 600000, ignoredStdio: false },
+    { command: 'output', timeout: 120000, ignoredStdio: false },
+    { command: 'console', timeout: 120000, ignoredStdio: false },
+  ]);
+});
+
 for (const fail of [false, true]) {
   test(`prepared override survives tfvars cleanup and is consumed privately on ${fail ? 'login failure' : 'successful login/DB check'}`, t => {
     const fixture = preparationFixture(t, { shared: 'different-shared-Password9', override: password });
@@ -612,5 +828,34 @@ test('normal Deploy Web still initializes normally; opt-in defers init to the pr
     assert.equal(existsSync(fixture.commands), verify === 'false');
     if (verify === 'false') assert.deepEqual(JSON.parse(readFileSync(fixture.commands, 'utf8')),
       ['init', '-backend-config=backend.hcl', '-input=false']);
+  }
+});
+
+test('restore recreates only its owned files privately without following leftover symlinks', t => {
+  const fixture = preparationFixture(t);
+  const restore = stepNamed(deploySteps, 'Restore terraform.foundation backend');
+  const foreign = join(fixture.foundation, 'another-job.txt');
+  writeFileSync(foreign, 'other-job-sentinel', { mode: 0o644 });
+  for (const kind of ['public-file', 'symlink']) {
+    for (const name of ['backend.hcl', 'terraform.tfvars']) {
+      const file = join(fixture.foundation, name);
+      rmSync(file, { force: true });
+      if (kind === 'symlink') symlinkSync(foreign, file);
+      else { writeFileSync(file, 'stale config'); chmodSync(file, 0o644); }
+    }
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', restore.run], {
+      cwd: fixture.foundation, encoding: 'utf8', env: {
+        PATH: fixture.env.PATH, BRANCH: 'dev', VERIFY_DATABASE: 'true',
+        DEV_BACKEND_B64: Buffer.from('bucket="fixture"\n').toString('base64'),
+        DEV_TFVARS_B64: Buffer.from('create_demo_user=true\n').toString('base64'),
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    for (const name of ['backend.hcl', 'terraform.tfvars']) {
+      const info = lstatSync(join(fixture.foundation, name));
+      assert.ok(info.isFile());
+      assert.equal(info.mode & 0o777, 0o600);
+    }
+    assert.equal(readFileSync(foreign, 'utf8'), 'other-job-sentinel');
   }
 });

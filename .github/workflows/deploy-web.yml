@@ -241,6 +241,9 @@ jobs:
             exit 1
           fi
           umask 077
+          # Recreate only this checkout's restored files; truncation preserves old modes.
+          rm -f -- backend.hcl terraform.tfvars
+          set -o noclobber
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
           if [ "$VERIFY_DATABASE" != "true" ]; then
