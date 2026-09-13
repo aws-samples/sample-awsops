@@ -78,6 +78,9 @@ tag/digest without rebuilding. Fresh sessions and aggregate phase deadlines keep
 inside one hour. Other stacks keep `make agentcore`; `SMOKE=1` checks after provisioning.
 Dev requires the matching readiness producer and `runtime_deployment`
 output with inventory enabled; these producer dependencies must land before selecting smoke.
+The applied `agentcore.deployment_readiness_enabled` output must also be boolean true.
+The provisioner maps it to `DEPLOYMENT_READINESS_ENABLED`; missing/false keeps the probe
+disabled, even if an ambient environment variable says true.
 Other stacks retain advisory compatibility invocation when readiness is unavailable, and
 advisory structured checks when available. Invocation transport failures still fail.
 **Everything is gated by `agentcore_enabled`**
@@ -97,6 +100,9 @@ project/digest를 전달한다. 재빌드 없이 커밋 태그/digest를 다시 
 새 1시간 세션 안의 전체 deadline으로 제한한다.
 `SMOKE=1`은 provisioning 후 실행한다. dev는 대응 producer·`runtime_deployment`·활성
 inventory가 필요하고, 다른 스택은 참고용 호환 검사를 유지한다. 전송 실패는 계속 실패한다.
+적용된 `agentcore.deployment_readiness_enabled` 출력도 boolean true여야 한다.
+provisioner가 이를 `DEPLOYMENT_READINESS_ENABLED`로 전달하며, 누락·false는 주변 환경변수가
+true여도 검증 모드를 비활성화한다.
 구조화 검사는 Ops inventory 도구와 모델을 거치며 SSE payload 하나·nonce/계정·고정 boolean을
 검증한다. count는 최대 500개 표본이고 ageMinutes 0–1440은 검증 범위다. 실제 freshness는
 MCP의 `stale_after_minutes` 분류를 따르며 15분 하드코딩이 아니다. 전체 웹/워커 배포 gate나

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 196242f4589c · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3b0ab48a76d9 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -85,7 +85,9 @@ Provision diagnostics expose fixed stages/codes, catalog keys, status counts and
 events (240 resource-event cap), never raw errors/ARNs/credentials; child exit codes survive.
 Smoke is post-provision and strict on dev; other stacks keep advisory compatibility,
 with transport failures still fatal. Structured mode needs the producer, runtime_deployment
-and enabled inventory. Accept one SSE payload after metadata/comments/[DONE]; bind nonce,
+and enabled inventory. The applied agentcore.deployment_readiness_enabled output must be
+literal boolean true; missing/false disables the runtime probe and ambient
+DEPLOYMENT_READINESS_ENABLED cannot enable it. Accept one SSE payload after metadata/comments/[DONE]; bind nonce,
 account and checks. The count is a 1–500 sample; age 0–1440 is a validation bound and actual
 freshness follows MCP stale_after_minutes. Do not claim Memory/Interpreter or full release proof.
 

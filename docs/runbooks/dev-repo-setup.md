@@ -966,6 +966,8 @@ For an authorized AgentCore deployment, [Deploy AgentCore](../../.github/workflo
 first runs the private reusable migration workflow on `dev`; other branches retain
 `make migrate`. Optional `smoke=true` runs after provisioning. On dev it requires the matching
 readiness producer, `runtime_deployment`, enabled inventory and producer-classified freshness.
+The applied `agentcore.deployment_readiness_enabled` output must be boolean true; the
+provisioner keeps the runtime probe disabled for missing/false values, ignoring ambient overrides.
 Missing prerequisites fail the optional dev smoke with a fixed code, not before provisioning.
 Other stacks retain advisory invocation behavior when readiness is unavailable; structured
 checks are advisory there when available, while invocation transport failures still fail.
@@ -979,6 +981,8 @@ CloudFront 연결 주소로 요청한다. `/api/health`는 프로세스 생존 �
 dev AgentCore는 사설 재사용 migration workflow를 먼저 실행하며 다른 브랜치는
 `make migrate`를 유지한다. 선택적 `smoke=true`는 provisioning 후 실행한다. dev에서는
 대응 producer·`runtime_deployment`·활성 inventory와 producer의 freshness 판정이 필수다.
+적용된 `agentcore.deployment_readiness_enabled` 출력도 boolean true여야 하며, 누락·false이면
+주변 환경변수와 무관하게 runtime 검증 모드를 비활성화한다.
 누락은 provisioning 이전 차단이 아니라 dev smoke의 고정 오류 코드로 보고한다.
 다른 스택은 readiness가 없으면 기존 참고용 호출을 유지하며, 사용 가능한 구조화 검사도
 참고용이다. 호출 전송 실패는 계속 실패한다. 웹 역할·로그인·DB·전체 수집·워커 검증을 대체하지 않는다.
@@ -1021,7 +1025,7 @@ and verifies that its immutable digest still matches; it never rebuilds or selec
 The old combined dev CLI path is rejected; main/preview retain their existing CLI path.
 Docker credential
 scratch is private and cleaned. Leave optional AgentCore smoke off during first provisioning
-until inventory has been collected, then run the full application release verification.
+until inventory has been collected and the applied readiness flag is enabled, then run the full application release verification.
 Never count successful provisioning alone as application readiness.
 Short CLI/Terraform operations have a two-minute process limit; dev build, image push and
 provisioning have separate 35/10/45-minute limits. Aggregate deadlines also cap the build
@@ -1039,7 +1043,7 @@ setup 후 새 1시간 세션으로 `--build-only`를 실행하고, 동일 deploy
 검증된 project/digest만 `--provision-only`에 전달한다. 계정과 커밋 태그/digest를 다시
 검증하며 재빌드나 latest 선택은 하지 않는다. 기존 단일 dev CLI 경로는 거부하고
 main/preview의 CLI 경로는 유지한다. Docker 자격증명
-임시 파일은 비공개로 만들고 정리한다. 최초 provisioning에서는 수집 전 선택적 AgentCore
+임시 파일은 비공개로 만들고 정리한다. 최초 provisioning에서는 수집·readiness flag 적용 전 선택적 AgentCore
 smoke를 끄고, 수집 후 전체 앱 배포 검증을 실행한다. provisioning 성공만으로 앱을
 정상 판정하지 않는다.
 짧은 CLI/Terraform 호출은 2분, dev 빌드·push·provisioning은 각각 35/10/45분으로 제한한다.

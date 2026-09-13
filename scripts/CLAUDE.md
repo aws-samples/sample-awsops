@@ -138,6 +138,9 @@ secrets-manager) — installed by `make deps`.
   preserves child failure exit codes. Optional smoke runs after provisioning: strict on dev;
   elsewhere compatible invocation/advisory checks remain and transport errors still fail.
   Structured mode needs the readiness producer, runtime_deployment and enabled inventory.
+  Applied `agentcore.deployment_readiness_enabled` must be literal boolean true to enable
+  the runtime probe. Missing/false values disable it; ambient DEPLOYMENT_READINESS_ENABLED
+  cannot override the applied output.
   Accept one real SSE payload after optional data spacing, event/id/comments and [DONE].
   Match nonce/account/fixed checks; count is a capped sample (1–500), ageMinutes 0–1440 is
   only a validation bound. Freshness uses the producer's MCP stale_after_minutes classifier,
