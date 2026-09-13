@@ -55,6 +55,7 @@ def validate_dependency_pins(repository=None):
     for relative in (
         "scripts/v2/ci/pg8000-requirements.txt",
         "scripts/v2/workers/requirements.txt", "scripts/v2/steampipe/requirements.txt",
+        "scripts/v2/incident/requirements.txt", "scripts/v2/remediation/requirements.txt",
     ):
         lines = [line for line in (repository / relative).read_text().splitlines()
                  if not line.lstrip().startswith(("#", "//"))]
@@ -158,6 +159,8 @@ def bundle_assets(root, output, commit, scope):
             raise ValueError("Archive does not match a known hash inside the saved plan")
     if digest(root / "tfplan") != plan_hash:
         raise ValueError("Plan changed during asset validation")
+    if set(expected_zips) - set(files):
+        raise ValueError("Planned archive is missing from the prepared assets")
     manifest = {
         "schema_version": 2, "commit": commit, "scope": scope,
         "tfplan_sha256": plan_hash, "files": files,
@@ -391,6 +394,9 @@ def main():
                 flags = json.loads(flags)
             result = prepare_layers(root, flags, args.scope)
         else:
+            # That event's GITHUB_SHA identifies the default branch, not reviewed source.
+            if os.environ.get("GITHUB_EVENT_NAME") == "pull_request_target":
+                raise ValueError("Ambiguous reviewed-source context")
             fn = bundle_assets if args.command == "pack" else restore_assets
             result = fn(root, root / "tfassets.tar.gz", os.environ.get("GITHUB_SHA", ""), args.scope)
         print(json.dumps(result))

@@ -97,6 +97,21 @@ class TerraformAssetTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.pack()
 
+    def test_missing_known_planned_zip_fails_before_replacing_a_bundle(self):
+        self.pack()
+        previous = self.archive.read_bytes()
+        (self.plan / ".build/function.zip").unlink()
+        with self.assertRaises(ValueError):
+            self.pack()
+        self.assertEqual(self.archive.read_bytes(), previous)
+
+    def test_plan_without_known_zip_hashes_can_pack_non_zip_inputs(self):
+        (self.plan / ".build/function.zip").unlink()
+        self.plan_json["planned_values"]["root_module"]["resources"] = [
+            {"values": {"filename": ".build/deferred.zip"}}
+        ]
+        self.assertEqual(self.pack()["files"], 1)
+
     def test_failed_prepare_invalidates_previous_marker_before_install(self):
         marker = self.apply / ".build/.ci-prepared.json"
         marker.parent.mkdir()
@@ -373,11 +388,13 @@ module.restore_assets(root, Path(sys.argv[3]), sys.argv[4], "full")
                 marker.write_text(json.dumps(value))
                 self.module.validate_layer(self.plan, "inv_layer")
 
-    def test_all_three_pg8000_pin_locations_must_agree(self):
+    def test_all_five_shared_layer_pg8000_pin_locations_must_agree(self):
         paths = (
             "scripts/v2/ci/pg8000-requirements.txt",
             "scripts/v2/workers/requirements.txt",
             "scripts/v2/steampipe/requirements.txt",
+            "scripts/v2/incident/requirements.txt",
+            "scripts/v2/remediation/requirements.txt",
         )
         repository = self.root / "repository"
         for path in paths:
@@ -458,3 +475,21 @@ module.restore_assets(root, Path(sys.argv[3]), sys.argv[4], "full")
                 with self.assertRaises(ValueError):
                     self.module.restore_assets(self.apply, self.archive, COMMIT, "full")
                 self.module.restore_assets(self.apply, self.archive, COMMIT, scope)
+
+    def test_cli_rejects_ambiguous_trigger_before_pack_or_restore_but_keeps_dispatch(self):
+        root = self.root / "terraform/foundation"
+        root.mkdir(parents=True)
+        for command, function in (("pack", "bundle_assets"), ("restore", "restore_assets")):
+            for event, expected in (("pull_request_target", 1), ("workflow_dispatch", 0)):
+                with self.subTest(command=command, event=event), \
+                        mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": event, "GITHUB_SHA": COMMIT}), \
+                        mock.patch.object(Path, "cwd", return_value=root), \
+                        mock.patch.object(sys, "argv", ["ci_tf_assets.py", command, "--scope", "full"]), \
+                        mock.patch.object(sys, "stderr", io.StringIO()), \
+                        mock.patch.object(sys, "stdout", io.StringIO()), \
+                        mock.patch.object(self.module, function, return_value={"files": 0}) as operation:
+                    self.assertEqual(self.module.main(), expected)
+                    if event == "pull_request_target":
+                        operation.assert_not_called()
+                    else:
+                        operation.assert_called_once_with(root, root / "tfassets.tar.gz", COMMIT, "full")

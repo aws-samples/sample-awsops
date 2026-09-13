@@ -140,10 +140,15 @@ These are reuse-critical — re-read before extending the backbone.
   the authoritative `scripts/v2/ci/pg8000-requirements.txt` lock: wheel hashes, no bytecode,
   normalized modes/timestamps. `CI_ASSETS_READY=true` validates the restored layer instead.
   Prepare invalidates old markers and records installed-file hashes plus the import closure.
-  To bump pg8000, update the lock, verified wheel hashes and both worker/inventory requirements;
-  Terraform rebuild triggers include the lock and installer. No bare-pip fallback remains.
+  To bump pg8000, update the lock, verified wheel hashes and all four shared-layer requirements:
+  `scripts/v2/{workers,steampipe,incident,remediation}/requirements.txt`. The validator requires
+  these five pins to match. Terraform rebuild triggers include the lock and installer; neither
+  Lambda layer has a bare-pip fallback. The separate Steampipe container still has its own
+  `scripts/v2/steampipe/Dockerfile` pin/installer, outside this Lambda lock and validator.
   워커·인벤토리 레이어는 같은 lock과 설치기를 사용하며 CI 복원본은 재설치하지 않고 검사합니다.
-  버전 변경은 lock·검증된 wheel 해시·두 requirements를 함께 수정합니다.
+  버전 변경은 lock·검증된 wheel 해시·workers/steampipe/incident/remediation의 네 requirements를
+  함께 수정하며 다섯 pin이 같아야 합니다. 별도 Steampipe 컨테이너의 Dockerfile pin·설치기는
+  이 Lambda lock·검사 범위 밖입니다.
 - **Reuse the existing `aws_security_group.service`** for the worker Lambdas + Fargate. The P1c
   Aurora SG uses inline ingress that already allows `service`; adding a standalone SG/ingress rule
   causes a perpetual diff. / 기존 `aws_security_group.service` 재사용 — Aurora SG 인라인 ingress가

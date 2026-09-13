@@ -1259,14 +1259,19 @@ runner에 없으면 apply 중 자동 재빌드를 기대하지 말고 준비·�
 Both Terraform layer builds and CI preparation use the same hash-locked installer; CI-prepared
 layers are checked without reinstalling when `CI_ASSETS_READY=true`. A failed prepare invalidates
 its old marker; validation checks the import closure and all installed file hashes.
-Pack checks each ZIP against a known hash inside `terraform show -json tfplan`, then authenticates
-plan/SHA/scope, paths, modes and hashes with `TF_PLAN_ENC_KEY` HMAC. Unknown ZIP hashes fail closed.
+Pack requires every ZIP with a known hash inside `terraform show -json tfplan`, verifies its bytes,
+then authenticates plan/SHA/scope, paths, modes and hashes with `TF_PLAN_ENC_KEY` HMAC.
+Missing planned ZIPs and unknown ZIP hashes fail closed; deferred archives without known hashes
+are excluded. Pack/restore reject `pull_request_target` because its `GITHUB_SHA` does not identify
+reviewed source. Existing explicit plan/apply dispatches retain their SHA binding.
 The 0600 `tfassets.tar.gz` is private scratch, like the plaintext plan. It can contain rendered
 Cognito signing keys and **must never be uploaded**. The utility has no upload path; the integrating
 workflow must encrypt it and clean plaintext scratch. No workflow is activated by this change.
 Terraform과 CI는 같은 해시 고정 설치기를 사용하며 CI asset은 재설치 없이 검사합니다.
 기존 marker는 변경 전에 무효화하고 설치 파일·import 의존성을 검증합니다.
-ZIP의 계획 내부 해시를 확인한 뒤 HMAC을 계산합니다. 평문 tar에는 렌더링된 서명키가 포함될
+계획 내부 해시가 알려진 ZIP은 모두 존재하고 일치해야 하며, 해시 미확정 지연 archive는 제외합니다.
+검토 소스와 GITHUB_SHA가 다른 pull_request_target은 pack/restore에서 거부합니다.
+ZIP을 확인한 뒤 HMAC을 계산합니다. 평문 tar에는 렌더링된 서명키가 포함될
 수 있으므로 0600 비공개 임시 파일로만 취급하고 호출 workflow가 암호화·정리해야 합니다.
 
 From the repository root, test with `python3 -m pytest scripts/v2/test_ci_tf_assets.py -q`.
@@ -1289,9 +1294,14 @@ Missing/mismatched authentication, plan or content requires a fresh reviewed pla
 not rebuilding under an old approval. See `scripts/v2/ci_tf_assets.py`,
 `scripts/v2/ci/pg8000-requirements.txt` and `scripts/v2/test_ci_tf_assets.py`.
 Key rotation also invalidates existing signed bundles. Dependency updates must change the lock,
-its verified wheel hashes and both worker/inventory pg8000 pins; see [worker build inputs](../reference/06-workers.md).
-시크릿 교체 시 기존 bundle도 무효화됩니다. 의존성 변경은 lock·wheel 해시·두 requirements pin을
-함께 갱신하며 불일치는 새 검토 계획/bundle로 해결합니다. 제품 변경 경계는 ADR-005를 따릅니다.
+its verified wheel hashes and the four shared-layer pins in
+`scripts/v2/{workers,steampipe,incident,remediation}/requirements.txt`; the validator checks all five.
+The separate `scripts/v2/steampipe/Dockerfile` image pin/installer is outside the Lambda lock.
+See [worker build inputs](../reference/06-workers.md).
+시크릿 교체 시 기존 bundle도 무효화됩니다. 의존성 변경은 lock·wheel 해시와
+workers/steampipe/incident/remediation의 네 requirements pin을 함께 갱신하며 다섯 pin을 검사합니다.
+별도 Steampipe Dockerfile의 이미지 pin·설치기는 Lambda lock 밖입니다.
+불일치는 새 검토 계획/bundle로 해결합니다. 제품 변경 경계는 ADR-005를 따릅니다.
 
 Related ADRs / 관련 ADR: **ADR-002** (edge authentication/private HTTPS boundaries),
 **ADR-005** (operator CI migration versus product AWS-resource mutation/autonomy), and
