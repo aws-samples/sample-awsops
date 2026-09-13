@@ -116,10 +116,19 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   from at most two recent PostgreSQL files. Partial/unavailable reads are advisory and retain
   independent evidence; no DB connection, new IAM grants, AWS writes or readiness bypass
   (ADR-005 read-only boundary). See [activation, fields and limits](../runbooks/dev-repo-setup.md#dev-db-diagnostics).
+  The same optional read projection batches seven IAM-auth outcome metrics and three pressure
+  metrics for the configured first instance in one bounded request; metadata exposes configured
+  min/max ACUs. Clean empty metric reads are available with missing data, not healthy outcomes.
+  Server lifecycle text is explicitly unverified and forgeable; auth-success logs require
+  log_connections, whose effective value is unknown. No timeout/auth/capacity setting changes.
   기본 비활성 수동 dev plan 진단이며 같은 플래그·이벤트·리전 조건으로 암호화 plan 업로드 후 실행한다.
   제한된 웹 오류/timing, 서비스 대상 구성 비교, 최근 PostgreSQL 파일 최대 2개의 severity-filtered
   tail을 고정된 안전한 JSON으로 공개 Actions 로그/요약에 게시한다. 부분/실패 조회는 참고용이며
   독립 결과를 유지한다. ADR-005 읽기 전용 범위로 DB 연결·새 IAM 권한·AWS 변경·준비 검사 우회가 없다.
+  같은 선택적 읽기 투영에서 설정된 첫 인스턴스의 IAM 인증 지표 7개·부하 지표 3개를 제한된 단일
+  요청으로 읽고 설정된 최소/최대 ACU를 표시한다. 정상 빈 지표 조회는 available/missing이며
+  정상 판정이 아니다. 서버 lifecycle 텍스트는 미검증·위조 가능하며 인증 성공 로그는 실제 설정이
+  미확인인 log_connections가 필요하다. timeout·인증·용량 설정은 바꾸지 않는다.
 - `terraform/foundation/ci-migrations.tf`, `.github/workflows/deploy-migrations.yml`,
   `scripts/v2/ci/run-migration.mjs` — default-off manual development migration task,
   scoped secret-read IAM and verified private execution (ADR-005 operator boundary).

@@ -39,8 +39,8 @@ secrets-manager) — installed by `make deps`.
   is a consistency check, not authorization or same-account stack validation.
   Use only the fixed read-only CLI verbs. Run after encrypted plan upload; publish fenced safe
   JSON (including posture booleans) to the public Actions log/step summary.
-  Independently retain web logs, configuration comparisons and an RDS server-log tail with
-  partial/unavailable markers; missing resources/permissions are advisory, not readiness gates.
+  Independently retain all four sections: `logs`, `configuration`, `server_logs`, `rds_metrics`.
+  Partial/unavailable reads are advisory, not readiness gates.
   `no_matching_events` labels empty accepted samples; `no_error_inference=true` prohibits health
   conclusions from any status's zero counts. Interpretation requires a known DB probe within
   the returned one-hour window. A successful task-definition read stays source-available even
@@ -61,11 +61,25 @@ secrets-manager) — installed by `make deps`.
   loss, and PostgreSQL slot/client limits are recognized. Metadata is the service target definition, not running
   revision proof; credential env/secrets names and environment-file presence are declarations
   only. SG/inline connect-Allow matches do not prove effective access under SCPs/boundaries.
-  Emit fixed categories/counts/timestamps/booleans/nulls only; withhold raw messages, credentials
+  Emit fixed labels/bounded metric values/counts/timestamps/booleans/nulls only; withhold raw messages, credentials
   and ARNs, including Terraform stderr. Unset/false is off; no writes or new IAM grants.
   Early input/context/identity failure returns only `{"status":"unavailable"}` with nonzero exit.
   Discarded milestones or regex inputs shortened to 4,096 characters mark samples partial.
   Read-only violations escape partial-read handlers and fail with a fixed reason, never raw args.
+  One bounded CloudWatch `get-metric-data` request adds seven IAM-auth Sum series plus CPU
+  Average, free-memory Minimum and capacity Average, scoped to the configured first instance.
+  Preserve fixed IDs, status/missing/invalid flags and at most 60 minute points each; never
+  remote labels/messages/tokens. Instance-wide metrics cannot attribute a probe outcome.
+  Metric read status is separate from presence: clean Complete+empty is available/missing;
+  Forbidden/InternalError is unavailable, PartialData or malformed/degraded reads are partial.
+  `read_ok` describes the response envelope, not an auth outcome.
+  Expose configured min/max ACUs as bounded numbers or null; change no capacity/auth/timeout setting.
+  Every server lifecycle count requires the web user in a recognized RDS prefix and anchored
+  PG messages, separately from error categories. This rejects bare/mid-line tokens, but
+  multiline SQL with a full prefix and RAISE LOG can forge matching text. Always retain
+  `lifecycle_source_integrity=unverified_text`, `lifecycle_injection_possible=true` and unknown
+  probe outcome. Authenticated/authorized messages require log_connections (PostgreSQL default
+  off; not enabled here); the effective setting is uninspected, `log_connections_enabled=null`.
   Only this optional workflow step tolerates failure (eight-minute timeout); DNS/CI/readiness
   gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
@@ -74,7 +88,8 @@ secrets-manager) — installed by `make deps`.
   workflow fixtures, real no-provider plans and a localhost state backend verify deployment
   gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active
-  rollout's public zone name/ID/NS; never raw configuration, ARNs, account IDs, state or plans.
+  rollout's public zone name/ID/NS. Diagnostics also publish bounded numeric metric values;
+  never raw configuration, ARNs, account IDs, state or plans.
 - `v2/terraform-test.sh` — Terraform 1.15.7 validate/mock tests in a disposable tracked-file
   copy, `init -backend=false`, fresh data dir, no deployment credentials or real backend.
   `v2/requirements-test.txt` declares pytest/PyYAML; the shared merge script runs Node smoke tests.

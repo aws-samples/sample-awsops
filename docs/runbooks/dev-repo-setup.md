@@ -478,7 +478,7 @@ bounds; otherwise repeat the existing authorized probe before collecting a new s
 안에 수동 실행하고 시각이 반환된 범위에 포함되는지 확인한다. 범위 밖이면 기존 승인된 probe를
 다시 수행한 뒤 새 표본을 수집한다.
 
-The output has independent `logs`, `configuration`, and `server_logs` sections.
+The output has independent `logs`, `configuration`, `server_logs`, and `rds_metrics` sections.
 Each reports `status=available|partial|unavailable`; a missing log group, cluster, service,
 or inline role policy does not discard other successful reads. A truncated/failed read with
 retained data is partial; malformed web records/timings also mark that sample partial.
@@ -488,17 +488,17 @@ one of their source reads succeeded. Zero counts in **any status, including avai
 are not proof of no errors or a healthy database. `logs.no_matching_events` means no accepted
 matching events in the returned pages (`null` if no page was read).
 `logs.no_error_inference=true` explicitly prohibits an error-free/healthy inference.
-Only fixed labels, booleans,
+Only fixed labels, booleans, bounded metric values,
 counts and timestamps are published; raw messages, resource names/ARNs, host details and
 credentials are withheld. Terraform stderr is discarded for this step; AWS error details
 are captured and replaced with safe availability indicators.
 An early source/flag/target, input, region or identity failure instead returns only
-`{"status":"unavailable"}` and a nonzero helper exit; the three sections are absent.
+`{"status":"unavailable"}` and a nonzero helper exit; the four sections are absent.
 Invalid invocation context or region is rejected before the helper calls AWS.
 A programming violation of the read-only allowlist instead adds the fixed
 `reason="read_only_violation"` and exits nonzero; partial-read handlers do not swallow it.
 
-출력의 `logs`, `configuration`, `server_logs`는 독립적이며 각각
+출력의 `logs`, `configuration`, `server_logs`, `rds_metrics`는 독립적이며 각각
 `status=available|partial|unavailable`을 표시한다. 로그 그룹·클러스터·서비스·inline 역할
 정책이 없더라도 다른 성공 결과는 유지한다. 일부 데이터가 남은 조회 제한/실패는 partial이며
 잘못된 웹 기록/timing도 해당 표본을 partial로 표시한다. 입력이 부족한 구성 필드는 `null`이다.
@@ -506,9 +506,9 @@ A programming violation of the read-only allowlist instead adds the fixed
 계산할 수 없는 비교/건수를 구분한다. **available을 포함한 모든 상태**에서 0건은 오류가 없거나
 DB가 정상이라는 증거가 아니다. `logs.no_matching_events`는 읽은 페이지에 유효한 대상 이벤트가
 없다는 뜻이며 페이지를 읽지 못했으면 `null`이다. `logs.no_error_inference=true`는 오류 없음/정상
-추론을 명시적으로 금지한다. 고정 분류·boolean·건수·시각만 공개하며 로그 원문·리소스 이름/ARN·호스트 상세·자격증명은
+추론을 명시적으로 금지한다. 고정 분류·boolean·범위가 제한된 지표 값·건수·시각만 공개하며 로그 원문·리소스 이름/ARN·호스트 상세·자격증명은
 숨긴다. 이 단계의 Terraform stderr는 폐기하고 AWS 오류 상세는 안전한 가용성 표시로 대체한다.
-초기 이벤트/플래그/대상·입력·리전·identity 실패는 세 절 없이 `{"status":"unavailable"}`만
+초기 이벤트/플래그/대상·입력·리전·identity 실패는 네 절 없이 `{"status":"unavailable"}`만
 출력하며 helper는 nonzero로 종료한다. 잘못된 실행 맥락이나 리전은 helper의 AWS 호출 전에 거부한다.
 읽기 전용 허용 목록을 위반한 코드 오류는 고정 `reason="read_only_violation"`을 추가하고
 nonzero로 종료하며 부분 조회 처리기가 이를 숨기지 않는다.
@@ -616,6 +616,107 @@ that sample partial; counters describe only the inspected prefixes.
 정규식 검사는 ping 오류/서버 로그 줄의 처음 4,096자로 제한한다. 줄이면
 `logs.classification_truncated` 또는 `server_logs.tail_truncated`와 partial을 표시하며
 건수는 검사한 접두 구간만 설명한다.
+
+`server_logs.lifecycle_counts` separately observes fixed PostgreSQL message starts:
+`authenticated`, `authorized`, `client_disconnected_during_auth`, `broken_pipe`, and
+`connection_reset`. Every category requires the web user in a recognized RDS-shaped prefix;
+authentication/authorization also needs an exact web identity in a LOG message. These filters
+reject bare and mid-line keyword matches, but **a full synthetic prefix in multiline SQL or
+`RAISE LOG` can forge the same text**. Accordingly, `lifecycle_source_integrity=unverified_text`
+and `lifecycle_injection_possible=true` always accompany the counts. They remain advisory;
+`probe_outcome` is always `unknown`. Counts can overlap error/non-error counters; do not sum them.
+
+The `authenticated`/`authorized` messages require `log_connections` to be enabled. PostgreSQL
+defaults it off, and this repository does not enable it. The helper does not inspect the
+effective setting: `log_connections_enabled=null` explicitly means unknown. Zero counts do
+not prove absent connections or failed/successful authentication. No logging parameter is changed.
+
+`server_logs.lifecycle_counts`는 PostgreSQL 메시지 시작 부분의 고정 패턴을 별도로 관측한다:
+`authenticated`, `authorized`, `client_disconnected_during_auth`, `broken_pipe`,
+`connection_reset`. 모든 분류에 RDS 형태 접두부의 web 사용자가 필요하며 인증/인가 LOG에는
+메시지에도 정확한 web identity가 있어야 한다. 접두부 없는 줄·중간 키워드는 거부하지만
+**여러 줄 SQL의 완전한 가짜 접두부나 `RAISE LOG`는 같은 텍스트를 위조할 수 있다**.
+따라서 `lifecycle_source_integrity=unverified_text`·`lifecycle_injection_possible=true`를 항상
+표시하며 건수는 참고용이고 `probe_outcome`은 항상 `unknown`이다. 오류/비오류 건수와 겹칠 수
+있으므로 합산하지 않는다.
+
+`authenticated`/`authorized` 메시지는 `log_connections` 활성화가 필요하다. PostgreSQL 기본값은
+off이며 이 저장소는 이를 활성화하지 않는다. helper는 실제 설정을 조회하지 않으므로
+`log_connections_enabled=null`로 미확인을 명시한다. 0건은 연결 부재나 인증 성공/실패의 증거가
+아니며 로깅 파라미터를 변경하지 않는다.
+
+**Configured-instance metrics:** one read-only `GetMetricData` request selects the configured
+`<project>-aurora-1` using `AWS/RDS` / `DBInstanceIdentifier`. The ten fixed IDs below share
+60-second buckets over the hour ending at the last completed minute when diagnostics starts.
+`window_start_ms` / `window_end_ms` expose that `[start,end)` range; the current incomplete
+minute and later publications may be missing. The request permits at most 1,000 datapoints,
+does not follow `NextToken`, and publishes at most 60 timestamp/value pairs per series.
+
+**설정된 인스턴스 지표:** 읽기 전용 `GetMetricData` 한 번으로 `AWS/RDS` / `DBInstanceIdentifier`의
+설정된 `<project>-aurora-1`을 선택한다. 아래 고정 ID 10개는 진단 시작 시 마지막으로 완료된 분까지
+최근 1시간을 60초 bucket으로 조회한다. `window_start_ms` / `window_end_ms`가 `[start,end)`를
+표시하며 진행 중인 분이나 늦게 게시된 데이터는 없을 수 있다. 요청은 최대 1,000 datapoint이며
+`NextToken`을 따라가지 않고 series당 최대 60개 시각/값 쌍만 공개한다.
+
+| ID | AWS/RDS metric / 지표 | Statistic / 통계 |
+|---|---|---|
+| `iam_requests` | `IamDbAuthConnectionRequests` | Sum |
+| `iam_success` | `IamDbAuthConnectionSuccess` | Sum |
+| `iam_failure` | `IamDbAuthConnectionFailure` | Sum |
+| `iam_invalid_token` | `IamDbAuthConnectionFailureInvalidToken` | Sum |
+| `iam_permissions` | `IamDbAuthConnectionFailureInsufficientPermissions` | Sum |
+| `iam_throttling` | `IamDbAuthConnectionFailureThrottling` | Sum |
+| `iam_server_error` | `IamDbAuthConnectionFailureServerError` | Sum |
+| `cpu` | `CPUUtilization` | Average |
+| `free_memory` | `FreeableMemory` | Minimum |
+| `capacity` | `ServerlessDatabaseCapacity` | Average |
+
+`series` preserves each requested ID, its fixed metric/statistic, allowed `status_code`
+(`Complete`, `PartialData`, `InternalError`, `Forbidden`; null if absent, `Unknown` if invalid),
+and validated `points`. `missing` means no valid points, not zero activity. A genuine numeric
+zero stays zero. `invalid_data`, `messages_present`, `unexpected_results`, and `truncated`
+retain degradation without remote labels, messages or pagination tokens. Unpaired arrays are
+rejected; duplicates/invalid/out-of-window points cannot establish completeness. `Complete`
+means returned published data, not continuous minute coverage or success of this probe.
+`read_ok` records receipt of a valid response envelope, independently of data presence.
+Series `status` is available for clean `Complete` (including empty), unavailable for absent,
+`Forbidden` or `InternalError` results, and partial for `PartialData` or malformed/degraded
+results. The summary is available when all series reads are available without global degradation,
+unavailable when all are unavailable, and partial otherwise. Ten clean empty results therefore
+mean available reads with `missing=true`, not a healthy database. Emptiness can also mean an
+unpublished metric, unsupported dimension, or delayed publication; absence is never filled with zero.
+
+`series`는 요청 ID, 고정 지표/통계, 허용 `status_code`와 검증한 `points`를 유지한다.
+상태는 `Complete`, `PartialData`, `InternalError`, `Forbidden`이며 누락 시 null, 잘못된 값은
+`Unknown`이다. `missing`은 유효한 point가 없다는 뜻이지 활동 0이 아니다. 실제 숫자 0은 유지한다.
+`invalid_data`·`messages_present`·`unexpected_results`·`truncated`로 불완전성을 알리되 원격
+라벨·메시지·페이지 토큰은 출력하지 않는다. 길이가 다른 배열은 거부하며 중복/잘못된/범위 밖 point로
+완전성을 주장하지 않는다. `Complete`도 게시된 데이터 반환 상태이며 매분 coverage나 이 probe의 성공이 아니다.
+`read_ok`는 데이터 존재와 별개로 유효한 응답 envelope 수신을 기록한다. Series `status`는 정상
+`Complete`이면 빈 결과도 available, 누락·`Forbidden`·`InternalError`이면 unavailable,
+`PartialData`나 잘못된/불완전한 결과이면 partial이다. 전부 available이고 전체 응답의 불완전성이
+없으면 요약도 available, 전부 unavailable이면 unavailable, 그 외는 partial이다.
+정상 빈 결과 10개는 available 조회와 `missing=true`를 뜻하며 DB 정상 판정이 아니다.
+미게시 지표·지원되지 않는 dimension·게시 지연으로도 비어 있을 수 있고 누락을 0으로 채우지 않는다.
+
+IAM counters aggregate all IAM clients on the configured instance. Positive failure-category
+points identify observed instance-level failures, but `probe_outcome=unknown` and
+`no_error_inference=true` prohibit attributing them to one connection or treating missing/zero
+data as healthy. CPU is percent, memory bytes and capacity ACUs. Configuration additionally
+projects numeric `serverless_min_acu` / `serverless_max_acu`, or null when unavailable/invalid.
+Pressure is a hypothesis to compare with the known probe window, not authority to change capacity,
+timeouts or authentication. The existing readiness gates remain required.
+
+IAM 건수는 설정된 인스턴스의 모든 IAM client를 집계한다. 양의 실패 분류 point는 인스턴스에서 관측된
+실패지만 `probe_outcome=unknown`·`no_error_inference=true`이므로 개별 연결에 귀속하거나 누락/0을
+정상으로 판정하지 않는다. CPU는 %, 메모리는 byte, 용량은 ACU다. 구성의 `serverless_min_acu` /
+`serverless_max_acu`는 검증된 숫자이며 없거나 잘못되면 null이다. 부하는 알려진 probe 시간과 비교할
+가설이며 용량·timeout·인증 변경 권한이 아니다. 기존 준비 상태 검사는 계속 필수다.
+
+Sources / 출처: [IAM-auth metrics](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/UsingWithRDS.IAMDBAuth.Troubleshooting.html),
+[Aurora dimensions](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/dimensions.html),
+[instance metrics](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/Aurora.AuroraMonitoring.Metrics.html),
+[GetMetricData status and bounds](https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_GetMetricData.html).
 
 **Configuration:** comparisons describe the ECS service's target task definition, not every
 running revision. `service_running_count` can include old and new revisions during deployment.

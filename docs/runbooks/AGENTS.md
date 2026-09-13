@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b33272d08033 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7d6bf6646dab · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -15,8 +15,8 @@ legacy runbook's steps as the current operational path).
   causes no reads; state-account/STS is consistency only, not authorization or stack isolation.
   Run after encrypted plan upload. Opt-in publishes fenced safe JSON including posture booleans
   to the public Actions log/summary; only this optional step tolerates failure.
-  Keep DNS/CI/readiness gates required and the exact existing read-only CLI verb allowlist.
-  Retain log/config/server evidence independently: partial for retained capped/failed reads,
+  Keep DNS/CI/readiness gates required and the fixed read-only CLI verb allowlist.
+  Retain all four sections independently (`logs`, `configuration`, `server_logs`, `rds_metrics`): partial for retained capped/failed reads,
   separate unavailable source and unknown derived fields. Early failure is only
   `{"status":"unavailable"}`. Never publish raw logs/filenames or Terraform/AWS errors.
   Web logs use a fixed one-hour oldest-first 3 × 100 sample and JSON `evt` OR; timing keys are
@@ -34,6 +34,19 @@ legacy runbook's steps as the current operational path).
   Successful task-definition reads remain source-available for missing/malformed web containers;
   use `web_container_found` and derived-unknown flags. Discarded milestones and regex inputs
   shortened to 4,096 characters make samples partial; read-only violations are not swallowed.
+
+- The configured first instance's metrics are an optional manual-plan read, not a tuning action.
+  Its single CloudWatch get-metric-data batch contains seven IAM-auth Sum metrics and CPU
+  Average, free-memory Minimum, capacity Average. Limit each series to 60 minute points and
+  expose fixed IDs/status/missing/invalid flags; suppress remote labels/messages/page tokens.
+  Show configured ACU minimum/maximum as numbers or null. `read_ok` means an accepted envelope.
+  Available/partial/unavailable describes the read independently of data presence: clean
+  Complete+empty is available/missing, Forbidden/InternalError unavailable, degraded reads partial.
+  Lifecycle counts have no provenance guarantee: full-prefix SQL and RAISE LOG can forge them.
+  Always mark lifecycle_source_integrity=unverified_text, lifecycle_injection_possible=true
+  and unknown probe outcome.
+  Genuine auth-success logging needs log_connections, which defaults off in PostgreSQL and
+  is not enabled here. Its effective value is uninspected and reported as null. Never tune from these counts.
 - `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is default-off. The manual
   `deploy-migrations.yml` + `run-migration.mjs` controller starts one verified private
   ARM64 task. Its IAM reads exact Aurora secrets; DB DDL uses those credentials.
@@ -60,7 +73,7 @@ legacy runbook's steps as the current operational path).
   permission. No private-DNS exception. Authorized cutovers set `allow_dns_changes=true` on
   both plan and apply; documentation is not authorization.
 - Public summaries permit certificate suffixes, publication, change counts/addresses and
-  active-rollout public zone name/ID/NS. Never expose full ARNs, account IDs or raw
+  active-rollout public zone name/ID/NS; diagnostics permit bounded metric values. Never expose full ARNs, account IDs or raw
   configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
   CLI; health proves liveness only. Verify DB/auth separately before service A publication.
 - From the repo root, `bash scripts/v2/terraform-test.sh` runs Terraform 1.15.7 in an isolated
