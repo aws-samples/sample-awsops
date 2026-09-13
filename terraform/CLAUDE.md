@@ -41,9 +41,9 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
 
 ## Flag Gates
 - `CI_READONLY_RUNTIME_DEV=true` generates ignored `ci-runtime.auto.tfvars.json`, enabling
-  inventory/AgentCore/workers, host-only inventory and the default-off `ci_readiness_enabled`
-  capability on dev. It assigns the managed demo user only to deployment-verifiers, with
-  no administrator or IAM role. Default-false
+  inventory/AgentCore/workers and host-only inventory on dev. A full activation first
+  verifies the deployed login and host registry. Saved profile metadata enforces read-only
+  flags even without a discovery rollout. Default-false
   `ci_runtime_rollout` records explicit private-DNS activation in the saved plan.
 - `existing_cf_certificate_arn` / `existing_alb_certificate_arn` are nullable string inputs:
   JSON null retains Terraform-managed certificates; the string `"null"` does not. External

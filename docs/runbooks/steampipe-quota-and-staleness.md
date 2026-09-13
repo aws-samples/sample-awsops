@@ -300,7 +300,7 @@ authorization may a fresh reviewed plan and its apply dispatch **both** set
 `allow_dns_changes=true`. Do not exercise that permission while ALLDNS is active or add a
 private-DNS exception.
 
-1. limiter/concurrency 값을 이전 보수적 값으로 되돌리거나 `steampipe_enabled=false`로 되돌린 saved plan을 만든다.
+1. 런타임을 유지한 채 limiter/concurrency 또는 이미지 digest를 이전 검토 값으로 되돌린 계획을 만든다. 전체 종료는 [runtime retirement](runtime-foundation.md#retirement--종료)의 명시적 절차로 별도 검토한다.
 2. controller-approved `apply tfplan`으로 적용한다.
 3. 필요한 경우 현재 catalog를 유지한다. Phase 2 이후의 별도 catalog cutover가 있다면 이전 target set을 복원한다.
 4. Aurora `inventory_resources`, `inventory_sync_runs`, 또는 migration을 삭제·truncate하지 않는다.
@@ -314,3 +314,6 @@ Phase 1 alone does not retire any direct AgentCore target, so it has no AgentCor
 - Approved design: `docs/superpowers/specs/2026-08-31-steampipe-quota-safe-aurora-mcp-design.md`
 - Renderer: `scripts/v2/steampipe/spc_render.py`
 - Sync Lambda: `scripts/v2/steampipe/sync_lambda.py`
+
+Dev runtime deletion requires the explicit retirement marker described in the runtime
+runbook. Ordinary rollback retains services/data and restores prior reviewed settings.

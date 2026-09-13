@@ -410,7 +410,7 @@ Then register the generated files (base64) as repo secrets:
 |---|---|
 | all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (plan-artifact encryption) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
 | production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` |
-| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` |
+| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` / `AWS_ACCOUNT_ID_DEV` |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
 
 ```bash
@@ -433,9 +433,9 @@ Nonsecret dev repository variables are `DOMAIN_NAME_DEV` / `HOSTED_ZONE_NAME_DEV
 and `CI_DB_DIAGNOSTICS_DEV` (`false`/unset by default; manual advisory read-only diagnostics only).
 Runtime activation also uses default-off `CI_READONLY_RUNTIME_DEV` and verified
 `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV`. These select reviewed deployment
-behavior; account identifiers and credentials stay in secrets. Runtime activation grants
-only the deployment-verifiers app capability to the managed demo identity, never admins or
-an IAM role. A fresh login is needed for updated group claims.
+behavior; account identifiers and credentials stay in secrets. Full activation requires
+real login/DB/host-registry preflight. Verifier-group provisioning belongs to the later
+full-release integration and is not granted by this foundation change.
 런타임 활성화에는 기본 비활성 `CI_READONLY_RUNTIME_DEV`와 검증된 두 이미지 digest
 변수를 추가로 사용하며 계정 식별자와 자격증명은 시크릿에 둡니다.
 dev의 일반 저장소 변수는 도메인/존 이름 쌍, 기본 `preserve`인 인증서 모드, 기본 `false`인
@@ -783,7 +783,7 @@ plan for a missing repository; do not disable this check or expand the role.
 ### 5. Deploy while DNS changes are deferred / DNS 변경 보류 상태의 배포
 
 `Terraform` dispatch defaults to `mode=plan`, `allow_dns_changes=false` and
-`domain_rollout=false`, `runtime_rollout=false`. See [runtime activation](runtime-foundation.md)
+`domain_rollout=false`, `runtime_rollout=false`, `runtime_retire=false`. See [runtime activation](runtime-foundation.md)
 for the separate dev private-DNS profile. Ordinary full plans keep the existing broad DNS policy:
 Cloud Map/registered ECS changes require explicit DNS permission on both plan and apply.
 For a dev service-domain rollout, use the [staged domain runbook](dev-domain-rollout.md)

@@ -27,12 +27,12 @@ name: Terraform
 on:
   pull_request:
     branches: [main, dev]
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
     # The workflow file itself is in the path filter so a workflow change
     # self-tests with a real plan on the branch it lands on.
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   workflow_dispatch:
     inputs:
       mode:
@@ -50,7 +50,11 @@ on:
         type: boolean
         default: false
       runtime_rollout:
-        description: "Plan only: dev/full core-runtime rollout, allowing only its private discovery DNS"
+        description: "Plan only: development/preview private runtime discovery rollout"
+        type: boolean
+        default: false
+      runtime_retire:
+        description: "Plan only: explicitly retire dev runtime resources; destroys retained runtime data/images"
         type: boolean
         default: false
       publish_service_dns:
@@ -184,6 +188,7 @@ jobs:
           STEAMPIPE_IMAGE_DIGEST_DEV: ${{ vars.STEAMPIPE_IMAGE_DIGEST_DEV }}
           WORKER_IMAGE_DIGEST_DEV: ${{ vars.WORKER_IMAGE_DIGEST_DEV }}
           RUNTIME_ROLLOUT: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_rollout }}
+          RUNTIME_RETIRE: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_retire }}
           PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
           ADVISORY: ${{ github.event_name != 'workflow_dispatch' }}
         run: |
@@ -191,6 +196,33 @@ jobs:
           tracked=$(git ls-files -- ci-runtime.auto.tfvars.json)
           [ -z "$tracked" ] || { echo "::error::Runtime CI override must not be tracked"; exit 1; }
           python3 ../../scripts/v2/ci_runtime_policy.py overrides
+
+      - uses: actions/setup-node@v4
+        if: steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READONLY_RUNTIME_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
+        with:
+          node-version: 20
+
+      - name: Prepare private host verification credentials
+        id: host_credentials
+        if: steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READONLY_RUNTIME_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
+        env:
+          TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
+        run: node ../../scripts/v2/prepare-smoke-credentials.mjs
+
+      - name: Verify host registry before runtime activation
+        if: steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READONLY_RUNTIME_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
+        timeout-minutes: 5
+        env:
+          CI_READONLY_RUNTIME_DEV: ${{ vars.CI_READONLY_RUNTIME_DEV }}
+          PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
+          SMOKE_CREDENTIAL_FILE: ${{ steps.host_credentials.outputs.credential_file }}
+        run: node ../../scripts/v2/ci/prepare-runtime-host.mjs
+
+      - name: Clean host verification credentials
+        if: always() && steps.host_credentials.outputs.credential_file != ''
+        env:
+          SMOKE_CREDENTIAL_FILE: ${{ steps.host_credentials.outputs.credential_file }}
+        run: node ../../scripts/v2/prepare-smoke-credentials.mjs --cleanup
 
       - name: Check existing certificates without changing DNS
         id: dns
@@ -485,6 +517,42 @@ jobs:
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in tfassets.enc -out tfassets.tar.gz -pass env:TF_PLAN_ENC_KEY
           python3 ../../scripts/v2/ci_tf_assets.py restore
           rm -f tfassets.tar.gz
+
+      - name: Inspect approved host preflight requirement
+        id: approved_host
+        env:
+          PLAN_SCOPE: ${{ inputs.plan_scope }}
+        run: |
+          set -euo pipefail
+          terraform show -json tfplan |
+            python3 -c 'import json,os,sys; p=json.load(sys.stdin); v=p["variables"]["ci_runtime_profile_enabled"]["value"]; assert type(v) is bool; print("required="+str(v and os.environ["TARGET"]=="dev" and os.environ["PLAN_SCOPE"]=="full").lower())' >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        if: steps.approved_host.outputs.required == 'true'
+        with:
+          node-version: 20
+
+      - name: Prepare private apply host credentials
+        id: apply_host_credentials
+        if: steps.approved_host.outputs.required == 'true'
+        env:
+          TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
+        run: node ../../scripts/v2/prepare-smoke-credentials.mjs
+
+      - name: Recheck actual host registry before apply
+        if: steps.approved_host.outputs.required == 'true'
+        timeout-minutes: 5
+        env:
+          CI_READONLY_RUNTIME_DEV: "true"
+          PLAN_SCOPE: full
+          SMOKE_CREDENTIAL_FILE: ${{ steps.apply_host_credentials.outputs.credential_file }}
+        run: node ../../scripts/v2/ci/prepare-runtime-host.mjs
+
+      - name: Clean apply host credentials
+        if: always() && steps.apply_host_credentials.outputs.credential_file != ''
+        env:
+          SMOKE_CREDENTIAL_FILE: ${{ steps.apply_host_credentials.outputs.credential_file }}
+        run: node ../../scripts/v2/prepare-smoke-credentials.mjs --cleanup
 
       - name: Recheck branch immediately before apply
         env:

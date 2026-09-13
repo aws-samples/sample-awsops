@@ -367,6 +367,7 @@ apply에서 바꿀 수 없습니다. 기본 false인 일반 full 계획도 DNS �
 | `workers_enabled` | 비동기 워커 계층(SQS/SFN/Lambda/Fargate) |
 | `ci_migrations_enabled` | 기본 비활성 운영 기능: 사설 migration 태스크 템플릿·정확한 시크릿 읽기 역할/정책·14일 로그. dev CI 수동 실행 전용이며 서비스·스케줄러는 없다. 비활성화하면 로그 그룹/이력이 삭제된다. |
 | `steampipe_enabled` | Steampipe 인벤토리 sync 데이터 계층 |
+| `inventory_host_only` | 기본 비활성: 활성 호스트 하나만 허용하고 수집기 AssumeRole을 제외합니다. Agent MCP 권한은 유지하며 활성화 전 호스트 검증이 필요합니다. [런타임 절차](docs/runbooks/runtime-foundation.md) 참고. |
 | `finops_baseline_enabled` | FinOps 기본 권장 엔진(ADR-020): 일별 Fargate 룰 배치(미사용 EBS 볼륨; Compute Optimizer 기반 EC2/RDS rightsizing)가 `finops_findings`에 적재, read-only, `/cost`에 렌더. terraform 레벨로는 `workers_enabled`만 선행 — 단 EBS 룰은 런타임에 `steampipe_enabled=true`의 최신 동기화가 있어야 동작하고, 없으면 그 룰만 정직하게 `partial`로 표면화(EC2/RDS는 무관하게 동작) |
 | `official_mcp_enabled` | ADR-017 큐레이션 공식 벤더 MCP 프리셋 — **벤더 호스팅 3종**(Datadog·Dynatrace·New Relic)을 external-obs `mcpServer` target으로 등록. (런타임 fail-closed 툴 allowlist는 이 플래그와 무관하게 매 provisioner run에 기록·무조건 강제된다 — 그 무조건성이 fail-closed의 본체) 운영 주의: Dynatrace는 hosted 툴 목록 전사 전까지 의도적으로 툴 0개; `make agentcore`는 런타임 READY를 대기(기본 300s, `AGENTCORE_RUNTIME_READY_TIMEOUT`)하며 롤아웃 실패/지연 시 자격을 갖춘 live target을 다음 성공 run까지 일시 회수한다 |
 | `graph_querygen_enabled` | ClickHouse `trace_spans` 그래프 쿼리 **1건**에 대한 LLM 폴백 (ADR-018). diag-signal 경로의 식별자 정화·관련성 게이트·주간 예산·읽기 게이트는 **없다** — ADR-018 §C |

@@ -1067,8 +1067,8 @@ resource "aws_iam_role_policy" "worker_lambda_datasource_invoke" {
 # (graph_querygen.py:_code_interpreter_check). Reads the provisioned interpreter id from SSM, then
 # starts/invokes/stops a session. No static ARN exists for the session actions (the interpreter id is
 # a runtime value written by agentcore.mjs's provisioner, not a Terraform resource here) — Resource
-# "*" on this narrow, session-scoped action set, consistent with the AgentCore execution role's own
-# broader `bedrock-agentcore:*` grant elsewhere (ai.tf). Every failure mode in _code_interpreter_check
+# "*" remains on this separately gated, session-scoped action set. The AgentCore execution
+# role is independently scoped in ai.tf. Every failure mode in _code_interpreter_check
 # already degrades to a safe skip (None), so an AccessDenied here just means step (b) never runs — it
 # does not weaken (a)/(c), which are the checks that actually gate.
 resource "aws_iam_role_policy" "worker_lambda_graph_querygen" {
