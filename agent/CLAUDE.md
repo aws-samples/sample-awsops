@@ -5,9 +5,8 @@ Strands Agent for AgentCore Runtime. Connects to 9 domain gateways via MCP proto
 
 ## Key Files
 - `readiness.py` — default off unless `DEPLOYMENT_READINESS_ENABLED=true`; payloads cannot enable it.
-  Provisioning maps only the applied `ci_readiness_enabled` boolean through the AgentCore output;
-  shell overrides cannot enable it. Deterministic 500-row samples that omit the known resource
-  return `known_resource_unverified`, never proof of absence.
+  Provisioning uses only applied `ci_readiness_enabled`, never shell overrides.
+  Runtime queries the exact CloudFront ID (one identity-only row); unverified is not proof of absence.
   The early `deployment_readiness` mode checks the runtime STS account,
   curated inventory tools through the existing Ops gateway, a known fresh CloudFront record
   and a bounded model call. It returns strict nonce/account-bound evidence, never ordinary

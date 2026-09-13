@@ -168,16 +168,16 @@ def check_readiness(payload, gateway_url, mcp_factory, region, model_id, *, prog
             progress.record(checks={"inventorySummary": True})
             inventory = _tool_body(client.call_tool_sync(
                 "readiness-query", TOOL_NAMES[1],
-                arguments={"resource_type": "cloudfront", "limit": 500},
+                arguments={"resource_type": "cloudfront", "resource_id": payload["expectedCloudfrontId"], "limit": 1},
                 read_timeout_seconds=timedelta(seconds=min(8, progress.remaining()))))
             progress.remaining()
             resources = inventory.get("resources")
             if (inventory.get("resource_type") != "cloudfront" or not isinstance(resources, list)
-                    or not all(isinstance(row, dict) for row in resources) or len(resources) > 500
+                    or not all(isinstance(row, dict) for row in resources) or len(resources) > 1
                     or type(inventory.get("count")) is not int or inventory["count"] != len(resources)):
                 return progress.snapshot()
             progress.record(reason="inventory_incomplete", checks={"inventoryQuery": True},
-                            inventory={"count": len(resources)})  # bounded sample, not a fleet total
+                            inventory={"count": len(resources)})  # exact identity match count, not a fleet total
             fresh = inventory.get("freshness")
             if any(not isinstance(value, dict) or type(value.get("unknown_attribute_count")) is not int
                    or value["unknown_attribute_count"] != 0 for value in (rows[0], fresh)):

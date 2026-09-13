@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e080165686c7 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ff85e0b90321 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -19,7 +19,7 @@ port 8080.
 ## Architectural boundaries
 - `readiness.py` requires `DEPLOYMENT_READINESS_ENABLED=true` (default off; never payload-controlled).
   Provision it only from the applied `ci_readiness_enabled` boolean; shell overrides are ignored.
-  A deterministic 500-row sample cannot prove absence: use `known_resource_unverified`.
+  Query the exact CloudFront ID (one identity-only row); unverified does not prove absence.
   Its `deployment_readiness` mode verifies runtime STS identity,
   curated inventory tools through the existing Ops gateway, a known fresh CloudFront record
   and a bounded model call. Return nonce/account-bound evidence, never normal chat/fallback

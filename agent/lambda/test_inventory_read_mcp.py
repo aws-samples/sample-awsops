@@ -152,6 +152,36 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
         self.assertEqual(inventory_params, [{"name": "rt", "value": {"stringValue": "alb"}}])
         self.assertNotIn("alb", inventory_sql)
 
+    def test_cloudfront_identity_lookup_finds_beyond_bulk_limit_without_large_details(self):
+        fleet = [{"id": f"E{i:08d}", "origins": ["large-detail" * 1000]} for i in range(601)]
+        expected = fleet[-1]["id"]
+        def fake(sql, params=None):
+            values = {p["name"]: p["value"]["stringValue"] for p in params}
+            if "rid" not in values:
+                return [{"data": row} for row in fleet[:500]]
+            self.assertIn("resource_id = :rid", sql)
+            self.assertIn("LIMIT 1", sql)
+            self.assertIn("account_id = 'self'", sql)
+            self.assertNotIn(expected, sql)
+            self.assertNotIn("origins", sql)
+            return [{"data": {"id": row["id"]}} for row in fleet if row["id"] == values["rid"]]
+        inv._execute_override = fake
+        with mock.patch.object(inv, "_freshness_for_type", return_value={}):
+            result = inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
+                "resource_type": "cloudfront", "resource_id": expected, "limit": 500}}, None)
+        body = json.loads(result["body"])
+        self.assertEqual(body["resources"], [{"id": expected}])
+        self.assertEqual(body["count"], 1)
+
+    def test_identity_lookup_rejects_other_types_and_invalid_ids_before_sql(self):
+        with mock.patch.object(inv, "_execute") as execute:
+            for resource_type, identifier in (("ec2", "E123EXAMPLE"), ("cloudfront", "' OR 1=1"),
+                                               ("cloudfront", 123), ("cloudfront", "")):
+                result = inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
+                    "resource_type": resource_type, "resource_id": identifier}}, None)
+                self.assertEqual(result["statusCode"], 400)
+            execute.assert_not_called()
+
     def test_query_inventory_discloses_bound_per_type_freshness(self):
         calls = []
 

@@ -163,7 +163,7 @@ Review: `v2-p1f-scope-architecture-review` (private upstream repo)
 `mode=deployment_readiness` is a bounded permission/data probe implemented by `agent/readiness.py`.
 It defaults off. Apply `ci_readiness_enabled=true` with AgentCore enabled, then provision;
 the applied `agentcore.deployment_readiness_enabled` boolean sets `DEPLOYMENT_READINESS_ENABLED`.
-Shell environment overrides cannot enable it. It uses fixed Ops gateway tools, producer freshness and a bounded model request;
+Shell overrides cannot enable it. Fixed Ops tools fetch one CloudFront identity by ID, with producer freshness and a bounded model request;
 missing attribute evidence remains unassessed, not a healthy zero. Caller identity and nonce
 are bound to the response; timeout retains completed checks. App access requires admin or a
 separately provisioned deployment-verifiers membership and process cooldown. Runtime discovery

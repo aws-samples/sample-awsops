@@ -67,7 +67,8 @@ class ReadinessTest(unittest.TestCase):
         self.assertEqual(result["status"], "ready")
         self.assertTrue(all(result["checks"].values()))
         self.assertEqual([name for name, _ in self.client.calls], self.client.tools)
-        self.assertEqual(self.client.calls[1][1]["arguments"], {"resource_type": "cloudfront", "limit": 500})
+        self.assertEqual(self.client.calls[1][1]["arguments"], {
+            "resource_type": "cloudfront", "resource_id": PAYLOAD["expectedCloudfrontId"], "limit": 1})
         self.assertNotIn(PAYLOAD["expectedCloudfrontId"], json.dumps(result))
 
     def test_invalid_request_never_calls_aws_or_gateway(self):
@@ -96,11 +97,10 @@ class ReadinessTest(unittest.TestCase):
         self.client.query["resources"] = [{"id": "FOREIGN"}]
         self.assertEqual(self.run_probe()["reason"], "known_resource_unverified")
 
-    def test_capped_sample_cannot_prove_known_resource_absent(self):
+    def test_bulk_sample_cannot_satisfy_exact_identity_lookup(self):
         self.client.query.update(count=500, resources=[{"id": f"E{i}"} for i in range(500)])
         result = self.run_probe()
-        self.assertEqual(result["reason"], "known_resource_unverified")
-        self.assertFalse(result["checks"]["model"])
+        self.assertEqual((result["reason"], result["checks"]["model"]), ("inventory_unavailable", False))
 
     def test_unknown_or_nonzero_attribute_coverage_is_incomplete_not_stale(self):
         for source in ("summary", "query"):

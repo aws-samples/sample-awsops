@@ -1129,20 +1129,15 @@ branch requires investigation and a fresh plan, never bypassing checks.
 
 ### Runtime probe capability / 런타임 검증 기능
 
-Before verify, apply `agentcore_enabled=true` and `ci_readiness_enabled=true` through the
-reviewed saved-plan flow, then provision AgentCore. The output boolean sets
-`DEPLOYMENT_READINESS_ENABLED`; false/missing means `runtime_disabled`, and shell overrides
-cannot enable it. This flag grants no Cognito membership; the verifier group remains separately provisioned.
-검증 전 위 두 플래그를 저장 계획으로 적용하고 AgentCore를 프로비저닝합니다.
-환경변수 덮어쓰기로 활성화할 수 없으며 이 플래그는 Cognito 그룹 권한을 부여하지 않습니다.
+For verify, apply `agentcore_enabled=true` and `ci_readiness_enabled=true`, then provision AgentCore.
+Only applied output sets `DEPLOYMENT_READINESS_ENABLED`; false/missing yields `runtime_disabled`, ignoring shell overrides.
+검증 전 두 플래그를 적용하고 프로비저닝합니다. 환경변수 덮어쓰기나 그룹 권한은 부여하지 않습니다.
 
-Both known-resource reads are deterministic samples capped at 500 rows; absence reports
-`known_resource_unverified`, never proof of deletion. Collection checks inspect every queued
-type: fresh partial/failed runs report `collection_partial`/`collection_failed`, absent ledger
-rows report `collection_missing` after the wait, and unknown attributes report `inventory_incomplete`.
-All remain failed readiness; accepted degraded inventory is not a release exception.
-알려진 리소스의 표본 미발견은 부재 증명이 아닙니다. 모든 수집 타입의 부분 실패·실패·
-원장 누락·속성 미확인을 구분하며 불완전한 증거로 배포 검증을 통과시키지 않습니다.
+Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway schema first.
+The web API scan remains capped at 500 rows. Failures distinguish `known_resource_unverified`,
+`collection_partial`, `collection_failed`, `collection_missing` after waiting, and `inventory_incomplete`.
+Degraded inventory never passes release readiness. 미발견은 부재 증명이 아니며 런타임은 지정 ID만 조회합니다.
+웹 표본은 500행 제한이고 모든 수집 타입의 부분 실패·원장 누락·속성 미확인을 통과시키지 않습니다.
 
 The authenticated smoke utility accepts `SMOKE_RUNTIME_CONFIG_FILE`: an absolute 0600 JSON
 file beside `SMOKE_CREDENTIAL_FILE` in the same 0700 directory. Cleanup covers both. Current

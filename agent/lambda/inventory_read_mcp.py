@@ -401,7 +401,7 @@ def _fetch_by_type(types):
     return out
 
 
-def _fetch_one_type(rtype, limit):
+def _fetch_one_type(rtype, limit, resource_id=None):
     """Backs `query_inventory`, the one tool where the model picks `rtype` — so unlike
     `_fetch_by_type` (called only with the fixed TOPOLOGY_TYPES set), this can be asked about a type
     with no PROJECTIONS entry.
@@ -415,10 +415,16 @@ def _fetch_one_type(rtype, limit):
     way) does not fix the incompleteness by itself; the honesty fix is the `limited` flag the caller
     surfaces so nothing downstream mistakes a partial object for a complete one.
     """
-    rows = _execute("SELECT " + _projected_select(rtype) + " AS data FROM inventory_resources "
-                    "WHERE account_id = 'self' AND resource_type = :rt "
-                    "ORDER BY captured_at DESC, account_id, region, resource_id LIMIT " + str(int(limit)),
-                    params=[{"name": "rt", "value": {"stringValue": rtype}}])
+    params = [{"name": "rt", "value": {"stringValue": rtype}}]
+    predicate, projection = "", _projected_select(rtype)
+    if resource_id is not None:
+        predicate = " AND resource_id = :rid"
+        params.append({"name": "rid", "value": {"stringValue": resource_id}})
+        projection, limit = "jsonb_build_object('id', resource_id)", 1
+    rows = _execute("SELECT " + projection + " AS data FROM inventory_resources "
+                    "WHERE account_id = 'self' AND resource_type = :rt" + predicate
+                    + " ORDER BY captured_at DESC, account_id, region, resource_id LIMIT " + str(int(limit)),
+                    params=params)
     return [_coerce(r.get("data")) for r in rows]
 
 
@@ -567,11 +573,15 @@ def lambda_handler(event, context):
         rtype = arguments.get("resource_type") if isinstance(arguments, dict) else None
         if not rtype:
             return {"statusCode": 400, "body": json.dumps({"error": "resource_type required"})}
+        resource_id = arguments.get("resource_id")
+        if "resource_id" in arguments and (rtype != "cloudfront" or not isinstance(resource_id, str)
+                                           or not re.fullmatch(r"[A-Z0-9]{5,32}", resource_id)):
+            return {"statusCode": 400, "body": json.dumps({"error": "valid CloudFront resource_id required"})}
         try:
             limit = min(int(arguments.get("limit", 200)), 500) if isinstance(arguments, dict) else 200
         except (TypeError, ValueError):
             limit = 200  # a hallucinated non-numeric limit must not 500
-        rows = _fetch_one_type(rtype, limit)
+        rows = _fetch_one_type(rtype, limit, resource_id)
         result = {
             "resource_type": rtype,
             "count": len(rows),

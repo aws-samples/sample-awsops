@@ -92,5 +92,4 @@ checks fresh collection, real runtime access and workers. Optional hostOnly reje
 Cap the file at 16 KiB; require a recent start (30 minutes) and unique types including cloudfront.
 HTTP files default to 64 KiB; only the CloudFront inventory leg allows 2 MiB. The utility
 alone does not change workflow wiring.
-Provisioning maps only the applied `agentcore.deployment_readiness_enabled` boolean to
-`DEPLOYMENT_READINESS_ENABLED`; missing/false is off and shell overrides are ignored.
+Only applied `agentcore.deployment_readiness_enabled` sets `DEPLOYMENT_READINESS_ENABLED`; missing/false is off, ignoring shell overrides.
