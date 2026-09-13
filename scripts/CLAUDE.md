@@ -121,10 +121,18 @@ secrets-manager) — installed by `make deps`.
   it too. BatchGetImage preflight accepts the expected missing commit tag, never a missing
   repository/access denial. No DescribeRepositories grant, repository creation or latest-tag
   write. Verify Linux/ARM64 configuration and uploaded single-manifest digest. Limits:
-  short CLI/TF 2 minutes, dev build 60, push 30, provision 120; role sessions are not renewed.
+  short CLI/TF 2 minutes, dev build 35, push 10, provision 45. Aggregate deadlines:
+  build helper 48 minutes, agent phases 50 including reads. Manual image builds acquire
+  fresh one-hour credentials after QEMU/buildx setup and cap the build step at 50 minutes.
 - `v2/agentcore.mjs` + `agentcore/` — `make agentcore`: arm64 agent image + idempotent
   provisioner, writes to SSM. Dev uses an immutable digest and reusable private migration;
-  main/preview retain legacy migration/tag behavior. `provision_report.py` emits fixed stages,
+  main/preview retain legacy migration/tag behavior. Dev requires `--build-only` then
+  `--provision-only`, with the workflow acquiring a fresh one-hour session of the SAME role
+  after setup and again between phases. Only verified project/digest outputs are passed;
+  provision-only rechecks STS and the current commit tag/digest without rebuilding or latest
+  fallback. A combined dev CLI call is rejected. Fresh-role checks take at most 2 minutes,
+  phase steps 52 and the dev job 120 including setup; no custom credential process or IAM/session-max change.
+  `provision_report.py` emits fixed stages,
   error codes, catalog keys and status counts; at most 240 resource events plus a dropped
   count, no raw errors/ARNs/credentials. Node relays only bounded structured records and
   preserves child failure exit codes. Optional smoke runs after provisioning: strict on dev;

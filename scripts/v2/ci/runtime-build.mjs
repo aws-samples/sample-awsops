@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { selectProject } from './run-migration.mjs';
 
@@ -12,7 +13,8 @@ const REGION = 'ap-northeast-2';
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 export const TIMEOUTS = Object.freeze({
-  read: 2 * 60_000, build: 60 * 60_000, transfer: 30 * 60_000, provision: 120 * 60_000,
+  read: 2 * 60_000, build: 35 * 60_000, transfer: 10 * 60_000, provision: 45 * 60_000,
+  buildPhase: 48 * 60_000, provisionPhase: 50 * 60_000,
 });
 export class RuntimeBuildError extends Error {
   constructor(code, { exitCode = 1, output = '' } = {}) {
@@ -120,9 +122,15 @@ export function command(commandName, args, { spawn = spawnSync, ...options } = {
 }
 
 export function buildImage({ env = process.env, project, component, root = ROOT, run = command,
-  emit = value => console.log(JSON.stringify(value)) }) {
+  emit = value => console.log(JSON.stringify(value)), now = () => performance.now() }) {
   const plan = imagePlan(env, project, component); // No tools before these guards.
-  const aws = args => run('aws', [...args, '--region', REGION, '--output', 'json', '--no-cli-pager'],
+  const deadline = now() + TIMEOUTS.buildPhase;
+  const bounded = (name, args, options = {}) => {
+    const remaining = Math.floor(deadline - now());
+    if (remaining <= 0) throw new RuntimeBuildError('build_phase_timeout', { exitCode: 124 });
+    return run(name, args, { ...options, timeout: Math.min(options.timeout || TIMEOUTS.read, remaining) });
+  };
+  const aws = args => bounded('aws', [...args, '--region', REGION, '--output', 'json', '--no-cli-pager'],
     { env, timeout: TIMEOUTS.read });
   let stage = 'caller';
   const enter = value => { stage = value; emit({ event: 'runtime_build_stage', stage, component }); };
@@ -140,10 +148,10 @@ export function buildImage({ env = process.env, project, component, root = ROOT,
       '--repository-name', plan.repository, '--image-ids', `imageTag=${plan.tag}`])));
     scratch = mkdtempSync(join(env.RUNNER_TEMP || tmpdir(), 'runtime-image-'));
     const dockerEnv = { ...env, DOCKER_CONFIG: join(scratch, 'docker') };
-    docker = (args, options = {}) => run('docker', args, { env: dockerEnv, ...options });
+    docker = (args, options = {}) => bounded('docker', args, { env: dockerEnv, ...options });
     // get-login-password emits text, not JSON. Keep it only in memory/stdin.
     enter('login');
-    const password = run('aws', ['ecr', 'get-login-password', '--region', REGION, '--no-cli-pager'],
+    const password = bounded('aws', ['ecr', 'get-login-password', '--region', REGION, '--no-cli-pager'],
       { env, timeout: TIMEOUTS.read });
     docker(['login', '--username', 'AWS', '--password-stdin', plan.registry], { input: password });
     let context = join(root, component === 'agent' ? 'agent' : `scripts/v2/${component === 'worker' ? 'workers' : 'steampipe'}`);

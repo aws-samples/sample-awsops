@@ -199,6 +199,8 @@ flowchart LR
 
 ### 절차
 
+dev는 Deploy AgentCore workflow의 `--build-only` → 동일 역할 OIDC 갱신 → `--provision-only` 경로를 사용합니다. 아래 기본 `make` 호출은 다른 스택의 기존 CLI 경로입니다.
+
 ```bash
 make agentcore          # arm64 agent 이미지 빌드/푸시 + 멱등 provisioner
 make agentcore SMOKE=1  # 추가로 호출 검증

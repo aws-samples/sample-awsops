@@ -39,7 +39,7 @@ deploy: migrate ## Apply pending migrations, then build arm64, push to ECR, roll
 upgrade: ## Safe release upgrade: RDS snapshot → migrate (+bootstrap if legacy) → deploy. PREVIEW unless CONFIRM=go.
 	@bash scripts/v2/upgrade.sh
 
-agentcore: ## Build/push arm64 and provision AgentCore; SMOKE=1 checks afterward (strict dev readiness, advisory elsewhere). Run after apply and migration (dev workflow reuses private migration; this target does not migrate).
+agentcore: ## Legacy non-dev build/push/provision CLI, after apply and migration; SMOKE=1 checks afterward. Dev uses Deploy AgentCore's separate build/provision phases with refreshed credentials.
 	@node scripts/v2/agentcore.mjs $(if $(SMOKE),--smoke,)
 
 workers: ## Build arm64 worker image, push to worker ECR (P2 Fargate worker). Run after `terraform apply` with workers_enabled=true.

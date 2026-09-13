@@ -199,6 +199,8 @@ flowchart LR
 
 ### Procedure
 
+Dev uses the Deploy AgentCore workflow: `--build-only` → fresh OIDC session for the same role → `--provision-only`. The default `make` calls below remain the legacy CLI path for other stacks.
+
 ```bash
 make agentcore          # build/push arm64 agent image + idempotent provisioner
 make agentcore SMOKE=1  # additionally validate with an invocation

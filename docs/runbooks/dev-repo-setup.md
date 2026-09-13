@@ -1014,23 +1014,40 @@ helper는 쓰기 전에 독립 설정 계정·CI 역할·실제 STS 식별자를
 저장소 부재·접근 거부는 실패하며 DescribeRepositories 권한이나 자동 생성을 추가하지 않는다.
 
 Dev AgentCore follows the same account/digest checks using an `agent-<commit SHA>` tag.
-Provisioning repeats the identity check and uses the verified digest. Docker credential
+After setup, the workflow obtains a fresh one-hour session for `--build-only`. It then
+refreshes the SAME deployer role before `--provision-only`, passing only the verified
+project/digest outputs. Provision-only repeats identity checks, rereads the commit tag
+and verifies that its immutable digest still matches; it never rebuilds or selects latest.
+The old combined dev CLI path is rejected; main/preview retain their existing CLI path.
+Docker credential
 scratch is private and cleaned. Leave optional AgentCore smoke off during first provisioning
 until inventory has been collected, then run the full application release verification.
 Never count successful provisioning alone as application readiness.
 Short CLI/Terraform operations have a two-minute process limit; dev build, image push and
-provisioning have separate 60/30/120-minute limits. These do not renew AWS role sessions.
+provisioning have separate 35/10/45-minute limits. Aggregate deadlines also cap the build
+helper at 48 minutes and each agent CLI phase at 50 minutes, including reads. Fresh-role
+verification is capped at two minutes and phase workflow steps at 52 minutes, within each
+fresh one-hour session. The dev job allows 120 minutes for setup plus both phases. Manual runtime image builds
+obtain credentials only after QEMU/buildx setup and use a 50-minute build step. No custom
+credential process, role-session maximum change or IAM grant is introduced.
 Public diagnostics retain fixed stages/codes, catalog keys and status counts, at most 240
 resource events with an explicit dropped count. Child failure exit codes are preserved;
 ARNs, credentials, endpoints and raw SDK errors are not relayed.
 
 dev AgentCore도 `agent-<commit SHA>` 태그와 같은 계정·digest 검증을 사용한다.
-provisioning에서도 식별자를 다시 확인하고 검증된 digest를 사용한다. Docker 자격증명
+setup 후 새 1시간 세션으로 `--build-only`를 실행하고, 동일 deployer 역할을 다시 갱신한 뒤
+검증된 project/digest만 `--provision-only`에 전달한다. 계정과 커밋 태그/digest를 다시
+검증하며 재빌드나 latest 선택은 하지 않는다. 기존 단일 dev CLI 경로는 거부하고
+main/preview의 CLI 경로는 유지한다. Docker 자격증명
 임시 파일은 비공개로 만들고 정리한다. 최초 provisioning에서는 수집 전 선택적 AgentCore
 smoke를 끄고, 수집 후 전체 앱 배포 검증을 실행한다. provisioning 성공만으로 앱을
 정상 판정하지 않는다.
-짧은 CLI/Terraform 호출은 2분, dev 빌드·push·provisioning은 각각 60/30/120분으로 제한하며
-역할 세션을 갱신하지 않는다. 공개 진단은 고정 단계/코드·catalog key·상태별 개수를 보존하고
+짧은 CLI/Terraform 호출은 2분, dev 빌드·push·provisioning은 각각 35/10/45분으로 제한한다.
+조회 시간을 포함한 전체 build helper는 48분, agent CLI 단계는 각각 50분이며,
+갱신한 역할 확인은 2분·workflow 단계는 52분 이내로 새 1시간 세션 안에 묶는다.
+dev job은 setup과 두 단계를 포함해 120분이고 수동 이미지 빌드는 QEMU/buildx setup 후 자격을 받아 50분 안에 끝낸다.
+별도 credential process·역할 최대 세션 시간 변경·새 IAM 권한은 없다.
+공개 진단은 고정 단계/코드·catalog key·상태별 개수를 보존하고
 resource event 240개 초과는 dropped 개수로 알린다. 자식 종료 코드는 보존하며 ARN·자격증명·
 endpoint·SDK 오류 원문은 전달하지 않는다.
 

@@ -33,7 +33,7 @@ jobs:
   build:
     needs: [guard]
     runs-on: sample-awsops
-    timeout-minutes: 100
+    timeout-minutes: 60
     environment: development
     permissions:
       contents: read
@@ -56,16 +56,18 @@ jobs:
           node-version: 20
       - name: Validate independent development account before OIDC
         run: node scripts/v2/ci/runtime-build.mjs check-role
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
           aws-region: ap-northeast-2
           mask-aws-account-id: true
           unset-current-credentials: true
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+          role-duration-seconds: 3600
       - name: Verify caller, build ARM64 and bind uploaded digest
         id: image
+        timeout-minutes: 50
         env:
           DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
         run: |

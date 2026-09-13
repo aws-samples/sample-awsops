@@ -71,10 +71,12 @@ catalog resource keys, status counts and an explicit dropped-event count; no ARN
 Migrations must run FIRST — they create the `awsops_sql_reader` role and sync its password, and
 `make agentcore` does neither; skipping it leaves `execute_sql` and `inventory-read` failing Data API
 auth (see [agent-sql-reader](../runbooks/agent-sql-reader.md)). Dev's workflow reuses the private
-migration task; main/preview retain `make migrate`. Then `make agentcore` (via
-`scripts/v2/agentcore.mjs`) builds +
-pushes the **arm64** agent image, then runs the provisioner; `make agentcore SMOKE=1`
-checks after provisioning. Dev requires the matching readiness producer and `runtime_deployment`
+migration task; main/preview retain `make migrate`. The dev workflow uses
+`node scripts/v2/agentcore.mjs --build-only`, refreshes the SAME OIDC role, then calls
+`--provision-only` with the verified project/digest. The second phase rechecks the commit
+tag/digest without rebuilding. Fresh sessions and aggregate phase deadlines keep each phase
+inside one hour. Other stacks keep `make agentcore`; `SMOKE=1` checks after provisioning.
+Dev requires the matching readiness producer and `runtime_deployment`
 output with inventory enabled; these producer dependencies must land before selecting smoke.
 Other stacks retain advisory compatibility invocation when readiness is unavailable, and
 advisory structured checks when available. Invocation transport failures still fail.
@@ -90,6 +92,9 @@ This optional CLI smoke is not the full web/worker release gate or a Memory/Code
 
 공개 provisioning 출력은 고정 단계/코드·catalog key·상태별 개수와 dropped 개수만 보존한다.
 dev는 사설 migration을 재사용하며 main/preview는 `make migrate`를 먼저 실행한다.
+dev는 `--build-only` 이후 동일 OIDC 역할을 새로 받아 `--provision-only`에 검증된
+project/digest를 전달한다. 재빌드 없이 커밋 태그/digest를 다시 확인하며 각 단계는
+새 1시간 세션 안의 전체 deadline으로 제한한다.
 `SMOKE=1`은 provisioning 후 실행한다. dev는 대응 producer·`runtime_deployment`·활성
 inventory가 필요하고, 다른 스택은 참고용 호환 검사를 유지한다. 전송 실패는 계속 실패한다.
 구조화 검사는 Ops inventory 도구와 모델을 거치며 SSE payload 하나·nonce/계정·고정 boolean을
@@ -127,7 +132,7 @@ Terraform; `provision.py` overwrites with real values.
 | File | Role |
 |------|------|
 | `terraform/foundation/ai.tf` | TF-owned ECR/IAM/Lambda-slice/SSM/web-grant (gated on `agentcore_enabled`) |
-| `scripts/v2/agentcore.mjs` | `make agentcore` entry — build+push arm64 image → run provisioner |
+| `scripts/v2/agentcore.mjs` | Dev build-only/provision-only phases with verified digest handoff; legacy `make agentcore` elsewhere |
 | `scripts/v2/agentcore/catalog.py` | 9 gateway names + GW descriptions + target tool schemas |
 | `scripts/v2/agentcore/provision.py` | Idempotent provisioner, SSM writes and post-provision smoke (strict on dev; advisory elsewhere) |
 | `scripts/v2/agentcore/provision_report.py` | Fixed stage/error codes, catalog keys and bounded status counts; no raw resource/error output |

@@ -36,7 +36,7 @@ jobs:
       ((github.ref == 'refs/heads/dev' && needs.migrate-dev.result == 'success') ||
        (github.ref != 'refs/heads/dev' && needs.migrate-dev.result == 'skipped'))
     runs-on: sample-awsops
-    timeout-minutes: 240
+    timeout-minutes: ${{ github.ref == 'refs/heads/dev' && 120 || 240 }}
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
       TARGET: ${{ github.ref_name }}
@@ -133,7 +133,59 @@ jobs:
         if: github.ref != 'refs/heads/dev'
         run: make migrate
 
+      # Setup/backend work must not consume the build's one-hour session.
+      - name: Fresh development credentials for image build
+        if: github.ref == 'refs/heads/dev'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          role-duration-seconds: 3600
+
+      - name: Verify refreshed development build caller
+        if: github.ref == 'refs/heads/dev'
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            node scripts/v2/ci/runtime-build.mjs verify-role
+
+      - name: Build and verify development agent image
+        if: github.ref == 'refs/heads/dev'
+        id: agent_image
+        timeout-minutes: 52
+        run: node scripts/v2/agentcore.mjs --build-only
+
+      - name: Fresh development credentials for provisioning
+        if: github.ref == 'refs/heads/dev'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          role-duration-seconds: 3600
+
+      - name: Verify refreshed development provision caller
+        if: github.ref == 'refs/heads/dev'
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            node scripts/v2/ci/runtime-build.mjs verify-role
+
+      - name: Provision verified development agent image
+        if: github.ref == 'refs/heads/dev'
+        timeout-minutes: 52
+        env:
+          AGENT_IMAGE_PROJECT: ${{ steps.agent_image.outputs.project }}
+          AGENT_IMAGE_DIGEST: ${{ steps.agent_image.outputs.digest }}
+        run: node scripts/v2/agentcore.mjs --provision-only ${{ inputs.smoke && '--smoke' || '' }}
+
       - name: make agentcore
+        if: github.ref != 'refs/heads/dev'
         # SMOKE just needs to be non-empty to enable Makefile's `$(if $(SMOKE),...)`
         # — "false" is non-empty too, so only export it when actually true.
         run: make agentcore ${{ inputs.smoke && 'SMOKE=1' || '' }}

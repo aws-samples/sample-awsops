@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { deployAgent } from '../agentcore.mjs';
 
 const account = '123456789012';
@@ -15,7 +16,9 @@ const ac = {
   role_arn: `arn:aws:iam::${account}:role/RuntimeRole`,
   ecr_uri: `${account}.dkr.ecr.ap-northeast-2.amazonaws.com/awsops-dev-agentcore`,
 };
-const digest = `sha256:${'b'.repeat(64)}`;
+const manifest = JSON.stringify({ schemaVersion: 2, mediaType: 'application/vnd.oci.image.manifest.v1+json',
+  config: { digest: `sha256:${'b'.repeat(64)}` }, layers: [] });
+const digest = `sha256:${createHash('sha256').update(manifest).digest('hex')}`;
 
 test('dev refuses missing expected account, mutable tag, foreign output or Docker override before build', () => {
   for (const [change, output] of [
@@ -25,7 +28,7 @@ test('dev refuses missing expected account, mutable tag, foreign output or Docke
     [{}, { ...ac, region: 'us-east-1' }],
   ]) {
     const calls = [];
-    assert.throws(() => deployAgent({ env: { ...env, ...change },
+    assert.throws(() => deployAgent({ env: { ...env, ...change }, phase: 'build',
       run: (cmd, args) => { calls.push([cmd, args]); return JSON.stringify(output); },
       build: () => { calls.push(['build']); return { digest }; } }));
     assert.ok(!calls.some(([cmd]) => ['build', 'aws', 'docker', 'python3'].includes(cmd)));
@@ -34,10 +37,17 @@ test('dev refuses missing expected account, mutable tag, foreign output or Docke
 
 test('dev binds the verified digest into provisioner environment and captures its output', () => {
   const calls = [];
-  const result = deployAgent({ env,
-    build: options => { assert.equal(options.component, 'agent'); return { digest, architecture: 'arm64' }; },
+  const result = deployAgent({ env: { ...env, AGENT_IMAGE_PROJECT: ac.project, AGENT_IMAGE_DIGEST: digest },
+    phase: 'provision', build: () => assert.fail('must not rebuild'),
     run: (cmd, args, options) => {
       calls.push({ cmd, args, options });
+      if (args[0] === 'sts') return JSON.stringify({
+        Account: account, Arn: `arn:aws:sts::${account}:assumed-role/DeployRole/FreshSession`,
+      });
+      if (args[0] === 'ecr') return JSON.stringify({ failures: [], images: [{
+        registryId: account, repositoryName: `${ac.project}-agentcore`,
+        imageId: { imageTag: env.AGENT_IMAGE_TAG, imageDigest: digest }, imageManifest: manifest,
+      }] });
       return cmd === 'terraform' ? JSON.stringify(ac) : JSON.stringify({
         event: 'agentcore_provision_summary', stage: 'complete', counts: { ERR: 0 }, dropped: 0,
       });

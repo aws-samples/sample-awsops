@@ -199,6 +199,8 @@ flowchart LR
 
 ### 步骤
 
+dev 使用 Deploy AgentCore workflow：`--build-only` → 同一角色的新 OIDC 会话 → `--provision-only`。下面的默认 `make` 调用保留为其他环境的既有 CLI 路径。
+
 ```bash
 make agentcore          # 构建/推送 arm64 agent 镜像 + 幂等 provisioner
 make agentcore SMOKE=1  # 额外进行调用验证

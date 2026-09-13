@@ -199,6 +199,8 @@ flowchart LR
 
 ### 手順
 
+dev は Deploy AgentCore workflow の `--build-only` → 同じロールの新しい OIDC セッション → `--provision-only` を使用します。以下の通常の `make` 呼び出しは、他の環境の既存 CLI パスです。
+
 ```bash
 make agentcore          # arm64 agent イメージのビルド/プッシュ + 冪等 provisioner
 make agentcore SMOKE=1  # 追加で呼び出し検証

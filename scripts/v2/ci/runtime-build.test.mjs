@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  checkRole, verifyCaller, imagePlan, verifyManifest, buildImage,
+  checkRole, verifyCaller, imagePlan, verifyManifest, buildImage, TIMEOUTS,
 } from './runtime-build.mjs';
 
 const account = '123456789012';
@@ -153,4 +153,20 @@ test('wrong STS identity or architecture prevents pushes and public errors omit 
       if (overrides.caller) assert.equal(f.calls.length, 1);
     } finally { f.cleanup(); }
   }
+});
+
+test('the aggregate build budget stops further AWS access before the session can expire', () => {
+  const f = fixture();
+  let elapsed = 0;
+  try {
+    assert.throws(() => buildImage({
+      env: { ...env, RUNNER_TEMP: f.dir }, project: 'awsops-dev', component: 'worker', root: f.dir,
+      now: () => elapsed, run: (cmd, args, options) => {
+        const value = f.run(cmd, args, options);
+        if (args[1] === 'batch-get-image') elapsed = TIMEOUTS.buildPhase + 1;
+        return value;
+      },
+    }), e => e.message === 'build_phase_timeout' && e.exitCode === 124);
+    assert.ok(!f.calls.some(c => c.args[0] === 'push' || c.args[1] === 'get-login-password'));
+  } finally { f.cleanup(); }
 });

@@ -81,3 +81,50 @@ test('AgentCore dev waits for private migration and uses strict account guards w
   assert.equal(w.jobs.deploy.env.DOCKER, "${{ github.ref == 'refs/heads/dev' && 'docker' || 'sudo docker' }}");
   assert.match(w.jobs.deploy.env.AGENT_IMAGE_TAG, /agent-\{0\}.*github.sha/);
 });
+
+test('manual runtime image setup precedes a fresh one-hour session and bounded build step', () => {
+  const job = workflow('build-runtime-images.yml').jobs.build;
+  const steps = job.steps;
+  const credentials = credentialsIndex(steps);
+  for (const action of ['docker/setup-qemu-action', 'docker/setup-buildx-action']) {
+    assert.ok(steps.findIndex(s => s.uses?.startsWith(action)) < credentials);
+  }
+  assert.equal(steps[credentials].with['role-duration-seconds'], 3600);
+  assert.equal(steps[credentials].with['unset-current-credentials'], true);
+  assert.ok(job['timeout-minutes'] <= 60);
+  const build = steps.find(s => s.id === 'image');
+  assert.ok(steps.indexOf(build) > credentials);
+  assert.ok(build['timeout-minutes'] <= 50);
+});
+
+test('dev AgentCore refreshes the same role between build-only and digest-bound provision-only', () => {
+  const job = workflow('deploy-agentcore.yml').jobs.deploy;
+  const steps = job.steps;
+  const buildCred = steps.findIndex(s => s.name === 'Fresh development credentials for image build');
+  const buildCheck = steps.findIndex(s => s.name === 'Verify refreshed development build caller');
+  const build = steps.findIndex(s => s.id === 'agent_image');
+  const provisionCred = steps.findIndex(s => s.name === 'Fresh development credentials for provisioning');
+  const provisionCheck = steps.findIndex(s => s.name === 'Verify refreshed development provision caller');
+  const provision = steps.findIndex(s => s.name === 'Provision verified development agent image');
+  assert.ok(buildCred > steps.findIndex(s => s.uses?.startsWith('docker/setup-buildx-action')));
+  assert.ok(buildCred > steps.findIndex(s => s.run?.includes('npm ci')));
+  assert.ok(buildCred < buildCheck && buildCheck < build && build < provisionCred &&
+    provisionCred < provisionCheck && provisionCheck < provision);
+  for (const i of [buildCred, provisionCred]) {
+    assert.equal(steps[i].if, "github.ref == 'refs/heads/dev'");
+    assert.equal(steps[i].with['role-to-assume'], '${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}');
+    assert.equal(steps[i].with['role-duration-seconds'], 3600);
+    assert.equal(steps[i].with['unset-current-credentials'], true);
+  }
+  for (const i of [buildCheck, provisionCheck]) {
+    assert.match(steps[i].run, /get-caller-identity/);
+    assert.match(steps[i].run, /runtime-build.mjs verify-role/);
+    assert.ok(steps[i]['timeout-minutes'] <= 2);
+  }
+  assert.match(steps[build].run, /agentcore.mjs --build-only/);
+  assert.match(steps[provision].run, /agentcore.mjs --provision-only/);
+  assert.equal(steps[provision].env.AGENT_IMAGE_DIGEST, '${{ steps.agent_image.outputs.digest }}');
+  assert.equal(steps[provision].env.AGENT_IMAGE_PROJECT, '${{ steps.agent_image.outputs.project }}');
+  assert.ok(steps[build]['timeout-minutes'] <= 52 && steps[provision]['timeout-minutes'] <= 52);
+  assert.equal(steps.find(s => s.name === 'make agentcore').if, "github.ref != 'refs/heads/dev'");
+});
