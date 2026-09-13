@@ -250,6 +250,9 @@ test('Deploy Web database verification is dispatch opt-in and follows regular he
   assert.equal(auth.env.SMOKE_CREDENTIAL_FILE, '${{ steps.demo.outputs.credential_file }}');
   assert.equal(resolve.id, 'demo');
   assert.equal(deploySteps.find(step => step.uses === 'hashicorp/setup-terraform@v3').with.terraform_version, '1.15.7');
+  // The wrapper can publish Terraform stdout as step outputs; the credential
+  // helper must capture the effective password through the unwrapped binary.
+  assert.equal(deploySteps.find(step => step.uses === 'hashicorp/setup-terraform@v3').with.terraform_wrapper, false);
   for (const job of Object.values(workflow.jobs)) {
     assert.ok(!JSON.stringify(job.env ?? {}).includes('TF_VAR_DEMO_PASSWORD'));
     for (const step of job.steps) {

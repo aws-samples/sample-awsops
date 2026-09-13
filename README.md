@@ -182,14 +182,13 @@ Private migration tests require `npm ci --prefix scripts/v2 --ignore-scripts --n
 The required private PostgreSQL suite fails if Docker is missing; it uses bare `docker` on PATH
 (the documented exception to optional legacy itests). Its offline companion uses no AWS credentials.
 Authenticated deployment smoke tests require Python 3 with PyYAML and Terraform **1.15.7**;
-their offline variable fixture needs no providers. Terraform mock tests also require installed/cached
+their offline variable fixture needs no providers. Terraform mock tests require **1.15.7** and installed/cached
 providers; the helper copies only tracked working-tree files, runs `init -backend=false`, validates
-and tests without a real backend. The command comment’s “opportunistic TF checks” refers only
-to its final fmt/validate diagnostics; the deployment Node suite always requires PyYAML and
-Terraform 1.15.7 and fails if either is missing.
+and tests without a real backend. Missing deployment-suite prerequisites fail the shared runner;
+only its final fmt/validate diagnostics are informational.
 
 ```bash
-bash scripts/v2/merge-verify.sh   # isolated Python + web vitest + deployment Node tests; opportunistic TF checks
+bash scripts/v2/merge-verify.sh   # required Python, web and deployment tests
 node --test scripts/v2/ci/*.test.mjs # offline private migration runtime fixtures (CI required)
 node --test scripts/v2/ci/migration.itest.mjs # real PostgreSQL initializer/runner regressions (CI required)
 bash scripts/v2/terraform-test.sh # isolated, backend-disabled Terraform mock tests (also required in CI)
@@ -388,15 +387,18 @@ Private migration 테스트는 `npm ci --prefix scripts/v2 --ignore-scripts --no
 `pg`·AWS SDK를 설치하며 PostgreSQL 테스트에는 OpenSSL·접근 가능한 Docker·`postgres:17`이
 필요합니다. 레거시 선택적 itest와 달리 Docker 부재 시 필수 gate가 실패하고 PATH의 `docker`를
 직접 사용합니다. 오프라인 companion은 AWS 자격증명을 사용하지 않습니다.
-Terraform mock 테스트에는 **1.15.7**과 설치/캐시된 provider가 필요합니다. 도우미는 추적된
+인증 배포 smoke 테스트는 Python 3·PyYAML·Terraform **1.15.7**을 필수로 요구하며,
+누락 시 공통 러너도 실패합니다. 오프라인 변수 fixture에는 provider가 필요하지 않습니다.
+마지막 fmt/validate 진단만 참고용입니다. Terraform mock 테스트에는 **1.15.7**과
+설치/캐시된 provider가 필요합니다. 도우미는 추적된
 작업 파일만 복사해 `init -backend=false`, validate, test를 실행하며 실제 backend를 사용하지 않습니다.
 
 ```bash
-bash scripts/v2/merge-verify.sh   # 격리 Python + web vitest + 배포 Node 테스트; 선택적 TF 검사
+bash scripts/v2/merge-verify.sh   # 필수 Python·웹·배포 테스트
 node --test scripts/v2/ci/*.test.mjs # private migration runtime 오프라인 fixture (CI 필수)
 node --test scripts/v2/ci/migration.itest.mjs # 실제 PG initializer/runner 회귀 테스트 (CI 필수)
 bash scripts/v2/terraform-test.sh # 별도 복사본·backend 비활성 Terraform mock 테스트 (CI 필수)
-node --test scripts/v2/deployment-smoke.test.mjs # 오프라인 스모크 인자 집중 테스트
+node --test scripts/v2/deployment-smoke.test.mjs # 오프라인 health·인증·자격증명 준비·워크플로 검사
 bash tests/run-all.sh             # repo 전반 hook/structure 테스트 + agent Python unittest
 (cd web && npx vitest run)        # web 유닛 테스트만
 ```
