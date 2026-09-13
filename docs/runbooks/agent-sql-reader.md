@@ -17,8 +17,14 @@ IAM DB auth on that path), so this one role has a password — Terraform generat
 ## 실행 순서 — 마이그레이션이 먼저 / Enable order — migrations first
 
 Dev Deploy AgentCore runs the reusable private `deploy-migrations.yml` workflow before its
-build/provision phases. Main/preview and direct CLI on a host with private DB access use:
-dev Deploy AgentCore는 사설 재사용 migration workflow를 먼저 실행한다.
+build/provision phases. Before dispatch, set `CI_MIGRATIONS_ENABLED_DEV=true` and apply a
+reviewed plan with `ci_migrations_enabled=true`; the applied `migration_job` output must
+be non-null. The default-off migration infrastructure blocks dev deployment until applied.
+Main/preview and direct CLI on a host with private DB access use:
+dev Deploy AgentCore는 사설 재사용 migration workflow를 먼저 실행한다. 사전에
+`CI_MIGRATIONS_ENABLED_DEV=true`를 설정하고 `ci_migrations_enabled=true`인 검토된 계획을
+적용해 `migration_job` 출력이 null이 아니어야 한다. 기본 비활성 인프라가 적용되지 않으면
+dev 배포는 차단된다.
 main/preview와 DB에 접근 가능한 호스트의 직접 CLI는 다음 순서를 따른다:
 
 ```

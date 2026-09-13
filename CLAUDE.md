@@ -76,7 +76,9 @@ Live environment: account `<ACCOUNT_ID>`, domain `awsops-v2.atomai.click`, reusi
 ## Deployment
 Migrations and `awsops_sql_reader` password sync must succeed before AgentCore provisioning.
 Dev Deploy AgentCore runs the reusable private `deploy-migrations.yml` workflow first, then
-the split image-build/provision phases. Main/preview and direct private-host CLI use
+the split image-build/provision phases. Before dispatch, set `CI_MIGRATIONS_ENABLED_DEV=true`
+and apply the reviewed plan with `ci_migrations_enabled=true` so `migration_job` is non-null.
+Main/preview and direct private-host CLI use
 `make migrate` before `make agentcore`; that target does not run migrations itself.
 See `docs/runbooks/agent-sql-reader.md`.
 

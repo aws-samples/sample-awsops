@@ -94,15 +94,25 @@ migration task; main/preview retain `make migrate`. The dev workflow uses
 `--provision-only` with the verified project/digest. The second phase rechecks the commit
 tag/digest without rebuilding. Fresh sessions and aggregate phase deadlines keep each phase
 inside one hour. Other stacks keep `make agentcore`; `SMOKE=1` checks after provisioning.
-Dev requires the matching readiness producer and `runtime_deployment`
+Before dev workflow dispatch, set `CI_MIGRATIONS_ENABLED_DEV=true` and apply a reviewed
+plan with `ci_migrations_enabled=true`, producing a non-null `migration_job` output.
+This private-migration prerequisite also applies when smoke is off.
+The configured dev build role needs push/BatchGetImage access to the selected
+`${project}-steampipe` or `${project}-worker` repository; the dev deployer needs those
+actions on `${project}-agentcore`. Web-only ECR grants do not establish this access.
+See [CI ECR scopes](../runbooks/dev-repo-setup.md#4-ecr-permissions-for-the-pin-step--ci-deployer-ecr-권한);
+the workflows check access but do not grant it.
+
+Dev smoke requires the matching readiness producer and `runtime_deployment`
 output with inventory enabled; these producer dependencies must land before selecting smoke.
 The applied `agentcore.deployment_readiness_enabled` output must also be boolean true.
 The provisioner maps it to `DEPLOYMENT_READINESS_ENABLED`; missing/false keeps the probe
 disabled, even if an ambient environment variable says true.
 Other stacks retain advisory compatibility invocation when readiness is unavailable, and
 advisory structured checks when available. Invocation transport failures still fail.
-**Everything is gated by `agentcore_enabled`**
-(default `false` → `count`/`for_each` = 0, a no-op).
+**AgentCore foundation resources require `agentcore_enabled`**
+(default `false` → `count`/`for_each` = 0, a no-op). The dev CI migration task has its
+own default-off `ci_migrations_enabled` gate.
 
 The structured check traverses the Ops inventory tools and the model through the producer.
 It accepts one SSE payload (optional data spacing, event/id/comments and `[DONE]`), checks
@@ -114,6 +124,11 @@ This optional CLI smoke is not the full web/worker release gate or a Memory/Code
 
 공개 provisioning 출력은 고정 단계/코드·catalog key·상태별 개수와 dropped 개수만 보존한다.
 dev는 사설 migration을 재사용하며 main/preview는 `make migrate`를 먼저 실행한다.
+dev 실행 전 `CI_MIGRATIONS_ENABLED_DEV=true`와 검토된 `ci_migrations_enabled=true`
+계획을 적용해 `migration_job` 출력이 null이 아니어야 한다. smoke를 꺼도 필수다.
+dev build 역할은 선택한 `${project}-steampipe`·`${project}-worker`, dev deployer는
+`${project}-agentcore`에 push·BatchGetImage 권한이 필요하다. web 전용 권한으로는
+충분하지 않으며 상세 범위는 CI ECR 절차를 따른다. 워크플로는 접근을 검사하고 IAM은 변경하지 않는다.
 dev는 `--build-only` 이후 동일 OIDC 역할을 새로 받아 `--provision-only`에 검증된
 project/digest를 전달한다. 재빌드 없이 커밋 태그/digest를 다시 확인하며 각 단계는
 새 1시간 세션 안의 전체 deadline으로 제한한다.

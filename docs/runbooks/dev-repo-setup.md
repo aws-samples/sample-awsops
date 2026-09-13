@@ -779,15 +779,40 @@ stack's web ECR repository (plus the auth-token action it already has).
 (각 deployer 역할에 자기 스택 web ECR 스코프의 `ecr:BatchGetImage`·`ecr:PutImage`
 권한이 필요합니다.)
 
+Backend image builds require additional **repository scopes**, which the web grants above
+do not establish. Verify the configured roles before using the runtime build workflows:
+
+| Configured role | Required backend repositories |
+|---|---|
+| Dev build role (`AWS_CI_BUILD_DEV_ROLE_ARN`) | `${project}-steampipe`, `${project}-worker` |
+| Dev deployer role (`AWS_CI_DEPLOYER_DEV_ROLE_ARN`) | `${project}-agentcore` |
+
+On those exact repository ARNs in the configured account/region, each role needs
+`ecr:BatchGetImage`, `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`,
+`ecr:UploadLayerPart`, `ecr:CompleteLayerUpload` and `ecr:PutImage`.
+Retain `ecr:GetAuthorizationToken` on `Resource: "*"` with `aws:RequestedRegion`
+restricted to the deployment region; it cannot use repository ARNs. These workflows do not
+change IAM; missing backend scopes require a separately reviewed policy change.
+The repository preflight tests effective access and fails on denial.
+
+백엔드 빌드는 위 web 권한과 별도로 저장소 범위를 확인해야 한다. dev build 역할은
+`${project}-steampipe`·`${project}-worker`, dev deployer 역할은 `${project}-agentcore`의
+정확한 계정·리전 ARN에 위 조회·업로드 권한이 필요하다. 배포 리전의
+`ecr:GetAuthorizationToken`은 저장소 ARN 대신 `Resource: "*"`와 배포 리전으로 제한한
+`aws:RequestedRegion` 조건을 사용한다. 워크플로가 IAM을 변경하지 않으므로 누락된 범위는
+별도 검토된 정책 변경으로 준비한다. 사전 검사는 실제 접근을 확인하며 거부 시 실패한다.
+
 Build checks repository availability **before** QEMU/Buildx and the image build using
 `ecr:BatchCheckLayerAvailability`, already part of its scoped push permissions, with an
 intentionally absent but valid layer digest. `LayerNotFound` is normal for this probe;
 repository-not-found or access-denied stops the build. Review/apply an `ecr-bootstrap`
-plan for a missing repository; do not disable this check or expand the role.
+plan for a missing repository. Keep this check; any missing permission scope needs the
+reviewed role/repository change described above.
 
 빌드 전에 기존 push 권한으로 ECR 저장소 존재·접근을 확인합니다. 테스트용 레이어 부재는
 정상이나 저장소 부재·권한 거부는 중단 사유입니다. 저장소가 없으면 §5의 ECR 초기 계획을
-검토·적용하고, 검사나 권한 제한을 해제하지 않습니다.
+검토·적용하고 검사를 유지합니다. 권한 범위가 누락됐다면 위 역할·저장소 범위의 검토된
+변경으로 준비합니다.
 
 ### 5. Deploy while DNS changes are deferred / DNS 변경 보류 상태의 배포
 
@@ -986,11 +1011,13 @@ checks process liveness; complete the required database migrations and verify
 authenticated application routes separately.
 For an authorized AgentCore deployment, [Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml)
 first runs the private reusable migration workflow on `dev`; other branches retain
-`make migrate`. Optional `smoke=true` runs after provisioning. On dev it requires the matching
+`make migrate`. Before dev dispatch, apply `ci_migrations_enabled=true` using
+`CI_MIGRATIONS_ENABLED_DEV=true` and confirm a non-null `migration_job` output.
+Optional `smoke=true` runs after provisioning. On dev it requires the matching
 readiness producer, `runtime_deployment`, enabled inventory and producer-classified freshness.
 The applied `agentcore.deployment_readiness_enabled` output must be boolean true; the
 provisioner keeps the runtime probe disabled for missing/false values, ignoring ambient overrides.
-Missing prerequisites fail the optional dev smoke with a fixed code, not before provisioning.
+Missing optional-readiness prerequisites fail dev smoke with a fixed code after provisioning.
 Other stacks retain advisory invocation behavior when readiness is unavailable; structured
 checks are advisory there when available, while invocation transport failures still fail.
 Neither AgentCore smoke nor `/api/health` substitutes for a web-role
@@ -1001,11 +1028,13 @@ CloudFront 연결 주소로 요청한다. `/api/health`는 프로세스 생존 �
 필수 DB 마이그레이션과 인증된 실제 기능 검증도 수행해야 한다.
 웹 워크플로와 `make deploy` 모두 공통 CLI로 주소를 검증하며 셸 문자열 대신 인자 배열을 사용한다.
 dev AgentCore는 사설 재사용 migration workflow를 먼저 실행하며 다른 브랜치는
-`make migrate`를 유지한다. 선택적 `smoke=true`는 provisioning 후 실행한다. dev에서는
+`make migrate`를 유지한다. dev 실행 전 `CI_MIGRATIONS_ENABLED_DEV=true`와 검토된
+`ci_migrations_enabled=true` 계획을 적용해 `migration_job` 출력이 null이 아님을 확인한다.
+선택적 `smoke=true`는 provisioning 후 실행한다. dev에서는
 대응 producer·`runtime_deployment`·활성 inventory와 producer의 freshness 판정이 필수다.
 적용된 `agentcore.deployment_readiness_enabled` 출력도 boolean true여야 하며, 누락·false이면
 주변 환경변수와 무관하게 runtime 검증 모드를 비활성화한다.
-누락은 provisioning 이전 차단이 아니라 dev smoke의 고정 오류 코드로 보고한다.
+선택 readiness 전제조건 누락은 provisioning 후 dev smoke의 고정 오류 코드로 보고한다.
 다른 스택은 readiness가 없으면 기존 참고용 호출을 유지하며, 사용 가능한 구조화 검사도
 참고용이다. 호출 전송 실패는 계속 실패한다. 웹 역할·로그인·DB·전체 수집·워커 검증을 대체하지 않는다.
 
@@ -1026,9 +1055,10 @@ configured CI role and actual STS identity before writes; it never creates repos
 It builds one Linux/ARM64 manifest, verifies the uploaded configuration and manifest hashes,
 and returns the project and immutable digest. Record those verified digests for the full
 infrastructure plan; the build itself deploys no service.
-Repository preflight uses the already-required `ecr:BatchGetImage`; an expected ImageNotFound
-for the commit tag is acceptable. Repository-not-found and access denial fail; no
-DescribeRepositories grant or automatic repository creation is added.
+Repository preflight and digest verification require `ecr:BatchGetImage` on the selected
+backend repository; see §4 for the complete role/repository scopes. An expected ImageNotFound
+for the commit tag is acceptable. Repository-not-found and access denial fail.
+The helper neither calls DescribeRepositories nor provisions repositories or IAM.
 
 검토된 Terraform ECR bootstrap 후 dev에서 **Build Development Runtime Image**를
 `component=steampipe` 또는 `component=worker`로 실행한다. 저장소는 미리 존재해야 한다.
@@ -1036,10 +1066,15 @@ helper는 쓰기 전에 독립 설정 계정·CI 역할·실제 STS 식별자를
 않는다. Linux/ARM64 단일 manifest와 업로드 해시를 검증하고 project·digest를 반환한다.
 이 digest를 전체 인프라 계획에 사용하며 이미지 빌드만으로 서비스가 배포되지는 않는다.
 각 저장소는 해당 `steampipe_enabled`·`workers_enabled`·`agentcore_enabled`에 의해 생성된다.
-사전 검사는 기존 `ecr:BatchGetImage` 권한만 사용한다. 커밋 태그의 ImageNotFound는 허용하지만
-저장소 부재·접근 거부는 실패하며 DescribeRepositories 권한이나 자동 생성을 추가하지 않는다.
+사전 검사·digest 검증에는 선택한 백엔드 저장소의 `ecr:BatchGetImage`가 필요하다.
+역할·저장소 범위는 §4를 따른다. 커밋 태그의 ImageNotFound는 허용하지만 저장소 부재·접근
+거부는 실패한다. helper는 DescribeRepositories 호출이나 저장소·IAM 생성을 수행하지 않는다.
 
 Dev AgentCore follows the same account/digest checks using an `agent-<commit SHA>` tag.
+Before dispatch, set `CI_MIGRATIONS_ENABLED_DEV=true` and apply the reviewed full plan
+with `ci_migrations_enabled=true`; `migration_job` must be non-null in applied state.
+The default-off migration infrastructure is mandatory for this dev workflow, even with
+`smoke=false`. A successful ECR-only bootstrap does not provision that infrastructure.
 After setup, the workflow obtains a fresh one-hour session for `--build-only`. It then
 refreshes the SAME deployer role before `--provision-only`, passing only the verified
 project/digest outputs. Provision-only repeats identity checks, rereads the commit tag
@@ -1055,12 +1090,16 @@ helper at 48 minutes and each agent CLI phase at 50 minutes, including reads. Fr
 verification is capped at two minutes and phase workflow steps at 52 minutes, within each
 fresh one-hour session. The dev job allows 120 minutes for setup plus both phases. Manual runtime image builds
 obtain credentials only after QEMU/buildx setup and use a 50-minute build step. No custom
-credential process, role-session maximum change or IAM grant is introduced.
+credential process or role-session maximum change is introduced. Required IAM scopes
+must be provisioned before dispatch; the workflow does not grant them.
 Public diagnostics retain fixed stages/codes, catalog keys and status counts, at most 240
 resource events with an explicit dropped count. Child failure exit codes are preserved;
 ARNs, credentials, endpoints and raw SDK errors are not relayed.
 
 dev AgentCore도 `agent-<commit SHA>` 태그와 같은 계정·digest 검증을 사용한다.
+실행 전 `CI_MIGRATIONS_ENABLED_DEV=true`를 설정하고 `ci_migrations_enabled=true`인 검토된
+전체 계획을 적용해 `migration_job` 출력이 null이 아니어야 한다. 기본 비활성 migration
+인프라는 `smoke=false`여도 필수이며 ECR 전용 bootstrap만으로는 생성되지 않는다.
 setup 후 새 1시간 세션으로 `--build-only`를 실행하고, 동일 deployer 역할을 다시 갱신한 뒤
 검증된 project/digest만 `--provision-only`에 전달한다. 계정과 커밋 태그/digest를 다시
 검증하며 재빌드나 latest 선택은 하지 않는다. 기존 단일 dev CLI 경로는 거부하고
@@ -1072,7 +1111,8 @@ smoke를 끄고, 수집 후 전체 앱 배포 검증을 실행한다. provisioni
 조회 시간을 포함한 전체 build helper는 48분, agent CLI 단계는 각각 50분이며,
 갱신한 역할 확인은 2분·workflow 단계는 52분 이내로 새 1시간 세션 안에 묶는다.
 dev job은 setup과 두 단계를 포함해 120분이고 수동 이미지 빌드는 QEMU/buildx setup 후 자격을 받아 50분 안에 끝낸다.
-별도 credential process·역할 최대 세션 시간 변경·새 IAM 권한은 없다.
+별도 credential process나 역할 최대 세션 시간 변경은 없다. 필요한 IAM 범위는 사전에
+준비해야 하며 워크플로가 권한을 부여하지 않는다.
 공개 진단은 고정 단계/코드·catalog key·상태별 개수를 보존하고
 resource event 240개 초과는 dropped 개수로 알린다. 자식 종료 코드는 보존하며 ARN·자격증명·
 endpoint·SDK 오류 원문은 전달하지 않는다.
