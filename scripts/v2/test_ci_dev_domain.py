@@ -21,12 +21,13 @@ ZONE = {
 }
 
 
-def plan_fixture(changes=()):
+def plan_fixture(changes=(), *, rollout=True):
     return {
         "format_version": "1.2",
         "variables": {key: {"value": value} for key, value in {
             "domain_name": DOMAIN, "hosted_zone_name": DOMAIN,
             "extra_domain_aliases": ["extra.dev.example.com"],
+            "ci_domain_rollout": rollout,
         }.items()},
         "planned_values": {"root_module": {"resources": [{
             "address": "data.aws_route53_zone.main", "mode": "data",
@@ -107,10 +108,32 @@ class DevDomainTests(unittest.TestCase):
                     self.assertFalse(override.exists())
                 else:
                     self.assertEqual(json.loads(override.read_text()), (
-                        {"domain_name": DOMAIN, "hosted_zone_name": DOMAIN} if target == "dev" else {}
+                        {"domain_name": DOMAIN, "hosted_zone_name": DOMAIN, "ci_domain_rollout": False}
+                        if target == "dev" else {"ci_domain_rollout": False}
                     ))
             self.assertIn("certificate_mode=managed", outputs.read_text())
-            self.assertIn("rollout=true", outputs.read_text())
+            self.assertNotIn("rollout=", outputs.read_text())
+
+    def test_explicit_rollout_input_is_dev_full_only_and_saved_as_boolean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for target, scope, rollout, expected in (
+                ("dev", "full", "true", 0), ("dev", "full", "false", 0),
+                ("main", "full", "true", 1), ("dev", "ecr-bootstrap", "true", 1),
+                ("dev", "full", "yes", 1),
+            ):
+                with self.subTest(target=target, scope=scope, rollout=rollout):
+                    result = subprocess.run(
+                        [sys.executable, str(SCRIPT), "overrides"], cwd=root,
+                        env={**os.environ, "TARGET": target, "PLAN_SCOPE": scope,
+                             "DOMAIN_ROLLOUT": rollout, "DOMAIN_NAME_DEV": "",
+                             "HOSTED_ZONE_NAME_DEV": "", "CERTIFICATE_MODE_DEV": ""},
+                        text=True, capture_output=True,
+                    )
+                    self.assertEqual(result.returncode, expected, result.stderr)
+                    if expected == 0:
+                        self.assertIs(json.loads((root / "ci-domain.auto.tfvars.json").read_text())[
+                            "ci_domain_rollout"], rollout == "true")
 
     def test_public_zone_summary_selects_only_expected_data_source(self):
         summary = self.module().zone_summary(plan_fixture())
@@ -122,14 +145,29 @@ class DevDomainTests(unittest.TestCase):
         # Terraform omits already-read data sources from planned_values, even
         # when a newly created resource references them.
         for changes in ([], [record()]):
-            plan = plan_fixture(changes)
-            data = plan["planned_values"]["root_module"]["resources"].pop()
+            for representation in ("empty", "omitted", "referenced"):
+                plan = plan_fixture(changes)
+                root = plan["planned_values"]["root_module"]
+                data = root["resources"].pop()
+                if representation == "omitted":
+                    del root["resources"]
+                elif representation == "referenced":
+                    root["resources"].append({"address": "terraform_data.reference"})
+                plan["prior_state"] = {"values": {"root_module": {"resources": [data]}}}
+                with self.subTest(changes=changes, representation=representation):
+                    result = self.module().check_scoped_dns(plan, changes)
+                    self.assertEqual(result["zone_id"], "Z123CHILD")
+                    self.assertEqual(result["name_servers"], sorted(ZONE["name_servers"]))
+                    self.assertNotIn("MUST-NOT-PRINT", json.dumps(result))
+
+    def test_malformed_resource_collections_do_not_use_valid_prior_data(self):
+        for malformed in ({}, None, "", [None]):
+            plan = plan_fixture()
+            data = plan["planned_values"]["root_module"]["resources"][0]
             plan["prior_state"] = {"values": {"root_module": {"resources": [data]}}}
-            with self.subTest(changes=changes):
-                result = self.module().check_scoped_dns(plan, changes)
-                self.assertEqual(result["zone_id"], "Z123CHILD")
-                self.assertEqual(result["name_servers"], sorted(ZONE["name_servers"]))
-                self.assertNotIn("MUST-NOT-PRINT", json.dumps(result))
+            plan["planned_values"]["root_module"]["resources"] = malformed
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                self.module().zone_summary(plan)
 
     def test_prior_state_does_not_bypass_deferred_or_invalid_selected_zone(self):
         for mutation in ("deferred", "wrong-prior", "duplicate-prior", "invalid-planned"):

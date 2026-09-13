@@ -31,6 +31,13 @@ variable "publish_service_dns" {
   description = "Publish Route53 service A aliases to CloudFront. false defers only service DNS; CloudFront aliases, HTTPS, and managed-certificate validation CNAMEs remain. For a new stack with no DNS writes, also supply both existing certificate ARNs."
 }
 
+variable "ci_domain_rollout" {
+  type        = bool
+  default     = false
+  nullable    = false
+  description = "CI metadata only: pin dev/full domain DNS scoping in the saved plan. Set by explicit plan dispatch; does not alter infrastructure."
+}
+
 variable "existing_cf_certificate_arn" {
   type        = string
   default     = null

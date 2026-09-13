@@ -45,6 +45,10 @@ on:
         type: choice
         options: [full, ecr-bootstrap]
         default: full
+      domain_rollout:
+        description: "Plan only: scope dev/full DNS to the configured service and validation records"
+        type: boolean
+        default: false
       publish_service_dns:
         description: "Publish service A records (preserve current state when DNS changes are prohibited)"
         type: boolean
@@ -136,10 +140,14 @@ jobs:
           DOMAIN_NAME_DEV: ${{ vars.DOMAIN_NAME_DEV }}
           HOSTED_ZONE_NAME_DEV: ${{ vars.HOSTED_ZONE_NAME_DEV }}
           CERTIFICATE_MODE_DEV: ${{ vars.CERTIFICATE_MODE_DEV }}
+          DOMAIN_ROLLOUT: ${{ github.event_name == 'workflow_dispatch' && inputs.domain_rollout }}
+          PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
         run: |
           set -euo pipefail
           # Never rewrite TF_TFVARS_DEV. Auto tfvars reach BOTH console and plan;
           # certificate choices stay in the later, explicitly passed var-file.
+          tracked=$(git ls-files -- ci-domain.auto.tfvars.json)
+          [ -z "$tracked" ] || { echo "::error::ci-domain.auto.tfvars.json is tracked; remove it from version control before planning"; exit 1; }
           rm -f ci-deployment.tfvars.json
           python3 ../../scripts/v2/ci_dev_domain.py overrides
 
@@ -157,6 +165,7 @@ jobs:
           PUBLISH_SERVICE_DNS: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_service_dns }}
           PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
           CERTIFICATE_MODE: ${{ steps.domain.outputs.certificate_mode }}
+          ADVISORY: ${{ github.event_name != 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           umask 077
@@ -166,12 +175,13 @@ jobs:
           # console does NOT support -lock=false; verified against an offline backend.
           terraform show -json > "$STATE_JSON"
           terraform console -no-color \
-            <<<'jsonencode({domain = var.domain_name, zone = var.hosted_zone_name, aliases = var.extra_domain_aliases, region = var.region, cf_arn = var.existing_cf_certificate_arn, alb_arn = var.existing_alb_certificate_arn})' |
+            <<<'jsonencode({domain = var.domain_name, zone = var.hosted_zone_name, aliases = var.extra_domain_aliases, region = var.region, cf_arn = var.existing_cf_certificate_arn, alb_arn = var.existing_alb_certificate_arn, domain_rollout = var.ci_domain_rollout})' |
             python3 ../../scripts/v2/ci_dns_policy.py certificates \
               --state "$STATE_JSON" --allow-dns "$ALLOW_DNS_CHANGES" \
               --publish "$PUBLISH_SERVICE_DNS" --scope "$PLAN_SCOPE" \
               --cf-arn "$CF_CERTIFICATE_ARN" --alb-arn "$ALB_CERTIFICATE_ARN" \
               --target "$TARGET" --certificate-mode "${CERTIFICATE_MODE:-preserve}" \
+              --advisory "$ADVISORY" \
               > ci-deployment.tfvars.json
           # JSON null preserves Terraform certificate ownership; "-var=...=null"
           # would instead pass the literal string "null" to a string variable.
@@ -212,9 +222,9 @@ jobs:
       - name: Check planned DNS operations
         if: steps.restore.outputs.skip != '1'
         env:
-          # Dev advisory plans never imply permission for a domain rollout.
-          # Preserve the existing advisory behavior on other targets.
-          ALLOW_DNS_CHANGES: ${{ (github.event_name == 'workflow_dispatch' && inputs.allow_dns_changes) || (github.event_name != 'workflow_dispatch' && (github.base_ref || github.ref_name) != 'dev') }}
+          # Advisory DNS allowance is reporting only; these plans cannot be applied.
+          # Dispatch plans need explicit permission independently of domain scoping.
+          ALLOW_DNS_CHANGES: ${{ github.event_name != 'workflow_dispatch' || inputs.allow_dns_changes }}
           PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
         run: |
           set -euo pipefail
@@ -248,7 +258,12 @@ jobs:
       # the restored config behind, whatever the outcome.
       - name: Clean sensitive files off the runner
         if: always()
-        run: rm -f tfplan tfplan.enc terraform.tfvars backend.hcl ci-deployment.tfvars.json ci-domain.auto.tfvars.json ci-state.json
+        run: |
+          set -euo pipefail
+          rm -f tfplan tfplan.enc terraform.tfvars backend.hcl ci-deployment.tfvars.json ci-state.json
+          # Preserve a tracked override for diagnosis if the generation guard refused it.
+          tracked=$(git ls-files -- ci-domain.auto.tfvars.json)
+          if [ -z "$tracked" ]; then rm -f ci-domain.auto.tfvars.json; fi
 
   apply:
     name: Apply (saved plan)

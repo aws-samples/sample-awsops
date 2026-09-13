@@ -2,15 +2,27 @@
 
 ## Symptoms and scope / 증상과 범위
 
-Use this procedure when the dev stack must serve a newly delegated child domain
-while keeping certificate ownership and DNS publication explicit. The parent
+Use this procedure for an **unpublished dev stack** (no owned service A aliases),
+or maintenance of the **same domain**. It does not cover renaming a published domain.
+Keep certificate ownership and DNS publication explicit. The parent
 operator performs all live checks and dispatches. Examples below use reserved
 names; substitute the approved deployment values. This procedure does not grant
 permission to change any other domain or parent-zone delegation.
 
-위임된 새 하위 도메인을 dev 스택에 연결할 때 사용한다. 실제 조회와 실행은 상위
+서비스 A 별칭이 없는 **미게시 dev 스택** 또는 **동일 도메인** 유지보수에 사용한다.
+게시된 기존 도메인의 이름 변경 절차가 아니다. 실제 조회와 실행은 상위
 운영자가 수행한다. 아래 예약 도메인을 승인된 배포 값으로 바꾼다. 다른 도메인이나
 상위 존의 NS 위임 변경 권한은 포함하지 않는다.
+
+An existing published old-domain alias is rejected before certificate lookup.
+Retiring it requires a **separate expressly authorized plan under the old
+configuration**, reviewed by that domain's owner. Do not authorize old/parent DNS
+changes as a workaround, extend this rollout's allowlist, or force an unknown plan
+through the gate. Owned validation-record retirement remains separately governed.
+
+게시된 이전 도메인 별칭이 있으면 인증서 조회 전에 거부한다. 삭제하려면 해당 소유자의
+**별도 명시적 승인과 이전 설정의 계획**이 필요하다. 이름 변경을 위해 이전/상위 DNS
+권한을 넓히거나 미확정 계획을 강제로 통과시키지 않는다. 검증 레코드 폐기도 별도 절차다.
 
 Possible blockers include a missing/duplicate public hosted zone in the assumed
 account, mismatched delegation, an out-of-zone alias in protected tfvars, or a
@@ -36,27 +48,39 @@ Set **repository-level variables**, not secrets or environment-scoped variables:
 
 Set the two names together or leave both unset. Names must be plain ASCII
 hostnames with valid labels, no wildcard, URL, whitespace, port, or trailing dot.
-The domain and every existing `extra_domain_aliases` entry must be in the selected
-zone. An empty pair keeps names from protected tfvars. `managed` can also be used
-with that empty pair; it still uses and validates the configured zone.
+The domain must be in the selected zone; active rollout additionally requires every
+`extra_domain_aliases` entry to be in that zone. An empty pair keeps names from
+protected tfvars. `managed` can also be used with that empty pair.
 
 두 이름은 함께 지정하거나 모두 비운다. 와일드카드, URL, 공백, 포트, 마지막 점이
-없는 ASCII 호스트명만 허용한다. 도메인과 기존 `extra_domain_aliases` 모두 지정
-존에 속해야 한다. 두 변수가 없으면 보호된 tfvars의 이름을 유지한다. 이 경우에도
-`managed`를 선택할 수 있으며, 기존 존 설정을 검증한다.
+없는 ASCII 호스트명만 허용한다. 도메인은 지정 존에 속해야 하며 활성 전환에서는
+`extra_domain_aliases`도 그 존에 속해야 한다. 두 변수가 없으면 보호된 tfvars의 이름을
+유지한다. 이 경우에도 `managed`를 선택할 수 있다.
 
 Only target `dev`, including a PR whose **base** is `dev`, reads these variables.
-Main and preview targets ignore them. The workflow cleans and generates
+Main and preview targets ignore them. The workflow rejects a **tracked**
+`ci-domain.auto.tfvars.json` before generation; the file is gitignored. It generates
 `ci-domain.auto.tfvars.json` before console; both console and plan automatically
 load it. Preflight produces `ci-deployment.tfvars.json`, passed explicitly to plan
-for certificate nulls/ARNs and the publication flag. Both generated files are
-removed even on failure. Keep independent migration flags additive in the plan
-argument array; do not replace either input path.
+for certificate nulls/ARNs and the publication flag on dispatch and dev advisory
+plans. Generated files are removed even on failure; a rejected tracked override
+is preserved for diagnosis. Protected tfvars are never rewritten by this path.
 
 PR의 **대상 브랜치**를 포함하여 `dev`일 때만 적용한다. main/preview에는 적용하지
-않는다. console과 plan은 같은 자동 tfvars 파일을 읽고, plan은 인증서 및 게시
-플래그를 담은 별도 검증 파일도 읽는다. 실패 시에도 생성 파일을 정리한다. 독립된
-마이그레이션 플래그는 plan 인자 배열에 추가하며 기존 입력 경로를 대체하지 않는다.
+않는다. 자동 tfvars가 Git 추적 중이면 생성 전에 거부한다. console과 plan은 동일 파일을
+읽으며 dispatch와 dev 참고 계획은 인증서·게시 입력 파일도 읽는다. 실패 시 생성 파일은
+정리하지만 거부된 추적 파일은 보존한다. 이 경로에서 보호된 tfvars를 재작성하지 않는다.
+
+`domain_rollout` is a **plan-dispatch input**, default `false`. Set it to `true` for
+**every domain stage below**; it is accepted only for `dev` / `full`. CI writes the
+declared, default-false Terraform metadata variable `ci_domain_rollout` into the
+saved plan. Plan and apply derive DNS scoping from that saved boolean, never from
+current repo variables or the apply dispatch's `domain_rollout` input.
+
+`domain_rollout`은 기본 `false`인 **plan dispatch 입력**이다. 아래 **모든 도메인 단계**에서
+`true`로 지정하며 `dev` / `full`만 허용한다. 기본 false인 Terraform 메타데이터 변수
+`ci_domain_rollout`으로 계획에 저장한다. plan/apply 범위 검사는 이 저장값만 사용하며
+현재 저장소 변수나 apply의 `domain_rollout` 입력으로 바뀌지 않는다.
 
 ## Verify first / 먼저 확인
 
@@ -77,10 +101,14 @@ PR의 **대상 브랜치**를 포함하여 `dev`일 때만 적용한다. main/pr
    null/unset; preflight verifies the owned certificates without externalizing them. With the new name variables
    already set, preflight verifies the new hostname against both selected public
    certificates (CloudFront: us-east-1 plus all aliases; ALB: configured Region).
-   `allow_dns_changes=false`, `publish_service_dns=false` is the initial test.
+   Use `domain_rollout=true`, `allow_dns_changes=false`, `publish_service_dns=false`
+   for the initial test on an unpublished stack. A certless stack cannot pass this
+   dispatch; first issuance needs the expressly authorized issuance stage below.
    There is no account-wide certificate scan or fallback selection.
    먼저 `preserve`를 선택하고 외부 소유 인증서만 기존 연결 ARN을 명시한다.
    Terraform이 이미 관리하는 인증서는 외부 ARN 입력을 비워 두어 소유권을 유지하며 검증한다.
+   미게시 스택의 초기 검증은 `domain_rollout=true`, DNS 허용/게시 false로 실행한다.
+   인증서가 없으면 이 dispatch는 실패하며 별도 승인된 최초 발급 단계가 필요하다.
    계정 전체 검색이나 대체 인증서 자동 선택은 하지 않는다.
 
 3. Inspect the safe `public_zone` plan summary: `name`, `zone_id`, `name_servers`.
@@ -130,54 +158,83 @@ mode. Do not use managed mode to bypass other trust/validity failures.
 DNS 허용**이 필요하다. 이전 외부 인증서를 가져오거나 삭제/폐기하지 않는다. 이미
 관리 중인 인증서의 소유권은 두 모드 모두 유지한다. 다른 검증 실패를 우회하지 않는다.
 
-An `ecr-bootstrap` plan with null external-ARN inputs remains certificate-neutral in
+An `ecr-bootstrap` plan with **`domain_rollout=false`** and null external-ARN inputs remains certificate-neutral in
 either mode, including a fresh stack. It needs no DNS permission and cannot create or
 change certificates: the saved-plan check permits only `aws_ecr_repository.web`.
 External-ARN conflicts and ownership guards still apply. See the
 [ECR bootstrap procedure](dev-repo-setup.md).
 
-외부 ARN 입력이 비어 있는 `ecr-bootstrap`은 새 스택에서도 두 모드 모두 인증서와 무관하게
+`domain_rollout=false`이고 외부 ARN 입력이 비어 있는 `ecr-bootstrap`은 새 스택에서도 두 모드 모두 인증서와 무관하게
 실행할 수 있다. DNS 허용이 필요 없으며 저장 계획은 `aws_ecr_repository.web`만 변경할 수
 있으므로 인증서를 생성·변경하지 않는다. 외부 ARN 충돌·소유권 검사는 그대로 적용된다.
 
-| Stage / 단계 | `plan_scope` | `allow_dns_changes` | `publish_service_dns` |
-| --- | --- | --- | --- |
-| Test old certificates / 기존 인증서 검증 | `full` | `false` | `false` |
-| New certificates/domain / 인증서·도메인 전환 | `full` | `true` | `false` |
-| After DB/auth smoke / DB·인증 검증 후 서비스 A 게시 | `full` | `true` | `true` |
+The table assumes no existing service A aliases. For same-domain maintenance with
+published aliases, keep `publish_service_dns=true`; false would request their deletion
+when DNS is allowed. Do not use these stages to retire a published old hostname.
+
+아래 표는 서비스 A가 없는 상태를 전제로 한다. 동일 도메인의 기존 게시를 유지하려면
+`publish_service_dns=true`를 유지한다. DNS 허용 시 false는 삭제 요청이다.
+이 단계로 게시된 이전 호스트를 폐기하지 않는다.
+
+| Stage / 단계 | `plan_scope` | `domain_rollout` (plan only) | `allow_dns_changes` | `publish_service_dns` |
+| --- | --- | --- | --- | --- |
+| Verify available certificates / 보유 인증서 검증 | `full` | `true` | `false` | `false` |
+| Issue/attach certificates, keep A absent / 인증서 발급·연결, A 미게시 | `full` | `true` | `true` | `false` |
+| After DB/auth smoke, publish A / DB·인증 검증 후 A 게시 | `full` | `true` | `true` | `true` |
+
+For external reuse, the exact dispatch input names are `existing_cf_certificate_arn`
+and `existing_alb_certificate_arn`. Leave both unset for Terraform-owned certificates
+or `managed` mode; do not put their ARNs into those inputs.
+
+외부 인증서 재사용 입력은 `existing_cf_certificate_arn`, `existing_alb_certificate_arn`이다.
+Terraform 소유 또는 `managed` 모드에서는 두 입력을 비우며 관리 인증서 ARN을 넣지 않는다.
 
 For each stage, dispatch **plan** from `dev`, review its summary and exact saved
 plan, then dispatch **apply** from the same branch/SHA with that successful
 `plan_run_id` and matching DNS permission/scope. The encrypted saved plan contains
 the publication setting; changing inputs or repository variables on the apply
 dispatch does not alter it. Create a fresh plan after any intended input change.
-PR/push plans remain advisory; a dev advisory plan never grants DNS permission.
-Before initial managed issuance, automatic preflight can therefore refuse the
-plan; use the explicit authorized dispatch to prepare the rollout.
+PR/push plans remain read-only and **never apply-eligible**. Their DNS allowance is
+reporting only, with `ci_domain_rollout=false`. Dev advisory preflight preserves
+ownership/publication from state without live ACM, SAN or trust validation, so
+bootstrap or a hostname change alone does not require live certificates to plan.
+Ownership/retirement guards still apply. Dispatch performs the live validation.
 
 각 단계에서 dev의 plan을 검토한 뒤 같은 브랜치/SHA에서 성공한 `plan_run_id`로
 apply한다. apply의 DNS 허용·scope도 일치시킨다. 게시 플래그는 암호화된 저장 plan에
 포함되므로 apply 입력이나 저장소 변수 변경으로 plan을 바꾸지 않는다. 입력 변경
-시 새 plan을 만든다. PR/push는 참고용이며 dev 자동 plan은 DNS 권한을 부여하지
-않는다. 최초 managed 발급 전 자동 검증이 거부되면 명시적 허용 dispatch를 사용한다.
+시 새 plan을 만든다. PR/push는 읽기 전용이고 **적용할 수 없다**. DNS 허용은 보고용이며
+`ci_domain_rollout=false`다. dev 참고 계획은 상태의 소유권·게시를 보존하되 ACM·SAN·신뢰 체인을
+실시간 검증하지 않는다. 소유권·폐기 제한은 유지하며 실제 인증서 검증은 dispatch에서 수행한다.
 
-The first rollout stage retains service A absence while validation CNAMEs and TLS
-consumers change. The parent must then complete DB/auth smoke using the existing
-Host/SNI-preserving smoke workflow before the final A-publication stage. This
-runbook does not replace the migration or smoke procedures.
+The issuance stage changes validation CNAMEs/TLS consumers while A remains absent.
+Then the parent runs [Deploy Web's `deploy` / `Smoke test`](../../.github/workflows/deploy-web.yml)
+using [deployment-smoke.mjs](../../scripts/v2/deployment-smoke.mjs): `/api/health`
+through CloudFront with the service Host/SNI/TLS preserved. This proves liveness,
+**not DB or authentication readiness**. Complete migrations and authenticated route
+checks separately before A publication. If AgentCore deployment is in scope,
+[Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml) runs `make migrate`
+before deployment and supports `smoke=true` for an agent invocation; it is not a
+web-login test. These live actions need their own existing authorization.
 
-첫 전환 단계에서는 서비스 A를 게시하지 않고 검증 CNAME과 TLS 구성을 변경한다.
-이후 상위 운영자가 기존 Host/SNI 유지 smoke 절차로 DB·인증을 검증한 뒤 최종 A를
-게시한다. 이 문서는 마이그레이션·smoke 절차를 대체하지 않는다.
+발급 단계는 A 미게시 상태로 CNAME·TLS를 변경한다. 이후 Deploy Web의 `Smoke test`는
+Host/SNI/TLS를 유지한 `/api/health` 생존 확인이며 **DB·인증 준비 완료 증거가 아니다**.
+상위 운영자는 마이그레이션·인증 경로를 별도로 검증한 뒤 A를 게시한다. AgentCore가 범위에
+포함되면 해당 workflow의 migrate→배포 및 `smoke=true`를 사용한다. 별도 실행 승인은 필요하다.
 
 ## Boundaries and recovery / 제한과 복구
 
-- Dev DNS permission covers only canonical `alias` A and `cf_validation` CNAME
+- **Active domain-rollout** DNS permission covers only canonical `alias` A and `cf_validation` CNAME
   resources for the configured domain/in-zone aliases in the selected child zone.
   It never covers parent NS, unrelated records, new zones, or Cloud Map/registered
   ECS DNS changes. Both before and after values are checked.
-  dev DNS 권한은 선택 존의 지정 도메인/별칭 A 및 검증 CNAME에만 적용한다.
+  **활성 도메인 전환** DNS 권한은 선택 존의 지정 도메인/별칭 A 및 검증 CNAME에만 적용한다.
   상위 NS, 다른 레코드, 새 존, Cloud Map/등록된 ECS 변경은 허용하지 않는다.
+- Ordinary `domain_rollout=false` full plans retain the broad DNS policy, including
+  Cloud Map, **only with explicit `allow_dns_changes=true` on plan and apply**.
+  That option does not authorize old/parent DNS under this runbook.
+  일반 full 계획은 `domain_rollout=false`에서 plan/apply 양쪽의 명시적 DNS 허용이 있어야
+  Cloud Map을 포함한 기존 광범위 DNS 정책을 사용한다. 이 문서는 이전/상위 DNS를 승인하지 않는다.
 - On first ACM creation, validation token fields can be unknown in the plan;
   the canonical resource/domain key and selected zone must be known. These tokens
   come from the existing reviewed ACM validation configuration. Known token names
@@ -197,6 +254,25 @@ runbook does not replace the migration or smoke procedures.
   다른 존 추정, 위임 변경, 기존 외부 인증서 폐기, 자체 서명/TLS 우회, 검사 해제,
   자동 승인을 하지 않는다. 롤백도 같은 제한을 충족하는 새 plan을 검토한다.
 
+## Rollback / 롤백
+
+Before A publication, leave A absent and stop the rollout if TLS or DB/auth checks
+fail. Prepare a fresh same-SHA reviewed plan to restore a supported same-domain
+configuration. After publication, unpublishing the **new** service A needs explicit
+DNS permission and a scoped reviewed plan. Preserve all Terraform-owned validation
+CNAMEs and managed certificate ownership; setting old external ARNs is not a safe
+rollback after managed issuance. Any required managed-certificate externalization,
+token retirement or old-domain restoration needs a separate expressly authorized
+procedure under the appropriate configuration. Never remove resources from state
+or accept unknown DNS identities to make rollback pass.
+
+A 게시 전 TLS·DB·인증 실패 시 미게시 상태로 중단하고 지원되는 동일 도메인 설정의 새 계획을
+검토한다. 게시 후 **새 도메인** A를 내리는 경우도 DNS 명시 승인과 범위 제한 계획이 필요하다.
+관리 검증 CNAME·인증서 소유권은 유지한다. managed 발급 후 이전 외부 ARN을 다시 넣는 것은
+안전한 롤백이 아니다. 소유권 이전·토큰 폐기·이전 도메인 복구는 적절한 설정의 별도 승인
+절차로 진행하며, 상태 삭제나 미확정 DNS 허용으로 우회하지 않는다.
+
 Related / 관련: `.github/workflows/terraform.yml`, `scripts/v2/ci_dns_policy.py`,
 `scripts/v2/ci_dev_domain.py`, `terraform/foundation/edge.tf`;
-ADR-005 (product mutation freeze / 제품 변경 기능 동결), ADR-016 (v2 topology / v2 구성).
+ADR-005 (AWS-resource mutation + autonomy freeze / AWS 리소스 변경·자율 실행 동결),
+ADR-016 (v1 decommission / domain-certificate cutover / v1 폐기·도메인/인증서 전환).

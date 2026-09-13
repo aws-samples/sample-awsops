@@ -62,11 +62,26 @@ def plan_scope(plan):
         raise ValueError("missing domain/zone/aliases in saved plan") from None
 
 
+def plan_rollout(plan, target, scope):
+    """Only the immutable saved plan decides whether domain scoping is active."""
+    try:
+        rollout = plan["variables"]["ci_domain_rollout"]["value"]
+    except (KeyError, TypeError):
+        raise ValueError("missing ci_domain_rollout in saved plan") from None
+    if not isinstance(rollout, bool):
+        raise ValueError("invalid ci_domain_rollout in saved plan")
+    if rollout and (target != "dev" or scope != "full"):
+        raise ValueError("ci_domain_rollout requires dev and full scope")
+    return rollout
+
+
 def zone_summary(plan):
     """Project only public delegation metadata, never state/configuration/outputs."""
     _, zone = plan_scope(plan)
     try:
-        resources = plan["planned_values"]["root_module"]["resources"]
+        resources = plan["planned_values"]["root_module"].get("resources", [])
+        if not isinstance(resources, list):
+            raise ValueError("invalid planned resource collection")
         matches = [r for r in resources if r.get("address") == "data.aws_route53_zone.main"]
         if not matches:
             # Data already read during planning lives in the saved plan's
@@ -75,6 +90,8 @@ def zone_summary(plan):
                    for r in plan.get("resource_changes", [])):
                 raise ValueError("selected public hosted zone read is not resolved")
             resources = plan.get("prior_state", {}).get("values", {}).get("root_module", {}).get("resources", [])
+            if not isinstance(resources, list):
+                raise ValueError("invalid prior resource collection")
             matches = [r for r in resources if r.get("address") == "data.aws_route53_zone.main"]
         if len(matches) != 1:
             raise ValueError("missing or ambiguous selected public hosted zone")
@@ -164,11 +181,17 @@ def main():
                 os.environ.get("TARGET", ""), os.environ.get("DOMAIN_NAME_DEV", ""),
                 os.environ.get("HOSTED_ZONE_NAME_DEV", ""), os.environ.get("CERTIFICATE_MODE_DEV", ""),
             )
+            rollout = os.environ.get("DOMAIN_ROLLOUT", "false")
+            if rollout not in {"true", "false"}:
+                raise ValueError("DOMAIN_ROLLOUT must be true or false")
+            if rollout == "true" and (os.environ.get("TARGET") != "dev"
+                                      or os.environ.get("PLAN_SCOPE", "full") != "full"):
+                raise ValueError("ci_domain_rollout requires dev and full scope")
+            overrides["ci_domain_rollout"] = rollout == "true"
             OVERRIDE.write_text(json.dumps(overrides) + "\n")
             if os.environ.get("GITHUB_OUTPUT"):
                 with open(os.environ["GITHUB_OUTPUT"], "a") as output:
                     output.write(f"certificate_mode={mode}\n")
-                    output.write(f"rollout={str(bool(overrides) or mode == 'managed').lower()}\n")
     except (ValueError, OSError) as error:
         print(f"Dev domain preflight refused: {error}", file=sys.stderr)
         return 1

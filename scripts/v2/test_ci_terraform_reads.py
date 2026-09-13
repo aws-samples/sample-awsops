@@ -3,12 +3,15 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from threading import Thread
 import unittest
+
+from ci_dev_domain import plan_rollout, plan_scope
 
 
 @unittest.skipUnless(shutil.which("terraform"), "Terraform CLI is required")
@@ -20,11 +23,16 @@ class TerraformReadTests(unittest.TestCase):
             env = {k: v for k, v in os.environ.items() if not k.startswith(("TF_", "AWS_"))}
             env.update(CHECKPOINT_DISABLE="1", TF_DATA_DIR=str(root / ".terraform"),
                        TARGET="dev", DOMAIN_NAME_DEV="new.dev.example.com",
-                       HOSTED_ZONE_NAME_DEV="dev.example.com", CERTIFICATE_MODE_DEV="managed")
+                       HOSTED_ZONE_NAME_DEV="dev.example.com", CERTIFICATE_MODE_DEV="managed",
+                       DOMAIN_ROLLOUT="true", PLAN_SCOPE="full")
             env.pop("GITHUB_OUTPUT", None)
-            (root / "main.tf").write_text(
+            variables = (Path(__file__).resolve().parents[2] / "terraform/foundation/variables.tf").read_text()
+            marker = re.search(r'variable "ci_domain_rollout" \{[^}]*\}', variables)
+            self.assertIsNotNone(marker, "The saved-plan rollout marker must be a declared Terraform variable")
+            (root / "main.tf").write_text(marker[0] + "\n" +
                 'variable "domain_name" { type = string }\n'
                 'variable "hosted_zone_name" { type = string }\n'
+                'variable "extra_domain_aliases" {\n type = list(string)\n default = []\n}\n'
                 'variable "existing_cf_certificate_arn" {\n type = string\n default = null\n}\n'
                 'output "selected" {\n value = { domain = var.domain_name, '
                 'zone = var.hosted_zone_name, certificate = var.existing_cf_certificate_arn }\n}\n'
@@ -39,8 +47,12 @@ class TerraformReadTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 return result.stdout
 
-            run(sys.executable, str(helper), "overrides")
             run("terraform", "init", "-backend=false", "-input=false", "-no-color")
+            run("terraform", "plan", "-input=false", "-lock=false", "-no-color", "-out=default.tfplan")
+            default = json.loads(run("terraform", "show", "-json", "default.tfplan"))
+            self.assertIs(default["variables"]["ci_domain_rollout"]["value"], False)
+            self.assertFalse(plan_rollout(default, "dev", "full"))
+            run(sys.executable, str(helper), "overrides")
             selected = json.loads(json.loads(run(
                 "terraform", "console", "-no-color", expression=(
                     "jsonencode({domain=var.domain_name,zone=var.hosted_zone_name,"
@@ -52,6 +64,9 @@ class TerraformReadTests(unittest.TestCase):
             run("terraform", "plan", "-input=false", "-lock=false", "-no-color",
                 "-var-file=ci-deployment.tfvars.json", "-out=tfplan")
             saved = json.loads(run("terraform", "show", "-json", "tfplan"))
+            self.assertEqual(saved["variables"]["extra_domain_aliases"]["value"], [])
+            self.assertEqual(plan_scope(saved), ({"new.dev.example.com"}, "dev.example.com"))
+            self.assertTrue(plan_rollout(saved, "dev", "full"))
             self.assertEqual(saved["planned_values"]["outputs"]["selected"]["value"], selected)
             self.assertEqual(protected.read_bytes(), original)
 

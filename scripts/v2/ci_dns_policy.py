@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 
-from ci_dev_domain import check_scoped_dns, domain_scope, hostname
+from ci_dev_domain import check_scoped_dns, domain_scope, hostname, plan_rollout
 
 
 # CloudFront supports RSA through 4096 and ECDSA P-256/P-384; retain an RSA 2048 floor.
@@ -192,7 +192,7 @@ def state_resources(state):
 
 
 def certificate_overrides(configuration, state, account, allow_dns, *, publish=True, scope="full",
-                          certificate_mode="preserve"):
+                          certificate_mode="preserve", advisory=False):
     """Preserve existing ownership/publication and return typed Terraform inputs."""
     domain, region = configuration["domain"], configuration["region"]
     aliases = configuration.get("aliases", [])
@@ -207,6 +207,15 @@ def certificate_overrides(configuration, state, account, allow_dns, *, publish=T
         raise ValueError("managed mode conflicts with supplied existing certificate ARN inputs")
     root, resources = state_resources(state)
     managed = {r["values"]["arn"] for r in resources if r["type"] == "aws_acm_certificate"}
+    if configuration.get("domain_rollout"):
+        hosts, _ = domain_scope(domain, configuration["zone"], aliases)
+        for resource in root:
+            if (resource["type"] == "aws_route53_record" and resource["name"] == "alias"
+                    and hostname(resource["values"].get("name"), dns_response=True) not in hosts):
+                raise ValueError(
+                    "Published old-domain rollout is unsupported; use a separate expressly "
+                    "authorized retirement plan under the old configuration."
+                )
 
     def own(kind, name):
         matches = [r["values"] for r in root if r["type"] == kind and r["name"] == name]
@@ -222,7 +231,7 @@ def certificate_overrides(configuration, state, account, allow_dns, *, publish=T
     )}
     # An ECR-only saved plan cannot mutate certificates; check_plan enforces
     # its sole-resource allowlist again before apply.
-    if certificate_mode == "managed" and scope != "ecr-bootstrap" and any(
+    if not advisory and certificate_mode == "managed" and scope != "ecr-bootstrap" and any(
         not own("aws_acm_certificate", key).get("arn") for key in ("cf", "alb")
     ):
         if scope != "full" or not allow_dns:
@@ -246,7 +255,11 @@ def certificate_overrides(configuration, state, account, allow_dns, *, publish=T
     ):
         configured = configuration.get(f"{key}_arn")
         current = own("aws_acm_certificate", key).get("arn")
-        if configured:
+        if advisory:
+            # Advisory plans retain ownership without an ACM/SAN/trust gate.
+            # They are never apply-eligible; dispatch preflight verifies live TLS.
+            selected = configured or (None if current or certificate_mode == "managed" else attached or None)
+        elif configured:
             selected = find_certificate(hosts, certificate_region, account, configured, excluded=managed)
         elif current:
             if not allow_dns and scope == "full":
@@ -295,6 +308,7 @@ def ecs_service_may_change_dns(change):
 def check_plan(plan, allow_dns, scope="full", *, target=""):
     if not isinstance(plan, dict) or not isinstance(plan.get("planned_values"), dict) or not plan.get("format_version"):
         raise ValueError("invalid Terraform plan JSON")
+    rollout = plan_rollout(plan, target, scope)
     changes = plan.get("resource_changes", [])
     if not isinstance(changes, list):
         raise ValueError("invalid Terraform plan resource changes")
@@ -341,7 +355,7 @@ def check_plan(plan, allow_dns, scope="full", *, target=""):
     if dns_changes and not allow_dns:
         raise ValueError("DNS change prohibited: " + ", ".join(dns_changes))
     result = {"changed_resources": mutations, "dns_changes": dns_changes}
-    if target == "dev" and scope == "full":
+    if rollout:
         result["public_zone"] = check_scoped_dns(plan, scoped_changes)
     return result
 
@@ -363,6 +377,7 @@ def main():
     certificates.add_argument("--scope", choices=("full", "ecr-bootstrap"), required=True)
     certificates.add_argument("--certificate-mode", choices=("preserve", "managed"), default="preserve")
     certificates.add_argument("--target", default="")
+    certificates.add_argument("--advisory", choices=("true", "false"), default="false")
     args = parser.parse_args()
     try:
         value = json.load(sys.stdin)
@@ -378,7 +393,7 @@ def main():
             if args.alb_arn:
                 configuration["alb_arn"] = args.alb_arn
             mode = args.certificate_mode if args.target == "dev" else "preserve"
-            if args.target == "dev":
+            if configuration.get("domain_rollout"):
                 domain_scope(configuration["domain"], configuration["zone"], configuration.get("aliases", []))
             if mode == "managed" and any(configuration.get(f"{key}_arn") is not None for key in ("cf", "alb")):
                 raise ValueError("managed mode conflicts with supplied existing certificate ARN inputs")
@@ -386,11 +401,12 @@ def main():
             for key, region in (("cf", "us-east-1"), ("alb", configuration["region"])):
                 if configuration.get(f"{key}_arn"):
                     validate_arn(configuration[f"{key}_arn"], region)
-            account = aws("sts", "get-caller-identity")["Account"]
+            advisory = args.advisory == "true"
+            account = "" if advisory else aws("sts", "get-caller-identity")["Account"]
             print(json.dumps(certificate_overrides(
                 configuration, json.loads(args.state.read_text()), account,
                 args.allow_dns == "true", publish=args.publish == "true", scope=args.scope,
-                certificate_mode=mode,
+                certificate_mode=mode, advisory=advisory,
             )))
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
         print(f"Deployment preflight refused: {error}", file=sys.stderr)

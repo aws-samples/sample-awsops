@@ -32,7 +32,7 @@ class DnsPolicyTests(unittest.TestCase):
 
     def check_plan(self, changes, allow=False):
         plan = {
-            "format_version": "1.2", "planned_values": {},
+            "format_version": "1.2", "variables": {"ci_domain_rollout": {"value": False}}, "planned_values": {},
             "resource_changes": changes,
         }
         return subprocess.run(
@@ -229,7 +229,7 @@ class DnsPolicyTests(unittest.TestCase):
 
     def test_ecr_scope_rejects_any_other_mutation(self):
         module = self.module()
-        plan = {"format_version": "1.2", "planned_values": {}, "resource_changes": [{
+        plan = {"format_version": "1.2", "variables": {"ci_domain_rollout": {"value": False}}, "planned_values": {}, "resource_changes": [{
             "address": "aws_ecs_service.web", "type": "aws_ecs_service",
             "change": {"actions": ["update"]},
         }]}
@@ -430,7 +430,7 @@ class DnsPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "retirement"):
             module.check_plan(plan_fixture([change]), True, target="dev")
         # No new zone requirement on ordinary targets or an ECR-only plan.
-        empty = {"format_version": "1.2", "planned_values": {}, "resource_changes": []}
+        empty = {"format_version": "1.2", "variables": {"ci_domain_rollout": {"value": False}}, "planned_values": {}, "resource_changes": []}
         self.assertNotIn("public_zone", module.check_plan(empty, True, target="main"))
         self.assertNotIn("public_zone", module.check_plan(empty, False, "ecr-bootstrap", target="dev"))
 
@@ -444,6 +444,82 @@ class DnsPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "full.*DNS"):
             module.check_plan(plan, False, target="dev")
         self.assertEqual(module.check_plan(plan, True, target="dev")["dns_changes"], [])
+
+    def test_saved_rollout_marker_controls_scope_and_ordinary_dev_keeps_dns_permission(self):
+        from test_ci_dev_domain import plan_fixture
+        module = self.module()
+        for resource in (
+            {"address": "aws_service_discovery_service.steampipe",
+             "type": "aws_service_discovery_service", "change": {"actions": ["create"]}},
+            {"address": "aws_ecs_service.steampipe", "type": "aws_ecs_service",
+             "change": {"actions": ["update"], "after": {"service_registries": [{"registry_arn": "fixture"}]}}},
+        ):
+            ordinary = plan_fixture([resource], rollout=False)
+            ordinary["planned_values"] = {}  # Ordinary plans need no domain-zone projection.
+            self.assertEqual(module.check_plan(ordinary, True, target="dev")["dns_changes"],
+                             [resource["address"]])
+            with self.assertRaisesRegex(ValueError, "DNS change prohibited"):
+                module.check_plan(ordinary, False, target="dev")
+            with self.assertRaisesRegex(ValueError, "outside configured"):
+                module.check_plan(plan_fixture([resource]), True, target="dev")
+
+    def test_saved_rollout_marker_is_required_typed_and_dev_full_only(self):
+        from test_ci_dev_domain import plan_fixture
+        module = self.module()
+        for value in (None, "true", "false", 1, {}, []):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "ci_domain_rollout"):
+                module.check_plan(plan_fixture(rollout=value), True, target="dev")
+        plan = plan_fixture()
+        del plan["variables"]["ci_domain_rollout"]
+        with self.assertRaisesRegex(ValueError, "ci_domain_rollout"):
+            module.check_plan(plan, True, target="dev")
+        for target, scope in (("main", "full"), ("dev", "ecr-bootstrap"), ("atomoh", "full")):
+            with self.subTest(target=target, scope=scope), self.assertRaisesRegex(ValueError, "dev.*full"):
+                module.check_plan(plan_fixture(), True, scope, target=target)
+
+    def test_published_old_domain_rollout_requires_separate_retirement(self):
+        module = self.module()
+        state = self.state([self.resource('aws_route53_record.alias["old.example.net"]',
+                                         name="old.example.net")])
+        config = self.configuration(zone="dev.example.com", domain_rollout=True)
+        for allow in (False, True):
+            with self.subTest(allow=allow), patch.object(module, "find_certificate") as find:
+                with self.assertRaisesRegex(ValueError, "Published old-domain.*separate"):
+                    module.certificate_overrides(config, state, ACCOUNT, allow)
+                find.assert_not_called()
+        current = self.state([self.resource('aws_route53_record.alias["dev.example.com"]',
+                                           name="dev.example.com.")])
+        for existing in (current, self.state([])):
+            result = module.certificate_overrides(config, existing, ACCOUNT, True, publish=False)
+            self.assertFalse(result["publish_service_dns"])
+
+    def test_advisory_bootstrap_and_changed_san_preserve_ownership_without_live_checks(self):
+        module = self.module()
+        alb = ARN.replace("us-east-1", "ap-northeast-2")
+        external = self.state([
+            self.resource("aws_cloudfront_distribution.main", viewer_certificate=[{"acm_certificate_arn": ARN}]),
+            self.resource("aws_lb_listener.https", certificate_arn=alb),
+        ])
+        managed = self.state([self.resource("aws_acm_certificate." + key, arn=arn)
+                              for key, arn in (("cf", ARN), ("alb", alb))])
+        for state, mode, selected in (
+            (self.state([]), "preserve", None), (self.state([]), "managed", None),
+            (managed, "managed", None), (external, "preserve", ARN),
+            (external, "managed", None),
+        ):
+            with self.subTest(state=state, mode=mode), patch.object(module, "aws") as aws:
+                result = module.certificate_overrides(
+                    self.configuration(domain="new.dev.example.com"), state, "", False,
+                    certificate_mode=mode, advisory=True,
+                )
+                self.assertEqual(result["existing_cf_certificate_arn"], selected)
+                self.assertFalse(result["publish_service_dns"])
+                aws.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "ownership migration"):
+            module.certificate_overrides(
+                self.configuration(cf_arn=ARN.replace("11111111", "99999999")),
+                managed, "", False, advisory=True,
+            )
 
     def test_selection_does_not_describe_excluded_or_rotate_valid_attached_certificate(self):
         module = self.module()

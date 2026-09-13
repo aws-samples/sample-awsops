@@ -33,6 +33,12 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
   permission; each requires a separate reviewed procedure. Ordinary managed rotations remain valid.
 - `publish_service_dns` defaults true; it is separate from the CI `allow_dns_changes` input
   (default false), which gates all public/private DNS and registered ECS changes.
+- `ci_domain_rollout` is default-false CI metadata, not an infrastructure feature flag.
+  An explicit dev/full plan dispatch pins it true for scoped service A/ACM CNAME rollout;
+  apply checks the saved marker. Ordinary full plans retain broad DNS behavior with explicit
+  permission. Dev repo name overrides feed console/plan through gitignored auto-tfvars;
+  tracked overrides are rejected. Advisory plans cannot be applied and use offline
+  ownership preservation without live certificate/SAN checks.
 - All large features are flag-gated, **default false** → `plan` = No changes, $0:
   `agentcore_enabled`, `integrations_enabled`, `steampipe_enabled`, `workers_enabled`, and
   others.
