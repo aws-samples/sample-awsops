@@ -18,10 +18,20 @@ secrets-manager) — installed by `make deps`.
   mutations when DNS is prohibited (including private DNS, validation and registered ECS).
   Routine CI always blocks managed-certificate externalization and owned validation-CNAME
   retirement/replacement, regardless of DNS permission.
+- `v2/ci_dev_domain.py` — dev repo names/mode plus explicit `domain_rollout` dispatch input.
+  Generates gitignored `ci-domain.auto.tfvars.json` for console/plan; the workflow rejects
+  tracked overrides. `ci_domain_rollout` is declared default-false metadata in the saved plan:
+  only true dev/full plans narrow DNS to configured A/ACM CNAME owners in the selected zone.
+  Ordinary full plans retain broad DNS behavior with explicit permission. Apply reads only
+  the saved marker. Dev advisory preflight preserves ownership from state without live
+  certificate validation; advisory DNS allowance is reporting only.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
-- `v2/test_ci_{dns_policy,plan_context,deployment_workflows,terraform_reads}.py` — local fixtures
-  and a localhost-only state backend verify deployment gates without AWS calls.
+- `v2/test_ci_{dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads}.py` —
+  workflow fixtures, real no-provider plans and a localhost state backend verify deployment
+  gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
+  Summaries allow certificate suffixes/publication/change counts and addresses, plus active
+  rollout's public zone name/ID/NS; never raw configuration, ARNs, account IDs, state or plans.
 - `v2/terraform-test.sh` — Terraform 1.15.7 validate/mock tests in a disposable tracked-file
   copy, `init -backend=false`, fresh data dir, no deployment credentials or real backend.
   `v2/requirements-test.txt` declares pytest/PyYAML; the shared merge script runs Node smoke tests.

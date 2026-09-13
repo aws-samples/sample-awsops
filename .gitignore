@@ -112,6 +112,7 @@ terraform/**/staging.tfvars
 terraform/**/backend.hcl
 terraform/**/ci-state.json
 terraform/**/ci-deployment.tfvars.json
+terraform/**/ci-domain.auto.tfvars.json
 terraform/**/*.tfplan
 terraform/**/*.tfstate
 terraform/**/*.tfstate.backup

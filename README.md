@@ -133,8 +133,14 @@ and service aliases. External certificates require operator-selected ARNs or alr
 external certificates; CI never scans the account to choose one. `allow_dns_changes` is a
 dispatch input (default **false**), separate from `publish_service_dns`; it prohibits private
 Cloud Map changes too. Routine CI cannot externalize a managed certificate or retire/replace
-its validation CNAMEs even when DNS is allowed. Automatic push plans are advisory and cannot
-be applied. See the [edge reference](docs/reference/01-edge-network.md)
+its validation CNAMEs even when DNS is allowed. PR/push plans are advisory and cannot
+be applied; dev preserves ownership from state without live certificate/SAN checks.
+Dev repo variables override domain/zone consistently in console and plan, with
+`CERTIFICATE_MODE_DEV=preserve|managed`. Explicit `domain_rollout=true` on each dev/full
+domain-stage plan pins scoped DNS checks in saved metadata; its default false retains
+ordinary DNS behavior only with explicit permission. Apply cannot toggle that saved scope.
+See the [unpublished/same-domain rollout runbook](docs/runbooks/dev-domain-rollout.md),
+[edge reference](docs/reference/01-edge-network.md)
 and [deployment runbook §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-changes-are-deferred--dns-변경-보류-상태의-배포).
 
 | Flag | Gates |
@@ -337,7 +343,11 @@ DNS 금지 배포는 명시적 dispatch에서 기존 관리 인증서 소유권�
 외부 인증서는 운영자가 ARN을 지정하거나 이미 연결된 외부 인증서만 재사용하며 계정 전체 검색은 하지 않습니다.
 별도 dispatch 입력인 `allow_dns_changes`는 기본 **false**로 사설 Cloud Map DNS도 금지합니다.
 DNS를 허용해도 일반 CI에서 관리 인증서를 외부화하거나 검증 CNAME을 삭제·교체할 수 없습니다.
-자동 push 계획은 참고용이며 적용할 수 없습니다. [엣지 참조](docs/reference/01-edge-network.md)와
+PR/push 계획은 참고용이며 적용할 수 없고 dev는 실시간 인증서/SAN 검증 없이 상태 소유권을 보존합니다.
+dev 저장소 이름/존 변수와 `CERTIFICATE_MODE_DEV=preserve|managed`는 console과 plan에 일관되게 반영됩니다.
+모든 dev/full 도메인 단계 plan의 `domain_rollout=true`는 저장 메타데이터로 DNS 범위를 제한하며
+apply에서 바꿀 수 없습니다. 기본 false인 일반 full 계획도 DNS 변경에는 명시적 승인이 필요합니다.
+[미게시/동일 도메인 전환 런북](docs/runbooks/dev-domain-rollout.md), [엣지 참조](docs/reference/01-edge-network.md)와
 [배포 런북 §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-changes-are-deferred--dns-변경-보류-상태의-배포)를 참고하세요.
 
 | Flag | 게이트 대상 |

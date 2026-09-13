@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 86c127efd64a · generated-at: 2026-09-12 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: fee0bd43cbde · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -12,20 +12,34 @@ legacy runbook's steps as the current operational path).
 ## Deployment review checks
 - `dev-repo-setup.md` covers CI/OIDC, protected review recovery, ECR preflight and explicit
   same-branch/SHA dispatch plans. PR/push plans are advisory.
+- `dev-domain-rollout.md` covers unpublished/same-domain dev stages only. Every domain-stage
+  plan sets `domain_rollout=true` (dev/full only), pinned as default-false Terraform metadata
+  `ci_domain_rollout`. Apply reads the saved marker, not current repo vars or an apply toggle.
+  Scoped DNS permits only configured service A/ACM CNAME owners in the selected zone.
+  Published old-domain retirement needs a separate expressly authorized plan under the old
+  configuration; do not expand scope or accept unknown identities to make a rename pass.
+- Dev repo name overrides feed console and plan through gitignored auto-tfvars; reject tracked
+  copies before generation. Dev advisory preflight preserves ownership/publication from state
+  without live ACM/SAN/trust validation. Its DNS allowance is reporting only, never apply
+  authority. `CERTIFICATE_MODE_DEV` preserves ownership or selects managed issuance.
 - Keep managed certificates as JSON null and preserve existing service aliases. External
   certificates must be operator-selected or already attached; never scan the account.
   Routine CI cannot externalize managed certificates or delete/replace owned validation CNAMEs,
   even with DNS permission. Ownership migration and record retirement need separate review.
 - ALLDNS includes private Cloud Map, validation CNAMEs and registered ECS task changes:
   Steampipe tuning, hydrate-fallback remedies and rollback/disable can change private DNS.
-  No private-DNS exception. Future authorized cutovers set `allow_dns_changes=true` on both
-  plan and apply dispatches; documentation is not authorization.
-- Public summaries contain only managed/external certificate suffixes. Workflow/manual smoke
-  share an argv-safe CLI preserving service Host/SNI/TLS through CloudFront.
+  Ordinary full plans (`domain_rollout=false`) retain broad DNS behavior only with explicit
+  permission. No private-DNS exception. Authorized cutovers set `allow_dns_changes=true` on
+  both plan and apply; documentation is not authorization.
+- Public summaries permit certificate suffixes, publication, change counts/addresses and
+  active-rollout public zone name/ID/NS. Never expose full ARNs, account IDs or raw
+  configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
+  CLI; health proves liveness only. Verify DB/auth separately before service A publication.
 - From the repo root, `bash scripts/v2/terraform-test.sh` runs Terraform 1.15.7 in an isolated
   tracked-file copy with fresh `TF_DATA_DIR`, `init -backend=false` and mocked providers.
   Never initialize a real backend for tests. Dependencies: `scripts/v2/requirements-test.txt`;
   Node smoke tests are also required by the shared merge script.
+  Root Python command: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
 
 ## Conventions
 - Filename: `kebab-case.md`, domain-then-topic order.

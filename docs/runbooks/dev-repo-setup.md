@@ -439,7 +439,22 @@ plan for a missing repository; do not disable this check or expand the role.
 
 ### 5. Deploy while DNS changes are deferred / DNS 변경 보류 상태의 배포
 
-`Terraform` dispatch defaults to `mode=plan` and `allow_dns_changes=false`.
+`Terraform` dispatch defaults to `mode=plan`, `allow_dns_changes=false` and
+`domain_rollout=false`. Ordinary full plans keep the existing broad DNS policy:
+Cloud Map/registered ECS changes require explicit DNS permission on both plan and apply.
+For a dev service-domain rollout, use the [staged domain runbook](dev-domain-rollout.md)
+and set **`domain_rollout=true` on every domain-stage plan dispatch** (`dev` / `full` only).
+The declared default-false Terraform metadata variable `ci_domain_rollout` is embedded
+in the saved plan; apply derives scoping from that marker, not current repository
+variables or an apply input. The scoped policy allows only the selected zone's configured
+service A/ACM CNAME records; it does not authorize old/parent DNS or Cloud Map changes.
+
+dispatch 기본값은 `mode=plan`, DNS 허용 false, `domain_rollout=false`다. 일반 full 계획의
+Cloud Map/등록된 ECS 변경에는 plan/apply 양쪽의 DNS 승인이 필요하다. dev 도메인 전환은
+연결된 런북을 따라 모든 도메인 단계 plan에서 `domain_rollout=true`로 설정한다.
+범위는 저장된 `ci_domain_rollout` 메타데이터로 결정하며 apply 입력으로 바뀌지 않는다.
+범위 제한 전환은 선택 존의 서비스 A/ACM CNAME만 허용하며 이전/상위 DNS 권한은 포함하지 않는다.
+
 For a new stack, a DNS-free full plan needs two already-issued public ACM
 certificates: one in `us-east-1` covering the service and additional aliases,
 and one in the stack Region covering the origin hostname. Both must belong to
@@ -463,10 +478,17 @@ can still create managed certificates, and ordinary managed rotations keep null 
 No-DNS mode preserves `publish_service_dns=true` when service aliases already exist,
 and false for a fresh/deferred stack. It does not force existing aliases toward deletion.
 Changes in alias membership/targets or validation CNAMEs still fail the plan gate.
-The typed overrides live in `ci-deployment.tfvars.json` for that dispatch and are removed
-after planning; string `"null"` and `-var=...=null` are not equivalent to JSON null.
-The public job summary reports only `managed` or `external:<8-character suffix>` and the
-publication flag. It never renders full ARNs, account IDs or the raw override JSON.
+The typed overrides live in `ci-deployment.tfvars.json` for dispatch and dev advisory
+plans and are removed after planning; string `"null"` and `-var=...=null` are not JSON null.
+Optional repo variables `DOMAIN_NAME_DEV` / `HOSTED_ZONE_NAME_DEV` feed a gitignored
+`ci-domain.auto.tfvars.json` before both console and plan (only dev reads the name overrides).
+Generation rejects a tracked override instead of deleting it. `CERTIFICATE_MODE_DEV`
+defaults to `preserve`; `managed` retains null external inputs and refuses conflicting
+ARNs in tfvars/dispatch. The domain runbook defines supported transitions.
+The public summaries report `managed` or `external:<8-character suffix>`, the publication
+flag, resource-change counts/addresses, and, for active domain rollout, `public_zone`
+(`name`, `zone_id`, `name_servers`). This public delegation projection is intentional.
+Full ARNs, account IDs, raw configuration/overrides/state/plan JSON remain excluded.
 
 The plan gate also rejects deletion/replacement of owned `aws_route53_record.cf_validation`
 records **even when DNS is allowed**, and rejects retirement of the managed CF/ALB certificate
@@ -477,7 +499,11 @@ establish that no current or renewed certificate needs a token before retiring i
 obtain separate authorization. Routine deployment is not that procedure. No-op validation
 records, new CNAME creation and service A-record updates remain valid when DNS is authorized.
 
-The preflight runs only for dispatch. It does not receive the demo password secret.
+Live certificate validation runs only for dispatch. Dev PR/push plans use an offline
+ownership/publication preflight reading existing state and configuration: no STS/ACM
+lookup, SAN, expiry or trust-chain gate during bootstrap/rollout. Their DNS allowance is
+reporting only; ownership/retirement checks still run and the artifacts cannot be applied.
+The preflight does not receive the demo password secret.
 `terraform console` reads configuration/current state without refreshing or locking it;
 it has **no `-lock=false` option**. Offline backend tests verify these read-only semantics.
 
@@ -492,8 +518,12 @@ CI가 인증서의 계정·리전·유효 기간·호스트 이름·공개 CA �
 거부한다. 소유권 이전 및 검증 레코드 폐기는 인증서·DNS 소유자와 별도로 검토·승인해야 하며,
 기존/갱신 인증서에 필요한 토큰을 보존해야 한다. 정상 관리 인증서 교체와 새 스택 생성은 유지된다.
 DNS 허용 시 CNAME 신규 생성, 서비스 A 레코드 갱신, 무변경 레코드는 허용한다.
-공개 요약에는 관리 여부/외부 인증서 마지막 8자리만 표시하며 ARN·계정 ID를 공개하지 않는다.
-사전 검사는 dispatch에서만 실행하며 demo 비밀번호를 받지 않는다.
+dev 저장소 이름 변수는 console과 plan이 함께 읽는 gitignored 자동 tfvars에 반영된다.
+추적된 자동 파일은 덮어쓰지 않고 거부한다. `managed` 모드는 충돌 ARN을 거부하고 null을 유지한다.
+공개 요약은 인증서 관리 여부/외부 ARN 마지막 8자리, 게시 플래그, 변경 수/주소와 활성 전환의
+public 존 이름·ID·NS만 포함한다. 전체 ARN·계정 ID·원본 설정/상태/계획은 공개하지 않는다.
+실제 인증서 검증은 dispatch에서만 실행한다. dev PR/push는 상태 기반 소유권·게시를 보존하되
+STS/ACM·SAN·만료·신뢰 체인 검증 없이 참고 계획을 만든다. 적용할 수 없으며 demo 비밀번호도 받지 않는다.
 
 ```bash
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
@@ -521,7 +551,7 @@ gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
 Apply accepts only a successful explicit Terraform plan dispatch from the same
 repository, stack branch and commit. It checks the live branch again and
 rechecks DNS changes after decrypting the plan. A moved branch requires a fresh
-plan. `plan_scope=ecr-bootstrap` is available for an initial plan limited to the
+plan. `plan_scope=ecr-bootstrap`, with `domain_rollout=false`, is available for an initial plan limited to the
 web ECR repository; the JSON gate also rejects unrelated mutations in that scope.
 Repeat the same `plan_scope` on apply; the apply gate checks that scope too.
 It needs no certificates unless external ARNs are explicitly configured.
@@ -532,10 +562,12 @@ Apply a full reviewed plan before rolling the service.
 경우 `plan_scope=ecr-bootstrap`을 사용하고, 서비스 배포 전에 전체 계획을
 별도로 검토·적용한다.
 
-**Push plans are advisory and cannot be applied.** They use the stored stack tfvars,
-so unpersisted dispatch overrides may appear to revert to managed certificates or
-published service DNS on the next push. Keep using explicit dispatch plans while DNS is
-deferred. Never use a push plan as a cutover plan.
+**PR/push plans are advisory and cannot be applied.** They read stored stack tfvars;
+dev also loads repo domain overrides and state-preserving certificate/publication inputs.
+`CERTIFICATE_MODE_DEV=managed` is reflected without live certificate validation. Other
+targets keep the stored tfvars behavior. DNS changes are reported without requiring a
+dispatch permission toggle; this grants no apply authority. Use a new explicit dispatch
+for any cutover or deployment.
 
 All DNS changes remain forbidden during deferral, including **certificate-validation
 CNAMEs, private namespaces and `aws_service_discovery_service`** records. First-time
@@ -546,28 +578,32 @@ see [the quota/staleness runbook](steampipe-quota-and-staleness.md). There is no
 exception. The HTTPS/private edge stays intact. If no trusted matching certificate
 is available, stop or perform only ECR bootstrap; there is no HTTP/public-ALB workaround.
 
-A later cutover requires separate, explicit DNS authorization. Only after that authorization:
-persist the intended certificate ownership and service-publication values in that stack's
-tfvars, create a new full dispatch plan with the authorized DNS permission and publication
-setting, review every DNS/certificate change, and apply that exact successful run at the
-same SHA. **Both plan and apply dispatches must explicitly set `allow_dns_changes=true`;**
-apply does not inherit the plan's permission. Keep external ARNs external unless a separately reviewed ownership migration
-is intended. Follow ADR-016 for alias transfer/rollback; do not treat this paragraph as
-permission to perform DNS changes during deferral.
+A later cutover requires separate, explicit DNS authorization. For dev, keep domain/mode
+in the repo variables and follow the domain runbook's unpublished/same-domain stages;
+do not rewrite protected tfvars to defeat those overrides. Other targets use reviewed
+stack tfvars. Review every DNS/certificate change in a fresh full dispatch plan and apply
+that exact successful run at the same SHA. **Both plan and apply must explicitly set
+`allow_dns_changes=true`;** apply does not inherit permission. Routine deployment cannot
+externalize managed certificates or retire validation records. Published old-domain
+retirement requires a separate expressly authorized plan under the old configuration;
+the new-domain rollout does not authorize it. Follow ADR-016 for alias transfer/rollback.
 
-자동 push 계획은 저장된 tfvars만 반영하는 참고용이며 적용할 수 없다. DNS 보류 기간에는
-계속 명시적 dispatch를 사용한다. 사설 Cloud Map과 인증서 CNAME도 예외 없이 금지하며,
+자동 PR/push 계획은 참고용이며 적용할 수 없다. dev는 저장 tfvars에 저장소 이름/모드와
+상태 기반 인증서·게시 입력도 반영하며 실시간 인증서 검증 없이 DNS 변경을 보고한다.
+배포에는 명시적 dispatch를 사용한다. DNS 보류 중 사설 Cloud Map과 인증서 CNAME도 금지하며,
 이미 운영 중인 Steampipe의 튜닝·hydrate 폴백 대응·롤백/비활성화도 ECS task 변경으로
 사설 DNS를 바꿀 수 있어 차단된다.
-인증서가 없으면 중단하거나 ECR만 준비한다. 향후 전환은 별도 DNS 승인을 받은 뒤 스택
-tfvars에 의도한 소유권·게시 설정을 저장하고 새 전체 dispatch 계획을 검토·적용한다.
+인증서가 없으면 dispatch를 중단하거나 ECR만 준비한다. 별도 승인된 dev 전환은 저장소 변수와
+미게시/동일 도메인 런북을 사용하고 다른 대상은 검토된 tfvars를 사용한다. 이전 도메인 삭제는
+이전 설정의 별도 명시적 승인 계획이 필요하며 새 도메인 권한에 포함되지 않는다.
 계획과 적용 dispatch **양쪽에** `allow_dns_changes=true`를 명시해야 한다.
 아래는 향후 별도 승인 후의 예제이며 현재의 DNS 금지를 해제하지 않는다.
 
 ```bash
-# FUTURE ONLY: separate DNS authorization required. Do not run during DNS deferral.
+# FUTURE domain rollout ONLY: separate DNS authorization required; unpublished/same-domain cases.
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
-  -f mode=plan -f plan_scope=full -f publish_service_dns=true -f allow_dns_changes=true
+  -f mode=plan -f plan_scope=full -f domain_rollout=true \
+  -f publish_service_dns=true -f allow_dns_changes=true
 # After review, set PLAN_RUN_ID to that successful same-SHA plan dispatch.
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
   -f mode=apply -f plan_scope=full -f plan_run_id="$PLAN_RUN_ID" -f allow_dns_changes=true
@@ -580,13 +616,17 @@ The supported key set is RSA 2048/3072/4096 and ECDSA P-256/P-384; see
 [AWS's certificate requirements](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html).
 외부 인증서는 소유자가 만료 감시·갱신을 담당하며, DNS 보류 중 검증 CNAME을 변경하지 않는다.
 
-Both the web rollout and manual `make deploy` invoke the shared `deployment-smoke.mjs` CLI,
+[Deploy Web's `deploy` / `Smoke test`](../../.github/workflows/deploy-web.yml) and manual
+`make deploy` invoke the shared [deployment-smoke.mjs](../../scripts/v2/deployment-smoke.mjs) CLI,
 which validates destinations and passes curl arguments without shell interpolation.
 They connect to `cloudfront_domain` with curl
 `--connect-to` while requesting `public_url`. This preserves the service Host,
 SNI and certificate verification before service DNS is published. `/api/health`
 checks process liveness; complete the required database migrations and verify
 authenticated application routes separately.
+For an authorized AgentCore deployment, [Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml)
+runs `make migrate` first and offers `smoke=true` for an agent invocation; neither that
+invocation nor `/api/health` substitutes for a web-login/database check before service A publication.
 
 웹 배포 스모크 테스트는 `public_url`의 Host·SNI·인증서 검증을 유지하면서
 CloudFront 연결 주소로 요청한다. `/api/health`는 프로세스 생존 확인이므로,
@@ -622,9 +662,7 @@ test. It strips deployment credentials/TF variables and never copies local backe
 state or `.terraform`. Run these commands from the repository root:
 
 ```bash
-CHECKPOINT_DISABLE=1 python3 -m unittest \
-  scripts/v2/test_ci_dns_policy.py scripts/v2/test_ci_plan_context.py \
-  scripts/v2/test_ci_deployment_workflows.py scripts/v2/test_ci_terraform_reads.py
+CHECKPOINT_DISABLE=1 python3 -m pytest -q scripts/v2/test_ci_*.py
 node --test scripts/v2/deployment-smoke.test.mjs
 bash scripts/v2/terraform-test.sh
 ```
