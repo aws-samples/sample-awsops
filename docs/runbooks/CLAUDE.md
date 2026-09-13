@@ -24,11 +24,17 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC and protected review recovery; ECR preflight; state-preserving DNS deferral, certificate ownership, dispatch-only same-SHA saved plans, Host/SNI smoke, default-off manual private DB migration, opt-in authenticated verification and manual opt-in advisory read-only DB diagnostics (ADR-002/005/016) |
+| [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; explicit saved-plan domain scope, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
 | [steampipe-quota-and-staleness.md](steampipe-quota-and-staleness.md) | Steampipe quota guard — rate limiter knobs, partial runs, freshness ledger/staleness response |
 | [agent-sql-reader.md](agent-sql-reader.md) | `execute_sql`/`inventory-read` Data API auth failures — `awsops_sql_reader` role/password sync (`apply → make migrate → make agentcore`) |
 
 ## Deployment invariants
+- `runtime-foundation.md` covers account-bound, default-off runtime activation and
+  saved-plan Lambda assets. Runtime rollout is dev/full only, requires explicit DNS
+  permission and permits only owned private Cloud Map/ECS changes; public DNS/certificates
+  remain blocked. Runtime ECR bootstrap creates only three expected repositories.
+  Configuration and policy checks are not effective-access or successful-collection proof.
 - `CI_DB_DIAGNOSTICS_DEV` is false/unset by default; literal `true` plus `workflow_dispatch`
   enables advisory dev plan diagnostics only after encrypted artifact upload. Require
   `--target dev`, region `ap-northeast-2`, and state-account/STS consistency; this is not

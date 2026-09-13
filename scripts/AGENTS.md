@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4bed1273dc07 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a28f836feb34 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,6 +8,15 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
+- `v2/ci_runtime_policy.py` checks the configured CI role and STS account for dev activation,
+  pins inventory/worker image digests and confines explicit runtime rollout DNS to owned
+  private Cloud Map/ECS changes. Public DNS/certificates stay blocked; the runtime ECR
+  bootstrap permits only three runtime repositories. Default-off flags and policy checks
+  do not prove effective runtime access or collection.
+- `v2/ci_tf_assets.py` prepares hash-locked pg8000 layers and carries generated Lambda assets
+  with the encrypted saved plan. Restore checks plan hash, commit, scope, paths, types, modes
+  and content hashes; missing or mismatched assets fail. The dependency closure is
+  `v2/ci/pg8000-requirements.txt`.
 
 - `v2/ci_db_diagnostics.py` is default-off manual dev-plan diagnostics. Both workflow and helper
   require `workflow_dispatch`, literal `CI_DB_DIAGNOSTICS_DEV=true`, and `--target dev`;

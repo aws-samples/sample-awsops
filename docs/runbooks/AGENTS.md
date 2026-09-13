@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7d6bf6646dab · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a84d2f6ac7d9 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -10,6 +10,11 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
+- `runtime-foundation.md` covers account-bound default-off runtime activation and saved-plan
+  Lambda assets. Runtime rollout is dev/full only, requires explicit DNS permission and
+  allows only owned private Cloud Map/ECS changes; public DNS/certificates remain blocked.
+  Runtime ECR bootstrap creates only three expected repositories. Configuration/policy
+  checks do not prove effective access or successful collection.
 - `CI_DB_DIAGNOSTICS_DEV` is default-off and advisory, enabled only by manual `workflow_dispatch`
   dev plans with literal flag `true`, `--target dev`, and region `ap-northeast-2`. Invalid context
   causes no reads; state-account/STS is consistency only, not authorization or stack isolation.
