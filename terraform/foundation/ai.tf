@@ -249,6 +249,13 @@ resource "aws_iam_role_policy" "official_mcp_credentials" {
         ], [for preset in ["datadog", "dynatrace", "newrelic"] :
         "arn:aws:bedrock-agentcore:${var.region}:${data.aws_caller_identity.current.account_id}:token-vault/default/apikeycredentialprovider/awsops-v2-${preset}-mcp"
       ])
+      }, {
+      Effect = "Allow"
+      Action = ["bedrock-agentcore:GetWorkloadAccessToken"]
+      Resource = [
+        "arn:aws:bedrock-agentcore:${var.region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default",
+        "arn:aws:bedrock-agentcore:${var.region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default/workload-identity/awsops-v2-external-obs-gateway-*",
+      ]
     }]
   })
 }

@@ -12,6 +12,9 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
   proof of effective permissions. The host-only renderer verifies STS and the account
   registry before rendering; Terraform omits only the collector cross-account grant.
   Agent MCP cross-account grants retain their existing behavior.
+  Official MCP's conditional credential policy also permits GetWorkloadAccessToken only for
+  the own default directory and external-obs gateway identity prefix. This restores a required
+  credential prerequisite, not proof that backing-secret access or live MCP invocation succeeds.
 - CI prepares Lambda ZIP inputs and pg8000 layers before plan, then encrypts an asset bundle
   bound to the saved plan. Apply restores and checks that bundle; it cannot rebuild different
   assets under the reviewed plan. See `docs/runbooks/runtime-foundation.md`.

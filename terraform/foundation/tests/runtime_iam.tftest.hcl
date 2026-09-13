@@ -231,6 +231,16 @@ run "legacy_tag_and_scope_behavior" {
     error_message = "Official MCP must retain scoped API-key use without control-plane authority."
   }
   assert {
+    condition = try(
+      jsondecode(aws_iam_role_policy.official_mcp_credentials[0].policy).Statement[1].Action == ["bedrock-agentcore:GetWorkloadAccessToken"] &&
+      toset(jsondecode(aws_iam_role_policy.official_mcp_credentials[0].policy).Statement[1].Resource) == toset([
+        "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:workload-identity-directory/default",
+        "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:workload-identity-directory/default/workload-identity/awsops-v2-external-obs-gateway-*"
+      ]), false
+    )
+    error_message = "Official MCP needs only its own gateway workload-token identity, not runtime/global token authority."
+  }
+  assert {
     condition = (
       jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].image == "${aws_ecr_repository.steampipe[0].repository_url}:${var.steampipe_image_tag}" &&
       jsondecode(aws_ecs_task_definition.worker[0].container_definitions)[0].image == "${aws_ecr_repository.worker[0].repository_url}:${var.worker_image_tag}" &&
