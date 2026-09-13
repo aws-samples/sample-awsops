@@ -71,13 +71,16 @@ PR의 **대상 브랜치**를 포함하여 `dev`일 때만 적용한다. main/pr
    aws sts get-caller-identity --query Account --output text
    ```
 
-2. First select `preserve` and supply the **currently attached, operator-selected**
-   CloudFront and ALB ARNs to a full plan dispatch. With the new name variables
+2. First select `preserve`. For **externally owned** certificates, supply the
+   currently attached, operator-selected CloudFront and ALB ARNs to a full plan dispatch.
+   For certificates already managed by this Terraform state, leave external-ARN inputs
+   null/unset; preflight verifies the owned certificates without externalizing them. With the new name variables
    already set, preflight verifies the new hostname against both selected public
    certificates (CloudFront: us-east-1 plus all aliases; ALB: configured Region).
    `allow_dns_changes=false`, `publish_service_dns=false` is the initial test.
    There is no account-wide certificate scan or fallback selection.
-   먼저 `preserve`로 기존 연결 인증서 ARN 두 개를 명시하여 새 호스트 검증을 한다.
+   먼저 `preserve`를 선택하고 외부 소유 인증서만 기존 연결 ARN을 명시한다.
+   Terraform이 이미 관리하는 인증서는 외부 ARN 입력을 비워 두어 소유권을 유지하며 검증한다.
    계정 전체 검색이나 대체 인증서 자동 선택은 하지 않는다.
 
 3. Inspect the safe `public_zone` plan summary: `name`, `zone_id`, `name_servers`.
@@ -126,6 +129,16 @@ mode. Do not use managed mode to bypass other trust/validity failures.
 리소스를 사용한다. 최초 생성/외부 연결 인증서에서의 전환에는 **full plan과 명시적
 DNS 허용**이 필요하다. 이전 외부 인증서를 가져오거나 삭제/폐기하지 않는다. 이미
 관리 중인 인증서의 소유권은 두 모드 모두 유지한다. 다른 검증 실패를 우회하지 않는다.
+
+An `ecr-bootstrap` plan with null external-ARN inputs remains certificate-neutral in
+either mode, including a fresh stack. It needs no DNS permission and cannot create or
+change certificates: the saved-plan check permits only `aws_ecr_repository.web`.
+External-ARN conflicts and ownership guards still apply. See the
+[ECR bootstrap procedure](dev-repo-setup.md).
+
+외부 ARN 입력이 비어 있는 `ecr-bootstrap`은 새 스택에서도 두 모드 모두 인증서와 무관하게
+실행할 수 있다. DNS 허용이 필요 없으며 저장 계획은 `aws_ecr_repository.web`만 변경할 수
+있으므로 인증서를 생성·변경하지 않는다. 외부 ARN 충돌·소유권 검사는 그대로 적용된다.
 
 | Stage / 단계 | `plan_scope` | `allow_dns_changes` | `publish_service_dns` |
 | --- | --- | --- | --- |

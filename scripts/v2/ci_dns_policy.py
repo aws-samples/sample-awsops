@@ -220,8 +220,11 @@ def certificate_overrides(configuration, state, account, allow_dns, *, publish=T
     result = {"publish_service_dns": publish if allow_dns else any(
         r["type"] == "aws_route53_record" and r["name"] == "alias" for r in root
     )}
-    if certificate_mode == "managed" and any(not own("aws_acm_certificate", key).get("arn")
-                                             for key in ("cf", "alb")):
+    # An ECR-only saved plan cannot mutate certificates; check_plan enforces
+    # its sole-resource allowlist again before apply.
+    if certificate_mode == "managed" and scope != "ecr-bootstrap" and any(
+        not own("aws_acm_certificate", key).get("arn") for key in ("cf", "alb")
+    ):
         if scope != "full" or not allow_dns:
             raise ValueError("First managed certificate creation/conversion requires a full plan with DNS permission")
     # Validate both ownership choices before looking up either certificate.

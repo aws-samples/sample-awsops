@@ -270,6 +270,22 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertFalse(any(c[:2] == ["aws", "acm"] for c in commands))
         self.assertIn("managed", result.summary)
 
+    def test_persistent_managed_mode_allows_dns_free_ecr_only_bootstrap(self):
+        script = step("terraform.yml", "plan", "Configure dev domain overrides")
+        script += "\n" + step("terraform.yml", "plan", "Check existing certificates without changing DNS")
+        script += "\n" + step("terraform.yml", "plan", "terraform plan")
+        result, commands = self.run_step(
+            script, DISPATCH="true", PLAN_SCOPE="ecr-bootstrap",
+            DOMAIN_NAME_DEV="dev.example.com", HOSTED_ZONE_NAME_DEV="dev.example.com",
+            CERTIFICATE_MODE_DEV="managed", CERTIFICATE_MODE="managed", DEV_DOMAIN_ROLLOUT="true",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = next(c for c in commands if c[:2] == ["terraform", "plan"])
+        self.assertIn("-target=aws_ecr_repository.web", plan)
+        self.assertIn(["tfvars", {"publish_service_dns": False, "existing_cf_certificate_arn": None,
+                                 "existing_alb_certificate_arn": None}], commands)
+        self.assertFalse(any(c[:2] == ["aws", "acm"] for c in commands))
+
     def test_plan_treats_inputs_as_arguments_and_rejects_unknown_scope(self):
         script = step("terraform.yml", "plan", "terraform plan")
         value = {"publish_service_dns": False, "existing_cf_certificate_arn": None,

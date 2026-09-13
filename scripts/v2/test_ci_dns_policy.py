@@ -364,12 +364,30 @@ class DnsPolicyTests(unittest.TestCase):
                                           "existing_alb_certificate_arn": None,
                                           "publish_service_dns": False})
                 find.assert_not_called()
-            for allow, scope in ((False, "full"), (True, "ecr-bootstrap"), (False, "ecr-bootstrap")):
+            for allow, scope in ((False, "full"),):
                 with self.subTest(allow=allow, scope=scope), self.assertRaisesRegex(ValueError, "full.*DNS"):
                     module.certificate_overrides(
                         self.configuration(), current_state, ACCOUNT, allow,
                         certificate_mode="managed", scope=scope,
                     )
+
+    def test_managed_mode_keeps_ecr_bootstrap_certificate_neutral(self):
+        module = self.module()
+        external = self.state([
+            self.resource("aws_cloudfront_distribution.main", viewer_certificate=[{"acm_certificate_arn": ARN}]),
+            self.resource("aws_lb_listener.https", certificate_arn=ARN.replace("us-east-1", "ap-northeast-2")),
+        ])
+        for state in ({"format_version": "1.0"}, external):
+            for allow in (False, True):
+                with self.subTest(state=state, allow=allow), patch.object(module, "find_certificate") as find:
+                    result = module.certificate_overrides(
+                        self.configuration(), state, ACCOUNT, allow,
+                        scope="ecr-bootstrap", certificate_mode="managed", publish=False,
+                    )
+                    self.assertEqual(result, {"publish_service_dns": False,
+                                              "existing_cf_certificate_arn": None,
+                                              "existing_alb_certificate_arn": None})
+                    find.assert_not_called()
 
     def test_managed_mode_rejects_supplied_arns_and_keeps_managed_ownership(self):
         module = self.module()
