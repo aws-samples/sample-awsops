@@ -706,6 +706,20 @@ one task-definition template. `migration_job` is absent/null while disabled.
 제거하거나 명시적 `-var`를 사용한다. 새 워크플로는 backend 초기화·`migration_job` 읽기만 하며
 Terraform plan/apply를 수행하지 않는다. 비활성 상태에는 해당 출력과 마이그레이션 리소스가 없다.
 
+The migration workflow uses the existing `AWS_CI_BUILD_DEV_ROLE_ARN` and
+`AWS_CI_DEPLOYER_DEV_ROLE_ARN` secrets. Role names in the setup matrix are conventions;
+operators do not need to rename an existing role. Valid IAM paths and surrounding input
+whitespace are supported. Both selected roles must belong to the same account. The workflow
+checks the actual build STS identity before ECR access, and the controller checks the exact
+configured deploy role identity before ECR/ECS access and cleanup. Account/region/backend,
+private-network, task-family, digest and current-commit checks still apply. There is no
+production-secret fallback, new role input or IAM permission change.
+마이그레이션은 기존 개발용 역할 ARN 시크릿을 사용한다. 설정 표의 역할명은 명명 관례이며
+기존 역할을 바꿀 필요가 없다. IAM 경로와 입력 앞뒤 공백을 지원하되 두 역할의 계정은 같아야
+한다. ECR 접근 전 실제 build STS 주체를, 실행·정리 전 설정된 deploy 역할과 실제 주체를
+대조한다. 계정·리전·backend·사설 네트워크·태스크 family·digest·커밋 검증은 유지하며
+production 시크릿 폴백, 추가 역할 입력, IAM 권한 변경은 없다.
+
 **Privilege review / 권한 검토:** CI roles are existing, separately managed prerequisites;
 this feature does not broaden them automatically. Verify the following grants before execution.
 An access denial is a failed run, never permission to substitute a more privileged role.
