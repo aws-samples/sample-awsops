@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b4179933d75b · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ef0bb72aa3e7 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -9,10 +9,14 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 
 ## Diagnostic and deployment boundaries
 - `v2/ci_runtime_policy.py` checks development/preview CI roles and STS accounts,
-  pins inventory/worker image digests for dev activation and confines explicit runtime rollout DNS to owned
-  private Cloud Map/ECS changes. Public DNS/certificates stay blocked; the runtime ECR
-  bootstrap permits only three runtime repositories. Default-off flags and policy checks
-  do not prove effective runtime access or collection.
+  pins dev image digests and enforces read-only profile flags without requiring a DNS rollout.
+  Dev/preview private discovery requires explicit full-plan rollout; public DNS/certificates stay
+  blocked. Separate dev/full retirement disables core/host flags and permits owned runtime
+  deletion, not replacement/forget or shared infrastructure deletion. ECR bootstrap permits three repos.
+  Default-off flags and policy checks do not prove effective access.
+- `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-only registry proof before
+  full dev activation plans; apply rechecks using the approved profile. Database-only success is rejected.
+  Credentials stay private and failures use a fixed code.
 - `v2/ci_tf_assets.py` prepares hash-locked pg8000 layers and carries generated Lambda assets
   with the encrypted saved plan. Restore checks plan hash, commit, scope, paths, types, modes
   and content hashes; missing or mismatched assets fail. The dependency closure is

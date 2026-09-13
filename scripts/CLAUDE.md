@@ -7,10 +7,15 @@ secrets-manager) — installed by `make deps`.
 
 ## Key Files
 - `v2/ci_runtime_policy.py` — dev activation pins inventory/worker image digests.
-  Development/preview CI roles and STS accounts are checked; DNS changes in runtime plans use
-  owned private Cloud Map/ECS registrations. Public DNS and certificate changes stay blocked.
-  `runtime-ecr-bootstrap` permits only the three runtime repositories. Feature flags stay
-  default-off; policy checks alone do not prove collection or effective runtime access.
+  Independently configured development/preview accounts, CI roles and actual STS callers must
+  match. The dev profile enforces read-only flags even without a discovery rollout. Dev/preview
+  private discovery requires an explicit full-plan rollout; public DNS/certificates stay blocked.
+  Dev/full retirement is separate, disables core/host flags and permits owned runtime deletion,
+  not replacement/forget or shared infrastructure deletion. ECR bootstrap permits three repositories.
+  Default-off flags and policy checks alone do not prove effective runtime access.
+- `v2/ci/prepare-runtime-host.mjs` verifies actual login, DB and the enabled host-only registry
+  before full dev activation plans. Apply uses the approved profile marker to require a fresh check.
+  It uses private existing credentials, rejects database-only proof and reports a fixed failure code.
 - `v2/ci_tf_assets.py` — prepares hash-locked pg8000 layers and carries generated Lambda assets
   with the encrypted saved plan. Restore checks the plan hash, commit, scope, member paths,
   types, modes and content hashes before apply; missing or mismatched assets fail.
