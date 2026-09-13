@@ -64,10 +64,9 @@ jobs:
       - name: Validate development role
         env:
           BUILD_ROLE: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+          MIGRATION_DEPLOY_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
         run: |
-          [[ "$BUILD_ROLE" =~ ^arn:aws:iam::[0-9]{12}:role/sample-awsops-dev-ci-build$ ]] || {
-            echo "::error::Expected the development build role"; exit 1;
-          }
+          node scripts/v2/ci/run-migration.mjs check-build-role
 
       - name: Configure development build credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -76,6 +75,15 @@ jobs:
           aws-region: ap-northeast-2
           mask-aws-account-id: true
           unset-current-credentials: true
+
+      - name: Verify the configured build caller before ECR access
+        env:
+          BUILD_ROLE: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+          MIGRATION_DEPLOY_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            node scripts/v2/ci/run-migration.mjs verify-build-role
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -131,9 +139,7 @@ jobs:
 
       - name: Validate development role
         run: |
-          [[ "$MIGRATION_DEPLOY_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/sample-awsops-dev-ci-deployer$ ]] || {
-            echo "::error::Expected the development deployer role"; exit 1;
-          }
+          node scripts/v2/ci/run-migration.mjs check-deploy-role
 
       - name: Configure development execution credentials
         id: credentials

@@ -217,13 +217,72 @@ test('rejects other repositories, branches, events, malformed digest and untrust
   for (const [key, value] of Object.entries({
     repository: 'other/repo', ref: 'refs/heads/main', event: 'push', sha: 'HEAD',
     digest: 'latest', image: `${repo}:migration-${sha}`, runId: '../123',
-    deployRoleArn: `arn:aws:iam::${account}:role/Administrator`,
+    deployRoleArn: `arn:aws:iam::${account}:user/Administrator`,
   })) {
     const h = harness();
     h.f.context[key] = value;
     await assert.rejects(runMigration(h.f, h.deps));
     assert.equal(h.calls.length, 0, key);
   }
+});
+
+test('configured development role names, paths and surrounding input whitespace work without renaming IAM roles', async () => {
+  for (const resource of ['DeploymentRole', 'platform/ci/Deploy+Preview']) {
+    const f = fixture();
+    f.context.deployRoleArn = ` \narn:aws:iam::${account}:role/${resource}\n`;
+    const roleName = resource.split('/').at(-1);
+    const h = harness(f, {
+      'get-caller-identity': () => ({
+        Account: account, Arn: `arn:aws:sts::${account}:assumed-role/${roleName}/GitHubActions`,
+      }),
+    });
+    assert.equal((await runMigration(f, h.deps)).exitCode, 0);
+    assert.equal(h.calls.filter(c => c[1] === 'run-task').length, 1);
+  }
+});
+
+test('the exact configured caller is required before ECR or ECS access', async () => {
+  const f = fixture();
+  f.context.deployRoleArn = `arn:aws:iam::${account}:role/platform/DeploymentRole`;
+  for (const caller of [
+    { Account: account, Arn: `arn:aws:sts::${account}:assumed-role/OtherRole/GitHubActions` },
+    { Account: account, Arn: `arn:aws:sts::${account}:assumed-role/DeploymentRole-extra/GitHubActions` },
+    { Account: account, Arn: `arn:aws:iam::${account}:user/DeploymentRole` },
+    { Account: '999999999999', Arn: `arn:aws:sts::999999999999:assumed-role/DeploymentRole/GitHubActions` },
+  ]) {
+    const h = harness(f, { 'get-caller-identity': () => caller });
+    await assert.rejects(runMigration(f, h.deps), /caller/);
+    assert.deepEqual(h.calls.map(c => c.slice(0, 2)), [['sts', 'get-caller-identity']]);
+  }
+});
+
+test('build role preflight binds both development secrets and validates the actual STS caller privately', () => {
+  const buildArn = `arn:aws:iam::${account}:role/platform/BuildRole`;
+  const deployArn = `arn:aws:iam::${account}:role/platform/DeploymentRole`;
+  const caller = { Account: account, Arn: `arn:aws:sts::${account}:assumed-role/BuildRole/GitHubActions` };
+  const cli = (mode, changes = {}, input = caller) => spawnSync(process.execPath,
+    [new URL('./run-migration.mjs', import.meta.url).pathname, mode], {
+      env: { ...process.env, BUILD_ROLE: ` ${buildArn}\n`, MIGRATION_DEPLOY_ROLE_ARN: deployArn, ...changes },
+      input: JSON.stringify(input), encoding: 'utf8',
+    });
+  for (const mode of ['check-build-role', 'check-deploy-role', 'verify-build-role']) {
+    const good = cli(mode);
+    assert.equal(good.status, 0, good.stderr);
+    assert.equal(good.stdout, '');
+  }
+  for (const changes of [
+    { BUILD_ROLE: '' }, { BUILD_ROLE: `arn:aws:iam::${account}:user/BuildRole` },
+    { MIGRATION_DEPLOY_ROLE_ARN: deployArn.replace(account, '999999999999') },
+    { BUILD_ROLE: `${buildArn}/` }, { BUILD_ROLE: 'SECRET\nnot-an-arn' },
+  ]) {
+    const bad = cli('check-build-role', changes);
+    assert.notEqual(bad.status, 0);
+    assert.ok(!`${bad.stdout}${bad.stderr}`.includes('SECRET'));
+  }
+  const badCaller = cli('verify-build-role', {}, { ...caller,
+    Arn: `arn:aws:sts::${account}:assumed-role/OtherRole/GitHubActions` });
+  assert.notEqual(badCaller.status, 0);
+  assert.ok(!badCaller.stderr.includes(account));
 });
 
 test('rejects missing or cross-stack Terraform output before registration', async () => {

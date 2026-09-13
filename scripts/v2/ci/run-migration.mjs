@@ -12,7 +12,6 @@ import { diagnosticCodeGroups } from '../migration-errors.mjs';
 const exec = promisify(execFile);
 const REGION = 'ap-northeast-2';
 const REPOSITORY = 'aws-samples/sample-awsops';
-const DEPLOY_ROLE = 'sample-awsops-dev-ci-deployer';
 const PROJECT = /^[a-z][a-z0-9-]{1,39}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const SHA = /^[a-f0-9]{40}$/;
@@ -25,6 +24,22 @@ const nonemptyArray = (a, max) => Array.isArray(a) && a.length > 0 && a.length <
 const hasFailures = response => (response?.failures?.length ?? 0) !== 0;
 const allowedKeys = (obj, keys) => obj && Object.keys(obj).every(k => keys.includes(k));
 const empty = value => value === undefined || (Array.isArray(value) && value.length === 0);
+
+function configuredRole(value) {
+  // Match configure-aws-credentials' trimmed input, including IAM role paths.
+  // Only the selected development secret supplies this ARN; names are not permissions.
+  const arn = typeof value === 'string' ? value.trim() : '';
+  const match = /^arn:aws:iam::([0-9]{12}):role\/((?:[\x21-\x7e]+\/)?)([A-Za-z0-9+=,.@_-]{1,64})$/.exec(arn);
+  requireThat(match && match[2].length <= 511, 'Invalid configured development role ARN');
+  return { arn, account: match[1], name: match[3] };
+}
+
+function verifyRoleIdentity(caller, role) {
+  const prefix = `arn:aws:sts::${role.account}:assumed-role/${role.name}/`;
+  requireThat(caller?.Account === role.account && typeof caller.Arn === 'string' &&
+    caller.Arn.startsWith(prefix) && /^[A-Za-z0-9+=,.@_-]{2,64}$/.test(caller.Arn.slice(prefix.length)),
+  'Unexpected AWS caller for configured development role');
+}
 
 export function selectProject(text) {
   // Deliberately accept only literal, single-line assignments. The trusted dev
@@ -46,15 +61,14 @@ export function validateContext(c) {
     c.event === 'workflow_dispatch', 'Only the samples repository dev dispatch is allowed');
   requireThat(SHA.test(c.sha) && PROJECT.test(c.project) && c.region === REGION &&
     numericId.test(c.runId) && numericId.test(c.attempt), 'Invalid migration run context');
-  const role = c.deployRoleArn?.match(new RegExp(`^arn:aws:iam::([0-9]{12}):role/${DEPLOY_ROLE}$`));
-  requireThat(role, 'Unexpected development deploy role');
-  const account = role[1];
+  const role = configuredRole(c.deployRoleArn);
+  const account = role.account;
   const repositoryUrl = `${account}.dkr.ecr.${REGION}.amazonaws.com/${c.project}-web`;
   requireThat(DIGEST.test(c.digest) && c.image === `${repositoryUrl}@${c.digest}`,
     'Expected the immutable digest from this run build');
   requireThat(`migration-${c.runId}-${c.attempt}`.length <= 36, 'Migration run identity is too long');
   return {
-    account, repositoryUrl, family: `${c.project}-migration`,
+    account, role, repositoryUrl, family: `${c.project}-migration`,
     cluster: `arn:aws:ecs:${REGION}:${account}:cluster/${c.project}`,
     arnPrefix: `arn:aws:ecs:${REGION}:${account}:`,
     startedBy: `migration-${c.runId}-${c.attempt}`,
@@ -147,9 +161,7 @@ function registration(t, config, c, e, expectedArn = config.task_template_arn, s
 
 async function verifyCaller(c, e, deps) {
   const caller = await deps.aws('sts', 'get-caller-identity', {});
-  requireThat(caller?.Account === e.account && typeof caller.Arn === 'string' &&
-    caller.Arn.startsWith(`arn:aws:sts::${e.account}:assumed-role/${DEPLOY_ROLE}/`),
-  'Unexpected AWS caller for development migration');
+  verifyRoleIdentity(caller, e.role);
 }
 
 function ownedTask(t, r, e) {
@@ -431,14 +443,15 @@ async function command(binary, args) {
 }
 
 function contextFromEnv(env) {
+  const role = configuredRole(env.MIGRATION_DEPLOY_ROLE_ARN);
   return {
     repository: env.GITHUB_REPOSITORY, ref: env.GITHUB_REF, event: env.GITHUB_EVENT_NAME,
     sha: env.GITHUB_SHA, runId: env.GITHUB_RUN_ID, attempt: env.GITHUB_RUN_ATTEMPT,
     project: env.MIGRATION_PROJECT, region: REGION, digest: env.MIGRATION_DIGEST,
     // Do not pass a masked registry/account in a GitHub job output. Derive the
-    // expected registry from the fixed deploy role; validateContext checks it.
-    image: `${env.MIGRATION_DEPLOY_ROLE_ARN?.split(':')[4]}.dkr.ecr.${REGION}.amazonaws.com/${env.MIGRATION_PROJECT}-web@${env.MIGRATION_DIGEST}`,
-    deployRoleArn: env.MIGRATION_DEPLOY_ROLE_ARN,
+    // expected registry from the selected dev secret; validateContext checks it.
+    image: `${role.account}.dkr.ecr.${REGION}.amazonaws.com/${env.MIGRATION_PROJECT}-web@${env.MIGRATION_DIGEST}`,
+    deployRoleArn: role.arn,
   };
 }
 
@@ -447,6 +460,19 @@ async function main() {
   if (mode === 'project') {
     const text = await stdin();
     console.log(selectProject(text));
+    return;
+  }
+  if (['check-build-role', 'check-deploy-role', 'verify-build-role'].includes(mode)) {
+    const deploy = configuredRole(process.env.MIGRATION_DEPLOY_ROLE_ARN);
+    if (mode !== 'check-deploy-role') {
+      const build = configuredRole(process.env.BUILD_ROLE);
+      requireThat(build.account === deploy.account, 'Development build/deploy role accounts differ');
+      if (mode === 'verify-build-role') {
+        let caller;
+        try { caller = JSON.parse(await stdin()); } catch { fail('Invalid build caller response'); }
+        verifyRoleIdentity(caller, build);
+      }
+    }
     return;
   }
   requireThat(['run', 'cleanup'].includes(mode), 'Expected run, cleanup or project');

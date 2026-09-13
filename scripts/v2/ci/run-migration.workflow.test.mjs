@@ -33,7 +33,9 @@ if os.environ.get("TF_FAIL") == "1":
  sys.exit(1)
 if "output" in sys.argv: print("null")
 `, { mode: 0o755 });
-    for (const [path, text] of Object.entries(files)) await writeFile(join(dir, path), text);
+    for (const [path, text] of Object.entries(files)) {
+      await writeFile(join(dir, path), text, { mode: path.startsWith('bin/') ? 0o755 : 0o600 });
+    }
     const environment = {
       PATH: `${join(dir, 'bin')}:${process.env.PATH}`,
       RUNNER_TEMP: join(dir, 'temp'), TF_DATA_DIR: join(dir, 'temp/tf'),
@@ -96,20 +98,54 @@ test('build and execution use fixed development credentials and the ARM64 build 
   assert.match(migrate.find(s => s.name === 'Stop only this run task if necessary').if, /always\(\)/);
 });
 
-test('role validation fails before OIDC for missing or arbitrary build/deployer roles', async () => {
-  for (const [job, envName, roleName] of [
-    ['build', 'BUILD_ROLE', 'sample-awsops-dev-ci-build'],
-    ['migrate', 'MIGRATION_DEPLOY_ROLE_ARN', 'sample-awsops-dev-ci-deployer'],
+test('role validation binds development secrets, permits configured names and rejects invalid/cross-account inputs before OIDC', async () => {
+  const account = '123456789012';
+  const buildRole = `arn:aws:iam::${account}:role/platform/BuildRole`;
+  const deployRole = `arn:aws:iam::${account}:role/platform/DeploymentRole`;
+  for (const [job, envName, role] of [
+    ['build', 'BUILD_ROLE', buildRole],
+    ['migrate', 'MIGRATION_DEPLOY_ROLE_ARN', deployRole],
   ]) {
     const w = workflow('deploy-migrations.yml');
     const steps = w.jobs[job].steps;
     const guard = steps.findIndex(s => s.name === 'Validate development role');
     assert.ok(guard >= 0 && guard < steps.findIndex(s => s.uses?.startsWith('aws-actions/configure-aws-credentials')));
-    for (const role of ['', 'arn:aws:iam::123456789012:role/Admin', `arn:aws:iam::123456789012:role/${roleName}`]) {
-      const result = await shell(steps[guard].run, { [envName]: role });
-      assert.equal(result.status === 0, role.endsWith(roleName));
+    for (const value of ['', `arn:aws:iam::${account}:user/NotARole`, ` \n${role}\n`]) {
+      const result = await shell(steps[guard].run, {
+        BUILD_ROLE: buildRole, MIGRATION_DEPLOY_ROLE_ARN: deployRole, [envName]: value,
+      });
+      assert.equal(result.status === 0, value.trim() === role, result.stderr);
       assert.deepEqual(result.calls, []);
     }
+  }
+  const guard = step('deploy-migrations.yml', 'build', 'Validate development role');
+  assert.equal(guard.env.BUILD_ROLE, '${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}');
+  assert.equal(guard.env.MIGRATION_DEPLOY_ROLE_ARN, '${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}');
+  const mismatch = await shell(guard.run, { BUILD_ROLE: buildRole,
+    MIGRATION_DEPLOY_ROLE_ARN: deployRole.replace(account, '999999999999') });
+  assert.notEqual(mismatch.status, 0);
+  assert.deepEqual(mismatch.calls, []);
+});
+
+test('configured build caller is checked after OIDC and before any ECR access', async () => {
+  const steps = workflow('deploy-migrations.yml').jobs.build.steps;
+  const index = steps.findIndex(s => s.name === 'Verify the configured build caller before ECR access');
+  assert.ok(index > steps.findIndex(s => s.uses?.startsWith('aws-actions/configure-aws-credentials')));
+  assert.ok(index < steps.findIndex(s => s.uses?.startsWith('aws-actions/amazon-ecr-login')));
+  assert.equal(steps[index].env.BUILD_ROLE, '${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}');
+  assert.equal(steps[index].env.MIGRATION_DEPLOY_ROLE_ARN, '${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}');
+  for (const roleName of ['BuildRole', 'UnexpectedRole']) {
+    const result = await shell(steps[index].run, {
+      BUILD_ROLE: 'arn:aws:iam::123456789012:role/platform/BuildRole',
+      MIGRATION_DEPLOY_ROLE_ARN: 'arn:aws:iam::123456789012:role/platform/DeploymentRole',
+    }, { 'bin/aws': '#!/usr/bin/env python3\nimport json,os,sys\n' +
+      'with open(os.environ["CALLS"],"a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")\n' +
+      'print(json.dumps(' + JSON.stringify({ Account: '123456789012',
+        Arn: `arn:aws:sts::123456789012:assumed-role/${roleName}/GitHubActions` }) + '))\n' });
+    assert.equal(result.status === 0, roleName === 'BuildRole', result.stderr);
+    assert.equal(result.stdout, '');
+    assert.deepEqual(result.calls, [['sts', 'get-caller-identity', '--region', 'ap-northeast-2',
+      '--output', 'json', '--no-cli-pager']]);
   }
 });
 
