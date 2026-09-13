@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: c6a7a7f2e033 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 21c5e3f1939e · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -106,6 +106,18 @@ legacy runbook's steps as the current operational path).
   (ADR-016), not stale content to delete outright.
 
 ## Authenticated development verification
+- Apply both `agentcore_enabled` and `ci_readiness_enabled`, then provision AgentCore.
+  Verify also requires active inventory/dispatch, `workers_enabled=true` and deployed ARM64 worker images.
+  Only that output boolean enables `DEPLOYMENT_READINESS_ENABLED`; no shell override or
+  Cognito membership grant. False/missing reports `runtime_disabled`. Capped samples cannot
+  prove absence; missing ledger, partial/failed runs and unknown attributes remain failed readiness.
+- The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
+  credentials. Prepare checks host registration (optional hostOnly); verify additionally
+  requires applied CloudFront identity, complete queued types and pre-dispatch timestamp,
+  fresh collection, web-role SSM/AgentCore proof and Lambda/Fargate completion. Current Deploy
+  Web remains DB-only until the release controller supplies this file. The billed readiness
+  route requires admin or deployment-verifiers, one in-flight call and a 60-second cooldown.
+
 - Dev-only `verify_database=true` prepares effective demo credentials privately before rollout,
   then verifies login and edge-authenticated `/api/db`; positive table count is not a ledger audit.
 - Unwrapped Terraform and private 0600/0700 files are required. The CLI's HTTP scratch shares

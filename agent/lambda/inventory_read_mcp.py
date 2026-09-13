@@ -59,7 +59,7 @@ COVERAGE_NOTE = ("Derived from the synced Aurora inventory (inventory_resources)
                  "here. query_inventory and inventory_summary carry a per-type freshness block "
                  "(healthy | degraded | stale | unavailable) classified from the durable "
                  "last_success_at and the oldest captured_at of current rows; degraded also covers "
-                 "succeeded runs with attribute blind spots (unknown_attribute_count > 0). For this "
+                 "succeeded runs with unknown attribute coverage (unknown_attribute_count null or > 0). For this "
                  "tool's data, call inventory_summary().")
 
 TRACE_TOPOLOGY_NOTE = (
@@ -423,7 +423,8 @@ def _fetch_one_type(rtype, limit, resource_id=None):
         projection, limit = "jsonb_build_object('id', resource_id)", 1
     rows = _execute("SELECT " + projection + " AS data FROM inventory_resources "
                     "WHERE account_id = 'self' AND resource_type = :rt" + predicate
-                    + " LIMIT " + str(int(limit)), params=params)
+                    + " ORDER BY captured_at DESC, account_id, region, resource_id LIMIT " + str(int(limit)),
+                    params=params)
     return [_coerce(r.get("data")) for r in rows]
 
 
@@ -434,8 +435,8 @@ def _sync_freshness(resource_type=None):
     rows behind newer rows. When no rows exist, the durable last_success_at keeps a genuine
     zero-row success visible across later running/failed/partial attempts.
 
-    A succeeded run with attribute blind spots (unknown_attribute_count > 0 — attribute reads
-    denied in steady state) reports 'degraded', not 'healthy': the denial must not block pruning
+    A succeeded run with unknown coverage (unknown_attribute_count null or > 0 — unmeasured or
+    denied attribute reads) reports 'degraded', not 'healthy': this must not block pruning
     or last_success_at, but the reader must not be told the sweep saw everything either.
     """
     stale_after = _inventory_stale_after_minutes()
@@ -484,7 +485,7 @@ def _sync_freshness(resource_type=None):
         "WHEN latest_success_at < CURRENT_TIMESTAMP - "
         "(:stale_after_minutes * INTERVAL '1 minute') THEN 'stale' "
         "WHEN status IN ('partial', 'failed', 'running') THEN 'degraded' "
-        "WHEN status = 'succeeded' AND COALESCE(unknown_attribute_count, 0) > 0 THEN 'degraded' "
+        "WHEN status = 'succeeded' AND (unknown_attribute_count IS NULL OR unknown_attribute_count > 0) THEN 'degraded' "
         "WHEN status = 'succeeded' THEN 'healthy' "
         "ELSE 'unavailable' END AS freshness, "
         "CASE WHEN latest_success_at IS NULL THEN NULL ELSE "

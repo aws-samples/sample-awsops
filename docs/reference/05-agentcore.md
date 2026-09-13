@@ -175,3 +175,14 @@ Consolidates three source docs (now archived):
 
 Review: `v2-p1f-scope-architecture-review` (private upstream repo)
 (3-AI cross review — MID-minus scope decision, least-privilege roles, SSM-not-valueFrom).
+
+## Deployment readiness mode / 배포 검증 모드
+
+`agent/readiness.py` implements bounded, default-off `mode=deployment_readiness`. Apply `ci_readiness_enabled=true` with AgentCore enabled, then provision.
+Only the applied `agentcore.deployment_readiness_enabled` sets `DEPLOYMENT_READINESS_ENABLED`; shell overrides are ignored.
+Fixed MCP tools read one CloudFront identity; producer freshness and bounded inference leave unknown attributes unassessed.
+Nonce/account-bound responses retain completed checks on timeout; admin or separately provisioned deployment-verifiers and process cooldown are required.
+Invocation discovery rejects PENDING/malformed ARNs before caching and stops on an explicitly empty runtime parameter.
+
+기본 비활성 모드이며 `ci_readiness_enabled=true`를 적용한 output으로 프로비저닝합니다. 환경변수 덮어쓰기는 무시하고 MCP 지정 ID·원본 신선도·제한된 모델 요청만 사용합니다.
+누락 속성은 미평가이며 타임아웃에도 완료 증거를 보존합니다. 관리자/별도 verifier와 호출 간격이 필요하고 PENDING·잘못된 ARN은 캐시하지 않으며 빈 런타임 경로는 호출 조회를 비활성화합니다.

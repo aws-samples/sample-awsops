@@ -32,6 +32,8 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
   section.
 
 ## Flag Gates
+- `ci_readiness_enabled` in `ai.tf` defaults false. Its AgentCore output boolean controls the
+  provisioner's `DEPLOYMENT_READINESS_ENABLED`; it grants no Cognito group or IAM permission.
 - `existing_cf_certificate_arn` / `existing_alb_certificate_arn` are nullable string inputs:
   JSON null retains Terraform-managed certificates; the string `"null"` does not. External
   ARNs must be operator-selected or already attached. Routine CI refuses managed-to-external

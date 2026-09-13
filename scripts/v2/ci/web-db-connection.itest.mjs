@@ -90,3 +90,49 @@ test('credential-provider rejection preserves the original error without logging
     assert.equal(JSON.stringify(logs).includes(error.message), false);
   });
 });
+
+test('inventory five-row pages totally order tied timestamps using every scoped primary-key column', async () => {
+  const client = new pg.Client({ ...fixture.config, database: 'awsops', password: fixture.password });
+  await client.connect();
+  try {
+    await client.query(`CREATE TEMP TABLE inventory_resources (
+      resource_type text, account_id text, region text, resource_id text, data jsonb,
+      captured_at timestamptz, PRIMARY KEY(resource_type, account_id, region, resource_id));
+      CREATE TEMP TABLE inventory_sync_runs (
+        resource_type text, account_id text, status text, finished_at timestamptz,
+        row_count integer, error text, last_success_at timestamptz);`);
+    const expected = [];
+    for (const account of ['111122223333', 'self']) {
+      for (const region of ['a-region', 'b-region']) {
+        for (const id of ['r0', 'r1', 'r2']) expected.push([account, region, id]);
+      }
+    }
+    for (const [account, region, id] of [...expected].reverse()) {
+      await client.query(`INSERT INTO inventory_resources VALUES
+        ('cloudfront',$1,$2,$3,'{}','2026-01-01T00:00:00Z')`, [account, region, id]);
+    }
+    const source = new URL('../../../web/lib/inventory.ts', import.meta.url).pathname;
+    const inventoryModule = new Module(source);
+    inventoryModule.require = id => {
+      if (id === '@/lib/db') return { getPool: () => client };
+      if (id === '@/lib/admin') return { isAdmin: () => false };
+      if (id === '@/lib/inventory-types') return { INVENTORY_TYPES: { cloudfront: {} } };
+      if (id === '@/lib/inventory-derived') return { AGG_DERIVED_KEYS: {} };
+      if (id === '@aws-sdk/client-lambda') return {
+        LambdaClient: class { send() { throw new Error('AWS forbidden in ordering test'); } },
+        InvokeCommand: class {},
+      };
+      return webRequire(id);
+    };
+    inventoryModule._compile(ts.transpileModule(readFileSync(source, 'utf8'), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    }).outputText, source);
+    const found = [];
+    for (let offset = 0; offset < expected.length; offset += 5) {
+      const page = await inventoryModule.exports.readResources('cloudfront', { limit: 5, offset, accounts: '__all__' });
+      found.push(...page.rows.map(row => [row.account_id, row.region, row.resource_id]));
+    }
+    assert.deepEqual(found, expected);
+    assert.equal(new Set(found.map(row => row.join('/'))).size, expected.length);
+  } finally { await client.end(); }
+});

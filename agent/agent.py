@@ -824,7 +824,7 @@ def get_aws_credentials():
     return None, None, None
 
 
-def create_gateway_transport(gateway_url):
+def create_gateway_transport(gateway_url, *, timeout=30, sse_read_timeout=300):
     """Create SigV4-signed transport to a specific Gateway. / 특정 게이트웨이에 대한 SigV4 서명된 전송 생성."""
     access_key, secret_key, session_token = get_aws_credentials()
     credentials = Credentials(
@@ -837,6 +837,8 @@ def create_gateway_transport(gateway_url):
         credentials=credentials,
         service=SERVICE,
         region=GATEWAY_REGION,
+        timeout=timeout,
+        sse_read_timeout=sse_read_timeout,
     )
 
 
@@ -1034,6 +1036,16 @@ def _extract_usage(result):
 # BFF faked a typewriter). callback_handler=None disables Strands' default stdout printer.
 @app.entrypoint
 async def handler(payload):
+    if payload.get("mode") == "deployment_readiness":
+        from readiness import handle_readiness
+        gateway_url = GATEWAYS.get(_resolve_gateway_key("ops", GATEWAYS))
+        yield await handle_readiness(
+            payload, gateway_url,
+            lambda url: MCPClient(lambda: create_gateway_transport(
+                url, timeout=6, sse_read_timeout=8), startup_timeout=8),
+            GATEWAY_REGION, MODEL_ID)
+        return
+
     # ADR-006 RCA (EoG) — a second, read-only execution path distinct from chat. The
     # deterministic controller returns a structured dict (NOT a token stream), so it
     # short-circuits before build_conversation / the no-input guard. Flag-gated inside
