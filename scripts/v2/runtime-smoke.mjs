@@ -54,7 +54,7 @@ const freshTime = (value, start, now) => typeof value === 'string' && Number.isF
   && Date.parse(value) >= start && Date.parse(value) <= now + 60_000;
 const failureReasons = new Set(['configuration_invalid', 'disabled', 'identity_failed', 'parameters_not_ready',
   'runtime_unavailable', 'runtime_protocol', 'invalid_request', 'account_mismatch', 'gateway_unavailable',
-  'tools_unavailable', 'inventory_unavailable', 'inventory_incomplete', 'inventory_stale', 'known_resource_missing', 'model_failed', 'timeout']);
+  'tools_unavailable', 'inventory_unavailable', 'inventory_incomplete', 'inventory_stale', 'known_resource_missing', 'known_resource_unverified', 'model_failed', 'timeout']);
 const parameterKeys = ['runtime_arn', 'interpreter_id', 'memory_id'];
 const parameterStates = new Set(['uninspected', 'ready', 'disabled', 'pending', 'missing', 'denied', 'invalid', 'unavailable']);
 function readinessFailure(value, nonce, account) {
@@ -87,25 +87,36 @@ export async function verifyRuntimeSmoke(configuration, request, {
       if (now() >= deadline) break;
       await wait(5000);
     }
-    fail(phase);
+    fail(typeof phase === 'function' ? phase() : phase);
   }
   const started = Date.parse(config.collectionStartedAt);
+  let collectionFailure = 'collection_timeout';
   await poll(async () => {
     const summary = await request('/api/inventory/summary?accounts=self');
     const c = summary?.collection;
     if (!object(c) || c.configured !== true || c.readOk !== true || !Array.isArray(c.runs)) fail('collection_unavailable');
-    return config.expectedQueuedTypes.every(type => {
+    let complete = true, missing = false;
+    const failures = new Set();
+    for (const type of config.expectedQueuedTypes) {
       const rows = c.runs.filter(r => r?.type === type && r.accountId === 'self');
-      if (rows.length !== 1) return false;
+      if (rows.length === 0) { missing = true; complete = false; continue; }
+      if (rows.length !== 1) fail('collection_protocol');
       const row = rows[0];
+      if (freshTime(row.started_at, started, now()) && ['partial', 'failed'].includes(row.status))
+        failures.add(`collection_${row.status}`);
       if (row.status === 'succeeded' && freshTime(row.started_at, started, now())
           && freshTime(row.last_success_at, started, now())
-          && (row.unknown_attribute_count !== 0 || row.unknown_attributes !== false)) fail('inventory_incomplete');
-      return row.status === 'succeeded' && finiteCount(row.row_count)
+          && (row.unknown_attribute_count !== 0 || row.unknown_attributes !== false)) failures.add('inventory_incomplete');
+      if (!(row.status === 'succeeded' && finiteCount(row.row_count)
         && row.unknown_attribute_count === 0 && row.unknown_attributes === false
-        && freshTime(row.started_at, started, now()) && freshTime(row.last_success_at, started, now());
-    });
-  }, 'collection_timeout', 600);
+        && freshTime(row.started_at, started, now()) && freshTime(row.last_success_at, started, now()))) complete = false;
+    }
+    // Inspect every acknowledged type before selecting a fixed diagnostic.
+    for (const reason of ['inventory_incomplete', 'collection_partial', 'collection_failed'])
+      if (failures.has(reason)) fail(reason);
+    collectionFailure = missing ? 'collection_missing' : 'collection_timeout';
+    return complete;
+  }, () => collectionFailure, 600);
 
   let found = false;
   for (let offset = 0; offset < 500 && !found; offset += 5) {
@@ -118,7 +129,7 @@ export async function verifyRuntimeSmoke(configuration, request, {
       && freshTime(row.captured_at, started, now()));
     if (page.rows.length < 5) break;
   }
-  if (!found) fail('inventory_known_resource');
+  if (!found) fail('inventory_known_resource_unverified');
   const nonce = randomBytes(24).toString('hex');
   const response = await request('/api/deployment/readiness', {
     method: 'POST', timeout: 80_000, status: ['200', '503'], withStatus: true, body: {

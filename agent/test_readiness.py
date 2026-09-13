@@ -94,7 +94,13 @@ class ReadinessTest(unittest.TestCase):
             self.assertEqual(self.run_probe()["reason"], "inventory_stale")
         self.client.query["freshness"] = freshness()
         self.client.query["resources"] = [{"id": "FOREIGN"}]
-        self.assertEqual(self.run_probe()["reason"], "known_resource_missing")
+        self.assertEqual(self.run_probe()["reason"], "known_resource_unverified")
+
+    def test_capped_sample_cannot_prove_known_resource_absent(self):
+        self.client.query.update(count=500, resources=[{"id": f"E{i}"} for i in range(500)])
+        result = self.run_probe()
+        self.assertEqual(result["reason"], "known_resource_unverified")
+        self.assertFalse(result["checks"]["model"])
 
     def test_unknown_or_nonzero_attribute_coverage_is_incomplete_not_stale(self):
         for source in ("summary", "query"):

@@ -116,8 +116,33 @@ test('missing/partial/stale/unknown collection cannot pass or be treated as zero
       row_count: 0, started_at: start, last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false, ...change }));
     await assert.rejects(fixture({
       '/api/inventory/summary?accounts=self': () => ({ collection: { configured: true, readOk: true, runs } }),
-    }).run(), Object.hasOwn(change, 'unknown_attribute_count') ? /inventory_incomplete/ : /collection_timeout/);
+    }).run(), Object.hasOwn(change, 'unknown_attribute_count') ? /inventory_incomplete/
+      : change.status === 'partial' ? /collection_partial/
+        : change.status === 'failed' ? /collection_failed/ : /collection_timeout/);
   }
+});
+test('missing ledger is distinct and a later incomplete type cannot hide behind an earlier running type', async () => {
+  const path = '/api/inventory/summary?accounts=self';
+  await assert.rejects(fixture({ [path]: () => ({
+    collection: { configured: true, readOk: true, runs: [] },
+  }) }).run(), /collection_missing/);
+  const runs = [
+    { type: 'cloudfront', accountId: 'self', status: 'running', started_at: start },
+    { type: 'ec2', accountId: 'self', status: 'succeeded', started_at: start,
+      last_success_at: start, row_count: 1, unknown_attribute_count: 1, unknown_attributes: true },
+  ];
+  await assert.rejects(fixture({ [path]: () => ({
+    collection: { configured: true, readOk: true, runs },
+  }) }).run(), /inventory_incomplete/);
+});
+test('a 500-row sample without the known ID is unverified, not proof of absence', async () => {
+  const responses = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [
+    `/api/inventory/cloudfront?accounts=self&limit=5&offset=${i * 5}`,
+    () => ({ rows: Array.from({ length: 5 }, (_, j) => ({
+      account_id: 'self', resource_id: `E${i * 5 + j}`, captured_at: start, data: { id: `E${i * 5 + j}` },
+    })) }),
+  ]));
+  await assert.rejects(fixture(responses).run(), /inventory_known_resource_unverified/);
 });
 test('queued delivery and wrong runtime never count as terminal worker proof', async () => {
   for (const body of [{ status: 'failed' }, { status: 'queued' },

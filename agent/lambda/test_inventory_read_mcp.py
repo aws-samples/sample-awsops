@@ -575,6 +575,12 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
                                   "arguments": {"resource_type": "alb", "limit": "oops"}}, None)
         self.assertEqual(out["statusCode"], 200)
 
+    def test_query_inventory_sample_has_total_order(self):
+        calls = []
+        inv._execute_override = lambda sql, params=None: calls.append(sql) or []
+        inv._fetch_one_type("cloudfront", 500)
+        self.assertIn("ORDER BY captured_at DESC, account_id, region, resource_id LIMIT 500", calls[0])
+
     def test_get_topology_reads_topology_tables_not_inventory(self):
         """get_topology must query topology_nodes/edges, returning the /api/graph node+edge contract."""
         calls = []

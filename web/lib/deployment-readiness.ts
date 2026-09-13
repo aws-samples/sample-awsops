@@ -9,7 +9,7 @@ type ParameterState = 'uninspected' | 'ready' | 'disabled' | 'pending' | 'missin
 const keys = ['runtime_arn', 'interpreter_id', 'memory_id'] as const;
 const checks = ['identity', 'inventorySummary', 'inventoryQuery', 'knownResource', 'freshInventory', 'model'] as const;
 const agentReasons = ['ok', 'disabled', 'invalid_request', 'identity_failed', 'account_mismatch', 'gateway_unavailable',
-  'tools_unavailable', 'inventory_unavailable', 'inventory_incomplete', 'inventory_stale', 'known_resource_missing', 'model_failed', 'timeout'] as const;
+  'tools_unavailable', 'inventory_unavailable', 'inventory_incomplete', 'inventory_stale', 'known_resource_missing', 'known_resource_unverified', 'model_failed', 'timeout'] as const;
 type AgentReason = typeof agentReasons[number];
 export interface AgentReadiness {
   schemaVersion: 1; mode: 'deployment_readiness'; nonce: string; accountId: string;

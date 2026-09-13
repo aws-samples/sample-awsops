@@ -6,6 +6,8 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
+- `v2/agentcore/provision.py` maps the applied `agentcore.deployment_readiness_enabled` boolean
+  to `DEPLOYMENT_READINESS_ENABLED`; missing/false is off and shell overrides are ignored.
 - `v2/configure.mjs` — `make configure`: interactive TUI → `terraform.tfvars` + `backend.hcl`.
   AWS access shells out to the `aws` CLI, not the SDK.
 - `v2/deploy.mjs` — `make deploy` (runs migrate first): arm64 build → ECR push →

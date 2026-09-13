@@ -185,7 +185,7 @@ def check_readiness(payload, gateway_url, mcp_factory, region, model_id, *, prog
             progress.record(reason="inventory_stale")
             if not _fresh(rows[0]) or not _fresh(fresh):
                 return progress.snapshot()
-            progress.record(reason="known_resource_missing", checks={"freshInventory": True},
+            progress.record(reason="known_resource_unverified", checks={"freshInventory": True},
                             inventory={"ageMinutes": max(rows[0]["age_minutes"], fresh["age_minutes"])})
             if not any(row.get("id") == payload["expectedCloudfrontId"] for row in resources):
                 return progress.snapshot()

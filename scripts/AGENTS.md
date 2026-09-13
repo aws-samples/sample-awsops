@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4b321ac0e2b2 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8694331e4ac9 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -92,3 +92,5 @@ checks fresh collection, real runtime access and workers. Optional hostOnly reje
 Cap the file at 16 KiB; require a recent start (30 minutes) and unique types including cloudfront.
 HTTP files default to 64 KiB; only the CloudFront inventory leg allows 2 MiB. The utility
 alone does not change workflow wiring.
+Provisioning maps only the applied `agentcore.deployment_readiness_enabled` boolean to
+`DEPLOYMENT_READINESS_ENABLED`; missing/false is off and shell overrides are ignored.
