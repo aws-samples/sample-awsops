@@ -1,8 +1,10 @@
 """Deterministic deployment proof. No model-selected tools, prompts, SQL or endpoints."""
 import asyncio
+import copy
 import functools
 import json
 import re
+import threading
 import time
 from datetime import timedelta
 
@@ -11,13 +13,14 @@ CHECK_NAMES = ("identity", "inventorySummary", "inventoryQuery", "knownResource"
 MAX_TOOL_BYTES = 256 * 1024
 
 
-@functools.lru_cache(maxsize=4)
-def _client(service, region):
+@functools.lru_cache(maxsize=8)
+def _client(service, region, budget):
     # Lazy imports also keep offline protocol tests independent of SDK/credential discovery.
     import boto3
     from botocore.config import Config
+    connect = min(3, budget / 2)
     return boto3.client(service, region_name=region, config=Config(
-        connect_timeout=3, read_timeout=20 if service == "bedrock-runtime" else 5,
+        connect_timeout=connect, read_timeout=min(20 if service == "bedrock-runtime" else 5, budget - connect),
         retries={"total_max_attempts": 1, "mode": "standard"}))
 
 
@@ -40,6 +43,42 @@ def _result(payload):
                 status="not_ready", reason="invalid_request",
                 checks={key: False for key in CHECK_NAMES},
                 inventory=dict(count=None, ageMinutes=None))
+
+
+class _Progress:
+    """Shared bounded work state; timeout snapshots never alias the worker's result."""
+    def __init__(self, payload):
+        self.result = _result(payload)
+        self.deadline = time.monotonic() + 40
+        self.cancelled = threading.Event()
+        self.lock = threading.Lock()
+
+    def remaining(self, minimum=0):
+        left = self.deadline - time.monotonic()
+        if self.cancelled.is_set() or left <= minimum:
+            raise TimeoutError()
+        return left
+
+    def record(self, *, reason=None, checks=None, inventory=None, status=None):
+        with self.lock:
+            self.remaining()
+            if reason is not None:
+                self.result["reason"] = reason
+            if checks:
+                self.result["checks"].update(checks)
+            if inventory:
+                self.result["inventory"].update(inventory)
+            if status is not None:
+                self.result["status"] = status
+
+    def cancel(self):
+        self.cancelled.set()
+        with self.lock:
+            self.result.update(status="not_ready", reason="timeout")
+
+    def snapshot(self):
+        with self.lock:
+            return copy.deepcopy(self.result)
 
 
 def _tool_body(result):
@@ -67,112 +106,119 @@ def _fresh(value):
     return (isinstance(value, dict) and value.get("resource_type") == "cloudfront"
             and value.get("status") == "succeeded" and value.get("freshness") == "healthy"
             and type(value.get("unknown_attribute_count")) is int and value["unknown_attribute_count"] == 0
-            and type(value.get("age_minutes")) is int and 0 <= value["age_minutes"] <= 15)
+            and type(value.get("stale_after_minutes")) is int and 1 <= value["stale_after_minutes"] <= 1440
+            and type(value.get("age_minutes")) is int
+            and 0 <= value["age_minutes"] <= value["stale_after_minutes"])
 
 
-def check_readiness(payload, gateway_url, mcp_factory, region, model_id):
-    result = _result(payload)
+def check_readiness(payload, gateway_url, mcp_factory, region, model_id, *, progress=None):
+    progress = progress or _Progress(payload)
     if not _valid(payload):
-        return result
-    # This URL comes only from the existing discovered/configured Ops gateway map.
-    # Payloads cannot supply a URL or tool name.
-    result["reason"] = "gateway_unavailable"
-    if not isinstance(gateway_url, str) or not re.fullmatch(
-            r"https://[a-z0-9-]+\.gateway\.bedrock-agentcore\." + re.escape(region) + r"\.amazonaws\.com/mcp",
-            gateway_url):
-        return result
-    deadline = time.monotonic() + 40
-
-    def remaining():
-        left = deadline - time.monotonic()
-        if left <= 0:
-            raise TimeoutError()
-        return timedelta(seconds=min(8, left))
-
+        return progress.snapshot()
     try:
-        result["reason"] = "identity_failed"
-        identity = _client("sts", region).get_caller_identity()
+        # Only the existing Ops map supplies this URL, never the request payload.
+        progress.record(reason="gateway_unavailable")
+        if not isinstance(gateway_url, str) or not re.fullmatch(
+                r"https://[a-z0-9-]+\.gateway\.bedrock-agentcore\." + re.escape(region) + r"\.amazonaws\.com/mcp",
+                gateway_url):
+            return progress.snapshot()
+        progress.record(reason="identity_failed")
+        sts = _client("sts", region, min(8, progress.remaining()))
+        progress.remaining()  # Client/credential initialization also consumes the budget.
+        identity = sts.get_caller_identity()
+        progress.remaining()
         if identity.get("Account") != payload["expectedAccountId"]:
-            result["reason"] = "account_mismatch"
-            return result
-        result["checks"]["identity"] = True
-        result["reason"] = "gateway_unavailable"
-        remaining()
+            progress.record(reason="account_mismatch")
+            return progress.snapshot()
+        progress.record(reason="gateway_unavailable", checks={"identity": True})
+        # The existing factory caps MCP startup/transport reads at eight seconds.
+        # Do not start a fixed-budget operation if that budget no longer fits.
+        progress.remaining(8)
         with mcp_factory(gateway_url) as client:
-            result["reason"] = "tools_unavailable"
+            progress.record(reason="tools_unavailable")
             names = []
             token = None
             for _ in range(3):
-                remaining()
+                progress.remaining(8)
                 batch = client.list_tools_sync(pagination_token=token)
+                progress.remaining()
                 names.extend(getattr(tool, "tool_name", "") for tool in batch)
                 token = getattr(batch, "pagination_token", None)
                 if len(names) > 128:
-                    return result
+                    return progress.snapshot()
                 if token is None:
                     break
             if token is not None or any(names.count(name) != 1 for name in TOOL_NAMES):
-                return result
-            result["reason"] = "inventory_unavailable"
+                return progress.snapshot()
+            progress.record(reason="inventory_unavailable")
             summary = _tool_body(client.call_tool_sync(
-                "readiness-summary", TOOL_NAMES[0], arguments={}, read_timeout_seconds=remaining()))
+                "readiness-summary", TOOL_NAMES[0], arguments={},
+                read_timeout_seconds=timedelta(seconds=min(8, progress.remaining()))))
+            progress.remaining()
             sync = summary.get("sync")
             if not isinstance(sync, list):
-                return result
+                return progress.snapshot()
             rows = [row for row in sync if isinstance(row, dict) and row.get("resource_type") == "cloudfront"]
             if len(rows) != 1:
-                return result
-            result["checks"]["inventorySummary"] = True
+                return progress.snapshot()
+            progress.record(checks={"inventorySummary": True})
             inventory = _tool_body(client.call_tool_sync(
                 "readiness-query", TOOL_NAMES[1],
-                arguments={"resource_type": "cloudfront", "limit": 500}, read_timeout_seconds=remaining()))
+                arguments={"resource_type": "cloudfront", "limit": 500},
+                read_timeout_seconds=timedelta(seconds=min(8, progress.remaining()))))
+            progress.remaining()
             resources = inventory.get("resources")
             if (inventory.get("resource_type") != "cloudfront" or not isinstance(resources, list)
                     or not all(isinstance(row, dict) for row in resources) or len(resources) > 500
                     or type(inventory.get("count")) is not int or inventory["count"] != len(resources)):
-                return result
-            result["checks"]["inventoryQuery"] = True
-            result["inventory"]["count"] = len(resources)  # bounded sample count, not a fleet total
-            result["reason"] = "inventory_stale"
+                return progress.snapshot()
+            progress.record(reason="inventory_stale", checks={"inventoryQuery": True},
+                            inventory={"count": len(resources)})  # bounded sample, not a fleet total
             fresh = inventory.get("freshness")
             if not _fresh(rows[0]) or not _fresh(fresh):
-                return result
-            result["inventory"]["ageMinutes"] = max(rows[0]["age_minutes"], fresh["age_minutes"])
-            result["checks"]["freshInventory"] = True
-            result["reason"] = "known_resource_missing"
+                return progress.snapshot()
+            progress.record(reason="known_resource_missing", checks={"freshInventory": True},
+                            inventory={"ageMinutes": max(rows[0]["age_minutes"], fresh["age_minutes"])})
             if not any(row.get("id") == payload["expectedCloudfrontId"] for row in resources):
-                return result
-            result["checks"]["knownResource"] = True
-        remaining()
-        result["reason"] = "model_failed"
+                return progress.snapshot()
+            # If session teardown fails, it is not evidence that the known ID was absent.
+            progress.record(reason="gateway_unavailable", checks={"knownResource": True})
+        progress.record(reason="model_failed")
+        model = _client("bedrock-runtime", region, min(23, progress.remaining()))
+        progress.remaining()
         # A bounded service-protocol check; inventory and resource data never enter this prompt.
-        response = _client("bedrock-runtime", region).converse(
+        response = model.converse(
             modelId=model_id, messages=[{"role": "user", "content": [{"text": "Reply with exactly READY."}]}],
             inferenceConfig={"maxTokens": 128})
+        progress.remaining()
         message = response.get("output", {}).get("message", {})
         content = message.get("content")
         if (response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 200
                 or response.get("stopReason") != "end_turn" or message.get("role") != "assistant"
                 or not isinstance(content, list) or not 1 <= len(content) <= 8
-                or not all(isinstance(block, dict) for block in content)
-                or "".join(block.get("text", "") for block in content).strip() != "READY"):
-            return result
-        remaining()
-        result["checks"]["model"] = True
-        result.update(status="ready", reason="ok")
+                or not all(isinstance(block, dict) and isinstance(block.get("text", ""), str) for block in content)):
+            return progress.snapshot()
+        text = "".join(block.get("text", "") for block in content).strip()
+        if not text or len(text.encode("utf-8")) > 4096:
+            return progress.snapshot()
+        progress.record(status="ready", reason="ok", checks={"model": True})
     except TimeoutError:
-        result["reason"] = "timeout"
+        progress.cancel()
     except Exception:
         # Keep the fixed stage code. Never return/log SDK, MCP, resource or model text.
-        pass
-    return result
+        if progress.cancelled.is_set() or time.monotonic() >= progress.deadline:
+            progress.cancel()
+    return progress.snapshot()
 
 
 async def handle_readiness(payload, gateway_url, mcp_factory, region, model_id):
+    progress = _Progress(payload)  # Queueing the worker also consumes the same work budget.
     try:
         return await asyncio.wait_for(asyncio.to_thread(
-            check_readiness, payload, gateway_url, mcp_factory, region, model_id), timeout=45)
+            check_readiness, payload, gateway_url, mcp_factory, region, model_id, progress=progress), timeout=45)
     except asyncio.TimeoutError:
-        result = _result(payload)
-        result["reason"] = "timeout"
-        return result
+        progress.cancel()
+        return progress.snapshot()
+    except asyncio.CancelledError:
+        progress.cancel()
+        raise

@@ -40,10 +40,11 @@ function validAgentEvent(v: unknown, input: ReadinessInput): v is AgentReadiness
   const inventory = v.inventory;
   if (!record(evidence) || !exactKeys(evidence, checks) || !checks.every(k => typeof evidence[k] === 'boolean')
       || !record(inventory) || !exactKeys(inventory, ['count', 'ageMinutes'])
-      || !count(inventory.count) || !count(inventory.ageMinutes)) return false;
+      || !count(inventory.count) || Number(inventory.count) > 500
+      || !count(inventory.ageMinutes) || Number(inventory.ageMinutes) > 1440) return false;
   if (v.status === 'ready' && (v.reason !== 'ok' || !Object.values(evidence).every(x => x === true)
       || inventory.count === null || Number(inventory.count) < 1
-      || inventory.ageMinutes === null || Number(inventory.ageMinutes) > 15)) return false;
+      || inventory.ageMinutes === null || Number(inventory.ageMinutes) > 1440)) return false;
   return !(v.status === 'not_ready' && v.reason === 'ok');
 }
 
@@ -56,11 +57,27 @@ export function validReadinessInput(value: unknown): value is ReadinessInput {
 
 /** Accept exactly the readiness protocol. Chat text, extra fields and duplicate events fail closed. */
 export function parseReadinessEvent(raw: string, input: ReadinessInput): AgentReadiness {
-  const frames = raw.replace(/\r\n/g, '\n').split('\n\n').filter(s => s.trim());
-  if (frames.length !== 1) throw new Error();
-  const lines = frames[0].split('\n').filter(s => s && !s.startsWith(':'));
-  if (lines.length !== 1 || !lines[0].startsWith('data: ')) throw new Error();
-  const v: unknown = JSON.parse(lines[0].slice(6));
+  if (Buffer.byteLength(raw) > 16_384) throw new Error();
+  const payloads: string[] = [];
+  let data: string[] = [];
+  const flush = () => {
+    const payload = data.join('\n').trim();
+    if (payload && payload !== '[DONE]') payloads.push(payload);
+    data = [];
+  };
+  for (const line of raw.split(/\r\n|\r|\n/)) {
+    if (!line) { flush(); continue; }
+    if (line.startsWith(':')) continue;
+    const colon = line.indexOf(':');
+    const field = colon < 0 ? line : line.slice(0, colon);
+    let value = colon < 0 ? '' : line.slice(colon + 1);
+    if (value.startsWith(' ')) value = value.slice(1);
+    if (field === 'data') data.push(value);
+    else if (!['event', 'id', 'retry'].includes(field)) throw new Error();
+  }
+  flush();
+  if (payloads.length !== 1) throw new Error();
+  const v: unknown = JSON.parse(payloads[0]);
   if (!validAgentEvent(v, input)) throw new Error();
   return v;
 }
@@ -129,19 +146,25 @@ export async function deploymentReadiness(input: ReadinessInput): Promise<Deploy
       }
       try {
         if (!response.contentType?.startsWith('text/event-stream')) throw new Error();
+        if (controller.signal.aborted) throw new Error();
+        result.reason = 'runtime_unavailable';
         const chunks: Uint8Array[] = [];
         let bytes = 0;
         for await (const chunk of body) {
           const value = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
           bytes += value.byteLength;
-          if (bytes > 16_384 || controller.signal.aborted) throw new Error();
+          if (bytes > 16_384) { result.reason = 'runtime_protocol'; throw new Error(); }
+          if (controller.signal.aborted) throw new Error();
           chunks.push(value);
         }
         if (controller.signal.aborted) throw new Error();
+        result.reason = 'runtime_protocol';
         result.agent = parseReadinessEvent(Buffer.concat(chunks).toString('utf8'), input);
       } finally { destroy?.(); }
       result.status = result.agent.status;
       result.reason = result.agent.reason;
+    } catch {
+      if (controller.signal.aborted) result.reason = 'timeout';
     } finally {
       clearTimeout(timer);
       controller.signal.removeEventListener('abort', abort);

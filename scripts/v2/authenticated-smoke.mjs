@@ -13,19 +13,20 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const execute = promisify(execFile);
 const MAX_RESPONSE_BYTES = 64 * 1024;
+const MAX_INVENTORY_RESPONSE_BYTES = 2 * 1024 * 1024;
 class SmokeError extends Error {}
 
-function readPrivateResponse(file) {
+function readPrivateResponse(file, limit = MAX_RESPONSE_BYTES) {
   const fd = openSync(file, 'r');
   try {
     const info = fstatSync(fd);
-    if (!info.isFile() || info.size > MAX_RESPONSE_BYTES) throw new Error();
+    if (!info.isFile() || info.size > limit) throw new Error();
     // Bound the read itself as well, including a file that grows after fstat.
-    const contents = Buffer.alloc(MAX_RESPONSE_BYTES + 1);
+    const contents = Buffer.alloc(limit + 1);
     let length = 0, count;
     while (length < contents.length
         && (count = readSync(fd, contents, length, contents.length - length, null)) > 0) length += count;
-    if (length > MAX_RESPONSE_BYTES) throw new Error();
+    if (length > limit) throw new Error();
     return contents.subarray(0, length).toString('utf8');
   } finally {
     closeSync(fd);
@@ -84,7 +85,7 @@ export async function authenticatedSmoke(
     }
     const commonArgs = [
       '-q', '-sS', ...connectionArgs, '--proto', '=https', '--max-redirs', '0',
-      '--max-filesize', String(MAX_RESPONSE_BYTES), '--write-out', '%{http_code}',
+      '--write-out', '%{http_code}',
     ];
     const options = {
       encoding: 'utf8', timeout: 35_000,
@@ -96,22 +97,28 @@ export async function authenticatedSmoke(
       if (typeof stdout === 'string' && /^[1-5][0-9]{2}$/.test(stdout)) failure += `; HTTP status ${stdout}`;
     };
     let requestCounter = 0;
-    const request = async (args, path, status = '200', timeout = 35_000) => {
+    const request = async (args, path, status = '200', timeout = 35_000,
+      maxResponseBytes = MAX_RESPONSE_BYTES, withStatus = false) => {
+      if (maxResponseBytes !== MAX_RESPONSE_BYTES
+          && !(path.startsWith('/api/inventory/cloudfront?') && maxResponseBytes === MAX_INVENTORY_RESPONSE_BYTES)) {
+        throw new Error();
+      }
       const response = join(directory, `response-${++requestCounter}.json`);
       writeFileSync(response, '', { mode: 0o600, flag: 'wx' });
       let stdout;
       try {
         ({ stdout } = await runCurl('curl', [
           ...commonArgs, ...(timeout > 35_000 ? ['--max-time', String((timeout - 5000) / 1000)] : []),
-          '--output', response, ...args, `${url.origin}${path}`,
+          '--max-filesize', String(maxResponseBytes), '--output', response, ...args, `${url.origin}${path}`,
         ], { ...options, timeout }));
       } catch (error) {
         recordStatus(error?.stdout);
         throw new Error();
       }
       recordStatus(stdout);
-      if (controller.signal.aborted || stdout !== status) throw new Error();
-      return JSON.parse(readPrivateResponse(response));
+      if (controller.signal.aborted || !(Array.isArray(status) ? status.includes(stdout) : stdout === status)) throw new Error();
+      const body = JSON.parse(readPrivateResponse(response, maxResponseBytes));
+      return withStatus ? { httpStatus: Number(stdout), body } : body;
     };
     failure = 'login failed (expected HTTP 200 and ok=true)';
     const login = await request([
@@ -129,7 +136,7 @@ export async function authenticatedSmoke(
     if (runtimeConfig !== undefined) {
       failure = 'runtime verification failed';
       const runtimeResult = await verifyRuntimeSmoke(runtimeConfig, async (path, {
-        method = 'GET', body, status = '200', timeout = 35_000,
+        method = 'GET', body, status = '200', timeout = 35_000, maxResponseBytes, withStatus,
       } = {}) => {
         // Paths and request bodies are generated exclusively by the fixed internal probe.
         failure = path === '/api/accounts' ? 'host_registry_http'
@@ -141,7 +148,7 @@ export async function authenticatedSmoke(
           writeFileSync(bodyFile, JSON.stringify(body), { mode: 0o600, flag: 'wx' });
           args.push('--header', 'Content-Type: application/json', '--data-binary', `@${bodyFile}`);
         }
-        return request(args, path, status, timeout);
+        return request(args, path, status, timeout, maxResponseBytes, withStatus);
       }, { wait: ms => delay(ms, undefined, { signal: controller.signal }) });
       return { ...runtimeResult, public_tables: database.public_tables };
     }

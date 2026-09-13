@@ -26,14 +26,14 @@ function fixture(overrides = {}) {
       resource_id: config.expectedCloudfrontId, account_id: 'self', captured_at: start,
       data: { id: config.expectedCloudfrontId },
     }] };
-    if (path === '/api/deployment/readiness') return {
+    if (path === '/api/deployment/readiness') return { httpStatus: 200, body: {
       schemaVersion: 1, nonce: options.body.nonce, accountId: account, status: 'ready', reason: 'ok',
       webIdentity: true, parameters: { runtime_arn: 'ready', interpreter_id: 'ready', memory_id: 'ready' },
       agent: { schemaVersion: 1, mode: 'deployment_readiness', nonce: options.body.nonce, accountId: account,
         status: 'ready', reason: 'ok', checks: { identity: true, inventorySummary: true,
           inventoryQuery: true, knownResource: true, freshInventory: true, model: true },
-        inventory: { count: 1, ageMinutes: 0 } },
-    };
+        inventory: { count: 1, ageMinutes: overrides.ageMinutes ?? 0 } },
+    } };
     if (path === '/api/jobs') return { job_id: jobIds[options.body.type === 'noop' ? 0 : 1], status: 'queued' };
     if (path.startsWith('/api/jobs/')) {
       const index = jobIds.indexOf(path.split('/').at(-1));
@@ -60,12 +60,49 @@ test('prepare is distinctly host registry only', async () => {
     { status: 'ok', mode: 'prepare' });
   assert.equal(f.calls.length, 1);
 });
-test('refuses absent/foreign/disabled hosts and every enabled foreign row', async () => {
+test('refuses absent/foreign/disabled hosts and host-only enabled foreign rows', async () => {
   for (const accounts of [[], [{ accountId: account, isHost: false, enabled: true }],
     [{ accountId: account, isHost: true, enabled: false }],
     [{ accountId: account, isHost: true, enabled: true }, { accountId: '999999999999', enabled: true }]]) {
-    await assert.rejects(fixture({ '/api/accounts': () => ({ accounts }) }).run(), /host_registry/);
+    await assert.rejects(fixture({ '/api/accounts': () => ({ accounts }) }).run({ ...config, hostOnly: true }), /host_registry/);
   }
+});
+test('optional hostOnly defaults false and regular multi-account registries remain valid', async () => {
+  const accounts = [{ accountId: account, isHost: true, enabled: true },
+    { accountId: '999999999999', isHost: false, enabled: true }];
+  for (const optional of [{}, { hostOnly: false }]) {
+    assert.equal((await fixture({ '/api/accounts': () => ({ accounts }) }).run({
+      schemaVersion: 1, mode: 'prepare', expectedAccountId: account, ...optional,
+    })).status, 'ok');
+  }
+  assert.throws(() => validateRuntimeSmokeConfig({ ...config, hostOnly: 'true' }, Date.parse(start) + 1000), /configuration/);
+});
+test('CloudFront requests have small pages and a bounded budget only for the inventory leg', async () => {
+  const f = fixture();
+  await f.run();
+  const page = f.calls.find(c => c.path.startsWith('/api/inventory/cloudfront?'));
+  assert.match(page.path, /limit=5&offset=0$/);
+  assert.equal(page.options.maxResponseBytes, 2 * 1024 * 1024);
+  assert.ok(f.calls.filter(c => !c.path.startsWith('/api/inventory/cloudfront?'))
+    .every(c => c.options.maxResponseBytes === undefined));
+});
+test('a 503 retains only bound fixed failure codes and sanitized parameter states', async () => {
+  const f = fixture({ '/api/deployment/readiness': options => ({
+    httpStatus: 503, body: { schemaVersion: 1, nonce: options.body.nonce, accountId: account,
+      status: 'not_ready', reason: 'parameters_not_ready', arbitrary: 'PRIVATE',
+      parameters: { runtime_arn: 'denied', interpreter_id: 'ready', memory_id: 'ready' } },
+  }) });
+  await assert.rejects(f.run(), error => /runtime_parameters_not_ready.*runtime_arn=denied/.test(error.message)
+    && !error.message.includes('PRIVATE'));
+});
+test('HTTP 503 cannot become success even if its body says ready', async () => {
+  await assert.rejects(fixture({ '/api/deployment/readiness': () => ({
+    httpStatus: 503, body: { status: 'ready', reason: 'ok' },
+  }) }).run(), /runtime_protocol/);
+});
+test('runtime age validation permits the producer range without imposing a new freshness threshold', async () => {
+  for (const ageMinutes of [16, 120, 1440]) assert.equal((await fixture({ ageMinutes }).run()).status, 'ok');
+  await assert.rejects(fixture({ ageMinutes: 1441 }).run(), /runtime_protocol/);
 });
 test('missing/partial/stale/unknown collection cannot pass or be treated as zero resources', async () => {
   for (const collection of [{ configured: false, readOk: true, runs: [] },
@@ -116,7 +153,8 @@ test('private runtime configuration refuses symlinks, public modes and oversized
   assert.throws(() => readRuntimeSmokeConfig(link, credentials), /configuration_file/);
   assert.throws(() => readRuntimeSmokeConfig(file, join(dir, 'nested', 'credentials.json')), /configuration_file/);
 });
-test('authenticated full flow uses unique private response/body files and strips curl secrets', async t => {
+for (const inventoryBytes of [75 * 1024, 2 * 1024 * 1024 + 1]) test(
+  `authenticated full flow bounds the larger inventory response (${inventoryBytes} bytes)`, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'runtime-smoke-curl-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const now = new Date().toISOString();
@@ -128,6 +166,8 @@ test('authenticated full flow uses unique private response/body files and strips
     const path = new URL(args.at(-1)).pathname;
     requests.push(path);
     const output = args[args.indexOf('--output') + 1];
+    assert.equal(args[args.indexOf('--max-filesize') + 1],
+      String(path === '/api/inventory/cloudfront' ? 2 * 1024 * 1024 : 64 * 1024));
     assert.ok(!responses.has(output)); responses.add(output);
     assert.equal(statSync(dirname(output)).mode & 0o777, 0o700);
     for (const filename of readdirSync(dirname(output))) assert.equal(statSync(join(dirname(output), filename)).mode & 0o777, 0o600);
@@ -146,7 +186,7 @@ test('authenticated full flow uses unique private response/body files and strips
       runs: ['ec2', 'cloudfront'].map(type => ({ type, accountId: 'self', status: 'succeeded', row_count: 1,
         started_at: now, last_success_at: now, unknown_attribute_count: 0, unknown_attributes: false })) } };
     else if (path === '/api/inventory/cloudfront') result = { rows: [{ resource_id: config.expectedCloudfrontId,
-      account_id: 'self', captured_at: now, data: { id: config.expectedCloudfrontId } }] };
+      account_id: 'self', captured_at: now, data: { id: config.expectedCloudfrontId, cache_behaviors: 'x'.repeat(inventoryBytes) } }] };
     else if (path === '/api/deployment/readiness') result = { schemaVersion: 1, nonce: body.nonce, accountId: account,
       status: 'ready', reason: 'ok', webIdentity: true,
       parameters: { runtime_arn: 'ready', interpreter_id: 'ready', memory_id: 'ready' },
@@ -162,10 +202,16 @@ test('authenticated full flow uses unique private response/body files and strips
     writeFileSync(output, JSON.stringify(result));
     return { stdout: status };
   };
-  assert.equal((await authenticatedSmoke({
+  const action = authenticatedSmoke({
     publicUrl: 'https://dev.example.com', cloudfrontDomain: 'd123.cloudfront.net',
     email: 'demo@example.com', password, runtimeConfig,
-  }, { runCurl, tempRoot: dir })).mode, 'verify');
-  assert.equal(requests.length, 10);
+  }, { runCurl, tempRoot: dir });
+  if (inventoryBytes > 2 * 1024 * 1024) {
+    await assert.rejects(action, /inventory_http/);
+    assert.equal(requests.length, 5);
+  } else {
+    assert.equal((await action).mode, 'verify');
+    assert.equal(requests.length, 10);
+  }
   assert.deepEqual(readdirSync(dir), []);
 });

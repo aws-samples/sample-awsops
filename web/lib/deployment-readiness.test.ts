@@ -110,4 +110,24 @@ describe('deployment readiness under the web task role', () => {
       expect(body.destroyed).toBe(true);
     } finally { vi.useRealTimers(); }
   });
+  it.each([
+    (json: string) => `: keepalive\nevent: readiness\nid: 42\ndata:${json}\n\ndata: [DONE]\n\n`,
+    (json: string) => `id:42\r\nevent:result\r\ndata: ${json}\r\n\r\ndata:[DONE]\r\n\r\n`,
+  ])('accepts standard SSE metadata and DONE framing around exactly one payload', async frame => {
+    invoke.mockResolvedValue({ contentType: 'text/event-stream', response: Readable.from([frame(JSON.stringify(agentResult()))]) });
+    const { deploymentReadiness } = await import('./deployment-readiness');
+    expect((await deploymentReadiness(input)).status).toBe('ready');
+  });
+  it.each([16, 120, 1440])('treats %i minutes as a bounded protocol value, not a freshness threshold', async ageMinutes => {
+    const event = agentResult(); event.inventory.ageMinutes = ageMinutes;
+    invoke.mockResolvedValue(response(event));
+    const { deploymentReadiness } = await import('./deployment-readiness');
+    expect((await deploymentReadiness(input)).status).toBe('ready');
+  });
+  it('rejects ages outside the supported protocol bound', async () => {
+    const event = agentResult(); event.inventory.ageMinutes = 1441;
+    invoke.mockResolvedValue(response(event));
+    const { deploymentReadiness } = await import('./deployment-readiness');
+    expect((await deploymentReadiness(input)).reason).toBe('runtime_protocol');
+  });
 });

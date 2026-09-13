@@ -12,7 +12,9 @@ const baseKeys = ['schemaVersion', 'mode', 'expectedAccountId'];
 export function validateRuntimeSmokeConfig(value, now = Date.now()) {
   const keys = value?.mode === 'prepare' ? baseKeys
     : [...baseKeys, 'expectedCloudfrontId', 'expectedQueuedTypes', 'collectionStartedAt'];
-  if (!exact(value, keys) || value.schemaVersion !== 1 || !['prepare', 'verify'].includes(value.mode)
+  const hasHostOnly = object(value) && Object.hasOwn(value, 'hostOnly');
+  if (!exact(value, hasHostOnly ? [...keys, 'hostOnly'] : keys) || (hasHostOnly && typeof value.hostOnly !== 'boolean')
+      || value.schemaVersion !== 1 || !['prepare', 'verify'].includes(value.mode)
       || typeof value.expectedAccountId !== 'string' || !/^[0-9]{12}$/.test(value.expectedAccountId)) fail('configuration');
   if (value.mode === 'verify') {
     const types = value.expectedQueuedTypes;
@@ -50,6 +52,21 @@ export function readRuntimeSmokeConfig(file, credentialFile) {
 const finiteCount = n => Number.isSafeInteger(n) && n >= 0;
 const freshTime = (value, start, now) => typeof value === 'string' && Number.isFinite(Date.parse(value))
   && Date.parse(value) >= start && Date.parse(value) <= now + 60_000;
+const failureReasons = new Set(['configuration_invalid', 'disabled', 'identity_failed', 'parameters_not_ready',
+  'runtime_unavailable', 'runtime_protocol', 'invalid_request', 'account_mismatch', 'gateway_unavailable',
+  'tools_unavailable', 'inventory_unavailable', 'inventory_stale', 'known_resource_missing', 'model_failed', 'timeout']);
+const parameterKeys = ['runtime_arn', 'interpreter_id', 'memory_id'];
+const parameterStates = new Set(['uninspected', 'ready', 'disabled', 'pending', 'missing', 'denied', 'invalid', 'unavailable']);
+function readinessFailure(value, nonce, account) {
+  if (value?.schemaVersion !== 1 || value.nonce !== nonce || value.accountId !== account
+      || value.status !== 'not_ready' || !failureReasons.has(value.reason)) return 'runtime_protocol';
+  if (value.reason !== 'parameters_not_ready') return `runtime_${value.reason}`;
+  if (!exact(value.parameters, parameterKeys)
+      || !Object.values(value.parameters).every(v => parameterStates.has(v))) return 'runtime_protocol';
+  const failed = parameterKeys.filter(k => value.parameters[k] !== 'ready');
+  if (!failed.length) return 'runtime_protocol';
+  return `runtime_parameters_not_ready(${failed.map(k => `${k}=${value.parameters[k]}`).join(',')})`;
+}
 
 export async function verifyRuntimeSmoke(configuration, request, {
   now = Date.now, wait = ms => delay(ms),
@@ -60,7 +77,7 @@ export async function verifyRuntimeSmoke(configuration, request, {
       || accounts.some(a => !object(a) || typeof a.enabled !== 'boolean' || typeof a.isHost !== 'boolean')
       || accounts.filter(a => a.isHost).length !== 1
       || accounts.filter(a => a.accountId === config.expectedAccountId && a.isHost && a.enabled).length !== 1
-      || accounts.some(a => a.enabled && a.accountId !== config.expectedAccountId)) fail('host_registry');
+      || (config.hostOnly === true && accounts.some(a => a.enabled && a.accountId !== config.expectedAccountId))) fail('host_registry');
   if (config.mode === 'prepare') return { status: 'ok', mode: 'prepare' };
 
   async function poll(check, phase, seconds) {
@@ -88,19 +105,27 @@ export async function verifyRuntimeSmoke(configuration, request, {
   }, 'collection_timeout', 600);
 
   let found = false;
-  for (let offset = 0; offset < 500 && !found; offset += 50) {
-    const page = await request(`/api/inventory/cloudfront?accounts=self&limit=50&offset=${offset}`);
-    if (!Array.isArray(page?.rows) || page.rows.length > 50) fail('inventory_protocol');
+  for (let offset = 0; offset < 500 && !found; offset += 5) {
+    const page = await request(`/api/inventory/cloudfront?accounts=self&limit=5&offset=${offset}`, {
+      maxResponseBytes: 2 * 1024 * 1024,
+    });
+    if (!Array.isArray(page?.rows) || page.rows.length > 5) fail('inventory_protocol');
     found = page.rows.some(row => row.account_id === 'self'
       && row.resource_id === config.expectedCloudfrontId && row.data?.id === config.expectedCloudfrontId
       && freshTime(row.captured_at, started, now()));
-    if (page.rows.length < 50) break;
+    if (page.rows.length < 5) break;
   }
   if (!found) fail('inventory_known_resource');
   const nonce = randomBytes(24).toString('hex');
-  const runtime = await request('/api/deployment/readiness', { method: 'POST', timeout: 80_000, body: {
+  const response = await request('/api/deployment/readiness', {
+    method: 'POST', timeout: 80_000, status: ['200', '503'], withStatus: true, body: {
     nonce, expectedAccountId: config.expectedAccountId, expectedCloudfrontId: config.expectedCloudfrontId,
   } });
+  const runtime = response?.body;
+  if (response?.httpStatus === 503 || runtime?.status === 'not_ready') {
+    fail(readinessFailure(runtime, nonce, config.expectedAccountId));
+  }
+  if (response?.httpStatus !== 200) fail('runtime_protocol');
   const agent = runtime?.agent;
   const checkNames = ['identity', 'inventorySummary', 'inventoryQuery', 'knownResource', 'freshInventory', 'model'];
   if (runtime?.schemaVersion !== 1 || runtime.nonce !== nonce || runtime.accountId !== config.expectedAccountId
@@ -111,8 +136,8 @@ export async function verifyRuntimeSmoke(configuration, request, {
       || agent.nonce !== nonce || agent.accountId !== config.expectedAccountId
       || agent.status !== 'ready' || agent.reason !== 'ok' || !exact(agent.checks, checkNames)
       || !Object.values(agent.checks).every(v => v === true)
-      || !finiteCount(agent.inventory?.count) || agent.inventory.count < 1
-      || !finiteCount(agent.inventory?.ageMinutes) || agent.inventory.ageMinutes > 15) fail('runtime_protocol');
+      || !finiteCount(agent.inventory?.count) || agent.inventory.count < 1 || agent.inventory.count > 500
+      || !finiteCount(agent.inventory?.ageMinutes) || agent.inventory.ageMinutes > 1440) fail('runtime_protocol');
 
   for (const [type, runtimeName] of [['noop', 'lambda'], ['noop-heavy', 'fargate']]) {
     const job = await request('/api/jobs', { method: 'POST', status: '202', body: {
