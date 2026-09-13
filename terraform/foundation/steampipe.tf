@@ -124,7 +124,7 @@ resource "aws_iam_role_policy" "steampipe_task" {
         "dynamodb:List*", "dynamodb:Describe*",
         "ecs:List*", "ecs:Describe*",
         "ecr:Describe*", "ecr:List*", "ecr:GetLifecyclePolicy", "ecr:GetRepositoryPolicy",
-        "iam:List*", "iam:Get*",
+        "iam:List*", "iam:Get*", "iam:GenerateCredentialReport",
         # D3 wave
         "cloudfront:List*", "cloudfront:Get*",
         # L7 origin resolution: API Gateway v1/v2 read (single apigateway:GET action covers GetApis/

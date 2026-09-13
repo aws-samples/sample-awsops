@@ -24,3 +24,7 @@ Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/a
 - On container deploy, set `HOSTNAME=0.0.0.0` as a task-def runtime env — image-level ENV alone is insufficient (ECS overwrites it with the ENI IP → healthCheck UNHEALTHY).
 - App state lives in Aurora (node-pg, `lib/db.ts`) — v1's `data/*.json` / Steampipe pg Pool pattern does not apply here.
 - All components use `export default`, built for production standalone.
+
+When `INVENTORY_HOST_ONLY=true`, `POST /api/accounts` rejects onboarding with 409 after
+authentication/admin checks and before STS or registry writes. Reads, connection re-tests
+and removal retain their behavior. Configure multi-account collection before onboarding.

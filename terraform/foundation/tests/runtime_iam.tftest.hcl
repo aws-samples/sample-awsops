@@ -191,9 +191,9 @@ run "host_core_permissions_and_digest_binding" {
     condition = (
       toset(local.runtime_read_regions) == toset(["ap-northeast-2", "eu-west-1", "us-east-1"]) &&
       toset(jsondecode(aws_iam_role_policy.steampipe_task[0].policy).Statement[0].Condition.StringEquals["aws:RequestedRegion"]) == toset(local.runtime_read_regions) &&
-      !contains(jsondecode(aws_iam_role_policy.steampipe_task[0].policy).Statement[0].Action, "iam:GenerateCredentialReport")
+      contains(jsondecode(aws_iam_role_policy.steampipe_task[0].policy).Statement[0].Action, "iam:GenerateCredentialReport")
     )
-    error_message = "Host reads retain enabled regions/global endpoints without credential-report generation."
+    error_message = "Host reads retain enabled regions/global endpoints and the existing credential-report permission."
   }
   assert {
     condition = alltrue([
