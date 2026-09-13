@@ -14,13 +14,21 @@ permission to change any other domain or parent-zone delegation.
 운영자가 수행한다. 아래 예약 도메인을 승인된 배포 값으로 바꾼다. 다른 도메인이나
 상위 존의 NS 위임 변경 권한은 포함하지 않는다.
 
-An existing published old-domain alias is rejected before certificate lookup.
+Dev full dispatches reject an existing published old-domain alias before certificate
+lookup, even with `domain_rollout=false`. This also covers a same-name hosted-zone
+change. Plan/apply checks use the saved domain/zone inputs and old alias identities,
+not current repo overrides or apply toggles. Advisory plans remain report-only;
+ordinary same-domain maintenance and certificate-neutral ECR bootstrap remain valid.
 Retiring it requires a **separate expressly authorized plan under the old
 configuration**, reviewed by that domain's owner. Do not authorize old/parent DNS
 changes as a workaround, extend this rollout's allowlist, or force an unknown plan
 through the gate. Owned validation-record retirement remains separately governed.
 
-게시된 이전 도메인 별칭이 있으면 인증서 조회 전에 거부한다. 삭제하려면 해당 소유자의
+dev full dispatch는 `domain_rollout=false`여도 게시된 이전 도메인 별칭을 인증서 조회
+전에 거부하며, 동일 이름의 hosted zone 변경도 포함한다. plan/apply 검사는 저장된
+도메인/존 입력과 기존 별칭 식별자를 사용하므로 현재 저장소 변수나 apply 토글로 바뀌지
+않는다. 참고 계획은 보고 전용이며, 일반 동일 도메인 유지보수와 인증서에 영향 없는
+ECR bootstrap은 계속 가능하다. 삭제하려면 해당 소유자의
 **별도 명시적 승인과 이전 설정의 계획**이 필요하다. 이름 변경을 위해 이전/상위 DNS
 권한을 넓히거나 미확정 계획을 강제로 통과시키지 않는다. 검증 레코드 폐기도 별도 절차다.
 
@@ -138,12 +146,12 @@ current repo variables or the apply dispatch's `domain_rollout` input.
 If both old certificates pass, retain `preserve` and their selected/attached reuse.
 If the parent establishes that SAN coverage fails and elects issuance, set
 `CERTIFICATE_MODE_DEV=managed` and remove supplied existing-ARN inputs.
-Conflicting nonempty existing ARNs in protected tfvars also block this mode; an
-operator must resolve that input separately without exposing the secret.
+Any non-null existing ARN input in protected tfvars, including `""`, also blocks
+this mode; an operator must resolve that input separately without exposing the secret.
 
 기존 인증서가 통과하면 `preserve`를 유지한다. 상위 운영자가 SAN 실패를 확인하고
 새 발급을 선택하면 `managed`로 전환하고 기존 ARN 입력을 제거한다. 보호된 tfvars에
-충돌하는 ARN이 있어도 거부한다. 운영자가 별도로 입력을 정리하되 비밀 내용을
+기존 ARN 입력이 JSON null이 아니면 빈 문자열 `""`도 거부한다. 운영자가 별도로 입력을 정리하되 비밀 내용을
 노출하지 않는다.
 
 `managed` selects JSON null for both external-ARN overrides, using the existing
@@ -232,9 +240,11 @@ Host/SNI/TLS를 유지한 `/api/health` 생존 확인이며 **DB·인증 준비 
   상위 NS, 다른 레코드, 새 존, Cloud Map/등록된 ECS 변경은 허용하지 않는다.
 - Ordinary `domain_rollout=false` full plans retain the broad DNS policy, including
   Cloud Map, **only with explicit `allow_dns_changes=true` on plan and apply**.
+  The published old-name/old-zone retirement guard still applies to dev plans.
   That option does not authorize old/parent DNS under this runbook.
   일반 full 계획은 `domain_rollout=false`에서 plan/apply 양쪽의 명시적 DNS 허용이 있어야
-  Cloud Map을 포함한 기존 광범위 DNS 정책을 사용한다. 이 문서는 이전/상위 DNS를 승인하지 않는다.
+  Cloud Map을 포함한 기존 광범위 DNS 정책을 사용한다. dev의 게시된 이전 이름/존 삭제
+  차단은 계속 적용된다. 이 문서는 이전/상위 DNS를 승인하지 않는다.
 - On first ACM creation, validation token fields can be unknown in the plan;
   the canonical resource/domain key and selected zone must be known. These tokens
   come from the existing reviewed ACM validation configuration. Known token names

@@ -10,7 +10,7 @@ import unittest
 
 import yaml
 
-from test_ci_dev_domain import plan_fixture
+from test_ci_dev_domain import plan_fixture, record
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -215,6 +215,102 @@ class DeploymentWorkflowTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode == 0, allow and not rollout, result.stderr)
                 self.assertEqual(any(c[:2] == ["terraform", "apply"] for c in commands), allow and not rollout)
+
+    def test_override_with_rollout_false_refuses_published_old_domain_dispatch(self):
+        items = [workflow_step("terraform.yml", "plan", name) for name in (
+            "Configure dev domain overrides", "Check existing certificates without changing DNS", "terraform plan",
+        )]
+        for host, zone in (("old.example.net", "example.net"),
+                           ("dev.example.com", "example.com")):
+            state = {"format_version": "1.0", "values": {"root_module": {"resources": [
+                {"address": f'aws_route53_record.alias["{host}"]', "mode": "managed",
+                 "type": "aws_route53_record", "name": "alias",
+                 "values": {"name": host, "zone_id": "ZOLD", "type": "A"}},
+                {"address": "data.aws_route53_zone.main", "mode": "data",
+                 "type": "aws_route53_zone", "name": "main",
+                 "values": {"name": zone + ".", "zone_id": "ZOLD"}},
+            ]}}}
+            for event in ("workflow_dispatch", "pull_request", "push"):
+                with self.subTest(host=host, zone=zone, event=event):
+                    result, commands = self.run_step(items, TEST_STATE_JSON=json.dumps(state), context={
+                        "github": {"event_name": event},
+                        "inputs": {"domain_rollout": False, "plan_scope": "full",
+                                   "allow_dns_changes": True, "publish_service_dns": True},
+                        "vars": {"DOMAIN_NAME_DEV": "dev.example.com",
+                                 "HOSTED_ZONE_NAME_DEV": "dev.example.com"},
+                    })
+                    advisory = event != "workflow_dispatch"
+                    self.assertEqual(result.returncode == 0, advisory, result.stderr)
+                    self.assertEqual(any(c[:2] == ["terraform", "plan"] for c in commands), advisory)
+                    self.assertFalse(any(c[:2] == ["aws", "acm"] for c in commands))
+                    if advisory:
+                        self.assertFalse(any(c[0] == "aws" for c in commands))
+                        self.assertIn(["tfvars", {"publish_service_dns": True,
+                                                 "existing_cf_certificate_arn": None,
+                                                 "existing_alb_certificate_arn": None}], commands)
+                    else:
+                        self.assertIn("Published old-domain", result.stderr)
+
+    def test_saved_old_alias_plan_is_refused_independently_of_current_overrides(self):
+        for host, zone in (("old.example.net", "ZOLD"), ("dev.example.com", "ZPARENT")):
+            change = record(host=host, zone_id=zone)
+            change["change"].update(actions=["delete"], before=change["change"]["after"], after=None)
+            saved = plan_fixture([change, record()], rollout=False)
+            for job, name in (("plan", "Check planned DNS operations"),
+                              ("apply", "terraform apply (exact saved plan — never re-planned)")):
+                for current_rollout in (False, True):
+                    with self.subTest(host=host, zone=zone, job=job, current_rollout=current_rollout):
+                        result, commands = self.run_step(
+                            [workflow_step("terraform.yml", job, name)], PLAN_JSON=json.dumps(saved),
+                            # None of these current values can rewrite saved-plan policy.
+                            DOMAIN_NAME_DEV=host, HOSTED_ZONE_NAME_DEV="example.net",
+                            DOMAIN_ROLLOUT=str(current_rollout).lower(), ADVISORY="true",
+                            context={"github": {"event_name": "workflow_dispatch"},
+                                     "inputs": {"allow_dns_changes": True, "plan_scope": "full",
+                                                "domain_rollout": current_rollout}},
+                        )
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("Published old-domain", result.stderr)
+                        self.assertFalse(any(c[:2] == ["terraform", "apply"] for c in commands))
+            for event in ("pull_request", "push"):
+                result, _ = self.run_step(
+                    [workflow_step("terraform.yml", "plan", "Check planned DNS operations")],
+                    PLAN_JSON=json.dumps(saved), context={"github": {"event_name": event}, "inputs": {}},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(change["address"], json.loads(result.summary)["dns_changes"])
+
+    def test_override_retains_unpublished_same_domain_and_ecr_dispatch(self):
+        items = [workflow_step("terraform.yml", "plan", name) for name in (
+            "Configure dev domain overrides", "Check existing certificates without changing DNS", "terraform plan",
+        )]
+        for scope, host, zone in (("full", None, "dev.example.com"),
+                                  ("full", "dev.example.com", "dev.example.com"),
+                                  ("ecr-bootstrap", "old.example.net", "example.net")):
+            resources = [{"address": "data.aws_route53_zone.main", "mode": "data",
+                          "type": "aws_route53_zone", "name": "main",
+                          "values": {"name": zone + ".", "zone_id": "Z123CHILD"}}]
+            if host:
+                resources.append({"address": f'aws_route53_record.alias["{host}"]', "mode": "managed",
+                                  "type": "aws_route53_record", "name": "alias",
+                                  "values": {"name": host, "zone_id": "Z123CHILD", "type": "A"}})
+            with self.subTest(scope=scope, host=host):
+                result, commands = self.run_step(
+                    items, TEST_STATE_JSON=json.dumps({
+                        "format_version": "1.0", "values": {"root_module": {"resources": resources}},
+                    }), context={
+                        "github": {"event_name": "workflow_dispatch"},
+                        "inputs": {"domain_rollout": False, "plan_scope": scope,
+                                   "allow_dns_changes": scope == "full", "publish_service_dns": False},
+                        "vars": {"DOMAIN_NAME_DEV": "dev.example.com",
+                                 "HOSTED_ZONE_NAME_DEV": "dev.example.com"},
+                    },
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(any(c[:2] == ["terraform", "plan"] for c in commands))
+                self.assertFalse(any(c[:2] == ["aws", "acm"] for c in commands))
+                if scope == "ecr-bootstrap":
+                    self.assertTrue(any("-target=aws_ecr_repository.web" in c for c in commands))
 
     def test_dev_repo_override_reaches_console_and_automatic_plan(self):
         script = step("terraform.yml", "plan", "Configure dev domain overrides")

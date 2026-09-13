@@ -493,6 +493,38 @@ class DnsPolicyTests(unittest.TestCase):
             result = module.certificate_overrides(config, existing, ACCOUNT, True, publish=False)
             self.assertFalse(result["publish_service_dns"])
 
+    def test_ordinary_dev_plan_refuses_old_alias_name_or_zone_retirement(self):
+        from test_ci_dev_domain import plan_fixture, record
+        module = self.module()
+        for host, zone in (("old.example.net", "ZOLD"), ("dev.example.com", "ZPARENT")):
+            for actions in (["delete"], ["delete", "create"], ["create", "delete"], ["update"], ["forget"]):
+                change = record(host=host, zone_id=zone)
+                change["change"].update(actions=actions, before=change["change"]["after"],
+                                        after=None if actions in (["delete"], ["forget"]) else {
+                                            "name": "dev.example.com", "type": "A", "zone_id": "Z123CHILD"})
+                with self.subTest(host=host, zone=zone, actions=actions):
+                    with self.assertRaisesRegex(ValueError, "Published old-domain.*separate"):
+                        module.check_plan(plan_fixture([change], rollout=False), True, target="dev")
+
+    def test_ordinary_same_domain_maintenance_and_unpublished_plans_still_work(self):
+        from test_ci_dev_domain import plan_fixture, record
+        module = self.module()
+        for actions in (["create"], ["update"], ["delete"], ["delete", "create"]):
+            change = record(name="DEV.EXAMPLE.COM.")
+            change["change"].update(actions=actions,
+                                    before=None if actions == ["create"] else dict(change["change"]["after"]))
+            if actions == ["delete"]:
+                change["change"]["after"] = None
+            cloudmap = {"address": "aws_service_discovery_service.steampipe",
+                        "type": "aws_service_discovery_service", "change": {"actions": ["update"]}}
+            plan = plan_fixture([change, cloudmap], rollout=False)
+            with self.subTest(actions=actions):
+                result = module.check_plan(plan, True, target="dev")
+                self.assertEqual(result["dns_changes"], [change["address"], cloudmap["address"]])
+                self.assertNotIn("public_zone", result)
+                with self.assertRaisesRegex(ValueError, "DNS change prohibited"):
+                    module.check_plan(plan, False, target="dev")
+
     def test_advisory_bootstrap_and_changed_san_preserve_ownership_without_live_checks(self):
         module = self.module()
         alb = ARN.replace("us-east-1", "ap-northeast-2")

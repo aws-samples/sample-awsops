@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 
-from ci_dev_domain import check_scoped_dns, domain_scope, hostname, plan_rollout
+from ci_dev_domain import check_scoped_dns, domain_scope, hostname, plan_rollout, plan_scope, zone_summary
 
 
 # CloudFront supports RSA through 4096 and ECDSA P-256/P-384; retain an RSA 2048 floor.
@@ -23,6 +23,10 @@ MIN_REMAINING = timedelta(hours=24)
 CERTIFICATE_ARN = re.compile(
     r"arn:aws:acm:([a-z]{2}(?:-[a-z]+)+-[0-9]):([0-9]{12}):certificate/"
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+PUBLISHED_DOMAIN_CHANGE = (
+    "Published old-domain rollout is unsupported; use a separate expressly "
+    "authorized retirement plan under the old configuration."
 )
 
 
@@ -192,7 +196,7 @@ def state_resources(state):
 
 
 def certificate_overrides(configuration, state, account, allow_dns, *, publish=True, scope="full",
-                          certificate_mode="preserve", advisory=False):
+                          certificate_mode="preserve", advisory=False, target=""):
     """Preserve existing ownership/publication and return typed Terraform inputs."""
     domain, region = configuration["domain"], configuration["region"]
     aliases = configuration.get("aliases", [])
@@ -207,15 +211,17 @@ def certificate_overrides(configuration, state, account, allow_dns, *, publish=T
         raise ValueError("managed mode conflicts with supplied existing certificate ARN inputs")
     root, resources = state_resources(state)
     managed = {r["values"]["arn"] for r in resources if r["type"] == "aws_acm_certificate"}
-    if configuration.get("domain_rollout"):
-        hosts, _ = domain_scope(domain, configuration["zone"], aliases)
-        for resource in root:
-            if (resource["type"] == "aws_route53_record" and resource["name"] == "alias"
-                    and hostname(resource["values"].get("name"), dns_response=True) not in hosts):
-                raise ValueError(
-                    "Published old-domain rollout is unsupported; use a separate expressly "
-                    "authorized retirement plan under the old configuration."
-                )
+    if not advisory and scope == "full" and (target == "dev" or configuration.get("domain_rollout")):
+        published = [r for r in root if r["type"] == "aws_route53_record" and r["name"] == "alias"]
+        if published:
+            hosts, zone = domain_scope(domain, configuration["zone"], aliases)
+            # Console already includes dev overrides, even without rollout.
+            # A same-name zone move also retires the published old record.
+            zones = [r["values"] for r in state["values"]["root_module"].get("resources", [])
+                     if r["address"] == "data.aws_route53_zone.main"]
+            if (any(hostname(r["values"].get("name"), dns_response=True) not in hosts for r in published)
+                    or any(hostname(z.get("name"), dns_response=True) != zone for z in zones)):
+                raise ValueError(PUBLISHED_DOMAIN_CHANGE)
 
     def own(kind, name):
         matches = [r["values"] for r in root if r["type"] == kind and r["name"] == name]
@@ -305,7 +311,7 @@ def ecs_service_may_change_dns(change):
                 or isinstance(registries_unknown, (list, dict)) and not registries_unknown)
 
 
-def check_plan(plan, allow_dns, scope="full", *, target=""):
+def check_plan(plan, allow_dns, scope="full", *, target="", advisory=False):
     if not isinstance(plan, dict) or not isinstance(plan.get("planned_values"), dict) or not plan.get("format_version"):
         raise ValueError("invalid Terraform plan JSON")
     rollout = plan_rollout(plan, target, scope)
@@ -354,6 +360,19 @@ def check_plan(plan, allow_dns, scope="full", *, target=""):
             scoped_changes.append(resource)
     if dns_changes and not allow_dns:
         raise ValueError("DNS change prohibited: " + ", ".join(dns_changes))
+    if target == "dev" and not advisory:
+        # Derive protection from actual alias mutations and immutable plan
+        # names/zone, never a rollout opt-in or current repository variables.
+        for resource in scoped_changes:
+            if (resource["type"] == "aws_route53_record"
+                    and re.fullmatch(r'aws_route53_record\.alias\["[^"]+"\]', resource["address"])
+                    and resource["change"]["actions"] != ["create"]):
+                hosts, _ = plan_scope(plan)
+                before = resource["change"].get("before")
+                if (not isinstance(before, dict)
+                        or hostname(before.get("name"), dns_response=True) not in hosts
+                        or before.get("zone_id") != zone_summary(plan)["zone_id"]):
+                    raise ValueError(PUBLISHED_DOMAIN_CHANGE)
     result = {"changed_resources": mutations, "dns_changes": dns_changes}
     if rollout:
         result["public_zone"] = check_scoped_dns(plan, scoped_changes)
@@ -368,6 +387,7 @@ def main():
     check.add_argument("--allow-dns", choices=("true", "false"), required=True)
     check.add_argument("--scope", choices=("full", "ecr-bootstrap"), default="full")
     check.add_argument("--target", default="")
+    check.add_argument("--advisory", choices=("true", "false"), default="false")
     certificates = commands.add_parser("certificates")
     certificates.add_argument("--cf-arn", default="")
     certificates.add_argument("--alb-arn", default="")
@@ -384,7 +404,8 @@ def main():
         if args.command == "summary":
             print(json.dumps(deployment_summary(value)))
         elif args.command == "check-plan":
-            print(json.dumps(check_plan(value, args.allow_dns == "true", args.scope, target=args.target)))
+            print(json.dumps(check_plan(value, args.allow_dns == "true", args.scope,
+                                        target=args.target, advisory=args.advisory == "true")))
         else:
             # `terraform console` prints jsonencode's result as a quoted JSON string.
             configuration = json.loads(value) if isinstance(value, str) else value
@@ -406,7 +427,7 @@ def main():
             print(json.dumps(certificate_overrides(
                 configuration, json.loads(args.state.read_text()), account,
                 args.allow_dns == "true", publish=args.publish == "true", scope=args.scope,
-                certificate_mode=mode, advisory=advisory,
+                certificate_mode=mode, advisory=advisory, target=args.target,
             )))
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
         print(f"Deployment preflight refused: {error}", file=sys.stderr)

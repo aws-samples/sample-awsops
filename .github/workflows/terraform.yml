@@ -226,12 +226,13 @@ jobs:
           # Dispatch plans need explicit permission independently of domain scoping.
           ALLOW_DNS_CHANGES: ${{ github.event_name != 'workflow_dispatch' || inputs.allow_dns_changes }}
           PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
+          ADVISORY: ${{ github.event_name != 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           terraform show -json tfplan |
             python3 ../../scripts/v2/ci_dns_policy.py check-plan \
               --allow-dns "$ALLOW_DNS_CHANGES" --scope "$PLAN_SCOPE" \
-              --target "$TARGET" | tee -a "$GITHUB_STEP_SUMMARY"
+              --target "$TARGET" --advisory "$ADVISORY" | tee -a "$GITHUB_STEP_SUMMARY"
 
       # A plan file embeds every input variable value in plaintext (sensitive
       # ones included), and artifacts on a public repo are downloadable by any

@@ -69,6 +69,20 @@ class TerraformReadTests(unittest.TestCase):
             self.assertTrue(plan_rollout(saved, "dev", "full"))
             self.assertEqual(saved["planned_values"]["outputs"]["selected"]["value"], selected)
             self.assertEqual(protected.read_bytes(), original)
+            # Ordinary dispatch still applies the override; later repo settings
+            # and rollout toggles must not change the domain policy of its plan.
+            env["DOMAIN_ROLLOUT"] = "false"
+            run(sys.executable, str(helper), "overrides")
+            run("terraform", "plan", "-input=false", "-lock=false", "-no-color",
+                "-var-file=ci-deployment.tfvars.json", "-out=ordinary.tfplan")
+            ordinary = json.loads(run("terraform", "show", "-json", "ordinary.tfplan"))
+            self.assertFalse(plan_rollout(ordinary, "dev", "full"))
+            self.assertEqual(plan_scope(ordinary), ({"new.dev.example.com"}, "dev.example.com"))
+            env.update(DOMAIN_NAME_DEV="", HOSTED_ZONE_NAME_DEV="", DOMAIN_ROLLOUT="true")
+            run(sys.executable, str(helper), "overrides")
+            reread = json.loads(run("terraform", "show", "-json", "ordinary.tfplan"))
+            self.assertEqual(reread, ordinary)
+            self.assertEqual(protected.read_bytes(), original)
 
     def test_console_and_show_read_without_locks_and_preserve_json_null(self):
         requests = []
