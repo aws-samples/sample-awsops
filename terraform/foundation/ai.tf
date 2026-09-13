@@ -394,7 +394,7 @@ resource "aws_iam_role_policy" "agent_lambda_reader_scoped" {
         Resource  = "*"
         Condition = local.runtime_read_condition
       },
-      ], var.inventory_host_only ? [] : [
+      ], [
       {
         # Cross-account describe/list for rds-mcp's non-execute_sql tools (execute_sql itself
         # rejects a foreign target_account_id before this could even be reached — see
@@ -786,7 +786,7 @@ resource "aws_iam_role_policy" "agent_lambda_read" {
         Resource  = "*"
         Condition = local.runtime_read_condition
       },
-      ], var.inventory_host_only ? [] : [
+      ], [
       {
         Sid      = "CrossAccountAssumeReadOnly"
         Effect   = "Allow"

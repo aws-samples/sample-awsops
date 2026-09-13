@@ -5,6 +5,13 @@ in each target account. Trust is pinned to the host task roles; an **ExternalId*
 guard) is **optional for 1st-party accounts** and **required for 3rd-party/shared accounts**
 (ADR-011 amended 2026-06-26). AWSops never mutates target-account resources.
 
+With `inventory_host_only=true`, configure the deployment for multi-account collection before
+adding enabled target accounts; otherwise the collector rejects that scope. Agent MCP IAM
+grants are unchanged. See [runtime activation](runtime-foundation.md).
+
+`inventory_host_only=true`이면 활성 타깃 추가 전에 다중 계정 수집 구성으로 전환합니다.
+그렇지 않으면 수집기가 범위를 거부합니다. Agent MCP IAM 권한은 유지됩니다.
+
 ## Prerequisites
 - Admin access to AWSops (`/accounts` is gated by Cognito `ADMIN_GROUP` or the SSM email allowlist).
 - The **host web task role ARN** — full ARN `arn:aws:iam::<host>:role/awsops-v2-task` (Terraform output `web_task_role_arn`).

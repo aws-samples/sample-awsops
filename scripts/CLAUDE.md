@@ -6,9 +6,9 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
-- `v2/ci_runtime_policy.py` — dev runtime activation checks the configured CI role and STS
-  account, pins inventory/worker image digests, and limits explicit runtime rollout plans to
-  owned private Cloud Map/ECS DNS changes. Public DNS and certificate changes stay blocked.
+- `v2/ci_runtime_policy.py` — dev activation pins inventory/worker image digests.
+  Development/preview CI roles and STS accounts are checked; DNS changes in runtime plans use
+  owned private Cloud Map/ECS registrations. Public DNS and certificate changes stay blocked.
   `runtime-ecr-bootstrap` permits only the three runtime repositories. Feature flags stay
   default-off; policy checks alone do not prove collection or effective runtime access.
 - `v2/ci_tf_assets.py` — prepares hash-locked pg8000 layers and carries generated Lambda assets

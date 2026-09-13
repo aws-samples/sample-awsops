@@ -87,10 +87,10 @@ jobs:
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: sample-awsops
-    # plan is automatic and read-only — it must never sit behind any gate.
+    # Automatic read-only plans have no environment approval; configured stacks still require identity checks.
     env:
       TARGET: ${{ github.base_ref || github.ref_name }}
-      AWS_ACCOUNT_ID_DEV: ${{ vars.AWS_ACCOUNT_ID_DEV }}
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
       TF_VAR_ci_migrations_enabled: ${{ (github.base_ref || github.ref_name) == 'dev' && vars.CI_MIGRATIONS_ENABLED_DEV || 'false' }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
@@ -105,26 +105,6 @@ jobs:
         with:
           terraform_version: 1.15.7
           terraform_wrapper: false
-
-      - name: Validate configured development plan account
-        env:
-          CI_ROLE_ARN: ${{ secrets.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
-        run: python3 ../../scripts/v2/ci_runtime_policy.py verify-role
-
-      - name: Configure AWS credentials (OIDC -> ci-terraform-plan)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          mask-aws-account-id: true
-          role-to-assume: ${{ secrets.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
-          aws-region: ap-northeast-2
-
-      - name: Verify actual development plan caller
-        env:
-          CI_ROLE_ARN: ${{ secrets.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
-        run: |
-          set -euo pipefail
-          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
-            python3 ../../scripts/v2/ci_runtime_policy.py verify-caller
 
       - name: Restore backend.hcl / terraform.tfvars
         id: restore
@@ -151,6 +131,29 @@ jobs:
             echo "::error::restored terraform.tfvars still contains admin_password — strip it and re-register the secret. Admins are not Terraform-managed: provision per stack with admin-create-user (docs/runbooks/dev-repo-setup.md)."
             exit 1
           fi
+
+      - name: Validate configured development plan account
+        if: steps.restore.outputs.skip != '1'
+        env:
+          CI_ROLE_ARN: ${{ secrets.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
+        run: python3 ../../scripts/v2/ci_runtime_policy.py verify-role
+
+      - name: Configure AWS credentials (OIDC -> ci-terraform-plan)
+        if: steps.restore.outputs.skip != '1'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          mask-aws-account-id: true
+          role-to-assume: ${{ secrets.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      - name: Verify actual development plan caller
+        if: steps.restore.outputs.skip != '1'
+        env:
+          CI_ROLE_ARN: ${{ secrets.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            python3 ../../scripts/v2/ci_runtime_policy.py verify-caller
 
       - name: Configure dev domain overrides
         id: domain
@@ -377,7 +380,7 @@ jobs:
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
       TARGET: ${{ github.ref_name }}
-      AWS_ACCOUNT_ID_DEV: ${{ vars.AWS_ACCOUNT_ID_DEV }}
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
       MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
       DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}

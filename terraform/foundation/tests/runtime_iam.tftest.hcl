@@ -154,13 +154,9 @@ run "host_core_permissions_and_digest_binding" {
   }
   assert {
     condition = alltrue([
-      for p in [
-        aws_iam_role_policy.steampipe_task[0].policy,
-        aws_iam_role_policy.agent_lambda_read[0].policy,
-        aws_iam_role_policy.agent_lambda_reader_scoped[0].policy,
-      ] : !contains(flatten([for s in jsondecode(p).Statement : s.Action]), "sts:AssumeRole")
+      for p in [aws_iam_role_policy.steampipe_task[0].policy] : !contains(flatten([for s in jsondecode(p).Statement : s.Action]), "sts:AssumeRole")
     ])
-    error_message = "Host-only mode must omit cross-account role assumption."
+    error_message = "Host-only inventory must omit collector cross-account role assumption."
   }
   assert {
     condition = alltrue([

@@ -32,7 +32,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 ## Deployment invariants
 - `runtime-foundation.md` covers account-bound, default-off runtime activation and
   saved-plan Lambda assets. Runtime rollout is dev/full only, requires explicit DNS
-  permission and permits only owned private Cloud Map/ECS changes; public DNS/certificates
+  permission and permits only owned private Cloud Map/ECS DNS changes; public DNS/certificates
   remain blocked. Runtime ECR bootstrap creates only three expected repositories.
   Configuration and policy checks are not effective-access or successful-collection proof.
 - `CI_DB_DIAGNOSTICS_DEV` is false/unset by default; literal `true` plus `workflow_dispatch`

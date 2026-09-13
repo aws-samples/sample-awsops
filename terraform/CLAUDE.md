@@ -10,7 +10,8 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
   Host collection keeps all enabled regions plus global-service reads; task/runtime policies
   scope SSM, Gateway, model and worker actions. This output describes configuration, not
   proof of effective permissions. The host-only renderer verifies STS and the account
-  registry before rendering and removes cross-account role grants.
+  registry before rendering; Terraform omits only the collector cross-account grant.
+  Agent MCP cross-account grants retain their existing behavior.
 - CI prepares Lambda ZIP inputs and pg8000 layers before plan, then encrypts an asset bundle
   bound to the saved plan. Apply restores and checks that bundle; it cannot rebuild different
   assets under the reviewed plan. See `docs/runbooks/runtime-foundation.md`.
@@ -18,7 +19,7 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
   `make configure`. Deployment `init` must pass `-backend-config=backend.hcl`.
   Offline mock tests instead use `bash scripts/v2/terraform-test.sh` from the repository root:
   Terraform 1.15.7, an isolated copy of tracked working files, fresh `TF_DATA_DIR`,
-  `init -backend=false`, validate and `tests/dns_deferred.tftest.hcl`. Never initialize a real
+  `init -backend=false`, validate and both DNS/runtime-IAM mock suites. Never initialize a real
   backend for tests; providers are mocked and local state/config is excluded.
 - `staging.tfvars` — **Contains the plaintext `admin_email`/`admin_password`. Gitignored via
   `terraform/**/staging.tfvars` since 2026-08-19, but still never commit** — check for any
@@ -26,6 +27,7 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
 - `backend.hcl.example` / `terraform.tfvars.example` — committable templates.
 - `variables.tf` — most flags are declared here, but `agentcore_enabled`/`integrations_enabled`
   are declared at the top of `ai.tf`; `ci_migrations_enabled` is declared in `ci-migrations.tf`.
+  Host-only, image-digest and CI runtime metadata inputs live in `runtime-read-scope.tf`.
 - `ci-migrations.tf` — default-off operator migration task template, exact-secret task IAM,
   14-day log group and `migration_job` output. The manual development CI controller owns
   launch/cleanup; no app service or scheduler starts it. Disabling deletes retained logs.
@@ -38,6 +40,9 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
   section.
 
 ## Flag Gates
+- `CI_READONLY_RUNTIME_DEV=true` generates ignored `ci-runtime.auto.tfvars.json`, enabling
+  inventory/AgentCore/workers and host-only inventory on dev. Default-false
+  `ci_runtime_rollout` records explicit private-DNS activation in the saved plan.
 - `existing_cf_certificate_arn` / `existing_alb_certificate_arn` are nullable string inputs:
   JSON null retains Terraform-managed certificates; the string `"null"` does not. External
   ARNs must be operator-selected or already attached. Routine CI refuses managed-to-external

@@ -1,7 +1,10 @@
 """Runtime activation is account-bound, digest-pinned and private-DNS scoped."""
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 
 
@@ -69,6 +72,11 @@ class RuntimePolicyTests(unittest.TestCase):
                     {"Account": ACCOUNT, "Arn": "not-an-arn"}):
             with self.assertRaises(ValueError):
                 self.module.verify_caller(bad, ACCOUNT, role)
+        for target in ("dev", "atomoh", "ssminji", "whchoi"):
+            result = subprocess.run([sys.executable, str(Path(self.module.__file__)), "verify-role"],
+                env={**os.environ, "TARGET": target, "AWS_ACCOUNT_ID_DEV": "",
+                     "CI_ROLE_ARN": role}, capture_output=True)
+            self.assertNotEqual(result.returncode, 0, target)
 
     def plan(self, changes=(), rollout=False):
         values = {
@@ -99,10 +107,17 @@ class RuntimePolicyTests(unittest.TestCase):
     def test_frozen_or_unrequested_notification_flags_fail(self):
         for flag in ("remediation_enabled", "integrations_write_enabled", "rca_writeback_enabled",
                      "diagnosis_notify_enabled"):
-            plan = self.plan()
+            plan = self.plan(rollout=True)
             plan["variables"][flag]["value"] = True
             with self.assertRaises(ValueError):
                 self.module.check_plan(plan, "dev", "full", ACCOUNT)
+
+    def test_ordinary_plans_preserve_governed_notifications_and_empty_advisory_plans(self):
+        plan = self.plan()
+        plan["variables"]["diagnosis_notify_enabled"]["value"] = True
+        plan.pop("resource_changes")
+        self.assertEqual(self.module.check_plan(plan, "dev", "full", ACCOUNT)["runtime_policy"], "verified")
+        self.assertEqual(self.module.check_plan(plan, "dev", "full", ACCOUNT, advisory=True)["runtime_policy"], "advisory")
 
     def test_private_namespace_requires_explicit_rollout_and_exact_name(self):
         change = self.change("aws_service_discovery_private_dns_namespace.main[0]",
@@ -183,6 +198,17 @@ class RuntimePolicyTests(unittest.TestCase):
             self.module.check_plan(plan, "dev", "full", ACCOUNT)
         service["change"]["after"]["service_registries"][0]["registry_arn"] = arn
         self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        # A task revision with the same owned registration needs DNS permission from
+        # the separate DNS policy, but not another activation-profile transition.
+        plan["variables"]["ci_runtime_rollout"]["value"] = False
+        service["change"]["actions"] = ["update"]
+        service["change"]["before"] = dict(service["change"]["after"])
+        self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        self.module.check_plan(plan, "atomoh", "full", ACCOUNT)
+        service["change"]["after"]["service_registries"] = [{"registry_arn": arn + "-foreign"}]
+        for target in ("dev", "atomoh", "ssminji", "whchoi"):
+            with self.assertRaises(ValueError):
+                self.module.check_plan(plan, target, "full", ACCOUNT)
 
     def test_runtime_rollout_cannot_replace_attached_groups_or_change_vpc(self):
         for kind, actions in (("aws_security_group", ["delete", "create"]), ("aws_vpc", ["update"])):
@@ -198,3 +224,11 @@ class RuntimePolicyTests(unittest.TestCase):
                               {"name": "awsops-dev-worker", "arn": "arn:aws:ecr:ap-northeast-2:999999999999:repository/x"})
         with self.assertRaises(ValueError):
             self.module.check_plan(self.plan([foreign]), "dev", "runtime-ecr-bootstrap", ACCOUNT)
+        for actions in (["delete", "create"], ["create", "delete"], ["forget"]):
+            for address in self.module.CORE:
+                with self.assertRaises(ValueError):
+                    self.module.check_plan(self.plan([self.change(address, "aws_resource", {}, actions)]),
+                                           "dev", "full", ACCOUNT)
+        for target in ("atomoh", "ssminji", "whchoi"):
+            with self.assertRaises(ValueError):
+                self.module.check_plan(self.plan([foreign]), target, "full", ACCOUNT)

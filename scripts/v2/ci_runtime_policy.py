@@ -7,6 +7,7 @@ import re
 import sys
 
 SCOPES = ("full", "ecr-bootstrap", "runtime-ecr-bootstrap")
+DEV_TARGETS = ("dev", "atomoh", "ssminji", "whchoi")
 REPOSITORIES = {
     "aws_ecr_repository.steampipe[0]": "steampipe",
     "aws_ecr_repository.agentcore[0]": "agentcore",
@@ -17,7 +18,7 @@ PRIVATE_DNS = {
     "aws_service_discovery_service.steampipe[0]",
     "aws_ecs_service.steampipe[0]",
 }
-FORBIDDEN_FLAGS = (
+READONLY_PROFILE_FLAGS = (
     "remediation_enabled", "integrations_write_enabled",
     "rca_writeback_enabled", "diagnosis_notify_enabled",
 )
@@ -26,6 +27,7 @@ CORE = set(REPOSITORIES) | PRIVATE_DNS | {
     "aws_ssm_parameter.agentcore_runtime_arn[0]",
     "aws_ssm_parameter.agentcore_interpreter_id[0]",
     "aws_ssm_parameter.agentcore_memory_id[0]",
+    "aws_sfn_state_machine.workers[0]", "aws_lambda_event_source_mapping.dispatcher[0]",
 }
 OVERRIDES = Path("ci-runtime.auto.tfvars.json")
 
@@ -187,10 +189,12 @@ def _check_accounts(value, expected):
 
 
 def check_plan(plan, target, scope, expected_account, *, advisory=False):
-    if target != "dev":
+    if target not in DEV_TARGETS:
         if scope == "runtime-ecr-bootstrap":
             raise ValueError("Runtime bootstrap is dev-only")
         return {"runtime_policy": "not_applicable"}
+    if target != "dev" and scope == "runtime-ecr-bootstrap":
+        raise ValueError("Runtime bootstrap is dev-only")
     expected = account_id(expected_account)
     if scope not in SCOPES or not isinstance(plan, dict) or not plan.get("format_version"):
         raise ValueError("Invalid runtime plan scope or document")
@@ -203,10 +207,11 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
     rollout = variables.get("ci_runtime_rollout", False)
     if type(rollout) is not bool or rollout and (scope != "full" or variables.get("ci_domain_rollout")):
         raise ValueError("Runtime and public-domain rollouts require separate full plans")
-    for flag in FORBIDDEN_FLAGS:
-        if variables.get(flag) is not False:
-            raise ValueError("Frozen mutation and unrequested notification flags must remain false")
-    changes = plan.get("resource_changes")
+    if rollout or scope == "runtime-ecr-bootstrap":
+        for flag in READONLY_PROFILE_FLAGS:
+            if variables.get(flag) is not False:
+                raise ValueError(f"Read-only runtime activation requires {flag}=false")
+    changes = plan.get("resource_changes", [])
     if not isinstance(changes, list):
         raise ValueError("Missing plan changes")
     private = []
@@ -227,7 +232,7 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
             if (address not in REPOSITORIES or kind != "aws_ecr_repository" or actions != ["create"]
                     or not isinstance(after, dict) or after.get("name") != f"{project}-{REPOSITORIES[address]}"):
                 raise ValueError("Runtime ECR bootstrap may create only the three expected repositories")
-        if address in CORE and actions in (["delete"], ["forget"]):
+        if not advisory and address in CORE and any(a in actions for a in ("delete", "forget")):
             raise ValueError("Runtime teardown requires a separately reviewed retirement")
         if rollout and (kind.startswith(("aws_route53", "aws_acm_"))
                         or kind in ("aws_vpc", "aws_subnet", "aws_nat_gateway", "aws_internet_gateway",
@@ -246,7 +251,14 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
         if advisory and not rollout:
             private.append(address)
             continue
-        if not rollout or address not in PRIVATE_DNS or not isinstance(after, dict):
+        unchanged_registration = (
+            address == "aws_ecs_service.steampipe[0]" and actions == ["update"]
+            and registries and registries == old_registries
+            and after.get("cluster") == before.get("cluster")
+            and not change.get("after_unknown", {}).get("service_registries")
+        )
+        if ((not rollout and target == "dev" and not unchanged_registration)
+                or address not in PRIVATE_DNS or not isinstance(after, dict)):
             raise ValueError("Private discovery changes require the scoped runtime rollout")
         if "delete" in actions:
             raise ValueError("Private discovery retirement requires a separate review")
@@ -276,7 +288,7 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
         else:
             raise ValueError("Unexpected private discovery resource")
         private.append(address)
-    return {"runtime_policy": "verified", "private_dns_changes": private}
+    return {"runtime_policy": "advisory" if advisory else "verified", "private_dns_changes": private}
 
 
 def main():
@@ -289,13 +301,13 @@ def main():
     try:
         account = os.environ.get("AWS_ACCOUNT_ID_DEV", "")
         if args.command == "verify-role":
-            if args.target == "dev":
+            if args.target in DEV_TARGETS:
                 verify_role(account, os.environ.get("CI_ROLE_ARN", ""))
-            print(json.dumps({"configured_account_verified": args.target == "dev"}))
+            print(json.dumps({"configured_account_verified": args.target in DEV_TARGETS}))
         elif args.command == "verify-caller":
-            if args.target == "dev":
+            if args.target in DEV_TARGETS:
                 verify_caller(json.load(sys.stdin), account, os.environ.get("CI_ROLE_ARN", ""))
-            print(json.dumps({"account_and_role_verified": args.target == "dev"}))
+            print(json.dumps({"account_and_role_verified": args.target in DEV_TARGETS}))
         elif args.command == "check-plan":
             print(json.dumps(check_plan(json.load(sys.stdin), args.target, args.scope, account,
                                         advisory=args.advisory == "true")))
@@ -313,7 +325,8 @@ def main():
             )
             with OVERRIDES.open("x") as output:
                 json.dump(value, output)
-            print(json.dumps({"runtime_profile_enabled": bool(value), "runtime_rollout": value.get("ci_runtime_rollout", False)}))
+            print(json.dumps({"runtime_profile_enabled": value.get("agentcore_enabled", False),
+                              "runtime_rollout": value.get("ci_runtime_rollout", False)}))
     except ValueError as error:
         print(f"Runtime deployment policy refused: {error}", file=sys.stderr)
         return 1

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a28f836feb34 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b4179933d75b · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,8 +8,8 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
-- `v2/ci_runtime_policy.py` checks the configured CI role and STS account for dev activation,
-  pins inventory/worker image digests and confines explicit runtime rollout DNS to owned
+- `v2/ci_runtime_policy.py` checks development/preview CI roles and STS accounts,
+  pins inventory/worker image digests for dev activation and confines explicit runtime rollout DNS to owned
   private Cloud Map/ECS changes. Public DNS/certificates stay blocked; the runtime ECR
   bootstrap permits only three runtime repositories. Default-off flags and policy checks
   do not prove effective runtime access or collection.
