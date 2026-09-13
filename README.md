@@ -187,7 +187,6 @@ Private migration tests require `npm ci --prefix scripts/v2 --ignore-scripts --n
 (`pg` + AWS SDK), OpenSSL and a reachable Docker daemon for `postgres:17`.
 The required private PostgreSQL suite fails if Docker is missing; it uses bare `docker` on PATH
 (the documented exception to optional legacy itests). Its offline companion uses no AWS credentials.
-Controller/workflow fixtures also require Python 3 with PyYAML and Terraform **1.15.7**.
 Terraform mock tests require **1.15.7** and installed/cached providers; the helper copies only
 tracked working-tree files, runs `init -backend=false`, validates and tests without a real backend.
 
@@ -200,6 +199,8 @@ node --test scripts/v2/deployment-smoke.test.mjs # focused offline smoke argumen
 bash tests/run-all.sh             # repo-wide hook/structure tests + agent Python unittests
 (cd web && npx vitest run)        # web unit tests only
 ```
+
+Controller/workflow fixtures also require Python 3 with PyYAML and Terraform **1.15.7**.
 
 ## API Documentation
 
