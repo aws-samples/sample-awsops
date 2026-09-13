@@ -2,7 +2,7 @@
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-export function smokeArgs(publicUrl, cloudfrontDomain) {
+export function smokeConnectionArgs(publicUrl, cloudfrontDomain) {
   const url = new URL(publicUrl);
   if (url.protocol !== 'https:' || url.username || url.password || url.port
       || url.pathname !== '/' || url.search || url.hash
@@ -10,8 +10,11 @@ export function smokeArgs(publicUrl, cloudfrontDomain) {
       || !/^d[a-z0-9]+\.cloudfront\.net$/.test(cloudfrontDomain)) {
     throw new Error('Smoke requires an HTTPS service URL and a CloudFront distribution domain');
   }
-  return ['-fsS', '--max-time', '30', '--connect-to',
-    `${url.hostname}:443:${cloudfrontDomain}:443`, `${url.origin}/api/health`];
+  return ['--max-time', '30', '--connect-to', `${url.hostname}:443:${cloudfrontDomain}:443`];
+}
+
+export function smokeArgs(publicUrl, cloudfrontDomain) {
+  return ['-fsS', ...smokeConnectionArgs(publicUrl, cloudfrontDomain), `${new URL(publicUrl).origin}/api/health`];
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

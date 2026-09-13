@@ -24,6 +24,11 @@ output "cognito_user_pool_id" { value = aws_cognito_user_pool.main.id }
 output "cognito_client_id" { value = aws_cognito_user_pool_client.main.id }
 output "cognito_hosted_ui" { value = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${var.region}.amazoncognito.com" }
 
+output "demo_username" {
+  description = "Nonsecret deployed demo username for opt-in dev database verification; empty when no demo user is configured."
+  value       = var.create_demo_user ? aws_cognito_user.demo[0].username : ""
+}
+
 output "aurora_endpoint" { value = aws_rds_cluster.aurora.endpoint }
 output "aurora_database" { value = aws_rds_cluster.aurora.database_name }
 output "aurora_secret_arn" { value = aws_rds_cluster.aurora.master_user_secret[0].secret_arn }

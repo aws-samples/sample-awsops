@@ -4,6 +4,8 @@ Related files / 관련 파일: `.github/workflows/{deploy-web,terraform,deploy-a
 `docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
 `scripts/v2/ci_review_access.py`, `scripts/v2/ci_dns_policy.py`, `scripts/v2/ci_plan_context.py`,
 `scripts/v2/deploy.mjs`, `scripts/v2/deployment-smoke.mjs`,
+`scripts/v2/prepare-smoke-credentials.mjs`, `scripts/v2/authenticated-smoke.mjs`,
+`terraform/foundation/outputs.tf` (`demo_username`),
 `scripts/v2/ci/run-migration.mjs`, `terraform/foundation/ci-migrations.tf`,
 `terraform/foundation/tests/dns_deferred.tftest.hcl`, `docs/reference/01-edge-network.md`
 
@@ -26,10 +28,12 @@ Related files / 관련 파일: `.github/workflows/{deploy-web,terraform,deploy-a
 - `Deployment preflight refused`, `DNS change prohibited`, or an unavailable certificate stops
   a dispatch (§5), or
 - saved-plan apply reports `branch moved` / an advisory push-plan event (§5), or
-- the build reports `Cannot access the web ECR repository` (§4–5).
+- the build reports `Cannot access the web ECR repository` (§4–5), or
+- `Demo credential preparation` or `Authenticated smoke` fails (see authenticated database verification).
 
 (dev push 런이 자격증명/시크릿/ECR pin 단계에서 실패하는 경우 — 아래 1회성 작업이
-아직 안 된 것입니다. AI 리뷰가 보호 환경 승인 대기 또는 역할 인증 실패로 멈추는 경우도 포함합니다.)
+아직 안 된 것입니다. AI 리뷰가 보호 환경 승인 대기 또는 역할 인증 실패로 멈추는 경우도 포함합니다.
+`Demo credential preparation`·`Authenticated smoke` 실패는 아래 인증된 DB 검증 절을 참고합니다.)
 
 ## Cause / 원인
 
@@ -329,8 +333,9 @@ anything carrying the account id live in repo **secrets** (auto-masked in
 logs), never variables; every credentials step sets `mask-aws-account-id`.
 Cognito users: dev/preview stacks get the shared regular **demo user**
 (`demo_email` defaults to `demo@awsops.local`; its password rides as the
-`TF_VAR_DEMO_PASSWORD` repo secret, exported by terraform.yml as
-`TF_VAR_demo_password` on the plan step only). `create_demo_user` defaults to
+`TF_VAR_DEMO_PASSWORD` repo secret, bound as `TF_VAR_demo_password` only in
+Terraform's plan step and Deploy Web's opt-in private credential-preparation step).
+`create_demo_user` defaults to
 **false** (fail-closed): a dev-tier stack opts in with `create_demo_user =
 true` in its tfvars blob, so the shared credential can never reach a stack —
 production foremost — by omission. A stack may instead override
@@ -788,6 +793,106 @@ branch requires investigation and a fresh plan, never bypassing checks.
 
 이미 준비된 스택은 서비스 DNS 없이 CloudFront 연결 스모크를 검증할 수 있다. 실제 기능은
 마이그레이션·인증 경로까지 별도로 확인한다. DNS 차단·브랜치 이동 시 검사를 우회하지 않는다.
+
+### Authenticated database verification / 인증된 DB 검증
+
+After the required database migrations succeed, run **Deploy Web** on `dev` with
+`verify_database=true`. Before dispatch, ensure the reviewed Terraform saved-plan apply
+has persisted the new **`demo_username` output** in dev state. A plan alone does not
+persist it. The restored `TF_TFVARS_DEV` must enable `create_demo_user=true`, and its
+effective `demo_email` must exactly match that applied username.
+
+The credential must match the existing user's deployed password. Deploy Web uses
+Terraform **1.15.7** to evaluate the restored configuration: the repository secret
+`TF_VAR_DEMO_PASSWORD` is supplied as the lowercase environment variable
+`TF_VAR_demo_password`, a shared **default**. A protected per-stack `demo_password`
+assignment in `TF_TFVARS_DEV` takes precedence, including when the shared secret is
+absent. With no override, the shared default is used. An explicitly empty override
+does not fall back to the shared secret.
+
+Before image pinning or ECS rollout, preparation rejects missing/malformed configuration,
+disabled demo users, missing/invalid applied output, identity mismatch and empty/invalid
+credentials. Terraform stdout/stderr stay private; inherited `TF_LOG*` and `TF_CLI_ARGS*`
+are removed from preparation subprocesses. Only a path crosses steps: the credential
+file is `0600` inside a `0700` directory under `RUNNER_TEMP` and is removed after use or by
+always-run cleanup if rollout fails or is cancelled. The CLI creates its login-body, cookie and
+response scratch files inside that same directory, so the cleanup also covers a killed smoke.
+Standalone smoke calls prefer `RUNNER_TEMP` as well. Only validated numeric HTTP statuses
+may accompany phase errors; response bodies, cookies and Terraform diagnostics stay private.
+
+```bash
+# After successful migration; use the already-built image for this reviewed dev HEAD:
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f verify_database=true
+# If this HEAD's web image still needs building, use this instead:
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true -f verify_database=true
+```
+
+Require ECS stability and the normal `/api/health` smoke, then **POST `/api/auth/login`**
+with HTTP **200**, boolean **`ok: true`** and a usable secure host-specific
+**`awsops_token`** cookie. The subsequent authenticated **GET `/api/db`** must return HTTP
+**200**, **`status: "ok"`** and a **positive safe-integer `public_tables`**. Both requests
+retain service Host/SNI and TLS verification through CloudFront; neither follows
+redirects. These checks verify login and the BFF's database connection/table presence,
+not the entire migration ledger. `verify_database=false` retains the ordinary health-only
+deployment path.
+
+A configured credential can still be stale: only the post-rollout login validates the
+actual password. If login fails, inspect the existing identity and protected credential
+source without exposing response bodies, passwords or cookies. **Never reset an existing
+user's password to make this smoke pass.** This workflow does not create users or set
+passwords.
+
+필수 DB 마이그레이션 성공을 확인한 후 `dev`의 **Deploy Web**을
+`verify_database=true`로 실행한다. 먼저 검토한 Terraform 저장 plan을 실제 apply하여
+개발 state에 `demo_username` 출력을 저장해야 한다. plan만으로는 저장되지 않는다.
+복원되는 `TF_TFVARS_DEV`는 `create_demo_user=true`여야 하며 유효 `demo_email`이
+적용된 사용자명과 정확히 같아야 한다. 사용할 암호는 기존 사용자의 실제 암호와 일치해야 한다.
+
+Terraform **1.15.7**이 변수 우선순위를 직접 평가한다. 저장소 시크릿
+`TF_VAR_DEMO_PASSWORD`는 소문자 환경변수 `TF_VAR_demo_password`로 공유 기본값을
+전달하며, 보호된 스택별 tfvars의 `demo_password`가 우선한다. 공유 시크릿 없이 override만
+있는 구성과 override 없이 공유 기본값만 있는 구성을 모두 지원한다. 빈 override는 공유값으로
+대체하지 않는다. 설정 오류·demo 비활성·적용 출력 누락·사용자 불일치·빈/잘못된 암호는 이미지
+pin·ECS rollout 전에 실패한다. Terraform 출력과 오류는 비공개로 처리하고 `TF_LOG*`·
+`TF_CLI_ARGS*`를 제거한다. 단계 간에는 경로만 전달하며 `0700` 디렉터리의 `0600` 암호 파일은
+사용 후 또는 실패·취소 시 항상 실행되는 cleanup으로 삭제한다. CLI의 로그인 본문·쿠키·응답
+임시 파일도 같은 디렉터리 안에 두므로 smoke가 강제 종료돼도 해당 정리 범위에 포함된다.
+독립 smoke 실행도 `RUNNER_TEMP`를 우선하며 공개 오류에는 단계와 검증된 HTTP 상태만 표시한다.
+
+ECS 안정화와 `/api/health` 성공에 이어 실제 `POST /api/auth/login`의 HTTP 200,
+`ok: true`, 유효한 secure·호스트 전용 `awsops_token` cookie를 요구한다. 그 cookie로
+`GET /api/db`가 HTTP 200, `status: "ok"`, 양의 안전 정수 `public_tables`를 반환해야
+완료된다. CloudFront 연결에서도 Host/SNI·TLS 검증을 유지하며 redirect를 따라가지 않는다.
+전체 migration ledger 검증은 아니며 기본 `verify_database=false` 배포는 기존 health 검사만
+수행한다. 실제 암호의 유효성은 rollout 후 로그인에서 확인한다. 실패하면 기존 사용자와 보호된
+암호 공급원을 비공개로 확인하고, **검사를 통과시키려고 기존 사용자 암호를 재설정하지 않는다.**
+이 워크플로는 사용자를 생성하거나 암호를 설정하지 않는다.
+
+Troubleshoot by phase and safe status: login 401 points to the configured credential; 403 to
+Cognito user/challenge state; 502 to its upstream connection. Database 503 points to missing
+service configuration; 500 to database credentials, IAM or connectivity. A transport/TLS failure
+may have no HTTP response. Inspect private application logs; never print response bodies or
+reset a password to make a check pass. Opt-in preparation performs its own bounded private
+Terraform init (10 minutes) before output/console (2 minutes each); it must finish before
+image pinning or rollout.
+로그인 401은 설정된 자격증명, 403은 Cognito 사용자/인증 상태, 502는 상위 연결을 확인한다.
+DB 503은 서비스 설정, 500은 DB 자격증명·IAM·연결을 확인한다. 전송/TLS 오류에는 HTTP
+응답이 없을 수 있다. 비공개 앱 로그로 조사하고 응답 본문을 출력하거나 암호를 재설정하지 않는다.
+선택적 준비 단계는 비공개 Terraform init을 10분 내 완료한 뒤 output/console을 각각 2분 내 읽으며,
+이미지 pin·rollout은 그 이후에만 진행한다.
+
+Offline checks for this path (Node 20, curl, OpenSSL, Python 3 with PyYAML, and Terraform 1.15.7):
+
+```bash
+node --test scripts/v2/deployment-smoke.test.mjs
+```
+
+The deployment smoke suite evaluates a small offline Terraform variable fixture;
+its backend/state and HTTP boundaries are substituted, with no AWS/provider calls.
+배포 smoke 테스트는 작은 오프라인 Terraform 변수 fixture를 실제 평가하며 backend/state·
+HTTP 경계를 대체하므로 AWS·provider 호출을 수행하지 않는다.
+
+### Offline deployment checks / 오프라인 배포 검사
 
 Install test dependencies once with `python3 -m pip install -r scripts/v2/requirements-test.txt`.
 Use Node.js 20, OpenSSL, and Terraform **1.15.7**. For offline provider initialization, set

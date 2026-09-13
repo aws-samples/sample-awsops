@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7b1e276f043f · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f42d7573b522 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -57,3 +57,11 @@ legacy runbook's steps as the current operational path).
 - A runbook marked **v1 (legacy)** describing a procedure that no longer matches v2's
   architecture is intentional — it's kept for reference during the v1 decommission window
   (ADR-016), not stale content to delete outright.
+
+## Authenticated development verification
+- Dev-only `verify_database=true` prepares effective demo credentials privately before rollout,
+  then verifies login and edge-authenticated `/api/db`; positive table count is not a ledger audit.
+- Unwrapped Terraform and private 0600/0700 files are required. The CLI's HTTP scratch shares
+  the prepared credential directory and always-cleanup; expose only phases/validated HTTP status,
+  never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
+- Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.

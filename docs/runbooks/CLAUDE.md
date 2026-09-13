@@ -23,7 +23,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
-| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC and protected review recovery; ECR preflight; state-preserving DNS deferral, certificate ownership, dispatch-only same-SHA saved plans, Host/SNI smoke and default-off manual private DB migration (ADR-002/005/016) |
+| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC and protected review recovery; ECR preflight; state-preserving DNS deferral, certificate ownership, dispatch-only same-SHA saved plans, Host/SNI smoke and default-off manual private DB migration and opt-in authenticated verification (ADR-002/005/016) |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; explicit saved-plan domain scope, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
 | [steampipe-quota-and-staleness.md](steampipe-quota-and-staleness.md) | Steampipe quota guard — rate limiter knobs, partial runs, freshness ledger/staleness response |
 | [agent-sql-reader.md](agent-sql-reader.md) | `execute_sql`/`inventory-read` Data API auth failures — `awsops_sql_reader` role/password sync (`apply → make migrate → make agentcore`) |
@@ -61,6 +61,16 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   `init -backend=false`, mocked providers and no real backend. Test dependencies are declared in
   `scripts/v2/requirements-test.txt`; deployment Node tests also run in the shared merge script.
   Root-level Python command: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
+
+## Authenticated development verification
+- Deploy Web `verify_database=true` is dev-only and runs after required migrations. It prepares
+  effective demo credentials privately with unwrapped Terraform before rollout, then verifies
+  login and edge-authenticated `/api/db`. A positive table count is not a full ledger audit.
+- Credentials and HTTP scratch share one 0700 run directory with 0600 files, covered by
+  always-cleanup. Public diagnostics contain only fixed phases and validated HTTP status.
+  Never relay Terraform diagnostics, response bodies or cookies, or reset a user's password.
+- Curl/OpenSSL, PyYAML and Terraform 1.15.7 are mandatory for the authenticated smoke fixtures;
+  missing tools fail the shared runner. Only final fmt/validate diagnostics are informational.
 
 ## Conventions
 - Filename: `kebab-case.md`, domain-then-topic order.

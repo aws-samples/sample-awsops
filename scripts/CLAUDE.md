@@ -12,6 +12,14 @@ secrets-manager) — installed by `make deps`.
   ECS force-new-deployment → wait stable → smoke `/api/health`. `deployment-smoke.mjs`
   preserves service Host/SNI/TLS via CloudFront `--connect-to` before service DNS publication.
   The `DOCKER` env defaults to `sudo docker`.
+- `v2/prepare-smoke-credentials.mjs` — Deploy Web's dev-only opt-in preparation: privately
+  evaluate effective Terraform demo credentials, require unwrapped Terraform, strip TF logging/
+  argument overrides, and publish only a 0600 credential-file path inside a 0700 directory.
+  Private init is bounded to 10 minutes; output/console each to 2 minutes.
+- `v2/authenticated-smoke.mjs` — login plus edge-authenticated `/api/db` verification. Preserve
+  Host/SNI/TLS; report only the phase and validated HTTP status, never bodies/cookies/passwords.
+  The CLI keeps HTTP scratch files under the prepared credential directory so the workflow's
+  always-cleanup owns them; standalone calls prefer RUNNER_TEMP. Response files are capped at 64 KiB.
 - `v2/ci_dns_policy.py` — reads Terraform state to preserve managed certificate ownership
   (JSON null) and existing service aliases; verifies operator-selected/attached certificates
   without account-wide selection. Redacts public summaries. Blocks all Route53/Cloud Map

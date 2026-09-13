@@ -9,8 +9,9 @@
 - **S2**: AgentCore catalog·web sections·route rules 9개 섹션 키가 정합하는지,
   `observability`→`external-obs` 별칭이 라우팅 양쪽(카탈로그+에이전트 런타임)에 있는지,
   v1 `/awsops/` 경로 리터럴이 web 소스에 누출되지 않는지 확인 (`web/lib/merge-invariants.ts`).
-- **S3**: 파일 격리 pytest + web vitest + 배포 Node 테스트 + 선택적 Terraform 검사를 공통
-  러너로 묶는다. PR CI는 private migration 오프라인 테스트, 실제 PostgreSQL runner 테스트,
+- **S3**: 파일 격리 pytest + web vitest + 배포 Node 테스트를 필수 실행한다. 배포 Node 테스트는
+  PyYAML과 Terraform **1.15.7**이 필수이며 누락 시 실패한다. 마지막 fmt/validate 진단만
+  참고용이다. PR CI는 private migration 오프라인 테스트, 실제 PostgreSQL runner 테스트,
   별도 복사본의 backend 비활성 Terraform mock 테스트도 필수로 실행한다
   (`scripts/v2/merge-verify.sh`, `scripts/v2/terraform-test.sh`, `.github/workflows/merge-verify.yml`).
 
@@ -41,10 +42,10 @@ gated files (measured), but narrowing the check to top-level attributes only is 
 
 ## Runner Usage
 
-Use Node.js 20 (CI; runtime image uses 22), Python 3.12, OpenSSL, Terraform **1.15.7**
+Use Node.js 20 (CI; runtime image uses 22), Python 3.12, curl, OpenSSL, Terraform **1.15.7**
 and a reachable Docker daemon. Install dependencies from the repository root. The private
 migration suites use locked `pg` and AWS SDK dependencies from `scripts/v2/package-lock.json`.
-CI Node 20(런타임 이미지 22)·Python 3.12·OpenSSL·Terraform **1.15.7**·접근 가능한 Docker를
+CI Node 20(런타임 이미지 22)·Python 3.12·curl·OpenSSL·Terraform **1.15.7**·접근 가능한 Docker를
 준비한다. private migration 테스트는 `scripts/v2`의 잠긴 `pg`·AWS SDK 의존성을 사용한다.
 
 ```bash
@@ -103,10 +104,15 @@ like a Python or web failure, makes the runner fail. To run only that suite:
 node --test scripts/v2/deployment-smoke.test.mjs
 ```
 
-The Terraform stage runs `terraform -chdir=terraform/foundation fmt -check` when the binary is
-available, and also runs `validate` when `terraform/foundation/.terraform` exists. Missing
-Terraform tooling is reported as `SKIP`; Terraform diagnostics are non-blocking in this runner.
-This opportunistic stage is separate from the **required CI mock-test step**.
+This required deployment suite loads workflow YAML using Python 3 with **PyYAML** and evaluates
+an offline variable fixture with Terraform **1.15.7**. Real curl/HTTPS cases also require curl and
+OpenSSL; they use only a loopback server and local test certificates. Missing prerequisites fail the suite and
+the shared runner; these tests never skip. The fixture uses no providers, deployment backend or AWS.
+
+The script's later formatting/validation diagnostics remain informational: it runs
+`terraform -chdir=terraform/foundation fmt -check` when the binary is available and `validate`
+when `terraform/foundation/.terraform` exists. A `SKIP` from this final stage does not waive
+the deployment suite's Terraform requirement. The **required CI mock-test step** is also separate.
 `terraform-test.sh` requires 1.15.7, copies tracked working-tree files into a disposable directory,
 strips deployment credentials/TF variables, initializes with
 `-backend=false -input=false -lockfile=readonly` in a fresh `TF_DATA_DIR`, validates and runs
@@ -115,7 +121,11 @@ AWS/DNS API is called. Local `.terraform`, backend config, tfvars and state are 
 Initialization installs locked providers; for fully offline use, point `TF_CLI_CONFIG_FILE`
 at an existing filesystem mirror containing them with no `direct` fallback.
 
-공통 러너의 선택적 Terraform 검사와 CI 필수 mock 검사는 별개다. `terraform-test.sh`는
+배포 Node 테스트는 curl·OpenSSL·Python 3·PyYAML·Terraform **1.15.7**을 필수로 요구한다.
+HTTPS 사례는 loopback 서버와 로컬 테스트 인증서만 사용한다. 의존성이 누락하면
+공통 러너도 실패하며 skip하지 않는다. 변수 fixture는 provider·배포 backend·AWS를 사용하지 않는다.
+마지막 fmt/validate 참고용 진단과 CI 필수 mock 검사는 별개이며 참고 진단의 SKIP으로
+필수 의존성을 생략할 수 없다. `terraform-test.sh`는
 추적된 작업 파일만 별도 복사하고 배포 자격증명/TF 변수를 제거한다. 새 `TF_DATA_DIR`에서
 `init -backend=false -input=false -lockfile=readonly`·validate·mock test를 실행한다.
 실제 backend와 AWS/DNS API는 사용하지 않으며 로컬 상태/설정을 복사하지 않는다.
@@ -137,7 +147,8 @@ aggregate-run false failures.
 2. Install web dependencies, `scripts/v2/requirements-test.txt` (**pytest and PyYAML**) and
    the existing agent/incident/remediation/Steampipe/worker requirements.
 3. Run `bash scripts/v2/merge-verify.sh`: file-isolated pytest (including workflow fixtures and
-   the localhost Terraform state-read test), web vitest, deployment Node tests and opportunistic TF checks.
+   the localhost Terraform state-read test), web vitest, required deployment Node tests
+   (PyYAML and Terraform 1.15.7), then informational fmt/validate diagnostics.
 4. Install locked `scripts/v2` dependencies with `--ignore-scripts` and run
    `node --test scripts/v2/ci/*.test.mjs` (runtime/controller/workflow fixtures and mocked Terraform plans).
 5. Run `node --test scripts/v2/ci/migration.itest.mjs` against disposable PostgreSQL:
