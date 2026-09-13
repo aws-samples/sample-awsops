@@ -235,12 +235,16 @@ class RuntimeImageTest(unittest.TestCase):
         self.assertTrue(provision.valid_readiness_response(event, REQUEST))
         self.assertFalse(provision.valid_readiness_response(event + frame(value), REQUEST))
 
-    def test_disabled_and_incomplete_reasons_are_preserved_without_raw_text(self):
-        for reason in ("disabled", "inventory_incomplete"):
+    def test_producer_failure_reasons_are_preserved_without_raw_text(self):
+        for reason in ("disabled", "inventory_incomplete", "known_resource_unverified"):
             value = {**ready(), "status": "not_ready", "reason": reason,
                      "inventory": {"count": None, "ageMinutes": None}}
             self.assertEqual(provision.readiness_code(frame(value), REQUEST), reason)
             self.assertFalse(provision.valid_readiness_response(frame(value), REQUEST))
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                provision.diagnostics.result("smoke", "ERR", reason)
+            self.assertEqual(json.loads(output.getvalue())["code"], reason)
 
     def test_access_denied_is_safe_and_distinct_from_protocol_failure(self):
         errors = [

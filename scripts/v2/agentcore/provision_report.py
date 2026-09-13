@@ -22,7 +22,7 @@ CODES = {
     "invoke_access_denied", "invoke_throttled", "invoke_credentials_expired", "invoke_timeout", "invoke_failed",
     "not_event_stream", "protocol_invalid", "response_identity_mismatch", "checks_failed",
     "disabled", "inventory_incomplete", "inventory_stale", "inventory_empty", "identity_failed", "account_mismatch",
-    "gateway_unavailable", "tools_unavailable", "inventory_unavailable", "known_resource_missing",
+    "gateway_unavailable", "tools_unavailable", "inventory_unavailable", "known_resource_missing", "known_resource_unverified",
     "model_failed", "timeout", "invalid_request", "response_close_failed",
 }
 _stage = "configuration"

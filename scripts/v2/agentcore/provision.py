@@ -1197,7 +1197,7 @@ def readiness_code(raw, request):
             return "response_identity_mismatch"
         failures = {"disabled", "invalid_request", "identity_failed", "account_mismatch", "gateway_unavailable",
                     "tools_unavailable", "inventory_unavailable", "inventory_incomplete", "inventory_stale",
-                    "known_resource_missing", "model_failed", "timeout"}
+                    "known_resource_missing", "known_resource_unverified", "model_failed", "timeout"}
         if value["status"] == "not_ready":
             return value["reason"] if value["reason"] in failures else "protocol_invalid"
         if value["reason"] != "ok":
