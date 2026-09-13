@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9e6b2f793408 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 276f3cced81f · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -12,6 +12,7 @@ that's the source of truth for tool counts, not this doc.
 - Exact `query_inventory.resource_id` is CloudFront-only: validate before SQL, bind the ID,
   return at most one identity-only row, and disclose the projection plus validated ID.
   It uses existing sql_reader columns/grants without schema, permission or AWS mutation changes.
+  Zero-row identity results explicitly disclose that synced-inventory absence is not AWS absence.
 - Gateway Targets must use Python/boto3 — the AWS CLI has inlinePayload issues.
 - Every **Lambda-backed** target requires `credentialProviderConfigurations: GATEWAY_IAM_ROLE`
   (not universal — live ADR-017 `mcpServer` targets use `API_KEY` instead).

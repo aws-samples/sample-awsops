@@ -589,6 +589,9 @@ def lambda_handler(event, context):
         }
         if resource_id is not None:
             result.update(projection="identity_only", resource_id=resource_id)
+            if not rows:
+                result["note"] = ("No matching identity was observed in the host/self synced inventory. "
+                                  "This is not evidence of absence in AWS; check freshness or a direct CloudFront read.")
         if rtype not in PROJECTIONS:
             # PR #197 review MAJOR: an unregistered type's `resources` entries only carry whatever
             # keys happen to be on SOME other type's projection allowlist — genuinely absent fields

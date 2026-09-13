@@ -183,6 +183,16 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
                 self.assertEqual(result["statusCode"], 400)
             execute.assert_not_called()
 
+    def test_identity_lookup_miss_discloses_observation_limits(self):
+        inv._execute_override = lambda sql, params=None: []
+        with mock.patch.object(inv, "_freshness_for_type", return_value={"freshness": "unavailable"}):
+            result = inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
+                "resource_type": "cloudfront", "resource_id": "E123EXAMPLE"}}, None)
+        body = json.loads(result["body"])
+        self.assertEqual((body["count"], body["resources"]), (0, []))
+        self.assertIn("not evidence of absence in AWS", body["note"])
+        self.assertIn("freshness", body["note"])
+
     def test_query_inventory_discloses_bound_per_type_freshness(self):
         calls = []
 
