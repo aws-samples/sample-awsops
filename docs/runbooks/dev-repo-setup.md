@@ -1149,6 +1149,44 @@ branch requires investigation and a fresh plan, never bypassing checks.
 이미 준비된 스택은 서비스 DNS 없이 CloudFront 연결 스모크를 검증할 수 있다. 실제 기능은
 마이그레이션·인증 경로까지 별도로 확인한다. DNS 차단·브랜치 이동 시 검사를 우회하지 않는다.
 
+### Runtime probe capability / 런타임 검증 기능
+
+For verify, apply `agentcore_enabled=true` and `ci_readiness_enabled=true`, then provision AgentCore.
+Only applied output sets `DEPLOYMENT_READINESS_ENABLED`; false/missing yields `runtime_disabled`, ignoring shell overrides.
+Also enable `steampipe_enabled=true`, `workers_enabled=true` and dispatch, and deploy inventory/ARM64
+worker images as described in [worker deployment](../reference/06-workers.md).
+검증 전 두 플래그를 적용하고 프로비저닝합니다. 환경변수 덮어쓰기나 그룹 권한은 부여하지 않습니다.
+수집·워커 플래그와 디스패치를 활성화하고 인벤토리·ARM64 워커 이미지를 먼저 배포해야 합니다.
+
+Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway schema first.
+The web API scan remains capped at 500 rows. Failures distinguish `known_resource_unverified`,
+`collection_partial`, `collection_failed`, `collection_missing` after waiting, and `inventory_incomplete`.
+Degraded inventory never passes release readiness. 미발견은 부재 증명이 아니며 런타임은 지정 ID만 조회합니다.
+웹 표본은 500행 제한이고 모든 수집 타입의 부분 실패·원장 누락·속성 미확인을 통과시키지 않습니다.
+
+`SMOKE_RUNTIME_CONFIG_FILE` is an absolute 0600 JSON file beside credentials in the same 0700 directory;
+cleanup covers both. Its 16 KiB cap, 30-minute verify window and unique type list including cloudfront are required.
+The release controller must supply actual deployment/dispatch evidence; current Deploy Web remains DB-only.
+
+`schemaVersion: 1`, `mode: "prepare"` and `expectedAccountId` check login/DB and the enabled host.
+Optional `hostOnly: true` also rejects enabled members. Verify adds `expectedCloudfrontId`,
+all acknowledged `expectedQueuedTypes` and the pre-dispatch `collectionStartedAt`, from applied
+deployment and owned Lambda evidence. It requires fresh complete collection, web SSM/runtime calls
+and succeeded Lambda/Fargate jobs. Missing/partial/stale is never healthy zero; deploy the updated
+inventory-reader Lambda so legacy NULL attribute coverage is disclosed as incomplete.
+
+`POST /api/deployment/readiness` requires an administrator or separately provisioned `deployment-verifiers`.
+Release infrastructure grants the CI identity only verifier membership, never admin/IAM authority.
+Use a fresh login after membership changes; one in-flight call and a 60-second process cooldown apply.
+
+스모크 도구는 자격증명 파일과 같은 0700 디렉터리의 0600 JSON을
+`SMOKE_RUNTIME_CONFIG_FILE`로 받으며 함께 정리합니다. 현재 Deploy Web은 DB 검증만
+연결합니다. 전체 검증 controller가 실제 배포·Lambda 응답으로 파일을 생성해야 합니다.
+prepare는 로그인·DB·활성 호스트를 확인하고 `hostOnly: true`일 때 외부 활성 계정을
+거부합니다. verify는 위 추가 필드로 최신 수집·실제 SSM/runtime·두 워커 완료를 검증합니다.
+검증 API는 관리자 또는 전용 verifier 그룹만 허용합니다. 이 앱 변경은 그룹을 만들지 않습니다. 배포 인프라가 CI 사용자를 verifier에만
+연결해야 하며 관리자·IAM 역할을 주지 않습니다. 그룹 변경 후 새 로그인과 호출 간격이 필요합니다.
+
 ### Authenticated database verification / 인증된 DB 검증
 
 After the required database migrations succeed, run **Deploy Web** on `dev` with

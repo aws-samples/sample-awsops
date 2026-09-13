@@ -120,6 +120,19 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   Root-level Python command: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
 
 ## Authenticated development verification
+- Verify requires applied `agentcore_enabled=true` and `ci_readiness_enabled=true`, then AgentCore
+  provisioning, active inventory/dispatch, `workers_enabled=true` and deployed ARM64 worker images.
+  Only the output boolean sets `DEPLOYMENT_READINESS_ENABLED`, with no shell override.
+  False/missing is `runtime_disabled`; this flag grants no Cognito group membership.
+  Capped samples cannot prove absence. Missing ledger, partial/failed runs and unknown attributes
+  remain distinct failures; accepted degraded inventory is not a deployment-readiness exception.
+- The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
+  credentials. Prepare checks host registration (optional hostOnly); verify additionally
+  requires applied CloudFront identity, complete queued types and pre-dispatch timestamp,
+  fresh collection, web-role SSM/AgentCore proof and Lambda/Fargate completion. Current Deploy
+  Web remains DB-only until the release controller supplies this file. The billed readiness
+  route requires admin or deployment-verifiers, one in-flight call and a 60-second cooldown.
+
 - Deploy Web `verify_database=true` is dev-only and runs after required migrations. It prepares
   effective demo credentials privately with unwrapped Terraform before rollout, then verifies
   login and edge-authenticated `/api/db`. A positive table count is not a full ledger audit.

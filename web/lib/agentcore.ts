@@ -1,9 +1,10 @@
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { BedrockAgentCoreClient, InvokeAgentRuntimeCommand } from '@aws-sdk/client-bedrock-agentcore';
 import type { ResolvedIntegration } from '@/lib/agent-resolver';
+import { runtimeParameter, validRuntimeArn } from './agentcore-config';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
-const ARN_PARAM = process.env.SSM_RUNTIME_ARN_PARAM || '/ops/awsops-v2/agentcore/runtime_arn';
+const ARN_PARAM = runtimeParameter();
 const TTL_MS = 5 * 60 * 1000;
 
 let ssm: SSMClient | null = null;
@@ -11,11 +12,14 @@ let ac: BedrockAgentCoreClient | null = null;
 let arnCache: { value: string; at: number } | null = null;
 
 export async function getRuntimeArn(): Promise<string> {
+  if (ARN_PARAM === '') throw new Error('AgentCore disabled');
   if (arnCache && Date.now() - arnCache.at < TTL_MS) return arnCache.value;
   if (!ssm) ssm = new SSMClient({ region: REGION });
   const r = await ssm.send(new GetParameterCommand({ Name: ARN_PARAM }));
   const value = r.Parameter?.Value;
-  if (!value) throw new Error('runtime ARN not found in SSM');
+  if (!value || !validRuntimeArn(value, REGION, process.env.HOST_ACCOUNT_ID)) {
+    throw new Error('runtime ARN unavailable or invalid');
+  }
   arnCache = { value, at: Date.now() };
   return value;
 }

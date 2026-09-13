@@ -1001,6 +1001,9 @@ def ensure_runtime(ctrl, ac, gw_ids):
     # Lambdas). Account parsed from the role ARN (arn:aws:iam::<account>:role/...).
     env = {"AWS_REGION": region, "GATEWAYS_JSON": gateways_json,
            "AWSOPS_HOST_ACCOUNT_ID": ac["role_arn"].split(":")[4],
+           # Applied Terraform boolean only; shell environment cannot enable this billed probe.
+           "DEPLOYMENT_READINESS_ENABLED":
+               "true" if ac.get("deployment_readiness_enabled") is True else "false",
            # Dark-path chat loop (ADR-008 amended / BASELINE §2) — default OFF. Set explicitly on the
            # runtime so it survives re-provisioning and is toggleable via the normal deploy path:
            # `ANTHROPIC_AGENT_LOOP_ENABLED=true make agentcore`.

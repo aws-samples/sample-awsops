@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9dcce690ddae · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 90a23315dde3 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -90,6 +90,13 @@ TypeScript, covering phase/timing logs, asynchronous passwords and original erro
 The CI fixtures use mocked AWS responses or local Terraform backends, not live AWS. Terraform
 checks use 1.15.7 with isolated data and mocked providers; dependencies are declared in
 `v2/requirements-test.txt`. Do not initialize a real backend for tests.
+
+Runtime smoke configuration is explicit and private: prepare checks registration, verify
+checks fresh collection, real runtime access and workers. Optional hostOnly rejects members.
+Cap the file at 16 KiB; require a recent start (30 minutes) and unique types including cloudfront.
+HTTP files default to 64 KiB; only the CloudFront inventory leg allows 2 MiB. The utility
+alone does not change workflow wiring.
+Only applied `agentcore.deployment_readiness_enabled` sets `DEPLOYMENT_READINESS_ENABLED`; missing/false is off, ignoring shell overrides.
 
 ## Plan asset utility
 

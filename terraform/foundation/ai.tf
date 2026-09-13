@@ -9,6 +9,13 @@ variable "agentcore_enabled" {
   default     = false
 }
 
+variable "ci_readiness_enabled" {
+  type        = bool
+  default     = false
+  nullable    = false
+  description = "Enable the bounded deployment readiness runtime mode through applied provisioning inputs."
+}
+
 variable "integrations_enabled" {
   type        = bool
   description = "ADR-039 P2-infra inc2: grant the AgentCore runtime scoped Secrets Manager + KMS for egress integration credentials. Requires agentcore_enabled. Default false → no-op ($0, plan = No changes). PERSIST in live terraform.tfvars so a later full apply does not destroy these."
@@ -986,14 +993,15 @@ resource "aws_lambda_permission" "agent_agentcore" {
 output "agentcore" {
   description = "AgentCore provisioning inputs for scripts/v2/agentcore/provision.py (null when disabled)."
   value = var.agentcore_enabled ? {
-    region             = var.region
-    project            = var.project
-    role_arn           = aws_iam_role.agentcore[0].arn
-    ecr_uri            = aws_ecr_repository.agentcore[0].repository_url
-    lambda_arns        = { for k, fn in aws_lambda_function.agent : k => fn.arn }
-    ssm_runtime_arn    = aws_ssm_parameter.agentcore_runtime_arn[0].name
-    ssm_interpreter_id = aws_ssm_parameter.agentcore_interpreter_id[0].name
-    ssm_memory_id      = aws_ssm_parameter.agentcore_memory_id[0].name
+    deployment_readiness_enabled = var.ci_readiness_enabled
+    region                       = var.region
+    project                      = var.project
+    role_arn                     = aws_iam_role.agentcore[0].arn
+    ecr_uri                      = aws_ecr_repository.agentcore[0].repository_url
+    lambda_arns                  = { for k, fn in aws_lambda_function.agent : k => fn.arn }
+    ssm_runtime_arn              = aws_ssm_parameter.agentcore_runtime_arn[0].name
+    ssm_interpreter_id           = aws_ssm_parameter.agentcore_interpreter_id[0].name
+    ssm_memory_id                = aws_ssm_parameter.agentcore_memory_id[0].name
     # ADR-017 — curated official-MCP preset endpoints (empty map when official_mcp_enabled=false).
     # provision.py SKIPs any catalog.MCP_SERVER_TARGETS preset whose key is missing here.
     official_mcp_endpoints = local.official_mcp_count > 0 ? var.official_mcp_endpoints : {}
