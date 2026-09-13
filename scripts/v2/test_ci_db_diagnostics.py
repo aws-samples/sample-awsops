@@ -362,7 +362,8 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
         self.assertTrue(callable(getattr(diagnostics, "aws_read", None)))
         with patch("subprocess.run", side_effect=AssertionError("Must not execute")):
             for args in [["ecs", "update-service"], ["iam", "put-role-policy"],
-                         ["secretsmanager", "get-secret-value"]]:
+                         ["secretsmanager", "get-secret-value"], ["cloudwatch", "put-metric-data"],
+                         ["cloudwatch", "put-metric-alarm"]]:
                 with self.assertRaises(diagnostics.ReadOnlyViolation):
                     diagnostics.aws_read(args)
 
@@ -674,14 +675,19 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["server_logs"]["status"], "partial")
 
     def test_readonly_violation_escapes_partial_read_wrappers(self):
-        with patch("subprocess.run") as process:
-            try:
-                configuration_snapshot(self.config, lambda _: diagnostics.aws_read(["ecs", "update-service"]))
-            except Exception as error:
-                self.assertEqual(type(error).__name__, "ReadOnlyViolation")
-            else:
-                self.fail("Read-only violation was swallowed as unavailable metadata")
-            process.assert_not_called()
+        for reader in [
+            lambda aws: configuration_snapshot(self.config, aws),
+            lambda aws: diagnostics.rds_metric_snapshot(self.config, aws, 5_000_000),
+            lambda aws: diagnostics.server_log_snapshot(self.config, aws),
+        ]:
+            with patch("subprocess.run") as process:
+                try:
+                    reader(lambda _: diagnostics.aws_read(["cloudwatch", "put-metric-data"]))
+                except Exception as error:
+                    self.assertEqual(type(error).__name__, "ReadOnlyViolation")
+                else:
+                    self.fail("Read-only violation was swallowed as unavailable metadata")
+                process.assert_not_called()
 
     def test_rds_metrics_single_bounded_request_preserves_exact_series(self):
         documents = self.documents[("cloudwatch", "get-metric-data")]["MetricDataResults"]
@@ -833,7 +839,7 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
         self.assertEqual(server["matching_lines"], 1)
         self.assertEqual(server["probe_outcome"], "unknown")
 
-    def test_sql_context_tokens_and_other_users_cannot_fabricate_lifecycle_outcomes(self):
+    def test_bare_midline_tokens_and_other_users_do_not_match_lifecycle(self):
         prefix = "2026-09-13 12:00:00 UTC:client:awsops_web@awsops:[7]:"
         self.documents[("rds", "download-db-log-file-portion")]["LogFileData"] = "\n".join([
             prefix + "LOG: statement: SELECT 'connection authorized: user=awsops_web'",
@@ -851,3 +857,55 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
         result, _ = self.invoke()
         self.assertIn("lifecycle_counts", result["server_logs"])
         self.assertEqual(result["server_logs"]["lifecycle_counts"], {})
+
+    def test_complete_empty_metric_reads_are_available_without_outcome_inference(self):
+        result, _ = self.invoke()
+        metrics = result["rds_metrics"]
+        self.assertIs(metrics.get("read_ok"), True)
+        self.assertEqual(metrics["status"], "available")
+        self.assertEqual(metrics["probe_outcome"], "unknown")
+        self.assertTrue(metrics["no_error_inference"])
+        for item in metrics["series"].values():
+            self.assertEqual(item["status_code"], "Complete")
+            self.assertEqual(item["status"], "available")
+            self.assertTrue(item["missing"])
+            self.assertEqual(item["points"], [])
+        op = ("cloudwatch", "get-metric-data")
+        self.documents[op] = self.failed_read(op)
+        result, _ = self.invoke()
+        self.assertFalse(result["rds_metrics"]["read_ok"])
+        self.assertEqual(result["rds_metrics"]["status"], "unavailable")
+
+    def test_metric_read_status_does_not_depend_on_datapoint_presence(self):
+        rows = self.documents[("cloudwatch", "get-metric-data")]["MetricDataResults"]
+        rows[0].update(StatusCode="Forbidden", Timestamps=[1440], Values=[1])
+        rows[1].update(StatusCode="InternalError", Timestamps=[1440], Values=[1])
+        rows[2].update(StatusCode="PartialData")
+        result, _ = self.invoke()
+        metrics = result["rds_metrics"]
+        self.assertEqual(metrics["series"]["iam_requests"]["status"], "unavailable")
+        self.assertEqual(metrics["series"]["iam_success"]["status"], "unavailable")
+        self.assertEqual(metrics["series"]["iam_failure"]["status"], "partial")
+        self.assertEqual(metrics["series"]["cpu"]["status"], "available")
+        self.assertTrue(metrics["series"]["cpu"]["missing"])
+        self.assertEqual(metrics["status"], "partial")
+        rows[3].update(StatusCode="Complete", Timestamps=[1440, 1500], Values=[1])
+        result, _ = self.invoke()
+        self.assertEqual(result["rds_metrics"]["series"]["iam_invalid_token"]["status"], "partial")
+
+    def test_forged_full_prefix_and_raise_log_remain_explicitly_unverified(self):
+        prefix = "2026-09-13 12:00:00 UTC:client:awsops_web@awsops:[7]:"
+        self.documents[("rds", "download-db-log-file-portion")]["LogFileData"] = "\n".join([
+            prefix + "LOG: statement: SELECT E'payload",
+            prefix + "LOG: connection authorized: user=awsops_web database=awsops",
+            # A RAISE LOG can produce the same prefix and message as server code.
+            prefix + 'LOG: connection authenticated: identity="awsops_web" method=pam',
+        ])
+        result, _ = self.invoke()
+        server = result["server_logs"]
+        self.assertEqual(server["lifecycle_counts"], {"authorized": 1, "authenticated": 1})
+        self.assertEqual(server.get("lifecycle_source_integrity"), "unverified_text")
+        self.assertIs(server.get("lifecycle_injection_possible"), True)
+        self.assertEqual(server["probe_outcome"], "unknown")
+        self.assertIn("log_connections_enabled", server)
+        self.assertIsNone(server["log_connections_enabled"])

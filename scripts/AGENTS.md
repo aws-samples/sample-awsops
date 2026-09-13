@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f65576368385 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b0849ef85ca9 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -13,11 +13,11 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   require `workflow_dispatch`, literal `CI_DB_DIAGNOSTICS_DEV=true`, and `--target dev`;
   region is fixed to `ap-northeast-2`. Invalid invocation context causes no AWS calls.
   State-account/STS consistency does not authorize access or detect the wrong same-account stack.
-  Existing read-only grants and the exact CLI verb allowlist remain; no new grants/writes/DB connection.
+  Use existing read-only grants and a fixed CLI verb allowlist; no new grants/writes/DB connection.
 - Run only after encrypted plan upload. Opt-in publishes fenced safe JSON, including posture
   booleans, to the public Actions log and step summary. Only this optional step tolerates
   failure (eight-minute limit); DNS/CI/readiness gates remain required.
-- Retain independent web-log/configuration/server-tail evidence. Capped/failed reads with
+- Retain all four sections independently: `logs`, `configuration`, `server_logs`, `rds_metrics`. Capped/failed reads with
   retained evidence are partial; distinguish unavailable source reads from unknown derived
   fields. Early context/input/identity failure returns only `{"status":"unavailable"}`.
 
@@ -44,12 +44,16 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 
 - The existing manual diagnostics batches seven IAM-auth Sum metrics plus CPU Average,
   free-memory Minimum and capacity Average in one bounded CloudWatch read for the configured
-  first instance. Preserve fixed IDs, status/missing/invalid data and at most 60 minute points
-  per series; never remote labels/messages/tokens. Configured min/max ACUs are numeric or null.
-  Metrics aggregate IAM clients: individual probe outcomes remain unknown; no tuning is authorized.
-  Server lifecycle counts need both a recognized RDS prefix identifying the web user and an
-  anchored message. Bare LOG/SQL/DETAIL/CONTEXT text cannot fabricate lifecycle observations;
-  lifecycle observations remain separate from existing error counters and never prove one probe.
+  first instance. Preserve fixed IDs, status/missing/invalid flags and at most 60 minute points.
+  Read status is separate from presence: clean Complete+empty is available with missing=true;
+  Forbidden/InternalError is unavailable and PartialData/malformed/degraded reads are partial.
+  `read_ok` describes an accepted response envelope. Never emit remote labels/messages/tokens.
+  Configured min/max ACUs are numeric or null. Metrics cannot attribute an individual probe.
+  Lifecycle prefixes/message starts reject bare or mid-line tokens, but full-prefix SQL
+  continuations and RAISE LOG can forge matching text. Always expose lifecycle_source_integrity=unverified_text,
+  lifecycle_injection_possible=true, and unknown probe outcome; counts remain advisory.
+  Authenticated/authorized logs require log_connections (PostgreSQL default off, not enabled
+  here). The helper does not inspect the live setting: log_connections_enabled=null is unknown.
 - `ci_plan_context.py` accepts only successful explicit same-repo/branch/SHA plan dispatches.
   PR/push plans are advisory. `ci_dns_policy.py` preserves managed certificate ownership and
   service aliases; blocks all public/private DNS mutations unless authorized, including Cloud

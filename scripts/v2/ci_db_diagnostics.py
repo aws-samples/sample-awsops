@@ -99,7 +99,7 @@ def rds_metric_snapshot(config, aws, now_ms):
         for key, (name, stat) in RDS_METRICS.items()
     }
     summary = {
-        "status": "unavailable", "scope": "configured_instance_all_iam_clients",
+        "status": "unavailable", "read_ok": False, "scope": "configured_instance_all_iam_clients",
         "window_start_ms": start_ms, "window_end_ms": end_ms, "period_seconds": 60,
         "no_error_inference": True, "probe_outcome": "unknown", "truncated": False,
         "messages_present": False, "unexpected_results": 0, "series": series,
@@ -122,6 +122,7 @@ def rds_metric_snapshot(config, aws, now_ms):
         results = response["MetricDataResults"]
         if not isinstance(results, list):
             raise ValueError("Invalid metric results")
+        summary["read_ok"] = True
         summary["truncated"] = bool(response.get("NextToken")) or len(results) > 20
         summary["messages_present"] = bool(response.get("Messages"))
     except READ_ERRORS:
@@ -160,19 +161,23 @@ def rds_metric_snapshot(config, aws, now_ms):
         item["points"].sort(key=lambda point: point["timestamp_ms"])
     for item in series.values():
         item["missing"] = not item["points"]
-        if item["points"]:
+        if item["status_code"] in (None, "Forbidden", "InternalError"):
+            item["status"] = "unavailable"
+        else:
             item["status"] = ("available" if item["status_code"] == "Complete"
-                              and not item["invalid_data"] and not item["messages_present"]
-                              else "partial")
-    if any(item["points"] for item in series.values()):
-        summary["status"] = ("available" if all(item["status"] == "available" for item in series.values())
-                             and not summary["truncated"] and not summary["messages_present"]
-                             and not summary["unexpected_results"] else "partial")
+                              and not item["invalid_data"] and not item["messages_present"] else "partial")
+    if all(item["status"] == "available" for item in series.values()) and not (
+            summary["truncated"] or summary["messages_present"] or summary["unexpected_results"]):
+        summary["status"] = "available"
+    elif all(item["status"] == "unavailable" for item in series.values()):
+        summary["status"] = "unavailable"
+    else:
+        summary["status"] = "partial"
     return summary
 
 
 def server_lifecycle(line, severity):
-    """Recognize message starts, never keywords inside SQL/DETAIL/CONTEXT text."""
+    """Recognize advisory text patterns; prefixes do not authenticate provenance."""
     if severity is None or severity[1] not in ("LOG", "FATAL"):
         return None
     message = line[severity.end():].strip()
@@ -435,6 +440,8 @@ def server_log_snapshot(config, aws):
         "matching_lines": 0, "category_counts": {}, "selected_last_written_ms": None,
         "benign_role_mentions": 0, "files_selected": 0, "files_downloaded": 0, "tail_unavailable": True,
         "lifecycle_counts": {}, "probe_outcome": "unknown",
+        "lifecycle_source_integrity": "unverified_text", "lifecycle_injection_possible": True,
+        "log_connections_enabled": None,
     }
     instance = f"{config['project']}-aurora-1"
     candidates, marker = {}, None

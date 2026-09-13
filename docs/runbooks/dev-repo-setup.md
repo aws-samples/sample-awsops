@@ -619,29 +619,40 @@ that sample partial; counters describe only the inspected prefixes.
 
 `server_logs.lifecycle_counts` separately observes fixed PostgreSQL message starts:
 `authenticated`, `authorized`, `client_disconnected_during_auth`, `broken_pipe`, and
-`connection_reset`. Every category requires the web user in the recognized RDS prefix;
-authentication/authorization also needs an exact web identity in the LOG message. Bare LOG lines,
-SQL statement text,
-DETAIL/CONTEXT and other users cannot supply these observations. Lifecycle counts may overlap
-the existing error/non-error counters; do not add them together. They cover the sampled file
-tails, not a correlated connection, so `probe_outcome` remains `unknown`.
+`connection_reset`. Every category requires the web user in a recognized RDS-shaped prefix;
+authentication/authorization also needs an exact web identity in a LOG message. These filters
+reject bare and mid-line keyword matches, but **a full synthetic prefix in multiline SQL or
+`RAISE LOG` can forge the same text**. Accordingly, `lifecycle_source_integrity=unverified_text`
+and `lifecycle_injection_possible=true` always accompany the counts. They remain advisory;
+`probe_outcome` is always `unknown`. Counts can overlap error/non-error counters; do not sum them.
+
+The `authenticated`/`authorized` messages require `log_connections` to be enabled. PostgreSQL
+defaults it off, and this repository does not enable it. The helper does not inspect the
+effective setting: `log_connections_enabled=null` explicitly means unknown. Zero counts do
+not prove absent connections or failed/successful authentication. No logging parameter is changed.
 
 `server_logs.lifecycle_counts`는 PostgreSQL 메시지 시작 부분의 고정 패턴을 별도로 관측한다:
 `authenticated`, `authorized`, `client_disconnected_during_auth`, `broken_pipe`,
-`connection_reset`. 모든 분류에 인식 가능한 RDS 접두부의 web 사용자가 필요하며 인증/인가 LOG는
-메시지에도 정확한 web identity가 있어야 한다. 접두부 없는 LOG·SQL 본문·DETAIL/CONTEXT·다른
-사용자는 이 관측을 만들지 못한다.
-기존 오류/비오류 건수와 겹칠 수 있으므로 합산하지 않는다. 같은 연결로 상관된 결과가 아닌 파일 tail
-표본이므로 `probe_outcome`은 `unknown`이다.
+`connection_reset`. 모든 분류에 RDS 형태 접두부의 web 사용자가 필요하며 인증/인가 LOG에는
+메시지에도 정확한 web identity가 있어야 한다. 접두부 없는 줄·중간 키워드는 거부하지만
+**여러 줄 SQL의 완전한 가짜 접두부나 `RAISE LOG`는 같은 텍스트를 위조할 수 있다**.
+따라서 `lifecycle_source_integrity=unverified_text`·`lifecycle_injection_possible=true`를 항상
+표시하며 건수는 참고용이고 `probe_outcome`은 항상 `unknown`이다. 오류/비오류 건수와 겹칠 수
+있으므로 합산하지 않는다.
 
-**Writer metrics:** one read-only `GetMetricData` request selects the configured
+`authenticated`/`authorized` 메시지는 `log_connections` 활성화가 필요하다. PostgreSQL 기본값은
+off이며 이 저장소는 이를 활성화하지 않는다. helper는 실제 설정을 조회하지 않으므로
+`log_connections_enabled=null`로 미확인을 명시한다. 0건은 연결 부재나 인증 성공/실패의 증거가
+아니며 로깅 파라미터를 변경하지 않는다.
+
+**Configured-instance metrics:** one read-only `GetMetricData` request selects the configured
 `<project>-aurora-1` using `AWS/RDS` / `DBInstanceIdentifier`. The ten fixed IDs below share
 60-second buckets over the hour ending at the last completed minute when diagnostics starts.
 `window_start_ms` / `window_end_ms` expose that `[start,end)` range; the current incomplete
 minute and later publications may be missing. The request permits at most 1,000 datapoints,
 does not follow `NextToken`, and publishes at most 60 timestamp/value pairs per series.
 
-**Writer 지표:** 읽기 전용 `GetMetricData` 한 번으로 `AWS/RDS` / `DBInstanceIdentifier`의
+**설정된 인스턴스 지표:** 읽기 전용 `GetMetricData` 한 번으로 `AWS/RDS` / `DBInstanceIdentifier`의
 설정된 `<project>-aurora-1`을 선택한다. 아래 고정 ID 10개는 진단 시작 시 마지막으로 완료된 분까지
 최근 1시간을 60초 bucket으로 조회한다. `window_start_ms` / `window_end_ms`가 `[start,end)`를
 표시하며 진행 중인 분이나 늦게 게시된 데이터는 없을 수 있다. 요청은 최대 1,000 datapoint이며
@@ -667,6 +678,13 @@ zero stays zero. `invalid_data`, `messages_present`, `unexpected_results`, and `
 retain degradation without remote labels, messages or pagination tokens. Unpaired arrays are
 rejected; duplicates/invalid/out-of-window points cannot establish completeness. `Complete`
 means returned published data, not continuous minute coverage or success of this probe.
+`read_ok` records receipt of a valid response envelope, independently of data presence.
+Series `status` is available for clean `Complete` (including empty), unavailable for absent,
+`Forbidden` or `InternalError` results, and partial for `PartialData` or malformed/degraded
+results. The summary is available when all series reads are available without global degradation,
+unavailable when all are unavailable, and partial otherwise. Ten clean empty results therefore
+mean available reads with `missing=true`, not a healthy database. Emptiness can also mean an
+unpublished metric, unsupported dimension, or delayed publication; absence is never filled with zero.
 
 `series`는 요청 ID, 고정 지표/통계, 허용 `status_code`와 검증한 `points`를 유지한다.
 상태는 `Complete`, `PartialData`, `InternalError`, `Forbidden`이며 누락 시 null, 잘못된 값은
@@ -674,6 +692,12 @@ means returned published data, not continuous minute coverage or success of this
 `invalid_data`·`messages_present`·`unexpected_results`·`truncated`로 불완전성을 알리되 원격
 라벨·메시지·페이지 토큰은 출력하지 않는다. 길이가 다른 배열은 거부하며 중복/잘못된/범위 밖 point로
 완전성을 주장하지 않는다. `Complete`도 게시된 데이터 반환 상태이며 매분 coverage나 이 probe의 성공이 아니다.
+`read_ok`는 데이터 존재와 별개로 유효한 응답 envelope 수신을 기록한다. Series `status`는 정상
+`Complete`이면 빈 결과도 available, 누락·`Forbidden`·`InternalError`이면 unavailable,
+`PartialData`나 잘못된/불완전한 결과이면 partial이다. 전부 available이고 전체 응답의 불완전성이
+없으면 요약도 available, 전부 unavailable이면 unavailable, 그 외는 partial이다.
+정상 빈 결과 10개는 available 조회와 `missing=true`를 뜻하며 DB 정상 판정이 아니다.
+미게시 지표·지원되지 않는 dimension·게시 지연으로도 비어 있을 수 있고 누락을 0으로 채우지 않는다.
 
 IAM counters aggregate all IAM clients on the configured instance. Positive failure-category
 points identify observed instance-level failures, but `probe_outcome=unknown` and

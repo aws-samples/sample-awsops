@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: cb60ce8b134f · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5b281f014f6a · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -15,8 +15,8 @@ legacy runbook's steps as the current operational path).
   causes no reads; state-account/STS is consistency only, not authorization or stack isolation.
   Run after encrypted plan upload. Opt-in publishes fenced safe JSON including posture booleans
   to the public Actions log/summary; only this optional step tolerates failure.
-  Keep DNS/CI/readiness gates required and the exact existing read-only CLI verb allowlist.
-  Retain log/config/server evidence independently: partial for retained capped/failed reads,
+  Keep DNS/CI/readiness gates required and the fixed read-only CLI verb allowlist.
+  Retain all four sections independently (`logs`, `configuration`, `server_logs`, `rds_metrics`): partial for retained capped/failed reads,
   separate unavailable source and unknown derived fields. Early failure is only
   `{"status":"unavailable"}`. Never publish raw logs/filenames or Terraform/AWS errors.
   Web logs use a fixed one-hour oldest-first 3 × 100 sample and JSON `evt` OR; timing keys are
@@ -37,12 +37,16 @@ legacy runbook's steps as the current operational path).
 
 - The existing manual diagnostics batches seven IAM-auth Sum metrics plus CPU Average,
   free-memory Minimum and capacity Average in one bounded CloudWatch read for the configured
-  first instance. Preserve fixed IDs, status/missing/invalid data and at most 60 minute points
-  per series; never remote labels/messages/tokens. Configured min/max ACUs are numeric or null.
-  Metrics aggregate IAM clients: individual probe outcomes remain unknown; no tuning is authorized.
-  Server lifecycle counts need both a recognized RDS prefix identifying the web user and an
-  anchored message. Bare LOG/SQL/DETAIL/CONTEXT text cannot fabricate lifecycle observations;
-  lifecycle observations remain separate from existing error counters and never prove one probe.
+  first instance. Preserve fixed IDs, status/missing/invalid flags and at most 60 minute points.
+  Read status is separate from presence: clean Complete+empty is available with missing=true;
+  Forbidden/InternalError is unavailable and PartialData/malformed/degraded reads are partial.
+  `read_ok` describes an accepted response envelope. Never emit remote labels/messages/tokens.
+  Configured min/max ACUs are numeric or null. Metrics cannot attribute an individual probe.
+  Lifecycle prefixes/message starts reject bare or mid-line tokens, but full-prefix SQL
+  continuations and RAISE LOG can forge matching text. Always expose lifecycle_source_integrity=unverified_text,
+  lifecycle_injection_possible=true, and unknown probe outcome; counts remain advisory.
+  Authenticated/authorized logs require log_connections (PostgreSQL default off, not enabled
+  here). The helper does not inspect the live setting: log_connections_enabled=null is unknown.
 - `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is default-off. The manual
   `deploy-migrations.yml` + `run-migration.mjs` controller starts one verified private
   ARM64 task. Its IAM reads exact Aurora secrets; DB DDL uses those credentials.

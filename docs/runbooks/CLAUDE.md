@@ -36,7 +36,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   CLI verb allowlist. No IAM/resource writes or DB connection. Opt-in publishes fenced safe
   JSON, including posture booleans, to the public Actions log/summary.
   Only this optional step tolerates failure; DNS/CI/readiness gates remain required.
-  Retain web-log/configuration/server-tail results independently with unavailable/partial flags.
+  Retain all four sections independently: `logs`, `configuration`, `server_logs`, `rds_metrics`.
   Distinguish unavailable sources from unknown derived comparisons; early input/context/identity
   failure returns only `{"status":"unavailable"}`, not fabricated empty sections.
   Empty samples explicitly expose `no_matching_events` and `no_error_inference`; zero counts
@@ -54,9 +54,14 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   Discarded milestones and regex text shortened to 4,096 characters also mark samples partial.
   The same opt-in batches IAM-auth outcome and pressure metrics in one bounded read for the
   configured first instance; preserve IDs/status/missing data and configured numeric ACU bounds.
+  Separate read status from data presence: clean Complete+empty is available with missing=true;
+  Forbidden/InternalError is unavailable; PartialData/malformed/degraded reads are partial.
   Every lifecycle observation needs the web user in a recognized RDS prefix and an anchored
-  message, separately from error counts. Metrics
-  aggregate IAM clients and never prove an individual probe outcome or authorize tuning.
+  message, separately from error counts. Full-prefix SQL continuations and RAISE LOG can forge
+  matching text: lifecycle_source_integrity stays unverified_text, lifecycle_injection_possible
+  is always true, and probe outcome stays unknown. Auth success messages require log_connections
+  (PostgreSQL default off; not enabled here); log_connections_enabled=null is explicitly unknown.
+  Metrics aggregate IAM clients and never prove an individual probe outcome or authorize tuning.
   Publish fixed projections only, including on Terraform/AWS failures; never raw logs/filenames.
   Service-target/declaration comparisons and error categories are hypotheses, not proof of
   running revisions, effective access, runtime credentials, connectivity or readiness.

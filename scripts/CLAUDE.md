@@ -39,8 +39,8 @@ secrets-manager) — installed by `make deps`.
   is a consistency check, not authorization or same-account stack validation.
   Use only the fixed read-only CLI verbs. Run after encrypted plan upload; publish fenced safe
   JSON (including posture booleans) to the public Actions log/step summary.
-  Independently retain web logs, configuration comparisons and an RDS server-log tail with
-  partial/unavailable markers; missing resources/permissions are advisory, not readiness gates.
+  Independently retain all four sections: `logs`, `configuration`, `server_logs`, `rds_metrics`.
+  Partial/unavailable reads are advisory, not readiness gates.
   `no_matching_events` labels empty accepted samples; `no_error_inference=true` prohibits health
   conclusions from any status's zero counts. Interpretation requires a known DB probe within
   the returned one-hour window. A successful task-definition read stays source-available even
@@ -70,10 +70,16 @@ secrets-manager) — installed by `make deps`.
   Average, free-memory Minimum and capacity Average, scoped to the configured first instance.
   Preserve fixed IDs, status/missing/invalid flags and at most 60 minute points each; never
   remote labels/messages/tokens. Instance-wide metrics cannot attribute a probe outcome.
+  Metric read status is separate from presence: clean Complete+empty is available/missing;
+  Forbidden/InternalError is unavailable, PartialData or malformed/degraded reads are partial.
+  `read_ok` describes the response envelope, not an auth outcome.
   Expose numeric configured min/max ACUs only; change no capacity/auth/timeout setting.
   Every server lifecycle count requires the web user in a recognized RDS prefix and anchored
-  PG messages, separately from
-  error categories; SQL/DETAIL/CONTEXT text cannot fabricate auth/authorization observations.
+  PG messages, separately from error categories. This rejects bare/mid-line tokens, but
+  multiline SQL with a full prefix and RAISE LOG can forge matching text. Always retain
+  `lifecycle_source_integrity=unverified_text`, `lifecycle_injection_possible=true` and unknown
+  probe outcome. Authenticated/authorized messages require log_connections (PostgreSQL default
+  off; not enabled here); the effective setting is uninspected, `log_connections_enabled=null`.
   Only this optional workflow step tolerates failure (eight-minute timeout); DNS/CI/readiness
   gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
