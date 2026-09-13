@@ -290,13 +290,20 @@ async function failureLogs(record, e, deps) {
       });
       // Match migration-errors.mjs metadata, excluding notices and encoded SQL
       // audit text. Never echo raw application/SQL/log messages into Actions.
-      const messages = (response.events ?? []).map(v => v.message).join('\n').split('\n')
+      const lines = (response.events ?? []).map(v => v.message).join('\n').split('\n')
         .filter(line => !/^\s*\[db\] notice /.test(line))
-        .map(line => line.split('message=')[0].trimEnd()).join('\n');
-      const codes = [...messages.matchAll(/(?:^|[:(,]\s*)([A-Za-z0-9_=]+)(?=[,)]|$)/gm)].map(m => m[1]);
+        .map(line => line.split('message=')[0].trimEnd());
+      const messages = lines.join('\n');
+      const codesIn = line => [...line.matchAll(/(?:^|[:(,]\s*)([A-Za-z0-9_=]+)(?=[,)]|$)/gm)].map(m => m[1]);
+      const codes = lines.flatMap(codesIn);
       const has = pattern => codes.some(code => pattern.test(code));
+      const auroraPurpose = /^(?:Connect to Aurora failed|Aurora connection (?:error|cleanup failed)): /;
+      // SDK and PostgreSQL share transport codes. Only the same line's explicit
+      // connection purpose can attribute them to Aurora, never a credential read.
       const groups = Object.entries(diagnosticCodeGroups)
-        .filter(([, allowed]) => allowed.some(code => codes.includes(code))).map(([label]) => label);
+        .flatMap(([label, allowed]) => [...new Set(lines
+          .filter(line => codesIn(line).some(code => allowed.includes(code)))
+          .map(line => auroraPurpose.test(line) ? label.replace(/^transport /, 'database ') : label))]);
       const categories = [
         [groups.includes('database connectivity') || has(/^SQLSTATE=(08[0-9A-Z]{3}|57P01|57P03)$/) ||
           /^(?:Connect to Aurora failed|Aurora connection (?:error|cleanup failed)): unclassified error$/m.test(messages),

@@ -6,11 +6,11 @@ export class MigrationError extends Error {}
 // Shared with the CI classifier. Freeze both levels so consumers cannot expand
 // the safe logging allowlist or inject labels into public diagnostics.
 export const diagnosticCodeGroups = Object.freeze({
-  'database connectivity': Object.freeze([
+  'transport connectivity': Object.freeze([
     'TimeoutError', 'RequestTimeout', 'AbortError', 'NetworkingError',
     'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'EPIPE',
   ]),
-  'database TLS': Object.freeze([
+  'transport TLS': Object.freeze([
     'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN',
     'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
     'ERR_TLS_CERT_ALTNAME_INVALID',

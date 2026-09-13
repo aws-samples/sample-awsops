@@ -643,6 +643,23 @@ function credentialDiagnostic(error) {
 }
 
 for (const [codes, category] of [
+  ['NetworkingError TimeoutError RequestTimeout AbortError ECONNREFUSED ECONNRESET ENOTFOUND EAI_AGAIN ETIMEDOUT EPIPE', 'transport connectivity'],
+  ['CERT_HAS_EXPIRED DEPTH_ZERO_SELF_SIGNED_CERT SELF_SIGNED_CERT_IN_CHAIN UNABLE_TO_VERIFY_LEAF_SIGNATURE UNABLE_TO_GET_ISSUER_CERT_LOCALLY ERR_TLS_CERT_ALTNAME_INVALID', 'transport TLS'],
+]) for (const code of codes.split(' ')) {
+  test(`failure logs do not blame Aurora for actual GetSecretValue transport failure: ${code}`, async () => {
+    const message = await credentialDiagnostic(Object.assign(new Error('SECRET'), { code }));
+    assert.match(message, /^Aurora master credentials: Migration credential read: Secrets Manager GetSecretValue read failed/);
+    await checkFailureLogs(message, category);
+  });
+}
+
+test('failure logs associate transport codes with their own runtime purpose across mixed events', async () => {
+  const connection = await runtimeDiagnostic({ phase: 'connection-event', error: new Error('SECRET') });
+  const credential = await credentialDiagnostic({ code: 'CERT_HAS_EXPIRED', message: 'SECRET' });
+  await checkFailureLogs(`${connection}\n${credential}`, 'database connectivity, transport TLS');
+});
+
+for (const [codes, category] of [
   ['28P01 28000', 'database authentication'],
   ['42501', 'database permission'],
   ['55P03 40P01', 'migration lock'],
