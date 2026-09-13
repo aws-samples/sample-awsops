@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Deferred-DNS deployment: explicit same-branch/SHA saved plans preserve existing certificate ownership and service records, verify operator-selected or attached external certificates without account-wide selection, block all public/private DNS changes and routine validation-CNAME retirement, check ECR before builds, and share Host/SNI-preserving smoke tests before service DNS publication.
+- Deferred-DNS deployment: explicit same-branch/SHA saved plans preserve existing certificate ownership and service records, verify operator-selected or attached external certificates without account-wide selection, block all public/private DNS changes and routine validation-CNAME retirement, check ECR before builds, and share Host/SNI-preserving smoke tests before service DNS publication. The private database migration runtime adds verified RDS TLS, in-memory credentials, atomic one-shot empty-database initialization, baseline/ULID checksum checks and fail-closed reader synchronization with safe diagnostics. Direct symlink invocation runs the migration gate; disabled password sync still rejects elevated reader roles. Offline and real PostgreSQL regressions are required merge checks.
 - Async workload observations: ownership-scoped acceptance→first worker start→terminal timing and an optional completion objective over a selected window. Wait includes queue/scheduling and worker lifecycle includes retries; missing/inverted timestamps and truncated samples withhold unsupported timing or attainment. Existing deployments remain compatible before the additive migration, with new timing reported as unknown.
 
 - Donut charts with $ values keep cents (2 fraction digits) in the center total, legend, and tooltip — whole-dollar rounding showed real sub-dollar spend as $0 beside a nonzero slice and disagreed with the adjacent 2dp KPI tiles; capped breakdowns disclose the cap in a card subtitle AND relabel the center figure honestly (e.g. the EC2 instance-types donut says 'Top-10 sum', not 합계 — the fleet total lives in the adjacent EC2 KPI tile).
@@ -644,7 +644,7 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 
 ### Added
 
-- DNS 보류 배포: 같은 브랜치·SHA의 명시적 저장 계획으로 기존 인증서 소유권과 서비스 레코드를 보존하고, 계정 전체 검색 없이 운영자가 지정했거나 이미 연결된 외부 인증서를 검증합니다. 모든 공용·사설 DNS 변경 및 일반 배포의 검증 CNAME 삭제·교체를 차단하고, 빌드 전 ECR 확인과 서비스 DNS 게시 전 Host·SNI를 유지하는 공통 스모크 테스트를 제공합니다.
+- DNS 보류 배포: 같은 브랜치·SHA의 명시적 저장 계획으로 기존 인증서 소유권과 서비스 레코드를 보존하고, 계정 전체 검색 없이 운영자가 지정했거나 이미 연결된 외부 인증서를 검증합니다. 모든 공용·사설 DNS 변경 및 일반 배포의 검증 CNAME 삭제·교체를 차단하고, 빌드 전 ECR 확인과 서비스 DNS 게시 전 Host·SNI를 유지하는 공통 스모크 테스트를 제공합니다. Private DB migration runtime은 RDS TLS 검증·메모리 내 자격증명·빈 DB의 원자적 일회성 초기화·baseline/ULID checksum 검사·안전한 진단을 갖춘 fail-closed reader 동기화를 제공합니다. symlink 직접 실행도 migration gate를 실행하며 비밀번호 동기화가 disabled여도 elevated reader 롤은 거부합니다. 오프라인·실제 PostgreSQL 회귀 테스트를 필수 머지 검사로 실행합니다.
 - 비동기 워크로드 관측: 사용자 소유권을 적용한 작업별 접수→최초 워커 시작→종료 시간과 선택 기간의 완료 목표를 제공한다. 대기에는 큐·스케줄링을, 워커 경과 시간에는 재시도를 포함하며 누락·역전된 시각과 잘린 표본에서는 시간·달성률을 확정하지 않는다. 기존 배포는 추가 마이그레이션 전에도 동작하며 새 시간은 미확인으로 표시된다.
 
 - $ 값 도넛 차트가 중앙 합계·범례·툴팁에서 센트(소수 2자리)를 유지 — 달러 반올림이 실존하는 1달러 미만 비용을 0이 아닌 조각 옆에 $0으로 표시하고 인접한 2자리 KPI 타일과 어긋났음; 캡이 있는 분포는 카드 부제로 캡을 공지하고 중앙 수치 라벨도 정직하게 교체(예: EC2 인스턴스 유형 도넛은 합계가 아니라 '상위 10 합계' — 플릿 전체 수는 옆의 EC2 KPI 타일).

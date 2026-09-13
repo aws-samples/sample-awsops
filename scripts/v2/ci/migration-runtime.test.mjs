@@ -2,9 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, symlinkSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import * as runner from '../migrate.mjs';
+import { databaseFailure } from '../migration-errors.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -18,6 +21,36 @@ test('importing the runner never exits the caller or starts CLI work', () => {
   });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), 'import-completed');
+});
+
+test('imports with an absent or unresolvable argv entry remain side-effect free', () => {
+  for (const entry of [undefined, '/missing-entry.mjs']) {
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e',
+      `process.argv[1] = ${JSON.stringify(entry)}; await import("./scripts/v2/migrate.mjs"); console.log("import-completed");`], {
+      cwd: root, env: { PATH: '/no-external-tools' }, encoding: 'utf8', timeout: 10_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'import-completed');
+  }
+});
+
+test('direct file and directory symlinks run status and reject incomplete runtime config', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'awsops-entry-test-'));
+  try {
+    symlinkSync(root, join(directory, 'repo'));
+    symlinkSync(join(root, 'scripts/v2/migrate.mjs'), join(directory, 'migrate.mjs'));
+    for (const entry of [join(directory, 'migrate.mjs'), join(directory, 'repo/scripts/v2/migrate.mjs')]) {
+      for (const args of [['--status'], []]) {
+        const result = spawnSync(process.execPath, [entry, ...args], {
+          env: { PATH: '/no-external-tools', AURORA_SECRET_ARN: 'incomplete' },
+          encoding: 'utf8', timeout: 10_000,
+        });
+        assert.equal(result.status, args.length ? 0 : 1, result.stderr);
+        if (args.length) assert.match(result.stdout, /migration files \(\d+\):/);
+        else assert.match(result.stderr, /SQL_READER_SYNC_MODE/);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
 for (const [name, args, env, expected] of [
@@ -155,8 +188,87 @@ test('Secrets Manager failures do not expose remote error messages', async () =>
   try {
     await assert.rejects(runner.readJsonSecret('selected-secret', client), error => {
       assert.match(error.message, /Secret.*read|read.*secret/i);
+      assert.match(error.message, /GetSecretValue/);
+      assert.match(error.message, /AccessDeniedException/);
+      assert.match(error.message, /HTTP=400/);
       assert.doesNotMatch(error.message, /do-not-echo-secret/);
       return true;
     });
   } finally { client.destroy(); }
+});
+
+test('unknown SDK names and malformed status cannot become diagnostic text', async () => {
+  for (const status of ['do-not-echo-secret', 400.5, 999]) {
+    await assert.rejects(runner.readJsonSecret('do-not-echo-secret', {
+      send: async () => { throw { name: 'do-not-echo-secret', code: 'do-not-echo-secret',
+        message: 'do-not-echo-secret', $metadata: { httpStatusCode: status } }; },
+    }), error => {
+      assert.match(error.message, /GetSecretValue/);
+      assert.doesNotMatch(error.message, /do-not-echo-secret|HTTP=/);
+      return true;
+    });
+  }
+});
+
+test('SDK-decoded unknown error types are not echoed even when the HTTP status is valid', async () => {
+  const client = secretClient({ __type: 'do-not-echo-secret', message: 'do-not-echo-secret' }, 500);
+  try {
+    await assert.rejects(runner.readJsonSecret('selected-secret', client), error => {
+      assert.match(error.message, /HTTP=500/);
+      assert.doesNotMatch(error.message, /do-not-echo-secret/);
+      return true;
+    });
+  } finally { client.destroy(); }
+});
+
+test('database diagnostics reject arbitrary SQLSTATE text and non-Error throws', () => {
+  for (const error of ['do-not-echo-secret', null, { name: 'do-not-echo-secret',
+    code: '42501\ndo-not-echo-secret', message: 'do-not-echo-secret' }]) {
+    const safe = databaseFailure('Connect to Aurora failed', error);
+    assert.match(safe.message, /Connect to Aurora failed/);
+    assert.doesNotMatch(safe.message, /do-not-echo-secret|SQLSTATE=/);
+  }
+  assert.match(databaseFailure('Connect to Aurora failed', {
+    name: 'do-not-echo-secret', code: 'ERR_TLS_CERT_ALTNAME_INVALID',
+  }).message, /ERR_TLS_CERT_ALTNAME_INVALID/);
+});
+
+test('master secret failures identify their purpose and recognized SDK code safely', async () => {
+  await assert.rejects(runner.loadCredentials(runtimeEnv, {
+    terraformOutput: noTerraform,
+    readSecret: async () => { throw { name: 'do-not-echo-secret', code: 'ResourceNotFoundException',
+      message: 'do-not-echo-secret', $metadata: { httpStatusCode: 400 } }; },
+  }), error => {
+    assert.match(error.message, /Aurora master.*GetSecretValue/);
+    assert.match(error.message, /ResourceNotFoundException.*HTTP=400/);
+    assert.doesNotMatch(error.message, /do-not-echo-secret/);
+    return true;
+  });
+});
+
+test('Terraform failures expose only a safe category, output purpose, and exit status', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'awsops-tf-error-'));
+  try {
+    for (const [stderr, category] of [
+      ['Backend initialization required', 'backend-initialization'],
+      ['Output "aurora_secret_arn" not found', 'missing-output'],
+      ['do-not-echo-secret', 'command-failed'],
+    ]) {
+      writeFileSync(join(directory, 'terraform'),
+        `#!/bin/sh\nprintf '%s\\n' '${stderr} do-not-echo-secret' >&2\nexit 7\n`, { mode: 0o700 });
+      const result = spawnSync(process.execPath, ['scripts/v2/migrate.mjs'], {
+        cwd: root, env: { PATH: directory }, encoding: 'utf8', timeout: 10_000,
+      });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Terraform output aurora_secret_arn/);
+      assert.ok(result.stderr.includes(`category=${category}`), result.stderr);
+      assert.match(result.stderr, /exit=7/);
+      assert.doesNotMatch(result.stderr + result.stdout, /do-not-echo-secret/);
+    }
+    const missing = spawnSync(process.execPath, ['scripts/v2/migrate.mjs'], {
+      cwd: root, env: { PATH: '/no-external-tools' }, encoding: 'utf8', timeout: 10_000,
+    });
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /category=executable-unavailable/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

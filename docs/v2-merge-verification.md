@@ -10,7 +10,8 @@
   `observability`→`external-obs` 별칭이 라우팅 양쪽(카탈로그+에이전트 런타임)에 있는지,
   v1 `/awsops/` 경로 리터럴이 web 소스에 누출되지 않는지 확인 (`web/lib/merge-invariants.ts`).
 - **S3**: 파일 격리 pytest + web vitest + 배포 Node 테스트 + 선택적 Terraform 검사를 공통
-  러너로 묶는다. PR CI는 별도 복사본의 backend 비활성 Terraform mock 테스트도 필수로 실행한다
+  러너로 묶는다. PR CI는 private migration 오프라인 테스트, 실제 PostgreSQL runner 테스트,
+  별도 복사본의 backend 비활성 Terraform mock 테스트도 필수로 실행한다
   (`scripts/v2/merge-verify.sh`, `scripts/v2/terraform-test.sh`, `.github/workflows/merge-verify.yml`).
 
 **알려진 한계 (patch 대상 아님, 문서화만)**: `ungated_resources()`는 리소스 body 안의
@@ -36,17 +37,19 @@ gated files (measured), but narrowing the check to top-level attributes only is 
 | --- | --- | --- | --- | --- |
 | S1 | Frozen and gated Terraform resources stay default-off, gated by `count` or `for_each`, and tracked tfvars do not enable gated flags. | `docs/decisions/BASELINE.md`, ADR-005, ADR-006, ADR-007 | `scripts/v2/test_merge_invariants.py`, `scripts/v2/merge_invariants.py` | `python3 -m pytest scripts/v2/test_merge_invariants.py -q` |
 | S2 | The 9 routed sections align across AgentCore catalog, web sections, route rules, and the `observability` to `external-obs` alias; v1 `/awsops/` route literals do not leak into v2 web sources. | ADR-004, ADR-038 | `web/lib/merge-invariants.test.ts`, `web/lib/merge-invariants.ts` | `cd web && npx vitest run lib/merge-invariants.test.ts` |
-| S3 | Merge verification runs isolated Python, web vitest and deployment Node tests; CI also requires isolated, backend-disabled Terraform mock tests. | 2026-07-05 v2 merge verification plan | `scripts/v2/merge-verify.sh`, `scripts/v2/terraform-test.sh`, `.github/workflows/merge-verify.yml` | `bash scripts/v2/merge-verify.sh` and `bash scripts/v2/terraform-test.sh` |
+| S3 | Isolated Python, web vitest, deployment Node tests, offline migration tests, real PostgreSQL runner tests and backend-disabled Terraform mock tests. | 2026-07-05 v2 merge verification plan; private migration runtime | `scripts/v2/merge-verify.sh`, `scripts/v2/ci/`, `scripts/v2/terraform-test.sh`, `.github/workflows/merge-verify.yml` | All four commands below |
 
 ## Runner Usage
 
-Use Node.js 20, Python 3.12, OpenSSL and Terraform **1.15.7**. Install the test dependencies
-from the repository root (the Node smoke suite uses only Node built-ins):
-Node.js 20·Python 3.12·OpenSSL·Terraform **1.15.7**을 준비하고 루트에서 의존성을 설치한다.
-Node 스모크 테스트에는 별도 npm 의존성이 없다.
+Use Node.js 20 (CI; runtime image uses 22), Python 3.12, OpenSSL, Terraform **1.15.7**
+and a reachable Docker daemon. Install dependencies from the repository root. The private
+migration suites use locked `pg` and AWS SDK dependencies from `scripts/v2/package-lock.json`.
+CI Node 20(런타임 이미지 22)·Python 3.12·OpenSSL·Terraform **1.15.7**·접근 가능한 Docker를
+준비한다. private migration 테스트는 `scripts/v2`의 잠긴 `pg`·AWS SDK 의존성을 사용한다.
 
 ```bash
 (cd web && npm ci)
+npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund
 python3 -m pip install \
   -r scripts/v2/requirements-test.txt \
   -r agent/requirements.txt \
@@ -56,13 +59,31 @@ python3 -m pip install \
   -r scripts/v2/workers/requirements.txt
 ```
 
-Run both commands for the CI-equivalent merge checks from the repository root:
-CI와 같은 범위의 검증에는 루트에서 두 명령을 모두 실행한다.
+Run all four commands for the CI-equivalent merge checks from the repository root:
+CI와 같은 범위의 검증에는 루트에서 네 명령을 모두 실행한다.
 
 ```bash
 bash scripts/v2/merge-verify.sh
+node --test scripts/v2/ci/*.test.mjs
+node --test scripts/v2/ci/migration.itest.mjs
 bash scripts/v2/terraform-test.sh
 ```
+
+**Private migration CI exception:** `scripts/v2/ci/migration.itest.mjs` (including initializer
+regressions) is a required fail-hard suite, not the legacy optional `scripts/v2/*.itest.mjs`
+convention in root `CLAUDE.md`. It uses bare `docker` on PATH, without the legacy `DOCKER`
+override/`sudo docker`; grant local daemon access before running. Missing Docker fails the
+suite rather than skipping it. `*.test.mjs` stays offline: SDK transport is local, no AWS credentials.
+The PostgreSQL fixture uses `postgres:17`, pulls only if missing, creates ephemeral
+credentials/CA, binds a random loopback port and removes its own container/files.
+Cache dependencies/images first for disconnected execution.
+
+**Private migration CI 예외:** initializer를 포함한 `scripts/v2/ci/migration.itest.mjs`는
+루트 CLAUDE의 레거시 선택적 itest와 달리 실패 시 gate를 막는다. PATH의 `docker`를 직접
+사용하므로 실행 전 daemon 접근을 준비하고 `DOCKER`/`sudo docker` 자동 처리를 기대하지 않는다.
+Docker 부재는 skip이 아니다. `*.test.mjs`는 로컬 SDK transport로 AWS 없이 실행한다.
+PG fixture는 필요 시 `postgres:17`을 pull하고 임시 자격증명·CA·loopback 포트만 사용하며
+자체 리소스를 정리한다. 외부 연결 없는 검증은 의존성과 이미지를 미리 캐시한다.
 
 The runner discovers `test_*.py` under `scripts/v2` and `agent` by default, then runs each file in a
 separate `python3 -m pytest` process from the file's own directory. Files in a `tests/` directory get
@@ -117,12 +138,26 @@ aggregate-run false failures.
    the existing agent/incident/remediation/Steampipe/worker requirements.
 3. Run `bash scripts/v2/merge-verify.sh`: file-isolated pytest (including workflow fixtures and
    the localhost Terraform state-read test), web vitest, deployment Node tests and opportunistic TF checks.
-4. Run `bash scripts/v2/terraform-test.sh`: required validate/mock-plan tests in an isolated tracked copy,
+4. Install locked `scripts/v2` dependencies with `--ignore-scripts` and run
+   `node --test scripts/v2/ci/*.test.mjs` (runtime and, when present, controller/workflow fixtures).
+5. Run `node --test scripts/v2/ci/migration.itest.mjs` against disposable PostgreSQL:
+   real initialization/ULIDs, rollback/retry/checksums, lock serialization, reader guards,
+   permission denial, password rotation and TLS rejection. Docker failure is a gate failure.
+6. Run `bash scripts/v2/terraform-test.sh`: required validate/mock-plan tests in an isolated tracked copy,
    initialized with `-backend=false`. A validation or test failure fails CI.
 
 CI는 **main/dev** 대상 PR에서 Node 20·Python 3.12·Terraform 1.15.7을 설치한다.
-pytest·PyYAML과 기존 하위 시스템 의존성 설치 후 공통 러너(격리 Python·web·Node)를 실행하고,
-별도 복사본의 backend 비활성 Terraform validate/mock 테스트도 필수로 실행한다.
+pytest·PyYAML과 기존 의존성 설치 후 공통 러너를 실행하고 `scripts/v2` 의존성을
+`--ignore-scripts`로 설치한다. migration offline 테스트·Docker PG 테스트·별도 복사본의
+backend 비활성 Terraform validate/mock 테스트 모두 필수다.
+
+These PR-authored tests run only under `pull_request` with `contents: read`, no deployment
+credentials, secrets or OIDC permissions. They must not move to `pull_request_target` or gain
+secret access. A runtime image build can additionally be checked locally using the
+[migration guide](../terraform/foundation/migrations/README.md); CI does not currently build it.
+PR 코드는 `pull_request`·`contents: read`에서 배포 자격증명·시크릿·OIDC 없이 검사한다.
+`pull_request_target` 전환이나 secret 접근을 추가하지 않는다. 이미지 빌드는 migration 안내대로
+별도 검증하며 현재 이 CI에는 포함되지 않는다.
 
 ## Manual Gates Outside CI
 

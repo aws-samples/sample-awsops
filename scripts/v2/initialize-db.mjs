@@ -1,4 +1,5 @@
 import { sha256 } from './migrate-core.mjs';
+import { MigrationError } from './migration-errors.mjs';
 
 // The caller holds migrate.mjs's session advisory lock across this operation
 // AND the subsequent ULIDs. A missing ledger alone is never proof of emptiness.
@@ -27,14 +28,21 @@ export async function initializeEmptyDatabase(client, schema, appVersion) {
     SELECT 1 FROM pg_event_trigger
     UNION ALL
     SELECT 1 FROM pg_publication
+    UNION ALL
+    SELECT 1 FROM pg_default_acl
   ) AS occupied`);
   if (stateWithoutLedger.occupied) {
-    throw new Error('Refusing initialization of a non-empty database without schema_migrations');
+    throw new MigrationError('Refusing initialization of a non-empty database without schema_migrations');
   }
 
   // schema.sql is frozen: strip its legacy top-level transaction wrapper only
   // in memory, so every baseline section and the ledger upgrade commit together.
-  const baseline = schema.replace(/^[ \t]*(?:BEGIN|COMMIT);[ \t]*\r?$/gm, '');
+  const wrapper = /^[ \t]*(BEGIN|COMMIT);[ \t]*\r?$/gm;
+  const matches = [...schema.matchAll(wrapper)];
+  if (matches.length !== 2 || matches[0][1] !== 'BEGIN' || matches[1][1] !== 'COMMIT') {
+    throw new MigrationError('Frozen schema must contain exactly one legacy BEGIN then COMMIT wrapper');
+  }
+  const baseline = schema.replace(wrapper, '');
   await client.query('BEGIN');
   try {
     await client.query(baseline);

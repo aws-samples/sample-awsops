@@ -33,7 +33,23 @@ the failure does not look like a missing migration:
 | 증상 / Symptom | 원인 / Cause |
 |---|---|
 | `execute_sql`·`inventory-read` 가 Data API **auth** 오류 / fail with a Data API **auth** error | 롤 부재 또는 비밀번호 ≠ 시크릿 / role absent, or its password ≠ the secret |
-| `migrate` 로그에 `sql-reader: role not present yet — skipping password sync` | 롤 생성 마이그레이션 전에 실행됨 / ran before the role-creating migration |
+| `sql-reader sync enabled but awsops_sql_reader is missing` | 동기화가 켜졌지만 롤 부재 — exit 1, `make deploy`도 중단 / enabled sync with absent role — exit 1, also blocks `make deploy` |
+| `sql-reader: password sync disabled` | 명시적 disabled 모드 또는 정의된 빈 Terraform reader output / explicit disabled mode or a defined empty Terraform reader output |
+
+런타임 태스크는 `SQL_READER_SYNC_MODE=secret`과 `SQL_READER_SECRET_ARN`을 명시해야 동기화한다.
+`disabled`는 롤이 없어도 허용하지만, 존재하는 롤의 `rolsuper/rolreplication/rolbypassrls`
+검사는 항상 수행한다(온라인 preview 제외). reader 시크릿 읽기와 비밀번호 변경만 생략한다.
+에이전트가 reader를 사용하는 환경에서 장애를 우회하려고 disabled로 바꾸지 않는다.
+Terraform 모드에서는 `agent_sql_reader_secret_arn`의 **정의된 빈 값**만 동기화를 끄며,
+output 조회 실패는 오류다. 런타임 변수·TLS·IAM은 [migration 안내](../../terraform/foundation/migrations/README.md)를 따른다.
+
+Runtime tasks synchronize only with explicit `SQL_READER_SYNC_MODE=secret` and
+`SQL_READER_SECRET_ARN`. Disabled mode permits an absent role but still checks
+`rolsuper/rolreplication/rolbypassrls` whenever the role exists (except online preview).
+It skips only reader-secret retrieval and password alteration. Do not select disabled to bypass
+a broken agent reader. In Terraform mode only a **defined empty** `agent_sql_reader_secret_arn`
+disables sync; an output-read failure is an error. See the
+[migration guide](../../terraform/foundation/migrations/README.md) for runtime settings, TLS and IAM.
 
 두 도구만 실패한다. 나머지 rds-mcp 도구(`describe_*`, `list_*`)는 reader 시크릿이 아니라 실행
 역할을 쓰므로 계속 동작한다 — 그 비대칭이 판별 단서다.
@@ -51,11 +67,9 @@ The two symptoms have **different** fixes — an earlier version of this runbook
 
 ### 비밀번호 불일치 → `make migrate` / Password mismatch → `make migrate`
 
-`syncSqlReaderPassword` 는 pending 마이그레이션 유무와 무관하게 **매 실행마다** 돌므로 진짜로
-멱등하다.
+동기화가 켜진 비-preview 실행에서는 pending 유무와 무관하게 비밀번호를 동기화한다.
 
-`syncSqlReaderPassword` runs on **every** invocation, independently of whether any migration is
-pending, so this is genuinely idempotent:
+With sync enabled, every non-preview run synchronizes the password, even without pending migrations:
 
 ```
 make migrate            # ALTER ROLE awsops_sql_reader WITH PASSWORD <secret>
@@ -70,14 +84,14 @@ make migrate            # ALTER ROLE awsops_sql_reader WITH PASSWORD <secret>
 ### 롤 부재 → 마이그레이션 적용 여부에 따라 다르다 / Role absent → depends on whether the migration already applied
 
 `migrate.mjs` 는 **pending** 마이그레이션만 실행하고 적용된 것에는 checksum 불변성을 강제하므로,
-이미 기록된 마이그레이션의 롤은 재실행으로 **다시 만들어지지 않는다** — 동기화 단계가
-`role not present yet — skipping password sync` 를 다시 로그할 뿐이어서 실패가 아니라 no-op 처럼
-읽힌다.
+이미 기록된 마이그레이션의 롤은 재실행으로 **다시 만들어지지 않는다**. 동기화가 켜져 있으면
+`sql-reader sync enabled but awsops_sql_reader is missing`으로 exit 1하며,
+`migrate`에 의존하는 `make deploy`도 중단된다.
 
 `migrate.mjs` runs only **pending** migrations and enforces checksum immutability on applied ones, so
-re-running it will NOT recreate a role whose migration is already recorded — the sync step just logs
-`role not present yet — skipping password sync` again, which reads like a no-op rather than the
-failure it is.
+re-running it will NOT recreate a role whose migration is already recorded. Enabled sync fails
+with `sql-reader sync enabled but awsops_sql_reader is missing` and exit 1.
+Because `make deploy` depends on `migrate`, deployment also stops.
 
 ```
 DRY_RUN=1 make migrate  # 01KYVY9J…_agent_sql_reader_role 이 LIVE DB 기준으로 아직 pending 인가?
@@ -169,6 +183,38 @@ Then invoke `execute_sql` (e.g. `SELECT 1`) through the agent. A `400` naming th
 cluster or an unset env var is a configuration error, not an auth error — see
 `agent/lambda/aws_rds_mcp.py`. Only the host's own foundation Aurora cluster is reachable;
 cross-account and caller-supplied `secret_arn`/`database` are fail-closed.
+
+### 안전한 오류 진단 / Safe failure diagnostics
+
+로그는 고정 작업/목적, 허용된 SDK code/name, 숫자 HTTP 상태, SQLSTATE, 정규화된 boolean만
+남긴다. 시크릿 본문·비밀번호·임의의 원격 오류 message/name·Terraform stderr는 출력하지 않는다.
+출력되지 않는 원문을 얻으려고 secret dump나 SDK 디버그 로깅을 켜지 않는다.
+
+Logs retain fixed operation/purpose context, recognized SDK identifiers, numeric HTTP status,
+SQLSTATE and normalized booleans. They exclude secret bodies/passwords, arbitrary remote
+message/name fields and Terraform stderr. Do not dump secrets or enable SDK debug logging
+to recover suppressed text.
+
+| Safe diagnostic / 안전한 진단 | Action / 조치 |
+| --- | --- |
+| `Aurora master credentials` or `SQL-reader password synchronization` + `GetSecretValue` + `AccessDeniedException` | Check the indicated purpose's exact secret/task-role policy and CMK decrypt scope / 해당 시크릿·task role·CMK 범위 확인 |
+| `ResourceNotFoundException`, `HTTP=400` | Check selected secret identifier and Region; do not substitute another role's secret / 식별자·리전 확인, 다른 롤 시크릿 대체 금지 |
+| `CredentialsProviderError`, `ExpiredTokenException` | Restore the intended local session/task credentials / 의도한 로컬 세션·태스크 자격증명 복구 |
+| `sql-reader: password synchronization failed: SQLSTATE=42501` | Connected DB user lacks role authority; inspect approved grants and elevated attributes / DB 사용자 권한·elevated 속성 확인 |
+| `elevated attributes (rolsuper=…, rolreplication=…, rolbypassrls=…)` | Stop; use the reviewed role-repair path above. `true` identifies the attribute; disabled mode cannot bypass it / 중단 후 검토된 롤 복구, disabled 우회 불가 |
+| `Connect to Aurora failed` + TLS code | Check private endpoint, CA and hostname; retain verification / 사설 endpoint·CA·호스트 검증 유지 |
+| `Acquire migration advisory lock failed: SQLSTATE=55P03` | Inspect the existing migration session before retrying; do not bypass its lock / 실행 중 세션 확인 후 재시도 |
+| `Terraform output … unavailable (category=backend-initialization, exit=…)` | Initialize the intended backend under the normal operator procedure / 승인된 backend 초기화 절차 |
+| `category=missing-output` / `executable-unavailable` / `command-failed` / `command-terminated` | Check state/output version, installed Terraform, approved backend access or termination; exit is numeric when available / 상태·output 버전·Terraform 설치·backend 접근·중단 확인 |
+
+`unclassified error` means no recognized safe code was available; the operation/purpose remains.
+Migration failure output includes rollback vs non-transactional status and SQLSTATE. Notices also
+omit arbitrary server text. Test fixtures reproduce a non-superuser role-authority denial and
+successful synchronization after explicit authorization; they do not emulate all Aurora managed roles.
+
+`unclassified error`는 안전하게 분류 가능한 code가 없다는 뜻이며 작업 목적은 남는다.
+마이그레이션 오류는 rollback 여부·SQLSTATE를 남기고 notice 원문도 생략한다. 로컬 테스트는
+non-superuser 권한 거부와 명시적 권한 부여 후 동기화를 재현하며 Aurora 관리 롤 전체를 모사하지 않는다.
 
 ## 실제 Postgres 17 로 검증함 / Verified against a real Postgres 17
 
