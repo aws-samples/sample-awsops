@@ -7,6 +7,7 @@ import { readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { diagnosticCodeGroups } from '../migration-errors.mjs';
 
 const exec = promisify(execFile);
 const REGION = 'ap-northeast-2';
@@ -30,13 +31,14 @@ export function selectProject(text) {
   // secret is never evaluated as shell or printed (even on malformed input).
   requireThat(typeof text === 'string' && !/\/\*|<<|\r/.test(text), 'Unsupported dev tfvars syntax');
   const assignments = text.split('\n').filter(line => /^\s*project\s*=/.test(line));
-  requireThat(assignments.length === 1, 'Dev tfvars must contain one explicit project');
-  const match = assignments[0].match(/^\s*project\s*=\s*"([a-z][a-z0-9-]{1,39})"\s*(?:#.*|\/\/.*)?$/);
-  requireThat(match, 'Dev tfvars project must be a literal project name');
+  requireThat(assignments.length <= 1, 'Dev tfvars must not contain duplicate projects');
+  const match = assignments[0]?.match(/^\s*project\s*=\s*"([a-z][a-z0-9-]{1,39})"\s*(?:#.*|\/\/.*)?$/);
+  requireThat(!assignments.length || match, 'Dev tfvars project must be a literal project name');
   const regions = text.split('\n').filter(line => /^\s*region\s*=/.test(line));
   requireThat(regions.length <= 1 && regions.every(line =>
     /^\s*region\s*=\s*"ap-northeast-2"\s*(?:#.*|\/\/.*)?$/.test(line)), 'Unexpected dev tfvars region');
-  return match[1];
+  // make configure omits project; keep this in lockstep with variables.tf.
+  return match?.[1] ?? 'awsops-v2';
 }
 
 export function validateContext(c) {
@@ -293,16 +295,20 @@ async function failureLogs(record, e, deps) {
         .map(line => line.split('message=')[0].trimEnd()).join('\n');
       const codes = [...messages.matchAll(/(?:^|[:(,]\s*)([A-Za-z0-9_=]+)(?=[,)]|$)/gm)].map(m => m[1]);
       const has = pattern => codes.some(code => pattern.test(code));
+      const groups = Object.entries(diagnosticCodeGroups)
+        .filter(([, allowed]) => allowed.some(code => codes.includes(code))).map(([label]) => label);
       const categories = [
-        [has(/^(SQLSTATE=08[0-9A-Z]{3}|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EPIPE|NetworkingError|TimeoutError|RequestTimeout|AbortError)$/) ||
-          /^Connect to Aurora failed: unclassified error$/m.test(messages), 'database connectivity'],
+        [groups.includes('database connectivity') || has(/^SQLSTATE=(08[0-9A-Z]{3}|57P01|57P03)$/) ||
+          /^(?:Connect to Aurora failed|Aurora connection (?:error|cleanup failed)): unclassified error$/m.test(messages),
+        'database connectivity'],
         [has(/^SQLSTATE=(28P01|28000)$/), 'database authentication'],
         [has(/^SQLSTATE=42501$/), 'database permission'],
         [has(/^SQLSTATE=(55P03|40P01)$/), 'migration lock'],
         [has(/^SQLSTATE=57014$/), 'database timeout'],
-        [has(/^(CERT_HAS_EXPIRED|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|ERR_TLS_CERT_ALTNAME_INVALID)$/), 'database TLS'],
-        [has(/^(AccessDeniedException|DecryptionFailure|EncryptionFailure|UnrecognizedClientException|ExpiredTokenException|InvalidSignatureException|CredentialsProviderError|TokenProviderError)$/), 'AWS access/decryption'],
+        ...groups.filter(label => label !== 'database connectivity').map(label => [true, label]),
         [/^(?:.*: )?(?:Aurora secret requires nonempty username and password strings|SQL-reader secret requires username awsops_sql_reader and a nonempty password string|Secret must contain a JSON object in SecretString)$/m.test(messages), 'secret configuration'],
+        [/^sql-reader: awsops_sql_reader has elevated attributes \(/m.test(messages), 'SQL-reader elevation'],
+        [/^sql-reader sync enabled but awsops_sql_reader is missing; apply its migration first$/m.test(messages), 'SQL-reader missing role'],
         [/^checksum drift: applied (baseline|migration) /m.test(messages), 'migration checksum'],
         [/^Refusing initialization of a non-empty database without schema_migrations$/m.test(messages), 'bootstrap refused nonempty database'],
       ].filter(([matched]) => matched).map(([, label]) => label);

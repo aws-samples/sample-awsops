@@ -1,16 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, spawn } from 'node:child_process';
-import { mkdtemp, writeFile, readFile, rm, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, mkdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { runInNewContext } from 'node:vm';
+import { EventEmitter } from 'node:events';
 
 // Keep AWS at the transport boundary: validation, registration, launch, polling
 // and cleanup below all exercise the production controller.
 import { runMigration, cleanupMigration, selectProject } from './run-migration.mjs';
-import { databaseFailure, secretFailure } from '../migration-errors.mjs';
-import { loadCredentials, readJsonSecret } from '../migrate.mjs';
+import { databaseFailure } from '../migration-errors.mjs';
+import { loadCredentials, readJsonSecret, migrateDatabase } from '../migrate.mjs';
 import { initializeEmptyDatabase } from '../initialize-db.mjs';
 const account = '123456789012';
 const region = 'ap-northeast-2';
@@ -119,21 +121,56 @@ function harness(f = fixture(), override = {}) {
   return { f, deps, calls, messages, get record() { return record; }, get registered() { return registered; } };
 }
 
-test('select only an explicit literal project from dev tfvars; reject ambiguity without echoing config', () => {
+test('select a literal project from dev tfvars; reject ambiguity without echoing config', () => {
   assert.equal(selectProject('project = "awsops-v2-dev"\nregion = "ap-northeast-2"\ndemo_password = "SECRET"'), project);
-  for (const text of ['', 'project="unsafe/other"', 'project="one"\nproject="two"',
-    'project="${evil}"', 'project="a"; touch injected', 'region="us-east-1"\nproject="awsops-v2-dev"']) {
+  for (const text of ['project="unsafe/other"', 'project="one"\nproject="two"',
+    'project="${evil}"', 'project="a"; touch injected', 'region="us-east-1"\nproject="awsops-v2-dev"',
+    'project = var.project', 'project = ""', 'region="us-east-1"', 'region=var.region',
+    'region="ap-northeast-2"\nregion="ap-northeast-2"', '/* project omitted */', 'project=<<EOF']) {
     assert.throws(() => selectProject(text), /project|region|tfvars/i);
   }
 });
 
+test('configure-generated project omission resolves in lockstep with the Terraform default', async () => {
+  const variables = await readFile(new URL('../../../terraform/foundation/variables.tf', import.meta.url), 'utf8');
+  const defaultProject = /variable "project"\s*\{[^}]*\bdefault\s*=\s*"([^"]+)"/.exec(variables)?.[1];
+  assert.equal(defaultProject, 'awsops-v2');
+  const source = await readFile(new URL('../configure.mjs', import.meta.url), 'utf8');
+  // Run the actual pure HCL writers without the interactive/AWS entry point.
+  const writers = source.slice(source.indexOf('function hclString('), source.indexOf('function readExistingFlag('));
+  for (const createNetwork of [true, false]) {
+    const text = runInNewContext(`${writers}\nbuildTfvars(cfg)`, { cfg: {
+      createNetwork, domainName: 'dev.example.com', hostedZoneName: 'example.com',
+      vpcCidr: '10.0.0.0/16', existingVpcId: 'vpc-0123456789abcdef0',
+      existingPrivateSubnetIds: ['subnet-0123456789abcdef0'], agentcoreEnabled: true,
+    } });
+    assert.doesNotMatch(text, /^\s*project\s*=/m);
+    assert.equal(selectProject(text), defaultProject);
+  }
+  assert.equal(selectProject(''), defaultProject);
+  assert.equal(selectProject('# project="ignored"\nregion="ap-northeast-2"'), defaultProject);
+});
+
 test('project CLI reads stdin and never prints the surrounding secret config', () => {
-  const command = spawnSync(process.execPath, [new URL('./run-migration.mjs', import.meta.url).pathname, 'project'], {
-    input: 'project = "awsops-v2-dev"\ndemo_password = "SECRET"\n', encoding: 'utf8',
-  });
-  assert.equal(command.status, 0, command.stderr);
-  assert.equal(command.stdout, 'awsops-v2-dev\n');
-  assert.ok(!command.stderr.includes('SECRET'));
+  for (const [input, expected] of [
+    ['project = "awsops-v2-dev"\ndemo_password = "SECRET"\n', 'awsops-v2-dev'],
+    ['demo_password = "SECRET"\n', 'awsops-v2'],
+  ]) {
+    const command = spawnSync(process.execPath, [new URL('./run-migration.mjs', import.meta.url).pathname, 'project'], {
+      input, encoding: 'utf8',
+    });
+    assert.equal(command.status, 0, command.stderr);
+    assert.equal(command.stdout, `${expected}\n`);
+    assert.ok(!command.stderr.includes('SECRET'));
+  }
+});
+
+test('default project cannot bypass the Terraform output cross-stack check', async () => {
+  const h = harness();
+  h.f.context.project = selectProject('');
+  h.f.context.image = h.f.context.image.replace(project, h.f.context.project);
+  await assert.rejects(runMigration(h.f, h.deps), /output does not match the development stack/);
+  assert.equal(h.calls.length, 0);
 });
 
 test('AWS registration response defaults and JSON key order do not reject the approved clone', async () => {
@@ -557,29 +594,113 @@ async function checkFailureLogs(message, expected) {
   assert.ok(!h.messages.join('\n').includes('::warning::'));
 }
 
+async function caughtDiagnostic(action) {
+  let failure;
+  try { await action(); } catch (error) { failure = error; }
+  assert.ok(failure, 'runtime must reject the fixture');
+  assert.doesNotMatch(failure.message, /SECRET|::warning::/);
+  return failure.message;
+}
+
+// Only database transport is replaced. The runtime owns purposes, event
+// handling, reader validation and connection cleanup before logs reach CI.
+async function runtimeDiagnostic({ phase = 'connect', error,
+  role = { rolsuper: false, rolreplication: false, rolbypassrls: false },
+  secret = { username: 'awsops_sql_reader', password: 'SECRET' } } = {}) {
+  const directory = await mkdtemp(join(tmpdir(), 'migration-diagnostic-SECRET-'));
+  class Client extends EventEmitter {
+    async connect() { if (phase === 'connect') throw error; }
+    async query(sql) {
+      if (sql.includes('information_schema.columns')) {
+        if (phase === 'connection-event') this.emit('error', error);
+        return { rows: ['version', 'checksum'].map(column_name => ({ column_name, data_type: 'text' })) };
+      }
+      if (sql.includes('FROM pg_roles')) return { rows: role ? [role] : [] };
+      if (sql.startsWith('ALTER ROLE')) throw error;
+      return { rows: [] };
+    }
+    escapeLiteral(value) { return `'${value.replaceAll("'", "''")}'`; }
+    async end() { if (phase === 'cleanup') throw error; }
+  }
+  try {
+    if (phase === 'file') await symlink(join(directory, 'missing.sql'),
+      join(directory, '01ARZ3NDEKTSV4RRFFQ69G5FAV_missing.sql'));
+    return await caughtDiagnostic(() => migrateDatabase(new Client(), {
+      migrationDir: directory, logger: { log() {} },
+      env: phase === 'reader' ? { SQL_READER_SYNC_MODE: 'secret', SQL_READER_SECRET_ARN: 'reader' }
+        : { SQL_READER_SYNC_MODE: 'disabled' },
+      readSecret: async () => secret,
+      terraformOutput: () => assert.fail('runtime must not invoke Terraform'),
+    }));
+  } finally { await rm(directory, { recursive: true, force: true }); }
+}
+
+function credentialDiagnostic(error) {
+  const env = Object.fromEntries(fixture().template.containerDefinitions[0].environment.map(v => [v.name, v.value]));
+  return caughtDiagnostic(() => loadCredentials(env, {
+    readSecret: arn => readJsonSecret(arn, { send: async () => { throw error; } }),
+  }));
+}
+
 for (const [codes, category] of [
   ['28P01 28000', 'database authentication'],
   ['42501', 'database permission'],
   ['55P03 40P01', 'migration lock'],
   ['57014', 'database timeout'],
-  ['08001 08006 ECONNREFUSED ECONNRESET ENOTFOUND EAI_AGAIN ETIMEDOUT EPIPE NetworkingError TimeoutError RequestTimeout AbortError', 'database connectivity'],
+  ['08001 08006 57P01 57P03 ECONNREFUSED ECONNRESET ENOTFOUND EAI_AGAIN ETIMEDOUT EPIPE NetworkingError TimeoutError RequestTimeout AbortError', 'database connectivity'],
   ['CERT_HAS_EXPIRED DEPTH_ZERO_SELF_SIGNED_CERT SELF_SIGNED_CERT_IN_CHAIN UNABLE_TO_VERIFY_LEAF_SIGNATURE UNABLE_TO_GET_ISSUER_CERT_LOCALLY ERR_TLS_CERT_ALTNAME_INVALID', 'database TLS'],
   ['AccessDeniedException DecryptionFailure EncryptionFailure UnrecognizedClientException ExpiredTokenException InvalidSignatureException CredentialsProviderError TokenProviderError', 'AWS access/decryption'],
+  ['ResourceNotFoundException', 'AWS missing resource'],
+  ['ThrottlingException TooManyRequestsException', 'AWS throttling'],
+  ['InternalServiceError InternalServiceErrorException InvalidParameterException InvalidRequestException', 'AWS service/request'],
+  ['ENOENT EACCES EPERM EBUSY', 'filesystem'],
 ]) for (const code of codes.split(' ')) {
   test(`failure logs classify sanitized runtime metadata ${code}`, async () => {
     const error = Object.assign(new Error('password=SECRET ::warning::injected'), { code, name: code });
     const diagnostic = category.startsWith('AWS')
-      ? secretFailure('Aurora master credentials', error)
-      : databaseFailure('Connect to Aurora failed', error);
-    await checkFailureLogs(diagnostic.message, category);
+      ? await credentialDiagnostic(error)
+      : await runtimeDiagnostic({ error });
+    await checkFailureLogs(diagnostic, category);
   });
 }
 
-test('failure logs retain codeless connection context without guessing other unclassified causes', async () => {
-  await checkFailureLogs(databaseFailure('Connect to Aurora failed', new Error('timeout expired SECRET')).message,
-    'database connectivity');
-  await checkFailureLogs(secretFailure('Aurora master credentials', new Error('SECRET')).message,
+for (const [phase, purpose] of [
+  ['connect', 'Connect to Aurora failed'],
+  ['connection-event', 'Aurora connection error'],
+  ['cleanup', 'Aurora connection cleanup failed'],
+]) for (const code of [undefined, '57P01', '57P03']) {
+  test(`failure logs classify actual ${phase}: ${code ?? 'codeless'}`, async () => {
+    const message = await runtimeDiagnostic({ phase, error: Object.assign(new Error('SECRET'), { code }) });
+    assert.equal(message, `${purpose}: ${code ? `SQLSTATE=${code}` : 'unclassified error'}`);
+    await checkFailureLogs(message, 'database connectivity');
+  });
+}
+
+test('failure logs do not guess codeless credential or reader-sync causes', async () => {
+  await checkFailureLogs(await credentialDiagnostic(new Error('SECRET')),
     'unclassified (inspect the private log stream)');
+  await checkFailureLogs(await runtimeDiagnostic({ phase: 'reader', error: new Error('SECRET') }),
+    'unclassified (inspect the private log stream)');
+});
+
+for (const attribute of ['rolsuper', 'rolreplication', 'rolbypassrls']) {
+  test(`failure logs classify actual reader elevation: ${attribute}`, async () => {
+    // Elevation is checked even when password synchronization is disabled.
+    await checkFailureLogs(await runtimeDiagnostic({ phase: 'validate', role: { [attribute]: true } }),
+      'SQL-reader elevation');
+  });
+}
+test('failure logs classify actual missing reader role', async () => {
+  await checkFailureLogs(await runtimeDiagnostic({ phase: 'reader', role: null }), 'SQL-reader missing role');
+});
+test('failure logs classify actual malformed reader secret', async () => {
+  await checkFailureLogs(await runtimeDiagnostic({ phase: 'reader', secret: {} }), 'secret configuration');
+});
+
+test('failure logs classify an actual migration asset read error without leaking its path', async () => {
+  const message = await runtimeDiagnostic({ phase: 'file' });
+  assert.equal(message, 'Prepare migrations failed: ENOENT');
+  await checkFailureLogs(message, 'filesystem');
 });
 
 test('failure logs separate actual malformed-secret failures from initializer refusal', async () => {
@@ -596,8 +717,6 @@ test('failure logs separate actual malformed-secret failures from initializer re
     assert.ok(failure, 'runtime must reject the fixture');
     await checkFailureLogs(failure.message, category);
   }
-  await checkFailureLogs('SQL-reader secret requires username awsops_sql_reader and a nonempty password string',
-    'secret configuration');
 });
 
 test('failure logs ignore audit text, notices and partial code matches', async () => {

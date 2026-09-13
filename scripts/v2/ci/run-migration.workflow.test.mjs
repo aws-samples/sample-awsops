@@ -23,6 +23,7 @@ async function shell(script, env = {}, files = {}) {
       await mkdir(join(dir, folder), { recursive: true });
     }
     await copyFile(new URL('./run-migration.mjs', import.meta.url), join(dir, 'scripts/v2/ci/run-migration.mjs'));
+    await copyFile(new URL('../migration-errors.mjs', import.meta.url), join(dir, 'scripts/v2/migration-errors.mjs'));
     await writeFile(join(dir, 'bin/terraform'), `#!/usr/bin/env python3
 import json,os,sys
 with open(os.environ["CALLS"],"a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")

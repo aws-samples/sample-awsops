@@ -11,6 +11,37 @@ import { databaseFailure } from '../migration-errors.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
+test('shared diagnostic groups are immutable and preserve the exact runtime allowlist and formatting', async () => {
+  const { diagnosticCodeGroups, diagnosticCodes } = await import('../migration-errors.mjs');
+  assert.ok(diagnosticCodeGroups, 'runtime must export the controller diagnostic groups');
+  const recognized = [
+    'AccessDeniedException', 'DecryptionFailure', 'EncryptionFailure',
+    'InternalServiceError', 'InternalServiceErrorException', 'InvalidParameterException',
+    'InvalidRequestException', 'ResourceNotFoundException', 'ThrottlingException',
+    'TooManyRequestsException', 'UnrecognizedClientException', 'ExpiredTokenException',
+    'InvalidSignatureException', 'CredentialsProviderError', 'TokenProviderError',
+    'TimeoutError', 'RequestTimeout', 'AbortError', 'NetworkingError',
+    'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT',
+    'ENOENT', 'EACCES', 'EPERM', 'EPIPE', 'EBUSY',
+    'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN',
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+    'ERR_TLS_CERT_ALTNAME_INVALID',
+  ];
+  assert.deepEqual(Object.values(diagnosticCodeGroups).flat().sort(), recognized.sort());
+  assert.ok(Object.isFrozen(diagnosticCodeGroups));
+  assert.throws(() => { diagnosticCodeGroups.injected = ['SECRET']; }, TypeError);
+  for (const codes of Object.values(diagnosticCodeGroups)) {
+    assert.ok(Object.isFrozen(codes));
+    assert.throws(() => codes.push('SECRET'), TypeError);
+  }
+  for (const code of recognized) assert.equal(diagnosticCodes({ name: code, code, message: 'SECRET' }), code);
+  assert.equal(diagnosticCodes({ name: 'AccessDeniedException', code: 'ENOENT',
+    $metadata: { httpStatusCode: 400 } }), 'AccessDeniedException, ENOENT, HTTP=400');
+  assert.equal(diagnosticCodes({ name: 'Error', code: '57P01',
+    $metadata: { httpStatusCode: 503 } }), 'HTTP=503, SQLSTATE=57P01');
+  assert.equal(diagnosticCodes({ name: 'SECRET', code: 'SECRET', message: 'SECRET' }), 'unclassified error');
+});
+
 test('importing the runner never exits the caller or starts CLI work', () => {
   const result = spawnSync(process.execPath, ['--input-type=module', '-e',
     'await import("./scripts/v2/migrate.mjs"); console.log("import-completed");'], {
