@@ -65,13 +65,20 @@ domain-aware coverage를 확장하고 parity 뒤 direct target을 retirement하�
 
 For CloudFront, optional `query_inventory.resource_id` performs a validated, parameterized
 identity lookup (one row, no origins/aliases). Responses mark `projection=identity_only` and
-echo the ID; missing attributes are not evidence of absence. Deploy the Lambda and gateway
-schema together. Existing sql_reader views/grants suffice; no AWS mutation or migration is added.
+echo the ID; omitted attributes are outside this projection. **Deployment gate:** first apply the
+reviewed Terraform plan for the inventory Lambda, then run AgentCore deployment (`make agentcore`)
+to update the gateway schema. `make agentcore` does not ship Lambda code. Schema-first rollout lets
+the old Lambda ignore the ID and return an unmarked bulk list. Consumers must require
+`projection=identity_only` and a matching echoed ID; missing/mismatched metadata means unverified,
+never an exact result or absence proof. Existing sql_reader views/grants suffice; no mutation or migration is added.
 A miss includes a fixed note directing readers to freshness/direct reads, not an AWS-absence verdict.
 
 CloudFront의 선택적 `resource_id`는 검증·바인딩된 ID 한 행만 조회합니다. 응답은
 identity-only projection과 ID를 명시하므로 속성 누락을 부재로 판단하지 않습니다.
-Lambda와 Gateway 스키마를 함께 배포하며 기존 읽기 뷰/권한을 그대로 사용합니다.
+먼저 검토한 Terraform 계획으로 Lambda를 배포하고, 이후 AgentCore 배포(`make agentcore`)로 Gateway
+스키마를 갱신한다. 순서를 바꾸면 이전 Lambda가 ID를 무시하고 일반 목록을 반환할 수 있다.
+클라이언트는 projection과 ID 일치를 확인하며 누락·불일치는 미확인으로 처리한다.
+origin/alias는 이 projection에 없으며 기존 읽기 뷰/권한을 사용한다. AWS 변경·migration은 추가하지 않는다.
 미발견 응답은 신선도·직접 조회를 확인하도록 명시하며 AWS에서 리소스가 없다는 뜻이 아닙니다.
 
 **Provisioner:** `scripts/v2/agentcore/{catalog.py, provision.py}` — `catalog.py` holds

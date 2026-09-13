@@ -11,6 +11,8 @@ lists below.
   Responses disclose `projection=identity_only` and echo the validated ID. Existing sql_reader
   view columns/grants suffice; this adds no schema/permission change or AWS mutation.
   A zero-row identity result includes a fixed note: synced-inventory absence is not AWS absence.
+  Deploy Lambda code through the reviewed Terraform flow before updating the gateway schema.
+  Consumers must match projection and echoed ID; missing/mismatched metadata means unverified lookup.
 - `create_targets.py` — **v1/dark**: an older, hand-written Gateway Target creator (8 gateways,
   no `external-obs`). The live v2 provisioner is `scripts/v2/agentcore/{catalog,provision}.py`
   (9 gateways) — read those, not this file, for the current provisioning path.
