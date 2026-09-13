@@ -191,7 +191,7 @@ export async function GET(request: Request) {
       // freshness omitted — non-fatal.
     }
 
-    const collection = await readCollectionStatus(pool, accounts);
+    const collection = await readCollectionStatus(pool);
     return Response.json({ byType, byCategory, total, splits: splitsOk ? splits : null, ec2Types, lastSyncAt, collection });
   } catch (e) {
     return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: 500 });
