@@ -113,6 +113,7 @@ terraform/**/backend.hcl
 terraform/**/ci-state.json
 terraform/**/ci-deployment.tfvars.json
 terraform/**/ci-domain.auto.tfvars.json
+terraform/**/ci-runtime.auto.tfvars.json
 terraform/**/tfassets.tar.gz
 terraform/**/tfassets.enc
 terraform/**/.ci-assets-*/

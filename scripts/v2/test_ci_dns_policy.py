@@ -62,6 +62,27 @@ class DnsPolicyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["dns_changes"], [])
 
+    def test_runtime_repository_scope_remains_dns_free_and_dev_only(self):
+        module = self.module()
+        plan = {
+            "format_version": "1.2", "variables": {"ci_domain_rollout": {"value": False}},
+            "planned_values": {}, "resource_changes": [{
+                "address": "aws_ecr_repository.steampipe[0]", "type": "aws_ecr_repository",
+                "change": {"actions": ["create"]},
+            }],
+        }
+        result = module.check_plan(plan, False, "runtime-ecr-bootstrap", target="dev")
+        self.assertEqual(result["dns_changes"], [])
+        with self.assertRaises(ValueError):
+            module.check_plan(plan, False, "runtime-ecr-bootstrap", target="main")
+        plan["resource_changes"].append({
+            "address": "aws_service_discovery_private_dns_namespace.main[0]",
+            "type": "aws_service_discovery_private_dns_namespace",
+            "change": {"actions": ["create"]},
+        })
+        with self.assertRaises(ValueError):
+            module.check_plan(plan, True, "runtime-ecr-bootstrap", target="dev")
+
     def test_owned_validation_cnames_cannot_be_retired_even_with_dns_permission(self):
         for allow in (False, True):
             for actions in (["delete"], ["delete", "create"], ["create", "delete"]):

@@ -447,7 +447,9 @@ resource "aws_ecs_task_definition" "web" {
         { name = "HOST_ACCOUNT_ID", value = data.aws_caller_identity.current.account_id },
         # AI Diagnosis (Task 1b): the diagnosis POST route reads process.env.AWS_ACCOUNT_ID.
         { name = "AWS_ACCOUNT_ID", value = data.aws_caller_identity.current.account_id },
-        ], var.workers_enabled ? [
+        ], var.inventory_host_only ? [
+        { name = "INVENTORY_HOST_ONLY", value = "true" }
+        ] : [], var.workers_enabled ? [
         { name = "JOBS_QUEUE_URL", value = one(aws_sqs_queue.jobs[*].url) }
         ] : [], var.remediation_enabled ? [
         # ADR-029+036: the web execute route reads the kill-switch param name + remediation SM ARN.
