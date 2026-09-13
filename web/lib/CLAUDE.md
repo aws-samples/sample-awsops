@@ -1,10 +1,17 @@
 # Library Module
 
 ## Role
-135 domain-logic modules (verified `find web/lib -name "*.ts" ! -name "*.test.ts" | wc -l`) shared by API routes and components, mostly React-free (includes `collectors/`). Tests colocated with source, vitest.
+Domain-logic modules shared by API routes and components, mostly React-free (includes `collectors/`). Tests colocated with source, vitest.
 
 ## Key Files
-- `db.ts` — Aurora node-pg shared pool `getPool()`: RDS IAM DB auth (`awsops_web` role, not the master secret). `password` is passed as a function so each connection signs a fresh 15-minute token — safe across the 7-day secret auto-rotation. `max: 3`.
+- `db-connection.ts` — exports `ObservedDbClient`; coupled to pinned pg 8.13.1 internal
+  `connection` events. `sslconnect` means SSL accepted, not completed TLS: only the socket's
+  `secureConnect` marks TLS completion. Observe error/errorMessage/end until Client connect,
+  preserving original errors and logging only fixed phase labels plus elapsed milliseconds.
+  Keep file path/export name and `scripts/v2/ci/web-db-connection.itest.mjs` in lockstep: that
+  required cross-tree CI suite compiles this exact path and imports this exact export. pg bumps
+  must pass both the web real-socket tests and the required PostgreSQL/TLS suite.
+- `db.ts` — Aurora node-pg shared pool `getPool()`: RDS IAM DB auth (`awsops_web` role, not the master secret). `password` is passed as a function so each connection signs a fresh 15-minute token — safe across the 7-day secret auto-rotation. `max: 3`. The pool installs `ObservedDbClient` for redacted physical-connection failure timing.
 - `auth.ts` — `verifyUser()`: re-verifies the `awsops_token` cookie via RS256 JWKS, alg pinning + `token_use==='id'`.
 - `aws-data.ts` — Steampipe SQL layer behind the chat `aws-data` route: LLM generates a SELECT (one self-correction pass) → live execution path (SELECT-only guard, 200-row cap, dedicated small pool `max: 2` + `statement_timeout: 35s` — raised from measured cold multi-region wide-scan latency) is retained as dark code but hard-disabled — `steampipeAvailable()` unconditionally returns `false` per ADR-001/010, so this logic never actually runs; see root CLAUDE.md's AI (AgentCore) section for the full fail-open contract → row-based Bedrock analysis stream (when the path is live). **Sonnet-5 responses can start with a thinking block — never assume `content[0]` is the text block; read all text blocks.** History turns starting with an assistant ⚠️ fallback are excluded from the SQL-generation context — guards against history contamination that misleads the model into thinking tools are unavailable.
 - `collectors/` — registry of the 6 auto-collect collectors (idle-scan, eks/db/msk-optimize, trace-analyze, incident). One line registered in `COLLECTORS` adds a chat route — `chat/route.ts` branches through a single generic `collectorByKey`.

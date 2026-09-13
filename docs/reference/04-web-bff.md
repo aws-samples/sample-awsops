@@ -19,7 +19,7 @@
   - `/api/jobs` (+ `/api/jobs/[id]`) — **P2 async** job submission/lookup, but the *generic* route only accepts `noop`/`noop-heavy`. Heavy/long/OOM-risk work is never run inline — it's enqueued via `web/lib/jobs.ts` `enqueueJob()` (durable Aurora ledger row, then best-effort SQS), but on user-facing paths `report`/`compliance` are reachable only through their own ownership-scoped routes, `POST /api/diagnosis` and `POST /api/compliance/run`, which compute `requestedBy` server-side; the trusted `schedule_dispatcher.py` direct enqueue is an internal exception for scheduled reports. The generic route deliberately rejects those two types: they'd otherwise trust a client-supplied `report_id`/`run_id`/`requested_by` with no ownership check — a cross-user IDOR write closed in the PR #195 pentest remediation.
 - **Image distribution — dual-tier ECR**: dev-private `awsops-v2-web` and prod-public `public.ecr.aws/r7z4t3s6/awsops-v2-web`.
 - **Deploy loop**: `make deploy` → `scripts/v2/deploy.mjs`: ECR login → `buildx` arm64 build+push → ECS `force-new-deployment` → `aws ecs wait services-stable` → smoke `GET /api/health`.
-- **Secret wiring**: the Aurora master secret is injected via the ECS task definition `secrets` `valueFrom` (`AURORA_USER`/`AURORA_PASSWORD`), resolved by the **execution role** at task start.
+- **Database authentication**: the task role has cluster/user-scoped `rds-db:connect`; the shared pool generates a fresh IAM token per physical connection as `awsops_web`. It does not use the Aurora master secret.
 
 **KO**
 
@@ -28,7 +28,7 @@
 - **라우트**: `/api/health`(공개 liveness, 배포 스모크 + 컨테이너/타깃그룹 헬스 경로), `/api/stream`(SSE, ~15s 하트비트), `/api/db`(node-`pg` 공유 풀 `getPool`로 Aurora ping), `/api/jobs`(+`/[id]`, P2 비동기 — 단 범용 라우트는 `noop`/`noop-heavy`만 허용). 무거운 작업은 인라인 실행 없이 `web/lib/jobs.ts`의 `enqueueJob()`으로 큐잉되지만, 사용자 경로 기준 `report`/`compliance`는 범용 라우트가 아니라 각자의 소유권-스코프 전용 라우트(`POST /api/diagnosis`, `POST /api/compliance/run`, 둘 다 `requestedBy`를 서버 측에서 계산)로만 도달 가능하며 예약 리포트의 신뢰된 `schedule_dispatcher.py` 내부 직접 enqueue는 예외다 — 클라이언트가 넘긴 `report_id`/`run_id`/`requested_by`를 소유권 검증 없이 신뢰하면 cross-user IDOR write가 되므로(PR #195 pentest-remediation에서 차단) 범용 라우트는 이 두 타입을 거부한다.
 - **이미지 배포 — 듀얼 티어 ECR**: dev-private `awsops-v2-web`, prod-public `public.ecr.aws/r7z4t3s6/awsops-v2-web`.
 - **배포 루프**: `make deploy` → `scripts/v2/deploy.mjs` (login → buildx arm64 push → ECS force-new-deployment → wait stable → `/api/health` 스모크).
-- **시크릿 주입**: Aurora 마스터 시크릿을 ECS task def의 `secrets` `valueFrom`(`AURORA_USER`/`AURORA_PASSWORD`)로 주입 — **실행 역할(execution role)** 이 태스크 시작 시 해석.
+- **DB 인증**: 태스크 역할의 cluster/user 한정 `rds-db:connect` 권한으로 `awsops_web` IAM 토큰을 연결마다 생성한다. 웹 풀은 Aurora 마스터 시크릿을 사용하지 않는다.
 
 ## Decisions (ADRs) / 결정
 
@@ -47,7 +47,7 @@
 | `web/lib/jobs.ts` | `enqueueJob()` — durable ledger write + best-effort SQS send, shared by `/api/jobs`, `/api/diagnosis`, `/api/compliance/run` |
 | `web/app/api/diagnosis/route.ts` | Diagnosis report job submission — computes `requestedBy` server-side, not client-supplied |
 | `web/app/api/compliance/run/route.ts` | CIS compliance scan job submission — computes `requestedBy` server-side, not client-supplied |
-| `web/lib/db.ts` | Shared node-`pg` Pool (`getPool`) |
+| `web/lib/db.ts` / `db-connection.ts` | Shared IAM-authenticated pool and redacted physical-connection phase observer / IAM 공유 풀·연결 단계 계측 |
 | `web/Dockerfile` | Multi-stage standalone arm64 build (sets `HOSTNAME=0.0.0.0`) |
 | `terraform/foundation/workload.tf` | ECS cluster/service/task def, ALB, TG, IAM roles, secret injection |
 | `terraform/foundation/ecr.tf` | Dual-tier ECR (dev-private repo + prod-public repo) |
@@ -55,7 +55,37 @@
 
 ## Status / 상태
 
-**P1d ✅ GREEN.** — Web image live, dual-tier ECR, `make deploy` loop, Aurora secret wired, container + ALB health on `/api/health`.
+The implementation supports standalone web deployment and IAM database authentication.
+`/api/health` proves liveness only; deployment-specific login/database readiness must be verified.
+standalone 웹 배포와 IAM DB 인증이 구현돼 있다. `/api/health`는 프로세스 생존만 확인하므로
+각 배포의 로그인·DB 준비 상태는 별도로 검증한다.
+
+## Connection failure phases / 연결 실패 단계
+
+`db_connection_failed` records one failed physical connection's `phase`, `elapsed_ms` and
+`milestones_ms`; it contains no endpoint, user, credentials, token, SQL or raw error. The
+existing timeout, pool size, authentication and TLS settings are unchanged. Phase identifies
+where progress stopped, not its root cause. A pool-slot wait creates no new physical connection.
+`db_connection_failed`는 물리 연결 실패의 단계·경과 시간만 기록하며 endpoint·사용자·자격증명·
+토큰·SQL·오류 원문은 포함하지 않는다. 시간 제한·풀 크기·인증·TLS 설정은 그대로다. 단계는
+진행이 멈춘 위치이며 원인 확정이 아니다. 풀 슬롯 대기에는 새 물리 연결 이벤트가 없다.
+
+| Phase | Meaning / 의미 |
+|---|---|
+| `dns_tcp_connect`, `tcp_connect` | TCP connection unproven / TCP 연결 미확인 |
+| `tls_negotiation` | TCP complete; awaiting PostgreSQL SSL acceptance / TCP 완료, SSL 수락 대기 |
+| `tls_handshake` | SSL accepted; TLS handshake not complete / SSL 수락, TLS handshake 미완료 |
+| `postgres_startup` | Waiting for PostgreSQL protocol progress / PostgreSQL 프로토콜 진행 대기 |
+| `iam_token` | Password requested; signing/credential resolution pending / 비밀번호 요청 후 서명·자격증명 준비 대기 |
+| `postgres_authentication` | Token ready; authentication pending or rejected / 토큰 준비 후 인증 대기·거부 |
+
+`tls_connected` proves handshake completion under the configured TLS policy, not certificate
+trust verification. Production retains its existing policy; the direct PostgreSQL test fixture
+verifies certificates. Web socket tests cover negotiation/handshake boundaries, while the
+required PostgreSQL suite covers async credentials, authentication rejection and error identity.
+`tls_connected`는 설정된 정책 아래 handshake 완료를 뜻하며 인증서 신뢰 검증을 보장하지 않는다.
+직접 PostgreSQL 테스트 fixture는 인증서를 검증하고, 웹 socket 테스트는 TLS 경계를 검사한다.
+필수 PostgreSQL suite는 비동기 자격증명·인증 거부·오류 동일성을 검사한다.
 
 ## Learnings & gotchas / 학습·함정
 
