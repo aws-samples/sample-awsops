@@ -23,12 +23,23 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
-| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC and protected review recovery; ECR preflight; state-preserving DNS deferral, certificate ownership, dispatch-only same-SHA saved plans, Host/SNI smoke, default-off manual private DB migration, opt-in authenticated verification and manual opt-in advisory read-only DB diagnostics (ADR-002/005/016) |
+| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC and protected review recovery; ECR preflight; state-preserving DNS deferral, certificate ownership, dispatch-only same-SHA saved plans and private authenticated assets, Host/SNI smoke, default-off manual private DB migration, opt-in authenticated verification and manual opt-in advisory read-only DB diagnostics (ADR-002/005/016) |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; explicit saved-plan domain scope, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
 | [steampipe-quota-and-staleness.md](steampipe-quota-and-staleness.md) | Steampipe quota guard — rate limiter knobs, partial runs, freshness ledger/staleness response |
 | [agent-sql-reader.md](agent-sql-reader.md) | `execute_sql`/`inventory-read` Data API auth failures — `awsops_sql_reader` role/password sync (`apply → make migrate → make agentcore`) |
 
 ## Deployment invariants
+- `scripts/v2/ci_tf_assets.py` shares one locked pg8000 installer with Terraform.
+  Prepare invalidates markers and removes stale regular ZIPs, rejecting ZIP symlinks.
+  Pack requires known planned ZIPs and binds plan/SHA/scope, paths, modes and hashes with
+  `TF_PLAN_ENC_KEY` HMAC. Both pack/restore APIs allow only push/pull_request/workflow_dispatch
+  in GitHub, or explicit local commits without an event; other events fail before work.
+  Targeted plans omit untargeted Lambda resources from planned_values; preserve the ZIP check.
+  The 0600 tarball can contain signing keys. The integrating workflow must encrypt it before
+  upload and clean its own plaintext/staging; pack/restore has no workflow caller yet.
+  `CI_ASSETS_READY=true` makes layer provisioners validate restored files without reinstalling.
+  See `scripts/v2/ci/pg8000-requirements.txt`, `scripts/v2/test_ci_tf_assets.py` and
+  `docs/reference/06-workers.md`. Key rotation invalidates prior signed bundles.
 - `CI_DB_DIAGNOSTICS_DEV` is false/unset by default; literal `true` plus `workflow_dispatch`
   enables advisory dev plan diagnostics only after encrypted artifact upload. Require
   `--target dev`, region `ap-northeast-2`, and state-account/STS consistency; this is not

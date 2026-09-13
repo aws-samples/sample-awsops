@@ -1,5 +1,21 @@
 # Runbook — Steampipe 쿼터 및 인벤토리 신선도 / Steampipe Quota and Inventory Staleness
 
+## Optional host scope / 선택적 호스트 범위
+
+`INVENTORY_HOST_ONLY=true` requires `EXPECTED_HOST_ACCOUNT_ID` and exactly one enabled
+host row matching fresh STS identity. Wrong scope or exhausted identity retries prevents
+startup or stops collection with exit 1. Transient STS calls get three total attempts;
+ordinary SIGTERM remains a graceful exit. Stop and restart share a lock, and crash backoff
+is interruptible. Defaults preserve the existing multi-account renderer. Before enabling,
+prepare the host registry and ensure the account-management path enforces the intended scope.
+
+`INVENTORY_HOST_ONLY=true`에서는 예상 계정과 활성 호스트 행 하나가 STS 식별자와
+일치해야 합니다. 잘못된 범위나 재시도 소진은 시작을 막거나 종료 코드 1로 수집을
+중단합니다. 일시적 STS 실패는 총 3회까지만 시도하며 일반 SIGTERM은 정상 종료입니다.
+종료와 재시작은 같은 잠금을 사용하고 backoff도 중단됩니다. 기본 다중 계정 동작은
+유지하며, 활성화 전에 호스트 행과 계정 관리 경로의 범위 제어를 준비합니다.
+
+
 > Data-flow diagram / 데이터 흐름 다이어그램: [`docs/diagrams/inventory-freshness-dataflow.html`](../diagrams/inventory-freshness-dataflow.html) (archify — collector → guard → ledger → freshness disclosure)
 
 Phase 1의 Steampipe 인벤토리 sync를 운영하는 절차다. Phase 1 구현은 저장소에 있다. **이 변경을 수행한 에이전트는 Terraform apply를 실행하지 않았으며, controller의 실제 배포 상태는 별도로 확인해야 한다.** 현재 ops gateway의 제한된 Aurora `inventory-read-target`은 direct domain inventory/configuration target과 공존한다.

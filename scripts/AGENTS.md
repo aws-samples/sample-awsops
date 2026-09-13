@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8694331e4ac9 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8a292bbd3640 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -93,3 +93,20 @@ Cap the file at 16 KiB; require a recent start (30 minutes) and unique types inc
 HTTP files default to 64 KiB; only the CloudFront inventory leg allows 2 MiB. The utility
 alone does not change workflow wiring.
 Only applied `agentcore.deployment_readiness_enabled` sets `DEPLOYMENT_READINESS_ENABLED`; missing/false is off, ignoring shell overrides.
+
+## Plan asset utility
+
+`v2/ci_tf_assets.py` prepares the hash-locked pg8000 closure and validates plan/SHA/scope,
+paths, modes and hashes; every ZIP with a known saved-plan hash must be present and match.
+Deferred archives without known hashes are excluded. Both pack/restore APIs allow GitHub
+push, pull_request and workflow_dispatch only, or explicit local commits without a GitHub event.
+They use TF_PLAN_ENC_KEY HMAC.
+The 0600 tarball is private secret-bearing scratch, with no upload path;
+callers must encrypt before publication and clean plaintext files.
+Both Terraform layer paths use the same locked build-layer command, or check-layer for
+CI_ASSETS_READY=true. Prepare invalidates markers, removes stale regular ZIPs and rejects ZIP
+symlinks. Schema-2 markers bind file hashes; validation checks a fixed required-import list.
+The pin gate covers `v2/ci/pg8000-requirements.txt` and the four requirements
+under workers, steampipe, incident and remediation; update all with verified wheel hashes.
+The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and validator.
+`v2/test_ci_tf_assets.py` covers these contracts and recovery.
