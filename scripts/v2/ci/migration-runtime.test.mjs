@@ -72,12 +72,12 @@ for (const [name, args, env, expected] of [
 const runtimeEnv = {
   AWS_REGION: 'ap-northeast-2',
   AURORA_ENDPOINT: 'cluster.example.rds.amazonaws.com',
-  AURORA_DATABASE: 'samples',
+  AURORA_DATABASE: 'awsops',
   AURORA_SECRET_ARN: 'master-secret',
   SQL_READER_SYNC_MODE: 'disabled',
 };
 const noTerraform = () => assert.fail('runtime credentials must not invoke Terraform');
-const master = { username: 'migration_admin', password: 'test-only-master-password' };
+const master = { username: 'awsops_admin', password: 'test-only-master-password' };
 
 test('runtime credentials use only the selected secret and verify the bundled CA and hostname', async () => {
   const config = await runner.loadCredentials(runtimeEnv, {
@@ -88,7 +88,7 @@ test('runtime credentials use only the selected secret and verify the bundled CA
     },
   });
   assert.equal(config.host, 'cluster.example.rds.amazonaws.com');
-  assert.equal(config.database, 'samples');
+  assert.equal(config.database, 'awsops');
   assert.equal(config.user, master.username);
   assert.equal(config.password, master.password);
   assert.equal(config.port, 5432);
@@ -96,6 +96,21 @@ test('runtime credentials use only the selected secret and verify the bundled CA
   assert.equal(config.ssl.servername, runtimeEnv.AURORA_ENDPOINT);
   assert.equal(config.ssl.ca, readFileSync(new URL('../eks/rds-ca-bundle.pem', import.meta.url), 'utf8'));
   assert.equal(config.ssl.checkServerIdentity, undefined);
+});
+
+test('runtime rejects unsupported database names before reading credentials', async () => {
+  await assert.rejects(runner.loadCredentials({ ...runtimeEnv, AURORA_DATABASE: 'other_database' }, {
+    terraformOutput: noTerraform,
+    readSecret: () => assert.fail('unsupported database must fail before secret lookup'),
+  }), /requires database awsops/);
+});
+
+test('migration credentials require the master identity used by the immutable SQL', async () => {
+  for (const username of ['migration_admin', 'awsops_sql_reader', 'awsops_admin ']) {
+    await assert.rejects(runner.loadCredentials(runtimeEnv, {
+      terraformOutput: noTerraform, readSecret: async () => ({ ...master, username }),
+    }), /requires master username awsops_admin/);
+  }
 });
 
 test('legacy CLI credentials still resolve Terraform outputs and default database', async () => {

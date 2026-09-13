@@ -80,6 +80,10 @@ export async function loadCredentials(env, { readSecret, terraformOutput = tf })
       if (!env[name]?.trim()) throw new MigrationError(`Runtime migration requires ${name}`);
     }
   }
+  const database = runtime ? env.AURORA_DATABASE.trim() : 'awsops';
+  if (database !== 'awsops') {
+    throw new MigrationError('The immutable migration schema requires database awsops');
+  }
   const arn = runtime ? env.AURORA_SECRET_ARN.trim() : terraformOutput('aurora_secret_arn');
   const host = runtime ? env.AURORA_ENDPOINT.trim() : terraformOutput('aurora_endpoint');
   // node-pg treats a slash-prefixed host as a Unix socket and bypasses TLS.
@@ -91,9 +95,12 @@ export async function loadCredentials(env, { readSecret, terraformOutput = tf })
     || typeof secret.password !== 'string' || !secret.password) {
     throw new MigrationError('Aurora secret requires nonempty username and password strings');
   }
+  if (secret.username !== 'awsops_admin') {
+    throw new MigrationError('The immutable migration schema requires master username awsops_admin');
+  }
   return {
     host, user: secret.username, password: secret.password,
-    database: runtime ? env.AURORA_DATABASE.trim() : 'awsops', port: 5432,
+    database, port: 5432,
     ssl: {
       rejectUnauthorized: true, servername: host,
       ca: readFileSync(join(ROOT, 'scripts/v2/eks/rds-ca-bundle.pem'), 'utf8'),

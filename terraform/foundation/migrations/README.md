@@ -87,14 +87,23 @@ reader output이 정의된 빈 문자열이면 비밀번호 동기화를 끄지�
 | --- | --- |
 | `AWS_REGION` | Required target Region / 대상 리전 필수 |
 | `AURORA_ENDPOINT` | Required writer DNS hostname, no scheme/path/port / writer DNS 이름, 경로·포트 금지 |
-| `AURORA_DATABASE` | Required selected database name / DB 이름 필수 |
-| `AURORA_SECRET_ARN` | Required **master** secret identifier; JSON string `username` and `password`, both nonempty / master 시크릿 |
+| `AURORA_DATABASE` | Required literal `awsops`; other names fail before secret lookup / `awsops`만 허용 |
+| `AURORA_SECRET_ARN` | Required **master** secret identifier; JSON `username` must be `awsops_admin`, password a nonempty string / `awsops_admin` master 시크릿 |
 | `SQL_READER_SYNC_MODE` | Explicit `secret` or `disabled`; no runtime `terraform` mode / 명시적 모드 필수 |
 | `SQL_READER_SECRET_ARN` | Required only with `secret`; omit or empty with `disabled`. JSON username must be exactly `awsops_sql_reader`, password a nonempty string / reader 전용 시크릿 |
 | `INITIALIZE_EMPTY_DB` | Optional one-shot `1` for verified empty DB / 최초 빈 DB 초기화 |
 | `BOOTSTRAP` | Optional controller-confirmed `1` for legacy INTEGER ledger / 기존 INTEGER 원장 전환 |
 | `APP_VERSION` | Optional release stamp fallback; otherwise `web/package.json`; `-- since:` takes precedence / release 기록 |
 | `STATUS`, `DRY_RUN`, `OFFLINE` | `1` enables the inspection modes described above / 위 조회 모드 |
+
+The immutable SQL corpus refers to database `awsops` and default privileges owned by
+`awsops_admin`; these match the foundation's fixed database/master settings. Credential
+validation rejects other names before connecting or initializing a ledger. Renaming them
+requires a separately reviewed migration design, not a runtime environment override.
+
+기존 SQL은 `awsops` DB와 `awsops_admin`의 default privilege를 참조한다. foundation의 고정
+설정과 일치해야 하며 다른 이름은 연결·원장 초기화 전에 거부한다. 이름 변경은 환경변수로
+처리하지 않고 별도의 마이그레이션 설계와 검토가 필요하다.
 
 These names define the runtime interface for a future deployment controller. `AURORA_SECRET_ARN` means the **master** here;
 the agent's `AURORA_SQL_READER_SECRET_ARN` is not an alias for `SQL_READER_SECRET_ARN`.

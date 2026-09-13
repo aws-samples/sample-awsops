@@ -442,7 +442,7 @@ test('missing or elevated reader role and malformed secrets fail closed on rerun
 });
 
 test('runtime TLS accepts a trusted hostname and rejects untrusted CA and hostname mismatch', async () => {
-  const database = await postgres.database();
+  const database = 'awsops'; // The runtime contract matches the deployed foundation.
   const config = await runner.loadCredentials({
     AWS_REGION: 'ap-northeast-2', AURORA_ENDPOINT: 'localhost', AURORA_DATABASE: database, AURORA_SECRET_ARN: 'local-master',
   }, { terraformOutput: forbiddenExternal, readSecret: async () => ({ username: 'awsops_admin', password: postgres.password }) });
