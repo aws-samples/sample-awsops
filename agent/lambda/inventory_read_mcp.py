@@ -588,6 +588,8 @@ def lambda_handler(event, context):
             "resources": rows,
             "freshness": _freshness_for_type(rtype),
         }
+        if resource_id is not None:
+            result.update(projection="identity_only", resource_id=resource_id)
         if rtype not in PROJECTIONS:
             # PR #197 review MAJOR: an unregistered type's `resources` entries only carry whatever
             # keys happen to be on SOME other type's projection allowlist — genuinely absent fields

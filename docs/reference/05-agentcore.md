@@ -160,18 +160,11 @@ Review: `v2-p1f-scope-architecture-review` (private upstream repo)
 
 ## Deployment readiness mode / 배포 검증 모드
 
-`mode=deployment_readiness` is a bounded permission/data probe implemented by `agent/readiness.py`.
-It defaults off. Apply `ci_readiness_enabled=true` with AgentCore enabled, then provision;
-the applied `agentcore.deployment_readiness_enabled` boolean sets `DEPLOYMENT_READINESS_ENABLED`.
-Shell overrides cannot enable it. Fixed Ops tools fetch one CloudFront identity by ID, with producer freshness and a bounded model request;
-missing attribute evidence remains unassessed, not a healthy zero. Caller identity and nonce
-are bound to the response; timeout retains completed checks. App access requires admin or a
-separately provisioned deployment-verifiers membership and process cooldown. Runtime discovery
-rejects PENDING/malformed ARNs before caching; an explicitly empty runtime parameter disables
-discovery. Resource reads remain behind MCP tools.
+`agent/readiness.py` implements bounded, default-off `mode=deployment_readiness`. Apply `ci_readiness_enabled=true` with AgentCore enabled, then provision.
+Only the applied `agentcore.deployment_readiness_enabled` sets `DEPLOYMENT_READINESS_ENABLED`; shell overrides are ignored.
+Fixed MCP tools read one CloudFront identity; producer freshness and bounded inference leave unknown attributes unassessed.
+Nonce/account-bound responses retain completed checks on timeout; admin or separately provisioned deployment-verifiers and process cooldown are required.
+Invocation discovery rejects PENDING/malformed ARNs before caching and stops on an explicitly empty runtime parameter.
 
-이 모드는 기본 비활성입니다. `ci_readiness_enabled=true`를 적용한 AgentCore output으로
-프로비저닝하며 환경변수 덮어쓰기로 활성화할 수 없습니다. 지정 도구·원본 신선도 기준·제한된 모델 요청만 사용합니다.
-누락 속성은 정상 0으로 바꾸지 않고 미평가로 남깁니다. 타임아웃에도 완료된 증거를
-보존하며 앱 호출에는 관리자 또는 별도로 준비된 verifier 권한과 호출 간격이 필요합니다.
-PENDING·잘못된 ARN은 캐시하지 않고 빈 런타임 파라미터는 조회를 비활성화합니다.
+기본 비활성 모드이며 `ci_readiness_enabled=true`를 적용한 output으로 프로비저닝합니다. 환경변수 덮어쓰기는 무시하고 MCP 지정 ID·원본 신선도·제한된 모델 요청만 사용합니다.
+누락 속성은 미평가이며 타임아웃에도 완료 증거를 보존합니다. 관리자/별도 verifier와 호출 간격이 필요하고 PENDING·잘못된 ARN은 캐시하지 않으며 빈 런타임 경로는 호출 조회를 비활성화합니다.

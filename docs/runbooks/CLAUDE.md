@@ -106,7 +106,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 
 ## Authenticated development verification
 - Verify requires applied `agentcore_enabled=true` and `ci_readiness_enabled=true`, then AgentCore
-  provisioning; its output boolean sets `DEPLOYMENT_READINESS_ENABLED`, with no shell override.
+  provisioning, active inventory/dispatch, `workers_enabled=true` and deployed ARM64 worker images.
+  Only the output boolean sets `DEPLOYMENT_READINESS_ENABLED`, with no shell override.
   False/missing is `runtime_disabled`; this flag grants no Cognito group membership.
   Capped samples cannot prove absence. Missing ledger, partial/failed runs and unknown attributes
   remain distinct failures; accepted degraded inventory is not a deployment-readiness exception.

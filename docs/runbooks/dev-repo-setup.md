@@ -1131,7 +1131,10 @@ branch requires investigation and a fresh plan, never bypassing checks.
 
 For verify, apply `agentcore_enabled=true` and `ci_readiness_enabled=true`, then provision AgentCore.
 Only applied output sets `DEPLOYMENT_READINESS_ENABLED`; false/missing yields `runtime_disabled`, ignoring shell overrides.
+Also enable `steampipe_enabled=true`, `workers_enabled=true` and dispatch, and deploy inventory/ARM64
+worker images as described in [worker deployment](../reference/06-workers.md).
 검증 전 두 플래그를 적용하고 프로비저닝합니다. 환경변수 덮어쓰기나 그룹 권한은 부여하지 않습니다.
+수집·워커 플래그와 디스패치를 활성화하고 인벤토리·ARM64 워커 이미지를 먼저 배포해야 합니다.
 
 Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway schema first.
 The web API scan remains capped at 500 rows. Failures distinguish `known_resource_unverified`,
@@ -1139,26 +1142,20 @@ The web API scan remains capped at 500 rows. Failures distinguish `known_resourc
 Degraded inventory never passes release readiness. 미발견은 부재 증명이 아니며 런타임은 지정 ID만 조회합니다.
 웹 표본은 500행 제한이고 모든 수집 타입의 부분 실패·원장 누락·속성 미확인을 통과시키지 않습니다.
 
-The authenticated smoke utility accepts `SMOKE_RUNTIME_CONFIG_FILE`: an absolute 0600 JSON
-file beside `SMOKE_CREDENTIAL_FILE` in the same 0700 directory. Cleanup covers both. Current
-Deploy Web wiring supplies only database verification; the full release controller must
-supply this file before claiming runtime readiness. Never guess a dispatch acknowledgement. The private file is capped at 16 KiB; verify requires
-a start within 30 minutes and a unique queued-type list containing cloudfront.
+`SMOKE_RUNTIME_CONFIG_FILE` is an absolute 0600 JSON file beside credentials in the same 0700 directory;
+cleanup covers both. Its 16 KiB cap, 30-minute verify window and unique type list including cloudfront are required.
+The release controller must supply actual deployment/dispatch evidence; current Deploy Web remains DB-only.
 
-`schemaVersion: 1`, `mode: "prepare"`, and `expectedAccountId` check login/DB and the enabled
-host registry. Optional `hostOnly: true` additionally rejects enabled member accounts for
-host-only activation. Verify mode adds `expectedCloudfrontId`, all acknowledged
-`expectedQueuedTypes`, and `collectionStartedAt` captured before dispatch. The controller
-must derive these from the applied deployment and the owned Lambda response. Verification
-requires fresh completed collection, actual web SSM/runtime calls and succeeded owned
-Lambda/Fargate jobs. Missing/partial/stale evidence is never healthy zero. Deploy the updated inventory-reader
-Lambda through Terraform so legacy NULL attribute coverage is reported as incomplete.
+`schemaVersion: 1`, `mode: "prepare"` and `expectedAccountId` check login/DB and the enabled host.
+Optional `hostOnly: true` also rejects enabled members. Verify adds `expectedCloudfrontId`,
+all acknowledged `expectedQueuedTypes` and the pre-dispatch `collectionStartedAt`, from applied
+deployment and owned Lambda evidence. It requires fresh complete collection, web SSM/runtime calls
+and succeeded Lambda/Fargate jobs. Missing/partial/stale is never healthy zero; deploy the updated
+inventory-reader Lambda so legacy NULL attribute coverage is disclosed as incomplete.
 
-`POST /api/deployment/readiness` requires an administrator or `deployment-verifiers` membership.
-This application change does not provision that group. Release infrastructure must create
-it and grant the CI identity only verifier membership, never administrator or IAM authority.
-Use a fresh login after membership changes. The probe
-permits one in-flight call and a 60-second process-wide cooldown (429 with Retry-After).
+`POST /api/deployment/readiness` requires an administrator or separately provisioned `deployment-verifiers`.
+Release infrastructure grants the CI identity only verifier membership, never admin/IAM authority.
+Use a fresh login after membership changes; one in-flight call and a 60-second process cooldown apply.
 
 스모크 도구는 자격증명 파일과 같은 0700 디렉터리의 0600 JSON을
 `SMOKE_RUNTIME_CONFIG_FILE`로 받으며 함께 정리합니다. 현재 Deploy Web은 DB 검증만

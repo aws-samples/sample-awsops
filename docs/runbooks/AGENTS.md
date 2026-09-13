@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 098ba110a320 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 31c39eded129 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -97,6 +97,7 @@ legacy runbook's steps as the current operational path).
 
 ## Authenticated development verification
 - Apply both `agentcore_enabled` and `ci_readiness_enabled`, then provision AgentCore.
+  Verify also requires active inventory/dispatch, `workers_enabled=true` and deployed ARM64 worker images.
   Only that output boolean enables `DEPLOYMENT_READINESS_ENABLED`; no shell override or
   Cognito membership grant. False/missing reports `runtime_disabled`. Capped samples cannot
   prove absence; missing ledger, partial/failed runs and unknown attributes remain failed readiness.

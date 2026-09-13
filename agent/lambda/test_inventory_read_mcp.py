@@ -170,8 +170,8 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
             result = inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
                 "resource_type": "cloudfront", "resource_id": expected, "limit": 500}}, None)
         body = json.loads(result["body"])
-        self.assertEqual(body["resources"], [{"id": expected}])
-        self.assertEqual(body["count"], 1)
+        self.assertEqual((body["resources"], body["count"]), ([{"id": expected}], 1))
+        self.assertEqual((body["projection"], body["resource_id"]), ("identity_only", expected))
 
     def test_identity_lookup_rejects_other_types_and_invalid_ids_before_sql(self):
         with mock.patch.object(inv, "_execute") as execute:
