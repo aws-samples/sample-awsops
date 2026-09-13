@@ -27,12 +27,12 @@ name: Terraform
 on:
   pull_request:
     branches: [main, dev]
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
     # The workflow file itself is in the path filter so a workflow change
     # self-tests with a real plan on the branch it lands on.
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   workflow_dispatch:
     inputs:
       mode:
@@ -41,12 +41,16 @@ on:
         options: [plan, apply]
         default: plan
       plan_scope:
-        description: "ECR bootstrap creates only the web image repository; full plans the stack"
+        description: "Full stack, web repository only, or the three core-runtime repositories only"
         type: choice
-        options: [full, ecr-bootstrap]
+        options: [full, ecr-bootstrap, runtime-ecr-bootstrap]
         default: full
       domain_rollout:
         description: "Plan only: scope dev/full DNS to the configured service and validation records"
+        type: boolean
+        default: false
+      runtime_rollout:
+        description: "Plan only: dev/full core-runtime rollout, allowing only its private discovery DNS"
         type: boolean
         default: false
       publish_service_dns:
@@ -86,6 +90,7 @@ jobs:
     # plan is automatic and read-only — it must never sit behind any gate.
     env:
       TARGET: ${{ github.base_ref || github.ref_name }}
+      AWS_ACCOUNT_ID_DEV: ${{ vars.AWS_ACCOUNT_ID_DEV }}
       TF_VAR_ci_migrations_enabled: ${{ (github.base_ref || github.ref_name) == 'dev' && vars.CI_MIGRATIONS_ENABLED_DEV || 'false' }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
@@ -101,12 +106,25 @@ jobs:
           terraform_version: 1.15.7
           terraform_wrapper: false
 
+      - name: Validate configured development plan account
+        env:
+          CI_ROLE_ARN: ${{ secrets.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
+        run: python3 ../../scripts/v2/ci_runtime_policy.py verify-role
+
       - name: Configure AWS credentials (OIDC -> ci-terraform-plan)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           mask-aws-account-id: true
           role-to-assume: ${{ secrets.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
           aws-region: ap-northeast-2
+
+      - name: Verify actual development plan caller
+        env:
+          CI_ROLE_ARN: ${{ secrets.AWS_CI_TERRAFORM_PLAN_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            python3 ../../scripts/v2/ci_runtime_policy.py verify-caller
 
       - name: Restore backend.hcl / terraform.tfvars
         id: restore
@@ -156,6 +174,21 @@ jobs:
         if: steps.restore.outputs.skip != '1'
         run: terraform init -backend-config=backend.hcl -input=false
 
+      - name: Configure development runtime profile
+        if: steps.restore.outputs.skip != '1'
+        env:
+          CI_READONLY_RUNTIME_DEV: ${{ vars.CI_READONLY_RUNTIME_DEV }}
+          STEAMPIPE_IMAGE_DIGEST_DEV: ${{ vars.STEAMPIPE_IMAGE_DIGEST_DEV }}
+          WORKER_IMAGE_DIGEST_DEV: ${{ vars.WORKER_IMAGE_DIGEST_DEV }}
+          RUNTIME_ROLLOUT: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_rollout }}
+          PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
+          ADVISORY: ${{ github.event_name != 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          tracked=$(git ls-files -- ci-runtime.auto.tfvars.json)
+          [ -z "$tracked" ] || { echo "::error::Runtime CI override must not be tracked"; exit 1; }
+          python3 ../../scripts/v2/ci_runtime_policy.py overrides
+
       - name: Check existing certificates without changing DNS
         id: dns
         if: steps.restore.outputs.skip != '1' && (github.event_name == 'workflow_dispatch' || env.TARGET == 'dev')
@@ -190,6 +223,18 @@ jobs:
           python3 ../../scripts/v2/ci_dns_policy.py summary \
             < ci-deployment.tfvars.json >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Prepare reproducible Lambda inputs
+        if: steps.restore.outputs.skip != '1'
+        timeout-minutes: 8
+        env:
+          PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
+        run: |
+          set -euo pipefail
+          [ -z "$(git ls-files -- .build)" ] || { echo "::error::.build must contain generated files only"; exit 1; }
+          terraform console -no-color \
+            <<<'jsonencode({steampipe_enabled=var.steampipe_enabled, workers_enabled=var.workers_enabled})' |
+            python3 ../../scripts/v2/ci_tf_assets.py prepare
+
       - name: terraform plan
         if: steps.restore.outputs.skip != '1'
         env:
@@ -215,6 +260,11 @@ jobs:
             case "$PLAN_SCOPE" in
               full) ;;
               ecr-bootstrap) args+=(-target=aws_ecr_repository.web);;
+              runtime-ecr-bootstrap) args+=(
+                -target=aws_ecr_repository.steampipe
+                -target=aws_ecr_repository.agentcore
+                -target=aws_ecr_repository.worker
+              );;
               *) echo "::error::unsupported plan scope"; exit 1;;
             esac
           fi
@@ -224,6 +274,16 @@ jobs:
             *) echo "::error::CI_MIGRATIONS_ENABLED_DEV must be true or false"; exit 1;;
           esac
           terraform plan "${args[@]}"
+
+      - name: Verify runtime account and private discovery scope
+        if: steps.restore.outputs.skip != '1'
+        env:
+          PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
+          ADVISORY: ${{ github.event_name != 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          terraform show -json tfplan |
+            python3 ../../scripts/v2/ci_runtime_policy.py check-plan | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Check planned DNS operations
         if: steps.restore.outputs.skip != '1'
@@ -247,17 +307,24 @@ jobs:
         if: steps.restore.outputs.skip != '1'
         env:
           TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+          PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
         run: |
+          set -euo pipefail
+          umask 077
           [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::TF_PLAN_ENC_KEY secret is not set — refusing to upload a plaintext plan."; exit 1; }
+          python3 ../../scripts/v2/ci_tf_assets.py pack
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in tfplan -out tfplan.enc -pass env:TF_PLAN_ENC_KEY
-          rm -f tfplan
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in tfassets.tar.gz -out tfassets.enc -pass env:TF_PLAN_ENC_KEY
+          rm -f tfplan tfassets.tar.gz
 
       - name: Upload plan artifact (encrypted)
         if: steps.restore.outputs.skip != '1'
         uses: actions/upload-artifact@v4
         with:
           name: tfplan
-          path: terraform/foundation/tfplan.enc
+          path: |
+            terraform/foundation/tfplan.enc
+            terraform/foundation/tfassets.enc
           retention-days: 5
 
       - name: Read safe development database diagnostics
@@ -291,10 +358,13 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          rm -f tfplan tfplan.enc terraform.tfvars backend.hcl ci-deployment.tfvars.json ci-state.json
+          rm -f tfplan tfplan.enc tfassets.tar.gz tfassets.enc terraform.tfvars backend.hcl ci-deployment.tfvars.json ci-state.json
           # Preserve a tracked override for diagnosis if the generation guard refused it.
           tracked=$(git ls-files -- ci-domain.auto.tfvars.json)
           if [ -z "$tracked" ]; then rm -f ci-domain.auto.tfvars.json; fi
+          tracked=$(git ls-files -- ci-runtime.auto.tfvars.json)
+          if [ -z "$tracked" ]; then rm -f ci-runtime.auto.tfvars.json; fi
+          [ -n "$(git ls-files -- .build)" ] || rm -rf .build
 
   apply:
     name: Apply (saved plan)
@@ -307,6 +377,7 @@ jobs:
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
       TARGET: ${{ github.ref_name }}
+      AWS_ACCOUNT_ID_DEV: ${{ vars.AWS_ACCOUNT_ID_DEV }}
       MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
       DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
@@ -347,12 +418,25 @@ jobs:
           [ -n "$ROLE" ] || { echo "::error::deployer role secret for '$TARGET' is not set"; exit 1; }
           echo "role=$ROLE" >> "$GITHUB_OUTPUT"
 
+      - name: Validate configured development apply account
+        env:
+          CI_ROLE_ARN: ${{ steps.sel.outputs.role }}
+        run: python3 ../../scripts/v2/ci_runtime_policy.py verify-role
+
       - name: Configure AWS credentials (OIDC -> ci-deployer)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           mask-aws-account-id: true
           role-to-assume: ${{ steps.sel.outputs.role }}
           aws-region: ap-northeast-2
+
+      - name: Verify actual development apply caller
+        env:
+          CI_ROLE_ARN: ${{ steps.sel.outputs.role }}
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            python3 ../../scripts/v2/ci_runtime_policy.py verify-caller
 
       - name: Restore backend.hcl / terraform.tfvars
         run: |
@@ -389,9 +473,15 @@ jobs:
       - name: Decrypt the approved plan
         env:
           TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+          PLAN_SCOPE: ${{ inputs.plan_scope }}
         run: |
+          set -euo pipefail
+          umask 077
           [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::TF_PLAN_ENC_KEY secret is not set."; exit 1; }
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in tfplan.enc -out tfplan -pass env:TF_PLAN_ENC_KEY
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in tfassets.enc -out tfassets.tar.gz -pass env:TF_PLAN_ENC_KEY
+          python3 ../../scripts/v2/ci_tf_assets.py restore
+          rm -f tfassets.tar.gz
 
       - name: Recheck branch immediately before apply
         env:
@@ -405,15 +495,20 @@ jobs:
         env:
           ALLOW_DNS_CHANGES: ${{ inputs.allow_dns_changes }}
           PLAN_SCOPE: ${{ inputs.plan_scope }}
+          AWSOPS_CI_ASSETS_READY: "1"
         run: |
           set -euo pipefail
           terraform show -json tfplan |
             python3 ../../scripts/v2/ci_dns_policy.py check-plan \
               --allow-dns "$ALLOW_DNS_CHANGES" --scope "$PLAN_SCOPE" --target "$TARGET"
+          terraform show -json tfplan |
+            python3 ../../scripts/v2/ci_runtime_policy.py check-plan
           terraform apply -input=false tfplan
 
       # The runner is persistent — never leave the decrypted plan (embeds sensitive
       # variable values in plaintext) or the restored config behind.
       - name: Clean sensitive files off the runner
         if: always()
-        run: rm -f tfplan tfplan.enc terraform.tfvars backend.hcl
+        run: |
+          rm -f tfplan tfplan.enc tfassets.tar.gz tfassets.enc terraform.tfvars backend.hcl
+          [ -n "$(git ls-files -- .build)" ] || rm -rf .build

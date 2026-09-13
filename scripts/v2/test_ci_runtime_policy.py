@@ -1,0 +1,200 @@
+"""Runtime activation is account-bound, digest-pinned and private-DNS scoped."""
+import importlib.util
+import json
+from pathlib import Path
+import unittest
+
+
+def load():
+    path = Path(__file__).with_name("ci_runtime_policy.py")
+    spec = importlib.util.spec_from_file_location("ci_runtime_policy", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+ACCOUNT = "012345678901"
+DIGEST = "sha256:" + "a" * 64
+
+
+class RuntimePolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.assertTrue(Path(__file__).with_name("ci_runtime_policy.py").is_file(),
+                        "Runtime activation policy is not implemented")
+        self.module = load()
+
+    def test_profile_is_opt_in_and_does_not_modify_other_branches(self):
+        self.assertEqual(self.module.runtime_overrides("main", "true", "", "full", "", "", False), {})
+        self.assertEqual(self.module.runtime_overrides("dev", "", ACCOUNT, "full", "", "", False),
+                         {"ci_runtime_rollout": False})
+        self.assertEqual(self.module.runtime_overrides("dev", "false", ACCOUNT, "full", "", "", False),
+                         {"ci_runtime_rollout": False})
+
+    def test_bootstrap_enables_only_existing_core_flags_without_fake_images(self):
+        value = self.module.runtime_overrides("dev", "true", ACCOUNT, "runtime-ecr-bootstrap", "", "", False)
+        self.assertEqual(value, {
+            "agentcore_enabled": True, "workers_enabled": True, "steampipe_enabled": True,
+            "inventory_host_only": True, "ci_runtime_rollout": False,
+        })
+
+    def test_full_activation_requires_both_immutable_digests(self):
+        for first, second in (("", DIGEST), (DIGEST, ""), ("latest", DIGEST)):
+            with self.assertRaises(ValueError):
+                self.module.runtime_overrides("dev", "true", ACCOUNT, "full", first, second, True)
+        value = self.module.runtime_overrides("dev", "true", ACCOUNT, "full", DIGEST, DIGEST, True)
+        self.assertEqual(value["steampipe_image_digest"], DIGEST)
+        self.assertEqual(value["worker_image_digest"], DIGEST)
+        self.assertTrue(value["ci_runtime_rollout"])
+
+    def test_advisory_plans_are_honest_about_missing_images(self):
+        value = self.module.runtime_overrides("dev", "true", ACCOUNT, "full", "", "", False, advisory=True)
+        self.assertNotIn("steampipe_image_digest", value)
+        self.assertFalse(value["ci_runtime_rollout"])
+
+    def test_invalid_profile_account_or_scope_fails(self):
+        for profile, account, scope in (("yes", ACCOUNT, "full"), ("true", "", "full"),
+                                        ("true", "61525506239", "full"), ("true", ACCOUNT, "unknown")):
+            with self.assertRaises(ValueError):
+                self.module.runtime_overrides("dev", profile, account, scope, DIGEST, DIGEST, False)
+
+    def test_caller_must_match_independent_account_and_configured_role(self):
+        role = f"arn:aws:iam::{ACCOUNT}:role/team/CustomDeployRole"
+        caller = {"Account": ACCOUNT, "Arn": f"arn:aws:sts::{ACCOUNT}:assumed-role/CustomDeployRole/GitHubActions"}
+        self.module.verify_caller(caller, ACCOUNT, role)
+        self.module.verify_caller(caller, ACCOUNT, " " + role + "\n")
+        with self.assertRaises(ValueError):
+            self.module.verify_role(ACCOUNT, role.replace(ACCOUNT, "999999999999"))
+        for bad in ({"Account": "999999999999", "Arn": caller["Arn"]},
+                    {"Account": ACCOUNT, "Arn": caller["Arn"].replace("CustomDeployRole/", "Admin/")},
+                    {"Account": ACCOUNT, "Arn": "not-an-arn"}):
+            with self.assertRaises(ValueError):
+                self.module.verify_caller(bad, ACCOUNT, role)
+
+    def plan(self, changes=(), rollout=False):
+        values = {
+            "project": "awsops-dev", "region": "ap-northeast-2",
+            "ci_runtime_rollout": rollout, "ci_domain_rollout": False,
+            "remediation_enabled": False, "integrations_write_enabled": False,
+            "rca_writeback_enabled": False, "diagnosis_notify_enabled": False,
+            "create_network": True,
+        }
+        return {"format_version": "1.2", "variables": {k: {"value": v} for k, v in values.items()},
+                "planned_values": {"root_module": {"resources": [
+                    {"address": "aws_vpc.main[0]", "values": {"id": "vpc-0123"}}
+                ]}},
+                "resource_changes": list(changes)}
+
+    def change(self, address, kind, after, actions=None):
+        return {"address": address, "type": kind,
+                "change": {"actions": actions or ["create"], "before": None, "after": after, "after_unknown": {}}}
+
+    def test_repository_bootstrap_cannot_mutate_any_other_resource(self):
+        changes = [self.change("aws_ecr_repository.steampipe[0]", "aws_ecr_repository",
+                               {"name": "awsops-dev-steampipe"})]
+        self.module.check_plan(self.plan(changes), "dev", "runtime-ecr-bootstrap", ACCOUNT)
+        changes.append(self.change("aws_lambda_function.inv_sync[0]", "aws_lambda_function", {}))
+        with self.assertRaises(ValueError):
+            self.module.check_plan(self.plan(changes), "dev", "runtime-ecr-bootstrap", ACCOUNT)
+
+    def test_frozen_or_unrequested_notification_flags_fail(self):
+        for flag in ("remediation_enabled", "integrations_write_enabled", "rca_writeback_enabled",
+                     "diagnosis_notify_enabled"):
+            plan = self.plan()
+            plan["variables"][flag]["value"] = True
+            with self.assertRaises(ValueError):
+                self.module.check_plan(plan, "dev", "full", ACCOUNT)
+
+    def test_private_namespace_requires_explicit_rollout_and_exact_name(self):
+        change = self.change("aws_service_discovery_private_dns_namespace.main[0]",
+                             "aws_service_discovery_private_dns_namespace",
+                             {"name": "awsops-dev.internal", "vpc": "vpc-0123"})
+        with self.assertRaises(ValueError):
+            self.module.check_plan(self.plan([change]), "dev", "full", ACCOUNT)
+        result = self.module.check_plan(self.plan([change], True), "dev", "full", ACCOUNT)
+        self.assertEqual(result["private_dns_changes"], [change["address"]])
+        change["change"]["after"]["name"] = "other.internal"
+        with self.assertRaises(ValueError):
+            self.module.check_plan(self.plan([change], True), "dev", "full", ACCOUNT)
+        change["change"]["after"].update(name="awsops-dev.internal", vpc="vpc-9999")
+        with self.assertRaises(ValueError):
+            self.module.check_plan(self.plan([change], True), "dev", "full", ACCOUNT)
+
+    def test_runtime_rollout_never_authorizes_public_dns_or_certificate_changes(self):
+        for kind in ("aws_route53_record", "aws_acm_certificate", "aws_route53_zone"):
+            change = self.change("unexpected.resource", kind, {})
+            with self.assertRaises(ValueError):
+                self.module.check_plan(self.plan([change], True), "dev", "full", ACCOUNT)
+
+    def test_service_discovery_cannot_register_an_unrelated_ecs_service(self):
+        change = self.change("aws_ecs_service.other", "aws_ecs_service",
+                             {"name": "other", "service_registries": [{"registry_arn": "arn:any"}]})
+        with self.assertRaises(ValueError):
+            self.module.check_plan(self.plan([change], True), "dev", "full", ACCOUNT)
+
+    def test_discovery_service_must_bind_to_the_owned_namespace(self):
+        change = self.change("aws_service_discovery_service.steampipe[0]", "aws_service_discovery_service",
+                             {"name": "steampipe", "dns_config": [{"namespace_id": "ns-foreign"}]})
+        plan = self.plan([change], True)
+        plan["planned_values"]["root_module"]["resources"].append({
+            "address": "aws_service_discovery_private_dns_namespace.main[0]",
+            "values": {"id": "ns-owned", "name": "awsops-dev.internal", "vpc": "vpc-0123"},
+        })
+        with self.assertRaises(ValueError):
+            self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        change["change"]["after"]["dns_config"][0]["namespace_id"] = "ns-owned"
+        self.module.check_plan(plan, "dev", "full", ACCOUNT)
+
+    def test_new_namespace_binding_requires_the_actual_terraform_reference(self):
+        namespace = self.change("aws_service_discovery_private_dns_namespace.main[0]",
+                                "aws_service_discovery_private_dns_namespace",
+                                {"name": "awsops-dev.internal", "vpc": "vpc-0123"})
+        service = self.change("aws_service_discovery_service.steampipe[0]", "aws_service_discovery_service",
+                              {"name": "steampipe", "dns_config": [{"namespace_id": None}]})
+        service["change"]["after_unknown"] = {"dns_config": [{"namespace_id": True}]}
+        plan = self.plan([namespace, service], True)
+        with self.assertRaises(ValueError):
+            self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        plan["configuration"] = {"root_module": {"resources": [{
+            "address": "aws_service_discovery_service.steampipe",
+            "expressions": {"dns_config": [{"namespace_id": {"references": [
+                "aws_service_discovery_private_dns_namespace.main[0].id",
+                "aws_service_discovery_private_dns_namespace.main[0]",
+                "aws_service_discovery_private_dns_namespace.main",
+            ]}}]},
+        }]}}
+        self.module.check_plan(plan, "dev", "full", ACCOUNT)
+
+    def test_ecs_registration_cannot_point_at_another_owned_account_service(self):
+        arn = f"arn:aws:servicediscovery:ap-northeast-2:{ACCOUNT}:service/srv-owned"
+        cluster = f"arn:aws:ecs:ap-northeast-2:{ACCOUNT}:cluster/awsops-dev"
+        service = self.change("aws_ecs_service.steampipe[0]", "aws_ecs_service", {
+            "name": "awsops-dev-steampipe", "cluster": cluster,
+            "service_registries": [{"registry_arn": arn.replace("srv-owned", "srv-foreign")}],
+        })
+        plan = self.plan([service], True)
+        plan["planned_values"]["root_module"]["resources"] += [
+            {"address": "aws_ecs_cluster.main", "values": {"arn": cluster, "name": "awsops-dev"}},
+            {"address": "aws_service_discovery_private_dns_namespace.main[0]",
+             "values": {"id": "ns-owned", "name": "awsops-dev.internal", "vpc": "vpc-0123"}},
+            {"address": "aws_service_discovery_service.steampipe[0]",
+             "values": {"name": "steampipe", "arn": arn, "dns_config": [{"namespace_id": "ns-owned"}]}},
+        ]
+        with self.assertRaises(ValueError):
+            self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        service["change"]["after"]["service_registries"][0]["registry_arn"] = arn
+        self.module.check_plan(plan, "dev", "full", ACCOUNT)
+
+    def test_runtime_rollout_cannot_replace_attached_groups_or_change_vpc(self):
+        for kind, actions in (("aws_security_group", ["delete", "create"]), ("aws_vpc", ["update"])):
+            with self.assertRaises(ValueError):
+                self.module.check_plan(self.plan([self.change("resource.test", kind, {}, actions)], True),
+                                       "dev", "full", ACCOUNT)
+
+    def test_unintentional_runtime_teardown_and_foreign_account_are_rejected(self):
+        delete = self.change("aws_lambda_function.inv_sync[0]", "aws_lambda_function", None, ["delete"])
+        with self.assertRaises(ValueError):
+            self.module.check_plan(self.plan([delete]), "dev", "full", ACCOUNT)
+        foreign = self.change("aws_ecr_repository.worker[0]", "aws_ecr_repository",
+                              {"name": "awsops-dev-worker", "arn": "arn:aws:ecr:ap-northeast-2:999999999999:repository/x"})
+        with self.assertRaises(ValueError):
+            self.module.check_plan(self.plan([foreign]), "dev", "runtime-ecr-bootstrap", ACCOUNT)

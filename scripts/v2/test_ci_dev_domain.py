@@ -28,6 +28,10 @@ def plan_fixture(changes=(), *, rollout=True):
             "domain_name": DOMAIN, "hosted_zone_name": DOMAIN,
             "extra_domain_aliases": ["extra.dev.example.com"],
             "ci_domain_rollout": rollout,
+            "project": "awsops-dev", "region": "ap-northeast-2",
+            "ci_runtime_rollout": False, "create_network": True,
+            "remediation_enabled": False, "integrations_write_enabled": False,
+            "rca_writeback_enabled": False, "diagnosis_notify_enabled": False,
         }.items()},
         "planned_values": {"root_module": {"resources": [{
             "address": "data.aws_route53_zone.main", "mode": "data",

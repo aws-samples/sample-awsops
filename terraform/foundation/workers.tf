@@ -197,6 +197,10 @@ resource "terraform_data" "pg8000_layer_build" {
   provisioner "local-exec" {
     command = <<-EOT
       set -e
+      if [ "$${AWSOPS_CI_ASSETS_READY:-}" = "1" ]; then
+        python3 ${path.module}/../../scripts/v2/ci_tf_assets.py check-layer --layer pg8000_layer
+        exit 0
+      fi
       rm -rf ${path.module}/.build/pg8000_layer
       mkdir -p ${path.module}/.build/pg8000_layer/python
       python3 -m pip install pg8000==1.31.2 --target ${path.module}/.build/pg8000_layer/python
