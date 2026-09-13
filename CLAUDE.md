@@ -56,6 +56,7 @@ Live environment: account `<ACCOUNT_ID>`, domain `awsops-v2.atomai.click`, reusi
 
 ### Data / Config
 - App state lives in **Aurora** (node-pg). Not `data/*.json` (the v1 pattern). Schema = `terraform/foundation/data/schema.sql` + `schema_migrations`.
+- The web pool (`web/lib/db.ts`) authenticates as `awsops_web` using task-role `rds-db:connect` and a fresh IAM token per physical connection; no Aurora master password is injected into the web task.
 - ECS `secrets` valueFrom (where used, e.g. optional Steampipe) requires **execution-role** permissions (not the task role) — otherwise `ResourceInitializationError`.
 - AgentCore config's **source of truth is SSM** (provision.py writes it → the web BFF reads it at runtime). No valueFrom (avoids a race).
 
