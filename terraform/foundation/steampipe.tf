@@ -260,14 +260,20 @@ resource "aws_cloudwatch_metric_alarm" "steampipe_down" {
 
 # ---- sync Lambda (VPC, pg8000 layer; queries Steampipe + writes Aurora) ----
 resource "terraform_data" "inv_pg8000_build" {
-  count            = local.sp
-  triggers_replace = filemd5("${path.module}/../../scripts/v2/steampipe/requirements.txt")
+  count = local.sp
+  triggers_replace = [
+    filemd5("${path.module}/../../scripts/v2/steampipe/requirements.txt"),
+    filemd5("${path.module}/../../scripts/v2/ci/pg8000-requirements.txt"),
+    filemd5("${path.module}/../../scripts/v2/ci_tf_assets.py"),
+  ]
   provisioner "local-exec" {
     command = <<-EOT
       set -e
-      rm -rf ${path.module}/.build/inv_layer
-      mkdir -p ${path.module}/.build/inv_layer/python
-      python3 -m pip install pg8000==1.31.2 --target ${path.module}/.build/inv_layer/python
+      if [ "$${CI_ASSETS_READY:-}" = "true" ]; then
+        python3 ${path.module}/../../scripts/v2/ci_tf_assets.py check-layer --layer inv_layer
+      else
+        python3 ${path.module}/../../scripts/v2/ci_tf_assets.py build-layer --layer inv_layer
+      fi
     EOT
   }
 }
@@ -339,14 +345,14 @@ resource "aws_iam_role_policy" "inv_sync" {
   })
 }
 resource "aws_lambda_function" "inv_sync" {
-  count                          = local.sp
-  function_name                  = "${var.project}-inv-sync"
-  role                           = aws_iam_role.inv_sync[0].arn
-  runtime                        = "python3.12"
-  architectures                  = ["arm64"]
-  handler                        = "sync_lambda.lambda_handler"
-  filename                       = data.archive_file.inv_sync_src[0].output_path
-  source_code_hash               = data.archive_file.inv_sync_src[0].output_base64sha256
+  count            = local.sp
+  function_name    = "${var.project}-inv-sync"
+  role             = aws_iam_role.inv_sync[0].arn
+  runtime          = "python3.12"
+  architectures    = ["arm64"]
+  handler          = "sync_lambda.lambda_handler"
+  filename         = data.archive_file.inv_sync_src[0].output_path
+  source_code_hash = data.archive_file.inv_sync_src[0].output_base64sha256
   # 420s, split by sync_lambda.py: hydrate-carrying queries (iam_role.attached_policy_arns ≈
   # one ListAttachedRolePolicies per role, and the aggregator makes that the role total across
   # ALL connected accounts) get ≤180s of statement_timeout (≈360 aggregate hydrates at the
