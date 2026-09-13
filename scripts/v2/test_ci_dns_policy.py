@@ -348,6 +348,85 @@ class DnsPolicyTests(unittest.TestCase):
                                          ACCOUNT, True, scope="ecr-bootstrap")
             find.assert_called_once()
 
+    def test_managed_mode_converts_external_attachments_only_with_full_dns_permission(self):
+        module = self.module()
+        state = self.state([
+            self.resource("aws_cloudfront_distribution.main", viewer_certificate=[{"acm_certificate_arn": ARN}]),
+            self.resource("aws_lb_listener.https", certificate_arn=ARN.replace("us-east-1", "ap-northeast-2")),
+        ])
+        for current_state in (state, self.state([])):
+            with patch.object(module, "find_certificate") as find:
+                result = module.certificate_overrides(
+                    self.configuration(), current_state, ACCOUNT, True,
+                    certificate_mode="managed", publish=False,
+                )
+                self.assertEqual(result, {"existing_cf_certificate_arn": None,
+                                          "existing_alb_certificate_arn": None,
+                                          "publish_service_dns": False})
+                find.assert_not_called()
+            for allow, scope in ((False, "full"), (True, "ecr-bootstrap"), (False, "ecr-bootstrap")):
+                with self.subTest(allow=allow, scope=scope), self.assertRaisesRegex(ValueError, "full.*DNS"):
+                    module.certificate_overrides(
+                        self.configuration(), current_state, ACCOUNT, allow,
+                        certificate_mode="managed", scope=scope,
+                    )
+
+    def test_managed_mode_rejects_supplied_arns_and_keeps_managed_ownership(self):
+        module = self.module()
+        for key in ("cf", "alb"):
+            with patch.object(module, "find_certificate") as find:
+                with self.assertRaisesRegex(ValueError, "conflict"):
+                    module.certificate_overrides(
+                        self.configuration(**{f"{key}_arn": ARN}), self.state([]), ACCOUNT, True,
+                        certificate_mode="managed",
+                    )
+                find.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "conflict"):
+            module.certificate_overrides(
+                self.configuration(cf_arn=""), self.state([]), ACCOUNT, True,
+                certificate_mode="managed",
+            )
+        state = self.state([
+            self.resource("aws_acm_certificate.cf[0]", arn=ARN),
+            self.resource("aws_acm_certificate.alb[0]", arn=ARN.replace("us-east-1", "ap-northeast-2")),
+        ])
+        with patch.object(module, "find_certificate", return_value=ARN) as find:
+            result = module.certificate_overrides(
+                self.configuration(), state, ACCOUNT, False, certificate_mode="managed",
+            )
+            self.assertEqual(find.call_count, 2)
+            self.assertIsNone(result["existing_cf_certificate_arn"])
+            self.assertIsNone(result["existing_alb_certificate_arn"])
+
+    def test_dev_plan_summary_enforces_child_zone_and_existing_retirement_blocks(self):
+        from test_ci_dev_domain import plan_fixture, record
+        module = self.module()
+        result = module.check_plan(plan_fixture([record()]), True, target="dev")
+        self.assertEqual(result["public_zone"]["zone_id"], "Z123CHILD")
+        with self.assertRaisesRegex(ValueError, "DNS change"):
+            module.check_plan(plan_fixture([record()]), False, target="dev")
+        with self.assertRaises(ValueError):
+            module.check_plan(plan_fixture([record(zone_id="ZPARENT")]), True, target="dev")
+        change = record("cf_validation")
+        change["change"]["actions"] = ["delete", "create"]
+        with self.assertRaisesRegex(ValueError, "retirement"):
+            module.check_plan(plan_fixture([change]), True, target="dev")
+        # No new zone requirement on ordinary targets or an ECR-only plan.
+        empty = {"format_version": "1.2", "planned_values": {}, "resource_changes": []}
+        self.assertNotIn("public_zone", module.check_plan(empty, True, target="main"))
+        self.assertNotIn("public_zone", module.check_plan(empty, False, "ecr-bootstrap", target="dev"))
+
+    def test_dev_initial_managed_certificate_requires_dns_permission_even_with_reused_tokens(self):
+        from test_ci_dev_domain import plan_fixture
+        module = self.module()
+        plan = plan_fixture([{
+            "address": "aws_acm_certificate.cf[0]", "type": "aws_acm_certificate",
+            "change": {"actions": ["create"], "before": None, "after": {}},
+        }])
+        with self.assertRaisesRegex(ValueError, "full.*DNS"):
+            module.check_plan(plan, False, target="dev")
+        self.assertEqual(module.check_plan(plan, True, target="dev")["dns_changes"], [])
+
     def test_selection_does_not_describe_excluded_or_rotate_valid_attached_certificate(self):
         module = self.module()
         attached = ARN.replace("11111111", "88888888")

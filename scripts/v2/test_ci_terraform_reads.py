@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 from threading import Thread
 import unittest
@@ -12,6 +13,48 @@ import unittest
 
 @unittest.skipUnless(shutil.which("terraform"), "Terraform CLI is required")
 class TerraformReadTests(unittest.TestCase):
+    def test_dev_auto_override_is_identical_in_console_and_saved_plan(self):
+        helper = Path(__file__).with_name("ci_dev_domain.py")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("TF_", "AWS_"))}
+            env.update(CHECKPOINT_DISABLE="1", TF_DATA_DIR=str(root / ".terraform"),
+                       TARGET="dev", DOMAIN_NAME_DEV="new.dev.example.com",
+                       HOSTED_ZONE_NAME_DEV="dev.example.com", CERTIFICATE_MODE_DEV="managed")
+            env.pop("GITHUB_OUTPUT", None)
+            (root / "main.tf").write_text(
+                'variable "domain_name" { type = string }\n'
+                'variable "hosted_zone_name" { type = string }\n'
+                'variable "existing_cf_certificate_arn" {\n type = string\n default = null\n}\n'
+                'output "selected" {\n value = { domain = var.domain_name, '
+                'zone = var.hosted_zone_name, certificate = var.existing_cf_certificate_arn }\n}\n'
+            )
+            protected = root / "terraform.tfvars"
+            protected.write_text('domain_name = "old.example.net"\nhosted_zone_name = "example.net"\n')
+            original = protected.read_bytes()
+
+            def run(*args, expression=None):
+                result = subprocess.run(args, cwd=root, env=env, input=expression, text=True,
+                                        capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return result.stdout
+
+            run(sys.executable, str(helper), "overrides")
+            run("terraform", "init", "-backend=false", "-input=false", "-no-color")
+            selected = json.loads(json.loads(run(
+                "terraform", "console", "-no-color", expression=(
+                    "jsonencode({domain=var.domain_name,zone=var.hosted_zone_name,"
+                    "certificate=var.existing_cf_certificate_arn})\n"),
+            )))
+            self.assertEqual(selected, {"domain": "new.dev.example.com",
+                                        "zone": "dev.example.com", "certificate": None})
+            (root / "ci-deployment.tfvars.json").write_text('{"existing_cf_certificate_arn":null}')
+            run("terraform", "plan", "-input=false", "-lock=false", "-no-color",
+                "-var-file=ci-deployment.tfvars.json", "-out=tfplan")
+            saved = json.loads(run("terraform", "show", "-json", "tfplan"))
+            self.assertEqual(saved["planned_values"]["outputs"]["selected"]["value"], selected)
+            self.assertEqual(protected.read_bytes(), original)
+
     def test_console_and_show_read_without_locks_and_preserve_json_null(self):
         requests = []
 

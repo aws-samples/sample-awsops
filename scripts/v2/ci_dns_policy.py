@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 
+from ci_dev_domain import check_scoped_dns, domain_scope, hostname
+
 
 # CloudFront supports RSA through 4096 and ECDSA P-256/P-384; retain an RSA 2048 floor.
 # https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html
@@ -189,19 +191,20 @@ def state_resources(state):
     return [r for r in root.get("resources", []) if r["mode"] == "managed"], all_resources
 
 
-def certificate_overrides(configuration, state, account, allow_dns, *, publish=True, scope="full"):
+def certificate_overrides(configuration, state, account, allow_dns, *, publish=True, scope="full",
+                          certificate_mode="preserve"):
     """Preserve existing ownership/publication and return typed Terraform inputs."""
     domain, region = configuration["domain"], configuration["region"]
     aliases = configuration.get("aliases", [])
     if not isinstance(aliases, list):
         raise ValueError("configured aliases must be a list (not null)")
     domains = [domain, *aliases]
-    if not all(
-        isinstance(host, str) and len(host) <= 253
-        and re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?", host)
-        for host in domains
-    ):
-        raise ValueError("invalid configured DNS hostname")
+    for host in domains:
+        hostname(host)
+    if certificate_mode not in {"preserve", "managed"}:
+        raise ValueError("invalid certificate mode")
+    if certificate_mode == "managed" and any(configuration.get(f"{key}_arn") is not None for key in ("cf", "alb")):
+        raise ValueError("managed mode conflicts with supplied existing certificate ARN inputs")
     root, resources = state_resources(state)
     managed = {r["values"]["arn"] for r in resources if r["type"] == "aws_acm_certificate"}
 
@@ -217,6 +220,10 @@ def certificate_overrides(configuration, state, account, allow_dns, *, publish=T
     result = {"publish_service_dns": publish if allow_dns else any(
         r["type"] == "aws_route53_record" and r["name"] == "alias" for r in root
     )}
+    if certificate_mode == "managed" and any(not own("aws_acm_certificate", key).get("arn")
+                                             for key in ("cf", "alb")):
+        if scope != "full" or not allow_dns:
+            raise ValueError("First managed certificate creation/conversion requires a full plan with DNS permission")
     # Validate both ownership choices before looking up either certificate.
     for key in ("cf", "alb"):
         configured = configuration.get(f"{key}_arn")
@@ -249,6 +256,8 @@ def certificate_overrides(configuration, state, account, allow_dns, *, publish=T
                         "Keep its external ARN input null; ownership migration is a separate operation."
                     ) from error
             selected = None
+        elif certificate_mode == "managed":
+            selected = None  # External attachments remain externally owned; never delete/revoke them.
         elif attached or not allow_dns and scope == "full":
             selected = find_certificate(
                 hosts, certificate_region, account, excluded=managed, preferred_arn=attached,
@@ -280,13 +289,13 @@ def ecs_service_may_change_dns(change):
                 or isinstance(registries_unknown, (list, dict)) and not registries_unknown)
 
 
-def check_plan(plan, allow_dns, scope="full"):
+def check_plan(plan, allow_dns, scope="full", *, target=""):
     if not isinstance(plan, dict) or not isinstance(plan.get("planned_values"), dict) or not plan.get("format_version"):
         raise ValueError("invalid Terraform plan JSON")
     changes = plan.get("resource_changes", [])
     if not isinstance(changes, list):
         raise ValueError("invalid Terraform plan resource changes")
-    dns_changes, mutations = [], 0
+    dns_changes, scoped_changes, mutations = [], [], 0
     for resource in changes:
         if (not isinstance(resource, dict)
                 or not all(isinstance(resource.get(k), str) and resource[k] for k in ("address", "type"))
@@ -299,6 +308,10 @@ def check_plan(plan, allow_dns, scope="full"):
             raise ValueError("invalid Terraform plan actions")
         if actions in (["no-op"], ["read"]):
             continue
+        if (target == "dev" and resource["type"] == "aws_acm_certificate"
+                and actions == ["create"] and resource["change"].get("before") is None
+                and (not allow_dns or scope != "full")):
+            raise ValueError("First managed certificate creation/conversion requires a full plan with DNS permission")
         # ACM renewal can depend on account-shared validation tokens long after a
         # cutover. DNS permission does not authorize retirement of owned CNAMEs.
         if (resource["type"] == "aws_route53_record"
@@ -321,9 +334,13 @@ def check_plan(plan, allow_dns, scope="full"):
         if (resource["type"].startswith(("aws_route53", "aws_service_discovery"))
                 or resource["type"] == "aws_ecs_service" and ecs_service_may_change_dns(resource["change"])):
             dns_changes.append(resource["address"])
+            scoped_changes.append(resource)
     if dns_changes and not allow_dns:
         raise ValueError("DNS change prohibited: " + ", ".join(dns_changes))
-    return {"changed_resources": mutations, "dns_changes": dns_changes}
+    result = {"changed_resources": mutations, "dns_changes": dns_changes}
+    if target == "dev" and scope == "full":
+        result["public_zone"] = check_scoped_dns(plan, scoped_changes)
+    return result
 
 
 def main():
@@ -333,6 +350,7 @@ def main():
     check = commands.add_parser("check-plan")
     check.add_argument("--allow-dns", choices=("true", "false"), required=True)
     check.add_argument("--scope", choices=("full", "ecr-bootstrap"), default="full")
+    check.add_argument("--target", default="")
     certificates = commands.add_parser("certificates")
     certificates.add_argument("--cf-arn", default="")
     certificates.add_argument("--alb-arn", default="")
@@ -340,13 +358,15 @@ def main():
     certificates.add_argument("--allow-dns", choices=("true", "false"), required=True)
     certificates.add_argument("--publish", choices=("true", "false"), required=True)
     certificates.add_argument("--scope", choices=("full", "ecr-bootstrap"), required=True)
+    certificates.add_argument("--certificate-mode", choices=("preserve", "managed"), default="preserve")
+    certificates.add_argument("--target", default="")
     args = parser.parse_args()
     try:
         value = json.load(sys.stdin)
         if args.command == "summary":
             print(json.dumps(deployment_summary(value)))
         elif args.command == "check-plan":
-            print(json.dumps(check_plan(value, args.allow_dns == "true", args.scope)))
+            print(json.dumps(check_plan(value, args.allow_dns == "true", args.scope, target=args.target)))
         else:
             # `terraform console` prints jsonencode's result as a quoted JSON string.
             configuration = json.loads(value) if isinstance(value, str) else value
@@ -354,6 +374,11 @@ def main():
                 configuration["cf_arn"] = args.cf_arn
             if args.alb_arn:
                 configuration["alb_arn"] = args.alb_arn
+            mode = args.certificate_mode if args.target == "dev" else "preserve"
+            if args.target == "dev":
+                domain_scope(configuration["domain"], configuration["zone"], configuration.get("aliases", []))
+            if mode == "managed" and any(configuration.get(f"{key}_arn") is not None for key in ("cf", "alb")):
+                raise ValueError("managed mode conflicts with supplied existing certificate ARN inputs")
             # Reject malformed inputs before even calling STS, including tfvars inputs.
             for key, region in (("cf", "us-east-1"), ("alb", configuration["region"])):
                 if configuration.get(f"{key}_arn"):
@@ -362,6 +387,7 @@ def main():
             print(json.dumps(certificate_overrides(
                 configuration, json.loads(args.state.read_text()), account,
                 args.allow_dns == "true", publish=args.publish == "true", scope=args.scope,
+                certificate_mode=mode,
             )))
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
         print(f"Deployment preflight refused: {error}", file=sys.stderr)

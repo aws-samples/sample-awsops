@@ -9,12 +9,14 @@ import unittest
 
 import yaml
 
+from test_ci_dev_domain import plan_fixture
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SHA = "a" * 40
 CF = "arn:aws:acm:us-east-1:123456789012:certificate/11111111-2222-3333-4444-555555555555"
 ALB = CF.replace("us-east-1", "ap-northeast-2")
-CONFIG = {"domain": "dev.example.com", "aliases": [], "region": "ap-northeast-2",
+CONFIG = {"domain": "dev.example.com", "zone": "dev.example.com", "aliases": [], "region": "ap-northeast-2",
           "cf_arn": None, "alb_arn": None}
 
 
@@ -32,6 +34,7 @@ class DeploymentWorkflowTests(unittest.TestCase):
             scripts = root / "scripts/v2"
             scripts.mkdir(parents=True)
             shutil.copyfile(ROOT / "scripts/v2/ci_dns_policy.py", scripts / "ci_dns_policy.py")
+            shutil.copyfile(ROOT / "scripts/v2/ci_dev_domain.py", scripts / "ci_dev_domain.py")
             shutil.copyfile(ROOT / "scripts/v2/deployment-smoke.mjs", scripts / "deployment-smoke.mjs")
             for name, content in (files or {}).items():
                 (working / name).write_text(content)
@@ -49,8 +52,18 @@ class DeploymentWorkflowTests(unittest.TestCase):
                     "elif name=='terraform' and sys.argv[1:3]==['show','-json']:\n"
                     " print(os.environ['TEST_STATE_JSON'] if len(sys.argv)==3 else os.environ['PLAN_JSON'])\n"
                     "elif name=='terraform' and sys.argv[1]=='console':\n"
-                    " print(json.dumps(os.environ['CONFIG_JSON']))\n"
+                    " config=json.loads(os.environ['CONFIG_JSON'])\n"
+                    " p=pathlib.Path('ci-domain.auto.tfvars.json')\n"
+                    " if p.exists():\n"
+                    "  override=json.loads(p.read_text())\n"
+                    "  for key,var in [('domain','domain_name'),('zone','hosted_zone_name')]:\n"
+                    "   if var in override: config[key]=override[var]\n"
+                    " with open(os.environ['COMMAND_LOG'],'a') as f: f.write(json.dumps(['console-config',config])+'\\n')\n"
+                    " print(json.dumps(json.dumps(config)))\n"
                     "elif name=='terraform' and sys.argv[1]=='plan':\n"
+                    " p=pathlib.Path('ci-domain.auto.tfvars.json')\n"
+                    " if p.exists():\n"
+                    "  with open(os.environ['COMMAND_LOG'],'a') as f: f.write(json.dumps(['domain-vars',json.loads(p.read_text())])+'\\n')\n"
                     " p=pathlib.Path('ci-deployment.tfvars.json')\n"
                     " if p.exists():\n"
                     "  with open(os.environ['COMMAND_LOG'],'a') as f: f.write(json.dumps(['tfvars',json.loads(p.read_text())])+'\\n')\n"
@@ -80,10 +93,8 @@ class DeploymentWorkflowTests(unittest.TestCase):
                 "CF_CERTIFICATE_ARN": "", "ALB_CERTIFICATE_ARN": "",
                 "PUBLISH_SERVICE_DNS": "true", "PLAN_SCOPE": "full",
                 "GITHUB_STEP_SUMMARY": str(root / "summary.md"),
-                "PLAN_JSON": json.dumps({
-                    "format_version": "1.2", "planned_values": {},
-                    "resource_changes": changes or [],
-                }),
+                "GITHUB_OUTPUT": str(root / "outputs"),
+                "PLAN_JSON": json.dumps(plan_fixture(changes or [])),
                 **overrides,
             }
             result = subprocess.run(
@@ -93,7 +104,68 @@ class DeploymentWorkflowTests(unittest.TestCase):
             commands = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
             summary = root / "summary.md"
             result.summary = summary.read_text() if summary.exists() else ""
+            result.files = {p.name: p.read_text() for p in working.iterdir() if p.is_file()}
             return result, commands
+
+    def test_dev_repo_override_reaches_console_and_automatic_plan(self):
+        script = step("terraform.yml", "plan", "Configure dev domain overrides")
+        script += "\n" + step("terraform.yml", "plan", "Check existing certificates without changing DNS")
+        script += "\n" + step("terraform.yml", "plan", "terraform plan")
+        result, commands = self.run_step(
+            script, DOMAIN_NAME_DEV="dev.example.com", HOSTED_ZONE_NAME_DEV="dev.example.com",
+            CERTIFICATE_MODE_DEV="preserve", CERTIFICATE_MODE="preserve", DEV_DOMAIN_ROLLOUT="true",
+            DISPATCH="false", CF_CERTIFICATE_ARN=CF, ALB_CERTIFICATE_ARN=ALB,
+            CONFIG_JSON=json.dumps({**CONFIG, "domain": "old.example.net", "zone": "example.net"}),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["console-config", CONFIG], commands)
+        self.assertIn(["domain-vars", {"domain_name": "dev.example.com",
+                                       "hosted_zone_name": "dev.example.com"}], commands)
+        plan = next(c for c in commands if c[:2] == ["terraform", "plan"])
+        self.assertIn("-var-file=ci-deployment.tfvars.json", plan)
+        self.assertIn(["tfvars", {"publish_service_dns": False, "existing_cf_certificate_arn": CF,
+                                  "existing_alb_certificate_arn": ALB}], commands)
+
+    def test_managed_dev_full_plan_defers_service_dns_and_refuses_conflicting_arns(self):
+        script = step("terraform.yml", "plan", "Check existing certificates without changing DNS")
+        script += "\n" + step("terraform.yml", "plan", "terraform plan")
+        for supplied in ("", CF):
+            result, commands = self.run_step(
+                script, DISPATCH="true", CERTIFICATE_MODE="managed", ALLOW_DNS_CHANGES="true",
+                PUBLISH_SERVICE_DNS="false", CF_CERTIFICATE_ARN=supplied,
+            )
+            if supplied:
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("conflict", result.stderr)
+                self.assertFalse(any(c[0] == "aws" for c in commands))
+            else:
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(["tfvars", {"publish_service_dns": False,
+                                          "existing_cf_certificate_arn": None,
+                                          "existing_alb_certificate_arn": None}], commands)
+            self.assertFalse(any(c[:2] == ["aws", "acm"] for c in commands))
+
+    def test_dev_apply_uses_saved_zone_and_blocks_unrelated_dns_even_with_permission(self):
+        from test_ci_dev_domain import record
+        script = step("terraform.yml", "apply", "terraform apply (exact saved plan — never re-planned)")
+        result, commands = self.run_step(script, changes=[record(zone_id="ZPARENT")],
+                                         ALLOW_DNS_CHANGES="true")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(c[:2] == ["terraform", "apply"] for c in commands))
+        result, commands = self.run_step(script, changes=[record()], ALLOW_DNS_CHANGES="true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["terraform", "apply", "-input=false", "tfplan"], commands)
+        self.assertIn("Z123CHILD", result.stdout)
+        self.assertNotIn("MUST-NOT-PRINT", result.stdout)
+
+    def test_cleanup_removes_generated_domain_override_after_failure(self):
+        result, _ = self.run_step(
+            step("terraform.yml", "plan", "Clean sensitive files off the runner"),
+            files={"ci-domain.auto.tfvars.json": '{"domain_name":"stale.invalid"}',
+                   "ci-deployment.tfvars.json": "{}", "terraform.tfvars": "protected"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.files, {})
 
     def test_apply_blocks_dns_changes_before_calling_terraform_apply(self):
         script = step("terraform.yml", "apply", "terraform apply (exact saved plan — never re-planned)")
