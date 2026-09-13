@@ -424,10 +424,12 @@ gh secret set TF_TFVARS_DEV -R aws-samples/sample-awsops \
 
 Nonsecret dev repository variables are `DOMAIN_NAME_DEV` / `HOSTED_ZONE_NAME_DEV` (paired names),
 `CERTIFICATE_MODE_DEV` (`preserve` by default), `CI_MIGRATIONS_ENABLED_DEV` (`false` by default),
+`AWS_ACCOUNT_ID_DEV` (required independent target-account check for runtime builds/provisioning),
 and `CI_DB_DIAGNOSTICS_DEV` (`false`/unset by default; manual advisory read-only diagnostics only).
 These select reviewed deployment behavior or optional observations; credentials stay in the secrets above.
 dev의 일반 저장소 변수는 도메인/존 이름 쌍, 기본 `preserve`인 인증서 모드, 기본 `false`인
-`CI_MIGRATIONS_ENABLED_DEV`, 기본 `false`/미설정인 참고용 읽기 전용 진단 변수
+`CI_MIGRATIONS_ENABLED_DEV`, 런타임 빌드·provisioning 대상 계정을 검증하는 필수
+`AWS_ACCOUNT_ID_DEV`, 기본 `false`/미설정인 참고용 읽기 전용 진단 변수
 `CI_DB_DIAGNOSTICS_DEV`이다. 배포·관측 선택값이며 자격증명은 위 시크릿에 유지한다.
 
 The distinct NAMES are the isolation: a dev/preview job can never fall back to the
@@ -956,13 +958,48 @@ SNI and certificate verification before service DNS is published. `/api/health`
 checks process liveness; complete the required database migrations and verify
 authenticated application routes separately.
 For an authorized AgentCore deployment, [Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml)
-runs `make migrate` first and offers `smoke=true` for an agent invocation; neither that
-invocation nor `/api/health` substitutes for a web-login/database check before service A publication.
+first runs the private reusable migration workflow on `dev`; other branches retain
+`make migrate`. Optional `smoke=true` requires the structured readiness protocol, including
+fresh inventory and a bounded model call. It needs the matching agent readiness implementation
+and `runtime_deployment` output. Neither it nor `/api/health` substitutes for a web-role
+permission, login/database or full collection/worker check.
 
 웹 배포 스모크 테스트는 `public_url`의 Host·SNI·인증서 검증을 유지하면서
 CloudFront 연결 주소로 요청한다. `/api/health`는 프로세스 생존 확인이므로,
 필수 DB 마이그레이션과 인증된 실제 기능 검증도 수행해야 한다.
 웹 워크플로와 `make deploy` 모두 공통 CLI로 주소를 검증하며 셸 문자열 대신 인자 배열을 사용한다.
+dev AgentCore는 사설 재사용 migration workflow를 먼저 실행하며 다른 브랜치는
+`make migrate`를 유지한다. 선택적 `smoke=true`는 최신 인벤토리와 제한된 모델 호출을
+포함한 구조화된 응답을 요구하므로 대응하는 에이전트 구현과 `runtime_deployment`
+output이 필요하다. 웹 역할 권한·로그인·DB·전체 수집·워커 검증을 대체하지 않는다.
+
+### Runtime images / 런타임 이미지
+
+After the reviewed Terraform ECR bootstrap, dispatch **Build Development Runtime Image**
+(`build-runtime-images.yml`) on `dev` with `component=steampipe` or `component=worker`.
+The repository must already exist. The helper checks the independently configured account,
+configured CI role and actual STS identity before writes; it never creates repositories.
+It builds one Linux/ARM64 manifest, verifies the uploaded configuration and manifest hashes,
+and returns the project and immutable digest. Record those verified digests for the full
+infrastructure plan; the build itself deploys no service.
+
+검토된 Terraform ECR bootstrap 후 dev에서 **Build Development Runtime Image**를
+`component=steampipe` 또는 `component=worker`로 실행한다. 저장소는 미리 존재해야 한다.
+helper는 쓰기 전에 독립 설정 계정·CI 역할·실제 STS 식별자를 검증하며 저장소를 생성하지
+않는다. Linux/ARM64 단일 manifest와 업로드 해시를 검증하고 project·digest를 반환한다.
+이 digest를 전체 인프라 계획에 사용하며 이미지 빌드만으로 서비스가 배포되지는 않는다.
+
+Dev AgentCore follows the same account/digest checks using an `agent-<commit SHA>` tag.
+Provisioning repeats the identity check and uses the verified digest. Docker credential
+scratch is private and cleaned. Leave optional AgentCore smoke off during first provisioning
+until inventory has been collected, then run the full application release verification.
+Never count successful provisioning alone as application readiness.
+
+dev AgentCore도 `agent-<commit SHA>` 태그와 같은 계정·digest 검증을 사용한다.
+provisioning에서도 식별자를 다시 확인하고 검증된 digest를 사용한다. Docker 자격증명
+임시 파일은 비공개로 만들고 정리한다. 최초 provisioning에서는 수집 전 선택적 AgentCore
+smoke를 끄고, 수집 후 전체 앱 배포 검증을 실행한다. provisioning 성공만으로 앱을
+정상 판정하지 않는다.
 
 The DNS/provenance scripts run from the deployment ref. They are safety checks for reviewed
 code, not a security boundary against changes to that ref; normal review and environment
@@ -975,11 +1012,13 @@ DNS·출처 검사도 배포 ref의 코드이므로 코드 변경에 대한 보�
 **Symptom / 증상:** a newly provisioned private Aurora has no application tables, or the
 external Actions runner cannot connect to its private endpoint. Deploy Web does not initialize
 the database. Use **Migrate Development Database** (`deploy-migrations.yml`), a manual-only
-workflow restricted to this samples repository's `dev` branch. It builds an ARM64 image and
+workflow restricted to this samples repository's `dev` branch, also reusable by a manual
+dev AgentCore dispatch. It builds an ARM64 image and
 runs one Fargate task in the existing private subnets with the existing service security group.
 
 새 Aurora에 앱 테이블이 없거나 외부 Actions runner가 비공개 endpoint에 연결하지 못하면
 `dev` 전용 **Migrate Development Database**를 사용한다. Deploy Web은 DB 초기화를 하지 않는다.
+수동 dev AgentCore workflow에서도 같은 migration을 재사용한다.
 마이그레이션은 기존 private subnet·서비스 SG를 재사용하는 일회성 ARM64 Fargate task에서 실행한다.
 
 **Preparation / 준비:**
