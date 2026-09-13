@@ -50,8 +50,8 @@ jobs:
           npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund
           node --test scripts/v2/ci/*.test.mjs
 
-      - name: Verify the actual migration runner against disposable PostgreSQL
-        run: node --test scripts/v2/ci/migration.itest.mjs
+      - name: Verify migration and web DB connections against disposable PostgreSQL
+        run: node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs
 
       - name: Verify mocked Terraform plans in an isolated tracked copy
         run: bash scripts/v2/terraform-test.sh
