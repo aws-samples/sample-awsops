@@ -199,11 +199,33 @@ class DnsPolicyTests(unittest.TestCase):
 
     def test_supported_large_rsa_and_ec_keys(self):
         module = self.module()
-        for key in ("RSA_2048", "RSA_3072", "RSA_4096", "EC_prime256v1", "EC_secp384r1"):
+        for key in ("RSA_2048", "RSA_3072", "RSA_4096",
+                    "RSA-2048", "RSA-3072", "RSA-4096", "EC_prime256v1", "EC_secp384r1"):
             with self.subTest(key=key):
                 self.assertTrue(module.eligible_certificate(
                     {**CERTIFICATE, "KeyAlgorithm": key}, ["dev.example.com"], "us-east-1", ACCOUNT, NOW,
                 ))
+
+    def test_cli_rsa_key_spelling_reaches_required_chain_verification(self):
+        # The official describe-certificate CLI example returns RSA-2048.
+        # https://docs.aws.amazon.com/cli/latest/reference/acm/describe-certificate.html
+        for trusted in (False, True):
+            with self.subTest(trusted=trusted):
+                module = self.module()
+                with patch.object(module, "datetime", wraps=datetime) as clock, \
+                        patch.object(module, "aws", side_effect=[
+                            {"Certificate": {**CERTIFICATE, "KeyAlgorithm": "RSA-2048"}},
+                            {"Certificate": "leaf", "CertificateChain": "chain"},
+                        ]), patch.object(module, "verify_chain", return_value=trusted) as verify:
+                    clock.now.return_value = NOW
+                    if trusted:
+                        self.assertEqual(module.find_certificate(
+                            ["dev.example.com"], "us-east-1", ACCOUNT, ARN,
+                        ), ARN)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "public trust or TLS hostname verification failed"):
+                            module.find_certificate(["dev.example.com"], "us-east-1", ACCOUNT, ARN)
+                    verify.assert_called_once_with("leaf", "chain", ["dev.example.com"])
 
     def test_ecr_scope_rejects_any_other_mutation(self):
         module = self.module()
@@ -460,7 +482,9 @@ class DnsPolicyTests(unittest.TestCase):
             {"NotAfter": None}, {"Type": "PRIVATE"},
             {"CertificateAuthorityArn": "arn:aws:acm-pca:us-east-1:123456789012:certificate-authority/test"},
             {"KeyAlgorithm": "RSA_1024"},
-            {"KeyAlgorithm": "EC_secp521r1"}, {"KeyAlgorithm": "RSA-2048"},
+            {"KeyAlgorithm": "EC_secp521r1"}, {"KeyAlgorithm": "RSA-1024"},
+            {"KeyAlgorithm": "RSA-8192"}, {"KeyAlgorithm": "RSA2048"},
+            {"KeyAlgorithm": "RSA-2048 "}, {"KeyAlgorithm": "rsa-2048"},
         ]
         for override in cases:
             with self.subTest(override=override):
