@@ -149,7 +149,7 @@ jobs:
 
       - name: Check existing certificates without changing DNS
         id: dns
-        if: steps.restore.outputs.skip != '1' && (github.event_name == 'workflow_dispatch' || steps.domain.outputs.rollout == 'true')
+        if: steps.restore.outputs.skip != '1' && (github.event_name == 'workflow_dispatch' || env.TARGET == 'dev')
         env:
           CF_CERTIFICATE_ARN: ${{ inputs.existing_cf_certificate_arn }}
           ALB_CERTIFICATE_ARN: ${{ inputs.existing_alb_certificate_arn }}
@@ -189,7 +189,6 @@ jobs:
           # and NOT created by CI (create_admin_user defaults to false).
           TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
           DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
-          DEV_DOMAIN_ROLLOUT: ${{ steps.domain.outputs.rollout }}
           PLAN_SCOPE: ${{ inputs.plan_scope }}
         # -lock=false: the plan role is ReadOnlyAccess by design and cannot write
         # the S3 lock object (use_lockfile → <key>.tflock, s3:PutObject). A
@@ -197,7 +196,7 @@ jobs:
         run: |
           set -euo pipefail
           args=(-out=tfplan -input=false -lock=false)
-          if [ "$DISPATCH" = "true" ] || [ "${DEV_DOMAIN_ROLLOUT:-false}" = "true" ]; then
+          if [ "$DISPATCH" = "true" ] || [ "$TARGET" = "dev" ]; then
             [ -s ci-deployment.tfvars.json ] || { echo "::error::verified deployment inputs are missing"; exit 1; }
             args+=(-var-file=ci-deployment.tfvars.json)
           fi

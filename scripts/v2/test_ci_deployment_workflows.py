@@ -254,6 +254,33 @@ class DeploymentWorkflowTests(unittest.TestCase):
         self.assertIn("ECR bootstrap", result.stderr)
         self.assertFalse(any(c[:2] == ["terraform", "apply"] for c in commands))
 
+    def test_automatic_dev_plan_preserves_external_certificates_without_overrides(self):
+        script = step("terraform.yml", "plan", "Configure dev domain overrides")
+        script += "\n" + step("terraform.yml", "plan", "Check existing certificates without changing DNS")
+        script += "\n" + step("terraform.yml", "plan", "terraform plan")
+        state = {"format_version": "1.0", "values": {"root_module": {"resources": [
+            {"address": "aws_cloudfront_distribution.main", "mode": "managed",
+             "type": "aws_cloudfront_distribution", "name": "main",
+             "values": {"viewer_certificate": [{"acm_certificate_arn": CF}]}},
+            {"address": "aws_lb_listener.https", "mode": "managed", "type": "aws_lb_listener",
+             "name": "https", "values": {"certificate_arn": ALB}},
+        ]}}}
+        result, commands = self.run_step(
+            script, DISPATCH="false", DOMAIN_NAME_DEV="", HOSTED_ZONE_NAME_DEV="",
+            CERTIFICATE_MODE_DEV="", CERTIFICATE_MODE="preserve", DEV_DOMAIN_ROLLOUT="false",
+            TEST_STATE_JSON=json.dumps(state),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = next(c for c in commands if c[:2] == ["terraform", "plan"])
+        self.assertIn("-var-file=ci-deployment.tfvars.json", plan)
+        self.assertIn(["tfvars", {"publish_service_dns": False,
+                                 "existing_cf_certificate_arn": CF,
+                                 "existing_alb_certificate_arn": ALB}], commands)
+        workflow = yaml.safe_load((ROOT / ".github/workflows/terraform.yml").read_text())
+        preflight = next(s for s in workflow["jobs"]["plan"]["steps"]
+                         if s.get("name") == "Check existing certificates without changing DNS")
+        self.assertIn("env.TARGET == 'dev'", preflight["if"])
+
     def test_dns_free_bootstrap_uses_typed_overrides_without_certificate_discovery(self):
         script = step("terraform.yml", "plan", "Check existing certificates without changing DNS")
         script += "\n" + step("terraform.yml", "plan", "terraform plan")
