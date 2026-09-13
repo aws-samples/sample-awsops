@@ -82,6 +82,21 @@ class RuntimeImageTest(unittest.TestCase):
     def test_legacy_tag_remains_when_no_digest_was_requested(self):
         self.assertEqual(provision.runtime_image(AC), AC["ecr_uri"] + ":" + provision.IMAGE_TAG)
 
+    def test_readiness_runtime_flag_requires_applied_boolean_true(self):
+        for value in (True, False, None, "true", 1):
+            ctrl = mock.MagicMock()
+            ctrl.list_agent_runtimes.return_value = {"agentRuntimes": []}
+            ctrl.create_agent_runtime.return_value = {"agentRuntimeArn": ARN, "agentRuntimeId": RID}
+            with mock.patch.dict(os.environ, {"DEPLOYMENT_READINESS_ENABLED": "true"}), \
+                    mock.patch.object(provision, "_wait_runtime_ready", return_value=True):
+                provision.ensure_runtime(ctrl, {**AC, "deployment_readiness_enabled": value}, {})
+            self.assertEqual(ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"]["DEPLOYMENT_READINESS_ENABLED"],
+                             "true" if value is True else "false")
+        ctrl.reset_mock()
+        with mock.patch.object(provision, "_wait_runtime_ready", return_value=True):
+            provision.ensure_runtime(ctrl, AC, {})
+        self.assertEqual(ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"]["DEPLOYMENT_READINESS_ENABLED"], "false")
+
     def test_pending_or_foreign_runtime_is_not_reported_ready(self):
         for value in ("PENDING", "", ARN.replace(ACCOUNT, "999999999999")):
             ctrl = mock.MagicMock()
@@ -219,6 +234,13 @@ class RuntimeImageTest(unittest.TestCase):
         event = b": heartbeat\n\nevent: readiness\nid: fixture\ndata:" + payload + b"\n\ndata: [DONE]\n\n"
         self.assertTrue(provision.valid_readiness_response(event, REQUEST))
         self.assertFalse(provision.valid_readiness_response(event + frame(value), REQUEST))
+
+    def test_disabled_and_incomplete_reasons_are_preserved_without_raw_text(self):
+        for reason in ("disabled", "inventory_incomplete"):
+            value = {**ready(), "status": "not_ready", "reason": reason,
+                     "inventory": {"count": None, "ageMinutes": None}}
+            self.assertEqual(provision.readiness_code(frame(value), REQUEST), reason)
+            self.assertFalse(provision.valid_readiness_response(frame(value), REQUEST))
 
     def test_access_denied_is_safe_and_distinct_from_protocol_failure(self):
         errors = [

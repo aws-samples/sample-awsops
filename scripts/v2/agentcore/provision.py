@@ -1059,6 +1059,8 @@ def ensure_runtime(ctrl, ac, gw_ids):
     # Lambdas). Account parsed from the role ARN (arn:aws:iam::<account>:role/...).
     env = {"AWS_REGION": region, "GATEWAYS_JSON": gateways_json,
            "AWSOPS_HOST_ACCOUNT_ID": ac["role_arn"].split(":")[4],
+           # Only the applied deployment output enables the billed readiness mode.
+           "DEPLOYMENT_READINESS_ENABLED": "true" if ac.get("deployment_readiness_enabled") is True else "false",
            # Dark-path chat loop (ADR-008 amended / BASELINE §2) — default OFF. Set explicitly on the
            # runtime so it survives re-provisioning and is toggleable via the normal deploy path:
            # `ANTHROPIC_AGENT_LOOP_ENABLED=true make agentcore`.
@@ -1193,8 +1195,8 @@ def readiness_code(raw, request):
             return "protocol_invalid"
         if value["nonce"] != request["nonce"] or value["accountId"] != request["expectedAccountId"]:
             return "response_identity_mismatch"
-        failures = {"invalid_request", "identity_failed", "account_mismatch", "gateway_unavailable",
-                    "tools_unavailable", "inventory_unavailable", "inventory_stale",
+        failures = {"disabled", "invalid_request", "identity_failed", "account_mismatch", "gateway_unavailable",
+                    "tools_unavailable", "inventory_unavailable", "inventory_incomplete", "inventory_stale",
                     "known_resource_missing", "model_failed", "timeout"}
         if value["status"] == "not_ready":
             return value["reason"] if value["reason"] in failures else "protocol_invalid"

@@ -21,7 +21,7 @@ CODES = {
     "inventory_disabled", "inventory_configuration_unavailable", "legacy_invocation_only",
     "invoke_access_denied", "invoke_throttled", "invoke_credentials_expired", "invoke_timeout", "invoke_failed",
     "not_event_stream", "protocol_invalid", "response_identity_mismatch", "checks_failed",
-    "inventory_stale", "inventory_empty", "identity_failed", "account_mismatch",
+    "disabled", "inventory_incomplete", "inventory_stale", "inventory_empty", "identity_failed", "account_mismatch",
     "gateway_unavailable", "tools_unavailable", "inventory_unavailable", "known_resource_missing",
     "model_failed", "timeout", "invalid_request", "response_close_failed",
 }
