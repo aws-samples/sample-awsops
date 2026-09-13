@@ -36,8 +36,12 @@ The digest/host-preflight profile is dev-only. Preview retains operator-configur
 digest·호스트 사전 검증은 dev 프로필 전용이다. preview는 운영자 설정 태그/digest·다중 계정 범위를 유지하며 계정·역할·사설 DNS 소유권만 공통으로 검증한다.
 
 ## Rollback / 롤백
-Retain runtime resources and restore reviewed prior digests/settings. This workflow does not support runtime retirement: core deletion, replacement and forget stay blocked. A destructive teardown needs a separate reviewed procedure covering Aurora ingress, migration dependencies and optional gates.
-런타임 리소스를 유지하고 검토된 이전 digest·설정을 복원한다. 이 워크플로는 런타임 종료를 지원하지 않으며 핵심 리소스 삭제·교체·forget을 차단한다. 파괴적 종료는 Aurora ingress·migration 의존성·선택 기능을 포함한 별도 검토 절차가 필요하다.
+Retain runtime resources and restore reviewed prior digests/settings. Manual dev/preview plans and apply block listed core deletion/replacement/forget; this development policy does not cover main. No retirement mode is provided. A destructive teardown needs a separate reviewed procedure covering Aurora ingress, migration dependencies and optional gates.
+런타임 리소스를 유지하고 검토된 이전 digest·설정을 복원한다. 수동 dev/preview 계획·적용은 지정 핵심 리소스 삭제·교체·forget을 차단한다. 이 개발 정책은 main에 적용되지 않으며 종료 모드는 제공하지 않는다. 파괴적 종료는 Aurora ingress·migration 의존성·선택 기능을 포함한 별도 검토 절차가 필요하다.
+
+## Promotion to main / main 승격
+Sequence: merge reviewed code to dev → reviewed dev apply and full live readiness → main promotion → reviewed production apply. Do not promote this IAM narrowing until live dev exercises verify gateway-backed chat, worker diagnosis, and an SFN/Fargate run with managed tags. Record actual identities, outcomes and denied operations privately; a mock plan or IAM document alone cannot satisfy this promotion gate. This dev PR is the prerequisite for that evidence, not production deployment authorization.
+순서: 검토된 dev 코드 머지 → 검토된 dev apply와 전체 실제 준비 상태 검증 → main 승격 → 검토된 운영 apply. 실제 dev gateway 경유 채팅·워커 진단·관리 태그를 포함한 SFN/Fargate 실행을 검증하기 전에는 이 IAM 축소를 main으로 승격하지 않는다. 실제 신원·결과·거부 작업의 증거를 비공개로 기록한다. Mock 계획이나 IAM 문서만으로 승격 조건을 충족할 수 없으며 이 dev PR은 증거 수집의 선행 조건이지 운영 배포 승인이 아니다.
 
 ## Related / 관련
 [CI setup/assets](dev-repo-setup.md) · [SQL reader](agent-sql-reader.md) · [Multi-account](onboard-target-account.md) · [Inventory rollback](steampipe-quota-and-staleness.md).

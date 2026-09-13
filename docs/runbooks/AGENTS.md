@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9c705b5bef1c · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e61e584f0d92 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -11,7 +11,8 @@ legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
 - `runtime-foundation.md` covers account-bound default-off activation and saved-plan assets. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
-- The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Routine core teardown/replacement/forget stays blocked; runtime retirement is unsupported. Configuration checks are not live-access proof.
+- The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
+- Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
 - `scripts/v2/ci_tf_assets.py` shares Terraform's locked layer installer. Prepare invalidates
   markers, removes stale regular ZIPs and rejects ZIP links. Pack requires known planned ZIPs;
   untargeted Lambdas are absent from targeted planned_values. TF_PLAN_ENC_KEY HMAC binds plan/SHA/scope and

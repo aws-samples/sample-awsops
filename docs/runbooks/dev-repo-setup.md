@@ -785,7 +785,7 @@ plan for a missing repository; do not disable this check or expand the role.
 ### 5. Deploy while DNS changes are deferred / DNS 변경 보류 상태의 배포
 
 `Terraform` dispatch defaults to `mode=plan`, `allow_dns_changes=false` and
-`domain_rollout=false`, `runtime_rollout=false`; runtime retirement is unsupported. See [runtime activation](runtime-foundation.md)
+`domain_rollout=false`, `runtime_rollout=false`; manual dev/preview core teardown remains blocked (no retirement mode). See [runtime activation](runtime-foundation.md)
 for the separate dev private-DNS profile. Ordinary full plans keep the existing broad DNS policy:
 Cloud Map/registered ECS changes require explicit DNS permission on both plan and apply.
 For a dev service-domain rollout, use the [staged domain runbook](dev-domain-rollout.md)

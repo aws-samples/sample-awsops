@@ -228,9 +228,9 @@ def _check_accounts(value, expected):
         for item in value:
             _check_accounts(item, expected)
     elif isinstance(value, str):
-        arn = re.match(r"^arn:aws:[a-z0-9-]+:[a-z0-9-]*:(\d{12}):", value)
-        if arn and arn[1] != expected:
-            raise ValueError("A runtime resource belongs to a different account")
+        for arn in re.finditer(r"arn:aws:[a-z0-9-]+:[a-z0-9-]*:(\d{12}):", value):
+            if arn[1] != expected:
+                raise ValueError("A runtime resource belongs to a different account")
 
 
 def check_plan(plan, target, scope, expected_account, *, advisory=False):

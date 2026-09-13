@@ -295,18 +295,18 @@ The values are safeguards, not assertions of universal AWS quotas; service, oper
 롤백은 파괴적 데이터베이스 변경 없이 이전 limiter defaults 또는 AgentCore catalog를 복원하는 방식이다.
 Rollback restores prior limiter defaults or catalog state without destructive database changes.
 
-ALLDNS 중에는 이전 limiter 값으로의 ECS 롤백과 `steampipe_enabled=false` 적용도 보류한다.
+ALLDNS 중에는 이전 limiter 값으로의 ECS 롤백도 보류한다.
 사설 Cloud Map DNS 변경이므로 동일한 계획 게이트를 적용한다. 별도 DNS 승인 이후에만 새 계획을
 검토하고 계획·적용 dispatch 양쪽에 `allow_dns_changes=true`를 명시한다. 금지 중에는 이 값을
 실행하지 않으며 사설 DNS 예외를 추가하지 않는다.
 
-Under ALLDNS, defer ECS rollback to prior limiter settings and disabling `steampipe_enabled` too:
-both can change private Cloud Map DNS and must pass the same gate. Only after separate DNS
+Under ALLDNS, defer ECS rollback to prior limiter settings:
+it can change private Cloud Map DNS and must pass the same gate. Only after separate DNS
 authorization may a fresh reviewed plan and its apply dispatch **both** set
 `allow_dns_changes=true`. Do not exercise that permission while ALLDNS is active or add a
 private-DNS exception.
 
-1. 런타임을 유지한 채 limiter/concurrency 또는 이미지 digest를 이전 검토 값으로 되돌린 계획을 만든다. 전체 종료는 [runtime retirement](runtime-foundation.md#retirement--종료)의 명시적 절차로 별도 검토한다.
+1. 런타임을 유지한 채 limiter/concurrency 또는 이미지 digest를 이전 검토 값으로 되돌린 계획을 만든다. [런타임 롤백](runtime-foundation.md#rollback--롤백)을 따르며 전체 종료는 별도 검토 절차가 필요하다.
 2. controller-approved `apply tfplan`으로 적용한다.
 3. 필요한 경우 현재 catalog를 유지한다. Phase 2 이후의 별도 catalog cutover가 있다면 이전 target set을 복원한다.
 4. Aurora `inventory_resources`, `inventory_sync_runs`, 또는 migration을 삭제·truncate하지 않는다.
@@ -321,5 +321,11 @@ Phase 1 alone does not retire any direct AgentCore target, so it has no AgentCor
 - Renderer: `scripts/v2/steampipe/spc_render.py`
 - Sync Lambda: `scripts/v2/steampipe/sync_lambda.py`
 
-Dev runtime deletion requires the explicit retirement marker described in the runtime
-runbook. Ordinary rollback retains services/data and restores prior reviewed settings.
+Manual dev/preview deployment blocks listed core-runtime deletion/replacement/forget.
+There is no retirement marker or supported teardown mode. Keep `steampipe_enabled=true`
+for ordinary rollback and restore prior reviewed settings; destructive decommissioning
+requires a separate reviewed procedure. This development guard does not apply to main.
+수동 dev/preview 배포는 지정 핵심 런타임의 삭제·교체·forget을 차단한다. 종료 marker나
+지원되는 teardown 모드는 없다. 일반 롤백은 `steampipe_enabled=true`와 서비스·데이터를
+유지하고 이전 검토 설정을 복원한다. 파괴적 종료에는 별도 검토 절차가 필요하며
+이 개발 환경 가드는 main에는 적용되지 않는다.

@@ -275,3 +275,16 @@ class RuntimePolicyTests(unittest.TestCase):
         for target in ("atomoh", "ssminji", "whchoi"):
             with self.assertRaises(ValueError):
                 self.module.check_plan(self.plan([foreign]), target, "full", ACCOUNT)
+
+    def test_embedded_arns_check_every_account_without_rejecting_wildcards(self):
+        own = f"arn:aws:iam::{ACCOUNT}:role/owned"
+        foreign = "arn:aws:iam::999999999999:role/foreign"
+        for field in ("policy", "assume_role_policy", "container_definitions", "definition"):
+            for value in (json.dumps({"Resource": [own, foreign]}), f"prefix {own} then {foreign}"):
+                change = self.change("aws_iam_role_policy.fixture", "aws_iam_role_policy", {field: value})
+                with self.assertRaisesRegex(ValueError, "different account"):
+                    self.module.check_plan(self.plan([change]), "dev", "full", ACCOUNT)
+        safe = json.dumps({"Resource": [own, "arn:aws:iam::*:role/AWSopsReadOnlyRole",
+                                       "arn:aws:iam::aws:policy/ReadOnlyAccess"]})
+        change = self.change("aws_iam_role_policy.fixture", "aws_iam_role_policy", {"policy": safe})
+        self.module.check_plan(self.plan([change]), "dev", "full", ACCOUNT)
