@@ -64,7 +64,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   message, separately from error counts. Full-prefix SQL continuations and RAISE LOG can forge
   matching text: lifecycle_source_integrity stays unverified_text, lifecycle_injection_possible
   is always true, and probe outcome stays unknown. Auth success messages require log_connections
-  (PostgreSQL default off; not enabled here); log_connections_enabled=null is explicitly unknown.
+  (PostgreSQL default off; not enabled here). The effective value is not inspected;
+  log_connections_enabled=null is explicitly unknown.
   Metrics aggregate IAM clients and never prove an individual probe outcome or authorize tuning.
   Publish fixed projections only, including on Terraform/AWS failures; never raw logs/filenames.
   Service-target/declaration comparisons and error categories are hypotheses, not proof of
