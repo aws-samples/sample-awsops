@@ -47,5 +47,9 @@ test('workflow requires host proof before planning and always cleans the private
   const step = workflow.slice(proof, workflow.indexOf('      - name:', proof + 6));
   assert.match(step, /vars.CI_READONLY_RUNTIME_DEV == 'true'/);
   assert.doesNotMatch(step, /continue-on-error|if: steps.host_credentials/);
+  const preparation = workflow.slice(workflow.indexOf('      - uses: actions/setup-node@v4'), proof);
+  for (const block of [...preparation.split('      - ').filter(s => /if:/.test(s)), step]) {
+    assert.match(block, /if:.*github.event_name == 'workflow_dispatch'/);
+  }
   assert.match(workflow, /name: Clean host verification credentials\n        if: always\(\)/);
 });

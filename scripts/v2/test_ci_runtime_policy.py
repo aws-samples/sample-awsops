@@ -9,7 +9,6 @@ import sys
 import tempfile
 import unittest
 
-
 def load():
     path = Path(__file__).with_name("ci_runtime_policy.py")
     spec = importlib.util.spec_from_file_location("ci_runtime_policy", path)
@@ -17,10 +16,8 @@ def load():
     spec.loader.exec_module(module)
     return module
 
-
 ACCOUNT = "012345678901"
 DIGEST = "sha256:" + "a" * 64
-
 
 class RuntimePolicyTests(unittest.TestCase):
     def setUp(self):
@@ -31,16 +28,16 @@ class RuntimePolicyTests(unittest.TestCase):
     def test_profile_is_opt_in_and_does_not_modify_other_branches(self):
         self.assertEqual(self.module.runtime_overrides("main", "true", "", "full", "", "", False), {})
         self.assertEqual(self.module.runtime_overrides("dev", "", ACCOUNT, "full", "", "", False),
-                         {"ci_runtime_profile_enabled": False, "ci_runtime_rollout": False, "ci_runtime_retire": False})
+                         {"ci_runtime_profile_enabled": False, "ci_runtime_rollout": False})
         self.assertEqual(self.module.runtime_overrides("dev", "false", ACCOUNT, "full", "", "", False),
-                         {"ci_runtime_profile_enabled": False, "ci_runtime_rollout": False, "ci_runtime_retire": False})
+                         {"ci_runtime_profile_enabled": False, "ci_runtime_rollout": False})
 
     def test_bootstrap_enables_only_existing_core_flags_without_fake_images(self):
         value = self.module.runtime_overrides("dev", "true", ACCOUNT, "runtime-ecr-bootstrap", "", "", False)
         self.assertEqual(value, {
             "agentcore_enabled": True, "workers_enabled": True, "steampipe_enabled": True,
             "inventory_host_only": True, "ci_runtime_profile_enabled": True,
-            "ci_runtime_rollout": False, "ci_runtime_retire": False,
+            "ci_runtime_rollout": False,
         })
 
     def test_full_activation_requires_both_immutable_digests(self):
@@ -81,11 +78,11 @@ class RuntimePolicyTests(unittest.TestCase):
                      "CI_ROLE_ARN": role}, capture_output=True)
             self.assertNotEqual(result.returncode, 0, target)
 
-    def plan(self, changes=(), rollout=False, profile=False, retire=False):
+    def plan(self, changes=(), rollout=False, profile=False):
         values = {
             "project": "awsops-dev", "region": "ap-northeast-2",
             "ci_runtime_rollout": rollout, "ci_domain_rollout": False,
-            "ci_runtime_profile_enabled": profile, "ci_runtime_retire": retire,
+            "ci_runtime_profile_enabled": profile,
             "agentcore_enabled": False, "workers_enabled": False,
             "steampipe_enabled": False, "inventory_host_only": False,
             "remediation_enabled": False, "integrations_write_enabled": False,
@@ -128,6 +125,22 @@ class RuntimePolicyTests(unittest.TestCase):
         plan = self.plan(profile=True)
         self.module.check_plan(plan, "dev", "full", ACCOUNT)
 
+    def test_direct_dev_host_only_requires_the_verified_profile(self):
+        plan = self.plan()
+        plan["variables"]["inventory_host_only"]["value"] = True
+        with self.assertRaises(ValueError):
+            self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        plan["variables"]["ci_runtime_profile_enabled"]["value"] = True
+        self.module.check_plan(plan, "dev", "full", ACCOUNT)
+
+    def test_retirement_is_unsupported_in_saved_plans_and_workflow_inputs(self):
+        plan = self.plan()
+        plan["variables"]["ci_runtime_retire"] = {"value": True}
+        with self.assertRaisesRegex(ValueError, "not supported"):
+            self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/terraform.yml").read_text()
+        self.assertNotIn("      runtime_retire:", workflow)
+
     def test_preview_rollout_is_explicit_and_does_not_force_the_dev_profile(self):
         change = self.change("aws_service_discovery_private_dns_namespace.main[0]",
                              "aws_service_discovery_private_dns_namespace",
@@ -135,191 +148,12 @@ class RuntimePolicyTests(unittest.TestCase):
         for target in ("atomoh", "ssminji", "whchoi"):
             value = self.module.runtime_overrides(target, "true", ACCOUNT, "full", "", "", True)
             self.assertEqual(value, {"ci_runtime_profile_enabled": False,
-                                    "ci_runtime_rollout": True, "ci_runtime_retire": False})
+                                    "ci_runtime_rollout": True})
             with self.assertRaises(ValueError):
                 self.module.check_plan(self.plan([change]), target, "full", ACCOUNT)
             self.module.check_plan(self.plan([change], rollout=True), target, "full", ACCOUNT)
             with self.assertRaises(ValueError):
                 self.module.runtime_overrides(target, "", ACCOUNT, "full", "", "", True, advisory=True)
-
-    def test_retirement_overrides_are_exclusive_and_force_runtime_flags_off(self):
-        value = self.module.runtime_overrides("dev", "false", ACCOUNT, "full", "", "", False, retire=True)
-        self.assertEqual(value, {
-            "ci_runtime_profile_enabled": False, "ci_runtime_rollout": False, "ci_runtime_retire": True,
-            "agentcore_enabled": False, "workers_enabled": False,
-            "steampipe_enabled": False, "inventory_host_only": False,
-        })
-        for target, enabled, scope, rollout, advisory in [
-            ("main", "false", "full", False, False), ("atomoh", "false", "full", False, False),
-            ("dev", "true", "full", False, False), ("dev", "false", "full", True, False),
-            ("dev", "false", "runtime-ecr-bootstrap", False, False), ("dev", "false", "full", False, True),
-        ]:
-            with self.assertRaises(ValueError):
-                self.module.runtime_overrides(target, enabled, ACCOUNT, scope, "", "", rollout,
-                                              advisory=advisory, retire=True)
-
-    def retirement_plan(self):
-        cluster = f"arn:aws:ecs:ap-northeast-2:{ACCOUNT}:cluster/awsops-dev"
-        arn = f"arn:aws:servicediscovery:ap-northeast-2:{ACCOUNT}:service/srv-owned"
-        old = {
-            "aws_service_discovery_private_dns_namespace.main[0]": {
-                "id": "ns-owned", "name": "awsops-dev.internal", "vpc": "vpc-0123"},
-            "aws_service_discovery_service.steampipe[0]": {
-                "name": "steampipe", "arn": arn, "dns_config": [{"namespace_id": "ns-owned"}]},
-            "aws_ecs_service.steampipe[0]": {
-                "name": "awsops-dev-steampipe", "cluster": cluster, "service_registries": [{"registry_arn": arn}]},
-        }
-        changes = []
-        for address, before in old.items():
-            change = self.change(address, address.split(".")[0], None, ["delete"])
-            change["change"]["before"] = before
-            changes.append(change)
-        plan = self.plan(changes, retire=True)
-        plan["planned_values"]["root_module"]["resources"].append({
-            "address": "aws_ecs_cluster.main", "values": {"arn": cluster, "name": "awsops-dev"}})
-        return plan
-
-    def test_retirement_validates_before_bindings_without_mutating_the_saved_plan(self):
-        plan = self.retirement_plan()
-        saved = copy.deepcopy(plan)
-        self.module.check_plan(plan, "dev", "full", ACCOUNT)
-        self.assertEqual(plan, saved)
-        for index, mutate in [
-            (0, lambda value: value.update(vpc="vpc-foreign")),
-            (0, lambda value: value.update(name="foreign.internal")),
-            (1, lambda value: value["dns_config"][0].update(namespace_id="ns-foreign")),
-            (2, lambda value: value["service_registries"][0].update(registry_arn=
-                f"arn:aws:servicediscovery:ap-northeast-2:{ACCOUNT}:service/srv-foreign")),
-            (2, lambda value: value.update(cluster="foreign-cluster")),
-        ]:
-            plan = self.retirement_plan()
-            mutate(plan["resource_changes"][index]["change"]["before"])
-            with self.assertRaises(ValueError):
-                self.module.check_plan(plan, "dev", "full", ACCOUNT)
-
-    def test_retirement_never_allows_core_replacements_forget_creates_or_updates(self):
-        for address in self.module.CORE:
-            for actions in (["delete", "create"], ["create", "delete"], ["forget"], ["create"], ["update"]):
-                change = self.change(address, address.split(".")[0], {}, actions)
-                change["change"]["before"] = {}
-                with self.assertRaises(ValueError):
-                    self.module.check_plan(self.plan([change], retire=True), "dev", "full", ACCOUNT)
-        for target, scope, profile, rollout, advisory in [
-            ("main", "full", False, False, False), ("atomoh", "full", False, False, False),
-            ("dev", "ecr-bootstrap", False, False, False), ("dev", "full", True, False, False),
-            ("dev", "full", False, True, False), ("dev", "full", False, False, True),
-        ]:
-            with self.assertRaises(ValueError):
-                self.module.check_plan(self.plan(retire=True, profile=profile, rollout=rollout),
-                                       target, scope, ACCOUNT, advisory=advisory)
-        for flag in ("agentcore_enabled", "workers_enabled", "steampipe_enabled", "inventory_host_only"):
-            plan = self.plan(retire=True)
-            plan["variables"][flag]["value"] = True
-            with self.assertRaises(ValueError):
-                self.module.check_plan(plan, "dev", "full", ACCOUNT)
-
-    def test_retirement_preserves_shared_infrastructure_and_rejects_unrelated_mutations(self):
-        for kind in ("aws_route53_record", "aws_acm_certificate", "aws_vpc", "aws_subnet",
-                     "aws_security_group", "aws_rds_cluster", "aws_cognito_user_pool"):
-            change = self.change(f"{kind}.unrelated", kind, None, ["delete"])
-            change["change"]["before"] = {}
-            with self.assertRaises(ValueError):
-                self.module.check_plan(self.plan([change], retire=True), "dev", "full", ACCOUNT)
-        change = self.change("aws_lambda_function.unrelated", "aws_lambda_function", {}, ["update"])
-        with self.assertRaises(ValueError):
-            self.module.check_plan(self.plan([change], retire=True), "dev", "full", ACCOUNT)
-
-    def test_retirement_allows_only_core_gated_dependency_deletion(self):
-        change = self.change("aws_iam_role.worker_task[0]", "aws_iam_role", None, ["delete"])
-        change["change"]["before"] = {"arn": f"arn:aws:iam::{ACCOUNT}:role/awsops-dev-worker"}
-        plan = self.plan([change], retire=True)
-        with self.assertRaises(ValueError):
-            self.module.check_plan(plan, "dev", "full", ACCOUNT)
-        plan["configuration"] = {"root_module": {"resources": [{
-            "address": "aws_iam_role.worker_task",
-            "count_expression": {"references": ["local.we"]},
-        }]}}
-        self.module.check_plan(plan, "dev", "full", ACCOUNT)
-        agent = self.change('aws_lambda_function.agent["inventory-read"]', "aws_lambda_function", None, ["delete"])
-        agent["change"]["before"] = {"arn": f"arn:aws:lambda:ap-northeast-2:{ACCOUNT}:function:awsops-dev-inventory-read"}
-        agent_plan = self.plan([agent], retire=True)
-        agent_plan["configuration"] = {"root_module": {"resources": [{
-            "address": "aws_lambda_function.agent", "for_each_expression": {"references": ["local.agent_lambdas"]}}]}}
-        self.module.check_plan(agent_plan, "dev", "full", ACCOUNT)
-        for kind in ("aws_ecs_service", "aws_rds_cluster"):
-            unrelated = self.change(f"{kind}.unrelated[0]", kind, None, ["delete"])
-            unrelated["change"]["before"] = {"service_registries": [{"registry_arn": "foreign"}]}
-            bad = self.plan([unrelated], retire=True)
-            bad["configuration"] = {"root_module": {"resources": [{
-                "address": f"{kind}.unrelated", "count_expression": {"references": ["local.we"]},
-            }]}}
-            with self.assertRaises(ValueError):
-                self.module.check_plan(bad, "dev", "full", ACCOUNT)
-
-    def test_retirement_web_exception_is_only_disabling_runtime_environment(self):
-        before = {
-            "family": "awsops-dev-web", "task_role_arn": f"arn:aws:iam::{ACCOUNT}:role/awsops-dev-task",
-            "container_definitions": json.dumps([{"name": "web", "image": "reviewed-image", "environment": [
-                {"name": "HOSTNAME", "value": "0.0.0.0"}, {"name": "INV_SYNC_FUNCTION", "value": "awsops-dev-inv-sync"},
-                {"name": "INVENTORY_HOST_ONLY", "value": "true"}, {"name": "JOBS_QUEUE_URL", "value": "old-queue"},
-                {"name": "PROJECT", "value": "awsops-dev"}, {"name": "PROJECT", "value": "awsops-dev"},
-            ]}]),
-        }
-        after = copy.deepcopy(before)
-        containers = json.loads(after["container_definitions"])
-        containers[0]["environment"] = [
-            {"name": "HOSTNAME", "value": "0.0.0.0"}, {"name": "INV_SYNC_FUNCTION", "value": ""},
-            {"name": "PROJECT", "value": "awsops-dev"},
-        ]
-        after["container_definitions"] = json.dumps(containers)
-        change = self.change("aws_ecs_task_definition.web", "aws_ecs_task_definition", after, ["create", "delete"])
-        change["change"]["before"] = before
-        plan = self.plan([change], retire=True)
-        self.module.check_plan(plan, "dev", "full", ACCOUNT)
-        bad = copy.deepcopy(plan)
-        data = json.loads(bad["resource_changes"][0]["change"]["before"]["container_definitions"])
-        data[0]["environment"][-2]["value"] = "conflicting-project"
-        bad["resource_changes"][0]["change"]["before"]["container_definitions"] = json.dumps(data)
-        with self.assertRaises(ValueError):
-            self.module.check_plan(bad, "dev", "full", ACCOUNT)
-        cluster = f"arn:aws:ecs:ap-northeast-2:{ACCOUNT}:cluster/awsops-dev"
-        plan["planned_values"]["root_module"]["resources"].append({
-            "address": "aws_ecs_cluster.main", "values": {"arn": cluster}})
-        service = self.change("aws_ecs_service.web", "aws_ecs_service",
-                              {"name": "awsops-dev-web", "cluster": cluster, "task_definition": None}, ["update"])
-        service["change"]["before"] = {**service["change"]["after"],
-                                      "task_definition": f"arn:aws:ecs:ap-northeast-2:{ACCOUNT}:task-definition/awsops-dev-web:1"}
-        service["change"]["after_unknown"] = {"task_definition": True}
-        plan["resource_changes"].append(service)
-        plan["configuration"] = {"root_module": {"resources": [{
-            "address": "aws_ecs_service.web", "expressions": {"task_definition": {
-                "references": ["aws_ecs_task_definition.web.arn", "aws_ecs_task_definition.web"]}},
-        }]}}
-        self.module.check_plan(plan, "dev", "full", ACCOUNT)
-        for key, value in [("image", "unreviewed-image"), ("environment", [
-            {"name": "HOSTNAME", "value": "0.0.0.0"}, {"name": "INV_SYNC_FUNCTION", "value": "new-function"},
-        ])]:
-            bad = copy.deepcopy(plan)
-            data = json.loads(bad["resource_changes"][0]["change"]["after"]["container_definitions"])
-            data[0][key] = value
-            bad["resource_changes"][0]["change"]["after"]["container_definitions"] = json.dumps(data)
-            with self.assertRaises(ValueError):
-                self.module.check_plan(bad, "dev", "full", ACCOUNT)
-
-    def test_cli_retirement_requires_manual_context_and_saves_metadata(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            env = {**os.environ, "TARGET": "dev", "AWS_ACCOUNT_ID_DEV": ACCOUNT, "PLAN_SCOPE": "full",
-                   "CI_READONLY_RUNTIME_DEV": "false", "RUNTIME_ROLLOUT": "false", "RUNTIME_RETIRE": "true",
-                   "ADVISORY": "false", "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/dev"}
-            command = [sys.executable, self.module.__file__, "overrides"]
-            self.assertNotEqual(subprocess.run(command, cwd=tmp, env=env, capture_output=True).returncode, 0)
-            env["GITHUB_EVENT_NAME"] = "workflow_dispatch"
-            result = subprocess.run(command, cwd=tmp, env=env, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            value = json.loads((Path(tmp) / "ci-runtime.auto.tfvars.json").read_text())
-            self.assertTrue(value["ci_runtime_retire"])
-            self.assertFalse(value["ci_runtime_profile_enabled"])
-            self.assertNotIn("ci_readiness_enabled", value)
 
     def test_ordinary_plans_preserve_governed_notifications_and_empty_advisory_plans(self):
         plan = self.plan()

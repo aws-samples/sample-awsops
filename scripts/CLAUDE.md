@@ -6,11 +6,9 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
-- `v2/ci_runtime_policy.py` — dev activation pins inventory/worker image digests. Independently configured development/preview accounts, CI roles and actual STS callers must match. The dev profile enforces read-only flags even without a
-  discovery rollout. Dev/preview private discovery requires an explicit full-plan rollout; public DNS/certificates stay blocked. Dev/full retirement is separate, disables core/host flags and permits owned runtime deletion, not
-  replacement/forget or shared infrastructure deletion. ECR bootstrap permits three repositories. Default-off flags and policy checks alone do not prove effective runtime access.
-- `v2/ci/prepare-runtime-host.mjs` verifies actual login, DB and the enabled host-only registry before full dev activation plans. Apply uses the approved profile marker to require a fresh check. It uses private existing credentials, rejects
-  database-only proof and reports a fixed failure code.
+- `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
+- Dev/preview private discovery requires explicit full-plan rollout and preserves public DNS/certificates. `runtime-ecr-bootstrap` permits exactly three repositories. Runtime retirement is unsupported; core teardown, replacements and forget remain blocked by routine deployment.
+- `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-registry proof before manual full dev activation plans; apply rechecks the approved profile. Automatic PR/push plans never receive the host-probe credential. Database-only proof is rejected; credentials stay private and failures use a fixed code. Flags/policy checks do not prove live access.
 - `v2/agentcore/provision.py` maps the applied `agentcore.deployment_readiness_enabled` boolean
   to `DEPLOYMENT_READINESS_ENABLED`; missing/false is off and shell overrides are ignored.
 

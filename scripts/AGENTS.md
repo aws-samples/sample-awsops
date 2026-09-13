@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 90a23315dde3 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4f25c711cbef · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,11 +8,9 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
-- `v2/ci_runtime_policy.py` checks development/preview CI roles and STS accounts, pins dev image digests and enforces read-only profile flags without requiring a DNS rollout. Dev/preview private discovery requires explicit full-plan
-  rollout; public DNS/certificates stay blocked. Separate dev/full retirement disables core/host flags and permits owned runtime deletion, not replacement/forget or shared infrastructure deletion. ECR bootstrap permits three repos.
-  Default-off flags and policy checks do not prove effective access.
-- `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-only registry proof before full dev activation plans; apply rechecks using the approved profile. Database-only success is rejected. Credentials stay private and failures use a
-  fixed code.
+- `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
+- Dev/preview private discovery requires explicit full-plan rollout and preserves public DNS/certificates. `runtime-ecr-bootstrap` permits exactly three repositories. Runtime retirement is unsupported; core teardown, replacements and forget remain blocked by routine deployment.
+- `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-registry proof before manual full dev activation plans; apply rechecks the approved profile. Automatic PR/push plans never receive the host-probe credential. Database-only proof is rejected; credentials stay private and failures use a fixed code. Flags/policy checks do not prove live access.
 - `v2/ci_db_diagnostics.py` is default-off manual dev-plan diagnostics. Both workflow and helper
   require `workflow_dispatch`, literal `CI_DB_DIAGNOSTICS_DEV=true`, and `--target dev`;
   region is fixed to `ap-northeast-2`. Invalid invocation context causes no AWS calls.

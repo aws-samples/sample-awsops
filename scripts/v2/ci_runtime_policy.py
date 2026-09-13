@@ -1,6 +1,5 @@
 """Offline account, immutable-image and private runtime rollout boundaries."""
 import argparse
-import copy
 import json
 import os
 from pathlib import Path
@@ -45,26 +44,22 @@ def account_id(value):
 
 
 def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest, worker_digest,
-                      rollout, *, advisory=False, retire=False):
+                      rollout, *, advisory=False):
     if (scope not in SCOPES or enabled not in ("", "false", "true")
-            or type(rollout) is not bool or type(retire) is not bool):
+            or type(rollout) is not bool):
         raise ValueError("Invalid runtime profile or scope")
     profile = target == "dev" and enabled == "true"
-    if retire and (target != "dev" or scope != "full" or advisory or rollout or profile):
-        raise ValueError("Runtime retirement requires manual dev/full with profile and rollout off")
     if target not in DEV_TARGETS:
-        if rollout or retire or scope == "runtime-ecr-bootstrap":
+        if rollout or scope == "runtime-ecr-bootstrap":
             raise ValueError("Runtime operation requires a development target")
         return {}
     if scope == "runtime-ecr-bootstrap" and target != "dev":
         raise ValueError("Runtime bootstrap is dev-only")
     if rollout and (scope != "full" or advisory or (target == "dev" and not profile)):
         raise ValueError("Runtime rollout requires manual full scope and the dev activation profile on dev")
-    result = {"ci_runtime_profile_enabled": profile, "ci_runtime_rollout": rollout, "ci_runtime_retire": retire}
-    if profile or rollout or retire:
+    result = {"ci_runtime_profile_enabled": profile, "ci_runtime_rollout": rollout}
+    if profile or rollout:
         account_id(expected_account)
-    if retire:
-        return {**result, **{key: False for key in RUNTIME_FLAGS}}
     if not profile:
         return result
     result.update({key: True for key in RUNTIME_FLAGS})
@@ -217,146 +212,12 @@ def _validate_private(plan, variables, resource):
         raise ValueError("Unexpected private discovery resource")
 
 
-def _before_inspection(plan):
-    """Validation view only: never rewrite the saved plan or authorize via unknown future IDs."""
-    inspection = copy.deepcopy(plan)
-    for resource in inspection.get("resource_changes", []):
-        change = resource.get("change", {})
-        if isinstance(change.get("before"), dict):
-            change["after"] = change["before"]
-        change["actions"], change["after_unknown"] = ["no-op"], {}
-    return inspection
-
-
-def _configuration(plan, address):
-    address = re.sub(r"\[.*\]$", "", address)
-    matches = [r for r in _resources(plan.get("configuration", {}).get("root_module"))
-               if r.get("address") == address]
-    return matches[0] if len(matches) == 1 else {}
-
-
-def _core_gated(plan, address):
-    resource = _configuration(plan, address)
-    gates = {"local.sp", "local.we", "local.ac_count", "local.core_runtime_enabled", "local.agent_lambdas",
-             "var.steampipe_enabled", "var.workers_enabled", "var.agentcore_enabled"}
-    for key in ("count_expression", "for_each_expression"):
-        refs = resource.get(key, {}).get("references", [])
-        if isinstance(refs, list) and refs and all(isinstance(r, str) for r in refs):
-            if set(refs) <= gates:
-                return True
-    return False
-
-
 def _has_unknown(value):
     if isinstance(value, dict):
         return any(_has_unknown(v) for v in value.values())
     if isinstance(value, list):
         return any(_has_unknown(v) for v in value)
     return value is not False and value is not None
-
-
-def _web_environment_cleanup(resource, project):
-    change = resource["change"]
-    before, after = change.get("before"), change.get("after")
-    if (resource["address"] != "aws_ecs_task_definition.web"
-            or resource["type"] != "aws_ecs_task_definition"
-            or change["actions"] not in (["update"], ["create", "delete"], ["delete", "create"])
-            or not isinstance(before, dict) or not isinstance(after, dict)
-            or before.get("family") != after.get("family") or after.get("family") != f"{project}-web"):
-        return False
-    computed = {"id", "arn", "arn_without_revision", "revision"}
-    ignored = computed | {"container_definitions"}
-    unknown = change.get("after_unknown") or {}
-    if not isinstance(unknown, dict) or _has_unknown({k: v for k, v in unknown.items() if k not in computed}):
-        return False
-    if {k: v for k, v in before.items() if k not in ignored} != {k: v for k, v in after.items() if k not in ignored}:
-        return False
-    try:
-        old, new = json.loads(before["container_definitions"]), json.loads(after["container_definitions"])
-        if not isinstance(old, list) or not isinstance(new, list) or len(old) != len(new):
-            return False
-        changed = False
-        allowed = {"INV_SYNC_FUNCTION", "INVENTORY_HOST_ONLY", "JOBS_QUEUE_URL",
-                   "SSM_RUNTIME_ARN_PARAM", "SSM_INTERPRETER_ID_PARAM", "SSM_MEMORY_ID_PARAM"}
-        for previous, following in zip(old, new):
-            if previous == following:
-                continue
-            if previous.get("name") != "web" or following.get("name") != "web":
-                return False
-            if {k: v for k, v in previous.items() if k != "environment"} != {
-                    k: v for k, v in following.items() if k != "environment"}:
-                return False
-            a, b = {}, {}
-            for source, result in ((previous, a), (following, b)):
-                for entry in source.get("environment", []):
-                    if set(entry) != {"name", "value"} or (
-                            entry["name"] in result and result[entry["name"]] != entry["value"]):
-                        return False
-                    result[entry["name"]] = entry["value"]
-            differences = {k for k in a.keys() | b.keys() if a.get(k) != b.get(k)}
-            if not differences <= allowed or any(k in b and b[k] not in ("", "false") for k in differences):
-                return False
-            changed |= bool(differences)
-        return changed
-    except (ValueError, KeyError, TypeError, AttributeError):
-        return False
-
-
-def _web_service_cleanup(plan, resource, variables):
-    change = resource["change"]
-    before, after = change.get("before"), change.get("after")
-    if (resource["address"] != "aws_ecs_service.web" or resource["type"] != "aws_ecs_service"
-            or change["actions"] != ["update"] or not isinstance(before, dict) or not isinstance(after, dict)
-            or after.get("name") != f"{variables['project']}-web"):
-        return False
-    if {k: v for k, v in before.items() if k != "task_definition"} != {
-            k: v for k, v in after.items() if k != "task_definition"}:
-        return False
-    cluster = _resource_values(plan, "aws_ecs_cluster.main")
-    if not after.get("cluster") or after["cluster"] not in (cluster.get("arn"), cluster.get("id"), cluster.get("name")):
-        return False
-    definition = next((r for r in plan["resource_changes"] if r.get("address") == "aws_ecs_task_definition.web"), None)
-    if not definition or not _web_environment_cleanup(definition, variables["project"]):
-        return False
-    unknown = change.get("after_unknown") or {}
-    if not isinstance(unknown, dict) or _has_unknown({k: v for k, v in unknown.items() if k != "task_definition"}):
-        return False
-    expected = definition["change"]["after"].get("arn")
-    if expected:
-        return after.get("task_definition") == expected
-    refs = _configuration(plan, resource["address"]).get("expressions", {}).get("task_definition", {}).get("references", [])
-    return (after.get("task_definition") is None and unknown.get("task_definition") is True
-            and isinstance(refs, list) and "aws_ecs_task_definition.web.arn" in refs
-            and all(r in ("aws_ecs_task_definition.web", "aws_ecs_task_definition.web.arn") for r in refs))
-
-
-def _retirement_change(plan, inspection, variables, resource):
-    address, kind, change = resource["address"], resource["type"], resource["change"]
-    if address not in CORE and (_web_environment_cleanup(resource, variables["project"])
-                               or _web_service_cleanup(plan, resource, variables)):
-        return
-    if (address in ("aws_ecs_service.web", "aws_ecs_task_definition.web")
-            or kind.startswith(("aws_rds_", "aws_db_", "aws_cognito_", "aws_kms_"))
-            or kind == "aws_ecs_cluster"):
-        raise ValueError("Retirement must preserve shared application infrastructure")
-    if change["actions"] != ["delete"] or change.get("after") is not None or not isinstance(change.get("before"), dict):
-        raise ValueError("Retirement permits true runtime deletion, not creation, update, replacement or forget")
-    if address in CORE:
-        if kind != address.split(".")[0]:
-            raise ValueError("Runtime retirement resource type mismatch")
-        if address in PRIVATE_DNS:
-            prior = next(r for r in inspection["resource_changes"] if r.get("address") == address)
-            _validate_private(inspection, variables, prior)
-        return
-    if (kind.startswith("aws_service_discovery")
-            or kind == "aws_ecs_service" and change["before"].get("service_registries")
-            or not _core_gated(plan, address)):
-        raise ValueError("Retirement contains an unrelated resource change")
-    if kind.startswith(("aws_security_group", "aws_vpc_security_group")):
-        before = change["before"]
-        if (address != "aws_security_group.steampipe[0]" or before.get("name") != f"{variables['project']}-steampipe-sg"
-                or before.get("vpc_id") != _vpc(inspection, variables)):
-            raise ValueError("Retirement must preserve shared network security groups")
 
 
 def _check_accounts(value, expected):
@@ -378,16 +239,14 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
     variables = _variables(plan)
     rollout = variables.get("ci_runtime_rollout", False)
     profile = variables.get("ci_runtime_profile_enabled", False)
-    retire = variables.get("ci_runtime_retire", False)
-    if any(type(value) is not bool for value in (rollout, profile, retire)):
+    if variables.get("ci_runtime_retire", False) is not False:
+        raise ValueError("Runtime retirement is not supported by this workflow")
+    if any(type(value) is not bool for value in (rollout, profile)):
         raise ValueError("Runtime operation metadata must be boolean")
     if profile and target != "dev":
         raise ValueError("The generated runtime profile is dev-only")
-    if retire and (target != "dev" or scope != "full" or advisory or rollout or profile
-                   or variables.get("ci_domain_rollout")):
-        raise ValueError("Runtime retirement requires manual dev/full with other rollout/profile intent off")
-    if retire and any(variables.get(flag) is not False for flag in RUNTIME_FLAGS):
-        raise ValueError("Runtime retirement requires all core and host-only flags off")
+    if target == "dev" and variables.get("inventory_host_only") is True and not profile:
+        raise ValueError("Development host-only inventory requires the verified runtime profile")
     if rollout and (target not in DEV_TARGETS or scope != "full" or advisory or variables.get("ci_domain_rollout")):
         raise ValueError("Runtime rollout requires a manual development full plan without domain rollout")
     if target not in DEV_TARGETS:
@@ -409,7 +268,6 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
     changes = plan.get("resource_changes", [])
     if not isinstance(changes, list):
         raise ValueError("Missing plan changes")
-    inspection = _before_inspection(plan) if retire else None
     private = []
     for resource in changes:
         address, kind = resource.get("address"), resource.get("type")
@@ -424,20 +282,14 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
             raise ValueError("Invalid resource actions")
         after = change.get("after")
         _check_accounts(after, expected)
-        if (rollout or retire) and (kind.startswith(("aws_route53", "aws_acm_")) or kind in NETWORK_TYPES):
+        if rollout and (kind.startswith(("aws_route53", "aws_acm_")) or kind in NETWORK_TYPES):
             raise ValueError("Runtime operations must preserve public DNS, certificates and network topology")
-        if retire:
-            _check_accounts(change.get("before"), expected)
-            _retirement_change(plan, inspection, variables, resource)
-            if address in PRIVATE_DNS:
-                private.append(address)
-            continue
         if scope == "runtime-ecr-bootstrap":
             if (address not in REPOSITORIES or kind != "aws_ecr_repository" or actions != ["create"]
                     or not isinstance(after, dict) or after.get("name") != f"{project}-{REPOSITORIES[address]}"):
                 raise ValueError("Runtime ECR bootstrap may create only the three expected repositories")
         if not advisory and address in CORE and any(a in actions for a in ("delete", "forget")):
-            raise ValueError("Runtime teardown requires a separately reviewed retirement")
+            raise ValueError("Runtime teardown requires a separate reviewed procedure")
         if rollout and kind == "aws_security_group" and "delete" in actions:
             raise ValueError("Runtime rollout must not replace attached security groups")
         registries = after.get("service_registries") if isinstance(after, dict) else None
@@ -495,22 +347,19 @@ def main():
                 raise ValueError("Runtime override path must not be a symlink")
             OVERRIDES.unlink(missing_ok=True)
             rollout = os.environ.get("RUNTIME_ROLLOUT", "false")
-            retire = os.environ.get("RUNTIME_RETIRE", "false")
-            if rollout not in ("true", "false") or retire not in ("true", "false"):
-                raise ValueError("RUNTIME_ROLLOUT and RUNTIME_RETIRE must be true or false")
-            if retire == "true" and (os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
-                                     or os.environ.get("GITHUB_REF") != "refs/heads/dev"):
-                raise ValueError("Runtime retirement requires a dev workflow_dispatch")
+            if rollout not in ("true", "false"):
+                raise ValueError("RUNTIME_ROLLOUT must be true or false")
+            if os.environ.get("RUNTIME_RETIRE", "false") not in ("", "false"):
+                raise ValueError("Runtime retirement is not supported by this workflow")
             value = runtime_overrides(
                 args.target, os.environ.get("CI_READONLY_RUNTIME_DEV", ""), account, args.scope,
                 os.environ.get("STEAMPIPE_IMAGE_DIGEST_DEV", ""), os.environ.get("WORKER_IMAGE_DIGEST_DEV", ""),
-                rollout == "true", advisory=args.advisory == "true", retire=retire == "true",
+                rollout == "true", advisory=args.advisory == "true",
             )
             with OVERRIDES.open("x") as output:
                 json.dump(value, output)
             print(json.dumps({"runtime_profile_enabled": value.get("ci_runtime_profile_enabled", False),
-                              "runtime_rollout": value.get("ci_runtime_rollout", False),
-                              "runtime_retire": value.get("ci_runtime_retire", False)}))
+                              "runtime_rollout": value.get("ci_runtime_rollout", False)}))
     except ValueError as error:
         print(f"Runtime deployment policy refused: {error}", file=sys.stderr)
         return 1

@@ -30,9 +30,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [agent-sql-reader.md](agent-sql-reader.md) | `execute_sql`/`inventory-read` Data API auth failures — `awsops_sql_reader` role/password sync (`apply → make migrate → make agentcore`) |
 
 ## Deployment invariants
-- `runtime-foundation.md` covers account-bound, default-off runtime activation and saved-plan Lambda assets. Explicit full-plan dev/preview rollout permits only owned private Cloud Map/ECS DNS changes with DNS permission; public
-  DNS/certificates remain blocked. Dev profile activation enforces read-only flags and real login/DB/host-registry preflight at plan/apply. Separate dev/full retirement disables core/host flags, permits true owned-runtime deletion and
-  protects shared/public infrastructure. ECR bootstrap creates three repositories. Configuration and policy checks are not effective-access or successful-collection proof.
+- `runtime-foundation.md` covers account-bound default-off activation and saved-plan assets. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
+- The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Routine core teardown/replacement/forget stays blocked; runtime retirement is unsupported. Configuration checks are not live-access proof.
 - `scripts/v2/ci_tf_assets.py` shares one locked pg8000 installer with Terraform.
   Prepare invalidates markers and removes stale regular ZIPs, rejecting ZIP symlinks.
   Pack requires known planned ZIPs and binds plan/SHA/scope, paths, modes and hashes with

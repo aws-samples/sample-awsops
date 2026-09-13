@@ -6,12 +6,6 @@ variable "ci_runtime_profile_enabled" {
   description = "Saved metadata that the explicit dev runtime profile generated these inputs."
 }
 
-variable "ci_runtime_retire" {
-  type        = bool
-  default     = false
-  description = "Saved-plan intent for manual dev/full core-runtime retirement; excludes activation and replacements."
-}
-
 variable "ci_runtime_rollout" {
   type        = bool
   default     = false
@@ -50,7 +44,7 @@ locals { core_runtime_enabled = var.steampipe_enabled || var.agentcore_enabled |
 
 data "aws_regions" "runtime_read" {
   count       = local.core_runtime_enabled ? 1 : 0
-  all_regions = false
+  all_regions = true
 }
 
 locals {
@@ -62,7 +56,6 @@ locals {
   runtime_model_resources = [
     "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
     "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*anthropic.claude-*",
-    "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:application-inference-profile/*",
   ]
 }
 

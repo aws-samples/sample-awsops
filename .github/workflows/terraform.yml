@@ -53,10 +53,6 @@ on:
         description: "Plan only: development/preview private runtime discovery rollout"
         type: boolean
         default: false
-      runtime_retire:
-        description: "Plan only: explicitly retire dev runtime resources; destroys retained runtime data/images"
-        type: boolean
-        default: false
       publish_service_dns:
         description: "Publish service A records (preserve current state when DNS changes are prohibited)"
         type: boolean
@@ -188,7 +184,6 @@ jobs:
           STEAMPIPE_IMAGE_DIGEST_DEV: ${{ vars.STEAMPIPE_IMAGE_DIGEST_DEV }}
           WORKER_IMAGE_DIGEST_DEV: ${{ vars.WORKER_IMAGE_DIGEST_DEV }}
           RUNTIME_ROLLOUT: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_rollout }}
-          RUNTIME_RETIRE: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_retire }}
           PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
           ADVISORY: ${{ github.event_name != 'workflow_dispatch' }}
         run: |
@@ -198,19 +193,19 @@ jobs:
           python3 ../../scripts/v2/ci_runtime_policy.py overrides
 
       - uses: actions/setup-node@v4
-        if: steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READONLY_RUNTIME_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
+        if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READONLY_RUNTIME_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
         with:
           node-version: 20
 
       - name: Prepare private host verification credentials
         id: host_credentials
-        if: steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READONLY_RUNTIME_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
+        if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READONLY_RUNTIME_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
         env:
           TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
         run: node ../../scripts/v2/prepare-smoke-credentials.mjs
 
       - name: Verify host registry before runtime activation
-        if: steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READONLY_RUNTIME_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
+        if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READONLY_RUNTIME_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
         timeout-minutes: 5
         env:
           CI_READONLY_RUNTIME_DEV: ${{ vars.CI_READONLY_RUNTIME_DEV }}

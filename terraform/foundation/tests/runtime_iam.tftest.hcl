@@ -110,8 +110,8 @@ run "host_core_permissions_and_digest_binding" {
     error_message = "Every newly activated bare-wildcard statement needs an applicable region condition."
   }
   assert {
-    condition     = (toset(local.runtime_read_regions) == toset(["ap-northeast-2", "eu-west-1", "us-east-1"]) && toset(jsondecode(aws_iam_role_policy.steampipe_task[0].policy).Statement[0].Condition.StringEquals["aws:RequestedRegion"]) == toset(local.runtime_read_regions) && contains(jsondecode(aws_iam_role_policy.steampipe_task[0].policy).Statement[0].Action, "iam:GenerateCredentialReport"))
-    error_message = "Host reads retain enabled regions/global endpoints and the existing credential-report permission."
+    condition     = (data.aws_regions.runtime_read[0].all_regions && toset(local.runtime_read_regions) == toset(["ap-northeast-2", "eu-west-1", "us-east-1"]) && toset(jsondecode(aws_iam_role_policy.steampipe_task[0].policy).Statement[0].Condition.StringEquals["aws:RequestedRegion"]) == toset(local.runtime_read_regions) && contains(jsondecode(aws_iam_role_policy.steampipe_task[0].policy).Statement[0].Action, "iam:GenerateCredentialReport"))
+    error_message = "Host reads retain known regions, including later opt-ins/global endpoints and the existing credential-report permission."
   }
   assert {
     condition = alltrue([
@@ -133,7 +133,9 @@ run "host_core_permissions_and_digest_binding" {
     condition = alltrue([
       for p in [aws_iam_role_policy.agentcore[0].policy, aws_iam_role_policy.worker_diagnosis[0].policy,
       aws_iam_role_policy.worker_lambda_diagnosis[0].policy] :
-      alltrue([for s in jsondecode(p).Statement : toset(s.Resource) == toset(local.runtime_model_resources)
+      alltrue([for s in jsondecode(p).Statement : toset(s.Resource) == toset([
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
+        "arn:aws:bedrock:*:123456789012:inference-profile/*anthropic.claude-*"])
       if contains(s.Action, "bedrock:InvokeModel")])
     ])
     error_message = "Model invocation must use the curated model/profile resources."
