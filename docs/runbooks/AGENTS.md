@@ -61,8 +61,7 @@ legacy runbook's steps as the current operational path).
   Genuine auth-success logging needs log_connections, which defaults off in PostgreSQL and
   is not enabled here. Its effective value is uninspected and reported as null. Never tune from these counts.
 - `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is default-off. The manual
-  dev AgentCore workflow requires the reviewed true plan applied and non-null `migration_job` output before dispatch; setting a variable or generating a plan alone is
-  insufficient. The manual
+  dev AgentCore workflow requires the reviewed true plan applied and non-null `migration_job` output before dispatch; setting a variable or generating a plan alone is insufficient. The manual
   `deploy-migrations.yml` + `run-migration.mjs` controller starts one verified private
   ARM64 task. Its IAM reads exact Aurora secrets; DB DDL uses those credentials.
   It enables no product AWS-resource mutation/autonomy (ADR-005).

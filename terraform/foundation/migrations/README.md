@@ -112,9 +112,8 @@ the agent's `AURORA_SQL_READER_SECRET_ARN` is not an alias for `SQL_READER_SECRE
 Do not copy the agent's environment block. Role elevation is checked on every non-preview run when
 the role exists, **including disabled mode**. Disabled permits an absent role and skips only the
 reader secret fetch/password alteration; it does not repair a missing role or password mismatch.
-After a disabled-mode installation, complete migrations with reader sync enabled before AgentCore. Dev Deploy AgentCore runs the reusable private `deploy-migrations.yml` first;
-main/preview and direct private-host CLI use `make migrate` before `make agentcore`. Otherwise Data API auth can fail. The dev workflow requires `CI_MIGRATIONS_ENABLED_DEV=true` and a reviewed apply of `ci_migrations_enabled=true` that
-persists a non-null `migration_job` output before dispatch.
+After a disabled-mode installation, complete migrations with reader sync enabled before AgentCore. Dev Deploy AgentCore runs the reusable private `deploy-migrations.yml` first; main/preview and direct private-host CLI use `make migrate` before `make agentcore`.
+Otherwise Data API auth can fail. The dev workflow requires `CI_MIGRATIONS_ENABLED_DEV=true` and a reviewed apply of `ci_migrations_enabled=true` that persists a non-null `migration_job` output before dispatch.
 See `docs/runbooks/agent-sql-reader.md` for recovery and safe diagnostic codes.
 
 이 이름은 runtime/controller의 계약이다. 에이전트 환경변수를 복사하지 않는다.

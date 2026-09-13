@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e33d4c240175 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a3d7cd252364 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -71,21 +71,17 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 
 ## Local verification
 
-Runtime image/provisioning review: the manual dev helper and both private migration jobs require repository secret `AWS_ACCOUNT_ID_DEV`, matching configured roles and actual
-STS. The configured build role needs repository-scoped push/BatchGetImage on `-steampipe`/`-worker`; the deployer needs those actions on `-agentcore`. Web-only grants do not establish
-backend access; IAM must be provisioned separately. Preflight performs no DescribeRepositories call or repository creation; retain ARM64 digest verification.
-Short CLI/TF operations have 2-minute limits; build/push/provision use 35/10/45. Build helper/agent-phase aggregate deadlines are 48/50 minutes including reads.
-Manual builds obtain one-hour credentials after QEMU/buildx setup (50-minute build step). Dev AgentCore requires build-only, then provision-only with a fresh
-SAME-role session between them; reject combined dev calls. Pass verified project/digest only and recheck STS plus commit tag/digest without rebuilding.
-Fresh-role checks are capped at 2 minutes, phase steps 52 and the dev job 120 including setup. No custom credential process or role-session maximum change;
-required IAM is not provisioned by the workflow. Dev requires applied `ci_migrations_enabled=true` (`CI_MIGRATIONS_ENABLED_DEV=true`) and non-null `migration_job` before dispatch, then reuses private migration and immutable
-images. Main/preview retain legacy migration/tags. Provision diagnostics expose fixed stages/codes, catalog keys, status counts and dropped events (240
-resource-event cap), never raw errors/ARNs/credentials; child exit codes survive. Smoke is post-provision and strict on dev; other stacks keep advisory
-compatibility, with transport failures still fatal. Structured mode needs the producer, runtime_deployment and enabled inventory. The applied
-agentcore.deployment_readiness_enabled output must be literal boolean true; missing/false disables the runtime probe and ambient DEPLOYMENT_READINESS_ENABLED
-cannot enable it. Accept one SSE payload after metadata/comments/[DONE]; bind nonce, account and checks. The count protocol cap is 500; the exact lookup returns
-zero or one match, with positive count required for success. Age 0–1440 is a validation bound and actual freshness follows MCP stale_after_minutes. Do not claim
-Memory/Interpreter or full release proof.
+Runtime image/provisioning review: the manual dev helper and both private migration jobs require repository secret `AWS_ACCOUNT_ID_DEV`, matching configured roles and actual STS. The configured build role needs repository-scoped
+push/BatchGetImage on `-steampipe`/`-worker`; the deployer needs those actions on `-agentcore`. Web-only grants do not establish backend access; IAM must be provisioned separately. Preflight performs no DescribeRepositories call or repository
+creation; retain ARM64 digest verification. Short CLI/TF operations have 2-minute limits; build/push/provision use 35/10/45. Build helper/agent-phase aggregate deadlines are 48/50 minutes including reads. Manual builds
+obtain one-hour credentials after QEMU/buildx setup (50-minute build step). Dev AgentCore requires build-only, then provision-only with a fresh SAME-role session between them; reject combined dev calls. Pass verified
+project/digest only and recheck STS plus commit tag/digest without rebuilding. Fresh-role checks are capped at 2 minutes, phase steps 52 and the dev job 120 including setup. No custom credential process or role-session
+maximum change; required IAM is not provisioned by the workflow. Dev requires applied `ci_migrations_enabled=true` (`CI_MIGRATIONS_ENABLED_DEV=true`) and non-null `migration_job` before dispatch, then reuses private migration and immutable images. Main/preview retain legacy
+migration/tags. Provision diagnostics expose fixed stages/codes, catalog keys, status counts and dropped events (240 resource-event cap), never raw errors/ARNs/credentials; child exit codes survive. Smoke is
+post-provision and strict on dev; other stacks keep advisory compatibility, with transport failures still fatal. Structured mode needs the producer, runtime_deployment and enabled inventory. The applied
+agentcore.deployment_readiness_enabled output must be literal boolean true; missing/false disables the runtime probe and ambient DEPLOYMENT_READINESS_ENABLED cannot enable it. Accept one SSE payload after
+metadata/comments/[DONE]; bind nonce, account and checks. The count protocol cap is 500; the exact lookup returns zero or one match, with positive count required for success. Age 0–1440 is a validation bound and actual
+freshness follows MCP stale_after_minutes. Do not claim Memory/Interpreter or full release proof.
 
 ```bash
 python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py
