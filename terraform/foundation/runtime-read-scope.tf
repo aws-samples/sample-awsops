@@ -46,9 +46,7 @@ variable "worker_image_digest" {
   }
 }
 
-locals {
-  core_runtime_enabled = var.steampipe_enabled || var.agentcore_enabled || var.workers_enabled
-}
+locals { core_runtime_enabled = var.steampipe_enabled || var.agentcore_enabled || var.workers_enabled }
 
 data "aws_regions" "runtime_read" {
   count       = local.core_runtime_enabled ? 1 : 0
@@ -59,12 +57,8 @@ locals {
   runtime_read_regions = local.core_runtime_enabled ? sort(distinct(concat(
     tolist(data.aws_regions.runtime_read[0].names), [var.region, "us-east-1"]
   ))) : [var.region, "us-east-1"]
-  runtime_read_condition = {
-    StringEquals = { "aws:RequestedRegion" = local.runtime_read_regions }
-  }
-  runtime_region_condition = {
-    StringEquals = { "aws:RequestedRegion" = var.region }
-  }
+  runtime_read_condition   = { StringEquals = { "aws:RequestedRegion" = local.runtime_read_regions } }
+  runtime_region_condition = { StringEquals = { "aws:RequestedRegion" = var.region } }
   runtime_model_resources = [
     "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
     "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*anthropic.claude-*",

@@ -6,16 +6,11 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
-- `v2/ci_runtime_policy.py` — dev activation pins inventory/worker image digests.
-  Independently configured development/preview accounts, CI roles and actual STS callers must
-  match. The dev profile enforces read-only flags even without a discovery rollout. Dev/preview
-  private discovery requires an explicit full-plan rollout; public DNS/certificates stay blocked.
-  Dev/full retirement is separate, disables core/host flags and permits owned runtime deletion,
-  not replacement/forget or shared infrastructure deletion. ECR bootstrap permits three repositories.
-  Default-off flags and policy checks alone do not prove effective runtime access.
-- `v2/ci/prepare-runtime-host.mjs` verifies actual login, DB and the enabled host-only registry
-  before full dev activation plans. Apply uses the approved profile marker to require a fresh check.
-  It uses private existing credentials, rejects database-only proof and reports a fixed failure code.
+- `v2/ci_runtime_policy.py` — dev activation pins inventory/worker image digests. Independently configured development/preview accounts, CI roles and actual STS callers must match. The dev profile enforces read-only flags even without a
+  discovery rollout. Dev/preview private discovery requires an explicit full-plan rollout; public DNS/certificates stay blocked. Dev/full retirement is separate, disables core/host flags and permits owned runtime deletion, not
+  replacement/forget or shared infrastructure deletion. ECR bootstrap permits three repositories. Default-off flags and policy checks alone do not prove effective runtime access.
+- `v2/ci/prepare-runtime-host.mjs` verifies actual login, DB and the enabled host-only registry before full dev activation plans. Apply uses the approved profile marker to require a fresh check. It uses private existing credentials, rejects
+  database-only proof and reports a fixed failure code.
 - `v2/ci_tf_assets.py` prepares hash-locked pg8000 layers and transports plan/SHA/scope-bound
   Lambda assets, validating paths, modes and hashes. Pack requires every ZIP with a known
   saved-plan hash and verifies its bytes; deferred archives without known hashes are excluded.

@@ -5,19 +5,12 @@ Single Terraform root for all v2 infra — one `foundation/` manages edge/auth/A
 AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
 
 ## Key Files (`foundation/`)
-- `runtime-read-scope.tf` — default-off runtime rollout/host-only inventory controls,
-  optional inventory/worker digests and the `runtime_deployment` identity output.
-  Host collection keeps all enabled regions plus global-service reads; task/runtime policies
-  scope SSM, Gateway, model and worker actions. This output describes configuration, not
-  proof of effective permissions. The host-only renderer verifies STS and the account
-  registry before rendering; Terraform omits only the collector cross-account grant.
-  Agent MCP cross-account grants retain their existing behavior.
-  Official MCP's conditional credential policy also permits GetWorkloadAccessToken only for
-  the own default directory and external-obs gateway identity prefix. This restores a required
-  credential prerequisite, not proof that backing-secret access or live MCP invocation succeeds.
-- CI prepares Lambda ZIP inputs and pg8000 layers before plan, then encrypts an asset bundle
-  bound to the saved plan. Apply restores and checks that bundle; it cannot rebuild different
-  assets under the reviewed plan. See `docs/runbooks/runtime-foundation.md`.
+- `runtime-read-scope.tf` — default-off runtime rollout/host-only inventory controls, optional inventory/worker digests and the `runtime_deployment` identity output. Host collection keeps all enabled regions plus global-service reads;
+  task/runtime policies scope SSM, Gateway, model and worker actions. This output describes configuration, not proof of effective permissions. The host-only renderer verifies STS and the account registry before rendering; Terraform omits
+  only the collector cross-account grant. Agent MCP cross-account grants retain their existing behavior. Official MCP's conditional credential policy also permits GetWorkloadAccessToken only for the own default directory and external-obs
+  gateway identity prefix. This restores a required credential prerequisite, not proof that backing-secret access or live MCP invocation succeeds.
+- CI prepares Lambda ZIP inputs and pg8000 layers before plan, then encrypts an asset bundle bound to the saved plan. Apply restores and checks that bundle; it cannot rebuild different assets under the reviewed plan. See
+  `docs/runbooks/runtime-foundation.md`.
 - Worker/inventory pg8000 layers use the single hash-locked `scripts/v2/ci_tf_assets.py`
   installer. `CI_ASSETS_READY=true` validates restored files without reinstalling.
   Both build triggers include the lock and installer hashes; see `docs/reference/06-workers.md`.
