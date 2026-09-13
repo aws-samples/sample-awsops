@@ -118,6 +118,41 @@ class DevDomainTests(unittest.TestCase):
                                    "name_servers": sorted(ZONE["name_servers"])})
         self.assertNotIn("MUST-NOT-PRINT", json.dumps(summary))
 
+    def test_plan_time_data_source_is_read_from_refreshed_prior_state(self):
+        # Terraform omits already-read data sources from planned_values, even
+        # when a newly created resource references them.
+        for changes in ([], [record()]):
+            plan = plan_fixture(changes)
+            data = plan["planned_values"]["root_module"]["resources"].pop()
+            plan["prior_state"] = {"values": {"root_module": {"resources": [data]}}}
+            with self.subTest(changes=changes):
+                result = self.module().check_scoped_dns(plan, changes)
+                self.assertEqual(result["zone_id"], "Z123CHILD")
+                self.assertEqual(result["name_servers"], sorted(ZONE["name_servers"]))
+                self.assertNotIn("MUST-NOT-PRINT", json.dumps(result))
+
+    def test_prior_state_does_not_bypass_deferred_or_invalid_selected_zone(self):
+        for mutation in ("deferred", "wrong-prior", "duplicate-prior", "invalid-planned"):
+            plan = plan_fixture()
+            data = plan["planned_values"]["root_module"]["resources"].pop()
+            plan["prior_state"] = {"values": {"root_module": {"resources": [data]}}}
+            if mutation == "deferred":
+                plan["resource_changes"] = [{
+                    "address": "data.aws_route53_zone.main", "mode": "data",
+                    "type": "aws_route53_zone",
+                    "change": {"actions": ["read"], "after_unknown": True},
+                }]
+            elif mutation == "wrong-prior":
+                data["values"]["name"] = "other.example.com"
+            elif mutation == "duplicate-prior":
+                plan["prior_state"]["values"]["root_module"]["resources"].append(copy.deepcopy(data))
+            else:
+                planned = copy.deepcopy(data)
+                planned["values"]["private_zone"] = True
+                plan["planned_values"]["root_module"]["resources"].append(planned)
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.module().zone_summary(plan)
+
     def test_missing_ambiguous_private_unknown_or_wrong_zone_is_rejected(self):
         for mutation in ("missing", "duplicate", "private", "name", "zone_id",
                          "name_servers", "unknown", "aliases", "domain", "id"):

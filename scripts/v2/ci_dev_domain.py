@@ -68,6 +68,14 @@ def zone_summary(plan):
     try:
         resources = plan["planned_values"]["root_module"]["resources"]
         matches = [r for r in resources if r.get("address") == "data.aws_route53_zone.main"]
+        if not matches:
+            # Data already read during planning lives in the saved plan's
+            # refreshed prior_state. Never substitute it for a deferred read.
+            if any(r.get("address") == "data.aws_route53_zone.main"
+                   for r in plan.get("resource_changes", [])):
+                raise ValueError("selected public hosted zone read is not resolved")
+            resources = plan.get("prior_state", {}).get("values", {}).get("root_module", {}).get("resources", [])
+            matches = [r for r in resources if r.get("address") == "data.aws_route53_zone.main"]
         if len(matches) != 1:
             raise ValueError("missing or ambiguous selected public hosted zone")
         resource = matches[0]
