@@ -7,6 +7,8 @@ import io
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -47,6 +49,7 @@ class TerraformAssetTests(unittest.TestCase):
             {"values": {"filename": ".build/function.zip",
                         "source_code_hash": base64.b64encode(hashlib.sha256(b"exact Lambda archive").digest()).decode()}}
         ]}}}
+        self.real_load_plan = self.module.load_plan
         plan_reader = mock.patch.object(self.module, "load_plan", return_value=self.plan_json, create=True)
         plan_reader.start()
         self.addCleanup(plan_reader.stop)
@@ -111,6 +114,107 @@ class TerraformAssetTests(unittest.TestCase):
             {"values": {"filename": ".build/deferred.zip"}}
         ]
         self.assertEqual(self.pack()["files"], 1)
+
+    def test_real_targeted_plan_excludes_existing_lambda_and_packs_without_its_zip(self):
+        # Local state/schema only. No refresh/apply; fake credentials, disabled account
+        # discovery and loopback endpoints prevent accidental AWS service access.
+        self.assertIsNotNone(shutil.which("terraform"), "Terraform is required for saved-plan fixtures")
+        root = self.apply
+        (root / ".build").mkdir()
+        (root / ".build/input.txt").write_text("prepared input")
+        encoded = base64.b64encode(hashlib.sha256(b"old archive").digest()).decode()
+        (root / "main.tf").write_text('''
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "~> 6.0" }
+  }
+}
+provider "aws" {
+  region = "ap-northeast-2"
+  access_key = "offline-fixture"
+  secret_key = "offline-fixture"
+  skip_credentials_validation = true
+  skip_requesting_account_id = true
+  skip_metadata_api_check = true
+  skip_region_validation = true
+  endpoints {
+    lambda = "http://127.0.0.1:9"
+    sts = "http://127.0.0.1:9"
+  }
+}
+resource "terraform_data" "repository" { input = "repository fixture" }
+resource "aws_lambda_function" "existing" {
+  function_name = "offline-fixture"
+  role = "arn:aws:iam::123456789012:role/offline-fixture"
+  runtime = "python3.12"
+  handler = "index.handler"
+  filename = "./.build/function.zip"
+  source_code_hash = "''' + encoded + '''"
+}
+''')
+        attributes = {
+            "id": "offline-fixture", "function_name": "offline-fixture",
+            "role": "arn:aws:iam::123456789012:role/offline-fixture",
+            "runtime": "python3.12", "handler": "index.handler",
+            "filename": "./.build/function.zip", "source_code_hash": encoded,
+        }
+        (root / "terraform.tfstate").write_text(json.dumps({
+            "version": 4, "terraform_version": "1.15.7", "serial": 1,
+            "lineage": "11111111-1111-4111-8111-111111111111", "outputs": {},
+            "resources": [{
+                "mode": "managed", "type": "aws_lambda_function", "name": "existing",
+                "provider": 'provider["registry.terraform.io/hashicorp/aws"]',
+                "instances": [{"schema_version": 0, "attributes": attributes, "sensitive_attributes": []}],
+            }],
+        }))
+        repository = Path(__file__).resolve().parents[2]
+        lock = (repository / "terraform/foundation/.terraform.lock.hcl").read_text()
+        (root / ".terraform.lock.hcl").write_text(
+            re.search(r'provider "registry.terraform.io/hashicorp/aws" \{.*?\n\}', lock, re.S).group() + "\n")
+        env = {
+            "PATH": os.environ["PATH"], "CHECKPOINT_DISABLE": "1", "TF_IN_AUTOMATION": "true",
+            "AWS_EC2_METADATA_DISABLED": "true", "AWS_CONFIG_FILE": os.devnull,
+            "AWS_SHARED_CREDENTIALS_FILE": os.devnull, "TF_PLAN_ENC_KEY": KEY,
+            "TF_CLI_CONFIG_FILE": os.environ.get("TF_CLI_CONFIG_FILE", os.devnull),
+        }
+        init = ["init", "-backend=false", "-input=false", "-lockfile=readonly"]
+        cache = Path(os.environ.get("TF_PLUGIN_CACHE_DIR") or Path.home() / ".terraform.d/plugin-cache")
+        platform = json.loads(subprocess.check_output(["terraform", "version", "-json"], env=env))["platform"]
+        version = re.search(r'version\s*=\s*"([^"]+)"', (root / ".terraform.lock.hcl").read_text())[1]
+        if (cache / f"registry.terraform.io/hashicorp/aws/{version}/{platform}").is_dir():
+            init.append(f"-plugin-dir={cache}")
+        for args in (init, ["plan", "-input=false", "-refresh=false",
+                            "-target=terraform_data.repository", "-out=tfplan"]):
+            result = subprocess.run(["terraform", *args], cwd=root, env=env,
+                                    capture_output=True, text=True, timeout=180)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(self.module, "load_plan", side_effect=self.real_load_plan):
+            projection = self.module.load_plan(root)
+            prior = projection["prior_state"]["values"]["root_module"]["resources"]
+            planned = projection["planned_values"]["root_module"]["resources"]
+            self.assertIn("aws_lambda_function.existing", [r["address"] for r in prior])
+            self.assertNotIn("aws_lambda_function.existing", [r["address"] for r in planned])
+            self.assertFalse((root / ".build/function.zip").exists())
+            self.assertEqual(self.module.bundle_assets(root, self.archive, COMMIT, "ecr-bootstrap")["files"], 1)
+
+    def test_prepare_removes_stale_zips_before_a_deferred_archive_plan(self):
+        stale = self.plan / ".build/nested/stale.zip"
+        stale.parent.mkdir()
+        stale.write_bytes(b"old deferred archive")
+        self.module.prepare_layers(self.plan, {"steampipe_enabled": False, "workers_enabled": False}, "full")
+        self.assertFalse(list((self.plan / ".build").rglob("*.zip")))
+        self.assertTrue((self.plan / ".build/layer/python/module.py").is_file())
+        self.plan_json["planned_values"]["root_module"]["resources"] = [
+            {"values": {"filename": ".build/function.zip"}}
+        ]
+        self.pack()
+
+    def test_prepare_rejects_a_zip_symlink_without_touching_its_target(self):
+        (self.plan / ".build/bad.zip").symlink_to(self.plan / "tfplan")
+        with self.assertRaises(ValueError):
+            self.module.prepare_layers(self.plan, {"steampipe_enabled": False, "workers_enabled": False}, "full")
+        self.assertEqual((self.plan / "tfplan").read_bytes(), b"reviewed opaque terraform plan")
 
     def test_failed_prepare_invalidates_previous_marker_before_install(self):
         marker = self.apply / ".build/.ci-prepared.json"
@@ -476,11 +580,15 @@ module.restore_assets(root, Path(sys.argv[3]), sys.argv[4], "full")
                     self.module.restore_assets(self.apply, self.archive, COMMIT, "full")
                 self.module.restore_assets(self.apply, self.archive, COMMIT, scope)
 
-    def test_cli_rejects_ambiguous_trigger_before_pack_or_restore_but_keeps_dispatch(self):
+    def test_cli_only_accepts_reviewed_source_event_contexts(self):
         root = self.root / "terraform/foundation"
         root.mkdir(parents=True)
         for command, function in (("pack", "bundle_assets"), ("restore", "restore_assets")):
-            for event, expected in (("pull_request_target", 1), ("workflow_dispatch", 0)):
+            for event, expected in (
+                ("pull_request_target", 1), ("workflow_run", 1), ("repository_dispatch", 1),
+                ("issue_comment", 1), ("schedule", 1), ("new_event", 1),
+                ("workflow_dispatch", 0), ("push", 0), ("pull_request", 0),
+            ):
                 with self.subTest(command=command, event=event), \
                         mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": event, "GITHUB_SHA": COMMIT}), \
                         mock.patch.object(Path, "cwd", return_value=root), \
@@ -489,7 +597,17 @@ module.restore_assets(root, Path(sys.argv[3]), sys.argv[4], "full")
                         mock.patch.object(sys, "stdout", io.StringIO()), \
                         mock.patch.object(self.module, function, return_value={"files": 0}) as operation:
                     self.assertEqual(self.module.main(), expected)
-                    if event == "pull_request_target":
+                    if expected == 1:
                         operation.assert_not_called()
                     else:
                         operation.assert_called_once_with(root, root / "tfassets.tar.gz", COMMIT, "full")
+
+    def test_direct_pack_restore_enforce_the_same_event_allowlist(self):
+        self.pack()
+        for event in ("pull_request_target", "workflow_run", "repository_dispatch",
+                      "issue_comment", "schedule", "new_event"):
+            with self.subTest(event=event), mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": event}):
+                with self.assertRaises(ValueError):
+                    self.pack()
+                with self.assertRaises(ValueError):
+                    self.module.restore_assets(self.apply, self.archive, COMMIT, "full")

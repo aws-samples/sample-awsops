@@ -88,6 +88,10 @@ def digest(file):
 def validate_context(commit, scope):
     if not isinstance(commit, str) or not re.fullmatch(r"[a-f0-9]{40}", commit) or scope not in SCOPES:
         raise ValueError("Invalid reviewed asset context")
+    # Local callers pass an explicit commit. GitHub callers must use a source-bound
+    # event, not a default-branch handoff/comment/scheduled event.
+    if os.environ.get("GITHUB_EVENT_NAME", "") not in ("", "push", "pull_request", "workflow_dispatch"):
+        raise ValueError("Unsupported reviewed-source event")
 
 
 def safe_member(name):
@@ -334,6 +338,11 @@ def prepare_layers(root, flags, scope):
     build.mkdir(mode=0o700, exist_ok=True)
     marker = build / ".ci-prepared.json"
     marker.unlink(missing_ok=True)
+    stale_zips = list(build.rglob("*.zip"))
+    if any(path.is_symlink() or not path.is_file() for path in stale_zips):
+        raise ValueError("Prepared archives must be regular files")
+    for path in stale_zips:
+        path.unlink()
     built = []
     hashes = {}
     if scope == "full":
@@ -394,9 +403,7 @@ def main():
                 flags = json.loads(flags)
             result = prepare_layers(root, flags, args.scope)
         else:
-            # That event's GITHUB_SHA identifies the default branch, not reviewed source.
-            if os.environ.get("GITHUB_EVENT_NAME") == "pull_request_target":
-                raise ValueError("Ambiguous reviewed-source context")
+            validate_context(os.environ.get("GITHUB_SHA", ""), args.scope)
             fn = bundle_assets if args.command == "pack" else restore_assets
             result = fn(root, root / "tfassets.tar.gz", os.environ.get("GITHUB_SHA", ""), args.scope)
         print(json.dumps(result))

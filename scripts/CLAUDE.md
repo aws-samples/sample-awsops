@@ -9,14 +9,16 @@ secrets-manager) — installed by `make deps`.
 - `v2/ci_tf_assets.py` prepares hash-locked pg8000 layers and transports plan/SHA/scope-bound
   Lambda assets, validating paths, modes and hashes. Pack requires every ZIP with a known
   saved-plan hash and verifies its bytes; deferred archives without known hashes are excluded.
-  Pack/restore reject `pull_request_target`, whose `GITHUB_SHA` is not the reviewed source.
+  Pack/restore share an event allowlist: push, pull_request or workflow_dispatch in GitHub;
+  local callers supply an explicit commit without a GitHub event. Other events fail before work.
   Pack/restore require `TF_PLAN_ENC_KEY` for HMAC authentication. The 0600 plaintext tarball is
   private scratch and may contain rendered secrets; this utility cannot upload it. Callers must
   encrypt before publication and clean plaintext files afterward.
   `v2/ci/pg8000-requirements.txt` is the single layer-install lock. Both Terraform paths call
   build-layer, or check-layer when CI_ASSETS_READY=true; lock/script changes trigger rebuilding.
-  Prepare invalidates old markers first; schema-2 markers bind the installed files and required
-  import closure. The pin validator checks this lock and all four shared-layer consumers:
+  Prepare invalidates old markers and removes stale regular ZIPs before building; it rejects
+  ZIP symlinks. Schema-2 markers bind installed-file hashes; validation also checks the fixed
+  required-import list. The pin validator checks this lock and all four shared-layer consumers:
   `v2/{workers,steampipe,incident,remediation}/requirements.txt`. Update these together with
   verified wheel hashes. The separate Steampipe container's `v2/steampipe/Dockerfile` pin and
   installer are outside the Lambda lock/validator. `v2/test_ci_tf_assets.py` covers these
