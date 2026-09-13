@@ -63,6 +63,15 @@ row를 가리지 않는다. Phase 2가
 domain-aware coverage를 확장하고 parity 뒤 direct target을 retirement하므로 Aurora-only는
 아직 live가 아니다. Phase 3 cache도 pending이며 ADR-005 FROZEN은 바뀌지 않는다.
 
+For CloudFront, optional `query_inventory.resource_id` performs a validated, parameterized
+identity lookup (one row, no origins/aliases). Responses mark `projection=identity_only` and
+echo the ID; missing attributes are not evidence of absence. Deploy the Lambda and gateway
+schema together. Existing sql_reader views/grants suffice; no AWS mutation or migration is added.
+
+CloudFront의 선택적 `resource_id`는 검증·바인딩된 ID 한 행만 조회합니다. 응답은
+identity-only projection과 ID를 명시하므로 속성 누락을 부재로 판단하지 않습니다.
+Lambda와 Gateway 스키마를 함께 배포하며 기존 읽기 뷰/권한을 그대로 사용합니다.
+
 **Provisioner:** `scripts/v2/agentcore/{catalog.py, provision.py}` — `catalog.py` holds
 the 9 gateway names + the target tool schemas; `provision.py` does boto3 `list →
 create/update` for Runtime, the 9 gateways, the target slices, Memory, and the Code
