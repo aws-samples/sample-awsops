@@ -9,6 +9,11 @@ import sys
 import time
 
 
+class ReadOnlyViolation(RuntimeError):
+    """Programming violation: never downgrade to an unavailable source."""
+
+
+REGEX_TEXT_LIMIT = 4096
 READ_OPERATIONS = frozenset({
     ("sts", "get-caller-identity"), ("logs", "filter-log-events"),
     ("rds", "describe-db-clusters"), ("ecs", "describe-services"),
@@ -28,7 +33,7 @@ CREDENTIAL_NAMES = frozenset({
 ERROR_PATTERNS = {
     "iam_database_auth": r"PAM authentication failed",
     "database_auth": r"password authentication failed",
-    "web_role_missing": r'role .*awsops_web.*does not exist',
+    "web_role_missing": r'\brole\s+"?awsops_web"?\s+does not exist\b',
     "database_permission": r"permission denied",
     "connection_timeout": r"connection timeout|timeout expired|ETIMEDOUT|timeout exceeded when trying to connect",
     "connection_lost": r"connection terminated unexpectedly|server closed the connection unexpectedly|ECONNRESET",
@@ -67,7 +72,7 @@ def connection_timing(record, timestamp):
 
 def aws_read(args):
     if tuple(args[:2]) not in READ_OPERATIONS:
-        raise ValueError("Diagnostic operation is not allowed")
+        raise ReadOnlyViolation("Diagnostic operation is not allowed")
     result = subprocess.run(
         ["aws", *args, "--region", "ap-northeast-2", "--output", "json",
          "--no-cli-pager", "--no-paginate"], check=True, capture_output=True, text=True,
@@ -78,6 +83,7 @@ def aws_read(args):
 def classify(message):
     if not isinstance(message, str):
         return {"unclassified"}
+    message = message[:REGEX_TEXT_LIMIT]
     # "SSL off"/"no encryption" describe an HBA rejection, not a TLS diagnosis.
     if re.search(r"no pg_hba\.conf entry", message, re.I):
         return {"database_hba"}
@@ -102,6 +108,7 @@ def collect(config, aws, now_ms):
         "event_counts": {"db_ping_failed": 0, "db_connection_failed": 0},
         "phase_counts": {}, "latest_connection": None,
         "invalid_timing": 0, "discarded_milestones": 0,
+        "no_matching_events": None, "no_error_inference": True, "classification_truncated": False,
     }
     counts, phase_counts = Counter(), Counter()
     token = None
@@ -156,7 +163,10 @@ def collect(config, aws, now_ms):
                 if previous is None or timestamp >= previous["timestamp_ms"]:
                     summary["latest_connection"] = timing
             else:
-                counts.update(classify(record.get("err")))
+                message = record.get("err")
+                if isinstance(message, str) and len(message) > REGEX_TEXT_LIMIT:
+                    summary["classification_truncated"] = True
+                counts.update(classify(message))
             summary["events"] += 1
             summary["event_counts"][event_type] += 1
             earliest, latest = summary["earliest_timestamp_ms"], summary["latest_timestamp_ms"]
@@ -168,8 +178,11 @@ def collect(config, aws, now_ms):
     summary["categories"] = sorted(counts)
     summary["category_counts"] = dict(sorted(counts.items()))
     summary["phase_counts"] = dict(sorted(phase_counts.items()))
+    if summary["pages_read"]:
+        summary["no_matching_events"] = summary["events"] == 0
     if summary["status"] == "available" and (
-            summary["truncated"] or summary["unparsed"] or summary["invalid_timing"]):
+            summary["truncated"] or summary["unparsed"] or summary["invalid_timing"]
+            or summary["discarded_milestones"] or summary["classification_truncated"]):
         summary["status"] = "partial"
     return summary
 
@@ -203,7 +216,7 @@ def configuration_snapshot(config, aws):
         "definition_basis": "service_target_not_running_tasks",
         "credential_check_basis": "declarations_only_not_runtime",
         **dict.fromkeys((
-            "cluster_available", "iam_database_auth_enabled", "service_running_count",
+            "cluster_available", "iam_database_auth_enabled", "service_running_count", "web_container_found",
             "endpoint_matches_cluster", "database_matches", "user_matches", "region_matches",
             "task_role_matches", "credential_env_override_declared", "credential_secret_override_declared",
             "environment_files_declared", "db_ingress_from_web_groups",
@@ -215,7 +228,13 @@ def configuration_snapshot(config, aws):
     if service is not None and type(service.get("runningCount")) is int:
         snapshot["service_running_count"] = service["runningCount"]
     try:
-        container = next(c for c in definition["containerDefinitions"] if c["name"] == "web")
+        containers = definition["containerDefinitions"]
+        if not isinstance(containers, list):
+            raise ValueError("Malformed container definitions")
+        container = next((c for c in containers if isinstance(c, dict) and c.get("name") == "web"), None)
+        snapshot["web_container_found"] = container is not None
+        if container is None:
+            raise ValueError("Web container is absent")
         env = {entry["name"]: entry["value"] for entry in container.get("environment", [])}
         secrets = {entry["name"] for entry in container.get("secrets", [])}
         snapshot.update({
@@ -231,7 +250,7 @@ def configuration_snapshot(config, aws):
                 bool(cluster.get("Endpoint")) and env.get("AURORA_ENDPOINT") == cluster.get("Endpoint"))
             snapshot["database_matches"] = env.get("AURORA_DATABASE") == cluster.get("DatabaseName") == "awsops"
     except READ_ERRORS:
-        unavailable["service_target_definition"] = True
+        pass
     try:
         db_groups = [group["VpcSecurityGroupId"] for group in cluster["VpcSecurityGroups"]]
         if not db_groups:
@@ -320,6 +339,9 @@ def server_log_snapshot(config, aws):
             summary["tail_truncated"] = bool(summary["tail_truncated"] or pending or len(lines) >= 500
                                              or len(data.encode("utf-8")) >= 1_048_576)
             for line in lines:
+                if len(line) > REGEX_TEXT_LIMIT:
+                    summary["tail_truncated"] = True
+                line = line[:REGEX_TEXT_LIMIT]
                 if not re.search(r"\bawsops_web\b", line):
                     continue
                 severity = re.search(
@@ -358,6 +380,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except ReadOnlyViolation:
+        print(json.dumps({"status": "unavailable", "reason": "read_only_violation"}))
+        sys.exit(1)
     except Exception:
         # This advisory tool never reports exception text, including unexpected failures.
         print(json.dumps({"status": "unavailable"}))

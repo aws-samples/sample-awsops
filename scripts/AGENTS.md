@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: adabd707b9b4 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4d9ff3ca4a55 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -20,13 +20,21 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 - Retain independent web-log/configuration/server-tail evidence. Capped/failed reads with
   retained evidence are partial; distinguish unavailable source reads from unknown derived
   fields. Early context/input/identity failure returns only `{"status":"unavailable"}`.
+
+- `no_matching_events` labels empty accepted samples; `no_error_inference=true` prohibits
+  no-error/healthy conclusions from zero counts in every status. A known authenticated DB
+  probe must fall within the returned one-hour window before interpreting the sample.
+  Successful task-definition reads remain source-available for missing/malformed web containers;
+  use `web_container_found` and derived-unknown flags. Discarded milestones and regex inputs
+  shortened to 4,096 characters make samples partial; read-only violations are not swallowed.
 - Web logs use JSON `evt` OR for ping errors and connection-stage observations: fixed one-hour
   bounds, oldest-first, at most 3 × 100 with `--next-token`/`--limit`. Only fixed phases/milestones
   and finite 0–3,600,000 ms durations are emitted; milestones cannot exceed elapsed. Latest
   timing describes the returned sample. Count invalid timings/discarded milestones explicitly.
 - RDS reads at most two latest observed PostgreSQL files from at most three listing pages.
   Each download is newest 500 lines without Marker (1 MiB cap per file). FATAL/ERROR/PANIC
-  web-role lines count as errors; other role mentions are counted separately. Never print
+  web-role lines count as errors. `benign_role_mentions` counts exactly non-error-severity
+  lines mentioning `awsops_web`; lines for other database roles are ignored. Never print
   filenames/raw lines. Failed downloads retain listing metadata as partial.
 - Pool-acquire timeouts, unexpected connection loss, HBA rejection, TLS errors and PostgreSQL
   client/slot limits have distinct fixed categories. Metadata describes the service target

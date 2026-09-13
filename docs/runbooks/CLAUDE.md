@@ -39,13 +39,19 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   Retain web-log/configuration/server-tail results independently with unavailable/partial flags.
   Distinguish unavailable sources from unknown derived comparisons; early input/context/identity
   failure returns only `{"status":"unavailable"}`, not three empty sections.
+  Empty samples explicitly expose `no_matching_events` and `no_error_inference`; zero counts
+  in any status are not health proof. Interpretation requires a known probe in the returned window.
+  Successful task-definition reads stay source-available for missing/malformed web containers;
+  `web_container_found` and derived-unknown flags describe the configuration defect.
   Web logs cover a fixed one-hour window, oldest-first, at most 3 × 100 events; disclose actual
   bounds, truncation and count meanings. JSON `evt` OR selects ping errors and connection-stage
   observations; phase/milestone names are fixed, durations finite and bounded to one hour,
   and latest timing describes only the returned sample. RDS lists at most three PostgreSQL-file pages for the
   configured first Aurora instance and reads at most two newest-500-line tails without download
-  Markers. Only FATAL/ERROR/PANIC web-role lines count as errors; other role mentions are counted
-  separately. Capped/failed reads retaining evidence are partial; download failure retains metadata.
+  Markers. Only FATAL/ERROR/PANIC web-role lines count as errors. `benign_role_mentions` counts
+  exactly non-error-severity lines mentioning `awsops_web`; lines for other database roles are
+  ignored. Capped/failed reads retaining evidence are partial; download failure retains metadata.
+  Discarded milestones and regex text shortened to 4,096 characters also mark samples partial.
   Publish fixed projections only, including on Terraform/AWS failures; never raw logs/filenames.
   Service-target/declaration comparisons and error categories are hypotheses, not proof of
   running revisions, effective access, runtime credentials, connectivity or readiness.

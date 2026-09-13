@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 170215a68d26 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b33272d08033 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -22,10 +22,18 @@ legacy runbook's steps as the current operational path).
   Web logs use a fixed one-hour oldest-first 3 × 100 sample and JSON `evt` OR; timing keys are
   fixed, durations finite and bounded, and latest means latest valid returned observation.
   RDS selects at most two latest observed files and downloads newest 500 lines each without
-  Marker. Only FATAL/ERROR/PANIC web-role lines are errors; other role mentions count separately.
+  Marker. Only FATAL/ERROR/PANIC web-role lines are errors. `benign_role_mentions` counts exactly
+  non-error-severity lines mentioning `awsops_web`; lines for other database roles are ignored.
   Pool timeout is distinct from lost connection, HBA and PostgreSQL capacity failures.
   Service-target/declaration/inline-Allow comparisons are hypotheses, not runtime/access proof.
   The dev runbook's Development variable catalog and Aurora component reference register this path.
+
+- `no_matching_events` labels empty accepted samples; `no_error_inference=true` prohibits
+  no-error/healthy conclusions from zero counts in every status. A known authenticated DB
+  probe must fall within the returned one-hour window before interpreting the sample.
+  Successful task-definition reads remain source-available for missing/malformed web containers;
+  use `web_container_found` and derived-unknown flags. Discarded milestones and regex inputs
+  shortened to 4,096 characters make samples partial; read-only violations are not swallowed.
 - `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is default-off. The manual
   `deploy-migrations.yml` + `run-migration.mjs` controller starts one verified private
   ARM64 task. Its IAM reads exact Aurora secrets; DB DDL uses those credentials.

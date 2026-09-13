@@ -459,6 +459,9 @@ plan; the Terraform plan, DNS checks, artifact protection, CI and readiness gate
 Enabling the flag and dispatching the plan publishes the safe JSON projection, including
 configuration booleans, in the **public Actions job log and fenced step summary**.
 Unset the variable or set it to `false` after diagnosis.
+Interpreting the sample requires a known authenticated DB probe within its returned one-hour
+window. Dispatch within one hour of that probe and check its timestamp against the returned
+bounds; otherwise repeat the existing authorized probe before collecting a new sample.
 
 인증된 DB 검사 실패 시 `CI_DB_DIAGNOSTICS_DEV=true`를 임시로 설정하고 Terraform workflow를
 수동 실행한다(`workflow_dispatch`, `mode=plan`, `dev` 브랜치). 자동 PR/push plan은 진단을 실행하지
@@ -471,6 +474,9 @@ Unset the variable or set it to `false` after diagnosis.
 아티팩트 보호, CI·준비 상태 검사는 계속 필수다. 플래그를 켜고 수동 실행하면 구성 boolean을 포함한
 안전한 JSON을 **공개 Actions 작업 로그와 코드 블록 형식의 step summary**에 게시한다.
 진단 후 변수를 지우거나 `false`로 바꾼다.
+표본을 해석하려면 반환된 1시간 범위 안에 수행한 인증된 DB probe가 있어야 한다. probe 후 1시간
+안에 수동 실행하고 시각이 반환된 범위에 포함되는지 확인한다. 범위 밖이면 기존 승인된 probe를
+다시 수행한 뒤 새 표본을 수집한다.
 
 The output has independent `logs`, `configuration`, and `server_logs` sections.
 Each reports `status=available|partial|unavailable`; a missing log group, cluster, service,
@@ -478,25 +484,34 @@ or inline role policy does not discard other successful reads. A truncated/faile
 retained data is partial; malformed web records/timings also mark that sample partial.
 Configuration fields with missing inputs are `null`. `sources_unavailable` describes source
 reads, while `derived_unavailable` marks comparisons/counts that cannot be computed, even if
-one of their source reads succeeded. Zero counts in an
-unavailable/partial section are not evidence of no errors. Only fixed labels, booleans,
+one of their source reads succeeded. Zero counts in **any status, including available,**
+are not proof of no errors or a healthy database. `logs.no_matching_events` means no accepted
+matching events in the returned pages (`null` if no page was read).
+`logs.no_error_inference=true` explicitly prohibits an error-free/healthy inference.
+Only fixed labels, booleans,
 counts and timestamps are published; raw messages, resource names/ARNs, host details and
 credentials are withheld. Terraform stderr is discarded for this step; AWS error details
 are captured and replaced with safe availability indicators.
 An early source/flag/target, input, region or identity failure instead returns only
 `{"status":"unavailable"}` and a nonzero helper exit; the three sections are absent.
 Invalid invocation context or region is rejected before the helper calls AWS.
+A programming violation of the read-only allowlist instead adds the fixed
+`reason="read_only_violation"` and exits nonzero; partial-read handlers do not swallow it.
 
 출력의 `logs`, `configuration`, `server_logs`는 독립적이며 각각
 `status=available|partial|unavailable`을 표시한다. 로그 그룹·클러스터·서비스·inline 역할
 정책이 없더라도 다른 성공 결과는 유지한다. 일부 데이터가 남은 조회 제한/실패는 partial이며
 잘못된 웹 기록/timing도 해당 표본을 partial로 표시한다. 입력이 부족한 구성 필드는 `null`이다.
 `sources_unavailable`은 소스 조회를, `derived_unavailable`은 일부 조회가 성공했더라도
-계산할 수 없는 비교/건수를 구분한다. unavailable/partial의 0건은 오류가 없다는 증거가
-아니다. 고정 분류·boolean·건수·시각만 공개하며 로그 원문·리소스 이름/ARN·호스트 상세·자격증명은
+계산할 수 없는 비교/건수를 구분한다. **available을 포함한 모든 상태**에서 0건은 오류가 없거나
+DB가 정상이라는 증거가 아니다. `logs.no_matching_events`는 읽은 페이지에 유효한 대상 이벤트가
+없다는 뜻이며 페이지를 읽지 못했으면 `null`이다. `logs.no_error_inference=true`는 오류 없음/정상
+추론을 명시적으로 금지한다. 고정 분류·boolean·건수·시각만 공개하며 로그 원문·리소스 이름/ARN·호스트 상세·자격증명은
 숨긴다. 이 단계의 Terraform stderr는 폐기하고 AWS 오류 상세는 안전한 가용성 표시로 대체한다.
 초기 이벤트/플래그/대상·입력·리전·identity 실패는 세 절 없이 `{"status":"unavailable"}`만
 출력하며 helper는 nonzero로 종료한다. 잘못된 실행 맥락이나 리전은 helper의 AWS 호출 전에 거부한다.
+읽기 전용 허용 목록을 위반한 코드 오류는 고정 `reason="read_only_violation"`을 추가하고
+nonzero로 종료하며 부분 조회 처리기가 이를 숨기지 않는다.
 
 **Web logs:** `logs` uses a JSON `evt` OR filter for `db_ping_failed` and
 `db_connection_failed` in the selected web log group over
@@ -543,6 +558,7 @@ echoing them. No timing event means `latest_connection=null`. These observations
 absent until the application observer is deployed and do not prove the live root cause.
 `invalid_timing` separates rejected timing records within `ignored`; `discarded_milestones`
 counts omitted milestone entries (or one malformed non-object milestone container).
+Discarded milestones alone make the sample partial.
 
 **연결 timing:** `phase_counts`는 유효한 `db_connection_failed` 이벤트를 센다.
 `latest_connection`은 반환된 표본 중 최신 유효 timing의 허용 phase·이벤트 시각·
@@ -553,6 +569,7 @@ counts omitted milestone entries (or one malformed non-object milestone containe
 있으며 이 정보만으로 실제 장애 원인을 증명하지 않는다.
 `invalid_timing`은 `ignored` 중 거부한 timing을 따로 세며 `discarded_milestones`는 제외한
 milestone 항목 수다(객체가 아닌 잘못된 milestone container는 1건).
+milestone을 제외한 경우에도 표본을 partial로 표시한다.
 
 | Timing allowlist / timing 허용 목록 | Fixed values / 고정 값 |
 |---|---|
@@ -564,8 +581,9 @@ It lists filenames containing `postgresql` (up to three pages of 100), selects a
 greatest `LastWritten` candidates, then requests the newest 500 lines **per file** without a
 download marker (API maximum 1 MiB per file; at most two downloads). It never prints filenames.
 Only `FATAL:`/`ERROR:`/`PANIC:` severity lines mentioning `awsops_web` contribute to fixed
-`category_counts` / `matching_lines`; other role mentions count as `benign_role_mentions`
-(not classified as errors). `lines_examined` includes all downloaded lines.
+`category_counts` / `matching_lines`. `benign_role_mentions` counts exactly non-error-severity
+lines mentioning `awsops_web`; lines for other database roles are ignored.
+`lines_examined` includes all downloaded lines.
 `listing_pages_read`, `files_selected`, `files_downloaded` and `tail_line_limit` disclose scope.
 `listing_truncated` means a capped/failed listing, so the selected candidates may not be the
 newest overall. `tail_unavailable` flags missing/unreadable tails; listing metadata survives a
@@ -580,8 +598,9 @@ authentication, TCP or TLS problems.
 파일을 최대 100개씩 3페이지 읽고 `LastWritten`이 가장 큰 후보 2개까지 선택한다.
 **파일당** 최신 500줄을 download marker 없이 요청한다(파일당 최대 1 MiB, 최대 2회 download).
 파일 이름은 출력하지 않는다. `awsops_web`이 언급된 `FATAL:`/`ERROR:`/`PANIC:` severity 줄만
-고정 `category_counts` / `matching_lines`에 포함한다. 다른 역할 언급은 오류로 분류하지 않고
-`benign_role_mentions`로 센다. `lines_examined`는 내려받은 전체 줄 수다.
+고정 `category_counts` / `matching_lines`에 포함한다. `benign_role_mentions`는 `awsops_web`을
+언급하는 비오류 severity 줄만 세며 다른 DB 역할의 줄은 무시한다.
+`lines_examined`는 내려받은 전체 줄 수다.
 `listing_pages_read`·`files_selected`·`files_downloaded`·`tail_line_limit`는 조회 범위를 표시한다.
 `listing_truncated`는 목록 제한/실패이므로 선택한 후보가 전체 중 최신이라는 보장은 없다.
 `tail_unavailable`은 tail 부재/읽기 실패이며 download 실패에도 목록 메타데이터와
@@ -591,6 +610,13 @@ authentication, TCP or TLS problems.
 표시가 아니다. 이 tail들에는 1시간 필터가
 없으며 CloudWatch export와 독립적이다. 대상 줄이 없다는 이유로 인증·TCP·TLS 문제를 배제하지 않는다.
 
+Regex inspection is limited to the first 4,096 characters of each ping error/server-log line.
+Shortening marks `logs.classification_truncated` or `server_logs.tail_truncated` and makes
+that sample partial; counters describe only the inspected prefixes.
+정규식 검사는 ping 오류/서버 로그 줄의 처음 4,096자로 제한한다. 줄이면
+`logs.classification_truncated` 또는 `server_logs.tail_truncated`와 partial을 표시하며
+건수는 검사한 접두 구간만 설명한다.
+
 **Configuration:** comparisons describe the ECS service's target task definition, not every
 running revision. `service_running_count` can include old and new revisions during deployment.
 `definition_basis=service_target_not_running_tasks` and
@@ -598,6 +624,9 @@ running revision. `service_running_count` can include old and new revisions duri
 Credential indicators inspect declared `environment` and `secrets` names, including
 `AWS_SESSION_TOKEN`; `environment_files_declared` reports only the presence of environment
 files, without reading them. These are declarations, not runtime credential proof.
+After a successful task-definition read, a missing/malformed web container leaves
+`sources_unavailable.service_target_definition=false`. `web_container_found` is false when
+absent, true when identified, or null when undeterminable; affected fields remain derived-unknown.
 Endpoint/user/region/task-role, IAM-auth, DB security-group ingress and inline connect-Allow
 matches provide hypotheses only. They do not evaluate effective access under service control
 policies (SCPs), permission boundaries, other denies, or end-to-end networking. No diagnostic
@@ -616,6 +645,9 @@ inline connect-Allow 일치는 가설용 근거다. SCP(Service Control Policy)�
 종단 간 네트워크를 포함한 실제 접근 권한을 판정하지 않으며 인증된 DB/login 준비 상태 검사를 면제하지 않는다.
 inline-Allow 검사는 정확한 action/resource만 찾으므로 false여도 wildcard나 다른 정책의 허용을
 배제하지 않는다.
+Task definition 조회가 성공했다면 web container 부재/형식 오류여도
+`sources_unavailable.service_target_definition=false`다. `web_container_found`는 없으면 false,
+식별했으면 true, 판단할 수 없으면 null이며 영향을 받는 파생 필드는 미확인으로 유지한다.
 
 ### 4. ECR permissions for the pin step / ci-deployer ECR 권한
 

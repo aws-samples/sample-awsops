@@ -355,7 +355,7 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
         with patch("subprocess.run", side_effect=AssertionError("Must not execute")):
             for args in [["ecs", "update-service"], ["iam", "put-role-policy"],
                          ["secretsmanager", "get-secret-value"]]:
-                with self.assertRaises(ValueError):
+                with self.assertRaises(diagnostics.ReadOnlyViolation):
                     diagnostics.aws_read(args)
 
     def test_optional_workflow_failure_does_not_weaken_required_gates(self):
@@ -550,6 +550,8 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
             "2026-09-13 UTC [4] FATAL: awsops_web PAM authentication failed",
             "2026-09-13 UTC [5] ERROR: awsops_web password authentication failed",
             "2026-09-13 UTC [6] PANIC: awsops_web unknown failure",
+            "2026-09-13 UTC [7] LOG: another_role SSL enabled",
+            "2026-09-13 UTC [8] FATAL: another_role password authentication failed",
         ])
         result, _ = self.invoke()
         server = result["server_logs"]
@@ -609,3 +611,66 @@ class AdvisoryDiagnosticsTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("UNEXPECTED_EXTERNAL_READ", result.stdout + result.stderr)
             self.assertIn('```json\n{"status": "unavailable"}\n```', result.stdout)
+
+    def test_empty_available_sample_explicitly_prohibits_error_free_inference(self):
+        self.documents[("logs", "filter-log-events")] = {"events": []}
+        result, _ = self.invoke()
+        self.assertEqual(result["logs"]["status"], "available")
+        self.assertEqual(result["logs"]["events"], 0)
+        self.assertIs(result["logs"].get("no_matching_events"), True)
+        self.assertIs(result["logs"].get("no_error_inference"), True)
+        op = ("logs", "filter-log-events")
+        self.documents[op] = self.failed_read(op)
+        result, _ = self.invoke()
+        self.assertIsNone(result["logs"]["no_matching_events"])
+        self.assertIs(result["logs"]["no_error_inference"], True)
+
+    def test_missing_or_malformed_web_container_is_not_a_source_read_failure(self):
+        definition = self.documents[("ecs", "describe-task-definition")]["taskDefinition"]
+        for containers, found in [
+            ([], False), ([{"name": "sidecar"}], False), ("malformed", None),
+            ([{"name": "web", "environment": "malformed"}], True),
+        ]:
+            with self.subTest(found=found):
+                definition["containerDefinitions"] = containers
+                result, _ = self.invoke()
+                config = result["configuration"]
+                self.assertFalse(config["sources_unavailable"]["service_target_definition"])
+                self.assertEqual(config.get("web_container_found"), found)
+                self.assertTrue(config["derived_unavailable"]["user_matches"])
+                self.assertEqual(config["status"], "partial")
+
+    def test_discarded_milestone_alone_degrades_the_sample(self):
+        self.documents[("logs", "filter-log-events")] = {"events": [{
+            "timestamp": 4_999_000, "message": json.dumps({
+                "evt": "db_connection_failed", "phase": "iam_token", "elapsed_ms": 1,
+                "milestones_ms": {"token_ready": 2},
+            }),
+        }]}
+        result, _ = self.invoke()
+        self.assertEqual(result["logs"]["invalid_timing"], 0)
+        self.assertEqual(result["logs"]["discarded_milestones"], 1)
+        self.assertEqual(result["logs"]["status"], "partial")
+
+    def test_regex_input_limits_are_visible_as_partial_results(self):
+        oversized = "x" * 4096 + " FATAL: awsops_web ETIMEDOUT"
+        self.assertEqual(diagnostics.classify(oversized), {"unclassified"})
+        self.documents[("logs", "filter-log-events")]["events"][0]["message"] = json.dumps({
+            "evt": "db_ping_failed", "err": oversized})
+        self.documents[("rds", "download-db-log-file-portion")]["LogFileData"] = oversized
+        result, _ = self.invoke()
+        self.assertTrue(result["logs"]["classification_truncated"])
+        self.assertEqual(result["logs"]["status"], "partial")
+        self.assertEqual(result["server_logs"]["category_counts"], {})
+        self.assertTrue(result["server_logs"]["tail_truncated"])
+        self.assertEqual(result["server_logs"]["status"], "partial")
+
+    def test_readonly_violation_escapes_partial_read_wrappers(self):
+        with patch("subprocess.run") as process:
+            try:
+                configuration_snapshot(self.config, lambda _: diagnostics.aws_read(["ecs", "update-service"]))
+            except Exception as error:
+                self.assertEqual(type(error).__name__, "ReadOnlyViolation")
+            else:
+                self.fail("Read-only violation was swallowed as unavailable metadata")
+            process.assert_not_called()

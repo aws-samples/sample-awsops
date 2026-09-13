@@ -41,6 +41,10 @@ secrets-manager) — installed by `make deps`.
   JSON (including posture booleans) to the public Actions log/step summary.
   Independently retain web logs, configuration comparisons and an RDS server-log tail with
   partial/unavailable markers; missing resources/permissions are advisory, not readiness gates.
+  `no_matching_events` labels empty accepted samples; `no_error_inference=true` prohibits health
+  conclusions from any status's zero counts. Interpretation requires a known DB probe within
+  the returned one-hour window. A successful task-definition read stays source-available even
+  if its web container is missing/malformed; use `web_container_found` and derived-unknown flags.
   Web logs use a fixed one-hour `[start,end)` window, oldest-first, at most three pages of 100
   using `--next-token`/`--limit`; disclose bounds, category counts, ignored/unparsed and truncation.
   JSON `evt` OR selects `db_ping_failed` plus `db_connection_failed`; the latter exposes only
@@ -48,8 +52,9 @@ secrets-manager) — installed by `make deps`.
   cannot exceed elapsed). Count phases and retain the latest valid timing in the sample.
   Server logs select the latest two observed PostgreSQL filenames from at most three listing
   pages for `<project>-aurora-1`; at most two downloads of 500 newest lines without Marker
-  (1 MiB cap per file). Count only FATAL/ERROR/PANIC web-role lines as errors; count other role
-  mentions separately, never print names/lines. Tail/listing truncation is independent;
+  (1 MiB cap per file). Count only FATAL/ERROR/PANIC web-role lines as errors.
+  `benign_role_mentions` counts exactly non-error-severity lines mentioning `awsops_web`;
+  lines for other database roles are ignored. Never print names/lines. Tail/listing truncation is independent;
   failed downloads retain listing metadata as partial. Capped web samples are also partial.
   Sources and unknown derived fields have separate flags. Accept single-object IAM Statement.
   HBA failures are distinct from TLS; pool-acquire timeout differs from unexpected connection
@@ -59,6 +64,8 @@ secrets-manager) — installed by `make deps`.
   Emit fixed categories/counts/timestamps/booleans/nulls only; withhold raw messages, credentials
   and ARNs, including Terraform stderr. Unset/false is off; no writes or new IAM grants.
   Early input/context/identity failure returns only `{"status":"unavailable"}` with nonzero exit.
+  Discarded milestones or regex inputs shortened to 4,096 characters mark samples partial.
+  Read-only violations escape partial-read handlers and fail with a fixed reason, never raw args.
   Only this optional workflow step tolerates failure (eight-minute timeout); DNS/CI/readiness
   gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
