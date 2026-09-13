@@ -42,8 +42,19 @@ class RuntimeWorkflowTests(unittest.TestCase):
         self.assertEqual(len(apply), 1)
         self.assertLess(restore[0], apply[0])
         self.assertIn("ci_runtime_policy.py check-plan", steps[apply[0]]["run"])
-        self.assertEqual(steps[apply[0]]["env"]["AWSOPS_CI_ASSETS_READY"], "1")
+        self.assertEqual(steps[apply[0]]["env"]["CI_ASSETS_READY"], "true")
         self.assertNotIn("-auto-approve", steps[apply[0]]["run"])
+
+    def test_workflow_and_layer_guards_use_the_same_ready_contract(self):
+        for name in ("plan", "apply"):
+            step = next(s for s in self.workflow()["jobs"][name]["steps"]
+                        if s.get("name", "").startswith("terraform " + name))
+            self.assertEqual(step["env"]["CI_ASSETS_READY"], "true")
+        root = Path(__file__).resolve().parents[2]
+        for name in ("workers.tf", "steampipe.tf"):
+            text = (root / "terraform/foundation" / name).read_text()
+            self.assertIn('"$${CI_ASSETS_READY:-}" = "true"', text)
+            self.assertNotIn("AWSOPS_CI_ASSETS_READY", text)
 
     def test_sensitive_and_generated_files_are_cleaned_even_on_failure(self):
         for name in ("plan", "apply"):

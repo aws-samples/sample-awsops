@@ -41,7 +41,9 @@ python3 -m pytest -q scripts/v2/steampipe/test_host_scope.py
 5. Review all changes and apply the same branch/SHA plan. Public DNS/certificates/network
    remain protected. Owned unchanged ECS registration updates still need DNS permission.
    CI binds encrypted Lambda assets to the plan; missing bundles require a new plan.
+   Plan/apply export `CI_ASSETS_READY=true`, selecting layer verification instead of rebuilding.
    같은 브랜치·SHA 계획과 암호화 asset을 적용하며 공용 DNS·인증서·네트워크는 보존합니다.
+   두 단계는 위 플래그로 레이어 재빌드 대신 검증 경로를 선택합니다.
 
 ```bash
 # Once the profile, base application and verified image digests are configured:

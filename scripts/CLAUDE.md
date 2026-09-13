@@ -19,6 +19,7 @@ secrets-manager) — installed by `make deps`.
 - `v2/ci_tf_assets.py` — prepares hash-locked pg8000 layers and carries generated Lambda assets
   with the encrypted saved plan. Restore checks the plan hash, commit, scope, member paths,
   types, modes and content hashes before apply; missing or mismatched assets fail.
+  Plan/apply and both Terraform layer guards share literal `CI_ASSETS_READY=true`.
   `v2/ci/pg8000-requirements.txt` is the locked dependency closure.
 - `v2/configure.mjs` — `make configure`: interactive TUI → `terraform.tfvars` + `backend.hcl`.
   AWS access shells out to the `aws` CLI, not the SDK.

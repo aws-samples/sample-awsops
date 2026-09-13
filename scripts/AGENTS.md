@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ef0bb72aa3e7 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: eb8834942323 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -21,6 +21,7 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   with the encrypted saved plan. Restore checks plan hash, commit, scope, paths, types, modes
   and content hashes; missing or mismatched assets fail. The dependency closure is
   `v2/ci/pg8000-requirements.txt`.
+  Plan/apply and both Terraform layer guards use literal `CI_ASSETS_READY=true`.
 
 - `v2/ci_db_diagnostics.py` is default-off manual dev-plan diagnostics. Both workflow and helper
   require `workflow_dispatch`, literal `CI_DB_DIAGNOSTICS_DEV=true`, and `--target dev`;

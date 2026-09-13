@@ -266,7 +266,7 @@ resource "terraform_data" "inv_pg8000_build" {
   provisioner "local-exec" {
     command = <<-EOT
       set -e
-      if [ "$${AWSOPS_CI_ASSETS_READY:-}" = "1" ]; then
+      if [ "$${CI_ASSETS_READY:-}" = "true" ]; then
         python3 ${path.module}/../../scripts/v2/ci_tf_assets.py check-layer --layer inv_layer
         exit 0
       fi
@@ -344,14 +344,14 @@ resource "aws_iam_role_policy" "inv_sync" {
   })
 }
 resource "aws_lambda_function" "inv_sync" {
-  count                          = local.sp
-  function_name                  = "${var.project}-inv-sync"
-  role                           = aws_iam_role.inv_sync[0].arn
-  runtime                        = "python3.12"
-  architectures                  = ["arm64"]
-  handler                        = "sync_lambda.lambda_handler"
-  filename                       = data.archive_file.inv_sync_src[0].output_path
-  source_code_hash               = data.archive_file.inv_sync_src[0].output_base64sha256
+  count            = local.sp
+  function_name    = "${var.project}-inv-sync"
+  role             = aws_iam_role.inv_sync[0].arn
+  runtime          = "python3.12"
+  architectures    = ["arm64"]
+  handler          = "sync_lambda.lambda_handler"
+  filename         = data.archive_file.inv_sync_src[0].output_path
+  source_code_hash = data.archive_file.inv_sync_src[0].output_base64sha256
   # 420s, split by sync_lambda.py: hydrate-carrying queries (iam_role.attached_policy_arns ≈
   # one ListAttachedRolePolicies per role, and the aggregator makes that the role total across
   # ALL connected accounts) get ≤180s of statement_timeout (≈360 aggregate hydrates at the

@@ -281,6 +281,7 @@ jobs:
           TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
           DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
           PLAN_SCOPE: ${{ inputs.plan_scope }}
+          CI_ASSETS_READY: "true"
         # -lock=false: the plan role is ReadOnlyAccess by design and cannot write
         # the S3 lock object (use_lockfile → <key>.tflock, s3:PutObject). A
         # read-only plan needs no lock; apply (deployer role) still locks.
@@ -566,7 +567,7 @@ jobs:
         env:
           ALLOW_DNS_CHANGES: ${{ inputs.allow_dns_changes }}
           PLAN_SCOPE: ${{ inputs.plan_scope }}
-          AWSOPS_CI_ASSETS_READY: "1"
+          CI_ASSETS_READY: "true"
         run: |
           set -euo pipefail
           terraform show -json tfplan |
