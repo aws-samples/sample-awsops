@@ -181,15 +181,17 @@ Private migration tests require `npm ci --prefix scripts/v2 --ignore-scripts --n
 (`pg` + AWS SDK), OpenSSL and a reachable Docker daemon for `postgres:17`.
 The required private PostgreSQL suite fails if Docker is missing; it uses bare `docker` on PATH
 (the documented exception to optional legacy itests). Its offline companion uses no AWS credentials.
-Terraform mock tests require **1.15.7** and installed/cached providers; the helper copies only
-tracked working-tree files, runs `init -backend=false`, validates and tests without a real backend.
+Authenticated deployment smoke tests require Python 3 with PyYAML and Terraform **1.15.7**;
+their offline variable fixture needs no providers. Terraform mock tests also require installed/cached
+providers; the helper copies only tracked working-tree files, runs `init -backend=false`, validates
+and tests without a real backend.
 
 ```bash
 bash scripts/v2/merge-verify.sh   # isolated Python + web vitest + deployment Node tests; opportunistic TF checks
 node --test scripts/v2/ci/*.test.mjs # offline private migration runtime fixtures (CI required)
 node --test scripts/v2/ci/migration.itest.mjs # real PostgreSQL initializer/runner regressions (CI required)
 bash scripts/v2/terraform-test.sh # isolated, backend-disabled Terraform mock tests (also required in CI)
-node --test scripts/v2/deployment-smoke.test.mjs # focused offline smoke argument tests
+node --test scripts/v2/deployment-smoke.test.mjs # offline health/auth/credential preparation and workflow checks
 bash tests/run-all.sh             # repo-wide hook/structure tests + agent Python unittests
 (cd web && npx vitest run)        # web unit tests only
 ```
