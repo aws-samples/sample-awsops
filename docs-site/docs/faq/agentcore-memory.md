@@ -199,14 +199,10 @@ flowchart LR
 
 ### 절차
 
-dev는 Deploy AgentCore workflow의 `--build-only` → 동일 역할 OIDC 갱신 → `--provision-only` 경로를 사용합니다. 아래 기본 `make` 호출은 다른 스택의 기존 CLI 경로입니다.
-
 ```bash
 make agentcore          # arm64 agent 이미지 빌드/푸시 + 멱등 provisioner
-make agentcore SMOKE=1  # 추가로 호출 검증
+make agentcore --smoke  # 추가로 호출 검증
 ```
-
-`SMOKE=1`은 provisioning 후 실행한다. dev는 대응 readiness producer와 `runtime_deployment`, 활성/수집된 inventory가 필요하며 다른 스택은 참고용 호환 검사를 유지한다. Memory나 Code Interpreter 기능 검증은 아니다. dev workflow는 먼저 사설 migration을 재사용하고, 다른 스택은 `make migrate`를 먼저 실행한다.
 
 provisioner는 멱등하므로 안전하게 재실행할 수 있습니다(예: 첫 Target 생성이 게이트웨이 미준비로 실패했을 때).
 

@@ -199,14 +199,10 @@ flowchart LR
 
 ### 步骤
 
-dev 使用 Deploy AgentCore workflow：`--build-only` → 同一角色的新 OIDC 会话 → `--provision-only`。下面的默认 `make` 调用保留为其他环境的既有 CLI 路径。
-
 ```bash
 make agentcore          # 构建/推送 arm64 agent 镜像 + 幂等 provisioner
-make agentcore SMOKE=1  # 额外进行调用验证
+make agentcore --smoke  # 额外进行调用验证
 ```
-
-`SMOKE=1` 在 provisioning 后执行。dev 需要对应的 readiness producer、`runtime_deployment` 以及已启用并采集的 inventory；其他环境保留兼容的参考检查。它不验证 Memory 或 Code Interpreter 功能。dev workflow 先复用私有 migration，其他环境先运行 `make migrate`。
 
 provisioner 是幂等的，可以安全地重复执行（例如首次创建 Target 因网关未就绪而失败时）。
 

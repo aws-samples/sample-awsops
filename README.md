@@ -211,8 +211,7 @@ bash tests/run-all.sh             # repo-wide hook/structure tests + agent Pytho
 ```
 
 The private migration fixture command includes runtime, controller, workflow and mocked-plan
-checks. Controller/workflow checks also require Python 3 with PyYAML, boto3/botocore
-(`pip install -r agent/requirements.txt`) and Terraform **1.15.7**.
+checks. Controller/workflow checks also require Python 3 with PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform **1.15.7**.
 
 ## API Documentation
 
@@ -432,8 +431,7 @@ bash tests/run-all.sh             # repo 전반 hook/structure 테스트 + agent
 ```
 
 위 private migration fixture 명령은 runtime·controller·workflow·모의 계획 검사를 포함합니다.
-controller/workflow 검사에는 Python 3·PyYAML·boto3/botocore
-(`pip install -r agent/requirements.txt`)·Terraform **1.15.7**도 필요합니다.
+controller/workflow 검사에는 Python 3·PyYAML·boto3/botocore (`pip install -r agent/requirements.txt`)·Terraform **1.15.7**도 필요합니다.
 
 ## API 문서
 

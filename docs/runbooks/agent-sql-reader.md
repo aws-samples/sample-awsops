@@ -16,16 +16,10 @@ IAM DB auth on that path), so this one role has a password — Terraform generat
 
 ## 실행 순서 — 마이그레이션이 먼저 / Enable order — migrations first
 
-Dev Deploy AgentCore runs the reusable private `deploy-migrations.yml` workflow before its
-build/provision phases. Before dispatch, set `CI_MIGRATIONS_ENABLED_DEV=true` and apply a
-reviewed plan with `ci_migrations_enabled=true`; the applied `migration_job` output must
-be non-null. The default-off migration infrastructure blocks dev deployment until applied.
-Main/preview and direct CLI on a host with private DB access use:
-dev Deploy AgentCore는 사설 재사용 migration workflow를 먼저 실행한다. 사전에
-`CI_MIGRATIONS_ENABLED_DEV=true`를 설정하고 `ci_migrations_enabled=true`인 검토된 계획을
-적용해 `migration_job` 출력이 null이 아니어야 한다. 기본 비활성 인프라가 적용되지 않으면
-dev 배포는 차단된다.
-main/preview와 DB에 접근 가능한 호스트의 직접 CLI는 다음 순서를 따른다:
+Dev Deploy AgentCore runs the reusable private `deploy-migrations.yml` workflow before its build/provision phases. Before dispatch, set `CI_MIGRATIONS_ENABLED_DEV=true` and apply a reviewed plan with `ci_migrations_enabled=true`; the
+applied `migration_job` output must be non-null. The default-off migration infrastructure blocks dev deployment until applied. Main/preview and direct CLI on a host with
+private DB access use: dev Deploy AgentCore는 사설 재사용 migration workflow를 먼저 실행한다. 사전에 `CI_MIGRATIONS_ENABLED_DEV=true`를 설정하고 `ci_migrations_enabled=true`인 검토된 계획을 적용해 `migration_job` 출력이 null이 아니어야 한다. 기본 비활성 인프라가 적용되지 않으면 dev
+배포는 차단된다. main/preview와 DB에 접근 가능한 호스트의 직접 CLI는 다음 순서를 따른다:
 
 ```
 terraform -chdir=terraform/foundation apply tfplan   # reader 시크릿 생성 / creates the reader secret
@@ -33,11 +27,9 @@ make migrate                                            # 롤 생성 + 비밀번
 make agentcore                                          # 게이트웨이/타겟 프로비저닝 / provisions the gateways/targets
 ```
 
-`make agentcore` 자체는 마이그레이션이나 비밀번호 동기화를 실행하지 않는다.
-사설 workflow 또는 앞선 `make migrate`를 생략하면 다음과 같은 인증 오류가 날 수 있다:
+`make agentcore` 자체는 마이그레이션이나 비밀번호 동기화를 실행하지 않는다. 사설 workflow 또는 앞선 `make migrate`를 생략하면 다음과 같은 인증 오류가 날 수 있다:
 
-`make agentcore` itself does not run migrations or sync passwords. Skipping the private
-workflow or preceding `make migrate` can surface as these authentication failures:
+`make agentcore` itself does not run migrations or sync passwords. Skipping the private workflow or preceding `make migrate` can surface as these authentication failures:
 
 | 증상 / Symptom | 원인 / Cause |
 |---|---|

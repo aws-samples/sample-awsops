@@ -86,8 +86,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   Service-target/declaration comparisons and error categories are hypotheses, not proof of
   running revisions, effective access, runtime credentials, connectivity or readiness.
 - `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is a default-off operator capability.
-  Dev Deploy AgentCore requires the reviewed `true` plan already applied and a non-null
-  `migration_job` output; a repository variable or plan alone does not provision it.
+  Dev Deploy AgentCore requires the reviewed `true` plan already applied and a non-null `migration_job` output; a repository variable or plan alone does not provision it.
   `deploy-migrations.yml` builds an ARM64 image and `run-migration.mjs` launches/verifies one
   private task. The task role reads exact Aurora secrets; DDL uses DB credentials. This is
   operator CI, not product autonomy or an ADR-005 AWS-resource-mutation exception.
