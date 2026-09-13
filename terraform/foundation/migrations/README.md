@@ -41,13 +41,15 @@ DO NOTHING`. Concurrent branches kept **preempting the same integer** (manual re
 ### Empty database / 빈 데이터베이스
 
 From an approved host with private Aurora connectivity, use `INITIALIZE_EMPTY_DB=1 make migrate`
-once for a new, empty database. This is a one-shot operator choice, not a standing task setting.
+once for a new, empty database. For host commands and ordinary deployment services, this is a
+one-shot operator choice rather than a persistent setting.
 The initializer refuses an absent ledger if any user object exists, including global default ACLs,
 custom schemas, routines, extensions, large objects, foreign wrappers or subscriptions in this database. Investigate or restore such
 a database; do not delete objects/ledger rows to force the guard through.
 
 Aurora에 사설 연결 가능한 승인된 호스트에서 새 빈 DB에 한해
-`INITIALIZE_EMPTY_DB=1 make migrate`를 한 번 실행한다. 태스크의 상시 환경변수로 두지 않는다.
+`INITIALIZE_EMPTY_DB=1 make migrate`를 한 번 실행한다. 호스트 명령이나 일반 배포 서비스에는
+상시 초기화 설정으로 두지 않는다.
 원장이 없어도 사용자 객체(전역 default ACL·스키마·함수·확장·large object·해당 DB의 subscription 등)가 있으면 거부한다.
 강제로 통과시키려고 객체나 원장 행을 지우지 말고 상태를 조사하거나 복원한다.
 
@@ -105,7 +107,7 @@ requires a separately reviewed migration design, not a runtime environment overr
 설정과 일치해야 하며 다른 이름은 연결·원장 초기화 전에 거부한다. 이름 변경은 환경변수로
 처리하지 않고 별도의 마이그레이션 설계와 검토가 필요하다.
 
-These names define the runtime interface for a future deployment controller. `AURORA_SECRET_ARN` means the **master** here;
+These names define the runtime/controller interface. `AURORA_SECRET_ARN` means the **master** here;
 the agent's `AURORA_SQL_READER_SECRET_ARN` is not an alias for `SQL_READER_SECRET_ARN`.
 Do not copy the agent's environment block. Role elevation is checked on every non-preview run when
 the role exists, **including disabled mode**. Disabled permits an absent role and skips only the
@@ -114,7 +116,7 @@ After a disabled-mode installation, run `make migrate` with reader sync enabled 
 before `make agentcore`; otherwise `execute_sql`/inventory-read can fail Data API authentication.
 See `docs/runbooks/agent-sql-reader.md` for recovery and safe diagnostic codes.
 
-이 이름은 향후 deployment controller가 사용할 runtime 계약이다. 에이전트 환경변수를 복사하지 않는다.
+이 이름은 runtime/controller의 계약이다. 에이전트 환경변수를 복사하지 않는다.
 `disabled`에서도 존재하는 reader 롤의 elevated 속성을 검사한다. 부재한 롤은 허용하고
 reader 시크릿 조회/비밀번호 변경만 생략한다. 활성 에이전트의 장애 우회책으로 disabled를 쓰지 않는다.
 disabled로 설치했다면 `make agentcore` 전에 reader 동기화를 활성화한 `make migrate`를
@@ -136,18 +138,24 @@ docker run --rm --network none --read-only awsops-migration:local \
   node scripts/v2/migrate.mjs --status
 ```
 
-The deployment controller is not implemented by this runtime change. A future reviewed controller must build/push to the selected private ECR repository,
-select the exact image digest, and execute the image's default CMD in a private ARM64 Fargate
-task. This runtime change alone provisions no task or IAM and enables no deployment gate.
+The manual development workflow builds/pushes to the selected private ECR repository,
+pins the image digest, and runs the default CMD in a private ARM64 Fargate task.
+Its task/IAM template is gated by `ci_migrations_enabled` (default false); see the [deployment runbook](../../../docs/runbooks/dev-repo-setup.md).
 Task completion must include the migration container's numeric exit code `0`; status output alone
 is not a successful migration. Supply the required identifiers/mode above (plus reader ARN
-only in secret mode) as nonsecret environment settings; never inject passwords/secret bodies or
-put `INITIALIZE_EMPTY_DB=1` in a reusable template.
+only in secret mode) as nonsecret environment settings; never inject passwords or secret bodies.
+The dedicated **Migrate Development Database** template deliberately enables guarded initialization:
+each manual dev dispatch requests it if needed. Provisioning the template runs nothing, an existing
+ledger skips initialization, and an occupied database without a ledger is refused. This exception
+does not apply to ordinary services or scheduled deployment templates.
 
-이 runtime 변경에는 deployment controller 구현이 없다. 향후 검토된 controller가 선택한 private ECR에 빌드/푸시하고 정확한 digest로 private ARM64
-Fargate 태스크의 기본 CMD를 실행한다. 런타임만으로 태스크/IAM/배포 gate가 생성되지 않는다.
+수동 개발 workflow가 private ECR에 빌드/푸시하고 정확한 digest로 private ARM64 Fargate 태스크를 실행한다.
+태스크/IAM 템플릿은 기본 false인 `ci_migrations_enabled`로 제어한다.
 성공은 migration 컨테이너의 숫자 exit code `0`까지 확인해야 한다. 환경에는 위 식별자/모드만
-전달하고 비밀번호·시크릿 본문·상시 초기화 설정을 넣지 않는다.
+전달하고 비밀번호·시크릿 본문을 넣지 않는다. 전용 **Migrate Development Database** 템플릿은
+수동 dev 실행마다 필요한 경우의 안전한 초기화를 명시적으로 요청한다. 템플릿 생성만으로 실행되지
+않으며, 원장이 있으면 초기화를 생략하고 원장 없는 비어 있지 않은 DB는 거부한다. 일반 서비스나
+예약 배포 템플릿에는 이 예외를 적용하지 않는다.
 
 - **Task role:** `secretsmanager:GetSecretValue` on the exact master secret, plus the exact reader
   secret only in secret mode. CMK secrets need scoped `kms:Decrypt` with Secrets Manager

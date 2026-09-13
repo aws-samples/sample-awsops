@@ -639,6 +639,127 @@ protections remain required.
 DNS·출처 검사도 배포 ref의 코드이므로 코드 변경에 대한 보안 경계를 대신하지 않는다.
 기존 리뷰·보호 환경 절차를 계속 적용한다.
 
+## Private development database migration / 비공개 개발 DB 마이그레이션
+
+**Symptom / 증상:** a newly provisioned private Aurora has no application tables, or the
+external Actions runner cannot connect to its private endpoint. Deploy Web does not initialize
+the database. Use **Migrate Development Database** (`deploy-migrations.yml`), a manual-only
+workflow restricted to this samples repository's `dev` branch. It builds an ARM64 image and
+runs one Fargate task in the existing private subnets with the existing service security group.
+
+새 Aurora에 앱 테이블이 없거나 외부 Actions runner가 비공개 endpoint에 연결하지 못하면
+`dev` 전용 **Migrate Development Database**를 사용한다. Deploy Web은 DB 초기화를 하지 않는다.
+마이그레이션은 기존 private subnet·서비스 SG를 재사용하는 일회성 ARM64 Fargate task에서 실행한다.
+
+**Preparation / 준비:**
+
+1. After reviewing the migration change, set the **nonsecret repository variable**
+   `CI_MIGRATIONS_ENABLED_DEV` to the literal `true`. Its default is `false`.
+   Terraform plans use `github.base_ref` for PRs and the current branch otherwise;
+   only a `dev` target reads this variable. Other targets explicitly use `false`.
+   The plan passes the value as `-var` as well as `TF_VAR_ci_migrations_enabled`, so
+   a restored tfvars assignment cannot override the repository setting. Apply uses
+   the value already captured in the approved saved plan.
+2. Dispatch the existing **Terraform** workflow in `plan` mode on the reviewed `dev`
+   commit, with DNS changes prohibited. Review that only the intended gated migration
+   resources are added, then use its existing saved-plan `apply` dispatch. Keep the
+   current DNS, edge, authentication, web task image and desired count intact.
+3. Confirm the existing dev build/deployer OIDC roles and backend secrets are configured.
+   `TF_TFVARS_DEV` must contain exactly one literal, single-line `project = "…"` assignment.
+   This workflow accepts the existing `ap-northeast-2` deployment region only, without
+   cross-stack fallback. The SQL reader sync is enabled only when AgentCore is enabled.
+4. Dispatch **Migrate Development Database** from the current `dev` HEAD. It accepts no
+   image, role, task, template or repository override. If the branch moves before launch,
+   dispatch again from the new reviewed HEAD.
+
+리뷰 후 일반 저장소 변수 `CI_MIGRATIONS_ENABLED_DEV=true`를 설정하고 기존 Terraform의
+명시적 plan → 저장된 plan apply 절차로만 인프라를 준비한다. PR은 base branch가 `dev`일 때만
+해당 변수를 읽고 다른 스택에는 전달하지 않는다. tfvars보다 CI 플래그가 우선하며 apply는 저장된
+값을 사용한다. DNS·edge·인증·웹 이미지·desired count를 유지한다. 개발 OIDC 역할과 backend
+secret을 준비하고, `TF_TFVARS_DEV`에 명시적 project 문자열과 지원 리전을 사용한다.
+이후 현재 `dev` HEAD에서 마이그레이션을 dispatch한다. 브랜치가 이동하면 새 HEAD로 다시 실행한다.
+
+For a controller reviewing a local Terraform plan, the equivalent opt-in is:
+
+```bash
+TF_VAR_ci_migrations_enabled=true terraform -chdir=terraform/foundation plan -out=tfplan
+```
+
+The `TF_VAR_` local form follows normal Terraform variable precedence; remove conflicting
+local tfvars entries or pass `-var=ci_migrations_enabled=true` explicitly. The new migration
+workflow itself only initializes the dev backend and reads `migration_job`; it never plans
+or applies infrastructure. The gated resources are one task role/policy, one log group, and
+one task-definition template. `migration_job` is absent/null while disabled.
+
+로컬 plan 검토 시 위 환경변수로 동일 기능을 선택할 수 있다. 로컬 tfvars에 충돌 값이 있으면
+제거하거나 명시적 `-var`를 사용한다. 새 워크플로는 backend 초기화·`migration_job` 읽기만 하며
+Terraform plan/apply를 수행하지 않는다. 비활성 상태에는 해당 출력과 마이그레이션 리소스가 없다.
+
+**Privilege review / 권한 검토:** CI roles are existing, separately managed prerequisites;
+this feature does not broaden them automatically. Verify the following grants before execution.
+An access denial is a failed run, never permission to substitute a more privileged role.
+
+| Principal / 주체 | Required scope / 필요한 범위 |
+|---|---|
+| Dev build role | Push only to the selected project's existing private `-web` ECR repository; retain the existing ECR login permission. Only `migration-<full commit SHA>` is written. |
+| Dev deployer role | Read the dev state backend and selected ECR image; register/describe the project's `-migration` family; run only that family on the project's cluster. Where an ECS API requires wildcard resource access, constrain the requested region and use supported action-specific conditions. |
+| Dev deployer `iam:PassRole` | Exactly the project's `-task-execution` and `-migration-task` roles, with `iam:PassedToService = ecs-tasks.amazonaws.com`; no arbitrary role pass. |
+| Dev deployer cleanup | `ecs:DescribeTasks` / `ecs:StopTask` limited to the project's task ARN prefix and cluster; `ecs:ListTasks` constrained to that cluster. The controller additionally checks run identity, exact registered revision and task ARN before stopping. |
+| Optional failure-log reader | `logs:GetLogEvents` only for `/ecs/<project>-migration`, stream prefix `migration/migration/`. No log-wide search is needed. |
+| Migration task role | `secretsmanager:GetSecretValue` for this Aurora master secret, plus the project's SQL reader secret only when AgentCore is enabled. Aurora CMK `kms:Decrypt` requires Secrets Manager and the master secret's encryption context. No ECS, ECR, IAM, DNS, secret-write or application mutation permissions. |
+| Existing execution role | Existing private ECR pull and CloudWatch log delivery. Database credentials are fetched by the task role at runtime, never through ECS environment/secrets injection. |
+
+기존 CI 역할의 ECR·ECS·PassRole·backend·로그 권한을 위 범위로 확인한다. 거부되면 실행 실패로
+처리하며 다른 고권한 역할로 대체하지 않는다. DB task 역할은 해당 secret 읽기와 제한된 KMS
+복호화만 가능하다. 암호는 컨테이너 메모리에서 읽으며 환경변수나 공개 로그에 넣지 않는다.
+
+**Verification and recovery / 확인·복구:** the controller refuses the `migration-unbuilt`
+template image and clones only approved fields using this run's immutable build digest.
+Only project and digest cross the build-job boundary; a masked registry/account value is
+not a job output. The controller verifies the digest in the expected ECR repository,
+checks current `dev` SHA immediately before `RunTask`, and requires task **STOPPED**,
+the same running-image digest, and the migration container's **numeric `exitCode: 0`**.
+Missing/string/null exit codes cannot pass.
+
+The migration wait is at most 20 minutes plus a bounded in-flight API request. Each CLI call
+is capped at 20 seconds; cleanup polls for at most two minutes plus bounded in-flight calls.
+Timeout/cancellation cleanup checks only this run's recorded task; if a launch response was
+lost, it discovers by this run's unique `startedBy` and verifies the exact clone before stopping.
+Temporary config, Terraform backend data and the run journal are removed by workflow cleanup.
+If the runner is killed or cleanup cannot verify STOPPED, inspect that run's task before retrying;
+do not stop other tasks. Registered clone revisions are retained for audit; no service is updated.
+
+Failure-log reads are best effort and do not replace the primary error. Public output contains
+fixed diagnostic categories only. In the private migration log stream, inspect the retained
+operation/purpose, SDK code and HTTP status, SQLSTATE and role booleans described in the
+[safe diagnostic table](agent-sql-reader.md#안전한-오류-진단--safe-failure-diagnostics).
+Raw remote error text is discarded before logging. Empty-DB bootstrap and ULID migrations run under the migration advisory lock;
+an occupied database without a ledger is refused. Retry only after identifying the failure,
+and preserve all existing migration checksums and `-- since:` headers.
+
+컨트롤러는 템플릿을 직접 실행하지 않고 이번 빌드 digest로 제한된 필드만 복제한다. ECR·브랜치
+SHA·실행 이미지 digest를 검증하며 실제 STOPPED와 숫자 0 종료 코드가 모두 필요하다.
+대기는 20분, 정리는 2분에 진행 중인 제한된 API 호출 시간을 더한 범위 안에서 종료한다.
+취소·시간초과 시 이번 실행 소유 task만 검증 후 중지한다. 응답 유실 시에도 run별 `startedBy`와
+정확한 revision을 검사한다. runner 강제 종료나 정리 실패 시 다른 task를 중지하지 말고 해당
+task 상태를 확인한 뒤 재시도한다. 비공개 로그에서는 보존된 작업·목적, SDK 코드·HTTP 상태,
+SQLSTATE·롤 속성을 [안전한 진단 표](agent-sql-reader.md#안전한-오류-진단--safe-failure-diagnostics)와 대조한다.
+원격 오류 원문은 로그에 남기지 않으며 공개 로그에는 고정된 분류만 표시한다.
+기존 schema·ULID checksum·since 헤더는 변경하지 않는다.
+
+After a successful migration, deploy the reviewed web image and verify authenticated database access before publishing service DNS.
+마이그레이션 성공 후 검토한 웹 이미지를 배포하고 인증된 DB 접근을 확인한 뒤 서비스 DNS를 게시한다.
+
+Offline controller checks require Node 20, Python 3 with PyYAML, Terraform 1.15.7 and cached providers:
+
+```bash
+node --test scripts/v2/ci/run-migration*.test.mjs
+```
+
+Merge Verify also runs the required runtime tests and disposable PostgreSQL integration suite.
+The manual controller adds no product autonomy or DNS exception.
+필수 runtime·PostgreSQL 통합 검사도 Merge Verify에서 실행하며 제품 자율 실행·DNS 예외는 추가하지 않는다.
+
 ## Verification / 확인
 
 For a provisioned dev stack, the web workflow should build, pin, roll and pass the

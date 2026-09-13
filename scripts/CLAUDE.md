@@ -55,8 +55,8 @@ secrets-manager) — installed by `make deps`.
 - `v2/agentcore.mjs` + `agentcore/` — `make agentcore`: arm64 agent image + idempotent
   provisioner, writes to SSM.
 - `v2/*.itest.mjs` — migration integration tests against a disposable PostgreSQL 17 container.
-- `v2/ci/*.test.mjs` — offline migration runtime tests (controller coverage is not present); install locked scripts/v2
-  dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`.
+- `v2/ci/*.test.mjs` — migration runtime/controller/workflow tests and mocked Terraform plans; install locked scripts/v2
+  dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`; PyYAML and Terraform 1.15.7 are also required.
   `v2/ci/migration.itest.mjs` includes initializer regressions and is a **required fail-hard
   exception** to the legacy optional itest convention: bare `docker` on PATH, OpenSSL,
   postgres:17, no automatic sudo/DOCKER override, no skip if Docker is unavailable.

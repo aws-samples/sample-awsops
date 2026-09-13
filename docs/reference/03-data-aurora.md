@@ -38,9 +38,14 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   (dev-only — flip both for prod).
 - **Schema**: the **ADR-001 baseline schema** (Phase-1 7-table baseline, **frozen**; expanded since via ULID `migrations/*` — current table count per `schema.sql`, incl. incident/k8s/integrations/topology/ai_usage/accounts) + a P2 `worker_jobs` table, applied via
   `make migrate` from an approved in-VPC host or the private migration runtime. A new empty DB
-  requires one-shot `INITIALIZE_EMPTY_DB=1`; the baseline plus ledger conversion/checksum commit
+  requires `INITIALIZE_EMPTY_DB=1` for its initial migration; the baseline plus ledger conversion/checksum commit
   atomically before ULIDs. Any user object without a ledger prevents initialization.
-  새 빈 DB는 일회성 초기화가 필요하며 baseline·원장 변환·checksum은 원자적으로 적용한다.
+  Ordinary host commands set this once. The default-off manual development migration template
+  retains the flag for deliberate dispatches; an existing ledger skips initialization and an
+  occupied unversioned database still fails closed. See the [runtime guide](../../terraform/foundation/migrations/README.md).
+  새 빈 DB는 최초 초기화가 필요하며 baseline·원장 변환·checksum은 원자적으로 적용한다.
+  일반 호스트 명령은 플래그를 한 번만 설정한다. 기본 비활성 수동 개발 템플릿은 명시적 dispatch용으로
+  플래그를 유지하지만 기존 원장이 있으면 초기화를 건너뛰며, 원장 없는 비어 있지 않은 DB는 거부한다.
   원장 없이 사용자 객체가 있으면 초기화를 거부한다.
 - **App access**: **node-pg** (`web/lib/db.ts`). No *live* Steampipe in v2 — live AWS
   queries go through AgentCore MCP Lambda tools; the ops gateway already has a limited

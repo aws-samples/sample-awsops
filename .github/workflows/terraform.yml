@@ -86,6 +86,7 @@ jobs:
     # plan is automatic and read-only — it must never sit behind any gate.
     env:
       TARGET: ${{ github.base_ref || github.ref_name }}
+      TF_VAR_ci_migrations_enabled: ${{ (github.base_ref || github.ref_name) == 'dev' && vars.CI_MIGRATIONS_ENABLED_DEV || 'false' }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
       DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
@@ -217,6 +218,11 @@ jobs:
               *) echo "::error::unsupported plan scope"; exit 1;;
             esac
           fi
+          # Append last so no restored or generated var-file can override the CI flag.
+          case "${TF_VAR_ci_migrations_enabled:-false}" in
+            true|false) args+=("-var=ci_migrations_enabled=${TF_VAR_ci_migrations_enabled:-false}");;
+            *) echo "::error::CI_MIGRATIONS_ENABLED_DEV must be true or false"; exit 1;;
+          esac
           terraform plan "${args[@]}"
 
       - name: Check planned DNS operations
