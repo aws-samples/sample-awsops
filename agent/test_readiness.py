@@ -27,7 +27,8 @@ class Client:
         self.tools = ["inventory-read-target___inventory_summary", "inventory-read-target___query_inventory"]
         self.summary = {"sync": [freshness()]}
         self.query = dict(resource_type="cloudfront", count=1,
-                          resources=[{"id": PAYLOAD["expectedCloudfrontId"]}], freshness=freshness())
+                          resources=[{"id": PAYLOAD["expectedCloudfrontId"]}], freshness=freshness(),
+                          projection="identity_only", resource_id=PAYLOAD["expectedCloudfrontId"])
 
     def __enter__(self):
         return self
@@ -101,6 +102,14 @@ class ReadinessTest(unittest.TestCase):
         self.client.query.update(count=500, resources=[{"id": f"E{i}"} for i in range(500)])
         result = self.run_probe()
         self.assertEqual((result["reason"], result["checks"]["model"]), ("inventory_unavailable", False))
+
+    def test_old_or_misbound_lookup_response_cannot_prove_readiness(self):
+        for changed in ({"projection": None}, {"projection": "full"}, {"resource_id": None},
+                        {"resource_id": "E999WRONG"}):
+            self.client = Client()
+            self.client.query.update(changed)
+            result = self.run_probe()
+            self.assertEqual((result["reason"], result["checks"]["model"]), ("inventory_unavailable", False))
 
     def test_unknown_or_nonzero_attribute_coverage_is_incomplete_not_stale(self):
         for source in ("summary", "query"):

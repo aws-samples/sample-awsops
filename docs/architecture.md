@@ -123,7 +123,7 @@ Single Terraform root `terraform/foundation/` — partial S3 backend (`backend.h
 | `workload.tf` | ECS cluster/service/task definition (web) |
 | `ci-migrations.tf` | Default-off `ci_migrations_enabled`: private ARM64 migration template, exact-secret IAM and logs; launched only by the manual development CI controller, never an app service/scheduler |
 | `ecr.tf` | Dual-tier ECR (dev-private + prod-public) |
-| `ai.tf` | AgentCore ECR + IAM + agent Lambda slices + SSM (21 gated on `agentcore_enabled`, 6 on `integrations_enabled`) |
+| `ai.tf` | AgentCore ECR + IAM + agent Lambda slices + SSM (21 gated on `agentcore_enabled`, 6 on `integrations_enabled`); default-off `ci_readiness_enabled` controls the bounded runtime permission/data/model probe through applied output |
 | `workers.tf` | SQS + ESM + dispatcher/worker/status_updater/reaper Lambda + Step Functions + Fargate worker (`workers_enabled`) |
 | `eks.tf` | `for_each onboard_eks_clusters` Access Entry + AdminView policy + endpoint/CA outputs |
 | `steampipe.tf` | Warm Steampipe Fargate (FDW) + sync Lambda → Aurora inventory (`steampipe_enabled`) — plugin rate limiter (env-tunable) + freshness ledger; data flow: [diagrams/inventory-freshness-dataflow.html](diagrams/inventory-freshness-dataflow.html) |
@@ -293,7 +293,7 @@ flowchart LR
 | `workload.tf` | ECS 클러스터/서비스/태스크 정의(web) |
 | `ci-migrations.tf` | 기본 비활성 `ci_migrations_enabled`: 사설 ARM64 migration 템플릿·시크릿 한정 IAM·로그. 수동 개발 CI 컨트롤러만 실행하며 앱 서비스/스케줄러는 없음 |
 | `ecr.tf` | 듀얼 티어 ECR(dev-private + prod-public) |
-| `ai.tf` | AgentCore ECR + IAM + 에이전트 Lambda 슬라이스 + SSM(21개 `agentcore_enabled`, 6개 `integrations_enabled` 게이트) |
+| `ai.tf` | AgentCore ECR + IAM + 에이전트 Lambda 슬라이스 + SSM(21개 `agentcore_enabled`, 6개 `integrations_enabled` 게이트). 기본 비활성 `ci_readiness_enabled`는 적용된 output으로 제한된 런타임 권한·데이터·모델 검증을 제어 |
 | `workers.tf` | SQS + ESM + dispatcher/worker/status_updater/reaper Lambda + Step Functions + Fargate 워커(`workers_enabled`) |
 | `eks.tf` | `for_each onboard_eks_clusters` Access Entry + AdminView 정책 + endpoint/CA output |
 | `steampipe.tf` | warm Steampipe Fargate(FDW) + sync Lambda → Aurora 인벤토리(`steampipe_enabled`) — 플러그인 rate limiter(env 조절) + freshness 원장; 데이터 흐름: [diagrams/inventory-freshness-dataflow.html](diagrams/inventory-freshness-dataflow.html) |

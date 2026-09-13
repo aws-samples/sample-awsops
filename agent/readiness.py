@@ -173,6 +173,8 @@ def check_readiness(payload, gateway_url, mcp_factory, region, model_id, *, prog
             progress.remaining()
             resources = inventory.get("resources")
             if (inventory.get("resource_type") != "cloudfront" or not isinstance(resources, list)
+                    or inventory.get("projection") != "identity_only"
+                    or inventory.get("resource_id") != payload["expectedCloudfrontId"]
                     or not all(isinstance(row, dict) for row in resources) or len(resources) > 1
                     or type(inventory.get("count")) is not int or inventory["count"] != len(resources)):
                 return progress.snapshot()
