@@ -1,4 +1,4 @@
-"""Temporary permissions for manual development verification; no AWS calls."""
+"""Temporary permissions for development verification; no AWS calls."""
 import argparse
 import base64
 import json
@@ -47,12 +47,16 @@ def parse_backend_fields(encoded, account, workspace="default"):
     return fields
 
 
-def context(env):
+def context(env, *, workload=False):
     account, mode = env.get("AWS_ACCOUNT_ID_DEV"), env.get("RUNTIME_MODE")
+    event, workflow = env.get("GITHUB_EVENT_NAME"), env.get("GITHUB_WORKFLOW_REF")
+    manual = (event == "workflow_dispatch"
+              and workflow == f"{REPO}/.github/workflows/collect-runtime.yml@refs/heads/dev")
+    web_verification = (workload and mode == "collect" and event in ("push", "workflow_dispatch")
+                        and workflow == f"{REPO}/.github/workflows/deploy-web.yml@refs/heads/dev")
     require(env.get("GITHUB_REPOSITORY") == REPO
-            and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and (manual or web_verification)
             and env.get("GITHUB_REF") == "refs/heads/dev" and env.get("TARGET") == "dev"
-            and env.get("GITHUB_WORKFLOW_REF") == f"{REPO}/.github/workflows/collect-runtime.yml@refs/heads/dev"
             and env.get("AWS_REGION") == REGION and env.get("TF_WORKSPACE", "default") in ("", "default"))
     require(isinstance(account, str) and re.fullmatch(r"[0-9]{12}", account))
     verify_role(account, env.get("CI_ROLE_ARN"))
@@ -97,7 +101,7 @@ def backend_policy(env):
 
 
 def workload_policy(env, value):
-    account, mode = context(env)
+    account, mode = context(env, workload=True)
     require(isinstance(value, dict) and type(value.get("schema_version")) is int
             and value["schema_version"] == 1
             and value.get("account_id") == account and value.get("region") == REGION)
