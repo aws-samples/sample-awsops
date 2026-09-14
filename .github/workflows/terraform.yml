@@ -499,7 +499,9 @@ jobs:
       DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
       DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
-      USER_BACKEND_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', github.ref_name)] }}
+      ATOMOH_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_PREVIEW_ATOMOH }}
+      SSMINJI_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_PREVIEW_SSMINJI }}
+      WHCHOI_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_PREVIEW_WHCHOI }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -517,7 +519,9 @@ jobs:
           case "$TARGET" in
             main) backend="$MAIN_BACKEND_B64"; role="$MAIN_ROLE";;
             dev) backend="$DEV_BACKEND_B64"; role="$DEV_ROLE";;
-            atomoh|ssminji|whchoi) backend="$USER_BACKEND_B64"; role="$DEV_ROLE";;
+            atomoh) backend="$ATOMOH_BACKEND_B64"; role="$DEV_ROLE";;
+            ssminji) backend="$SSMINJI_BACKEND_B64"; role="$DEV_ROLE";;
+            whchoi) backend="$WHCHOI_BACKEND_B64"; role="$DEV_ROLE";;
             *) echo "::error::Unsupported private plan target"; exit 1;;
           esac
           [ -n "$backend" ] && [ -n "$role" ] || { echo "::error::Private plan scope is not configured"; exit 1; }

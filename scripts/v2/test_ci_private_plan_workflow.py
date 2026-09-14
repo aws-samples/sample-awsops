@@ -167,9 +167,13 @@ def test_documented_purge_preparation_rejects_unsafe_deletions(tmp_path, case, o
 @pytest.mark.parametrize("target,missing,expected", [
     ("main", None, ("PRIVATE_MAIN_ROLE", "PRIVATE_MAIN_BACKEND")),
     ("dev", None, ("PRIVATE_DEV_ROLE", "PRIVATE_DEV_BACKEND")),
-    ("atomoh", None, ("PRIVATE_DEV_ROLE", "PRIVATE_USER_BACKEND")),
+    ("atomoh", None, ("PRIVATE_DEV_ROLE", "PRIVATE_ATOMOH_BACKEND")),
+    ("ssminji", None, ("PRIVATE_DEV_ROLE", "PRIVATE_SSMINJI_BACKEND")),
+    ("whchoi", None, ("PRIVATE_DEV_ROLE", "PRIVATE_WHCHOI_BACKEND")),
     ("main", "MAIN_ROLE", None),
-    ("atomoh", "USER_BACKEND_B64", None),
+    ("atomoh", "ATOMOH_BACKEND_B64", None),
+    ("ssminji", "SSMINJI_BACKEND_B64", None),
+    ("whchoi", "WHCHOI_BACKEND_B64", None),
     ("other", None, None),
 ])
 def test_publisher_stack_selection_has_no_cross_stack_fallback(tmp_path, target, missing, expected):
@@ -189,7 +193,7 @@ print('{"status":"policy_ready"}')
            "TARGET": target, "PLAN_SCOPE": "full", "GITHUB_REPOSITORY": "fixture/repo",
            "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "123",
            "MAIN_ROLE": "PRIVATE_MAIN_ROLE", "DEV_ROLE": "PRIVATE_DEV_ROLE"}
-    for kind in ("MAIN", "DEV", "USER"):
+    for kind in ("MAIN", "DEV", "ATOMOH", "SSMINJI", "WHCHOI"):
         env[f"{kind}_BACKEND_B64"] = base64.b64encode(f"PRIVATE_{kind}_BACKEND".encode()).decode()
     if missing:
         env[missing] = ""
@@ -203,6 +207,15 @@ print('{"status":"policy_ready"}')
     else:
         assert result.returncode != 0
         assert not (tmp_path / "commands").exists()
+
+
+def test_publisher_secret_references_are_static_and_bounded():
+    publish = workflow()["jobs"]["publish"]
+    assert "secrets[" not in json.dumps(publish)
+    for branch in ("ATOMOH", "SSMINJI", "WHCHOI"):
+        assert publish["env"][f"{branch}_BACKEND_B64"] == (
+            "${{ secrets.TF_BACKEND_HCL_PREVIEW_" + branch + " }}")
+    assert "USER_BACKEND_B64" not in publish["env"]
 
 
 def test_public_artifact_is_replaced_only_after_private_publication():
