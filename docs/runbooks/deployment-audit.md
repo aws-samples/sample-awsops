@@ -62,7 +62,8 @@ files, secret values or raw exceptions are published.
 ## Interpret the observations
 
 - **Deployment:** ECS service counts and actual running task revisions/health;
-  collector Lambda state/update status and code SHA versus applied state; own SSM
+  collector Lambda state/update status and code SHA versus the configured archive
+  fingerprint persisted by Terraform apply; own SSM
   runtime followed by AgentCore status/role comparison. Web's best status is
   `OBSERVED`: current tasks match the current live service, but the existing web
   output has no applied task-definition ARN (`target_matches_state: null`).
@@ -92,6 +93,14 @@ files, secret values or raw exceptions are published.
   configured freshness policy. The known CloudFront row is checked separately.
   Up to 256 observed types are shown with truncation disclosed. Required deployed
   type coverage is not derived; completeness always remains **UNKNOWN**.
+
+The expected collector fingerprint is
+`runtime_deployment.inventory.sync_code_sha256`, derived from the configured
+Lambda `source_code_hash`. It is not the provider's observed `code_sha256`, which
+can lag an update or reflect an out-of-band change. Apply the output correction
+through a reviewed saved plan before relying on this comparison; a code merge
+alone does not refresh persisted Terraform outputs. Compare the live Lambda hash
+with that intended fingerprint when investigating a mismatch.
 
 The data-gateway diagnostic reads only `awsops-v2-data-gateway` and its
 `rds-mcp-target`. It compares the live role and target Lambda URI with applied
