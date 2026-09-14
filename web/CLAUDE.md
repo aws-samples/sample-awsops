@@ -13,7 +13,8 @@ Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/a
   `SSM_RUNTIME_ARN_PARAM` disables discovery; undefined retains the legacy project fallback.
 - `lib/inventory-collection.ts` — aggregate job-ledger metadata (`scope: aggregate`) in inventory
   summaries. Account/region selections affect resource counts, not this whole-sweep ledger.
-  Missing runs and unknown attributes remain unknown.
+  Missing runs and unknown attributes remain unknown. `/api/inventory/summary?view=collection`
+  authenticates normally and reads only this sanitized ledger, skipping fleet aggregations.
   The private `scripts/v2/runtime-smoke.mjs` prepare mode checks the host registry; verify
   consumes collection metadata and requires Lambda/Fargate completion checks.
 - `middleware.ts` — global 2MB body cap over all of `/api/*` (defense-in-depth above each route's own `readJsonBounded`).
