@@ -6,6 +6,7 @@ const api = vi.hoisted(() => ({ pool: null as unknown }));
 vi.mock('@/lib/auth', () => ({ verifyUser: async () => ({ sub: 'fixture' }) }));
 vi.mock('@/lib/db', () => ({ getPool: () => api.pool }));
 import { GET } from '../app/api/graph/route';
+import { graphTransaction } from './graph-transaction';
 
 const socket = process.env.GRAPH_TEST_POSTGRES_SOCKET;
 describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
@@ -102,6 +103,23 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
       expect((await first).status).toBe(500);
       expect((await pool.query('SELECT count(*) FROM topology_nodes')).rows[0].count).toBe('1');
     } finally { vi.restoreAllMocks(); }
+  });
+
+  it('retains the fatal transaction SQLSTATE when the next query only reports an unusable client', async () => {
+    await expect(graphTransaction(pool, true, async client => {
+      await client.query("SET LOCAL idle_in_transaction_session_timeout = '20ms'");
+      await new Promise(resolve => setTimeout(resolve, 120));
+      await client.query('SELECT 1');
+    })).rejects.toMatchObject({ code: '25P03' });
+    expect((await pool.query('SELECT 42 AS value')).rows[0].value).toBe(42);
+  });
+
+  it('preserves the original query SQLSTATE ahead of a later client error', async () => {
+    const original = Object.assign(new Error('fixture original query'), { code: '42501' });
+    await expect(graphTransaction(pool, true, async client => {
+      client.emit('error', new Error('fixture later socket event'));
+      throw original;
+    })).rejects.toBe(original);
   });
 
   it('exposes only the narrow collection projection to the SQL reader', async () => {
