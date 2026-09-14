@@ -5,6 +5,9 @@ import { useI18n } from '@/components/shell/LanguageProvider';
 export interface GraphCollectionSource {
   sourceId: string;
   status: string;
+  producerStatus?: 'succeeded' | 'failed' | 'partial' | 'running' | 'unknown';
+  attemptedAtMs?: number | null;
+  finishedAtMs?: number | null;
   reasons?: string[];
   itemCount?: number;
   scope?: 'aggregate' | 'account';
@@ -24,6 +27,10 @@ export interface GraphCollection {
   attempted_at?: string | null;
   captured_at?: string | null;
   evidenceKind?: 'inventory' | 'trace';
+  failureReason?: 'publication_failed' | 'source_read_failed' | 'state_read_failed';
+  coverage?: 'unknown';
+  windowStartMs?: number;
+  windowEndMs?: number;
   inputTruncated?: boolean;
   graphTruncated?: boolean;
   nodeDrops?: number;
