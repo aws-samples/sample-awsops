@@ -1,4 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 // FakeTraceSource lives in trace-source.ts, which transitively imports datasources →
 // integration-credentials (aws-sdk). Stub those so this DB-aggregation test needs no AWS SDK.
 vi.mock('@/lib/datasources', () => ({
@@ -25,7 +26,7 @@ class FakeMetricsCallsSource {
 function mockPool(infraNodeRows: unknown[] = []) {
   const calls: string[] = [];
   const params: unknown[][] = [];
-  const client = {
+  const client = Object.assign(new EventEmitter(), {
     query: vi.fn((sql: string, p?: unknown[]) => {
       calls.push(sql);
       // Decode batch binds into logical rows so identity/evidence assertions remain independent
@@ -38,7 +39,7 @@ function mockPool(infraNodeRows: unknown[] = []) {
       return Promise.resolve({ rows: sql.includes('pg_try_advisory') ? [{ acquired: true }] : [] });
     }),
     release: vi.fn(),
-  };
+  });
   const pool = {
     // rebuildTraceGraph may query infra nodes for bridge-ref resolution
     query: vi.fn((sql: string) => Promise.resolve({

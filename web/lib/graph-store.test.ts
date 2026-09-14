@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { rebuildGraph, rebuildInfraGraph } from './graph-store';
@@ -52,7 +53,7 @@ function mockPool(invRows: unknown[]) {
     row_count: resourceRows.filter(row => (row as Record<string, unknown>).resource_type === type).length,
     started_at: new Date().toISOString(), finished_at: new Date().toISOString(), last_success_at: new Date().toISOString(),
   })) : [] };
-  const client = {
+  const client = Object.assign(new EventEmitter(), {
     query: vi.fn((sql: string, p?: unknown[]) => {
       calls.push(String(sql)); if (p) params.push(p);
       const rows = sql.includes('to_regclass') ? [{ ready: true }]
@@ -64,7 +65,7 @@ function mockPool(invRows: unknown[]) {
       return Promise.resolve({ rows, rowCount: 1 });
     }),
     release: vi.fn(),
-  };
+  });
   const pool = {
     query: vi.fn(() => Promise.resolve({ rows: [{ ready: true }] })),
     connect: vi.fn(() => Promise.resolve(client)),

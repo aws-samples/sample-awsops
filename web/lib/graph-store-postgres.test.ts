@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { Pool } from 'pg';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } from './graph-store';
 import { inventorySnapshot } from './graph-inventory';
 import { readGraphState, writeGraphState } from './graph-state';
@@ -150,7 +151,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     const wrapped = { connect: async () => {
       const client = await pool.connect();
       const query = client.query.bind(client);
-      return { release: () => client.release(), query: async (sql: string, args?: unknown[]) => {
+      return { on: client.on.bind(client), removeListener: client.removeListener.bind(client),
+        release: client.release.bind(client), query: async (sql: string, args?: unknown[]) => {
         const result = await query(sql, args);
         if (sql.includes('FROM inventory_sync_runs') && !sql.includes('UNION') && !changed) {
           changed = true;
@@ -188,8 +190,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     let statements = 0;
     const delayed = { query: pool.query.bind(pool), connect: async () => {
       const client = await pool.connect();
-      client.on('error', () => {}); // PG17 transaction_timeout may terminate the session on RED.
-      return { release: () => client.release(), query: async (sql: string, args?: unknown[]) => {
+      return { on: client.on.bind(client), removeListener: client.removeListener.bind(client),
+        release: client.release.bind(client), query: async (sql: string, args?: unknown[]) => {
         statements++;
         await new Promise(resolve => setTimeout(resolve, 8));
         return client.query(sql, args);
@@ -233,7 +235,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await state('trace')).toEqual(previous);
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
   });
-  it.each(['raise', 'timeout', 'transaction'])('trace rolls back an edge write %s and records failure without renewing publication', async mode => {
+  it.each(['raise', 'timeout'])('trace rolls back an edge write %s and records failure without renewing publication', async mode => {
     await trace();
     const previous = await state('trace');
     const nodes = (await pool.query("SELECT * FROM topology_nodes WHERE class='trace' ORDER BY id")).rows;
@@ -241,23 +243,51 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await pool.query(`CREATE OR REPLACE FUNCTION reject_graph() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN ${mode === 'timeout' ? 'PERFORM pg_sleep(2.1); RETURN NEW;' : "RAISE EXCEPTION 'credential=do-not-expose';"} END $$;
       CREATE TRIGGER reject_publication BEFORE INSERT OR UPDATE ON topology_edges FOR EACH ROW EXECUTE FUNCTION reject_graph();`);
-    const target = mode !== 'transaction' ? pool : { query: pool.query.bind(pool), connect: async () => {
-      const client = await pool.connect();
-      client.on('error', () => {});
-      return { release: () => client.release(), query: async (sql: string, args?: unknown[]) => {
-        // Each statement stays below 2s, but their sum crosses PG17's real 4s transaction budget.
-        if (sql.includes('INSERT INTO topology_edges'))
-          for (let i = 0; i < 3; i++) await client.query('SELECT pg_sleep(1.4)');
-        return client.query(sql, args);
-      } };
-    } } as unknown as Pool;
-    await expect(trace([{ client: 'new', server: 'other', count: 3 }], 'ok', target)).rejects.toThrow();
+    await expect(trace([{ client: 'new', server: 'other', count: 3 }])).rejects.toThrow();
     expect(await state('trace')).toMatchObject({ status: 'error', stale: true, retainedPrevious: true,
       failureReason: 'publication_failed', captured_at: previous.captured_at });
     expect(JSON.stringify(await state('trace'))).not.toContain('credential');
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace' ORDER BY id")).rows).toEqual(nodes);
     expect((await pool.query("SELECT * FROM topology_edges WHERE class='trace' ORDER BY id")).rows).toEqual(edges);
   }, 10_000);
+  it.each([
+    ['helper', 'available'], ['helper', 'fatal'], ['idle', 'available'], ['idle-query', 'available'], ['rollback', 'available'],
+    ...['cli', 'timer'].flatMap(mode => ['available', 'sql-error', 'fatal', 'connect-error'].map(recording => [mode, recording])),
+  ])('fatal PG recovery through %s with %s failure recording survives in an isolated child', async (mode, recording) => {
+    await trace();
+    const previous = await state('trace');
+    const nodes = (await pool.query("SELECT * FROM topology_nodes WHERE class='trace' ORDER BY id")).rows;
+    const edges = (await pool.query("SELECT * FROM topology_edges WHERE class='trace' ORDER BY id")).rows;
+    const child = spawnSync(process.execPath, ['--experimental-vm-modules', 'lib/fixtures/graph-fatal-child.mjs', mode, recording],
+      { encoding: 'utf8', timeout: 15_000, env: process.env });
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.error).toBeUndefined();
+    expect(child.signal).toBeNull();
+    expect(child.stderr).not.toMatch(/Unhandled|credential=|Connection terminated|uncaught/i);
+    const result = JSON.parse(child.stdout);
+    expect(result.removed).toBeGreaterThanOrEqual(recording === 'fatal' ? 2 : 1);
+    const afterFailure = mode === 'timer' ? result.afterFailure : await state('trace');
+    if (mode.startsWith('idle') || mode === 'rollback' || recording !== 'available') {
+      expect(JSON.parse(JSON.stringify(afterFailure))).toEqual(JSON.parse(JSON.stringify(previous)));
+    } else {
+      expect(afterFailure).toMatchObject({ status: 'error', stale: true, retainedPrevious: true,
+        failureReason: 'publication_failed' });
+      expect(new Date(afterFailure.captured_at).getTime()).toBe(new Date(previous.captured_at).getTime());
+    }
+    if (mode === 'timer') {
+      expect(result.scheduled).toEqual([['timeout', 60000], ['interval', 60000]]);
+      expect(result.logs).toHaveLength(5); // first cycle fails at trace; overlap skips; next cycle succeeds
+      expect(result.logs.at(-1)).toContain('"published":1');
+      expect(result.closed).toBe(0); // timer keeps the shared pool open for the next cycle
+      expect(await state('trace')).toMatchObject({ status: 'ok', retainedPrevious: false });
+    } else {
+      expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace' ORDER BY id")).rows).toEqual(nodes);
+      expect((await pool.query("SELECT * FROM topology_edges WHERE class='trace' ORDER BY id")).rows).toEqual(edges);
+    }
+    if (mode === 'cli') expect(result).toMatchObject({ code: 1, closed: 1 });
+    if (!mode.startsWith('idle') && mode !== 'rollback')
+      expect(result).toMatchObject({ originalCode: '25P04', failureAttempts: 1 });
+  }, 20_000);
   it('trace still rejects if even its failure state cannot be recorded', async () => {
     await trace();
     const previous = await state('trace');
@@ -314,7 +344,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     const wrapped = { connect: async () => {
       const client = await pool.connect();
       const query = client.query.bind(client);
-      return { release: () => client.release(), query: async (sql: string, args?: unknown[]) => {
+      return { on: client.on.bind(client), removeListener: client.removeListener.bind(client),
+        release: client.release.bind(client), query: async (sql: string, args?: unknown[]) => {
         const result = await query(sql, args);
         if (sql.includes('FROM inventory_sync_runs') && !once) {
           once = true; entered(); await blocked;

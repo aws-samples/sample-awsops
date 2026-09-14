@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { rebuildTraceGraph } from './graph-store';
 
 function database() {
   const writes: { sql: string; args: unknown[] }[] = [];
-  const client = {
+  const client = Object.assign(new EventEmitter(), {
     query: async (sql: string, args: unknown[] = []) => {
       writes.push({ sql, args });
       return { rows: sql.includes('to_regclass') ? [{ ready: true }] : sql.includes('pg_try_advisory') ? [{ acquired: true }] : [] };
     },
     release() {},
-  };
+  });
   return {
     pool: { connect: async () => client, query: client.query } as never,
     writes,
