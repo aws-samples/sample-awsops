@@ -35,7 +35,7 @@
 ### Inventory pagination and sweep ledger
 
 In normal row mode, `GET /api/inventory/[type]` returns scoped `rows` plus nullable
-`run` metadata and `consistency: "repeatable-read"`. `limit` defaults to 100 and is upper-capped at 500; `offset` defaults
+`run` metadata and `consistency: "statement-snapshot"`. `limit` defaults to 100 and is upper-capped at 500; `offset` defaults
 to 0. The route uses numeric coercion/defaults, without positive/integer validation
 or a lower-bound clamp. Callers should send a positive integer limit and nonnegative
 integer offset; negative/fractional values can reach PostgreSQL, with row-mode errors
@@ -52,11 +52,13 @@ finish advances `finished_at` and `last_success_at`; partial/failed finishes do 
 advance the last-success timestamp. The endpoint exposes `status`, `finished_at`,
 `row_count`, `error` and `last_success_at`, not a per-account completion certificate.
 
-`readResources` reads stored rows and the global ledger (including its `row_count`) on
-one PostgreSQL client in a READ ONLY REPEATABLE READ transaction. The marker is returned
-only after commit. Failure rolls back and always releases the client; rollback failure
-discards it. Statements are bounded to 15 seconds. No additional fleet count or per-account
-completion certificate is implied, and `view=agg` is a separate response/transaction.
+`readResources` uses one read-only SQL statement: an ordered, limited page CTE and a
+single-row global-ledger CTE are combined into one result. JSON aggregation repeats the
+page ordering, including worst-first rules. An empty page still returns its ledger;
+a missing ledger remains null. One `pool.query` call borrows/releases its connection
+without a manually held transaction. PostgreSQL supplies one MVCC snapshot for that
+statement; `statement-snapshot` describes this guarantee, not a requested transaction
+isolation level. Parameters and scope filters are unchanged. `view=agg` remains separate.
 
 Topology reads target groups/ECS tasks/subnets in at most 20 pages of 500 under one
 30-second browser load budget shared with EKS. All inventory and VPC/security-group
@@ -243,16 +245,10 @@ application, without guaranteeing cancellation of a server query already started
 
 ## Configuration topology inventory evidence
 
-`/api/inventory/{type}` returns scoped row captures and a self-keyed `run` describing
-an aggregate sweep across connected accounts. The configuration page labels aggregate
-status under every account scope, separately from inventory read failures. A successful
-sweep is not per-account health proof; member clocks never borrow aggregate last-success.
-Only RUNNING ECS tasks with subnet/VPC corroboration establish current IP ownership.
-Ordinary EKS pod-IP ambiguity removes attribution without implying a failed read.
-EKS evidence is limited to connected clusters returned in `/api/eks`'s configured
-`region`; other regions are not assessed. Listed `entry-only`/`no-entry` clusters are
-counted as not queried, independently of read failure/truncation. Inventory reads apply
-account selection only. Failed HTTP reads do not synthesize unknown aggregate status.
+The row/ledger wire contract is defined once in
+[Inventory pagination and sweep ledger](#inventory-pagination-and-sweep-ledger).
+For unresolved targets, incomplete reads, onboarding gaps and retained results, use
+[Topology evidence compatibility](runbooks/source-sync-observability.md#topology-evidence-compatibility).
 
 ## Trace collection disclosure
 

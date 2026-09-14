@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import Module, { createRequire } from 'node:module';
 import { after, before, test } from 'node:test';
-import { disposablePostgres } from './postgres-test-fixture.mjs';
+import { disposablePostgres, waitForQuery } from './postgres-test-fixture.mjs';
 
 const webRequire = createRequire(new URL('../../../web/package.json', import.meta.url));
 const pg = webRequire('pg');
@@ -18,6 +18,29 @@ const mod = new Module(file);
 mod.paths = Module._nodeModulePaths(new URL('../../../web/lib/', import.meta.url).pathname);
 mod._compile(compiled, file);
 const { ObservedDbClient } = mod.exports;
+function loadInventory(pool) {
+  const source = new URL('../../../web/lib/inventory.ts', import.meta.url).pathname;
+  const specsFile = new URL('../../../web/lib/inventory-types.ts', import.meta.url).pathname;
+  const specs = new Module(specsFile);
+  specs._compile(ts.transpileModule(readFileSync(specsFile, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText, specsFile);
+  const inventoryModule = new Module(source);
+  inventoryModule.require = id => {
+    if (id === '@/lib/db') return { getPool: () => pool };
+    if (id === '@/lib/admin') return { isAdmin: () => false };
+    if (id === '@/lib/inventory-types') return specs.exports;
+    if (id === '@/lib/inventory-derived') return { AGG_DERIVED_KEYS: {} };
+    if (id === '@aws-sdk/client-lambda') return {
+      LambdaClient: class { send() { throw new Error('AWS forbidden in inventory tests'); } }, InvokeCommand: class {},
+    };
+    return webRequire(id);
+  };
+  inventoryModule._compile(ts.transpileModule(readFileSync(source, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText, source);
+  return inventoryModule.exports.readResources;
+}
 let fixture;
 
 before(async () => { fixture = await disposablePostgres(); });
@@ -111,28 +134,86 @@ test('inventory five-row pages totally order tied timestamps using every scoped 
       await client.query(`INSERT INTO inventory_resources VALUES
         ('cloudfront',$1,$2,$3,'{}','2026-01-01T00:00:00Z')`, [account, region, id]);
     }
-    const source = new URL('../../../web/lib/inventory.ts', import.meta.url).pathname;
-    const inventoryModule = new Module(source);
-    inventoryModule.require = id => {
-      if (id === '@/lib/db') return { getPool: () => client };
-      if (id === '@/lib/admin') return { isAdmin: () => false };
-      if (id === '@/lib/inventory-types') return { INVENTORY_TYPES: { cloudfront: {} } };
-      if (id === '@/lib/inventory-derived') return { AGG_DERIVED_KEYS: {} };
-      if (id === '@aws-sdk/client-lambda') return {
-        LambdaClient: class { send() { throw new Error('AWS forbidden in ordering test'); } },
-        InvokeCommand: class {},
-      };
-      return webRequire(id);
-    };
-    inventoryModule._compile(ts.transpileModule(readFileSync(source, 'utf8'), {
-      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-    }).outputText, source);
+    const readResources = loadInventory(client);
     const found = [];
     for (let offset = 0; offset < expected.length; offset += 5) {
-      const page = await inventoryModule.exports.readResources('cloudfront', { limit: 5, offset, accounts: '__all__' });
+      const page = await readResources('cloudfront', { limit: 5, offset, accounts: '__all__' });
       found.push(...page.rows.map(row => [row.account_id, row.region, row.resource_id]));
     }
     assert.deepEqual(found, expected);
     assert.equal(new Set(found.map(row => row.join('/'))).size, expected.length);
+    await client.query(`INSERT INTO inventory_sync_runs VALUES
+      ('cloudfront','self','partial','2026-01-02',12,NULL,'2026-01-01')`);
+    const empty = await readResources('cloudfront', { limit: 5, offset: 500, accounts: '__all__' });
+    assert.deepEqual(empty.rows, []);
+    assert.equal(empty.run.row_count, 12);
+    assert.equal(empty.run.status, 'partial');
+    assert.equal(empty.consistency, 'statement-snapshot');
+    const absent = await readResources('ec2', { limit: 5, offset: 0 });
+    assert.deepEqual(absent.rows, []);
+    assert.equal(absent.run, null);
+    for (const [id, state, updated] of [
+      ['ok-new','OK','2026-01-03'], ['alarm-old','alarm','2026-01-01'],
+      ['unknown','NEW_STATE','2026-01-04'], ['alarm-new','ALARM','2026-01-02'],
+      ['insufficient','INSUFFICIENT_DATA','2026-01-01'],
+    ]) await client.query(`INSERT INTO inventory_resources VALUES
+      ('cloudwatch_alarm','self','a-region',$1,$2,'2026-01-01')`,
+      [id, { state_value: state, state_updated_timestamp: updated }]);
+    const first = await readResources('cloudwatch_alarm', { limit: 2, offset: 0 });
+    const rest = await readResources('cloudwatch_alarm', { limit: 5, offset: 2 });
+    assert.deepEqual([...first.rows, ...rest.rows].map(row => row.resource_id),
+      ['alarm-new','alarm-old','insufficient','ok-new','unknown']);
+
   } finally { await client.end(); }
+});
+
+
+test('one statement keeps rows/ledger coherent across a concurrent writer and returns the pool slot on errors', async () => {
+  const database = await fixture.database();
+  const writer = fixture.client(database), observer = fixture.client(database);
+  await writer.connect(); await observer.connect();
+  const pool = new pg.Pool({ ...fixture.config, database, max: 1, application_name: 'inventory-snapshot-race' });
+  const nativeQuery = pool.query.bind(pool);
+  let calls = 0;
+  pool.query = (...args) => { calls++; return nativeQuery(...args); };
+  const readResources = loadInventory(pool);
+  let pending;
+  try {
+    await writer.query(`CREATE TABLE inventory_resources (
+      resource_type text, account_id text, region text, resource_id text, data jsonb, captured_at timestamptz);
+      CREATE TABLE inventory_ledger (resource_type text, account_id text, status text, finished_at timestamptz,
+        row_count integer, error text, last_success_at timestamptz);
+      CREATE FUNCTION snapshot_gate() RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN
+        PERFORM pg_advisory_xact_lock(694416); RETURN true; END $$;
+      CREATE VIEW inventory_sync_runs AS SELECT * FROM inventory_ledger WHERE snapshot_gate();
+      INSERT INTO inventory_resources VALUES ('ec2','self','us-east-1','old','{}','2026-01-01');
+      INSERT INTO inventory_ledger VALUES ('ec2','self','succeeded','2026-01-01',1,NULL,'2026-01-01');`);
+    await writer.query('SELECT pg_advisory_lock(694416)');
+    pending = readResources('ec2', { limit: 5, offset: 0 });
+    await waitForQuery(observer, `SELECT wait_event FROM pg_stat_activity
+      WHERE application_name='inventory-snapshot-race'`, rows => rows.some(row => row.wait_event === 'advisory'));
+    await writer.query(`BEGIN;
+      UPDATE inventory_resources SET resource_id='new';
+      INSERT INTO inventory_resources VALUES ('ec2','self','us-east-1','second','{}','2026-01-02');
+      UPDATE inventory_ledger SET row_count=2, finished_at='2026-01-02', last_success_at='2026-01-02'; COMMIT;`);
+    await writer.query('SELECT pg_advisory_unlock(694416)');
+    const snapshot = await pending;
+    assert.deepEqual(snapshot.rows.map(row => row.resource_id), ['old']);
+    assert.equal(snapshot.run.row_count, 1);
+    assert.equal(snapshot.consistency, 'statement-snapshot');
+    assert.equal(calls, 1);
+    assert.equal(pool.idleCount, 1);
+    const current = await readResources('ec2', { limit: 5, offset: 0 });
+    assert.deepEqual(current.rows.map(row => row.resource_id), ['second', 'new']);
+    assert.equal(current.run.row_count, 2);
+    await assert.rejects(readResources('ec2', { limit: -1, offset: 0 }), /LIMIT must not be negative/);
+    assert.equal(pool.totalCount, 0); // pg-pool discards the errored client instead of pinning it.
+    assert.equal((await pool.query('SELECT 1 AS ok')).rows[0].ok, 1);
+    assert.equal(pool.idleCount, 1);
+    assert.equal(pool.waitingCount, 0);
+  } finally {
+    await writer.query('SELECT pg_advisory_unlock_all()').catch(() => {});
+    await pending?.catch(() => {});
+    await pool.end(); await writer.end(); await observer.end();
+  }
 });

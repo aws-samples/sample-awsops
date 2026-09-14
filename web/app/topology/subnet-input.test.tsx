@@ -36,7 +36,7 @@ it('passes independently collected subnet rows to the real ECS target resolver',
         ] }],
       },
     }] : [];
-    return Response.json({ rows: rows.map(row => ({ ...row, account_id: 'self' })), consistency: 'repeatable-read',
+    return Response.json({ rows: rows.map(row => ({ ...row, account_id: 'self' })), consistency: 'statement-snapshot',
       run: { status: 'succeeded', finished_at: '2026-09-13T00:00:00Z', last_success_at: '2026-09-13T00:00:00Z', row_count: 1 } });
   }));
   render(<TopologyPage />);

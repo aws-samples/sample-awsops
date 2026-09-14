@@ -212,7 +212,7 @@ async function fetchType(t: InvType | 'vpc' | 'security_group', account: string,
       const run = record(d.run) ? d.run : null;
       const incomplete = critical && ['running', 'partial', 'failed'].includes(String(run?.status));
       if (critical) {
-        if (d.consistency !== 'repeatable-read') throw new Error();
+        if (d.consistency !== 'statement-snapshot') throw new Error();
         // The global type sweep covers every account. Only a stable success permits ownership.
         if (!run || (!incomplete && (run.status !== 'succeeded' || !nonempty(run.finished_at) || !Number.isFinite(Date.parse(run.finished_at))
           || !nonempty(run.last_success_at) || !Number.isFinite(Date.parse(run.last_success_at))

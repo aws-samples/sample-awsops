@@ -63,7 +63,7 @@ function serve(options: {
       }
       if (url.pathname.endsWith('/subnet') && options.subnetRows) {
         const offset = Number(url.searchParams.get('offset') ?? 0);
-        return Response.json({ rows: options.subnetRows.slice(offset, offset + 500).map(row => ({ data: {}, ...row as object, account_id: accountId })), run, consistency: 'repeatable-read' });
+        return Response.json({ rows: options.subnetRows.slice(offset, offset + 500).map(row => ({ data: {}, ...row as object, account_id: accountId })), run, consistency: 'statement-snapshot' });
       }
       const host = url.searchParams.get('accounts') === 'self';
       if (url.pathname.endsWith('/target_group')) {
@@ -84,7 +84,7 @@ function serve(options: {
         },
       }] : [],
       run: { ...run, status: options.runStatus ?? 'succeeded', error: options.runStatus === 'failed' ? 'collection failed' : null },
-      consistency: 'repeatable-read',
+      consistency: 'statement-snapshot',
     });
     }
     throw new Error(`Unexpected request: ${url}`);
@@ -296,7 +296,7 @@ function pendingInventoryResponse() {
   return Response.json({ rows: [{
     resource_id: 'tg-orders', region, account_id: member, captured_at: memberCapture,
     data: { vpc_id: vpcId, target_type: 'ip', target_health_descriptions: [{ Target: { Id: ip, Port: 80 } }] },
-  }], run, consistency: 'repeatable-read' });
+  }], run, consistency: 'statement-snapshot' });
 }
 async function hostPodsStarted() {
   await waitFor(() => expect(eksRequests().some(([url]) => String(url).includes('kind=pods'))).toBe(true));

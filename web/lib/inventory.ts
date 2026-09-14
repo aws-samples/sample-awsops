@@ -32,7 +32,7 @@ export interface InventoryPage {
   rows: Record<string, unknown>[];
   run: SyncRun | null;
   /** Rows and the global ledger/count were read from one database snapshot. */
-  consistency: 'repeatable-read';
+  consistency: 'statement-snapshot';
 }
 
 /** Region allow-list, or '__all__' for no region filter. */
@@ -106,10 +106,10 @@ export interface InventoryAggregates {
   facets: Record<string, AggBucket[]>;
 }
 
-// Server-side bound shared by aggregate and row/ledger read statements (the auth.ts SET LOCAL precedent: the
+// Server-side bound for the aggregation statement (the auth.ts SET LOCAL precedent: the
 // timeout must be a literal integer — SET LOCAL can't take a bound parameter).
-const INVENTORY_STATEMENT_TIMEOUT_MS = 15000;
-if (!Number.isInteger(INVENTORY_STATEMENT_TIMEOUT_MS)) throw new Error('INVENTORY_STATEMENT_TIMEOUT_MS must be a literal integer');
+const AGG_STATEMENT_TIMEOUT_MS = 15000;
+if (!Number.isInteger(AGG_STATEMENT_TIMEOUT_MS)) throw new Error('AGG_STATEMENT_TIMEOUT_MS must be a literal integer');
 
 /** Full-fleet aggregates for a capped inventory page (gap L102, v1 parity): GROUP BYs over
  *  the WHOLE scoped fleet for the spec's stateKey/distKey/distKey2/filterKeys, plus the true
@@ -157,7 +157,7 @@ export async function readAggregates(
   let rows: { k: string; name: string | null; value: number }[];
   try {
     await clientConn.query('BEGIN');
-    await clientConn.query(`SET LOCAL statement_timeout = ${INVENTORY_STATEMENT_TIMEOUT_MS}`);
+    await clientConn.query(`SET LOCAL statement_timeout = ${AGG_STATEMENT_TIMEOUT_MS}`);
     rows = (await clientConn.query(parts.join(' UNION ALL '), params)).rows;
     await clientConn.query('COMMIT');
   } catch (e) {
@@ -184,28 +184,25 @@ export async function readResources(type: string, { limit, offset, regions = '__
   const params: unknown[] = [type];
   const where = `resource_type = $1` + accountWhereClause(accounts, params) + regionWhereClause(regions, includeGlobal, params);
   params.push(limit, offset);
-  const client = await getPool().connect();
-  let discard = false;
-  try {
-    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    await client.query(`SET LOCAL statement_timeout = ${INVENTORY_STATEMENT_TIMEOUT_MS}`);
-    const r = await client.query(
-      `SELECT resource_id, region, account_id, data, captured_at FROM inventory_resources
-       WHERE ${where} ORDER BY ${worstFirstOrderBy(type)}captured_at DESC, account_id ASC, region ASC, resource_id ASC LIMIT $${params.length - 1} OFFSET $${params.length}`,
-      params,
-    );
-    const s = await client.query(
-      `SELECT status, finished_at, row_count, error, last_success_at FROM inventory_sync_runs WHERE resource_type = $1 AND account_id = 'self'`,
-      [type],
-    );
-    await client.query('COMMIT');
-    return { rows: r.rows, run: s.rows[0] ?? null, consistency: 'repeatable-read' };
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => { discard = true; });
-    throw error;
-  } finally {
-    client.release(discard);
-  }
+  const order = `${worstFirstOrderBy(type)}captured_at DESC, account_id ASC, region ASC, resource_id ASC`;
+  // A single SELECT shares one MVCC snapshot and lets pool.query release its own client.
+  // Order both the limited page and JSON aggregation; an empty page still returns its ledger.
+  const result = await getPool().query<{ rows: Record<string, unknown>[]; run: SyncRun | null }>(
+    `WITH inventory_page AS (
+      SELECT resource_id, region, account_id, data, captured_at FROM inventory_resources
+      WHERE ${where} ORDER BY ${order} LIMIT $${params.length - 1} OFFSET $${params.length}
+    ), inventory_run AS (
+      SELECT status, finished_at, row_count, error, last_success_at FROM inventory_sync_runs
+      WHERE resource_type = $1 AND account_id = 'self'
+    )
+    SELECT COALESCE((SELECT jsonb_agg(to_jsonb(inventory_page) ORDER BY ${order})
+      FROM inventory_page), '[]'::jsonb) AS rows,
+      (SELECT to_jsonb(inventory_run) FROM inventory_run) AS run`,
+    params,
+  );
+  const page = result.rows[0];
+  if (!page || !Array.isArray(page.rows)) throw new Error('invalid inventory snapshot');
+  return { rows: page.rows, run: page.run, consistency: 'statement-snapshot' };
 }
 
 export async function triggerSync(type: string): Promise<{ status: 'queued' }> {

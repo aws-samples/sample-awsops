@@ -1,8 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 const query = vi.fn();
 const lambdaSend = vi.fn();
-const connectionQuery = vi.fn();
-const release = vi.fn();
 const poolMock: { query: (...a: unknown[]) => unknown; connect?: unknown } = { query: (...a: unknown[]) => query(...a) };
 vi.mock('@/lib/db', () => ({ getPool: () => poolMock }));
 vi.mock('@aws-sdk/client-lambda', () => ({
@@ -10,64 +8,61 @@ vi.mock('@aws-sdk/client-lambda', () => ({
   InvokeCommand: class { constructor(public input: unknown) {} },
 }));
 beforeEach(() => {
-  query.mockReset(); lambdaSend.mockReset(); release.mockReset(); connectionQuery.mockReset();
-  connectionQuery.mockImplementation((sql: string, ...args: unknown[]) =>
-    /^(BEGIN|SET LOCAL|COMMIT|ROLLBACK)/.test(sql) ? Promise.resolve({ rows: [] }) : query(sql, ...args));
-  poolMock.connect = vi.fn().mockResolvedValue({ query: connectionQuery, release });
+  query.mockReset(); lambdaSend.mockReset(); poolMock.connect = vi.fn();
   process.env.INV_SYNC_FUNCTION = 'fn';
 });
 
 describe('readResources', () => {
-  it('keeps rows and global ledger/count in one read-only snapshot while a sweep finishes between reads', async () => {
-    const old = { rows: [{ resource_id: 'old' }], run: { status: 'succeeded', finished_at: '2026-09-13T00:00:00Z', row_count: 1 } };
-    let live = old, snapshot: typeof old | undefined;
-    const sql = vi.fn(async (text: string) => {
-      if (/^BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY$/.test(text)) snapshot = live;
-      const read = snapshot ?? live;
-      if (/FROM inventory_resources/.test(text)) {
-        live = { rows: [{ resource_id: 'new' }], run: { ...old.run, finished_at: '2026-09-14T00:00:00Z', row_count: 2 } };
-        return { rows: read.rows };
-      }
-      return { rows: /FROM inventory_sync_runs/.test(text) ? [read.run] : [] };
-    });
-    query.mockImplementation(sql); // The old pool.query path observes the torn ledger.
-    poolMock.connect = vi.fn().mockResolvedValue({ query: sql, release });
+  it('reads ordered rows and the global ledger/count with one pool query and no checked-out client', async () => {
+    const snapshot = { rows: [{ resource_id: 'old' }], run: { status: 'succeeded', finished_at: '2026-09-13T00:00:00Z', row_count: 1 } };
+    query.mockResolvedValue({ rows: [snapshot] });
     const { readResources } = await import('./inventory');
-    const page = await readResources('target_group', { limit: 500, offset: 0 });
-    expect(page).toMatchObject({ rows: old.rows, run: old.run, consistency: 'repeatable-read' });
-    expect(query).not.toHaveBeenCalled();
-    expect(sql.mock.calls[0][0]).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    expect(sql.mock.calls.at(-1)?.[0]).toBe('COMMIT');
-    expect(release).toHaveBeenCalledTimes(1);
+    expect(await readResources('target_group', { limit: 500, offset: 0 }))
+      .toEqual({ ...snapshot, consistency: 'statement-snapshot' });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(poolMock.connect).not.toHaveBeenCalled();
+    const sql = query.mock.calls[0][0];
+    expect(sql).toContain('inventory_resources');
+    expect(sql).toContain('inventory_sync_runs');
+    expect(sql).toMatch(/jsonb_agg/i);
+    expect(sql).not.toMatch(/\bBEGIN\b|\bCOMMIT\b|SET LOCAL|ROLLBACK/);
   });
 
-  it.each(['BEGIN', 'SET LOCAL', 'inventory_resources', 'inventory_sync_runs', 'COMMIT'])(
-    'rolls back and releases the same client after %s failure without returning a consistency marker', async failure => {
-      const error = new Error('original query failure');
-      connectionQuery.mockImplementation(async (sql: string) => {
-        if (sql.includes(failure)) throw error;
-        return { rows: [] };
-      });
-      const { readResources } = await import('./inventory');
-      await expect(readResources('target_group', { limit: 500, offset: 0 })).rejects.toBe(error);
-      expect(connectionQuery).toHaveBeenCalledWith('ROLLBACK');
-      expect(release).toHaveBeenCalledTimes(1);
-    });
-
-  it('discards the connection after rollback failure and preserves the original error', async () => {
-    const error = new Error('row read failed');
-    connectionQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes('inventory_resources')) throw error;
-      if (sql === 'ROLLBACK') throw new Error('rollback failed');
-      return { rows: [] };
-    });
+  it.each(['ec2', 'target_group', 'subnet'])('propagates a %s query failure without acquiring a manual client', async type => {
+    const error = new Error('original query failure');
+    query.mockRejectedValue(error);
     const { readResources } = await import('./inventory');
-    await expect(readResources('subnet', { limit: 500, offset: 0 })).rejects.toBe(error);
-    expect(release).toHaveBeenCalledWith(true);
+    await expect(readResources(type, { limit: 500, offset: 0 })).rejects.toBe(error);
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(poolMock.connect).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { status: 'partial', row_count: 12 }])('keeps an empty page and its nullable ledger: %j', async run => {
+    query.mockResolvedValue({ rows: [{ rows: [], run }] });
+    const { readResources } = await import('./inventory');
+    expect(await readResources('ec2', { limit: 5, offset: 500 }))
+      .toEqual({ rows: [], run, consistency: 'statement-snapshot' });
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fabricate an empty inventory if the one-row query envelope is absent', async () => {
+    query.mockResolvedValue({ rows: [] });
+    const { readResources } = await import('./inventory');
+    await expect(readResources('ec2', { limit: 5, offset: 0 })).rejects.toThrow('invalid inventory snapshot');
+  });
+
+  it('applies the real worst-first alarm ordering before the page limit and inside JSON aggregation', async () => {
+    query.mockResolvedValue({ rows: [{ rows: [], run: null }] });
+    const { readResources } = await import('./inventory');
+    await readResources('cloudwatch_alarm', { limit: 5, offset: 10 });
+    const sql = query.mock.calls[0][0];
+    expect(sql.match(/CASE lower\(data->>'state_value'\)/g)).toHaveLength(2);
+    expect(sql.match(/state_updated_timestamp/g)).toHaveLength(2);
+    expect(query.mock.calls[0][1]).toEqual(['cloudwatch_alarm', ['self'], 5, 10]);
   });
 
   it('uses timestamp plus the full scoped primary key for stable five-row pagination', async () => {
-    query.mockResolvedValue({ rows: [] });
+    query.mockResolvedValue({ rows: [{ rows: [], run: null }] });
     const { readResources } = await import('./inventory');
     for (const offset of [0, 5, 10]) {
       await readResources('cloudfront', { limit: 5, offset, accounts: '__all__' });
@@ -81,16 +76,15 @@ describe('readResources', () => {
   });
   it.each([['self'], ['123456789012'], '__all__'] as const)('returns scoped rows and the global sweep ledger for %j', async accounts => {
     const ledger = { status: 'partial', finished_at: '2026-09-14T00:00:00Z', last_success_at: '2026-09-13T00:00:00Z', row_count: 1200 };
-    query.mockResolvedValueOnce({ rows: [{ resource_id: 'i-1', data: { instance_type: 't3.micro' }, captured_at: 't' }] })
-         .mockResolvedValueOnce({ rows: [ledger] });
+    query.mockResolvedValueOnce({ rows: [{ rows: [{ resource_id: 'i-1', data: { instance_type: 't3.micro' }, captured_at: 't' }], run: ledger }] });
     const { readResources } = await import('./inventory');
     const out = await readResources('ec2', { limit: 50, offset: 0, accounts: accounts === '__all__' ? accounts : [...accounts] });
     expect(out.rows[0].resource_id).toBe('i-1'); expect(out.run).toEqual(ledger);
-    expect(query.mock.calls[1][0]).toContain("account_id = 'self'"); expect(query.mock.calls[1][1]).toEqual(['ec2']);
+    expect(query.mock.calls[0][0]).toContain("account_id = 'self'"); expect(query).toHaveBeenCalledTimes(1);
   });
 
   it('__all__ regions (default) → no region predicate in the WHERE clause', async () => {
-    query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
+    query.mockResolvedValueOnce({ rows: [{ rows: [], run: null }] });
     const { readResources } = await import('./inventory');
     await readResources('ec2', { limit: 50, offset: 0 });
     const [sql] = query.mock.calls[0];
@@ -98,7 +92,7 @@ describe('readResources', () => {
   });
 
   it('explicit regions → region = ANY($n) with includeGlobal folded into the array', async () => {
-    query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
+    query.mockResolvedValueOnce({ rows: [{ rows: [], run: null }] });
     const { readResources } = await import('./inventory');
     await readResources('ec2', { limit: 50, offset: 0, regions: ['ap-northeast-2', 'us-east-1'], includeGlobal: true });
     const [sql, params] = query.mock.calls[0];
@@ -107,7 +101,7 @@ describe('readResources', () => {
   });
 
   it('includeGlobal=false with explicit regions → global excluded from the array', async () => {
-    query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
+    query.mockResolvedValueOnce({ rows: [{ rows: [], run: null }] });
     const { readResources } = await import('./inventory');
     await readResources('ec2', { limit: 50, offset: 0, regions: ['ap-northeast-2'], includeGlobal: false });
     const [, params] = query.mock.calls[0];
@@ -115,7 +109,7 @@ describe('readResources', () => {
   });
 
   it('includeGlobal=false with __all__ regions → excludes region=global directly', async () => {
-    query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
+    query.mockResolvedValueOnce({ rows: [{ rows: [], run: null }] });
     const { readResources } = await import('./inventory');
     await readResources('ec2', { limit: 50, offset: 0, regions: '__all__', includeGlobal: false });
     const [sql] = query.mock.calls[0];
@@ -123,7 +117,7 @@ describe('readResources', () => {
   });
 
   it('empty region selection → guarded to a non-matching sentinel, not an unfiltered query', async () => {
-    query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
+    query.mockResolvedValueOnce({ rows: [{ rows: [], run: null }] });
     const { readResources } = await import('./inventory');
     await readResources('ec2', { limit: 50, offset: 0, regions: [], includeGlobal: false });
     const [, params] = query.mock.calls[0];
@@ -131,7 +125,7 @@ describe('readResources', () => {
   });
 
   it('includeGlobal=false strips a caller-supplied "global" out of explicit regions', async () => {
-    query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
+    query.mockResolvedValueOnce({ rows: [{ rows: [], run: null }] });
     const { readResources } = await import('./inventory');
     await readResources('ec2', { limit: 50, offset: 0, regions: ['ap-northeast-2', 'global'], includeGlobal: false });
     const [, params] = query.mock.calls[0];

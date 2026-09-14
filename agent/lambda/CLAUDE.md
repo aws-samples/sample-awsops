@@ -91,6 +91,7 @@ guard — see the section below.
   - `sql_reader.topology_nodes.meta` is a named-key allowlist, currently owned by
     `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Materialized flow target nodes
     carry `ownership_evidence` and `targetCapturedAt`, with VPC/subnet/ambiguity data where applicable.
+    Configuration-only IP targets also carry `ownership_reason`; other target kinds need not.
     The timestamp dates only the target-group row, not ownership evidence. `candidate` is
     page-only metadata, not materializer output. These names are excluded; bare `region`, `cluster`, `ecsService`
     and `task` may be exposed and do not prove complete scope or live ownership. Any unlisted

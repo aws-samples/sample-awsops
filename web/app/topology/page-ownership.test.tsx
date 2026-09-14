@@ -55,7 +55,7 @@ function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; 
         : type === 'subnet' ? [row('subnet-app', { vpc_id: vpcId, tags: { Name: 'App subnet' } })] : []);
       const offset = Number(url.searchParams.get('offset') ?? 0), limit = Number(url.searchParams.get('limit'));
       const rows = all.slice(offset, offset + limit).map(r => ({ ...r, account_id: url.searchParams.get('accounts') === '__all__' ? r.account_id : host ? 'self' : url.searchParams.get('accounts')! }));
-      const body = { rows, run: { ...RUN }, consistency: 'repeatable-read' };
+      const body = { rows, run: { ...RUN }, consistency: 'statement-snapshot' };
       return options.inventoryReply?.(url, body, init?.signal) ?? Response.json(body);
     }
     throw new Error(`Unexpected request: ${url}`);
@@ -351,7 +351,7 @@ describe('bounded ownership inventory paging', () => {
     expect(screen.queryByRole('option', { name: 'EKS · good' })).toBeNull();
   });
 
-  it.each(['target_group', 'ecs_task', 'subnet'].flatMap(type => [undefined, null, 'read-committed'].map(consistency => ({ type, consistency }))))(
+  it.each(['target_group', 'ecs_task', 'subnet'].flatMap(type => [undefined, null, 'read-committed', 'repeatable-read'].map(consistency => ({ type, consistency }))))(
     'withholds ownership without verified snapshot consistency for $type / $consistency', async ({ type, consistency }) => {
       const requests = serve({ inventory: { [type]: largeInventory(type) }, inventoryReply: (url, body) =>
         Response.json(url.pathname.endsWith(`/${type}`) ? { ...body, consistency } : body) });
