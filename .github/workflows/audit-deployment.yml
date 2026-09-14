@@ -1,0 +1,105 @@
+name: Audit Development Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_project:
+        description: Exact development project from the reviewed deployment configuration
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deployment-audit-development
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a samples development dispatch
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REPOSITORY" = "aws-samples/sample-awsops" ] &&
+          [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
+          [ "$GITHUB_REF" = "refs/heads/dev" ] || {
+            echo "::error::Only a samples dev dispatch can run this audit"
+            exit 1
+          }
+
+  audit:
+    needs: [guard]
+    runs-on: sample-awsops
+    environment: development
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ap-northeast-2
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      RUNTIME_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+      EXPECTED_PROJECT: ${{ inputs.expected_project }}
+      AUDIT_DIR: ${{ runner.temp }}/deployment-audit-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install read API SDK
+        run: python3 -m pip install boto3
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.7
+          terraform_wrapper: false
+      - name: Check context and configured account before OIDC
+        run: python3 scripts/v2/ci_deployment_audit.py guard
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          role-duration-seconds: 3600
+      - name: Verify the existing development caller
+        run: python3 scripts/v2/ci_deployment_audit.py caller
+      - name: Capture only named outputs and remove backend immediately
+        timeout-minutes: 5
+        env:
+          BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -m 700 "$AUDIT_DIR"
+          export TF_DATA_DIR="$AUDIT_DIR/tfdata"
+          trap 'rm -rf -- "$TF_DATA_DIR"; rm -f -- "$AUDIT_DIR/backend.hcl"' EXIT
+          # No tfvars, plans, full state, Terraform debug logs or CLI overrides.
+          for name in ${!TF_LOG@} ${!TF_CLI_ARGS@}; do unset "$name"; done
+          [ -n "$BACKEND_B64" ] || { echo "::error::Development backend is missing"; exit 1; }
+          printf '%s' "$BACKEND_B64" | base64 --decode > "$AUDIT_DIR/backend.hcl" 2>/dev/null || {
+            echo "::error::Backend restore failed (details withheld)"; exit 1;
+          }
+          unset BACKEND_B64
+          terraform -chdir=terraform/foundation init -backend-config="$AUDIT_DIR/backend.hcl" \
+            -input=false -lockfile=readonly >/dev/null 2>&1 || {
+              echo "::error::Backend initialization failed (details withheld)"; exit 1;
+            }
+          for output in runtime_deployment agentcore agent_sql_reader_secret_arn aurora_database; do
+            terraform -chdir=terraform/foundation output -json "$output" \
+              > "$AUDIT_DIR/$output.json" 2>/dev/null || {
+                echo "::error::Required deployment output unavailable (details withheld)"; exit 1;
+              }
+          done
+          rm -rf -- "$TF_DATA_DIR"
+          rm -f -- "$AUDIT_DIR/backend.hcl"
+      - name: Read deployment, schedule execution and database observations
+        timeout-minutes: 8
+        run: python3 scripts/v2/ci_deployment_audit.py audit --directory "$AUDIT_DIR"
+      - name: Always remove private audit scratch
+        if: always()
+        run: rm -rf -- "$AUDIT_DIR"
