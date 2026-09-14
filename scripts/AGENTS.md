@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 268a783156fd · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 11f25b225616 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -166,3 +166,19 @@ Require full HTTP timeouts remaining, and probe/worker budgets before billing or
 Collection windows are caps; late completion can fail admission.
 Post-marker running attempts with old/null previous success time out as collection_timeout;
 full-policy stale terminal evidence is collection_stale. Login/DB also require full timeouts.
+
+## Strict release controller capability
+
+`v2/ci/runtime-release.mjs` is unwired: Deploy Web remains DB-only and the manual
+collect-runtime workflow is absent. No flags/workflows are enabled. Future full
+release integration must require collect, never accept prepare or skip inactive prerequisites.
+It binds dev source/account/actual role, applied runtime identity and ARM64 web digest.
+All current catalog types (43) need post-marker succeeded evidence, known counts and
+zero unknowns, with at most four synchronous owned calls. Prepare obtains authenticated
+DB time plus host proof; calibration anchors at request start and shifts the existing
+deadline equally. No freshness tolerance or rolling prior success is introduced.
+Collector hash/RevisionId must remain stable before/after collection; then full
+SSM/AgentCore/model and both owned worker proofs remain mandatory. Preserve private
+credentials/cleanup, restrictive consumer sessions and reviewed activation prerequisites.
+Budgets and boundaries: `docs/runbooks/runtime-foundation.md#strict-release-controller-capability`
+and `runtime-verifier-sessions.md`. Test: `node --test scripts/v2/ci/runtime-release.test.mjs`.

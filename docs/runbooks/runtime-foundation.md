@@ -174,10 +174,67 @@ opted-in callers; default/opt-out return shapes are unchanged, with no raw respo
 or credential fields added.
 
 Opt-in requires the updated API to be deployed first. No workflow opts in here.
-Controller calibration and marker selection remain separate integration work:
-elapsed-time calibration must anchor at **request start**, conservatively, rather
-than response observation. This helper does not introduce clock tolerance, relax
-the post-marker lower bound, or extend any existing expiry/deadline.
+The controller below consumes this sample; workflow integration remains separate.
+Calibration anchors at **request start**, conservatively, rather than response
+observation. Neither helper introduces clock tolerance, relaxes the post-marker
+lower bound, or extends an existing expiry/deadline.
+
+## Strict release controller capability
+
+`scripts/v2/ci/runtime-release.mjs` is available for future CI integration. Current
+Deploy Web still performs DB-only verification, and the manual `collect-runtime.yml`
+workflow is absent. Adding this controller enables no workflow, feature flag or IAM
+grant. Integrating the mandatory release gate is separate work; it must not silently
+skip disabled prerequisites or accept health-only/DB-only proof as a full release.
+
+The accepted context is dev-only: same repository/ref, configured account and CI role,
+actual STS caller, and a valid source SHA. A future manual collect-runtime dispatch may
+prepare or collect; Deploy Web push/dispatch may collect only. Collect requires a full
+lowercase `PIN_SHA`, applied inventory/AgentCore/worker metadata, the exact owned
+collector identity/hash and known CloudFront ID. Web verification binds the running
+ARM64 task role/revision/digest; Deploy Web also requires the approved root digest.
+Use the [restrictive session contract](runtime-verifier-sessions.md) and private
+0700/0600 credential/state files. Prepare verifies login, DB and the enabled host-only
+registry but is never a full-release result. First-time stacks must complete the
+[bootstrap sequence](first-web-bootstrap.md) before this existing-web preflight.
+
+Collect validates the owned Lambda catalog, then performs authenticated prepare with
+the optional DB-clock sample before invoking any type. It validates canonical UTC
+milliseconds and request/response times inside the observed prepare interval, with
+DB request elapsed time from zero through 35 seconds. The DB timestamp becomes
+`collectionStartedAt`; subsequent time is `rawNow + (DB time - request start)`.
+The existing controller deadline shifts by that same offset, preserving time remaining.
+Every current catalog type (43 at this revision) must succeed after that marker with
+known counts and zero unknown attributes. Prior rolling success is insufficient.
+At most four synchronous owned invocations run; all admitted calls settle before
+cleanup or failure. Code hash and a nonempty RevisionId are captured before collection
+and rechecked within 15 seconds afterward, before final authenticated runtime proof.
+Changed/incomplete code metadata or read failure blocks that proof.
+
+The outer controller cap is 50 minutes; verification also expires at DB marker plus
+30 minutes, whichever comes first. Reserve 17 minutes after collection: the existing
+995-second minimum proof plus the 15-second code/revision recheck, leaving 10 seconds
+of margin. Initial prepare adds three bounded 35-second HTTP reads/requests; its DB
+request and subsequent host proof consume the nominal 13-minute collection window,
+as does local overhead. Each type needs at least 450 seconds remaining before admission;
+confirmed busy/superseded or throttled retries share that remaining global window.
+Transport uncertainty, partial/failed/unknown results cannot become success.
+
+Final proof repeats authentication and requires strict fresh inventory/known CloudFront,
+SSM/AgentCore/model evidence and terminal success of both owned worker types. The shared
+probe's one contention retry is conditional: after validating the collision, admission
+needs 65 seconds of cooldown, a 35-second recheck, an 80-second probe and both 370-second
+worker allowances still available. Additional reads consume time too; no retry is promised.
+Collection invokes may upsert/prune application inventory in Aurora, and full proof may
+bill a bounded model call and submit internal worker jobs. These are operator verification
+effects, not an ADR-005 AWS-resource mutation exception. No direct CI model/SQS/DB grants
+are added. Fixed diagnostics and private cleanup remain required on success and failure.
+
+Offline controller, real authentication composition, and clock-helper checks:
+
+```bash
+node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs
+```
 
 <a id="related--관련"></a>
 

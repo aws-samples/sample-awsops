@@ -256,3 +256,22 @@ the probe and both workers. Collection windows are caps; late completion may fai
 Fresh running collection attempts with old/null previous success remain pending and time
 out as collection_timeout. Stale terminal evidence remains collection_stale in full mode.
 The outer authenticated login/DB wrapper also refuses shortened request timeouts.
+
+## Strict release controller capability
+
+`v2/ci/runtime-release.mjs` is an unwired CI prerequisite. Current Deploy Web still
+performs DB-only verification; `collect-runtime.yml` is absent. This change enables
+no workflow or flag. Future integration must use collect mode for mandatory full
+readiness; prepare is only authenticated login/DB/host registration, never release proof.
+The controller verifies dev source/account/role, applied runtime metadata and ARM64
+web digest, then drives every owned catalog type (currently 43) with at most four
+synchronous invocations. It requires succeeded results, known counts and zero unknowns.
+It samples the authenticated DB clock before collecting, anchors calibration at request
+start, shifts the existing deadline by the same offset, and retains strict post-marker
+ledger checks. Collector code hash and RevisionId must remain stable through collection.
+Full SSM/AgentCore/model and both owned worker proofs remain required afterward.
+Private credentials/configuration and cleanup, restrictive consumer sessions and
+explicit capability activation remain mandatory integration prerequisites.
+See [runtime-foundation.md](../docs/runbooks/runtime-foundation.md#strict-release-controller-capability)
+for budgets and [runtime-verifier-sessions.md](../docs/runbooks/runtime-verifier-sessions.md)
+for session boundaries. Offline tests: `node --test scripts/v2/ci/runtime-release.test.mjs`.
