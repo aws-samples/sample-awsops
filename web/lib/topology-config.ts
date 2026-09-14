@@ -43,20 +43,30 @@ export function inventoryEvidence(
 // unique pod can establish ownership; conflicting references also disqualify the pod fallback.
 export interface EksIpEvidence {
   ipResolved: NonNullable<FlowInput['ipResolved']>;
+  // Read outcome within declared coverage, never a whole-account completeness verdict.
   status: 'ok' | 'partial' | 'failed';
+  region: string | null;
+  notConnected: number;
 }
 
 export async function fetchEksIpEvidence(signal?: AbortSignal): Promise<EksIpEvidence> {
   const candidates = new Map<string, Resolution | null>();
   let degraded = false;
+  let region: string | null = null, notConnected = 0;
   try {
     const response = await fetch('/api/eks', { signal });
     const list = response.ok ? await response.json() : null;
     if (signal?.aborted || list?.error || !Array.isArray(list?.clusters)) {
-      return { ipResolved: {}, status: 'failed' };
+      return { ipResolved: {}, status: 'failed', region, notConnected };
     }
+    region = typeof list.region === 'string' && /^[a-z0-9-]{1,64}$/.test(list.region) ? list.region : null;
     degraded = list.truncated === true || (list.truncated !== undefined && typeof list.truncated !== 'boolean');
     await Promise.all((list.clusters as Cluster[]).filter(c => {
+      // Deliberately un-onboarded clusters are an explicit coverage limit, not failed reads.
+      if (c && (c.access === 'entry-only' || c.access === 'no-entry')) {
+        notConnected++;
+        return false;
+      }
       const usable = c && c.access === 'connected' && typeof c.name === 'string' && c.name
         && typeof c.region === 'string' && c.region && typeof c.vpcId === 'string' && c.vpcId;
       if (!usable) degraded = true;
@@ -110,10 +120,10 @@ export async function fetchEksIpEvidence(signal?: AbortSignal): Promise<EksIpEvi
         candidates.set(key, candidates.has(key) ? null : resolution);
       }
     }));
-  } catch { return { ipResolved: {}, status: 'failed' }; }
+  } catch { return { ipResolved: {}, status: 'failed', region, notConnected }; }
   return {
     ipResolved: Object.fromEntries([...candidates].filter((entry): entry is [string, Resolution] => entry[1] !== null)),
-    status: degraded ? 'partial' : 'ok',
+    status: degraded ? 'partial' : 'ok', region, notConnected,
   };
 }
 

@@ -52,7 +52,7 @@ To see a service's full path, pick an entry point with the **CloudFront** or **L
 :::
 
 :::info Displayed times
-Configuration topology shows the range of source capture times, using last-success time as a fallback in host scope when captures are missing. Times use the browser timezone; they are neither the current fetch time nor proof of live traffic. Aggregate account-sweep status and inventory read failures are shown separately. Aggregate success does not establish per-account collection health.
+Configuration topology shows the range of source capture times, using last-success time as a fallback in host scope when captures are missing. Times use the browser timezone; they are neither the current fetch time nor proof of live traffic. Aggregate account-sweep status and inventory read failures are shown separately. Aggregate success does not establish per-account collection health. Inventory reads apply account selection only. EKS ownership checks cover listed connected clusters in the API’s configured region; other regions and listed not-connected clusters are explicitly unassessed, separately from failed reads. Response caps remain visible even when the graph is empty.
 :::
 
 ## AI analysis tips

@@ -136,6 +136,9 @@ const EVIDENCE_COPY = {
   en: {
     capture: 'Capture range (last-success fallback):', unknown: 'unknown', missingCapture: 'Some capture times unknown',
     healthUnknown: 'Run health unknown for this account scope',
+    inventoryScope: 'Inventory uses account selection; region filters are not applied here.',
+    eksScope: 'EKS ownership scope: configured region', eksOtherRegions: 'other regions are not assessed',
+    eksNotConnected: 'Not-connected clusters not queried',
     limit: 'Response limit reached; coverage may be incomplete',
     failures: { failed: 'failed', partial: 'partial' },
     runs: 'Aggregate sync runs:', issues: 'Aggregate sync issues:', reads: 'Inventory read failures:',
@@ -146,6 +149,9 @@ const EVIDENCE_COPY = {
   ko: {
     capture: '수집 시각 범위 (최근 성공 시각으로 보완):', unknown: '미확인', missingCapture: '일부 수집 시각 미확인',
     healthUnknown: '이 계정 범위의 수집 실행 상태는 미확인',
+    inventoryScope: '인벤토리는 계정 선택을 사용하며 리전 필터는 여기에서 적용하지 않습니다.',
+    eksScope: 'EKS 소유 근거 범위: 설정된 리전', eksOtherRegions: '다른 리전은 평가하지 않음',
+    eksNotConnected: '연결되지 않아 조회하지 않은 클러스터',
     limit: '응답 상한 도달 — 일부 정보가 누락될 수 있음',
     failures: { failed: '실패', partial: '부분 수집' },
     runs: '전체 계정 집계 수집:', issues: '집계 수집 문제:', reads: '인벤토리 조회 실패:',
@@ -156,6 +162,9 @@ const EVIDENCE_COPY = {
   ja: {
     capture: '取得時刻の範囲（最終成功時刻で補完）:', unknown: '不明', missingCapture: '一部の取得時刻が不明',
     healthUnknown: 'このアカウント範囲の収集実行状態は不明',
+    inventoryScope: 'インベントリは選択したアカウントを使用し、ここではリージョンフィルターを適用しません。',
+    eksScope: 'EKS所有情報の範囲: 設定リージョン', eksOtherRegions: '他のリージョンは未評価',
+    eksNotConnected: '未接続のため取得していないクラスター',
     limit: '応答上限に到達 — 情報が不足している可能性があります',
     failures: { failed: '失敗', partial: '部分収集' },
     runs: '全アカウント集計の収集:', issues: '集計収集の問題:', reads: 'インベントリ取得失敗:',
@@ -166,6 +175,9 @@ const EVIDENCE_COPY = {
   zh: {
     capture: '采集时间范围（最近成功时间作为回退）:', unknown: '未知', missingCapture: '部分采集时间未知',
     healthUnknown: '此账户范围的采集运行状态未知',
+    inventoryScope: '资产清单使用所选账户，此处不应用区域筛选。',
+    eksScope: 'EKS归属范围：配置区域', eksOtherRegions: '其他区域未评估',
+    eksNotConnected: '未连接且未查询的集群',
     limit: '已达到响应上限 — 覆盖范围可能不完整',
     failures: { failed: '失败', partial: '部分采集' },
     runs: '所有账户汇总采集:', issues: '汇总采集问题:', reads: '资产清单读取失败:',
@@ -252,6 +264,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
   const [readFailures, setReadFailures] = useState<string[]>([]);
   const [aggregateRuns, setAggregateRuns] = useState<[AggregateRunStatus, number][]>([]);
   const [runHealthUnknown, setRunHealthUnknown] = useState(false);
+  const [eksCoverage, setEksCoverage] = useState<Pick<EksIpEvidence, 'region' | 'notConnected'> | null>(null);
   const [eksStatus, setEksStatus] = useState<EksIpEvidence['status'] | 'not_attempted'>('not_attempted');
   const [cappedTypes, setCappedTypes] = useState<string[]>([]);
   const [entryId, setEntryId] = useState<string>('');
@@ -275,7 +288,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
         // Mixed-account inventory does not carry account proof in the IP key. Do not
         // attach host pod ownership to those targets; disclose the opt-out explicitly.
         account === 'self' ? fetchEksIpEvidence(signal)
-          : Promise.resolve({ ipResolved: {}, status: 'not_attempted' as const }),
+          : Promise.resolve({ ipResolved: {}, status: 'not_attempted' as const, region: null, notConnected: 0 }),
         // Subnets also establish each ECS attachment's VPC; never infer it from a target group.
         Promise.all(NET.map((t) => fetchType(t, account, signal))),
       ]);
@@ -299,8 +312,9 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
       setSyncedAt(oldest);
       setCaptureThrough(newest);
       setUnknownCapture(results.some(r => r.rows.length > 0 && r.unknownCapture));
-      setRunHealthUnknown(account !== 'self' || results.some(r => r.aggregateStatus === 'unknown'));
+      setRunHealthUnknown(account !== 'self' || results.some(r => !r.readFailed && r.aggregateStatus === 'unknown'));
       setEksStatus(eks.status);
+      setEksCoverage(eks.status === 'not_attempted' ? null : { region: eks.region, notConnected: eks.notConnected });
       const counts = new Map<AggregateRunStatus, number>();
       results.filter(r => !r.readFailed).forEach(r => counts.set(r.aggregateStatus, (counts.get(r.aggregateStatus) ?? 0) + 1));
       setAggregateRuns([...counts]);
@@ -631,6 +645,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
         {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
         {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
         {data && !err && <div aria-label="Inventory collection evidence" className="text-[12px] text-ink-400">
+          <div>{copy.inventoryScope}</div>
           <span>{copy.capture} {syncedAt ? new Date(syncedAt).toLocaleString() : copy.unknown}</span>
           {captureThrough && captureThrough !== syncedAt && <span> – {new Date(captureThrough).toLocaleString()}</span>}
           {unknownCapture && <span> · {copy.missingCapture}</span>}
@@ -638,7 +653,10 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
           {readFailures.length > 0 && <div role="status">{copy.reads} {readFailures.map(type => `${type}: ${copy.failures.failed}`).join(', ')}</div>}
           {collectionIssues.length > 0 && <div role="status">{copy.issues} {collectionIssues.map(issue => `${issue.type}: ${copy.failures[issue.status]}`).join(', ')}</div>}
           {runHealthUnknown && <div>{copy.healthUnknown}</div>}
+          {eksCoverage && <div>{copy.eksScope} {eksCoverage.region ?? copy.unknown}; {copy.eksOtherRegions}</div>}
+          {!!eksCoverage?.notConnected && <div>{copy.eksNotConnected}: {eksCoverage.notConnected}</div>}
           {eksStatus !== 'ok' && <div>{copy.eks[eksStatus]}</div>}
+          {cappedTypes.length > 0 && <div className="text-warning">{copy.limit}: {cappedTypes.join(', ')} ({ROW_CAP})</div>}
         </div>}
         {data && !err && (
           full.nodes.length === 0 ? (
@@ -649,9 +667,6 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
             <>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-ink-400">
                 <span>{tt(`노드 ${nodes.length} · 엣지 ${edges.length}`)}</span>
-                {cappedTypes.length > 0 && (
-                  <span className="text-warning">{copy.limit}: {cappedTypes.join(', ')} ({ROW_CAP})</span>
-                )}
                 {/* kind/health color legend (gap L248) — the same fills the nodes render. */}
                 {legend.kinds.map((k) => {
                   const [bg, border] = (dark ? KIND_DARK : KIND_LIGHT)[k];

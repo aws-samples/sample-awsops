@@ -36,7 +36,7 @@ function serve(options: {
   pods?: unknown[]; rowCapture?: string | null; clusterVpc?: string; ecs?: boolean;
   hostPods?: Promise<Response>; hostInventory?: Promise<Response>; memberInventory?: Promise<Response>;
   subnetStatus?: number; subnetRows?: unknown[]; subnetReject?: boolean;
-  runStatus?: string; eksStatus?: number; podStatus?: number;
+  runStatus?: string; eksStatus?: number; podStatus?: number; clusterAccess?: string; emptyGraph?: boolean;
 } = {}) {
   vi.stubGlobal('fetch', vi.fn(async (input: string, _init?: RequestInit) => {
     const url = new URL(input, 'http://localhost');
@@ -47,7 +47,7 @@ function serve(options: {
     if (url.pathname === '/api/accounts/regions') return Response.json({ regions: [] });
     if (url.pathname === '/api/eks' && options.eksStatus) return Response.json({ error: 'EKS read failed' }, { status: options.eksStatus });
     if (url.pathname === '/api/eks') return Response.json({
-      clusters: options.ecs ? [] : [{ name: 'production', access: 'connected', region, vpcId: options.clusterVpc ?? vpcId }],
+      clusters: options.ecs ? [] : [{ name: 'production', access: options.clusterAccess ?? 'connected', region, vpcId: options.clusterVpc ?? vpcId }], region,
     });
     if (url.searchParams.get('kind') === 'pods' && options.podStatus) return Response.json({ error: 'pod read failed' }, { status: options.podStatus });
     if (url.searchParams.get('kind') === 'pods') return options.hostPods ?? Response.json({ rows: options.pods ?? [pod] });
@@ -68,7 +68,7 @@ function serve(options: {
         if (pending) return pending; // Deliberately ignores abort: late completions must also be rejected.
       }
       return Response.json({
-      rows: url.pathname.endsWith('/target_group') ? [{
+      rows: url.pathname.endsWith('/target_group') && !options.emptyGraph ? [{
         resource_id: 'tg-orders', region,
         captured_at: options.rowCapture === undefined ? (host ? captured : memberCapture) : options.rowCapture,
         data: { vpc_id: vpcId, target_type: 'ip', target_health_descriptions: [{ Target: { Id: ip, Port: 80 } }] },
@@ -120,6 +120,45 @@ describe('sample topology evidence', () => {
     expect((await ready()).textContent).toBe(ip);
     expect(screen.getByLabelText('Inventory collection evidence').textContent).toContain('subnet: failed');
     expect(document.body.textContent).not.toContain('subnet transport unavailable');
+  });
+  it('does not turn a host read failure into unknown aggregate health', async () => {
+    serve({ subnetStatus: 503, runStatus: 'succeeded' });
+    await ready();
+    const text = screen.getByLabelText('Inventory collection evidence').textContent;
+    expect(text).toContain('Inventory read failures: subnet: failed');
+    expect(text).not.toContain('Run health unknown');
+  });
+  it('still discloses actual unknown run metadata after successful reads', async () => {
+    serve({ runStatus: 'unrecognized' });
+    await ready();
+    const text = screen.getByLabelText('Inventory collection evidence').textContent;
+    expect(text).toContain('Aggregate sync runs: unknown (18)');
+    expect(text).toContain('Run health unknown');
+    expect(text).not.toContain('Inventory read failures:');
+  });
+  it.each(['entry-only', 'no-entry'])('separates %s onboarding coverage from EKS read failure', async clusterAccess => {
+    serve({ clusterAccess, runStatus: 'succeeded' });
+    expect((await ready()).textContent).toBe(ip);
+    const text = screen.getByLabelText('Inventory collection evidence').textContent;
+    expect(text).toContain(`EKS ownership scope: configured region ${region}`);
+    expect(text).toContain('other regions are not assessed');
+    expect(text).toContain('Not-connected clusters not queried: 1');
+    expect(text).not.toContain('EKS ownership evidence is partial');
+  });
+  it('discloses the configured-region boundary even after successful connected reads', async () => {
+    serve({ runStatus: 'succeeded' });
+    expect((await ready()).textContent).toBe('shop/orders-service');
+    const text = screen.getByLabelText('Inventory collection evidence').textContent;
+    expect(text).toContain(`EKS ownership scope: configured region ${region}`);
+    expect(text).toContain('other regions are not assessed');
+    expect(text).not.toContain('Not-connected clusters not queried:');
+  });
+  it('keeps capped coverage visible when the graph has no nodes', async () => {
+    serve({ emptyGraph: true, runStatus: 'succeeded', subnetRows: Array.from({ length: 500 }, (_, i) => ({ resource_id: `subnet-${i}`, region })) });
+    render(<TopologyPage />);
+    await waitFor(() => expect(screen.queryByText('로딩 중…')).toBeNull());
+    expect(screen.queryByLabelText('flow graph')).toBeNull();
+    expect(screen.getByLabelText('Inventory collection evidence').textContent).toMatch(/Response limit reached.*subnet.*500/);
   });
   it.each([
     { eksStatus: 503, expected: 'EKS ownership read failed' },

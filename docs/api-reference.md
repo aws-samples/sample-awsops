@@ -203,6 +203,10 @@ status under every account scope, separately from inventory read failures. A suc
 sweep is not per-account health proof; member clocks never borrow aggregate last-success.
 Only RUNNING ECS tasks with subnet/VPC corroboration establish current IP ownership.
 Ordinary EKS pod-IP ambiguity removes attribution without implying a failed read.
+EKS evidence is limited to connected clusters returned in `/api/eks`'s configured
+`region`; other regions are not assessed. Listed `entry-only`/`no-entry` clusters are
+counted as not queried, independently of read failure/truncation. Inventory reads apply
+account selection only. Failed HTTP reads do not synthesize unknown aggregate status.
 
 ## Trace collection disclosure
 
