@@ -369,6 +369,16 @@ Caller-selected profiles, endpoints, credential providers, CA/proxy overrides an
 command hooks cannot replace that evidence path. Account/role and restricted-session
 checks still apply; this isolation grants no additional AWS access.
 
+Catalog/per-type invocation timeouts are defined in
+[collection effects and proof](runtime-verifier-sessions.md#collection-effects-and-proof).
+Offline controller, real authentication composition, and clock-helper checks require
+Node.js and Python/PyYAML; the authenticated fixtures also require curl, OpenSSL and
+Terraform 1.15.7. From the repository root:
+
+```bash
+node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs
+```
+
 ### Fixed diagnostics and remaining prerequisites
 
 Use fixed codes and the bounded `collection_attempts` / `inventory_quality` fields
@@ -376,11 +386,16 @@ when present. The first chronological per-type terminal error identifies the col
 stop; later settled outcomes and never-started types remain visible. Do not relay raw
 provider responses or secrets.
 
-The controller's stderr envelope is exactly `Runtime release: <reason>`. Helper
-messages retain `Runtime smoke: <code>` or `Authenticated smoke: <phase>` inside
-that envelope; only the exact `Runtime smoke: host_registry` message maps to
-`host_only_registry_required`. Authentication phases can include fixed explanatory
-text and a validated `; HTTP status NNN` suffix. For example:
+The controller's stderr envelope is exactly `Runtime release: <reason>`.
+`smokeFailure` passes through only `SmokeError` messages, retaining their
+`Runtime smoke: <code>` or `Authenticated smoke: <phase>` text; only a `SmokeError`
+whose message is exactly `Runtime smoke: host_registry` maps to
+`host_only_registry_required`. Direct `RuntimeSmokeError` exceptions from private
+config validation are a different class: the config-file path inside the proof
+catch can become `authenticated_runtime_proof_failed`, while direct validation or
+deadline calls elsewhere can become `runtime_release_failed`. Prefix preservation
+is not universal. Authentication phases can include fixed explanatory text and a
+validated `; HTTP status NNN` suffix. Passed-through examples:
 
 ```text
 Runtime release: collection_partial
@@ -394,39 +409,65 @@ authenticated ledger verifier. Preserve the full reason when matching logs; do n
 strip helper prefixes or normalize identical suffixes into one code. A controller
 deadline guard can take precedence and emit the bare `release_timeout` reason.
 
+The following table covers the current controller's fixed reasons, including
+dynamic RPC reason variants and the CLI's unclassified fallback. Rows group
+context/source, deployment/web identity, collection/proof and local execution failures.
+
 | Reason after `Runtime release: ` | Meaning and bounded operator action |
 | --- | --- |
+| `invalid_command`, `output_path_required` | Use exactly the documented `capture` or `run` command. Capture requires the real `GITHUB_OUTPUT` channel; do not substitute fabricated workflow context. |
+| `invalid_dev_source`, `invalid_release_workflow` | Repository, dev ref, region, source SHA or workflow/event context is not accepted. Check the actual Actions context against the allowed caller matrix; do not rewrite metadata to pass. |
+| `invalid_runtime_mode`, `invalid_inventory_policy` | Mode/policy is unsupported. Only allowed prepare/collect callers and full inventory policy are accepted; there is no degraded or feature-off bypass. |
+| `expected_account_required`, `configured_role_mismatch`, `actual_ci_caller_mismatch` | Check the configured account, role ARN and actual exported session identity. Do not change the expected identity merely to match an unexpected caller. |
 | `aws_credentials_required` | One or more exported temporary credential values are missing. Refresh the approved restricted session; do not restore profiles, credential files or alternate endpoint/provider settings. |
-| `host_only_registry_required` | Mapping of the helper's registry check: missing, disabled, wrong or duplicate host; enabled foreign accounts; or malformed/oversized `/api/accounts` data. Check response shape and host registration as well as scope. Use the existing preparation/bootstrap procedure when the host is absent; do not assume foreign accounts are the cause or change scope/accounts automatically. |
+| `expected_image_sha_required`, `expected_web_digest_required`, `invalid_expected_web_digest` | Check the reviewed image SHA, mode-specific pin requirement and approved root digest. Prepare requires an empty image SHA; Deploy Web run requires its pin digest. Do not replace required digest authority with a mutable tag. |
+| `invalid_application_target` | The public URL or CloudFront target fails the connection contract. Check the captured HTTPS targets while preserving Host/SNI/TLS validation. |
+| `deployment_identity_mismatch`, `web_deployment_mismatch` | Captured schema/account/region/project or web cluster/service/task-role identity is inconsistent. Re-capture the reviewed applied deployment; do not guess resource identities. |
+| `invalid_feature_state`, `runtime_not_enabled` | Feature metadata is invalid or collect prerequisites are inactive. Complete the reviewed activation sequence; prepare is not a substitute for full release proof. |
+| `inventory_deployment_mismatch`, `known_resource_required` | The captured owned collector name/ARN/hash or known CloudFront identity is missing/invalid. Reconcile the applied runtime contract before invoking collection. |
+| `expected_web_image_missing` | ECR returned no usable image set or reported lookup failures. Check the selected repository and reviewed tag/digest; missing evidence cannot authorize another image. |
+| `web_image_identity_mismatch`, `web_manifest_digest_mismatch` | Account/repository/tag/digest, alias consistency or the manifest hash disagrees. Verify the approved identity and identical manifest bytes; do not discard conflicting entries to pass. |
+| `invalid_web_manifest`, `invalid_web_index`, `web_arm64_image_missing` | Manifest/schema/media or index/ARM64 evidence is unsupported or ambiguous. Use a reviewed Linux/ARM64 image with valid manifest evidence; never rewrite the response to manufacture a match. |
+| `web_service_unavailable`, `web_service_not_stable` | The expected ECS service is missing, ambiguous, inactive or not fully stable at the selected revision/count. Inspect the actual rollout before verification. |
+| `web_task_definition_mismatch`, `web_container_mismatch` | Task role/platform or the essential web container/image does not match the deployment. Reconcile the reviewed task definition and image rather than weakening identity checks. |
+| `web_task_list_incomplete`, `web_tasks_unavailable`, `running_web_mismatch` | Task enumeration is incomplete, task reads failed, or running task health/revision/digest disagrees. Obtain complete matching task evidence; a partial list is not full deployment proof. |
+| `aws_throttled`, `aws_timeout`, `aws_request_failed`, `aws_access_denied` | AWS metadata read/recheck failed, including the final collector recheck. These are distinct from remapped invoke failures. Identify the read and investigate throttling, timing/provider failure or access under existing bounds; never treat unavailable metadata as empty or valid. |
 | `invalid_collection_catalog` | Missing pinned membership, invalid names/shape or bounds. Reconcile the reviewed collector source, applied hash and catalog; do not pad the response or waive required types. |
+| `inventory_code_mismatch` | Configured hash/revision and live collector evidence disagree or cannot be verified. Reconcile the reviewed deployment; discard the attempt's readiness claim. |
 | `collection_partial`, `collection_failed`, `inventory_incomplete`, `collection_probe_incomplete` | Owned RPC result is partial/failed, has unknown attributes or has unusable counts. This is an expected hard stop, including limiter/hydrate degradation. Diagnose capacity, reachability and actual denials before an authorized fresh bounded attempt; no automatic partial/unknown retry or degraded acceptance. |
 | `collection_probe_busy`, `collection_probe_throttled` | Another attempt could not be admitted after busy/superseded or confirmed invoke-throttling outcomes. Check phase budget and contention, with per-type outcomes when present; do not infer success or suppress the scheduler. |
 | `collection_probe_protocol` | The collector payload is not an object with the requested type and a recognized result shape/status. Reconcile the reviewed collector/protocol without printing its raw response. |
-| `collection_probe_denied`, `actual_ci_caller_mismatch` | Check configured identity, exported credentials and the exact denied operation under existing session/IAM boundaries. Do not restore ambient profiles/endpoints or grant permissions automatically. |
+| `collection_probe_denied` | The owned invocation was denied. Check its exact operation under the existing identity/session/IAM boundaries; do not restore ambient profiles/endpoints or grant permissions automatically. |
 | `collection_probe_timeout`, `collection_probe_failed` | Inspect per-type attempts and known delivery evidence. A timeout may mean uncertain delivery or failed admission; use the structured status rather than assuming a safe blind retry. |
-| `invalid_private_path`, `invalid_private_directory`, `invalid_private_file`, `private_response_too_large`, `configuration_too_large`, `deployment_input_too_large` | Check the owned paths, regular files, 0700/0600 modes and 16 KiB limits. A selected type can fail before an AWS attempt; zero attempts do not mean `not_started`. Do not enlarge limits, follow symlinks or delete unrelated files to pass. |
-| `aws_throttled`, `aws_timeout`, `aws_request_failed`, `aws_access_denied` | AWS metadata read/recheck failed, including the final collector recheck. These are distinct from remapped invoke failures. Identify the read and investigate throttling, timing/provider failure or access under existing bounds; never treat unavailable metadata as empty or valid. |
-| `inventory_code_mismatch` | Configured hash/revision and live collector evidence disagree or cannot be verified. Reconcile the reviewed deployment; discard the attempt's readiness claim. |
+| `host_only_registry_required` | Mapping of the helper's registry check: missing, disabled, wrong or duplicate host; enabled foreign accounts; or malformed/oversized `/api/accounts` data. Check response shape and host registration as well as scope. Use the existing preparation/bootstrap procedure when the host is absent; do not assume foreign accounts are the cause or change scope/accounts automatically. |
+| `database_clock_invalid` | The prepared result, canonical DB timestamp or local request/response bracket is invalid. Check authenticated preparation and the 35-second sample bound; do not add lower-bound tolerance or reset the marker. |
+| `runtime_proof_required`, `complete_runtime_proof_required` | Returned status/mode or complete inventory/worker evidence is missing or inconsistent. Require the actual expected proof; never synthesize a successful adapter result. |
+| `authenticated_runtime_proof_failed` | The proof catch received an exception other than `SmokeError`. This includes direct private-config `RuntimeSmokeError`; inspect local config/clock/file validation before assuming remote authentication failed. |
 | `release_timeout` | Controller deadline/admission guard, which can override another failure when the deadline has expired. Inspect available timing and attempt status; do not extend the deadline. |
+| `invalid_private_path`, `invalid_private_directory`, `invalid_private_file`, `private_response_too_large`, `configuration_too_large`, `deployment_input_too_large` | Check the owned paths, regular files, 0700/0600 modes and 16 KiB limits. A selected type can fail before an AWS attempt; zero attempts do not mean `not_started`. Do not enlarge limits, follow symlinks or delete unrelated files to pass. |
+| `invalid_response` | JSON parsing failed for metadata, captured input or a private collector response. Non-JSON collector output can reach this code without becoming `collection_probe_protocol`; inspect the producer privately, never print the raw payload. |
+| `forbidden_aws_operation` | A requested command is outside the controller's closed verb allowlist. Stop and review the caller/code; do not expand permissions or the allowlist as an automatic repair. |
+| `private_cleanup_failed` | Cleanup failure surfaced after otherwise-successful work. Inspect only the owned private directory. Cleanup errors on an already-failing path can be suppressed, so absence of this code does not prove removal. |
+| `runtime_release_failed` | An exception other than `ReleaseError` reached the release wrapper, including direct config validation/deadline exceptions outside the proof catch. Inspect local setup, private inputs and runtime behavior; this is not proof of an AWS denial. |
+| `failed` | The CLI caught an unclassified exception outside typed release handling, for example local capture I/O failure. Preserve the failed outcome and inspect private input/runtime conditions without publishing raw errors. |
+
+The helper examples below describe passed-through `SmokeError` message families,
+not an exhaustive list of all helper messages. Direct `RuntimeSmokeError` paths
+can instead produce the controller fallbacks above.
+
+| Reason after `Runtime release: ` | Helper phase and bounded operator action |
+| --- | --- |
 | `Runtime smoke: collection_partial`, `Runtime smoke: collection_failed`, `Runtime smoke: inventory_incomplete` | Authenticated ledger proof failed after collection, independently of RPC outcomes. Inspect `inventory_quality` and current ledger evidence; a successful RPC does not override partial/failed/unknown ledger data. |
 | `Runtime smoke: collection_stale`, `Runtime smoke: collection_missing`, `Runtime smoke: collection_timeout`, `Runtime smoke: collection_unavailable` | Ledger freshness, presence, bounded waiting or availability failed. Missing/unavailable evidence is not healthy zero; preserve the marker and inspect the existing bounded observations. |
 | `Runtime smoke: release_timeout`, `Runtime smoke: runtime_inventory_contention` | Helper HTTP/proof admission or the single permitted contention retry cannot complete. Inspect timing and collision evidence before a fresh bounded attempt; no new proof window or scheduler suppression. |
+| `Runtime smoke: <code>` | Other wrapped configuration, clock, runtime/readiness or worker failures retain the complete helper message. Follow the [reusable probe contract](#reusable-runtime-probe-contract) and [DB-clock contract](#optional-database-clock-sample); do not reduce the message to a suffix or assume every helper exception uses this path. |
 | `Authenticated smoke: <phase>` | Login/database, `host_registry_http`, `inventory_http`, `worker_http`, `runtime_http`, or private-request-file phase failure, with optional validated HTTP status. Inspect the target, session, TLS and response contract privately; retain the complete phase text rather than relabeling it as a ledger/RPC code. |
-| `runtime_release_failed` | Unexpected or unclassified failure inside the release wrapper. Inspect local setup, private inputs and runtime behavior; the generic code alone does not establish an AWS denial or successful remote operation. |
 
 Even a controller `full_verified` result retains
 `remaining_prerequisites: "not_assessed"`. It reports this controller's evidence,
 not workflow installation, plan/apply approval or completion of every promotion
 prerequisite. Future consumers must enforce those separate gates; `prepared` is
 never full runtime readiness. The consumers remain unwired in this prerequisite.
-
-Offline controller, real authentication composition, and clock-helper checks require
-Node.js and Python/PyYAML; the authenticated fixtures also require curl, OpenSSL and
-Terraform 1.15.7. From the repository root:
-
-```bash
-node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs
-```
 
 <a id="related--관련"></a>
 

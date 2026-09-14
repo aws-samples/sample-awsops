@@ -280,7 +280,8 @@ remain mandatory. The policy generator neither invokes types nor repairs failure
 the strict controller supplies the collection orchestration when wired.
 Its `remaining_prerequisites: "not_assessed"` result does not approve the separate
 workflow/plan/promotion gates; see the [fixed diagnostics](runtime-foundation.md#fixed-diagnostics-and-remaining-prerequisites).
-That table preserves `Runtime release: <reason>` and helper prefixes. For example,
+That table distinguishes controller reasons from passed-through `SmokeError` messages.
+Direct `RuntimeSmokeError` config failures can become controller fallbacks. For example,
 `collection_partial` is an RPC reason, while `Runtime smoke: collection_partial`
 is a ledger reason; do not normalize them by stripping the prefix.
 

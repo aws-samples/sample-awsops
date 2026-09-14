@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 57b7e15c860b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 94c572d3f6fa · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -210,7 +210,8 @@ admitted work settles and untouched types remain `not_started`. The six status-b
 is blocked by the 450-second floor is `deadline`/zero attempts; a never-selected type is
 `not_started`/zero attempts. Attempt counts alone do not classify status, and
 `inventory_quality` gaps may still overlap. Preserve the outer `Runtime release:`
-and inner helper prefixes; identical RPC/ledger suffixes are different reasons.
+and prefixes of passed-through `SmokeError` messages; direct `RuntimeSmokeError`
+config failures can become controller fallbacks. Identical RPC/ledger suffixes differ.
 Partial/unknown
 outcomes intentionally stop even under limiter/hydrate pressure; use bounded
 capacity/reachability/permission diagnosis before an authorized fresh rerun.
@@ -220,6 +221,7 @@ with the separate workflow/plan/promotion gates. The 17-minute
 reserve covers only the single-pass 1,010-second base path plus 10 seconds; extras
 need saved time (at least 25 seconds for another 35-second read, at least 170 seconds
 for the minimum 180-second retry overhead, without counting workers twice).
-Additional reads/waits/overhead need more time. Keep CLI inputs and catalog/per-type
-timeouts aligned with `runtime-foundation.md#controller-cli-contract`.
+Additional reads/waits/overhead need more time.
+CLI inputs and fixture prerequisites: `runtime-foundation.md#controller-cli-contract`.
+Catalog/per-type timeouts: `runtime-verifier-sessions.md#collection-effects-and-proof`.
 Checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.

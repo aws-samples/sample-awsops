@@ -337,9 +337,10 @@ The first chronological terminal failure stops new type admission; admitted work
 and untouched types remain structured `not_started`. Six status counts partition
 `expected`; a selected type whose first call is blocked by the 450-second floor is `deadline`/zero attempts,
 while never-selected types are `not_started`/zero attempts. Inventory quality gaps can
-still overlap. Preserve the full `Runtime release: <reason>` envelope and nested
-`Runtime smoke:` / `Authenticated smoke:` prefixes; identical RPC/ledger suffixes
-are not interchangeable. Partial/unknown outcomes intentionally
+still overlap. Preserve the full `Runtime release: <reason>` envelope. Passed-through
+`SmokeError` messages retain nested `Runtime smoke:` / `Authenticated smoke:` prefixes;
+direct `RuntimeSmokeError` config exceptions can become controller fallbacks.
+Identical RPC/ledger suffixes are not interchangeable. Partial/unknown outcomes intentionally
 stop even under limiter/hydrate pressure. Diagnose capacity, reachability or denials before
 an authorized fresh bounded rerun; do not weaken acceptance or suppress the schedule.
 Full SSM/AgentCore/model and both owned worker proofs remain required afterward.
@@ -351,8 +352,10 @@ for session boundaries. The 17-minute reserve covers only the single-pass 1,010-
 base path plus 10 seconds. Extra 35-second reads need at least 25 seconds saved elsewhere;
 the minimum 180-second retry overhead needs at least 170 seconds saved, without counting
 workers twice. More reads/waits/overhead need more time; no extras are guaranteed.
-CLI inputs, per-type versus catalog timeouts and prerequisites:
+CLI inputs and fixture prerequisites:
 [controller CLI contract](../docs/runbooks/runtime-foundation.md#controller-cli-contract).
+Catalog/per-type timeouts:
+[collection effects and proof](../docs/runbooks/runtime-verifier-sessions.md#collection-effects-and-proof).
 `remaining_prerequisites: "not_assessed"` preserves separate workflow/plan/promotion gates.
 Use the canonical [fixed-code operator table](../docs/runbooks/runtime-foundation.md#fixed-diagnostics-and-remaining-prerequisites).
 Combined tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.

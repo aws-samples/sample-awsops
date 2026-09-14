@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 75432c424941 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9eeb8fa71b51 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -212,8 +212,9 @@ and untouched types remain `not_started`. Six status buckets partition `expected
 a selected type unable to admit its first call under the 450-second floor is
 `deadline`/zero attempts; never-selected is
 `not_started`/zero attempts. Inventory quality gaps may overlap. Keep the outer
-`Runtime release:` and nested helper prefixes; RPC/ledger suffixes identify different
-reasons and must not be normalized together. Partial/unknown results are expected hard
+`Runtime release:` and the prefixes of passed-through `SmokeError` messages;
+direct `RuntimeSmokeError` config failures can become controller fallbacks.
+RPC/ledger suffixes must not be normalized together. Partial/unknown results are expected hard
 stops under limiter/hydrate load too; investigate capacity, reachability or denials
 before an authorized fresh bounded rerun. No weaker acceptance or scheduler suppression.
 Collector hash/RevisionId must remain stable before/after collection; then full
@@ -226,7 +227,8 @@ saved elsewhere; the minimum 180-second retry overhead needs at least 170 second
 reusing the original worker allowances. More reads/waits/overhead need more time.
 `capture` reads private deployment JSON on stdin and emits `deployment_file` to
 `GITHUB_OUTPUT`; `run` reads `RUNTIME_DEPLOYMENT_FILE`. Both need private credentials.
-Full CLI inputs/timeouts: `docs/runbooks/runtime-foundation.md#controller-cli-contract`.
+CLI inputs and fixture prerequisites: `docs/runbooks/runtime-foundation.md#controller-cli-contract`.
+Catalog/per-type timeouts: `docs/runbooks/runtime-verifier-sessions.md#collection-effects-and-proof`.
 `remaining_prerequisites: "not_assessed"` retains separate workflow/plan/promotion gates;
 use the canonical fixed-code operator table in that runbook.
 Tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
