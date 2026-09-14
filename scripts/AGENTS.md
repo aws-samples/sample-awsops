@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3d0e64ca7646 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: caa339649216 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -155,3 +155,19 @@ The pin gate covers `v2/ci/pg8000-requirements.txt` and the four requirements
 under workers, steampipe, incident and remediation; update all with verified wheel hashes.
 The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and validator.
 `v2/test_ci_tf_assets.py` covers these contracts and recovery.
+
+## Unwired private plan transport
+
+`v2/ci_private_plan.py` exposes only policy/publish/inspect/restore. The base Terraform
+workflow does not call it or publish private S3 references; operator use requires the
+later consumer integration. No workflow/IAM/bucket provisioning ships with the module.
+Require successful Plan plus publisher ID `publish` / name `Publish private plan`,
+attempt artifact `tfplan-N`, private backend/store, protected scoped credentials and
+publish/restore CI HMAC verification. Inspection requires an explicit private backend
+and profile, never bucket discovery or the CI key. Public reference fields are only
+schema/storage tags, CI context and manifest hash/size; no public plan/backend/bucket
+hashes or storage identities. A cap/failure does not create a usable reference.
+Private inspection is not approval; restore never applies and supplies no orphan recovery.
+Consumers own safe artifact overwrite, masking before logging, existing gates and cleanup.
+Contract: `docs/reference/private-plan-transport.md`. Run `v2/test_ci_private_plan.py`
+with the existing crypto/inspection/context suites; no additional dependency or live access.
