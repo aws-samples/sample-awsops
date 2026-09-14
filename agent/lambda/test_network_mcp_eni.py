@@ -7,7 +7,10 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import (
+    ClientError, ConnectionClosedError, ConnectTimeoutError, EndpointConnectionError,
+    ReadTimeoutError, SSLError,
+)
 
 sys.path.insert(0, os.path.dirname(__file__))
 import cross_account as ca
@@ -424,7 +427,95 @@ def test_omitted_result_list_is_not_evidence_of_absence(ec2, scope):
         assert len(ec2.route_calls) == 1
 
 
-def test_empty_eni_response_returns_deliberate_error(ec2):
+@pytest.mark.parametrize("failure,error_code", [
+    *[
+        pytest.param(
+            ClientError({
+                "Error": {
+                    "Code": code,
+                    "Message": "fixture-private-detail arn:aws:iam::123456789012:role/private "
+                               + "x" * 4096,
+                },
+                "ResponseMetadata": {"HTTPStatusCode": 400, "RequestId": "private-request-id"},
+            }, "DescribeNetworkInterfaces"),
+            code,
+            id=code,
+        )
+        for code in ("InvalidNetworkInterfaceID.NotFound", "UnauthorizedOperation",
+                     "AccessDenied", "AccessDeniedException", "AuthFailure",
+                     "RequestLimitExceeded", "Throttling", "ThrottlingException")
+    ],
+    *[
+        pytest.param(
+            error_type(endpoint_url="https://fixture-private-detail.example.test/private",
+                       error="fixture-private-detail"),
+            error_type.__name__,
+            id=error_type.__name__,
+        )
+        for error_type in (EndpointConnectionError, ConnectionClosedError, ConnectTimeoutError,
+                           ReadTimeoutError, SSLError)
+    ],
+    pytest.param(
+        ClientError({"Error": {
+            "Code": "fixture-private-detail arn:aws:iam::123456789012:role/private " + "x" * 4096,
+            "Message": "fixture-private-detail",
+        }}, "DescribeNetworkInterfaces"),
+        "ReadError",
+        id="unrecognized-service-code",
+    ),
+])
+def test_entry_sdk_failure_returns_sanitized_non_success_without_followup_reads(
+        ec2, monkeypatch, failure, error_code):
+    reads = []
+
+    def fail_entry(**kwargs):
+        reads.append("eni")
+        assert kwargs == {"NetworkInterfaceIds": ["eni-test"]}
+        raise failure
+
+    def unexpected_read(**kwargs):
+        reads.append("configuration")
+        raise AssertionError("Configuration must not be read after an ENI lookup failure")
+
+    monkeypatch.setattr(ec2, "describe_network_interfaces", fail_entry)
+    for method in ("describe_security_groups", "describe_network_acls", "describe_route_tables"):
+        monkeypatch.setattr(ec2, method, unexpected_read)
+
+    result = network.lambda_handler(
+        {"tool_name": "get_eni_details", "arguments": {"eni_id": "eni-test"}}, None)
+    assert 400 <= result["statusCode"] < 600
+    body = json.loads(result["body"])
+    assert body.get("error")
+    assert body.get("eniId") == "eni-test"
+    assert body.get("partial") is True
+    assert body.get("unknown") == [{
+        "component": "eni", "resourceId": "eni-test",
+        "reason": "read_failed", "errorCode": error_code,
+    }]
+    assert not {"securityGroups", "nacl", "routes", "routeSelection"} & body.keys()
+    assert len(result["body"]) < 1024
+    assert all(value not in result["body"] for value in (
+        "fixture-private-detail", "arn:aws:", "private-request-id", "https://"))
+    assert reads == ["eni"]
+
+
+@pytest.mark.parametrize("failure,reason", [
+    ("tokens", "truncated"), ("omitted", "response_missing")])
+def test_incomplete_entry_response_cannot_become_successful_configuration(ec2, failure, reason):
+    getattr(ec2, failure).add("eni")
+    result = network.lambda_handler({"eni_id": "eni-test"}, None)
+    assert 400 <= result["statusCode"] < 600
+    body = json.loads(result["body"])
+    assert body.get("partial") is True
+    assert body.get("unknown") == [{
+        "component": "eni", "resourceId": "eni-test", "reason": reason,
+    }]
+    assert not {"securityGroups", "nacl", "routes", "routeSelection"} & body.keys()
+    assert ec2.route_calls == []
+
+
+def test_defensive_empty_eni_response_returns_deliberate_error(ec2):
+    # Defensive malformed/empty response coverage, not a live EC2 not-found simulation.
     ec2.enis = []
     result = network.lambda_handler({"eni_id": "eni-test"}, None)
     assert result["statusCode"] == 400

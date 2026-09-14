@@ -125,12 +125,28 @@ def _eni_route(route, unknown):
 def _get_eni_details(ec2, eni_id):
     if not eni_id:
         return err("eni_id required")
-    enis = ec2.describe_network_interfaces(NetworkInterfaceIds=[eni_id]).get("NetworkInterfaces") or []
+    unknown = []
+    enis, reason = _eni_read(ec2.describe_network_interfaces, "NetworkInterfaces",
+                            unknown, "eni", resource_id=eni_id, NetworkInterfaceIds=[eni_id])
+    if reason:
+        # Only fixed diagnostic codes may leave the entry failure boundary.
+        if reason == "read_failed" and unknown[0]["errorCode"] not in (
+            "InvalidNetworkInterfaceID.NotFound", "UnauthorizedOperation",
+            "AccessDenied", "AccessDeniedException", "AuthFailure",
+            "RequestLimitExceeded", "Throttling", "ThrottlingException",
+            "EndpointConnectionError", "ConnectionClosedError", "ConnectTimeoutError",
+            "ReadTimeoutError", "SSLError",
+        ):
+            unknown[0]["errorCode"] = "ReadError"
+        return {"statusCode": 400, "body": json.dumps({
+            "error": "ENI lookup unavailable; configuration unassessed",
+            "eniId": eni_id, "partial": True, "unknown": unknown,
+        })}
     if len(enis) != 1:
         return err(f"ENI {eni_id}: expected one interface, found {len(enis)}")
     eni = enis[0]
     subnet_id, vpc_id = eni.get("SubnetId"), eni.get("VpcId")
-    unknown, sgs, nacl_rules = [], [], []
+    sgs, nacl_rules = [], []
     for sg in eni.get("Groups") or []:
         sg_id = sg.get("GroupId")
         projected = {"id": sg_id, "name": sg.get("GroupName"), "inbound": [], "outbound": [],

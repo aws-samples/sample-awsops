@@ -127,7 +127,14 @@ TARGETS = {
         "tools": [
             {"name": "get_path_trace_methodology", "description": "Network troubleshooting methodology", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "find_ip_address", "description": "Locate ENIs by IP", "inputSchema": {"type": "object", "properties": {"ip_address": _p("string", "IP")}, "required": ["ip_address"]}},
-            {"name": "get_eni_details", "description": "ENI details with SG, NACL, routes", "inputSchema": {"type": "object", "properties": {"eni_id": _p("string", "ENI ID")}, "required": ["eni_id"]}},
+            {"name": "get_eni_details", "description": (
+                "ENI SG/NACL/route configuration evidence (describe-only, not a live connectivity test). "
+                "An error, partial=true, unknown entries, or routeSelection.status=unknown means affected "
+                "evidence is unassessed; never infer no rules/no routes or healthy/failed connectivity "
+                "from these gaps. Attribute SG gaps by unknown[].resourceId: empty inbound/outbound with "
+                "SG partial=true is unassessed; both empty with SG partial=false confirms only that "
+                "group is ruleless. Preserve other returned evidence."
+            ), "inputSchema": {"type": "object", "properties": {"eni_id": _p("string", "ENI ID")}, "required": ["eni_id"]}},
             {"name": "list_vpcs", "description": "List VPCs", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "get_vpc_network_details", "description": "Full VPC config", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
             {"name": "get_vpc_flow_logs", "description": "VPC flow logs", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},

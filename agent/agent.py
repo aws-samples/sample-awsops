@@ -166,7 +166,8 @@ SKILL_BASE = {
 
 ## Rules:
 - ALWAYS call tools for real-time data — never answer from memory
-- For connectivity: always use the 3-step pattern (reachability → SG → flow logs)""",
+- For connectivity: always use the 3-step pattern (reachability → SG → flow logs)
+- Interpret get_eni_details as configuration evidence, not a live connectivity test. An error, partial=true, unknown entries, or routeSelection.status=unknown leaves the affected evidence unassessed; never infer no rules, no routes, or healthy/failed connectivity from these gaps. Use unknown[].resourceId to attribute SG gaps: empty inbound/outbound with that SG's partial=true is unassessed; both empty with partial=false confirms only that group is ruleless. Preserve other returned evidence.""",
 
 
     "container": """You are AWSops Container Specialist. Manage and troubleshoot EKS, ECS, and Istio service mesh.
