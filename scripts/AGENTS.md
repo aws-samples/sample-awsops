@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9066afe5a479 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b25187458364 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -173,7 +173,8 @@ full-policy stale terminal evidence is collection_stale. Login/DB also require f
 collect-runtime workflow is absent. No flags/workflows are enabled. Future full
 release integration must require collect, never accept prepare or skip inactive prerequisites.
 It binds dev source/account/actual role, applied runtime identity and ARM64 web digest.
-All current catalog types (43) need post-marker succeeded evidence, known counts and
+Reject catalogs below 43 or above 128 types. Every returned type (currently 43)
+needs post-marker succeeded evidence, known counts and
 zero unknowns, with at most four concurrent in-flight synchronous owned calls. Prepare obtains authenticated
 DB time plus host proof; calibration anchors at request start and shifts the existing
 deadline equally. No lower-bound freshness tolerance or rolling prior success is introduced.
@@ -181,7 +182,14 @@ Collector hash/RevisionId must remain stable before/after collection; then full
 SSM/AgentCore/model and both owned worker proofs remain mandatory. Preserve private
 credentials/cleanup, restrictive consumer sessions and reviewed activation prerequisites.
 Budgets and boundaries: `docs/runbooks/runtime-foundation.md#strict-release-controller-capability`
-and `runtime-verifier-sessions.md`. Test: `node --test scripts/v2/ci/runtime-release.test.mjs`.
+and `runtime-verifier-sessions.md`. The 17-minute reserve covers only the single-pass
+1,010-second base path plus 10 seconds. Extra 35-second reads need at least 25 seconds
+saved elsewhere; the minimum 180-second retry overhead needs at least 170 seconds saved,
+reusing the original worker allowances. More reads/waits/overhead need more time.
+`capture` reads private deployment JSON on stdin and emits `deployment_file` to
+`GITHUB_OUTPUT`; `run` reads `RUNTIME_DEPLOYMENT_FILE`. Both need private credentials.
+Full CLI inputs/timeouts: `docs/runbooks/runtime-foundation.md#controller-cli-contract`.
+Tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
 The dated owner requirement supersedes the earlier CloudFront-only proposal.
 Four lanes do not promise fourfold throughput or completion for every workload.
 Keep the schedule active and fail closed on budget/permission/contention failures;

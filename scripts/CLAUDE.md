@@ -86,6 +86,8 @@ secrets-manager) — installed by `make deps`.
   Host/SNI/TLS; report only the phase and validated HTTP status, never bodies/cookies/passwords.
   CLI HTTP scratch belongs to the prepared credential directory and normal finalizers;
   process/runner loss can prevent cleanup. Standalone calls prefer RUNNER_TEMP. Response files default to 64 KiB; only the bounded CloudFront inventory leg permits 2 MiB.
+- `v2/ci/runtime-release.mjs` — unwired strict controller; `capture` writes private state
+  and its `GITHUB_OUTPUT` path, `run` consumes it. See the controller contract below.
 - `v2/ci_dns_policy.py` — reads Terraform state to preserve managed certificate ownership
   (JSON null) and existing service aliases; verifies operator-selected/attached certificates
   without account-wide selection. Redacts public summaries. Blocks all Route53/Cloud Map
@@ -280,7 +282,8 @@ performs DB-only verification; `collect-runtime.yml` is absent. This change enab
 no workflow or flag. Future integration must use collect mode for mandatory full
 readiness; prepare is only authenticated login/DB/host registration, never release proof.
 The controller verifies dev source/account/role, applied runtime metadata and ARM64
-web digest, then drives every owned catalog type (currently 43) with at most four
+web digest, rejects catalogs below 43 or above 128 types, then drives every returned
+type (currently 43) with at most four
 concurrent in-flight synchronous invocations. It requires succeeded results, known counts and zero unknowns.
 It samples the authenticated DB clock before collecting, anchors calibration at request
 start, shifts the existing deadline by the same offset, and retains strict post-marker
@@ -290,7 +293,13 @@ Private credentials/configuration and cleanup, restrictive consumer sessions and
 explicit capability activation remain mandatory integration prerequisites.
 See [runtime-foundation.md](../docs/runbooks/runtime-foundation.md#strict-release-controller-capability)
 for budgets and [runtime-verifier-sessions.md](../docs/runbooks/runtime-verifier-sessions.md)
-for session boundaries. Offline tests: `node --test scripts/v2/ci/runtime-release.test.mjs`.
+for session boundaries. The 17-minute reserve covers only the single-pass 1,010-second
+base path plus 10 seconds. Extra 35-second reads need at least 25 seconds saved elsewhere;
+the minimum 180-second retry overhead needs at least 170 seconds saved, without counting
+workers twice. More reads/waits/overhead need more time; no extras are guaranteed.
+CLI inputs, per-type versus catalog timeouts and prerequisites:
+[controller CLI contract](../docs/runbooks/runtime-foundation.md#controller-cli-contract).
+Combined tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
 The owner requires all current types, superseding the earlier CloudFront-only proposal.
 Four lanes are a concurrency ceiling, not a throughput guarantee; the active schedule
 and shared limiter can cause throttling or incomplete data. Budgets fail closed rather

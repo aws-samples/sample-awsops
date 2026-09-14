@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4a61d6b1a555 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 73dbdd86f375 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -168,3 +168,10 @@ distinction between operational degraded data and ineligible release evidence.
 Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
 admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
 57.461-second collection sample and its limits; it is not full live readiness.
+Require 43–128 catalog types and strict proof for every returned type. The 17-minute
+reserve covers only the single-pass 1,010-second base path plus 10 seconds; extras
+need saved time (at least 25 seconds for another 35-second read, at least 170 seconds
+for the minimum 180-second retry overhead, without counting workers twice).
+Additional reads/waits/overhead need more time. Keep CLI inputs and catalog/per-type
+timeouts aligned with `runtime-foundation.md#controller-cli-contract`.
+Checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.

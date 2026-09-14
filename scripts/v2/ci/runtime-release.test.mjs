@@ -2,12 +2,14 @@ import { test } from 'node:test';
 import { SmokeError, authenticatedSmoke } from '../authenticated-smoke.mjs';
 import { verifyRuntimeSmoke } from '../runtime-smoke.mjs';
 import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, symlinkSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   classifyAwsError, ReleaseError, validateContext, validateDeployment, validateCatalog, captureDeployment, release,
+  MIN_CATALOG_TYPES,
 } from './runtime-release.mjs';
 
 const account = '123456789012', project = 'awsops-fixture', region = 'ap-northeast-2';
@@ -41,8 +43,11 @@ function deployment() {
   };
 }
 function catalog() {
-  return { status: 'catalog', types: ['cloudfront', 'rds'] };
+  return { status: 'catalog', types: ['cloudfront', 'rds', ...sourceTypes.filter(t => !['cloudfront', 'rds'].includes(t))] };
 }
+const sourceTypes = JSON.parse(execFileSync('python3', ['-c',
+  'import ast,json,sys; t=ast.parse(open(sys.argv[1]).read()); print(json.dumps([k.value for n in t.body if isinstance(n,ast.Assign) and any(isinstance(a,ast.Name) and a.id in ("QUERIES","SDK_SYNCS") for a in n.targets) for k in n.value.keys]))',
+  new URL('../steampipe/sync_lambda.py', import.meta.url).pathname], { encoding: 'utf8' }));
 function fixture(overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'release-tests-'));
   const previousTemp = process.env.RUNNER_TEMP;
@@ -134,6 +139,73 @@ async function withFixture(action, overrides = {}) {
   try { return await action(f); } finally { f.cleanup(); }
 }
 
+function runCli(f, mode, extraEnv = {}, input, extraArgs = []) {
+  const guard = mkdtempSync(join(f.root, 'cli-guard-')), called = join(guard, 'aws-called');
+  writeFileSync(join(guard, 'aws'), `#!${process.execPath}
+require('node:fs').writeFileSync(${JSON.stringify(called)}, 'called');
+process.exit(99);
+`, { mode: 0o700 });
+  const result = spawnSync(process.execPath, [new URL('./runtime-release.mjs', import.meta.url).pathname,
+    mode, ...extraArgs], { env: { ...f.env, PATH: guard, ...extraEnv }, input, encoding: 'utf8', timeout: 5000 });
+  assert.equal(result.error, undefined);
+  assert.equal(existsSync(called), false, 'The CLI must reject preflight failures before any AWS operation');
+  assert.ok(!(result.stdout + result.stderr).includes('FIXTURE_PASSWORD'));
+  return result;
+}
+
+test('CLI run cleans owned credentials on early context and deployment-file failures without deleting siblings', async () => {
+  for (const kind of ['context', 'arguments', 'missing', 'malformed', 'symlink', 'outside', 'credential_symlink',
+    'directory_symlink']) await withFixture(async f => {
+    const neighbor = mkdtempSync(join(f.root, 'neighbor-')), sentinel = join(neighbor, 'credentials.json');
+    const privateData = '{"private":"FIXTURE_PASSWORD"}';
+    writeFileSync(sentinel, privateData, { mode: 0o600 });
+    const file = join(f.directory, 'runtime-deployment.json');
+    const extraEnv = { RUNTIME_DEPLOYMENT_FILE: file };
+    let expected = 'failed';
+    if (kind === 'context') { extraEnv.GITHUB_REPOSITORY = 'wrong/repo'; expected = 'invalid_dev_source'; }
+    else if (kind === 'arguments') expected = 'invalid_command';
+    else if (kind === 'malformed') { writeFileSync(file, '{FIXTURE_PASSWORD', { mode: 0o600 }); expected = 'invalid_response'; }
+    else if (kind === 'symlink') symlinkSync(sentinel, file);
+    else if (kind === 'outside') { extraEnv.RUNTIME_DEPLOYMENT_FILE = sentinel; expected = 'invalid_private_path'; }
+    else if (kind === 'credential_symlink') { rmSync(f.credentials); symlinkSync(sentinel, f.credentials); }
+    else if (kind === 'directory_symlink') {
+      rmSync(f.directory, { recursive: true }); symlinkSync(neighbor, f.directory);
+    }
+    const result = runCli(f, 'run', extraEnv, undefined, kind === 'arguments' ? ['extra'] : []);
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr.trim(), `Runtime release: ${expected}`);
+    assert.equal(existsSync(f.directory), false);
+    assert.equal(readFileSync(sentinel, 'utf8'), privateData, 'Cleanup must not follow links or delete a sibling');
+  });
+});
+
+test('CLI run preserves the primary diagnostic when cleanup refuses an unowned credential path', async () => withFixture(async f => {
+  const sibling = mkdtempSync(join(f.root, 'sibling-')), file = join(sibling, 'credentials.json');
+  writeFileSync(file, 'FIXTURE_PASSWORD', { mode: 0o600 });
+  const result = runCli(f, 'run', { GITHUB_REPOSITORY: 'wrong/repo', SMOKE_CREDENTIAL_FILE: file });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr.trim(), 'Runtime release: invalid_dev_source');
+  assert.equal(readFileSync(file, 'utf8'), 'FIXTURE_PASSWORD');
+  assert.equal(existsSync(f.credentials), true);
+}));
+
+test('CLI capture keeps private credentials and captured state for the later run phase', async () => {
+  for (const valid of [true, false]) await withFixture(async f => {
+    const output = join(f.root, 'github-output');
+    const result = runCli(f, 'capture', { GITHUB_OUTPUT: output },
+      valid ? JSON.stringify(deployment()) : '{FIXTURE_PASSWORD');
+    assert.equal(result.status, valid ? 0 : 1);
+    assert.equal(existsSync(f.credentials), true);
+    assert.equal(statSync(f.credentials).mode & 0o777, 0o600);
+    if (valid) {
+      const file = join(f.directory, 'runtime-deployment.json');
+      assert.equal(readFileSync(output, 'utf8'), `deployment_file=${file}\n`);
+      assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), deployment());
+      assert.equal(statSync(file).mode & 0o777, 0o600);
+    } else assert.equal(result.stderr.trim(), 'Runtime release: invalid_response');
+  });
+});
+
 test('wrong source, role/account or mode fails before AWS calls', async () => {
   for (const change of [
     { TARGET: 'main' }, { AWS_ACCOUNT_ID_DEV: '' }, { AWS_ACCOUNT_ID_DEV: '999999999999' },
@@ -165,17 +237,13 @@ test('the own CloudFront probe waits through busy/superseded without another ful
     }, authenticate: f.authenticate,
   });
   assert.equal(probes, 3);
-  assert.deepEqual(f.authenticated[0].input.runtimeConfig.expectedQueuedTypes, ['cloudfront', 'rds']);
+  assert.deepEqual(f.authenticated[0].input.runtimeConfig.expectedQueuedTypes, catalog().types);
   assert.equal(f.authenticated[0].input.runtimeConfig.collectionMode, 'release');
 }));
 
 test('full collection synchronously drives every source catalog type with at most four workers', async () => {
-  const { execFileSync } = await import('node:child_process');
-  const source = new URL('../steampipe/sync_lambda.py', import.meta.url);
-  const types = JSON.parse(execFileSync('python3', ['-c',
-    'import ast,json,sys; t=ast.parse(open(sys.argv[1]).read()); print(json.dumps([k.value for n in t.body if isinstance(n,ast.Assign) and any(isinstance(a,ast.Name) and a.id in ("QUERIES","SDK_SYNCS") for a in n.targets) for k in n.value.keys]))',
-    source.pathname], { encoding: 'utf8' }));
-  assert.ok(types.length >= 43);
+  const types = sourceTypes;
+  assert.equal(MIN_CATALOG_TYPES, types.length, 'The runtime floor must match the current registered source catalog');
   await withFixture(async f => {
     const policy = JSON.parse(execFileSync('python3', ['-c',
       'import json,sys; sys.path.insert(0,sys.argv[1]); from ci_verifier_sessions import workload_policy; e,d=json.load(sys.stdin); print(json.dumps(workload_policy(e,d)))',
@@ -242,7 +310,7 @@ test('partial type is reported, other types settle, and incomplete collection ca
 
 test('reserved dispatcher names cannot enter the synchronous catalog', () => {
   for (const type of ['all', 'catalog'])
-    assert.throws(() => validateCatalog({ status: 'catalog', types: ['cloudfront', type] }),
+    assert.throws(() => validateCatalog({ status: 'catalog', types: [type, ...catalog().types.slice(1), 'cloudfront'] }),
       /invalid_collection_catalog/);
 });
 
@@ -299,6 +367,8 @@ test('a long busy probe retries only when the next complete call preserves the p
   for (const duration of [300_000, 420_000]) await withFixture(async f => {
     let clock = Date.now() - 900_000, probes = 0;
     const began = clock;
+    let remainingFast = sourceTypes.length - 1, finishFast;
+    const fastTypesSettled = new Promise(resolve => { finishFast = resolve; });
     const action = release(deployment(), { env: f.env, now: () => clock, wait: async ms => { clock += ms; },
       run: async (command, args, options) => {
         if (args[0] === 'lambda' && args[1] === 'invoke'
@@ -306,13 +376,18 @@ test('a long busy probe retries only when the next complete call preserves the p
           probes++;
           assert.equal(options.env.AWS_MAX_ATTEMPTS, '1');
           assert.equal(options.timeout, 450_000);
+          await fastTypesSettled; // Other lanes finish while the slow CloudFront call is in flight.
           clock += duration;
           writeFileSync(args.at(-1), JSON.stringify({ type: 'cloudfront',
             status: probes === 1 ? 'busy' : 'succeeded',
             ...(probes > 1 ? { row_count: 1, unknown_attribute_count: 0 } : {}) }));
           return JSON.stringify({ StatusCode: 200, ExecutedVersion: '$LATEST' });
         }
-        return f.run(command, args);
+        const result = await f.run(command, args);
+        if (args[0] === 'lambda' && args[1] === 'invoke'
+          && JSON.parse(args[args.indexOf('--payload') + 1]).type !== 'catalog'
+          && --remainingFast === 0) finishFast();
+        return result;
       }, authenticate: f.authenticate });
     if (duration === 420_000) {
       await assert.rejects(action, /collection_probe_busy/);
@@ -354,23 +429,45 @@ test('Terraform schema is snake_case and collect cannot accept disabled/partial 
 });
 
 test('catalog rejects a partial, duplicate, empty or incomplete canonical set', () => {
-  assert.deepEqual(validateCatalog(catalog()), ['cloudfront', 'rds']);
+  assert.deepEqual(validateCatalog(catalog()), catalog().types);
   for (const value of [{ status: 'partial', types: ['cloudfront'] }, { status: 'catalog', types: [] },
     { status: 'catalog', types: ['rds'] }, { status: 'catalog', types: ['cloudfront', 'cloudfront'] },
+    { ...catalog(), status: 'partial' },
+    { ...catalog(), types: ['cloudfront', 'cloudfront', ...catalog().types.slice(2)] },
     { ...catalog(), arbitrary: 'PRIVATE' }]) assert.throws(() => validateCatalog(value));
+});
+test('catalog floor rejects a shrunken hash-matching collector before type invocation or authentication', async () => {
+  for (const types of [['cloudfront'], ['cloudfront', 'rds'], catalog().types.slice(0, -1)]) {
+    assert.throws(() => validateCatalog({ status: 'catalog', types }), /invalid_collection_catalog/);
+    await withFixture(async f => {
+      await assert.rejects(f.release(), /invalid_collection_catalog/);
+      assert.deepEqual(f.calls.filter(a => a[0] === 'lambda' && a[1] === 'invoke')
+        .map(a => JSON.parse(a[a.indexOf('--payload') + 1]).type), ['catalog']);
+      assert.equal(f.prepared.length, 0);
+      assert.equal(f.authenticated.length, 0);
+      assert.equal(existsSync(f.directory), false);
+    }, { catalog: { status: 'catalog', types } });
+  }
+});
+test('full catalog retains upper bound, valid names, unique members and CloudFront requirement', () => {
+  const types = [...catalog().types, ...Array.from({ length: 128 - sourceTypes.length }, (_, i) => `future_${i}`)];
+  assert.deepEqual(validateCatalog({ status: 'catalog', types }), types);
+  for (const invalid of [[...types, 'too_many'], ['replacement', ...catalog().types.slice(1)],
+    ['cloudfront', null, ...catalog().types.slice(2)], ['cloudfront', 'bad/type', ...catalog().types.slice(2)]])
+    assert.throws(() => validateCatalog({ status: 'catalog', types: invalid }), /invalid_collection_catalog/);
 });
 test('collect binds running web, code hash, canonical coverage and the fresh own-workload probe', async () => withFixture(async f => {
   const now = Date.now();
   const result = await f.release({ now: () => now });
   assert.equal(result.status, 'full_verified');
   assert.equal(result.inventory_policy, 'full');
-  assert.equal(result.inventory_quality.counts.verified, 2);
+  assert.equal(result.inventory_quality.counts.verified, sourceTypes.length);
   assert.equal(result.web_tasks, 1);
   assert.equal(result.workers, 2);
   assert.equal(f.authenticated.length, 1);
   assert.deepEqual(f.authenticated[0].input.runtimeConfig, {
     schemaVersion: 1, mode: 'verify', hostOnly: true, expectedAccountId: account,
-    expectedCloudfrontId: 'E123EXAMPLE', expectedQueuedTypes: ['cloudfront', 'rds'],
+    expectedCloudfrontId: 'E123EXAMPLE', expectedQueuedTypes: catalog().types,
     collectionStartedAt: new Date(now).toISOString(), collectionMode: 'release',
     inventoryPolicy: 'full',
   });
@@ -425,7 +522,7 @@ for (const [label, change, readError] of [
     },
   }), error => {
     assert.equal(error.message, readError || 'inventory_code_mismatch');
-    assert.equal(error.collection_attempts.counts.succeeded, 2);
+    assert.equal(error.collection_attempts.counts.succeeded, sourceTypes.length);
     return true;
   });
   assert.equal(configReads, 2);
@@ -537,8 +634,9 @@ test('approved root digest still rejects a different running image', async () =>
 
 test('full controller rejects successful-looking incomplete inventory proof', async () => {
   for (const status of ['gaps', 'complete']) {
-    const quality = { status, catalog_types: ['cloudfront', 'rds'],
-      counts: { expected: 2, verified: 1, missing: 1 }, types: { verified: ['cloudfront'], missing: ['rds'] } };
+    const quality = { status, catalog_types: catalog().types,
+      counts: { expected: sourceTypes.length, verified: sourceTypes.length - 1, missing: 1 },
+      types: { verified: catalog().types.filter(t => t !== 'rds'), missing: ['rds'] } };
     await withFixture(async f => {
       f.env.INVENTORY_POLICY = 'full';
       await assert.rejects(f.release(),
@@ -552,7 +650,7 @@ test('complete proof must contain every verified type and zero consistent gap co
   for (const mutate of [
     quality => { quality.counts.unknown = 1; },
     quality => { quality.types.pending.push('rds'); },
-    quality => { quality.types.verified = ['cloudfront', 'cloudfront']; },
+    quality => { quality.types.verified[1] = quality.types.verified[0]; },
     quality => { quality.counts.pending = '0'; },
   ]) await withFixture(async f => {
     await assert.rejects(release(deployment(), { env: f.env, run: f.run,
@@ -588,8 +686,8 @@ test('runtime proof receives the earlier controller or marker deadline without r
       } });
     if (setupMinutes === 26) {
       await assert.rejects(action, error => {
-        assert.equal(error.collection_attempts.counts.not_started, 2);
-        assert.equal(error.collection_attempts.counts.deadline, 2);
+        assert.equal(error.collection_attempts.counts.not_started, sourceTypes.length);
+        assert.equal(error.collection_attempts.counts.deadline, sourceTypes.length);
         return true;
       });
       assert.equal(f.authenticated.length, 0);
@@ -604,7 +702,8 @@ test('runtime proof receives the earlier controller or marker deadline without r
 
 test('late batches cannot spend the authentication and runtime proof reserve', async () => {
   for (const setupMinutes of [0, 25]) {
-    const types = ['cloudfront', 'rds', 'ec2', 's3', 'iam_user'];
+    const first = ['cloudfront', 'rds', 'ec2', 's3', 'iam_user'];
+    const types = [...first, ...sourceTypes.filter(type => !first.includes(type))];
     await withFixture(async f => {
       let clock = Date.now() - (setupMinutes + 10) * 60_000;
       const invoked = [];
