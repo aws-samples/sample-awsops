@@ -22,9 +22,11 @@ Diagnostics contain fixed operation labels, never provider output or arguments.
 Keep writes on ci_web_image.command; do not catch ImageError as retryable.
 
 Outside a window, each call has a 30-second cap. Nested windows can only shorten
-it. A real monotonic subprocess watchdog enforces the computed remaining budget
+it; launch requires at least 50ms remaining for useful work and cleanup.
+A real monotonic subprocess watchdog enforces the computed remaining budget
 even with an injected test clock. Cleanup time is reserved INSIDE that budget;
 timeout kills the owned process group and waits boundedly for the direct child.
+An admitted read's parsed success is retained; the next read checks the budget.
 Normal OS scheduling/process creation latency is not a hard realtime guarantee.
 """
 from contextlib import contextmanager
@@ -43,20 +45,20 @@ from ci_web_image import ImageError, child_environment, require
 
 __all__ = ["TransientReadError", "read_window", "read_request"]
 MAX_REQUEST_SECONDS = 30.0
+MIN_REQUEST_SECONDS = 0.05
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_ERROR_BYTES = 64 * 1024
 
 # This is an authorization boundary, independent of the base diagnostic labels.
 _OPERATIONS = {
-    ("ecs", "describe-services"): ("ecs:DescribeServices", {"cluster", "services", "include"}),
-    ("ecs", "describe-tasks"): ("ecs:DescribeTasks", {"cluster", "tasks", "include"}),
+    ("ecs", "describe-services"): ("ecs:DescribeServices", {"cluster", "services"}),
+    ("ecs", "describe-tasks"): ("ecs:DescribeTasks", {"cluster", "tasks"}),
     ("ecs", "describe-task-definition"): (
-        "ecs:DescribeTaskDefinition", {"task-definition", "include"}),
+        "ecs:DescribeTaskDefinition", {"task-definition"}),
     ("ecs", "list-tasks"): ("ecs:ListTasks", {
-        "cluster", "container-instance", "family", "started-by", "service-name",
-        "desired-status", "launch-type", "next-token", "max-results"}),
+        "cluster", "service-name", "desired-status", "max-results", "next-token"}),
     ("ecr", "batch-get-image"): ("ecr:BatchGetImage", {
-        "registry-id", "repository-name", "image-ids", "accepted-media-types"}),
+        "registry-id", "repository-name", "image-ids"}),
     ("ecr", "get-download-url-for-layer"): ("ecr:GetDownloadUrlForLayer", {
         "registry-id", "repository-name", "layer-digest"}),
     ("sts", "get-caller-identity"): ("sts:GetCallerIdentity", set()),
@@ -151,7 +153,10 @@ def _transient(stderr, label):
 
 
 def _stop(proc, deadline, label):
-    # Kill the group even when its leader exited but a descendant kept a pipe open.
+    # A reaped PID may have been reused. Do not poll here: an exited, unreaped
+    # leader still owns the group whose descendant may be holding a pipe open.
+    if proc.returncode is not None:
+        return
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -209,7 +214,7 @@ def read_request(service, operation, args):
         with tempfile.TemporaryDirectory(prefix="web-read-config-") as config_dir:
             env = child_environment("aws", config_dir)
             seconds = min(_budget(), request_deadline - time.monotonic())
-            if seconds <= 0:
+            if seconds < MIN_REQUEST_SECONDS:
                 raise TransientReadError(f"AWS read budget exhausted [{label}]")
             code, stdout, stderr = _capture(argv, env, seconds, label)
         if code != 0:
@@ -218,8 +223,6 @@ def read_request(service, operation, args):
             raise ImageError(f"AWS read failed [{label}]")
         result = json.loads(stdout)
         require(isinstance(result, dict), f"Invalid AWS read response [{label}]")
-        if _budget() <= 0 or time.monotonic() >= request_deadline:
-            raise TransientReadError(f"AWS read budget exhausted [{label}]")
         return result
     except (OSError, ValueError, RecursionError, subprocess.SubprocessError):
         raise ImageError(f"AWS read failed [{label}]") from None

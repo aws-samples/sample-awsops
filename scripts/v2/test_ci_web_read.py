@@ -72,7 +72,8 @@ class ReadTransportTest(unittest.TestCase):
             ("ecs", "describe-tasks", {"cluster": "fixture", "tasks": ["task-a", "task-b"]}),
             ("ecs", "describe-task-definition", {"task-definition": "web:1"}),
             ("ecs", "list-tasks", {"cluster": "fixture", "service-name": "web",
-                                   "next-token": "opaque", "max-results": "100"}),
+                                   "desired-status": "RUNNING", "next-token": "opaque",
+                                   "max-results": "100"}),
             ("ecr", "batch-get-image", {"registry-id": "123456789012",
                                        "repository-name": "web", "image-ids": "imageTag=source"}),
             ("ecr", "get-download-url-for-layer", {"registry-id": "123456789012",
@@ -90,6 +91,24 @@ class ReadTransportTest(unittest.TestCase):
                 if "tasks" in args:
                     start = calls[0].index("--tasks")
                     self.assertEqual(calls[0][start + 1:start + 3], ["task-a", "task-b"])
+
+    def test_unused_read_options_are_rejected_before_process_launch(self):
+        cases = [
+            ("ecs", "describe-services", {"include": ["TAGS"]}),
+            ("ecs", "describe-tasks", {"include": ["TAGS"]}),
+            ("ecs", "describe-task-definition", {"include": ["TAGS"]}),
+            ("ecs", "list-tasks", {"container-instance": "fixture"}),
+            ("ecs", "list-tasks", {"family": "web"}),
+            ("ecs", "list-tasks", {"started-by": "fixture"}),
+            ("ecs", "list-tasks", {"launch-type": "FARGATE"}),
+            ("ecr", "batch-get-image", {
+                "accepted-media-types": "application/vnd.oci.image.manifest.v1+json"}),
+        ]
+        with self.cli(['print("{}")']) as (calls, _):
+            for service, operation, args in cases:
+                with self.subTest(operation=operation, args=args):
+                    self.assert_fatal(lambda: self.subject.read_request(service, operation, args))
+            self.assertEqual(calls, [])
 
     def test_unknown_operations_and_mutations_are_rejected_before_process_launch(self):
         cases = [("ecs", "update-service"), ("ecs", "run-task"),
@@ -233,6 +252,29 @@ class ReadTransportTest(unittest.TestCase):
             self.assertEqual(self.read(), {})
             self.assertEqual(len(calls), 1)
 
+    def test_insufficient_cleanup_budget_is_transient_without_process_launch(self):
+        for remaining in (0.000001, 0.001, 0.049):
+            with self.subTest(remaining=remaining), self.cli(['print("{}")']) as (calls, _):
+                with self.subject.read_window(10.0 + remaining, now=lambda: 10.0):
+                    with self.assertRaises(self.subject.TransientReadError):
+                        self.read()
+                self.assertEqual(calls, [])
+
+    def test_parsed_success_is_kept_after_deadline_but_next_read_cannot_launch(self):
+        current = [10.0]
+        original = self.subject.json.loads
+        def parse_at_deadline(data):
+            result = original(data)
+            current[0] = 11.0
+            return result
+        with self.subject.read_window(11.0, now=lambda: current[0]), \
+                patch.object(self.subject.json, "loads", side_effect=parse_at_deadline), \
+                self.cli(['print(\'{"status": "ready"}\')']) as (calls, _):
+            self.assertEqual(self.read(), {"status": "ready"})
+            with self.assertRaises(self.subject.TransientReadError):
+                self.read()
+            self.assertEqual(len(calls), 1)
+
     def test_nested_windows_cannot_extend_outer_budget_and_reset_on_exception(self):
         with self.cli(['print("{}")']) as (calls, _):
             with self.subject.read_window(10.0, now=lambda: 10.0):
@@ -311,11 +353,63 @@ class ReadTransportTest(unittest.TestCase):
         self.assertTrue(pid_file.exists(), "Fixture must spawn a descendant before timeout")
         self.assert_not_running(int(pid_file.read_text()))
 
+    def test_successful_reaped_process_is_not_signalled_during_cleanup(self):
+        with self.cli(['print("{}")']) as (_, children), \
+                patch.object(self.subject.os, "killpg", wraps=os.killpg) as kill:
+            self.assertEqual(self.read(), {})
+            self.assertEqual(children[0].returncode, 0)
+            kill.assert_not_called()
+
+    def test_exited_unreaped_leader_still_kills_descendant_holding_pipe(self):
+        pid_file = Path(self.directory.name) / "descendant"
+        program = (
+            "import subprocess, sys\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+            f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n")
+        observed = []
+        original = self.subject._stop
+        def stop(proc, deadline, label):
+            state = Path(f"/proc/{proc.pid}/stat").read_text().split(") ", 1)[1][0]
+            observed.append((proc.returncode, state))
+            return original(proc, deadline, label)
+        try:
+            with self.cli([program]) as (_, children), \
+                    patch.object(self.subject, "_stop", side_effect=stop):
+                start = time.monotonic()
+                with self.subject.read_window(start + 0.7):
+                    with self.assertRaises(self.subject.TransientReadError):
+                        self.read()
+                self.assertLess(time.monotonic() - start, 0.85)
+                self.assertEqual(observed, [(None, "Z")])
+                self.assertEqual(children[0].returncode, 0)
+            self.assertTrue(pid_file.exists(), "Fixture must spawn a descendant before timeout")
+            self.assert_not_running(int(pid_file.read_text()))
+        finally:
+            # Keep a regression that skips group cleanup from leaving a live fixture.
+            if pid_file.exists():
+                pid = int(pid_file.read_text())
+                stat = Path(f"/proc/{pid}/stat")
+                if stat.exists() and stat.read_text().split(") ", 1)[1][0] != "Z":
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
     def assert_not_running(self, pid):
-        # An orphan killed with its group can briefly be a zombie pending init's reap.
+        # Give a killed descendant a brief scheduling turn to exit. An orphan
+        # can then remain a zombie pending init's reap.
         stat = Path(f"/proc/{pid}/stat")
-        if stat.exists():
-            self.assertEqual(stat.read_text().split(") ", 1)[1][0], "Z")
+        deadline = time.monotonic() + 0.1
+        while True:
+            try:
+                state = stat.read_text().split(") ", 1)[1][0]
+            except FileNotFoundError:
+                return
+            if state == "Z":
+                return
+            if time.monotonic() >= deadline:
+                self.fail("Descendant is still running after process-group cleanup")
+            time.sleep(0.005)
 
     def test_default_window_also_bounds_a_stuck_cli(self):
         with patch.object(self.subject, "MAX_REQUEST_SECONDS", 0.3), \

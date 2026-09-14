@@ -5,6 +5,7 @@ import json
 import os
 import re
 import stat
+import sys
 import time
 
 from ci_web_image import (INDEX_MEDIA, ImageError, command, environment_context, get_image,
@@ -125,7 +126,12 @@ def service(c, aws, supplied=None):
             "Web service identity mismatch")
     require(re.fullmatch(re.escape(p + f"task-definition/{project}-web:") + r"[1-9][0-9]*",
                          supplied.get("taskDefinition", "")), "Task definition identity mismatch")
-    primary = [d for d in supplied.get("deployments", []) if d.get("status") == "PRIMARY"]
+    deployments = supplied.get("deployments")
+    require(isinstance(deployments, list) and all(isinstance(d, dict)
+            and isinstance(d.get("id"), str)
+            and re.fullmatch(r"ecs-svc/[0-9]+", d["id"]) for d in deployments),
+            "Invalid deployment identity")
+    primary = [d for d in deployments if d.get("status") == "PRIMARY"]
     require(len(primary) == 1 and re.fullmatch(r"ecs-svc/[0-9]+", primary[0].get("id", ""))
             and primary[0].get("taskDefinition") == supplied["taskDefinition"], "Primary deployment missing")
     require(type(supplied.get("desiredCount")) is int and 0 < supplied["desiredCount"] <= 1000,
@@ -179,7 +185,7 @@ def probe_tasks(c, aws):
 def task_set(c, value, primary, aws, digests):
     """The candidate must have a complete, healthy, digest-bound task set."""
     arns, token = [], None
-    for _ in range(10):
+    for _ in range(11):
         request = dict(cluster=c["project"], serviceName=c["project"] + "-web",
                        desiredStatus="RUNNING", maxResults=100)
         if token:
@@ -285,6 +291,10 @@ def verify(c, proof, aws=aws_request, timeout=600, now=time.monotonic, sleep=tim
             and re.fullmatch(r"ecs-svc/[0-9]+", proof.get("deployment_id", ""))
             and re.fullmatch(r"[1-9][0-9]*", proof.get("task_revision", ""))
             and re.fullmatch(r"[1-9][0-9]*", proof.get("desired_count", "")), "Invalid rollout receipt")
+    old_id = proof.get("old_deployment_id")
+    require(old_id in (None, "") or (isinstance(old_id, str)
+            and re.fullmatch(r"ecs-svc/[0-9]+", old_id)
+            and old_id != proof["deployment_id"]), "Invalid prior deployment identity")
     visibility_deadline = now() + min(timeout, 15)
     def current():
         value, primary = service(c, aws)
@@ -298,6 +308,7 @@ def verify(c, proof, aws=aws_request, timeout=600, now=time.monotonic, sleep=tim
             raise ImageError("Deployment was replaced or rolled back")
         require(value["taskDefinition"].endswith(":" + proof["task_revision"])
                 and value["desiredCount"] == int(proof["desired_count"]), "Deployment configuration changed")
+        ready(primary.get("rolloutState") is not None, "Deployment state is not yet available")
         require(primary.get("rolloutState") in {"IN_PROGRESS", "COMPLETED"}, "Deployment failed")
         stable(value, primary)
         return value, primary
@@ -359,5 +370,5 @@ if __name__ == "__main__":
     try:
         main()
     except (ImageError, ValueError, KeyError, TypeError, AttributeError, IndexError, OSError) as error:
-        print("::error::" + (str(error) if isinstance(error, ImageError) else "Web deployment verification failed"))
+        print("::error::" + (str(error) if isinstance(error, ImageError) else "Web deployment verification failed"), file=sys.stderr)
         raise SystemExit(1)

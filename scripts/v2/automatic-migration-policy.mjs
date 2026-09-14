@@ -1,8 +1,10 @@
 import { MigrationError } from './migration-errors.mjs';
-import { validateId } from './migrate-core.mjs';
+import { hasNoTxnFlag, parseMigrationFile, validateId } from './migrate-core.mjs';
 
 // Deliberately a small SQL subset, not a PostgreSQL parser or a safety proof for
 // arbitrary reviewed SQL. Unsupported syntax requires the standalone override.
+// Only new tables and ordinary non-unique indexes; column/view changes must be
+// reviewed together in standalone mode. Every admitted file stays transactional.
 // Quoted identifiers/literals never become keywords. Reject dollar quotes and
 // backslash escapes rather than guessing at bodies or session string settings.
 function tokenize(sql) {
@@ -100,14 +102,14 @@ class AdditiveStatement {
     }
     return !this.take('::') || this.type();
   }
-  column(newTable) {
-    if (!this.identifier() || !this.type(newTable)) return false;
+  column() {
+    if (!this.identifier() || !this.type(true)) return false;
     for (;;) {
       if (this.take('NULL')) continue;
       if (this.take('DEFAULT')) { if (!this.constant()) return false; continue; }
-      if (newTable && this.take('NOT')) { if (!this.take('NULL')) return false; continue; }
-      if (newTable && this.take('PRIMARY')) { if (!this.take('KEY')) return false; continue; }
-      if (newTable && this.take('UNIQUE')) continue;
+      if (this.take('NOT')) { if (!this.take('NULL')) return false; continue; }
+      if (this.take('PRIMARY')) { if (!this.take('KEY')) return false; continue; }
+      if (this.take('UNIQUE')) continue;
       return true;
     }
   }
@@ -115,14 +117,13 @@ class AdditiveStatement {
     this.take('CONSTRAINT') && this.identifier();
     if (this.take('PRIMARY')) return this.take('KEY') && this.list(() => this.identifier());
     if (this.take('UNIQUE')) return this.list(() => this.identifier());
-    return this.column(true);
+    return this.column();
   }
   createTable() {
     if (this.take('IF') && !(this.take('NOT') && this.take('EXISTS'))) return false;
     return this.name() && this.list(() => this.tableElement());
   }
   createIndex() {
-    this.take('CONCURRENTLY');
     if (this.take('IF') && !(this.take('NOT') && this.take('EXISTS'))) return false;
     if (!this.identifier() || !this.take('ON')) return false;
     this.take('ONLY');
@@ -134,25 +135,12 @@ class AdditiveStatement {
     })) return false;
     return !this.take('INCLUDE') || this.list(() => this.identifier());
   }
-  alterTable() {
-    if (!this.take('TABLE')) return false;
-    if (this.take('IF') && !this.take('EXISTS')) return false;
-    this.take('ONLY');
-    if (!this.name()) return false;
-    do {
-      if (!this.take('ADD')) return false;
-      this.take('COLUMN');
-      if (this.take('IF') && !(this.take('NOT') && this.take('EXISTS'))) return false;
-      if (!this.column(false)) return false;
-    } while (this.take(','));
-    return true;
-  }
   allowed() {
     let allowed = false;
     if (this.take('CREATE')) {
       if (this.take('TABLE')) allowed = this.createTable();
       else if (this.take('INDEX')) allowed = this.createIndex();
-    } else if (this.take('ALTER')) allowed = this.alterTable();
+    }
     return allowed && this.position === this.tokens.length;
   }
 }
@@ -160,8 +148,11 @@ class AdditiveStatement {
 /** null = supported additive SQL; otherwise a closed, SQL-free reason code. */
 export function automaticMigrationReason(sql) {
   if (typeof sql !== 'string') return 'unsupported-syntax';
+  // Use the runner's exact flag recognizer, including otherwise harmless files.
+  if (hasNoTxnFlag(sql)) return 'non-transactional-file';
   const tokens = tokenize(sql);
   if (!tokens) return 'unsupported-syntax';
+  if (tokens.includes('CONCURRENTLY')) return 'concurrent-index';
   if (tokens.some(token => ['DROP', 'TRUNCATE'].includes(token))) return 'destructive-sql';
   if (tokens.some(token => ['DO', 'CALL', 'EXECUTE', 'PREPARE', 'FUNCTION', 'PROCEDURE'].includes(token))) {
     return 'procedural-or-dynamic-sql';
@@ -169,10 +160,21 @@ export function automaticMigrationReason(sql) {
   let statement = [];
   for (const token of [...tokens, ';']) {
     if (token !== ';') { statement.push(token); continue; }
+    if (statement[0] === 'ALTER') return 'table-alteration';
     if (statement.length && !new AdditiveStatement(statement).allowed()) return 'outside-additive-subset';
     statement = [];
   }
   return null;
+}
+
+function filenameLabel(file) {
+  // Match the actual filename parser, but never render a supplied path.
+  if (typeof file !== 'string' || /[\\/]/.test(file) || !parseMigrationFile(file)) {
+    return '"[invalid filename]"';
+  }
+  const text = file.length > 256 ? `${file.slice(0, 256)}…[truncated]` : file;
+  return JSON.stringify(text).replace(/[\u007f-\u009f\u2028-\u202e\u2066-\u2069]/g,
+    char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 /** Call only with the entire ledger-derived pending set, while holding the lock. */
@@ -181,9 +183,7 @@ export function assertAutomaticMigrations(pendingMigrations) {
     const reason = automaticMigrationReason(migration.sql);
     if (!reason) continue;
     const id = validateId(migration.id) ? migration.id : '[invalid id]';
-    const file = typeof migration.file === 'string'
-      && /^[0-9A-HJKMNP-TV-Z]{26}_[a-z0-9_]{1,160}\.sql$/i.test(migration.file)
-      ? migration.file : '[invalid filename]';
+    const file = filenameLabel(migration.file);
     throw new MigrationError(`Automatic migration blocked: file=${file}, id=${id}, reason=${reason}; `
       + 'run a reviewed standalone migration with AUTOMATIC_MIGRATION unset');
   }

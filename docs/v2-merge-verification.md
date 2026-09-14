@@ -167,7 +167,7 @@ aggregate-run false failures.
    The provisioner fixture imports boto3/botocore; install `agent/requirements.txt` for local runs too.
 5. Run `node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs`
    against disposable PostgreSQL. Keep all migration cases:
-   real initialization/ULIDs, rollback/retry/checksums, lock serialization, reader guards,
+   real initialization/ULIDs, rollback/retry/checksums, concurrent lock exclusion, actionable contention/retry, automatic SQL rejection, reader guards,
    permission denial, password rotation and TLS rejection. Also verify the web connection
    observer's phase/timing and error propagation. Docker failure is a gate failure.
 6. Run `bash scripts/v2/terraform-test.sh`: required validate/mock-plan tests in an isolated tracked copy,

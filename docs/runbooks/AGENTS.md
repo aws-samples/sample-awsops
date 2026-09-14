@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ab3d9f918ee5 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: cdbfd117972d · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -10,8 +10,9 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
-- Release safety primitives remain unwired to web workflows. Automatic pending-SQL
-  checks are opt-in; standalone overrides require reviewed cutovers. Contention fails
+- Release safety primitives remain unwired to web workflows. Automatic transactional pending-SQL
+  checks are opt-in; column/view and non-transactional changes require reviewed cutovers.
+  The empty-only frozen baseline precedes pending admission. Contention fails
   immediately under the shared lock. Read retries share a deadline and never retry writes;
   failed/replaced ECS deployment evidence is terminal. See `release-safety-primitives.md`.
 

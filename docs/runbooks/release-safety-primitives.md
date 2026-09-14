@@ -38,10 +38,15 @@ holding the advisory lock, after checksum validation and before pending SQL,
 ledger upgrades or reader password synchronization. Applied migration contents
 and immutable `-- since:` headers are never rewritten.
 
-The supported subset includes simple new tables, non-unique btree indexes and
-nullable columns with supported built-in types and constant defaults. Destructive
-or restrictive alterations, procedural/dynamic SQL, dollar-quoted bodies and
-unrecognized syntax require a reviewed standalone migration. This is a conservative
+The automatic subset permits only transactional files containing simple new tables
+and ordinary non-unique btree indexes. Non-transactional files, `CONCURRENTLY`,
+all column alterations, procedural/dynamic SQL, dollar-quoted bodies and unknown
+syntax require a reviewed standalone migration. Column changes and their paired
+`sql_reader` view refresh must be reviewed/applied together; do not split a file
+to omit the view update. Rejecting all automatic column alterations avoids silently
+leaving fixed-column reader views stale. Failed concurrent indexes and partial
+non-transactional files require inspection/repair, never an `IF NOT EXISTS` retry
+that could ledger an invalid index. This is a conservative
 syntax admission rule, not proof that arbitrary SQL is backward-compatible or
 cheap. Review remains mandatory. The existing frozen-baseline initializer still
 checks that the database is empty; setting its flag on an existing database does
@@ -53,10 +58,10 @@ leaves it unset and is the explicit override for approved contract cutovers.
 Keep web releases disabled and queues drained during those cutovers; keep required
 AI/CI checks enabled. Re-enable only after compatible consumers are verified.
 
-The deployment owner's standing instructions dated 2026-09-14 authorize this
-work's reviewed commits, merges and deployments. The implementation confines
-unattended development SQL to this checked subset; it adds no product autonomy,
-AWS-resource remediation flag or exception to ADR-005.
+This implementation adds no product autonomy, AWS-resource remediation flag or
+exception to ADR-005. Automatic caller activation remains a separately reviewed
+operator deployment change. `DRY_RUN=1` combined with automatic mode still validates
+the subset and rejects unsupported SQL rather than previewing rejected statements.
 
 `pg_try_advisory_lock(4729411)` fails immediately when another runner holds the
 lock. No pending SQL or reader synchronization starts in that case. Acquired
@@ -78,7 +83,7 @@ are fatal. Diagnostics contain fixed labels, not provider data or credentials.
 The controller's `wait_for` retries only transient reads and not-yet-converged
 observations inside that budget. Writes remain single-attempt. An explicit failed
 deployment or a new replacement PRIMARY fails immediately. The known pre-update
-PRIMARY may be stale for at most 15 seconds; a persistent old projection then
+PRIMARY may be stale for at most 15 seconds during receipt verification; a persistent old projection then
 fails with a replacement/rollback diagnosis. Callers pass the recorded
 `old_deployment_id` with the other verification fields to enable that narrow grace.
 Task digests, health and the final promoted-tag read share the verification window.
@@ -94,4 +99,5 @@ See `scripts/v2/automatic-migration-policy.mjs`, `migrate.mjs`,
 `migration-errors.mjs`, `ci_web_read.py`, `ci_web_deploy.py`,
 [web provenance](web-image-provenance.md), and [migration setup](dev-repo-setup.md).
 ADR-001 preserves migration history; ADR-005 separates operator deployment from
-frozen application autonomy; ADR-021 governs consumer/schema compatibility.
+frozen application autonomy. Schema/reader compatibility is governed by the
+migration and SQL-reader contracts linked above.

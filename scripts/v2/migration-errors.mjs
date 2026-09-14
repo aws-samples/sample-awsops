@@ -71,7 +71,11 @@ export function databaseFailure(purpose, error, { migrationSql = false } = {}) {
   const fields = [diagnosticCodes(error)];
   // These SQLSTATEs do not establish who holds a lock or why a query was
   // canceled. Only failed pg_try_advisory_lock proves a concurrent runner.
-  if (error?.code === '55P03') {
+  if (error?.code === '25001') {
+    fields.push('active SQL transaction; inspect the reviewed standalone migration transaction mode before retrying');
+  } else if (error?.code === '40P01') {
+    fields.push('database deadlock detected; inspect blocking transactions and lock order before retrying');
+  } else if (error?.code === '55P03') {
     fields.push('database lock unavailable; inspect blocking transactions and retry after they finish');
   } else if (error?.code === '57014') {
     fields.push('query canceled; inspect statement timeout or operator cancellation before retrying');
