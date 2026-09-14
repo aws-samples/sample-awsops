@@ -32,6 +32,24 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 180; // 콜드 Steampipe(≤35s) + 자기수정 + 장문 분석 스트림이 60s를 넘던 실측(2026-08-02) // long agent calls
 
 const MAX_PROMPT = 50_000;
+const CUSTOM_POLICY_FAILURE_NOTICE: Record<ChatLang, { fallback: string; pin: string }> = {
+  ko: {
+    fallback: '커스텀 에이전트를 사용할 수 없어 이번 답변은 기본 에이전트로 라우팅합니다.',
+    pin: '선택한 커스텀 에이전트의 설정을 읽을 수 없어 일시적으로 사용할 수 없습니다. 다시 시도하세요.',
+  },
+  en: {
+    fallback: 'Custom-agent routing is unavailable; using built-in routing for this reply.',
+    pin: 'The requested custom agent is temporarily unavailable because its settings could not be read. Please retry.',
+  },
+  zh: {
+    fallback: '无法使用自定义代理；本次回复使用内置代理路由。',
+    pin: '无法读取所选自定义代理的设置，因此暂时无法使用。请重试。',
+  },
+  ja: {
+    fallback: 'カスタムエージェントを利用できないため、この回答には組み込みエージェントのルーティングを使用します。',
+    pin: '選択したカスタムエージェントの設定を読み込めないため、一時的に利用できません。再試行してください。',
+  },
+};
 const TYPE_DELAY_MS = Number(process.env.CHAT_TYPEWRITER_MS) || 0;
 const STATUS_TICK_MS = 1500;
 const THREAD_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -448,6 +466,8 @@ export async function POST(request: Request) {
   // section — and it sits ABOVE keyword-matched custom agents and the classifier in the ladder.
   // A non-built-in `section` is a custom-agent pin attempt (hybrid path only; legacy is unchanged).
   const customPinTarget = (hybridOn && body.section && !pinIsBuiltin) ? body.section : null;
+  const productHelpIntent = hybridOn && !body.section && isProductHelpIntent(prompt);
+  let finalPolicyUnavailable = false;
   let customPinEnabled: boolean, unavailablePin: boolean, customPick: string | null, routeKey: string;
   try {
     customPinEnabled = customPinTarget
@@ -456,7 +476,7 @@ export async function POST(request: Request) {
     // ADR-044 §2: a confirmed disabled/absent pin gets an honest message, never a fallback.
     unavailablePin = !!customPinTarget && !customPinEnabled;
     // Recheck enablement after the fresh catalog read to catch a concurrent revocation.
-    customPick = unavailablePin
+    customPick = unavailablePin || productHelpIntent
       ? null
       : customPinEnabled
         ? customPinTarget                                   // explicit custom pin — highest precedence
@@ -465,8 +485,13 @@ export async function POST(request: Request) {
       ? customPinTarget!
       : (customPick && (await isCustomAgentEnabled(customPick, { throwOnError: true })) ? customPick : gateway);
   } catch {
-    // An unavailable final read is not a revocation and must not discard the custom policy.
-    return Response.json({ error: 'Custom-agent policy unavailable' }, { status: 503 });
+    // Deny this custom candidate. ADR-003/004 keep independent builtin routing/help usable;
+    // an explicit custom pin receives an unavailable response and is never substituted.
+    finalPolicyUnavailable = true;
+    customPinEnabled = false;
+    unavailablePin = !!customPinTarget;
+    customPick = null;
+    routeKey = gateway;
   }
   // v1 priority-10 'aws-data' local handler: when the routing decision (pin included — a pinned
   // built-in section reaches here as `gateway`) lands on aws-data, answer with live Steampipe SQL
@@ -513,7 +538,8 @@ export async function POST(request: Request) {
   const proposableWrites = enabledIntegrations
     .filter((i) => i.direction === 'egress' && i.capability === 'read_write')
     .map((i) => ({ name: i.name, writeActionRefs: i.writeActionRefs }));
-  const spec = resolveAgent(routeKey, customAgents, space, egressReadIntegrations, proposableWrites); // server-side enforcement
+  const spec = resolveAgent(routeKey, finalPolicyUnavailable || productHelpIntent ? [] : customAgents,
+    space, egressReadIntegrations, proposableWrites); // server-side enforcement
   // ADR-044: cross-domain auto-synthesis (flag MULTI_ROUTE_SYNTHESIS_ENABLED, default OFF ⇒ unchanged
   // single-route path). Only built-in multi-domain fans out — a pinned/picked custom agent stays single.
   // `fanGateways` is the ACTIVE subset of route.selected — the FINAL multi-domain decision is
@@ -537,7 +563,9 @@ export async function POST(request: Request) {
   const explicitPin = pinIsBuiltin || customPinEnabled || unavailablePin;
   const inactiveWasPinned = inactiveSection != null && route?.method === 'pin';
   const useAssistant = hybridOn && !unavailablePin
-    && ((!explicitPin && isProductHelpIntent(prompt)) || (inactiveSection != null && !inactiveWasPinned));
+    && (productHelpIntent || (inactiveSection != null && !inactiveWasPinned));
+  const fallbackNotice = !explicitPin && !useAssistant && finalPolicyUnavailable
+    ? `${CUSTOM_POLICY_FAILURE_NOTICE[lang].fallback}\n\n` : '';
   const messages: ChatMsg[] = [...history, { role: 'user', content: prompt }];
   // Thread persistence: adopt a well-formed client threadId, else mint one. Ownership is
   // enforced at write time by chat-store's owner-guarded upsert (forged ids just drop).
@@ -555,7 +583,7 @@ export async function POST(request: Request) {
     recordExchange({
       threadId, userSub: user.sub, sessionId,
       promptTitle: prompt.slice(0, 40),
-      userContent: prompt, assistantContent,
+      userContent: prompt, assistantContent: fallbackNotice + assistantContent,
       gateway: recordGateway, meta: extras ? { ...(exchangeMeta ?? {}), ...extras } : exchangeMeta,
     }).catch(() => { /* store is never-throws by contract; belt-and-suspenders (P2 gate) */ });
   };
@@ -606,7 +634,8 @@ export async function POST(request: Request) {
       // HONEST message — never a silent fallback to keyword/classifier routing.
       if (unavailablePin) {
         const name = String(body.section).slice(0, 40);
-        const guide = chatMsg.unavailablePin(lang, name);
+        const guide = finalPolicyUnavailable
+          ? CUSTOM_POLICY_FAILURE_NOTICE[lang].pin : chatMsg.unavailablePin(lang, name);
         controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: guide })}\n\n`));
         record(guide);
         controller.enqueue(enc.encode('data: [DONE]\n\n'));
@@ -630,6 +659,7 @@ export async function POST(request: Request) {
         controller.close();
         return;
       }
+      if (fallbackNotice) controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: fallbackNotice })}\n\n`));
       // ADR-044 cross-domain auto-synthesis: fan out over the selected built-in gateways, then merge.
       if (doFanout) {
         const tf0 = Date.now();
