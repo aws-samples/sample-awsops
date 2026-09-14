@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: c3f3b064cdfc · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: db05a083d1a3 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -152,9 +152,7 @@ The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and 
 
 ## Development release controller
 
-Every dev release requires account/image/code checks plus owned CloudFront, SSM/model and
-Lambda/Fargate proof. Preserve bounded freshness, disclosed degradation/unknown completeness
-and the one confirmed-contention retry in `docs/runbooks/runtime-foundation.md`.
-Prepare is existing-web only; never reset passwords, promote admin or bypass the full gate.
-Manual verification requires separate backend/workload policies and private-file cleanup;
-`docs/runbooks/runtime-verifier-sessions.md` owns the permission contract.
+Dev releases require identity/image/code, owned CloudFront, SSM/model and Lambda/Fargate proofs.
+Preserve the freshness/degradation/retry contract in `docs/runbooks/runtime-foundation.md`.
+Prepare is existing-web only; no password reset, admin promotion or full-gate bypass.
+Manual session scopes and cleanup follow `docs/runbooks/runtime-verifier-sessions.md`.
