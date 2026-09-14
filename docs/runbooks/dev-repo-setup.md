@@ -429,6 +429,11 @@ may skip an advisory plan; missing account verification on a configured stack fa
 개발·preview 스택이 구성되어 있으면 `AWS_ACCOUNT_ID_DEV` 시크릿이 필수입니다.
 backend 미설정 계획은 생략할 수 있지만 구성된 스택의 계정 검증 누락은 실패합니다.
 
+The manual development [deployment audit](deployment-audit.md)
+(`audit-deployment.yml`) reuses the dev account/deployer/backend secrets with a
+restrictive session policy. It reads status, schedule metrics and SQL-reader
+metadata without provisioning resources or claiming complete collection.
+
 #### Development variable catalog / 개발 변수 목록
 
 Nonsecret dev repository variables are `DOMAIN_NAME_DEV` / `HOSTED_ZONE_NAME_DEV` (paired names),
@@ -1015,6 +1020,14 @@ DNS·출처 검사도 배포 ref의 코드이므로 코드 변경에 대한 보�
 기존 리뷰·보호 환경 절차를 계속 적용한다.
 
 Full controller verification also requires the narrowly scoped ECS/Lambda reads and owned sync invocation in [deployer verification permissions](runtime-foundation.md#deployer-verification-permissions--deployer-검증-권한). The pre-mutation feature check and existing-stack rollout order are documented there.
+
+#### AgentCore provisioner Python
+
+In the deploy job (after the separate private migration job), Deploy AgentCore prepares a private Python 3.12 virtual environment before that job's AWS credential setup and agent image build. `requirements-provision.txt` pins the host SDK closure by version and hash. `setup-provision-python.py` derives control-plane operations from the provisioner's `ctrl` references and runtime operations from `smoke`, verifies model availability and exact SDK versions, and imports the provisioner through `--help` without AWS credentials. This checks local SDK compatibility, not live IAM, quotas, input-shape compatibility or runtime health.
+
+The verified interpreter path is published only after success. Final cleanup uses the base interpreter; SDK-folder removal failures produce a fixed warning instead of changing the deployment result. The SDK folder contains packages, not deployment credentials. Container dependencies remain separate.
+
+For a pin update, resolve the complete Python 3.12 wheel closure from PyPI, generate hashes from the downloaded wheels (`python -m pip hash <wheel>`), then run the actual setup/preflight and `python3 -m pytest scripts/v2/ci/test_setup_provision_python.py -q`. The existing merge-verification Python stage discovers that test file; it is not repeated by a Node wrapper. The runner needs setup-python access and PyPI egress.
 
 #### Runtime images / 런타임 이미지
 

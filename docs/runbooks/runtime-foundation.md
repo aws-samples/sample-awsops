@@ -140,7 +140,7 @@ The configured dev deployer needs these scopes before the first gated release. T
 ListTasks is constrained by its cluster condition for this Fargate/service query; do not substitute task-definition ARNs for unsupported resource scoping. STS caller verification remains mandatory. An API failure means access is unverified, not permission to broaden grants. Scope references: `https://docs.aws.amazon.com/service-authorization/latest/reference/list_ecs.html` and `https://docs.aws.amazon.com/service-authorization/latest/reference/list_lambda.html`.
 
 ## Related / 관련
-
+[Manual deployment observations](deployment-audit.md) separate deployed resources, schedule execution and observed inventory after provisioning.
 [CI setup/assets](dev-repo-setup.md) · [SQL reader](agent-sql-reader.md) · [Multi-account](onboard-target-account.md) · [Inventory rollback](steampipe-quota-and-staleness.md).
 Sources: `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `scripts/v2/ci/runtime-release.mjs`, `terraform/foundation/runtime-read-scope.tf`, `terraform/foundation/controller-readiness.tf`, `.github/workflows/terraform.yml`, `.github/workflows/collect-runtime.yml`, `.github/workflows/deploy-web.yml`.
 ADRs: ADR-001, ADR-002, ADR-005, ADR-007, ADR-011, ADR-016, ADR-021. Infrastructure apply is not live readiness proof.

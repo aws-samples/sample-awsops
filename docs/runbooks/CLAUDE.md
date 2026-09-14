@@ -25,11 +25,13 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC and protected review recovery; ECR preflight; state-preserving DNS deferral, certificate ownership, dispatch-only same-SHA saved plans and private authenticated assets, Host/SNI smoke, default-off manual private DB migration, mandatory full authenticated dev release verification and manual opt-in advisory read-only DB diagnostics (ADR-002/005/016) |
 | [runtime-foundation.md](runtime-foundation.md) | Existing-web runtime adoption, capacity/freshness proof, verifier imports and private DNS scope |
+| [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; explicit saved-plan domain scope, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
 | [steampipe-quota-and-staleness.md](steampipe-quota-and-staleness.md) | Steampipe quota guard — rate limiter knobs, partial runs, freshness ledger/staleness response |
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
+- `deployment-audit.md` separates manual dev observations under backend-bound and workload-read sessions. Preserve identity/resource guards and private cleanup. Web and AgentCore observations do not prove applied versions or invocation readiness; observed SQL-reader types never establish complete inventory.
 - `runtime-foundation.md` covers account-bound default-off activation and saved-plan assets. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
 - The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
 - Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
@@ -130,8 +132,9 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   controller does not provision either resource; do not separately create the Terraform-managed group.
   `CI_READONLY_RUNTIME_DEV=true` enables readiness through the public dev profile; public CI
   rejects the flag outside dev. Private deployments outside public CI set it explicitly before apply/provisioning.
-  Capped samples cannot prove absence. Missing ledger, partial/failed runs and unknown attributes
-  remain distinct failures; accepted degraded inventory is not a deployment-readiness exception.
+  Capped samples cannot prove absence. CloudFront partial/failed runs and unknown attributes
+  remain failures. Other catalog types may report degradation only with recent last-success
+  evidence; complete inventory is never inferred.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
   credentials. Prepare checks host registration (optional hostOnly); verify additionally
   requires applied CloudFront identity, the deployed catalog and pre-probe timestamp,

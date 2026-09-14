@@ -137,3 +137,17 @@ test('dev AgentCore refreshes the same role between build-only and digest-bound 
   assert.ok(steps[build]['timeout-minutes'] <= 52 && steps[provision]['timeout-minutes'] <= 52);
   assert.equal(steps.find(s => s.name === 'make agentcore').if, "github.ref != 'refs/heads/dev'");
 });
+
+test('AgentCore prepares pinned Python SDK before AWS/image work and cleans its private packages', () => {
+  const w = workflow('deploy-agentcore.yml');
+  const job = w.jobs.deploy;
+  const setup = job.steps.find(s => s.uses === 'actions/setup-python@v5');
+  assert.equal(setup?.with['python-version'], '3.12');
+  const prepare = job.steps.find(s => s.name === 'Prepare isolated AgentCore provisioner SDK');
+  assert.ok(prepare);
+  assert.ok(job.steps.indexOf(prepare) < job.steps.findIndex(s => s.uses?.startsWith('aws-actions/configure-aws-credentials')));
+  assert.match(prepare.run, /setup-provision-python.py prepare/);
+  const cleanup = job.steps.find(s => s.name === 'Clean AgentCore provisioner SDK');
+  assert.ok(cleanup.if.includes('always()'));
+  assert.match(cleanup.run, /setup-provision-python.py cleanup/);
+});

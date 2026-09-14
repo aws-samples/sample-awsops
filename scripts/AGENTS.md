@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4880a917833f · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 31e0a03207a3 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,6 +8,7 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
+- `v2/ci_deployment_audit.py` is manual dev-only, with a restrictive session and fixed reads/SELECTs. Preserve identity/resource guards and safe output projection; current web status, event metrics and observed SQL-reader rows never establish full deployment readiness. Tests: `test_ci_deployment_audit.py`; guide: `docs/runbooks/deployment-audit.md`.
 - `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
 - Dev/preview private discovery requires explicit full-plan rollout and preserves public DNS/certificates. `runtime-ecr-bootstrap` permits exactly three repositories. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy.
 - `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-registry proof before manual full dev activation plans; apply rechecks the approved profile. Automatic PR/push plans never receive the host-probe credential. Database-only proof is rejected; credentials stay private and failures use a fixed code. Flags/policy checks do not prove live access.
@@ -76,6 +77,9 @@ and ARM64 digest. Build-role scopes cover `-steampipe`/`-worker`; deployer scope
 Web-only ECR grants are insufficient; IAM is separate. No repository creation or latest-tag writes.
 Verify the exported image archive tag/Linux/ARM64 config and bind its byte hash to ECR. Tar reads
 validated hash paths with bounded output and no AWS credentials; BuildKit metadata is not required.
+The host provisioner uses a private Python 3.12 environment with hash-pinned SDK wheels,
+credential-free install/preflight, source-derived operation checks, exact SDK versions and imports.
+Base-Python cleanup warns on package-removal failures without overwriting deployment results.
 Dev requires applied migration infrastructure and non-null `migration_job`, private migration,
 then bounded digest-bound phases with fresh same-role sessions. Guard selection uses TARGET/dev ref.
 Provision-only never rebuilds. Fixed diagnostics preserve failure codes without raw secrets/ARNs.

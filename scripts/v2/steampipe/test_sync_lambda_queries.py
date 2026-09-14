@@ -96,7 +96,7 @@ def test_enabled_target_accounts_excludes_host_and_self():
 
 def test_account_reachable_true_when_its_own_steampipe_connection_answers(monkeypatch):
     """M2 (round 5): _account_reachable must query the account's OWN Steampipe connection
-    (aws_<account_id>.aws_caller_identity) — the SAME data path the aggregator uses — not an
+    (aws_<account_id>.aws_sts_caller_identity) — the SAME data path the aggregator uses — not an
     independent sts:AssumeRole (which only proves the IAM trust policy, not that Steampipe
     actually queried the account this run; see the round-5 rewrite comment on _account_reachable
     for the exact data-loss scenario that motivated this)."""
@@ -113,7 +113,7 @@ def test_account_reachable_true_when_its_own_steampipe_connection_answers(monkey
 
     monkeypatch.setattr(mod, "_steampipe", lambda *_a: FakeConn())
     assert mod._account_reachable("210987654321") is True
-    assert "aws_210987654321.aws_caller_identity" in queries[0]
+    assert "aws_210987654321.aws_sts_caller_identity" in queries[0]
 
 
 def test_account_reachable_false_when_connection_query_fails(monkeypatch):
@@ -132,7 +132,8 @@ def test_account_reachable_false_when_connection_query_fails(monkeypatch):
     assert mod._account_reachable("999999999999") is False
 
 
-def test_account_reachable_rejects_non_account_id_without_connecting(monkeypatch):
+@pytest.mark.parametrize("account_id", ["'; DROP TABLE x--", "111111111111\n", "１" * 12, "self"])
+def test_account_reachable_rejects_non_account_id_without_connecting(monkeypatch, account_id):
     """Defense in depth (mirrors _inject_account's validation): a non-12-digit value must never
     reach SQL string interpolation — reject before ever calling _steampipe()."""
     mod = load_sync_lambda()
@@ -141,7 +142,7 @@ def test_account_reachable_rejects_non_account_id_without_connecting(monkeypatch
         raise AssertionError("must not connect for an invalid account id")
 
     monkeypatch.setattr(mod, "_steampipe", _boom)
-    assert mod._account_reachable("'; DROP TABLE x--") is False
+    assert mod._account_reachable(account_id) is False
 
 
 def test_account_reachable_closes_connection_even_on_failure(monkeypatch):

@@ -1,5 +1,7 @@
 # 05. AgentCore Agents — v2 Reference
 
+The GitHub deploy job prepares its host provisioner with Python 3.12 and the hash-pinned `scripts/v2/agentcore/requirements-provision.txt` closure through `scripts/v2/ci/setup-provision-python.py`. Before credential setup or agent image work in that job, local preflight checks the provisioner's complete `ctrl` operation references, the runtime smoke operation, exact SDK versions and imports. This follows the separate private migration job. The owned SDK environment is cleaned afterward; package-cleanup warnings do not overwrite deployment results.
+
 ## Purpose / 목적
 
 The AI brain of AWSops v2: a Strands agent on **AgentCore Runtime** fronted by domain

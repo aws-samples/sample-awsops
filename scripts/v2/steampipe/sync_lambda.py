@@ -1125,7 +1125,7 @@ def _enabled_target_accounts(adb):
 def _account_reachable(account_id):
     """Direct DATA-PATH probe (M1 fix, round 5): query the account's OWN Steampipe connection
     (aws_<account_id>, the exact schema the aggregator itself fans out to — see spc_render.py)
-    for a single row from aws_caller_identity.
+    for exactly one matching row from the pinned plugin's aws_sts_caller_identity.
 
     An earlier version of this probe used an INDEPENDENT sts:AssumeRole call from this Lambda's
     own task role. That only proved the IAM TRUST POLICY was intact — NOT that Steampipe's
@@ -1140,7 +1140,7 @@ def _account_reachable(account_id):
     Used ONLY to decide whether a target account that contributed 0 rows this run is genuinely
     empty (safe to prune) vs unreachable (protect its last-good inventory, per M5) — never used
     to fetch or touch any real account data beyond the caller-identity check."""
-    if not _ACCT_RE.match(str(account_id)):
+    if not re.fullmatch(r"[0-9]{12}", str(account_id)):
         return False
     # Remaining-time clamp (round-10 gate): the probe runs in the prune phase, AFTER the main
     # query budgets and the Aurora upserts, once per unpresent account — a bare 240s default
@@ -1154,14 +1154,18 @@ def _account_reachable(account_id):
         budget = _query_budget_s(REACHABILITY_PROBE_TIMEOUT_S)
     except RuntimeError:
         return False
-    conn = _steampipe(budget)
     try:
-        rows = conn.run(f"SELECT account_id FROM aws_{account_id}.aws_caller_identity LIMIT 1")
-        return len(rows) > 0
+        conn = _steampipe(budget)
+        try:
+            # Read at most two rows so an unexpected duplicate cannot masquerade as one.
+            rows = conn.run(f"SELECT account_id FROM aws_{account_id}.aws_sts_caller_identity LIMIT 2")
+            return (isinstance(rows, (list, tuple)) and len(rows) == 1
+                    and isinstance(rows[0], (list, tuple)) and len(rows[0]) == 1
+                    and rows[0][0] == str(account_id))
+        finally:
+            conn.close()
     except Exception:
         return False
-    finally:
-        conn.close()
 
 
 def _inject_account(sql, account_id):
