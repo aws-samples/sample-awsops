@@ -1,3 +1,5 @@
+import tempoContracts from '../../agent/fixtures/tempo-topology-contract.json';
+import { TempoTraceSource } from './trace-source';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Pool } from 'pg';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -9,6 +11,9 @@ import { HOST_ONLY_TREND_TYPES } from './trend-utils';
 import { readGraphState, writeGraphState } from './graph-state';
 import type { ServiceGraphCall, SourceRead } from './trace-source';
 const api = vi.hoisted(() => ({ pool: null as unknown }));
+const producer = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock('@/lib/datasources', () => ({ getDatasource: async () => ({ id: 7, kind: 'tempo' }), getDefaultDatasource: async () => ({ id: 7, kind: 'tempo' }), resolveConnConfig: async () => ({ endpoint: 'http://fixture.invalid' }) }));
+vi.mock('@/lib/mcp-lambda-invoke', () => ({ invokeMcpLambdaTool: (...args: unknown[]) => producer.invoke(...args) }));
 vi.mock('@/lib/auth', () => ({ verifyUser: async () => ({ sub: 'fixture' }) }));
 vi.mock('@/lib/db', () => ({ getPool: () => api.pool }));
 import { GET } from '../app/api/graph/route';
@@ -89,6 +94,27 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       calls: async (mins, endMs = Date.now()) => ({ sourceId: 'metrics:test', items, status,
         reasons: [], windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }),
     }]);
+
+  it.each(tempoContracts)('Tempo producer $name preserves the graph unless empty is confirmed', async fixture => {
+    await trace();
+    const previous = await state('trace');
+    const nodes = (await pool.query("SELECT id FROM topology_nodes WHERE class='trace' ORDER BY id")).rows;
+    expect(nodes.length).toBeGreaterThan(0);
+    producer.invoke.mockReset().mockResolvedValue(fixture.body);
+    const source = new TempoTraceSource(7);
+    const observed = vi.spyOn(source, 'recentSpans');
+    await rebuildTraceGraph(pool, [source]);
+    expect((await observed.mock.results[0].value).status).toBe(fixture.readStatus);
+    const after = await state('trace');
+    const remaining = (await pool.query("SELECT id FROM topology_nodes WHERE class='trace' ORDER BY id")).rows;
+    if (fixture.readStatus === 'ok') {
+      expect(after).toMatchObject({ status: 'empty', retainedPrevious: false });
+      expect(remaining).toEqual([]);
+    } else {
+      expect(after).toMatchObject({ retainedPrevious: true, captured_at: previous.captured_at });
+      expect(remaining).toEqual(nodes);
+    }
+  });
 
   it.each(['flow', 'infra'])('%s confirms host empty from a succeeded aggregate with member-only rows', async cls => {
     await seed(cls, recent, '111122223333');

@@ -4,6 +4,13 @@ import { inventorySourcesStale, readGraphState } from './graph-state';
 afterEach(() => vi.unstubAllEnvs());
 
 describe('graph state during rollout', () => {
+  it('preserves the legacy unknown trace envelope while inventory kind remains explicit', async () => {
+    const pool = { query: vi.fn().mockResolvedValue({ rows: [] }) };
+    expect(await readGraphState(pool as never, 'self', 'trace')).toEqual({
+      status: 'unknown', stale: true, attempted_at: null, captured_at: null, sources: [],
+    });
+    expect(await readGraphState(pool as never, 'self', 'infra')).toMatchObject({ evidenceKind: 'inventory' });
+  });
   it('reports unknown collection before its additive migration is applied', async () => {
     const pool = { query: vi.fn(async () => { throw Object.assign(new Error('missing relation'), { code: '42P01' }); }) };
     await expect(readGraphState(pool as never, 'self')).resolves.toMatchObject({ status: 'unknown', stale: true });
@@ -41,4 +48,20 @@ describe('graph producer and scope honesty', () => {
     expect(await readGraphState({ query } as never, '__all__', 'infra')).toMatchObject({ status: 'unknown', coverage: 'unknown', evidenceKind: 'inventory' });
     expect(query).not.toHaveBeenCalled();
   });
+});
+
+
+it('projects bounded HTTP collection metadata and removes injected read fields', async () => {
+  const query = vi.fn().mockResolvedValue({ rows: [{ status: 'ok', captured_at: new Date(), attempted_at: new Date(),
+    details: { secret: 'PRIVATE', readReason: 'PRIVATE', readStatus: 'ok', coverage: 'PRIVATE',
+      sources: Array.from({ length: 129 }, (_, i) => ({ sourceId: `tempo:${i}`, status: 'ok', secret: 'PRIVATE',
+        reasons: ['query_failed', 'PRIVATE'] })),
+      publishedSources: [{ sourceId: 'inventory:vpc', status: 'partial', producerStatus: 'running', secret: 'PRIVATE' }] } }] });
+  const result = await readGraphState({ query } as never, 'self', 'infra');
+  expect(JSON.stringify(result)).not.toContain('PRIVATE');
+  expect(result).not.toHaveProperty('readStatus');
+  expect(result).not.toHaveProperty('coverage');
+  expect(result).toMatchObject({ metadataTruncated: true, stale: true });
+  expect(result.sources).toHaveLength(128);
+  expect(result.publishedSources[0]).toEqual({ sourceId: 'inventory:vpc', status: 'partial', producerStatus: 'running' });
 });

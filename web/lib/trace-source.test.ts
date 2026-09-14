@@ -1,3 +1,4 @@
+import tempoContracts from '../../agent/fixtures/tempo-topology-contract.json';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const getDefaultDatasource = vi.fn();
@@ -812,5 +813,29 @@ describe('metrics identity and query provenance', () => {
     expect(await source.calls(30, END_MS)).toMatchObject({ items: [], status: 'ok', reasons: [] });
     invokeMcpLambdaTool.mockResolvedValue({ resultType: 'matrix', result: [] });
     expect(await source.calls(30, END_MS)).toMatchObject({ items: [], status: 'error' });
+  });
+});
+
+
+describe('typed producer collection status', () => {
+  beforeEach(() => {
+    getDatasource.mockReset(); resolveConnConfig.mockReset(); invokeMcpLambdaTool.mockReset();
+    resolveConnConfig.mockResolvedValue({ endpoint: 'http://fixture', token: 'private-token' });
+  });
+  it.each(tempoContracts)('Tempo $name never becomes an unproven successful empty read', async fixture => {
+    getDatasource.mockResolvedValue({ id: 7, kind: 'tempo' });
+    invokeMcpLambdaTool.mockResolvedValue(fixture.body);
+    const read = await new TempoTraceSource(7).recentSpans(30, 1000);
+    expect(read.status).toBe(fixture.readStatus);
+    expect(read.items).toEqual([]);
+    expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(read)).not.toContain('private-token');
+  });
+  it.each(['prometheus', 'mimir'] as const)('%s metric collection markers restrict empty reads', async kind => {
+    getDatasource.mockResolvedValue({ id: 7, kind });
+    for (const [collectionStatus, expected] of [['empty', 'ok'], ['partial', 'partial'], ['unknown', 'error']] as const) {
+      invokeMcpLambdaTool.mockResolvedValue({ resultType: 'vector', result: [], truncated: false, collectionStatus });
+      expect((await new MetricsCallsSource(7, kind, 'fixture').calls(30)).status).toBe(expected);
+    }
   });
 });
