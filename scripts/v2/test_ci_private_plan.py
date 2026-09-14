@@ -23,6 +23,8 @@ import ci_plan_inspect as legacy
 SHA, ACCOUNT, REPO, REGION = 'a' * 40, '111122223333', 'example/awsops', 'ap-northeast-2'
 BUCKET, KEY = 'private-backend-fixture', 'offline-ci-authentication-key'
 ROLE = f'arn:aws:iam::{ACCOUNT}:role/path/fixture-deployer'
+KEY_ID = '12345678-1234-1234-1234-123456789012'
+KEY_ARN = f'arn:aws:kms:{REGION}:{ACCOUNT}:key/{KEY_ID}'
 NOW = 1789380000
 
 def digest(data):
@@ -47,6 +49,10 @@ class Fixture:
                      dict(id=2, run_id=23, run_attempt=1, head_sha=SHA, name='Publish private plan', status='in_progress', conclusion=None)]
         self.branch = self.checkout = SHA
         self.owner, self.algorithm, self.versioning, self.public = ACCOUNT, 'aws:kms', 'Enabled', False
+        self.default_key = None
+        self.key_metadata = dict(Arn=KEY_ARN, KeyId=KEY_ID, AWSAccountId=ACCOUNT,
+                                 Enabled=True, KeyState='Enabled', KeyUsage='ENCRYPT_DECRYPT',
+                                 KeySpec='SYMMETRIC_DEFAULT')
         self.objects, self.calls, self.downloaded = {}, [], []
         self.artifact_changes, self.put_changes, self.get_changes = {}, {}, {}
         self.extra_artifacts, self.extra_entries = [], []
@@ -113,12 +119,17 @@ class Fixture:
             for key in ['TF_PLAN_ENC_KEY', 'GITHUB_OUTPUT', 'AWS_ENDPOINT_URL', 'TF_LOG', 'GH_TOKEN']:
                 self.case.assertNotIn(key, env)
             self.case.assertEqual(env.get('AWS_SESSION_TOKEN'), 'synthetic-session')
-            service = next(x for x in ['sts', 's3api'] if x in args)
+            self.case.assertEqual(env.get('AWS_MAX_ATTEMPTS'), '1')
+            service = next(x for x in ['sts', 's3api', 'kms'] if x in args)
             op = args[args.index(service) + 1]
             self.case.assertEqual(flag('--region'), REGION)
-            self.case.assertEqual(flag('--endpoint-url'), f'https://{"s3" if service == "s3api" else "sts"}.{REGION}.amazonaws.com')
+            self.case.assertEqual(flag('--endpoint-url'), f'https://{"s3" if service == "s3api" else service}.{REGION}.amazonaws.com')
             if service == 'sts':
                 value = {'Account': self.owner, 'Arn': f'arn:aws:sts::{self.owner}:assumed-role/fixture-deployer/session'}
+            elif service == 'kms':
+                self.case.assertEqual(op, 'describe-key')
+                self.case.assertEqual(flag('--key-id'), self.default_key or 'alias/aws/s3')
+                value = {'KeyMetadata': self.key_metadata}
             else:
                 self.case.assertEqual(flag('--bucket'), BUCKET)
                 self.case.assertEqual(flag('--expected-bucket-owner'), ACCOUNT)
@@ -135,7 +146,9 @@ class Fixture:
                     value = {'PolicyStatus': {'IsPublic': self.public}}
                 elif op == 'get-bucket-encryption':
                     value = {'ServerSideEncryptionConfiguration': {'Rules': [{
-                        'ApplyServerSideEncryptionByDefault': {'SSEAlgorithm': self.algorithm}, 'BucketKeyEnabled': True}]}}
+                        'ApplyServerSideEncryptionByDefault': {'SSEAlgorithm': self.algorithm,
+                            **({'KMSMasterKeyID': self.default_key} if self.default_key is not None else {})},
+                        'BucketKeyEnabled': True}]}}
                 elif op == 'put-object':
                     self.case.assertEqual(flag('--if-none-match'), '*')
                     self.case.assertEqual(flag('--server-side-encryption'), 'aws:kms')
@@ -144,14 +157,17 @@ class Fixture:
                     self.case.assertEqual(flag('--checksum-sha256'), checksum)
                     key = flag('--key')
                     self.case.assertTrue(key.startswith(f'ci/tfplans/{REPO}/dev/{SHA}/23/1/'))
-                    self.case.assertNotIn(key, self.objects)
+                    if key in self.objects:
+                        raise self.case.module.PrivatePlanError('object_already_exists')
                     version = 'version-' + str(len(self.objects) + 1)
                     self.objects[key] = (version, body)
-                    value = {'VersionId': version, 'ServerSideEncryption': 'aws:kms', 'ChecksumSHA256': checksum, **self.put_changes}
+                    value = {'VersionId': version, 'ServerSideEncryption': 'aws:kms',
+                             'SSEKMSKeyId': KEY_ARN, 'ChecksumSHA256': checksum, **self.put_changes}
                 elif op in ['head-object', 'get-object']:
                     key = flag('--key')
                     version, body = self.objects[key]
-                    value = {'VersionId': version, 'ContentLength': len(body), 'ServerSideEncryption': 'aws:kms', **self.get_changes}
+                    value = {'VersionId': version, 'ContentLength': len(body), 'ServerSideEncryption': 'aws:kms',
+                             'SSEKMSKeyId': KEY_ARN, **self.get_changes}
                     if op == 'get-object':
                         self.case.assertEqual(flag('--version-id'), version)
                         self.case.assertEqual(flag('--range'), f'bytes=0-{len(body)-1}')
@@ -233,7 +249,7 @@ class PrivatePlanTests(unittest.TestCase):
 
     def assert_public_safe(self, *values):
         text = json.dumps(values)
-        private = [BUCKET, ACCOUNT, ROLE, REGION, 'dev/terraform.tfstate', KEY, 'SYNTHETIC_PRIVATE_VALUE']
+        private = [BUCKET, ACCOUNT, ROLE, REGION, KEY_ARN, KEY_ID, 'dev/terraform.tfstate', KEY, 'SYNTHETIC_PRIVATE_VALUE']
         private += [self.env[key] for key in ('AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
                                              'AWS_SESSION_TOKEN', 'GH_TOKEN') if self.env.get(key)]
         hashes = [digest(value.encode()) for value in private] + [digest(self.fake.plan)]
@@ -685,6 +701,187 @@ class PrivatePlanTests(unittest.TestCase):
             with self.assertRaises(self.module.PrivatePlanError): self.policy()
             self.assertFalse((self.root / 'policy').exists())
         self.assertFalse(any(args[0] == 'aws' for args, _ in self.fake.calls))
+
+    def test_every_dev_family_branch_pins_policy_and_ci_caller_but_not_local_inspection(self):
+        from ci_runtime_policy import DEV_TARGETS
+        for branch in DEV_TARGETS:
+            self.env.update(GITHUB_REF=f'refs/heads/{branch}',
+                            GITHUB_WORKFLOW_REF=f'{REPO}/.github/workflows/terraform.yml@refs/heads/{branch}')
+            self.fake.run['head_branch'] = branch
+            for configured in [None, '', 'invalid', '999999999999', ACCOUNT]:
+                with self.subTest(branch=branch, configured=configured):
+                    self.env.pop('AWS_ACCOUNT_ID_DEV', None)
+                    if configured is not None:
+                        self.env['AWS_ACCOUNT_ID_DEV'] = configured
+                    op = self.module.Operation(self.root, self.env, self.fake, lambda: NOW,
+                                               REPO, branch, SHA, '23', 'full')
+                    if configured == ACCOUNT:
+                        files = op.policy(self.backend, ROLE)
+                        self.assertEqual(json.loads(files['store.json'])['account'], ACCOUNT)
+                    else:
+                        with self.assertRaisesRegex(self.module.PrivatePlanError, 'configured_dev_account_'):
+                            op.policy(self.backend, ROLE)
+                    op.backend = self.module.parse_backend(self.backend, {})
+                    if configured == ACCOUNT:
+                        self.fake.owner = '999999999999'
+                        with self.assertRaisesRegex(self.module.PrivatePlanError, '^caller_mismatch$'):
+                            op.caller()
+                        self.fake.owner = ACCOUNT
+                        self.assertEqual(op.caller(), ACCOUNT)
+                    else:
+                        wanted = '^caller_mismatch$' if configured == '999999999999' else 'configured_dev_account_'
+                        with self.assertRaisesRegex(self.module.PrivatePlanError, wanted):
+                            op.caller()
+            local = {**self.env, 'GITHUB_ACTIONS': 'false'}
+            local.pop('AWS_ACCOUNT_ID_DEV')
+            op.env, op.profile = local, 'samples'
+            self.assertEqual(op.caller(), ACCOUNT)
+
+    def test_bucket_key_forms_resolve_independently_of_the_static_state_key(self):
+        forms = [None, 'alias/aws/s3', 'alias/fixture', f'arn:aws:kms:{REGION}:{ACCOUNT}:alias/fixture',
+                 KEY_ID, KEY_ARN, 'mrk-' + 'a' * 32]
+        state_key = f'arn:aws:kms:{REGION}:{ACCOUNT}:key/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        backend = self.module.parse_backend(self.backend, {})
+        backend['kms_key_id'] = state_key
+        for form in forms:
+            with self.subTest(form=form):
+                self.fake.default_key = form
+                key_id = form if form and form.startswith('mrk-') else KEY_ID
+                expected = f'arn:aws:kms:{REGION}:{ACCOUNT}:key/{key_id}'
+                self.fake.key_metadata.update(Arn=expected, KeyId=key_id)
+                op = self.module.Operation(self.root, self.env, self.fake, lambda: NOW,
+                                           REPO, 'dev', SHA, '23', 'full')
+                op.backend, op.account = backend, ACCOUNT
+                op.posture()
+                self.assertEqual(op.encryption, (expected, True))
+                self.assertEqual(op.backend['kms_key_id'], state_key)
+                if form is not None:
+                    self.assertEqual(self.module.validate_backend({**backend, 'kms_key_id': form})['kms_key_id'], form)
+        policy = self.module.session_policy(backend, ACCOUNT, self.fake.context)
+        describe = next(s for s in policy['Statement'] if 'kms:DescribeKey' in s['Action'])
+        self.assertEqual(describe['Resource'], f'arn:aws:kms:{REGION}:{ACCOUNT}:key/*')
+        self.assertEqual(describe['Condition']['StringEquals']['kms:CallerAccount'], ACCOUNT)
+        self.assertNotIn('kms:ViaService', json.dumps(describe))
+        self.assertNotIn('EncryptionContext', json.dumps(describe))
+        self.assertLessEqual(len(self.module.canonical(policy)), 2048)
+
+    def test_bucket_key_rejects_foreign_disabled_asymmetric_or_non_encryption_keys(self):
+        original = dict(self.fake.key_metadata)
+        for changes in [{'Arn': KEY_ARN.replace(ACCOUNT, '999999999999')},
+                        {'AWSAccountId': '999999999999'}, {'Arn': KEY_ARN.replace(REGION, 'us-east-1')},
+                        {'Arn': f'arn:aws:kms:{REGION}:{ACCOUNT}:alias/fixture'},
+                        {'Enabled': False}, {'KeyState': 'PendingDeletion'},
+                        {'KeySpec': 'RSA_2048'}, {'KeyUsage': 'SIGN_VERIFY'}, {'KeyId': 'wrong'}]:
+            with self.subTest(changes=changes):
+                self.fake.key_metadata = {**original, **changes}
+                op = self.module.Operation(self.root, self.env, self.fake, lambda: NOW,
+                                           REPO, 'dev', SHA, '23', 'full')
+                op.backend, op.account = self.module.parse_backend(self.backend, {}), ACCOUNT
+                with self.assertRaisesRegex(self.module.PrivatePlanError, 'bucket_key_'):
+                    op.posture()
+        self.assertFalse(self.fake.objects)
+
+    def test_accepted_put_lost_response_recovers_same_attempt_via_pinned_bytes(self):
+        p = self.policy()
+        puts = []
+        def transport(args, output, **kwargs):
+            self.fake(args, output, **kwargs)
+            if 'put-object' in args:
+                puts.append(args)
+                if len(puts) == 1:
+                    raise self.module.PrivatePlanError('command_timeout')
+        with mock.patch.object(self.module.time, 'sleep'):
+            r = self.module.execute('publish', repository=REPO, branch='dev', commit=SHA, run_id='23',
+                scope='full', env=self.env, transport=transport, now=lambda: NOW,
+                store=p['store_file'], foundation=self.foundation, destination=self.root / 'reference')
+        reference = json.loads(Path(r['reference_file']).read_text())
+        self.assertEqual(reference['context'], self.fake.context)
+        self.assertEqual(len(self.fake.objects), 3)
+        gets = [args for args, _ in self.fake.calls if 'get-object' in args]
+        self.assertEqual(len(gets), 1)
+        key = gets[0][gets[0].index('--key') + 1]
+        self.assertEqual(gets[0][gets[0].index('--version-id') + 1], self.fake.objects[key][0])
+        self.assert_public_safe(r, reference)
+
+    def test_conditional_upload_retries_are_bounded_and_keep_the_same_body_and_key(self):
+        for successful in [True, False]:
+            op = self.module.Operation(self.root, self.env, self.fake, lambda: NOW,
+                                       REPO, 'dev', SHA, '23', 'full')
+            op.ctx, op.account = self.fake.context, ACCOUNT
+            op.backend, op.encryption = self.module.parse_backend(self.backend, {}), (KEY_ARN, True)
+            calls = []
+            def transport(args, output, **kwargs):
+                calls.append(args)
+                if len(calls) <= 2 or not successful:
+                    raise self.module.PrivatePlanError('object_put_retryable')
+                self.fake(args, output, **kwargs)
+            op.transport = transport
+            with mock.patch.object(self.module.time, 'sleep'):
+                if successful:
+                    entry = op.upload('plan', self.fake.plan)
+                    self.assertEqual(entry['sha256'], digest(self.fake.plan))
+                else:
+                    with self.assertRaisesRegex(self.module.PrivatePlanError, '^object_upload_retry_exhausted$'):
+                        op.upload('plan', self.fake.plan)
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(len({tuple(args) for args in calls}), 1)
+            self.fake.objects.clear()
+            for p in self.root.glob('command-*'):
+                p.unlink()
+
+    def test_412_never_accepts_wrong_bytes_version_or_encryption(self):
+        expected = self.fake.plan
+        key = self.module.prefix(self.fake.context) + f'plan-{digest(expected)}.bin'
+        for body, changes in [(b'x' * len(expected), {}), (expected, {'VersionId': 'null'}),
+                              (expected, {'ServerSideEncryption': 'AES256'}),
+                              (expected, {'SSEKMSKeyId': KEY_ARN.replace(ACCOUNT, '999999999999')})]:
+            self.fake.objects[key] = ('existing-version', body)
+            self.fake.get_changes = changes
+            op = self.module.Operation(self.root, self.env, self.fake, lambda: NOW,
+                                       REPO, 'dev', SHA, '23', 'full')
+            op.ctx, op.account = self.fake.context, ACCOUNT
+            op.backend, op.encryption = self.module.parse_backend(self.backend, {}), (KEY_ARN, True)
+            with self.assertRaisesRegex(self.module.PrivatePlanError, 'object_(metadata|digest|version)_'):
+                op.upload('plan', expected)
+            self.assertEqual(self.fake.objects[key], ('existing-version', body))
+            for p in self.root.glob('command-*'):
+                p.unlink()
+
+    def test_412_recovery_rejects_a_get_response_for_a_different_version(self):
+        key = self.module.prefix(self.fake.context) + f'plan-{digest(self.fake.plan)}.bin'
+        self.fake.objects[key] = ('existing-version', self.fake.plan)
+        def transport(args, output, **kwargs):
+            self.fake(args, output, **kwargs)
+            if 'get-object' in args:
+                self.assertEqual(args[args.index('--version-id') + 1], 'existing-version')
+                value = json.loads(Path(output).read_text())
+                value['VersionId'] = 'other-version'
+                Path(output).write_text(json.dumps(value))
+        op = self.module.Operation(self.root, self.env, transport, lambda: NOW, REPO, 'dev', SHA, '23', 'full')
+        op.ctx, op.account = self.fake.context, ACCOUNT
+        op.backend, op.encryption = self.module.parse_backend(self.backend, {}), (KEY_ARN, True)
+        with self.assertRaisesRegex(self.module.PrivatePlanError, '^object_response_mismatch$'):
+            op.upload('plan', self.fake.plan)
+
+    def test_closed_command_pipes_do_not_hide_a_process_timeout(self):
+        code = 'import os,time; os.close(1); os.close(2); time.sleep(10)'
+        with self.assertRaisesRegex(self.module.PrivatePlanError, '^command_timeout$'):
+            self.module.run_command([sys.executable, '-c', code], self.root / 'closed-pipes',
+                                    env={'PATH': os.environ['PATH']}, timeout=0.1)
+
+    def test_exact_put_and_kms_error_categories_never_parse_other_tools_or_operations(self):
+        for service, verb, code, envelope, wanted in [
+            ('s3api', 'put-object', 'PreconditionFailed', 'PutObject', 'object_already_exists'),
+            ('s3api', 'put-object', 'SlowDown', 'PutObject', 'object_put_retryable'),
+            ('s3api', 'put-object', 'ConditionalRequestConflict', 'PutObject', 'object_put_retryable'),
+            ('kms', 'describe-key', 'AccessDeniedException', 'DescribeKey', 'kms_access_denied'),
+            ('kms', 'describe-key', 'NotFoundException', 'DescribeKey', 'kms_key_missing'),
+            ('kms', 'describe-key', 'AccessDeniedException', 'GetObject', 'command_failed'),
+        ]:
+            text = f'An error occurred ({code}) when calling the {envelope} operation: PRIVATE'.encode()
+            self.assertEqual(self.module.command_error(['aws', service, verb], text), wanted)
+            for exe in ['gh', 'git', 'terraform']:
+                self.assertEqual(self.module.command_error([exe, service, verb], text), 'command_failed')
 
     def test_main_policy_does_not_require_dev_account_or_step_only_role_environment(self):
         self.env.pop('AWS_ACCOUNT_ID_DEV')

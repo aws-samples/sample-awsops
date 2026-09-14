@@ -865,7 +865,9 @@ Enabled, all four public-access blocks, BucketOwnerEnforced ownership and defaul
 SSE-KMS in the same account/region. `terraform/bootstrap/main.tf` provisions the
 versioning, public-access blocks and SSE-KMS settings for new state buckets;
 inspect existing bucket ownership and writer compatibility before changing them.
-An explicit backend KMS key must match the supported bucket-default key selection.
+The artifact key is resolved from the bucket default into an enabled same-account/region
+symmetric key; the backend state-object key is independently configured and exactly bound
+as metadata, not compared with that bucket-default key.
 This workflow checks these prerequisites but creates no bucket/key or IAM grant.
 
 Run these metadata checks locally with the intended profile. Set `PLAN_BUCKET`,
@@ -892,13 +894,15 @@ roles and any KMS key policy must authorize these operations in the selected acc
 
 | Actor | Required existing permission scope |
 |---|---|
-| Publisher | Bucket metadata reads below; `s3:PutObject` only under `ci/tfplans/`; KMS GenerateDataKey/Decrypt for the supported S3 encryption context. |
-| Inspector / apply | Bucket metadata reads; `s3:GetObject` / `s3:GetObjectVersion` under that private prefix and KMS Decrypt. Existing apply/state permissions remain separate. |
+| Publisher | Bucket metadata reads below; `s3:PutObject` only under `ci/tfplans/`; KMS GenerateDataKey/Decrypt for the supported S3 encryption context, plus direct DescribeKey for key normalization. |
+| Inspector / apply | Bucket metadata reads; `s3:GetObject` / `s3:GetObjectVersion` under that private prefix, direct KMS DescribeKey and KMS Decrypt. Existing apply/state permissions remain separate. |
 | Purge operator | `s3:ListBucketVersions` for the repository/branch prefix and `s3:DeleteObjectVersion` for the reviewed expired attempt, excluding state keys. Publisher sessions cannot delete. |
 
 Bucket reads are GetBucketLocation, GetBucketVersioning, GetEncryptionConfiguration,
 GetBucketPublicAccessBlock, GetBucketOwnershipControls and GetBucketPolicyStatus.
-Scope KMS by its supported key plus ViaService, CallerAccount and S3 encryption context.
+Scope S3 encryption use by key, ViaService, CallerAccount and encryption context. Scope
+direct DescribeKey separately by account/region/key ARN; S3-only context conditions do not
+apply to a direct metadata lookup. All dev-family CI branches require AWS_ACCOUNT_ID_DEV.
 Update operator-managed policies if required; no policy widening occurs in this PR.
 Missing backend/tfvars blobs retain the plan's soft skip. A configured plan with a
 missing deployer role or insufficient storage permissions fails publication explicitly.
@@ -972,7 +976,9 @@ runner/process loss can prevent finalizers. No public summary is full-plan appro
 | `bucket_not_private` / `bucket_not_versioned` | Establish the four public-access blocks and Enabled versioning through the reviewed bucket configuration. |
 | `bucket_ownership_invalid` | Confirm BucketOwnerEnforced ownership; other ownership modes are not supported by this transport. |
 | `bucket_not_sse_kms` / `bucket_encryption_missing` / `bucket_encryption_invalid` | Confirm one supported default SSE-KMS rule; backend `encrypt=true` is not evidence of that setting. |
-| `backend_key_mismatch` / `bucket_key_invalid` | Reconcile supported same-account/region backend and bucket key choices; do not silently change an existing state-key contract. |
+| `backend_key_mismatch` / `bucket_key_invalid` / `bucket_key_unusable` | Check identifier format and the resolved artifact key's account, region, Enabled state and symmetric ENCRYPT_DECRYPT use. Backend state-key metadata is independent. |
+| `kms_access_denied` / `kms_key_missing` | Verify direct DescribeKey authorization and the configured key/alias; no key material is requested. |
+| `object_already_exists` / `object_upload_retry_exhausted` | Conditional PUT recovery requires a pinned GET proving exact bytes, hash, length and key; at most three identical PUTs are attempted. Wrong objects are never overwritten. |
 
 These codes come only from the matching AWS S3 operation's exception envelope.
 Other command failures remain generic; provider text is not published. Apply finalizers

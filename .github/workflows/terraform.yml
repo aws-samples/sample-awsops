@@ -491,7 +491,7 @@ jobs:
       TARGET: ${{ github.ref_name }}
       PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
       GH_TOKEN: ${{ github.token }}
-      AWS_ACCOUNT_ID_DEV: ${{ github.ref_name == 'dev' && secrets.AWS_ACCOUNT_ID_DEV || '' }}
+      AWS_ACCOUNT_ID_DEV: ${{ github.ref_name != 'main' && secrets.AWS_ACCOUNT_ID_DEV || '' }}
       MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
       DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}

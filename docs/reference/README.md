@@ -47,6 +47,11 @@ flowchart LR
 각 컴포넌트는 한 단락으로 요약하고, 상세는 해당 레퍼런스 문서로 링크한다. The current decision
 baseline for all of them is [`../decisions/BASELINE.md`](../decisions/BASELINE.md).
 
+**Private plan transport — [private-plan-transport.md](private-plan-transport.md).**
+Operator CI helper for private S3 publication, inspection and exact restore.
+It grants no IAM permission, provisions no storage and does not enable product mutation
+or an ADR-005 exception. The Terraform workflow supplies the protected consumer integration.
+
 **Edge & Networking — [`01-edge-network.md`](01-edge-network.md).** CloudFront(TLS) → **VPC Origin
 `https-only:443`** → **internal ALB HTTPS:443** (regional ACM) → HTTP → Fargate web. No public ALB;
 the ALB SG allows 443 from the CloudFront managed SG. VPC is newly created or reused via the

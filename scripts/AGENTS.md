@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 017d930a5536 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: fa336ec01559 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -180,3 +180,5 @@ The workflow wires the four helper modes with Plan / Publish private plan job co
 attempt-specific tfplan-N references, protected storage sessions and existing apply guards.
 The helper has no orphan recovery, legacy fallback or Terraform apply operation. Contract:
 `docs/reference/private-plan-transport.md`; validate both helper and consumer workflow tests.
+
+This is operator CI artifact transport, not an ADR-005 exception; no frozen product capability is enabled.

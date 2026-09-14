@@ -16,6 +16,7 @@ secrets-manager) — installed by `make deps`.
   with 0600 files; it reads no state. Public references contain no backend identifiers/digests. References last five days; no S3 expiry is configured. The operator purge procedure
   removes expired attempt versions after seven days. Contract: `docs/reference/private-plan-transport.md`;
   tests: `v2/test_ci_private_plan.py`, `v2/test_ci_private_plan_workflow.py` and the existing crypto/context suites.
+  This is operator CI artifact transport, not an ADR-005 exception or product mutation path.
 - `v2/ci_plan_inspect.py` is the legacy encrypted-artifact inspector: it verifies plan-run identity, checkout SHA
   and the existing signed plan/assets before local private rendering. No backend init/apply;
   new 0700 destination with 0600 bounded outputs. It refuses execution inside Actions.
