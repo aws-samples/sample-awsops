@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { loadNetworkObservations, type NetworkFilters } from './topology-observations';
+import { loadNetworkObservations, TOPOLOGY_METRICS, TOPOLOGY_CATEGORIES, type NetworkFilters } from './topology-observations';
+import { NFM_METRICS, NFM_CATEGORIES } from './nfm';
 
 const monitor = { name: 'nfm-eks-demo', status: 'ACTIVE', cluster: 'demo' };
 const filters: NetworkFilters = {
@@ -21,6 +22,10 @@ function reply(url: string, overrides: Record<string, unknown> = {}) {
 }
 
 describe('loadNetworkObservations', () => {
+  it('keeps client metric/category sets equal to the NFM exports', () => {
+    expect(new Set(TOPOLOGY_METRICS)).toEqual(new Set(NFM_METRICS));
+    expect(new Set(TOPOLOGY_CATEGORIES)).toEqual(new Set(NFM_CATEGORIES));
+  });
   it.each(['http', 'transport', 'json'])('never exposes upstream error details for %s failures', async mode => {
     const secret = 'secret=not-a-real-credential-1234567890 SELECT private_table';
     const batch = await loadNetworkObservations({ ...filters, category: 'INTRA_AZ' }, monitor, {

@@ -1,3 +1,6 @@
 # Shared merge checks and deployment workflow fixtures (Python 3.12 in CI).
 pytest>=8,<9
 PyYAML>=6,<7
+# Same SDK/model pins as agentcore/requirements-provision.txt (workflow hash lock).
+boto3==1.43.93
+botocore==1.43.93

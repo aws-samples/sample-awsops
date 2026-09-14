@@ -1,12 +1,26 @@
 import type { NfmCategory, NfmFlowRow, NfmMetric } from './nfm';
-import type { NetworkObservation } from './e2e-topology-types';
 
-// Client-safe mirrors of the existing NFM API allowlists; never import its AWS client at runtime.
+// Client-safe metric/category mirrors of nfm.ts; ranges mirror the query route's RANGE_ALLOWED.
+// Never import the AWS client at runtime.
 export const TOPOLOGY_METRICS: NfmMetric[] = ['DATA_TRANSFERRED', 'ROUND_TRIP_TIME', 'RETRANSMISSIONS', 'TIMEOUTS'];
 export const TOPOLOGY_CATEGORIES: NfmCategory[] = [
   'INTRA_AZ', 'INTER_AZ', 'INTER_VPC', 'INTER_REGION', 'AMAZON_S3', 'AMAZON_DYNAMODB', 'UNCLASSIFIED',
 ];
 export const TOPOLOGY_RANGES = [900, 1800, 3600];
+
+export interface NetworkObservation {
+  monitor: string;
+  cluster: string | null;
+  metric: NfmMetric;
+  category: NfmCategory;
+  rangeSec: number;
+  rows: NfmFlowRow[];
+  unit: string;
+  startTime?: string;
+  endTime?: string;
+  queriedAt?: string;
+  capped: boolean;
+}
 
 export interface TopologyMonitor { name: string; status: string; cluster: string | null }
 export interface NetworkFilters {

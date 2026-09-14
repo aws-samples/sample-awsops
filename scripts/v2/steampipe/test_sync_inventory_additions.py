@@ -18,7 +18,7 @@ def test_ebs_snapshot_registered_with_literal_owner_pushdown():
     # multi-account aggregator a single host literal would miss target accounts, so the query
     # carries an {owner_ids} placeholder sync() renders to the IN-list of all enabled accounts.
     assert "owner_id IN ({owner_ids})" in sql
-    assert "aws_caller_identity" not in sql  # subquery form removed (would not push down)
+    assert "aws_sts_caller_identity" not in sql  # subquery form would not push down
     for col in ("volume_id", "volume_size", "state", "encrypted", "start_time"):
         assert col in sql, col
     assert id_col == "snapshot_id"
@@ -68,7 +68,7 @@ def test_host_probe_symmetric_with_target_probe_via_real_account_reachable(monke
 
     monkeypatch.setattr(mod, "_steampipe", lambda *_a: FakeConn())
     assert mod._account_reachable(mod._caller_account()) is True
-    assert "aws_111111111111.aws_caller_identity" in queried_schemas[0]
+    assert "aws_111111111111.aws_sts_caller_identity" in queried_schemas[0]
 
 
 def test_host_probe_unreachable_protects_last_good_inventory(monkeypatch):
@@ -88,6 +88,101 @@ def test_host_probe_unreachable_protects_last_good_inventory(monkeypatch):
 
     monkeypatch.setattr(mod, "_steampipe", lambda *_a: FakeConn())
     assert mod._account_reachable(mod._caller_account()) is False
+
+
+class _PinnedSteampipe:
+    """The v0.142.0 catalog has aws_sts_caller_identity, not aws_caller_identity."""
+    def __init__(self, identity_rows):
+        self.tables = dict.fromkeys(
+            ("aws_ebs_snapshot", "aws_wafv2_ip_set", "aws_wafv2_rule_group"), [])
+        self.tables["aws_111111111111.aws_sts_caller_identity"] = identity_rows
+        self.columns = []
+        self.closed = False
+
+    def run(self, sql):
+        relation = sql.split("FROM ", 1)[1].split()[0]
+        rows = self.tables[relation]  # Unknown relations fail, as the pinned plugin does.
+        if isinstance(rows, Exception):
+            raise rows
+        if isinstance(rows, (list, tuple)) and "LIMIT " in sql:
+            rows = rows[:int(sql.rsplit("LIMIT ", 1)[1])]
+        return rows
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.mark.parametrize("rows, reachable", [
+    ([("111111111111",)], True), ([["111111111111"]], True),
+    ([], False), (None, False), ([()], False), ([None], False),
+    ([{"account_id": "111111111111"}], False), ([["111111111111", "extra"]], False),
+    ([("999999999999",)], False), ([(111111111111,)], False),
+    ([("111111111111",), ("111111111111",)], False),
+    (RuntimeError("plugin read failed"), False),
+])
+def test_identity_probe_requires_one_matching_catalog_row(monkeypatch, rows, reachable):
+    conn = _PinnedSteampipe(rows)
+    monkeypatch.setattr(sync_lambda, "_steampipe", lambda *_: conn)
+    assert sync_lambda._account_reachable("111111111111") is reachable
+    assert conn.closed
+
+
+@pytest.mark.parametrize("phase", ["connect", "close"])
+def test_identity_probe_connection_errors_fail_closed(monkeypatch, phase):
+    def fail(*_):
+        raise RuntimeError("connection unavailable")
+    conn = _PinnedSteampipe([("111111111111",)])
+    if phase == "close":
+        conn.close = fail
+    monkeypatch.setattr(sync_lambda, "_steampipe", fail if phase == "connect" else lambda *_: conn)
+    assert sync_lambda._account_reachable("111111111111") is False
+
+
+@pytest.mark.parametrize("resource_type", ["ebs_snapshot", "waf_ip_set", "waf_rule_group"])
+@pytest.mark.parametrize("identity_rows, verified", [
+    ([("111111111111",)], True), ([], False), ([("999999999999",)], False),
+    (RuntimeError("plugin read failed"), False),
+])
+def test_empty_inventory_sync_uses_real_identity_probe(monkeypatch, resource_type, identity_rows, verified):
+    state = {"inventory": [("self", "us-east-1", "last-good")],
+             "snapshot": 1, "last_success": ("earlier", 1)}
+    connections = []
+
+    class FakeAurora:
+        def run(self, sql, **params):
+            if "pg_try_advisory_lock" in sql or "RETURNING 1" in sql:
+                if "last_success_at=now()" in sql:
+                    state["last_success"] = ("now", params["n"])
+                return [(True,)]
+            if sql.startswith("SELECT account_id, region, resource_id"):
+                return state["inventory"][:]
+            if sql.startswith("DELETE FROM inventory_resources") and params.get("id") == "last-good":
+                state["inventory"].clear()
+            if sql.startswith("DELETE FROM inventory_snapshots"):
+                state["snapshot"] = None
+            if sql.startswith("INSERT INTO inventory_snapshots"):
+                state["snapshot"] = params["n"]
+            return []
+
+        def close(self):
+            pass
+
+    def steampipe(*_):
+        conn = _PinnedSteampipe(identity_rows)
+        connections.append(conn)
+        return conn
+
+    monkeypatch.setattr(sync_lambda, "_ACCOUNT_CACHE", {"id": "111111111111"})
+    monkeypatch.setattr(sync_lambda, "_aurora", FakeAurora)
+    monkeypatch.setattr(sync_lambda, "_steampipe", steampipe)
+    result = sync_lambda.sync(resource_type)
+    assert result["status"] == ("succeeded" if verified else "partial")
+    assert result["row_count"] == result["unknown_attribute_count"] == 0
+    assert result.get("unreachable_account_count", 0) == (0 if verified else 1)
+    assert state["inventory"] == ([] if verified else [("self", "us-east-1", "last-good")])
+    assert state["snapshot"] == (0 if verified else 1)
+    assert state["last_success"] == (("now", 0) if verified else ("earlier", 1))
+    assert len(connections) == 2 and all(conn.closed for conn in connections)
 
 
 def test_sdk_synced_types_short_circuit_the_host_probe_entirely():

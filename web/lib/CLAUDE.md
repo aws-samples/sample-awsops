@@ -4,6 +4,10 @@
 Domain-logic modules shared by API routes and components, mostly React-free (includes `collectors/`). Tests colocated with source, vitest.
 
 ## Key Files
+- `topology-observations.ts` — standalone, unwired NFM category loader; owns `NetworkObservation`.
+  Keep category concurrency at most three, with closed errors, per-category window quality and caps. Metric/category
+  mirrors follow `nfm.ts`; range presets follow `app/api/nfm/query/route.ts`'s `RANGE_ALLOWED`.
+  Query-window metadata is not proof of full traffic coverage. No E2E/UI integration ships here.
 - `db-connection.ts` — exports `ObservedDbClient`; coupled to pinned pg 8.13.1 internal
   `connection` events. `sslconnect` means SSL accepted, not completed TLS: only the socket's
   `secureConnect` marks TLS completion. Observe error/errorMessage/end until Client connect,
