@@ -34,7 +34,7 @@ AgentCore 基于 Amazon Bedrock AgentCore Runtime 和 Gateway，负责 AI 助手
 | **Code Interpreter / Memory** | 名称中不可使用连字符，只能使用下划线 |
 | **Memory Store** | 最长保留 365 天（`eventExpiryDuration`） |
 | **配置 source of truth** | **SSM** `/ops/awsops-v2/agentcore/{runtime_arn,interpreter_id,memory_id}` — 由 `provision.py` 写入，web BFF 在运行时读取（不在 UI 中暴露） |
-| **Runtime 更新** | 通过重新运行幂等 provisioner（`scripts/v2/agentcore/provision.py`）生效 — 刚创建的 Gateway 在进入 READY 之前，首次创建 target 可能失败，重新运行即可解决 |
+| **Runtime 更新** | 使用幂等 provisioner（`scripts/v2/agentcore/provision.py`）提交变更。对于新建 Gateway，确认 `READY` 后再重试。持续的 `FAILED` 需要诊断，不会自动删除并重建。 |
 
 ## AgentCore Runtime
 
