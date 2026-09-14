@@ -1360,6 +1360,18 @@ class TestTraceTopologyCollection(unittest.TestCase):
                             (self._state(details={"sources": [], "metadataTruncated": True}), True),
                             (self._state(captured_at=None), True), (None, True),
                         ]
+                    cases = [(row, stale, "trace") for row, stale in cases]
+                    if minutes == 30:
+                        for cls in ("flow", "infra"):
+                            cases.append((None, True, cls))
+                            for producer in (None, "succeeded", "failed", "running", "partial", "unknown"):
+                                source = {"sourceId": "inventory:alb", "status": "empty", "itemCount": 0,
+                                          "lastSuccessAtMs": (self.NOW - 60) * 1000, "reasons": []}
+                                if producer is not None:
+                                    source["producerStatus"] = producer
+                                cases.append((self._state("empty", {
+                                    "sources": [source], "publishedSources": [source],
+                                }), producer != "succeeded", cls))
                     # Execute graph-state.ts itself using the installed compiler, compatible with
                     # the CI's Node 20. Only SQL rows, environment and wall clock are controlled.
                     web = subprocess.run(["node", "-e", r"""
@@ -1373,28 +1385,29 @@ const code = ts.transpileModule(source, { compilerOptions: {
 const context = { exports: {}, process: { env: input.environment },
   Date: class extends Date { static now() { return input.now; } } };
 vm.runInNewContext(code, context);
-Promise.all(input.rows.map(row => context.exports.readGraphState({
+Promise.all(input.rows.map(({row, cls}) => context.exports.readGraphState({
   query: async (sql, args) => {
-    if (!sql.includes('FROM topology_graph_state') || args[0] !== 'self') throw Error('unexpected SQL');
+    if (!sql.includes('FROM topology_graph_state') || args[0] !== 'self' || args[1] !== cls) throw Error('unexpected SQL');
     return { rows: row ? [row] : [] };
   },
-}, 'self'))).then(rows => process.stdout.write(JSON.stringify(rows)))
+}, 'self', cls))).then(rows => process.stdout.write(JSON.stringify(rows)))
   .catch(error => { console.error(error); process.exitCode = 1; });
 """], input=json.dumps({
                         "root": str(root), "now": self.NOW * 1000,
                         # The web omits this variable when the configured timer is disabled.
                         "environment": {"GRAPH_REBUILD_INTERVAL_MINS": deployed["web"]} if minutes else {},
-                        "rows": [row for row, _ in cases],
+                        "rows": [{"row": row, "cls": cls} for row, _, cls in cases],
                     }), text=True, capture_output=True, timeout=20)
                     self.assertEqual(web.returncode, 0, web.stderr)
                     web_collections = json.loads(web.stdout)
                     self.assertEqual(len(web_collections), len(cases))
-                    for (state, stale), web_collection in zip(cases, web_collections):
-                        with self.subTest(state=state):
+                    for (state, stale, cls), web_collection in zip(cases, web_collections):
+                        with self.subTest(state=state, cls=cls):
                             with mock.patch.dict(os.environ, {
                                 "GRAPH_REBUILD_INTERVAL_MINS": deployed["reader"],
                             }, clear=True):
-                                body, _ = self._read(state)
+                                body, _ = self._read(state, arguments={"class": cls},
+                                                     nodes=[] if cls != "trace" else None)
                             self.assertEqual(body["collection"]["stale"], stale)
                             self.assertEqual(body["collection"], web_collection)
                             self.assertEqual("warning" in body,
@@ -1545,7 +1558,7 @@ Promise.all(input.rows.map(row => context.exports.readGraphState({
 
     def test_inventory_fresh_publication_uses_oldest_original_source_clock(self):
         source = {"sourceId": "inventory:alb", "status": "ok", "scope": "aggregate", "itemCount": 1,
-                  "capturedAtMs": 1789120800000, "lastSuccessAtMs": 1789127400000}
+                  "capturedAtMs": 1789120800000, "lastSuccessAtMs": 1789127400000, "producerStatus": "succeeded"}
         for cls in ("flow", "infra"):
             body, _ = self._read(self._state(details={"sources": [source], "publishedSources": [source]}),
                                  arguments={"class": cls})
@@ -1559,7 +1572,7 @@ Promise.all(input.rows.map(row => context.exports.readGraphState({
 
     def test_inventory_successful_zero_is_fresh_without_a_row_capture(self):
         source = {"sourceId": "inventory:alb", "status": "empty", "scope": "aggregate",
-                  "itemCount": 0, "lastSuccessAtMs": 1789127700000}
+                  "itemCount": 0, "lastSuccessAtMs": 1789127700000, "producerStatus": "succeeded"}
         body, _ = self._read(self._state("empty", details={
             "sources": [source], "publishedSources": [source],
         }), nodes=[], arguments={"class": "infra"})
@@ -1605,6 +1618,7 @@ Promise.all(input.rows.map(row => context.exports.readGraphState({
                     "source": "a", "target": "b", "rel": "routes", "confidence": "inferred",
                 }], arguments={"class": cls})
                 self.assertEqual(body["collection"]["status"], "unknown")
+                self.assertEqual(body["collection"]["evidenceKind"], "inventory")
                 self.assertIsNone(body["captured_at"])
                 self.assertEqual(body["edges"][0], {
                     "source": "a", "target": "b", "rel": "routes", "confidence": "inferred",
