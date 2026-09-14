@@ -6,6 +6,12 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
+- `v2/ci_web_image.py` — preparatory web provenance helper; no workflow caller yet.
+  `promote` composes caller/context/source/migration/producer checks before publishing only
+  the validated project's digest. Do not call the low-level publisher from CI.
+  `v2/test_ci_web_image.py` tests the contract; jq is required for compare projection.
+  See `docs/runbooks/web-image-provenance.md` for future receipt-step names, inputs and
+  expiry/rollback limits. Operator CI publication adds no ADR-005 exception or IAM grant.
 - `v2/ci_plan_inspect.py` verifies authenticated successful plan-run identity, checkout SHA
   and the existing signed plan/assets before local private rendering. No backend init/apply;
   new 0700 destination with 0600 bounded outputs. It refuses execution inside Actions.
@@ -141,7 +147,7 @@ secrets-manager) — installed by `make deps`.
   It runs before encryption with a two-minute timeout and fenced JSON output.
   Presence booleans are separate, with a combined 256-row bound and no private values;
   new enrollment checks the existing or planned group's absence of an IAM role.
-- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,readiness_plan_summary,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets,verifier_sessions}.py` —
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,readiness_plan_summary,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets,verifier_sessions,web_image}.py` —
   the suites collectively use policy/workflow fixtures, real no-provider plans and a localhost
   state backend to verify gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active

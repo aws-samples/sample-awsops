@@ -76,6 +76,7 @@ def github(path, binary=False):
 
 
 def aws_request(operation, args):
+    require(operation in {"batch-get-image", "put-image"}, "Unsupported image operation")
     argv = ["aws", "ecr", operation, "--region", "ap-northeast-2", "--output", "json",
             "--no-cli-pager"]
     for key, value in args.items():
@@ -192,7 +193,7 @@ def resolve_digest(c, *, pin_sha, fresh_digest="", fresh_project="", producer_ru
             continue
         require(attempt not in valid, "Ambiguous producer receipts")
         valid[attempt] = receipt["digest"]
-    require(valid, "No retained successful build receipt; rebuild or use reviewed operator recovery")
+    require(valid, "No retained successful build receipt; rebuild current source with receipt-enabled wiring")
     latest = api(run_path)
     validate_run(latest, c, pin_sha, producer_run)
     require(latest["run_attempt"] == run["run_attempt"], "Producer attempt changed")
@@ -256,6 +257,7 @@ def verify_source_and_migration(c, pin_sha, env, api=github):
 
 
 def pin_image(repository, digest, aws=aws_request):
+    """Low-level publisher; CI callers must use promote() for the guard chain."""
     require(matches(PROJECT, repository.removesuffix("-web")) and repository.endswith("-web")
             and matches(DIGEST, digest), "Invalid image selection")
     result = aws("batch-get-image", {"repository-name": repository, "image-ids": f"imageDigest={digest}"})
@@ -280,14 +282,39 @@ def pin_image(repository, digest, aws=aws_request):
                 "Image promotion failed")
 
 
+def promote(env=None, *, api=None, aws=None, caller=None, expected_digest=None):
+    """The supported CI write entrypoint: no caller-supplied repository or skipped guard."""
+    env = os.environ if env is None else env
+    api = github if api is None else api
+    aws = aws_request if aws is None else aws
+    verify_caller(env, caller)
+    c = environment_context(env)
+    validate_context(c)
+    pin = env.get("PIN_SHA") or c["sha"]
+    rollback = verify_source_and_migration(c, pin, env, api)
+    digest = resolve_digest(c, pin_sha=pin, fresh_digest=env.get("FRESH_DIGEST", ""),
+                            fresh_project=env.get("FRESH_PROJECT", ""),
+                            producer_run=env.get("IMAGE_BUILD_RUN_ID", ""), api=api)
+    expected = expected_digest if expected_digest is not None else env.get("PREFLIGHT_DIGEST", "")
+    if expected:
+        require(matches(DIGEST, expected) and expected == digest, "Validated image digest changed")
+    # Producer lookup may take time; repeat source/migration checks immediately before publication.
+    verify_source_and_migration(c, pin, env, api)
+    pin_image(c["project"] + "-web", digest, aws)
+    return {"digest": digest, "image_sha": pin, "rollback": rollback}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("receipt", "check-role", "verify-role"))
+    parser.add_argument("mode", choices=("receipt", "check-role", "verify-role", "promote"))
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     env = os.environ
     if args.mode == "check-role":
         role_context(env)
+        return
+    if args.mode == "promote":
+        print(json.dumps(promote(env), sort_keys=True))
         return
     verify_caller(env)
     if args.mode == "verify-role":
@@ -301,15 +328,15 @@ def main():
             and j.get("head_sha") == c["sha"] and j.get("status") == "in_progress"]
     require(len(jobs) == 1, "Cannot identify the producing build job")
     body = build_receipt(c | {"job_id": str(jobs[0]["id"])}, env.get("IMAGE_DIGEST"))
-    with args.output.open("x") as output:
-        os.chmod(args.output, 0o600)
+    fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as output:
         json.dump(body, output, sort_keys=True)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (ImageError, ValueError, KeyError, TypeError, OSError):
+    except (ImageError, ValueError, KeyError, TypeError, AttributeError, OSError):
         print("::error::Web image provenance or promotion failed; verify the producer run and rebuild if its receipt expired.",
               file=sys.stderr)
         sys.exit(1)

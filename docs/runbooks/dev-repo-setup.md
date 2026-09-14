@@ -387,7 +387,7 @@ Then register the generated files (base64) as repo secrets:
 | Stack | Secrets |
 |---|---|
 | all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (saved-plan/failure-capsule encryption, private asset HMAC and a separate failure HMAC domain; rotation requires the matching key for old bundles) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
-| production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` |
+| production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS`; future `ci_web_image.py` integration also requires repository secret `AWS_ACCOUNT_ID_DEV` for its dev-account exclusion check |
 | dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` / `AWS_ACCOUNT_ID_DEV` (required configured account for migrations, runtime image builds and provisioning; secret, not variable) |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
 
@@ -401,6 +401,11 @@ gh secret set TF_TFVARS_DEV -R aws-samples/sample-awsops \
 The secret `AWS_ACCOUNT_ID_DEV` is required for configured development and preview stacks.
 The configured role and STS caller must match it before AWS reads/writes. A missing backend
 may skip an advisory plan; missing account verification on a configured stack fails.
+
+The preparatory [web image provenance helper](web-image-provenance.md) additionally requires
+this repository secret on **main**, as 12 ASCII digits, before excluding the dev account.
+Keep it available to the production environment and do not shadow it with an invalid value.
+This is the new helper's contract; the current legacy web workflow is not yet wired to it.
 
 The manual development [deployment audit](deployment-audit.md)
 (`audit-deployment.yml`) reuses the dev account/deployer/backend secrets with a
