@@ -269,6 +269,31 @@ def test_cli_refuses_public_or_linked_runtime_state_without_echoing_it(tmp_path)
         assert not (tmp_path / "output").exists()
 
 
+def test_workload_cli_binds_runtime_state_to_the_selected_private_directory(tmp_path):
+    directory, other = tmp_path / "session", tmp_path / "other-session"
+    directory.mkdir(mode=0o700)
+    other.mkdir(mode=0o700)
+    for parent in (directory, other):
+        state = parent / "runtime.json"
+        state.write_text(json.dumps(deployment()))
+        state.chmod(0o600)
+    output = tmp_path / "output"
+    source = Path(__file__).with_name("ci_verifier_sessions.py")
+    env = {**ENV, "PATH": os.environ["PATH"], "GITHUB_ACTIONS": "true", "GITHUB_OUTPUT": str(output),
+           "PYTHONDONTWRITEBYTECODE": "1", "AWS_EC2_METADATA_DISABLED": "true",
+           "AWS_CONFIG_FILE": "/dev/null", "AWS_SHARED_CREDENTIALS_FILE": "/dev/null"}
+    command = ["python3", str(source), "workload", "--directory", str(directory), "--deployment-file"]
+    rejected = subprocess.run([*command, str(other / "runtime.json")], env=env, text=True, capture_output=True)
+    assert rejected.returncode != 0
+    assert rejected.stdout == "" and rejected.stderr.strip() == "verifier_session_policy_unavailable"
+    assert not output.exists() and not (directory / "workload-policy.json").exists()
+    accepted = subprocess.run([*command, str(directory / "runtime.json")], env=env, text=True, capture_output=True)
+    assert accepted.returncode == 0 and accepted.stderr == ""
+    published = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert Path(published["policy_file"]).parent == directory
+    assert json.loads(published["session_policy"]) == helpers().workload_policy(ENV, deployment())
+
+
 def test_cli_does_not_emit_a_policy_outside_actions_or_without_output_publication(tmp_path):
     tmp_path.chmod(0o700)
     source = Path(__file__).with_name("ci_verifier_sessions.py")

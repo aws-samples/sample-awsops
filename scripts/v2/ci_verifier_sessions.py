@@ -144,9 +144,9 @@ def private_directory(value):
     return directory
 
 
-def read_deployment(file):
+def read_deployment(file, directory):
     path = Path(file)
-    require(path.is_absolute() and path.parent == private_directory(str(path.parent)))
+    require(path.is_absolute() and path.parent == directory)
     with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
         info = os.fstat(stream.fileno())
         require(stat.S_ISREG(info.st_mode) and info.st_mode & 0o777 == 0o600 and info.st_size <= 16384)
@@ -164,7 +164,7 @@ def main():
     require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("GITHUB_OUTPUT"))
     directory = private_directory(args.directory)
     value = backend_policy(os.environ) if args.phase == "backend" else workload_policy(
-        os.environ, read_deployment(args.deployment_file))
+        os.environ, read_deployment(args.deployment_file, directory))
     path = directory / f"{args.phase}-policy.json"
     text = json.dumps(value, separators=(",", ":"))
     with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
