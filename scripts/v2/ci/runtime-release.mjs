@@ -237,7 +237,8 @@ export async function release(deployment, {
 } = {}) {
   let failed = false;
   let collectionAttempts;
-  const deadline = now() + 50 * 60_000;
+  const rawNow = now;
+  let deadline = now() + 50 * 60_000;
   try {
     const context = validateContext(env);
     context.expectedWebDigest = env.EXPECTED_WEB_DIGEST || undefined;
@@ -334,7 +335,35 @@ export async function release(deployment, {
         }
       };
       const types = validateCatalog(await invoke('catalog', 450_000));
-      const collectionStartedAt = new Date(now()).toISOString();
+      const prepareStarted = now();
+      const credentials = readSmokeCredentials(env.SMOKE_CREDENTIAL_FILE);
+      let prepared;
+      try {
+        prepared = await authenticate({
+          publicUrl: env.PUBLIC_URL, cloudfrontDomain: env.CLOUDFRONT_DOMAIN,
+          email: credentials?.email, password: credentials?.password, runtimeConfig: config,
+        }, { tempRoot: directory, includeDatabaseClock: true, now, deadline });
+      } catch (error) {
+        need(now() < deadline, 'release_timeout');
+        throw new ReleaseError(error instanceof SmokeError ? error.message : 'authenticated_runtime_proof_failed');
+      }
+      const prepareFinished = now(), clock = prepared?.database_clock;
+      need(prepareFinished < deadline, 'release_timeout');
+      const databaseTime = Date.parse(clock?.server_time);
+      need(prepared?.status === 'ok' && prepared.mode === 'prepare' &&
+        Number.isSafeInteger(prepared.public_tables) && prepared.public_tables > 0 &&
+        typeof clock?.server_time === 'string' && Number.isFinite(databaseTime) &&
+        new Date(databaseTime).toISOString() === clock.server_time &&
+        Number.isSafeInteger(clock.request_started_at_ms) && Number.isSafeInteger(clock.response_observed_at_ms) &&
+        clock.request_started_at_ms >= prepareStarted && clock.response_observed_at_ms <= prepareFinished &&
+        clock.response_observed_at_ms >= clock.request_started_at_ms &&
+        clock.response_observed_at_ms - clock.request_started_at_ms <= 35_000,
+      'database_clock_invalid');
+      // Request-start anchoring includes response/host-proof time in the evidence budget.
+      const offset = databaseTime - clock.request_started_at_ms;
+      now = () => rawNow() + offset;
+      deadline += offset;
+      const collectionStartedAt = clock.server_time;
       config = { schemaVersion: 1, mode: 'verify', hostOnly: true, expectedAccountId: context.account,
         expectedCloudfrontId: deployment.known.cloudfront_distribution_id,
         expectedQueuedTypes: types, collectionStartedAt, collectionMode: 'release',
@@ -391,7 +420,7 @@ export async function release(deployment, {
       result = await authenticate({
         publicUrl: env.PUBLIC_URL, cloudfrontDomain: env.CLOUDFRONT_DOMAIN,
         email: credentials?.email, password: credentials?.password,
-        runtimeConfig: readRuntimeSmokeConfig(configFile, env.SMOKE_CREDENTIAL_FILE),
+        runtimeConfig: readRuntimeSmokeConfig(configFile, env.SMOKE_CREDENTIAL_FILE, now()),
       }, { tempRoot: directory, now, deadline: verificationDeadline });
     } catch (error) {
       need(now() < verificationDeadline, 'release_timeout');
