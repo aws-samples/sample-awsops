@@ -6,7 +6,7 @@ import type { TraceSource, TraceSpan, ServiceGraphCall, SourceRead } from './tra
 import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
 import { writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
 import { currentAccountId } from './account';
-import { graphTransaction, inventoryAccounts, inventorySnapshot, inventoryAttempt, INFRA_TYPES, type InventoryRow } from './graph-inventory';
+import { graphTransaction, inventoryAccounts, inventorySnapshot, inventoryAttempt, inventoryTypesForAccount, INFRA_TYPES, type InventoryRow } from './graph-inventory';
 export { resolveInfraRef } from './trace-graph';
 
 /** Structural (duck-typed) interface for a Prometheus/Mimir service-graph metrics source — matches
@@ -133,8 +133,9 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
         totals.skipped += Math.min(accounts.length, 100) - index; reason('time_limit'); break;
       }
       account = current; attempt = undefined; publishing = false;
-      const snapshot = await inventorySnapshot(pool, cls, account, types);
-      attempt = inventoryAttempt(snapshot, types, cls, account, attemptedAt);
+      const accountTypes = inventoryTypesForAccount(types, account);
+      const snapshot = await inventorySnapshot(pool, cls, account, accountTypes);
+      attempt = inventoryAttempt(snapshot, accountTypes, cls, account, attemptedAt);
       if (snapshot.truncated) reason('snapshot_limit');
       const graph = attempt.publish ? build(snapshot.rows) : { nodes: [], edges: [] };
       if (graph.nodes.length > 4000 || graph.edges.length > 8000

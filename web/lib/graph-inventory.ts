@@ -3,6 +3,11 @@ import { graphTransaction } from './graph-transaction';
 export { graphTransaction } from './graph-transaction';
 import type { GraphAttempt, GraphClass } from './graph-state';
 import type { Row } from './infra-topology';
+import { HOST_ONLY_TREND_TYPES } from './trend-utils';
+
+/** Same SDK host-only scope used by the existing inventory producer/trend contract. */
+export const inventoryTypesForAccount = (types: string[], account: string) =>
+  account === 'self' ? types : types.filter(type => !HOST_ONLY_TREND_TYPES.has(type));
 
 // These fields/types are the placement inputs consumed by buildInfraGraph and produced by
 // sync_lambda. Nested opensearch.vpc_options / msk.provisioned are not placement inputs.
@@ -35,17 +40,19 @@ export async function inventoryAccounts(pool: Pool, cls: GraphClass, types: stri
 
 export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: string, types: string[]) {
   return graphTransaction(pool, true, async client => {
-    const prior = await client.query(`SELECT ARRAY(
-      SELECT DISTINCT jsonb_build_object('sourceId', source->>'sourceId')
-      FROM jsonb_array_elements(CASE WHEN jsonb_typeof(details->'publishedSources')='array'
-        THEN details->'publishedSources' ELSE '[]'::jsonb END) source
-      WHERE source->>'sourceId'=ANY($3)
-    ) AS sources FROM topology_graph_state WHERE class=$1 AND account_id=$2`,
-    [cls, account, types.map(type => `inventory:${type}`)]);
     const runs = await client.query(`SELECT account_id, resource_type, status, started_at,
       finished_at, last_success_at, row_count, unknown_attribute_count
       FROM inventory_sync_runs WHERE account_id=ANY($1) AND resource_type=ANY($2)`,
     [[...new Set(['self', account])], types]);
+    // sync() writes these per-account counts only for observed/probed participants after
+    // pruning. The self-keyed job ledger alone cannot prove a member's empty result.
+    const participation = account === 'self' ? { rows: [] } : await client.query(`
+      SELECT DISTINCT ON (s.resource_type) s.resource_type,s.resource_count,s.captured_at
+      FROM inventory_snapshots s WHERE s.account_id=$1 AND s.resource_type=ANY($2)
+        AND EXISTS (SELECT 1 FROM accounts a WHERE a.account_id=$1 AND a.enabled
+          AND (a.all_regions OR EXISTS (SELECT 1 FROM account_regions ar
+            WHERE ar.account_id=a.account_id AND ar.enabled)))
+      ORDER BY s.resource_type,s.captured_at DESC`, [account, types]);
     // No raw all-account aggregation. Infra strips unused provider payloads; flow retains the
     // existing builder's row contract. SQL byte guards prevent oversized JSON reaching Node.
     const result = await client.query(`WITH bounded AS MATERIALIZED (
@@ -76,8 +83,8 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
       FROM inventory_resources WHERE resource_type=ANY($1) GROUP BY resource_type`, [countTypes]) : { rows: [] };
     const aggregateCounts = new Map<string, number>(countTypes.map(type => [type, 0]));
     for (const row of counts.rows) aggregateCounts.set(row.resource_type, row.count);
-    return { rows, runs: runs.rows as Run[], previous: prior.rows[0]?.sources,
-      aggregateCounts, truncated: rows.length > ROW_CAP || rows.some(row => row.oversized) };
+    return { rows, runs: runs.rows as Run[],
+      aggregateCounts, participation: participation.rows as Run[], truncated: rows.length > ROW_CAP || rows.some(row => row.oversized) };
   });
 }
 
@@ -88,32 +95,28 @@ const stamp = (value: unknown): number | null => {
 
 export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySnapshot>>, types: string[],
   cls: GraphClass, account: string, attemptedAt: string): GraphAttempt {
-  const { rows, runs, previous, aggregateCounts, truncated } = snapshot;
-  const previousTypes = Array.isArray(previous) ? previous.flatMap(source =>
-    typeof source?.sourceId === 'string' && types.includes(source.sourceId.slice(10))
-      && source.sourceId.startsWith('inventory:') ? [source.sourceId.slice(10)] : []) : [];
-  const required = [...new Set([
-    ...(account === 'self' && cls === 'flow' ? types : []),
-    // Aggregate failures are missing coverage even on a member's first publication.
-    // Aggregate success still cannot certify absence for an unobserved member.
-    ...runs.filter(run => types.includes(run.resource_type) && (run.account_id === account
-      || (run.account_id === 'self' && run.status !== 'succeeded'))).map(run => run.resource_type),
-    ...rows.map(row => row.resource_type), ...previousTypes,
-  ])];
+  const { rows, runs, aggregateCounts, participation, truncated } = snapshot;
+  // Every source this class can collect in this account contributes a coverage result.
+  const required = [...new Set(types)];
   let safe = required.length > 0 && !truncated;
   const sources = required.map(type => {
     const items = rows.filter(row => row.resource_type === type);
-    const direct = runs.find(row => row.resource_type === type && row.account_id === account);
-    const run = direct ?? runs.find(row => row.resource_type === type && row.account_id === 'self');
-    const unknownScope = account !== 'self' && !direct && !items.length;
+    const run = runs.find(row => row.resource_type === type && row.account_id === 'self');
+    const point = participation.find(row => row.resource_type === type);
+    const pointAt = stamp(point?.captured_at), started = stamp(run?.started_at), finished = stamp(run?.finished_at);
+    const participated = account === 'self' || (run?.status === 'succeeded' && pointAt !== null
+      && started !== null && finished !== null && started <= pointAt && pointAt <= finished
+      && finished <= Date.now() && finished === stamp(run?.last_success_at)
+      && Number.isSafeInteger(point?.resource_count) && point!.resource_count >= 0);
+    const unknownScope = !participated;
     const captures = items.map(row => stamp(row.captured_at));
     const capturedAtMs = captures.length && captures.every(value => value !== null)
       ? Math.min(...captures as number[]) : null;
     const lastSuccessAtMs = stamp(run?.last_success_at);
     const producerStatus = ['succeeded', 'failed', 'partial', 'running'].includes(run?.status) ? run!.status : 'unknown';
     const validCount = Number.isSafeInteger(run?.row_count) && run!.row_count >= 0;
-    const countConfirmed = validCount && (direct && account !== 'self'
-      ? items.length === direct.row_count : aggregateCounts.get(type) === run!.row_count);
+    const countConfirmed = validCount && aggregateCounts.get(type) === run!.row_count
+      && (account === 'self' || (participated && point!.resource_count === items.length));
     const confirmedEmpty = !unknownScope && countConfirmed;
     const blockers = !run ? ['missing_ledger'] : producerStatus === 'failed' ? ['source_failed']
       : unknownScope ? ['unknown_account_coverage'] : producerStatus !== 'succeeded' ? ['incomplete_collection']
@@ -126,7 +129,7 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
     const status = producerStatus === 'failed' ? 'error'
       : producerStatus === 'unknown' || !lastSuccessAtMs || unknownScope ? 'unavailable'
       : reasons.length ? 'partial' : items.length ? 'ok' : 'empty';
-    return { sourceId: `inventory:${type}`, scope: direct && account !== 'self' ? 'account' : 'aggregate',
+    return { sourceId: `inventory:${type}`, scope: account !== 'self' && participated ? 'account' : 'aggregate',
       status, producerStatus, reasons, itemCount: items.length, capturedAtMs, lastSuccessAtMs,
       attemptedAtMs: stamp(run?.started_at), finishedAtMs: stamp(run?.finished_at) };
   });
