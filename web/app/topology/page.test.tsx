@@ -18,7 +18,7 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean } = {}) {
+function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; failures?: Set<string> } = {}) {
   const requests: URL[] = [];
   vi.stubGlobal('fetch', vi.fn(async (input: string) => {
     const url = new URL(input, 'http://localhost'); requests.push(url);
@@ -35,6 +35,7 @@ function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean }
     }
     if (url.pathname.startsWith('/api/inventory/')) {
       const type = url.pathname.split('/').pop(), host = url.searchParams.get('accounts') === 'self';
+      if (options.failures?.has(type!) || options.failures?.has('*')) return Response.json({ error: 'Unavailable' }, { status: 503 });
       if (type === 'ecs_task' && host && options.lateTask) return options.lateTask;
       if (type === 'subnet' && options.subnetFailed) return Response.json({ error: 'Unavailable' }, { status: 503 });
       const rows = type === 'target_group' ? [targets] : type === 'ecs_task' ? [task(host ? 'ecs-api' : 'member-api')]
@@ -53,6 +54,7 @@ describe('live topology inventory adapter', () => {
   it('resolves ECS through real subnet inventory and EKS through the scoped producer', async () => {
     const requests = serve(); render(<TopologyPage />);
     await screen.findByRole('option', { name: 'ECS · ecs-app' });
+    await waitFor(() => expect(document.querySelector('.react-flow')).not.toBeNull());
     search('ecs-api'); expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
     search('shop/service-good'); expect(screen.getByRole('button', { name: /service-good/ })).toBeTruthy();
     search('shop/service-wrong'); expect(screen.queryByRole('button', { name: /service-wrong/ })).toBeNull();
@@ -62,6 +64,28 @@ describe('live topology inventory adapter', () => {
   it('does not present a failed subnet read as an empty successful inventory', async () => {
     serve({ subnetFailed: true }); render(<TopologyPage />);
     expect(await screen.findByText(/503.*subnet|subnet.*503/)).toBeTruthy();
+    expect(screen.queryByText(/그래프로 그릴 리소스가 없습니다/)).toBeNull();
+  });
+
+  it('renders successful inventory types when an unrelated type fails', async () => {
+    serve({ failures: new Set(['alb_listener_rule']) }); render(<TopologyPage />);
+    await screen.findByText(/alb_listener_rule.*503/);
+    search('ecs-api');
+    expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
+  });
+
+  it('retains previous same-account data after total refresh failure but clears it on account switch', async () => {
+    const failures = new Set<string>(); serve({ failures }); render(<TopologyPage />);
+    await screen.findByRole('option', { name: 'ECS · ecs-app' });
+    await waitFor(() => expect(document.querySelector('.react-flow')).not.toBeNull());
+    failures.add('*');
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await screen.findByText('조회 실패로 이전 결과를 표시합니다.');
+    expect(document.querySelector('.react-flow')).not.toBeNull();
+    search('ecs-api'); expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
+    act(() => setActiveAccount('123456789012'));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /ecs-api/ })).toBeNull());
+    expect(screen.queryByText('조회 실패로 이전 결과를 표시합니다.')).toBeNull();
     expect(screen.queryByText(/그래프로 그릴 리소스가 없습니다/)).toBeNull();
   });
 

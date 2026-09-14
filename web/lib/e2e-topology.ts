@@ -355,6 +355,13 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
       if (traversed.has(edge.source) && allowed.has(edge.target)) visited.add(edge.target);
       if (traversed.has(edge.target) && allowed.has(edge.source)) visited.add(edge.source);
     }
+    // A construct seed can admit a connection through context. Include that
+    // connection's own endpoints, without another traversal through the construct.
+    for (const edge of edges) {
+      if (edge.evidence !== 'network') continue;
+      if (byId.get(edge.source)?.kind === 'connection' && visited.has(edge.source) && allowed.has(edge.target)) visited.add(edge.target);
+      if (byId.get(edge.target)?.kind === 'connection' && visited.has(edge.target) && allowed.has(edge.source)) visited.add(edge.source);
+    }
     return visited;
   };
   const validFocus = selection.focusId && eligible.has(selection.focusId) ? selection.focusId : null;

@@ -7,6 +7,7 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '조회 실패로 이전 결과를 표시합니다.': { en: 'The refresh failed; showing previous results.', zh: '刷新失败；正在显示之前的结果。', ja: '更新に失敗したため、前回の結果を表示しています。' },
   '불변식 평가 범위': { en: 'Invariant assessment coverage', zh: '不变量评估覆盖范围', ja: '不変条件の評価範囲' },
   '불변식 통과': { en: 'Passed', zh: '通过', ja: '合格' },
   '불변식 평가 정보 없음': { en: 'Invariant assessment unavailable', zh: '不变量评估信息不可用', ja: '不変条件の評価情報なし' },

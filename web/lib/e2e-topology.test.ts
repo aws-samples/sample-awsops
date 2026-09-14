@@ -476,6 +476,25 @@ describe('buildE2eGraph — workload identity', () => {
 });
 
 describe('selectE2eGraph — filtering before bounds', () => {
+  it.each(['focus', 'query'])('includes each connection endpoint when a shared construct is the %s target', mode => {
+    const graph = buildE2eGraph(input({ network: [observation([
+      flow({ traversedIds: ['NAT:nat-shared'] }),
+      flow({ local: { ip: '10.2.1.1' }, remote: { ip: '10.2.1.2' }, traversedIds: ['NAT:nat-shared'] }),
+    ])] }));
+    const construct = graph.nodes.find(n => n.kind === 'construct')!;
+    const selection = mode === 'focus' ? { focusId: construct.id } : { query: construct.id };
+    const view = selectE2eGraph(graph, selection);
+    expect(view.nodes.filter(n => n.kind === 'connection')).toHaveLength(2);
+    expect(view.nodes.filter(n => n.kind === 'endpoint')).toHaveLength(4);
+    expect(view.edges.filter(e => e.evidence === 'network')).toHaveLength(4);
+    expect(view.edges.filter(e => e.evidence === 'context')).toHaveLength(2);
+    expectNoDanglingEdges(view);
+    const capped = selectE2eGraph(graph, { ...selection, maxNodes: 4, maxEdges: 3 });
+    expect(capped.nodes.filter(n => n.kind === 'connection')).toHaveLength(1);
+    expect(capped.nodes.filter(n => n.kind === 'endpoint')).toHaveLength(2);
+    expectNoDanglingEdges(capped);
+  });
+
   it.each(['focus-connection', 'focus-endpoint', 'query', 'focus-query'])('keeps whole connection groups under tight node and edge budgets for %s', mode => {
     const graph = buildE2eGraph(input({ network: [observation([flow()])] }));
     const connection = graph.nodes.find(n => n.kind === 'connection')!;

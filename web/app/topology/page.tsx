@@ -197,24 +197,43 @@ export default function TopologyPage() {
   const [query, setQuery] = useState('');
   const [netMaps, setNetMaps] = useState<NetMaps>(emptyNetMaps);
   const loadGeneration = useRef(0);
+  const displayedAccount = useRef<string | null>(null);
+  const [retained, setRetained] = useState(false);
 
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
     const current = () => loadGeneration.current === generation;
+    const account = activeAccount || 'self';
     setBusy(true);
-    setData(null);
-    setSelected(null);
-    setErr('');
+    if (displayedAccount.current !== account) {
+      displayedAccount.current = null;
+      setData(null);
+      setSelected(null);
+      setNetMaps(emptyNetMaps());
+      setCapturedAt(null);
+      setSyncedAt(null);
+      setCappedTypes([]);
+      setRetained(false);
+      setErr('');
+    }
     try {
-      const account = activeAccount || 'self';
       const NET = ['vpc', 'security_group'] as const;
-      const [res, ipResolved, net] = await Promise.all([
-        Promise.all(TYPES.map((t) => fetchType(t, account))),
+      const [results, ipResolved, net] = await Promise.all([
+        Promise.allSettled(TYPES.map((t) => fetchType(t, account))),
         account === 'self' ? fetchEksIpMap() : Promise.resolve({}),
         // Subnets are fetched once with flow inventory and reused for detail names.
         Promise.all(NET.map((t) => fetch(`/api/inventory/${t}?limit=500&accounts=${encodeURIComponent(account)}`).then((r) => (r.ok ? r.json() : { rows: [] })).catch(() => ({ rows: [] })))),
       ]);
       if (!current()) return;
+      const failed = results.flatMap((result, i) => result.status === 'rejected'
+        ? [`${TYPES[i]}: ${result.reason instanceof Error ? result.reason.message : 'unavailable'}`] : []);
+      setErr(failed.join('; '));
+      if (failed.length === TYPES.length) {
+        setRetained(displayedAccount.current === account);
+        return;
+      }
+      const res = results.map(result => result.status === 'fulfilled'
+        ? result.value : { rows: [] as Row[], finishedAt: null, capped: false });
       const mk = (rows: { resource_id?: unknown; data?: Record<string, unknown> }[]) =>
         new Map((rows ?? []).map((r) => [String(r.resource_id), invName(r)]));
       setNetMaps({ vpc: mk(net[0]?.rows), sg: mk(net[1]?.rows),
@@ -229,12 +248,17 @@ export default function TopologyPage() {
         if (res[i].capped) capped.push(t);
       });
       setData(out);
+      displayedAccount.current = account;
+      setSelected(null);
+      setRetained(false);
       setSyncedAt(newest);
       setCappedTypes(capped);
-      setErr('');
       setCapturedAt(new Date().toISOString());
     } catch (e) {
-      if (current()) setErr(String(e));
+      if (current()) {
+        setErr(String(e));
+        setRetained(displayedAccount.current === account);
+      }
     } finally {
       if (current()) setBusy(false);
     }
@@ -548,10 +572,11 @@ export default function TopologyPage() {
       />
       <div className="flex-1 min-h-0 flex flex-col gap-4 px-8 py-6">
         {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
+        {retained && <div role="status" className="text-[13px] text-warning">{tt('조회 실패로 이전 결과를 표시합니다.')}</div>}
         {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
-        {data && !err && (
+        {data && (
           full.nodes.length === 0 ? (
-            <div className="rounded-md border border-ink-100 bg-ink-50 px-3 py-3 text-[13px] text-ink-400">
+            !err && <div className="rounded-md border border-ink-100 bg-ink-50 px-3 py-3 text-[13px] text-ink-400">
               {tt('그래프로 그릴 리소스가 없습니다. (cloudfront/alb/nlb/target_group sync 확인 — target_group은 steampipe 동기화 후 채워집니다.)')}
             </div>
           ) : (
