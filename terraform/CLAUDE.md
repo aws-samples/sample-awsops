@@ -70,6 +70,9 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
   control plane, no-AWS-mutation IAM, and SSRF/Secrets/DLP/human-gate controls.
 
 ## Rules
+- `foundation/ci-plan.tf` optionally grants a named existing CI plan role only
+  `secretsmanager:GetSecretValue` on the owned Steampipe listener secret. The role-name
+  input defaults empty; no role/trust, Aurora-master, KMS or mutating grant is added.
 - **No `-auto-approve` on shared infrastructure** — `plan -out tfplan`, then the controller
   runs `apply tfplan`.
 - **SG `description` is immutable** — changing it forces a replace that hangs on the ALB

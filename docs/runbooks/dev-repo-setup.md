@@ -72,7 +72,7 @@ mutation roles. Role-to-sub matrix:
 | `sample-awsops-ci-deployer` | main roll / apply / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply |
 | `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | dev + user stacks' ECR push |
 | `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply — **never production** |
-| `sample-awsops-ci-terraform-plan` | plan (PR/push incl. user-branch own-stack plans, read-only) | StringLike: `...:pull_request` + refs `main`, `dev`, `atomoh`, `ssminji`, `whchoi` | ReadOnlyAccess |
+| `sample-awsops-ci-terraform-plan` | plan (PR/push incl. user-branch own-stack plans, read-only) | StringLike: `...:pull_request` + refs `main`, `dev`, `atomoh`, `ssminji`, `whchoi` | ReadOnlyAccess; optional exact Steampipe-secret refresh grant described below |
 | `sample-awsops-ci-review` | AI pr-review | StringEquals: verified subject prefix + environments `ci-review-auto` / `ci-review-recovery`, or legacy refs `main` / `dev`; no bare `pull_request` subject | Bedrock / Mantle policies — inspect actual permissions before approval |
 
 CRITICAL sub rule: **a job that declares `environment:` presents the
@@ -81,6 +81,30 @@ roles must therefore trust the environment sub (pinning them to a branch ref
 makes every deploy fail AssumeRoleWithWebIdentity). Which branches can reach an
 environment is enforced by the environment's own deployment branch policy
 (`production` → main only; `development` → dev, atomoh, ssminji, whchoi).
+
+### Plan access to the managed Steampipe secret
+
+`ReadOnlyAccess` does not allow the `GetSecretValue` call that the AWS provider uses
+to refresh `aws_secretsmanager_secret_version.steampipe`. When inventory is enabled,
+an existing version can therefore block all plans. Do not disable refresh or use a
+mutating deployment role for automatic PR plans.
+
+The optional `ci_terraform_plan_role_name` input in `terraform/foundation/ci-plan.tf`
+grants only `secretsmanager:GetSecretValue` on this stack's exact Steampipe listener
+secret ARN. It creates no role, changes no trust, reads no Aurora master secret, and
+defaults to an empty name (no grant). The secret uses the default Secrets Manager
+key, so this policy adds no KMS permission. For dev CI, set the nonsecret
+`CI_TERRAFORM_PLAN_ROLE_NAME_DEV` repository variable to the existing configured
+plan role name; the plan step verifies that it matches `AWS_CI_TERRAFORM_PLAN_ROLE_ARN`.
+Keep the same input in any operator plan for this stack.
+
+If the missing permission prevents the first plan, an authorized IAM operator may
+bootstrap the exact inline policy from `ci-plan.tf`, named
+`<project>-ci-plan-steampipe-read`, following `terraform/CLAUDE.md`'s emergency
+same-code policy convention. Resolve the exact owned secret ARN with metadata reads;
+do not fetch or publish its value. Review the next saved plan so Terraform records
+the matching policy. Do not broaden the role's permissions or skip the required Plan check.
+
 Build/plan jobs carry no environment and present branch-ref subs. Fork PRs can
 never mint tokens (GitHub withholds id-token from forks) and `terraform.yml`
 skips non-same-repo PRs outright.
