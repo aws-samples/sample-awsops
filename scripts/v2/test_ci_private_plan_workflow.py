@@ -82,7 +82,8 @@ def test_apply_finalizer_removes_only_current_run_private_scratch(tmp_path):
 
 
 @pytest.mark.parametrize("case", ["expired", "recent", "broad_prefix", "state_key", "unversioned", "truncated"])
-def test_documented_purge_preparation_rejects_unsafe_deletions(tmp_path, case):
+@pytest.mark.parametrize("optimized", [False, True])
+def test_documented_purge_preparation_rejects_unsafe_deletions(tmp_path, case, optimized):
     document = (ROOT / "docs/runbooks/dev-repo-setup.md").read_text()
     code = document.split('python3 - "$PLAN_PREFIX" "$PURGE_DIR" <<\'PY\'\n', 1)[1].split("\nPY", 1)[0]
     prefix = "ci/tfplans/aws-samples/sample-awsops/dev/" + "a" * 40 + "/123/1/"
@@ -100,7 +101,7 @@ def test_documented_purge_preparation_rejects_unsafe_deletions(tmp_path, case):
     elif case == "truncated":
         data["NextToken"] = "more"
     (tmp_path / "versions.json").write_text(json.dumps(data))
-    result = subprocess.run([sys.executable, "-c", code, prefix, str(tmp_path)],
+    result = subprocess.run([sys.executable, *(["-O"] if optimized else []), "-c", code, prefix, str(tmp_path)],
                             text=True, capture_output=True)
     assert (result.returncode == 0) is (case == "expired")
     assert (tmp_path / "delete.json").exists() is (case == "expired")

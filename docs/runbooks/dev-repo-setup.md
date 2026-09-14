@@ -945,18 +945,21 @@ aws s3api list-object-versions --profile samples --region "$PLAN_REGION" \
   --prefix "$PLAN_PREFIX" --max-items 1000 > "$PURGE_DIR/versions.json"
 python3 - "$PLAN_PREFIX" "$PURGE_DIR" <<'PY'
 import datetime as dt, json, pathlib, re, sys
+def require(condition):
+    if not condition:
+        raise SystemExit("Unsafe or incomplete purge selection")
 prefix, root = sys.argv[1], pathlib.Path(sys.argv[2])
-assert re.fullmatch(r"ci/tfplans/aws-samples/sample-awsops/(main|dev|atomoh|ssminji|whchoi)/[0-9a-f]{40}/[1-9][0-9]*/[1-9][0-9]*/", prefix)
+require(re.fullmatch(r"ci/tfplans/aws-samples/sample-awsops/(main|dev|atomoh|ssminji|whchoi)/[0-9a-f]{40}/[1-9][0-9]*/[1-9][0-9]*/", prefix))
 data = json.loads((root / "versions.json").read_text())
-assert not data.get("NextToken") and not data.get("IsTruncated")
+require(not data.get("NextToken") and not data.get("IsTruncated"))
 rows = data.get("Versions", []) + data.get("DeleteMarkers", [])
-assert 0 < len(rows) <= 1000
+require(0 < len(rows) <= 1000)
 cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
 objects = []
 for row in rows:
-    assert re.fullmatch(re.escape(prefix) + r"(plan-[0-9a-f]{64}\.bin|assets-[0-9a-f]{64}\.tar\.gz|manifest-[0-9a-f]{64}\.json)", row["Key"])
-    assert isinstance(row.get("VersionId"), str) and row["VersionId"] not in ("", "null")
-    assert dt.datetime.fromisoformat(row["LastModified"].replace("Z", "+00:00")) < cutoff
+    require(re.fullmatch(re.escape(prefix) + r"(plan-[0-9a-f]{64}\.bin|assets-[0-9a-f]{64}\.tar\.gz|manifest-[0-9a-f]{64}\.json)", row["Key"]))
+    require(isinstance(row.get("VersionId"), str) and row["VersionId"] not in ("", "null"))
+    require(dt.datetime.fromisoformat(row["LastModified"].replace("Z", "+00:00")) < cutoff)
     objects.append({"Key": row["Key"], "VersionId": row["VersionId"]})
 (root / "delete.json").write_text(json.dumps({"Objects": objects, "Quiet": True}))
 print("Expired versions prepared:", len(objects))
@@ -971,7 +974,8 @@ aws s3api delete-objects --profile samples --region "$PLAN_REGION" \
   --delete "file://$PURGE_DIR/delete.json" > "$PURGE_DIR/delete-result.json"
 python3 - "$PURGE_DIR/delete-result.json" <<'PY'
 import json, sys
-assert not json.load(open(sys.argv[1])).get("Errors"), "Version purge incomplete"
+if json.load(open(sys.argv[1])).get("Errors"):
+    raise SystemExit("Version purge incomplete")
 PY
 ```
 
