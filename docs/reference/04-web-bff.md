@@ -24,7 +24,7 @@ permissions. Resource reads stay behind the curated MCP tools.
 - **Routes**:
   - `/api/health` — **public** liveness; the deploy smoke target and the health-check path for both the container and the ALB target group.
   - `/api/stream` — **SSE** stream (heartbeat ~15s, comfortably under the LB/CloudFront read timeouts).
-  - `/api/db` — **Aurora ping** via the shared node-`pg` pool (`getPool` in `web/lib/db.ts`); returns a `public_tables` count or an `unconfigured` (503) response when `AURORA_ENDPOINT` is unset.
+  - `/api/db` — **Aurora ping** via the shared node-`pg` pool (`getPool` in `web/lib/db.ts`). Successful responses contain `status: "ok"`, `public_tables`, and `server_time` (UTC ISO with milliseconds, sampled by Aurora's `clock_timestamp()` in the same SELECT). An unset `AURORA_ENDPOINT` still returns `unconfigured` (503); database failures return the existing generic error (500). CloudFront edge authentication and the ADR-002 §2-4 BFF `verifyUser()` exception are unchanged.
   - `/api/jobs` (+ `/api/jobs/[id]`) — **P2 async** job submission/lookup, but the *generic* route only accepts `noop`/`noop-heavy`. Heavy/long/OOM-risk work is never run inline — it's enqueued via `web/lib/jobs.ts` `enqueueJob()` (durable Aurora ledger row, then best-effort SQS), but on user-facing paths `report`/`compliance` are reachable only through their own ownership-scoped routes, `POST /api/diagnosis` and `POST /api/compliance/run`, which compute `requestedBy` server-side; the trusted `schedule_dispatcher.py` direct enqueue is an internal exception for scheduled reports. The generic route deliberately rejects those two types: they'd otherwise trust a client-supplied `report_id`/`run_id`/`requested_by` with no ownership check — a cross-user IDOR write closed in the PR #195 pentest remediation.
 - **Image distribution — dual-tier ECR**: dev-private `awsops-v2-web` and prod-public `public.ecr.aws/r7z4t3s6/awsops-v2-web`.
 - **Deploy loop**: `make deploy` → `scripts/v2/deploy.mjs`: ECR login → `buildx` arm64 build+push → ECS `force-new-deployment` → `aws ecs wait services-stable` → smoke `GET /api/health`.
@@ -50,7 +50,7 @@ permissions. Resource reads stay behind the curated MCP tools.
 |------|------|
 | `web/app/api/health/route.ts` | Public liveness; smoke + health-check target |
 | `web/app/api/stream/route.ts` | SSE stream (heartbeat ~15s) |
-| `web/app/api/db/route.ts` | Aurora ping via `getPool` |
+| `web/app/api/db/route.ts` | Edge-authenticated Aurora ping via `getPool`; successful `status`, `public_tables` and UTC `server_time` |
 | `web/app/api/jobs/route.ts` | P2 async job submit/list (`noop`/`noop-heavy` only) + ledger write + SQS enqueue |
 | `web/app/api/jobs/[id]/route.ts` | P2 async job lookup by id (ownership-gated) |
 | `web/lib/jobs.ts` | `enqueueJob()` — durable ledger write + best-effort SQS send, shared by `/api/jobs`, `/api/diagnosis`, `/api/compliance/run` |

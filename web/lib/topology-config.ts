@@ -8,6 +8,7 @@ export interface EksIpResolution {
   blockedScopes: string[];
   coveredRegions: string[];
   globalUnknown: boolean;
+  notConnected?: number;
   status: 'ok' | 'empty' | 'partial' | 'unavailable';
   reasons: ('cluster_unreadable' | 'cluster_limit_possible')[];
 }
@@ -20,6 +21,40 @@ const nonempty = (value: unknown): value is string => typeof value === 'string' 
 const optionalStrings = (row: Record<string, unknown>, keys: string[]) =>
   keys.every(key => row[key] == null || typeof row[key] === 'string');
 
+export type AggregateRunStatus = 'succeeded' | 'running' | 'partial' | 'failed' | 'unknown';
+
+export interface InventoryEvidence {
+  capturedAt: string | null;
+  capturedThrough: string | null;
+  unknownCapture: boolean;
+  aggregateStatus: AggregateRunStatus;
+}
+
+const validTime = (value: unknown): value is string =>
+  typeof value === 'string' && Number.isFinite(Date.parse(value));
+
+/** Row captures are scoped; the self-keyed run ledger describes an aggregate account sweep. */
+export function inventoryEvidence(
+  rows: { captured_at?: unknown }[],
+  run: { status?: unknown; last_success_at?: unknown } | null | undefined,
+  host: boolean,
+): InventoryEvidence {
+  const times = rows.map(row => row.captured_at).filter(validTime);
+  const lastSuccess = host && validTime(run?.last_success_at) ? run.last_success_at : null;
+  // Retained row captures take precedence over a newer success or failed attempt.
+  // Missing captures may fall back to host last-success evidence, never finished_at.
+  if (times.length < rows.length && lastSuccess) times.push(lastSuccess);
+  if (rows.length === 0 && lastSuccess) times.push(lastSuccess);
+  times.sort((a, b) => Date.parse(a) - Date.parse(b));
+  return {
+    capturedAt: times[0] ?? null,
+    capturedThrough: times[times.length - 1] ?? null,
+    unknownCapture: rows.some(row => !validTime(row.captured_at)) || times.length === 0,
+    aggregateStatus: typeof run?.status === 'string'
+      && ['succeeded', 'running', 'partial', 'failed'].includes(run.status) ? run.status as AggregateRunStatus : 'unknown',
+  };
+}
+
 // Endpoints describes Service membership, not cluster ownership. Only an independently listed,
 // unique pod in a known active phase can establish ownership; conflicting references also
 // disqualify the pod fallback. PodRow.status is the normalized Kubernetes status.phase.
@@ -27,6 +62,7 @@ export async function fetchEksIpMap(signal?: AbortSignal): Promise<EksIpResoluti
   const candidates = new Map<string, Resolution | null>();
   const blockedScopes = new Set<string>();
   let coveredRegions: string[] = [];
+  let notConnected = 0;
   try {
     if (signal?.aborted) return unavailable();
     const response = await fetch('/api/eks', { signal });
@@ -34,14 +70,18 @@ export async function fetchEksIpMap(signal?: AbortSignal): Promise<EksIpResoluti
     if (signal?.aborted || list?.error || list?.status === 'error' || !Array.isArray(list?.clusters)) return unavailable();
     if (!list.clusters.every((c: unknown) => isRecord(c) && nonempty(c.name) && nonempty(c.access))) return unavailable();
     // The current API returns at most 25 descriptors and reports truncation.
-    if (list.truncated === true || (list.truncated !== false && list.clusters.length >= 25)) return unavailable('cluster_limit_possible');
+    if (list.truncated === true || (list.truncated !== undefined && typeof list.truncated !== 'boolean')
+      || (list.truncated !== false && list.clusters.length >= 25)) return unavailable('cluster_limit_possible');
     const clusters = list.clusters as Cluster[];
     if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return unavailable();
     coveredRegions = nonempty(list.region) ? [list.region] : [...new Set(clusters.map(c => c.region!))];
     if (!coveredRegions.length || clusters.some(c => !coveredRegions.includes(c.region!))) return unavailable();
     await Promise.all(clusters.map(async cluster => {
       const scope = scopedTargetIp(cluster.region!, cluster.vpcId!, '');
-      if (cluster.access !== 'connected') { blockedScopes.add(scope); return; }
+      if (cluster.access !== 'connected') {
+        if (cluster.access === 'entry-only' || cluster.access === 'no-entry') notConnected++;
+        blockedScopes.add(scope); return;
+      }
       const get = async (kind: string) => {
         try {
           if (signal?.aborted) return null;
@@ -107,6 +147,19 @@ export async function fetchEksIpMap(signal?: AbortSignal): Promise<EksIpResoluti
   if (signal?.aborted) return unavailable();
   const map = Object.fromEntries([...candidates].map(([key, value]) =>
     [key, blockedScopes.has(key.slice(0, key.lastIndexOf('|') + 1)) ? null : value]));
-  return { map, blockedScopes: [...blockedScopes].sort(), coveredRegions, globalUnknown: false, status: blockedScopes.size ? Object.values(map).some(Boolean) ? 'partial' : 'unavailable'
+  return { map, ...(notConnected ? { notConnected } : {}), blockedScopes: [...blockedScopes].sort(), coveredRegions, globalUnknown: false, status: blockedScopes.size ? Object.values(map).some(Boolean) ? 'partial' : 'unavailable'
     : candidates.size ? 'ok' : 'empty', reasons: blockedScopes.size ? ['cluster_unreadable'] : [] };
+}
+
+/** Compatibility evidence view; the typed resolution remains the source of ownership guards. */
+export interface EksIpEvidence {
+  ipResolved: NonNullable<FlowInput['ipResolved']>;
+  status: 'ok' | 'partial' | 'failed';
+  region: string | null;
+  notConnected: number;
+}
+export async function fetchEksIpEvidence(signal?: AbortSignal): Promise<EksIpEvidence> {
+  const result = await fetchEksIpMap(signal);
+  return { ipResolved: result.map, status: result.globalUnknown ? 'failed' : result.blockedScopes.length ? 'partial' : 'ok',
+    region: result.coveredRegions[0] ?? null, notConnected: result.notConnected ?? 0 };
 }

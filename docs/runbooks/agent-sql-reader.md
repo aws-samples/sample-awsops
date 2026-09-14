@@ -278,7 +278,8 @@ applicable. `targetCapturedAt` dates only the target-group inventory row; it doe
 date the independent task/subnet/pod evidence or establish current ownership. Host ECS
 snapshot target labels are cached configuration as well. `candidate` is page-only
 out-of-region context, not materializer output. The view excludes these fields along
-with `vpcId`, `subnetId` and `ambiguity`; older retained `capturedAt` fields are also unlisted.
+with `vpcId`, `subnetId`, `ambiguity` and `ownership_reason`. A `capturedAt` key,
+if supplied by another writer, is also unlisted.
 It can expose bare `region`, `cluster`, `ecsService` and `task` fields: these do not
 establish complete network scope or current ownership when the provenance fields are absent.
 Any other unlisted key remains excluded. Exposing another key requires a reviewed

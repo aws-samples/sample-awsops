@@ -1,367 +1,381 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ReactNode } from 'react';
+import type { FlowNode } from '@/lib/flow-topology';
+import { ALL_ACCOUNTS, DEFAULT_SCOPE, setActiveAccount, setActiveScope } from '@/lib/account-context';
+import ScopeSelector from '@/components/shell/ScopeSelector';
+
+vi.mock('@/components/shell/LanguageProvider', () => ({
+  useI18n: () => ({ lang: 'en', tt: (s: string) => s, t: (s: string) => s }),
+}));
+vi.mock('@/lib/use-theme', () => ({ useTheme: () => 'light' }));
+// Keep the page's real data fetching, flow builder and layout; inspect the graph handed to the canvas.
+vi.mock('next/dynamic', () => ({
+  default: () => ({ nodes, onNodeClick }: {
+    nodes: { id: string; data: { label: ReactNode; fnode: FlowNode } }[];
+    onNodeClick: (event: unknown, node: unknown) => void;
+  }) =>
+    <div aria-label="flow graph">{nodes.map(n =>
+      <button key={n.id} data-testid={n.data.fnode.kind} data-region={n.data.fnode.meta?.region}
+        data-vpc={n.data.fnode.meta?.vpcId} onClick={() => onNodeClick({}, n)}>{n.data.fnode.label}</button>)}</div>,
+}));
 import TopologyPage from './page';
-import { setActiveAccount } from '@/lib/account-context';
-import * as topology from '@/lib/flow-topology';
 
-const region = 'us-east-1', vpcId = 'vpc-app';
-const row = (resource_id: string, data: object) => ({ account_id: 'self', resource_id, region, captured_at: '2026-09-11T11:00:00Z', data });
-// One global type-sweep ledger, shared by host/member reads; not this scope's row count.
-const RUN = { status: 'succeeded', finished_at: '2026-09-11T12:00:00Z', last_success_at: '2026-09-11T12:00:00Z', row_count: 20000 };
-type Body = { rows: ReturnType<typeof row>[]; run: typeof RUN };
-const targets = row('tg-app', { captured_at: '2099-01-01T00:00:00Z', vpc_id: vpcId, target_type: 'ip', target_health_descriptions:
-  ['10.0.1.2', '10.0.1.3'].map(Id => ({ Target: { Id, Port: 80 } })) });
-const task = (name: string) => row(`task-${name}`, {
-  task_group: `service:${name}`, cluster_arn: 'cluster/ecs-app', last_status: 'RUNNING',
-  attachments: [{ Details: [{ Name: 'subnetId', Value: 'subnet-app' }, { Name: 'privateIPv4Address', Value: '10.0.1.2' }] }],
-});
-beforeEach(() => {
-  localStorage.clear();
-  window.history.replaceState({}, '', '/');
-  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
-  vi.stubGlobal('DOMMatrixReadOnly', class { m22 = 1; });
-});
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
-
-function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; failures?: Set<string>; eks?: object; eksFailed?: boolean; subnetCapped?: boolean;
-  inventory?: Record<string, ReturnType<typeof row>[]>;
-  inventoryReply?: (url: URL, body: Body, signal?: AbortSignal | null) => Response | Promise<Response>;
+const region = 'us-east-1', vpcId = 'vpc-a', ip = '10.0.1.10';
+const captured = '2026-09-01T10:00:00Z', failed = '2026-09-14T10:00:00Z';
+const pod = { name: 'orders-a', namespace: 'shop', podIP: ip, workload: 'orders', status: 'Running' };
+const member = '123456789012';
+const run = { status: 'succeeded', last_success_at: captured, finished_at: failed, row_count: 20000 };
+const memberCapture = '2026-09-13T12:00:00Z';
+function deferred<T>() {
+  let resolve!: (value: T) => void, reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+function serve(options: {
+  pods?: unknown[]; rowCapture?: string | null; clusterVpc?: string; ecs?: boolean;
+  hostPods?: Promise<Response>; hostInventory?: Promise<Response>; memberInventory?: Promise<Response>;
+  subnetStatus?: number; subnetRows?: unknown[]; subnetReject?: boolean;
+  runStatus?: string; eksStatus?: number; podStatus?: number; clusterAccess?: string; emptyGraph?: boolean;
 } = {}) {
-  const requests: URL[] = [];
-  const inventories = { ...options.inventory };
-  if (options.subnetCapped) inventories.subnet = Array.from({ length: 10000 }, (_, i) => row(i ? `extra-${i}` : 'subnet-app', { vpc_id: vpcId }));
-  vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
-    const url = new URL(input, 'http://localhost'); requests.push(url);
-    if (url.pathname === '/api/eks' && options.eksFailed) return Response.json({ message: 'secret=not-a-real-credential-1234567890' }, { status: 503 });
-    if (url.pathname === '/api/eks' && options.eks) return Response.json({ region, truncated: false, ...options.eks });
-    if (url.pathname === '/api/eks') return Response.json({ region, truncated: false, clusters: [
-      { name: 'good', region, vpcId, access: 'connected' },
-      { name: 'wrong', region, vpcId: 'vpc-other', access: 'connected' },
-    ] });
-    if (url.pathname.endsWith('/incluster')) {
-      const cluster = url.pathname.split('/')[3];
-      return Response.json({ rows: url.searchParams.get('kind') === 'pods'
-        ? [{ name: `${cluster}-pod`, namespace: 'shop', podIP: '10.0.1.3', workload: cluster, status: 'Running' }]
-        : [{ name: `service-${cluster}`, namespace: 'shop', ips: ['10.0.1.3'],
-          targets: [{ ip: '10.0.1.3', pod: `${cluster}-pod` }] }] });
-    }
+  vi.stubGlobal('fetch', vi.fn(async (input: string, _init?: RequestInit) => {
+    const url = new URL(input, 'http://localhost');
+    const accountId = url.searchParams.get('accounts') === 'self' ? 'self' : member;
+    if (url.pathname === '/api/accounts') return Response.json({
+      accounts: [{ accountId: '111111111111', alias: 'Host', isHost: true },
+        { accountId: member, alias: 'Member', isHost: false }],
+    });
+    if (url.pathname === '/api/accounts/regions') return Response.json({ regions: [] });
+    if (url.pathname === '/api/eks' && options.eksStatus) return Response.json({ error: 'EKS read failed' }, { status: options.eksStatus });
+    if (url.pathname === '/api/eks') return Response.json({
+      clusters: options.ecs ? [] : [{ name: 'production', access: options.clusterAccess ?? 'connected', region, vpcId: options.clusterVpc ?? vpcId }], region,
+    });
+    if (url.searchParams.get('kind') === 'pods' && options.podStatus) return Response.json({ error: 'pod read failed' }, { status: options.podStatus });
+    if (url.searchParams.get('kind') === 'pods') return options.hostPods ?? Response.json({ rows: options.pods ?? [pod] });
+    if (url.searchParams.get('kind') === 'endpoints') return Response.json({
+      rows: [{ name: 'orders-service', namespace: 'shop', ips: [ip], targets: [{ ip, pod: pod.name }] }],
+    });
     if (url.pathname.startsWith('/api/inventory/')) {
-      const type = url.pathname.split('/').pop(), host = url.searchParams.get('accounts') === 'self';
-      if (options.failures?.has(type!) || options.failures?.has('*')) return Response.json({ error: 'Unavailable' }, { status: 503 });
-      if (type === 'ecs_task' && host && options.lateTask) return options.lateTask;
-      if (type === 'subnet' && options.subnetFailed) return Response.json({ error: 'Unavailable' }, { status: 503 });
-      const all = inventories[type!] ?? (type === 'target_group' ? [targets] : type === 'ecs_task' ? [task(host ? 'ecs-api' : 'member-api')]
-        : type === 'subnet' ? [row('subnet-app', { vpc_id: vpcId, tags: { Name: 'App subnet' } })] : []);
-      const offset = Number(url.searchParams.get('offset') ?? 0), limit = Number(url.searchParams.get('limit'));
-      const rows = all.slice(offset, offset + limit).map(r => ({ ...r, account_id: url.searchParams.get('accounts') === '__all__' ? r.account_id : host ? 'self' : url.searchParams.get('accounts')! }));
-      const body = { rows, run: { ...RUN } };
-      return options.inventoryReply?.(url, body, init?.signal) ?? Response.json(body);
+      if (url.pathname.endsWith('/subnet') && options.subnetReject) throw new Error('subnet transport unavailable');
+      if (url.pathname.endsWith('/subnet') && options.subnetStatus) {
+        return Response.json({ error: 'subnet read failed' }, { status: options.subnetStatus });
+      }
+      if (url.pathname.endsWith('/subnet') && options.subnetRows) {
+        const offset = Number(url.searchParams.get('offset') ?? 0);
+        return Response.json({ rows: options.subnetRows.slice(offset, offset + 500).map(row => ({ data: {}, ...row as object, account_id: accountId })), run, consistency: 'repeatable-read' });
+      }
+      const host = url.searchParams.get('accounts') === 'self';
+      if (url.pathname.endsWith('/target_group')) {
+        const pending = host ? options.hostInventory : options.memberInventory;
+        if (pending) return pending; // Deliberately ignores abort: late completions must also be rejected.
+      }
+      return Response.json({
+      rows: url.pathname.endsWith('/target_group') && !options.emptyGraph ? [{
+        resource_id: 'tg-orders', region, account_id: accountId,
+        captured_at: options.rowCapture === undefined ? (host ? captured : memberCapture) : options.rowCapture,
+        data: { vpc_id: vpcId, target_type: 'ip', target_health_descriptions: [{ Target: { Id: ip, Port: 80 } }] },
+      }] : options.ecs && url.pathname.endsWith('/subnet') ? [{
+        resource_id: 'subnet-a', region, account_id: accountId, captured_at: captured, data: { vpc_id: vpcId },
+      }] : options.ecs && url.pathname.endsWith('/ecs_task') ? [{
+        resource_id: 'task-orders', region, account_id: accountId, captured_at: captured, data: {
+          last_status: 'RUNNING', task_group: 'service:ecs-orders', cluster_arn: 'cluster/production',
+          attachments: [{ Details: [{ Name: 'subnetId', Value: 'subnet-a' }, { Name: 'privateIPv4Address', Value: ip }] }],
+        },
+      }] : [],
+      run: { ...run, status: options.runStatus ?? 'succeeded', error: options.runStatus === 'failed' ? 'collection failed' : null },
+      consistency: 'repeatable-read',
+    });
     }
     throw new Error(`Unexpected request: ${url}`);
   }));
-  return requests;
 }
-function search(value: string) {
-  fireEvent.change(screen.getByPlaceholderText('리소스 이름 검색…'), { target: { value } });
+beforeEach(() => {
+  window.localStorage.clear();
+  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => window.setTimeout(() => cb(0), 0));
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id));
+});
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+async function ready() {
+  render(<TopologyPage />);
+  await waitFor(() => expect(screen.queryByText('로딩 중…')).toBeNull());
+  return screen.getByTestId('target');
 }
 
-describe('live topology inventory adapter', () => {
+describe('sample topology evidence', () => {
+  it('supplies collected subnets to corroborate an ECS attachment IP', async () => {
+    serve({ ecs: true });
+    expect((await ready()).textContent).toBe('ecs-orders');
+  });
+  it('discloses a failed subnet read while retaining the unresolved target', async () => {
+    serve({ ecs: true, subnetStatus: 503 });
+    expect((await ready()).textContent).toBe(ip);
+    expect(screen.getByLabelText('Inventory collection evidence').textContent).toContain('subnet: failed');
+  });
+  it('discloses the subnet cap when attachment evidence lies beyond the returned rows', async () => {
+    serve({ ecs: true, subnetRows: Array.from({ length: 10000 }, (_, index) => ({
+      resource_id: `subnet-other-${index}`, region, captured_at: captured, data: { vpc_id: vpcId },
+    })) });
+    expect((await ready()).textContent).toBe(ip);
+    expect(screen.getByText(/Response limit reached.*subnet.*10000/)).toBeTruthy();
+  });
+  it('retains the graph and discloses a rejected subnet transport', async () => {
+    serve({ ecs: true, subnetReject: true, runStatus: 'succeeded' });
+    expect((await ready()).textContent).toBe(ip);
+    expect(screen.getByLabelText('Inventory collection evidence').textContent).toContain('subnet: failed');
+    expect(document.body.textContent).not.toContain('subnet transport unavailable');
+  });
+  it('does not turn a host read failure into unknown aggregate health', async () => {
+    serve({ subnetStatus: 503, runStatus: 'succeeded' });
+    await ready();
+    const text = screen.getByLabelText('Inventory collection evidence').textContent;
+    expect(text).toContain('Inventory read failures: subnet: failed');
+    expect(text).not.toContain('Run health unknown');
+  });
+  it('still discloses actual unknown run metadata after successful reads', async () => {
+    serve({ runStatus: 'unrecognized' });
+    render(<TopologyPage />);
+    await screen.findByLabelText('Inventory collection evidence');
+    const text = screen.getByLabelText('Inventory collection evidence').textContent;
+    expect(text).toContain('Aggregate sync runs: unknown (15)');
+    expect(text).toContain('Run health unknown');
+    expect(text).toContain('Inventory read failures: target_group: failed, ecs_task: failed, subnet: failed');
+    expect(screen.queryByTestId('target')).toBeNull();
+  });
+  it.each(['entry-only', 'no-entry'])('separates %s onboarding coverage from EKS read failure', async clusterAccess => {
+    serve({ clusterAccess, runStatus: 'succeeded' });
+    expect((await ready()).textContent).toBe(ip);
+    const text = screen.getByLabelText('Inventory collection evidence').textContent;
+    expect(text).toContain(`EKS ownership scope: configured region ${region}`);
+    expect(text).toContain('other regions are not assessed');
+    expect(text).toContain('Not-connected clusters not queried: 1');
+    expect(text).toContain('EKS ownership evidence is partial');
+    expect(text).not.toContain('EKS ownership read failed');
+  });
+  it('discloses the configured-region boundary even after successful connected reads', async () => {
+    serve({ runStatus: 'succeeded' });
+    expect((await ready()).textContent).toBe('shop/orders-service');
+    const text = screen.getByLabelText('Inventory collection evidence').textContent;
+    expect(text).toContain(`EKS ownership scope: configured region ${region}`);
+    expect(text).toContain('other regions are not assessed');
+    expect(text).not.toContain('Not-connected clusters not queried:');
+  });
+  it('keeps capped coverage visible when the graph has no nodes', async () => {
+    serve({ emptyGraph: true, runStatus: 'succeeded', subnetRows: Array.from({ length: 10000 }, (_, i) => ({ resource_id: `subnet-${i}`, region })) });
+    render(<TopologyPage />);
+    await waitFor(() => expect(screen.queryByText('로딩 중…')).toBeNull());
+    expect(screen.queryByLabelText('flow graph')).toBeNull();
+    expect(screen.getByLabelText('Inventory collection evidence').textContent).toMatch(/Response limit reached.*subnet.*10000/);
+  });
   it.each([
-    { eksFailed: true },
-    { eks: { clusters: [{ name: 'blocked', region, vpcId, access: 'unknown' }] } },
-    { eks: { truncated: true, clusters: Array.from({ length: 25 }, (_, i) => ({ name: `cluster-${i}`, region, vpcId, access: 'connected' })) } },
-    { eks: { region: undefined, clusters: [] } },
-  ])('discloses unavailable EKS resolution without hiding other inventory: %j', async options => {
-    serve(options); render(<TopologyPage />);
-    await screen.findByRole('alert', { name: 'EKS 식별 상태' });
-    await waitFor(() => expect(document.querySelector('.react-flow__node')).not.toBeNull());
-    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
-    expect(document.body.textContent).not.toContain('not-a-real-credential');
+    { eksStatus: 503, expected: 'EKS ownership read failed' },
+    { podStatus: 503, expected: 'EKS ownership evidence is partial' },
+    { clusterVpc: '', expected: 'EKS ownership read failed' },
+  ])('discloses EKS evidence degradation: $expected', async ({ expected, ...options }) => {
+    serve({ ...options, runStatus: 'succeeded' });
+    expect((await ready()).textContent).toBe(ip);
+    expect(screen.getByLabelText('Inventory collection evidence').textContent).toContain(expected);
   });
-  it.each(['ecs_task', 'subnet-cap'])('does not treat %s read gaps as absent ownership competitors', async gap => {
-    serve({ failures: new Set(gap === 'ecs_task' ? ['ecs_task'] : []), subnetCapped: gap === 'subnet-cap' });
-    render(<TopologyPage />);
-    await screen.findByText('인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.');
-    expect(screen.queryByRole('option', { name: 'EKS · good' })).toBeNull();
-    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
+  it.each([{ accounts: [member] }, { accounts: ALL_ACCOUNTS }, { accounts: ['self', member] }])('collapses unavailable run health and explains EKS opt-out for $accounts', async ({ accounts }) => {
+    setActiveScope({ ...DEFAULT_SCOPE, accounts });
+    serve({ runStatus: 'succeeded' });
+    await ready();
+    const text = screen.getByLabelText('Inventory collection evidence').textContent ?? '';
+    expect(text.match(/Run health unknown for this account scope/g)).toHaveLength(1);
+    expect(text).not.toContain('route53: unknown');
+    expect(text).not.toContain('Some capture times unknown');
+    expect(text).toContain('EKS ownership was not attempted for this account scope');
+    expect(eksRequests()).toHaveLength(0);
   });
-  it('keeps healthy EKS nodes visible when another VPC is unreadable', async () => {
-    serve({ eks: { clusters: [{ name: 'good', region, vpcId, access: 'connected' },
-      { name: 'blocked', region, vpcId: 'vpc-other', access: 'no-entry' }] } });
-    render(<TopologyPage />);
-    await screen.findByRole('alert', { name: 'EKS 식별 상태' });
-    search('service-good'); expect(screen.getByRole('button', { name: /service-good/ })).toBeTruthy();
+  it('does not report a running sync as a failure', async () => {
+    serve({ runStatus: 'running' });
+    await ready();
+    const text = screen.getByLabelText('Inventory collection evidence').textContent;
+    expect(text).toContain('Aggregate sync runs: running (18)');
+    expect(text).not.toContain('Aggregate sync issues:');
+    expect(text).not.toContain('Run health unknown');
   });
-  it('does not label successful empty EKS enumeration as a failure', async () => {
-    serve({ eks: { clusters: [] } }); render(<TopologyPage />);
-    await screen.findByRole('option', { name: 'ECS · ecs-app' });
-    expect(screen.queryByRole('alert', { name: 'EKS 식별 상태' })).toBeNull();
+  it('keeps a real member-scope subnet failure separate from unavailable run health', async () => {
+    setActiveScope({ ...DEFAULT_SCOPE, accounts: [member] });
+    serve({ runStatus: 'succeeded', subnetStatus: 503 });
+    await ready();
+    const evidence = screen.getByLabelText('Inventory collection evidence');
+    expect(evidence.querySelector('[role="status"]')?.textContent).toBe('Inventory read failures: subnet: failed');
+    expect(evidence.textContent).toContain('Run health unknown for this account scope');
   });
-
-  it('resolves ECS through real subnet inventory and EKS through the scoped producer', async () => {
-    const graph = vi.spyOn(topology, 'buildFlowGraph');
-    const requests = serve(); render(<TopologyPage />);
-    await screen.findByRole('option', { name: 'ECS · ecs-app' });
-    await waitFor(() => expect(document.querySelector('.react-flow')).not.toBeNull());
-    search('ecs-api'); expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
-    search('shop/service-good'); expect(screen.getByRole('button', { name: /service-good/ })).toBeTruthy();
-    search('shop/service-wrong'); expect(screen.queryByRole('button', { name: /service-wrong/ })).toBeNull();
-    expect(requests.filter(url => url.pathname === '/api/inventory/subnet')).toHaveLength(1);
-    expect(graph.mock.calls.at(-1)?.[0].tg?.[0].captured_at).toBe('2026-09-11T11:00:00Z');
+  it.each(['failed', 'partial'])('discloses aggregate %s sweeps in member scope without using their clocks', async runStatus => {
+    setActiveScope({ ...DEFAULT_SCOPE, accounts: [member] });
+    serve({ runStatus, rowCapture: null });
+    await ready();
+    const evidence = screen.getByLabelText('Inventory collection evidence');
+    expect(evidence.textContent).toContain(`Aggregate sync runs: ${runStatus} (18)`);
+    expect(evidence.textContent).toContain(`Aggregate sync issues: route53: ${runStatus}`);
+    expect(evidence.textContent).toContain('Run health unknown for this account scope');
+    expect(evidence.textContent).not.toContain(new Date(captured).toLocaleString());
   });
-
-  it('does not present a failed subnet read as an empty successful inventory', async () => {
-    serve({ subnetFailed: true }); render(<TopologyPage />);
-    expect(await screen.findByText(/subnet: invalid inventory response/)).toBeTruthy();
-    expect(screen.queryByText(/그래프로 그릴 리소스가 없습니다/)).toBeNull();
+  it('labels aggregate success separately from unknown member run health', async () => {
+    setActiveScope({ ...DEFAULT_SCOPE, accounts: [member] });
+    serve({ runStatus: 'succeeded' });
+    await ready();
+    const text = screen.getByLabelText('Inventory collection evidence').textContent;
+    expect(text).toContain('Aggregate sync runs: succeeded (18)');
+    expect(text).toContain('Run health unknown for this account scope');
+    expect(text).not.toContain('Aggregate sync issues:');
   });
-
-  it('renders successful inventory types when an unrelated type fails', async () => {
-    serve({ failures: new Set(['alb_listener_rule']) }); render(<TopologyPage />);
-    await screen.findByText(/alb_listener_rule: invalid inventory response/);
-    search('ecs-api');
-    expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
+  it('does not reload unchanged account queries on a region-only selection change', async () => {
+    serve({ runStatus: 'succeeded' });
+    await ready();
+    const count = vi.mocked(fetch).mock.calls.length;
+    await act(async () => setActiveScope({ ...DEFAULT_SCOPE, regions: ['ap-northeast-2'] }));
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(count);
   });
-
-  it.each(['target_group', 'alb', 'nlb', 'cloudfront'])('retains a nonempty graph after partial %s failure empties the new graph', async type => {
-    const failures = new Set<string>();
-    const active = type === 'target_group' ? [targets] : [row(type, {
-      arn: `arn:fixture:${type}`, dns_name: `${type}.example.test`, name: type,
-    })];
-    serve({ failures, inventory: { target_group: [], [type]: active } });
-    render(<TopologyPage />);
-    await screen.findByText(/인벤토리 동기화:/);
-    await waitFor(() => expect(document.querySelectorAll('.react-flow__node').length).toBeGreaterThan(0));
-    failures.add(type);
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-    await screen.findByText('조회 실패로 이전 결과를 표시합니다.');
-    expect(document.querySelectorAll('.react-flow__node').length).toBeGreaterThan(0);
-    expect(screen.queryByText(/그래프로 그릴 리소스가 없습니다/)).toBeNull();
-    failures.clear(); active.length = 0;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-    await screen.findByText(/그래프로 그릴 리소스가 없습니다/);
-    expect(screen.queryByText('조회 실패로 이전 결과를 표시합니다.')).toBeNull();
+  it('resolves a corroborated pod using its independently listed region and VPC', async () => {
+    serve();
+    const target = await ready();
+    expect(target.textContent).toBe('shop/orders-service');
+    expect(target.getAttribute('data-region')).toBe(region);
+    expect(target.getAttribute('data-vpc')).toBe(vpcId);
   });
-  it('retains the prior graph when an incomplete target-group sweep returns no rows', async () => {
-    let incomplete = false;
-    serve({ inventoryReply: (url, body) => Response.json(incomplete && url.pathname.endsWith('/target_group')
-      ? { rows: [], run: { ...body.run, status: 'partial' } } : body) });
-    render(<TopologyPage />);
-    await screen.findByRole('option', { name: 'ECS · ecs-app' });
-    incomplete = true;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-    await screen.findByText('조회 실패로 이전 결과를 표시합니다.');
-    search('ecs-api'); expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
-    expect(screen.queryByText(/그래프로 그릴 리소스가 없습니다/)).toBeNull();
+  it('leaves the same IP in another VPC unresolved', async () => {
+    serve({ clusterVpc: 'vpc-other' });
+    expect((await ready()).textContent).toBe(ip);
   });
-
-  it.each([false, true])('retains same-account graph provenance after total refresh failure (partial: %s)', async partial => {
-    const failures = new Set<string>();
-    const options = { failures, eks: { clusters: [
-      { name: 'good', region, vpcId, access: 'connected' },
-      { name: 'blocked', region, vpcId: 'vpc-other', access: partial ? 'no-entry' : 'connected' },
-    ] },
-      inventoryReply: (url: URL, body: Body) => Response.json(partial && url.pathname.endsWith('/ecs_task')
-        ? { ...body, run: { ...body.run, status: 'partial' } } : body) };
-    serve(options); render(<TopologyPage />);
-    await screen.findByText(/인벤토리 동기화:/);
-    await waitFor(() => expect(document.querySelector('.react-flow')).not.toBeNull());
-    const label = partial ? 'ambiguous:' : 'ecs-api';
-    const syncWarning = '인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.';
-    expect(!!screen.queryByRole('alert', { name: 'EKS 식별 상태' })).toBe(partial);
-    expect(!!screen.queryByText(syncWarning)).toBe(partial);
-    failures.add('*');
-    options.eks = { clusters: partial ? [] : [{ name: 'blocked', region, vpcId, access: 'no-entry' }] };
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-    await screen.findByText('조회 실패로 이전 결과를 표시합니다.');
-    expect(document.querySelector('.react-flow')).not.toBeNull();
-    search(label); expect(screen.getByRole('button', { name: partial ? /×2/ : /ecs-api/ })).toBeTruthy();
-    expect(!!screen.queryByRole('alert', { name: 'EKS 식별 상태' })).toBe(partial);
-    expect(!!screen.queryByText(syncWarning)).toBe(partial);
-    act(() => setActiveAccount('123456789012'));
-    await waitFor(() => expect(screen.queryByRole('button', { name: partial ? /×2/ : /ecs-api/ })).toBeNull());
-    expect(screen.queryByRole('alert', { name: 'EKS 식별 상태' })).toBeNull();
-    expect(screen.queryByText(syncWarning)).toBeNull();
-    expect(screen.queryByText('조회 실패로 이전 결과를 표시합니다.')).toBeNull();
-    expect(screen.queryByText(/그래프로 그릴 리소스가 없습니다/)).toBeNull();
+  it('does not infer pod ownership from Endpoints without pod inventory', async () => {
+    serve({ pods: [] });
+    expect((await ready()).textContent).toBe(ip);
   });
-
-  it('ignores a late host load after account selection changes', async () => {
-    let resolve!: (response: Response) => void;
-    const pending = new Promise<Response>(done => { resolve = done; });
-    const requests = serve({ lateTask: pending }); render(<TopologyPage />);
-    await waitFor(() => expect(requests.some(url => url.pathname.endsWith('/ecs_task'))).toBe(true));
-    act(() => setActiveAccount('123456789012'));
-    const oldRequest = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes('/ecs_task') && String(url).includes('accounts=self'));
-    expect(oldRequest?.[1]?.signal?.aborted).toBe(true);
-    await screen.findByRole('option', { name: 'ECS · ecs-app' });
-    await act(async () => { resolve(Response.json({ rows: [task('ecs-api')], run: RUN })); });
-    search('ecs-api'); expect(screen.queryByRole('button', { name: /ecs-api/ })).toBeNull();
-    search('member-api'); expect(screen.getByRole('button', { name: /member-api/ })).toBeTruthy();
-    expect(screen.queryByRole('option', { name: 'EKS · good' })).toBeNull();
+  it('shows retained capture evidence and failed collection, never failed-attempt freshness', async () => {
+    serve({ runStatus: 'failed' });
+    await ready();
+    expect(document.body.textContent).not.toContain(new Date(failed).toLocaleString());
+    const evidence = screen.getByLabelText('Inventory collection evidence');
+    expect(evidence.textContent).toContain(new Date(captured).toLocaleString());
+    expect(evidence.textContent).not.toContain(new Date(failed).toLocaleString());
+    expect(evidence.textContent).toContain('failed');
+  });
+  it('uses last success when the host rows have no capture timestamp', async () => {
+    serve({ rowCapture: null });
+    await ready();
+    expect(screen.getByLabelText('Inventory collection evidence').textContent)
+      .toContain(new Date(captured).toLocaleString());
+  });
+  it('does not borrow the host last-success evidence for a member scope', async () => {
+    setActiveScope({ ...DEFAULT_SCOPE, accounts: [member] });
+    serve({ rowCapture: null });
+    await ready();
+    const evidence = screen.getByLabelText('Inventory collection evidence');
+    expect(evidence.textContent).toContain('unknown');
+    expect(evidence.textContent).not.toContain(new Date(captured).toLocaleString());
+    expect(screen.getByTestId('target').textContent).toBe(ip);
   });
 });
 
-function largeInventory(type: string) {
-  return [...Array.from({ length: 500 }, (_, i) => row(`filler-${i}`, {})),
-    type === 'ecs_task' ? task('ecs-api') : type === 'target_group' ? targets : row('subnet-app', { vpc_id: vpcId })];
+function eksRequests() {
+  return vi.mocked(fetch).mock.calls.filter(([url]) => String(url).startsWith('/api/eks'));
 }
-describe('bounded ownership inventory paging', () => {
-  it.each([['self', 'ecs_task'], ['self', 'subnet'], ['self', 'target_group'], ['123456789012', 'ecs_task'], ['123456789012', 'subnet'], ['123456789012', 'target_group']])('pages %s / %s without paging display types', async (account, type) => {
-    const requests = serve({ inventory: { [type]: largeInventory(type) } });
-    render(<TopologyPage />);
-    await screen.findByRole('option', { name: 'ECS · ecs-app' });
-    if (account !== 'self') {
-      requests.length = 0;
-      act(() => setActiveAccount(account));
-      await waitFor(() => expect(requests.some(u => u.pathname.endsWith(`/${type}`) && u.searchParams.get('offset') === '500')).toBe(true));
-      await screen.findByRole('option', { name: 'ECS · ecs-app' });
-    }
-    expect(requests.filter(u => u.pathname.endsWith(`/${type}`)).map(u => u.searchParams.get('offset'))).toEqual(['0', '500']);
-    expect(requests.filter(u => u.pathname.endsWith('/target_group'))).toHaveLength(type === 'target_group' ? 2 : 1);
-    expect(requests.filter(u => u.pathname.endsWith('/cloudfront'))).toHaveLength(1);
-    expect(requests.filter(u => u.pathname.startsWith('/api/inventory/')).every(u => u.searchParams.get('accounts') === account)).toBe(true);
-    expect(screen.queryByText('인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.')).toBeNull();
-    if (account !== 'self') {
-      search('ecs:'); fireEvent.click(screen.getByRole('button', { name: /ecs-api|member-api/ }));
-      expect(await screen.findByText('cached_configuration')).toBeTruthy();
-      expect(requests.some(u => u.pathname === '/api/eks')).toBe(false);
-    }
+function pendingInventoryResponse() {
+  return Response.json({ rows: [{
+    resource_id: 'tg-orders', region, account_id: member, captured_at: memberCapture,
+    data: { vpc_id: vpcId, target_type: 'ip', target_health_descriptions: [{ Target: { Id: ip, Port: 80 } }] },
+  }], run, consistency: 'repeatable-read' });
+}
+async function hostPodsStarted() {
+  await waitFor(() => expect(eksRequests().some(([url]) => String(url).includes('kind=pods'))).toBe(true));
+}
+
+describe('topology scope lifecycle through real hooks and events', () => {
+  it('follows member and all-account selection through the mounted ScopeSelector, including Refresh', async () => {
+    serve();
+    render(<><ScopeSelector /><TopologyPage /></>);
+    await waitFor(() => expect(screen.getByTestId('target').textContent).toBe('shop/orders-service'));
+    fireEvent.click(await screen.findByLabelText('Member'));
+    fireEvent.click(screen.getByLabelText('Host (scope.host)'));
+    await waitFor(() => expect(screen.getByTestId('target').textContent).toBe(ip));
+    const hostReads = eksRequests().length;
+    fireEvent.click(screen.getByLabelText('scope.allAccounts'));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) =>
+      String(url).includes('accounts=__all__'))).toBe(true));
+    await screen.findByRole('button', { name: 'Refresh' });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await screen.findByRole('button', { name: 'Refresh' });
+    expect(screen.getByTestId('target').textContent).toBe(ip);
+    expect(eksRequests()).toHaveLength(hostReads);
   });
 
-  it.each([false, true])('discloses out-of-region context without exclusive cluster filtering (pin: %s)', async pin => {
-    const west = <T extends { region: string }>(value: T) => ({ ...value, region: 'us-west-2' });
-    if (pin) window.history.replaceState({}, '', '/?cluster=ecs:ecs-app');
-    serve({ inventory: { target_group: [west(targets)], ecs_task: [west(task('ecs-api'))],
-      subnet: [west(row('subnet-app', { vpc_id: vpcId }))] } });
-    render(<TopologyPage />);
-    await screen.findByText(/인벤토리 동기화:/);
-    expect(screen.getByText(/EKS 조회 범위 밖의 대상은 소유권 미확인입니다. 조회 리전:/)).toBeTruthy();
-    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
-    if (pin) { expect(document.querySelectorAll('.react-flow__node')).toHaveLength(0); return; }
-    search('ecs-api'); fireEvent.click(screen.getByRole('button', { name: /ecs-api/ }));
-    expect(await screen.findByText('eks_not_enumerated')).toBeTruthy();
-    expect(screen.getByText('scope_unverified')).toBeTruthy();
+  it.each([member, ALL_ACCOUNTS])('never starts a speculative host load for saved scope %s', async account => {
+    setActiveScope({ ...DEFAULT_SCOPE, accounts: account === ALL_ACCOUNTS ? account : [account] });
+    const late = deferred<Response>();
+    serve({ hostPods: late.promise });
+    await ready();
+    expect(eksRequests()).toHaveLength(0);
+    await act(async () => { late.resolve(Response.json({ rows: [pod] })); });
+    expect(screen.getByTestId('target').textContent).toBe(ip);
   });
 
-  it.each(['finished_at', 'last_success_at', 'row_count', 'missing-run', 'missing-version', 'duplicate', 'malformed', 'http', 'json'])(
-    'withholds ownership for a %s paging inconsistency', async defect => {
-      const graph = vi.spyOn(topology, 'buildFlowGraph');
-      const inventory = largeInventory('ecs_task');
-      const requests = serve({ inventory: { ecs_task: inventory }, inventoryReply: (url, body) => {
-        if (!url.pathname.endsWith('/ecs_task')) return Response.json(body);
-        if (url.searchParams.get('offset') !== '500') return Response.json(body);
-        if (defect === 'http') return Response.json({ message: 'secret=canary' }, { status: 503 });
-        if (defect === 'json') return new Response('secret=canary is not JSON');
-        if (defect === 'missing-run') return Response.json({ rows: body.rows });
-        if (defect === 'missing-version') return Response.json({ ...body, run: { ...body.run, last_success_at: undefined } });
-        if (defect === 'duplicate') return Response.json({ ...body, rows: [inventory[0]] });
-        if (defect === 'malformed') return Response.json({ ...body, rows: [{ ...inventory[500], account_id: undefined }] });
-        return Response.json({ ...body, run: { ...body.run, [defect]: defect === 'row_count' ? 502 : '2026-09-11T12:01:00Z' } });
-      } });
-      render(<TopologyPage />);
-      if (['finished_at', 'last_success_at', 'row_count'].includes(defect)) {
-        await screen.findByText('인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.');
-        expect(graph.mock.calls.at(-1)?.[0].ecsTask).toHaveLength(500);
-        expect(screen.queryByText(/500개 초과/)).toBeNull();
-      } else await screen.findByText(/ecs_task: invalid inventory response/);
-      expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
-      expect(document.body.textContent).not.toContain('secret=canary');
-      expect(requests.filter(u => u.pathname.endsWith('/ecs_task')).length).toBeLessThanOrEqual(2);
+  // The legacy setter also emits scopechange. Before the fix its accountchange lets these
+  // tests reproduce the publication race independently of the missing scope subscription.
+  it.each([member, ALL_ACCOUNTS])('rejects late host results after scope %s completes', async account => {
+    const late = deferred<Response>();
+    serve({ hostPods: late.promise });
+    render(<TopologyPage />);
+    await hostPodsStarted();
+    act(() => setActiveAccount(account));
+    await waitFor(() => expect(screen.getByTestId('target').textContent).toBe(ip));
+    fireEvent.click(screen.getByTestId('target'));
+    const currentEvidence = screen.getByLabelText('Inventory collection evidence').textContent;
+    await act(async () => { late.resolve(Response.json({ rows: [pod] })); });
+    expect(screen.getByTestId('target').textContent).toBe(ip);
+    expect(document.body.textContent).not.toContain('shop/orders-service');
+    expect(screen.getByLabelText('Inventory collection evidence').textContent).toBe(currentEvidence);
+    expect((screen.getByRole('button', { name: 'Refresh' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it.each([member, ALL_ACCOUNTS])('clears visible host graph, details and evidence while scope %s loads', async account => {
+    const next = deferred<Response>();
+    serve({ memberInventory: next.promise });
+    await ready();
+    fireEvent.click(screen.getByTestId('target'));
+    expect(document.body.textContent).toContain('shop/orders-service');
+    act(() => setActiveAccount(account));
+    expect(screen.queryByTestId('target')).toBeNull();
+    expect(document.body.textContent).not.toContain('shop/orders-service');
+    expect(screen.queryByLabelText('Inventory collection evidence')).toBeNull();
+    expect(document.body.textContent).not.toContain(new Date(captured).toLocaleString());
+    await act(async () => { next.resolve(pendingInventoryResponse()); });
+    expect(screen.getByTestId('target').textContent).toBe(ip);
+  });
+
+  it.each(['resolve', 'reject'] as const)('late host %s cannot clear a member load busy state or publish an error', async outcome => {
+    const host = deferred<Response>(), next = deferred<Response>();
+    serve({ hostInventory: host.promise, memberInventory: next.promise });
+    render(<TopologyPage />);
+    await hostPodsStarted();
+    act(() => setActiveAccount(member));
+    await act(async () => {
+      if (outcome === 'reject') host.reject(new Error('late host failure'));
+      else host.resolve(pendingInventoryResponse());
     });
-
-  it('stops at twenty pages and discloses the remaining cap', async () => {
-    const requests = serve({ subnetCapped: true }); render(<TopologyPage />);
-    await screen.findByText('인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.');
-    expect(requests.filter(u => u.pathname.endsWith('/subnet'))).toHaveLength(20);
-    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
+    expect(document.body.textContent).not.toContain('late host failure');
+    expect(screen.queryByTestId('target')).toBeNull();
+    expect((screen.getByRole('button', { name: '수집 중…' }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { next.resolve(pendingInventoryResponse()); });
+    expect(screen.getByTestId('target').textContent).toBe(ip);
+    expect((screen.getByRole('button', { name: 'Refresh' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it.each(['running', 'partial', 'failed'])('retains cached %s rows without asserting exclusive ownership', async status => {
-    const graph = vi.spyOn(topology, 'buildFlowGraph');
-    serve({ inventoryReply: (url, body) => Response.json(url.pathname.endsWith('/ecs_task')
-      ? { ...body, run: { ...body.run, status, finished_at: status === 'running' ? null : RUN.finished_at, row_count: status === 'running' ? null : 1 } } : body) });
-    render(<TopologyPage />);
-    await screen.findByText('인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.');
-    expect(graph.mock.calls.at(-1)?.[0].ecsTask).toHaveLength(1);
-    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
-    expect(screen.queryByText(/invalid inventory response/)).toBeNull();
-  });
-
-  it.each(['running', 'partial', 'failed'])('blocks both target labels during a %s target-group sweep', async status => {
-    const graph = vi.spyOn(topology, 'buildFlowGraph');
-    serve({ inventoryReply: (url, body) => Response.json(url.pathname.endsWith('/target_group')
-      ? { ...body, run: { ...body.run, status, finished_at: status === 'running' ? null : RUN.finished_at } } : body) });
-    render(<TopologyPage />);
-    await screen.findByText('인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.');
-    expect(graph.mock.calls.at(-1)?.[0].ownershipRead?.targetGroup).toBe('failed');
-    expect(graph.mock.calls.at(-1)?.[0].tg).toHaveLength(1);
-    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
-    expect(screen.queryByRole('option', { name: 'EKS · good' })).toBeNull();
-  });
-
-  it.each(['target_group', 'ecs_task', 'subnet'])('rejects a torn first %s page even when later ledger versions would match', async type => {
-    const start = Date.parse('2026-09-14T12:00:00Z');
-    vi.spyOn(Date, 'now').mockReturnValue(start);
-    const graph = vi.spyOn(topology, 'buildFlowGraph');
-    const requests = serve({ inventory: { [type]: largeInventory(type) }, inventoryReply: (url, body) =>
-      Response.json(url.pathname.endsWith(`/${type}`) ? { ...body, run: {
-        ...body.run, finished_at: '2026-09-14T12:00:00Z', last_success_at: '2026-09-14T12:00:00Z',
-      } } : body) });
-    render(<TopologyPage />);
-    await screen.findByText('인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.');
-    expect(requests.filter(u => u.pathname.endsWith(`/${type}`))).toHaveLength(1);
-    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
-    expect(screen.queryByRole('option', { name: 'EKS · good' })).toBeNull();
-    const key = type === 'target_group' ? 'targetGroup' : type === 'ecs_task' ? 'ecsTask' : 'subnet';
-    expect(graph.mock.calls.at(-1)?.[0].ownershipRead?.[key]).toBe('failed');
-  });
-
-  it.each([-1, 1])('requires the completed sweep to predate load start (offset %sms)', async delta => {
-    const start = Date.parse('2026-09-14T12:00:00Z');
-    vi.spyOn(Date, 'now').mockReturnValue(start);
-    serve({ inventoryReply: (url, body) => Response.json(url.pathname.endsWith('/target_group')
-      ? { ...body, run: { ...body.run, finished_at: new Date(start + delta).toISOString(),
-        last_success_at: new Date(start + delta).toISOString() } } : body) });
-    render(<TopologyPage />);
-    if (delta < 0) await screen.findByRole('option', { name: 'EKS · good' });
-    else {
-      await screen.findByText('인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.');
-      expect(screen.queryByRole('option', { name: 'EKS · good' })).toBeNull();
-    }
-  });
-
-  it.each([false, true])('clears the load deadline after settling (invalid JSON: %s)', async invalid => {
-    const scheduled = vi.spyOn(globalThis, 'setTimeout'), cleared = vi.spyOn(globalThis, 'clearTimeout');
-    serve({ inventoryReply: (url, body) => invalid && url.pathname.endsWith('/ecs_task') ? new Response('secret=canary') : Response.json(body) });
-    render(<TopologyPage />);
-    if (invalid) await screen.findByText(/ecs_task: invalid inventory response/);
-    else await screen.findByRole('option', { name: 'ECS · ecs-app' });
-    const deadlines = scheduled.mock.calls.flatMap((args, i) => args[1] === 30000 ? [scheduled.mock.results[i].value] : []);
-    expect(deadlines).toHaveLength(1);
-    expect(cleared).toHaveBeenCalledWith(deadlines[0]);
-  });
-
-  it.each(['inventory', 'eks-list', 'eks-pods'])('aborts stalled %s reads at the shared thirty-second budget', async stage => {
-    vi.useFakeTimers();
-    let signal: AbortSignal | null | undefined;
-    serve({ inventory: { ecs_task: largeInventory('ecs_task') } });
-    const normal = vi.mocked(fetch).getMockImplementation()!;
-    vi.mocked(fetch).mockImplementation((input, init) => {
-      const url = new URL(String(input), 'http://localhost');
-      const stalled = stage === 'inventory' ? url.pathname.endsWith('/ecs_task') && url.searchParams.get('offset') === '500'
-        : stage === 'eks-list' ? url.pathname === '/api/eks' : url.searchParams.get('kind') === 'pods';
-      if (!stalled) return normal(input, init);
-      signal = init?.signal;
-      return new Promise((_, reject) => signal?.addEventListener('abort', () => reject(new Error('secret=canary')), { once: true }));
-    });
-    render(<TopologyPage />);
-    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
-    expect(signal?.aborted).toBe(true);
-    if (stage === 'inventory') expect(screen.getByText(/ecs_task: invalid inventory response/)).toBeTruthy();
-    else expect(screen.getByRole('alert', { name: 'EKS 식별 상태' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Refresh' })).toHaveProperty('disabled', false);
-    expect(document.body.textContent).not.toContain('secret=canary');
+  it('cancels every in-flight host fetch when switching scope and current fetches on unmount', async () => {
+    const late = deferred<Response>();
+    serve({ hostPods: late.promise });
+    const view = render(<TopologyPage />);
+    await hostPodsStarted();
+    const hostCalls = [...vi.mocked(fetch).mock.calls];
+    act(() => setActiveScope({ ...DEFAULT_SCOPE, accounts: [member] }));
+    await waitFor(() => expect(screen.getByTestId('target').textContent).toBe(ip));
+    expect(hostCalls.length).toBeGreaterThan(0);
+    for (const [, init] of hostCalls) expect(init?.signal?.aborted).toBe(true);
+    const currentCalls = vi.mocked(fetch).mock.calls.slice(hostCalls.length);
+    view.unmount();
+    for (const [, init] of currentCalls) expect(init?.signal?.aborted).toBe(true);
+    await act(async () => { late.resolve(Response.json({ rows: [pod] })); });
   });
 });

@@ -35,7 +35,7 @@
 ### Inventory pagination and sweep ledger
 
 In normal row mode, `GET /api/inventory/[type]` returns scoped `rows` plus nullable
-`run` metadata. `limit` defaults to 100 and is upper-capped at 500; `offset` defaults
+`run` metadata and `consistency: "repeatable-read"`. `limit` defaults to 100 and is upper-capped at 500; `offset` defaults
 to 0. The route uses numeric coercion/defaults, without positive/integer validation
 or a lower-bound clamp. Callers should send a positive integer limit and nonnegative
 integer offset; negative/fractional values can reach PostgreSQL, with row-mode errors
@@ -52,18 +52,19 @@ finish advances `finished_at` and `last_success_at`; partial/failed finishes do 
 advance the last-success timestamp. The endpoint exposes `status`, `finished_at`,
 `row_count`, `error` and `last_success_at`, not a per-account completion certificate.
 
-Rows and run metadata are separate reads, not an atomic snapshot across one request
-or multiple pages. Missing run/timestamps, `running`/`partial`/`failed`, stale last
-success or changed metadata between pages must not be read as fresh complete coverage.
-Even stable successful metadata does not certify atomic page contents or AWS absence.
-Bounded paging, freshness and coverage decisions belong to the caller.
+`readResources` reads stored rows and the global ledger (including its `row_count`) on
+one PostgreSQL client in a READ ONLY REPEATABLE READ transaction. The marker is returned
+only after commit. Failure rolls back and always releases the client; rollback failure
+discards it. Statements are bounded to 15 seconds. No additional fleet count or per-account
+completion certificate is implied, and `view=agg` is a separate response/transaction.
 
-Topology reads target groups/ECS tasks/subnets in at most 20 pages of 500 under the shared
-30-second load budget. It compares status, finish, last-success and row-count
-metadata across pages; rows and ledger are separate reads, not an atomic snapshot.
-The succeeded sweep must also finish strictly before the shared browser load start,
-rejecting a finalizer that races the first row/ledger read. This is not atomic snapshot
-proof; clock skew can conservatively withhold attribution. All ECS snapshot labels,
+Topology reads target groups/ECS tasks/subnets in at most 20 pages of 500 under one
+30-second browser load budget shared with EKS. Each critical page must carry the marker;
+legacy/missing markers fail closed. Succeeded status, finish, last-success and row-count
+must remain stable across pages. This removes browser/Aurora clock comparisons and
+prevents a finalizing sweep from mixing one page's rows with another ledger snapshot.
+Separate pages/types are not a single snapshot; success still proves neither freshness
+nor complete AWS coverage. All ECS snapshot labels,
 including host labels, remain cached configuration rather than current ownership.
 Incomplete or changed
 sweeps retain bounded cached rows with confidence withheld; missing ledger, failed,
@@ -76,9 +77,10 @@ a complete empty load replaces it. Target-node `targetCapturedAt` dates only the
 target-group row, not the independent task/subnet/pod evidence.
 
 Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
-[row/ledger reads](../web/lib/inventory.ts), and
-[collector lifecycle](../scripts/v2/steampipe/sync_lambda.py);
-[topology loader](../web/app/topology/page.tsx) and
+[row/ledger reads](../web/lib/inventory.ts),
+[collector lifecycle](../scripts/v2/steampipe/sync_lambda.py),
+[topology loader](../web/app/topology/page.tsx),
+[EKS evidence producer](../web/lib/topology-config.ts), and
 [IP-target builder](../web/lib/flow-topology.ts).
 
 ## eks (10)
@@ -198,7 +200,7 @@ application, without guaranteeing cancellation of a server query already started
 | `/api/datasources/[id]/cards` | GET | 사전 생성 대시보드 카드 조회 (read-only, auth) | verifyUser |
 | `/api/datasources/[id]/default` | POST | kind별 기본 인스턴스 지정 — 트랜잭션으로 기존 기본 해제 (admin) | verifyUser |
 | `/api/datasources/[id]/diag-signals` | GET | 사전 정의 진단 시그널 — Explore 칩 (DB read only, egress 없음). kind 범위: prometheus/mimir/loki 는 결정론 카탈로그, clickhouse 는 결정론 엔트리가 없어 폴백 전용. tempo 는 `tags_or_services` matcher 가 introspect 된 어떤 스키마에도 매칭되어 항상 ready 이므로 폴백에 도달하지 않는다. **LLM 폴백(`diag_signal_querygen_enabled`)은 clickhouse 전용이 아니다** — ready 0행인 *모든* 배선 kind 에서 발동하므로 라벨 미탐지로 0행이 된 loki 인스턴스의 칩에도 `provenance='generated'` 가 섞일 수 있다(리뷰 MAJOR-9). 생성 행은 칩 전용 — 리포트 경로 제외, 플래그 OFF 면 read 에서도 제외. jaeger/dynatrace/datadog 는 아직 배선 없음(빈 응답) | verifyUser |
-| `/api/db` | GET | Aurora ping — public 테이블 카운트, `AURORA_ENDPOINT` 미설정 시 503 | CloudFront Edge 인증; BFF `verifyUser()` 생략(ADR-002 §2-4) |
+| `/api/db` | GET | Aurora ping — success returns `status: "ok"`, `public_tables` and UTC ISO `server_time` from the same table-count/`clock_timestamp()` SELECT; unset `AURORA_ENDPOINT` remains 503 and database errors remain generic 500 responses | CloudFront edge authentication; BFF `verifyUser()` omitted (ADR-002 §2-4) |
 | `/api/diagnosis` | GET, POST | AI 종합진단 리포트 목록/생성 — worker enqueue + 멱등키 | verifyUser |
 | `/api/diagnosis/intent` | GET, POST | Plan-2 Intent Engine — `architecture_intent` 조회(auth) + 쓰기(admin) | verifyUser |
 | `/api/diagnosis/schedule` | GET, PUT | 사용자별 자동 진단 스케줄 — row read/write만 (실행은 worker `schedule_dispatcher`) | verifyUser |
@@ -232,3 +234,54 @@ application, without guaranteeing cancellation of a server query already started
 | `/api/security` | GET | 보안 findings (`inventory_resources` 파생, read-only) + ECR 이미지 스캔 CVE(라이브, 실패 시 빈 탭) — `accounts` 파라미터 해석(`__all__` 포함) | verifyUser |
 | `/api/security/refresh` | POST | 보안 관련 인벤토리 타입 재동기화 | verifyUser |
 | `/api/stream` | GET | SSE 스트림 | 없음 |
+
+
+## Configuration topology inventory evidence
+
+`/api/inventory/{type}` returns scoped row captures and a self-keyed `run` describing
+an aggregate sweep across connected accounts. The configuration page labels aggregate
+status under every account scope, separately from inventory read failures. A successful
+sweep is not per-account health proof; member clocks never borrow aggregate last-success.
+Only RUNNING ECS tasks with subnet/VPC corroboration establish current IP ownership.
+Ordinary EKS pod-IP ambiguity removes attribution without implying a failed read.
+EKS evidence is limited to connected clusters returned in `/api/eks`'s configured
+`region`; other regions are not assessed. Listed `entry-only`/`no-entry` clusters are
+counted as not queried, independently of read failure/truncation. Inventory reads apply
+account selection only. Failed HTTP reads do not synthesize unknown aggregate status.
+
+## Trace collection disclosure
+
+The `GraphCollection` / `GraphCollectionSource` TypeScript contract is defined in
+`web/components/topology/GraphCollectionStatus.tsx`; runtime input is still normalized.
+Trace `sources[].windowStartMs/windowEndMs` identify the source query window, separately
+from top-level `attempted_at/captured_at` and optional source capture/last-success clocks.
+Positive `nodeDrops/edgeDrops/orphanSpans/invalidSpans/unresolvedMessaging` and
+`infraUnavailable` remain visible for older persisted envelopes as well as newer producer flags.
+Only node/edge drops or explicit truncation flags imply a processing limit; malformed spans
+and unresolved parent/link/messaging evidence are distinct partial-result causes. Losses alone do not prove retention:
+`retainedPrevious` is required for that claim. Source-detail totals include saved sources, with latest-attempt status counts labeled separately.
+Missing collection metadata stays unknown rather than implying collector failure.
+
+
+## Graph collection metadata
+
+`GET /api/graph` returns an optional `collection` envelope. The shared TypeScript
+contract is `GraphCollection` / `GraphCollectionSource` in
+`web/components/topology/GraphCollectionStatus.tsx`; the renderer also validates unknown
+runtime payloads for compatibility with older or malformed responses.
+
+| Fields | Meaning |
+| --- | --- |
+| `status`, `stale`, `retainedPrevious` | Collection result and snapshot age/retention; a retained graph does not establish current traffic. Missing metadata stays unknown. |
+| `attempted_at`, `captured_at` | Latest graph attempt and saved publication clocks, serialized as timestamps; neither substitutes for the source query window. |
+| `sources[].sourceId/status/reasons/itemCount` | Per-source collection result and bounded reason vocabulary. |
+| `sources[].windowStartMs/windowEndMs` | Actual trace query window, in epoch milliseconds; displayed independently of publication time. |
+| `nodeDrops`, `edgeDrops`, `orphanSpans`, `invalidSpans`, `unresolvedMessaging`, `infraUnavailable` | Existing trace loss counters and unavailable inventory context; span/messaging problems are distinct from processing limits. Positive losses are visible even for older rows without newer truncation flags. Loss alone does not imply that a previous graph was retained. |
+| `evidenceKind`, `inputTruncated`, `graphTruncated` | Optional additive producer metadata; `inventory` changes the empty-result wording, and truncation is disclosed conservatively. |
+| `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Optional source scope/capture/sweep clocks and saved-source provenance used by the graph-publication companion. Absent fields are not fabricated. |
+
+The UI supports the existing trace envelope and reserves optional inventory/saved-source
+fields for the bounded publication implementation in `web/lib/graph-store.ts`. It does not itself install that producer or
+activate collection. Source details are collapsed and height-bounded; their count
+includes saved-source entries. Runtime, Lambda and migration rollout remain separate
+from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).

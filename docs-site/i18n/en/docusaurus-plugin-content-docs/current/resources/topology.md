@@ -16,7 +16,7 @@ A page for exploring the request flow (**Route53 → CloudFront → Load Balance
 ### Request-flow graph
 - Visualizes the traffic path **Route53 → CloudFront → Load Balancer → Target Group → target** as nodes and edges.
 - Nodes are distinguished by per-kind color and icon; target nodes change color by their health state (**healthy / unhealthy / draining**, etc.). The info line above the graph shows color legend chips for the kinds/health states present in the current graph.
-- The header above the graph shows the current **node count** and **edge count**, plus the inventory sync time.
+- The graph shows the current **node count** and **edge count**; a separate collection-evidence area shows source capture/last-success times and read status.
 - Use the **MiniMap** at the bottom-right and the **Controls** at the bottom-left to pan and zoom freely.
 
 ### Entry-point filter
@@ -52,8 +52,16 @@ To see a service's full path, pick an entry point with the **CloudFront** or **L
 :::
 
 :::info Displayed times
-The inventory sync time in the graph header and the times in the detail panel are all in Korea Standard Time (KST, Asia/Seoul).
+Configuration topology shows the range of source capture times, using last-success time as a fallback in host scope when captures are missing. Times use the browser timezone; they are neither the current fetch time nor proof of live traffic. Aggregate account-sweep status and inventory read failures are shown separately. Aggregate success does not establish per-account collection health. Inventory reads apply account selection only. EKS ownership checks cover listed connected clusters in the API’s configured region; other regions and listed not-connected clusters are explicitly unassessed, separately from failed reads. Response caps remain visible even when the graph is empty.
 :::
+
+## Ownership evidence and incomplete reads
+
+- EKS IP evidence is queried only for the exact host scope (`self`). Member, mixed and all-account scopes show an unqueried-EKS notice; IP target details include `ownership_reason=eks_not_enumerated`. Host pod addresses are never reused globally. Cached ECS configuration can remain visible without claiming exclusive ownership.
+- EKS candidates require an independently listed unique `Pending`/`Running` pod with an assigned IP and valid endpoint read. `Succeeded`/`Failed` pods and `STOPPED`/`DELETED` ECS tasks cannot claim former IPs; other or missing states remain unverified. If two clusters in one region/VPC enumerate the same IP, that scoped IP is withheld even when workload names match. Other addresses are independent; a shared VPC alone does not invalidate every target.
+- Target-group, ECS-task and subnet reads use at most 20 pages of 500 rows under a 30-second browser deadline shared with EKS. Each page's stored rows and global sweep ledger/count are read in one read-only Repeatable Read database snapshot. Critical reads require the `consistency: "repeatable-read"` marker and stable succeeded versions across pages. Legacy/missing markers, failures, changed metadata or remaining caps withhold ownership; browser clocks are not compared with database clocks. Separate pages/types are not one snapshot or proof of fresh, complete AWS coverage.
+- Check the read/scope warnings and ambiguous-target icon before using cluster filters. Successful types remain visible after partial failures. If failed/incomplete reads produce an empty graph, the prior nonempty graph and its original evidence remain only within the same account, with a retained-data notice; complete empty reads replace it normally.
+- Target `targetCapturedAt` is the target-group row's capture time, not task/subnet/pod ownership time. All member/materialized target labels and host ECS snapshot labels are cached configuration. The agent SQL view can expose bare region/cluster/ECS/task fields while omitting provenance and target time; those projected labels are not live ownership proof.
 
 ## AI analysis tips
 Using the detail panel's question chips or the **Ask AI** button opens the AI assistant pre-seeded with the selected resource's context. Example questions:

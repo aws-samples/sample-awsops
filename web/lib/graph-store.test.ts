@@ -73,6 +73,7 @@ describe('rebuildGraph', () => {
   it('materializes ECS scope from the account-scoped synced subnet rows it actually requests', async () => {
     const inventory = [
       { resource_type: 'target_group', resource_id: 'tg-b', region: 'us-east-1', captured_at: new Date('2026-09-11T10:00:00Z'), data: {
+        resource_id: 'spoofed', region: 'us-west-2',
         target_type: 'ip', vpc_id: 'vpc-b', target_health_descriptions: [{ Target: { Id: '10.0.1.10' } }],
       } },
       { resource_type: 'ecs_task', resource_id: 'task-b', region: 'us-east-1', captured_at: '2020-01-01T00:00:00Z', data: {
@@ -95,6 +96,7 @@ describe('rebuildGraph', () => {
       sql.includes('INSERT INTO topology_nodes') && params?.[1] === 'target',
     )!;
     expect(write[1]?.[2]).toBe('orders');
+    expect(String(write[1]?.[0])).toContain('tg-b');
     expect(JSON.parse(String(write[1]?.[3]))).toMatchObject({
       resolved: 'ecs', region: 'us-east-1', vpcId: 'vpc-b', subnetId: 'subnet-b', ownership_evidence: 'cached_configuration',
       targetCapturedAt: '2026-09-11T10:00:00.000Z',

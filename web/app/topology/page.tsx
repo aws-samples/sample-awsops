@@ -11,9 +11,9 @@ import DetailPanel from '@/components/ui/DetailPanel';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { buildFlowGraph, filterFromEntry, type FlowInput, type FlowKind, type FlowNode } from '@/lib/flow-topology';
 import { layoutFlow } from '@/lib/flow-layout';
-import { fetchEksIpMap, type EksIpResolution } from '@/lib/topology-config';
+import { fetchEksIpMap, inventoryEvidence, type EksIpResolution, type InventoryEvidence, type AggregateRunStatus } from '@/lib/topology-config';
 import { useTheme } from '@/lib/use-theme';
-import { useActiveAccount } from '@/lib/account-context';
+import { useActiveScope } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
 // ReactFlow touches the DOM on mount — load it client-only to avoid SSR mismatch.
@@ -130,13 +130,72 @@ function nodeLabel(n: FlowNode): ReactNode {
 }
 
 const ROW_CAP = 500; // /api/inventory caps limit at 500
+const ISSUE_STATUSES = ['failed', 'partial'] as const;
+type InventoryIssue = { type: string; status: typeof ISSUE_STATUSES[number] };
+const EVIDENCE_COPY = {
+  en: {
+    capture: 'Capture range (last-success fallback):', unknown: 'unknown', missingCapture: 'Some capture times unknown',
+    healthUnknown: 'Run health unknown for this account scope',
+    inventoryScope: 'Inventory uses account selection; region filters are not applied here.',
+    eksScope: 'EKS ownership scope: configured region', eksOtherRegions: 'other regions are not assessed',
+    eksNotConnected: 'Not-connected clusters not queried',
+    limit: 'Response limit reached; coverage may be incomplete',
+    failures: { failed: 'failed', partial: 'partial' },
+    runs: 'Aggregate sync runs:', issues: 'Aggregate sync issues:', reads: 'Inventory read failures:',
+    statuses: { succeeded: 'succeeded', running: 'running', partial: 'partial', failed: 'failed', unknown: 'unknown' },
+    eks: { failed: 'EKS ownership read failed', partial: 'EKS ownership evidence is partial',
+      not_attempted: 'EKS ownership was not attempted for this account scope' },
+  },
+  ko: {
+    capture: '수집 시각 범위 (최근 성공 시각으로 보완):', unknown: '미확인', missingCapture: '일부 수집 시각 미확인',
+    healthUnknown: '이 계정 범위의 수집 실행 상태는 미확인',
+    inventoryScope: '인벤토리는 계정 선택을 사용하며 리전 필터는 여기에서 적용하지 않습니다.',
+    eksScope: 'EKS 소유 근거 범위: 설정된 리전', eksOtherRegions: '다른 리전은 평가하지 않음',
+    eksNotConnected: '연결되지 않아 조회하지 않은 클러스터',
+    limit: '응답 상한 도달 — 일부 정보가 누락될 수 있음',
+    failures: { failed: '실패', partial: '부분 수집' },
+    runs: '전체 계정 집계 수집:', issues: '집계 수집 문제:', reads: '인벤토리 조회 실패:',
+    statuses: { succeeded: '성공', running: '진행 중', partial: '부분 수집', failed: '실패', unknown: '미확인' },
+    eks: { failed: 'EKS 소유 근거 조회 실패', partial: 'EKS 소유 근거가 일부만 확인됨',
+      not_attempted: '이 계정 범위에서는 EKS 소유 근거를 조회하지 않음' },
+  },
+  ja: {
+    capture: '取得時刻の範囲（最終成功時刻で補完）:', unknown: '不明', missingCapture: '一部の取得時刻が不明',
+    healthUnknown: 'このアカウント範囲の収集実行状態は不明',
+    inventoryScope: 'インベントリは選択したアカウントを使用し、ここではリージョンフィルターを適用しません。',
+    eksScope: 'EKS所有情報の範囲: 設定リージョン', eksOtherRegions: '他のリージョンは未評価',
+    eksNotConnected: '未接続のため取得していないクラスター',
+    limit: '応答上限に到達 — 情報が不足している可能性があります',
+    failures: { failed: '失敗', partial: '部分収集' },
+    runs: '全アカウント集計の収集:', issues: '集計収集の問題:', reads: 'インベントリ取得失敗:',
+    statuses: { succeeded: '成功', running: '実行中', partial: '部分収集', failed: '失敗', unknown: '不明' },
+    eks: { failed: 'EKS所有情報の取得に失敗', partial: 'EKS所有情報は一部のみ確認済み',
+      not_attempted: 'このアカウント範囲ではEKS所有情報を取得していません' },
+  },
+  zh: {
+    capture: '采集时间范围（最近成功时间作为回退）:', unknown: '未知', missingCapture: '部分采集时间未知',
+    healthUnknown: '此账户范围的采集运行状态未知',
+    inventoryScope: '资产清单使用所选账户，此处不应用区域筛选。',
+    eksScope: 'EKS归属范围：配置区域', eksOtherRegions: '其他区域未评估',
+    eksNotConnected: '未连接且未查询的集群',
+    limit: '已达到响应上限 — 覆盖范围可能不完整',
+    failures: { failed: '失败', partial: '部分采集' },
+    runs: '所有账户汇总采集:', issues: '汇总采集问题:', reads: '资产清单读取失败:',
+    statuses: { succeeded: '成功', running: '运行中', partial: '部分采集', failed: '失败', unknown: '未知' },
+    eks: { failed: 'EKS归属信息读取失败', partial: 'EKS归属证据不完整',
+      not_attempted: '此账户范围未尝试读取EKS归属信息' },
+  },
+};
+
 const record = (v: unknown): v is Row => v !== null && typeof v === 'object' && !Array.isArray(v);
 const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
-async function fetchType(t: InvType, account: string, signal: AbortSignal, loadStartedAt: number): Promise<{ rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean }> {
+async function fetchType(t: InvType | 'vpc' | 'security_group', account: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean }> {
   const critical = t === 'target_group' || t === 'ecs_task' || t === 'subnet';
   const rows: Row[] = [], seen = new Set<string>();
   let version: string | undefined, finishedAt: string | null = null;
+  let firstRun: Row | null = null;
+  const result = (capped: boolean, incomplete = false) => ({ rows, finishedAt, capped, incomplete, ...inventoryEvidence(rows, firstRun, account === 'self') });
   try {
     for (let page = 0; page < (critical ? 20 : 1); page++) {
       if (signal.aborted) throw new Error();
@@ -149,16 +208,17 @@ async function fetchType(t: InvType, account: string, signal: AbortSignal, loadS
       const run = record(d.run) ? d.run : null;
       let incomplete = critical && ['running', 'partial', 'failed'].includes(String(run?.status));
       if (critical) {
+        if (d.consistency !== 'repeatable-read') throw new Error();
         // The global type sweep covers every account. Only a stable success permits ownership.
         if (!run || (!incomplete && (run.status !== 'succeeded' || !nonempty(run.finished_at) || !Number.isFinite(Date.parse(run.finished_at))
           || !nonempty(run.last_success_at) || !Number.isFinite(Date.parse(run.last_success_at))
           || !Number.isSafeInteger(run.row_count) || (run.row_count as number) < 0))) throw new Error();
         const current = JSON.stringify([run.status, run.finished_at, run.last_success_at, run.row_count]);
-        if (version !== undefined && version !== current) return { rows, finishedAt, capped: false, incomplete: true };
+        if (version !== undefined && version !== current) return result(false, true);
         version = current;
-        // Rows precede the ledger read. A sweep ending during this load can hide a torn first page.
-        if (!incomplete && Date.parse(run.finished_at as string) >= loadStartedAt) incomplete = true;
+
       }
+      if (page === 0) firstRun = run;
       for (const row of d.rows) {
         if (!record(row) || !record(row.data)) throw new Error();
         if (critical) {
@@ -172,9 +232,9 @@ async function fetchType(t: InvType, account: string, signal: AbortSignal, loadS
       }
       finishedAt = run && typeof run.finished_at === 'string' ? run.finished_at : null;
       // Keep a bounded cached page during a sweep, without mixing mutable pages or proving absence.
-      if (incomplete || d.rows.length < ROW_CAP) return { rows, finishedAt, capped: d.rows.length === ROW_CAP, incomplete };
+      if (incomplete || d.rows.length < ROW_CAP) return result(d.rows.length === ROW_CAP, incomplete);
     }
-    return { rows, finishedAt, capped: true }; // 10,000 critical rows still need an end-of-data proof.
+    return result(true); // 10,000 critical rows still need an end-of-data proof.
   } catch {
     // Fetch/JSON errors can contain response fragments; expose only the fixed type-scoped reason.
     throw new Error(`${t}: invalid inventory response`);
@@ -186,10 +246,9 @@ type NetMaps = { vpc: Map<string, string>; subnet: Map<string, string>; sg: Map<
 const emptyNetMaps = (): NetMaps => ({ vpc: new Map(), subnet: new Map(), sg: new Map() });
 
 // inventory row {resource_id, data:{...}} → a human name (Name tag / group_name), else the id.
-function invName(invRow: { resource_id?: unknown; data?: Record<string, unknown> }): string {
-  const d = invRow.data ?? {};
-  const tags = (d.tags ?? {}) as Record<string, unknown>;
-  return String(tags.Name ?? d.group_name ?? d.title ?? d.name ?? invRow.resource_id ?? '');
+function invName(row: Row): string {
+  const tags = (row.tags ?? {}) as Record<string, unknown>;
+  return String(tags.Name ?? row.group_name ?? row.title ?? row.name ?? row.resource_id ?? '');
 }
 // pull ids from the many shapes a row uses: 'sg-x' | {GroupId} | {SubnetId} | {Id} | availability_zones[].SubnetId
 function idsFrom(v: unknown): string[] {
@@ -219,13 +278,30 @@ function networkNames(row: Record<string, unknown>, nm: NetMaps): Record<string,
 }
 
 export default function TopologyPage() {
-  const { tt } = useI18n();
-  const [activeAccount] = useActiveAccount();
+  const [scope, , ready] = useActiveScope();
+  // Remount all graph/detail/evidence state on selection changes. A saved member/all scope
+  // must be known before the first load; the hook's hydration default is not a host selection.
+  if (!ready) return null;
+  const account = Array.isArray(scope.accounts) ? scope.accounts.join(',') : scope.accounts;
+  return <ScopedTopologyPage key={account} activeAccount={account} />;
+}
+
+function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
+  const { tt, lang } = useI18n();
+  const copy = EVIDENCE_COPY[lang];
   const [data, setData] = useState<FlowInput | null>(null);
   const [syncedAt, setSyncedAt] = useState<string | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
+  const [captureThrough, setCaptureThrough] = useState<string | null>(null);
+  const [unknownCapture, setUnknownCapture] = useState(false);
+  const [collectionIssues, setCollectionIssues] = useState<InventoryIssue[]>([]);
+  const [readFailures, setReadFailures] = useState<string[]>([]);
+  const [aggregateRuns, setAggregateRuns] = useState<[AggregateRunStatus, number][]>([]);
+  const [runHealthUnknown, setRunHealthUnknown] = useState(false);
+  const [eksCoverage, setEksCoverage] = useState<{ region: string | null; notConnected: number } | null>(null);
+  const [eksStatus, setEksStatus] = useState<'ok' | 'partial' | 'failed' | 'not_attempted'>('not_attempted');
   const [cappedTypes, setCappedTypes] = useState<string[]>([]);
   const [syncIncomplete, setSyncIncomplete] = useState(false);
   const [entryId, setEntryId] = useState<string>('');
@@ -241,7 +317,6 @@ export default function TopologyPage() {
   const [eksResolution, setEksResolution] = useState<EksIpResolution | null>(null);
 
   const load = useCallback(async () => {
-    const loadStartedAt = Date.now();
     const generation = ++loadGeneration.current;
     const current = () => loadGeneration.current === generation;
     const account = activeAccount || 'self';
@@ -266,39 +341,34 @@ export default function TopologyPage() {
     }
     try {
       const NET = ['vpc', 'security_group'] as const;
-      const [results, eks, net] = await Promise.all([
-        Promise.allSettled(TYPES.map((t) => fetchType(t, account, controller.signal, loadStartedAt))),
+      const read = async (type: InvType | typeof NET[number]) => {
+        try { return { ...await fetchType(type, account, controller.signal), readFailed: false, error: '' }; }
+        catch { return { rows: [] as Row[], finishedAt: null, capped: false, incomplete: false,
+          ...inventoryEvidence([], null, false), readFailed: true, error: `${type}: invalid inventory response` }; }
+      };
+      const [res, eks, net] = await Promise.all([
+        Promise.all(TYPES.map(read)),
         account === 'self' ? fetchEksIpMap(controller.signal) : Promise.resolve(null),
-        // Subnets are fetched once with flow inventory and reused for detail names.
-        Promise.all(NET.map((t) => fetch(`/api/inventory/${t}?limit=500&accounts=${encodeURIComponent(account)}`, { signal: controller.signal }).then((r) => (r.ok ? r.json() : { rows: [] })).catch(() => ({ rows: [] })))),
+        Promise.all(NET.map(read)),
       ]);
       if (!current()) return;
-      const failed = results.flatMap((result, i) => result.status === 'rejected'
-        ? [result.reason instanceof Error ? result.reason.message : `${TYPES[i]}: unavailable`] : []);
-      setErr(failed.join('; '));
-      if (failed.length === TYPES.length) {
+      const types = [...TYPES, ...NET], results = [...res, ...net];
+      const failed = results.filter(result => result.readFailed);
+      setErr(failed.map(result => result.error).join('; '));
+      if (res.every(result => result.readFailed)) {
         setRetained(displayedAccount.current === account && displayedHasNodes.current);
         return;
       }
-      const res = results.map(result => result.status === 'fulfilled'
-        ? result.value : { rows: [] as Row[], finishedAt: null, capped: false, incomplete: false });
       const readIssue = (type: InvType): 'failed' | 'capped' | undefined => {
-        const i = TYPES.indexOf(type);
-        return results[i].status === 'rejected' || res[i].incomplete ? 'failed' : res[i].capped ? 'capped' : undefined;
+        const result = res[TYPES.indexOf(type)];
+        return result.readFailed || result.incomplete ? 'failed' : result.capped ? 'capped' : undefined;
       };
       const out: FlowInput = { ipResolved: eks?.map, ownershipRead: {
         targetGroup: readIssue('target_group'), ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
         eksScopes: eks?.blockedScopes, eksUnknown: eks?.globalUnknown,
         ...(account === 'self' ? { eksRegions: eks?.coveredRegions } : { configurationOnly: true }),
       } };
-      let newest: string | null = null;
-      const capped: string[] = [];
-      TYPES.forEach((t, i) => {
-        out[FLOW_KEY[t]] = res[i].rows;
-        const f = res[i].finishedAt;
-        if (f && (!newest || f > newest)) newest = f;
-        if (res[i].capped) capped.push(t);
-      });
+      TYPES.forEach((t, i) => { out[FLOW_KEY[t]] = res[i].rows; });
       const nextHasNodes = buildFlowGraph(out).nodes.length > 0;
       const incomplete = res.some(result => result.incomplete);
       if (!nextHasNodes && (failed.length > 0 || incomplete)
@@ -306,18 +376,36 @@ export default function TopologyPage() {
         setRetained(true);
         return;
       }
-      const mk = (rows: { resource_id?: unknown; data?: Record<string, unknown> }[]) =>
-        new Map((rows ?? []).map((r) => [String(r.resource_id), invName(r)]));
-      setNetMaps({ vpc: mk(net[0]?.rows), sg: mk(net[1]?.rows),
-        subnet: mk(res[TYPES.indexOf('subnet')].rows.map(row => ({ resource_id: row.resource_id, data: row }))) });
+      const mk = (rows: Row[]) => new Map(rows.map(row => [String(row.resource_id), invName(row)]));
+      setNetMaps({ vpc: mk(net[0].rows), sg: mk(net[1].rows), subnet: mk(res[TYPES.indexOf('subnet')].rows) });
+      let oldest: string | null = null, newest: string | null = null;
+      const capped: string[] = [];
+      results.forEach((r, i) => {
+        if (r.capturedAt && (!oldest || Date.parse(r.capturedAt) < Date.parse(oldest))) oldest = r.capturedAt;
+        if (r.capturedThrough && (!newest || Date.parse(r.capturedThrough) > Date.parse(newest))) newest = r.capturedThrough;
+        if (r.capped) capped.push(types[i]);
+      });
       setData(out);
       setSyncIncomplete(incomplete);
       setEksResolution(eks);
       displayedAccount.current = account;
       displayedHasNodes.current = nextHasNodes;
+      setCaptureThrough(newest);
+      setUnknownCapture(results.some(r => r.rows.length > 0 && r.unknownCapture));
+      setRunHealthUnknown(account !== 'self' || results.some(r => !r.readFailed && r.aggregateStatus === 'unknown'));
+      setEksStatus(!eks ? 'not_attempted' : eks.globalUnknown ? 'failed' : eks.blockedScopes.length ? 'partial' : 'ok');
+      setEksCoverage(eks ? { region: eks.coveredRegions[0] ?? null, notConnected: eks.notConnected ?? 0 } : null);
+      const counts = new Map<AggregateRunStatus, number>();
+      results.filter(r => !r.readFailed).forEach(r => counts.set(r.aggregateStatus, (counts.get(r.aggregateStatus) ?? 0) + 1));
+      setAggregateRuns([...counts]);
+      setReadFailures(results.flatMap((r, i) => r.readFailed ? [types[i]] : []));
+      setCollectionIssues(results.flatMap((r, i) => {
+        const status = ISSUE_STATUSES.find(value => value === r.aggregateStatus);
+        return status ? [{ type: types[i], status }] : [];
+      }));
       setSelected(null);
       setRetained(false);
-      setSyncedAt(newest);
+      setSyncedAt(oldest);
       setCappedTypes(capped);
       setCapturedAt(new Date().toISOString());
     } catch {
@@ -493,7 +581,7 @@ export default function TopologyPage() {
       syn.target_type = m.targetType; syn.health = m.health; syn.port = m.port;
       if (m.resolved) syn.resolved_as = m.resolved;
       // EKS/ECS resolution detail (cluster / namespace / service / workload), when present
-      for (const k of ['cluster', 'namespace', 'service', 'workload', 'ecsService', 'task', 'pod', 'ambiguity', 'ownership_evidence', 'candidate', 'targetCapturedAt'] as const) {
+      for (const k of ['cluster', 'namespace', 'service', 'workload', 'ecsService', 'task', 'pod', 'ambiguity', 'ownership_evidence', 'ownership_reason', 'candidate', 'targetCapturedAt'] as const) {
         if (m[k] != null && m[k] !== '') syn[k] = m[k];
       }
       // grouped node (ASG/replicas/tasks): show the member count + health summary + the IP list
@@ -650,6 +738,20 @@ export default function TopologyPage() {
         </div>}
         {retained && <div role="status" className="text-[13px] text-warning">{tt('조회 실패로 이전 결과를 표시합니다.')}</div>}
         {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
+        {data && <div aria-label="Inventory collection evidence" className="text-[12px] text-ink-400">
+          <div>{copy.inventoryScope}</div>
+          <span>{copy.capture} {syncedAt ? new Date(syncedAt).toLocaleString() : copy.unknown}</span>
+          {captureThrough && captureThrough !== syncedAt && <span> – {new Date(captureThrough).toLocaleString()}</span>}
+          {unknownCapture && <span> · {copy.missingCapture}</span>}
+          {aggregateRuns.length > 0 && <div>{copy.runs} {aggregateRuns.map(([status, count]) => `${copy.statuses[status]} (${count})`).join(', ')}</div>}
+          {readFailures.length > 0 && <div role="status">{copy.reads} {readFailures.map(type => `${type}: ${copy.failures.failed}`).join(', ')}</div>}
+          {collectionIssues.length > 0 && <div role="status">{copy.issues} {collectionIssues.map(issue => `${issue.type}: ${copy.failures[issue.status]}`).join(', ')}</div>}
+          {runHealthUnknown && <div>{copy.healthUnknown}</div>}
+          {eksCoverage && <div>{copy.eksScope} {eksCoverage.region ?? copy.unknown}; {copy.eksOtherRegions}</div>}
+          {!!eksCoverage?.notConnected && <div>{copy.eksNotConnected}: {eksCoverage.notConnected}</div>}
+          {eksStatus !== 'ok' && <div>{copy.eks[eksStatus]}</div>}
+          {cappedTypes.length > 0 && <div className="text-warning">{copy.limit}: {cappedTypes.map(type => `${type} (${['target_group', 'ecs_task', 'subnet'].includes(type) ? 10000 : ROW_CAP})`).join(', ')}</div>}
+        </div>}
         {data && (
           full.nodes.length === 0 ? (
             !err && <div className="rounded-md border border-ink-100 bg-ink-50 px-3 py-3 text-[13px] text-ink-400">
@@ -660,9 +762,7 @@ export default function TopologyPage() {
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-ink-400">
                 <span>{tt(`노드 ${nodes.length} · 엣지 ${edges.length}`)}</span>
                 {syncedAt && <span>{tt('인벤토리 동기화:')} {new Date(syncedAt).toLocaleString()}</span>}
-                {cappedTypes.length > 0 && (
-                  <span className="text-warning">{tt(`⚠ ${cappedTypes.join(', ')} ${ROW_CAP}개 초과 — 일부만 표시`)}</span>
-                )}
+
                 {/* kind/health color legend (gap L248) — the same fills the nodes render. */}
                 {legend.kinds.map((k) => {
                   const [bg, border] = (dark ? KIND_DARK : KIND_LIGHT)[k];

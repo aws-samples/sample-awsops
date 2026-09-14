@@ -28,7 +28,12 @@ export async function assertInventoryTypeAllowed(
 }
 
 export interface SyncRun { status: string; finished_at: string | null; row_count: number | null; error?: string | null; last_success_at?: string | null }
-export interface InventoryPage { rows: Record<string, unknown>[]; run: SyncRun | null }
+export interface InventoryPage {
+  rows: Record<string, unknown>[];
+  run: SyncRun | null;
+  /** Rows and the global ledger/count were read from one database snapshot. */
+  consistency: 'repeatable-read';
+}
 
 /** Region allow-list, or '__all__' for no region filter. */
 export type RegionScope = string[] | '__all__';
@@ -176,20 +181,31 @@ export async function readAggregates(
 }
 
 export async function readResources(type: string, { limit, offset, regions = '__all__', includeGlobal = true, accounts = ['self'] }: ReadResourcesOpts): Promise<InventoryPage> {
-  const pool = getPool();
   const params: unknown[] = [type];
   const where = `resource_type = $1` + accountWhereClause(accounts, params) + regionWhereClause(regions, includeGlobal, params);
   params.push(limit, offset);
-  const r = await pool.query(
-    `SELECT resource_id, region, account_id, data, captured_at FROM inventory_resources
-     WHERE ${where} ORDER BY ${worstFirstOrderBy(type)}captured_at DESC, account_id ASC, region ASC, resource_id ASC LIMIT $${params.length - 1} OFFSET $${params.length}`,
-    params,
-  );
-  const s = await pool.query(
-    `SELECT status, finished_at, row_count, error, last_success_at FROM inventory_sync_runs WHERE resource_type = $1 AND account_id = 'self'`,
-    [type],
-  );
-  return { rows: r.rows, run: s.rows[0] ?? null };
+  const client = await getPool().connect();
+  let discard = false;
+  try {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    await client.query(`SET LOCAL statement_timeout = ${AGG_STATEMENT_TIMEOUT_MS}`);
+    const r = await client.query(
+      `SELECT resource_id, region, account_id, data, captured_at FROM inventory_resources
+       WHERE ${where} ORDER BY ${worstFirstOrderBy(type)}captured_at DESC, account_id ASC, region ASC, resource_id ASC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
+    );
+    const s = await client.query(
+      `SELECT status, finished_at, row_count, error, last_success_at FROM inventory_sync_runs WHERE resource_type = $1 AND account_id = 'self'`,
+      [type],
+    );
+    await client.query('COMMIT');
+    return { rows: r.rows, run: s.rows[0] ?? null, consistency: 'repeatable-read' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => { discard = true; });
+    throw error;
+  } finally {
+    client.release(discard);
+  }
 }
 
 export async function triggerSync(type: string): Promise<{ status: 'queued' }> {

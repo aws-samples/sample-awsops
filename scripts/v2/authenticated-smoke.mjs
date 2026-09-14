@@ -49,9 +49,22 @@ function hasSessionCookie(contents, hostname) {
   });
 }
 
+function validatedDatabaseClock(value, timing) {
+  const started = timing?.request_started_at_ms, observed = timing?.response_observed_at_ms;
+  const parsed = typeof value === 'string' ? Date.parse(value) : NaN;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+      || !Number.isFinite(parsed) || new Date(parsed).toISOString() !== value
+      || !Number.isSafeInteger(started) || !Number.isSafeInteger(observed)
+      || observed < started || observed - started > 35_000) {
+    throw new RuntimeSmokeError('Runtime smoke: database_clock_invalid');
+  }
+  return { server_time: value, request_started_at_ms: started, response_observed_at_ms: observed };
+}
+
 export async function authenticatedSmoke(
   { publicUrl, cloudfrontDomain, email, password, runtimeConfig },
-  { runCurl = execute, tempRoot = resolve(process.env.RUNNER_TEMP || tmpdir()), now = Date.now, deadline = Infinity } = {},
+  { runCurl = execute, tempRoot = resolve(process.env.RUNNER_TEMP || tmpdir()), now = Date.now,
+    deadline = Infinity, includeDatabaseClock = false } = {},
 ) {
   let directory;
   let previousUmask;
@@ -60,6 +73,9 @@ export async function authenticatedSmoke(
   const cancel = () => controller.abort();
   const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
   try {
+    if (typeof includeDatabaseClock !== 'boolean' || (includeDatabaseClock && runtimeConfig?.mode !== 'prepare')) {
+      throw new RuntimeSmokeError('Runtime smoke: configuration');
+    }
     if (runtimeConfig !== undefined) {
       validateRuntimeSmokeConfig(runtimeConfig, now());
       deadline = runtimeSmokeDeadline(runtimeConfig, now(), deadline);
@@ -102,6 +118,7 @@ export async function authenticatedSmoke(
       if (typeof stdout === 'string' && /^[1-5][0-9]{2}$/.test(stdout)) failure += `; HTTP status ${stdout}`;
     };
     let requestCounter = 0;
+    let databaseTiming;
     const request = async (args, path, status = '200', timeout = 35_000,
       maxResponseBytes = MAX_RESPONSE_BYTES, withStatus = false) => {
       const remaining = deadline - now();
@@ -113,6 +130,8 @@ export async function authenticatedSmoke(
       const response = join(directory, `response-${++requestCounter}.json`);
       writeFileSync(response, '', { mode: 0o600, flag: 'wx' });
       let stdout;
+      const sampleClock = includeDatabaseClock && path === '/api/db';
+      const requestStartedAt = sampleClock ? now() : undefined;
       try {
         ({ stdout } = await runCurl('curl', [
           ...commonArgs, ...(timeout > 35_000 ? ['--max-time', String((timeout - 5000) / 1000)] : []),
@@ -123,7 +142,11 @@ export async function authenticatedSmoke(
         recordStatus(error?.stdout);
         throw new Error();
       }
-      if (now() >= deadline) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
+      const responseObservedAt = now();
+      if (responseObservedAt >= deadline) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
+      if (sampleClock) databaseTiming = {
+        request_started_at_ms: requestStartedAt, response_observed_at_ms: responseObservedAt,
+      };
       recordStatus(stdout);
       if (controller.signal.aborted || !(Array.isArray(status) ? status.includes(stdout) : stdout === status)) throw new Error();
       const body = JSON.parse(readPrivateResponse(response, maxResponseBytes));
@@ -142,6 +165,7 @@ export async function authenticatedSmoke(
     const database = await request(['--request', 'GET', '--cookie', jar], '/api/db');
     if (database?.status !== 'ok' || !Number.isSafeInteger(database.public_tables)
         || database.public_tables <= 0) throw new Error();
+    const databaseClock = includeDatabaseClock ? validatedDatabaseClock(database.server_time, databaseTiming) : undefined;
     if (runtimeConfig !== undefined) {
       failure = 'runtime verification failed';
       const runtimeResult = await verifyRuntimeSmoke(runtimeConfig, async (path, {
@@ -159,7 +183,8 @@ export async function authenticatedSmoke(
         }
         return request(args, path, status, timeout, maxResponseBytes, withStatus);
       }, { now, deadline, wait: ms => delay(ms, undefined, { signal: controller.signal }) });
-      return { ...runtimeResult, public_tables: database.public_tables };
+      return { ...runtimeResult, public_tables: database.public_tables,
+        ...(includeDatabaseClock ? { database_clock: databaseClock } : {}) };
     }
     return { status: 'ok', public_tables: database.public_tables };
   } catch (error) {

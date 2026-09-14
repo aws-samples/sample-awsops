@@ -1,15 +1,71 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 const query = vi.fn();
 const lambdaSend = vi.fn();
+const connectionQuery = vi.fn();
+const release = vi.fn();
 const poolMock: { query: (...a: unknown[]) => unknown; connect?: unknown } = { query: (...a: unknown[]) => query(...a) };
 vi.mock('@/lib/db', () => ({ getPool: () => poolMock }));
 vi.mock('@aws-sdk/client-lambda', () => ({
   LambdaClient: class { send = lambdaSend; },
   InvokeCommand: class { constructor(public input: unknown) {} },
 }));
-beforeEach(() => { query.mockReset(); lambdaSend.mockReset(); process.env.INV_SYNC_FUNCTION = 'fn'; });
+beforeEach(() => {
+  query.mockReset(); lambdaSend.mockReset(); release.mockReset(); connectionQuery.mockReset();
+  connectionQuery.mockImplementation((sql: string, ...args: unknown[]) =>
+    /^(BEGIN|SET LOCAL|COMMIT|ROLLBACK)/.test(sql) ? Promise.resolve({ rows: [] }) : query(sql, ...args));
+  poolMock.connect = vi.fn().mockResolvedValue({ query: connectionQuery, release });
+  process.env.INV_SYNC_FUNCTION = 'fn';
+});
 
 describe('readResources', () => {
+  it('keeps rows and global ledger/count in one read-only snapshot while a sweep finishes between reads', async () => {
+    const old = { rows: [{ resource_id: 'old' }], run: { status: 'succeeded', finished_at: '2026-09-13T00:00:00Z', row_count: 1 } };
+    let live = old, snapshot: typeof old | undefined;
+    const sql = vi.fn(async (text: string) => {
+      if (/^BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY$/.test(text)) snapshot = live;
+      const read = snapshot ?? live;
+      if (/FROM inventory_resources/.test(text)) {
+        live = { rows: [{ resource_id: 'new' }], run: { ...old.run, finished_at: '2026-09-14T00:00:00Z', row_count: 2 } };
+        return { rows: read.rows };
+      }
+      return { rows: /FROM inventory_sync_runs/.test(text) ? [read.run] : [] };
+    });
+    query.mockImplementation(sql); // The old pool.query path observes the torn ledger.
+    poolMock.connect = vi.fn().mockResolvedValue({ query: sql, release });
+    const { readResources } = await import('./inventory');
+    const page = await readResources('target_group', { limit: 500, offset: 0 });
+    expect(page).toMatchObject({ rows: old.rows, run: old.run, consistency: 'repeatable-read' });
+    expect(query).not.toHaveBeenCalled();
+    expect(sql.mock.calls[0][0]).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    expect(sql.mock.calls.at(-1)?.[0]).toBe('COMMIT');
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['BEGIN', 'SET LOCAL', 'inventory_resources', 'inventory_sync_runs', 'COMMIT'])(
+    'rolls back and releases the same client after %s failure without returning a consistency marker', async failure => {
+      const error = new Error('original query failure');
+      connectionQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes(failure)) throw error;
+        return { rows: [] };
+      });
+      const { readResources } = await import('./inventory');
+      await expect(readResources('target_group', { limit: 500, offset: 0 })).rejects.toBe(error);
+      expect(connectionQuery).toHaveBeenCalledWith('ROLLBACK');
+      expect(release).toHaveBeenCalledTimes(1);
+    });
+
+  it('discards the connection after rollback failure and preserves the original error', async () => {
+    const error = new Error('row read failed');
+    connectionQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes('inventory_resources')) throw error;
+      if (sql === 'ROLLBACK') throw new Error('rollback failed');
+      return { rows: [] };
+    });
+    const { readResources } = await import('./inventory');
+    await expect(readResources('subnet', { limit: 500, offset: 0 })).rejects.toBe(error);
+    expect(release).toHaveBeenCalledWith(true);
+  });
+
   it('uses timestamp plus the full scoped primary key for stable five-row pagination', async () => {
     query.mockResolvedValue({ rows: [] });
     const { readResources } = await import('./inventory');

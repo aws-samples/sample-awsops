@@ -17,7 +17,7 @@ beforeEach(() => {
   verifyUser.mockReset(); readResources.mockReset(); assertInventoryTypeAllowed.mockReset();
   verifyUser.mockResolvedValue({ sub: 'u' });
   assertInventoryTypeAllowed.mockResolvedValue(null);
-  readResources.mockResolvedValue({ rows: [{ resource_id: 'i-1' }], run: { status: 'succeeded' } });
+  readResources.mockResolvedValue({ rows: [{ resource_id: 'i-1' }], run: { status: 'succeeded' }, consistency: 'repeatable-read' });
 });
 
 describe('GET /api/inventory/[type]', () => {
@@ -26,8 +26,9 @@ describe('GET /api/inventory/[type]', () => {
     const { GET } = await import('./route');
     expect((await GET(req(), ctx)).status).toBe(401);
   });
-  it('200 with rows+run', async () => {
+  it('200 preserves rows/run and the database consistency contract', async () => {
     const { GET } = await import('./route');
+    expect(await (await GET(req(), ctx)).json()).toMatchObject({ consistency: 'repeatable-read' });
     const res = await GET(req(), ctx);
     expect(res.status).toBe(200);
     expect((await res.json()).rows[0].resource_id).toBe('i-1');

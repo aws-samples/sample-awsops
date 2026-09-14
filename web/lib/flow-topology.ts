@@ -78,7 +78,7 @@ function ecsIpMap(tasks: Row[], subnets: Row[]): Map<string, { label: string; re
   }
   for (const t of tasks) {
     const status = str(t.last_status).toUpperCase();
-    if (status === 'STOPPED') continue; // A terminal task no longer owns its former ENI address.
+    if (status === 'STOPPED' || status === 'DELETED') continue; // Terminal tasks no longer own their ENI addresses.
     const region = str(t.region);
     const group = str(t.task_group);
     const svc = group.startsWith('service:') ? group.slice(8) : group;
@@ -500,7 +500,7 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
     // per-target shape (label/id/port) so 1:1 cases render exactly as before.
     const thds = arr(t.target_health_descriptions);
     const ttype = str(t.target_type);
-    interface Grp { key: string; groupLabel: string; resolved: string; meta: Record<string, unknown>; members: { id: string; port: unknown; health: string; label: string }[] }
+    interface Grp { key: string; groupLabel: string; resolved: string; meta: Record<string, unknown>; members: { id: string; port: unknown; health: string; label: string; pod?: string; namespace?: string }[] }
     const groups = new Map<string, Grp>();
     thds.forEach((thd, i) => {
       const target = (thd.Target && typeof thd.Target === 'object') ? (thd.Target as Row) : {};
@@ -547,10 +547,12 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
         }
         // group key includes cluster so same-named workloads in different clusters don't merge
         if (r) { resolved = r.resolved; key = `${r.resolved}:${str(r.meta?.cluster ?? '')}/${r.label}`; mlabel = r.label; groupLabel = r.label; meta = { ...r.meta }; }
+        if (reads?.configurationOnly) meta.ownership_reason = 'eks_not_enumerated';
       }
       let g = groups.get(key);
       if (!g) { g = { key, groupLabel, resolved, meta, members: [] }; groups.set(key, g); }
-      g.members.push({ id: targetId, port: target.Port ?? null, health: str(health.State) || 'unknown', label: mlabel });
+      g.members.push({ id: targetId, port: target.Port ?? null, health: str(health.State) || 'unknown', label: mlabel,
+        ...(resolved === 'eks' ? { pod: str(meta.pod), namespace: str(meta.namespace) } : {}) });
     });
     for (const g of groups.values()) {
       const total = g.members.length;
@@ -565,7 +567,12 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
         ...(single ? { id: g.members[0].id, port: g.members[0].port }
                    : { count: total, healthSummary: `${healthy}/${total} healthy`,
                        // member IP[:port] list (display-capped; count stays accurate)
-                       members: g.members.slice(0, TARGET_CAP).map((m) => (m.port == null ? m.id : `${m.id}:${m.port}`)),
+                       members: g.members.slice(0, TARGET_CAP).map((m) => {
+                         const address = ttype === 'ip' && m.id.includes(':') ? `[${m.id}]` : m.id;
+                         return m.port == null ? address : `${address}:${m.port}`;
+                       }),
+                       ...(g.resolved === 'eks' ? { memberIdentities: g.members.slice(0, TARGET_CAP)
+                         .map(({ id, pod, namespace }) => ({ id, pod, namespace })) } : {}),
                        ...(total > TARGET_CAP ? { membersTruncated: total - TARGET_CAP } : {}) }),
         ...(g.resolved ? { resolved: g.resolved } : {}),
         ...g.meta,

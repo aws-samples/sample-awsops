@@ -36,6 +36,11 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
       ownershipRead: { configurationOnly: true } });
     expect(node.meta).toMatchObject({ resolved: 'ecs', ownership_evidence: 'cached_configuration' });
   });
+  it('discloses EKS not enumerated on configuration-only IP targets without importing host identities', () => {
+    const node = target({ tg: [tg], ownershipRead: { configurationOnly: true } });
+    expect(node.meta).toMatchObject({ ownership_reason: 'eks_not_enumerated', ownership_evidence: 'cached_configuration' });
+    expect(node.meta?.cluster).toBeUndefined();
+  });
   it('labels host ECS snapshot evidence as cached despite a fresh target-group capture', () => {
     const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b', captured_at: '2026-09-11T12:00:00Z' }],
       ecsTask: [{ ...task, captured_at: '2020-01-01T00:00:00Z' }],
@@ -102,6 +107,7 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
     const configured = buildFlowGraph({ tg: [tg], ecsTask: [task], subnet: [subnet] });
     expect(configured.nodes.find(n => n.kind === 'target')).toMatchObject({ label: ip });
     expect(configured.nodes.find(n => n.kind === 'target')?.meta?.resolved).toBeUndefined();
+    expect(configured.nodes.find(n => n.kind === 'target')?.meta?.ecsService).toBeUndefined();
   });
 
   it('resolves a realistic same-VPC task without a top-level vpc_id', () => {
@@ -160,12 +166,14 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
       .toMatchObject({ label: 'service-a', meta: { resolved: 'ecs', cluster: 'cluster-a', vpcId: 'vpc-a' } });
   });
 
-  it.each(['RUNNING', 'running', 'STOPPED', 'PENDING', undefined, 'unknown'])('arbitrates task status %s before claiming a reused IP', status => {
+  it.each(['RUNNING', 'running', 'STOPPED', 'DELETED', 'PENDING', 'DEPROVISIONING', '', undefined, 'unknown'])('arbitrates task status %s before claiming a reused IP', status => {
     for (const competitor of [false, true]) {
       const claims = [{ ...task, last_status: status }, ...(competitor ? [{ ...task, resource_id: 'task-other' }] : [])];
-      const expected = status === 'STOPPED' ? competitor ? 'ecs' : undefined
+      const expected = ['STOPPED', 'DELETED'].includes(status ?? '') ? competitor ? 'ecs' : undefined
         : status?.toUpperCase() === 'RUNNING' && !competitor ? 'ecs' : 'ambiguous';
-      expect(target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: claims, subnet: [subnet] }).meta?.resolved).toBe(expected);
+      for (const tasks of [claims, [...claims].reverse()]) {
+        expect(target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: tasks, subnet: [subnet] }).meta?.resolved).toBe(expected);
+      }
     }
   });
 

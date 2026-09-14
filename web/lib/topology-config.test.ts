@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchEksIpMap } from './topology-config';
+import { fetchEksIpMap, fetchEksIpEvidence, inventoryEvidence } from './topology-config';
 import { buildFlowGraph, scopedTargetIp } from './flow-topology';
 
 const region = 'us-east-1', vpcId = 'vpc-shared', ip = '10.0.2.10';
@@ -105,9 +105,13 @@ describe('EKS inventory producer → configuration', () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ clusters: [], region, truncated: true })));
     expect(await fetchEksIpMap()).toMatchObject({ globalUnknown: true, reasons: ['cluster_limit_possible'] });
   });
+  it.each([null, 'false', 0])('retains the public invalid truncation guard: %s', async truncated => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ clusters: [], region, truncated })));
+    expect(await fetchEksIpMap()).toMatchObject({ globalUnknown: true, reasons: ['cluster_limit_possible'] });
+  });
   it('keeps unreadable scope evidence when no IP could be enumerated', async () => {
     serve([], [], { clusters: [{ ...cluster, access: 'no-entry' }] });
-    expect(await fetchEksIpMap()).toEqual({ map: {}, status: 'unavailable', reasons: ['cluster_unreadable'],
+    expect(await fetchEksIpMap()).toEqual({ map: {}, status: 'unavailable', reasons: ['cluster_unreadable'], notConnected: 1,
       blockedScopes: [`${region}|${vpcId}|`], coveredRegions: [region], globalUnknown: false });
   });
   it.each(['unknown', 'no-entry'])('keeps a healthy different VPC when access is %s', access => {
@@ -260,5 +264,55 @@ describe('EKS inventory producer → configuration', () => {
     serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'other-cluster', vpcId: 'vpc-other' }] });
     const { ipResolved } = await graphs();
     expect(Object.keys(ipResolved)).toHaveLength(2);
+  });
+});
+
+describe('inventory capture evidence', () => {
+  const old = '2026-09-01T01:00:00Z', newer = '2026-09-02T01:00:00Z';
+  const run = { status: 'failed', last_success_at: newer, finished_at: '2026-09-14T12:00:00Z' };
+  it('retains oldest/newest row captures despite a newer failed attempt', () => {
+    expect(inventoryEvidence([{ captured_at: newer }, { captured_at: old }], run, true))
+      .toEqual({ capturedAt: old, capturedThrough: newer, unknownCapture: false, aggregateStatus: 'failed' });
+  });
+  it('uses last-success only as fallback while disclosing unknown row captures', () => {
+    expect(inventoryEvidence([{}], run, true))
+      .toEqual({ capturedAt: newer, capturedThrough: newer, unknownCapture: true, aggregateStatus: 'failed' });
+  });
+  it('keeps member row clocks and separately reports aggregate run health', () => {
+    expect(inventoryEvidence([{ captured_at: old }], run, false))
+      .toEqual({ capturedAt: old, capturedThrough: old, unknownCapture: false, aggregateStatus: 'failed' });
+  });
+  it.each(['succeeded', 'partial', 'failed', 'running'])('retains aggregate %s without borrowing a member clock', status => {
+    expect(inventoryEvidence([], { ...run, status }, false)).toEqual({
+      capturedAt: null, capturedThrough: null, unknownCapture: true, aggregateStatus: status,
+    });
+  });
+  it('rejects invalid times and never falls back to failed-attempt finish', () => {
+    expect(inventoryEvidence([{ captured_at: 'bad' }], { ...run, last_success_at: 'bad' }, true))
+      .toEqual({ capturedAt: null, capturedThrough: null, unknownCapture: true, aggregateStatus: 'failed' });
+  });
+  it('preserves successful empty host collection evidence', () => {
+    expect(inventoryEvidence([], { status: 'succeeded', last_success_at: old }, true))
+      .toEqual({ capturedAt: old, capturedThrough: old, unknownCapture: false, aggregateStatus: 'succeeded' });
+  });
+});
+
+// Public evidence UI keeps source-read health distinct from unverified address candidates.
+describe('EKS evidence compatibility', () => {
+  it.each(['host-network', 'duplicate-cluster'])('does not call successful %s reads a collection failure', async scenario => {
+    serve(scenario === 'host-network' ? [pod, { ...pod, name: 'other' }] : [pod], [endpoint],
+      { clusters: scenario === 'duplicate-cluster' ? [cluster, { ...cluster, name: 'other' }] : [cluster] });
+    const result = await fetchEksIpEvidence();
+    expect(result).toMatchObject({ status: 'ok', region, notConnected: 0 });
+    expect(Object.values(result.ipResolved).every(value => value === null)).toBe(true);
+  });
+  it.each(['entry-only', 'no-entry'])('counts unqueried %s clusters while retaining a blocked ownership scope', async access => {
+    serve([], [], { clusters: [{ ...cluster, access }] });
+    expect(await fetchEksIpEvidence()).toMatchObject({ status: 'partial', region, notConnected: 1 });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+  it.each(['http', 'transport', 'envelope'] as const)('discloses %s failures', async failure => {
+    serve([pod], [endpoint], { failure });
+    expect(await fetchEksIpEvidence()).toMatchObject({ status: 'partial', region, notConnected: 0 });
   });
 });
