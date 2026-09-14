@@ -8,6 +8,10 @@ Do not use its operator commands against that base workflow; the consumer integr
 must land and produce the required artifacts first. Existing operator procedures remain
 separate.
 
+This is operator CI artifact transport, **not an ADR-005 exception** or a product
+mutation/autonomy path. The module enables no frozen feature. ADR-005's product
+boundary remains unchanged; ADR bodies are maintained in the private upstream repo.
+
 ## Four modes and their boundaries
 
 | Mode | Required contract | Result |
@@ -46,6 +50,12 @@ DNS/runtime and exact reviewed-plan gates. It must provide:
    BucketOwnerEnforced and matching default SSE-KMS settings. Existing role/key policies
    must grant the required S3/KMS operations; the session policy only restricts them.
    This module installs none of those prerequisites.
+   All four dev-family CI branches require the independent configured account ID.
+   Bucket-default KMS aliases/IDs/ARNs are resolved with direct `kms:DescribeKey` into an
+   enabled symmetric ENCRYPT_DECRYPT key in the expected account/region. The backend's
+   state-object key is independently configured and is not compared with that bucket default.
+   Existing IAM/key policies must permit DescribeKey; its session statement is separately
+   scoped by account, region and key ARN, without S3-only encryption-context conditions.
 4. `TF_PLAN_ENC_KEY` for publish/restore and the existing plan packing operation.
    Publication decrypts the handoff and verifies the existing authenticated asset
    archive before storage writes; restore verifies the same plan/context/asset contract.
@@ -71,10 +81,13 @@ hashes or storage identities.
 The private manifest binds the backend/account and content-addressed plan/assets with
 exact versions, sizes and hashes. Consumers compare every normalized backend field
 and the authenticated account before using it. S3 body reads pin a version and verify
-bounded size, encryption metadata and content hash. Writes require confirmed versions
-and checksums. The backend state object is never read.
+bounded size, encryption metadata and content hash. Writes require confirmed versions,
+KMS key and checksums. At most three identical conditional PUTs are attempted. A 412
+is accepted only after a version-pinned private GET proves the existing bytes, size,
+hash and encryption key; mismatches fail rather than overwrite. The backend state object
+is never read.
 
-Local rendered outputs and receipts are mode0600 in a new mode0700 destination.
+Local rendered outputs and receipts are mode 0600 in a new mode 0700 destination.
 The receipt carries the private plan/backend hashes for review, explicitly marked
 `inspected_not_approved`; it is not human attestation. Limits are 2 MiB metadata,
 16 KiB reference/manifest, 64 MiB plan, 136 MiB assets and 32 MiB per rendered file.
@@ -82,8 +95,9 @@ The five-day reference age/expiry checks do not install or prove an S3 lifecycle
 
 Errors use fixed categories without provider output. Cleanup covers only owned local
 scratch/output paths. Partial uploads never produce a success reference and are not
-automatically deleted. There is **no orphan recovery/delete mode**, and no promise that
-an incomplete publication or a legacy artifact can be recovered with this helper.
+automatically deleted. Same-attempt retries can recover a confirmed identical upload;
+they do not bypass source/attempt or encrypted-handoff checks. There is **no arbitrary
+orphan recovery/delete mode or legacy-artifact fallback**.
 
 ## Offline verification
 
@@ -98,5 +112,7 @@ python3 -m pytest -q -p no:cacheprovider \
 ```
 
 This adds no Python dependency. Runtime integration additionally needs authenticated
-GitHub CLI, AWS CLI and Terraform/provider schemas in the appropriate protected
+GitHub CLI, AWS CLI v2 supporting conditional PUT/checksum arguments, and Terraform/provider schemas in the appropriate protected
 environment; the offline tests neither install that consumer nor prove live access.
+
+Related decision: ADR-005 — operator-controlled CI transport, not a carve-out.

@@ -21,6 +21,7 @@ import zipfile
 import ci_plan_context
 import ci_plan_inspect as legacy
 import ci_tf_assets as assets
+from ci_runtime_policy import DEV_TARGETS
 
 META_LIMIT = 2 * 1024 * 1024
 SMALL_LIMIT = 16 * 1024
@@ -31,10 +32,11 @@ RENDER_LIMIT = 32 * 1024 * 1024
 HASH = re.compile(r'[a-f0-9]{64}')
 REGION = re.compile(r'(?:af|ap|ca|eu|il|me|mx|sa|us)-(?:central|east|north|northeast|northwest|south|southeast|southwest|west)-[1-9][0-9]*')
 BUCKET = re.compile(r'[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]')
+KEY_ID = r'(?:[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}|mrk-[a-f0-9]{32})'
 STORAGE = 's3-private-plan'
 BACKEND_KEYS = {'bucket', 'key', 'region', 'encrypt', 'use_lockfile',
                 'kms_key_id', 'workspace_key_prefix', 'workspace'}
-AWS_OPERATIONS = {'sts': {'get-caller-identity'}, 's3api': {
+AWS_OPERATIONS = {'sts': {'get-caller-identity'}, 'kms': {'describe-key'}, 's3api': {
     'get-bucket-location', 'get-public-access-block', 'get-bucket-versioning',
     'get-bucket-ownership-controls', 'get-bucket-policy-status', 'get-bucket-encryption',
     'head-object', 'get-object', 'put-object'}}
@@ -119,7 +121,7 @@ def scratch(parent, env, *, ci):
 
 
 def command_error(args, error):
-    """Recognize only the first AWS exception envelope for the invoked S3 verb."""
+    """Recognize only the first AWS exception envelope for the invoked known verb."""
     index = 1
     while index < len(args) and args[index].startswith('--'):
         flag = args[index]
@@ -131,7 +133,8 @@ def command_error(args, error):
         else:
             return 'command_failed'
     if (not args or args[0] != 'aws' or len(args) <= index + 1
-            or args[index] != 's3api' or args[index + 1] not in AWS_OPERATIONS['s3api']):
+            or args[index] not in {'s3api', 'kms'}
+            or args[index + 1] not in AWS_OPERATIONS[args[index]]):
         return 'command_failed'
     match = re.search(rb'(?m)^An error occurred \(([A-Za-z0-9]+)\) when calling the ([A-Za-z0-9]+) operation:', error)
     if not match:
@@ -140,8 +143,17 @@ def command_error(args, error):
     verb = args[index + 1]
     if operation != ''.join(word.title() for word in verb.split('-')):
         return 'command_failed'
+    if args[index] == 'kms':
+        return {'AccessDeniedException': 'kms_access_denied', 'AccessDenied': 'kms_access_denied',
+                'NotFoundException': 'kms_key_missing'}.get(code, 'command_failed')
     if code in {'AccessDenied', 'AccessDeniedException'}:
         return 's3_access_denied'
+    if verb == 'put-object':
+        if code == 'PreconditionFailed':
+            return 'object_already_exists'
+        if code in {'SlowDown', 'InternalError', 'ServiceUnavailable', 'RequestTimeout',
+                    'ConditionalRequestConflict', 'ThrottlingException'}:
+            return 'object_put_retryable'
     return {
         ('get-bucket-ownership-controls', 'OwnershipControlsNotFoundError'): 'bucket_ownership_missing',
         ('get-public-access-block', 'NoSuchPublicAccessBlockConfiguration'): 'bucket_public_access_block_missing',
@@ -183,6 +195,8 @@ def run_command(args, output, *, cwd=None, env=None, limit=META_LIMIT, timeout=1
             code = process.wait(timeout=max(0.01, end - time.monotonic()))
         if code:
             raise PrivatePlanError(category or 'command_failed')
+    except subprocess.TimeoutExpired:
+        raise PrivatePlanError('command_timeout') from None
     finally:
         if process is not None:
             if process.poll() is None:
@@ -190,6 +204,17 @@ def run_command(args, output, *, cwd=None, env=None, limit=META_LIMIT, timeout=1
                 process.wait()
             process.stdout.close()
             process.stderr.close()
+
+
+def key_identifier(value, region, account=None, *, canonical_only=False):
+    if not isinstance(value, str) or len(value) > 512:
+        return False
+    owner = re.escape(account) if account else r'[0-9]{12}'
+    arn = rf'arn:aws:kms:{re.escape(region)}:{owner}:'
+    if canonical_only:
+        return re.fullmatch(arn + 'key/' + KEY_ID, value) is not None
+    alias = r'alias/[A-Za-z0-9/_-]{1,256}'
+    return re.fullmatch(rf'(?:{KEY_ID}|{alias}|{arn}(?:key/{KEY_ID}|{alias}))', value) is not None
 
 
 def validate_backend(value):
@@ -209,8 +234,7 @@ def validate_backend(value):
             and workspace_prefix != 'ci/tfplans'
             and not workspace_prefix.startswith('ci/tfplans/'), 'invalid_workspace_prefix')
     kms = value['kms_key_id']
-    require(kms is None or kms == 'alias/aws/s3' or isinstance(kms, str) and
-            re.fullmatch(r'arn:aws:kms:' + re.escape(region) + r':[0-9]{12}:key/[A-Za-z0-9-]+', kms), 'invalid_backend_key')
+    require(kms is None or key_identifier(kms, region), 'invalid_backend_key')
     return value
 
 
@@ -288,6 +312,10 @@ def session_policy(backend, account, ctx):
          'Condition': {'StringEquals': {'kms:ViaService': f"s3.{backend['region']}.amazonaws.com",
                                         'kms:CallerAccount': account},
                        'StringLike': {'kms:EncryptionContext:aws:s3:arn': [bucket, objects]}}},
+        {'Effect': 'Allow', 'Action': ['kms:DescribeKey'],
+         'Resource': f"arn:aws:kms:{backend['region']}:{account}:key/*",
+         'Condition': {'StringEquals': {'kms:CallerAccount': account,
+                                        'aws:RequestedRegion': backend['region']}}},
     ]}
     require(len(canonical(result)) <= 2048, 'session_policy_too_large')
     return result
@@ -345,7 +373,7 @@ class Operation:
             expected.update(GITHUB_JOB='publish', GITHUB_RUN_ID=str(run_id))
         require(all(self.env.get(k) == v for k, v in expected.items()), 'invalid_ci_context')
         require(self.env.get('TF_WORKSPACE', 'default') in ('', 'default'), 'workspace_not_default')
-        if branch == 'dev':
+        if branch in DEV_TARGETS:
             value = self.env.get('AWS_ACCOUNT_ID_DEV')
             require(isinstance(value, str) and re.fullmatch(r'[0-9]{12}', value), 'configured_dev_account_required')
 
@@ -449,7 +477,7 @@ class Operation:
         require(operation in AWS_OPERATIONS.get(service, set()), 'forbidden_operation')
         require(self.backend is not None, 'backend_required')
         region = self.backend['region']
-        endpoint = f"https://{'s3' if service == 's3api' else 'sts'}.{region}.amazonaws.com"
+        endpoint = f"https://{ {'s3api': 's3', 'sts': 'sts', 'kms': 'kms'}[service]}.{region}.amazonaws.com"
         cmd = ['aws', '--region', region, '--endpoint-url', endpoint, '--no-cli-pager',
                '--cli-connect-timeout', '5', '--cli-read-timeout', '60']
         if self.profile:
@@ -458,7 +486,7 @@ class Operation:
         return parse_json(self.command(cmd, 'aws', timeout=180))
 
     def caller(self, expected_account=None, expected_role=None):
-        if self.env.get('GITHUB_ACTIONS') == 'true' and self.identity[1] == 'dev':
+        if self.env.get('GITHUB_ACTIONS') == 'true' and self.identity[1] in DEV_TARGETS:
             configured = self.env.get('AWS_ACCOUNT_ID_DEV')
             require(isinstance(configured, str) and re.fullmatch(r'[0-9]{12}', configured)
                     and (expected_account is None or configured == expected_account), 'configured_dev_account_mismatch')
@@ -495,12 +523,20 @@ class Operation:
         encryption = rule.get('ApplyServerSideEncryptionByDefault', {})
         require(encryption.get('SSEAlgorithm') == 'aws:kms', 'bucket_not_sse_kms')
         key = encryption.get('KMSMasterKeyID')
-        if key is not None:
-            require(isinstance(key, str) and (key == 'alias/aws/s3' or re.fullmatch(
-                rf'arn:aws:kms:{re.escape(self.backend["region"])}:{self.account}:key/[A-Za-z0-9-]+', key)), 'bucket_key_invalid')
-        require(self.backend['kms_key_id'] is None or self.backend['kms_key_id'] == (key or 'alias/aws/s3'), 'backend_key_mismatch')
+        key = 'alias/aws/s3' if key is None else key
+        require(key_identifier(key, self.backend['region'], self.account), 'bucket_key_invalid')
+        metadata = self.aws('kms', 'describe-key', '--key-id', key).get('KeyMetadata', {})
+        arn = metadata.get('Arn')
+        require(key_identifier(arn, self.backend['region'], self.account, canonical_only=True)
+                and metadata.get('AWSAccountId') == self.account
+                and metadata.get('KeyId') == arn.rsplit('/', 1)[-1], 'bucket_key_invalid')
+        if ':key/' in key or re.fullmatch(KEY_ID, key):
+            require(key in (arn, metadata['KeyId']), 'bucket_key_invalid')
+        require(metadata.get('Enabled') is True and metadata.get('KeyState') == 'Enabled'
+                and metadata.get('KeyUsage') == 'ENCRYPT_DECRYPT'
+                and metadata.get('KeySpec') == 'SYMMETRIC_DEFAULT', 'bucket_key_unusable')
         require(type(rule.get('BucketKeyEnabled', False)) is bool, 'bucket_encryption_invalid')
-        self.encryption = (key, rule.get('BucketKeyEnabled', False))
+        self.encryption = (arn, rule.get('BucketKeyEnabled', False))
 
     def upload(self, kind, data):
         require(0 < len(data) <= (PLAN_LIMIT if kind == 'plan' else ASSET_LIMIT if kind == 'assets' else SMALL_LIMIT), 'object_too_large')
@@ -514,10 +550,26 @@ class Operation:
                    '--bucket-key-enabled' if self.encryption[1] else '--no-bucket-key-enabled']
         if self.encryption[0]:
             options += ['--ssekms-key-id', self.encryption[0]]
-        response = self.bucket_call('put-object', *options)
+        entry = {'key': key, 'bytes': len(data), 'sha256': digest(data)}
+        for attempt in range(3):
+            try:
+                response = self.bucket_call('put-object', *options)
+                break
+            except PrivatePlanError as error:
+                if str(error) == 'object_already_exists':
+                    version = self.bucket_call('head-object', '--key', key).get('VersionId')
+                    require(valid_version(version), 'object_version_missing')
+                    entry['version_id'] = version
+                    self.download(entry, kind, expected_key=self.encryption[0])
+                    return entry
+                if str(error) not in {'object_put_retryable', 'command_timeout', 'command_failed'}:
+                    raise
+                require(attempt < 2, 'object_upload_retry_exhausted')
+                time.sleep(0.1 * (attempt + 1))
         require(valid_version(response.get('VersionId')) and response.get('ServerSideEncryption') == 'aws:kms'
+                and response.get('SSEKMSKeyId') == self.encryption[0]
                 and response.get('ChecksumSHA256') == checksum, 'upload_unconfirmed')
-        return {'key': key, 'version_id': response['VersionId'], 'bytes': len(data), 'sha256': digest(data)}
+        return {**entry, 'version_id': response['VersionId']}
 
     def check_entry(self, entry, kind):
         limit = PLAN_LIMIT if kind == 'plan' else ASSET_LIMIT if kind == 'assets' else SMALL_LIMIT
@@ -529,7 +581,7 @@ class Operation:
         require(version is None and kind == 'manifest' or valid_version(version), 'object_version_missing')
         return limit
 
-    def download(self, entry, kind):
+    def download(self, entry, kind, *, expected_key=None):
         limit = self.check_entry(entry, kind)
         version = entry['version_id']
         args = ['--key', entry['key']]
@@ -538,6 +590,8 @@ class Operation:
         head = self.bucket_call('head-object', *args)
         require(type(head.get('ContentLength')) is int and head['ContentLength'] == entry['bytes']
                 and head.get('ServerSideEncryption') == 'aws:kms' and valid_version(head.get('VersionId'))
+                and key_identifier(head.get('SSEKMSKeyId'), self.backend['region'], self.account, canonical_only=True)
+                and (expected_key is None or head['SSEKMSKeyId'] == expected_key)
                 and (version is None or head['VersionId'] == version), 'object_metadata_mismatch')
         version = head['VersionId']
         path = self.temporary('body')
@@ -546,6 +600,7 @@ class Operation:
                                     '--range', f"bytes=0-{entry['bytes']-1}", str(path))
         require(response.get('VersionId') == version and type(response.get('ContentLength')) is int
                 and response['ContentLength'] == entry['bytes'] and response.get('ServerSideEncryption') == 'aws:kms'
+                and response.get('SSEKMSKeyId') == head['SSEKMSKeyId']
                 and response.get('ContentRange') == f"bytes 0-{entry['bytes']-1}/{entry['bytes']}", 'object_response_mismatch')
         data = private_read(path, limit, protected=True)
         require(len(data) == entry['bytes'] and digest(data) == entry['sha256'], 'object_digest_mismatch')
@@ -576,10 +631,10 @@ class Operation:
         if workspace.exists():
             require(private_read(workspace, 128).decode().strip() == 'default', 'workspace_not_default')
         account, _ = role_identity(role_arn)
-        if self.identity[1] == 'dev':
+        if self.identity[1] in DEV_TARGETS:
             require(account == self.env['AWS_ACCOUNT_ID_DEV'], 'configured_dev_account_mismatch')
         key = store_backend['kms_key_id']
-        require(key is None or key == 'alias/aws/s3' or f':{account}:key/' in key, 'backend_key_mismatch')
+        require(key is None or key_identifier(key, store_backend['region'], account), 'backend_key_mismatch')
         store = {'schema': 1, 'context': self.ctx, 'backend': store_backend, 'account': account,
                  'role_arn': role_arn, 'backend_sha256': binding(store_backend, account)}
         return {'store.json': canonical(store),

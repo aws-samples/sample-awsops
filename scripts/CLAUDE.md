@@ -20,6 +20,7 @@ secrets-manager) — installed by `make deps`.
   restore never applies, and no orphan-recovery operation is supplied.
   Contract: `docs/reference/private-plan-transport.md`; offline tests: `v2/test_ci_private_plan.py`
   with the existing `test_ci_{tf_assets,plan_inspect,plan_context}.py` suites.
+  This is operator CI artifact transport, not an ADR-005 exception or a product mutation path.
 - `v2/ci_failure_diagnostics.py` drains bounded output in memory until Terraform exits; no scratch-write error may kill apply or replace its result. Linux supervision forwards one graceful interrupt, escalates a second, and kills Terraform if its capture parent dies. Retain the last 1 MiB and signed total/capture status. No success/advisory raw log is written.
 - Strip GitHub command-file/token variables, encryption keys, TF_LOG* and TF_CLI_ARGS* from captured Terraform and pre-apply scope-check children; keep AWS STS credentials including AWS_SESSION_TOKEN. Publish only a validated owned single ciphertext path, gated by dispatch plus failure/cancellation, with attempt-specific artifact names and five-day retention.
 - Fixed public audit fields distinguish command, capture, retention and cleanup status; numeric standard Terraform success counts never include resource/output text. Missing summaries stay unavailable. Schema-2 failure HMAC uses its own domain with the existing CBC cipher/key. Recovery verifies the exact failed attempt and emits fixed timeout/errors; private inspection remains authenticated and bounded to 32 MiB.
