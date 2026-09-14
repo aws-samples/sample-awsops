@@ -42,8 +42,11 @@ jobs:
       AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
       RUNTIME_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       EXPECTED_PROJECT: ${{ inputs.expected_project }}
-      AUDIT_DIR: ${{ runner.temp }}/deployment-audit-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - name: Select private audit directory
+        run: |
+          printf 'AUDIT_DIR=%s/deployment-audit-%s-%s\n' \
+            "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
