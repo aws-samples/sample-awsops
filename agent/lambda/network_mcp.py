@@ -10,6 +10,15 @@ import time
 from botocore.exceptions import BotoCoreError, ClientError
 from cross_account import get_client, get_role_arn, resolve_tool_name
 
+_ENI_ERROR_CODES = frozenset((
+    "InvalidNetworkInterfaceID.NotFound", "InvalidNetworkInterfaceID.Malformed",
+    "UnauthorizedOperation", "AccessDenied", "AccessDeniedException", "AuthFailure",
+    "RequestLimitExceeded", "Throttling", "ThrottlingException",
+    "EndpointConnectionError", "ConnectionClosedError", "ConnectTimeoutError",
+    "ReadTimeoutError", "SSLError",
+))
+_ENI_GROUP_ROWS = 200
+
 
 def _eni_read(read, key, unknown, component, *, resource_id=None, **kwargs):
     """One bounded describe call; failed/truncated evidence must not look complete."""
@@ -21,6 +30,7 @@ def _eni_read(read, key, unknown, component, *, resource_id=None, **kwargs):
     except (ClientError, BotoCoreError) as exc:
         code = (exc.response.get("Error", {}).get("Code") if isinstance(exc, ClientError)
                 else type(exc).__name__)
+        code = code if isinstance(code, str) and code in _ENI_ERROR_CODES else "ReadError"
         unknown.append({**scope, "reason": "read_failed", "errorCode": code})
         return [], "read_failed"
     rows = response.get(key)
@@ -78,7 +88,10 @@ def _eni_route_table(ec2, subnet_id, vpc_id, unknown):
                 reason = "identity_mismatch"
             elif not associations:
                 reason = "association_missing"
-            elif any(a.get("AssociationState", {}).get("State") not in (None, "associated")
+            elif any(not isinstance(a.get("AssociationState"), dict)
+                     or not a["AssociationState"].get("State") for a in associations):
+                reason = "association_state_unknown"
+            elif any(a["AssociationState"]["State"] != "associated"
                      for a in associations):
                 reason = "association_not_established"
             else:
@@ -89,30 +102,63 @@ def _eni_route_table(ec2, subnet_id, vpc_id, unknown):
         return None, selection
 
 
-def _eni_permissions(rules, peer_key, sg_id, unknown):
-    """Keep legacy rule fields, emitting one row per peer, including its full metadata."""
+def _eni_permissions(rules, peer_key, sg_id, unknown, limit):
+    """Bound per-group fan-out and retain explicit peer metadata with visible gaps."""
     rows = []
+    def gap(reason, field=None):
+        item = {"component": "securityGroups", "resourceId": sg_id, "reason": reason}
+        if field:
+            item["field"] = field
+        if item not in unknown:
+            unknown.append(item)
+
     for rule in rules:
         base = {"proto": rule.get("IpProtocol"),
                 "ports": "{}-{}".format(rule.get("FromPort", ""), rule.get("ToPort", ""))}
         if str(rule.get("IpProtocol")) in ("icmp", "1", "icmpv6", "58"):
             base.update(icmpType=rule.get("FromPort"), icmpCode=rule.get("ToPort"))
-        peers = []
+        has_peer = False
         for field, value_key, peer_type in (
             ("IpRanges", "CidrIp", "ipv4"),
             ("Ipv6Ranges", "CidrIpv6", "ipv6"),
             ("UserIdGroupPairs", "GroupId", "securityGroup"),
             ("PrefixListIds", "PrefixListId", "prefixList"),
         ):
-            for peer in rule.get(field) or []:
-                peers.append({**base, peer_key: peer.get(value_key),
-                              "peerType": peer_type, "peer": peer})
-        if not peers:
-            peers.append({**base, peer_key: None, "peerType": "unknown", "peer": {}})
-        if any(p[peer_key] is None for p in peers):
-            unknown.append({"component": "securityGroups", "resourceId": sg_id,
-                            "reason": "peer_missing"})
-        rows.extend(peers)
+            values = rule.get(field, [])
+            if not isinstance(values, list):
+                gap("response_invalid", field)
+                continue
+            for peer in values:
+                if len(rows) >= limit:
+                    gap("truncated")
+                    return rows
+                if not isinstance(peer, dict):
+                    gap("response_invalid", field)
+                    continue
+                projected = {}
+                for key in ("CidrIp", "CidrIpv6", "GroupId", "GroupName", "UserId", "VpcId",
+                            "VpcPeeringConnectionId", "PeeringStatus", "PrefixListId", "Description"):
+                    if key not in peer:
+                        continue
+                    value = peer[key]
+                    if not isinstance(value, str) or (key != "Description" and len(value) > 256):
+                        gap("response_invalid", field)
+                        continue
+                    if key == "Description" and len(value) > 100:
+                        gap("truncated", "Description")
+                        value = value[:100]
+                    projected[key] = value
+                value = projected.get(value_key)
+                if value is None:
+                    gap("peer_missing")
+                rows.append({**base, peer_key: value, "peerType": peer_type, "peer": projected})
+                has_peer = True
+        if not has_peer:
+            if len(rows) >= limit:
+                gap("truncated")
+                return rows
+            gap("peer_missing")
+            rows.append({**base, peer_key: None, "peerType": "unknown", "peer": {}})
     return rows
 
 
@@ -142,15 +188,7 @@ def _get_eni_details(ec2, eni_id):
     enis, reason = _eni_read(ec2.describe_network_interfaces, "NetworkInterfaces",
                             unknown, "eni", resource_id=eni_id, NetworkInterfaceIds=[eni_id])
     if reason:
-        # Only fixed diagnostic codes may leave the entry failure boundary.
-        if reason == "read_failed" and unknown[0]["errorCode"] not in (
-            "InvalidNetworkInterfaceID.NotFound", "UnauthorizedOperation",
-            "AccessDenied", "AccessDeniedException", "AuthFailure",
-            "RequestLimitExceeded", "Throttling", "ThrottlingException",
-            "EndpointConnectionError", "ConnectionClosedError", "ConnectTimeoutError",
-            "ReadTimeoutError", "SSLError",
-        ):
-            unknown[0]["errorCode"] = "ReadError"
+        # Entry and component reads share the same fixed diagnostic-code boundary.
         return {"statusCode": 400, "body": json.dumps({
             "error": "ENI lookup unavailable; configuration unassessed",
             "eniId": eni_id, "partial": True, "unknown": unknown,
@@ -180,7 +218,8 @@ def _get_eni_details(ec2, eni_id):
         for key, side, peer_key in (("IpPermissions", "inbound", "source"),
                                     ("IpPermissionsEgress", "outbound", "dest")):
             rules = _eni_list(groups[0], key, unknown, "securityGroups", sg_id)
-            projected[side] = _eni_permissions(rules, peer_key, sg_id, unknown)
+            remaining = _ENI_GROUP_ROWS - len(projected["inbound"]) - len(projected["outbound"])
+            projected[side] = _eni_permissions(rules, peer_key, sg_id, unknown, remaining)
         # Completeness is local to this group, including any missing rule peers.
         projected["partial"] = len(unknown) != unknown_before_rules
 

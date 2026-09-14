@@ -225,6 +225,46 @@ def test_unsettled_explicit_association_never_falls_back_to_main(ec2, state):
     assert len(ec2.route_calls) == 1
 
 
+@pytest.mark.parametrize("state", [None, {}, {"State": None}, {"State": ""}])
+def test_missing_association_state_is_unassessed_without_main_fallback(ec2, state):
+    ec2.tables = [route_table("rtb-explicit", subnet="subnet-test", main=False), route_table()]
+    if state is None:
+        ec2.tables[0]["Associations"][0].pop("AssociationState")
+    else:
+        ec2.tables[0]["Associations"][0]["AssociationState"] = state
+    body = call_eni()
+    assert body["routeSelection"]["status"] == "unknown"
+    assert_unknown(body, "routeTable", "association_state_unknown")
+    assert len(ec2.route_calls) == 1
+
+
+@pytest.mark.parametrize("method", ["describe_security_groups", "describe_network_acls", "describe_route_tables"])
+def test_component_error_codes_share_entry_sanitization(ec2, monkeypatch, method):
+    private = "private-component-detail-" + "x" * 4096
+    def denied(**kwargs):
+        raise ClientError({"Error": {"Code": private, "Message": private}}, method)
+    monkeypatch.setattr(ec2, method, denied)
+    body = call_eni()
+    assert private not in json.dumps(body)
+    assert body["partial"] is True
+    assert all(gap.get("errorCode", "ReadError") == "ReadError" for gap in body["unknown"])
+
+
+def test_large_peer_set_is_bounded_and_disclosed_per_group(multi_sg_ec2):
+    multi_sg_ec2.groups[1]["IpPermissions"] = [permission(IpRanges=[
+        {"CidrIp": f"192.0.2.{i % 255}/32", "Description": "x" * 255} for i in range(250)])]
+    body = call_eni()
+    groups = {sg["id"]: sg for sg in body["securityGroups"]}
+    affected = groups["sg-unassessed"]
+    assert len(affected["inbound"]) + len(affected["outbound"]) <= 200
+    assert affected["partial"] is True
+    assert groups["sg-after"]["partial"] is False
+    assert any(gap.get("resourceId") == "sg-unassessed" and gap["reason"] == "truncated"
+               for gap in body["unknown"])
+    assert all(len(row["peer"].get("Description", "")) <= 100 for row in affected["inbound"])
+    assert body["nacl"] and body["routes"]
+
+
 @pytest.mark.parametrize("scope", ["explicit", "main"])
 def test_truncated_table_response_cannot_prove_route_selection(ec2, scope):
     ec2.tokens.add(scope)

@@ -27,11 +27,13 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |
 | [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
 | [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
+| [runtime-verifier-sessions.md](runtime-verifier-sessions.md) | Development verification policies: manual backend/workload phases, Deploy Web workload-only collect, owned collector invocation, synchronous/HTTP proof, and cleanup gates (ADR-002/005/021) |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; saved-plan scope, links to branch-independent artifact inspection/recovery, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
 | [steampipe-quota-and-staleness.md](steampipe-quota-and-staleness.md) | Steampipe quota guard — rate limiter knobs, partial runs, freshness ledger/staleness response |
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
+- Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). The helper supplies policies and installs neither consumer path. Deploy Web integration must be dev-only with activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
 - Private saved-plan inspection authenticates run/checkout/assets before 32 MiB-bounded rendering; it never authorizes apply.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.
 - Linux capture forwards the first interrupt, kills the child group on a second, and arms parent-death SIGKILL before exec; cancellation is not infrastructure rollback.
@@ -60,7 +62,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   authorization or same-account stack validation. Use existing read-only grants and an exact
   CLI verb allowlist. No IAM/resource writes or DB connection. Opt-in publishes fenced safe
   JSON, including posture booleans, to the public Actions log/summary.
-  Only this optional step tolerates failure; DNS/CI/readiness gates remain required.
+  This optional step and the separate advisory readiness-plan summary tolerate failure;
+  DNS/CI/readiness gates remain required.
   Retain all four sections independently: `logs`, `configuration`, `server_logs`, `rds_metrics`.
   Distinguish unavailable sources from unknown derived comparisons; early input/context/identity
   failure returns only `{"status":"unavailable"}`, not fabricated empty sections.
@@ -121,7 +124,12 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   `allow_dns_changes=true` on both plan and apply dispatches; examples do not grant permission.
 - Public summaries include managed/external certificate suffixes, publication, change counts/
   addresses and active-rollout public zone name/ID/NS; diagnostics additionally permit bounded
-  metric values. Never expose full ARNs, account IDs or
+  metric values. Explicit full dev readiness plans may also publish fixed scope/presence
+  checks and a known configured collector hash through `ci_readiness_plan_summary.py`.
+  That advisory summary does not establish approval or resource presence; unknown changes
+  require private inspection. Its two-minute, failure-tolerant step runs before encryption,
+  renders fenced JSON, and must not block encrypted artifacts.
+  Never expose full ARNs, account IDs or
   raw configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
   CLI; health is liveness only. DB/auth checks precede service A publication.
 - Offline Terraform checks use `bash scripts/v2/terraform-test.sh` from the repo root:
