@@ -1,5 +1,6 @@
 """Private plan workflow contracts; no AWS or GitHub calls."""
 import base64
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -114,7 +115,11 @@ def test_apply_finalizer_removes_only_current_run_private_scratch(tmp_path):
     assert (other / "tfplan").read_text() == "other operation"
 
 
-@pytest.mark.parametrize("case", ["expired", "recent", "broad_prefix", "state_key", "unversioned", "truncated"])
+@pytest.mark.parametrize("case", [
+    "expired", "recent", "broad_prefix", "state_key", "unversioned", "truncated",
+    "expired_with_fresh_marker", "marker_only", "recent_with_marker",
+    "state_marker", "unversioned_marker", "truncated_markers",
+])
 @pytest.mark.parametrize("optimized", [False, True])
 def test_documented_purge_preparation_rejects_unsafe_deletions(tmp_path, case, optimized):
     document = (ROOT / "docs/runbooks/dev-repo-setup.md").read_text()
@@ -133,11 +138,30 @@ def test_documented_purge_preparation_rejects_unsafe_deletions(tmp_path, case, o
         row["VersionId"] = "null"
     elif case == "truncated":
         data["NextToken"] = "more"
+    if "marker" in case:
+        marker = {**row, "VersionId": "fixture-marker",
+                  "LastModified": datetime.now(timezone.utc).isoformat()}
+        data["DeleteMarkers"] = [marker]
+        if case == "marker_only":
+            data["Versions"] = []
+        elif case == "recent_with_marker":
+            row["LastModified"] = "2999-01-01T00:00:00Z"
+        elif case == "state_marker":
+            marker["Key"] = "state/terraform.tfstate"
+        elif case == "unversioned_marker":
+            marker["VersionId"] = "null"
+        elif case == "truncated_markers":
+            data["IsTruncated"] = True
     (tmp_path / "versions.json").write_text(json.dumps(data))
     result = subprocess.run([sys.executable, *(["-O"] if optimized else []), "-c", code, prefix, str(tmp_path)],
                             text=True, capture_output=True)
-    assert (result.returncode == 0) is (case == "expired")
-    assert (tmp_path / "delete.json").exists() is (case == "expired")
+    accepted = case in {"expired", "expired_with_fresh_marker", "marker_only"}
+    assert (result.returncode == 0) is accepted
+    assert (tmp_path / "delete.json").exists() is accepted
+    if accepted:
+        actual = json.loads((tmp_path / "delete.json").read_text())["Objects"]
+        assert actual == [{"Key": row["Key"], "VersionId": row["VersionId"]}
+                          for row in data.get("Versions", []) + data.get("DeleteMarkers", [])]
 
 
 @pytest.mark.parametrize("target,missing,expected", [

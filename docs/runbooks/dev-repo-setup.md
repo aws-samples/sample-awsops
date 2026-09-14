@@ -14,6 +14,7 @@
 `scripts/v2/ci_private_plan.py`, `scripts/v2/test_ci_private_plan.py`,
 `scripts/v2/test_ci_private_plan_workflow.py`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_readiness_plan_summary.py`,
 `docs/reference/private-plan-transport.md`,
+`terraform/bootstrap/{main,variables}.tf`,
 `scripts/v2/test_ci_readiness_plan_summary.py`,
 `scripts/v2/ci_failure_diagnostics.py`,
 `scripts/v2/ci_db_diagnostics.py`, `scripts/v2/test_ci_db_diagnostics.py`,
@@ -925,7 +926,7 @@ roles and any KMS key policy must authorize these operations in the selected acc
 
 | Actor | Required existing permission scope |
 |---|---|
-| Publisher | Bucket metadata reads below; `s3:PutObject` only under `ci/tfplans/`; KMS GenerateDataKey/Decrypt for the supported S3 encryption context, plus direct DescribeKey for key normalization. |
+| Publisher | Bucket metadata reads below; `s3:PutObject` plus `s3:GetObject` / `s3:GetObjectVersion` only under the run's `ci/tfplans/` prefix (reads verify conditional-PUT recovery); KMS GenerateDataKey/Decrypt for the supported S3 encryption context, plus direct DescribeKey for key normalization. |
 | Inspector / apply | Bucket metadata reads; `s3:GetObject` / `s3:GetObjectVersion` under that private prefix, direct KMS DescribeKey and KMS Decrypt. Existing apply/state permissions remain separate. |
 | Purge operator | `s3:ListBucketVersions` for the repository/branch prefix and `s3:DeleteObjectVersion` for the reviewed expired attempt, excluding state keys. Publisher sessions cannot delete. |
 
@@ -945,6 +946,8 @@ to the fresh session. Restore runs under the separately protected Apply role.
 Keep `TF_PLAN_ENC_KEY` as one repository-level secret. Do not define an environment
 secret with the same name: it can shadow the plan job's key in publication/apply,
 breaking the encrypted handoff or asset HMAC after a rotation.
+Keep repository-owned backend, target-account and deployer secret names unshadowed
+as well so Plan, Publish and Apply resolve the same deployment configuration.
 
 ### Inspect and select exact bytes
 
@@ -1018,6 +1021,7 @@ runner/process loss can prevent finalizers. No public summary is full-plan appro
 | `bucket_ownership_missing` | Confirm explicit BucketOwnerEnforced ownership controls with the bucket owner; this workflow does not configure them. |
 | `bucket_public_access_block_missing` | Confirm the bucket's four public-access blocks; missing settings cannot establish private storage. |
 | `s3_access_denied` | Check the selected profile/session, expected bucket owner and scoped S3/KMS permissions privately. No missing-object or empty-state inference is valid. |
+| `bucket_region_mismatch` | Confirm the private backend region matches GetBucketLocation. A failed regional endpoint request is not proof of a match. |
 | `bucket_not_private` / `bucket_not_versioned` | Establish the four public-access blocks and Enabled versioning through the reviewed bucket configuration. |
 | `bucket_ownership_invalid` | Confirm BucketOwnerEnforced ownership; other ownership modes are not supported by this transport. |
 | `bucket_not_sse_kms` / `bucket_encryption_missing` / `bucket_encryption_invalid` | Confirm one supported default SSE-KMS rule; backend `encrypt=true` is not evidence of that setting. |
@@ -1068,7 +1072,11 @@ PY
 Set `PLAN_PREFIX` to one expired attempt's exact
 `ci/tfplans/aws-samples/sample-awsops/<branch>/<commit>/<run>/<attempt>/` prefix.
 The following preparation rejects broader prefixes, truncated listings, unexpected names,
-unversioned entries and any version less than seven days old:
+unversioned entries and any data version less than seven days old. Delete markers do
+not contain plan bytes and receive no age cutoff: lifecycle can create them around
+day seven even while their underlying versions are old enough for early cleanup.
+A complete listing must contain no young data version before any marker is removed.
+Marker-only leftovers can be removed once the complete listing confirms no data versions.
 
 <!-- Executable purge example: test_ci_private_plan_workflow.py exercises normal and optimized Python. -->
 ```bash
@@ -1087,15 +1095,19 @@ prefix, root = sys.argv[1], pathlib.Path(sys.argv[2])
 require(re.fullmatch(r"ci/tfplans/aws-samples/sample-awsops/(main|dev|atomoh|ssminji|whchoi)/[0-9a-f]{40}/[1-9][0-9]*/[1-9][0-9]*/", prefix))
 data = json.loads((root / "versions.json").read_text())
 require(not data.get("NextToken") and not data.get("IsTruncated"))
-rows = data.get("Versions", []) + data.get("DeleteMarkers", [])
+versions = data.get("Versions", [])
+markers = data.get("DeleteMarkers", [])
+require(isinstance(versions, list) and isinstance(markers, list))
+rows = versions + markers
 require(0 < len(rows) <= 1000)
 cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
 objects = []
 for row in rows:
     require(re.fullmatch(re.escape(prefix) + r"(plan-[0-9a-f]{64}\.bin|assets-[0-9a-f]{64}\.tar\.gz|manifest-[0-9a-f]{64}\.json)", row["Key"]))
     require(isinstance(row.get("VersionId"), str) and row["VersionId"] not in ("", "null"))
-    require(dt.datetime.fromisoformat(row["LastModified"].replace("Z", "+00:00")) < cutoff)
     objects.append({"Key": row["Key"], "VersionId": row["VersionId"]})
+for row in versions:
+    require(dt.datetime.fromisoformat(row["LastModified"].replace("Z", "+00:00")) < cutoff)
 (root / "delete.json").write_text(json.dumps({"Objects": objects, "Quiet": True}))
 print("Expired versions prepared:", len(objects))
 PY

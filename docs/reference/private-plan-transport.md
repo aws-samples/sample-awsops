@@ -160,6 +160,7 @@ Grant no IAM permissions or product mutation capabilities from this helper.
 
 - `scripts/v2/ci_private_plan.py`: four-mode transport and validation.
 - `scripts/v2/test_ci_private_plan.py`: offline transport/security fixtures.
+- `scripts/v2/test_ci_private_plan_workflow.py`: workflow adapters and executable operator procedures.
 - `scripts/v2/ci_plan_inspect.py`: historical encrypted-artifact inspector.
 - `.github/workflows/terraform.yml`: protected publication and exact-plan Apply.
 - `terraform/bootstrap/`: optional owner-run plan-prefix retention.
@@ -176,12 +177,13 @@ publication, applied lifecycle configuration or successful deployment.
 ### Offline verification
 
 Use the existing Python test dependencies in `scripts/v2/requirements-test.txt`,
-OpenSSL and the repository's Terraform test version (1.15.7). These tests use fake
+Node.js, OpenSSL and the repository's Terraform test version (1.15.7). These tests use fake
 GitHub/AWS CLI responses, real local crypto/archive checks and local Terraform fixtures:
 
 ```bash
 python3 -m pytest -q -p no:cacheprovider \
-  scripts/v2/test_ci_private_plan.py scripts/v2/test_ci_tf_assets.py \
+  scripts/v2/test_ci_private_plan.py scripts/v2/test_ci_private_plan_workflow.py \
+  scripts/v2/test_ci_tf_assets.py \
   scripts/v2/test_ci_plan_inspect.py scripts/v2/test_ci_plan_context.py
 ```
 

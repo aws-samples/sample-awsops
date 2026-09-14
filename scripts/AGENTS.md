@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 862d8d52b014 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ce3b94b6e366 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -177,6 +177,8 @@ Mask the reviewed input before step environments. Private digests select exact b
 CI still checks asset HMAC and original gates. Read-only lifecycle validation requires
 the owner-configured plan-prefix 7-day current/noncurrent expiry and 1-day multipart abort.
 Expiration is asynchronous; scoped purge and current-run scratch cleanup remain separate.
+Purge is a manual AWS-CLI runbook procedure, not a helper mode or a required scheduled task.
+Its complete listing must contain no young data versions; delete markers need no age cutoff.
 SSE-KMS readers need no CI envelope key: review effective S3/KMS access before rollout.
 Generated policy is publisher-only; Apply retains its own authorization. Legacy `tfplan`
 runs use the historical inspector.

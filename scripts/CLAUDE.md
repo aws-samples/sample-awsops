@@ -19,7 +19,8 @@ secrets-manager) — installed by `make deps`.
   the separately reviewed bootstrap. Expiration is asynchronous, not an erasure guarantee.
   SSE-KMS readers need no CI envelope key, so review effective S3/KMS access before rollout.
   Policy mode is publisher-only; Apply retains its own authorization. Legacy `tfplan` runs
-  keep the historical inspector. Optional purge targets reviewed expired attempt versions.
+  keep the historical inspector. Optional purge is the manual AWS-CLI runbook procedure
+  for reviewed expired attempt versions, not another helper mode.
   Contract: `docs/reference/private-plan-transport.md`;
   tests: `v2/test_ci_private_plan.py`, `v2/test_ci_private_plan_workflow.py` and the existing crypto/context suites.
   This is operator CI artifact transport, not an ADR-005 exception or product mutation path.
@@ -250,8 +251,11 @@ secrets-manager) — installed by `make deps`.
   the private backend file. Public references omit storage identifiers/bare hashes and plan
   digests; every CLI result omits the plan digest. Mask the reviewed input before logging.
   Digests bind bytes, not human review. Existing bucket/IAM/KMS prerequisites are checked,
-  never granted. No S3 expiry is installed; operator version discovery/purge is required after
-  seven days. Cleanup is current-run scoped without a runner-loss guarantee.
+  never granted. Owner-installed plan-prefix lifecycle is mandatory; the optional owner-run
+  bootstrap supplies it, never the workflow. Manual AWS-CLI purge is optional early cleanup
+  or orphan investigation. Its age cutoff covers data versions, not delete markers; a complete
+  listing must show no young data versions before deletion. Local cleanup is current-run
+  scoped without a runner-loss guarantee.
 - Scripts assume they run from the repo root (they resolve resource addresses via
   `terraform -chdir=terraform/foundation output`) — prefer the Makefile targets over running
   scripts directly.
