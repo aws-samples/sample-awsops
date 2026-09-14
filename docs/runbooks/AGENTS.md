@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 1adfe4260b89 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d1891efe78a5 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -120,8 +120,15 @@ legacy runbook's steps as the current operational path).
 ## Authenticated development verification
 - Apply both `agentcore_enabled` and `ci_readiness_enabled`, then provision AgentCore.
   Verify also requires active inventory/dispatch, `workers_enabled=true` and deployed ARM64 worker images.
-  Only that output boolean enables `DEPLOYMENT_READINESS_ENABLED`; no shell override or
-  Cognito membership grant. False/missing reports `runtime_disabled`. Capped samples cannot
+  Only that output boolean enables `DEPLOYMENT_READINESS_ENABLED`; no shell override.
+  A reviewed apply with readiness and AgentCore enabled creates only deployment-verifiers;
+  membership additionally requires the managed demo flag. No admin/IAM role is granted.
+  Existing ID-token group claims can persist for their remaining 12-hour lifetime unless
+  session revocation rejects them; use the canonical runtime-foundation readiness guidance.
+  Disabled AgentCore blanks only the web task's `SSM_RUNTIME_ARN_PARAM`; invocation/status
+  lookup honor it. The separate alias and incident bridge paths remain literal. Status lookup
+  does not validate the full ARN and can still perform other control-plane reads.
+  Public CI permits readiness only on dev. Dedicated CI_READINESS_ENABLED_DEV=true/false overrides the flag; empty/unset preserves explicit tfvars/default false. The runtime profile alone does not enable it. False/missing reports `runtime_disabled`. Capped samples cannot
   prove absence; missing ledger, partial/failed runs and unknown attributes remain failed readiness.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
   credentials. Prepare checks host registration (optional hostOnly); verify additionally

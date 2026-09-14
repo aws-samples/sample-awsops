@@ -4,6 +4,7 @@
 // 5-min in-process cache (matches v1's NodeCache TTL). Never throws — degrades to nulls/empties so
 // the page renders a partial view instead of 500-ing.
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { runtimeParameter } from './agentcore-config';
 import {
   BedrockAgentCoreControlClient,
   GetAgentRuntimeCommand,
@@ -15,7 +16,6 @@ import {
 } from '@aws-sdk/client-bedrock-agentcore-control';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
-const ARN_PARAM = process.env.SSM_RUNTIME_ARN_PARAM || '/ops/awsops-v2/agentcore/runtime_arn';
 const TTL_MS = 5 * 60 * 1000;
 
 // Only surface gateways for THIS deployment. v2 gateways are named awsops-v2-<x>-gateway; during
@@ -43,9 +43,11 @@ function runtimeIdFromArn(arn: string): string {
 }
 
 async function getRuntimeId(): Promise<string> {
+  const parameter = runtimeParameter();
+  if (parameter === '') return '';
   if (!ssm) ssm = new SSMClient({ region: REGION });
   try {
-    const r = await ssm.send(new GetParameterCommand({ Name: ARN_PARAM }));
+    const r = await ssm.send(new GetParameterCommand({ Name: parameter }));
     return runtimeIdFromArn(r.Parameter?.Value ?? '');
   } catch {
     return '';
