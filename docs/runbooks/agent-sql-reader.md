@@ -296,10 +296,10 @@ The node's exposed `captured_at` is graph materialization time, not its underlyi
 inventory capture or observation time. For collection quality, consult
 `sql_reader.topology_graph_state`: status, attempt/publication times, observation
 window, retained flag and projected source reasons. Its current projection owner is
-`01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql`, which also exposes bounded
+`01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql`, extending the prior inventory/attempt projections and exposing bounded
 `publishedSources`, producer status, per-source capture/success/attempt/finish clocks,
 aggregate/account scope, failure reasons and numeric loss counters. It does not expose
-raw provider JSON or widen grants. The current writer records only
+raw provider JSON or widen grants. Computed `metadataTruncated` discloses omitted/malformed source metadata; the Python reader and HTTP reader both treat it as stale. The shared vocabulary includes sourceAttempted, not_attempted and count_not_confirmed. The current writer records only
 `class='trace'`; a missing flow/infra state row is not evidence of complete or empty
 coverage. Missing qualifiers or timestamps never establish confidence.
 

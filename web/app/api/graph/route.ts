@@ -2,7 +2,7 @@ import { verifyUser } from '@/lib/auth';
 import { getPool } from '@/lib/db';
 import { downstream, upstream, FANOUT_CAP } from '@/lib/graph-query';
 import { readGraphState, graphDiagnostic, type GraphClass } from '@/lib/graph-state';
-import { graphReadTransaction, GraphReadBusy } from '@/lib/graph-transaction';
+import { graphReadTransaction, GraphReadBusy, GraphReadDeadline } from '@/lib/graph-transaction';
 import { queueClaimMeta } from '@/lib/trace-evidence';
 
 export const dynamic = 'force-dynamic';
@@ -43,7 +43,7 @@ async function graphRows(client: Parameters<Parameters<typeof graphReadTransacti
     WHERE ($2 = '__all__' OR account_id = $2) AND class = $1 AND source = ANY($3) AND target = ANY($3)
     ORDER BY source, target, rel, captured_at DESC LIMIT ${EDGE_LIMIT + 1}`, [cls, account, visible.map(row => row.id)]);
   return { nodes: visible,
-    edges: [...new Map(edges.rows.slice(0, EDGE_LIMIT).map(row => [JSON.stringify(row), row])).values()],
+    edges: edges.rows.slice(0, EDGE_LIMIT),
     truncated: nodes.rows.length > NODE_LIMIT || edges.rows.length > EDGE_LIMIT };
 }
 
@@ -99,18 +99,21 @@ export async function GET(request: Request) {
       }
       const rows = await graphRows(client, cls, account, ids);
       return { class: cls, account, ...(from ? { from, depth, capped } : {}),
-        nodes: evidenceNodes(rows.nodes, cls), edges: evidenceEdges(rows.edges, cls),
+        nodes: rows.nodes, edges: rows.edges,
         // Legacy display clock only. Never substitute this for collection publication/source proof.
         captured_at: collection.captured_at ?? (cls !== 'trace' && account !== '__all__' ? rows.nodes[0]?.captured_at ?? null : null),
         collection: { ...collection, readStatus: rows.truncated ? 'partial' : 'ok',
           ...(rows.truncated ? { readTruncated: true, readReason: 'row_limit' } : {}) } };
     });
-    return Response.json(result);
+    // Normalize annotations/deduplicate and serialize only after commit and client release.
+    const edges = [...new Map(result.edges.map(edge => [JSON.stringify(edge), edge])).values()];
+    return Response.json({ ...result, nodes: evidenceNodes(result.nodes, cls), edges: evidenceEdges(edges, cls) });
   } catch (error) {
     const busy = error instanceof GraphReadBusy;
     const code = (error as { code?: string } | null)?.code;
-    const reason = busy ? 'busy' : ['57014','25P03','25P04'].includes(code ?? '') ? 'timeout' : 'query_failed';
+    const reason = busy ? 'busy' : error instanceof GraphReadDeadline || ['57014','25P03','25P04','55P03'].includes(code ?? '') ? 'timeout' : 'query_failed';
     if (busy) console.warn('[graph-read] shed {"reason":"busy"}');
+    else if (error instanceof GraphReadDeadline) console.warn(`[graph-read] deadline ${JSON.stringify({ phase: error.phase })}`);
     else console.error(`[graph-read] failed ${graphDiagnostic('graph_read', error)}`);
     return Response.json({ status: 'error', message: 'Graph read failed',
       class: cls, account, collection: { ...unknownCollection(cls), readStatus: 'unavailable',

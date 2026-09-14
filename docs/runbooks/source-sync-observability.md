@@ -27,16 +27,17 @@ samples의 CI·OIDC·브랜치/배포 정책과 Terraform 경로를 유지한다
 
 ## Additive migrations / 추가 마이그레이션
 
-- `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql`: collection-state projection for flow/infra, bounded source clocks/status/scope, saved sources, loss counters and failure reasons; existing grants remain unchanged.
-- `01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql`: class-ordered indexes for bounded graph reads; no writer or schedule activation.
-
 - `01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql`: collection attempts,
   explicit graph evidence counts, and projected SQL-reader views.
+- `01M27AQXZKQQ5J611R01BEFHPD_worker_jobs_lifecycle_timestamps.sql`: first worker-start and
+  terminal timestamps, stamped by the existing ledger's status transitions.
 - `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`: queue claimed account/region
   derived only from destination ARN qualifiers and constant `telemetry_claim` provenance in the
   SQL-reader projection, including retained snapshots; idempotent view-only SELECT grant.
-- `01M27AQXZKQQ5J611R01BEFHPD_worker_jobs_lifecycle_timestamps.sql`: first worker-start and
-  terminal timestamps, stamped by the existing ledger's status transitions.
+- `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql`: collection-state projection for flow/infra, bounded source clocks/status/scope, saved sources, loss counters and failure reasons; existing grants remain unchanged.
+- `01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`: bounded sourceAttempted/not_attempted/count_not_confirmed metadata, unchanged from the prepared publisher contract.
+- `01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql`: class-ordered indexes for bounded graph reads; no writer or schedule activation.
+- `01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql`: matching HTTP/SQL vocabulary, nullable source clocks and computed metadataTruncated; existing grants unchanged.
 
 The samples web deployment workflow does not run migrations. Run the existing `make migrate`
 from the authorized VPC/operator context to activate these metadata contracts. Existing workers

@@ -238,3 +238,7 @@ collection windows are caps and late completion can fail admission. Retry admiss
 cooldown, recheck, probe and both workers. HTTP requests need their full timeout remaining.
 Keep the probe contract before Related/ADR references. From the repository root run
 `node --test scripts/v2/deployment-smoke.test.mjs`; it imports the runtime-smoke test suite.
+
+## Graph read contract
+
+Graph reads admit at most two requests per shared max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. Source-attempt metadata is supported before the separately gated inventory publisher is activated.

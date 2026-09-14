@@ -7,6 +7,7 @@ vi.mock('@/lib/auth', () => ({ verifyUser: async () => ({ sub: 'fixture' }) }));
 vi.mock('@/lib/db', () => ({ getPool: () => api.pool }));
 import { GET } from '../app/api/graph/route';
 import { graphTransaction } from './graph-transaction';
+import { projectGraphDetails } from './graph-state';
 
 const socket = process.env.GRAPH_TEST_POSTGRES_SOCKET;
 describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
@@ -39,7 +40,7 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     const baseline = readFileSync(resolve(migrations, '01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql'), 'utf8');
     await pool.query(baseline.match(/GRANT USAGE ON SCHEMA sql_reader TO awsops_sql_reader;/)![0]);
     for (const suffix of ['_topology_graph.sql', '_topology_class.sql',
-      '_topology_graph_collection_state.sql', '_topology_inventory_evidence.sql', '_graph_read_indexes.sql']) {
+      '_topology_graph_collection_state.sql', '_topology_inventory_evidence.sql', '_graph_attempt_disclosure.sql', '_graph_read_indexes.sql', '_graph_projection_parity.sql']) {
       const file = readdirSync(migrations).find(name => name.endsWith(suffix))!;
       await pool.query(readFileSync(resolve(migrations, file), 'utf8'));
     }
@@ -144,6 +145,28 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     })).rejects.toBe(original);
   });
 
+  it.each([
+    { sources: Array.from({ length: 129 }, (_, i) => ({ sourceId: `tempo:${i}`, status: 'ok' })),
+      sourceAttempted: false, failureReason: 'not_attempted', publishedSources: [{ sourceId: 'inventory:vpc',
+        status: 'partial', producerStatus: 'succeeded', capturedAtMs: null, reasons: ['count_not_confirmed'] }] },
+    { sources: [null, { sourceId: 'invalid PRIVATE' }, { sourceId: 'tempo:1', status: 'partial', reasons: ['PRIVATE','query_failed'] }] },
+    { sources: 'PRIVATE', publishedSources: null },
+  ])('SQL and HTTP expose the same bounded metadata and omission flag', async details => {
+    await pool.query("UPDATE topology_graph_state SET details=$1 WHERE account_id='self' AND class='infra'", [details]);
+    const projected = (await pool.query("SELECT details FROM sql_reader.topology_graph_state WHERE account_id='self' AND class='infra'")).rows[0].details;
+    expect(projected).toEqual(projectGraphDetails(details));
+    expect(projected.metadataTruncated).toBe(true);
+    expect(JSON.stringify(projected)).not.toContain('PRIVATE');
+  });
+  it('reason deduplication alone does not claim missing metadata in either projection', async () => {
+    const details = { sources: [{ sourceId: 'tempo:1', status: 'partial', reasons: ['cap_reached','cap_reached'] }] };
+    await pool.query("UPDATE topology_graph_state SET details=$1", [details]);
+    const projected = (await pool.query('SELECT details FROM sql_reader.topology_graph_state')).rows[0].details;
+    expect(projected).toEqual(projectGraphDetails(details));
+    expect(projected).not.toHaveProperty('metadataTruncated');
+    expect(projected.sources[0].reasons).toEqual(['cap_reached']);
+  });
+
   it('exposes only the narrow collection projection to the SQL reader', async () => {
     const client = await pool.connect();
     try {
@@ -155,3 +178,6 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     } finally { await client.query('RESET ROLE'); client.release(); }
   });
 });
+
+
+// These cases are within the same guarded disposable database; no application connection.
