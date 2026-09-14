@@ -137,12 +137,15 @@ def ensure_gateways(ctrl, ac):
         if name in existing:
             gid = existing[name]["gatewayId"]
             try:
-                gw = _wait_gateway_ready(ctrl, gid, key)
-                if gw is None:
-                    continue
+                gw = ctrl.get_gateway(gatewayIdentifier=gid)
+                if gw.get("status") not in ("READY", "UPDATE_UNSUCCESSFUL"):
+                    gw = _wait_gateway_ready(ctrl, gid, key)
+                    if gw is None:
+                        continue
                 want = catalog.GATEWAY_DESCRIPTIONS.get(key, key)
                 role_drift = gw.get("roleArn") != ac["role_arn"]
-                if role_drift or gw.get("description") != want:
+                recovery = gw.get("status") == "UPDATE_UNSUCCESSFUL"
+                if role_drift or recovery or gw.get("description") != want:
                     if not gw.get("authorizerType") or not gw.get("protocolType"):
                         log(f"gateway:{key}", "ERR", "gateway_configuration_unavailable")
                         continue
@@ -159,9 +162,9 @@ def ensure_gateways(ctrl, ac):
                     except (ClientError, BotoCoreError) as error:
                         # A rejected cosmetic edit keeps the already-ready gateway usable.
                         # Role reconciliation is mandatory; never hand a stale role to targets.
-                        log(f"gateway:{key}", "ERR" if role_drift else "WARN",
+                        log(f"gateway:{key}", "ERR" if role_drift or recovery else "WARN",
                             diagnostics.error_code(error))
-                        if not role_drift:
+                        if not role_drift and not recovery:
                             ids[key] = gid
                         continue
                     if _wait_gateway_ready(ctrl, gid, key, expected={
@@ -281,11 +284,15 @@ def ensure_targets(ctrl, ac, gw_ids, skip_names=frozenset()):
             if tname in existing:
                 tid = existing[tname]["targetId"]
                 cur = ctrl.get_gateway_target(gatewayIdentifier=gw_id, targetId=tid)
-                if cur.get("status") != "READY":
+                if cur.get("status") not in ({"READY"} | _TARGET_UPDATE_RETRY_STATUSES):
                     if not _wait_target_ready(ctrl, gw_id, tid, tname):
                         continue
                     cur = ctrl.get_gateway_target(gatewayIdentifier=gw_id, targetId=tid)
-                if _lambda_target_matches(cur, desired):
+                    if cur.get("status") not in ({"READY"} | _TARGET_UPDATE_RETRY_STATUSES):
+                        log(f"target:{tname}:ready", "ERR", "readiness_terminal")
+                        continue
+                recovery = cur.get("status") in _TARGET_UPDATE_RETRY_STATUSES
+                if not recovery and _lambda_target_matches(cur, desired):
                     log(f"target:{tname}", "EXISTS", f"{len(tools)} tools")
                 else:
                     preserve = {field: copy.deepcopy(cur[field])
@@ -545,6 +552,7 @@ def _delete_api_key_provider(ctrl, provider_name):
 # model: CREATING/UPDATING/SYNCHRONIZING are in-flight; READY is the only "safe to cut over to"
 # state; the rest are terminal failures.
 _TARGET_TERMINAL_FAILURE_STATUSES = {"FAILED", "UPDATE_UNSUCCESSFUL", "SYNCHRONIZE_UNSUCCESSFUL"}
+_TARGET_UPDATE_RETRY_STATUSES = {"UPDATE_UNSUCCESSFUL", "SYNCHRONIZE_UNSUCCESSFUL"}
 
 
 _RUNTIME_TERMINAL_FAILURE_STATUSES = ("CREATE_FAILED", "UPDATE_FAILED")

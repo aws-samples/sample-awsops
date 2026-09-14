@@ -25,7 +25,10 @@ cause drift. Curated MCP-server ownership/skip rules remain separate.
 Gateway and Lambda-target updates wait for `READY` and read back the requested
 managed values. An older `READY` snapshot is insufficient. Gateway waits are
 bounded to 60 seconds; target waits to 30 seconds, polling every two seconds.
-Terminal failures and timeouts remain errors, never successful updates.
+An existing `UPDATE_UNSUCCESSFUL` gateway/target or `SYNCHRONIZE_UNSUCCESSFUL`
+target gets one managed update attempt per run, even if its stored fields already
+match. This permits recovery from a prior asynchronous failure. Failed retries,
+terminal post-update failures and timeouts remain errors, never successful updates.
 
 Public diagnostics contain catalog keys and fixed codes, including:
 

@@ -158,6 +158,14 @@ class TestProvisionDrift(unittest.TestCase):
         sleep.assert_called_once()
         self.assertIn("UPDATED", {row[1] for row in provision.report})
 
+    def test_unsuccessful_target_updates_can_retry_without_metadata_drift(self):
+        for status in ("UPDATE_UNSUCCESSFUL", "SYNCHRONIZE_UNSUCCESSFUL"):
+            with self.subTest(status=status):
+                ctrl, statuses = _run(_deployed(_SCHEMA_NEW),
+                                      _target(_deployed(_SCHEMA_NEW), status=status))
+                ctrl.update_gateway_target.assert_called_once()
+                self.assertIn("UPDATED", statuses)
+
 
 def _gateway(description="new text", **changes):
     return {"name": "awsops-v2-ops-gateway", "gatewayId": "gw-ops", "status": "READY",
@@ -207,7 +215,7 @@ class TestGatewayDescriptionDrift(unittest.TestCase):
         ctrl.update_gateway.assert_not_called()
         self.assertEqual({"ops": "gw-ops"}, ids)
 
-    def test_update_failure_never_fails_the_run(self):
+    def test_rejected_cosmetic_update_does_not_fail_ready_gateway(self):
         ctrl = mock.Mock()
         ctrl.list_gateways.return_value = {"items": [{
             "name": "awsops-v2-ops-gateway", "gatewayId": "gw-ops", "description": "stale"}]}
@@ -293,6 +301,28 @@ class TestGatewayDescriptionDrift(unittest.TestCase):
         self.assertEqual(ctrl.get_gateway.call_count, 3)
         sleep.assert_called_once()
 
+    def test_unsuccessful_gateway_update_can_retry_without_metadata_drift(self):
+        ctrl, ids, statuses = _run_gateways("new text", status="UPDATE_UNSUCCESSFUL",
+                                          authorizerType="AWS_IAM")
+        ctrl.update_gateway.assert_called_once()
+        self.assertEqual(ctrl.update_gateway.call_args.kwargs["authorizerType"], "AWS_IAM")
+        self.assertEqual(ids, {"ops": "gw-ops"})
+        self.assertIn("UPDATED", statuses)
+
+    def test_rejected_recovery_is_an_error_even_when_role_matches(self):
+        ctrl = mock.Mock()
+        ctrl.list_gateways.return_value = {"items": [_gateway(status="UPDATE_UNSUCCESSFUL")]}
+        ctrl.get_gateway.return_value = _gateway(status="UPDATE_UNSUCCESSFUL")
+        ctrl.update_gateway.side_effect = provision.ClientError(
+            {"Error": {"Code": "ValidationException", "Message": "SECRET_SENTINEL"}}, "UpdateGateway")
+        provision.report.clear()
+        with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]), \
+             mock.patch.object(provision.catalog, "GATEWAY_DESCRIPTIONS", {"ops": "new text"}):
+            ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"})
+        ctrl.update_gateway.assert_called_once()
+        self.assertEqual(ids, {})
+        self.assertIn("ERR", {row[1] for row in provision.report})
+
 
 class TestTypedProvisionErrors(unittest.TestCase):
     def test_target_errors_preserve_safe_codes_without_messages(self):
@@ -314,6 +344,19 @@ class TestTypedProvisionErrors(unittest.TestCase):
                 records = [json.loads(line) for line in output.getvalue().splitlines()]
                 self.assertEqual(records[-1]["code"], expected)
                 self.assertNotIn("SECRET_SENTINEL", output.getvalue())
+
+    def test_sdk_validation_error_does_not_print_request_parameters(self):
+        from botocore.exceptions import ParamValidationError
+        ctrl = mock.Mock()
+        ctrl.list_gateway_targets.return_value = {"items": []}
+        ctrl.create_gateway_target.side_effect = ParamValidationError(report="SECRET_SENTINEL")
+        output = io.StringIO()
+        with mock.patch.object(provision.catalog, "TARGETS", _TARGETS), redirect_stdout(output):
+            provision.diagnostics.reset()
+            provision.ensure_targets(ctrl, {"lambda_arns": {"rds-mcp": "arn:fixture:lambda"}},
+                                     {"data": "gw-1"})
+        self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["code"], "sdk_validation_failed")
+        self.assertNotIn("SECRET_SENTINEL", output.getvalue())
 
 
 class TestReadinessFlag(unittest.TestCase):
