@@ -47,7 +47,6 @@ class Fixture:
                      dict(id=2, run_id=23, run_attempt=1, head_sha=SHA, name='Publish private plan', status='in_progress', conclusion=None)]
         self.branch = self.checkout = SHA
         self.owner, self.algorithm, self.versioning, self.public = ACCOUNT, 'aws:kms', 'Enabled', False
-        self.names, self.more = [BUCKET], False
         self.objects, self.calls, self.downloaded = {}, [], []
         self.artifact_changes, self.put_changes, self.get_changes = {}, {}, {}
         self.extra_artifacts, self.extra_entries = [], []
@@ -120,8 +119,6 @@ class Fixture:
             self.case.assertEqual(flag('--endpoint-url'), f'https://{"s3" if service == "s3api" else "sts"}.{REGION}.amazonaws.com')
             if service == 'sts':
                 value = {'Account': self.owner, 'Arn': f'arn:aws:sts::{self.owner}:assumed-role/fixture-deployer/session'}
-            elif op == 'list-buckets':
-                value = {'Buckets': [{'Name': x} for x in self.names], **({'ContinuationToken': 'more'} if self.more else {})}
             else:
                 self.case.assertEqual(flag('--bucket'), BUCKET)
                 self.case.assertEqual(flag('--expected-bucket-owner'), ACCOUNT)
@@ -234,17 +231,28 @@ class PrivatePlanTests(unittest.TestCase):
                 env=env, transport=self.fake, now=lambda: NOW, foundation=self.foundation,
                 destination=self.root / 'review', profile='samples', **kw)
 
+    def assert_public_safe(self, *values):
+        text = json.dumps(values)
+        private = [BUCKET, ACCOUNT, ROLE, REGION, 'dev/terraform.tfstate', KEY, 'SYNTHETIC_PRIVATE_VALUE']
+        private += [self.env[key] for key in ('AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
+                                             'AWS_SESSION_TOKEN', 'GH_TOKEN') if self.env.get(key)]
+        hashes = [digest(value.encode()) for value in private] + [digest(self.fake.plan)]
+        store = self.root / 'policy/store.json'
+        if store.exists():
+            hashes.append(json.loads(store.read_text())['backend_sha256'])
+        hashes += [digest(body) for key, (_, body) in self.fake.objects.items() if '/manifest-' not in key]
+        for value in private + hashes:
+            self.assertNotIn(value, text)
+
     def test_publish_reference_is_private_and_attempt_bound(self):
         r = self.publish()
         raw = Path(r['reference_file']).read_text()
         reference = json.loads(raw)
         self.assertEqual(reference['context'], self.fake.context)
-        self.assertNotIn('plan_sha256', reference)
-        self.assertNotIn(digest(self.fake.plan), raw + json.dumps(r))
-        self.assertEqual(reference['bucket_sha256'], digest(BUCKET.encode()))
+        self.assertEqual(set(reference), {'schema', 'storage', 'context', 'manifest'})
+        self.assertEqual(set(reference['manifest']), {'sha256', 'bytes'})
         self.assertEqual(len(self.fake.objects), 3)
-        for private in [BUCKET, ACCOUNT, ROLE, 'dev/terraform.tfstate', KEY, 'SYNTHETIC_PRIVATE_VALUE']:
-            self.assertNotIn(private, raw + json.dumps(r))
+        self.assert_public_safe(reference, r)
 
     def test_inspection_needs_no_ci_key_or_assets(self):
         r = self.ready()
@@ -252,7 +260,7 @@ class PrivatePlanTests(unittest.TestCase):
         receipt = json.loads(Path(result['receipt_file']).read_text())
         self.assertEqual(receipt['plan_sha256'], digest(self.fake.plan))
         self.assertEqual(receipt['status'], 'inspected_not_approved')
-        self.assertNotIn('plan_sha256', result)
+        self.assert_public_safe(result)
         self.assertEqual({p.name for p in (self.root / 'review').iterdir()}, {'plan.txt', 'plan.json', 'receipt.json'})
         self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in (self.root / 'review').iterdir()))
         self.assertEqual((self.root / 'review').stat().st_mode & 0o777, 0o700)
@@ -269,7 +277,7 @@ class PrivatePlanTests(unittest.TestCase):
             self.invoke('restore', backend=self.backend, foundation=self.foundation, reviewed_plan_sha256='0' * 64)
         self.assertFalse((self.foundation / 'tfplan').exists())
         result = self.invoke('restore', backend=self.backend, foundation=self.foundation, reviewed_plan_sha256=reviewed)
-        self.assertEqual(result['plan_sha256'], reviewed)
+        self.assert_public_safe(result)
         self.assertTrue(result['assets_verified'])
         self.assertEqual((self.foundation / 'tfplan').read_bytes(), self.fake.plan)
         self.assertEqual((self.foundation / '.build/function.zip').read_bytes(), b'exact signed Lambda bytes')
@@ -419,15 +427,57 @@ class PrivatePlanTests(unittest.TestCase):
         with self.assertRaises(self.module.PrivatePlanError): self.inspect(backend=self.backend)
         self.assertFalse(any(args[0] == 'terraform' for args, _ in self.fake.calls))
 
-    def test_bucket_hash_discovery_is_complete_bounded_unique_and_keyless(self):
+    def test_inspection_requires_valid_backend_before_any_command(self):
         self.ready()
-        for names, more in [([BUCKET], True), ([BUCKET, BUCKET], False), (['another-bucket'], False), ([BUCKET] * 1001, False)]:
-            self.fake.names, self.fake.more = names, more
-            with self.assertRaises(self.module.PrivatePlanError): self.inspect()
+        self.fake.calls.clear()
+        invalid = self.root / 'invalid.hcl'
+        invalid.write_text('bucket="unvalidated"\n')
+        for backend in [None, self.root / 'missing.hcl', invalid]:
+            with self.subTest(backend=backend), self.assertRaises(self.module.PrivatePlanError):
+                self.inspect(backend=backend)
+            self.assertFalse(self.fake.calls)
             self.assertFalse((self.root / 'review').exists())
-        self.fake.names, self.fake.more = [BUCKET], False
-        self.assertEqual(self.inspect()['status'], 'inspected')
+        self.assertEqual(self.inspect(backend=self.backend)['status'], 'inspected')
+        self.assertFalse(any('list-buckets' in args for args, _ in self.fake.calls))
         self.assertTrue(any('--profile' in args and 'samples' in args for args, _ in self.fake.calls if args[0] == 'aws'))
+
+    def test_cli_requires_backend_before_execution(self):
+        args = ['inspect', '--repository', REPO, '--branch', 'dev', '--commit', SHA,
+                '--run-id', '23', '--scope', 'full', '--profile', 'samples',
+                '--foundation', str(self.foundation), '--destination', str(self.root / 'review')]
+        with mock.patch.object(self.module, 'execute') as execute, mock.patch('sys.stderr', io.StringIO()):
+            self.assertEqual(self.module.main(args), 1)
+        execute.assert_not_called()
+
+    def test_all_cli_results_exclude_private_values_and_hashes(self):
+        execute = self.module.execute
+        active_env = self.env
+        common = ['--repository', REPO, '--branch', 'dev', '--commit', SHA, '--run-id', '23', '--scope', 'full']
+        def cli(mode, extra):
+            output, errors = io.StringIO(), io.StringIO()
+            def controlled(**args):
+                return execute(**args, env=active_env, transport=self.fake, now=lambda: NOW)
+            with mock.patch.object(self.module, 'execute', side_effect=controlled), \
+                    mock.patch('sys.stdout', output), mock.patch('sys.stderr', errors):
+                self.assertEqual(self.module.main([mode, *common, *extra]), 0, errors.getvalue())
+            self.assert_public_safe(output.getvalue())
+            self.assertNotRegex(output.getvalue(), r'\b[a-f0-9]{64}\b')
+            return json.loads(output.getvalue())
+        policy = cli('policy', ['--backend', str(self.backend), '--role-arn', ROLE,
+                                '--destination', str(self.root / 'policy')])
+        published = cli('publish', ['--store', policy['store_file'], '--foundation', str(self.foundation),
+                                    '--destination', str(self.root / 'reference')])
+        self.fake.completed(published['reference_file'])
+        active_env = {k: v for k, v in self.env.items() if not k.startswith('GITHUB_') and k != 'TF_PLAN_ENC_KEY'}
+        active_env['GITHUB_ACTIONS'] = 'false'
+        inspected = cli('inspect', ['--backend', str(self.backend), '--profile', 'samples',
+                                    '--foundation', str(self.foundation), '--destination', str(self.root / 'review')])
+        receipt = json.loads(Path(inspected['receipt_file']).read_text())
+        self.assertEqual(receipt['plan_sha256'], digest(self.fake.plan))
+        self.assertEqual(receipt['backend_sha256'], json.loads(Path(policy['store_file']).read_text())['backend_sha256'])
+        active_env = self.env | {'GITHUB_JOB': 'apply', 'GITHUB_RUN_ID': '24'}
+        cli('restore', ['--backend', str(self.backend), '--foundation', str(self.foundation),
+                        '--reviewed-plan-sha256', receipt['plan_sha256']])
 
     def test_zip_links_paths_duplicates_and_extra_files_do_not_become_references(self):
         result = self.ready()
@@ -466,12 +516,30 @@ class PrivatePlanTests(unittest.TestCase):
         result = self.ready()
         base = json.loads(Path(result['reference_file']).read_text())
         for change in [lambda r: r.update(bucket=BUCKET), lambda r: r['context'].update(attempt=True),
+                       lambda r: r.update(region=REGION), lambda r: r.update(bucket_sha256=digest(BUCKET.encode())),
                        lambda r: r.update(backend_sha256='0' * 64),
                        lambda r: r.update(plan_sha256=digest(self.fake.plan))]:
             reference = copy.deepcopy(base)
             change(reference)
             self.fake.zip = zip_bytes([('reference.json', json.dumps(reference).encode())])
             with self.assertRaises(self.module.PrivatePlanError): self.inspect(backend=self.backend)
+        self.assertFalse((self.root / 'review').exists())
+
+    def test_private_manifest_must_match_exact_operator_backend_and_caller(self):
+        self.ready()
+        for field, value in [('key', 'other/state'), ('region', 'us-east-1'), ('bucket', 'other-backend-fixture'),
+                             ('workspace_key_prefix', 'other'), ('account', '999999999999'),
+                             ('kms_key_id', f'arn:aws:kms:{REGION}:{ACCOUNT}:key/11111111-1111-1111-1111-111111111111')]:
+            def change(manifest):
+                if field == 'account':
+                    manifest['account'] = value
+                else:
+                    manifest['backend'][field] = value
+                manifest['backend_sha256'] = self.module.binding(manifest['backend'], manifest['account'])
+            self.change_manifest(change)
+            with self.subTest(field=field), self.assertRaises(self.module.PrivatePlanError):
+                self.inspect(backend=self.backend)
+            self.assertFalse(any('/plan-' in key or '/assets-' in key for key in self.fake.downloaded))
         self.assertFalse((self.root / 'review').exists())
 
     def test_changed_bytes_or_missing_versions_are_rejected(self):
@@ -495,11 +563,11 @@ class PrivatePlanTests(unittest.TestCase):
         self.ready()
         (self.root / 'review').mkdir()
         (self.root / 'review/keep').write_text('keep')
-        with self.assertRaises(self.module.PrivatePlanError): self.inspect()
+        with self.assertRaises(self.module.PrivatePlanError): self.inspect(backend=self.backend)
         self.assertEqual((self.root / 'review/keep').read_text(), 'keep')
         shutil.rmtree(self.root / 'review')
         (self.root / 'review').symlink_to(self.foundation, target_is_directory=True)
-        with self.assertRaises(self.module.PrivatePlanError): self.inspect()
+        with self.assertRaises(self.module.PrivatePlanError): self.inspect(backend=self.backend)
         (self.root / 'review').unlink()
         self.backend.write_text(self.backend.read_text().replace('dev/terraform.tfstate', 'other/state'))
         with self.assertRaises(self.module.PrivatePlanError): self.inspect(backend=self.backend)
@@ -717,6 +785,7 @@ class PrivatePlanTests(unittest.TestCase):
         cases = [
             ('aws', 'get-bucket-ownership-controls', 'OwnershipControlsNotFoundError', 'GetBucketOwnershipControls', 'bucket_ownership_missing'),
             ('aws', 'get-public-access-block', 'NoSuchPublicAccessBlockConfiguration', 'GetPublicAccessBlock', 'bucket_public_access_block_missing'),
+            ('aws', 'get-bucket-encryption', 'ServerSideEncryptionConfigurationNotFoundError', 'GetBucketEncryption', 'bucket_encryption_missing'),
             ('aws', 'get-bucket-policy-status', 'NoSuchBucketPolicy', 'GetBucketPolicyStatus', 'no_bucket_policy'),
             ('aws', 'get-bucket-versioning', 'AccessDenied', 'GetBucketVersioning', 's3_access_denied'),
             ('aws', 'get-object', 'AccessDeniedException', 'GetObject', 's3_access_denied'),

@@ -148,8 +148,8 @@ ADR bodies are maintained in the private upstream; numbers here provide traceabi
 | `scripts/v2/ci_dns_policy.py` | State-aware certificate selection, typed tfvars overrides and all-DNS plan gate |
 | `scripts/v2/ci_dev_domain.py` | Dev overrides, immutable plan rollout marker and scoped public-zone/record checks |
 | `scripts/v2/ci_plan_context.py` | Successful explicit dispatch, repository/branch/SHA provenance for saved-plan apply |
-| `scripts/v2/ci_private_plan.py`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_failure_diagnostics.py` | Private S3 plan inspection with reviewed-hash apply, legacy encrypted inspection and bounded failure recovery; no plaintext staging during capture/sealing, and owned ciphertext cleanup only after confirmed upload success |
-| `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/pg8000-requirements.txt` | Locked layer preparation and private plan-bound assets; caller owns encryption/cleanup / 레이어 준비·계획 결합 asset, 호출 측 암호화·정리 |
+| `scripts/v2/ci_private_plan.py`, `scripts/v2/test_ci_private_plan.py`, `scripts/v2/test_ci_private_plan_workflow.py`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_failure_diagnostics.py` | Private S3 plan inspection (private backend required) with reviewed-hash apply, legacy encrypted inspection and bounded failure recovery; no plaintext staging during capture/sealing, and owned ciphertext cleanup only after confirmed upload success |
+| `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/pg8000-requirements.txt` | Locked layers and private plan-bound assets; manual encrypted handoff, verified private S3 transport and owned cleanup |
 | `scripts/v2/test_ci_tf_assets.py` | Saved-plan artifact and local targeted-plan regressions / 저장 artifact·로컬 타깃 계획 회귀 검사 |
 | `terraform/foundation/tests/dns_deferred.tftest.hcl` | Offline mocked plans; Python CI tests cover managed/external state roundtrips |
 

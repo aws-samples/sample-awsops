@@ -35,7 +35,7 @@ STORAGE = 's3-private-plan'
 BACKEND_KEYS = {'bucket', 'key', 'region', 'encrypt', 'use_lockfile',
                 'kms_key_id', 'workspace_key_prefix', 'workspace'}
 AWS_OPERATIONS = {'sts': {'get-caller-identity'}, 's3api': {
-    'list-buckets', 'get-bucket-location', 'get-public-access-block', 'get-bucket-versioning',
+    'get-bucket-location', 'get-public-access-block', 'get-bucket-versioning',
     'get-bucket-ownership-controls', 'get-bucket-policy-status', 'get-bucket-encryption',
     'head-object', 'get-object', 'put-object'}}
 
@@ -146,6 +146,7 @@ def command_error(args, error):
         ('get-bucket-ownership-controls', 'OwnershipControlsNotFoundError'): 'bucket_ownership_missing',
         ('get-public-access-block', 'NoSuchPublicAccessBlockConfiguration'): 'bucket_public_access_block_missing',
         ('get-public-access-block', 'NoSuchPublicAccessBlock'): 'bucket_public_access_block_missing',
+        ('get-bucket-encryption', 'ServerSideEncryptionConfigurationNotFoundError'): 'bucket_encryption_missing',
         ('get-bucket-policy-status', 'NoSuchBucketPolicy'): 'no_bucket_policy',
     }.get((verb, code), 'command_failed')
 
@@ -446,7 +447,8 @@ class Operation:
 
     def aws(self, service, operation, *args):
         require(operation in AWS_OPERATIONS.get(service, set()), 'forbidden_operation')
-        region = self.backend['region'] if self.backend else self.region
+        require(self.backend is not None, 'backend_required')
+        region = self.backend['region']
         endpoint = f"https://{'s3' if service == 's3api' else 'sts'}.{region}.amazonaws.com"
         cmd = ['aws', '--region', region, '--endpoint-url', endpoint, '--no-cli-pager',
                '--cli-connect-timeout', '5', '--cli-read-timeout', '60']
@@ -620,40 +622,20 @@ class Operation:
         # attempt. Unreferenced private objects are deliberately not deleted.
         self.source(True)
         reference = {'schema': 1, 'storage': STORAGE, 'context': self.ctx,
-                     'region': self.backend['region'], 'bucket_sha256': digest(self.backend['bucket'].encode()),
-                     'backend_sha256': config['backend_sha256'],
                      'manifest': {'sha256': manifest_entry['sha256'], 'bytes': manifest_entry['bytes']}}
         return reference
 
-    def receive(self, backend=None, reviewed=None):
+    def receive(self, backend, reviewed=None):
+        expected_backend = self.backend = validate_backend(backend)
         run = self.source(False)
         reference = parse_json(self.artifact(run, False)['reference.json'])
-        require(exact(reference, ['schema', 'storage', 'context', 'region', 'bucket_sha256',
-                                  'backend_sha256', 'manifest'])
+        require(exact(reference, ['schema', 'storage', 'context', 'manifest'])
                 and type(reference['schema']) is int and reference['schema'] == 1
                 and reference['storage'] == STORAGE and self.same_context(reference['context'])
-                and isinstance(reference['region'], str) and REGION.fullmatch(reference['region'])
-                and all(hashed(reference[k]) for k in ['bucket_sha256', 'backend_sha256'])
                 and exact(reference['manifest'], ['sha256', 'bytes'])
                 and hashed(reference['manifest']['sha256']) and positive(reference['manifest']['bytes'], SMALL_LIMIT),
                 'invalid_reference')
-        self.region = reference['region']
         self.caller()
-        expected_backend = parse_backend(backend, self.env) if backend else None
-        if expected_backend:
-            require(expected_backend['region'] == self.region
-                    and digest(expected_backend['bucket'].encode()) == reference['bucket_sha256']
-                    and binding(expected_backend, self.account) == reference['backend_sha256'], 'backend_binding_mismatch')
-            self.backend = expected_backend
-        else:
-            result = self.aws('s3api', 'list-buckets', '--max-buckets', '1000', '--no-paginate')
-            names = result.get('Buckets')
-            require(isinstance(names, list) and len(names) <= 1000
-                    and not any(v for k, v in result.items() if 'token' in k.lower() or k.lower() == 'marker'), 'bucket_discovery_incomplete')
-            require(all(isinstance(b, dict) and isinstance(b.get('Name'), str) and BUCKET.fullmatch(b['Name']) for b in names), 'bucket_discovery_invalid')
-            selected = [b['Name'] for b in names if digest(b['Name'].encode()) == reference['bucket_sha256']]
-            require(len(selected) == 1, 'bucket_discovery_not_unique')
-            self.backend = {'bucket': selected[0], 'region': self.region, 'kms_key_id': None}
         self.posture()
         descriptor = {**reference['manifest'], 'version_id': None,
                       'key': prefix(self.ctx) + 'manifest-' + reference['manifest']['sha256'] + '.json'}
@@ -663,9 +645,8 @@ class Operation:
                 and self.same_context(manifest['context']) and manifest['account'] == self.account
                 and exact(manifest['objects'], ['plan', 'assets']), 'invalid_manifest')
         actual_backend = validate_backend(manifest['backend'])
-        require(actual_backend['bucket'] == self.backend['bucket'] and actual_backend['region'] == self.region
-                and manifest['backend_sha256'] == reference['backend_sha256'] == binding(actual_backend, self.account)
-                and (expected_backend is None or expected_backend == actual_backend), 'backend_binding_mismatch')
+        require(expected_backend == actual_backend
+                and manifest['backend_sha256'] == binding(actual_backend, self.account), 'backend_binding_mismatch')
         self.backend = actual_backend
         for kind in ('plan', 'assets'):
             self.check_entry(manifest['objects'][kind], kind)
@@ -700,6 +681,10 @@ def execute(mode, *, repository, branch, commit, run_id, scope, backend=None, ro
             require(profile is not None, 'profile_required')
         else:
             require(profile is None, 'invalid_profile')
+        operator_backend = None
+        if mode in ('restore', 'inspect'):
+            require(backend is not None, 'backend_required')
+            operator_backend = parse_backend(backend, env)  # Validate before any command or network request.
         if mode == 'restore':
             require(backend is not None and foundation is not None and hashed(reviewed_plan_sha256), 'invalid_arguments')
             foundation = legacy.real_path(foundation)
@@ -731,7 +716,7 @@ def execute(mode, *, repository, branch, commit, run_id, scope, backend=None, ro
                     op.ci_context(False)
                     require_ci_key(env)
                 foundation = op.checkout(foundation, mode == 'inspect')
-                reference, manifest = op.receive(backend, reviewed_plan_sha256 if mode == 'restore' else None)
+                reference, manifest = op.receive(operator_backend, reviewed_plan_sha256 if mode == 'restore' else None)
                 plan = op.download(manifest['objects']['plan'], 'plan')
                 path = work / 'tfplan'
                 private_write(path, plan)
@@ -741,7 +726,7 @@ def execute(mode, *, repository, branch, commit, run_id, scope, backend=None, ro
                         outputs[name] = op.command(['terraform', 'show', option, str(path)], 'render', cwd=foundation,
                             env_extra={'TF_DATA_DIR': str(foundation / '.terraform')}, limit=RENDER_LIMIT)
                     outputs['receipt.json'] = canonical({'schema': 1, 'context': op.ctx,
-                        'plan_sha256': manifest['objects']['plan']['sha256'], 'backend_sha256': reference['backend_sha256'],
+                        'plan_sha256': manifest['objects']['plan']['sha256'], 'backend_sha256': manifest['backend_sha256'],
                         'status': 'inspected_not_approved'})
                     op.revalidate_source()
                     finish_files(destination, outputs)
@@ -762,8 +747,7 @@ def execute(mode, *, repository, branch, commit, run_id, scope, backend=None, ro
                     except (ValueError, OSError):
                         raise PrivatePlanError('asset_verification_failed') from None
                     (foundation / '.build').chmod(0o700)
-                    result = {'status': 'restored', 'plan_file': str(foundation / 'tfplan'),
-                              'plan_sha256': reviewed_plan_sha256, 'assets_verified': True}
+                    result = {'status': 'restored', 'plan_file': str(foundation / 'tfplan'), 'assets_verified': True}
         return result
     except BaseException as error:
         if created_plan is not None:
@@ -792,7 +776,7 @@ def main(argv=None):
             for name in ['repository', 'branch', 'commit', 'run-id', 'scope']:
                 p.add_argument('--' + name, required=True)
             if mode in ['policy', 'restore', 'inspect']:
-                p.add_argument('--backend', type=Path, required=mode != 'inspect')
+                p.add_argument('--backend', type=Path, required=True)
             if mode == 'policy':
                 p.add_argument('--role-arn', required=True)
             if mode == 'publish':

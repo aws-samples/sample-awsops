@@ -12,8 +12,8 @@ secrets-manager) — installed by `make deps`.
   the HMAC bundle, stores pinned objects/private manifest and replaces the GitHub artifact
   with a nonsecret reference. Operators use IAM/KMS, not the CI key; apply still verifies
   asset HMAC plus reviewed_plan_sha256, exact source/attempt/scope and existing gates.
-  Local-only inspection reads the plan into new0700/0600 files; bounded bucket-hash discovery
-  reads no state. References last five days; no S3 expiry is configured. The operator purge procedure
+  Local-only inspection requires the private backend file and writes a new 0700 directory
+  with 0600 files; it reads no state. Public references contain no backend identifiers/digests. References last five days; no S3 expiry is configured. The operator purge procedure
   removes expired attempt versions after seven days.
 - `v2/ci_plan_inspect.py` is the legacy encrypted-artifact inspector: it verifies plan-run identity, checkout SHA
   and the existing signed plan/assets before local private rendering. No backend init/apply;
@@ -24,9 +24,14 @@ secrets-manager) — installed by `make deps`.
 - The sealing payload reaches OpenSSL through stdin, with no plaintext staging file. Captured Terraform runs in a separate session; first-interrupt forwarding, second-interrupt group kill and parent-death protection govern cancellation. Sealing/storage/publication failures preserve the command exit.
 - Cleanup deletes only after the identified upload's literal success; failed/cancelled/skipped/unknown outcomes retain ciphertext privately. Audits distinguish pending_upload, retained_unpublished and final cleanup outcomes. No broad runner-temp sweep, shared-UID isolation or SIGKILL guarantee.
 - `v2/ci_deployment_audit.py` — manual dev audit with existing identity guards, a restrictive session policy, fixed reads/SELECTs and safe projections. It shares only backend parsing with `ci_verifier_sessions.py`; its grants and no-invoke behavior are unchanged. Web observations do not claim an applied revision; timestamps do not classify product freshness, and observed types do not establish completeness. Offline fixtures: `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`; operator guide: `docs/runbooks/deployment-audit.md`.
-- `v2/ci_verifier_sessions.py` — pure prerequisite for the separate manual collection workflow:
+- `v2/ci_verifier_sessions.py` — pure policy generator for manual collection and Deploy Web verification:
   backend state-read and workload policies, never persistent IAM changes or AWS calls.
-  Require both nonempty session outputs; bind workload state to the selected private directory.
+  Manual `collect-runtime.yml` dev dispatches support both phases and prepare/collect.
+  `deploy-web.yml` dev push/dispatch supports workload collect only; backend/prepare are refused.
+  Consumers own workflow wiring; helper availability does not install either consumer path.
+  Deploy Web integration must be dev-only, prepare proof credentials/state for push and dispatch,
+  and satisfy the activated-runtime collect prerequisites; missing proof fails closed.
+  Require a nonempty policy for each refresh; bind workload state to the selected private directory.
   Prepare cannot invoke Lambda; collect allows only the owned collector. The consumer must
   enforce explicit catalog/CloudFront RequestResponse payloads (absent type defaults to all),
   distinct catalog/succeeded result shapes and post-marker authenticated freshness/runtime/worker proof.
@@ -232,6 +237,13 @@ secrets-manager) — installed by `make deps`.
   for ULIDs).
 
 ## Rules
+- Private-plan publication/apply require branch environments, including main plan approval.
+  Only missing backend/tfvars blobs soft-skip; absent publisher roles fail. Inspection requires
+  the private backend file. Public references omit storage identifiers/bare hashes and plan
+  digests; every CLI result omits the plan digest. Mask the reviewed input before logging.
+  Digests bind bytes, not human review. Existing bucket/IAM/KMS prerequisites are checked,
+  never granted. No S3 expiry is installed; operator version discovery/purge is required after
+  seven days. Cleanup is current-run scoped without a runner-loss guarantee.
 - Scripts assume they run from the repo root (they resolve resource addresses via
   `terraform -chdir=terraform/foundation output`) — prefer the Makefile targets over running
   scripts directly.
@@ -242,10 +254,3 @@ checks the host registry; optional hostOnly rejects members. Verify requires com
 fresh collection, real web-role runtime evidence and owned worker completion. The file
 is at most 16 KiB, collectionStartedAt at most 30 minutes old, and queued types unique
 with cloudfront included. The utility alone does not wire a deployment workflow.
-
-Private-plan publication and apply both enter the branch environment; main publication
-requires production approval. Skip publication when the plan skips an unconfigured stack.
-Keep plan hashes out of public references/publication output; a privately obtained hash
-binds bytes but does not attest that a human read them. No S3 expiry is installed: the
-deployment owner uses the expired-attempt version-purge procedure after seven days.
-Apply cleanup removes only its current run/attempt scratch; runner loss can prevent it.

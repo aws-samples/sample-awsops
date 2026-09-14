@@ -9,7 +9,7 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
   task/runtime IAM narrowing applies on the next apply to already-enabled stacks including main, independently of the dev profile; scopes are three web SSM parameters, runtime discovery/token actions, own-cluster task control and Claude-only models. This output describes configuration, not proof of effective permissions. The host-only renderer verifies STS and the account registry before rendering; Terraform omits
   only the collector cross-account grant. Agent MCP cross-account grants retain their existing behavior. Official MCP's conditional credential policy also permits GetWorkloadAccessToken only for the own default directory and external-obs
   gateway identity prefix. This restores a required credential prerequisite, not proof that backing-secret access or live MCP invocation succeeds.
-- CI prepares Lambda ZIP inputs and pg8000 layers before plan, then encrypts an asset bundle bound to the saved plan. Apply restores and checks that bundle; it cannot rebuild different assets under the reviewed plan. See
+- CI prepares Lambda ZIP inputs and pg8000 layers before plan and authenticates the saved-plan bundle. Manual plans encrypt the inter-job handoff; the protected publisher verifies HMAC and stores private SSE-KMS objects. Apply restores pinned S3 bytes and checks HMAC plus the privately selected plan hash; it cannot rebuild different assets. See
   `docs/runbooks/runtime-foundation.md`.
 - Worker/inventory pg8000 layers use the single hash-locked `scripts/v2/ci_tf_assets.py`
   installer. `CI_ASSETS_READY=true` validates restored files without reinstalling.

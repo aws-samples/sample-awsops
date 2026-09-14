@@ -11,7 +11,8 @@ name: Terraform
 # Repo-level, not environment-scoped: the automatic plan job must run ungated
 # on PRs/pushes. Environments gate manual private publication AND apply.
 # A main plan dispatch therefore waits for production approval before publication.
-# Until a stack's secrets are populated, its plan and publisher skip with a warning.
+# Missing backend/tfvars blobs skip planning/publication; configured plans require
+# the deployer role and storage permissions, whose absence fails publication.
 # Fork-PR guard: plan runs only for same-repo PRs — GitHub already denies fork
 # runs secrets and id-token, and the fork's branch controls the workflow file
 # on pull_request events, so we don't even start the job for forks.
@@ -402,6 +403,10 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          if [ -z "${TF_PLAN_ENC_KEY:-}" ]; then
+            echo "::error::TF_PLAN_ENC_KEY is required for saved-plan asset authentication"
+            exit 1
+          fi
           python3 ../../scripts/v2/ci_tf_assets.py pack
 
       # The protected publisher replaces this short-lived encrypted handoff with
@@ -635,6 +640,17 @@ jobs:
       USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate and mask the reviewed plan digest
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const value = context.payload.inputs?.reviewed_plan_sha256;
+            if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) {
+              core.setFailed('A valid reviewed plan digest is required');
+              return;
+            }
+            core.setSecret(value);
 
       - name: Verify the saved plan belongs to this deployed commit and branch
         env:

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 701e77bce71b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 01b0ffe3cd4a · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -10,13 +10,21 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
-- Manual verifier session policies are a prerequisite; review the later workflow's two nonempty restrictions and owned-file cleanup. Collect permits only the owned collector; its application-data effects are operator CI, not an ADR-005 exception. IAM cannot restrict event payloads: the consumer enforces catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. Contract: `runtime-verifier-sessions.md`.
+
+- S3 runbooks must state backend-file, bucket-posture and existing role/key-policy prerequisites,
+  branch-environment approval for publication/apply, missing-backend/tfvars soft skips and
+  hard failures for missing publisher roles. No automatic permission/configuration changes.
+- Public references contain source context and manifest hash only; no storage bindings or
+  plan digest. Mask the reviewed input before any step environment; hashes select bytes,
+  not human review. CI asset HMAC remains mandatory. Document local metadata discovery and
+  expired-version purge after seven days; no automatic S3 expiry or runner-loss cleanup guarantee.
+- Verification policies accept manual collect-runtime dev dispatches for backend/workload and prepare/collect, plus deploy-web dev push/dispatch for workload collect only (backend/prepare refused). The helper installs neither consumer path. Dev integration needs activated runtime prerequisites and private proof credentials/state for both events; missing proof fails closed. Consumers enforce nonempty restrictions and owned-file cleanup. Collect permits only the owned collector; its application-data effects are operator CI, not an ADR-005 exception. IAM cannot restrict event payloads: the consumer enforces catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. Contract: `runtime-verifier-sessions.md`.
 - `ci_readiness_plan_summary.py` runs before encryption only for explicit full dev readiness
   plans, with a two-minute timeout and fenced JSON output. Its failure-tolerant report publishes
   fixed scope/presence checks, fixed addresses and a known collector hash, never private values.
   The combined 256-row view is not approval or resource-presence proof; unknown changes require
   private inspection. Membership checks include the existing/planned group's lack of an IAM role.
-  Reporting cannot weaken DNS/runtime/exact-plan gates or block later encrypted artifacts.
+  Reporting cannot weaken DNS/runtime/exact-plan gates or block the encrypted handoff or private publication.
 - Private S3 plan inspection validates source/reference, manifest, version and hash before bounded local rendering; CI alone verifies asset HMAC. Inspection never authorizes apply.
 - Branch-independent artifact inspection/recovery lives in `dev-repo-setup.md`; domain rollout remains dev-only. Linux capture forwards the first interrupt, kills the child group on a second and arms parent-death SIGKILL; cancellation is not rollback.
 - Plan/apply capture drains a 1 MiB tail in memory, preserving the command exit independently of scratch writes. Fixed audits include capture/retention classes and available numeric success action counts; no raw automatic-run diagnostics.
@@ -152,11 +160,3 @@ legacy runbook's steps as the current operational path).
   the prepared credential directory and always-cleanup; expose only phases/validated HTTP status,
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
 - Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
-
-Private-plan runbook review: document branch-environment approval for publication and
-apply (including main plans), unconfigured-stack skips, and privately obtained byte hashes
-without claiming human review attestation. CI alone verifies asset HMAC. Public references
-and publication output must omit the plan hash. No S3 expiry is installed; the deployment
-owner purges expired attempt versions after seven days using the scoped runbook procedure.
-Current-run scratch cleanup is required, without a runner-loss guarantee. Public summaries
-never replace full private review.

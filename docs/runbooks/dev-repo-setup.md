@@ -11,7 +11,8 @@
 `.github/workflows/{deploy-web,terraform,deploy-agentcore,deploy-migrations}.yml`,
 `docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
 `scripts/v2/ci_review_access.py`, `scripts/v2/ci_dns_policy.py`, `scripts/v2/ci_plan_context.py`,
-`scripts/v2/ci_private_plan.py`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_readiness_plan_summary.py`,
+`scripts/v2/ci_private_plan.py`, `scripts/v2/test_ci_private_plan.py`,
+`scripts/v2/test_ci_private_plan_workflow.py`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_readiness_plan_summary.py`,
 `scripts/v2/test_ci_readiness_plan_summary.py`,
 `scripts/v2/ci_failure_diagnostics.py`,
 `scripts/v2/ci_db_diagnostics.py`, `scripts/v2/test_ci_db_diagnostics.py`,
@@ -79,9 +80,9 @@ mutation roles. Role-to-sub matrix:
 | Role | Used by | Trust `sub` | Permissions scope |
 |---|---|---|---|
 | `sample-awsops-ci-build` | main build (no environment) | StringEquals `repo:aws-samples/sample-awsops:ref:refs/heads/main` | prod ECR push |
-| `sample-awsops-ci-deployer` | main roll / apply / private-plan publication / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway` |
+| `sample-awsops-ci-deployer` | main roll / apply / private-plan publication / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway`; publication also requires scoped S3/KMS permissions below |
 | `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | dev + user stacks' ECR push |
-| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls/apply/private-plan publication, dev agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway` — **never production** |
+| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls/apply/private-plan publication, dev agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway`; scoped S3/KMS publication permissions — **never production** |
 | `sample-awsops-ci-terraform-plan` | plan (PR/push incl. user-branch own-stack plans, read-only) | StringLike: `...:pull_request` + refs `main`, `dev`, `atomoh`, `ssminji`, `whchoi` | ReadOnlyAccess |
 | `sample-awsops-ci-review` | AI pr-review | StringEquals: verified subject prefix + environments `ci-review-auto` / `ci-review-recovery`, or legacy refs `main` / `dev`; no bare `pull_request` subject | Bedrock / Mantle policies — inspect actual permissions before approval |
 
@@ -855,6 +856,55 @@ preserved; ARNs, credentials, endpoints and raw SDK errors are not relayed.
 
 ## Private exact-plan inspection
 
+### Storage and role prerequisites
+
+Use the configured backend bucket and its private `backend.hcl` for publication,
+inspection and apply. The backend's `encrypt=true` alone does not establish the
+bucket's default encryption or access controls. This transport requires versioning
+Enabled, all four public-access blocks, BucketOwnerEnforced ownership and default
+SSE-KMS in the same account/region. `terraform/bootstrap/main.tf` provisions the
+versioning, public-access blocks and SSE-KMS settings for new state buckets;
+inspect existing bucket ownership and writer compatibility before changing them.
+An explicit backend KMS key must match the supported bucket-default key selection.
+This workflow checks these prerequisites but creates no bucket/key or IAM grant.
+
+Run these metadata checks locally with the intended profile. Set `PLAN_BUCKET`,
+`PLAN_OWNER` and `PLAN_REGION` from the private backend and verified deployment account:
+
+```bash
+set -euo pipefail
+umask 077
+SETUP_DIR=$(mktemp -d "$HOME/awsops-plan-storage.XXXXXX")
+storage_args=(--profile samples --region "$PLAN_REGION" --bucket "$PLAN_BUCKET" --expected-bucket-owner "$PLAN_OWNER")
+for operation in get-bucket-versioning get-public-access-block get-bucket-ownership-controls get-bucket-encryption; do
+  aws s3api "$operation" "${storage_args[@]}" > "$SETUP_DIR/$operation.json"
+done
+```
+
+If a setting is missing or incompatible, prepare its correction through the bucket
+owner's reviewed bootstrap configuration before publishing. For legacy state buckets,
+BucketOwnerEnforced also requires compatible writers; do not silently change an
+existing key/ACL contract merely to make the check pass.
+
+The named deployer-role secret must be configured for manual publication. An inline
+session policy can only restrict existing permissions; it grants none. Existing base
+roles and any KMS key policy must authorize these operations in the selected account:
+
+| Actor | Required existing permission scope |
+|---|---|
+| Publisher | Bucket metadata reads below; `s3:PutObject` only under `ci/tfplans/`; KMS GenerateDataKey/Decrypt for the supported S3 encryption context. |
+| Inspector / apply | Bucket metadata reads; `s3:GetObject` / `s3:GetObjectVersion` under that private prefix and KMS Decrypt. Existing apply/state permissions remain separate. |
+| Purge operator | `s3:ListBucketVersions` for the repository/branch prefix and `s3:DeleteObjectVersion` for the reviewed expired attempt, excluding state keys. Publisher sessions cannot delete. |
+
+Bucket reads are GetBucketLocation, GetBucketVersioning, GetEncryptionConfiguration,
+GetBucketPublicAccessBlock, GetBucketOwnershipControls and GetBucketPolicyStatus.
+Scope KMS by its supported key plus ViaService, CallerAccount and S3 encryption context.
+Update operator-managed policies if required; no policy widening occurs in this PR.
+Missing backend/tfvars blobs retain the plan's soft skip. A configured plan with a
+missing deployer role or insufficient storage permissions fails publication explicitly.
+
+### Inspect and select exact bytes
+
 These procedures support main, dev and the supported user branches without changing
 which domain-rollout stages are authorized. Wait for the entire manual plan run,
 including **Publish private plan**, to succeed. Its safe reference binds repository,
@@ -873,14 +923,15 @@ python3 scripts/v2/ci_private_plan.py inspect \
   --repository aws-samples/sample-awsops --branch dev \
   --commit "$PLAN_SHA" --run-id "$PLAN_RUN_ID" --scope full --profile samples \
   --foundation /private/checkout/terraform/foundation \
+  --backend /private/backend.hcl \
   --destination /private/review/new-plan-directory
 ```
 
 The inspector validates the completed source run, publisher and exact attempt's reference
-before fetching private S3 data. An optional `--backend /private/backend.hcl` supplies the
-store; otherwise bounded owned-bucket metadata discovery matches the reference's bucket
-hash. This reads no Terraform state. The store must be same-account, private, versioned
-and SSE-KMS encrypted. No public or presigned access link is used.
+before fetching private S3 data. `--backend /private/backend.hcl` is required; the
+public reference contains no storage identifier or digest of bucket/account/backend
+values. The private manifest is checked against that backend and the actual caller.
+This reads no Terraform state. No public or presigned access link is used.
 
 The helper writes `plan.txt`, `plan.json` and `receipt.json` in a **new 0700 directory**, with
 0600 files. Plan contents may include passwords or signing material: inspect them privately.
@@ -918,6 +969,10 @@ runner/process loss can prevent finalizers. No public summary is full-plan appro
 | `bucket_ownership_missing` | Confirm explicit BucketOwnerEnforced ownership controls with the bucket owner; this workflow does not configure them. |
 | `bucket_public_access_block_missing` | Confirm the bucket's four public-access blocks; missing settings cannot establish private storage. |
 | `s3_access_denied` | Check the selected profile/session, expected bucket owner and scoped S3/KMS permissions privately. No missing-object or empty-state inference is valid. |
+| `bucket_not_private` / `bucket_not_versioned` | Establish the four public-access blocks and Enabled versioning through the reviewed bucket configuration. |
+| `bucket_ownership_invalid` | Confirm BucketOwnerEnforced ownership; other ownership modes are not supported by this transport. |
+| `bucket_not_sse_kms` / `bucket_encryption_missing` / `bucket_encryption_invalid` | Confirm one supported default SSE-KMS rule; backend `encrypt=true` is not evidence of that setting. |
+| `backend_key_mismatch` / `bucket_key_invalid` | Reconcile supported same-account/region backend and bucket key choices; do not silently change an existing state-key contract. |
 
 These codes come only from the matching AWS S3 operation's exception envelope.
 Other command failures remain generic; provider text is not published. Apply finalizers
@@ -931,11 +986,37 @@ The five-day GitHub reference is an apply limit, not storage expiry. Use the ope
 profile; publisher sessions deliberately cannot delete objects.
 
 Set `PLAN_BUCKET`, `PLAN_OWNER` and `PLAN_REGION` from the privately reviewed backend/account.
+Discover candidates locally, including failed-publication orphans and noncurrent-only
+objects. This metadata listing does not delete anything or authorize a purge. An incomplete
+listing must be paged privately or narrowed to a branch; never treat it as complete:
+
+```bash
+set -euo pipefail
+umask 077
+DISCOVERY_DIR=$(mktemp -d "$HOME/awsops-plan-discovery.XXXXXX")
+aws s3api list-object-versions --profile samples --region "$PLAN_REGION" \
+  --bucket "$PLAN_BUCKET" --expected-bucket-owner "$PLAN_OWNER" \
+  --prefix ci/tfplans/aws-samples/sample-awsops/ --max-items 1000 > "$DISCOVERY_DIR/versions.json"
+python3 - "$DISCOVERY_DIR/versions.json" > "$DISCOVERY_DIR/candidate-prefixes.txt" <<'PY'
+import json, re, sys
+data = json.load(open(sys.argv[1]))
+if data.get("NextToken") or data.get("IsTruncated"):
+    raise SystemExit("Incomplete discovery; narrow or finish paging privately")
+prefixes = set()
+for row in data.get("Versions", []) + data.get("DeleteMarkers", []):
+    match = re.fullmatch(r"(ci/tfplans/aws-samples/sample-awsops/(?:main|dev|atomoh|ssminji|whchoi)/[0-9a-f]{40}/[1-9][0-9]*/[1-9][0-9]*/).+", row["Key"])
+    if match:
+        prefixes.add(match[1])
+print("\n".join(sorted(prefixes)))
+PY
+```
+
 Set `PLAN_PREFIX` to one expired attempt's exact
 `ci/tfplans/aws-samples/sample-awsops/<branch>/<commit>/<run>/<attempt>/` prefix.
 The following preparation rejects broader prefixes, truncated listings, unexpected names,
 unversioned entries and any version less than seven days old:
 
+<!-- Executable purge example: test_ci_private_plan_workflow.py exercises normal and optimized Python. -->
 ```bash
 set -euo pipefail
 umask 077
@@ -979,7 +1060,9 @@ if json.load(open(sys.argv[1])).get("Errors"):
 PY
 ```
 
-List the same prefix again and confirm no versions or delete markers remain before
+Separately list the same prefix again and confirm no versions or delete markers remain;
+do not rerun purge preparation to validate an empty listing. Only preparation refuses an
+empty deletion request. Finish this verification before
 removing the owned local directory. Retain failed cleanup evidence privately and resolve
 it; do not claim expiry from reference deletion or use a bucket-wide recursive delete.
 No state key is covered by this prefix.
@@ -997,6 +1080,7 @@ python3 scripts/v2/ci_plan_inspect.py \
   --repository aws-samples/sample-awsops --branch dev \
   --commit "$PLAN_SHA" --run-id "$PLAN_RUN_ID" --scope full \
   --foundation /private/checkout/terraform/foundation \
+  --backend /private/backend.hcl \
   --destination /private/review/new-legacy-plan-directory
 ```
 

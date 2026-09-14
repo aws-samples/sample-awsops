@@ -27,13 +27,25 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |
 | [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
 | [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
-| [runtime-verifier-sessions.md](runtime-verifier-sessions.md) | Manual-verifier policy prerequisite: separate backend/workload sessions, owned collector invocation, synchronous/HTTP proof, and integration cleanup gates (ADR-002/005/021) |
+| [runtime-verifier-sessions.md](runtime-verifier-sessions.md) | Development verification policies: manual backend/workload phases, Deploy Web workload-only collect, owned collector invocation, synchronous/HTTP proof, and cleanup gates (ADR-002/005/021) |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; saved-plan scope, links to branch-independent artifact inspection/recovery, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
 | [steampipe-quota-and-staleness.md](steampipe-quota-and-staleness.md) | Steampipe quota guard — rate limiter knobs, partial runs, freshness ledger/staleness response |
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
-- Manual verifier session policies are a prerequisite; the collection workflow/controller lands separately. Backend and workload sessions must use nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
+
+- Private S3 plans require the configured backend file, verified bucket posture and existing
+  base-role/key-policy permissions; publication grants none. Operators use IAM/KMS, not the
+  CI key. Public references expose only source context and the unpredictable manifest hash;
+  no storage identifiers or bare bucket/account/backend hashes. CLI results omit plan hashes.
+- Manual publication and apply enter the branch environment, including main production
+  approval. Only missing backend/tfvars blobs soft-skip; missing publication roles otherwise
+  fail. One-day ciphertext becomes a five-day reference after successful publication.
+- The privately selected plan digest binds exact bytes, not human attestation. Mask the input
+  before workflow step environments can log it. CI still authenticates assets and all original
+  apply gates. No S3 expiry is installed: discover/purge expired attempt versions after seven
+  days. Current-run scratch cleanup can be prevented by runner loss; summaries are advisory.
+- Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). The helper supplies policies and installs neither consumer path. Deploy Web integration must be dev-only with activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
 - Private S3 inspection authenticates source/run/reference, manifest, pinned plan and hashes before bounded local rendering; it never authorizes apply. Asset HMAC is checked inside CI publication/apply, not by the keyless operator renderer.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.
 - Linux capture forwards the first interrupt, kills the child group on a second, and arms parent-death SIGKILL before exec; cancellation is not infrastructure rollback.
@@ -128,7 +140,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   checks and a known configured collector hash through `ci_readiness_plan_summary.py`.
   That advisory summary does not establish approval or resource presence; unknown changes
   require private inspection. Its two-minute, failure-tolerant step runs before encryption,
-  renders fenced JSON, and must not block encrypted artifacts.
+  renders fenced JSON, and must not block encrypted handoff/private publication.
   Never expose full ARNs, account IDs or
   raw configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
   CLI; health is liveness only. DB/auth checks precede service A publication.
@@ -187,18 +199,3 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 2. Use an existing runbook's structure as a template (`start-services.md`, `deploy-new-version.md`).
 3. Follow the symptoms → diagnosis → action order strictly.
 4. Always include the related file paths.
-
-Private plan storage uses the existing backend bucket in a separate ci/tfplans prefix,
-with private/versioned/SSE-KMS checks and no new IAM allow or bucket configuration.
-Manual publication is required through the existing protected deployer and a scoped storage
-session; automatic plans publish no handoff. A successful attempt replaces its one-day
-ciphertext with a five-day nonsecret reference. Operators inspect through AWS profiles;
-apply requires reviewed_plan_sha256 and all original checks. S3 retention is not inferred
-from reference expiry. Public summaries remain advisory, never full-plan approval.
-
-Private-plan publication and apply both enter the branch environment; main publication
-requires production approval. Skip publication when the plan skips an unconfigured stack.
-Keep plan hashes out of public references/publication output; a privately obtained hash
-binds bytes but does not attest that a human read them. No S3 expiry is installed: the
-deployment owner uses the expired-attempt version-purge procedure after seven days.
-Apply cleanup removes only its current run/attempt scratch; runner loss can prevent it.

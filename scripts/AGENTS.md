@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ff1d13e01f0c · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: bdd1205a01f4 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -13,7 +13,7 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   fixed scope/presence checks, fixed addresses and a known collector hash, never private values.
   The combined 256-row view is not approval or resource-presence proof; unknown changes require
   private inspection. Membership checks include the existing/planned group's lack of an IAM role.
-  Reporting cannot weaken DNS/runtime/exact-plan gates or block later encrypted artifacts.
+  Reporting cannot weaken DNS/runtime/exact-plan gates or block the encrypted handoff or private publication.
 - `CI_READINESS_ENABLED_DEV` is separate from the runtime profile: true/false explicitly overrides readiness on dev, while empty/unset preserves operator tfvars/default false. Public CI rejects enabled readiness elsewhere. The applied group requires AgentCore, and automatic membership requires the managed demo; no admin/IAM grant.
 - `v2/ci_plan_inspect.py` is the legacy encrypted-artifact inspector, local-only: authenticate successful plan-run context, checkout
   SHA and existing signed plan/assets before private rendering. No backend init/apply.
@@ -24,9 +24,15 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 - The sealing payload reaches OpenSSL through stdin, with no plaintext staging file. Captured Terraform runs in a separate session; first-interrupt forwarding, second-interrupt group kill and parent-death protection govern cancellation. Sealing/storage/publication failures preserve the command exit.
 - Cleanup deletes only after the identified upload's literal success; failed/cancelled/skipped/unknown outcomes retain ciphertext privately. Audits distinguish pending_upload, retained_unpublished and final cleanup outcomes. No broad runner-temp sweep, shared-UID isolation or SIGKILL guarantee.
 - `v2/ci_deployment_audit.py` is manual dev-only, with a restrictive session and fixed reads/SELECTs. It shares only backend parsing with `ci_verifier_sessions.py`; grants and no-invoke behavior stay unchanged. Preserve identity/resource guards and safe output projection; current web status, event metrics and observed SQL-reader rows never establish full deployment readiness. Tests: `test_ci_deployment_audit.py`; guide: `docs/runbooks/deployment-audit.md`.
-- `v2/ci_verifier_sessions.py` is a pure prerequisite for separate manual collection wiring:
-  two nonempty restricted sessions, no AWS calls or persistent IAM changes. Workload state must
-  share the selected private directory. Prepare has no Lambda grant; collect permits only the
+- `v2/ci_verifier_sessions.py` supplies policies for manual collection and Deploy Web verification:
+  backend/workload restrictions, no AWS calls or persistent IAM changes. Workload state must
+  come from the consumer's private capture. Manual dev collect-runtime dispatches support
+  backend/workload and prepare/collect; dev deploy-web push/dispatch supports workload collect
+  only, never backend/prepare. Workflow wiring and earlier Deploy Web deployment credentials
+  remain consumer responsibilities; the helper installs neither consumer path. Dev verification
+  needs an activated runtime and private proof credentials/state for both push and dispatch.
+  Missing proof fails closed; each refresh needs a nonempty policy. State must share the selected private directory.
+  Prepare has no Lambda grant; collect permits only the
   owned collector. The consumer enforces explicit catalog/CloudFront RequestResponse payloads
   (missing type means all), distinct catalog/succeeded replies and post-marker authenticated
   freshness/runtime/worker proof. Application inventory writes are operator collection, not an
@@ -150,14 +156,9 @@ under workers, steampipe, incident and remediation; update all with verified whe
 The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and validator.
 `v2/test_ci_tf_assets.py` covers these contracts and recovery.
 
-Private S3 plans use ci_private_plan.py and the existing protected deployer restricted to
-storage operations. No new IAM/bucket configuration is granted. Validate source/attempt,
-reference/manifest, pinned versions and hashes. Operator inspection needs IAM/KMS, no CI key;
-CI restore still requires asset HMAC and reviewed_plan_sha256 before original apply gates.
-Only manual plans publish; successful publication replaces ciphertext with a safe reference.
-Reference expiry is not S3 object deletion. Public summaries never replace private review.
-
-Publication and apply enter branch environments, including main plan approval. Preserve
-soft skips, private-only plan hashes and current-run scratch cleanup. Hashes bind bytes,
-not human review. No S3 expiry is installed; the runbook requires operator version purge
-after seven days. Finalizers do not guarantee cleanup after runner loss.
+Private S3 helpers require a private backend file and existing bucket/IAM/KMS posture.
+Publish/apply enter branch environments; only backend/tfvars absence soft-skips.
+Public references omit storage bindings and plan hashes; CLI results omit plan hashes.
+Mask the reviewed input before step environments. Private digests select exact bytes;
+CI still checks asset HMAC and original gates. No automatic expiry or cleanup guarantee:
+use scoped discovery/version purge after seven days and current-run scratch cleanup.

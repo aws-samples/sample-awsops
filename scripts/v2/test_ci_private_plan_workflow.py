@@ -35,6 +35,22 @@ def test_only_manual_plans_create_attempt_specific_encrypted_handoff():
         "terraform/foundation/tfplan.enc", "terraform/foundation/tfassets.enc"}
 
 
+@pytest.mark.parametrize("key", ["", "fixture-ci-key"])
+def test_asset_validation_reports_missing_key_before_running_pack(tmp_path, key):
+    binary = tmp_path / "python3"
+    binary.write_text(f"#!{sys.executable}\nimport os,pathlib\npathlib.Path(os.environ['PACK_CALLED']).touch()\n")
+    binary.chmod(0o700)
+    step = named(workflow()["jobs"]["plan"], "Validate saved-plan Lambda assets")
+    marker = tmp_path / "called"
+    result = subprocess.run(["bash", "-c", step["run"]], text=True, capture_output=True,
+                            env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+                                 "PACK_CALLED": str(marker), "TF_PLAN_ENC_KEY": key})
+    assert (result.returncode == 0) is bool(key)
+    assert marker.exists() is bool(key)
+    if not key:
+        assert "TF_PLAN_ENC_KEY is required" in result.stdout
+
+
 def test_private_publication_is_required_and_uses_a_scoped_protected_session():
     publish = workflow()["jobs"]["publish"]
     assert publish["name"] == "Publish private plan"
@@ -239,3 +255,26 @@ def test_exact_apply_requires_reviewed_hash_and_preserves_existing_gates():
     assert "terraform apply -input=false tfplan" in apply["run"]
     assert job["steps"].index(restore) < job["steps"].index(
         named(job, "Recheck branch immediately before apply")) < job["steps"].index(apply)
+
+
+@pytest.mark.parametrize("value,valid", [("a" * 64, True), ("", False), ("not-a-digest", False), (None, False)])
+def test_reviewed_digest_is_masked_before_any_step_environment(value, valid):
+    job = workflow()["jobs"]["apply"]
+    mask = named(job, "Validate and mask the reviewed plan digest")
+    assert "env" not in mask
+    assert "${{" not in mask["with"]["script"]
+    for step in job["steps"]:
+        if "REVIEWED_PLAN_SHA256" in step.get("env", {}):
+            assert job["steps"].index(mask) < job["steps"].index(step)
+    harness = """
+const x=JSON.parse(require('fs').readFileSync(0,'utf8')), events=[];
+new Function('core','context',x.script)(
+  {setSecret:v=>events.push(['mask',v]),setFailed:v=>events.push(['failed',v])},
+  {payload:{inputs:{reviewed_plan_sha256:x.value}}});
+process.stdout.write(JSON.stringify(events));
+"""
+    result = subprocess.run(["node", "-e", harness], input=json.dumps({
+        "value": value, "script": mask["with"]["script"],
+    }), text=True, capture_output=True, check=True)
+    events = json.loads(result.stdout)
+    assert events == [["mask", value]] if valid else events == [["failed", "A valid reviewed plan digest is required"]]

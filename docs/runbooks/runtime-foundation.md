@@ -66,11 +66,11 @@ group are not checked. Imports, state address moves, disabling features and reti
 resources fall outside this view. The combined resource/output report is capped at 256 rows.
 
 The summary step has a two-minute timeout and renders fenced JSON. Reporting failure
-or timeout is advisory and does not fail the later encrypted-artifact steps.
+or timeout is advisory and does not block the encrypted plan-job handoff or private S3 publication.
 An unavailable, incomplete or unsupported summary requires
 [private exact-plan inspection](dev-repo-setup.md#private-exact-plan-inspection).
-The original encrypted artifacts, provenance and exact-saved-plan apply gates
-remain required; no check or credential boundary is bypassed.
+The completed source/publisher reference, pinned S3 versions, privately selected plan hash,
+asset HMAC and exact-saved-plan apply checks remain required; no boundary is bypassed.
 
 Saved-plan JSON can retain CLI Boolean inputs as the exact strings `true`/`false`,
 while Terraform's effective values are Boolean. The readiness policy decodes only
