@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const RUNTIME_ARN = 'arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:runtime/awsops_v2_agent-abcdefghij';
 const ssmSend = vi.fn();
 const acSend = vi.fn();
 vi.mock('@aws-sdk/client-ssm', () => ({
@@ -42,17 +43,40 @@ function eventStreamOf(frames: string[], splitAt?: number) {
 }
 
 describe('agentcore', () => {
+  it('explicit empty disables discovery and absence retains the legacy parameter path', async () => {
+    vi.resetModules();
+    process.env.SSM_RUNTIME_ARN_PARAM = '';
+    const disabled = await import('./agentcore');
+    await expect(disabled.getRuntimeArn()).rejects.toThrow('disabled');
+    expect(ssmSend).not.toHaveBeenCalled();
+    vi.resetModules();
+    delete process.env.SSM_RUNTIME_ARN_PARAM;
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
+    const legacy = await import('./agentcore');
+    await legacy.getRuntimeArn();
+    expect(ssmSend.mock.calls[0][0].input.Name).toBe('/ops/awsops-v2/agentcore/runtime_arn');
+  });
+  it.each(['PENDING', 'arn:rt', RUNTIME_ARN.replace('awsops_v2_agent', 'foreign')])(
+    'never caches invalid discovery values: %s', async value => {
+      vi.resetModules();
+      ssmSend.mockResolvedValueOnce({ Parameter: { Value: value } })
+        .mockResolvedValueOnce({ Parameter: { Value: RUNTIME_ARN } });
+      const { getRuntimeArn } = await import('./agentcore');
+      await expect(getRuntimeArn()).rejects.toThrow('invalid');
+      expect(await getRuntimeArn()).toBe(RUNTIME_ARN);
+      expect(ssmSend).toHaveBeenCalledTimes(2);
+    });
   it('caches the runtime ARN (SSM hit once)', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     const { getRuntimeArn } = await import('./agentcore');
-    expect(await getRuntimeArn()).toBe('arn:rt');
-    expect(await getRuntimeArn()).toBe('arn:rt');
+    expect(await getRuntimeArn()).toBe(RUNTIME_ARN);
+    expect(await getRuntimeArn()).toBe(RUNTIME_ARN);
     expect(ssmSend).toHaveBeenCalledTimes(1);
   });
   it('invokes and returns the agent text', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockResolvedValue({ response: streamOf(JSON.stringify('이번 달 비용은 $4,210입니다')) });
     const { invokeAgent } = await import('./agentcore');
     const text = await invokeAgent({ gateway: 'cost', messages: [{ role: 'user', content: 'hi' }], sessionId: 's'.repeat(36) });
@@ -60,7 +84,7 @@ describe('agentcore', () => {
   });
   it('retries once on transient failure', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockRejectedValueOnce(new Error('throttle')).mockResolvedValueOnce({ response: streamOf('"ok"') });
     const { invokeAgent } = await import('./agentcore');
     const text = await invokeAgent({ gateway: 'ops', messages: [{ role: 'user', content: 'x' }], sessionId: 's'.repeat(36) });
@@ -69,7 +93,7 @@ describe('agentcore', () => {
   });
   it('includes systemPromptOverride + traceability in the payload when present', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockResolvedValue({ response: streamOf('"ok"') });
     const { invokeAgent } = await import('./agentcore');
     await invokeAgent({
@@ -86,7 +110,7 @@ describe('agentcore', () => {
   });
   it('threads accountId + accountAlias into the payload when present, omits them otherwise', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockResolvedValue({ response: streamOf('"ok"') });
     const { invokeAgent } = await import('./agentcore');
     await invokeAgent({
@@ -106,7 +130,7 @@ describe('agentcore', () => {
 
   it('ADR-039: threads integrations into the payload when non-empty, omits otherwise', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockResolvedValue({ response: streamOf('"ok"') });
     const { invokeAgent } = await import('./agentcore');
     const integrations = [{ name: 'dd', endpoint: 'https://x/mcp', transport: 'api_key', credentialsRef: 'arn:sec', exposedTools: ['datadog_query'], allowPrivate: false }];
@@ -128,7 +152,7 @@ describe('agentcore', () => {
   // --- real streaming (SSE) ---
   it('invokeAgentStream yields SSE deltas incrementally', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockResolvedValue(eventStreamOf([
       JSON.stringify({ delta: '이번 ' }), JSON.stringify({ delta: '달 비용은 ' }), JSON.stringify({ delta: '$4,210' }),
     ]));
@@ -140,7 +164,7 @@ describe('agentcore', () => {
 
   it('invokeAgent collects SSE deltas into the full answer (buffered consumer)', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockResolvedValue(eventStreamOf([
       JSON.stringify({ delta: 'a' }), JSON.stringify({ delta: 'b' }), JSON.stringify({ delta: 'c' }),
     ]));
@@ -151,7 +175,7 @@ describe('agentcore', () => {
 
   it('buffers SSE frames split across stream chunks', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     // split mid-frame so a `data:` line spans two reads → exercises the line buffer
     acSend.mockResolvedValue(eventStreamOf([JSON.stringify({ delta: 'hello ' }), JSON.stringify({ delta: 'world' })], 9));
     const { invokeAgentStream } = await import('./agentcore');
@@ -162,7 +186,7 @@ describe('agentcore', () => {
 
   it('tolerates a raw Strands event shape ({data}) and skips non-text frames', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockResolvedValue(eventStreamOf([
       JSON.stringify({ data: 'hi' }),                 // raw strands event → text
       JSON.stringify({ current_tool_use: { name: 'x' } }), // non-text event → skipped
@@ -176,7 +200,7 @@ describe('agentcore', () => {
 
   it('cancels the upstream reader when the consumer stops early (client abort)', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     let cancelled = false;
     const enc = new TextEncoder();
     const frames = [JSON.stringify({ delta: 'a' }), JSON.stringify({ delta: 'b' }), JSON.stringify({ delta: 'c' })];
@@ -204,7 +228,7 @@ describe('agentcore', () => {
 
   it('backward-compat: a legacy buffered JSON answer streams as one delta', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockResolvedValue({ response: streamOf(JSON.stringify('legacy answer')) }); // no contentType
     const { invokeAgentStream } = await import('./agentcore');
     const out: string[] = [];
@@ -215,7 +239,7 @@ describe('agentcore', () => {
   // --- real streaming + provenance (invokeAgentStreamDetailed) ---
   it('invokeAgentStreamDetailed yields delta/tool/model events live, in arrival order', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockResolvedValue(eventStreamOf([
       JSON.stringify({ model: 'sonnet-4-6' }),
       JSON.stringify({ delta: '이번 ' }),
@@ -235,7 +259,7 @@ describe('agentcore', () => {
 
   it('invokeAgentStreamDetailed keeps frame boundaries intact when split mid-frame', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockResolvedValue(eventStreamOf([JSON.stringify({ delta: 'hello ' }), JSON.stringify({ delta: 'world' })], 9));
     const { invokeAgentStreamDetailed } = await import('./agentcore');
     const deltas: string[] = [];
@@ -248,7 +272,7 @@ describe('agentcore', () => {
 
   it('invokeAgentStreamDetailed backward-compat: a legacy buffered JSON answer yields one delta event', async () => {
     vi.resetModules();
-    ssmSend.mockResolvedValue({ Parameter: { Value: 'arn:rt' } });
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
     acSend.mockResolvedValue({ response: streamOf(JSON.stringify('legacy answer')) }); // no contentType
     const { invokeAgentStreamDetailed } = await import('./agentcore');
     const events: unknown[] = [];

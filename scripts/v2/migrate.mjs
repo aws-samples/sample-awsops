@@ -1,214 +1,343 @@
 #!/usr/bin/env node
-// AWSops v2 DB migration runner — collision-free, fail-loud, advisory-locked, version-stamped.
-//   make migrate            apply pending migrations (terraform/foundation/migrations/*.sql)
-//   make migrate-status     offline summary: app version + each migration's declared release (--status)
-//   DRY_RUN=1 make migrate  list pending + SQL, no exec (DRY_RUN=1 OFFLINE=1 = no DB connect)
-//   BOOTSTRAP=1 make migrate one-time: ALTER schema_migrations.version→TEXT + ADD checksum/app_version (controller-confirmed)
-// Each applied migration is stamped with a release version (app_version column): the migration's
-//   `-- since: <semver>` header if present, else APP_VERSION env, else web/package.json "version".
-// Creds from `terraform output -raw aurora_secret_arn` → Secrets Manager (mirrors scripts/13-deploy-aurora.sh).
-// pg is resolved from scripts/v2/node_modules (also a web/ dep, separately). Requires PostgreSQL DDL transactionality.
-import { execSync } from 'node:child_process';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+// Collision-free, checksum-verified, advisory-locked migrations.
+// make migrate / BOOTSTRAP=1 make migrate retain the Terraform-output CLI mode.
+// --status and DRY_RUN=1 OFFLINE=1 never need credentials or a database.
+// Fargate uses explicit AURORA_* settings, Secrets Manager in memory, verified
+// RDS TLS, and INITIALIZE_EMPTY_DB=1 for safe first installation.
+import { execFileSync } from 'node:child_process';
+import { readFileSync, readdirSync, realpathSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import pg from 'pg';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { hasRuntimeDatabaseConfig, sqlReaderConfiguration } from './sql-reader-config.mjs';
+import { initializeEmptyDatabase } from './initialize-db.mjs';
+import {
+  MigrationError, databaseFailure, migrationNotice, secretFailure,
+  readSecretForPurpose, terraformFailure,
+} from './migration-errors.mjs';
 import {
   parseMigrationFile, computePending, sha256, findDuplicateIds, hasNoTxnFlag,
   parseSinceHeader, resolveAppVersion,
 } from './migrate-core.mjs';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..'); // scripts/v2 → repo root
-const MIG_DIR = join(ROOT, 'terraform', 'foundation', 'migrations');
-const REGION = process.env.AWS_REGION || 'ap-northeast-2';
-const TF = 'terraform/foundation';
-const LOCK_KEY = 4729411; // arbitrary constant — serializes concurrent `make migrate`
-const DRY = process.env.DRY_RUN === '1';
-const BOOTSTRAP = process.env.BOOTSTRAP === '1';
-const STATUS = process.argv.includes('--status') || process.env.STATUS === '1';
-// Release version stamped on each applied migration (APP_VERSION env → web/package.json → 'unknown').
-const PKG_JSON = (() => { try { return readFileSync(join(ROOT, 'web', 'package.json'), 'utf8'); } catch { return ''; } })();
-const APP_VERSION = resolveAppVersion(process.env.APP_VERSION, PKG_JSON);
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const MIG_DIR = join(ROOT, 'terraform/foundation/migrations');
+const SCHEMA = join(ROOT, 'terraform/foundation/data/schema.sql');
+const LOCK_KEY = 4729411; // unchanged: serializes old CLI and new runtime runners
 
-const tf = (out) => execSync(`terraform -chdir=${TF} output -raw ${out}`, { cwd: ROOT, encoding: 'utf8' }).trim();
-const tfOptional = (out) => { try { return tf(out); } catch { return ''; } };
-const die = (msg) => { console.error(`\n✗ ${msg}`); process.exit(1); };
-
-// 1. Load migration files + fail-loud duplicate-id precheck (before connecting).
-if (!existsSync(MIG_DIR)) die(`migrations dir not found: ${MIG_DIR}`);
-const files = readdirSync(MIG_DIR).filter((f) => f.endsWith('.sql')).sort();
-const dups = findDuplicateIds(files);
-if (dups.length) die(`duplicate migration id(s): ${dups.join(', ')} — ids must be unique (ULID)`);
-const migrations = files
-  .map((f) => {
-    const p = parseMigrationFile(f);
-    if (!p) return null;
-    const sql = readFileSync(join(MIG_DIR, f), 'utf8');
-    return { ...p, file: f, sql, since: parseSinceHeader(sql) }; // since = declared release (-- since: x.y.z)
-  })
-  .filter(Boolean);
-const badNames = files.filter((f) => !parseMigrationFile(f));
-if (badNames.length) die(`malformed migration filename(s) (need <ULID>_<name>.sql): ${badNames.join(', ')}`);
-
-// Offline status (no DB): app version + each migration's declared release. Applied/pending state
-// vs the live ledger comes from `DRY_RUN=1 make migrate`.
-if (STATUS) {
-  console.log(`app version: ${APP_VERSION}`);
-  console.log(`migration files (${migrations.length}):`);
-  for (const m of migrations) console.log(`  ${m.file}  — release ${m.since ?? `${APP_VERSION} (apply-time default; no -- since: header)`}`);
-  console.log(`\n(applied vs pending against the live DB: \`DRY_RUN=1 make migrate\`)`);
-  process.exit(0);
+function tf(output) {
+  try {
+    return execFileSync('terraform', ['-chdir=terraform/foundation', 'output', '-raw', output], {
+      cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch (error) {
+    throw terraformFailure(output, error);
+  }
 }
 
-// No migration files (e.g. empty migrations/ today) → nothing to do; skip the DB connection entirely
-// so `make deploy` (which depends on migrate) stays cheap until the first ULID migration is authored.
-if (migrations.length === 0) { console.log('migrate: no migration files — nothing to do'); process.exit(0); }
-
-// 2. Creds (skip the network in pure dry-run with no DB).
-function loadCreds() {
-  const secretArn = tf('aurora_secret_arn');
-  const endpoint = tf('aurora_endpoint');
-  const secret = JSON.parse(execSync(
-    `aws secretsmanager get-secret-value --region ${REGION} --secret-id ${secretArn} --query SecretString --output text`,
-    { cwd: ROOT, encoding: 'utf8' },
-  ));
-  return { host: endpoint, user: secret.username, password: secret.password, database: 'awsops', port: 5432, ssl: { rejectUnauthorized: false } };
+function appVersion(env) {
+  let pkg = '';
+  try { pkg = readFileSync(join(ROOT, 'web/package.json'), 'utf8'); } catch { /* offline fallback */ }
+  return resolveAppVersion(env.APP_VERSION, pkg);
 }
 
-// Sync the Terraform-generated password for the least-privilege `awsops_sql_reader` role (see the
-// `agent_sql_reader_role` migration) onto the DB role. The RDS Data API requires a Secrets Manager
-// secretArn (no IAM DB auth on that path), so this one role needs a password — Terraform owns it,
-// the secret is the source of truth, and this makes the DB converge to it on every `make migrate`
-// (including after a Terraform-side rotation). No-ops when agentcore is disabled (no such output/
-// secret) or before the migration that creates the role has been applied.
-async function syncSqlReaderPassword(client) {
-  const arn = tfOptional('agent_sql_reader_secret_arn');
-  if (!arn) return; // agentcore_enabled=false → no secret, nothing to sync
-  const { rowCount } = await client.query(`SELECT 1 FROM pg_roles WHERE rolname='awsops_sql_reader'`);
-  if (!rowCount) { console.log('sql-reader: role not present yet — skipping password sync'); return; }
+function loadMigrations(directory) {
+  if (!existsSync(directory)) throw new MigrationError('Migration directory missing; check the runtime image assets');
+  const files = readdirSync(directory).filter(file => file.endsWith('.sql')).sort();
+  const duplicates = findDuplicateIds(files);
+  if (duplicates.length) throw new MigrationError(`duplicate migration id(s): ${duplicates.join(', ')} — ids must be unique (ULID)`);
+  const badNames = files.filter(file => !parseMigrationFile(file));
+  if (badNames.length) throw new MigrationError(`malformed migration filename(s) (need <ULID>_<name>.sql): ${badNames.join(', ')}`);
+  return files.map(file => {
+    const sql = readFileSync(join(directory, file), 'utf8');
+    return { ...parseMigrationFile(file), file, sql, since: parseSinceHeader(sql) };
+  });
+}
+
+export async function readJsonSecret(arn, secrets) {
+  let result;
+  try {
+    result = await secrets.send(new GetSecretValueCommand({ SecretId: arn }));
+  } catch (error) {
+    // SDK/JSON parser errors can contain the response body. Never log those.
+    throw secretFailure('Migration credential read', error);
+  }
+  try {
+    if (typeof result.SecretString !== 'string') throw new Error();
+    const secret = JSON.parse(result.SecretString);
+    if (!secret || typeof secret !== 'object' || Array.isArray(secret)) throw new Error();
+    return secret;
+  } catch {
+    throw new MigrationError('Secret must contain a JSON object in SecretString');
+  }
+}
+
+export async function loadCredentials(env, { readSecret, terraformOutput = tf }) {
+  const runtime = hasRuntimeDatabaseConfig(env);
+  if (runtime) {
+    for (const name of ['AWS_REGION', 'AURORA_ENDPOINT', 'AURORA_DATABASE', 'AURORA_SECRET_ARN']) {
+      if (!env[name]?.trim()) throw new MigrationError(`Runtime migration requires ${name}`);
+    }
+  }
+  const database = runtime ? env.AURORA_DATABASE.trim() : 'awsops';
+  if (database !== 'awsops') {
+    throw new MigrationError('The immutable migration schema requires database awsops');
+  }
+  const arn = runtime ? env.AURORA_SECRET_ARN.trim() : terraformOutput('aurora_secret_arn');
+  const host = runtime ? env.AURORA_ENDPOINT.trim() : terraformOutput('aurora_endpoint');
+  // node-pg treats a slash-prefixed host as a Unix socket and bypasses TLS.
+  if (!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(host)) {
+    throw new MigrationError('Aurora endpoint must be a DNS hostname');
+  }
+  const secret = await readSecretForPurpose(readSecret, arn, 'Aurora master credentials');
+  if (!secret || typeof secret.username !== 'string' || !secret.username.trim()
+    || typeof secret.password !== 'string' || !secret.password) {
+    throw new MigrationError('Aurora secret requires nonempty username and password strings');
+  }
+  if (secret.username !== 'awsops_admin') {
+    throw new MigrationError('The immutable migration schema requires master username awsops_admin');
+  }
+  return {
+    host, user: secret.username, password: secret.password,
+    database, port: 5432,
+    ssl: {
+      rejectUnauthorized: true, servername: host,
+      ca: readFileSync(join(ROOT, 'scripts/v2/eks/rds-ca-bundle.pem'), 'utf8'),
+    },
+  };
+}
+
+async function syncSqlReaderPassword(client, configuration, readSecret, logger) {
   const { rows: [role] } = await client.query(
     `SELECT rolsuper, rolreplication, rolbypassrls FROM pg_roles WHERE rolname='awsops_sql_reader'`,
   );
-  if (role.rolsuper || role.rolreplication || role.rolbypassrls) {
-    die(`sql-reader: awsops_sql_reader has an elevated attribute this project's migrations cannot revoke `
-      + `(rolsuper=${role.rolsuper}, rolreplication=${role.rolreplication}, rolbypassrls=${role.rolbypassrls}); `
-      + `the Aurora master user is not a real superuser and cannot clear SUPERUSER/REPLICATION/BYPASSRLS. `
-      + `See docs/runbooks/agent-sql-reader.md for the repair-migration procedure.`);
+  if (role && (role.rolsuper || role.rolreplication || role.rolbypassrls)) {
+    throw new MigrationError('sql-reader: awsops_sql_reader has elevated attributes '
+      + `(rolsuper=${role.rolsuper === true}, rolreplication=${role.rolreplication === true}, rolbypassrls=${role.rolbypassrls === true}); `
+      + 'the Aurora master cannot revoke them. See docs/runbooks/agent-sql-reader.md.');
   }
-  const secret = JSON.parse(execSync(
-    `aws secretsmanager get-secret-value --region ${REGION} --secret-id ${arn} --query SecretString --output text`,
-    { cwd: ROOT, encoding: 'utf8' },
-  ));
-  if (!secret.password) die('sql-reader secret has no password field');
-  // ALTER ROLE ... PASSWORD takes no bind parameters — escape via pg's own literal escaper.
-  await client.query(`ALTER ROLE awsops_sql_reader WITH PASSWORD ${client.escapeLiteral(secret.password)}`);
-  console.log('sql-reader: password synced from Secrets Manager');
+  if (configuration.mode === 'disabled') {
+    logger.log('sql-reader: password sync disabled');
+    return;
+  }
+  if (!role) throw new MigrationError('sql-reader sync enabled but awsops_sql_reader is missing; apply its migration first');
+  const secret = await readSecretForPurpose(readSecret, configuration.arn, 'SQL-reader password synchronization');
+  if (secret?.username !== 'awsops_sql_reader' || typeof secret.password !== 'string' || !secret.password) {
+    throw new MigrationError('SQL-reader secret requires username awsops_sql_reader and a nonempty password string');
+  }
+  // ALTER ROLE has no bind parameters. Use pg's literal escaper; never log the
+  // statement or a server error that might reproduce its password literal.
+  try {
+    await client.query(`ALTER ROLE awsops_sql_reader WITH PASSWORD ${client.escapeLiteral(secret.password)}`);
+  } catch (error) {
+    throw databaseFailure('sql-reader: password synchronization failed', error);
+  }
+  logger.log('sql-reader: password synced from Secrets Manager');
 }
 
-async function main() {
-  const client = new pg.Client({ ...loadCreds(), statement_timeout: 300_000, lock_timeout: 30_000 });
-  // Surface server-side notices. A migration that decides something irreversibly (e.g. which duplicate
-  // row to disable) can only leave an audit trail through RAISE NOTICE, and without a listener node-pg
-  // drops those silently — the record existed only in the migration author's imagination (review).
-  client.on('notice', (n) => console.log(`  [db] ${n.message ?? n}`));
-  await client.connect();
+// Owns the supplied (unconnected) client's lifecycle. Production uses the same
+// function as disposable-PostgreSQL tests; only credential transport is external.
+export async function migrateDatabase(client, {
+  env = process.env, migrationDir = MIG_DIR, logger = console,
+  readSecret, terraformOutput = tf,
+} = {}) {
+  const dry = env.DRY_RUN === '1';
+  const initialize = env.INITIALIZE_EMPTY_DB === '1';
+  const version = appVersion(env);
   let locked = false;
+  let operation = 'Prepare migrations';
+  let failure, connectionError, completion;
+  let migrationSql = false;
+  let rejectConnection;
+  const disconnected = new Promise((_, reject) => { rejectConnection = reject; });
+  disconnected.catch(() => {}); // also handled when emitted during cleanup
+  const onError = error => {
+    connectionError ??= databaseFailure('Aurora connection error', error);
+    rejectConnection(connectionError); // never throw from an EventEmitter
+  };
+  client.on('error', onError); // before connect; kept through end and late close events
+  const checked = async action => {
+    if (connectionError) throw connectionError;
+    const result = await Promise.race([action(), disconnected]);
+    if (connectionError) throw connectionError;
+    return result;
+  };
+  const db = {
+    query: (...args) => checked(() => client.query(...args)),
+    escapeLiteral: value => client.escapeLiteral(value),
+  };
+  const executeSql = async sql => {
+    migrationSql = true;
+    try { return await db.query(sql); }
+    catch (error) { throw databaseFailure('Reviewed SQL failed', error, { migrationSql: true }); }
+    finally { migrationSql = false; }
+  };
+  const notice = message => { if (migrationSql) logger.log(migrationNotice(message)); };
   try {
-    await client.query('SELECT pg_advisory_lock($1)', [LOCK_KEY]);
+    if (initialize && dry) throw new MigrationError('INITIALIZE_EMPTY_DB cannot be combined with DRY_RUN');
+    const migrations = loadMigrations(migrationDir);
+    let reader = sqlReaderConfiguration(env);
+    if (!dry && reader.mode === 'terraform') {
+      // Missing output is an error. The defined empty output is the only
+      // Terraform indication that AgentCore/reader synchronization is disabled.
+      const arn = terraformOutput('agent_sql_reader_secret_arn');
+      reader = arn ? { mode: 'secret', arn } : { mode: 'disabled' };
+    }
+    client.on('notice', notice);
+    operation = 'Connect to Aurora';
+    await checked(() => client.connect());
+    operation = 'Acquire migration advisory lock';
+    await db.query('SELECT pg_advisory_lock($1)', [LOCK_KEY]);
     locked = true;
+    if (initialize) {
+      operation = 'Read frozen baseline schema.sql';
+      const schema = readFileSync(SCHEMA, 'utf8');
+      operation = 'Initialize empty database';
+      const initialized = await initializeEmptyDatabase(db, schema, version, executeSql);
+      if (initialized) logger.log('initialized empty database from frozen baseline');
+    }
 
-    // Column-type detect → bootstrap gate.
-    const { rows: cols } = await client.query(
-      `SELECT data_type FROM information_schema.columns WHERE table_name='schema_migrations' AND column_name='version'`,
+    operation = 'Read migration ledger';
+    const { rows: columns } = await db.query(
+      `SELECT column_name, data_type FROM information_schema.columns
+       WHERE table_schema='public' AND table_name='schema_migrations'`,
     );
-    const versionType = cols[0]?.data_type ?? 'text';
-    const hasChecksum = (await client.query(
-      `SELECT 1 FROM information_schema.columns WHERE table_name='schema_migrations' AND column_name='checksum'`,
-    )).rowCount > 0;
+    const versionType = columns.find(column => column.column_name === 'version')?.data_type;
+    if (!versionType) throw new MigrationError('schema_migrations missing; INITIALIZE_EMPTY_DB=1 is required for an empty database');
+    const hasChecksum = columns.some(column => column.column_name === 'checksum');
+    const { rows: appliedRows } = await db.query(
+      hasChecksum ? 'SELECT version, checksum FROM public.schema_migrations'
+        : 'SELECT version, NULL AS checksum FROM public.schema_migrations',
+    );
+    const applied = new Map(appliedRows.map(row => [String(row.version), row.checksum ?? null]));
+    const pending = computePending(migrations.map(migration => migration.id), [...applied.keys()]);
 
-    const { rows: appliedRows } = await client.query(
-      hasChecksum ? 'SELECT version, checksum FROM schema_migrations' : 'SELECT version, NULL AS checksum FROM schema_migrations',
-    );
-    const applied = new Map(appliedRows.map((r) => [String(r.version), r.checksum ?? null]));
-    const pending = computePending(migrations.map((m) => m.id), [...applied.keys()]);
+    // Check before any ledger alteration or password synchronization.
+    operation = 'Read frozen baseline schema.sql and verify checksums';
+    const baselineChecksum = applied.get('baseline');
+    if (baselineChecksum != null && baselineChecksum !== sha256(readFileSync(SCHEMA, 'utf8'))) {
+      throw new MigrationError('checksum drift: applied baseline differs from frozen schema.sql — baseline is immutable');
+    }
+    for (const migration of migrations) {
+      const recorded = applied.get(migration.id);
+      if (recorded !== undefined && recorded !== null && recorded !== sha256(migration.sql)) {
+        throw new MigrationError(`checksum drift: applied migration ${migration.id} (${migration.file}) was edited after apply — migrations are immutable`);
+      }
+    }
 
     if (versionType === 'integer' && pending.length > 0) {
-      if (!BOOTSTRAP) die('schema_migrations.version is INTEGER but ULID migrations are pending.\n  Bootstrap required (controller-confirmed, run during a coordinated quiet window):\n    BOOTSTRAP=1 make migrate');
-      console.log('[bootstrap] ALTER version→TEXT + ADD checksum + baseline marker');
-      if (!DRY) {
-        // All three are transactional DDL/DML in PostgreSQL — run them as ONE atomic unit so a
-        // crash/lock-timeout mid-bootstrap can't leave the column TEXT but the baseline marker
-        // missing (the integer→text gate at line 75 would then never re-insert it). Rolls back to
-        // the clean INTEGER state on any failure → fully re-runnable.
+      if (env.BOOTSTRAP !== '1') {
+        throw new MigrationError('schema_migrations.version is INTEGER but ULID migrations are pending. '
+          + 'Bootstrap required (controller-confirmed, coordinated quiet window): BOOTSTRAP=1 make migrate');
+      }
+      logger.log('[bootstrap] ALTER version to TEXT + metadata + baseline marker');
+      if (!dry) {
         try {
-          await client.query('BEGIN');
-          await client.query('ALTER TABLE schema_migrations ALTER COLUMN version TYPE TEXT USING version::text');
-          await client.query('ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT');
-          await client.query('ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS app_version TEXT');
-          await client.query(`INSERT INTO schema_migrations(version, applied_at, description, app_version) VALUES ('baseline', now(), 'schema.sql baseline; future migrations are ULID files', $1) ON CONFLICT (version) DO NOTHING`, [APP_VERSION]);
-          await client.query('COMMIT');
-        } catch (e) {
-          await client.query('ROLLBACK').catch(() => {});
-          die(`bootstrap failed (rolled back to INTEGER): ${e instanceof Error ? e.message : e}`);
+          await db.query('BEGIN');
+          await db.query('ALTER TABLE public.schema_migrations ALTER COLUMN version TYPE TEXT USING version::text');
+          await db.query('ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT');
+          await db.query('ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS app_version TEXT');
+          await db.query(`INSERT INTO public.schema_migrations(version, applied_at, description, app_version)
+            VALUES ('baseline', now(), 'schema.sql baseline; future migrations are ULID files', $1)
+            ON CONFLICT (version) DO NOTHING`, [version]);
+          await db.query('COMMIT');
+        } catch (error) {
+          await db.query('ROLLBACK').catch(() => {});
+          throw databaseFailure('bootstrap failed (rolled back to INTEGER)', error);
         }
       }
-    } else if (!DRY && pending.length > 0) {
-      // already-TEXT ledger (fresh install or post-bootstrap): ensure both metadata columns exist.
-      await client.query('ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT');
-      await client.query('ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS app_version TEXT');
+    } else if (!dry && pending.length > 0) {
+      operation = 'Upgrade migration ledger metadata';
+      await db.query('ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT');
+      await db.query('ALTER TABLE public.schema_migrations ADD COLUMN IF NOT EXISTS app_version TEXT');
     }
 
-    // Drift check: an already-applied migration's file must not have changed.
-    for (const m of migrations) {
-      const rec = applied.get(m.id);
-      if (rec !== undefined && rec !== null && rec !== sha256(m.sql)) {
-        die(`checksum drift: applied migration ${m.id} (${m.file}) was edited after apply — migrations are immutable`);
-      }
-    }
-
-    if (pending.length === 0) {
-      console.log('✅ up to date — no pending migrations');
-      if (!DRY) await syncSqlReaderPassword(client);
-      return;
-    }
-    console.log(`pending (${pending.length}): ${pending.join(', ')}`);
-
+    if (pending.length) logger.log(`pending (${pending.length}): ${pending.join(', ')}`);
     for (const id of pending) {
-      const m = migrations.find((x) => x.id === id);
-      const checksum = sha256(m.sql);
-      if (DRY) { console.log(`\n--- ${m.file} ---\n${m.sql}`); continue; }
-      const noTxn = hasNoTxnFlag(m.sql);
+      const migration = migrations.find(entry => entry.id === id);
+      if (dry) { logger.log(`\n--- ${migration.file} ---\n${migration.sql}`); continue; }
+      const noTransaction = hasNoTxnFlag(migration.sql);
       try {
-        if (noTxn) {
-          await client.query(m.sql); // autocommit (e.g. CREATE INDEX CONCURRENTLY)
-          await client.query('INSERT INTO schema_migrations(version, applied_at, description, checksum, app_version) VALUES ($1, now(), $2, $3, $4)', [m.id, m.name, checksum, m.since ?? APP_VERSION]);
-        } else {
-          await client.query('BEGIN');
-          await client.query(m.sql); // DDL — simple query, no params
-          // plain INSERT (no ON CONFLICT) → duplicate id = PK violation = fail-loud
-          await client.query('INSERT INTO schema_migrations(version, applied_at, description, checksum, app_version) VALUES ($1, now(), $2, $3, $4)', [m.id, m.name, checksum, m.since ?? APP_VERSION]);
-          await client.query('COMMIT');
-        }
-        console.log(`  ✓ ${m.file}`);
-      } catch (e) {
-        if (!noTxn) await client.query('ROLLBACK').catch(() => {});
-        die(`migration ${m.file} failed (rolled back): ${e instanceof Error ? e.message : e}`);
+        if (!noTransaction) await db.query('BEGIN');
+        await executeSql(migration.sql);
+        await db.query(`INSERT INTO public.schema_migrations(version, applied_at, description, checksum, app_version)
+          VALUES ($1, now(), $2, $3, $4)`,
+        [migration.id, migration.name, sha256(migration.sql), migration.since ?? version]);
+        if (!noTransaction) await db.query('COMMIT');
+        logger.log(`  applied ${migration.file}`);
+      } catch (error) {
+        if (!noTransaction) await db.query('ROLLBACK').catch(() => {});
+        throw databaseFailure(`migration ${migration.file} failed (${noTransaction ? 'non-transactional; inspect partial changes' : 'rolled back'})`, error);
       }
     }
-    if (!DRY) await syncSqlReaderPassword(client);
-    console.log(DRY
-      ? `\n■ preview only — ${pending.length} migration(s) pending, nothing applied`
-      : `\n✅ applied ${pending.length} migration(s)`);
+    operation = 'Validate and synchronize sql-reader';
+    if (!dry) await syncSqlReaderPassword(db, reader, arn => checked(() => readSecret(arn)), logger);
+    completion = !pending.length ? 'up to date — no pending migrations'
+      : dry ? `preview only — ${pending.length} migration(s) pending, nothing applied`
+        : `applied ${pending.length} migration(s)`;
+  } catch (error) {
+    failure = error instanceof MigrationError ? error : databaseFailure(`${operation} failed`, error);
   } finally {
-    if (locked) await client.query('SELECT pg_advisory_unlock($1)', [LOCK_KEY]).catch(() => {});
-    await client.end().catch(() => {});
+    if (locked && !connectionError) {
+      try { await client.query('SELECT pg_advisory_unlock($1)', [LOCK_KEY]); }
+      catch (error) { failure ??= databaseFailure('Migration advisory unlock failed', error); }
+    }
+    client.removeListener('notice', notice);
+    try { await client.end(); }
+    catch (error) { failure ??= databaseFailure('Aurora connection cleanup failed', error); }
   }
+  if (failure || connectionError) throw failure || connectionError;
+  logger.log(completion); // success only after unlock and connection cleanup
 }
 
-// Pure dry-run (list files + SQL) without a DB connection when explicitly offline.
-if (DRY && process.env.OFFLINE === '1') {
-  console.log(`migrations dir: ${MIG_DIR}\nfiles (${migrations.length}): ${migrations.map((m) => m.file).join(', ')}`);
-  for (const m of migrations) console.log(`\n--- ${m.file} ---\n${m.sql}`);
-  process.exit(0);
+async function cli() {
+  const env = process.env;
+  const migrations = loadMigrations(MIG_DIR);
+  const version = appVersion(env);
+  if (process.argv.includes('--status') || env.STATUS === '1') {
+    console.log(`app version: ${version}\nmigration files (${migrations.length}):`);
+    for (const migration of migrations) {
+      console.log(`  ${migration.file}  — release ${migration.since ?? `${version} (apply-time default; no -- since: header)`}`);
+    }
+    console.log('\n(applied vs pending against the live DB: `DRY_RUN=1 make migrate`)');
+    return;
+  }
+  if (env.DRY_RUN === '1' && env.OFFLINE === '1') {
+    console.log(`migrations dir: ${MIG_DIR}\nfiles (${migrations.length}): ${migrations.map(migration => migration.file).join(', ')}`);
+    for (const migration of migrations) console.log(`\n--- ${migration.file} ---\n${migration.sql}`);
+    return;
+  }
+  if (!migrations.length && env.INITIALIZE_EMPTY_DB !== '1') {
+    console.log('migrate: no migration files — nothing to do');
+    return;
+  }
+  if (env.INITIALIZE_EMPTY_DB === '1' && env.DRY_RUN === '1') {
+    throw new MigrationError('INITIALIZE_EMPTY_DB cannot be combined with DRY_RUN');
+  }
+  sqlReaderConfiguration(env); // reject runtime ambiguity before fetching any secret
+  const secrets = new SecretsManagerClient({ region: env.AWS_REGION || 'ap-northeast-2' });
+  const readSecret = arn => readJsonSecret(arn, secrets);
+  try {
+    const client = new pg.Client({
+      ...await loadCredentials(env, { readSecret }),
+      connectionTimeoutMillis: 30_000, statement_timeout: 300_000, lock_timeout: 30_000,
+    });
+    await migrateDatabase(client, { env, readSecret });
+  } finally { secrets.destroy(); }
 }
-main().catch((e) => die(e instanceof Error ? e.message : String(e)));
+
+function isMain() {
+  try {
+    return Boolean(process.argv[1])
+      && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch { return false; } // imports can have no entry path (or a synthetic one)
+}
+
+if (isMain()) {
+  cli().catch(error => {
+    console.error(error instanceof MigrationError ? error.message
+      : databaseFailure('Migration runtime failed', error).message);
+    process.exitCode = 1;
+  });
+}

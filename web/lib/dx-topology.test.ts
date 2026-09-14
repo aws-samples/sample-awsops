@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildDxTopology, assessResiliency, layoutDxTopology } from './dx-topology';
-import type { DxConnectionRow, DxVifRow, DxGatewayRow } from './dx';
+import type { DxAnalysis, DxConnectionRow, DxVifRow, DxGatewayRow } from './dx';
+import { isDeployedDxConnection, summarizeDxLocations } from './dx-evidence';
 
 const conn = (o: Partial<DxConnectionRow>): DxConnectionRow => ({
   id: 'dxcon-1', name: 'c1', state: 'available', region: 'ap-northeast-2', location: 'SEL1',
@@ -25,6 +26,41 @@ const gw = (o: Partial<DxGatewayRow>): DxGatewayRow => ({
 });
 
 describe('buildDxTopology', () => {
+  it.each(['pending', 'ordering', 'requested', 'unknown', 'available'])(
+    'never infers up from down=false for an unassessed %s LAG member', state => {
+      const g = buildDxTopology({
+        connections: [conn({ state, stateMetricMin: null, lagId: 'dxlag-1' })],
+        vifs: [], gateways: [],
+      });
+      expect(g.nodes.find(n => n.id === 'dxcon-1')!.state).toBe('none');
+      expect(g.nodes.find(n => n.id === 'loc|SEL1')!.state).toBe('none');
+      expect(g.nodes.find(n => n.id === 'dxlag-1')).toMatchObject({
+        state: 'none', sub: 'LAG · 0/1 up',
+        connectionHealth: { unknown: state === 'available' ? 1 : 0, excluded: state === 'available' ? 0 : 1 },
+      });
+      expect(g.edges.filter(e => e.source === 'onprem' || e.source === 'loc|SEL1' || e.target === 'dxlag-1')
+        .every(e => e.state === 'none')).toBe(true);
+    },
+  );
+
+  it('keeps unknown and excluded LAG members out of up counts while retaining metric-zero observations', () => {
+    const g = buildDxTopology({
+      connections: [
+        conn({ id: 'healthy', lagId: 'dxlag-1' }),
+        conn({ id: 'pending', state: 'pending', stateMetricMin: null, lagId: 'dxlag-1' }),
+        conn({ id: 'unknown', stateMetricMin: null, lagId: 'dxlag-1' }),
+        conn({ id: 'observed', state: 'deleting', stateMetricMin: 0, lagId: 'dxlag-1' }),
+      ], vifs: [], gateways: [],
+    });
+    expect(g.nodes.find(n => n.id === 'healthy')!.state).toBe('ok');
+    expect(g.nodes.find(n => n.id === 'observed')!.state).toBe('down');
+    expect(g.nodes.find(n => n.id === 'dxlag-1')).toMatchObject({
+      state: 'warn', sub: 'LAG · 1/4 up',
+      connectionHealth: { down: 0, unknown: 1, excluded: 2, excludedObservedDown: 1 },
+    });
+    expect(g.edges.find(e => e.source === 'onprem')!.state).toBe('warn');
+  });
+
   it('계층 그래프: 온프레미스→로케이션→커넥션→VIF→DXGW→TGW, association 상태·cidr 라벨', () => {
     const g = buildDxTopology({
       connections: [conn({})],
@@ -220,11 +256,176 @@ describe('assessResiliency (DX SLA 티어 — sample-network-resilience-agent �
       connections: [conn({ down: true })],
       vifs: [vif({ id: 'v-dangling' })],
       gateways: [gw({ unassociated: true })],
+      degradedRegions: [], metricsDegradedRegions: [], gatewaysDegraded: false,
     });
     const by = (label: string) => r.checks.find((c) => c.label.includes(label))!;
-    expect(by('모든 커넥션').ok).toBe(false);
+    expect(by('배포된 커넥션').ok).toBe(false);
     expect(by('미연결 DX Gateway').ok).toBe(false);
     expect(by('미연결 VIF').ok).toBe(false);
     expect(by('모든 VIF').ok).toBe(true);
+  });
+});
+
+describe('resilience evidence coverage', () => {
+  const snapshot = (over: Partial<DxAnalysis> = {}) => ({
+    connections: [conn({})],
+    vifs: [vif({ attachedTo: 'dxgw-1', attachmentType: 'dx-gateway' })],
+    gateways: [gw({ associations: [
+      { id: 'tgw-1', type: 'transitGateway', state: 'associated', region: 'ap-northeast-2', cidrs: [] },
+    ] })],
+    degradedRegions: [], metricsDegradedRegions: [], gatewaysDegraded: false,
+    ...over,
+  });
+  const check = (data: ReturnType<typeof snapshot>, label: string) =>
+    assessResiliency(data).checks.find(c => c.label.includes(label))!.ok;
+
+  it('keeps missing metric, peer and association evidence unknown', () => {
+    const data = snapshot({
+      connections: [conn({ stateMetricMin: null })],
+      vifs: [vif({ attachedTo: 'dxgw-1', bgpStatusMin: null, bgpPeersTotal: 0, bgpPeersUp: 0 })],
+      gateways: [gw({ associationsAvailable: false, unassociated: false })],
+      metricsDegradedRegions: ['ap-northeast-2'],
+    });
+    expect(check(data, '배포된 커넥션')).toBeNull();
+    expect(check(data, '모든 VIF')).toBeNull();
+    expect(check(data, '미연결 DX Gateway')).toBeNull();
+  });
+
+  it.each([
+    { connections: [conn({ stateMetricMin: null })] },
+    { connections: [conn({ state: 'pending', stateMetricMin: 1 })] },
+    { metricsDegradedRegions: ['ap-northeast-2'] },
+    { degradedRegions: ['us-west-2'] },
+    { connections: [] },
+  ])('withholds an all-connections pass for incomplete evidence: %j', over => {
+    expect(check(snapshot(over), '배포된 커넥션')).toBeNull();
+  });
+
+  it.each([
+    { vifs: [vif({ bgpStatusMin: null })] },
+    { vifs: [vif({ bgpPeersTotal: 0, bgpPeersUp: 0 })] },
+    { metricsDegradedRegions: ['ap-northeast-2'] },
+    { degradedRegions: ['us-west-2'] },
+    { vifs: [] },
+  ])('withholds a VIF/BGP pass for incomplete evidence: %j', over => {
+    expect(check(snapshot(over), '모든 VIF')).toBeNull();
+  });
+
+  it('does not interpret absent coverage metadata as a confirmed successful inventory read', () => {
+    expect(check(snapshot({ degradedRegions: undefined }), '배포된 커넥션')).toBeNull();
+    expect(check(snapshot({ metricsDegradedRegions: undefined }), '모든 VIF')).toBeNull();
+    expect(check(snapshot({ gatewaysDegraded: undefined }), '미연결 DX Gateway')).toBeNull();
+  });
+
+  it('withholds absence-based gateway and VIF checks after their inventory reads fail', () => {
+    expect(check(snapshot({ gateways: [], gatewaysDegraded: true }), '미연결 DX Gateway')).toBeNull();
+    expect(check(snapshot({ vifs: [], degradedRegions: ['ap-northeast-2'] }), '미연결 VIF')).toBeNull();
+  });
+
+  it('keeps observed failures even when other evidence is unavailable', () => {
+    const data = snapshot({
+      connections: [conn({ down: true, stateMetricMin: null })],
+      vifs: [vif({ down: true, bgpStatusMin: null })],
+      gateways: [gw({ unassociated: true })],
+      degradedRegions: ['us-west-2'], metricsDegradedRegions: ['ap-northeast-2'], gatewaysDegraded: true,
+    });
+    expect(check(data, '배포된 커넥션')).toBe(false);
+    expect(check(data, '모든 VIF')).toBe(false);
+    expect(check(data, '미연결 DX Gateway')).toBe(false);
+    expect(check(data, '미연결 VIF')).toBe(false);
+  });
+
+  it('retains passes for complete observed health and successful empty absence checks', () => {
+    expect(check(snapshot(), '배포된 커넥션')).toBe(true);
+    expect(check(snapshot(), '모든 VIF')).toBe(true);
+    expect(check(snapshot(), '미연결 DX Gateway')).toBe(true);
+    expect(check(snapshot({ gateways: [] }), '미연결 DX Gateway')).toBe(true);
+    expect(check(snapshot({ vifs: [] }), '미연결 VIF')).toBe(true);
+  });
+
+  it.each(['?', 'unknown', ' UNKNOWN ', '', '   '])('does not certify an unknown site as a second location: %j', location => {
+    const r = assessResiliency(snapshot({ connections: [
+      conn({ id: 'c1', awsDevice: 'a' }), conn({ id: 'c2', awsDevice: 'b' }),
+      conn({ id: 'c3', location, awsDevice: 'c' }), conn({ id: 'c4', location, awsDevice: 'd' }),
+    ] }));
+    expect(r.locations).toBe(1);
+    expect(r.dualConnLocations).toBe(1);
+    expect(r.tier).toBe('single');
+    expect(r.unknownLocationConnections).toBe(2);
+    expect(r.checks.find(c => c.label.startsWith('로케이션 이중화'))!.ok).toBeNull();
+    expect(r.checks.find(c => c.label.startsWith('로케이션당 디바이스'))!.ok).toBeNull();
+  });
+
+  it('preserves verified redundancy while disclosing additional unknown locations', () => {
+    const r = assessResiliency(snapshot({ connections: [
+      conn({ id: 'c1', awsDevice: 'a' }), conn({ id: 'c2', awsDevice: 'b' }),
+      conn({ id: 'c3', location: 'SEL2', awsDevice: 'c' }), conn({ id: 'c4', location: 'SEL2', awsDevice: 'd' }),
+      conn({ id: 'c5', location: '?' }),
+    ] }));
+    expect(r.tier).toBe('maximum');
+    expect(r.unknownLocationConnections).toBe(1);
+    expect(r.checks.find(c => c.label.startsWith('로케이션 이중화'))!.ok).toBe(true);
+  });
+
+  it('keeps unverified device redundancy unknown and confirmed single-site redundancy failed', () => {
+    const unknown = assessResiliency(snapshot({ connections: [conn({}), conn({ id: 'c2', location: 'SEL2' })] }));
+    expect(unknown.checks.find(c => c.label.startsWith('로케이션당 디바이스'))!.ok).toBeNull();
+    const single = assessResiliency(snapshot({ connections: [conn({ awsDevice: 'a' })] }));
+    expect(single.checks.find(c => c.label.startsWith('로케이션 이중화'))!.ok).toBe(false);
+  });
+
+  it('fails missing device metadata availability without asserting a network failure', () => {
+    const data = snapshot({ degradedRegions: ['us-west-2'] });
+    expect(check(data, '디바이스 정보로')).toBe(false);
+    expect(check(data, '배포된 커넥션')).toBeNull();
+    expect(check(snapshot({ connections: [conn({ awsDevice: 'a', location: '?' })] }), '디바이스 정보로')).toBeNull();
+  });
+
+  it.each(['pending', 'ordering', 'requested', 'deleted', 'rejected', 'deleting', 'unknown', 'other', '', undefined])('excludes %s from deployed health with explicit coverage', state => {
+    const r = assessResiliency(snapshot({ connections: [
+      conn({}), conn({ id: 'not-deployed', state, stateMetricMin: null, down: state === 'deleted' }),
+    ] }));
+    const health = r.checks.find(c => c.label.includes('배포된 커넥션'))!;
+    expect(health.ok).toBe(true);
+    expect(health.detail).toContain('1/2');
+    expect(r.connectionHealthCoverage).toEqual({ total: 2, assessed: 1, excluded: 1, unknown: 0, down: 0, excludedObservedDown: 0 });
+  });
+
+  it.each(['deleting', 'unknown', 'other', '', undefined])('cannot certify locations or SLA from state %s', state => {
+    const connections = [
+      conn({ id: 'c1', awsDevice: 'a' }), conn({ id: 'c2', awsDevice: 'b' }),
+      conn({ id: 'c3', state, location: 'SEL2', awsDevice: 'c' }),
+      conn({ id: 'c4', state, location: 'SEL2', awsDevice: 'd' }),
+    ];
+    expect(isDeployedDxConnection(connections[2])).toBe(false);
+    const summary = summarizeDxLocations(connections);
+    expect(summary).toMatchObject({ knownLocations: 1, excludedConnections: 2, assessedConnections: 2 });
+    expect(summary.locations.map(l => l.location)).toEqual(['SEL1']);
+    const result = assessResiliency(snapshot({ connections }));
+    expect(result).toMatchObject({ tier: 'single', locations: 1, dualConnLocations: 1 });
+    const unassessed = assessResiliency(snapshot({ connections: connections.slice(2) }));
+    expect(unassessed).toMatchObject({ tier: 'none', slaPct: null, locations: 0 });
+    expect(unassessed.checks.find(c => c.label.startsWith('배포된 커넥션'))!.ok).toBeNull();
+  });
+
+  it.each(['available', 'down'])('keeps %s deployed for location/SLA and reports observed down health', state => {
+    const connections = [conn({}), conn({ id: 'c2', state, location: 'SEL2', down: state === 'down' })];
+    expect(isDeployedDxConnection(connections[1])).toBe(true);
+    expect(summarizeDxLocations(connections).knownLocations).toBe(2);
+    const result = assessResiliency(snapshot({ connections }));
+    expect(result.tier).toBe('high');
+    expect(result.checks.find(c => c.label.startsWith('배포된 커넥션'))!.ok).toBe(state === 'available');
+  });
+
+  it('supports hosted ConnectionState independently of unsupported connection throughput', () => {
+    const hosted = conn({ partnerName: 'partner', bandwidth: '50Mbps', bandwidthBps: 50e6 });
+    expect(check(snapshot({ connections: [hosted] }), '배포된 커넥션')).toBe(true);
+    expect(check(snapshot({ connections: [{ ...hosted, stateMetricMin: null }] }), '배포된 커넥션')).toBeNull();
+    expect(check(snapshot({ connections: [{ ...hosted, stateMetricMin: 0, down: true }], metricsDegradedRegions: ['other'] }), '배포된 커넥션')).toBe(false);
+  });
+
+  it('retains the confirmed single-site failure even when its device identities are missing', () => {
+    const single = assessResiliency(snapshot());
+    expect(single.checks.find(c => c.label.startsWith('로케이션당 디바이스'))!.ok).toBe(false);
   });
 });

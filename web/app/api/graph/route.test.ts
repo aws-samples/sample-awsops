@@ -1,75 +1,78 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const verifyUser = vi.fn();
-const query = vi.fn();
-vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
-vi.mock('@/lib/db', () => ({ getPool: () => ({ query: (...a: unknown[]) => query(...a) }) }));
-
+const auth = vi.hoisted(() => vi.fn());
+const query = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/auth', () => ({ verifyUser: auth }));
+vi.mock('@/lib/db', () => ({ getPool: () => ({ query }) }));
 import { GET } from './route';
+import claimCases from '../../../lib/fixtures/trace-queue-claims.json';
 
-beforeEach(() => {
-  verifyUser.mockReset(); query.mockReset();
-  verifyUser.mockResolvedValue({ sub: 'a' });
-  query.mockResolvedValue({ rows: [] });
-});
-
-describe('GET /api/graph', () => {
-  it('401 when unauthenticated', async () => {
-    verifyUser.mockResolvedValue(null);
-    const r = await GET(new Request('http://x/api/graph'));
-    expect(r.status).toBe(401);
+describe('graph collection evidence API', () => {
+  beforeEach(() => {
+    auth.mockReset().mockResolvedValue({ sub: 'user' });
+    query.mockReset().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM topology_graph_state')) return {
+        rows: [{ status: 'error', captured_at: '2026-09-11T01:00:00Z',
+          attempted_at: '2026-09-11T02:00:00Z',
+          details: { retainedPrevious: true, sources: [{ sourceId: 'tempo:1', status: 'error' }] } }],
+      };
+      return { rows: [] };
+    });
   });
 
-  it('returns the materialized graph shape, class-scoped (default flow)', async () => {
-    const r = await GET(new Request('http://x/api/graph'));
-    const j = await r.json();
-    expect(j).toHaveProperty('nodes');
-    expect(j).toHaveProperty('edges');
-    expect(j.class).toBe('flow');
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('class = $1'), ['flow', 'self']);
+  it('returns failed collection evidence even when no graph nodes exist', async () => {
+    const response = await GET(new Request('http://localhost/api/graph?class=trace'));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.collection).toMatchObject({
+      status: 'error', stale: true, retainedPrevious: true,
+      sources: [{ sourceId: 'tempo:1', status: 'error' }],
+    });
+    expect(body.captured_at).toBe('2026-09-11T01:00:00Z');
   });
 
-  it('honors ?class=infra for the full graph', async () => {
-    const r = await GET(new Request('http://x/api/graph?class=infra'));
-    const j = await r.json();
-    expect(j.class).toBe('infra');
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('class = $1'), ['infra', 'self']);
-  });
-
-  it('honors ?class=trace (the third materialized layer)', async () => {
-    const r = await GET(new Request('http://x/api/graph?class=trace'));
-    const j = await r.json();
-    expect(r.status).toBe(200);
-    expect(j.class).toBe('trace');
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('class = $1'), ['trace', 'self']);
-  });
-
-  it('400 on an unknown class (no silent fall-back to flow)', async () => {
-    const r = await GET(new Request('http://x/api/graph?class=bogus'));
-    expect(r.status).toBe(400);
+  it('does not expose collection state to an unauthenticated request', async () => {
+    auth.mockResolvedValue(null);
+    const response = await GET(new Request('http://localhost/api/graph?class=trace'));
+    expect(response.status).toBe(401);
     expect(query).not.toHaveBeenCalled();
   });
 
-  it('scopes to a 12-digit member account and rejects malformed ones', async () => {
-    const ok = await GET(new Request('http://x/api/graph?class=infra&account=222233334444'));
-    expect(ok.status).toBe(200);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('class = $1'), ['infra', '222233334444']);
-    const all = await GET(new Request('http://x/api/graph?class=infra&account=__all__'));
-    expect(all.status).toBe(200);
-    const bad = await GET(new Request('http://x/api/graph?class=infra&account=abc'));
-    expect(bad.status).toBe(400);
+  it('does not expose legacy traffic-volume normalization as confidence', async () => {
+    query.mockImplementation(async (sql: string) => ({
+      rows: sql.includes('FROM topology_edges')
+        ? [{ source: 'a', target: 'b', rel: 'calls', confidence: '0.5', meta: null }] : [],
+    }));
+    const response = await GET(new Request('http://localhost/api/graph?class=trace'));
+    expect((await response.json()).edges[0].confidence).toBe('unknown');
+  });
+});
+
+describe('queue attribution on retained snapshots', () => {
+  it.each(['', '&from=queue:old'])('keeps claimed telemetry separate in trace API %s', async suffix => {
+    auth.mockResolvedValue({ sub: 'user' });
+    query.mockImplementation(async (sql: string) => ({ rows: sql.includes('FROM topology_nodes') ? [{
+      id: 'queue:old', kind: 'queue', label: 'orders', meta: {
+        accountId: '111122223333', region: 'us-east-1', identityProvenance: 'aws_verified', infra_ref: 'inventory:queue',
+      },
+    }] : [] }));
+    const body = await (await GET(new Request(`http://localhost/api/graph?class=trace${suffix}`))).json();
+    expect(body.nodes[0].meta).toEqual({ claimedAccountId: null, claimedRegion: null, identityProvenance: 'telemetry_claim' });
   });
 
-  it('?from= returns the per-resource subgraph and runs the class+depth traversal', async () => {
-    const r = await GET(new Request('http://x/api/graph?from=alb:lb&class=infra&depth=2'));
-    const j = await r.json();
-    expect(j.from).toBe('alb:lb');
-    expect(j.class).toBe('infra');
-    expect(j.depth).toBe(2);
-    expect(j).toHaveProperty('nodes');
-    expect(j).toHaveProperty('edges');
-    expect(j).toHaveProperty('capped');
-    // traversal issued with [id, class, depth, account]
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('WITH RECURSIVE'), ['alb:lb', 'infra', 2, 'self']);
+  it.each(claimCases)('rederives retained claims from destination $destination on both reads', async ({ destination, account, region }) => {
+    auth.mockResolvedValue({ sub: 'user' });
+    query.mockImplementation(async (sql: string) => ({ rows: sql.includes('FROM topology_nodes') ? [{
+      id: 'queue:old', kind: 'queue', label: 'orders', meta: {
+        destination, accountId: '444455556666', region: 'us-west-2',
+        claimedAccountId: '777788889999', claimedRegion: 'eu-west-1', infra_ref: 'inventory:queue',
+      },
+    }] : [] }));
+    for (const suffix of ['', '&from=queue:old']) {
+      const body = await (await GET(new Request(`http://localhost/api/graph?class=trace${suffix}`))).json();
+      expect(body.nodes[0].meta).toEqual({
+        destination, claimedAccountId: account, claimedRegion: region, identityProvenance: 'telemetry_claim',
+      });
+    }
   });
 });

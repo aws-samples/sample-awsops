@@ -182,7 +182,7 @@ export async function readResources(type: string, { limit, offset, regions = '__
   params.push(limit, offset);
   const r = await pool.query(
     `SELECT resource_id, region, account_id, data, captured_at FROM inventory_resources
-     WHERE ${where} ORDER BY ${worstFirstOrderBy(type)}captured_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+     WHERE ${where} ORDER BY ${worstFirstOrderBy(type)}captured_at DESC, account_id ASC, region ASC, resource_id ASC LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
   const s = await pool.query(

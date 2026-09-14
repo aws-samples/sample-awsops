@@ -53,21 +53,33 @@ def insert_job(conn, job_id, type_, payload, dry_run=False, idempotency_key=None
 
 
 def claim_running(conn, job_id, runtime):
-    """queued|running -> running (idempotent re-claim). Returns rows affected (0 = already terminal)."""
+    """Claim queued|running and count accepted claims (0 = absent or not runnable).
+
+    ADR-005 FROZEN: awaiting_approval is DELIBERATELY unclaimable, even after an
+    approval callback. The retained remediation state machine is dark substrate, not
+    a supported post-approval execution path. Do not widen this predicate to enable it.
+
+    Optional lifecycle timestamps are owned by the migration-installed database trigger.
+    These statements also work before that migration is applied.
+    """
     rows = conn.run(
         "UPDATE worker_jobs SET status='running', runtime=:r, attempt=attempt+1 "
-        "WHERE job_id=:id AND status NOT IN ('succeeded','failed','canceled') RETURNING job_id",
+        "WHERE job_id=:id AND status IN ('queued','running') RETURNING job_id",
         id=job_id, r=runtime,
     )
     return len(rows)
 
 
 def finish_job(conn, job_id, status, result=None, artifact_uri=None, error=None):
-    """Set a TERMINAL status only if not already terminal (immutable). Returns rows affected."""
+    """Atomically finish an active job; success requires running, failure may precede claim.
+
+    Terminal callbacks cannot replace the outcome or its original finish timestamp.
+    """
     assert status in _TERMINAL
     rows = conn.run(
         "UPDATE worker_jobs SET status=:s, result=:res::jsonb, artifact_uri=:a, error=:e "
-        "WHERE job_id=:id AND status NOT IN ('succeeded','failed','canceled') RETURNING job_id",
+        "WHERE job_id=:id AND status NOT IN ('succeeded','failed','canceled','manual_intervention') "
+        "AND (:s <> 'succeeded' OR status='running') RETURNING job_id",
         s=status, res=(json.dumps(result) if result is not None else None),
         a=artifact_uri, e=error, id=job_id,
     )
@@ -75,7 +87,10 @@ def finish_job(conn, job_id, status, result=None, artifact_uri=None, error=None)
 
 
 # Single source of truth for get_job's SELECT + dict keys (avoids positional-zip drift).
-_JOB_COLS = ["job_id", "type", "status", "payload", "result", "artifact_uri", "error", "dry_run"]
+_JOB_COLS = [
+    "job_id", "type", "status", "payload", "result", "artifact_uri", "error", "dry_run",
+    "attempt",
+]
 
 
 def get_job(conn, job_id):

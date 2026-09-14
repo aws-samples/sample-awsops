@@ -1,7 +1,7 @@
 # Components Module
 
 ## Role
-112 client components across 15 subdirectories: `ui` (shared primitives), `shell` (AppShell, Sidebar, LanguageProvider, AccountSelector, etc.), `charts`, `chat`, `inventory` (+`metrics/`), `eks`, `diagnosis`, `datasources`, `dx`, `finops`, `graph`, `insights`, `nfm`, `overview`, `topology`.
+Client components span `ui`, `shell`, `charts`, `chat`, `inventory` (including `metrics/`), `eks`, `diagnosis`, `datasources`, `dx`, `finops`, `graph`, `insights`, `nfm`, `overview`, and `topology`.
 
 ## Key Files
 - `ui/DataTable.tsx` + `ui/DetailPanel.tsx` — the default list+detail combo. DetailPanel renders the full data the row already holds (plus a handful of type-specific fetching sections: RDS metrics/trends/SG rules, EBS related, live metrics, S3 IAM access) — if the spec (`InvType`) has `sections`, it renders grouped sections; otherwise a flat key list (backward-compat). New inventory types must define `sections`.

@@ -1,5 +1,6 @@
 import { Pool, types as pgTypes } from 'pg';
 import { Signer } from '@aws-sdk/rds-signer';
+import { ObservedDbClient } from './db-connection';
 
 let pool: Pool | null = null;
 
@@ -18,7 +19,8 @@ pgTypes.setTypeParser(pgTypes.builtins.INT8, (v) => Number(v));
 // auto-rotates every 7 days; a long-running task that only reads a valueFrom secret once at
 // container start would be left holding a stale password after the next rotation. `password` as a
 // function is called by pg per new physical connection, so the signed token is always fresh
-// (15-min validity, signed locally — no network call).
+// (15-min validity). Signing is local, but resolving/refreshing the task-role
+// credentials can require an ECS metadata HTTP request.
 export function getPool(): Pool {
   if (!pool) {
     const signer = new Signer({
@@ -28,6 +30,7 @@ export function getPool(): Pool {
       region: process.env.AWS_REGION || 'ap-northeast-2',
     });
     pool = new Pool({
+      Client: ObservedDbClient,
       host: process.env.AURORA_ENDPOINT,
       port: 5432,
       database: process.env.AURORA_DATABASE || 'awsops',

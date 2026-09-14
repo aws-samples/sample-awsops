@@ -2,8 +2,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, within, fireEvent, waitFor } from '@testing-library/react';
 import DiagnosisView from './DiagnosisView';
+import { LanguageProvider } from '@/components/shell/LanguageProvider';
 
 afterEach(cleanup);
+afterEach(() => localStorage.removeItem('awsops-lang'));
 
 function mockCapture(reports: Array<Record<string, unknown>> = []) {
   const posts: any[] = [];
@@ -176,6 +178,96 @@ describe('DiagnosisView — export menu + generation date', () => {
     expect(screen.getByRole('link', { name: /^MD$/ }).getAttribute('href')).toBe('/api/diagnosis/12/download?format=md');
     expect(screen.getByRole('link', { name: /^DOCX$/ }).getAttribute('href')).toBe('/api/diagnosis/12/download?format=docx');
     expect(screen.getByRole('link', { name: /^PDF$/ }).getAttribute('href')).toBe('/api/diagnosis/12/download?format=pdf');
+  });
+});
+
+describe('DiagnosisView — invariant assessment coverage', () => {
+  it.each([
+    ['zh', '不变量评估覆盖范围', '通过 2'],
+    ['ja', '不変条件の評価範囲', '合格 2'],
+  ])('uses assessment-specific passed labels in %s', async (lang, region, passed) => {
+    localStorage.setItem('awsops-lang', lang);
+    mockList([{ id: 71, tier: 'mid', status: 'succeeded', created_at: 't',
+      summary: { drift: [], unassessed: [],
+        invariant_coverage: { total: 2, assessed: 2, passed: 2, failed: 0, unassessed: 0 } } }]);
+    render(<LanguageProvider><DiagnosisView /></LanguageProvider>);
+    fireEvent.click(await screen.findByRole('button', { name: /#71/ }));
+    expect(within(await screen.findByRole('region', { name: region })).getByText(passed)).toBeTruthy();
+  });
+
+  async function openSummary(summary: Record<string, unknown>) {
+    mockList([{ id: 71, tier: 'mid', status: 'succeeded', created_at: 't', summary }]);
+    const view = render(<DiagnosisView />);
+    fireEvent.click(await screen.findByRole('button', { name: /#71/ }));
+    const panel = await screen.findByRole('region', { name: '불변식 평가 범위' });
+    return { panel, ...view };
+  }
+
+  it('keeps an all-unassessed report visible with reasons instead of hiding zero drift', async () => {
+    const { panel } = await openSummary({
+      drift: [], unassessed: [{ id: 1, kind: 'expected_edge', observed: 'unknown: service map unavailable' }],
+      invariant_coverage: { total: 1, assessed: 0, passed: 0, failed: 0, unassessed: 1 },
+    });
+    expect(within(panel).getByText('평가 완료 0 / 1')).toBeTruthy();
+    expect(within(panel).getByText('미평가 1')).toBeTruthy();
+    expect(within(panel).getByText('unknown: service map unavailable')).toBeTruthy();
+    expect(within(panel).getByText('미평가 결과는 정상 또는 개선을 뜻하지 않습니다.')).toBeTruthy();
+  });
+
+  it('shows assessed, failed and unassessed counts separately for mixed evidence', async () => {
+    const { panel } = await openSummary({
+      drift: [{ id: 2, kind: 'forbidden_edge', observed: 'edge observed', severity: 'critical' }],
+      unassessed: [{ id: 3, kind: 'encryption_required', observed: 'unknown: aggregate missing' }],
+      invariant_coverage: { total: 3, assessed: 2, passed: 1, failed: 1, unassessed: 1 },
+    });
+    expect(within(panel).getByText('평가 완료 2 / 3')).toBeTruthy();
+    expect(within(panel).getByText('불변식 통과 1')).toBeTruthy();
+    expect(within(panel).getByText('위반 1')).toBeTruthy();
+    expect(within(panel).getByText('unknown: aggregate missing')).toBeTruthy();
+    expect(screen.getByText('forbidden_edge')).toBeTruthy();
+  });
+
+  it('distinguishes no active invariants from an evaluated pass', async () => {
+    const { panel } = await openSummary({
+      drift: [], unassessed: [],
+      invariant_coverage: { total: 0, assessed: 0, passed: 0, failed: 0, unassessed: 0 },
+    });
+    expect(within(panel).getByText('활성 불변식 없음')).toBeTruthy();
+    expect(within(panel).queryByText('불변식 통과 0')).toBeNull();
+  });
+
+  it('discloses missing coverage for historical reports', async () => {
+    const { panel } = await openSummary({ drift: [], diff: { regressions: [], improvements: [] } });
+    expect(within(panel).getByText('불변식 평가 정보 없음')).toBeTruthy();
+    expect(within(panel).getByText('이 보고서에는 유효한 불변식 평가 범위가 기록되지 않았습니다.')).toBeTruthy();
+  });
+
+  it('does not trust inconsistent coverage or non-array legacy fields', async () => {
+    const { panel } = await openSummary({
+      drift: null, unassessed: 'not an array',
+      invariant_coverage: { total: 2, assessed: 2, passed: 2, failed: 0, unassessed: 1 },
+    });
+    expect(within(panel).getByText('불변식 평가 정보 없음')).toBeTruthy();
+  });
+
+  it('shows explicit full assessment without an unassessed warning', async () => {
+    const { panel } = await openSummary({
+      drift: [], unassessed: [],
+      invariant_coverage: { total: 2, assessed: 2, passed: 2, failed: 0, unassessed: 0 },
+    });
+    expect(within(panel).getByText('평가 완료 2 / 2')).toBeTruthy();
+    expect(within(panel).getByText('불변식 통과 2')).toBeTruthy();
+    expect(within(panel).queryByText('미평가 결과는 정상 또는 개선을 뜻하지 않습니다.')).toBeNull();
+  });
+
+  it('renders unassessed evidence as text, not markup', async () => {
+    const reason = '<img src=x onerror=alert(1)>';
+    const { panel, container } = await openSummary({
+      drift: [], unassessed: [{ id: 1, kind: 'expected_edge', observed: reason }],
+      invariant_coverage: { total: 1, assessed: 0, passed: 0, failed: 0, unassessed: 1 },
+    });
+    expect(within(panel).getByText(reason)).toBeTruthy();
+    expect(container.querySelector('img[src="x"]')).toBeNull();
   });
 });
 

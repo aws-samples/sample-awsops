@@ -21,7 +21,11 @@ pure detection logic (detect_unused) is unit-testable with fixtures (no DB, no b
 RDS Data API로 읽어 미사용 리소스·토폴로지 질의에 답한다. 전부 읽기 전용(SELECT만).
 """
 import json
+import math
 import os
+import re
+import time
+from datetime import datetime, timezone
 
 from cross_account import resolve_tool_name
 
@@ -55,8 +59,23 @@ COVERAGE_NOTE = ("Derived from the synced Aurora inventory (inventory_resources)
                  "here. query_inventory and inventory_summary carry a per-type freshness block "
                  "(healthy | degraded | stale | unavailable) classified from the durable "
                  "last_success_at and the oldest captured_at of current rows; degraded also covers "
-                 "succeeded runs with attribute blind spots (unknown_attribute_count > 0). For this "
+                 "succeeded runs with unknown attribute coverage (unknown_attribute_count null or > 0). For this "
                  "tool's data, call inventory_summary().")
+
+TRACE_TOPOLOGY_NOTE = (
+    "Host-scoped trace topology from observed spans and service-graph metrics. "
+    "Edge confidence is 'observed' with count metadata and 'unknown' without it, not a probability. "
+    "Legacy normalized volume values are not evidence counts. meta.spanCount counts observed span "
+    "relationships; meta.metricCount is an aggregate metric count. These are separate evidence "
+    "counts, not complete traffic volume. collection describes the latest attempt and snapshot "
+    "freshness; retained nodes alone do not establish that collection succeeded or is current. "
+    "Queue identities are telemetry claims, not verified AWS accounts, regions or queue inventory. "
+    "claimedAccountId/claimedRegion are rederived only from parsed destination ARNs, including "
+    "retained rows; non-ARN destinations and absent qualifiers have null claims, never caller "
+    "account/region fallbacks. identityProvenance is always telemetry_claim, even when an ARN "
+    "names the host; queues never bridge into inventory. Shared destination ARNs join across "
+    "callers only within datasource/environment; the same ARN can have separate nodes in each scope."
+)
 
 
 # ── Pure detection logic (fixture-testable; no DB) ───────────────────────────────────────────────
@@ -169,7 +188,7 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
 
     Matches the /api/graph contract:
       nodes = [{id, kind, label, meta}]
-      edges = [{source, target, rel, confidence}]
+      edges = [{source, target, rel, confidence, meta?}] (trace meta: spanCount/metricCount)
 
     If resource_id is given, scopes to that node + its 1-hop neighbourhood (filtered in Python
     after the full-graph fetch so we avoid RDS Data API array-binding complexity).
@@ -180,8 +199,11 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
         "SELECT id, kind, label, meta FROM topology_nodes "
         "WHERE account_id = 'self' AND class = :cls LIMIT " + str(int(min(limit, 1000))),
         params=[{"name": "cls", "value": {"stringValue": cls}}])
+    # Row-to-JSON lookup also works against the pre-migration view, which has no meta column.
+    edge_columns = "source, target, rel, confidence" + (
+        ", to_jsonb(e)->'meta' AS meta" if cls == "trace" else "")
     edge_rows = _execute(
-        "SELECT source, target, rel, confidence FROM topology_edges "
+        "SELECT " + edge_columns + " FROM topology_edges e "
         "WHERE account_id = 'self' AND class = :cls",
         params=[{"name": "cls", "value": {"stringValue": cls}}])
 
@@ -190,16 +212,48 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
             return m
         if isinstance(m, str) and m:
             try:
-                return json.loads(m)
-            except Exception:
+                parsed = json.loads(m)
+                return parsed if isinstance(parsed, dict) else {}
+            except ValueError:
                 return {}
         return {}
 
     nodes = [{"id": r["id"], "kind": r["kind"], "label": r["label"],
               "meta": _parse_meta(r.get("meta"))} for r in node_rows if r.get("id")]
-    edges = [{"source": r["source"], "target": r["target"],
-              "rel": r["rel"], "confidence": r["confidence"]}
-             for r in edge_rows if r.get("source") and r.get("target")]
+    if cls == "trace":
+        for node in nodes:
+            if node["kind"] != "queue":
+                continue
+            meta = node["meta"].copy()
+            # Re-derive before/after migration: stored claim fields may name the reporter.
+            destination = meta.get("destination")
+            arn = re.fullmatch(
+                r"arn:[a-z0-9-]+:[a-z0-9-]+:([a-z0-9-]*):([0-9]{12}):\S+",
+                destination.strip(),
+            ) if isinstance(destination, str) else None
+            for key in ("accountId", "region", "infra_ref"):
+                meta.pop(key, None)
+            meta["claimedAccountId"] = arn[2] if arn else None
+            meta["claimedRegion"] = (arn[1] or None) if arn else None
+            meta["identityProvenance"] = "telemetry_claim"
+            node["meta"] = meta
+    edges = []
+    for row in edge_rows:
+        if not row.get("source") or not row.get("target"):
+            continue
+        edge = {"source": row["source"], "target": row["target"], "rel": row["rel"],
+                "confidence": "unknown" if cls == "trace" else row["confidence"]}
+        if cls == "trace":
+            # Legacy snapshots have no counts. Do not fabricate a count from old confidence values.
+            meta = _parse_meta(row.get("meta"))
+            edge["meta"] = {
+                key: meta[key] for key in ("spanCount", "metricCount")
+                if key in meta and type(meta[key]) in (int, float) and meta[key] >= 0
+                and (isinstance(meta[key], int) or math.isfinite(meta[key]))
+            }
+            if edge["meta"]:
+                edge["confidence"] = "observed"
+        edges.append(edge)
 
     if resource_id:
         neighbor_ids = {resource_id}
@@ -211,6 +265,63 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
         edges = [e for e in edges if e["source"] in neighbor_ids and e["target"] in neighbor_ids]
 
     return nodes, edges
+
+
+def _fetch_trace_collection():
+    """Mirror graph-state.ts's trace evidence/freshness contract through the sql_reader view.
+
+    DB/permission errors deliberately propagate, just like the topology reads. An absent relation
+    or state row means unknown; a failed query must never certify a retained graph.
+    """
+    unknown = {"status": "unknown", "stale": True, "attempted_at": None,
+               "captured_at": None, "sources": []}
+    # Probe the same search-path relation we actually read (the sql_reader view). Deployment may
+    # precede either the state-table migration or its reader-view projection. No public fallback,
+    # and no permission/connection error is caught or reclassified as an absent schema.
+    relation = _execute("SELECT to_regclass('topology_graph_state')::text AS state_relation")
+    if not relation or relation[0].get("state_relation") is None:
+        return unknown
+    rows = _execute(
+        "SELECT status, attempted_at, captured_at, details FROM topology_graph_state "
+        "WHERE account_id = 'self' AND class = :cls LIMIT 1",
+        params=[{"name": "cls", "value": {"stringValue": "trace"}}],
+    )
+    if not rows:
+        return unknown
+    row = rows[0]
+    details = row.get("details")
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except ValueError:
+            details = None
+    valid_details = isinstance(details, dict) and isinstance(details.get("sources"), list)
+    details = details if valid_details else {"sources": []}
+    status = row.get("status")
+    if status not in ("ok", "empty", "partial", "unavailable", "error"):
+        status = "unknown"
+    if not valid_details and status not in ("error", "unavailable"):
+        status = "unknown"
+
+    # Same cadence policy as web/lib/graph-state.ts: two rebuild intervals, at least 15 minutes.
+    try:
+        interval = float(os.environ.get("GRAPH_REBUILD_INTERVAL_MINS", "0"))
+    except ValueError:
+        interval = 0
+    max_age_minutes = max(15, interval * 2) if math.isfinite(interval) else 15
+    captured = None
+    try:
+        raw = row.get("captured_at")
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        captured = stamp.replace(tzinfo=timezone.utc).timestamp() if stamp.tzinfo is None else stamp.timestamp()
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        pass  # missing/invalid snapshot time is stale, never replaced with the current clock
+    stale = (
+        captured is None or time.time() - captured > max_age_minutes * 60
+        or status in ("unknown", "error", "unavailable") or details.get("retainedPrevious") is True
+    )
+    return {**details, "status": status, "stale": stale,
+            "attempted_at": row.get("attempted_at"), "captured_at": row.get("captured_at")}
 
 
 # ── Aurora access via the RDS Data API (lazy + injectable; boto3 is in the Lambda runtime) ─────────
@@ -290,7 +401,7 @@ def _fetch_by_type(types):
     return out
 
 
-def _fetch_one_type(rtype, limit):
+def _fetch_one_type(rtype, limit, resource_id=None):
     """Backs `query_inventory`, the one tool where the model picks `rtype` — so unlike
     `_fetch_by_type` (called only with the fixed TOPOLOGY_TYPES set), this can be asked about a type
     with no PROJECTIONS entry.
@@ -304,9 +415,16 @@ def _fetch_one_type(rtype, limit):
     way) does not fix the incompleteness by itself; the honesty fix is the `limited` flag the caller
     surfaces so nothing downstream mistakes a partial object for a complete one.
     """
-    rows = _execute("SELECT " + _projected_select(rtype) + " AS data FROM inventory_resources "
-                    "WHERE account_id = 'self' AND resource_type = :rt LIMIT " + str(int(limit)),
-                    params=[{"name": "rt", "value": {"stringValue": rtype}}])
+    params = [{"name": "rt", "value": {"stringValue": rtype}}]
+    predicate, projection = "", _projected_select(rtype)
+    if resource_id is not None:
+        predicate = " AND resource_id = :rid"
+        params.append({"name": "rid", "value": {"stringValue": resource_id}})
+        projection, limit = "jsonb_build_object('id', resource_id)", 1
+    rows = _execute("SELECT " + projection + " AS data FROM inventory_resources "
+                    "WHERE account_id = 'self' AND resource_type = :rt" + predicate
+                    + " ORDER BY captured_at DESC, account_id, region, resource_id LIMIT " + str(int(limit)),
+                    params=params)
     return [_coerce(r.get("data")) for r in rows]
 
 
@@ -317,8 +435,8 @@ def _sync_freshness(resource_type=None):
     rows behind newer rows. When no rows exist, the durable last_success_at keeps a genuine
     zero-row success visible across later running/failed/partial attempts.
 
-    A succeeded run with attribute blind spots (unknown_attribute_count > 0 — attribute reads
-    denied in steady state) reports 'degraded', not 'healthy': the denial must not block pruning
+    A succeeded run with unknown coverage (unknown_attribute_count null or > 0 — unmeasured or
+    denied attribute reads) reports 'degraded', not 'healthy': this must not block pruning
     or last_success_at, but the reader must not be told the sweep saw everything either.
     """
     stale_after = _inventory_stale_after_minutes()
@@ -367,7 +485,7 @@ def _sync_freshness(resource_type=None):
         "WHEN latest_success_at < CURRENT_TIMESTAMP - "
         "(:stale_after_minutes * INTERVAL '1 minute') THEN 'stale' "
         "WHEN status IN ('partial', 'failed', 'running') THEN 'degraded' "
-        "WHEN status = 'succeeded' AND COALESCE(unknown_attribute_count, 0) > 0 THEN 'degraded' "
+        "WHEN status = 'succeeded' AND (unknown_attribute_count IS NULL OR unknown_attribute_count > 0) THEN 'degraded' "
         "WHEN status = 'succeeded' THEN 'healthy' "
         "ELSE 'unavailable' END AS freshness, "
         "CASE WHEN latest_success_at IS NULL THEN NULL ELSE "
@@ -431,12 +549,22 @@ def lambda_handler(event, context):
             # (plan T7b: both read paths reject identically) (M4).
             return {"statusCode": 400, "body": json.dumps(
                 {"error": "invalid class: " + str(cls) + " (expected flow|infra|trace)"})}
+        collection = _fetch_trace_collection() if cls == "trace" else None
         nodes, edges = _fetch_topology_graph(resource_id=resource_id, cls=cls)
         result = {"class": cls, "nodes": nodes, "edges": edges,
-                  "node_count": len(nodes), "edge_count": len(edges), "note": COVERAGE_NOTE}
+                  "node_count": len(nodes), "edge_count": len(edges),
+                  "note": TRACE_TOPOLOGY_NOTE if cls == "trace" else COVERAGE_NOTE}
         if resource_id:
             result["from"] = resource_id
-        if not nodes:
+        if collection is not None:
+            result["collection"] = collection
+            result["captured_at"] = collection["captured_at"]
+            if collection["stale"] or collection["status"] == "partial":
+                result["warning"] = (
+                    "Trace collection evidence is incomplete or stale; inspect collection before "
+                    "treating nodes or edges as current."
+                )
+        elif not nodes:
             result["warning"] = ("Graph not materialized yet — run scripts/v2/graph-rebuild.mjs "
                                  "(or the post-sync worker job) to populate topology_nodes/edges.")
         return _ok(result)
@@ -445,17 +573,26 @@ def lambda_handler(event, context):
         rtype = arguments.get("resource_type") if isinstance(arguments, dict) else None
         if not rtype:
             return {"statusCode": 400, "body": json.dumps({"error": "resource_type required"})}
+        resource_id = arguments.get("resource_id")
+        if resource_id is not None and (rtype != "cloudfront" or not isinstance(resource_id, str)
+                                            or not re.fullmatch(r"[A-Z0-9]{5,32}", resource_id)):
+            return {"statusCode": 400, "body": json.dumps({"error": "valid CloudFront resource_id required"})}
         try:
             limit = min(int(arguments.get("limit", 200)), 500) if isinstance(arguments, dict) else 200
         except (TypeError, ValueError):
             limit = 200  # a hallucinated non-numeric limit must not 500
-        rows = _fetch_one_type(rtype, limit)
+        rows = _fetch_one_type(rtype, limit, resource_id)
         result = {
             "resource_type": rtype,
             "count": len(rows),
             "resources": rows,
             "freshness": _freshness_for_type(rtype),
         }
+        if resource_id is not None:
+            result.update(projection="identity_only", resource_id=resource_id)
+            if not rows:
+                result["note"] = ("No matching identity was observed in the host/self synced inventory. "
+                                  "This is not evidence of absence in AWS; check freshness or a direct CloudFront read.")
         if rtype not in PROJECTIONS:
             # PR #197 review MAJOR: an unregistered type's `resources` entries only carry whatever
             # keys happen to be on SOME other type's projection allowlist — genuinely absent fields

@@ -67,6 +67,154 @@ describe('datasource-schema (keyed by integration_id)', () => {
 });
 
 describe('renderSchemaForPrompt', () => {
+  it('does not present intrinsic-only cached rows as custom attributes', () => {
+    expect(renderSchemaForPrompt({
+      attributes: [{ name: 'duration' }, { name: 'span:status' }, { name: 'trace:id' }],
+      tags: ['duration', 'status'],
+    }, 'tempo')).toBe('');
+  });
+
+  it('keeps raw legacy custom keys distinct from similarly named intrinsics', () => {
+    const out = renderSchemaForPrompt({ tags: ['duration', 'status', 'rootServiceName', 'http.status_code'] }, 'tempo');
+    expect(out).toContain('.http.status_code');
+    expect(out).toContain('.duration (type unknown)');
+    expect(out).toContain('.status (type unknown)');
+    expect(out).toContain('.rootServiceName (type unknown)');
+  });
+
+  it('keeps genuinely scoped attributes even when their names match intrinsics', () => {
+    expect(renderSchemaForPrompt({ attributes: [{ name: 'span.duration', types: ['int'] }] }, 'tempo'))
+      .toContain('span.duration (int)');
+  });
+
+  it('returns no usable schema when the budget cannot hold any complete attribute', () => {
+    expect(renderSchemaForPrompt({
+      version: '2.9.0', attributes: [{ name: 'span.' + 'a'.repeat(1000), types: ['string'] }],
+    }, 'tempo', 100)).toBe('');
+  });
+
+  it('preserves Tempo attribute scopes, observed types, and server version', () => {
+    const out = renderSchemaForPrompt({
+      version: '2.8.0',
+      tags: ['http.status_code', 'service.name'],
+      attributes: [
+        { name: 'span.http.status_code', types: ['int'] },
+        { name: 'span.http.response.status_code', types: ['string', 'int'] },
+        { name: 'resource.service.name', types: ['string'] },
+      ],
+    }, 'tempo');
+    expect(out).toContain('Tempo version: 2.8.0');
+    expect(out).toContain('span.http.status_code (int)');
+    expect(out).toContain('span.http.response.status_code (string | int)');
+    expect(out).toContain('resource.service.name (string)');
+    expect(out).not.toContain('tags: http.status_code');
+  });
+
+  it('renders old Tempo cache tags as valid unscoped attributes without guessing scope or type', () => {
+    const out = renderSchemaForPrompt({ tags: ['http.status_code', 'service.name', 'http status'] }, 'tempo');
+    expect(out).toContain('.http.status_code (type unknown)');
+    expect(out).toContain('.service.name (type unknown)');
+    expect(out).toContain('."http status" (type unknown)');
+    expect(out).not.toContain('span.http.status_code');
+  });
+
+  it.each(['resource.service.name', 'span.foo', 'parent.foo', 'event', 'trace.foo'])(
+    'quotes a legacy Tempo key beginning with a reserved scope: %s', (tag) => {
+      expect(renderSchemaForPrompt({ tags: [tag] }, 'tempo')).toContain(`."${tag}" (type unknown)`);
+    },
+  );
+
+  it('keeps relevant typed Tempo attributes within the render budget', () => {
+    const schema = {
+      attributes: [
+        ...Array.from({ length: 150 }, (_, i) => ({ name: `span.attr${i}`, types: ['string'] })),
+        { name: 'span.http.response.status_code', types: ['int'] },
+      ],
+    };
+    const out = renderSchemaForPrompt(prioritizeSchemaForQuery(schema, 'HTTP 500 응답 스팬'), 'tempo', 300);
+    expect(out).toContain('span.http.response.status_code (int)');
+    expect(out.length).toBeLessThanOrEqual(300);
+    expect(out).toMatch(/more attributes/);
+    expect(schema.attributes[0].name).toBe('span.attr0');
+  });
+
+  it('does not treat a version-only Tempo schema as observed attributes', () => {
+    expect(renderSchemaForPrompt({ version: '2.8.0', tags: [] }, 'tempo')).toBe('');
+  });
+
+  it('marks limited Tempo type evidence unknown without tainting an uncapped sibling sample', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: [
+        { name: 'span.http.status_code', types: ['string'], types_truncated: true },
+        { name: 'span.http.response.status_code', types: ['int'], types_truncated: false },
+      ],
+    }, 'tempo');
+    expect(out).toContain('span.http.status_code (type unknown; observed: string; sampling incomplete)');
+    expect(out).not.toContain('span.http.status_code (string)');
+    expect(out).toContain('span.http.response.status_code (int)');
+  });
+
+  it('treats old truncated Tempo caches without per-attribute sampling metadata conservatively', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: [{ name: 'span.http.status_code', types: ['string'] }],
+    }, 'tempo');
+    expect(out).toContain('span.http.status_code (type unknown; observed: string; sampling incomplete)');
+  });
+
+  it('does not label a type-only sampling limit as incomplete attribute-name discovery', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true, names_truncated: false, types_truncated: true,
+      attributes: [{ name: 'span.http.status_code', types: ['string'], types_truncated: true }],
+    }, 'tempo');
+    expect(out).toContain('type unknown; observed: string; sampling incomplete');
+    expect(out).not.toContain('discovery limited');
+    expect(out).not.toContain('more attributes');
+  });
+
+  it('retains explicit name-limit disclosure without tainting a complete type sample', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true, names_truncated: true, types_truncated: false,
+      attributes: [{ name: 'span.http.status_code', types: ['int'], types_truncated: false }],
+    }, 'tempo');
+    expect(out).toContain('span.http.status_code (int)');
+    expect(out).toContain('schema discovery limited');
+  });
+
+  it('discloses limited discovery without claiming zero additional Tempo attributes', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: [{ name: 'span.custom' }],
+    }, 'tempo');
+    expect(out).toContain('span.custom (type unknown)');
+    expect(out).toContain('schema discovery limited');
+    expect(out).not.toMatch(/\+0/);
+    expect(out).not.toContain('more attributes');
+  });
+
+  it('reports known omitted Tempo attributes separately from discovery limits', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: Array.from({ length: 81 }, (_, i) => ({ name: `span.attr${i}` })),
+    }, 'tempo');
+    expect(out).toContain('(+1 more attributes; discovery also limited)');
+    expect(out).not.toContain('+1+');
+  });
+
+  it('keeps incomplete Tempo sampling disclosures within a small prompt budget', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: [
+        { name: 'span.http.status_code', types: ['string'], types_truncated: true },
+        ...Array.from({ length: 10 }, (_, i) => ({ name: `span.attr${i}` })),
+      ],
+    }, 'tempo', 300);
+    expect(out.length).toBeLessThanOrEqual(300);
+    expect(out).toContain('span.http.status_code (type unknown; observed: string; sampling incomplete)');
+    expect(out).toContain('discovery also limited');
+  });
+
   it('emits SQL tables WITH columns and types (not just names) — the core ClickHouse fix', () => {
     const schema = {
       version: '24.8.1',

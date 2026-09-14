@@ -51,6 +51,9 @@ export async function POST(request: Request) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return err('unauthenticated', 401);
   if (!(await isAdmin(user))) return err('forbidden: admin only', 403);
+  if (process.env.INVENTORY_HOST_ONLY === 'true') {
+    return err('Host-only inventory is enabled. Configure multi-account collection before onboarding a target account.', 409);
+  }
 
   const body = (await readJsonBounded(request).catch(() => null)) as Record<string, unknown> | null;
   const accountId = String(body?.accountId ?? '').trim();

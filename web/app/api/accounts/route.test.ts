@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const verifyUser = vi.fn();
 const isAdmin = vi.fn();
@@ -30,6 +30,7 @@ const TARGET = '210987654321';
 const req = (method = 'GET', url = 'http://x/api/accounts', cookie = 'awsops_token=t') =>
   new Request(url, { method, headers: { cookie } });
 const validBody = { accountId: TARGET, alias: 'Prod', region: 'ap-northeast-2', externalId: 'ext-1' };
+afterEach(() => vi.unstubAllEnvs());
 
 beforeEach(() => {
   vi.resetModules();
@@ -60,6 +61,24 @@ describe('GET /api/accounts', () => {
 });
 
 describe('POST /api/accounts', () => {
+  it('rejects target onboarding in host-only mode before STS or registry writes', async () => {
+    vi.stubEnv('INVENTORY_HOST_ONLY', 'true');
+    const { POST } = await import('./route');
+    const response = await POST(req('POST'));
+    expect(response.status).toBe(409);
+    expect((await response.json()).message).toMatch(/host-only inventory/i);
+    expect(send).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+    expect(upsertAccountRegion).not.toHaveBeenCalled();
+  });
+  it('keeps authentication and admin checks ahead of the host-only restriction', async () => {
+    vi.stubEnv('INVENTORY_HOST_ONLY', 'true');
+    const { POST } = await import('./route');
+    verifyUser.mockResolvedValueOnce(null);
+    expect((await POST(req('POST'))).status).toBe(401);
+    isAdmin.mockResolvedValueOnce(false);
+    expect((await POST(req('POST'))).status).toBe(403);
+  });
   it('401 unauth', async () => {
     verifyUser.mockResolvedValue(null);
     const { POST } = await import('./route');

@@ -1,28 +1,26 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 25ae339f48bf · generated-at: 2026-09-05 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 08de80b2d1a1 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
-> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
+> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
-# Documentation — Reviewer Context
+# Documentation review
 
-Project docs organized by purpose; each subdirectory has its own `CLAUDE.md`.
-`decisions/BASELINE.md` is the decision single source of truth (+ consolidated ADRs 001–021).
-`reference/` is current v2 design, one file per component. `plans/`, `superpowers/plans|specs`,
-and `history/` mix current, frozen, and superseded material — never treat them as live guidance
-on their own; anything about mutation/autonomy is settled by ADR-005 FROZEN regardless of what
-an old plan says.
+Use the current component references and scoped runbooks. Historical plans and
+status records do not establish current deployment, approval or feature enablement.
+ADR bodies and the BASELINE register live in the private upstream repository, not
+this public tree. Cite ADR numbers for traceability; do not require local copies.
+AWS mutation/autonomy remains governed by ADR-005.
 
-## Conventions
-- New documents are bilingual Korean/English, with one exception: **all `CLAUDE.md`-type files
-  are English-only regardless of directory** (they're context files Claude Code auto-loads —
-  the goal is context-size savings), and generated archify artifacts under `docs/diagrams/`
-  are English-only. "Stays bilingual" is about a directory's body content, never its `CLAUDE.md`.
-- ADR bodies and the `BASELINE.md` register live in the private upstream repository, not in
-  this public tree — cite ADR numbers for traceability only.
+New or rewritten developer/reviewer documents under `docs/`, including operational
+runbooks and context files, are English-only. Preserve facts while maintaining old
+bilingual bodies; do not require parallel translations. Multilingual product guides
+under `docs-site/` and application translations remain.
 
-## Review checklist
-1. A CLAUDE.md-type file added in Korean (or bilingual) anywhere in the repo is a convention
-   violation — flag it.
+Generated archify spec/HTML artifacts are English-only. Regenerate delivered HTML
+from its source using the skill instead of hand-translating it. Follow the scoped
+runbook conventions for operational procedures and use the API reference for routes,
+not hand-maintained route counts.
 
-## Additional rule
-- Docs tree only — no application logic. Watch for secrets/credentials in committed docs
-  (account IDs, ARNs, live domains, tokens) and reject them.
+Never commit credentials or tokens. Use placeholders for environment-specific
+account IDs, ARNs and domains in public examples. Distinguish source-supported
+capability from actual execution evidence, and check commands and links against
+this public checkout.

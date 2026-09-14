@@ -6,6 +6,7 @@ cd "$ROOT" || exit 1
 
 python_failures=()
 web_failed=0
+node_failed=0
 
 if [[ -n "${MERGE_VERIFY_PY_ROOT:-}" ]]; then
   py_roots=("$MERGE_VERIFY_PY_ROOT")
@@ -55,7 +56,12 @@ else
   fi
 fi
 
-echo "== Stage 3: terraform checks =="
+echo "== Stage 3: deployment Node tests =="
+if ! node --test scripts/v2/deployment-smoke.test.mjs; then
+  node_failed=1
+fi
+
+echo "== Stage 4: terraform checks =="
 terraform_status="SKIP terraform binary not found"
 if command -v terraform >/dev/null 2>&1; then
   terraform_fmt_status="PASS fmt -check"
@@ -93,8 +99,13 @@ else
 fi
 
 echo "Terraform: $terraform_status"
+if [[ "$node_failed" -eq 0 ]]; then
+  echo "Deployment Node tests: PASS"
+else
+  echo "Deployment Node tests: FAIL"
+fi
 
-if [[ ${#python_failures[@]} -gt 0 || "$web_failed" -ne 0 ]]; then
+if [[ ${#python_failures[@]} -gt 0 || "$web_failed" -ne 0 || "$node_failed" -ne 0 ]]; then
   exit 1
 fi
 exit 0

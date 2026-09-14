@@ -4,8 +4,14 @@ The pure detection logic (detect_unused) takes already-fetched inventory rows (t
 of inventory_resources, keyed by resource_type) so it is testable with fixtures — no DB, no boto3.
 """
 import os
+import json
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -145,6 +151,63 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
         )
         self.assertEqual(inventory_params, [{"name": "rt", "value": {"stringValue": "alb"}}])
         self.assertNotIn("alb", inventory_sql)
+
+    def test_cloudfront_identity_lookup_finds_beyond_bulk_limit_without_large_details(self):
+        fleet = [{"id": f"E{i:08d}", "origins": ["large-detail" * 1000]} for i in range(601)]
+        expected = fleet[-1]["id"]
+        def fake(sql, params=None):
+            values = {p["name"]: p["value"]["stringValue"] for p in params}
+            if "rid" not in values:
+                return [{"data": row} for row in fleet[:500]]
+            self.assertIn("resource_id = :rid", sql)
+            self.assertIn("LIMIT 1", sql)
+            self.assertIn("account_id = 'self'", sql)
+            self.assertNotIn(expected, sql)
+            self.assertNotIn("origins", sql)
+            return [{"data": {"id": row["id"]}} for row in fleet if row["id"] == values["rid"]]
+        inv._execute_override = fake
+        with mock.patch.object(inv, "_freshness_for_type", return_value={}):
+            bulk = inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
+                "resource_type": "cloudfront", "resource_id": None, "limit": 500}}, None)
+            bulk_body = json.loads(bulk["body"])
+            self.assertEqual(len(bulk_body["resources"]), 500)
+            self.assertNotIn(expected, [row["id"] for row in bulk_body["resources"]])
+            self.assertNotIn("projection", bulk_body)
+            result = inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
+                "resource_type": "cloudfront", "resource_id": expected, "limit": 500}}, None)
+        body = json.loads(result["body"])
+        self.assertEqual(body["resources"], [{"id": expected}])
+        self.assertEqual(body["count"], 1)
+        self.assertEqual((body["projection"], body["resource_id"]), ("identity_only", expected))
+
+    def test_null_optional_identity_preserves_other_resource_lists(self):
+        inv._execute_override = lambda sql, params=None: [{"data": {"instance_id": "fixture"}}]
+        with mock.patch.object(inv, "_freshness_for_type", return_value={}):
+            for optional in ({}, {"resource_id": None}):
+                result = inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
+                    "resource_type": "ec2", **optional}}, None)
+                body = json.loads(result["body"])
+                self.assertEqual(body["resources"], [{"instance_id": "fixture"}])
+                self.assertNotIn("projection", body)
+
+    def test_identity_lookup_rejects_other_types_and_invalid_ids_before_sql(self):
+        with mock.patch.object(inv, "_execute") as execute:
+            for resource_type, identifier in (("ec2", "E123EXAMPLE"), ("cloudfront", "' OR 1=1"),
+                                               ("cloudfront", 123), ("cloudfront", "")):
+                result = inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
+                    "resource_type": resource_type, "resource_id": identifier}}, None)
+                self.assertEqual(result["statusCode"], 400)
+            execute.assert_not_called()
+
+    def test_identity_lookup_miss_discloses_observation_limits(self):
+        inv._execute_override = lambda sql, params=None: []
+        with mock.patch.object(inv, "_freshness_for_type", return_value={"freshness": "unavailable"}):
+            result = inv.lambda_handler({"tool_name": "query_inventory", "arguments": {
+                "resource_type": "cloudfront", "resource_id": "E123EXAMPLE"}}, None)
+        body = json.loads(result["body"])
+        self.assertEqual((body["count"], body["resources"]), (0, []))
+        self.assertIn("not evidence of absence in AWS", body["note"])
+        self.assertIn("freshness", body["note"])
 
     def test_query_inventory_discloses_bound_per_type_freshness(self):
         calls = []
@@ -372,7 +435,7 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
                     "unknown_attribute_count": None,
                     "oldest_captured_at": "2026-08-31T00:25:00+00:00",
                     "latest_success_at": "2026-08-31T00:25:00+00:00",
-                    "freshness": "healthy",
+                    "freshness": "degraded",
                     "age_minutes": 2,
                     "stale_after_minutes": 30,
                 },
@@ -382,22 +445,24 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
         rows = inv._sync_freshness()
 
         by_type = {row["resource_type"]: row for row in rows}
-        # blind attribute reads degrade the DISCLOSED freshness; an explicit 0/None stays healthy
+        # Unknown attribute coverage stays unknown/degraded; only an explicit zero can be healthy.
         self.assertEqual(by_type["s3_public_access"]["freshness"], "degraded")
         self.assertEqual(by_type["s3_public_access"]["unknown_attribute_count"], 2)
         self.assertEqual(by_type["s3"]["freshness"], "healthy")
-        self.assertEqual(by_type["alb"]["freshness"], "healthy")
+        self.assertEqual(by_type["alb"]["freshness"], "degraded")
+        self.assertIsNone(by_type["alb"]["unknown_attribute_count"])
         freshness_sql = calls[0][0]
         self.assertIn("runs.unknown_attribute_count", freshness_sql)
+        self.assertNotIn("COALESCE(unknown_attribute_count, 0)", freshness_sql)
         self.assertIn(
-            "WHEN status = 'succeeded' AND COALESCE(unknown_attribute_count, 0) > 0 "
+            "WHEN status = 'succeeded' AND (unknown_attribute_count IS NULL OR unknown_attribute_count > 0) "
             "THEN 'degraded'",
             freshness_sql,
         )
         # the unknown-attribute arm must precede the plain succeeded->healthy arm
         self.assertLess(
             freshness_sql.index(
-                "WHEN status = 'succeeded' AND COALESCE(unknown_attribute_count, 0) > 0 "
+                "WHEN status = 'succeeded' AND (unknown_attribute_count IS NULL OR unknown_attribute_count > 0) "
                 "THEN 'degraded'"
             ),
             freshness_sql.index("WHEN status = 'succeeded' THEN 'healthy'"),
@@ -567,6 +632,12 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
                                   "arguments": {"resource_type": "alb", "limit": "oops"}}, None)
         self.assertEqual(out["statusCode"], 200)
 
+    def test_query_inventory_sample_has_total_order(self):
+        calls = []
+        inv._execute_override = lambda sql, params=None: calls.append(sql) or []
+        inv._fetch_one_type("cloudfront", 500)
+        self.assertIn("ORDER BY captured_at DESC, account_id, region, resource_id LIMIT 500", calls[0])
+
     def test_get_topology_reads_topology_tables_not_inventory(self):
         """get_topology must query topology_nodes/edges, returning the /api/graph node+edge contract."""
         calls = []
@@ -682,6 +753,415 @@ class TestCatalogWiring(unittest.TestCase):
         self.assertIsNotNone(t, "inventory-read-target missing from catalog.TARGETS")
         tool = next(x for x in t["tools"] if x["name"] == "query_inventory")
         self.assertIn("ecs_service", tool["description"])
+
+    def test_inventory_reader_deployment_binds_web_graph_cadence(self):
+        # A binding elsewhere in ai.tf does not configure the inventory-reader Lambda.
+        for expression in _graph_cadence_expressions().values():
+            self.assertRegex(expression, r"^tostring\(\s*var\.graph_rebuild_interval_mins\s*\)$")
+
+
+def _graph_cadence_expressions():
+    """Read the deployed settings, without substituting a test-only cadence binding."""
+    foundation = Path(__file__).resolve().parents[2] / "terraform/foundation"
+    agent = (foundation / "ai.tf").read_text().split('resource "aws_lambda_function" "agent" {', 1)[1]
+    reader = re.search(r'each\.key\s*==\s*"inventory-read"\s*\?\s*\{([^}]+)\}\s*:\s*\{\}', agent)
+    assert reader is not None, "inventory-reader environment branch missing"
+    binding = re.search(r"^\s*GRAPH_REBUILD_INTERVAL_MINS\s*=\s*([^\n]+)", reader[1], re.M)
+    assert binding is not None, "inventory-reader Lambda must receive the web graph rebuild cadence"
+    web = re.search(
+        r'name\s*=\s*"GRAPH_REBUILD_INTERVAL_MINS"\s*,\s*value\s*=\s*([^}\n]+)',
+        (foundation / "workload.tf").read_text(),
+    )
+    assert web is not None, "web graph rebuild cadence binding missing"
+    return {"reader": binding[1].strip(), "web": web[1].strip()}
+
+
+class TestTraceTopologyCollection(unittest.TestCase):
+    NOW = 1_789_128_000  # 2026-09-11T12:00:00Z
+    CAPTURED = "2026-09-11T11:55:00+00:00"
+    ATTEMPTED = "2026-09-11T11:59:00+00:00"
+
+    def tearDown(self):
+        inv._execute_override = None
+
+    def _read(self, state, nodes=None, edges=None, arguments=None,
+              schema_present=True, edge_meta_present=True):
+        calls = []
+
+        def fake(sql, params=None):
+            calls.append((sql, params))
+            if "to_regclass" in sql:
+                return [{"state_relation": "sql_reader.topology_graph_state" if schema_present else None}]
+            if "topology_graph_state" in sql:
+                if not schema_present:
+                    raise RuntimeError("relation topology_graph_state does not exist")
+                return [state] if state is not None else []
+            if "topology_nodes" in sql:
+                return nodes if nodes is not None else [
+                    {"id": "svc:checkout", "kind": "service", "label": "checkout", "meta": {}},
+                ]
+            if "topology_edges" in sql:
+                if not edge_meta_present and "to_jsonb(e)->'meta' AS meta" not in sql:
+                    raise RuntimeError("column meta does not exist")
+                return edges or []
+            self.fail(f"unexpected query: {sql}")
+
+        inv._execute_override = fake
+        # Use the real clock boundary; no DB, boto3, or live AWS call can occur.
+        with mock.patch("time.time", return_value=self.NOW):
+            response = inv.lambda_handler({
+                "tool_name": "get_topology", "arguments": {"class": "trace", **(arguments or {})},
+            }, None)
+        self.assertEqual(response["statusCode"], 200)
+        return json.loads(response["body"]), calls
+
+    def _state(self, status="ok", details=None, captured_at=CAPTURED):
+        return {"status": status, "attempted_at": self.ATTEMPTED, "captured_at": captured_at,
+                "details": {"sources": [], "retainedPrevious": False} if details is None else details}
+
+    def test_queue_arn_claims_remain_unverified_including_before_projection_migration(self):
+        cases = json.loads((Path(__file__).resolve().parents[2]
+                           / "web/lib/fixtures/trace-queue-claims.json").read_text())
+        for case in cases:
+            for attrs in [
+                {},
+                {"accountId": "444455556666", "region": "us-west-2"},
+                {"claimedAccountId": "777788889999", "claimedRegion": "eu-west-1"},
+            ]:
+                with self.subTest(case=case, attrs=attrs):
+                    body, _ = self._read(self._state(), nodes=[{
+                        "id": "queue:one", "kind": "queue", "label": "orders",
+                        "meta": json.dumps({**attrs, "destination": case["destination"],
+                                           "identityProvenance": "aws_verified", "infra_ref": "inventory:queue"}),
+                    }])
+                    self.assertEqual(body["nodes"][0]["meta"], {
+                        "destination": case["destination"],
+                        "claimedAccountId": case["account"], "claimedRegion": case["region"],
+                        "identityProvenance": "telemetry_claim",
+                    })
+                    self.assertIn("not verified AWS", body["note"])
+
+    def test_queue_without_destination_never_uses_legacy_reporter_claims(self):
+        for attrs in [
+            {"accountId": "111122223333", "region": "us-east-1"},
+            {"claimedAccountId": "111122223333", "claimedRegion": "us-east-1"},
+        ]:
+            body, _ = self._read(self._state(), nodes=[{
+                "id": "queue:one", "kind": "queue", "label": "orders",
+                "meta": {**attrs, "identityProvenance": "aws_verified", "infra_ref": "inventory:queue"},
+            }])
+            self.assertEqual(body["nodes"][0]["meta"], {
+                "claimedAccountId": None, "claimedRegion": None,
+                "identityProvenance": "telemetry_claim",
+            })
+            self.assertIn("not verified AWS", body["note"])
+
+    def test_trace_returns_latest_failure_and_retained_snapshot_evidence(self):
+        source = {
+            "sourceId": "tempo:7", "status": "error", "reasons": ["trace_fetch_failed"], "itemCount": 0,
+            "windowStartMs": 1_789_124_340_000, "windowEndMs": 1_789_127_940_000,
+        }
+        body, _ = self._read(self._state("error", {
+            "sources": [source], "retainedPrevious": True,
+            "windowStartMs": source["windowStartMs"], "windowEndMs": source["windowEndMs"],
+        }))
+        self.assertEqual(body["collection"], {
+            "status": "error", "stale": True, "attempted_at": self.ATTEMPTED, "captured_at": self.CAPTURED,
+            "sources": [source], "retainedPrevious": True,
+            "windowStartMs": source["windowStartMs"], "windowEndMs": source["windowEndMs"],
+        })
+        self.assertEqual(body["captured_at"], self.CAPTURED)
+        self.assertEqual(body["node_count"], 1, "retained nodes remain available with their failed collection state")
+        self.assertIn("warning", body)
+        self.assertNotIn("synced Aurora inventory", body["note"])
+
+    def test_partial_collection_keeps_source_reasons_counts_caps_and_orphans(self):
+        details = {
+            "sources": [{
+                "sourceId": "clickhouse:42", "status": "partial", "reasons": ["cap_reached"],
+                "itemCount": 1000, "windowStartMs": 1_789_124_340_000, "windowEndMs": 1_789_127_940_000,
+            }],
+            "retainedPrevious": False, "windowStartMs": 1_789_124_340_000, "windowEndMs": 1_789_127_940_000,
+            "nodeDrops": 10, "edgeDrops": 20, "orphanSpans": 3, "invalidSpans": 2, "infraUnavailable": True,
+        }
+        body, _ = self._read(self._state("partial", json.dumps(details)))
+        self.assertEqual(body["collection"], {
+            **details, "status": "partial", "stale": False,
+            "attempted_at": self.ATTEMPTED, "captured_at": self.CAPTURED,
+        })
+        self.assertIn("warning", body)
+
+    def test_missing_state_is_unknown_even_with_retained_nodes(self):
+        body, _ = self._read(None)
+        self.assertEqual(body["collection"], {
+            "status": "unknown", "stale": True, "attempted_at": None, "captured_at": None, "sources": [],
+        })
+        self.assertIsNone(body["captured_at"])
+        self.assertEqual(body["node_count"], 1)
+        self.assertIn("warning", body)
+
+    def test_stale_success_and_unavailable_reads_are_not_current(self):
+        for status, captured in [
+            ("ok", "2026-09-11T11:44:59Z"),
+            ("unavailable", self.CAPTURED),
+            ("ok", None),
+            ("ok", "not-a-timestamp"),
+        ]:
+            with self.subTest(status=status, captured=captured):
+                body, _ = self._read(self._state(status, captured_at=captured))
+                self.assertEqual(body["collection"]["status"], status)
+                self.assertTrue(body["collection"]["stale"])
+                self.assertIn("warning", body)
+
+    def test_stale_threshold_matches_graph_api_interval_with_fifteen_minute_floor(self):
+        for interval, captured, stale in [
+            ("0", "2026-09-11T11:45:00Z", False),
+            ("0", "2026-09-11T11:44:59Z", True),
+            ("30", "2026-09-11T11:01:00Z", False),
+            ("30", "2026-09-11T10:59:59Z", True),
+            ("NaN", "2026-09-11T11:44:59Z", True),
+        ]:
+            with self.subTest(interval=interval, captured=captured):
+                with mock.patch.dict(os.environ, {"GRAPH_REBUILD_INTERVAL_MINS": interval}):
+                    body, _ = self._read(self._state(captured_at=captured))
+                self.assertEqual(body["collection"]["stale"], stale)
+
+    def test_deployed_graph_cadence_agrees_with_real_web_reader(self):
+        expressions = _graph_cadence_expressions()  # Missing binding fails even without optional tools.
+        root = Path(__file__).resolve().parents[2]
+        if not shutil.which("terraform") or not shutil.which("node"):
+            self.skipTest("Cross-runtime contract requires Terraform and Node; binding contract still runs")
+        if not (root / "web/node_modules/typescript/lib/typescript.js").is_file():
+            self.skipTest("Cross-runtime contract requires the existing web TypeScript dependency")
+        # Evaluate the actual HCL expressions in a provider-free, backend-free module.
+        # No foundation state, provider initialization, AWS credentials or network is used.
+        with tempfile.TemporaryDirectory(prefix="graph-cadence-") as directory:
+            fixture = Path(directory)
+            (fixture / "main.tf").write_text('variable "graph_rebuild_interval_mins" { type = number }\n')
+            (fixture / "terraform.rc").write_text("")
+            env = {k: v for k, v in os.environ.items() if not k.startswith("TF_")}
+            env.update(TF_DATA_DIR=str(fixture / ".terraform"),
+                       TF_CLI_CONFIG_FILE=str(fixture / "terraform.rc"), CHECKPOINT_DISABLE="1")
+            for minutes in (0, 15, 30, 60):
+                with self.subTest(minutes=minutes):
+                    expression = "jsonencode({" + ",".join(
+                        f"{key}=({value})" for key, value in expressions.items()) + "})\n"
+                    evaluated = subprocess.run(
+                        ["terraform", f"-chdir={directory}", "console", "-no-color",
+                         f"-var=graph_rebuild_interval_mins={minutes}"],
+                        input=expression, text=True, capture_output=True, env=env, timeout=20,
+                    )
+                    self.assertEqual(evaluated.returncode, 0, evaluated.stderr)
+                    deployed = json.loads(json.loads(evaluated.stdout))
+                    self.assertEqual(deployed, {"reader": str(minutes), "web": str(minutes)})
+                    cases = [
+                        (self._state(captured_at="2026-09-11T11:40:00Z"), minutes == 0),
+                    ]
+                    if minutes == 30:
+                        cases += [
+                            (self._state("empty", captured_at="2026-09-11T11:40:00Z"), False),
+                            (self._state("partial", captured_at="2026-09-11T11:40:00Z"), False),
+                            (self._state(captured_at="2026-09-11T11:00:00Z"), False),
+                            (self._state(captured_at="2026-09-11T10:59:59Z"), True),
+                            (self._state("error"), True), (self._state("unavailable"), True),
+                            (self._state(details={"sources": [], "retainedPrevious": True}), True),
+                            (self._state(captured_at=None), True), (None, True),
+                        ]
+                    # Execute graph-state.ts itself using the installed compiler, compatible with
+                    # the CI's Node 20. Only SQL rows, environment and wall clock are controlled.
+                    web = subprocess.run(["node", "-e", r"""
+const fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const ts = require(path.join(input.root, 'web/node_modules/typescript'));
+const source = fs.readFileSync(path.join(input.root, 'web/lib/graph-state.ts'), 'utf8');
+const code = ts.transpileModule(source, { compilerOptions: {
+  module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020,
+} }).outputText;
+const context = { exports: {}, process: { env: input.environment },
+  Date: class extends Date { static now() { return input.now; } } };
+vm.runInNewContext(code, context);
+Promise.all(input.rows.map(row => context.exports.readGraphState({
+  query: async (sql, args) => {
+    if (!sql.includes('FROM topology_graph_state') || args[0] !== 'self') throw Error('unexpected SQL');
+    return { rows: row ? [row] : [] };
+  },
+}, 'self'))).then(rows => process.stdout.write(JSON.stringify(rows)))
+  .catch(error => { console.error(error); process.exitCode = 1; });
+"""], input=json.dumps({
+                        "root": str(root), "now": self.NOW * 1000,
+                        # The web omits this variable when the configured timer is disabled.
+                        "environment": {"GRAPH_REBUILD_INTERVAL_MINS": deployed["web"]} if minutes else {},
+                        "rows": [row for row, _ in cases],
+                    }), text=True, capture_output=True, timeout=20)
+                    self.assertEqual(web.returncode, 0, web.stderr)
+                    web_collections = json.loads(web.stdout)
+                    self.assertEqual(len(web_collections), len(cases))
+                    for (state, stale), web_collection in zip(cases, web_collections):
+                        with self.subTest(state=state):
+                            with mock.patch.dict(os.environ, {
+                                "GRAPH_REBUILD_INTERVAL_MINS": deployed["reader"],
+                            }, clear=True):
+                                body, _ = self._read(state)
+                            self.assertEqual(body["collection"]["stale"], stale)
+                            self.assertEqual(body["collection"], web_collection)
+                            self.assertEqual("warning" in body,
+                                             stale or body["collection"]["status"] == "partial")
+
+    def test_successfully_collected_empty_graph_is_not_reported_as_unmaterialized(self):
+        body, _ = self._read(self._state("empty"), nodes=[])
+        self.assertEqual(body["collection"]["status"], "empty")
+        self.assertFalse(body["collection"]["stale"])
+        self.assertNotIn("warning", body)
+        self.assertEqual(body["nodes"], [])
+
+    def test_retention_and_authoritative_columns_override_conflicting_details(self):
+        body, _ = self._read(self._state("error", {
+            "sources": [], "retainedPrevious": True, "status": "ok", "stale": False,
+            "attempted_at": "bogus", "captured_at": "bogus",
+        }))
+        self.assertEqual(body["collection"]["status"], "error")
+        self.assertTrue(body["collection"]["stale"])
+        self.assertEqual(body["collection"]["captured_at"], self.CAPTURED)
+        body, _ = self._read(self._state("ok", {"sources": [], "retainedPrevious": True}))
+        self.assertTrue(body["collection"]["stale"])
+
+    def test_malformed_state_is_unknown_rather_than_success(self):
+        for state in [
+            self._state(details="not-json"),
+            self._state(details="[]"),
+            self._state(details={"sources": "not-an-array"}),
+            self._state(status="unexpected"),
+        ]:
+            with self.subTest(state=state):
+                body, _ = self._read(state)
+                self.assertEqual(body["collection"]["status"], "unknown")
+                self.assertTrue(body["collection"]["stale"])
+
+    def test_state_permission_or_database_failure_is_not_swallowed_as_healthy(self):
+        for error in (PermissionError("reader view denied"), ConnectionError("DB unavailable")):
+            for phase in ("probe", "read"):
+                with self.subTest(error=error, phase=phase):
+                    def fake(sql, params=None):
+                        if "to_regclass" in sql:
+                            if phase == "probe":
+                                raise error
+                            return [{"state_relation": "sql_reader.topology_graph_state"}]
+                        if "topology_graph_state" in sql:
+                            raise error
+                        return [{"id": "retained", "kind": "service", "label": "old", "meta": {}}] if "topology_nodes" in sql else []
+                    inv._execute_override = fake
+                    with self.assertRaises(type(error)):
+                        inv.lambda_handler({"tool_name": "get_topology", "arguments": {"class": "trace"}}, None)
+
+    def test_trace_edge_counts_are_separate_observations_not_probability(self):
+        for confidence in ("observed", "0.95", 0.95):
+            with self.subTest(confidence=confidence):
+                body, calls = self._read(self._state(), edges=[{
+                    "source": "svc:checkout", "target": "svc:orders", "rel": "calls",
+                    "confidence": confidence, "meta": json.dumps({"spanCount": 3, "metricCount": 12.5}),
+                }])
+                self.assertEqual(body["edges"], [{
+                    "source": "svc:checkout", "target": "svc:orders", "rel": "calls",
+                    "confidence": "observed", "meta": {"spanCount": 3, "metricCount": 12.5},
+                }])
+                edge_sql = next(sql for sql, _ in calls if "FROM topology_edges" in sql)
+                self.assertIn("meta", edge_sql)
+                self.assertIn("not a probability", body["note"])
+
+    def test_legacy_edge_without_metadata_does_not_invent_evidence_counts(self):
+        body, _ = self._read(None, edges=[{
+            "source": "svc:a", "target": "svc:b", "rel": "calls", "confidence": "0.7",
+        }])
+        self.assertEqual(body["edges"][0]["meta"], {})
+        self.assertEqual(body["edges"][0]["confidence"], "unknown")
+        self.assertEqual(body["collection"]["status"], "unknown")
+
+    def test_pre_migration_trace_graph_returns_retained_nodes_with_unknown_collection_and_evidence(self):
+        body, calls = self._read(None, schema_present=False, edge_meta_present=False, edges=[{
+            "source": "svc:a", "target": "svc:b", "rel": "calls", "confidence": "0.7", "meta": None,
+        }])
+        self.assertEqual(body["node_count"], 1)
+        self.assertEqual(body["collection"], {
+            "status": "unknown", "stale": True, "attempted_at": None, "captured_at": None, "sources": [],
+        })
+        self.assertEqual(body["edges"], [{
+            "source": "svc:a", "target": "svc:b", "rel": "calls", "confidence": "unknown", "meta": {},
+        }])
+        self.assertIn("warning", body)
+        self.assertTrue(any("to_regclass" in sql for sql, _ in calls))
+        self.assertFalse(any("FROM topology_graph_state" in sql for sql, _ in calls))
+        self.assertNotIn('"0.7"', json.dumps(body))
+
+    def test_missing_reader_view_is_unknown_without_falling_back_to_public_tables(self):
+        body, calls = self._read(self._state(), schema_present=False)
+        self.assertEqual(body["collection"]["status"], "unknown")
+        self.assertTrue(body["collection"]["stale"])
+        self.assertFalse(any("FROM topology_graph_state" in sql or "FROM public." in sql for sql, _ in calls))
+
+    def test_optional_edge_column_can_be_absent_while_collection_state_exists(self):
+        body, _ = self._read(self._state(), edge_meta_present=False, edges=[{
+            "source": "svc:a", "target": "svc:b", "rel": "calls", "confidence": "0.95", "meta": None,
+        }])
+        self.assertEqual(body["collection"]["status"], "ok")
+        self.assertEqual(body["edges"][0]["confidence"], "unknown")
+        self.assertEqual(body["edges"][0]["meta"], {})
+
+    def test_empty_or_invalid_edge_counts_do_not_certify_observed_evidence(self):
+        for meta in ({}, None, {"spanCount": None, "metricCount": "0.7"},
+                     {"spanCount": -1, "metricCount": False}):
+            with self.subTest(meta=meta):
+                body, _ = self._read(self._state(), edges=[{
+                    "source": "svc:a", "target": "svc:b", "rel": "calls", "confidence": "observed", "meta": meta,
+                }])
+                self.assertEqual(body["edges"][0]["confidence"], "unknown")
+                self.assertEqual(body["edges"][0]["meta"], {})
+
+    def test_edge_permission_failure_remains_visible_when_state_schema_is_absent(self):
+        def fake(sql, params=None):
+            if "to_regclass" in sql:
+                return [{"state_relation": None}]
+            if "topology_edges" in sql:
+                raise PermissionError("topology view denied")
+            if "topology_nodes" in sql:
+                return []
+            self.fail("must not query the absent state relation")
+        inv._execute_override = fake
+        with self.assertRaises(PermissionError):
+            inv.lambda_handler({"tool_name": "get_topology", "arguments": {"class": "trace"}}, None)
+
+    def test_collection_read_and_neighbourhood_remain_host_scoped_and_bounded(self):
+        body, calls = self._read(self._state(), nodes=[
+            {"id": key, "kind": "service", "label": key, "meta": {}}
+            for key in ("svc:checkout", "svc:orders", "svc:unrelated")
+        ], edges=[{
+            "source": "svc:checkout", "target": "svc:orders", "rel": "calls",
+            "confidence": "observed", "meta": {"spanCount": 2, "metricCount": 0},
+        }], arguments={"resource_id": "svc:checkout", "target_account_id": "222222222222", "limit": 999999})
+        self.assertEqual({n["id"] for n in body["nodes"]}, {"svc:checkout", "svc:orders"})
+        self.assertEqual(body["from"], "svc:checkout")
+        self.assertIn("collection", body)
+        self.assertEqual(len(calls), 4)
+        for sql, _ in calls:
+            if "to_regclass" not in sql:
+                self.assertIn("account_id = 'self'", sql)
+            self.assertNotIn("222222222222", sql)
+            self.assertNotIn("public.", sql)
+            self.assertTrue(sql.lstrip().startswith("SELECT"))
+        self.assertIn("LIMIT 1", next(sql for sql, _ in calls if "FROM topology_graph_state" in sql))
+        self.assertIn("LIMIT 500", next(sql for sql, _ in calls if "topology_nodes" in sql))
+
+    def test_other_graph_classes_do_not_read_collection_or_change_edge_contract(self):
+        for cls in ("flow", "infra"):
+            with self.subTest(cls=cls):
+                body, calls = self._read(None, edges=[{
+                    "source": "a", "target": "b", "rel": "routes", "confidence": "inferred",
+                }], arguments={"class": cls})
+                self.assertNotIn("collection", body)
+                self.assertNotIn("captured_at", body)
+                self.assertEqual(body["edges"][0], {
+                    "source": "a", "target": "b", "rel": "routes", "confidence": "inferred",
+                })
+                self.assertFalse(any("topology_graph_state" in sql for sql, _ in calls))
 
 
 if __name__ == "__main__":

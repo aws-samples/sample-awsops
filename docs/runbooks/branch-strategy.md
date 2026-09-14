@@ -62,31 +62,70 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
   contributors" so unknown contributors' runs need a maintainer click.
 - PR content and review text are untrusted data for CI and AI review alike.
 
+Fork PRs intentionally do **not** receive the canonical `AI Code Review` check; a
+skipped job must not impersonate a completed review. A green test/CodeQL run alone
+does not make a fork PR eligible to merge under the review policy.
+
+Maintainer path:
+
+1. Review the contributor's patch as data, especially workflow/build-hook changes,
+   before putting it on a same-repository branch. Do not blindly mirror executable
+   CI changes into a branch that can receive repository secrets.
+2. Create a maintainer-owned topic branch and an internal PR targeting `dev`, linking
+   the original fork PR. The trusted automatic review runs against the internal PR's
+   exact HEAD; use the normal full AI/CI checks, not a recovery label.
+3. Merge the internal PR only after those checks pass, then close the original fork
+   PR with the integration link. A changed internal HEAD requires fresh review.
+
 (외부 fork PR은 시크릿·OIDC 토큰을 받지 못해 배포/AWS 접근이 불가하고, plan 잡은
 same-repo가 아니면 시작하지 않습니다. main 대상 PR은 head가 이 리포의 `dev`가 아니면
 guard 체크가 실패합니다. 첫 기여자의 CI 실행은 관리자 승인 후에만 동작합니다.)
+
+Fork PR에는 정식 `AI Code Review` 검사를 발행하지 않으므로 테스트·CodeQL 통과만으로
+머지할 수 없습니다. 유지관리자는 패치, 특히 CI·빌드 훅 변경을 먼저 검토한 뒤 내부
+토픽 브랜치와 `dev` 대상 PR을 만들고 원본 PR을 연결합니다. 내부 PR의 최신 HEAD가
+전체 AI·CI 검사를 통과하면 그 PR을 머지하고 원본 fork PR에 통합 결과를 연결해
+닫습니다. 이 경로에서 복구 라벨이나 검사 우회는 사용하지 않습니다.
 
 ## Domain / deployment map / 도메인·배포 맵
 
 | Tier | Branch | Stack / domain | Deploy trigger |
 |---|---|---|---|
 | User | `atomoh` / `ssminji` / `whchoi` | that user's stack, `<user>.awsops-dev.whchoi.net` | auto on push (`deploy-web.yml`) |
-| Dev | `dev` | dev stack, `awsops-dev.whchoi.net` | auto on push (`deploy-web.yml`) |
+| Dev | `dev` | dev stack; `DOMAIN_NAME_DEV` when set, otherwise stored tfvars | auto web roll on push (`deploy-web.yml`); DNS requires explicit dispatch |
 | Production | `main` | production stack — **domain not attached yet** | dispatch + `production` environment approval |
+
+Dev's repo-level name/zone overrides feed console and plan consistently; main/preview ignore
+them and retain their own tfvars. PR/push Terraform plans are read-only advisory artifacts,
+never apply-eligible, and dev advisory preflight does no live certificate/SAN validation.
+For each authorized unpublished/same-domain dev rollout stage, set `domain_rollout=true`
+on the full plan dispatch; apply derives scoping from saved `ci_domain_rollout` metadata.
+Ordinary full DNS/Cloud Map changes still require explicit DNS permission. This does not
+authorize changing or deleting the old dev/parent records. Follow the
+[domain rollout runbook](dev-domain-rollout.md); preview names do not move with the dev override.
+
+dev 저장소 이름/존 변수는 console과 plan에 함께 적용되며 main/preview는 자체 tfvars를 유지합니다.
+PR/push는 적용 불가 참고 계획이고 dev 실시간 인증서 검증도 하지 않습니다. 승인된 미게시/동일
+도메인 전환은 모든 full plan에서 `domain_rollout=true`를 저장하며 apply에서 범위를 바꾸지 않습니다.
+일반 Cloud Map/DNS도 승인이 필요하고 이전/상위 DNS 삭제나 preview 이동 권한은 포함하지 않습니다.
 
 ### Production domain decision / 프로덕션 도메인 결정 (PENDING)
 
-Provision and deploy the production stack **without a custom domain first** — it
-serves on its CloudFront default domain (the `public_url` terraform output; every
-workflow smoke-tests that output, so attaching a domain later changes no CI). After
-reviewing the deployed distribution, decide whether to attach `awsops.whchoi.net`:
+Provisioning **without publishing service DNS** still needs a configured hostname and
+trusted certificates for both TLS hops. `public_url` is the service URL, while
+`cloudfront_domain` is the connection destination used by
+[Deploy Web's smoke step](../../.github/workflows/deploy-web.yml) to preserve Host/SNI/TLS
+before A publication. `/api/health` proves liveness; DB/auth checks are separate.
+After reviewing the deployed distribution, decide whether to attach `awsops.whchoi.net`:
 
 - `awsops.whchoi.net` is **currently in use by an existing deployment** — attaching
   it here is a cutover decision for the domain's owner, not a default.
 - Attaching later = tfvars domain + ACM cert (us-east-1 for CloudFront) + alias →
   `terraform plan` / dispatch apply. Nothing else moves; `public_url` follows.
 
-(프로덕션은 우선 도메인 없이 배포해 CloudFront 기본 도메인(`public_url`)으로 확인한 뒤
+(프로덕션은 서비스 DNS를 게시하지 않아도 설정 호스트와 TLS 인증서가 필요합니다.
+`public_url`은 서비스 URL이며 CloudFront 연결 주소를 사용한 smoke가 Host/SNI/TLS를 보존합니다.
+생존 확인과 DB·인증 검증을 마친 뒤
 `awsops.whchoi.net` 부착 여부를 결정합니다 — 현재 다른 배포가 사용 중인 도메인이므로
 부착은 소유자의 컷오버 결정입니다. 부착 = tfvars 도메인 + us-east-1 ACM + alias →
 plan/apply.)

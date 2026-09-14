@@ -4,11 +4,15 @@ Render an already-generated report markdown into download formats:
   - to_docx(markdown) -> bytes   (python-docx; pure-python)
   - to_pdf(markdown)  -> bytes   (markdown→HTML→headless chromium via playwright)
 
-Read-only: these only transcode a report that was already produced over redacted data. No AWS
-mutation, no network egress (the PDF CSS uses the system Noto CJK font — no external @import).
+Read-only: these only transcode a report already produced over redacted data. No AWS mutation.
+PDF resource isolation combines a markup allowlist, CSP, an offline browser context and
+context-wide request aborts. The system Noto CJK font needs no external import.
 """
 import io
 import re
+from collections import Counter
+from html import escape
+from html.parser import HTMLParser
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET = re.compile(r"^\s*[-*]\s+(.*)$")
@@ -308,13 +312,99 @@ th, td { border: 1px solid #bbb; padding: 5px 8px; font-size: 10pt; text-align: 
 code, pre { font-family: monospace; background: #f4f4f4; }
 """
 
+# Chromium's speculative prefetch can bypass Playwright request interception. Install this trusted
+# policy before any report markup; later markup cannot relax it. Only inline styles/data images
+# are needed alongside the system fonts. Offline mode below also blocks document navigation.
+_PDF_CSP = (
+    "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+    "base-uri 'none'; form-action 'none'"
+)
+
+_PDF_TAGS = frozenset(
+    "a abbr b blockquote br caption code col colgroup dd del details div dl dt em figcaption "
+    "figure h1 h2 h3 h4 h5 h6 hr i img kbd li mark ol p pre s samp small span strong style "
+    "sub summary sup table tbody td tfoot th thead tr u ul var".split()
+)
+_PDF_VOID_TAGS = frozenset(("br", "col", "hr", "img"))
+_PDF_ATTRIBUTES = frozenset(("class", "id", "title", "lang", "dir", "style"))
+_PDF_TAG_ATTRIBUTES = {
+    "a": {"href", "name"}, "img": {"src", "alt", "width", "height"},
+    "col": {"span", "width"}, "colgroup": {"span"},
+    "td": {"colspan", "rowspan"}, "th": {"colspan", "rowspan", "scope"},
+    "ol": {"start", "reversed", "type"}, "li": {"value"},
+    "details": {"open"},
+}
+
+
+class _PdfMarkup(HTMLParser):
+    """Rebuild formatting HTML; raw hints, metadata, embeds and active attributes never survive.
+
+    Re-encode text/attributes rather than copying input tags: browser parsing must not recover
+    a discarded link/meta through entity decoding, malformed markup or a foreign namespace.
+    Inline CSS remains behind CSP; image sources are embedded raster data only.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.open_tags = []
+        self.open_counts = Counter()
+
+    def handle_starttag(self, tag, attrs):
+        if tag not in _PDF_TAGS:
+            return
+        allowed = _PDF_ATTRIBUTES | _PDF_TAG_ATTRIBUTES.get(tag, set())
+        kept = []
+        for name, value in attrs:
+            if name not in allowed:
+                continue
+            if name == "href":
+                if value is None or not re.match(r"^(?:#|https?://|mailto:)", value, re.I):
+                    continue
+            if name == "src":
+                if value is None or not re.fullmatch(
+                        r"data:image/(?:png|jpeg|gif|webp|avif|bmp);base64,[A-Za-z0-9+/=\s]+",
+                        value, re.I):
+                    continue
+            kept.append(f' {name}="{escape(value or "", quote=True)}"')
+        self.parts.append(f"<{tag}{''.join(kept)}>")
+        if tag not in _PDF_VOID_TAGS:
+            self.open_tags.append(tag)
+            self.open_counts[tag] += 1
+
+    def handle_endtag(self, tag):
+        if not self.open_counts[tag]:
+            return
+        while self.open_tags:
+            current = self.open_tags.pop()
+            self.open_counts[current] -= 1
+            self.parts.append(f"</{current}>")
+            if current == tag:
+                break
+
+    def handle_data(self, data):
+        if self.cdata_elem == "style" and self.open_tags and self.open_tags[-1] == "style":
+            # HTMLParser and Chromium disagree on malformed raw-text end tags (e.g. </style/x>).
+            # CSS-escape the slash so CSS strings retain their value without closing the element.
+            # Both parser and output must still be inside style; cdata_elem alone can linger
+            # after an older parser already closed our output tag. Escape that case as HTML.
+            self.parts.append(data.replace("</", r"<\/"))
+        else:
+            self.parts.append(escape(data, quote=False))
+
+    def render(self, body):
+        self.feed(body)
+        self.close()
+        return "".join(self.parts) + "".join(f"</{tag}>" for tag in reversed(self.open_tags))
+
 
 def _html(md_text: str) -> str:
     import markdown as _md
 
-    body = _md.markdown(md_text, extensions=["tables", "fenced_code"])
+    body = _PdfMarkup().render(_md.markdown(md_text, extensions=["tables", "fenced_code"]))
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
+        f'<meta http-equiv="Content-Security-Policy" content="{_PDF_CSP}">'
         f"<style>{_PDF_CSS}</style></head><body>{body}</body></html>"
     )
 
@@ -327,12 +417,17 @@ def to_pdf(md_text: str) -> bytes:
     with sync_playwright() as p:
         # Fargate blocks the user-namespace sandbox chromium uses by default → --no-sandbox; and the
         # container runs unprivileged so the setuid sandbox helper can't be used either →
-        # --disable-setuid-sandbox. Safe here: JS is disabled below and the HTML is static, server-
-        # built from already-redacted report data (no untrusted scripts to contain).
+        # --disable-setuid-sandbox. Report markup is untrusted even after redaction; disable scripts
+        # and isolate every page/frame from the network before loading any content.
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
         try:
-            # Static render of LLM-generated HTML over redacted data → no script execution.
-            page = browser.new_page(java_script_enabled=False)
+            context = browser.new_context(
+                java_script_enabled=False, service_workers="block", offline=True,
+            )
+            # JS-off alone still allows img, CSS and iframe fetches into the worker's network.
+            # Context-wide interception also covers nested frames. All report assets are inline.
+            context.route("**/*", lambda route: route.abort())
+            page = context.new_page()
             page.set_content(html, wait_until="load")
             return page.pdf(format="A4", print_background=True)
         finally:

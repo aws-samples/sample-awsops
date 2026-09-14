@@ -447,7 +447,9 @@ resource "aws_ecs_task_definition" "web" {
         { name = "HOST_ACCOUNT_ID", value = data.aws_caller_identity.current.account_id },
         # AI Diagnosis (Task 1b): the diagnosis POST route reads process.env.AWS_ACCOUNT_ID.
         { name = "AWS_ACCOUNT_ID", value = data.aws_caller_identity.current.account_id },
-        ], var.workers_enabled ? [
+        ], var.inventory_host_only ? [
+        { name = "INVENTORY_HOST_ONLY", value = "true" }
+        ] : [], var.workers_enabled ? [
         { name = "JOBS_QUEUE_URL", value = one(aws_sqs_queue.jobs[*].url) }
         ] : [], var.remediation_enabled ? [
         # ADR-029+036: the web execute route reads the kill-switch param name + remediation SM ARN.
@@ -643,6 +645,7 @@ resource "aws_security_group" "service" {
 }
 
 resource "aws_acm_certificate" "alb" {
+  count             = var.existing_alb_certificate_arn == null ? 1 : 0
   domain_name       = var.domain_name
   validation_method = "DNS"
   lifecycle {
@@ -651,8 +654,20 @@ resource "aws_acm_certificate" "alb" {
 }
 
 resource "aws_acm_certificate_validation" "alb" {
-  certificate_arn         = aws_acm_certificate.alb.arn
+  count                   = var.existing_alb_certificate_arn == null ? 1 : 0
+  certificate_arn         = aws_acm_certificate.alb[0].arn
   validation_record_fqdns = [for r in aws_route53_record.cf_validation : r.fqdn]
+}
+
+# Preserve existing managed certificates when the optional ARN remains null.
+moved {
+  from = aws_acm_certificate.alb
+  to   = aws_acm_certificate.alb[0]
+}
+
+moved {
+  from = aws_acm_certificate_validation.alb
+  to   = aws_acm_certificate_validation.alb[0]
 }
 
 resource "aws_lb" "internal" {
@@ -687,7 +702,7 @@ resource "aws_lb_listener" "https" {
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate_validation.alb.certificate_arn
+  certificate_arn   = var.existing_alb_certificate_arn != null ? var.existing_alb_certificate_arn : aws_acm_certificate_validation.alb[0].certificate_arn
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.web.arn

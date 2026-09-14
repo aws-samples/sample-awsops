@@ -58,7 +58,7 @@ AWSops のデータソース機能は、外部オブザーバビリティプラ�
 | **Type** | O | データソースのタイプ（8 種から選択） |
 | **URL** | O | エンドポイント URL（例: `http://prometheus:9090`） |
 | **Authentication** | - | 認証方式 (None, Basic, Bearer Token, Custom Header) |
-| **Timeout** | - | アップストリームのクエリ実行上限（秒、1–60・デフォルト 10）— Prometheus/Mimir は API `timeout` パラメータ、ClickHouse は `max_execution_time` として転送。その他の種類（Loki/Tempo/Jaeger/Dynatrace/Datadog）は保存のみで現在は適用されません |
+| **Timeout** | - | 保存範囲は 1–60 秒（デフォルト 10 秒）。ClickHouse はすべての経路で `max_execution_time` の上限として適用し、有効上限は 55 秒（56–60 秒は 55 秒に短縮）。Prometheus/Mimir は Explore 経路のみで API `timeout` として適用し、上限は 10 秒。その他の種類（Loki/Tempo/Jaeger/Dynatrace/Datadog）は保存のみで現在は適用されません |
 | **Database** | - | デフォルトのデータベース名（ClickHouse 専用、識別子のみ） |
 
 :::note v1 との違い
