@@ -11,7 +11,9 @@
 `.github/workflows/{deploy-web,terraform,deploy-agentcore,deploy-migrations}.yml`,
 `docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
 `scripts/v2/ci_review_access.py`, `scripts/v2/ci_dns_policy.py`, `scripts/v2/ci_plan_context.py`,
-`scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_failure_diagnostics.py`,
+`scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_readiness_plan_summary.py`,
+`scripts/v2/test_ci_readiness_plan_summary.py`,
+`scripts/v2/ci_failure_diagnostics.py`,
 `scripts/v2/ci_db_diagnostics.py`, `scripts/v2/test_ci_db_diagnostics.py`,
 `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/pg8000-requirements.txt`,
 `scripts/v2/test_ci_tf_assets.py`, `docs/reference/06-workers.md`,
@@ -443,8 +445,10 @@ Comparing the persisted-state account with STS is a consistency check: it does n
 a wrong stack in the same account or provide authorization. The helper uses
 the existing read-only plan role and a fixed CLI operation allowlist, with no new IAM grants,
 resource writes, database connection, or apply step. It runs **after encrypted plan upload**,
-when the plaintext plan has been removed. Only this advisory step has
-`continue-on-error` and an eight-minute timeout. Its failure does not fail an otherwise valid
+when the plaintext plan has been removed. This advisory DB step has
+`continue-on-error` and an eight-minute timeout. The separate readiness-plan summary
+runs before encryption with its own two-minute timeout and `continue-on-error`.
+Neither reporting failure fails an otherwise valid
 plan; the Terraform plan, DNS checks, artifact protection, CI and readiness gates remain required.
 Enabling the flag and dispatching the plan publishes the safe JSON projection, including
 configuration booleans, in the **public Actions job log and fenced step summary**.

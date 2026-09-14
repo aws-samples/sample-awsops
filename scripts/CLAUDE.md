@@ -14,7 +14,15 @@ secrets-manager) — installed by `make deps`.
 - Fixed public audit fields distinguish command, capture, retention and cleanup status; numeric standard Terraform success counts never include resource/output text. Missing summaries stay unavailable. Schema-2 failure HMAC uses its own domain with the existing CBC cipher/key. Recovery verifies the exact failed attempt and emits fixed timeout/errors; private inspection remains authenticated and bounded to 32 MiB.
 - The sealing payload reaches OpenSSL through stdin, with no plaintext staging file. Captured Terraform runs in a separate session; first-interrupt forwarding, second-interrupt group kill and parent-death protection govern cancellation. Sealing/storage/publication failures preserve the command exit.
 - Cleanup deletes only after the identified upload's literal success; failed/cancelled/skipped/unknown outcomes retain ciphertext privately. Audits distinguish pending_upload, retained_unpublished and final cleanup outcomes. No broad runner-temp sweep, shared-UID isolation or SIGKILL guarantee.
-- `v2/ci_deployment_audit.py` — manual dev audit with existing identity guards, a restrictive session policy, fixed reads/SELECTs and safe projections. Web observations do not claim an applied revision; timestamps do not classify product freshness, and observed types do not establish completeness. Offline fixtures: `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`; operator guide: `docs/runbooks/deployment-audit.md`.
+- `v2/ci_deployment_audit.py` — manual dev audit with existing identity guards, a restrictive session policy, fixed reads/SELECTs and safe projections. It shares only backend parsing with `ci_verifier_sessions.py`; its grants and no-invoke behavior are unchanged. Web observations do not claim an applied revision; timestamps do not classify product freshness, and observed types do not establish completeness. Offline fixtures: `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`; operator guide: `docs/runbooks/deployment-audit.md`.
+- `v2/ci_verifier_sessions.py` — pure prerequisite for the separate manual collection workflow:
+  backend state-read and workload policies, never persistent IAM changes or AWS calls.
+  Require both nonempty session outputs; bind workload state to the selected private directory.
+  Prepare cannot invoke Lambda; collect allows only the owned collector. The consumer must
+  enforce explicit catalog/CloudFront RequestResponse payloads (absent type defaults to all),
+  distinct catalog/succeeded result shapes and post-marker authenticated freshness/runtime/worker proof.
+  Operator collection writes application inventory, not AWS resources; this is not an ADR-005 exception.
+  Tests: `v2/test_ci_verifier_sessions.py`; contract: `docs/runbooks/runtime-verifier-sessions.md`.
 - `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
 - Readiness is separate from the runtime profile: `CI_READINESS_ENABLED_DEV=true/false`
   explicitly overrides `ci_readiness_enabled` on dev; empty/unset preserves operator tfvars
@@ -117,15 +125,23 @@ secrets-manager) — installed by `make deps`.
   `lifecycle_source_integrity=unverified_text`, `lifecycle_injection_possible=true` and unknown
   probe outcome. Authenticated/authorized messages require log_connections (PostgreSQL default
   off; not enabled here); the effective setting is uninspected, `log_connections_enabled=null`.
-  Only this optional workflow step tolerates failure (eight-minute timeout); DNS/CI/readiness
-  gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
+  This optional workflow step tolerates failure (eight-minute timeout), as does the separate
+  advisory readiness-plan summary; DNS/CI/readiness gates remain required.
+  Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
-- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets}.py` —
-  workflow fixtures, real no-provider plans and a localhost state backend verify deployment
-  gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
+- `v2/ci_readiness_plan_summary.py` reports only fixed resource addresses, checks and a known
+  public collector code hash for explicit full dev readiness plans. It is advisory, not
+  approval or resource-presence proof; unknown changes require private inspection.
+  It runs before encryption with a two-minute timeout and fenced JSON output.
+  Presence booleans are separate, with a combined 256-row bound and no private values;
+  new enrollment checks the existing or planned group's absence of an IAM role.
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,readiness_plan_summary,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets,verifier_sessions}.py` —
+  the suites collectively use policy/workflow fixtures, real no-provider plans and a localhost
+  state backend to verify gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active
-  rollout's public zone name/ID/NS. Diagnostics also publish bounded numeric metric values;
+  rollout's public zone name/ID/NS. The readiness summary adds fixed scope/presence checks and
+  a known configured collector hash. Diagnostics also publish bounded numeric metric values;
   never raw configuration, ARNs, account IDs, state or plans.
 - `v2/terraform-test.sh` — Terraform 1.15.7 validate/mock tests in a disposable tracked-file
   copy, `init -backend=false`, fresh data dir, no deployment credentials or real backend.

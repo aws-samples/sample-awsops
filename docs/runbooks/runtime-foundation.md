@@ -45,6 +45,31 @@ the controller must still check fresh complete results for every returned type.
 
 ## Readiness capability
 
+After the existing runtime/DNS checks, a manual full dev plan with
+`CI_READINESS_ENABLED_DEV=true` publishes an advisory `bounded_readiness_rollout`
+summary without raw plan values. It recognizes only
+creation of the verifier group in the existing pool with no IAM role, enrollment
+of the existing managed demo, and a code-only inventory Lambda update. Supported
+output changes are the AgentCore readiness Boolean and the
+collector fingerprint. Resource identities and private values remain undisclosed;
+the report uses fixed resource addresses, checks and a package hash.
+
+`no_changes_outside_expected_scope: true` only describes reported changes. It can
+be true for an empty plan; it does not confirm resource presence, readiness or
+approval. Separate `planned_changes` booleans indicate which group, enrollment,
+collector update and readiness-output activation are present. Unrecognized changes,
+wrong identities/IAM roles, non-code collector changes, unsupported operations and
+truncation make the scope comparison false. Description/precedence of a role-less
+group are not checked. Imports, state address moves, disabling features and retiring
+resources fall outside this view. The combined resource/output report is capped at 256 rows.
+
+The summary step has a two-minute timeout and renders fenced JSON. Reporting failure
+or timeout is advisory and does not fail the later encrypted-artifact steps.
+An unavailable, incomplete or unsupported summary requires
+[private exact-plan inspection](dev-repo-setup.md#private-exact-plan-inspection).
+The original encrypted artifacts, provenance and exact-saved-plan apply gates
+remain required; no check or credential boundary is bypassed.
+
 Saved-plan JSON can retain CLI Boolean inputs as the exact strings `true`/`false`,
 while Terraform's effective values are Boolean. The readiness policy decodes only
 those canonical spellings and real Booleans; other strings, numbers and null remain
@@ -82,5 +107,5 @@ Sequence: merge reviewed code to dev → reviewed dev apply and full live readin
 
 [Manual deployment observations](deployment-audit.md) separate deployed resources, schedule execution and observed inventory after provisioning.
 [CI setup/assets](dev-repo-setup.md) · [SQL reader](agent-sql-reader.md) · [Multi-account](onboard-target-account.md) · [Inventory rollback](steampipe-quota-and-staleness.md).
-Sources: `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `terraform/foundation/runtime-read-scope.tf`, `.github/workflows/terraform.yml`.
+Sources: `scripts/v2/ci_readiness_plan_summary.py`, `scripts/v2/test_ci_readiness_plan_summary.py`, `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `terraform/foundation/runtime-read-scope.tf`, `.github/workflows/terraform.yml`.
 ADRs: 001, 005, 007, 011, 016. Infrastructure apply is not live readiness proof.
