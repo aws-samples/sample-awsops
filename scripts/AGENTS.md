@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 06939e45d0a7 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: dd8f0c01d955 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -158,3 +158,5 @@ permits a cooldown/revalidation retry. No workflow or billed capability is activ
 Require full HTTP timeouts remaining, and probe/worker budgets before billing or enqueue:
 80s probe, 370s per worker; retry also needs 65s cooldown and a 35s collection read.
 Collection windows are caps; late completion can fail admission.
+Post-marker running attempts with old/null previous success time out as collection_timeout;
+full-policy stale terminal evidence is collection_stale. Login/DB also require full timeouts.

@@ -108,6 +108,10 @@ Verify accepts optional `inventoryPolicy: "full"` for structured quality/gap ret
 omission retains strict checks and other policies fail. These payloads are programmatic:
 the CLI keeps fixed status/error messages. The caller supplies the intended catalog; the
 helper does not discover it. Gap categories can overlap and must not be summed as disjoint counts.
+Quality may be absent before the first ledger read; `collection_unavailable` supplies
+`counts: null` and `types: null`. Other collection outcomes carry categorized arrays and
+timestamps. Categories describe the latest ledger row, including prior attempts; only
+the verified set establishes post-marker success.
 
 Optional `collectionMode: "release"` allows a 20-minute collection poll window instead of
 10 minutes. Both the initial poll and a contention recheck share that original window.
@@ -123,6 +127,9 @@ Before billing readiness, the helper requires the full 80-second request allowan
 35-second status request). It checks worker allowances again before each enqueue.
 Every HTTP request needs its full configured timeout remaining; it is never shortened
 to start a request that cannot finish within the overall bound.
+With a new marker, billed readiness must start before about 16 minutes 20 seconds
+(30 minutes minus the 820-second probe/worker allowance). Earlier deadlines and preceding
+login, database and inventory reads reduce the available collection time further.
 
 A validated inventory-incomplete/stale response permits one retry only when the ledger
 shows a unique fresh running CloudFront attempt with a fresh prior success. After a
@@ -134,6 +141,8 @@ The latter fails before wasting the
 cooldown; delayed wakeups are checked again. Initial or continuous collection waiting
 exhausts as `collection_timeout`. Full-policy stale
 coverage can end as `collection_stale`; the overall bound is `release_timeout`.
+A post-marker running attempt stays a collection wait even when its previous success
+is old or null; exhausting that wait is `collection_timeout`, never verified coverage.
 Partial/failed/unknown evidence and unrelated protocol, authorization or model failures
 never pass. Workers start only after ready. One additional AgentCore probe may be billed.
 
@@ -146,6 +155,9 @@ utility does not enable a workflow.
 ```bash
 node --test scripts/v2/deployment-smoke.test.mjs
 ```
+
+Implementation: `scripts/v2/runtime-smoke.mjs`, `scripts/v2/authenticated-smoke.mjs`
+and `web/app/api/inventory/summary/route.ts`. Worker ownership follows ADR-009.
 
 <a id="related--관련"></a>
 

@@ -248,3 +248,6 @@ Requests require their full timeout remaining. Before billed readiness, require 
 allowance plus 370s per worker (35s enqueue, 300s poll, final 35s request); recheck remaining
 workers before enqueue. Retry admission includes 65s cooldown, one 35s collection read,
 the probe and both workers. Collection windows are caps; late completion may fail admission.
+Fresh running collection attempts with old/null previous success remain pending and time
+out as collection_timeout. Stale terminal evidence remains collection_stale in full mode.
+The outer authenticated login/DB wrapper also refuses shortened request timeouts.

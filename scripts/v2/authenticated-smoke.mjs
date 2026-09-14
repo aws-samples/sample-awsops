@@ -105,8 +105,7 @@ export async function authenticatedSmoke(
     const request = async (args, path, status = '200', timeout = 35_000,
       maxResponseBytes = MAX_RESPONSE_BYTES, withStatus = false) => {
       const remaining = deadline - now();
-      if (remaining <= 0) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
-      timeout = Math.max(1, Math.ceil(Math.min(timeout, remaining)));
+      if (remaining <= timeout) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
       if (maxResponseBytes !== MAX_RESPONSE_BYTES
           && !(path.startsWith('/api/inventory/cloudfront?') && maxResponseBytes === MAX_INVENTORY_RESPONSE_BYTES)) {
         throw new Error();

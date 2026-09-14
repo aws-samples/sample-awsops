@@ -178,6 +178,7 @@ export async function verifyRuntimeSmoke(configuration, send, {
       for (const status of ['partial', 'failed'])
         if (recent.some(row => row.status === status)) fail(`collection_${status}`, quality);
       collectionFailure = has('missing') ? 'collection_missing'
+        : recent.some(row => row.status === 'running') ? 'collection_timeout'
         : config.inventoryPolicy && has('stale') ? 'collection_stale' : 'collection_timeout';
       return required.every(type => quality.types.verified.includes(type));
     }, () => collectionFailure, releaseWindow ? 1200 : 600, collectionEnd);

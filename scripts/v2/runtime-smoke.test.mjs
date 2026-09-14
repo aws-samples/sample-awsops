@@ -510,6 +510,34 @@ test('a delayed cooldown cannot reset the shared collection window', async () =>
   assert.ok(!f.calls.some(c => c.path === '/api/jobs'));
 });
 
+test('a current running sweep with old or absent success times out as pending', async () => {
+  for (const last_success_at of [null, '2020-01-01T00:00:00Z']) {
+    const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({
+      collection: { configured: true, readOk: true, runs: config.expectedQueuedTypes.map(type => ({
+        type, accountId: 'self', status: 'running', started_at: start, last_success_at,
+        row_count: null, unknown_attribute_count: null, unknown_attributes: true,
+      })) },
+    }) });
+    await assert.rejects(f.run({ ...config, inventoryPolicy: 'full' }), /collection_timeout$/);
+    assert.ok(!f.calls.some(c => c.path === '/api/deployment/readiness' || c.path === '/api/jobs'));
+  }
+});
+
+test('runtime authentication refuses a partial login timeout before sending', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'runtime-login-budget-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const clock = Date.now();
+  let calls = 0;
+  await assert.rejects(authenticatedSmoke({
+    publicUrl: 'https://dev.example.com', cloudfrontDomain: 'd123example.cloudfront.net',
+    email: 'demo@example.com', password: 'fixture-password',
+    runtimeConfig: { schemaVersion: 1, mode: 'prepare', expectedAccountId: account },
+  }, { tempRoot: dir, now: () => clock, deadline: clock + 10_000,
+    runCurl: async () => { calls++; throw new Error('unexpected request'); } }),
+  /Runtime smoke: release_timeout$/);
+  assert.equal(calls, 0);
+});
+
 test('the existing authenticated entry point bounds runtime preparation without caller options', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'runtime-default-deadline-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
