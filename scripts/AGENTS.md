@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8ea6779540d9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 75432c424941 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -208,7 +208,12 @@ fails `host_only_registry_required` before type calls. AWS CLI children use an e
 credential/settings allowlist, pinned path, disabled config/credential files/metadata
 and endpoint isolation; drop ambient profiles/providers/CA/proxy/hooks and CI secrets.
 First chronological terminal failure stops new type admission; admitted work settles
-and untouched types remain `not_started`. Partial/unknown results are expected hard
+and untouched types remain `not_started`. Six status buckets partition `expected`:
+a selected type unable to admit its first call under the 450-second floor is
+`deadline`/zero attempts; never-selected is
+`not_started`/zero attempts. Inventory quality gaps may overlap. Keep the outer
+`Runtime release:` and nested helper prefixes; RPC/ledger suffixes identify different
+reasons and must not be normalized together. Partial/unknown results are expected hard
 stops under limiter/hydrate load too; investigate capacity, reachability or denials
 before an authorized fresh bounded rerun. No weaker acceptance or scheduler suppression.
 Collector hash/RevisionId must remain stable before/after collection; then full

@@ -80,7 +80,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 - Sealing uses OpenSSL stdin without plaintext staging. Captured Terraform uses Linux parent-death protection and escalates a second interrupt after graceful first-interrupt forwarding.
 - Key/storage/seal/publication/cleanup outcomes are distinct. Delete owned ciphertext only after the identified upload succeeds; failed/cancelled/skipped/unknown uploads retain it privately. Audits report pending_upload and final upload/cleanup outcomes; no broad temp sweep, host-loss guarantee or shared-UID isolation.
 - `deployment-audit.md` separates manual dev observations under backend-bound and workload-read sessions. Preserve identity/resource guards and private cleanup. Web and AgentCore observations do not prove applied versions or invocation readiness; observed SQL-reader types never establish complete inventory.
-- `runtime-foundation.md` covers account-bound default-off activation and saved-plan assets. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
+- `runtime-foundation.md` covers activation and the unwired strict host-only controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
 - The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
 - Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
 - `scripts/v2/ci_tf_assets.py` shares one locked pg8000 installer with Terraform.
@@ -250,6 +250,13 @@ rejects incompatible registries before type calls with `host_only_registry_requi
 Preserve the AWS CLI environment allowlist, configuration isolation and endpoint restrictions.
 The first chronological terminal failure stops new type admission; admitted work settles
 and untouched types remain `not_started`.
+`collection_attempts.counts` uses six status buckets that partition `expected`.
+A selected type whose first call is refused by the 450-second floor is `deadline` with zero attempts;
+never-selected types are `not_started` with zero attempts. Do not classify by attempts alone
+or apply this partition rule to overlapping `inventory_quality` gaps.
+Preserve exact diagnostics: outer `Runtime release: <reason>`, with helper
+`Runtime smoke:` / `Authenticated smoke:` prefixes retained. RPC and ledger suffixes
+are not interchangeable; the operator table documents full reasons.
 Partial/unknown outcomes are expected hard stops even under limiter/hydrate pressure.
 Use bounded capacity/reachability/permission diagnosis before an authorized fresh rerun,
 never automatic permission widening, degraded acceptance or scheduler suppression.

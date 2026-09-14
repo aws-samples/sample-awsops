@@ -231,8 +231,15 @@ Prior rolling success is insufficient.
 At most four synchronous owned invocations are concurrent and in flight. The first
 chronological terminal failure becomes the headline error and stops admission of
 further types. Already-admitted operations settle within their existing bounds before
-cleanup and final failure reporting. Untouched types retain `status: "not_started"`
+cleanup and final failure reporting. Never-selected types retain `status: "not_started"`
 and `attempts: 0` in `collection_attempts`; they are never counted as successful proof.
+Its six status counts (`succeeded`, `partial`, `failed`, `unknown`, `deadline`,
+`not_started`) are mutually exclusive and sum to `counts.expected`, the number of
+catalog types. Counts use each type's `status`, not its attempt count. A selected
+type whose first call is refused by the 450-second admission floor has `status: "deadline"` and
+`attempts: 0`; a never-selected type has `status: "not_started"` and `attempts: 0`.
+Zero attempts alone cannot distinguish them. This partition applies only to
+`collection_attempts`; the separate `inventory_quality` gap categories can overlap.
 Code hash and a nonempty RevisionId are captured before collection
 and rechecked within 15 seconds afterward, before final authenticated runtime proof.
 Changed/incomplete code metadata or read failure blocks that proof.
@@ -369,16 +376,43 @@ when present. The first chronological per-type terminal error identifies the col
 stop; later settled outcomes and never-started types remain visible. Do not relay raw
 provider responses or secrets.
 
-| Code | Meaning and bounded operator action |
+The controller's stderr envelope is exactly `Runtime release: <reason>`. Helper
+messages retain `Runtime smoke: <code>` or `Authenticated smoke: <phase>` inside
+that envelope; only the exact `Runtime smoke: host_registry` message maps to
+`host_only_registry_required`. Authentication phases can include fixed explanatory
+text and a validated `; HTTP status NNN` suffix. For example:
+
+```text
+Runtime release: collection_partial
+Runtime release: Runtime smoke: collection_partial
+Runtime release: Runtime smoke: runtime_inventory_contention
+Runtime release: Authenticated smoke: host_registry_http; HTTP status 503
+```
+
+The first two lines identify different failures: the owned collector RPC and the
+authenticated ledger verifier. Preserve the full reason when matching logs; do not
+strip helper prefixes or normalize identical suffixes into one code. A controller
+deadline guard can take precedence and emit the bare `release_timeout` reason.
+
+| Reason after `Runtime release: ` | Meaning and bounded operator action |
 | --- | --- |
 | `aws_credentials_required` | One or more exported temporary credential values are missing. Refresh the approved restricted session; do not restore profiles, credential files or alternate endpoint/provider settings. |
-| `host_only_registry_required` | This controller requires the enabled host only. Inspect the expected host and enabled foreign rows before rerunning; do not expand controller scope or change accounts automatically to pass. |
+| `host_only_registry_required` | Mapping of the helper's registry check: missing, disabled, wrong or duplicate host; enabled foreign accounts; or malformed/oversized `/api/accounts` data. Check response shape and host registration as well as scope. Use the existing preparation/bootstrap procedure when the host is absent; do not assume foreign accounts are the cause or change scope/accounts automatically. |
 | `invalid_collection_catalog` | Missing pinned membership, invalid names/shape or bounds. Reconcile the reviewed collector source, applied hash and catalog; do not pad the response or waive required types. |
-| `collection_partial`, `inventory_incomplete`, `collection_probe_incomplete` | Expected hard stop for partial/unknown or unusable counts, including limiter/hydrate degradation. Diagnose capacity, reachability and actual denials before an authorized fresh bounded attempt; no automatic partial/unknown retry or degraded acceptance. |
+| `collection_partial`, `collection_failed`, `inventory_incomplete`, `collection_probe_incomplete` | Owned RPC result is partial/failed, has unknown attributes or has unusable counts. This is an expected hard stop, including limiter/hydrate degradation. Diagnose capacity, reachability and actual denials before an authorized fresh bounded attempt; no automatic partial/unknown retry or degraded acceptance. |
+| `collection_probe_busy`, `collection_probe_throttled` | Another attempt could not be admitted after busy/superseded or confirmed invoke-throttling outcomes. Check phase budget and contention, with per-type outcomes when present; do not infer success or suppress the scheduler. |
+| `collection_probe_protocol` | The collector payload is not an object with the requested type and a recognized result shape/status. Reconcile the reviewed collector/protocol without printing its raw response. |
 | `collection_probe_denied`, `actual_ci_caller_mismatch` | Check configured identity, exported credentials and the exact denied operation under existing session/IAM boundaries. Do not restore ambient profiles/endpoints or grant permissions automatically. |
 | `collection_probe_timeout`, `collection_probe_failed` | Inspect per-type attempts and known delivery evidence. A timeout may mean uncertain delivery or failed admission; use the structured status rather than assuming a safe blind retry. |
+| `invalid_private_path`, `invalid_private_directory`, `invalid_private_file`, `private_response_too_large`, `configuration_too_large`, `deployment_input_too_large` | Check the owned paths, regular files, 0700/0600 modes and 16 KiB limits. A selected type can fail before an AWS attempt; zero attempts do not mean `not_started`. Do not enlarge limits, follow symlinks or delete unrelated files to pass. |
+| `aws_throttled`, `aws_timeout`, `aws_request_failed`, `aws_access_denied` | AWS metadata read/recheck failed, including the final collector recheck. These are distinct from remapped invoke failures. Identify the read and investigate throttling, timing/provider failure or access under existing bounds; never treat unavailable metadata as empty or valid. |
 | `inventory_code_mismatch` | Configured hash/revision and live collector evidence disagree or cannot be verified. Reconcile the reviewed deployment; discard the attempt's readiness claim. |
-| `release_timeout`, `runtime_inventory_contention` | The absolute/proof budget or permitted contention retry cannot complete. Inspect recorded timing/contention before a fresh bounded attempt; do not extend the deadline or suppress the scheduler. |
+| `release_timeout` | Controller deadline/admission guard, which can override another failure when the deadline has expired. Inspect available timing and attempt status; do not extend the deadline. |
+| `Runtime smoke: collection_partial`, `Runtime smoke: collection_failed`, `Runtime smoke: inventory_incomplete` | Authenticated ledger proof failed after collection, independently of RPC outcomes. Inspect `inventory_quality` and current ledger evidence; a successful RPC does not override partial/failed/unknown ledger data. |
+| `Runtime smoke: collection_stale`, `Runtime smoke: collection_missing`, `Runtime smoke: collection_timeout`, `Runtime smoke: collection_unavailable` | Ledger freshness, presence, bounded waiting or availability failed. Missing/unavailable evidence is not healthy zero; preserve the marker and inspect the existing bounded observations. |
+| `Runtime smoke: release_timeout`, `Runtime smoke: runtime_inventory_contention` | Helper HTTP/proof admission or the single permitted contention retry cannot complete. Inspect timing and collision evidence before a fresh bounded attempt; no new proof window or scheduler suppression. |
+| `Authenticated smoke: <phase>` | Login/database, `host_registry_http`, `inventory_http`, `worker_http`, `runtime_http`, or private-request-file phase failure, with optional validated HTTP status. Inspect the target, session, TLS and response contract privately; retain the complete phase text rather than relabeling it as a ledger/RPC code. |
+| `runtime_release_failed` | Unexpected or unclassified failure inside the release wrapper. Inspect local setup, private inputs and runtime behavior; the generic code alone does not establish an AWS denial or successful remote operation. |
 
 Even a controller `full_verified` result retains
 `remaining_prerequisites: "not_assessed"`. It reports this controller's evidence,

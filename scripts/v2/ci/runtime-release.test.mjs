@@ -141,6 +141,13 @@ async function withFixture(action, overrides = {}) {
   try { return await action(f); } finally { f.cleanup(); }
 }
 
+function assertCollectionPartition(attempts) {
+  const buckets = ['succeeded', 'partial', 'failed', 'unknown', 'deadline', 'not_started'];
+  assert.equal(attempts.counts.expected, Object.keys(attempts.types).length);
+  assert.ok(buckets.every(key => Number.isSafeInteger(attempts.counts[key]) && attempts.counts[key] >= 0));
+  assert.equal(buckets.reduce((sum, key) => sum + attempts.counts[key], 0), attempts.counts.expected);
+}
+
 function runCli(f, mode, extraEnv = {}, input, extraArgs = []) {
   const guard = mkdtempSync(join(f.root, 'cli-guard-')), called = join(guard, 'aws-called');
   writeFileSync(join(guard, 'aws'), `#!${process.execPath}
@@ -333,6 +340,7 @@ test('full collection synchronously drives every source catalog type with at mos
     assert.ok(peak > 1 && peak <= 4);
     assert.equal(result.status, 'full_verified');
     assert.equal(result.collection_attempts.counts.succeeded, types.length);
+    assertCollectionPartition(result.collection_attempts);
     assert.deepEqual(f.authenticated[0].input.runtimeConfig.expectedQueuedTypes, types);
   }, { catalog: { status: 'catalog', types } });
 });
@@ -351,6 +359,7 @@ test('partial type is reported, other types settle, and incomplete collection ca
     assert.equal(error.collection_attempts.types.rds.status, 'partial');
     assert.equal(error.collection_attempts.types.rds.unreachable_account_count, 1);
     assert.equal(error.collection_attempts.types.cloudfront.status, 'succeeded');
+    assertCollectionPartition(error.collection_attempts);
     return true;
   });
   assert.equal(f.authenticated.length, 0);
@@ -397,6 +406,7 @@ test('first chronological failure stops new admissions while all admitted types 
     assert.equal(error.collection_attempts.types.cloudfront.status, 'partial');
     assert.equal(error.collection_attempts.counts.succeeded, 2);
     assert.equal(error.collection_attempts.counts.not_started, sourceTypes.length - 4);
+    assertCollectionPartition(error.collection_attempts);
     for (const type of catalog().types.slice(4)) {
       assert.equal(error.collection_attempts.types[type].status, 'not_started');
       assert.equal(error.collection_attempts.types[type].attempts, 0);
@@ -882,8 +892,9 @@ test('runtime proof receives the earlier controller or marker deadline without r
       } });
     if (setupMinutes === 26) {
       await assert.rejects(action, error => {
-        assert.equal(error.collection_attempts.counts.not_started, sourceTypes.length);
+        assert.equal(error.collection_attempts.counts.not_started, sourceTypes.length - 4);
         assert.equal(error.collection_attempts.counts.deadline, 4);
+        assertCollectionPartition(error.collection_attempts);
         for (const type of catalog().types.slice(4)) {
           assert.equal(error.collection_attempts.types[type].status, 'not_started');
           assert.equal(error.collection_attempts.types[type].attempts, 0);
@@ -930,6 +941,7 @@ test('late batches cannot spend the authentication and runtime proof reserve', a
         assert.equal(error.collection_attempts.counts.succeeded, 4);
         assert.equal(error.collection_attempts.types.iam_user.status, 'deadline');
         assert.equal(error.collection_attempts.types.iam_user.attempts, 0);
+        assertCollectionPartition(error.collection_attempts);
         return true;
       });
       assert.deepEqual(invoked, types.slice(0, 4));
