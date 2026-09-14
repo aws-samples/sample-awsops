@@ -11,6 +11,9 @@ const start = '2026-09-13T14:00:00.000Z';
 const config = { schemaVersion: 1, mode: 'verify', expectedAccountId: account,
   expectedCloudfrontId: 'E123EXAMPLE', expectedQueuedTypes: ['cloudfront', 'ec2'], collectionStartedAt: start };
 const jobIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+const readinessPath = '/api/deployment/readiness';
+const collectionPath = '/api/inventory/summary?accounts=self&view=collection';
+const releaseConfig = { ...config, collectionMode: 'release' };
 function readyResponse(options, ageMinutes = 0) {
   return { httpStatus: 200, body: {
     schemaVersion: 1, nonce: options.body.nonce, accountId: account, status: 'ready', reason: 'ok',
@@ -21,6 +24,16 @@ function readyResponse(options, ageMinutes = 0) {
       inventory: { count: 1, ageMinutes } },
   } };
 }
+function collectionSummary(change = () => ({}), types = ['cloudfront', 'ec2']) {
+  return { collection: { configured: true, readOk: true, runs: types.map(type => ({
+    type, accountId: 'self', status: 'succeeded', row_count: 1,
+    started_at: start, last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false,
+    ...change(type),
+  })) } };
+}
+function collectionFixture(change, runtimeOptions, types) {
+  return fixture({ [collectionPath]: () => collectionSummary(change, types) }, runtimeOptions);
+}
 function fixture(overrides = {}, runtimeOptions = {}) {
   let now = Date.parse(start) + 1000;
   const calls = [];
@@ -29,9 +42,7 @@ function fixture(overrides = {}, runtimeOptions = {}) {
     calls.push({ path, options });
     if (overrides[path]) return overrides[path](options);
     if (path === '/api/accounts') return { accounts: [{ accountId: account, isHost: true, enabled: true }] };
-    if (path.startsWith('/api/inventory/summary')) return { collection: { configured: true, readOk: true,
-      runs: ['cloudfront', 'ec2'].map(type => ({ type, accountId: 'self', status: 'succeeded', row_count: 0,
-        last_success_at: start, started_at: start, unknown_attribute_count: 0, unknown_attributes: false })) } };
+    if (path.startsWith('/api/inventory/summary')) return collectionSummary(() => ({ row_count: 0 }));
     if (path.startsWith('/api/inventory/cloudfront')) return { rows: [{
       resource_id: config.expectedCloudfrontId, account_id: 'self', captured_at: start,
       data: { id: config.expectedCloudfrontId },
@@ -116,11 +127,8 @@ test('missing/partial/stale/unknown collection cannot pass or be treated as zero
   for (const change of [{ status: 'partial' }, { status: 'failed' }, { status: 'running' },
     { last_success_at: '2020-01-01T00:00:00Z' }, { unknown_attribute_count: null, unknown_attributes: null },
     { unknown_attribute_count: 1, unknown_attributes: true }]) {
-    const runs = ['cloudfront', 'ec2'].map(type => ({ type, accountId: 'self', status: 'succeeded',
-      row_count: 0, started_at: start, last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false, ...change }));
-    await assert.rejects(fixture({
-      '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: { configured: true, readOk: true, runs } }),
-    }).run(), Object.hasOwn(change, 'unknown_attribute_count') ? /inventory_incomplete/
+    const f = collectionFixture(() => ({ row_count: 0, ...change }));
+    await assert.rejects(f.run(), Object.hasOwn(change, 'unknown_attribute_count') ? /inventory_incomplete/
       : change.status === 'partial' ? /collection_partial/
         : change.status === 'failed' ? /collection_failed/ : /collection_timeout/);
   }
@@ -211,20 +219,11 @@ for (const [inventoryBytes, releaseMode] of [[75 * 1024, false], [2 * 1024 * 102
       result = { ok: true };
     } else if (path === '/api/db') result = { status: 'ok', public_tables: 42 };
     else if (path === '/api/accounts') result = { accounts: [{ accountId: account, isHost: true, enabled: true }] };
-    else if (path === '/api/inventory/summary') {
-      result = { collection: { configured: true, readOk: true,
-      runs: ['ec2', 'cloudfront'].map(type => ({ type, accountId: 'self', status: 'succeeded', row_count: 1,
-        started_at: now,
-        last_success_at: now, unknown_attribute_count: 0, unknown_attributes: false })) } };
-    }
+    else if (path === '/api/inventory/summary') result = collectionSummary(
+      () => ({ started_at: now, last_success_at: now }), ['ec2', 'cloudfront']);
     else if (path === '/api/inventory/cloudfront') result = { rows: [{ resource_id: config.expectedCloudfrontId,
       account_id: 'self', captured_at: now, data: { id: config.expectedCloudfrontId, cache_behaviors: 'x'.repeat(inventoryBytes) } }] };
-    else if (path === '/api/deployment/readiness') result = { schemaVersion: 1, nonce: body.nonce, accountId: account,
-      status: 'ready', reason: 'ok', webIdentity: true,
-      parameters: { runtime_arn: 'ready', interpreter_id: 'ready', memory_id: 'ready' },
-      agent: { schemaVersion: 1, mode: 'deployment_readiness', nonce: body.nonce, accountId: account,
-        status: 'ready', reason: 'ok', checks: { identity: true, inventorySummary: true, inventoryQuery: true,
-          knownResource: true, freshInventory: true, model: true }, inventory: { count: 1, ageMinutes: 0 } } };
+    else if (path === '/api/deployment/readiness') result = readyResponse({ body }).body;
     else if (path === '/api/jobs') { result = { job_id: jobIds[jobIndex++], status: 'queued' }; status = '202'; }
     else if (path.startsWith('/api/jobs/')) {
       const i = jobIds.indexOf(path.split('/').at(-1));
@@ -280,14 +279,10 @@ test('fresh ledger metadata cannot substitute for an old known resource record',
 
 test('release accepts a recent catalog success while retaining the post-marker CloudFront proof', async () => {
   const recent = new Date(Date.parse(start) - 15 * 60_000).toISOString();
-  const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
-    configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
-      type, accountId: 'self', status: 'succeeded', row_count: 1,
-      started_at: type === 'cloudfront' ? start : recent,
-      last_success_at: type === 'cloudfront' ? start : recent,
-      unknown_attribute_count: 0, unknown_attributes: false,
-    })),
-  } }) });
+  const f = collectionFixture(type => ({
+    started_at: type === 'cloudfront' ? start : recent,
+    last_success_at: type === 'cloudfront' ? start : recent,
+  }));
   assert.deepEqual(await f.run({ ...config, collectionMode: 'release' }), {
     status: 'ok', mode: 'verify', catalog_types: 2, workers: 2,
     collection: { status: 'current', completeness: 'unknown', freshness_minutes: 30, degraded_types: [] },
@@ -305,13 +300,7 @@ test('release discloses catalog degradation with a recent last success, never co
   for (const change of [{ status: 'partial' }, { status: 'failed', row_count: null },
     { status: 'running', row_count: null }, { unknown_attribute_count: 1, unknown_attributes: true },
     { unknown_attribute_count: null, unknown_attributes: null }]) {
-    const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
-      configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
-        type, accountId: 'self', status: 'succeeded', row_count: 1, started_at: start,
-        last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false,
-        ...(type === 'ec2' ? { last_success_at: recent, ...change } : {}),
-      })),
-    } }) });
+    const f = collectionFixture(type => type === 'ec2' ? { last_success_at: recent, ...change } : {});
     const result = await f.run({ ...config, collectionMode: 'release' });
     assert.deepEqual(result.collection, { status: 'degraded', completeness: 'unknown', freshness_minutes: 30,
       degraded_types: [{ type: 'ec2', status: change.status || 'succeeded',
@@ -332,13 +321,8 @@ test('release refuses missing, stale and malformed catalog evidence without star
     [{ status: 'unknown' }, 'collection_protocol'],
     [{ unknown_attribute_count: -1, unknown_attributes: true }, 'collection_protocol'],
   ]) {
-    const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
-      configured: true, readOk: true, runs: ['cloudfront', ...(change ? ['ec2'] : [])].map(type => ({
-        type, accountId: 'self', status: 'succeeded', row_count: 1, started_at: start,
-        last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false,
-        ...(type === 'ec2' ? change : {}),
-      })),
-    } }) });
+    const f = collectionFixture(type => type === 'ec2' ? change : {},
+      undefined, ['cloudfront', ...(change ? ['ec2'] : [])]);
     await assert.rejects(f.run({ ...config, collectionMode: 'release' }), new RegExp(`Runtime smoke: ${reason}$`));
     assert.ok(f.calls.every(c => c.path !== '/api/jobs'));
   }
@@ -347,28 +331,20 @@ test('release freshness uses observation time even when the marker was recorded 
   const observed = Date.parse(start) + 10 * 60_000;
   for (const [ageMinutes, accepted] of [[30, true], [30.01, false]]) {
     const lastSuccess = new Date(observed - ageMinutes * 60_000).toISOString();
-    const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
-      configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
-        type, accountId: 'self', status: 'succeeded', row_count: 1,
-        started_at: type === 'cloudfront' ? start : lastSuccess,
-        last_success_at: type === 'cloudfront' ? start : lastSuccess,
-        unknown_attribute_count: 0, unknown_attributes: false,
-      })),
-    } }) }, { now: () => observed, wait: async () => {} });
+    const f = collectionFixture(type => ({
+      started_at: type === 'cloudfront' ? start : lastSuccess,
+      last_success_at: type === 'cloudfront' ? start : lastSuccess,
+    }), { now: () => observed, wait: async () => {} });
     if (accepted) assert.equal((await f.run({ ...config, collectionMode: 'release' })).status, 'ok');
     else await assert.rejects(f.run({ ...config, collectionMode: 'release' }), /collection_stale$/);
   }
 });
 test('a newer scheduled CloudFront attempt cannot invalidate the owned proof but is disclosed', async () => {
   for (const status of ['running', 'partial', 'failed', 'succeeded']) {
-    const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
-      configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
-        type, accountId: 'self', status: 'succeeded', row_count: 1, started_at: start,
-        last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false,
-        ...(type === 'cloudfront' ? { status, started_at: new Date(Date.parse(start) + 500).toISOString(),
-          unknown_attribute_count: 1, unknown_attributes: true } : {}),
-      })),
-    } }) });
+    const f = collectionFixture(type => type === 'cloudfront' ? {
+      status, started_at: new Date(Date.parse(start) + 500).toISOString(),
+      unknown_attribute_count: 1, unknown_attributes: true,
+    } : {});
     const result = await f.run({ ...config, collectionMode: 'release' });
     assert.deepEqual(result.collection.degraded_types, [{ type: 'cloudfront', status,
       unknown_attributes: ['running', 'failed'].includes(status) ? null : true }]);
@@ -380,23 +356,14 @@ test('a newer scheduled CloudFront attempt cannot invalidate the owned proof but
 });
 test('an older CloudFront success cannot pass even when the current attempt is newer', async () => {
   const previous = new Date(Date.parse(start) - 1000).toISOString();
-  const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
-    configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
-      type, accountId: 'self', status: 'running', row_count: null, started_at: start,
-      last_success_at: type === 'cloudfront' ? previous : start,
-      unknown_attribute_count: null, unknown_attributes: null,
-    })),
-  } }) });
+  const f = collectionFixture(type => ({
+    status: 'running', row_count: null, last_success_at: type === 'cloudfront' ? previous : start,
+    unknown_attribute_count: null, unknown_attributes: null,
+  }));
   await assert.rejects(f.run({ ...config, collectionMode: 'release' }), /collection_stale$/);
 });
 test('degraded catalog acceptance never substitutes for own SSM/model and terminal worker proof', async () => {
-  const summary = () => ({ collection: {
-    configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
-      type, accountId: 'self', status: type === 'cloudfront' ? 'succeeded' : 'partial',
-      row_count: 1, started_at: start, last_success_at: start,
-      unknown_attribute_count: 0, unknown_attributes: false,
-    })),
-  } });
+  const summary = () => collectionSummary(type => ({ status: type === 'cloudfront' ? 'succeeded' : 'partial' }));
   for (const [path, reply, reason] of [
     ['/api/deployment/readiness', options => ({ httpStatus: 503, body: {
       schemaVersion: 1, nonce: options.body.nonce, accountId: account, status: 'not_ready',
@@ -415,9 +382,6 @@ test('degraded catalog acceptance never substitutes for own SSM/model and termin
   }
 });
 
-const readinessPath = '/api/deployment/readiness';
-const collectionPath = '/api/inventory/summary?accounts=self&view=collection';
-const releaseConfig = { ...config, collectionMode: 'release' };
 function incompleteResponse(options) {
   const response = readyResponse(options);
   response.httpStatus = 503;
@@ -429,37 +393,35 @@ function incompleteResponse(options) {
   return response;
 }
 function collectionResponse(cloudfront = {}) {
-  return { collection: { scope: 'aggregate', configured: true, readOk: true,
-    runs: ['cloudfront', 'ec2'].map(type => ({
-      type, accountId: 'self', status: 'succeeded', row_count: 1,
-      started_at: start, finished_at: start, last_success_at: start,
-      unknown_attribute_count: 0, unknown_attributes: false,
-      ...(type === 'cloudfront' ? cloudfront : {}),
-    })) } };
+  const response = collectionSummary(type => ({ finished_at: start, ...(type === 'cloudfront' ? cloudfront : {}) }));
+  response.collection.scope = 'aggregate';
+  return response;
 }
 const runningCloudfront = {
   status: 'running', started_at: new Date(Date.parse(start) + 500).toISOString(),
   finished_at: null, row_count: null, unknown_attribute_count: null, unknown_attributes: null,
 };
+function readinessFixture(
+  readiness = incompleteResponse, summary = () => collectionResponse(runningCloudfront), runtimeOptions,
+) {
+  return fixture({ [readinessPath]: readiness, [collectionPath]: summary }, runtimeOptions);
+}
 
 test('release retries a proven scheduled CloudFront race once after cooldown with a fresh nonce', async () => {
   let clock = Date.parse(start) + 1000;
   const posts = [], waits = [];
-  const f = fixture({
-    [readinessPath]: options => {
-      posts.push({ nonce: options.body.nonce, at: clock });
-      if (posts.length === 1) {
-        clock += 20_000; // A failed BFF/AgentCore request also consumes time.
-        return incompleteResponse(options);
-      }
-      if (clock - posts[0].at < 60_000) return { httpStatus: 429 };
-      return readyResponse(options);
-    },
-    [collectionPath]: () => collectionResponse(clock < Date.parse(start) + 60_000 ? runningCloudfront : {
-      started_at: runningCloudfront.started_at,
-      finished_at: new Date(clock).toISOString(), last_success_at: new Date(clock).toISOString(),
-    }),
-  }, { now: () => clock, wait: async ms => { waits.push(ms); clock += ms; } });
+  const f = readinessFixture(options => {
+    posts.push({ nonce: options.body.nonce, at: clock });
+    if (posts.length === 1) {
+      clock += 20_000; // A failed BFF/AgentCore request also consumes time.
+      return incompleteResponse(options);
+    }
+    if (clock - posts[0].at < 60_000) return { httpStatus: 429 };
+    return readyResponse(options);
+  }, () => collectionResponse(clock < Date.parse(start) + 60_000 ? runningCloudfront : {
+    started_at: runningCloudfront.started_at,
+    finished_at: new Date(clock).toISOString(), last_success_at: new Date(clock).toISOString(),
+  }), { now: () => clock, wait: async ms => { waits.push(ms); clock += ms; } });
   const result = await f.run(releaseConfig);
   assert.equal(result.status, 'ok');
   assert.equal(posts.length, 2);
@@ -475,10 +437,7 @@ test('release retries a proven scheduled CloudFront race once after cooldown wit
 });
 
 test('release reports only confirmed running contention after the second failure and never calls a third time', async () => {
-  const f = fixture({
-    [readinessPath]: incompleteResponse,
-    [collectionPath]: () => collectionResponse(runningCloudfront),
-  });
+  const f = readinessFixture();
   await assert.rejects(f.run(releaseConfig), /^Error: Runtime smoke: runtime_inventory_contention$/);
   assert.equal(f.calls.filter(c => c.path === readinessPath).length, 2);
   assert.equal(f.calls.filter(c => c.path === '/api/jobs').length, 0);
@@ -511,10 +470,8 @@ test('release does not retry real failures, incomplete identities, or malformed 
   ];
   for (const mutate of mutations) {
     const waits = [];
-    const f = fixture({
-      [readinessPath]: options => { const r = incompleteResponse(options); mutate(r); return r; },
-      [collectionPath]: () => collectionResponse(runningCloudfront),
-    }, { wait: async ms => { waits.push(ms); } });
+    const f = readinessFixture(options => { const r = incompleteResponse(options); mutate(r); return r; },
+      undefined, { wait: async ms => { waits.push(ms); } });
     await assert.rejects(f.run(releaseConfig), /Runtime smoke: runtime_/);
     assert.equal(f.calls.filter(c => c.path === readinessPath).length, 1);
     assert.equal(f.calls.filter(c => c.path === collectionPath).length, 0);
@@ -543,7 +500,7 @@ test('release cannot attribute owned, stale, partial, failed, or malformed Cloud
   ];
   for (const summary of summaries) {
     const waits = [];
-    const f = fixture({ [readinessPath]: incompleteResponse, [collectionPath]: summary },
+    const f = readinessFixture(incompleteResponse, summary,
       { wait: async ms => { waits.push(ms); } });
     await assert.rejects(f.run(releaseConfig), /Runtime smoke: runtime_inventory_incomplete$/);
     assert.equal(f.calls.filter(c => c.path === readinessPath).length, 1);
@@ -561,13 +518,10 @@ test('the one retry must still satisfy every original AgentCore proof check and 
     r => { r.body.parameters.runtime_arn = 'pending'; },
   ]) {
     const posts = [];
-    const f = fixture({
-      [readinessPath]: options => {
-        posts.push(options.body.nonce);
-        if (posts.length === 1) return incompleteResponse(options);
-        const response = readyResponse(options); mutate(response, posts[0]); return response;
-      },
-      [collectionPath]: () => collectionResponse(runningCloudfront),
+    const f = readinessFixture(options => {
+      posts.push(options.body.nonce);
+      if (posts.length === 1) return incompleteResponse(options);
+      const response = readyResponse(options); mutate(response, posts[0]); return response;
     });
     await assert.rejects(f.run(releaseConfig), /Runtime smoke: runtime_protocol$/);
     assert.equal(posts.length, 2);
@@ -579,13 +533,10 @@ test('the one retry must still satisfy every original AgentCore proof check and 
 test('a second real failure retains its cause instead of being relabeled as contention', async () => {
   for (const reason of ['model_failed', 'inventory_stale', 'runtime_protocol']) {
     let posts = 0;
-    const f = fixture({
-      [readinessPath]: options => {
-        const r = incompleteResponse(options);
-        if (++posts === 2) r.body.reason = r.body.agent.reason = reason;
-        return r;
-      },
-      [collectionPath]: () => collectionResponse(runningCloudfront),
+    const f = readinessFixture(options => {
+      const r = incompleteResponse(options);
+      if (++posts === 2) r.body.reason = r.body.agent.reason = reason;
+      return r;
     });
     await assert.rejects(f.run(releaseConfig), new RegExp(`Runtime smoke: runtime_${reason}$`));
     assert.equal(posts, 2);
@@ -594,10 +545,8 @@ test('a second real failure retains its cause instead of being relabeled as cont
   for (const change of [{ status: 'partial' }, { status: 'failed' },
     { last_success_at: new Date(Date.parse(start) - 1000).toISOString() }]) {
     let reads = 0;
-    const f = fixture({
-      [readinessPath]: incompleteResponse,
-      [collectionPath]: () => collectionResponse({ ...runningCloudfront, ...(reads++ ? change : {}) }),
-    });
+    const f = readinessFixture(incompleteResponse,
+      () => collectionResponse({ ...runningCloudfront, ...(reads++ ? change : {}) }));
     await assert.rejects(f.run(releaseConfig), /Runtime smoke: runtime_inventory_incomplete$/);
     assert.equal(f.calls.filter(c => c.path === readinessPath).length, 2);
     assert.equal(f.calls.filter(c => c.path === '/api/jobs').length, 0);
@@ -607,10 +556,8 @@ test('a second real failure retains its cause instead of being relabeled as cont
 test('standalone strict mode still makes one readiness request when a sweep starts after collection proof', async () => {
   let reads = 0;
   const waits = [];
-  const f = fixture({
-    [collectionPath]: () => collectionResponse(reads++ ? runningCloudfront : {}),
-    [readinessPath]: incompleteResponse,
-  }, { wait: async ms => { waits.push(ms); } });
+  const f = readinessFixture(incompleteResponse, () => collectionResponse(reads++ ? runningCloudfront : {}),
+    { wait: async ms => { waits.push(ms); } });
   await assert.rejects(f.run(config), /Runtime smoke: runtime_inventory_incomplete$/);
   assert.equal(f.calls.filter(c => c.path === readinessPath).length, 1);
   assert.equal(reads, 1);
