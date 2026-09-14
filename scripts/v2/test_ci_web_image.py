@@ -312,48 +312,29 @@ class WorkflowTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ImageError):
                 verify_source_and_migration(context(), older, value, api)
 
-    def test_role_binding_cannot_fall_back_to_a_foreign_account(self):
-        env = {
-            "GITHUB_REPOSITORY": REPO, "GITHUB_REF_NAME": "dev", "GITHUB_REF": "refs/heads/dev",
-            "GITHUB_EVENT_NAME": "push",
-            "GITHUB_WORKFLOW_REF": REPO + "/.github/workflows/deploy-web.yml@refs/heads/dev",
-            "CI_ROLE_ARN": "arn:aws:iam::123456789012:role/CI", "AWS_ACCOUNT_ID_DEV": "123456789012",
-        }
-        self.assertEqual(role_context(env), ("123456789012", "CI"))
-        for change in [{"CI_ROLE_ARN": ""}, {"AWS_ACCOUNT_ID_DEV": "999999999999"},
-                       {"GITHUB_REF": "refs/heads/main"}, {"GITHUB_REPOSITORY": "Atom-oh/awsops"}]:
-            with self.subTest(change=change), self.assertRaises(ImageError):
-                role_context(env | change)
-        with self.assertRaises(ImageError):
-            verify_caller(env, lambda: {"Account": "123456789012",
-                "Arn": "arn:aws:sts::123456789012:assumed-role/Other/GitHub"})
-
-    def test_every_dev_tier_branch_requires_the_configured_development_account(self):
-        for branch in ("dev", "atomoh", "ssminji", "whchoi"):
+    def test_branch_accounts_configuration_and_actual_role_fail_closed(self):
+        for branch in ("dev", "atomoh", "ssminji", "whchoi", "main"):
+            account = "999999999999" if branch == "main" else "123456789012"
             env = {
                 "GITHUB_REPOSITORY": REPO, "GITHUB_REF_NAME": branch,
                 "GITHUB_REF": f"refs/heads/{branch}", "GITHUB_EVENT_NAME": "push",
                 "GITHUB_WORKFLOW_REF": f"{REPO}/.github/workflows/deploy-web.yml@refs/heads/{branch}",
-                "CI_ROLE_ARN": "arn:aws:iam::123456789012:role/CI",
-                "AWS_ACCOUNT_ID_DEV": "123456789012",
+                "CI_ROLE_ARN": f"arn:aws:iam::{account}:role/CI", "AWS_ACCOUNT_ID_DEV": "123456789012",
             }
             with self.subTest(branch=branch):
-                self.assertEqual(role_context(env), ("123456789012", "CI"))
-                for account in ("", "999999999999"):
-                    with self.assertRaises(ImageError):
-                        role_context(env | {"AWS_ACCOUNT_ID_DEV": account})
-
-    def test_main_cannot_use_the_development_account(self):
-        env = {
-            "GITHUB_REPOSITORY": REPO, "GITHUB_REF_NAME": "main", "GITHUB_REF": "refs/heads/main",
-            "GITHUB_EVENT_NAME": "workflow_dispatch",
-            "GITHUB_WORKFLOW_REF": f"{REPO}/.github/workflows/deploy-web.yml@refs/heads/main",
-            "CI_ROLE_ARN": "arn:aws:iam::999999999999:role/ProductionCI",
-            "AWS_ACCOUNT_ID_DEV": "123456789012",
-        }
-        self.assertEqual(role_context(env), ("999999999999", "ProductionCI"))
-        with self.assertRaises(ImageError):
-            role_context(env | {"CI_ROLE_ARN": "arn:aws:iam::123456789012:role/CI"})
+                self.assertEqual(role_context(env), (account, "CI"))
+                invalid = [{"CI_ROLE_ARN": ""}, {"GITHUB_REF": "refs/heads/other"},
+                           {"GITHUB_REPOSITORY": "Atom-oh/awsops"}]
+                invalid += [{"AWS_ACCOUNT_ID_DEV": value} for value in
+                            ("", "123", "x" * 12, "123456789012\n", "999999999999")]
+                if branch == "main":
+                    invalid.append({"CI_ROLE_ARN": "arn:aws:iam::123456789012:role/CI"})
+                for change in invalid:
+                    with self.subTest(change=change), self.assertRaises(ImageError):
+                        role_context(env | change)
+                with self.assertRaises(ImageError):
+                    verify_caller(env, lambda: {"Account": account,
+                        "Arn": f"arn:aws:sts::{account}:assumed-role/Other/GitHub"})
 
     def test_rollback_is_explicit_and_never_runs_current_migrations(self):
         script = self.workflow("deploy-web.yml")["jobs"]["guard"]["steps"][0]["run"]

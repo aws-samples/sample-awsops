@@ -35,7 +35,8 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
 
 - `dev` is the **default branch** — PRs (internal and external) target it by default.
 - `main` accepts PRs **only from `dev`**, enforced mechanically by
-  `guard-main-prs.yml` on top of the `protect-main` ruleset (PR required, no
+  `guard-main-prs.yml` on top of the `protect-main-dev` ruleset (PR required, required
+  `AI Code Review` and `Merge Verify` checks, no
   force-push/deletion). `dev` carries the same ruleset protections.
 
 ## Branch flow / 브랜치 흐름
@@ -180,7 +181,8 @@ branches); production stays behind the `production` environment approval. See
 
 - User PR → `dev`: merge-verify + AI review green; a fork PR shows no plan job.
 - PR to `main` from anything but `dev`: `guard-main-prs` fails the PR.
-- Push to `dev`: `deploy-web.yml` builds ARM64, applies the matching-source private
+- Push to `dev` changing web code, CHANGELOG or `terraform/foundation/migrations/**`:
+  `deploy-web.yml` builds ARM64, applies the matching-source private
   migration, verifies the new ECS deployment and actual image digest, then requires
   login/DB smoke. Configure `CI_MIGRATIONS_ENABLED_DEV=true` and apply
   `ci_migrations_enabled=true` before this path; the workflow cannot provision it.

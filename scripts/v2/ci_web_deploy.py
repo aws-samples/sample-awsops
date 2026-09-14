@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import time
 
 from ci_web_image import (ImageError, command, environment_context, pin_image,
@@ -32,10 +33,11 @@ def wait_for(check, timeout, now, sleep):
     require(type(timeout) in (int, float) and 0 < timeout <= 600, "Invalid verification timeout")
     deadline = now() + timeout
     while True:
+        require(now() < deadline, "Deployment verification timeout")
         try:
-            result = check()
-            require(now() <= deadline, "Deployment verification timeout")
-            return result
+            # A read started in budget still supplies valid evidence when its
+            # bounded provider call finishes later; never discard a rollout ID.
+            return check()
         except NotReady as error:
             remaining = deadline - now()
             if remaining <= 0:
@@ -130,8 +132,42 @@ def stable(value, primary):
                     for d in value["deployments"] if d["id"] != primary["id"]), "Web service is not stable")
 
 
-def task_set(c, value, primary, aws, digests=None):
-    """Read the whole current web task set, both before mutation and after rollout."""
+def probe_tasks(c, aws):
+    """Exercise scoped reads; prior health/cardinality must not prevent recovery."""
+    request = dict(cluster=c["project"], serviceName=c["project"] + "-web",
+                   desiredStatus="RUNNING", maxResults=100)
+    page = aws("ecs", "list-tasks", ["--cli-input-json", json.dumps(request), "--no-paginate"])
+    arns = page.get("taskArns")
+    pattern = re.escape(prefix(c) + "task/" + c["project"] + "/") + r"[0-9a-f]{32}"
+    require(isinstance(arns, list) and len(arns) <= 100
+            and all(isinstance(a, str) and re.fullmatch(pattern, a) for a in arns)
+            and len(set(arns)) == len(arns)
+            and (page.get("nextToken") is None or isinstance(page["nextToken"], str)),
+            "Invalid task permission probe listing")
+    # One page suffices to exercise IAM; this is not a complete health inventory.
+    # Even an empty service must authorize DescribeTasks on an owned task ARN.
+    batch = arns or [prefix(c) + "task/" + c["project"] + "/" + "0" * 32]
+    response = aws("ecs", "describe-tasks", ["--cluster", c["project"], "--tasks", *batch])
+    tasks, failures = response.get("tasks"), response.get("failures", [])
+    require(isinstance(tasks, list) and isinstance(failures, list), "Invalid task permission probe")
+    seen = []
+    for task in tasks:
+        require(isinstance(task, dict) and task.get("taskArn") in batch
+                and task.get("clusterArn") == prefix(c) + "cluster/" + c["project"]
+                and task.get("group") == "service:" + c["project"] + "-web"
+                and re.fullmatch(re.escape(prefix(c) + f"task-definition/{c['project']}-web:")
+                                 + r"[1-9][0-9]*", task.get("taskDefinitionArn", "")),
+                "Foreign task permission probe result")
+        seen.append(task["taskArn"])
+    for failure in failures:
+        require(isinstance(failure, dict) and failure.get("arn") in batch
+                and failure.get("reason") == "MISSING", "Task permission probe failed")
+        seen.append(failure["arn"])
+    require(len(seen) == len(set(seen)) and set(seen) == set(batch), "Incomplete task permission probe")
+
+
+def task_set(c, value, primary, aws, digests):
+    """The candidate must have a complete, healthy, digest-bound task set."""
     arns, token = [], None
     for _ in range(10):
         request = dict(cluster=c["project"], serviceName=c["project"] + "-web",
@@ -174,7 +210,7 @@ def task_set(c, value, primary, aws, digests=None):
                     and web[0].get("image") == repository(c) + ":web-latest"
                     and isinstance(web[0].get("imageDigest"), str)
                     and DIGEST.fullmatch(web[0]["imageDigest"])
-                    and (digests is None or web[0]["imageDigest"] in digests),
+                    and web[0]["imageDigest"] in digests,
                     "Running web image, health or deployment mismatch")
             seen.add(task["taskArn"])
 
@@ -182,7 +218,6 @@ def task_set(c, value, primary, aws, digests=None):
 def snapshot(c, aws, timeout=120, now=time.monotonic, sleep=time.sleep):
     def read():
         value, primary = service(c, aws)
-        stable(value, primary)
         definition = aws("ecs", "describe-task-definition",
                          ["--task-definition", value["taskDefinition"]]).get("taskDefinition", {})
         web = [v for v in definition.get("containerDefinitions", []) if v.get("name") == "web"]
@@ -192,14 +227,26 @@ def snapshot(c, aws, timeout=120, now=time.monotonic, sleep=time.sleep):
                 and len(web) == 1 and web[0].get("essential") is True
                 and web[0].get("image") == repository(c) + ":web-latest", "Web task configuration mismatch")
         # These real calls preflight permissions, not just configured IAM metadata.
-        task_set(c, value, primary, aws)
+        probe_tasks(c, aws)
         after, current = service(c, aws)
-        stable(after, current)
         ready(current["id"] == primary["id"] and after["taskDefinition"] == value["taskDefinition"]
               and after["desiredCount"] == value["desiredCount"], "Web snapshot changed during reads")
         return {"old_deployment_id": primary["id"], "task_revision": value["taskDefinition"].rsplit(":", 1)[1],
                 "desired_count": str(value["desiredCount"])}
     return wait_for(read, timeout, now, sleep)
+
+
+def open_workflow_output(env):
+    path = env.get("GITHUB_OUTPUT", "")
+    require(path and os.path.isabs(path), "Workflow output is required")
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid(), "Invalid workflow output")
+        return os.fdopen(fd, "a")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def start(c, digest, child, aws=aws_request, before=None,
@@ -265,18 +312,19 @@ def main():
         verify(c, proof)
         print("Exact web deployment and healthy image verified.")
         return
-    pin = env.get("PIN_SHA") or c["sha"]
-    rollback = verify_source_and_migration(c, pin, env)
-    digest = resolve_digest(c, pin_sha=pin, fresh_digest=env.get("FRESH_DIGEST", ""),
-                            fresh_project=env.get("FRESH_PROJECT", ""), producer_run=env.get("IMAGE_BUILD_RUN_ID", ""))
-    child = runtime_digest(c, digest, aws_request)
-    before = snapshot(c, aws_request)
-    verify_source_and_migration(c, pin, env)
-    pin_image(c["project"] + "-web", digest)
-    verify_source_and_migration(c, pin, env)
-    proof = start(c, digest, child, aws_request, before=before)
-    require(env.get("GITHUB_OUTPUT"), "Workflow output is required")
-    with open(env["GITHUB_OUTPUT"], "a") as output:
+    # Keep the validated descriptor open, so output permission/type errors precede
+    # promotion and a later path substitution cannot redirect the release receipt.
+    with open_workflow_output(env) as output:
+        pin = env.get("PIN_SHA") or c["sha"]
+        rollback = verify_source_and_migration(c, pin, env)
+        digest = resolve_digest(c, pin_sha=pin, fresh_digest=env.get("FRESH_DIGEST", ""),
+                                fresh_project=env.get("FRESH_PROJECT", ""), producer_run=env.get("IMAGE_BUILD_RUN_ID", ""))
+        child = runtime_digest(c, digest, aws_request)
+        before = snapshot(c, aws_request)
+        verify_source_and_migration(c, pin, env)
+        pin_image(c["project"] + "-web", digest)
+        verify_source_and_migration(c, pin, env)
+        proof = start(c, digest, child, aws_request, before=before)
         for key, value in proof.items():
             output.write(f"{key}={value}\n")
     print(json.dumps({"digest": digest, "image_sha": pin, "rollback": rollback,

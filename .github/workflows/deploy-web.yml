@@ -30,7 +30,7 @@ name: Deploy Web
 on:
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
-    paths: ["web/**", "CHANGELOG.md"]
+    paths: ["web/**", "CHANGELOG.md", "terraform/foundation/migrations/**"]
   workflow_dispatch:
     inputs:
       image_sha:
@@ -44,7 +44,7 @@ on:
         type: boolean
         default: false
       build:
-        description: "Build & push web-<HEAD sha> first, then roll it (for a stack whose image was never built / was lost). Mutually exclusive with image_sha."
+        description: "Build this source, migrate and release. Cannot combine with image_sha, image_build_run_id or rollback_schema_compatible."
         type: boolean
         required: false
         default: false

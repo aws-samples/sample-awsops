@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: fbb9dfc7bdb8 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5619eb114bb9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -75,8 +75,7 @@ legacy runbook's steps as the current operational path).
   Genuine auth-success logging needs log_connections, which defaults off in PostgreSQL and
   is not enabled here. Its effective value is uninspected and reported as null. Never tune from these counts.
 - `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is default-off. Dev AgentCore and current-source dev Deploy Web require the reviewed true plan applied and non-null `migration_job` output before execution; setting a variable or generating a plan alone is insufficient. Guarded dev web pushes also call
-  `deploy-migrations.yml` + `run-migration.mjs` controller starts one verified private
-  ARM64 task. Its IAM reads exact Aurora secrets; DB DDL uses those credentials.
+  `deploy-migrations.yml`; its `run-migration.mjs` controller starts one verified private ARM64 task. Its IAM reads exact Aurora secrets; DB DDL uses those credentials.
   It enables no product AWS-resource mutation/autonomy (ADR-005).
 - `dev-repo-setup.md` covers CI/OIDC, protected review recovery, ECR preflight and explicit
   same-branch/SHA dispatch plans. PR/push plans are advisory.
@@ -145,6 +144,7 @@ legacy runbook's steps as the current operational path).
   route requires admin or deployment-verifiers, one in-flight call and a 60-second cooldown.
 
 - Every dev web release prepares effective demo credentials privately and verifies login/DB.
+  The protect-main-dev ruleset requires GitHub Actions AI Code Review and Merge Verify success.
   Current source requires matching private migrations; explicit older-image rollback runs no DDL.
   The compatibility input cannot disable checks; positive table count is not a ledger audit.
   `web-release.md` documents producer receipts, IAM preflight, unattended dev execution and rollback (ADR-001/005).

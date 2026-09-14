@@ -205,10 +205,12 @@ def role_context(env):
     role = re.fullmatch(r"arn:aws:iam::([0-9]{12}):role/([A-Za-z0-9_+=,.@/-]+)",
                         env.get("CI_ROLE_ARN", ""))
     require(role, "Explicit branch release role is required")
+    dev_account = env.get("AWS_ACCOUNT_ID_DEV", "")
+    require(matches(re.compile(r"[0-9]{12}"), dev_account), "Explicit development account is required")
     if branch != "main":
-        require(role[1] == env.get("AWS_ACCOUNT_ID_DEV"), "Development role account mismatch")
+        require(role[1] == dev_account, "Development role account mismatch")
     else:
-        require(role[1] != env.get("AWS_ACCOUNT_ID_DEV"), "Production role must not use the development account")
+        require(role[1] != dev_account, "Production role must not use the development account")
     return role[1], role[2].split("/")[-1]
 
 

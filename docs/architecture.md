@@ -121,7 +121,7 @@ Single Terraform root `terraform/foundation/` — partial S3 backend (`backend.h
 | `auth.tf` + `edge-lambda/` | Cognito User Pool/client/domain + Lambda@Edge (RS256, templated Python) |
 | `data.tf` + `data/schema.sql` + `migrations/` | Aurora Serverless v2 + baseline schema + ULID migrations |
 | `workload.tf` | ECS cluster/service/task definition (web) |
-| `ci-migrations.tf` | Default-off `ci_migrations_enabled`: private ARM64 migration template, exact-secret IAM and logs; launched only by the manual development CI controller, never an app service/scheduler |
+| `ci-migrations.tf` | Default-off `ci_migrations_enabled`: private ARM64 migration template, exact-secret IAM and logs; launched manually or by guarded current-source dev web releases, never an app service/scheduler |
 | `ecr.tf` | Dual-tier ECR (dev-private + prod-public) |
 | `ai.tf` | AgentCore ECR + IAM + agent Lambda slices + SSM (21 gated on `agentcore_enabled`, 6 on `integrations_enabled`); default-off `ci_readiness_enabled` controls the bounded runtime permission/data/model probe through applied output |
 | `workers.tf` | SQS + ESM + dispatcher/worker/status_updater/reaper Lambda + Step Functions + Fargate worker (`workers_enabled`) |

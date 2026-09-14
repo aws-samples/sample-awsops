@@ -45,10 +45,6 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   Ordinary host commands set this once. The default-off private development migration template
   retains the flag for manual calls and guarded current-source dev web releases; an existing ledger skips initialization and an
   occupied unversioned database still fails closed. See the [runtime guide](../../terraform/foundation/migrations/README.md).
-  새 빈 DB는 최초 초기화가 필요하며 baseline·원장 변환·checksum은 원자적으로 적용한다.
-  The private template is also called by current-source Deploy Web on dev pushes after capability enablement.
-  Existing ledgers skip initialization; occupied unversioned databases are rejected.
-  원장 없이 사용자 객체가 있으면 초기화를 거부한다.
 - **App access**: **node-pg** (`web/lib/db.ts`). No *live* Steampipe in v2 — live AWS
   queries go through AgentCore MCP Lambda tools; the ops gateway already has a limited
   Aurora-backed `inventory-read-target`, while direct domain API targets remain registered.

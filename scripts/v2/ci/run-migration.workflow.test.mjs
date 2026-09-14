@@ -60,7 +60,7 @@ if "output" in sys.argv: print("null")
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
-test('migration workflow is manual-only and rejects non-dev/non-samples runs before privileged jobs', async () => {
+test('standalone migration is manual and rejects unapproved pushes before privileged jobs', async () => {
   const w = workflow('deploy-migrations.yml');
   assert.deepEqual(Object.keys(w.on).sort(), ['workflow_call', 'workflow_dispatch']);
   for (const invalid of [{ GITHUB_REF: 'refs/heads/main' },
@@ -75,6 +75,14 @@ test('migration workflow is manual-only and rejects non-dev/non-samples runs bef
   assert.deepEqual(w.jobs.migrate.needs, ['guard', 'build']);
   assert.equal(w.jobs.migrate.environment, 'development');
   assert.equal(w.concurrency['cancel-in-progress'], false);
+});
+
+test('schema-only dev changes trigger the release workflow and its migration dependency', () => {
+  const w = workflow('deploy-web.yml');
+  assert.ok(w.on.push.branches.includes('dev'));
+  assert.ok(w.on.push.paths.includes('terraform/foundation/migrations/**'));
+  assert.ok(w.jobs.deploy.needs.includes('migrate-dev'));
+  assert.equal(w.jobs['migrate-dev'].uses, './.github/workflows/deploy-migrations.yml');
 });
 
 test('build and execution use fixed development credentials and the ARM64 build output digest', () => {

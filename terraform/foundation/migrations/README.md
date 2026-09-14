@@ -93,7 +93,7 @@ reader output이 정의된 빈 문자열이면 비밀번호 동기화를 끄지�
 | `AURORA_SECRET_ARN` | Required **master** secret identifier; JSON `username` must be `awsops_admin`, password a nonempty string / `awsops_admin` master 시크릿 |
 | `SQL_READER_SYNC_MODE` | Explicit `secret` or `disabled`; no runtime `terraform` mode / 명시적 모드 필수 |
 | `SQL_READER_SECRET_ARN` | Required only with `secret`; omit or empty with `disabled`. JSON username must be exactly `awsops_sql_reader`, password a nonempty string / reader 전용 시크릿 |
-| `INITIALIZE_EMPTY_DB` | Optional `1` for verified empty DB; one-shot host command, retained in the manual CI template / 최초 빈 DB 초기화; 수동 CI 템플릿 예외는 위 설명 참조 |
+| `INITIALIZE_EMPTY_DB` | Optional `1` for verified empty DB; one-shot host command, retained in the private CI template for manual and guarded current-source dev web releases |
 | `BOOTSTRAP` | Optional controller-confirmed `1` for legacy INTEGER ledger / 기존 INTEGER 원장 전환 |
 | `APP_VERSION` | Optional release stamp fallback; otherwise `web/package.json`; `-- since:` takes precedence / release 기록 |
 | `STATUS`, `DRY_RUN`, `OFFLINE` | `1` enables the inspection modes described above / 위 조회 모드 |
@@ -112,8 +112,8 @@ the agent's `AURORA_SQL_READER_SECRET_ARN` is not an alias for `SQL_READER_SECRE
 Do not copy the agent's environment block. Role elevation is checked on every non-preview run when
 the role exists, **including disabled mode**. Disabled permits an absent role and skips only the
 reader secret fetch/password alteration; it does not repair a missing role or password mismatch.
-After a disabled-mode installation, complete migrations with reader sync enabled before AgentCore. Dev Deploy AgentCore runs the reusable private `deploy-migrations.yml` first; main/preview and direct private-host CLI use `make migrate` before `make agentcore`.
-Otherwise Data API auth can fail. The dev workflow requires `CI_MIGRATIONS_ENABLED_DEV=true` and a reviewed apply of `ci_migrations_enabled=true` that persists a non-null `migration_job` output before dispatch.
+After a disabled-mode installation, complete migrations with reader sync enabled before AgentCore. Dev Deploy AgentCore and current-source dev Deploy Web run the reusable private `deploy-migrations.yml` first; main/preview and direct private-host CLI use `make migrate` before `make agentcore`.
+Otherwise Data API auth can fail. The dev workflow requires `CI_MIGRATIONS_ENABLED_DEV=true` and a reviewed apply of `ci_migrations_enabled=true` that persists a non-null `migration_job` output before release.
 See `docs/runbooks/agent-sql-reader.md` for recovery and safe diagnostic codes.
 
 이 이름은 runtime/controller의 계약이다. 에이전트 환경변수를 복사하지 않는다.

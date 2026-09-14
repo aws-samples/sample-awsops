@@ -1,8 +1,6 @@
 # Verified web release and rollback
 
-Use this procedure when a web release needs migration, image provenance or
-rollout verification. Terraform/tool/AgentCore/worker deployment and broad runtime
-or collection readiness remain separate procedures; this workflow changes no IaC.
+This workflow verifies migrations, provenance and web rollout. Infrastructure, AgentCore, workers and broad readiness remain separate.
 
 ## Symptoms and candidate causes
 
@@ -16,41 +14,28 @@ or collection readiness remain separate procedures; this workflow changes no IaC
 
 ## Verification commands
 
-From the repository root:
-
 ```bash
 gh pr checks <PR_NUMBER> -R aws-samples/sample-awsops
 gh run view <RUN_ID> -R aws-samples/sample-awsops --json status,conclusion,jobs
 ```
 
-The called `migrate-dev` jobs contain the bounded migration failure categories;
-inspect their step results as well as the deploy job. Do not publish raw
-Terraform state, credentials or response bodies to diagnose a failure.
+Inspect both `migrate-dev` and deploy step results. Migration failures use bounded categories; do not publish raw Terraform state,
+credentials or response bodies.
 
 ## Action: current-source development releases
 
-A matching `dev` push builds ARM64, completes the reusable private migration,
-then promotes the verified digest and checks the exact ECS deployment and running
-image. Every dev release also performs the existing private login/DB smoke.
-`verify_database=false` does not turn that verification off.
+A dev push changing `web/**`, `CHANGELOG.md` or `terraform/foundation/migrations/**` builds ARM64, runs the matching private migration,
+promotes the digest and verifies the exact deployment/image. Dev login/DB smoke is mandatory; `verify_database=false` cannot disable it.
+Other paths require an explicit release dispatch.
 
-Before enabling this path, review/apply `ci_migrations_enabled=true` with
-`CI_MIGRATIONS_ENABLED_DEV=true` and confirm the non-null `migration_job` output.
-The configured dev account, build/deployer roles and private migration network
-must already work. A missing output or failed migration blocks promotion with
-an explicit capability/migration failure; no gate is automatically enabled.
-This deliberately runs required DDL unattended after an authorized dev push
-once the operator has applied the capability. It is operator deployment
-automation under ADR-005, not product/agent autonomy or a new AWS-mutation exception.
+First review/apply `ci_migrations_enabled=true`, set `CI_MIGRATIONS_ENABLED_DEV=true` and confirm non-null `migration_job`. The dev account,
+roles and private network must work. Missing capability or failed migration blocks promotion; nothing enables the capability automatically.
+Once enabled, authorized merges intentionally run dev DDL. These are operator deployments under ADR-005, not product autonomy or a freeze
+exception.
 
-The repository settings verified on 2026-09-14 use the active `protect-main-dev`
-ruleset: PRs are required for main/dev, bypass actors are absent, and force pushes
-and branch deletion are blocked. The ruleset has no required approving-review
-count or required-status-check rule. The `development` environment allows dev
-and the three documented preview branches, with no environment reviewer gate.
-Thus a merge intentionally starts dev DDL without another manual approval.
-The maintained PR procedure still requires latest-HEAD AI review and successful
-CI before merge; do not mistake the environment branch filter for a human approval.
+Settings verified on 2026-09-14: `protect-main-dev` requires PRs and GitHub Actions `AI Code Review`/`Merge Verify` success on main/dev,
+blocks force-push/deletion and has no bypass actors or required human approval count. The development environment allows dev and the three
+preview branches without environment reviewers. Required checks and latest-HEAD review gate merge; the branch filter is not human approval.
 
 ```bash
 # Build the dispatched dev source, migrate that source, deploy and verify:
@@ -61,40 +46,24 @@ gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev \
   -f image_build_run_id='<PRODUCER_RUN_ID>'
 ```
 
-The migration result must name this source SHA and project. Standalone migrations
-and AgentCore reuse remain dispatch-only. The additional push path requires both
-the explicit reusable-workflow opt-in and the exact samples/dev Deploy Web caller.
-Generic runtime-image build commands do not accept that opt-in.
+The migration result must match the source SHA/project. Standalone/AgentCore use stays dispatch-only; dev web pushes require both explicit
+reusable opt-in and the exact samples/dev Deploy Web caller. Generic runtime builds cannot use that opt-in.
 
 ## Image producer evidence
 
-Fresh builds use the digest returned by Buildx. Reuse requires a receipt from
-this repository, workflow, branch and source, with the same project and account
-binding. The receipt records its producing attempt and numeric build-job ID.
-GitHub artifact digest, workflow metadata, actual producing attempt, successful
-build/publication steps and creation interval are verified; an artifact name
-alone never authorizes an image.
+Fresh builds use Buildx's digest. Reuse verifies repository/workflow/branch/source/ project, artifact digest, producing attempt/job ID,
+successful build/publication steps and artifact creation interval. Names alone never authorize an image.
 
-An attempt-1 build receipt remains valid when a deploy-only retry advances the
-run to attempt 2. The producer's build job must have succeeded; a subsequent
-deployment failure is not evidence that the image build failed. A later,
-authenticated failed build is ineligible and does not invalidate an earlier
-successful receipt; selection uses the newest verified successful build attempt.
-Receipts are
-retained for 90 days. Expired, missing, legacy or unverifiable receipts fail closed:
-rebuild the current source, choose another retained producer, or use a separately
-reviewed operator recovery procedure. There is no mutable-tag-only fallback.
-Public receipts contain no account identifier or deterministic account fingerprint,
-credentials, role ARN or tfvars. The configured account and actual assumed role
-are verified at runtime; repository, workflow, branch, source, project and image
-content remain bound to the authenticated producer.
+A successful attempt-1 build survives a deploy-only attempt-2 retry. Later failed builds are ineligible without invalidating earlier
+success; the newest verified successful attempt wins. Receipts expire after 90 days. Missing, legacy, expired or unverifiable receipts
+require a rebuild, another retained producer or reviewed operator recovery. There is no mutable-tag fallback. Public receipts contain no
+account ID or deterministic fingerprint, credentials, role ARN or tfvars; caller/account binding is checked separately at runtime, alongside
+authenticated source/project/image evidence.
 
 ## Explicit older-image rollback
 
-Rollback is a separate behavior. Select an older ancestor source and its retained
-producer, and explicitly acknowledge compatibility with the currently applied
-schema. This does **not** prove compatibility automatically or revert database
-changes. Coordinate independent migration activity before acknowledging it.
+Select an older ancestor and retained producer, then acknowledge compatibility with the applied schema. This neither proves compatibility
+nor undoes DDL. Coordinate independent migration activity before acknowledging it.
 
 ```bash
 gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev \
@@ -103,58 +72,36 @@ gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev \
   -f rollback_schema_compatible=true
 ```
 
-This skips the migration workflow entirely: neither the current source's DDL nor
-an old migration runner executes. It still requires producer/account/project
-proof, the exact new ECS deployment, healthy running digest, and dev login/DB
-verification. Thus a broken current migration does not prevent an explicitly
-acknowledged image rollback. Schema repair is a separate reviewed operation.
+Rollback skips all migrations, so broken current migrations cannot block it. Producer/account/project proof, exact new deployment, healthy
+digest and dev login/DB checks still apply; schema repair remains separate. Preflight requires identity/configuration, positive desired
+count and actual read permissions, including a DescribeTasks probe for empty services. Prior health is advisory: failed services can
+recover, while intentionally paused services are not reactivated.
 
 ## Production and previews
 
-`main` pushes build only. Production rollout remains manual and environment-gated:
+`main` pushes build only. For manual, environment-gated production rollout, use
+the build/reuse/rollback examples above with `--ref main`.
 
-```bash
-gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref main -f build=true
-# Or reuse a retained producer of the currently dispatched main SHA:
-gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref main \
-  -f image_build_run_id='<PRODUCER_RUN_ID>'
-```
-
-The same explicit source/producer/compatibility inputs select older production
-images. Main always selects its production roles/backend; missing configuration
-fails instead of falling back to dev. Preview branches keep their documented
-dev-tier roles and separate stack secrets. Non-dev database migrations remain
-operator-managed; this workflow never substitutes the dev database or demo
-credentials for another stack.
+The same rollback inputs select older production images. Main requires production roles/backend and rejects the declared dev account;
+missing configuration cannot fall back to dev. Previews use dev-tier roles with separate stack secrets. Non-dev migrations remain
+operator-managed; dev DB/demo credentials are not substituted.
 
 ## Verification, recovery and integration
 
-In-flight rollouts are not cancelled by newer runs. Before promotion, the
-dispatched branch must still match the source SHA. State metadata must agree with
-the configured branch account/project. Verification binds the new deployment ID,
-task revision, desired count, healthy task/container state and actual image digest.
-A stable rollback to another image or a changed `web-latest` pointer is a failure.
-There is no automatic rollback. A failure after pinning may leave the selected tag
-or deployment changed; inspect it and use a new explicit release/rollback request.
+New runs do not cancel in-flight rollouts. Superseded source checks fail, even if DDL already applied. Verification binds account/project,
+deployment ID, revision, desired count, task/container health and digest. Wrong-image rollback or a moved `web-latest` fails. There is no
+automatic rollback: post-pin failures can leave the tag/deployment changed; inspect it before a new explicit release/rollback request.
 
-For the separately owned runtime gate, `steps.pin.outputs.digest` is the trusted
-root image digest; `steps.pin.outputs.runtime_digest` is its ARM64 manifest digest.
-The deploy job exposes `expected_image_digest` and `expected_runtime_digest`.
-Consumers of job outputs must require that deployment job to succeed. Within
-the deployment job, run the verifier after exact ECS/image verification and
-pass the values explicitly:
+The separate runtime gate consumes the root/ARM64 digests after exact ECS verification. Job outputs `expected_image_digest` and
+`expected_runtime_digest` require a successful deploy job. Within that job pass:
 
 ```yaml
 EXPECTED_WEB_IMAGE_DIGEST: ${{ steps.pin.outputs.digest }}
 EXPECTED_WEB_RUNTIME_DIGEST: ${{ steps.pin.outputs.runtime_digest }}
 ```
 
-The runtime verifier must accept these digest inputs, fetch any needed manifest
-by `imageDigest`, and compare running images to these values. `PIN_SHA` remains
-source metadata; it must not become a fresh lookup of mutable `web-<SHA>` authority.
-The runtime integration should replace/wrap the authenticated smoke at that
-verification point: its current CLI consumes and removes the private credential
-file. Do not append another consumer that assumes the same file still exists.
+Fetch manifests by `imageDigest`; `PIN_SHA` is source metadata, never authority to re-resolve a mutable `web-<SHA>` tag. Replace/wrap the
+authenticated smoke: its CLI consumes and removes the private credential file, so a later consumer cannot reuse it.
 
 Targeted offline verification:
 
@@ -164,8 +111,7 @@ node --test scripts/v2/ci/run-migration.test.mjs scripts/v2/ci/run-migration.wor
 actionlint .github/workflows/deploy-web.yml .github/workflows/deploy-migrations.yml
 ```
 
-These tests and workflow lint do not establish live deployment or effective IAM.
-`.github/actionlint.yaml` declares the existing `sample-awsops` runner label.
+Offline tests/lint do not prove live IAM/deployment. `.github/actionlint.yaml` declares the existing `sample-awsops` runner label.
 
 ## Related files and decisions
 
@@ -175,5 +121,4 @@ These tests and workflow lint do not establish live deployment or effective IAM.
 - `terraform/foundation/ci-migrations.tf`: default-off task and secret scopes.
 - [Deployment setup](dev-repo-setup.md), [branch strategy](branch-strategy.md), and [SQL reader](agent-sql-reader.md): prerequisites and recovery.
 
-ADR-001 governs immutable database migrations; ADR-005 keeps product remediation
-and autonomy frozen while allowing these operator-authorized deployment steps.
+ADR-001 governs immutable migrations; ADR-005 keeps product autonomy frozen while permitting these operator-authorized deployments.

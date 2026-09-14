@@ -163,6 +163,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   route requires admin or deployment-verifiers, one in-flight call and a 60-second cooldown.
 
 - Every dev Deploy Web release verifies login/DB; the compatibility input cannot disable it.
+  The active `protect-main-dev` ruleset requires GitHub Actions AI Code Review and
+  Merge Verify success before main/dev merge; no extra environment reviewer is added.
   Current-source releases require matching private migrations; explicit rollback runs no DDL. It prepares
   effective demo credentials privately with unwrapped Terraform before rollout, then verifies
   login and edge-authenticated `/api/db`. A positive table count is not a full ledger audit.
