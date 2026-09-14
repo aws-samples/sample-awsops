@@ -262,25 +262,14 @@ mandatory dev Deploy Web gate, explicitly apply `ci_readiness_enabled=true` with
 enabled, then provision. `CI_READINESS_ENABLED_DEV=true` supplies this separate opt-in in public dev CI.
 Only the applied `agentcore.deployment_readiness_enabled` sets `DEPLOYMENT_READINESS_ENABLED`; shell overrides are ignored.
 Fixed MCP tools read one CloudFront identity; producer freshness and bounded inference leave unknown attributes unassessed.
-Nonce/account-bound responses retain completed checks on timeout; administrator or deployment-verifiers
-membership, one in-flight request and a 60-second process cooldown are required. The owned synchronous
-CloudFront probe must succeed with zero unknown attributes and produce a post-marker known record.
-Capture fresh web-role SSM and nonce-bound AgentCore/model proof before the catalog wait. Durable
-post-marker CloudFront success survives a later scheduled attempt; other catalog types require
-last success within thirty minutes. Disclose current degradation with completeness `unknown`.
-Both owned Lambda and Fargate jobs must succeed. See the
-[collection contract](../runbooks/runtime-foundation.md#collection-contention--수집-경합).
+Nonce/account-bound responses retain completed checks on timeout. Administrator or deployment-verifiers membership, one in-flight request and a 60-second process cooldown are required.
+The mandatory release gate combines web-role SSM/AgentCore/model proof with owned CloudFront, bounded catalog and Lambda/Fargate evidence under the [collection contract](../runbooks/runtime-foundation.md#collection-contention--수집-경합); collection completeness remains `unknown`.
 An opt-in apply creates the verifier group only with readiness and AgentCore enabled; membership
 additionally requires the managed demo flag. No admin/IAM role is granted. Public CI permits
 readiness only on dev. CI_READINESS_ENABLED_DEV is a dedicated true/false override; empty/unset
 preserves explicit Terraform configuration and default false. The runtime profile alone does not enable it.
-The release controller verifies authenticated readiness access, not live group/membership state.
-It does not provision those resources. Do not separately
-create the Terraform-managed group. Adopt an existing group or managed-demo membership using the
-[reviewed import procedure](../runbooks/runtime-foundation.md#adopting-an-existing-verifier-group--기존-검증-그룹-채택).
-Use a fresh login after membership changes. Removing membership does not rewrite issued ID-token
-group claims, which can persist for their remaining configured 12-hour lifetime unless session
-revocation rejects them; [runtime disablement is independent](../runbooks/runtime-foundation.md#readiness-capability).
+The controller verifies authenticated readiness access, not live group/membership state. Use the [reviewed import procedure](../runbooks/runtime-foundation.md#adopting-an-existing-verifier-group--기존-검증-그룹-채택) for existing resources; do not create duplicates.
+Use a fresh login after membership changes. Removal leaves issued group claims unchanged for their remaining 12-hour lifetime unless session revocation rejects them; [runtime disablement is independent](../runbooks/runtime-foundation.md#readiness-capability).
 Web invocation validates the runtime ARN before caching; `PENDING` or malformed values fail.
 Status discovery only extracts a runtime ID and does not perform that full ARN validation.
 Both honor an explicitly empty `SSM_RUNTIME_ARN_PARAM`, which the web task receives when

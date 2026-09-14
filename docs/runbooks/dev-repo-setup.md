@@ -1048,20 +1048,10 @@ Also enable `steampipe_enabled=true`, `workers_enabled=true` and dispatch, and d
 worker images as described in [worker deployment](../reference/06-workers.md).
 Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway
 schema first. The web scan is capped at 500 rows; not finding the ID does not prove absence.
-The owned CloudFront probe must succeed with zero unknown attributes; the known record and durable
-CloudFront last success must be post-marker. Actual runtime proof precedes the longer catalog wait,
-so a newer scheduled attempt is disclosed without revoking that proof. Other catalog types require last-success evidence within thirty
-minutes of observation. Newer running/partial/failed attempts or unknown attributes are disclosed
-as degraded, never as complete collection. Missing/stale evidence still blocks. See the
-[collection contract](runtime-foundation.md#collection-contention--수집-경합) and
-[runtime endpoint authorization](../reference/05-agentcore.md).
+The [collection contract](runtime-foundation.md#collection-contention--수집-경합) defines post-marker owned CloudFront proof, thirty-minute catalog freshness, disclosed degradation and mandatory runtime/worker checks. Missing/stale evidence blocks; completeness remains unknown. See also [runtime endpoint authorization](../reference/05-agentcore.md).
 
-`SMOKE_RUNTIME_CONFIG_FILE` is an absolute 0600 JSON file beside credentials in the same 0700 directory;
-cleanup covers both. Its 16 KiB cap, marker no older than thirty minutes at validation, and
-unique type list including cloudfront are required. This input-age limit is not the total run budget.
-Every dev Deploy Web release invokes the controller with applied deployment, the code-checked
-catalog and its owned CloudFront probe evidence.
-The legacy verify_database input cannot skip this gate.
+`SMOKE_RUNTIME_CONFIG_FILE` is an absolute 0600 JSON file beside credentials in a cleanup-owned 0700 directory. It requires a 16 KiB cap, marker at most thirty minutes old at validation, and unique types including cloudfront; marker age is not the total run budget.
+Every dev Deploy Web release supplies applied deployment, the code-checked catalog and owned CloudFront evidence. The legacy `verify_database` input cannot skip this gate.
 
 `schemaVersion: 1`, `mode: "prepare"` and `expectedAccountId` check login/DB and the enabled host.
 Optional `hostOnly: true` also rejects enabled members. Verify adds `expectedCloudfrontId`,
