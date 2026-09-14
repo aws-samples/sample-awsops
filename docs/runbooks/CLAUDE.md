@@ -24,6 +24,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration and opt-in diagnostics (ADR-002/005/016) |
+| [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |
 | [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
 | [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
 | [runtime-verifier-sessions.md](runtime-verifier-sessions.md) | Manual-verifier policy prerequisite: separate backend/workload sessions, owned collector invocation, synchronous/HTTP proof, and integration cleanup gates (ADR-002/005/007/021) |
@@ -61,7 +62,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   authorization or same-account stack validation. Use existing read-only grants and an exact
   CLI verb allowlist. No IAM/resource writes or DB connection. Opt-in publishes fenced safe
   JSON, including posture booleans, to the public Actions log/summary.
-  Only this optional step tolerates failure; DNS/CI/readiness gates remain required.
+  This optional step and the separate advisory readiness-plan summary tolerate failure;
+  DNS/CI/readiness gates remain required.
   Retain all four sections independently: `logs`, `configuration`, `server_logs`, `rds_metrics`.
   Distinguish unavailable sources from unknown derived comparisons; early input/context/identity
   failure returns only `{"status":"unavailable"}`, not fabricated empty sections.
@@ -122,7 +124,12 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   `allow_dns_changes=true` on both plan and apply dispatches; examples do not grant permission.
 - Public summaries include managed/external certificate suffixes, publication, change counts/
   addresses and active-rollout public zone name/ID/NS; diagnostics additionally permit bounded
-  metric values. Never expose full ARNs, account IDs or
+  metric values. Explicit full dev readiness plans may also publish fixed scope/presence
+  checks and a known configured collector hash through `ci_readiness_plan_summary.py`.
+  That advisory summary does not establish approval or resource presence; unknown changes
+  require private inspection. Its two-minute, failure-tolerant step runs before encryption,
+  renders fenced JSON, and must not block encrypted artifacts.
+  Never expose full ARNs, account IDs or
   raw configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
   CLI; health is liveness only. DB/auth checks precede service A publication.
 - Offline Terraform checks use `bash scripts/v2/terraform-test.sh` from the repo root:
