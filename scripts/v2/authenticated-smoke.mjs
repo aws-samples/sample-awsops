@@ -14,7 +14,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 const execute = promisify(execFile);
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_INVENTORY_RESPONSE_BYTES = 2 * 1024 * 1024;
-class SmokeError extends Error {}
+// Only fixed or validated diagnostic messages are passed to this class.
+export class SmokeError extends Error {}
 
 function readPrivateResponse(file, limit = MAX_RESPONSE_BYTES) {
   const fd = openSync(file, 'r');
@@ -50,7 +51,7 @@ function hasSessionCookie(contents, hostname) {
 
 export async function authenticatedSmoke(
   { publicUrl, cloudfrontDomain, email, password, runtimeConfig },
-  { runCurl = execute, tempRoot = resolve(process.env.RUNNER_TEMP || tmpdir()) } = {},
+  { runCurl = execute, tempRoot = resolve(process.env.RUNNER_TEMP || tmpdir()), now = Date.now, deadline = Infinity } = {},
 ) {
   let directory;
   let previousUmask;
@@ -99,6 +100,8 @@ export async function authenticatedSmoke(
     let requestCounter = 0;
     const request = async (args, path, status = '200', timeout = 35_000,
       maxResponseBytes = MAX_RESPONSE_BYTES, withStatus = false) => {
+      if (now() >= deadline) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
+      timeout = Math.min(timeout, deadline - now());
       if (maxResponseBytes !== MAX_RESPONSE_BYTES
           && !(path.startsWith('/api/inventory/cloudfront?') && maxResponseBytes === MAX_INVENTORY_RESPONSE_BYTES)) {
         throw new Error();
@@ -112,9 +115,11 @@ export async function authenticatedSmoke(
           '--max-filesize', String(maxResponseBytes), '--output', response, ...args, `${url.origin}${path}`,
         ], { ...options, timeout }));
       } catch (error) {
+        if (now() >= deadline) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
         recordStatus(error?.stdout);
         throw new Error();
       }
+      if (now() >= deadline) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
       recordStatus(stdout);
       if (controller.signal.aborted || !(Array.isArray(status) ? status.includes(stdout) : stdout === status)) throw new Error();
       const body = JSON.parse(readPrivateResponse(response, maxResponseBytes));
@@ -149,13 +154,17 @@ export async function authenticatedSmoke(
           args.push('--header', 'Content-Type: application/json', '--data-binary', `@${bodyFile}`);
         }
         return request(args, path, status, timeout, maxResponseBytes, withStatus);
-      }, { wait: ms => delay(ms, undefined, { signal: controller.signal }) });
+      }, { now, deadline, wait: ms => delay(ms, undefined, { signal: controller.signal }) });
       return { ...runtimeResult, public_tables: database.public_tables };
     }
     return { status: 'ok', public_tables: database.public_tables };
   } catch (error) {
     // Never expose curl exceptions, response bodies, credentials or cookies.
-    if (error instanceof RuntimeSmokeError) throw new SmokeError(error.message);
+    if (error instanceof RuntimeSmokeError) {
+      const failure = new SmokeError(error.message);
+      failure.inventory_quality = error.inventory_quality;
+      throw failure;
+    }
     throw new SmokeError(`Authenticated smoke: ${failure}`);
   } finally {
     signals.forEach(signal => process.removeListener(signal, cancel));

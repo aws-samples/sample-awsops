@@ -217,3 +217,12 @@ checks the host registry; optional hostOnly rejects members. Verify requires com
 fresh collection, real web-role runtime evidence and owned worker completion. The file
 is at most 16 KiB, collectionStartedAt at most 30 minutes old, and queued types unique
 with cloudfront included. The utility alone does not wire a deployment workflow.
+
+The reusable smoke helper accepts only the optional `inventoryPolicy: "full"`; omission
+retains complete checks for every supplied type. Explicit full mode returns structured
+quality/gaps, never healthy zeros for unknown counts. It does not discover the catalog.
+A caller-supplied deadline bounds HTTP, polling and cooldown waits. One validated inventory
+failure plus a fresh running CloudFront ledger permits one 65-second-cooldown retry, only
+after every supplied type is complete again. Persistent contention fails distinctly; unrelated
+failures are not retried, and workers start only after a valid runtime response. This helper
+change does not activate a workflow or change the default-off billed readiness capability.

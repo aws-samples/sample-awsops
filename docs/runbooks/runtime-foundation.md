@@ -84,3 +84,24 @@ Sequence: merge reviewed code to dev → reviewed dev apply and full live readin
 [CI setup/assets](dev-repo-setup.md) · [SQL reader](agent-sql-reader.md) · [Multi-account](onboard-target-account.md) · [Inventory rollback](steampipe-quota-and-staleness.md).
 Sources: `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `terraform/foundation/runtime-read-scope.tf`, `.github/workflows/terraform.yml`.
 ADRs: 001, 005, 007, 011, 016. Infrastructure apply is not live readiness proof.
+
+## Reusable runtime probe contract
+
+The standalone smoke helper still requires a successful post-marker ledger row with known
+counts and zero unknown attributes for every supplied type. Optional `inventoryPolicy: "full"`
+adds structured quality/gap diagnostics; other policies are rejected, and omission preserves
+strict checks. The caller must obtain the intended type set; this helper does not discover
+it or establish that it is the complete deployed catalog.
+
+Callers may supply an overall deadline, propagated through authentication, HTTP, polling and
+cooldown waits. A validated inventory-incomplete/stale response can be retried once only when
+the ledger shows one fresh running CloudFront attempt with a fresh previous success. After
+65 seconds, every supplied type must be complete again before retrying. Persistent contention
+reports `runtime_inventory_contention`; partial/failed/unknown data, protocol errors and
+unrelated authorization/model failures never become success. Workers start only after ready.
+This may incur one additional bounded AgentCore probe. No workflow is enabled, IAM is changed
+or readiness flag is turned on by this library update; the existing capability opt-in remains.
+
+```bash
+node --test scripts/v2/runtime-smoke.test.mjs scripts/v2/authenticated-smoke.test.mjs
+```

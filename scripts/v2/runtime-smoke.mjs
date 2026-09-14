@@ -5,15 +5,25 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export class RuntimeSmokeError extends Error {}
-const fail = phase => { throw new RuntimeSmokeError(`Runtime smoke: ${phase}`); };
+const fail = (phase, quality) => {
+  const error = new RuntimeSmokeError(`Runtime smoke: ${phase}`);
+  if (quality) error.inventory_quality = quality;
+  throw error;
+};
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const exact = (v, keys) => object(v) && Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
 const baseKeys = ['schemaVersion', 'mode', 'expectedAccountId'];
 export function validateRuntimeSmokeConfig(value, now = Date.now()) {
-  const keys = value?.mode === 'prepare' ? baseKeys
+  const keys = value?.mode === 'prepare' ? [...baseKeys]
     : [...baseKeys, 'expectedCloudfrontId', 'expectedQueuedTypes', 'collectionStartedAt'];
   const hasHostOnly = object(value) && Object.hasOwn(value, 'hostOnly');
-  if (!exact(value, hasHostOnly ? [...keys, 'hostOnly'] : keys) || (hasHostOnly && typeof value.hostOnly !== 'boolean')
+  const hasCollectionMode = object(value) && Object.hasOwn(value, 'collectionMode');
+  const hasPolicy = object(value) && Object.hasOwn(value, 'inventoryPolicy');
+  if (hasPolicy) keys.push('inventoryPolicy');
+  if (hasCollectionMode) keys.push('collectionMode');
+  if ((hasPolicy && (value.mode !== 'verify' || value.inventoryPolicy !== 'full'))
+      || (hasCollectionMode && (value.mode !== 'verify' || value.collectionMode !== 'release'))
+      || !exact(value, hasHostOnly ? [...keys, 'hostOnly'] : keys) || (hasHostOnly && typeof value.hostOnly !== 'boolean')
       || value.schemaVersion !== 1 || !['prepare', 'verify'].includes(value.mode)
       || typeof value.expectedAccountId !== 'string' || !/^[0-9]{12}$/.test(value.expectedAccountId)) fail('configuration');
   if (value.mode === 'verify') {
@@ -29,7 +39,7 @@ export function validateRuntimeSmokeConfig(value, now = Date.now()) {
 }
 
 export function readRuntimeSmokeConfig(file, credentialFile) {
-  // Same private directory as credentials: the existing always() cleanup also covers SIGKILL.
+  // Same private directory as credentials; handled cleanup is not a SIGKILL guarantee.
   if (typeof file !== 'string' || !file || resolve(file) !== file
       || dirname(file) !== dirname(credentialFile) || file === credentialFile) fail('configuration_file');
   let fd;
@@ -57,6 +67,27 @@ const failureReasons = new Set(['configuration_invalid', 'disabled', 'identity_f
   'tools_unavailable', 'inventory_unavailable', 'inventory_incomplete', 'inventory_stale', 'known_resource_missing', 'known_resource_unverified', 'model_failed', 'timeout']);
 const parameterKeys = ['runtime_arn', 'interpreter_id', 'memory_id'];
 const parameterStates = new Set(['uninspected', 'ready', 'disabled', 'pending', 'missing', 'denied', 'invalid', 'unavailable']);
+function inventoryQuality(catalog, runs, started, now) {
+  const types = { verified: [], partial: [], failed: [], stale: [], missing: [], unknown: [], pending: [], invalid: [] };
+  for (const type of catalog) {
+    const rows = runs.filter(row => row?.type === type && row.accountId === 'self');
+    if (!rows.length) { types.missing.push(type); continue; }
+    if (rows.length !== 1) { types.invalid.push(type); continue; }
+    const row = rows[0];
+    const fresh = freshTime(row.started_at, started, now) && freshTime(row.last_success_at, started, now);
+    const known = finiteCount(row.row_count) && row.unknown_attribute_count === 0 && row.unknown_attributes === false;
+    if (!fresh) types.stale.push(type);
+    if (!known || row.status === 'unknown') types.unknown.push(type);
+    if (['partial', 'failed'].includes(row.status)) types[row.status].push(type);
+    else if (row.status === 'running') types.pending.push(type);
+    else if (!['succeeded', 'unknown'].includes(row.status)) types.invalid.push(type);
+    if (row.status === 'succeeded' && fresh && known) types.verified.push(type);
+  }
+  return { status: types.verified.length === catalog.length ? 'complete' : 'gaps', catalog_types: catalog,
+    observed_at: new Date(now).toISOString(), since: new Date(started).toISOString(),
+    counts: { expected: catalog.length, ...Object.fromEntries(Object.entries(types).map(([key, value]) => [key, value.length])) },
+    types };
+}
 function readinessFailure(value, nonce, account) {
   if (value?.schemaVersion !== 1 || value.nonce !== nonce || value.accountId !== account
       || value.status !== 'not_ready' || !failureReasons.has(value.reason)) return 'runtime_protocol';
@@ -68,10 +99,16 @@ function readinessFailure(value, nonce, account) {
   return `runtime_parameters_not_ready(${failed.map(k => `${k}=${value.parameters[k]}`).join(',')})`;
 }
 
-export async function verifyRuntimeSmoke(configuration, request, {
-  now = Date.now, wait = ms => delay(ms),
+export async function verifyRuntimeSmoke(configuration, send, {
+  now = Date.now, wait = ms => delay(ms), deadline = Infinity,
 } = {}) {
   const config = validateRuntimeSmokeConfig(configuration, now());
+  const request = async (path, options = {}) => {
+    if (now() >= deadline) fail('release_timeout');
+    const result = await send(path, { ...options, timeout: Math.min(options.timeout ?? 35_000, deadline - now()) });
+    if (now() >= deadline) fail('release_timeout');
+    return result;
+  };
   const { accounts } = await request('/api/accounts');
   if (!Array.isArray(accounts) || accounts.length > 1000
       || accounts.some(a => !object(a) || typeof a.enabled !== 'boolean' || typeof a.isHost !== 'boolean')
@@ -81,42 +118,43 @@ export async function verifyRuntimeSmoke(configuration, request, {
   if (config.mode === 'prepare') return { status: 'ok', mode: 'prepare' };
 
   async function poll(check, phase, seconds) {
-    const deadline = now() + seconds * 1000;
-    for (let attempt = 0; attempt <= seconds / 5 && now() <= deadline; attempt++) {
+    const end = Math.min(deadline, now() + seconds * 1000);
+    for (let attempt = 0; attempt <= seconds / 5 && now() < end; attempt++) {
       if (await check()) return;
-      if (now() >= deadline) break;
-      await wait(5000);
+      if (now() >= end) break;
+      await wait(Math.min(5000, end - now()));
     }
-    fail(typeof phase === 'function' ? phase() : phase);
+    if (now() >= deadline) fail('release_timeout');
+    fail(typeof phase === 'function' ? phase() : phase, quality);
   }
   const started = Date.parse(config.collectionStartedAt);
+  const releaseWindow = config.collectionMode === 'release';
+  const required = config.expectedQueuedTypes;
+  let quality;
   let collectionFailure = 'collection_timeout';
-  await poll(async () => {
-    const summary = await request('/api/inventory/summary?accounts=self');
+  const readCollection = async () => {
+    const summary = await request('/api/inventory/summary?accounts=self&view=collection');
     const c = summary?.collection;
-    if (!object(c) || c.configured !== true || c.readOk !== true || !Array.isArray(c.runs)) fail('collection_unavailable');
-    let complete = true, missing = false;
-    const failures = new Set();
-    for (const type of config.expectedQueuedTypes) {
-      const rows = c.runs.filter(r => r?.type === type && r.accountId === 'self');
-      if (rows.length === 0) { missing = true; complete = false; continue; }
-      if (rows.length !== 1) fail('collection_protocol');
-      const row = rows[0];
-      if (freshTime(row.started_at, started, now()) && ['partial', 'failed'].includes(row.status))
-        failures.add(`collection_${row.status}`);
-      if (row.status === 'succeeded' && freshTime(row.started_at, started, now())
-          && freshTime(row.last_success_at, started, now())
-          && (row.unknown_attribute_count !== 0 || row.unknown_attributes !== false)) failures.add('inventory_incomplete');
-      if (!(row.status === 'succeeded' && finiteCount(row.row_count)
-        && row.unknown_attribute_count === 0 && row.unknown_attributes === false
-        && freshTime(row.started_at, started, now()) && freshTime(row.last_success_at, started, now()))) complete = false;
-    }
-    // Inspect every acknowledged type before selecting a fixed diagnostic.
-    for (const reason of ['inventory_incomplete', 'collection_partial', 'collection_failed'])
-      if (failures.has(reason)) fail(reason);
-    collectionFailure = missing ? 'collection_missing' : 'collection_timeout';
-    return complete;
-  }, () => collectionFailure, 600);
+    if (!object(c) || c.configured !== true || c.readOk !== true || !Array.isArray(c.runs))
+      fail('collection_unavailable', { status: 'unavailable', catalog_types: required, counts: null, types: null });
+    return c;
+  };
+  const verifyCollection = () => poll(async () => {
+    const c = await readCollection();
+    quality = inventoryQuality(config.expectedQueuedTypes, c.runs, started, now());
+    const has = category => required.some(type => quality.types[category].includes(type));
+    if (has('invalid')) fail('collection_protocol', quality);
+    const recent = c.runs.filter(row => required.includes(row?.type) && row.accountId === 'self'
+      && freshTime(row.started_at, started, now()));
+    if (recent.some(row => row.status === 'succeeded' && freshTime(row.last_success_at, started, now())
+      && (row.unknown_attribute_count !== 0 || row.unknown_attributes !== false))) fail('inventory_incomplete', quality);
+    for (const status of ['partial', 'failed'])
+      if (recent.some(row => row.status === status)) fail(`collection_${status}`, quality);
+    collectionFailure = has('missing') ? 'collection_missing'
+      : config.inventoryPolicy && has('stale') ? 'collection_stale' : 'collection_timeout';
+    return required.every(type => quality.types.verified.includes(type));
+  }, () => collectionFailure, releaseWindow ? 1200 : 600);
+  await verifyCollection();
 
   let found = false;
   for (let offset = 0; offset < 500 && !found; offset += 5) {
@@ -131,14 +169,29 @@ export async function verifyRuntimeSmoke(configuration, request, {
   }
   if (!found) fail('inventory_known_resource_unverified');
   const nonce = randomBytes(24).toString('hex');
-  const response = await request('/api/deployment/readiness', {
-    method: 'POST', timeout: 80_000, status: ['200', '503'], withStatus: true, body: {
-    nonce, expectedAccountId: config.expectedAccountId, expectedCloudfrontId: config.expectedCloudfrontId,
-  } });
-  const runtime = response?.body;
-  if (response?.httpStatus === 503 || runtime?.status === 'not_ready') {
-    fail(readinessFailure(runtime, nonce, config.expectedAccountId));
+  let response;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    response = await request('/api/deployment/readiness', {
+      method: 'POST', timeout: 80_000, status: ['200', '503'], withStatus: true, body: {
+        nonce, expectedAccountId: config.expectedAccountId, expectedCloudfrontId: config.expectedCloudfrontId,
+      },
+    });
+    if (response?.httpStatus !== 503 && response?.body?.status !== 'not_ready') break;
+    const reason = readinessFailure(response?.body, nonce, config.expectedAccountId);
+    if (!['runtime_inventory_incomplete', 'runtime_inventory_stale'].includes(reason)) fail(reason);
+    const c = await readCollection();
+    quality = inventoryQuality(required, c.runs, started, now());
+    const rows = c.runs.filter(row => row?.type === 'cloudfront' && row.accountId === 'self');
+    const competing = rows.length === 1 && rows[0].status === 'running'
+      && freshTime(rows[0].started_at, started, now()) && freshTime(rows[0].last_success_at, started, now());
+    if (!competing) fail(reason, quality);
+    if (attempt === 1) fail('runtime_inventory_contention', quality);
+    // Respect the BFF's 60-second cooldown; successful old evidence never admits partial data.
+    if (now() + 65_000 >= deadline) fail('release_timeout');
+    await wait(65_000);
+    await verifyCollection();
   }
+  const runtime = response?.body;
   if (response?.httpStatus !== 200) fail('runtime_protocol');
   const agent = runtime?.agent;
   const checkNames = ['identity', 'inventorySummary', 'inventoryQuery', 'knownResource', 'freshInventory', 'model'];
@@ -168,5 +221,8 @@ export async function verifyRuntimeSmoke(configuration, request, {
       return true;
     }, 'worker_timeout', 300);
   }
-  return { status: 'ok', mode: 'verify', collected_types: config.expectedQueuedTypes.length, workers: 2 };
+  return config.inventoryPolicy
+    ? { status: 'ok', mode: 'verify', inventory_policy: config.inventoryPolicy,
+      inventory_quality: quality, workers: 2 }
+    : { status: 'ok', mode: 'verify', collected_types: config.expectedQueuedTypes.length, workers: 2 };
 }
