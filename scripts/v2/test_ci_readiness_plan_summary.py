@@ -1,7 +1,10 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
+import tempfile
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -51,7 +54,7 @@ def test_imports_unknown_shapes_and_action_invocations_remain_unreviewed():
         row = value["resource_changes"][0]
         if change == "import":
             row["change"]["actions"] = ["no-op"]
-            row["importing"] = {"id": "PRIVATE_ID"}
+            row["change"]["importing"] = {"id": "PRIVATE_ID"}
         elif change == "unknown":
             row["change"]["after_unknown"] = True
         elif change == "action":
@@ -61,6 +64,34 @@ def test_imports_unknown_shapes_and_action_invocations_remain_unreviewed():
         result = summary.project(value)
         assert not result["no_changes_outside_expected_scope"]
         assert "PRIVATE" not in json.dumps(result)
+
+
+def test_real_terraform_import_is_not_hidden_by_noop_actions():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        root.joinpath("main.tf").write_text(
+            'resource "terraform_data" "example" {}\n'
+            'import {\n to = terraform_data.example\n id = "PRIVATE_IMPORT"\n}\n')
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("AWS_", "TF_"))}
+        env.update(CHECKPOINT_DISABLE="1", AWS_EC2_METADATA_DISABLED="true",
+                   AWS_CONFIG_FILE="/dev/null", AWS_SHARED_CREDENTIALS_FILE="/dev/null",
+                   TF_CLI_CONFIG_FILE="/dev/null")
+        for command in (
+            ["terraform", "init", "-backend=false", "-input=false"],
+            ["terraform", "plan", "-input=false", "-out=tfplan"],
+        ):
+            result = subprocess.run(command, cwd=root, env=env, text=True,
+                                    capture_output=True, timeout=15)
+            assert result.returncode == 0, result.stderr
+        value = json.loads(subprocess.check_output(
+            ["terraform", "show", "-json", "tfplan"], cwd=root, env=env, text=True, timeout=15))
+        resource = value["resource_changes"][0]
+        assert resource["change"]["actions"] == ["no-op"]
+        assert resource["change"]["importing"]
+        result = summary.project(value)
+        assert not result["no_changes_outside_expected_scope"]
+        assert len(result["resource_changes"]) == 1
+        assert "PRIVATE_IMPORT" not in json.dumps(result)
 
 
 def test_sensitive_or_unmatched_collector_hash_is_not_published():

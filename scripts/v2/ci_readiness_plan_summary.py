@@ -48,7 +48,7 @@ def project(plan):
         actions = change["actions"]
         if not isinstance(actions, list) or not actions or any(a not in ACTIONS for a in actions):
             raise ValueError()
-        if actions in (["no-op"], ["read"]) and not item.get("importing"):
+        if actions in (["no-op"], ["read"]) and not change.get("importing"):
             continue
         if len(changes) == 256:
             complete, truncated = False, True
