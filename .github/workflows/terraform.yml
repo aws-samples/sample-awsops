@@ -186,6 +186,7 @@ jobs:
         if: steps.restore.outputs.skip != '1'
         env:
           CI_READONLY_RUNTIME_DEV: ${{ vars.CI_READONLY_RUNTIME_DEV }}
+          CI_READINESS_ENABLED_DEV: ${{ env.TARGET == 'dev' && vars.CI_READINESS_ENABLED_DEV || '' }}
           STEAMPIPE_IMAGE_DIGEST_DEV: ${{ vars.STEAMPIPE_IMAGE_DIGEST_DEV }}
           WORKER_IMAGE_DIGEST_DEV: ${{ vars.WORKER_IMAGE_DIGEST_DEV }}
           RUNTIME_ROLLOUT: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_rollout }}
@@ -284,6 +285,7 @@ jobs:
           DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
           PLAN_SCOPE: ${{ inputs.plan_scope }}
           CI_ASSETS_READY: "true"
+          CI_READINESS_ENABLED_DEV: ${{ env.TARGET == 'dev' && vars.CI_READINESS_ENABLED_DEV || '' }}
           # Retain failures only for explicit dispatches. The child Terraform process never receives this key.
           TF_PLAN_ENC_KEY: ${{ github.event_name == 'workflow_dispatch' && secrets.TF_PLAN_ENC_KEY || '' }}
         # -lock=false: the plan role is ReadOnlyAccess by design and cannot write
@@ -308,6 +310,14 @@ jobs:
               *) echo "::error::unsupported plan scope"; exit 1;;
             esac
           fi
+          # An explicit readiness decision wins over var-files; absence preserves them.
+          case "${CI_READINESS_ENABLED_DEV:-}" in
+            "") ;;
+            true|false)
+              [ "$TARGET" = "dev" ] || { echo "::error::CI_READINESS_ENABLED_DEV requires dev"; exit 1; }
+              args+=("-var=ci_readiness_enabled=$CI_READINESS_ENABLED_DEV");;
+            *) echo "::error::CI_READINESS_ENABLED_DEV must be true or false"; exit 1;;
+          esac
           # Append last so no restored or generated var-file can override the CI flag.
           case "${TF_VAR_ci_migrations_enabled:-false}" in
             true|false) args+=("-var=ci_migrations_enabled=${TF_VAR_ci_migrations_enabled:-false}");;

@@ -133,7 +133,17 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 - Verify requires applied `agentcore_enabled=true` and `ci_readiness_enabled=true`, then AgentCore
   provisioning, active inventory/dispatch, `workers_enabled=true` and deployed ARM64 worker images.
   Only the output boolean sets `DEPLOYMENT_READINESS_ENABLED`, with no shell override.
-  False/missing is `runtime_disabled`; this flag grants no Cognito group membership.
+  False/missing is `runtime_disabled`. A reviewed apply creates `deployment-verifiers`
+  only with readiness and AgentCore enabled; managed-demo membership additionally requires
+  `create_demo_user=true`. No admin membership or IAM role is granted. Public CI permits
+  the flag only on dev. Dedicated CI_READINESS_ENABLED_DEV=true/false overrides the flag;
+  empty/unset preserves explicit tfvars/default false. The runtime profile alone does not enable it.
+  `auth.tf` configures 12-hour ID/access tokens. Removing membership does not rewrite issued
+  ID-token group claims; they can persist for the remaining lifetime unless session revocation
+  rejects them. Runtime disablement is independent; see runtime-foundation's readiness guidance.
+  Disabled AgentCore blanks only the web task's `SSM_RUNTIME_ARN_PARAM`; invocation and status
+  lookup honor it. The separate alias and incident bridge paths remain literal. Status lookup
+  does not validate the full ARN and can still perform other control-plane reads.
   Capped samples cannot prove absence. Missing ledger, partial/failed runs and unknown attributes
   remain distinct failures; accepted degraded inventory is not a deployment-readiness exception.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the

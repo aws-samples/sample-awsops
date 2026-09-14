@@ -6,6 +6,12 @@ mock_provider "aws" {
   mock_data "aws_iam_policy_document" { defaults = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" } }
   mock_data "aws_vpc" { defaults = { cidr_block = "10.20.0.0/16" } }
   mock_data "aws_security_groups" { defaults = { ids = ["sg-0123456789abcdef0"] } }
+  mock_resource "aws_ecr_repository" {
+    defaults = { repository_url = "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/awsops-fixture-web" }
+  }
+  mock_resource "aws_cognito_user_pool" { defaults = { id = "ap-northeast-2_fixture" } }
+  mock_resource "aws_cognito_user_pool_client" { defaults = { id = "fixture-client" } }
+  mock_resource "aws_sqs_queue" { defaults = { url = "https://sqs.ap-northeast-2.amazonaws.com/123456789012/awsops-fixture-jobs" } }
   mock_resource "aws_iam_role" { defaults = { arn = "arn:aws:iam::123456789012:role/fixture" } }
   mock_resource "aws_kms_key" { defaults = { arn = "arn:aws:kms:ap-northeast-2:123456789012:key/11111111-1111-1111-1111-111111111111" } }
   mock_resource "aws_secretsmanager_secret" { defaults = { arn = "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:fixture" } }
@@ -58,6 +64,10 @@ variables {
 
 run "defaults_remain_dark" {
   command = plan
+  assert {
+    condition     = [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.value if e.name == "SSM_RUNTIME_ARN_PARAM"] == [""]
+    error_message = "Disabled AgentCore must not advertise an unavailable runtime parameter."
+  }
   assert {
     condition     = output.runtime_deployment.inventory.sync_code_sha256 == null
     error_message = "Disabled inventory must not publish a collector fingerprint."
