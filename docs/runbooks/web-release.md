@@ -16,7 +16,7 @@ This workflow verifies migrations, provenance and web rollout. Infrastructure, A
 
 ## Action: current-source development releases
 
-Dev pushes changing `web/**`, `CHANGELOG.md` or `terraform/foundation/migrations/**` build ARM64, run the matching private migration, promote its verified image and check the exact deployment. Login/DB smoke is mandatory; `verify_database=false` cannot disable it. Other paths require explicit dispatch. The migration receipt must match source SHA/project. Standalone/AgentCore migration use stays dispatch-only. Dev web pushes require explicit reusable opt-in plus the exact samples/dev Deploy Web caller; generic runtime builds cannot use that opt-in.
+Dev pushes changing `web/**`, `CHANGELOG.md` or `terraform/foundation/migrations/**` build ARM64, validate the selected receipt/ECR digest in a readonly prerequisite job, run matching private migrations, then promote and verify that same digest. Invalid reuse stops before DDL. Login/DB smoke is mandatory; `verify_database=false` cannot disable it. Other paths require explicit dispatch. Migration receipts must match SHA/project. Standalone/AgentCore calls stay dispatch-only; dev web pushes require explicit reusable opt-in and the exact Deploy Web caller.
 
 First review/apply `ci_migrations_enabled=true`, set `CI_MIGRATIONS_ENABLED_DEV=true` and confirm non-null `migration_job`. Account, roles and private network must work. Missing capability or failed migration blocks promotion; this workflow does not provision them. Enabled dev merges intentionally run DDL as operator deployments under ADR-005, not product autonomy or a freeze exception. Settings verified on 2026-09-14: `protect-main-dev` requires PRs and GitHub Actions `AI Code Review`/`Merge Verify` success on main/dev, blocks force-push/deletion and has no bypass actors or required human approval count. Development allows dev and the three preview branches without environment reviewers. Required checks and latest-HEAD review gate merge; a branch filter is not human approval.
 
@@ -31,6 +31,8 @@ Fresh images use Buildx's digest. Reuse verifies repository, workflow, branch, s
 
 Select an older ancestor and retained producer, then acknowledge compatibility with the applied schema. This neither proves compatibility nor undoes DDL. Coordinate independent migration activity first.
 
+For pre-receipt or expired-receipt images, use [legacy operator recovery](legacy-web-image-recovery.md) with trusted source/digest evidence and explicit schema/write approval. Do not fabricate a receipt or use a mutable tag as provenance.
+
 ```bash
 gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f image_sha='<OLDER_FULL_COMMIT_SHA>' -f image_build_run_id='<PRODUCER_RUN_ID>' -f rollback_schema_compatible=true
 ```
@@ -38,6 +40,12 @@ gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f image_s
 Rollback skips all migrations, so broken current migrations cannot block it. Producer/account/project proof, exact new deployment, healthy digest and dev login/DB checks still apply; schema repair stays separate. Preflight requires identity/configuration, positive desired count and actual read permissions, including DescribeTasks for empty services. Prior health is advisory: failed services can recover; intentionally paused services are not reactivated. Main pushes build only. For manual, environment-gated production rollout, use the examples with `--ref main`. Main requires production roles/backend and rejects the declared dev account; missing configuration never falls back to dev. Previews use dev-tier roles with separate stack secrets. Non-dev migrations remain operator-managed; dev DB/demo credentials are not substituted.
 
 ## Verification, recovery and runtime integration
+
+Automatic DDL is **expand-only**: every migration must remain compatible with all deployed web, collector, AgentCore/SQL-reader and worker consumers. A green web release proves none of those other consumers ready. Column/view removal, restrictive CHECK/NOT NULL changes and other contract operations require a separately approved manual cutover after compatible consumers are deployed and verified.
+
+For a contract cutover, freeze dev merges and drain release/migration queues, set `CI_MIGRATIONS_ENABLED_DEV=false`, and merge the reviewed contract change with required AI/CI still enabled. Let its automatic web run fail the capability gate without SQL/promotion. With no pending web callers and the maintenance freeze held, restore the capability variable and explicitly dispatch `deploy-migrations.yml` on dev. Verify every affected consumer, then dispatch/verify the normal current-source web release before lifting the freeze. Do not enable a contract change through an unattended push or use disabled checks as a migration bypass.
+
+Web-driven migrations and operator/AgentCore migrations use separate concurrency groups, so automatic web traffic cannot evict a pending operator run. PostgreSQL's shared advisory lock still serializes SQL; lock waits/timeouts remain bounded and must be investigated rather than bypassed.
 
 New runs do not cancel in-flight rollouts. Superseded source checks fail even if DDL already applied. Verification binds account/project, deployment ID, revision, desired count, task/container health and digest. Wrong-image rollback or moved `web-latest` fails. The controller does not initiate rollback or count an ECS rollback as release success. Post-pin failures may leave state changed; inspect it before an explicit release/rollback request.
 

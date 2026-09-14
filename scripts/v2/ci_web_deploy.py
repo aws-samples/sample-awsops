@@ -299,13 +299,14 @@ def verify(c, proof, aws=aws_request, timeout=600, now=time.monotonic, sleep=tim
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("deploy", "verify"))
+    parser.add_argument("mode", choices=("preflight-image", "deploy", "verify"))
     args = parser.parse_args()
     env = os.environ
     c = environment_context(env)
     validate_context(c)
     verify_caller(env)
-    validate_target(c, env)
+    if args.mode != "preflight-image":
+        validate_target(c, env)
     if args.mode == "verify":
         proof = {key: env.get("WEB_" + key.upper(), "") for key in
                  ("digest", "runtime_digest", "deployment_id", "task_revision", "desired_count")}
@@ -316,10 +317,14 @@ def main():
     # promotion and a later path substitution cannot redirect the release receipt.
     with open_workflow_output(env) as output:
         pin = env.get("PIN_SHA") or c["sha"]
-        rollback = verify_source_and_migration(c, pin, env)
+        rollback = verify_source_and_migration(c, pin, env) if args.mode == "deploy" else False
         digest = resolve_digest(c, pin_sha=pin, fresh_digest=env.get("FRESH_DIGEST", ""),
                                 fresh_project=env.get("FRESH_PROJECT", ""), producer_run=env.get("IMAGE_BUILD_RUN_ID", ""))
         child = runtime_digest(c, digest, aws_request)
+        if args.mode == "preflight-image":
+            output.write(f"digest={digest}\nruntime_digest={child}\n")
+            return
+        require(env.get("PREFLIGHT_DIGEST") == digest, "Image changed after pre-migration validation")
         before = snapshot(c, aws_request)
         verify_source_and_migration(c, pin, env)
         pin_image(c["project"] + "-web", digest)

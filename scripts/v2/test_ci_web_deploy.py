@@ -249,10 +249,10 @@ class DeploymentTests(unittest.TestCase):
             "GITHUB_SHA": C["sha"], "GITHUB_RUN_ID": C["run_id"], "GITHUB_RUN_ATTEMPT": "1",
             "CI_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/CI", "AWS_ACCOUNT_ID_DEV": ACCOUNT,
             "IMAGE_PROJECT": PROJECT, "ECR_URI": REPO, "ECS_CLUSTER": PROJECT,
-            "ECS_SERVICE": PROJECT + "-web",
+            "ECS_SERVICE": PROJECT + "-web", "PREFLIGHT_DIGEST": DIGEST,
         }
         reads = {"batch-get-image", "describe-task-definition", "list-tasks", "describe-tasks"}
-        for denied in [None, *sorted(reads), "output"]:
+        for denied in [None, *sorted(reads), "output", "changed-proof"]:
             self.setUp()
             if denied:
                 self.aws.denied.add(denied)
@@ -266,6 +266,7 @@ class DeploymentTests(unittest.TestCase):
             with self.subTest(denied=denied), tempfile.TemporaryDirectory() as folder, \
                     patch.dict(os.environ, env | {
                         "GITHUB_OUTPUT": folder if denied == "output" else str(Path(folder) / "output"),
+                        "PREFLIGHT_DIGEST": "sha256:" + "f" * 64 if denied == "changed-proof" else DIGEST,
                     }, clear=True), \
                     patch.object(sys, "argv", ["ci_web_deploy.py", "deploy"]), \
                     patch.object(deploy, "aws_request", self.aws), \
@@ -321,7 +322,7 @@ class DeploymentTests(unittest.TestCase):
                     "GITHUB_SHA": C["sha"], "GITHUB_RUN_ID": C["run_id"], "GITHUB_RUN_ATTEMPT": "1",
                     "CI_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/CI", "AWS_ACCOUNT_ID_DEV": ACCOUNT,
                     "IMAGE_PROJECT": PROJECT, "ECR_URI": REPO, "ECS_CLUSTER": PROJECT,
-                    "ECS_SERVICE": PROJECT + "-web", "PIN_SHA": pin_sha,
+                    "ECS_SERVICE": PROJECT + "-web", "PIN_SHA": pin_sha, "PREFLIGHT_DIGEST": DIGEST,
                     "ROLLBACK_SCHEMA_COMPATIBLE": "true" if rollback else "",
                     "MIGRATED_SHA": "" if rollback else C["sha"],
                     "MIGRATED_PROJECT": "" if rollback else PROJECT,
@@ -364,6 +365,34 @@ class DeploymentTests(unittest.TestCase):
                 with self.assertRaises(ImageError):
                     self.verify(proof, timeout=5)
                 self.assertEqual([op for _, op, _ in self.aws.calls if op in writes], writes)
+
+    def test_image_preflight_needs_no_migration_receipt_and_cannot_mutate(self):
+        env = {"GITHUB_REPOSITORY": C["repository"], "GITHUB_REF_NAME": "dev",
+               "GITHUB_REF": "refs/heads/dev", "GITHUB_EVENT_NAME": "workflow_dispatch",
+               "GITHUB_WORKFLOW_REF": C["repository"] + "/.github/workflows/deploy-web.yml@refs/heads/dev",
+               "GITHUB_SHA": C["sha"], "GITHUB_RUN_ID": C["run_id"], "GITHUB_RUN_ATTEMPT": "1",
+               "CI_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/CI", "AWS_ACCOUNT_ID_DEV": ACCOUNT,
+               "IMAGE_PROJECT": PROJECT, "IMAGE_BUILD_RUN_ID": "111"}
+        for invalid in (False, "receipt", "ecr"):
+            self.setUp()
+            if invalid == "ecr":
+                self.aws.denied.add("batch-get-image")
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as folder, \
+                    patch.dict(os.environ, env | {"GITHUB_OUTPUT": str(Path(folder) / "output")}, clear=True), \
+                    patch.object(sys, "argv", ["ci_web_deploy.py", "preflight-image"]), \
+                    patch.object(deploy, "command", side_effect=AssertionError("Unexpected live AWS")), \
+                    patch.object(deploy, "aws_request", self.aws), \
+                    patch.object(deploy, "verify_caller", return_value=ACCOUNT), \
+                    patch.object(deploy, "resolve_digest", side_effect=ImageError("expired") if invalid == "receipt" else None,
+                                 return_value=DIGEST), \
+                    patch.object(deploy, "pin_image", side_effect=AssertionError("Preflight mutation")):
+                if invalid:
+                    with self.assertRaises(ImageError):
+                        deploy.main()
+                else:
+                    deploy.main()
+                    self.assertIn("digest=" + DIGEST, (Path(folder) / "output").read_text())
+                self.assertFalse(any(op == "update-service" for _, op, _ in self.aws.calls))
 
 
 if __name__ == "__main__":

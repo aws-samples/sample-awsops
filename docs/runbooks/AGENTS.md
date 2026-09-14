@@ -1,8 +1,10 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ac0641fe0b6f · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e7e6eaab7521 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
 # Runbooks — Reviewer Context
+
+Web image receipt/ECR proof precedes private migrations, including reuse; promotion retains that digest. Automatic DDL is expand-only; contract cutovers require a merge freeze, drained queues and explicit operator coordination. Legacy images without receipts use the separately approved `legacy-web-image-recovery.md` path with trusted digest/source evidence and schema approval, never a fabricated receipt or mutable-tag fallback.
 
 Operational playbooks organized by scenario, each following symptoms → diagnosis → action. See
 `docs/runbooks/CLAUDE.md`'s index for the current runbook list (several are marked **v1

@@ -61,7 +61,8 @@ secrets-manager) — installed by `make deps`.
   bound to repository/workflow/branch/SHA/job/project. Account is verified at runtime;
   publish no account ID or deterministic account fingerprint in the public receipt.
 - `v2/ci_web_deploy.py` — verify caller, owned service and required read access before
-  web promotion; require source/project migration evidence for current dev source, or
+  web promotion. Its readonly image-proof mode validates receipt/ECR content before
+  migrations; promotion must retain that digest. Require source/project migration evidence for current dev source, or
   explicit schema-compatible older-image rollback. Bounded ECS consistency polling
   must converge to the exact deployment and healthy running digest, never a stable rollback.
 - `v2/prepare-smoke-credentials.mjs` — every dev Deploy Web release's preparation: privately
@@ -143,7 +144,7 @@ secrets-manager) — installed by `make deps`.
   It runs before encryption with a two-minute timeout and fenced JSON output.
   Presence booleans are separate, with a combined 256-row bound and no private values;
   new enrollment checks the existing or planned group's absence of an IAM role.
-- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,readiness_plan_summary,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets,verifier_sessions,web_image,web_deploy}.py` —
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,readiness_plan_summary,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets,verifier_sessions,web_image,web_workflow,web_deploy}.py` —
   the suites collectively use policy/workflow fixtures, real no-provider plans and a localhost
   state backend to verify gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active

@@ -28,9 +28,10 @@ permissions:
 env:
   MIGRATION_FROM_DEPLOY_WEB: ${{ inputs.from_deploy_web }}
 
-# Do not interrupt an in-flight migration with another dispatch.
+# Web pushes cannot displace a pending operator/AgentCore run. The database
+# advisory lock still serializes SQL across these queues; lock waits are bounded.
 concurrency:
-  group: migration-development
+  group: migration-development-${{ inputs.from_deploy_web && 'web' || 'operator' }}
   cancel-in-progress: false
 
 jobs:

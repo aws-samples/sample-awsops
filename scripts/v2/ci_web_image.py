@@ -68,7 +68,11 @@ def command(args, *, binary=False):
 
 
 def github(path, binary=False):
-    return command(["gh", "api", "--hostname", "github.com", path], binary=binary)
+    args = ["gh", "api", "--hostname", "github.com", path]
+    if not binary and path.startswith(f"repos/{REPOSITORY}/compare/"):
+        # gh filters locally before stdout; do not cap the entire commits/files payload.
+        args += ["--jq", "{status: .status, merge_base_commit: {sha: .merge_base_commit.sha}}"]
+    return command(args, binary=binary)
 
 
 def aws_request(operation, args):

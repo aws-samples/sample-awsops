@@ -387,7 +387,7 @@ Then register the generated files (base64) as repo secrets:
 | Stack | Secrets |
 |---|---|
 | all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (saved-plan/failure-capsule encryption, private asset HMAC and a separate failure HMAC domain; rotation requires the matching key for old bundles) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
-| production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` |
+| production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` / repository secret `AWS_ACCOUNT_ID_DEV` (12-digit dev-account exclusion check; required even on main) |
 | dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` / `AWS_ACCOUNT_ID_DEV` (required configured account for migrations, runtime image builds and provisioning; secret, not variable) |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
 
@@ -398,9 +398,11 @@ gh secret set TF_TFVARS_DEV -R aws-samples/sample-awsops \
   --body "$(base64 -w0 terraform/foundation/terraform.tfvars)"
 ```
 
-The secret `AWS_ACCOUNT_ID_DEV` is required for configured development and preview stacks.
-The configured role and STS caller must match it before AWS reads/writes. A missing backend
-may skip an advisory plan; missing account verification on a configured stack fails.
+The repository secret `AWS_ACCOUNT_ID_DEV` is required for every Deploy Web run, including main.
+It must be 12 ASCII digits and available to the production environment: dev/preview callers
+must match it, while main must differ and match its production backend/role metadata.
+Do not place it only in the development environment or shadow it with a different production
+value. A missing backend may skip an advisory plan; missing account validation fails closed.
 
 The manual development [deployment audit](deployment-audit.md)
 (`audit-deployment.yml`) reuses the dev account/deployer/backend secrets with a
@@ -421,7 +423,7 @@ real login/DB/host-registry preflight. Readiness is a separate capability contro
 `CI_READINESS_ENABLED_DEV`: true/false explicitly overrides the dev Terraform value; empty/unset
 preserves explicit tfvars and its default false. The runtime profile alone never enables it.
 See [readiness capability](runtime-foundation.md#readiness-capability) for billed access and revocation.
-`AWS_ACCOUNT_ID_DEV` is a required repository **secret** for both migration jobs, runtime image builds and dev AgentCore provisioning. No variable/default-account fallback exists. It must match the configured role accounts and actual STS
+`AWS_ACCOUNT_ID_DEV` is a required repository **secret** for both migration jobs, runtime image builds, dev AgentCore provisioning and every Deploy Web job (including main's exclusion check). No variable/default-account fallback exists. On dev/preview it must match the configured role accounts and actual STS
 callers; this agreement is not proof of effective permissions or an independent classification of the account as development.
 
 The distinct NAMES are the isolation: a dev/preview job can never fall back to the

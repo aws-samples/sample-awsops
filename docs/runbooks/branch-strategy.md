@@ -46,7 +46,7 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
    `<user>.awsops-dev.whchoi.net`. When ready, PR into `dev`. PR checks:
    merge-verify + AI pr-review + terraform plan (when `terraform/foundation/**`
    changed; same-repo PRs only).
-2. **`dev`** — integration branch; every push auto-deploys the DEV stack
+2. **`dev`** — integration branch; pushes touching web code, CHANGELOG or migrations auto-deploy the DEV stack
    via `deploy-web.yml` (build → matching private migration → digest promotion →
    exact ECS verification → login/DB smoke). The applied private migration
    capability is required; a dev push fails closed when it is absent.

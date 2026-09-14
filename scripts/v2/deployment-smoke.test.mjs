@@ -423,6 +423,11 @@ test('Deploy Web rejects unsupported verification refs before any build or deplo
     SCHEMA_ACK: 'false', GITHUB_OUTPUT: '/dev/null',
   };
   for (const [name, job] of Object.entries(workflow.jobs)) {
+    if (name === 'image-proof') {
+      assert.ok(job.needs.includes('guard'));
+      assert.match(job.if, /needs\.guard\.result == 'success'/);
+      continue;
+    }
     if (!job.steps) {
       assert.equal(job.uses, './.github/workflows/deploy-migrations.yml');
       assert.ok(job.needs.includes('guard'));

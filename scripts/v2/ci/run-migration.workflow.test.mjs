@@ -75,6 +75,7 @@ test('standalone migration is manual and rejects unapproved pushes before privil
   assert.deepEqual(w.jobs.migrate.needs, ['guard', 'build']);
   assert.equal(w.jobs.migrate.environment, 'development');
   assert.equal(w.concurrency['cancel-in-progress'], false);
+  assert.equal(w.concurrency.group, "migration-development-${{ inputs.from_deploy_web && 'web' || 'operator' }}");
 });
 
 test('schema-only dev changes trigger the release workflow and its migration dependency', () => {

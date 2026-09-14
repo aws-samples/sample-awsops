@@ -25,6 +25,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration and opt-in diagnostics (ADR-002/005/016) |
 | [web-release.md](web-release.md) | Digest-bound web release, private migration ordering, mandatory dev login/DB checks and explicit image rollback (ADR-001/005) |
+| [legacy-web-image-recovery.md](legacy-web-image-recovery.md) | Explicitly approved private-host recovery for images without receipts: trusted source/digest evidence, schema approval, exact image verification, no migrations (ADR-001/005) |
 | [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |
 | [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
 | [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
@@ -165,6 +166,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   route requires admin or deployment-verifiers, one in-flight call and a 60-second cooldown.
 
 - Every dev Deploy Web release verifies login/DB; the compatibility input cannot disable it.
+  Reused-image receipt/ECR validation precedes migrations. Automatic DDL is expand-only;
+  contract cutovers require a merge freeze, drained queues and explicit manual coordination.
   The active `protect-main-dev` ruleset requires GitHub Actions AI Code Review and
   Merge Verify success before main/dev merge; no extra environment reviewer is added.
   Current-source releases require matching private migrations; explicit rollback runs no DDL. It prepares
