@@ -10,6 +10,7 @@ const safe = [
   '',
   '-- DROP TABLE ignored;\r\n/* outer /* TRUNCATE */ comment */ ;',
   'CREATE TABLE public.example (id bigint PRIMARY KEY, label text NOT NULL, enabled boolean DEFAULT false);',
+  'CREATE TABLE "public"."example" ("id" int);',
   'CREATE TABLE IF NOT EXISTS example (id bigserial, label text, PRIMARY KEY (id));',
   'CREATE TABLE "DROP" ("TRUNCATE" text, "say""hi" text DEFAULT \'it\'\'s; DROP TABLE t; --\');',
   'CREATE INDEX example_idx ON public.example (id);',
@@ -24,6 +25,17 @@ test('automatic policy allows only the supported additive SQL forms', () => {
   for (const sql of safe) {
     assert.equal(policy.automaticMigrationReason(sql), null, sql);
     assert.doesNotThrow(() => policy.assertAutomaticMigrations([migration(sql)]));
+  }
+});
+
+test('automatic objects cannot target temporary or PostgreSQL internal schemas, including quoted names', () => {
+  for (const schema of ['pg_temp', 'pg_temp_7', 'pg_catalog', 'pg_toast', 'information_schema',
+    '"pg_temp"', '"pg_temp_7"', '"pg_catalog"', '"information_schema"']) {
+    for (const sql of [`CREATE TABLE ${schema}.example(id int)`,
+      `CREATE INDEX example_idx ON ${schema}.example(id)`]) {
+      assert.equal(policy.automaticMigrationReason(sql), 'outside-additive-subset', sql);
+      assert.throws(() => policy.assertAutomaticMigrations([migration(sql)]), MigrationError);
+    }
   }
 });
 
