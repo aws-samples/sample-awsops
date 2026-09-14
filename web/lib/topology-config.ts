@@ -73,9 +73,10 @@ export async function fetchEksIpMap(signal?: AbortSignal): Promise<EksIpResoluti
       for (const ip of new Set([...podsByIp.keys(), ...servicesByIp.keys()])) {
         const matches = podsByIp.get(ip) ?? [];
         const pod = matches.length === 1 ? matches[0] : undefined;
-        const services = servicesByIp.get(ip) ?? [];
+        const services = (servicesByIp.get(ip) ?? [])
+          .filter(service => service.targets.some(t => t.ip === ip && t.pod));
         // A manual non-pod backend is service context, not a competing Kubernetes owner.
-        if (!matches.length && !services.some(service => service.targets.some(t => t.ip === ip && t.pod))) continue;
+        if (!matches.length && !services.length) continue;
         const corroborated = endpoints !== null && pod?.name && pod.namespace && services.every(service =>
           service.namespace === pod.namespace && (service.targets ?? []).filter(t => t.ip === ip)
             .every(t => !t.pod || t.pod === pod.name),

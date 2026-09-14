@@ -2,6 +2,7 @@
 // ranked arrangement (CF → ALB/NLB → TG → target) so the whole graph appears at once,
 // Datadog-style, rather than crude manual column placement. Pure / testable.
 import dagre from '@dagrejs/dagre';
+import type { FlowGraph } from './flow-topology';
 
 export interface Positioned { id: string; x: number; y: number }
 
@@ -17,8 +18,8 @@ export const NODE_H = 44;
  * labels end up overflowing into — or overlapping — a neighboring node. When omitted, every node
  * uses the module default (NODE_W x NODE_H), same as before this option existed.
  */
-export function layoutFlow<N extends { id: string }, E extends { source: string; target: string }>(
-  graph: { nodes: readonly N[]; edges: readonly E[] },
+export function layoutFlow(
+  graph: FlowGraph,
   opts?: { rankdir?: 'LR' | 'TB'; nodeSize?: (id: string) => { width: number; height: number } },
 ): Positioned[] {
   if (graph.nodes.length === 0) return [];
@@ -28,10 +29,7 @@ export function layoutFlow<N extends { id: string }, E extends { source: string;
 
   for (const n of graph.nodes) {
     const size = opts?.nodeSize?.(n.id) ?? { width: NODE_W, height: NODE_H };
-    // Dagre mutates node labels with coordinates. A caller may return one shared
-    // size constant; give every node its own label so positions cannot overwrite
-    // one another or mutate the caller's dimensions.
-    g.setNode(n.id, { width: size.width, height: size.height });
+    g.setNode(n.id, size);
   }
   const present = new Set(graph.nodes.map((n) => n.id));
   for (const e of graph.edges) if (present.has(e.source) && present.has(e.target)) g.setEdge(e.source, e.target);

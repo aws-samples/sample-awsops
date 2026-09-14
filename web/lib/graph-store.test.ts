@@ -72,7 +72,7 @@ describe('rebuildGraph', () => {
 
   it('materializes ECS scope from the account-scoped synced subnet rows it actually requests', async () => {
     const inventory = [
-      { resource_type: 'target_group', resource_id: 'tg-b', region: 'us-east-1', data: {
+      { resource_type: 'target_group', resource_id: 'tg-b', region: 'us-east-1', captured_at: new Date('2026-09-11T10:00:00Z'), data: {
         target_type: 'ip', vpc_id: 'vpc-b', target_health_descriptions: [{ Target: { Id: '10.0.1.10' } }],
       } },
       { resource_type: 'ecs_task', resource_id: 'task-b', region: 'us-east-1', data: {
@@ -86,6 +86,7 @@ describe('rebuildGraph', () => {
     pool.query.mockImplementation((...args: unknown[]) => {
       const [sql, params] = args as [string, [string[], string]];
       if (sql.includes('DISTINCT account_id')) return Promise.resolve({ rows: [{ account_id: 'self' }] });
+      expect(sql).toContain('captured_at');
       expect(params[1]).toBe('self');
       return Promise.resolve({ rows: inventory.filter(row => params[0].includes(row.resource_type)) });
     });
@@ -96,6 +97,7 @@ describe('rebuildGraph', () => {
     expect(write[1]?.[2]).toBe('orders');
     expect(JSON.parse(String(write[1]?.[3]))).toMatchObject({
       resolved: 'ecs', region: 'us-east-1', vpcId: 'vpc-b', subnetId: 'subnet-b', ownership_evidence: 'cached_configuration',
+      capturedAt: '2026-09-11T10:00:00.000Z',
     });
   });
 

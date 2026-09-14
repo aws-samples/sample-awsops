@@ -6,11 +6,11 @@ import { setActiveAccount } from '@/lib/account-context';
 import * as topology from '@/lib/flow-topology';
 
 const region = 'us-east-1', vpcId = 'vpc-app';
-const row = (resource_id: string, data: object) => ({ account_id: 'self', resource_id, region, data });
+const row = (resource_id: string, data: object) => ({ account_id: 'self', resource_id, region, captured_at: '2026-09-11T11:00:00Z', data });
 // One global type-sweep ledger, shared by host/member reads; not this scope's row count.
 const RUN = { status: 'succeeded', finished_at: '2026-09-11T12:00:00Z', last_success_at: '2026-09-11T12:00:00Z', row_count: 20000 };
 type Body = { rows: ReturnType<typeof row>[]; run: typeof RUN };
-const targets = row('tg-app', { vpc_id: vpcId, target_type: 'ip', target_health_descriptions:
+const targets = row('tg-app', { captured_at: '2099-01-01T00:00:00Z', vpc_id: vpcId, target_type: 'ip', target_health_descriptions:
   ['10.0.1.2', '10.0.1.3'].map(Id => ({ Target: { Id, Port: 80 } })) });
 const task = (name: string) => row(`task-${name}`, {
   task_group: `service:${name}`, cluster_arn: 'cluster/ecs-app', last_status: 'RUNNING',
@@ -18,6 +18,7 @@ const task = (name: string) => row(`task-${name}`, {
 });
 beforeEach(() => {
   localStorage.clear();
+  window.history.replaceState({}, '', '/');
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal('DOMMatrixReadOnly', class { m22 = 1; });
 });
@@ -99,6 +100,7 @@ describe('live topology inventory adapter', () => {
   });
 
   it('resolves ECS through real subnet inventory and EKS through the scoped producer', async () => {
+    const graph = vi.spyOn(topology, 'buildFlowGraph');
     const requests = serve(); render(<TopologyPage />);
     await screen.findByRole('option', { name: 'ECS · ecs-app' });
     await waitFor(() => expect(document.querySelector('.react-flow')).not.toBeNull());
@@ -106,6 +108,7 @@ describe('live topology inventory adapter', () => {
     search('shop/service-good'); expect(screen.getByRole('button', { name: /service-good/ })).toBeTruthy();
     search('shop/service-wrong'); expect(screen.queryByRole('button', { name: /service-wrong/ })).toBeNull();
     expect(requests.filter(url => url.pathname === '/api/inventory/subnet')).toHaveLength(1);
+    expect(graph.mock.calls.at(-1)?.[0].tg?.[0].captured_at).toBe('2026-09-11T11:00:00Z');
   });
 
   it('does not present a failed subnet read as an empty successful inventory', async () => {
@@ -194,15 +197,19 @@ describe('bounded ownership inventory paging', () => {
     }
   });
 
-  it('withholds host ECS ownership outside the enumerated EKS region', async () => {
+  it.each([false, true])('discloses out-of-region context without exclusive cluster filtering (pin: %s)', async pin => {
     const west = <T extends { region: string }>(value: T) => ({ ...value, region: 'us-west-2' });
+    if (pin) window.history.replaceState({}, '', '/?cluster=ecs:ecs-app');
     serve({ inventory: { target_group: [west(targets)], ecs_task: [west(task('ecs-api'))],
       subnet: [west(row('subnet-app', { vpc_id: vpcId }))] } });
     render(<TopologyPage />);
     await screen.findByText(/인벤토리 동기화:/);
+    expect(screen.getByText(/EKS 조회 범위 밖의 대상은 소유권 미확인입니다. 조회 리전:/)).toBeTruthy();
     expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
-    search('ambiguous:'); fireEvent.click(screen.getByRole('button', { name: /×2/ }));
+    if (pin) { expect(document.querySelectorAll('.react-flow__node')).toHaveLength(0); return; }
+    search('ecs-api'); fireEvent.click(screen.getByRole('button', { name: /ecs-api/ }));
     expect(await screen.findByText('eks_not_enumerated')).toBeTruthy();
+    expect(screen.getByText('scope_unverified')).toBeTruthy();
   });
 
   it.each(['finished_at', 'last_success_at', 'row_count', 'missing-run', 'missing-version', 'duplicate', 'malformed', 'http', 'json'])(

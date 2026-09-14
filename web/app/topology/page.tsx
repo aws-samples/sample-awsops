@@ -166,7 +166,7 @@ async function fetchType(t: InvType, account: string, signal: AbortSignal): Prom
           if (seen.has(key)) throw new Error();
           seen.add(key);
         }
-        rows.push({ ...row.data, account_id: row.account_id, resource_id: row.resource_id, region: row.region });
+        rows.push({ ...row.data, account_id: row.account_id, resource_id: row.resource_id, region: row.region, captured_at: row.captured_at });
       }
       finishedAt = run && typeof run.finished_at === 'string' ? run.finished_at : null;
       // Keep a bounded cached page during a sweep, without mixing mutable pages or proving absence.
@@ -480,7 +480,7 @@ export default function TopologyPage() {
       syn.target_type = m.targetType; syn.health = m.health; syn.port = m.port;
       if (m.resolved) syn.resolved_as = m.resolved;
       // EKS/ECS resolution detail (cluster / namespace / service / workload), when present
-      for (const k of ['cluster', 'namespace', 'service', 'workload', 'ecsService', 'task', 'pod', 'ambiguity', 'ownership_evidence'] as const) {
+      for (const k of ['cluster', 'namespace', 'service', 'workload', 'ecsService', 'task', 'pod', 'ambiguity', 'ownership_evidence', 'candidate', 'capturedAt'] as const) {
         if (m[k] != null && m[k] !== '') syn[k] = m[k];
       }
       // grouped node (ASG/replicas/tasks): show the member count + health summary + the IP list
@@ -626,6 +626,9 @@ export default function TopologyPage() {
       />
       <div className="flex-1 min-h-0 flex flex-col gap-4 px-8 py-6">
         {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
+        {full.nodes.some(n => n.meta?.ambiguity === 'eks_not_enumerated') && <div role="status" className="text-[13px] text-warning">
+          {tt('EKS 조회 범위 밖의 대상은 소유권 미확인입니다. 조회 리전:')} {eksResolution?.coveredRegions.join(', ')}
+        </div>}
         {(eksResolution?.status === 'unavailable' || eksResolution?.status === 'partial') && <div role="alert" aria-label={tt('EKS 식별 상태')} className="text-[13px] text-warning">
           {tt('EKS 조회 실패 또는 수집 범위 제한으로 IP 소유자를 확인할 수 없습니다.')} ({eksResolution.reasons.join(', ')})
         </div>}

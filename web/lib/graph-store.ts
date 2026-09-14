@@ -129,15 +129,15 @@ export async function rebuildGraph(pool: Pool, runId: string = randomUUID()): Pr
   const totals = { nodes: 0, edges: 0 };
   for (const account of await inventoryAccounts(pool, TYPES)) {
     const inv = await pool.query(
-      `SELECT resource_type, resource_id, region, data FROM inventory_resources
+      `SELECT resource_type, resource_id, region, data, captured_at FROM inventory_resources
        WHERE account_id = $2 AND resource_type = ANY($1)`,
       [TYPES, account],
     );
     const input: FlowInput = { ownershipRead: { configurationOnly: true } };
-    for (const r of inv.rows as { resource_type: string; resource_id: unknown; region: unknown; data?: object }[]) {
+    for (const r of inv.rows as { resource_type: string; resource_id: unknown; region: unknown; data?: object; captured_at?: unknown }[]) {
       const key = TYPE_TO_KEY[r.resource_type];
       if (!key) continue;
-      (input[key] ??= []).push({ resource_id: r.resource_id, region: r.region, ...(r.data ?? {}) });
+      (input[key] ??= []).push({ resource_id: r.resource_id, region: r.region, ...(r.data ?? {}), captured_at: r.captured_at });
     }
     const g = buildFlowGraph(input);
     const kindOf = new Map(g.nodes.map((n) => [n.id, n.kind]));

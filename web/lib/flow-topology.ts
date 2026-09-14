@@ -525,14 +525,21 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
             ? 'eks_not_enumerated'
           : !reads?.configurationOnly && reads?.eksScopes?.includes(scopedTargetIp(str(t.region), str(t.vpc_id), ''))
             ? 'eks_inventory_incomplete' : undefined;
-        const contradiction = !!issue || pod === null || task === null
+        const contradiction = pod === null || task === null
           || ecsByIp.get(scopedTargetIp(str(t.region), '', targetId)) === null
           || ecsByIp.get(scopedTargetIp('', '', targetId)) === null
           || inScope(pod) && pod?.resolved === 'eks' && inScope(task);
-        const r = contradiction ? undefined : inScope(pod) ? pod : inScope(task) ? task : undefined;
-        if (contradiction) {
+        const candidate = contradiction ? undefined : inScope(pod) ? pod : inScope(task) ? task : undefined;
+        const r = issue ? undefined : candidate;
+        if (issue || contradiction) {
           resolved = 'ambiguous'; key = `ambiguous:${issue ?? 'ownership_unverified'}`;
           meta = { ambiguity: issue ?? 'ownership_unverified' };
+          if (issue === 'eks_not_enumerated' && candidate) {
+            key = `context:${candidate.resolved}:${str(candidate.meta?.cluster)}/${candidate.label}`;
+            mlabel = groupLabel = candidate.label;
+            meta = { ...meta, ownership_evidence: 'scope_unverified',
+              candidate: { ...candidate, meta: { ...candidate.meta } } };
+          }
         }
         // group key includes cluster so same-named workloads in different clusters don't merge
         if (r) { resolved = r.resolved; key = `${r.resolved}:${str(r.meta?.cluster ?? '')}/${r.label}`; mlabel = r.label; groupLabel = r.label; meta = { ...r.meta }; }
@@ -558,6 +565,7 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
                        ...(total > TARGET_CAP ? { membersTruncated: total - TARGET_CAP } : {}) }),
         ...(g.resolved ? { resolved: g.resolved } : {}),
         ...g.meta,
+        capturedAt: t.captured_at ?? null,
         ...(input.ownershipRead?.configurationOnly ? { ownership_evidence: 'cached_configuration' } : {}),
       });
       addEdge(tgId, nodeId);

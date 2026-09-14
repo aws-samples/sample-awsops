@@ -75,6 +75,23 @@ function expectNoDanglingEdges(graph: { nodes: { id: string }[]; edges: { source
 }
 
 describe('buildE2eGraph — evidence and provenance', () => {
+  it.each([CAPTURED_AT, new Date(CAPTURED_AT), null, undefined, 'invalid'])(
+    'carries actual configuration capture time without inventing freshness: %s', capturedAt => {
+      const config = buildFlowGraph({ tg: [{ resource_id: 'tg', region: REGION, vpc_id: VPC,
+        captured_at: capturedAt, target_type: 'ip', target_health_descriptions: [{ Target: { Id: '10.0.1.10' } }] }] });
+      const graph = buildE2eGraph(input({ configured: config, services: services(), network: [observation()] }));
+      const expected = capturedAt instanceof Date ? capturedAt.toISOString() : capturedAt === CAPTURED_AT ? CAPTURED_AT : null;
+      expect(graph.nodes.find(n => n.kind === 'target')?.meta.capturedAt).toBe(expected);
+      expect(identityEdges(graph)[0].meta?.configurationCapturedAt).toBe(expected);
+      expect(graph.nodes.find(n => n.kind === 'connection')?.meta.startTime).toBe('2026-09-11T09:00:00Z');
+    });
+  it('retains a supplied configuration snapshot timestamp independently of the observation window', () => {
+    const captured_at = '2026-09-10T00:00:00Z';
+    const graph = buildE2eGraph(input({ configured: { ...configured(), captured_at }, network: [observation()] }));
+    expect(identityEdges(graph)[0].meta?.configurationCapturedAt).toBe(captured_at);
+    expect(graph.nodes.find(n => n.kind === 'target')?.meta.capturedAt).toBe(captured_at);
+  });
+
   it.each([['instance', 'i-cache'], ['ip', '10.0.1.10']])(
     'keeps cached %s targets out of identity evidence while preserving live scoped joins', (type, id) => {
       const network = [observation([flow({ local: endpoint(type === 'instance' ? { instanceId: id } : {}) })])];
@@ -89,8 +106,8 @@ describe('buildE2eGraph — evidence and provenance', () => {
       expect(graph.summary.ambiguousEndpoints).toBeGreaterThan(0);
     });
 
-  it('does not promote materialized configuration into exclusive identity evidence', () => {
-    const graph = buildE2eGraph(input({ configured: configured([target({ ownership_evidence: 'cached_configuration' })]),
+  it.each(['cached_configuration', 'scope_unverified'])('does not promote %s into exclusive identity evidence', ownership_evidence => {
+    const graph = buildE2eGraph(input({ configured: configured([target({ ownership_evidence })]),
       network: [observation()] }));
     expect(identityEdges(graph)).toHaveLength(0);
     expect(graph.summary.ambiguousEndpoints).toBeGreaterThan(0);

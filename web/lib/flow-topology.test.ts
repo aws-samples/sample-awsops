@@ -4,8 +4,8 @@ import { buildE2eGraph } from './e2e-topology';
 
 describe('ECS scope from synced attachment and subnet inventory', () => {
   const region = 'us-east-1', ip = '10.0.1.10';
-  const attachment = (subnetId: string) => ({ Type: 'ElasticNetworkInterface', Details: [
-    { Name: 'subnetId', Value: subnetId }, { Name: 'privateIPv4Address', Value: ip },
+  const attachment = (subnetId: string, address = ip) => ({ Type: 'ElasticNetworkInterface', Details: [
+    { Name: 'subnetId', Value: subnetId }, { Name: 'privateIPv4Address', Value: address },
   ] });
   const task = {
     resource_id: 'arn:aws:ecs:us-east-1:123456789012:task/cluster-b/task-b', region,
@@ -20,9 +20,22 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
   const target = (input: FlowInput) => buildFlowGraph(input).nodes.find(n => n.kind === 'target')!;
 
   it('withholds exclusive ownership outside the enumerated EKS region', () => {
-    const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task], subnet: [subnet],
+    const configured = buildFlowGraph({ tg: [{ ...tg, vpc_id: 'vpc-b',
+      target_health_descriptions: [ip, '10.0.1.11'].map(Id => ({ Target: { Id } })) }],
+      ecsTask: [task, { ...task, resource_id: 'other', task_group: 'service:other', attachments: [attachment('subnet-b', '10.0.1.11')] }], subnet: [subnet],
       ownershipRead: { eksRegions: ['ap-northeast-2'] } });
-    expect(node.meta).toMatchObject({ resolved: 'ambiguous', ambiguity: 'eks_not_enumerated' });
+    const nodes = configured.nodes.filter(n => n.kind === 'target');
+    expect(nodes.map(n => n.label)).toEqual(['service-b', 'other']);
+    for (const node of nodes) {
+      expect(node.meta).toMatchObject({ resolved: 'ambiguous', ambiguity: 'eks_not_enumerated',
+        ownership_evidence: 'scope_unverified', candidate: { resolved: 'ecs', meta: { cluster: 'cluster-b', region, vpcId: 'vpc-b' } } });
+      expect(node.meta?.cluster).toBeUndefined();
+    }
+    const graph = buildE2eGraph({ account: 'self', configured, services: null, network: [{
+      monitor: 'monitor', cluster: null, metric: 'DATA_TRANSFERRED', category: 'INTER_AZ', rangeSec: 900, unit: 'Bytes', capped: false,
+      rows: [{ local: { ip, region, vpcId: 'vpc-b' }, remote: {}, value: 1, unit: 'Bytes', category: 'INTER_AZ', traversed: [], traversedIds: [] }],
+    }] });
+    expect(graph.edges.filter(edge => edge.evidence === 'identity')).toEqual([]);
   });
   it('labels cached configuration without certifying exclusive ownership', () => {
     const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task], subnet: [subnet],

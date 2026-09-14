@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: bc9915c2871b · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 0b51789d5736 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -42,6 +42,10 @@ that's the source of truth for tool counts, not this doc.
   explicit-column, read-only views in a dedicated `sql_reader` schema (never `SELECT *`).
   Adding a column or view here is a security-relevant change requiring review; never grant
   anything to `public`.
+- SQL-reader topology metadata excludes `ownership_evidence`, `ambiguity`, `candidate` and
+  per-target `capturedAt`. Treat every `class='flow'` label as cached configuration context,
+  never exclusive/live ownership. Missing qualifiers do not establish confidence; the
+  exposed `captured_at` is graph materialization time, not target inventory capture time.
 - `execute_sql` is host-account AND single-cluster only — any other target fails closed (400).
 - The agent Lambda's IAM role has no `GetSecretValue` on the master secret, so bypassing the
   lexical guard (`sql_readonly_guard.py`) only reaches an unprivileged session — the guard is

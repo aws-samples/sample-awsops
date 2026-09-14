@@ -32,7 +32,7 @@ export interface ServiceSnapshot {
 }
 export interface E2eInput {
   account: string;
-  configured: FlowGraph;
+  configured: FlowGraph & { captured_at?: string | null };
   services: ServiceSnapshot | null;
   network: NetworkObservation[];
   /** Pass the batch even when every category failed and network is empty. */

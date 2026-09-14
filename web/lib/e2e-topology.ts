@@ -10,6 +10,8 @@ const record = (value: unknown): Meta =>
 const text = (value: unknown): string => typeof value === 'string' && value.trim() ? value : '';
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const strings = (value: unknown): string[] => list(value).map(text).filter(Boolean);
+const capturedTime = (value: unknown): string | null => value instanceof Date && Number.isFinite(value.getTime())
+  ? value.toISOString() : typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null;
 // Tuple encoding avoids collisions from separators occurring in source IDs or names.
 const key = (...parts: string[]): string => JSON.stringify(parts);
 const nodeId = (layer: E2eLayer, account: string, ...parts: string[]): string =>
@@ -131,11 +133,14 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     }
   };
   const appendLayer = (layer: 'configuration' | 'service', source: unknown) => {
-    const data = record(source), extra = layer === 'service' ? { capturedAt: data.captured_at ?? null } : {};
+    const data = record(source), extra = { capturedAt: capturedTime(data.captured_at) };
     for (const raw of list(data.nodes)) {
       const node = record(raw), id = text(node.id);
+      const meta = record(node.meta);
+      const capturedAt = layer === 'configuration'
+        ? capturedTime(meta.capturedAt) ?? capturedTime(record(meta.row).captured_at) ?? extra.capturedAt : extra.capturedAt;
       if (id) addNode({ id: nodeId(layer, input.account, id), layer, kind: text(node.kind),
-        label: text(node.label) || id, meta: { ...record(node.meta), ...extra } });
+        label: text(node.label) || id, meta: { ...meta, capturedAt } });
     }
     for (const raw of list(data.edges)) {
       const edge = record(raw);
@@ -185,7 +190,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       || (targetPod && pod && targetPod !== pod);
     const conflictingWorkloadType = target?.node.meta.resolved === 'ecs' && (!!pod || !!namespace || matches.length > 0);
     if (candidates.size > 1 || matches.length > 1 || conflictingClusters || conflictingOwner || conflictingWorkloadType
-      || target?.node.meta.resolved === 'ambiguous' || target?.node.meta.ownership_evidence === 'cached_configuration') {
+      || target?.node.meta.resolved === 'ambiguous'
+      || ['cached_configuration', 'scope_unverified'].includes(text(target?.node.meta.ownership_evidence))) {
       endpoint.meta.correlation = 'ambiguous';
       summary.ambiguousEndpoints++;
       return;
@@ -196,6 +202,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
         evidence: 'identity', directed: false,
         meta: {
           match: target.type === 'ip' ? 'ip-region-vpc' : 'instance-region-vpc',
+          configurationCapturedAt: target.node.meta.capturedAt,
           account: input.account, region, vpcId, [target.type === 'ip' ? 'ip' : 'instanceId']: target.value,
         },
       });

@@ -224,6 +224,14 @@ describe('EKS inventory producer → configuration → service/network graph', (
     expect(integrated.edges.filter(e => e.meta?.match === 'configured-cluster')).toHaveLength(1);
   });
 
+  it.each(['shop', 'other'])('ignores a manual non-pod Service in namespace %s for ownership and labeling', async namespace => {
+    const manual = { ...endpoint, name: 'external-backend', namespace, targets: [{ ip }] };
+    serve([pod], [manual]);
+    expect((await graphs()).target).toMatchObject({ label: 'shop/orders', meta: { resolved: 'eks', pod: 'orders-a' } });
+    serve([pod], [manual, endpoint]);
+    expect((await graphs()).target).toMatchObject({ label: 'shop/external-service', meta: { resolved: 'eks', pod: 'orders-a' } });
+  });
+
   it.each([undefined, 'orders-a'])('distinguishes a manual backend from an unresolved pod reference: %s', async reference => {
     serve([], [{ ...endpoint, targets: [{ ip, pod: reference }] }]);
     const { map } = await fetchEksIpMap();
