@@ -12,6 +12,8 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/resources/topology.png" alt="请求流图" />
 
+截图中的账户 ID 和 ARN 已隐藏。
+
 ## 主要功能
 ### 请求流图
 - 将 **Route53 → CloudFront → Load Balancer → Target Group → 目标**相连的流量路径以节点和边可视化。

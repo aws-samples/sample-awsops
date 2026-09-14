@@ -12,6 +12,8 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/resources/topology.png" alt="リクエストフローグラフ" />
 
+スクリーンショットのアカウント ID と ARN は非表示にしています。
+
 ## 主な機能
 ### リクエストフローグラフ
 - **Route53 → CloudFront → Load Balancer → Target Group → ターゲット**へと続くトラフィック経路を、ノードとエッジで可視化します。

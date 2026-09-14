@@ -12,6 +12,8 @@ A page for exploring the request flow (**Route53 → CloudFront → Load Balance
 
 <Screenshot src="/screenshots/resources/topology.png" alt="Request-flow graph" />
 
+Account IDs and ARNs are redacted in the screenshots.
+
 ## Features
 ### Request-flow graph
 - Visualizes the traffic path **Route53 → CloudFront → Load Balancer → Target Group → target** as nodes and edges.
@@ -22,7 +24,7 @@ A page for exploring the request flow (**Route53 → CloudFront → Load Balance
 ### Entry-point filter
 - Pick a specific distribution from the top **CloudFront** selector to narrow the graph to just the paths starting from that entry point.
 - The **LB** selector does the same for a specific Load Balancer.
-- Leave either selector at **All** to show the entire graph.
+- Leave both selectors at **All** to show the entire graph.
 
 ### Resource search
 - Type part of a resource name in the top search box to see an autocomplete list.
@@ -38,7 +40,7 @@ A page for exploring the request flow (**Route53 → CloudFront → Load Balance
 <Screenshot src="/screenshots/resources/topology-detail.png" alt="Node focus mode + detail panel" />
 
 ## How to use
-1. Click **Resources > Topology** in the sidebar.
+1. Click **Topology** in the sidebar.
 2. Once the graph renders, use the **MiniMap** and **Controls** to zoom into the area you want to inspect.
 3. To view a single entry point, pick a target in the top **CloudFront** or **LB** selector.
 4. To find a specific resource, type part of its name in the search box and choose from the autocomplete list.

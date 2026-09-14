@@ -12,6 +12,8 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/resources/topology.png" alt="요청 흐름 그래프" />
 
+스크린샷의 계정 ID와 ARN은 가렸습니다.
+
 ## 주요 기능
 ### 요청 흐름 그래프
 - **Route53 → CloudFront → Load Balancer → Target Group → 타깃**으로 이어지는 트래픽 경로를 노드와 엣지로 시각화합니다.
