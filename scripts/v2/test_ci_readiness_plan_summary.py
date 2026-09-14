@@ -18,11 +18,12 @@ def plan():
     return {"format_version": "1.2", "prior_state": {"values": {"root_module": {"resources": [
         {"address": "aws_cognito_user_pool.main", "values": {"id": "PRIVATE_POOL"}},
         {"address": "aws_cognito_user.demo[0]", "values": {"username": "PRIVATE_USER"}},
+        {"address": summary.COLLECTOR, "values": {"function_name": "PRIVATE_FUNCTION"}},
     ]}}}, "resource_changes": [
         change(summary.GROUP, {"name": "deployment-verifiers", "user_pool_id": "PRIVATE_POOL", "role_arn": None}),
         change(summary.MEMBER, {"group_name": "deployment-verifiers", "user_pool_id": "PRIVATE_POOL", "username": "PRIVATE_USER"}),
-        change(summary.COLLECTOR, {"role": "PRIVATE_ROLE", "source_code_hash": HASH},
-               ["update"], {"role": "PRIVATE_ROLE", "source_code_hash": "previous"}),
+        change(summary.COLLECTOR, {"function_name": "PRIVATE_FUNCTION", "role": "PRIVATE_ROLE", "source_code_hash": HASH},
+               ["update"], {"function_name": "PRIVATE_FUNCTION", "role": "PRIVATE_ROLE", "source_code_hash": "previous"}),
     ], "output_changes": {}}
 
 
@@ -95,3 +96,20 @@ def test_capped_changes_cannot_be_mistaken_for_complete_review():
     assert result["truncated"]
     assert len(result["resource_changes"]) == 256
     assert not result["all_changes_match_expected_scope"]
+
+
+def test_workflow_projects_only_manual_dev_plans_before_encryption():
+    import yaml
+    root = Path(__file__).resolve().parents[2]
+    steps = yaml.safe_load((root / ".github/workflows/terraform.yml").read_text())["jobs"]["plan"]["steps"]
+    index = next(i for i, step in enumerate(steps)
+                 if step.get("name") == "Project bounded readiness changes without private plan values")
+    step = steps[index]
+    assert step["if"] == "github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev'"
+    assert next(i for i, s in enumerate(steps) if s.get("name") == "Check planned DNS operations") < index
+    assert index < next(i for i, s in enumerate(steps) if s.get("name") == "Encrypt plan artifact")
+    assert step["run"].strip() == (
+        'set -euo pipefail\n'
+        'terraform show -json tfplan 2>/dev/null |\n'
+        '  python3 ../../scripts/v2/ci_readiness_plan_summary.py | tee -a "$GITHUB_STEP_SUMMARY"'
+    )

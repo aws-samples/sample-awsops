@@ -39,6 +39,7 @@ def project(plan):
     pool = prior.get("aws_cognito_user_pool.main", {}).get("id")
     user = prior.get("aws_cognito_user.demo[0]", {}).get("username")
     cloudfront = prior.get("aws_cloudfront_distribution.main", {}).get("id")
+    collector = prior.get(COLLECTOR, {}).get("function_name")
     changes, complete, new_hash, truncated = [], True, None, False
     for item in plan.get("resource_changes", []):
         change = item["change"]
@@ -74,8 +75,14 @@ def project(plan):
             changed = {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)}
             checks = {
                 "update_only": actions == ["update"],
+                "existing_collector": bool(collector) and before.get("function_name") == collector
+                and after.get("function_name") == collector,
                 "code_only": changed <= {"source_code_hash", "code_sha256", "last_modified"},
                 "known_code_hash": digest(after.get("source_code_hash")) and not unknown.get("source_code_hash"),
+                "known_configuration": not has_unknown({
+                    key: value for key, value in unknown.items()
+                    if key not in {"code_sha256", "last_modified"}
+                }),
             }
             if checks["known_code_hash"]:
                 new_hash = after["source_code_hash"]
