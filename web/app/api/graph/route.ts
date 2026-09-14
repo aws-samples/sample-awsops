@@ -1,7 +1,8 @@
 import { verifyUser } from '@/lib/auth';
 import { getPool } from '@/lib/db';
 import { downstream, upstream, FANOUT_CAP } from '@/lib/graph-query';
-import { readGraphState } from '@/lib/graph-state';
+import { readGraphState, graphDiagnostic, type GraphClass } from '@/lib/graph-state';
+import type { Pool, PoolClient } from 'pg';
 import { queueClaimMeta } from '@/lib/trace-evidence';
 
 export const dynamic = 'force-dynamic';
@@ -39,7 +40,7 @@ export async function GET(request: Request) {
   if (!ALLOWED.includes(raw)) {
     return Response.json({ status: 'error', message: `unknown class: ${raw}` }, { status: 400 });
   }
-  const cls = raw;
+  const cls = raw as GraphClass;
   // Account scope: 'self' (default) | 12-digit member id | '__all__' (union across accounts).
   // Trace snapshots live under host storage scope 'self'. Claimed accounts in span/queue
   // telemetry do not change this scope or verify AWS ownership.
@@ -51,9 +52,22 @@ export async function GET(request: Request) {
   const from = url.searchParams.get('from');
   const depthRaw = Number(url.searchParams.get('depth'));
   const depth = Number.isFinite(depthRaw) && depthRaw > 0 ? depthRaw : 2;
-  const pool = getPool();
+  let client: PoolClient | undefined;
   try {
-    const collection = cls === 'trace' ? await readGraphState(pool, account) : undefined;
+    client = await getPool().connect();
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    // Every neighborhood/row/state read observes one publication snapshot.
+    const pool = client as unknown as Pool;
+    await client.query('SAVEPOINT collection_read');
+    let collection;
+    try { collection = await readGraphState(pool, account, cls); }
+    catch (error) {
+      console.error(`[graph-read] failed ${graphDiagnostic('graph_state', error)}`);
+      collection = { status: 'error', stale: true, captured_at: null, attempted_at: null,
+        sources: [], failureReason: 'state_read_failed' };
+    }
+    // Also clears an absent-relation error swallowed by the rollout-compatible state reader.
+    await client.query('ROLLBACK TO SAVEPOINT collection_read');
     if (from) {
       // per-resource neighborhood: union of up + down reachable ids (each capped per hop in SQL)
       const [down, up] = await Promise.all([
@@ -74,9 +88,10 @@ export async function GET(request: Request) {
                       SELECT source FROM topology_edges WHERE ($4 = '__all__' OR account_id = $4) AND class = $1 AND source = ANY($2)
                       GROUP BY source HAVING count(*) > $3) t) AS capped`, [cls, ids, FANOUT_CAP, account]),
       ]);
+      await client.query('COMMIT');
       return Response.json({
         from, depth, class: cls, account, nodes: evidenceNodes(nodes.rows, cls), edges: evidenceEdges(edges.rows, cls),
-        captured_at: collection?.captured_at ?? nodes.rows[0]?.captured_at ?? null,
+        captured_at: collection.captured_at,
         capped: cap.rows[0]?.capped ?? false, collection,
       });
     }
@@ -87,9 +102,12 @@ export async function GET(request: Request) {
       pool.query(`SELECT DISTINCT source, target, rel, confidence, to_jsonb(e)->'meta' AS meta FROM topology_edges e
                     WHERE ($2 = '__all__' OR account_id = $2) AND class = $1`, [cls, account]),
     ]);
+    await client.query('COMMIT');
     return Response.json({ class: cls, account, nodes: evidenceNodes(nodes.rows, cls), edges: evidenceEdges(edges.rows, cls),
-      captured_at: collection?.captured_at ?? nodes.rows[0]?.captured_at ?? null, collection });
-  } catch (e) {
-    return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: 500 });
-  }
+      captured_at: collection.captured_at, collection });
+  } catch (error) {
+    await client?.query('ROLLBACK').catch(() => {});
+    console.error(`[graph-read] failed ${graphDiagnostic('graph_read', error)}`);
+    return Response.json({ status: 'error', message: 'Graph read failed' }, { status: 500 });
+  } finally { client?.release(); }
 }

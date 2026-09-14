@@ -96,12 +96,21 @@ run "inventory_fingerprint_uses_the_deployed_archive" {
 run "host_core_permissions_and_digest_binding" {
   command = plan
   variables {
-    agentcore_enabled      = true
-    workers_enabled        = true
-    steampipe_enabled      = true
-    inventory_host_only    = true
-    steampipe_image_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    worker_image_digest    = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    agentcore_enabled             = true
+    workers_enabled               = true
+    steampipe_enabled             = true
+    inventory_host_only           = true
+    steampipe_image_digest        = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    worker_image_digest           = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    inventory_stale_after_minutes = 7
+  }
+  assert {
+    condition = (
+      try(one([for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment :
+      e.value if e.name == "INVENTORY_STALE_AFTER_MINUTES"]), null) == "7" &&
+      aws_lambda_function.agent["inventory-read"].environment[0].variables["INVENTORY_STALE_AFTER_MINUTES"] == "7"
+    )
+    error_message = "Web graph evidence and inventory-read Lambda must share the configured freshness policy."
   }
   assert {
     condition = toset(jsondecode(aws_iam_role_policy.task_agentcore_ssm[0].policy).Statement[0].Resource) == toset([

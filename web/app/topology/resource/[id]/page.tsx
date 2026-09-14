@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { Background, Controls, Position, type Node, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import PageHeader from '@/components/ui/PageHeader';
+import GraphCollectionStatus from '@/components/topology/GraphCollectionStatus';
 import { layoutFlow } from '@/lib/flow-layout';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
@@ -15,7 +16,7 @@ const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow)
 
 interface GNode { id: string; kind: string; label: string; meta?: Record<string, unknown> }
 interface GEdge { source: string; target: string; rel: string }
-interface Graph { nodes: GNode[]; edges: GEdge[]; captured_at: string | null; capped?: boolean }
+interface Graph { nodes: GNode[]; edges: GEdge[]; captured_at: string | null; capped?: boolean; collection?: unknown }
 
 // kind → [bg, border] (paper/ink tokens; infra kinds + a generic resource fallback)
 const COLORS: Record<string, [string, string]> = {
@@ -41,6 +42,7 @@ export default function ResourceTopologyPage({ params }: { params: { id: string 
   useEffect(() => {
     let live = true;
     setBusy(true);
+    setGraph(null);
     fetch(`/api/graph?class=infra&from=${encodeURIComponent(fromId)}&depth=${depth}&${accountParam(activeAccount) || 'account=self'}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((d) => { if (live) { setGraph(d); setErr(''); } })
@@ -106,9 +108,10 @@ export default function ResourceTopologyPage({ params }: { params: { id: string 
         {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
         {graph?.captured_at && <span>{tt('그래프 시점:')} {new Date(graph.captured_at).toLocaleString()}</span>}
         {graph?.capped && <span className="text-amber-600">{tt('일부 허브는 이웃이 많아 상위 일부만 표시됩니다 (cap).')}</span>}
-        {graph && graph.nodes.length === 0 && !busy && <span>{tt('이 리소스의 관계 그래프가 비어 있습니다 (materializer 미실행이거나 네트워크 배치 없음).')}</span>}
+        {graph && graph.nodes.length === 0 && !busy && <span>{tt('표시할 관계 노드가 없습니다. 수집 상태를 확인하세요.')}</span>}
       </div>
-      <div className="min-h-0 flex-1">
+      {!busy && !err && graph ? <div className="shrink-0 px-4"><GraphCollectionStatus collection={graph.collection} /></div> : null}
+      <div className="min-h-[240px] flex-1">
         <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.2 }} proOptions={{ hideAttribution: true }}>
           <Background />
           <Controls />

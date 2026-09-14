@@ -1,13 +1,8 @@
-// Next.js server-boot hook (requires experimental.instrumentationHook in next.config.mjs). Schedules
-// the graph-rebuild materializer (flow/infra/trace layers, ADR-043 + the 2026-06-25 trace-topology
-// design) to run periodically IN the web server process — no new Docker image or AWS resource, and
-// the web task role already holds the perms rebuildTraceGraph needs (Aurora IAM auth + connector-Lambda
-// invoke for the ClickHouse source). Bounded work (one inventory SELECT + ≤1000 spans + ≤200/500 node/
-// edge upserts, seconds, I/O-bound) run OFF any request path, so this doesn't violate thin-BFF.
-// Concurrent ECS tasks are safe: writeGraph() takes a per-class pg advisory lock, so overlapping runs
-// serialize rather than corrupt state — duplicate work is a bounded, acceptable cost, not a bug.
-// Upgrade path if this ever gets heavy: move to an EventBridge-scheduled ECS runTask (ADR-043 stays
-// BFF-request-path-clean either way; this only affects background-timer plumbing).
+// Next.js server-boot hook: the gated graph timer runs IN the request-serving web process.
+// Inventory reads use bounded per-account snapshots and release the shared pool connection
+// before building. Publication uses nonwaiting class locks and transaction deadlines. The
+// timer's in-flight guard skips overlapping ticks; it does not enqueue a worker job.
+// Larger fleets beyond these budgets require a separately reviewed worker path.
 //
 // Default OFF (GRAPH_REBUILD_INTERVAL_MINS unset/0) — manual `scripts/v2/graph-rebuild.mjs` remains
 // the baseline path; this just automates it once the interval is configured (recommended: 15, matching
@@ -26,6 +21,7 @@ export async function register() {
     const { getPool } = await import('./lib/db');
     const { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } = await import('./lib/graph-store');
     const { loadGraphSources } = await import('./lib/graph-sources');
+    const { graphDiagnostic } = await import('./lib/graph-state');
     const pool = getPool();
 
     // In-flight guard: the advisory lock in writeGraph() only serializes the WRITE section, not the
@@ -37,20 +33,24 @@ export async function register() {
     const run = async () => {
       if (running) return;
       running = true;
+      let stage = 'flow';
       try {
         const flow = await rebuildGraph(pool);
+        console.log(`[graph-rebuild] flow: ${JSON.stringify(flow)}`);
+        stage = 'infra';
         const infra = await rebuildInfraGraph(pool);
+        console.log(`[graph-rebuild] infra: ${JSON.stringify(infra)}`);
         // Registry-driven (2026-07-08): sources come from every registered datasource's pre-built
         // graph-query catalog (datasource_graph_queries), not one hardcoded default — see
         // docs/superpowers/specs/2026-07-08-registry-graph-sources-design.md.
+        stage = 'trace_sources';
         const { sources, metricsSources } = await loadGraphSources(pool);
+        stage = 'trace';
         const trace = await rebuildTraceGraph(pool, sources, undefined, metricsSources);
-        console.log(`[graph-rebuild] flow: ${flow.nodes} nodes, ${flow.edges} edges`);
-        console.log(`[graph-rebuild] infra: ${infra.nodes} nodes, ${infra.edges} edges`);
-        console.log(`[graph-rebuild] trace: ${trace.nodes} nodes, ${trace.edges} edges`);
-      } catch (err) {
+        console.log(`[graph-rebuild] trace: ${JSON.stringify(trace)}`);
+      } catch (error) {
         // Never crash the server over a background rebuild — log and retry next interval.
-        console.error('[graph-rebuild] failed:', err);
+        console.error(`[graph-rebuild] failed ${graphDiagnostic(stage, error)}`);
       } finally {
         running = false;
       }

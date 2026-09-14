@@ -10,22 +10,30 @@
 //   This setting does not verify telemetry claims or grant queue-to-inventory attribution:
 //     cd web && npx tsx ../scripts/v2/graph-rebuild.mjs
 //
-// The post-inventory-sync AUTO trigger (a 'graph-rebuild' worker job) invokes this same logic.
+// The gated web/instrumentation.ts timer invokes this logic in the web process.
 import { getPool } from '../../web/lib/db.ts';
 import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } from '../../web/lib/graph-store.ts';
 import { loadGraphSources } from '../../web/lib/graph-sources.ts';
+import { graphDiagnostic } from '../../web/lib/graph-state.ts';
 
+// Exit 0: all layers published (including confirmed zero/degraded); 2: retained/skipped; 1: exception.
 const pool = getPool();
-const flow = await rebuildGraph(pool);
-console.log(`[graph-rebuild] flow: ${flow.nodes} nodes, ${flow.edges} edges`);
-const infra = await rebuildInfraGraph(pool);
-console.log(`[graph-rebuild] infra: ${infra.nodes} nodes, ${infra.edges} edges`);
-// Step 3 — trace-level (application) graph. Registry-driven (2026-07-08): sources come from every
-// registered datasource's pre-built graph-query catalog (datasource_graph_queries) — see
-// docs/superpowers/specs/2026-07-08-registry-graph-sources-design.md. Falls back to a bare default
-// ClickHouse source (available()=false with no default clickhouse instance → empty layer) when no
-// ready row exists yet, e.g. before the first daily datasource_index run.
-const { sources, metricsSources } = await loadGraphSources(pool);
-const trace = await rebuildTraceGraph(pool, sources, undefined, metricsSources);
-console.log(`[graph-rebuild] trace: ${trace.nodes} nodes, ${trace.edges} edges`);
-process.exit(0);
+let stage = 'flow';
+try {
+  const flow = await rebuildGraph(pool);
+  console.log(`[graph-rebuild] flow: ${JSON.stringify(flow)}`);
+  stage = 'infra';
+  const infra = await rebuildInfraGraph(pool);
+  console.log(`[graph-rebuild] infra: ${JSON.stringify(infra)}`);
+  stage = 'trace_sources';
+  const { sources, metricsSources } = await loadGraphSources(pool);
+  stage = 'trace';
+  const trace = await rebuildTraceGraph(pool, sources, undefined, metricsSources);
+  console.log(`[graph-rebuild] trace: ${JSON.stringify(trace)}`);
+  process.exitCode = [flow, infra, trace].some(result => result.retained || result.skipped) ? 2 : 0;
+} catch (error) {
+  console.error(`[graph-rebuild] failed ${graphDiagnostic(stage, error)}`);
+  process.exitCode = 1;
+} finally {
+  await pool.end();
+}

@@ -12,14 +12,14 @@ export interface InfraInput { resources: Row[]; vpcs: Row[]; subnets: Row[]; sec
 
 const str = (v: unknown): string => (v == null ? '' : String(v));
 
-// pull ids from the many shapes a row uses: 'sg-x' | {GroupId} | {SubnetId} | {Id} | availability_zones[].SubnetId
+// Producer shapes include EC2 GroupId, RDS VpcSecurityGroupId and LB SubnetId.
 export function idsFrom(v: unknown): string[] {
   if (v == null) return [];
   return (Array.isArray(v) ? v : [v])
     .map((x) => {
       if (typeof x === 'string') return x;
       const o = (x ?? {}) as Record<string, unknown>;
-      return str(o.GroupId ?? o.group_id ?? o.SubnetId ?? o.subnet_id ?? o.Id);
+      return str(o.GroupId ?? o.group_id ?? o.VpcSecurityGroupId ?? o.SubnetId ?? o.subnet_id ?? o.Id);
     })
     .filter(Boolean);
 }
@@ -57,8 +57,8 @@ export function buildInfraGraph(input: InfraInput): InfraGraph {
   for (const r of input.resources) {
     const d = (r.data ?? {}) as Record<string, unknown>;
     const vpcId = str(d.vpc_id);
-    const subnetIds = [...new Set([...idsFrom(d.subnet_id), ...idsFrom(d.subnet_ids), ...idsFrom(d.subnets), ...idsFrom(d.availability_zones)])];
-    const sgIds = [...new Set([...idsFrom(d.security_groups), ...idsFrom(d.security_group_ids), ...idsFrom(d.vpc_security_group_ids)])];
+    const subnetIds = [...new Set([...idsFrom(d.subnet_id), ...idsFrom(d.subnet_ids), ...idsFrom(d.vpc_subnet_ids), ...idsFrom(d.subnets), ...idsFrom(d.availability_zones)])];
+    const sgIds = [...new Set([...idsFrom(d.security_groups), ...idsFrom(d.security_group_ids), ...idsFrom(d.vpc_security_group_ids), ...idsFrom(d.vpc_security_groups)])];
     if (!vpcId && subnetIds.length === 0 && sgIds.length === 0) continue;
     const rid = `${str(r.resource_type)}:${str(r.resource_id)}`;
     // meta.host bridges this node to the trace-topology layer's db-node infra_ref (graph-store.ts

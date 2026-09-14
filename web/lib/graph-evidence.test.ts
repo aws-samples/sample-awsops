@@ -6,7 +6,7 @@ function database() {
   const client = {
     query: async (sql: string, args: unknown[] = []) => {
       writes.push({ sql, args });
-      return { rows: sql.includes('to_regclass') ? [{ ready: true }] : [] };
+      return { rows: sql.includes('to_regclass') ? [{ ready: true }] : sql.includes('pg_try_advisory') ? [{ acquired: true }] : [] };
     },
     release() {},
   };
@@ -14,9 +14,9 @@ function database() {
     pool: { connect: async () => client, query: client.query } as never,
     writes,
     nodes: () => writes.filter((w) => w.sql.includes('INSERT INTO topology_nodes'))
-      .map((w) => ({ id: w.args[0], kind: w.args[1], meta: JSON.parse(String(w.args[3])) })),
+      .flatMap((w) => JSON.parse(String(w.args[3]))),
     edges: () => writes.filter((w) => w.sql.includes('INSERT INTO topology_edges'))
-      .map((w) => ({ source: w.args[0], target: w.args[1], rel: w.args[2] })),
+      .flatMap((w) => JSON.parse(String(w.args[3]))),
   };
 }
 
@@ -43,7 +43,7 @@ describe('trace graph evidence', () => {
       available: async () => true,
       recentSpans: async () => { reads++; throw new Error('must not query'); },
     };
-    await expect(rebuildTraceGraph(pool as never, [backend])).resolves.toEqual({ nodes: 0, edges: 0 });
+    await expect(rebuildTraceGraph(pool as never, [backend])).resolves.toMatchObject({ nodes: 0, edges: 0, published: 0, skipped: 1, reasons: ['state_schema_missing'] });
     expect(reads).toBe(0);
   });
   it('keeps identical service names in prod and staging separate', async () => {
