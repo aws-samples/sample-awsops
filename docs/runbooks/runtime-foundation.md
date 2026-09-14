@@ -36,6 +36,13 @@ Host-only removes only collector AssumeRole; Agent MCP grants remain. IAM includ
 S3 steady denials remain unknown: rows carry `attributes_unknown`, the ledger increments `unknown_attribute_count`, and freshness is `degraded`; full readiness rejects that incomplete evidence.
 The digest/host-preflight profile is dev-only. Preview retains operator-configured mutable tags or digests and multi-account scope, without dev host verification; account/role and private-DNS ownership checks still apply.
 
+## Collector catalog prerequisite
+
+Deploy the collector's read-only `type=catalog` mode before enabling the full-release
+controller. It returns the registered type names without collecting resources or
+scheduling work. Catalog acknowledgement alone never proves collection completeness;
+the controller must still check fresh complete results for every returned type.
+
 ## Readiness capability
 
 Saved-plan JSON can retain CLI Boolean inputs as the exact strings `true`/`false`,

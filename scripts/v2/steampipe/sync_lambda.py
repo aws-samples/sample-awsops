@@ -1678,6 +1678,8 @@ def lambda_handler(event, ctx):
     remaining_ms = getattr(ctx, "get_remaining_time_in_millis", lambda: None)()
     _DEADLINE = (time.monotonic() + remaining_ms / 1000.0) if remaining_ms else None
     rtype = (event or {}).get("type", "all")
+    if rtype == "catalog":
+        return {"status": "catalog", "types": list(QUERIES) + list(SDK_SYNCS)}
     if rtype == "all":
         types = list(QUERIES) + list(SDK_SYNCS)
         queued_types = []
