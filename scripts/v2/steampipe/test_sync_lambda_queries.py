@@ -352,6 +352,60 @@ def test_every_terminal_finalizer_uses_run_token_compare_and_set(
     assert params["run_token"] == run_token
 
 
+@pytest.mark.parametrize("mode", ["steampipe", "sdk", "sdk_partial"])
+def test_duplicate_collector_rows_use_persisted_identity_counts(mode, capsys, monkeypatch):
+    mod = load_sync_lambda()
+    mod._ACCOUNT_CACHE["id"] = "111111111111"
+    rows = [
+        {"id": "i-one", "account_id": "111111111111", "region": "r-one", "value": "old"},
+        {"id": "i-one", "account_id": "111111111111", "region": "r-one", "value": "last"},
+        {"id": "i-one", "account_id": "111111111111", "region": "r-two", "value": "region"},
+        {"id": "i-one", "account_id": "222222222222", "region": "r-one", "value": "member"},
+    ]
+    persisted, finalized, snapshots = {}, [], []
+
+    class Aurora:
+        def run(self, sql, **params):
+            if "pg_try_advisory_lock" in sql:
+                return [(True,)]
+            if sql.startswith("INSERT INTO inventory_resources"):
+                assert "ON CONFLICT (resource_type, account_id, region, resource_id)" in sql
+                persisted[(params["acct"], params["rg"], params["id"])] = json.loads(params["d"])
+            if "SELECT account_id, region, resource_id" in sql:
+                return list(persisted)
+            if "RETURNING 1" in sql:
+                finalized.append(params)
+                return [(1,)]
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mod, "_aurora", Aurora)
+    monkeypatch.setattr(mod, "_enabled_target_accounts", lambda _db: [])
+    monkeypatch.setattr(mod, "_write_snapshot_row", lambda _db, account, typ, count: snapshots.append((account, count)))
+    mod._ALLOWED.add("duplicate_test")
+    if mode == "steampipe":
+        mod.QUERIES["duplicate_test"] = ("SELECT fixture", "id", "region")
+        columns = list(rows[0])
+        monkeypatch.setattr(mod, "_run_steampipe_query", lambda *_args: (
+            [[row[key] for key in columns] for row in rows], columns, False))
+    else:
+        mod.SDK_SYNCS["duplicate_test"] = lambda: (rows, "id", "region", {
+            "failure_count": int(mode == "sdk_partial"),
+            "failure_types": ["ClientError:AccessDenied"] if mode == "sdk_partial" else [],
+        })
+    result = mod.sync("duplicate_test")
+    assert result["status"] == ("partial" if mode == "sdk_partial" else "succeeded")
+    assert len(persisted) == 3
+    assert persisted[("self", "r-one", "i-one")]["value"] == "last"
+    assert result["row_count"] == finalized[-1]["n"] == len(persisted)
+    terminal = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+                if '"inventory_sync_complete"' in line]
+    assert terminal[-1]["row_count"] == len(persisted)
+    assert sorted(snapshots) == ([] if mode == "sdk_partial" else [("222222222222", 1), ("self", 2)])
+
+
 def test_sync_success_logs_one_terminal_record_with_row_count(capsys, monkeypatch):
     """Omitting or duplicating a successful terminal log loses sync outcome observability."""
     mod = load_sync_lambda()
