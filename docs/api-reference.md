@@ -179,7 +179,7 @@ application, without guaranteeing cancellation of a server query already started
 | `/api/datasources/[id]/cards` | GET | 사전 생성 대시보드 카드 조회 (read-only, auth) | verifyUser |
 | `/api/datasources/[id]/default` | POST | kind별 기본 인스턴스 지정 — 트랜잭션으로 기존 기본 해제 (admin) | verifyUser |
 | `/api/datasources/[id]/diag-signals` | GET | 사전 정의 진단 시그널 — Explore 칩 (DB read only, egress 없음). kind 범위: prometheus/mimir/loki 는 결정론 카탈로그, clickhouse 는 결정론 엔트리가 없어 폴백 전용. tempo 는 `tags_or_services` matcher 가 introspect 된 어떤 스키마에도 매칭되어 항상 ready 이므로 폴백에 도달하지 않는다. **LLM 폴백(`diag_signal_querygen_enabled`)은 clickhouse 전용이 아니다** — ready 0행인 *모든* 배선 kind 에서 발동하므로 라벨 미탐지로 0행이 된 loki 인스턴스의 칩에도 `provenance='generated'` 가 섞일 수 있다(리뷰 MAJOR-9). 생성 행은 칩 전용 — 리포트 경로 제외, 플래그 OFF 면 read 에서도 제외. jaeger/dynatrace/datadog 는 아직 배선 없음(빈 응답) | verifyUser |
-| `/api/db` | GET | Aurora ping — public 테이블 카운트, `AURORA_ENDPOINT` 미설정 시 503 | CloudFront Edge 인증; BFF `verifyUser()` 생략(ADR-002 §2-4) |
+| `/api/db` | GET | Aurora ping — success returns `status: "ok"`, `public_tables` and UTC ISO `server_time` from the same table-count/`clock_timestamp()` SELECT; unset `AURORA_ENDPOINT` remains 503 and database errors remain generic 500 responses | CloudFront edge authentication; BFF `verifyUser()` omitted (ADR-002 §2-4) |
 | `/api/diagnosis` | GET, POST | AI 종합진단 리포트 목록/생성 — worker enqueue + 멱등키 | verifyUser |
 | `/api/diagnosis/intent` | GET, POST | Plan-2 Intent Engine — `architecture_intent` 조회(auth) + 쓰기(admin) | verifyUser |
 | `/api/diagnosis/schedule` | GET, PUT | 사용자별 자동 진단 스케줄 — row read/write만 (실행은 worker `schedule_dispatcher`) | verifyUser |

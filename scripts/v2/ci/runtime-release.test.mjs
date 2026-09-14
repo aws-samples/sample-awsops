@@ -1,5 +1,5 @@
 import { test } from 'node:test';
-import { SmokeError } from '../authenticated-smoke.mjs';
+import { SmokeError, authenticatedSmoke } from '../authenticated-smoke.mjs';
 import { verifyRuntimeSmoke } from '../runtime-smoke.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -820,3 +820,91 @@ test('dispatcher denial does not repeat and confirmed throttling has a hard admi
     assert.ok(code === 'aws_throttled' ? calls > 1 && calls <= 45 : calls === 1);
   });
 });
+
+for (const skew of [-5000, 5000]) test(`real authenticated smoke composes DB clock and full release with skew ${skew}`,
+  async () => withFixture(async f => {
+    let raw = Date.parse('2026-09-14T12:00:00.000Z'), marker, configReads = 0;
+    const events = [], runs = [], jobs = [], phases = [];
+    const runCurl = async (command, args, options) => {
+      assert.equal(command, 'curl');
+      assert.ok(!JSON.stringify({ args, env: options.env }).includes('FIXTURE_PASSWORD'));
+      const path = new URL(args.at(-1)).pathname;
+      const output = args[args.indexOf('--output') + 1];
+      const body = args.includes('--data-binary')
+        ? JSON.parse(readFileSync(args[args.indexOf('--data-binary') + 1].slice(1), 'utf8')) : {};
+      events.push(path);
+      let response, status = '200';
+      if (path === '/api/auth/login') {
+        assert.equal(body.password, 'FIXTURE_PASSWORD');
+        writeFileSync(args[args.indexOf('--cookie-jar') + 1],
+          '#HttpOnly_dev.example.com\tFALSE\t/\tTRUE\t0\tawsops_token\tFIXTURE_COOKIE\n');
+        response = { ok: true };
+      } else if (path === '/api/db') {
+        const server_time = new Date(raw + skew).toISOString();
+        marker ??= server_time;
+        response = { status: 'ok', public_tables: 42, server_time };
+      } else if (path === '/api/accounts') {
+        response = { accounts: [{ accountId: account, isHost: true, enabled: true }] };
+      } else if (path === '/api/inventory/summary') {
+        response = { collection: { configured: true, readOk: true, runs } };
+      } else if (path === '/api/inventory/cloudfront') {
+        response = { rows: [{ resource_id: 'E123EXAMPLE', account_id: 'self',
+          captured_at: runs[0].started_at, data: { id: 'E123EXAMPLE' } }] };
+      } else if (path === '/api/deployment/readiness') {
+        assert.equal(configReads, 2);
+        response = { schemaVersion: 1, nonce: body.nonce, accountId: account, status: 'ready', reason: 'ok',
+          webIdentity: true, parameters: { runtime_arn: 'ready', interpreter_id: 'ready', memory_id: 'ready' },
+          agent: { schemaVersion: 1, mode: 'deployment_readiness', nonce: body.nonce, accountId: account,
+            status: 'ready', reason: 'ok', inventory: { count: 1, ageMinutes: 0 },
+            checks: { identity: true, inventorySummary: true, inventoryQuery: true,
+              knownResource: true, freshInventory: true, model: true } } };
+      } else if (path === '/api/jobs') {
+        const job_id = `${jobs.length ? '22222222' : '11111111'}-1111-4111-8111-111111111111`;
+        jobs.push({ job_id, type: body.type, runtime: body.type === 'noop' ? 'lambda' : 'fargate',
+          status: 'succeeded', dry_run: body.dry_run, result: { ok: true } });
+        response = { job_id, status: 'queued' }; status = '202';
+      } else {
+        response = jobs.find(job => path === `/api/jobs/${job.job_id}`);
+        assert.ok(response, 'Only the two owned worker status routes may follow enqueue');
+      }
+      raw += 10;
+      assert.equal(statSync(output).mode & 0o777, 0o600);
+      writeFileSync(output, JSON.stringify(response));
+      return { stdout: status };
+    };
+    const result = await release(deployment(), { env: f.env, now: () => raw,
+      run: async (cmd, args, options) => {
+        if (args[0] === 'lambda' && args[1] === 'get-function-configuration') configReads++;
+        if (args[0] === 'lambda' && args[1] === 'invoke') {
+          const { type } = JSON.parse(args[args.indexOf('--payload') + 1]);
+          events.push(type);
+          if (type !== 'catalog') {
+            assert.deepEqual(phases, ['prepare']);
+            const timestamp = new Date(raw + skew).toISOString();
+            assert.ok(Date.parse(timestamp) >= Date.parse(marker));
+            runs.push({ type, accountId: 'self', status: 'succeeded', row_count: 1,
+              started_at: timestamp, last_success_at: timestamp,
+              unknown_attribute_count: 0, unknown_attributes: false });
+          }
+        }
+        return f.run(cmd, args, options);
+      },
+      authenticate: (input, options) => {
+        phases.push(input.runtimeConfig.mode);
+        if (input.runtimeConfig.mode === 'verify') {
+          assert.equal(input.runtimeConfig.collectionStartedAt, marker);
+          assert.equal(options.now(), raw + skew);
+        }
+        return authenticatedSmoke(input, { ...options, runCurl });
+      },
+    });
+    assert.equal(result.status, 'full_verified');
+    assert.deepEqual(phases, ['prepare', 'verify']);
+    assert.deepEqual(events.slice(0, 4), ['catalog', '/api/auth/login', '/api/db', '/api/accounts']);
+    assert.deepEqual(result.inventory_quality.types.verified, catalog().types);
+    assert.deepEqual(jobs.map(job => [job.type, job.runtime, job.dry_run]),
+      [['noop', 'lambda', false], ['noop-heavy', 'fargate', false]]);
+    assert.equal(result.workers, 2);
+    assert.equal(existsSync(f.directory), false);
+    assert.ok(!JSON.stringify(result).includes('FIXTURE_COOKIE'));
+  }));
