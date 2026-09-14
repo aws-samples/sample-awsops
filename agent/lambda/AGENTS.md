@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: bc9915c2871b · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 70831164f7c4 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -61,3 +61,15 @@ that's the source of truth for tool counts, not this doc.
   live again.
 - The lexical guard missing some SQL construct is not itself a finding as long as the DB role's
   view-only grant boundary holds.
+
+## ENI configuration evidence
+
+`get_eni_details` reports configuration, not connectivity. Missing or malformed `Groups`,
+`IpPermissions`, `IpPermissionsEgress`, `Entries` or `Routes` is partial evidence, with the
+affected resource and field in `unknown`. Actual empty lists remain distinct. Per-group
+completeness includes both rule lists and their peers; preserve other returned evidence.
+
+Require established route-association state and sanitized codes for every component read.
+SG output is bounded to 200 peer rows per group with explicit metadata and 100-character
+descriptions; truncation is partial evidence. Validate the ENI test suite, then deploy
+Lambda, AgentCore prompt and live Gateway catalog through the existing operator flow.
