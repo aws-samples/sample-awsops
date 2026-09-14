@@ -152,7 +152,7 @@ invocation. A lagging provider observation must not reject a matching rollout or
 code changed outside the reviewed configuration. Apply the reviewed configuration to
 persist the output; changing a repository variable or producing a plan is insufficient.
 
-The controller reads the complete catalog from the code-checked inventory Lambda, then invokes only the owned CloudFront collector synchronously. It does not enqueue another all-type sweep or run a stale-terminal batch queue. Ledger rows no longer control RPC retry admission. Only the bounded owned probe is retried; all other catalog types still require fresh successful evidence from the existing scheduled collector.
+The controller reads the complete catalog from the code-checked inventory Lambda, then invokes only the owned CloudFront collector synchronously. It does not enqueue another all-type sweep or run a stale-terminal batch queue. Ledger rows do not control owned Lambda RPC retry admission. Only the bounded owned Lambda probe is retried; all other catalog types still require fresh successful evidence from the existing scheduled collector.
 
 Catalog admission has a 450-second budget and retries only confirmed Lambda throttling. The CloudFront probe has a 900-second budget; each invocation needs at least 450 seconds remaining for the verified function timeout of at most 420 seconds plus transport overhead. Confirmed throttling, `busy`, and the producer's exact superseded result wait ten seconds before another bounded attempt. Denied, uncertain-delivery, partial, failed, and invalid-protocol outcomes fail distinctly. A successful RPC alone is not readiness proof.
 
@@ -162,6 +162,14 @@ a valid row count and zero unknown attributes. The known record must be captured
 marker. The AgentCore probe separately requires that exact record and the producer's configured
 freshness policy. Capture this actual runtime/known-record proof before the longer catalog wait;
 failures while obtaining it still block. Neither an old known record nor a successful RPC alone passes.
+
+Release mode permits one additional readiness POST only after a valid, nonce/account-bound
+`inventory_incomplete` response and a fresh ledger read confirming a later CloudFront attempt
+is running with durable success after the marker. It waits 60 seconds after the failed response,
+uses a new nonce, and still requires the complete AgentCore proof. A second such failure with
+freshly confirmed running contention reports `runtime_inventory_contention`; there is no third
+POST. Auth, model, protocol, stale inventory and unverified/partial/failed ledger evidence do not
+qualify. Standalone strict smoke is unchanged.
 
 The later catalog read requires durable CloudFront `last_success_at` at or after the marker.
 Its singleton ledger row may now describe a newer scheduled attempt: running/partial/failed

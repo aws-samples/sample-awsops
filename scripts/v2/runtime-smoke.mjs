@@ -60,6 +60,7 @@ const failureReasons = new Set(['configuration_invalid', 'disabled', 'identity_f
   'tools_unavailable', 'inventory_unavailable', 'inventory_incomplete', 'inventory_stale', 'known_resource_missing', 'known_resource_unverified', 'model_failed', 'timeout']);
 const parameterKeys = ['runtime_arn', 'interpreter_id', 'memory_id'];
 const parameterStates = new Set(['uninspected', 'ready', 'disabled', 'pending', 'missing', 'denied', 'invalid', 'unavailable']);
+const checkNames = ['identity', 'inventorySummary', 'inventoryQuery', 'knownResource', 'freshInventory', 'model'];
 function readinessFailure(value, nonce, account) {
   if (value?.schemaVersion !== 1 || value.nonce !== nonce || value.accountId !== account
       || value.status !== 'not_ready' || !failureReasons.has(value.reason)) return 'runtime_protocol';
@@ -69,6 +70,26 @@ function readinessFailure(value, nonce, account) {
   const failed = parameterKeys.filter(k => value.parameters[k] !== 'ready');
   if (!failed.length) return 'runtime_protocol';
   return `runtime_parameters_not_ready(${failed.map(k => `${k}=${value.parameters[k]}`).join(',')})`;
+}
+
+function inventoryContentionCandidate(response, nonce, account) {
+  const value = response?.body, agent = value?.agent;
+  // This is the producer's pre-freshness inventory failure, not a substitute for
+  // its proof. Staleness, missing identity, auth, model and protocol errors stay fatal.
+  return response?.httpStatus === 503
+    && exact(value, ['schemaVersion', 'nonce', 'accountId', 'status', 'reason', 'webIdentity', 'parameters', 'agent'])
+    && readinessFailure(value, nonce, account) === 'runtime_inventory_incomplete'
+    && value.webIdentity === true && exact(value.parameters, parameterKeys)
+    && Object.values(value.parameters).every(v => v === 'ready')
+    && exact(agent, ['schemaVersion', 'mode', 'nonce', 'accountId', 'status', 'reason', 'checks', 'inventory'])
+    && agent.schemaVersion === 1 && agent.mode === 'deployment_readiness'
+    && agent.nonce === nonce && agent.accountId === account
+    && agent.status === 'not_ready' && agent.reason === 'inventory_incomplete'
+    && exact(agent.checks, checkNames)
+    && ['identity', 'inventorySummary', 'inventoryQuery'].every(k => agent.checks[k] === true)
+    && ['knownResource', 'freshInventory', 'model'].every(k => agent.checks[k] === false)
+    && exact(agent.inventory, ['count', 'ageMinutes'])
+    && agent.inventory.count === 1 && agent.inventory.ageMinutes === null;
 }
 
 export async function verifyRuntimeSmoke(configuration, request, {
@@ -158,18 +179,40 @@ export async function verifyRuntimeSmoke(configuration, request, {
     if (page.rows.length < 5) break;
   }
   if (!found) fail('inventory_known_resource_unverified');
-  const nonce = randomBytes(24).toString('hex');
-  const response = await request('/api/deployment/readiness', {
-    method: 'POST', timeout: 80_000, status: ['200', '503'], withStatus: true, body: {
-    nonce, expectedAccountId: config.expectedAccountId, expectedCloudfrontId: config.expectedCloudfrontId,
-  } });
-  const runtime = response?.body;
-  if (response?.httpStatus === 503 || runtime?.status === 'not_ready') {
-    fail(readinessFailure(runtime, nonce, config.expectedAccountId));
+  const runningContention = async () => {
+    const summary = await request('/api/inventory/summary?accounts=self&view=collection', { timeout: 20_000 });
+    const c = summary?.collection;
+    if (!object(c) || c.scope !== 'aggregate' || c.configured !== true || c.readOk !== true
+        || !Array.isArray(c.runs)) return false;
+    const rows = c.runs.filter(r => r?.type === 'cloudfront' && r.accountId === 'self');
+    if (rows.length !== 1) return false;
+    const row = rows[0], observed = now();
+    // The release controller already proved its synchronous CloudFront run.
+    // Only a later active attempt may explain this race; old/owned failures cannot.
+    return row.status === 'running' && row.finished_at === null && row.row_count === null
+      && row.unknown_attribute_count === null && row.unknown_attributes === null
+      && freshTime(row.last_success_at, started, observed) && freshTime(row.started_at, started, observed)
+      && Date.parse(row.started_at) > Date.parse(row.last_success_at);
+  };
+  let nonce, response;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    nonce = randomBytes(24).toString('hex');
+    response = await request('/api/deployment/readiness', {
+      method: 'POST', timeout: 80_000, status: ['200', '503'], withStatus: true, body: {
+      nonce, expectedAccountId: config.expectedAccountId, expectedCloudfrontId: config.expectedCloudfrontId,
+    } });
+    if (response?.httpStatus !== 503 && response?.body?.status !== 'not_ready') break;
+    const reason = readinessFailure(response?.body, nonce, config.expectedAccountId);
+    if (!releaseWindow || !inventoryContentionCandidate(response, nonce, config.expectedAccountId)
+        || !(await runningContention())) fail(reason);
+    if (attempt === 1) fail('runtime_inventory_contention');
+    // Wait after the completed response, conservatively exceeding the BFF's
+    // 60-second start-based cooldown. There is exactly one retry, with a new nonce.
+    await wait(60_000);
   }
+  const runtime = response?.body;
   if (response?.httpStatus !== 200) fail('runtime_protocol');
   const agent = runtime?.agent;
-  const checkNames = ['identity', 'inventorySummary', 'inventoryQuery', 'knownResource', 'freshInventory', 'model'];
   if (runtime?.schemaVersion !== 1 || runtime.nonce !== nonce || runtime.accountId !== config.expectedAccountId
       || runtime.status !== 'ready' || runtime.reason !== 'ok' || runtime.webIdentity !== true
       || !exact(runtime.parameters, ['runtime_arn', 'interpreter_id', 'memory_id'])
@@ -182,7 +225,8 @@ export async function verifyRuntimeSmoke(configuration, request, {
       || !finiteCount(agent.inventory?.ageMinutes) || agent.inventory.ageMinutes > 1440) fail('runtime_protocol');
 
   // Capture the actual runtime/known-record proof before the long catalog wait.
-  // Runtime failures here still fail; later ledger changes are disclosed below.
+  // Only the fully validated response establishes proof; later ledger changes
+  // are disclosed below and cannot substitute for that response.
   if (releaseWindow) await collect();
   for (const [type, runtimeName] of [['noop', 'lambda'], ['noop-heavy', 'fargate']]) {
     const job = await request('/api/jobs', { method: 'POST', status: '202', body: {
