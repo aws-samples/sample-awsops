@@ -11,7 +11,7 @@
 `.github/workflows/{deploy-web,terraform,deploy-agentcore,deploy-migrations}.yml`,
 `docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
 `scripts/v2/ci_review_access.py`, `scripts/v2/ci_dns_policy.py`, `scripts/v2/ci_plan_context.py`,
-`scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_readiness_plan_summary.py`,
+`scripts/v2/ci_private_plan.py`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_readiness_plan_summary.py`,
 `scripts/v2/test_ci_readiness_plan_summary.py`,
 `scripts/v2/ci_failure_diagnostics.py`,
 `scripts/v2/ci_db_diagnostics.py`, `scripts/v2/test_ci_db_diagnostics.py`,
@@ -372,11 +372,14 @@ situations:
   prefer `admin-disable-user` over delete/recreate — deletion is identity
   loss.
 
-Artifact channels are covered too: public-repository artifacts are publicly accessible and must not protect secrets by access controls alone. The binary plan and rendered assets may contain secrets, so the `tfplan` artifact carries encrypted `tfplan.enc` and `tfassets.enc` only. `TF_PLAN_ENC_KEY` supplies CBC/PBKDF2 encryption, authenticated asset binding, and the separate schema-2 failure-capsule HMAC domain. Rotation invalidates verification without the matching prior key; never put this key in argv or public logs.
+Saved plans and rendered assets can contain credentials. Manual plans use the configured private, versioned SSE-KMS backend bucket under a separate `ci/tfplans/` prefix. The read-only plan job validates/HMAC-packs assets and stages an attempt-specific encrypted handoff for a protected publisher. The publisher uses the existing deployment role with an S3/KMS-only session, verifies/decrypts the handoff and stores pinned plan/assets plus a private manifest. It then replaces the GitHub handoff with a nonsecret reference. No new bucket, key or IAM allow is created by this flow. Automatic PR/push plans retain required asset validation but upload no saved-plan handoff.
+
+`TF_PLAN_ENC_KEY` stays inside CI for the temporary handoff, asset HMAC and existing failure capsules. Operators inspect the S3 plan through IAM/KMS without that client key. Rotation still requires the matching key for historical signed bundles; never put it in argv or logs.
 
 | Channel | Contents and conditions |
 |---|---|
-| `tfplan` | Existing encrypted saved plan/assets; same repository/branch/SHA/run checks and apply gates remain mandatory. |
+| `tfplan-<attempt>` | Initially an encrypted one-day handoff; successful publication overwrites it with only `reference.json` for five days. The reference has source/digest metadata, no bucket/account/ARN/version/private values. |
+| Private S3 | Exact plan and HMAC-authenticated assets, pinned versions/checksums and a private manifest. Existing bucket retention applies; reference expiry does not delete S3 objects or authorize stale apply. |
 | `terraform-failure-<phase>-<attempt>` | One validated ciphertext file for an explicit failed/cancelled dispatch, five-day artifact retention. Local ciphertext is deleted only after confirmed upload success; failed/cancelled/skipped uploads retain it privately. |
 | Job log and step summary | Fixed command/capture/retention classifications, subsequent upload/cleanup status and numeric Terraform success action counts; no raw command output or arbitrary `Error:` text. Advisory PR/push failures are classified but retain no raw log. |
 
@@ -732,22 +735,24 @@ For a fresh stack, also supply the operator's `existing_cf_certificate_arn` and
 `existing_alb_certificate_arn` inputs (or their reviewed stack tfvars); otherwise it stops.
 
 Inspect the completed run, its resource changes and commit. Set `PLAN_RUN_ID` to
-that successful run's numeric ID, then apply its encrypted saved plan:
+that successful run's numeric ID and `REVIEWED_PLAN_SHA256` from the private inspection receipt, then apply:
 
 ```bash
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
-  -f mode=apply -f plan_run_id="$PLAN_RUN_ID" -f allow_dns_changes=false
+  -f mode=apply -f plan_run_id="$PLAN_RUN_ID" -f allow_dns_changes=false \
+  -f reviewed_plan_sha256="$REVIEWED_PLAN_SHA256"
 ```
 
 Apply accepts only a successful explicit Terraform plan dispatch from the same
 repository, stack branch and commit. It checks the live branch again and
-rechecks DNS changes after decrypting the plan. A moved branch requires a fresh
+rechecks DNS changes after restoring the privately reviewed plan. A moved branch requires a fresh
 plan. `plan_scope=ecr-bootstrap`, with `domain_rollout=false`, is available for an initial plan limited to the
 web ECR repository; the JSON gate also rejects unrelated mutations in that scope.
 Dev `plan_scope=runtime-ecr-bootstrap` targets only three runtime repositories; it needs no
-images yet. Repeat the same scope on apply. Saved plans now require both encrypted `tfplan.enc`
-and `tfassets.enc`, with asset hashes bound to that plan/SHA/scope. Old or missing bundles require
-a fresh reviewed plan; never rebuild assets during apply.
+images yet. Repeat the same scope on apply. Private publication authenticates both encrypted
+handoff files; apply downloads the pinned S3 plan/assets and verifies the reviewed hash plus
+HMAC plan/SHA/scope binding. Old or missing bundles require a fresh reviewed plan; never
+rebuild assets during apply.
 It needs no certificates unless external ARNs are explicitly configured.
 Apply a full reviewed plan before rolling the service.
 
@@ -782,9 +787,10 @@ the new-domain rollout does not authorize it. Follow ADR-016 for alias transfer/
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
   -f mode=plan -f plan_scope=full -f domain_rollout=true \
   -f publish_service_dns=true -f allow_dns_changes=true
-# After review, set PLAN_RUN_ID to that successful same-SHA plan dispatch.
+# After private inspection, set PLAN_RUN_ID and REVIEWED_PLAN_SHA256 from its receipt.
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
-  -f mode=apply -f plan_scope=full -f plan_run_id="$PLAN_RUN_ID" -f allow_dns_changes=true
+  -f mode=apply -f plan_scope=full -f plan_run_id="$PLAN_RUN_ID" -f allow_dns_changes=true \
+  -f reviewed_plan_sha256="$REVIEWED_PLAN_SHA256"
 ```
 
 External certificate owners must monitor expiry and renew/reimport ahead of time.
@@ -844,36 +850,76 @@ preserved; ARNs, credentials, endpoints and raw SDK errors are not relayed.
 
 ## Private exact-plan inspection
 
-These inspection and recovery procedures support main, dev and supported user branches.
-They do not authorize dev-only domain-rollout stages on another branch.
+These procedures support main, dev and the supported user branches without changing
+which domain-rollout stages are authorized. Wait for the entire manual plan run,
+including **Publish private plan**, to succeed. Its safe reference binds repository,
+branch, full SHA, run/attempt, scope and private object hashes. A failed/skipped publisher,
+missing/expired reference, changed bytes or moved branch never authorizes apply.
+The encrypted handoff lasts one day. If a protected publication is delayed beyond that
+window, or a publisher-only rerun has no handoff for its new attempt, dispatch a fresh
+complete plan and inspect its new reference. Do not relax attempts, expiry or source checks.
 
-Use a trusted checkout at the plan's full commit SHA and its already installed Terraform
-provider schemas (`terraform/foundation/.terraform`). Authenticate `gh` normally and make
-the existing `TF_PLAN_ENC_KEY` available through the approved private secret mechanism.
-Never put the key in command arguments, source, shell history or public logs.
+Use a trusted checkout at the plan's full SHA with Terraform 1.15.7 provider schemas
+already installed. Authenticate `gh` and the intended AWS profile. No client encryption
+key is required for this S3 inspection:
+
+```bash
+python3 scripts/v2/ci_private_plan.py inspect \
+  --repository aws-samples/sample-awsops --branch dev \
+  --commit "$PLAN_SHA" --run-id "$PLAN_RUN_ID" --scope full --profile samples \
+  --foundation /private/checkout/terraform/foundation \
+  --destination /private/review/new-plan-directory
+```
+
+The inspector validates the completed source run, publisher and exact attempt's reference
+before fetching private S3 data. An optional `--backend /private/backend.hcl` supplies the
+store; otherwise bounded owned-bucket metadata discovery matches the reference's bucket
+hash. This reads no Terraform state. The store must be same-account, private, versioned
+and SSE-KMS encrypted. No public or presigned access link is used.
+
+The helper writes `plan.txt`, `plan.json` and `receipt.json` in a **new 0700 directory**, with
+0600 files. Plan contents may include passwords or signing material: inspect them privately.
+Rendering is bounded to 32 MiB per file and receives no deployment credentials, backend
+initialization or Terraform debug/argument overrides. Inspection downloads only the plan;
+asset HMAC verification remains mandatory inside publication and apply. The helper never
+refreshes, re-plans, approves or applies, and rejects execution inside GitHub Actions.
+
+After reviewing the complete plan, take `plan_sha256` from its private receipt and pass it
+as `REVIEWED_PLAN_SHA256`. The apply input is required even when all summary checks passed:
+
+```bash
+REVIEWED_PLAN_SHA256=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plan_sha256"])' /private/review/new-plan-directory/receipt.json)
+gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
+  -f mode=apply -f plan_scope=full -f plan_run_id="$PLAN_RUN_ID" \
+  -f reviewed_plan_sha256="$REVIEWED_PLAN_SHA256"
+```
+
+Repeat the plan's DNS permission/scope when applicable; the command above grants neither
+new DNS changes nor a different plan. Apply authenticates the reference, pinned versions,
+reviewed hash and existing HMAC/plan/asset binding before the original host, DNS/runtime and
+branch checks and `terraform apply -input=false tfplan`. It never re-plans. A newer attempt
+or changed plan requires a fresh private inspection. Reference lifetime is five days;
+private S3 copies follow the existing bucket policy and are not claimed to expire with it.
+
+Wrong context, unsafe paths, missing schemas, oversized/tampered data or failed cleanup
+produce fixed errors without printing private contents. Only owned scratch is cleaned;
+runner/process loss can prevent finalizers. No public summary is full-plan approval.
+
+### Legacy encrypted-artifact inspection
+
+`ci_plan_inspect.py` remains available only for historical runs that published the old
+`tfplan` encrypted artifact. It requires that source checkout and matching client key,
+authenticates the run plus HMAC-bound plan/assets before protected rendering, and retains
+its existing 32 MiB and path/cleanup guards. The current S3 apply path does not fall back
+to legacy artifacts. This historical helper never makes an old plan apply-eligible:
 
 ```bash
 python3 scripts/v2/ci_plan_inspect.py \
   --repository aws-samples/sample-awsops --branch dev \
   --commit "$PLAN_SHA" --run-id "$PLAN_RUN_ID" --scope full \
   --foundation /private/checkout/terraform/foundation \
-  --destination /private/review/new-plan-directory
+  --destination /private/review/new-legacy-plan-directory
 ```
-
-The helper reads authenticated GitHub metadata and downloads `tfplan` from that run.
-It requires a successful explicit plan dispatch from the same repository, branch and
-SHA, verifies the checkout, decrypts both existing artifacts, and calls the existing
-HMAC/plan/asset verifier **before** `terraform show`. It writes only `plan.txt` and
-`plan.json` into a new 0700 directory, with 0600 files. Read these privately; they can
-contain passwords or rendered signing material. It never initializes a backend,
-refreshes, plans, approves or applies. Its GitHub Actions environment refusal is an accident guard for trusted operators, not an authorization boundary.
-Historical inspection does not make a plan apply-eligible; all current apply gates still run.
-
-Wrong context/key, missing or altered artifacts, unsafe/existing output paths, unavailable
-provider schemas and oversized output fail closed without printing plan/error contents.
-Inputs are bounded; each rendered file is capped at 32 MiB. Only the new review directory
-is retained after success; cleanup removes owned decrypted scratch on handled failures.
-Cleanup errors are reported without raw paths; inspect any owned residue privately.
 
 ## Encrypted failure recovery
 

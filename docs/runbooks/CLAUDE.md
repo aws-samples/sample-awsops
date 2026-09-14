@@ -32,7 +32,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
-- Private saved-plan inspection authenticates run/checkout/assets before 32 MiB-bounded rendering; it never authorizes apply.
+- Private S3 inspection authenticates source/run/reference, manifest, pinned plan and hashes before bounded local rendering; it never authorizes apply. Asset HMAC is checked inside CI publication/apply, not by the keyless operator renderer.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.
 - Linux capture forwards the first interrupt, kills the child group on a second, and arms parent-death SIGKILL before exec; cancellation is not infrastructure rollback.
 - Plan/apply capture drains a 1 MiB tail in memory, preserving the command exit independently of scratch writes. Fixed audits include capture/retention classes and available numeric success action counts; no raw automatic-run diagnostics.
@@ -49,8 +49,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   `TF_PLAN_ENC_KEY` HMAC. Both pack/restore APIs allow only push/pull_request/workflow_dispatch
   in GitHub, or explicit local commits without an event; other events fail before work.
   Targeted plans omit untargeted Lambda resources from planned_values; preserve the ZIP check.
-  The 0600 tarball can contain signing keys. The integrating workflow must encrypt it before
-  upload and clean its own plaintext/staging; Terraform plan/apply now wire pack/restore.
+  The 0600 tarball can contain signing keys. Use encrypted GitHub handoff and private SSE-KMS
+  storage; clean owned plaintext/staging. CI publication/apply preserve pack/restore checks.
   `CI_ASSETS_READY=true` makes layer provisioners validate restored files without reinstalling.
   See `scripts/v2/ci/pg8000-requirements.txt`, `scripts/v2/test_ci_tf_assets.py` and
   `docs/reference/06-workers.md`. Old signed bundles require their matching prior key after rotation.
@@ -185,3 +185,11 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 2. Use an existing runbook's structure as a template (`start-services.md`, `deploy-new-version.md`).
 3. Follow the symptoms → diagnosis → action order strictly.
 4. Always include the related file paths.
+
+Private plan storage uses the existing backend bucket in a separate ci/tfplans prefix,
+with private/versioned/SSE-KMS checks and no new IAM allow or bucket configuration.
+Manual publication is required through the existing protected deployer and a scoped storage
+session; automatic plans publish no handoff. A successful attempt replaces its one-day
+ciphertext with a five-day nonsecret reference. Operators inspect through AWS profiles;
+apply requires reviewed_plan_sha256 and all original checks. S3 retention is not inferred
+from reference expiry. Public summaries remain advisory, never full-plan approval.

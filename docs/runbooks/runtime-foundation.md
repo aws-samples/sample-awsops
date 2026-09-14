@@ -45,6 +45,8 @@ the controller must still check fresh complete results for every returned type.
 
 ## Readiness capability
 
+Review the entire saved plan through [private S3 inspection](dev-repo-setup.md#private-exact-plan-inspection) and pass its verified hash to apply. The bounded summary below is advisory for this rollout.
+
 After the existing runtime/DNS checks, a manual full dev plan with
 `CI_READINESS_ENABLED_DEV=true` publishes an advisory `bounded_readiness_rollout`
 summary without raw plan values. It recognizes only

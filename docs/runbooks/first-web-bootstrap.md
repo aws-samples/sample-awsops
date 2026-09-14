@@ -134,16 +134,17 @@ gh run list -R aws-samples/sample-awsops --workflow terraform.yml --branch dev -
 Identify the successful plan dispatch at the reviewed commit. Inspect its exact
 saved plan through [private plan inspection](dev-repo-setup.md); only
 `aws_ecr_repository.web` may change. Set `BOOTSTRAP_PLAN_RUN_ID` to that run's
-numeric ID, then have the authorized controller apply:
+numeric ID and `REVIEWED_PLAN_SHA256` to the private inspection receipt hash, then have the authorized controller apply:
 
 ```bash
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
   -f mode=apply -f plan_scope=ecr-bootstrap \
-  -f plan_run_id="$BOOTSTRAP_PLAN_RUN_ID" -f allow_dns_changes=false
+  -f plan_run_id="$BOOTSTRAP_PLAN_RUN_ID" -f allow_dns_changes=false \
+  -f reviewed_plan_sha256="$REVIEWED_PLAN_SHA256"
 ```
 
 Wait for successful apply. Every apply in this procedure consumes the reviewed
-saved plan and its authenticated encrypted assets at the same branch/SHA.
+private S3 saved plan and its HMAC-authenticated assets at the same branch/SHA, with the reviewed hash.
 PR/push advisory plans are not eligible. If the branch or intended inputs change,
 create and review a fresh plan. Never use `-auto-approve` or rebuild plan assets
 during apply.
@@ -183,12 +184,13 @@ Review the entire base, including networking, Aurora, Cognito, ECR Public,
 certificates and the web task/service. Confirm the runtime flags remain off,
 the web image matches the pushed tag, and no service A alias is created or
 retired. DNS changes must be limited to the expressly authorized owners.
-Set `BOOTSTRAP_PLAN_RUN_ID` to this new successful plan, then apply it:
+Set `BOOTSTRAP_PLAN_RUN_ID` and `REVIEWED_PLAN_SHA256` from this new plan's private inspection receipt, then apply it:
 
 ```bash
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
   -f mode=apply -f plan_scope=full \
-  -f plan_run_id="$BOOTSTRAP_PLAN_RUN_ID" -f allow_dns_changes=true
+  -f plan_run_id="$BOOTSTRAP_PLAN_RUN_ID" -f allow_dns_changes=true \
+  -f reviewed_plan_sha256="$REVIEWED_PLAN_SHA256"
 ```
 
 After successful apply, inspect `cf_vpc_origin_sg_present`. If the first plan ran

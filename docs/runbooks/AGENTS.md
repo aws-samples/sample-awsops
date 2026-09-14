@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e61dd05102d0 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 91ab6b8d42ac · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -16,7 +16,7 @@ legacy runbook's steps as the current operational path).
   The combined 256-row view is not approval or resource-presence proof; unknown changes require
   private inspection. Membership checks include the existing/planned group's lack of an IAM role.
   Reporting cannot weaken DNS/runtime/exact-plan gates or block later encrypted artifacts.
-- Private saved-plan inspection authenticates run/checkout/assets before 32 MiB-bounded rendering; it never authorizes apply.
+- Private S3 plan inspection validates source/reference, manifest, version and hash before bounded local rendering; CI alone verifies asset HMAC. Inspection never authorizes apply.
 - Branch-independent artifact inspection/recovery lives in `dev-repo-setup.md`; domain rollout remains dev-only. Linux capture forwards the first interrupt, kills the child group on a second and arms parent-death SIGKILL; cancellation is not rollback.
 - Plan/apply capture drains a 1 MiB tail in memory, preserving the command exit independently of scratch writes. Fixed audits include capture/retention classes and available numeric success action counts; no raw automatic-run diagnostics.
 - Only an owned single ciphertext file can be uploaded for dispatch failure/cancellation, under an attempt-specific name. Schema-2 failure HMAC uses a separate domain; recovery authenticates the original attempt. Keep AWS_SESSION_TOKEN while removing GitHub channels/tokens, encryption keys, TF_LOG* and TF_CLI_ARGS* from Terraform child environments.
@@ -31,8 +31,8 @@ legacy runbook's steps as the current operational path).
   untargeted Lambdas are absent from targeted planned_values. TF_PLAN_ENC_KEY HMAC binds plan/SHA/scope and
   file paths/modes/hashes. Both APIs permit push/pull_request/workflow_dispatch, or explicit
   local commits without an event. Old signed bundles require their matching prior key after rotation.
-  The 0600 archive may contain signing keys; integrating callers must encrypt before upload
-  and clean their plaintext/staging. Terraform plan/apply now wire pack/restore.
+  The 0600 archive may contain signing keys; use encrypted GitHub handoff or private SSE-KMS
+  storage and clean owned plaintext/staging. Terraform plan/apply now wire pack/restore.
   CI_ASSETS_READY=true validates restored layers without reinstalling. See
   `scripts/v2/ci/pg8000-requirements.txt`, `scripts/v2/test_ci_tf_assets.py` and
   `docs/reference/06-workers.md`.
@@ -151,3 +151,10 @@ legacy runbook's steps as the current operational path).
   the prepared credential directory and always-cleanup; expose only phases/validated HTTP status,
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
 - Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
+
+Private S3 plans use ci_private_plan.py and the existing protected deployer restricted to
+storage operations. No new IAM/bucket configuration is granted. Validate source/attempt,
+reference/manifest, pinned versions and hashes. Operator inspection needs IAM/KMS, no CI key;
+CI restore still requires asset HMAC and reviewed_plan_sha256 before original apply gates.
+Only manual plans publish; successful publication replaces ciphertext with a safe reference.
+Reference expiry is not S3 object deletion. Public summaries never replace private review.

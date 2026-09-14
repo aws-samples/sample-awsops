@@ -6,7 +6,15 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
-- `v2/ci_plan_inspect.py` verifies authenticated successful plan-run identity, checkout SHA
+- `v2/ci_private_plan.py` provides policy/publish/restore/inspect for private saved plans.
+  The read-only plan job keeps asset validation and stages manual attempt-specific ciphertext.
+  A protected publisher uses the existing deployer with an S3/KMS-only session, verifies
+  the HMAC bundle, stores pinned objects/private manifest and replaces the GitHub artifact
+  with a nonsecret reference. Operators use IAM/KMS, not the CI key; apply still verifies
+  asset HMAC plus reviewed_plan_sha256, exact source/attempt/scope and existing gates.
+  Local-only inspection reads the plan into new0700/0600 files; bounded bucket-hash discovery
+  reads no state. References last five days; S3 objects follow existing bucket retention.
+- `v2/ci_plan_inspect.py` is the legacy encrypted-artifact inspector: it verifies plan-run identity, checkout SHA
   and the existing signed plan/assets before local private rendering. No backend init/apply;
   new 0700 destination with 0600 bounded outputs. It refuses execution inside Actions.
 - `v2/ci_failure_diagnostics.py` drains bounded output in memory until Terraform exits; no scratch-write error may kill apply or replace its result. Linux supervision forwards one graceful interrupt, escalates a second, and kills Terraform if its capture parent dies. Retain the last 1 MiB and signed total/capture status. No success/advisory raw log is written.
@@ -32,7 +40,7 @@ secrets-manager) — installed by `make deps`.
   local callers supply an explicit commit without a GitHub event. Other events fail before work.
   Pack/restore require `TF_PLAN_ENC_KEY` for HMAC authentication. The 0600 plaintext tarball is
   private scratch and may contain rendered secrets; this utility cannot upload it. Callers must
-  encrypt before publication and clean plaintext files afterward.
+  encrypt for GitHub handoff or use private SSE-KMS storage, and clean plaintext files afterward.
   `v2/ci/pg8000-requirements.txt` is the single layer-install lock. Both Terraform paths call
   build-layer, or check-layer when CI_ASSETS_READY=true; lock/script changes trigger rebuilding.
   Prepare invalidates old markers and removes stale regular ZIPs before building; it rejects

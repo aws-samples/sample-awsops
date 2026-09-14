@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f8b72349a6b4 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f082a1440081 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -15,7 +15,7 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   private inspection. Membership checks include the existing/planned group's lack of an IAM role.
   Reporting cannot weaken DNS/runtime/exact-plan gates or block later encrypted artifacts.
 - `CI_READINESS_ENABLED_DEV` is separate from the runtime profile: true/false explicitly overrides readiness on dev, while empty/unset preserves operator tfvars/default false. Public CI rejects enabled readiness elsewhere. The applied group requires AgentCore, and automatic membership requires the managed demo; no admin/IAM grant.
-- `v2/ci_plan_inspect.py` is local-only: authenticate successful plan-run context, checkout
+- `v2/ci_plan_inspect.py` is the legacy encrypted-artifact inspector, local-only: authenticate successful plan-run context, checkout
   SHA and existing signed plan/assets before private rendering. No backend init/apply.
   Outputs are bounded 0600 files in a new 0700 destination.
 - `v2/ci_failure_diagnostics.py` drains bounded output in memory until Terraform exits; no scratch-write error may kill apply or replace its result. Linux supervision forwards one graceful interrupt, escalates a second, and kills Terraform if its capture parent dies. Retain the last 1 MiB and signed total/capture status. No success/advisory raw log is written.
@@ -134,7 +134,7 @@ Deferred archives without known hashes are excluded. Both pack/restore APIs allo
 push, pull_request and workflow_dispatch only, or explicit local commits without a GitHub event.
 They use TF_PLAN_ENC_KEY HMAC.
 The 0600 tarball is private secret-bearing scratch, with no upload path;
-callers must encrypt before publication and clean plaintext files.
+callers require encrypted GitHub handoff or private SSE-KMS storage and owned cleanup.
 Both Terraform layer paths use the same locked build-layer command, or check-layer for
 CI_ASSETS_READY=true, also exported by plan/apply. Prepare invalidates markers, removes stale regular ZIPs and rejects ZIP
 symlinks. Schema-2 markers bind file hashes; validation checks a fixed required-import list.
@@ -142,3 +142,10 @@ The pin gate covers `v2/ci/pg8000-requirements.txt` and the four requirements
 under workers, steampipe, incident and remediation; update all with verified wheel hashes.
 The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and validator.
 `v2/test_ci_tf_assets.py` covers these contracts and recovery.
+
+Private S3 plans use ci_private_plan.py and the existing protected deployer restricted to
+storage operations. No new IAM/bucket configuration is granted. Validate source/attempt,
+reference/manifest, pinned versions and hashes. Operator inspection needs IAM/KMS, no CI key;
+CI restore still requires asset HMAC and reviewed_plan_sha256 before original apply gates.
+Only manual plans publish; successful publication replaces ciphertext with a safe reference.
+Reference expiry is not S3 object deletion. Public summaries never replace private review.
