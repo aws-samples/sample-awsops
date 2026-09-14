@@ -26,6 +26,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration and opt-in diagnostics (ADR-002/005/016) |
 | [web-release.md](web-release.md) | Digest-bound web release, private migration ordering, mandatory dev login/DB checks and explicit image rollback (ADR-001/005) |
 | [legacy-web-image-recovery.md](legacy-web-image-recovery.md) | Explicitly approved private-host recovery for images without receipts: trusted source/digest evidence, schema approval, exact image verification, no migrations (ADR-001/005) |
+| [web-image-provenance.md](web-image-provenance.md) | Helper contract: receipt steps/inputs, composed promotion, main account prerequisite, migration/rollback/expiry limits (ADR-005) |
 | [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |
 | [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
 | [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
@@ -35,6 +36,9 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
+- Deploy Web wires producer-receipt steps and current-dev migration outputs, with readonly
+  image proof before DDL and composed `promote` preserving the validated project/digest;
+  never manually mint migration evidence or silently fall back to mutable-tag authority.
 - Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). The helper supplies policies and installs neither consumer path. Deploy Web integration must be dev-only with activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
 - Private saved-plan inspection authenticates run/checkout/assets before 32 MiB-bounded rendering; it never authorizes apply.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.

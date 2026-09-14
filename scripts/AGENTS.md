@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4afd0d23e7cb · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 70fa2cee5e16 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -11,6 +11,11 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
+- `v2/ci_web_deploy.py` calls composed `ci_web_image.promote(env, expected_digest=...)`, verifying the
+  caller/context/source/migration/producer before publishing the validated project's digest.
+  No manually assembled publishing chain. `test_ci_web_image.py` requires jq; the
+  receipt steps, main account prerequisite and recovery limits are documented in
+  `docs/runbooks/web-image-provenance.md`. Operator CI adds no ADR-005 exception or IAM grant.
 - `ci_readiness_plan_summary.py` runs before encryption only for explicit full dev readiness
   plans, with a two-minute timeout and fenced JSON output. Its failure-tolerant report publishes
   fixed scope/presence checks, fixed addresses and a known collector hash, never private values.

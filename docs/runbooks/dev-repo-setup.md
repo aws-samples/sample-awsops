@@ -404,6 +404,11 @@ must match it, while main must differ and match its production backend/role meta
 Do not place it only in the development environment or shadow it with a different production
 value. A missing backend may skip an advisory plan; missing account validation fails closed.
 
+The [web image provenance helper](web-image-provenance.md) additionally requires
+this repository secret on **main**, as 12 ASCII digits, before excluding the dev account.
+Keep it available to the production environment and do not shadow it with an invalid value.
+Deploy Web passes this secret to its configured-role and actual-caller checks.
+
 The manual development [deployment audit](deployment-audit.md)
 (`audit-deployment.yml`) reuses the dev account/deployer/backend secrets with a
 restrictive session policy. It reads status, schedule metrics and SQL-reader

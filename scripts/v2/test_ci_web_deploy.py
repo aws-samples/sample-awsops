@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import ci_web_deploy as deploy
+import ci_web_image as image
 from ci_web_image import ImageError
 
 ACCOUNT = "123456789012"
@@ -66,6 +67,8 @@ class AWS:
             return copy.deepcopy(self.responses[operation].pop(0))
         if operation == "batch-get-image":
             return {"images": [copy.deepcopy(self.image)], "failures": []}
+        if operation == "put-image":
+            return {"image": copy.deepcopy(self.image)}
         if operation == "describe-services":
             return {"services": [copy.deepcopy(self.service)], "failures": []}
         if operation == "describe-task-definition":
@@ -101,6 +104,85 @@ class DeploymentTests(unittest.TestCase):
 
     def proof(self):
         return deploy.start(C, DIGEST, DIGEST, self.aws)
+
+    def release_env(self):
+        return {
+            "GITHUB_REPOSITORY": C["repository"], "GITHUB_REF_NAME": "dev",
+            "GITHUB_REF": "refs/heads/dev", "GITHUB_EVENT_NAME": "push",
+            "GITHUB_WORKFLOW_REF": C["repository"] + "/.github/workflows/deploy-web.yml@refs/heads/dev",
+            "GITHUB_SHA": C["sha"], "GITHUB_RUN_ID": C["run_id"], "GITHUB_RUN_ATTEMPT": "1",
+            "CI_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/CI", "AWS_ACCOUNT_ID_DEV": ACCOUNT,
+            "IMAGE_PROJECT": PROJECT, "ECR_URI": REPO, "ECS_CLUSTER": PROJECT,
+            "ECS_SERVICE": PROJECT + "-web", "PREFLIGHT_DIGEST": DIGEST,
+            "FRESH_DIGEST": DIGEST, "FRESH_PROJECT": PROJECT,
+            "MIGRATED_SHA": C["sha"], "MIGRATED_PROJECT": PROJECT,
+        }
+
+    def run_main_with_providers(self, mode="deploy", changes=None, identity_accounts=None):
+        identities = iter(identity_accounts or [ACCOUNT, ACCOUNT])
+        def provider(argv, **kwargs):
+            if argv[:3] == ["aws", "sts", "get-caller-identity"]:
+                account = next(identities)
+                return {"Account": account, "Arn": f"arn:aws:sts::{account}:assumed-role/CI/session"}
+            if argv[:4] == ["gh", "api", "--hostname", "github.com"]:
+                self.assertEqual(argv[4], f"repos/{C['repository']}/git/ref/heads/dev")
+                return {"object": {"sha": C["sha"]}}
+            self.assertEqual(argv[0], "aws")
+            return self.aws(argv[1], argv[2], argv[3:])
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.dict(os.environ, self.release_env() | (changes or {}) |
+                           {"GITHUB_OUTPUT": str(Path(folder) / "output")}, clear=True), \
+                patch.object(sys, "argv", ["ci_web_deploy.py", mode]), \
+                patch.object(sys, "stdout", new_callable=io.StringIO) as stdout, \
+                patch.object(image, "command", side_effect=provider), \
+                patch.object(deploy, "command", side_effect=provider):
+            deploy.main()
+            proof = dict(line.split("=", 1) for line in (Path(folder) / "output").read_text().splitlines())
+            return proof, stdout.getvalue()
+
+    def test_deploy_revalidates_caller_after_snapshot_before_publication(self):
+        with self.assertRaisesRegex(ImageError, "Actual branch account/role mismatch"):
+            self.run_main_with_providers(identity_accounts=[ACCOUNT, "999999999999"])
+        reads = {op for _, op, _ in self.aws.calls}
+        self.assertTrue({"describe-task-definition", "list-tasks", "describe-tasks"} <= reads)
+        self.assertFalse(reads & {"put-image", "update-service"})
+
+    def test_promotion_cannot_reselect_digest_after_controller_validation(self):
+        # The controller keeps its imported resolver; only promotion's later
+        # producer lookup selects another digest, as a changed receipt could.
+        with patch.object(image, "resolve_digest", return_value="sha256:" + "f" * 64), \
+                self.assertRaisesRegex(ImageError, "Validated image digest changed"):
+            self.run_main_with_providers()
+        reads = {op for _, op, _ in self.aws.calls}
+        self.assertIn("describe-tasks", reads)
+        self.assertFalse(reads & {"put-image", "update-service"})
+
+    def test_guarded_deploy_publishes_validated_project_digest_and_exact_rollout(self):
+        proof, summary = self.run_main_with_providers()
+        self.assertEqual(json.loads(summary)["digest"], DIGEST)
+        self.assertEqual(proof["deployment_id"], NEW)
+        self.assertEqual(proof["digest"], DIGEST)
+        self.verify(proof)
+        writes = [(op, args) for _, op, args in self.aws.calls if op in {"put-image", "update-service"}]
+        self.assertEqual([op for op, _ in writes], ["put-image", "update-service"])
+        args = writes[0][1]
+        self.assertEqual(args[args.index("--repository-name") + 1], PROJECT + "-web")
+        self.assertEqual(args[args.index("--image-manifest") + 1], RAW)
+
+    def test_preflight_still_validates_image_without_migration_or_publication(self):
+        proof, _ = self.run_main_with_providers("preflight-image",
+            {"MIGRATED_SHA": "", "MIGRATED_PROJECT": "", "PREFLIGHT_DIGEST": ""})
+        self.assertEqual(proof, {"digest": DIGEST, "runtime_digest": DIGEST})
+        self.assertEqual([op for _, op, _ in self.aws.calls], ["batch-get-image"])
+
+    def test_preflight_migration_and_project_mismatches_never_publish(self):
+        for changes in ({"PREFLIGHT_DIGEST": "sha256:" + "f" * 64},
+                        {"MIGRATED_SHA": "b" * 40}, {"MIGRATED_PROJECT": "other"},
+                        {"IMAGE_PROJECT": "other"}, {"FRESH_PROJECT": "other"}):
+            self.setUp()
+            with self.subTest(changes=changes), self.assertRaises(ImageError):
+                self.run_main_with_providers(changes=changes)
+            self.assertFalse(any(op in {"put-image", "update-service"} for _, op, _ in self.aws.calls))
 
     def test_valid_inflight_read_result_is_retained_after_poll_deadline(self):
         def read():
@@ -259,7 +341,9 @@ class DeploymentTests(unittest.TestCase):
             if denied == "describe-tasks":
                 self.aws.task = None
                 self.aws.service["deployments"][0]["rolloutState"] = "FAILED"
-            def pin(*args):
+            def promotion(env, *, expected_digest):
+                self.assertEqual(expected_digest, DIGEST)
+                self.assertEqual(env["IMAGE_PROJECT"], PROJECT)
                 observed = {op for _, op, _ in self.aws.calls}
                 self.assertTrue(reads <= observed)
                 self.aws.calls.append(("ecr", "put-image", []))
@@ -274,7 +358,7 @@ class DeploymentTests(unittest.TestCase):
                     patch.object(deploy, "verify_caller", return_value=ACCOUNT), \
                     patch.object(deploy, "verify_source_and_migration", return_value=False), \
                     patch.object(deploy, "resolve_digest", return_value=DIGEST), \
-                    patch.object(deploy, "pin_image", side_effect=pin):
+                    patch.object(deploy, "promote", side_effect=promotion):
                 if denied:
                     with self.assertRaises((ImageError, OSError)):
                         deploy.main()
@@ -332,8 +416,9 @@ class DeploymentTests(unittest.TestCase):
                         self.assertTrue(rollback)
                         return {"status": "ahead", "merge_base_commit": {"sha": pin_sha}}
                     return {"object": {"sha": C["sha"]}}
-                def pin(*args):
-                    self.assertEqual(args, (PROJECT + "-web", DIGEST))
+                def promotion(env, *, expected_digest):
+                    self.assertEqual(expected_digest, DIGEST)
+                    self.assertEqual(env["IMAGE_PROJECT"], PROJECT)
                     self.aws.calls.append(("ecr", "put-image", []))
                 with tempfile.TemporaryDirectory() as folder, \
                         patch.dict(os.environ, env | {"GITHUB_OUTPUT": str(Path(folder) / "output")}, clear=True), \
@@ -345,7 +430,7 @@ class DeploymentTests(unittest.TestCase):
                         patch.object(deploy, "verify_source_and_migration",
                                      side_effect=lambda c, sha, e: source_check(c, sha, e, api)), \
                         patch.object(deploy, "resolve_digest", return_value=DIGEST), \
-                        patch.object(deploy, "pin_image", side_effect=pin), \
+                        patch.object(deploy, "promote", side_effect=promotion), \
                         patch.object(deploy, "wait_for",
                                      side_effect=lambda check, timeout, now, sleep: wait(check, timeout, lambda: self.tick, self.sleep)):
                     deploy.main()
@@ -385,7 +470,7 @@ class DeploymentTests(unittest.TestCase):
                     patch.object(deploy, "verify_caller", return_value=ACCOUNT), \
                     patch.object(deploy, "resolve_digest", side_effect=ImageError("expired") if invalid == "receipt" else None,
                                  return_value=DIGEST), \
-                    patch.object(deploy, "pin_image", side_effect=AssertionError("Preflight mutation")):
+                    patch.object(deploy, "promote", side_effect=AssertionError("Preflight mutation")):
                 if invalid:
                     with self.assertRaises(ImageError):
                         deploy.main()

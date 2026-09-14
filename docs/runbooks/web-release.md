@@ -27,6 +27,8 @@ gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f image_b
 
 Fresh images use Buildx's digest. Reuse verifies repository, workflow, branch, source, project, artifact digest, producing attempt/job ID, successful build/publication steps and creation interval. Names alone never authorize an image. A successful attempt-1 build survives deploy-only attempt-2 retries; a later failed build does not invalidate earlier success. The newest verified successful attempt wins. Receipts expire after 90 days. Missing, legacy, expired or unverifiable receipts require a rebuild, another retained producer or reviewed operator recovery; there is no mutable-tag fallback. Public receipts contain no account ID/fingerprint, credentials, role ARN or tfvars. Caller/account checks happen separately at runtime alongside authenticated source/project/image evidence.
 
+After image proof, migrations and service/read preflight, the controller calls `ci_web_image.promote(env, expected_digest=digest)` with the validated `IMAGE_PROJECT`. This repeats the caller/provenance/source guards and rejects a changed selection before publication. The source check immediately before ECS rollout and exact deployment/digest verification remain required. See the [helper contract](web-image-provenance.md).
+
 ## Explicit older-image rollback
 
 Select an older ancestor and retained producer, then acknowledge compatibility with the applied schema. This neither proves compatibility nor undoes DDL. Coordinate independent migration activity first.

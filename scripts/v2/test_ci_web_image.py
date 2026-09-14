@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -13,6 +14,7 @@ import zipfile
 sys.path.insert(0, str(Path(__file__).parent))
 from ci_web_image import (ImageError, build_receipt, resolve_digest, pin_image,
                           role_context, verify_caller, verify_source_and_migration, github)
+import ci_web_image as subject
 
 SHA = "a" * 40
 DIGEST = "sha256:" + "b" * 64
@@ -27,6 +29,175 @@ def context(**overrides):
 
 
 class ProvenanceTest(unittest.TestCase):
+    def promotion_fixture(self):
+        raw = '{"schemaVersion":2,"config":{}}'
+        digest = "sha256:" + hashlib.sha256(raw.encode()).hexdigest()
+        env = {"GITHUB_REPOSITORY": REPO, "GITHUB_REF_NAME": "dev",
+               "GITHUB_REF": "refs/heads/dev", "GITHUB_EVENT_NAME": "workflow_dispatch",
+               "GITHUB_WORKFLOW_REF": REPO + "/.github/workflows/deploy-web.yml@refs/heads/dev",
+               "GITHUB_SHA": SHA, "GITHUB_RUN_ID": "900", "GITHUB_RUN_ATTEMPT": "1",
+               "CI_ROLE_ARN": "arn:aws:iam::123456789012:role/CI", "AWS_ACCOUNT_ID_DEV": "123456789012",
+               "IMAGE_PROJECT": "sample-dev", "MIGRATED_SHA": SHA, "MIGRATED_PROJECT": "sample-dev",
+               "FRESH_DIGEST": digest, "FRESH_PROJECT": "sample-dev"}
+        trace = []
+        def caller():
+            trace.append("caller")
+            return {"Account": "123456789012", "Arn": "arn:aws:sts::123456789012:assumed-role/CI/session"}
+        def api(path, **kwargs):
+            trace.append("source")
+            return {"object": {"sha": SHA}}
+        def aws(operation, args):
+            trace.append(operation)
+            self.assertEqual(args["repository-name"], "sample-dev-web")
+            if operation == "batch-get-image":
+                return {"images": [{"imageId": {"imageDigest": digest}, "imageManifest": raw}]}
+            self.assertEqual(operation, "put-image")
+            return {"image": {"imageId": {"imageDigest": digest}}}
+        return env, digest, trace, caller, api, aws
+
+    def test_promote_enforces_complete_chain_and_derived_repository(self):
+        env, digest, trace, caller, api, aws = self.promotion_fixture()
+        result = subject.promote(env, caller=caller, api=api, aws=aws, expected_digest=digest)
+        self.assertEqual(trace, ["caller", "source", "source", "batch-get-image", "put-image"])
+        self.assertEqual(result, {"digest": digest, "image_sha": SHA, "rollback": False})
+
+    def test_promote_guard_failures_never_reach_a_write(self):
+        for failure in ("caller", "source", "migration", "project", "producer", "expected", "rollback", "manifest"):
+            env, digest, trace, caller, api, aws = self.promotion_fixture()
+            expected = digest
+            if failure == "caller":
+                caller = lambda: {"Account": "999999999999", "Arn": "foreign"}
+            elif failure == "source":
+                api = lambda *args, **kwargs: {"object": {"sha": "b" * 40}}
+            elif failure == "migration":
+                env["MIGRATED_SHA"] = ""
+            elif failure == "project":
+                env["FRESH_PROJECT"] = "other"
+            elif failure == "producer":
+                env.update(FRESH_DIGEST="", IMAGE_BUILD_RUN_ID="123")
+            elif failure == "expected":
+                expected = "sha256:" + "f" * 64
+            elif failure == "rollback":
+                env["PIN_SHA"] = "b" * 40
+            else:
+                original = aws
+                def corrupt(operation, args):
+                    result = original(operation, args)
+                    if operation == "batch-get-image":
+                        result["images"][0]["imageManifest"] = "{}"
+                    return result
+                aws = corrupt
+            with self.subTest(failure=failure), self.assertRaises(ImageError):
+                subject.promote(env, caller=caller, api=api, aws=aws, expected_digest=expected)
+            self.assertNotIn("put-image", trace)
+
+    def test_promote_cli_runs_the_complete_chain(self):
+        env, digest, trace, caller, api, aws = self.promotion_fixture()
+        def identity(argv):
+            self.assertEqual(argv[:3], ["aws", "sts", "get-caller-identity"])
+            return caller()
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(sys, "argv", ["ci_web_image.py", "promote"]), \
+                patch.object(subject, "command", side_effect=identity), \
+                patch.object(subject, "github", side_effect=api), \
+                patch.object(subject, "aws_request", side_effect=aws), \
+                patch.object(sys, "stdout", new_callable=io.StringIO) as stdout:
+            subject.main()
+        self.assertEqual(trace, ["caller", "source", "source", "batch-get-image", "put-image"])
+        self.assertEqual(json.loads(stdout.getvalue()),
+                         {"digest": digest, "image_sha": SHA, "rollback": False})
+
+    def test_promote_reuses_verified_receipt_after_deploy_retry(self):
+        env, digest, trace, caller, source, aws = self.promotion_fixture()
+        env.update(FRESH_DIGEST="", FRESH_PROJECT="", IMAGE_BUILD_RUN_ID="123",
+                   PREFLIGHT_DIGEST=digest)
+        producer, calls = self.producer(
+            receipt=build_receipt(context(), digest),
+            run_changes={"run_attempt": 2, "conclusion": "failure"})
+        def api(path, **kwargs):
+            return source(path) if "/git/ref/" in path else producer(path, **kwargs)
+        result = subject.promote(env, caller=caller, api=api, aws=aws)
+        self.assertEqual(result, {"digest": digest, "image_sha": SHA, "rollback": False})
+        self.assertIn(f"repos/{REPO}/actions/jobs/789", calls)
+        self.assertEqual(trace[-2:], ["batch-get-image", "put-image"])
+        # Changing the pre-migration selection must fail before any registry write.
+        env["PREFLIGHT_DIGEST"] = DIGEST
+        trace.clear()
+        with self.assertRaisesRegex(ImageError, "Validated image digest changed"):
+            subject.promote(env, caller=caller, api=api, aws=aws)
+        self.assertNotIn("put-image", trace)
+
+    def test_promote_rollback_requires_ancestor_receipt_and_no_migrations(self):
+        env, digest, trace, caller, source, aws = self.promotion_fixture()
+        # The producer fixture is at SHA; dispatch a newer branch HEAD.
+        current = "c" * 40
+        env.update(GITHUB_SHA=current, PIN_SHA=SHA, FRESH_DIGEST="", FRESH_PROJECT="",
+                   IMAGE_BUILD_RUN_ID="123", ROLLBACK_SCHEMA_COMPATIBLE="true",
+                   MIGRATED_SHA="", MIGRATED_PROJECT="")
+        producer, _ = self.producer(receipt=build_receipt(context(), digest))
+        def api(path, **kwargs):
+            if "/git/ref/" in path:
+                return {"object": {"sha": current}}
+            if "/compare/" in path:
+                self.assertTrue(path.endswith(f"/compare/{SHA}...{current}"))
+                return {"status": "ahead", "merge_base_commit": {"sha": SHA}}
+            return producer(path, **kwargs)
+        result = subject.promote(env, caller=caller, api=api, aws=aws)
+        self.assertEqual(result, {"digest": digest, "image_sha": SHA, "rollback": True})
+        for invalid in ({"ROLLBACK_SCHEMA_COMPATIBLE": "false"},
+                        {"MIGRATED_SHA": current}, {"MIGRATED_PROJECT": "sample-dev"}):
+            trace.clear()
+            with self.subTest(invalid=invalid), self.assertRaises(ImageError):
+                subject.promote(env | invalid, caller=caller, api=api, aws=aws)
+            self.assertNotIn("put-image", trace)
+
+    def test_promote_rechecks_branch_after_producer_validation(self):
+        env, digest, trace, caller, source, aws = self.promotion_fixture()
+        env.update(FRESH_DIGEST="", IMAGE_BUILD_RUN_ID="123")
+        producer, calls = self.producer(receipt=build_receipt(context(), digest))
+        reads = 0
+        def api(path, **kwargs):
+            nonlocal reads
+            if "/git/ref/" in path:
+                reads += 1
+                return {"object": {"sha": SHA if reads == 1 else "c" * 40}}
+            return producer(path, **kwargs)
+        with self.assertRaisesRegex(ImageError, "Branch moved"):
+            subject.promote(env, caller=caller, api=api, aws=aws)
+        self.assertIn(f"repos/{REPO}/actions/jobs/789", calls)
+        self.assertEqual(reads, 2)
+        self.assertNotIn("put-image", trace)
+
+    def test_receipt_cli_creates_private_file_without_overwriting(self):
+        env, digest, _, caller, _, _ = self.promotion_fixture()
+        env.update(GITHUB_JOB="build", IMAGE_DIGEST=digest)
+        job = {"id": 789, "name": subject.BUILD_JOB, "run_id": 900,
+               "run_attempt": 1, "head_sha": SHA, "status": "in_progress"}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, env, clear=True), \
+                patch.object(subject, "command", side_effect=lambda _: caller()), \
+                patch.object(subject, "github", return_value={"total_count": 1, "jobs": [job]}):
+            output = Path(directory) / "web-build.json"
+            with patch.object(sys, "argv", ["ci_web_image.py", "receipt", "--output", str(output)]):
+                # Creation must be private even with a permissive process umask.
+                old_umask = os.umask(0)
+                try:
+                    subject.main()
+                finally:
+                    os.umask(old_umask)
+                self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+                body = output.read_bytes()
+                self.assertEqual(json.loads(body), build_receipt(context(run_id="900"), digest))
+                with self.assertRaises(FileExistsError):
+                    subject.main()
+                self.assertEqual(output.read_bytes(), body)
+
+    def test_ecr_operation_allowlist_rejects_other_operations_before_command(self):
+        with patch.object(subject, "command") as command:
+            with self.assertRaises(ImageError):
+                subject.aws_request("delete-repository", {"repository-name": "sample-dev-web"})
+        command.assert_not_called()
+
     def test_compare_projects_metadata_before_the_python_output_cap(self):
         payload = {"status": "ahead", "merge_base_commit": {"sha": SHA},
                    "files": [{"patch": "x" * (2 * 1024 * 1024)}]}

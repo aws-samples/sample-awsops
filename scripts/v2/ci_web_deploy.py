@@ -8,7 +8,7 @@ import re
 import stat
 import time
 
-from ci_web_image import (ImageError, command, environment_context, pin_image,
+from ci_web_image import (ImageError, command, environment_context, promote,
                           require, resolve_digest, validate_context, verify_caller,
                           verify_source_and_migration)
 
@@ -326,8 +326,7 @@ def main():
             return
         require(env.get("PREFLIGHT_DIGEST") == digest, "Image changed after pre-migration validation")
         before = snapshot(c, aws_request)
-        verify_source_and_migration(c, pin, env)
-        pin_image(c["project"] + "-web", digest)
+        promote(env, expected_digest=digest)
         verify_source_and_migration(c, pin, env)
         proof = start(c, digest, child, aws_request, before=before)
         for key, value in proof.items():

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ca53d92a5153 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5d871daeba77 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -57,6 +57,11 @@ before `make agentcore`. Migrations and reader password sync always precede Agen
 additionally uses the locked web driver and TypeScript dependencies. Both PostgreSQL suites are fail-hard exceptions to legacy optional `scripts/v2/*.itest.mjs`; missing Docker is never a skip.
 
 No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scripts/v2/package.json` (`make deps` runs `npm ci --prefix scripts/v2`). `next build` fails on app-level type errors but `*.test.ts(x)` type noise is non-blocking.
+
+Deploy Web wires producer receipts and successful migration outputs. Its controller calls
+composed `promote(env, expected_digest=...)` after readonly proof and service/read preflight.
+Preserve the validated project/digest. `AWS_ACCOUNT_ID_DEV` is required even on main for
+dev-account exclusion; see `docs/runbooks/web-image-provenance.md` and `docs/runbooks/web-release.md`.
 
 ## BANNED PATTERNS (enforce in review)
 - **AWS security:** no `0.0.0.0/0` ingress; no IAM `Principal:"*"`/wildcard-action without scoped condition; **no secrets in env/code/IaC** (Secrets Manager / SSM).
