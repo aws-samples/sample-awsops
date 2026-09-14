@@ -94,6 +94,18 @@ def test_real_terraform_import_is_not_hidden_by_noop_actions():
         assert "PRIVATE_IMPORT" not in json.dumps(result)
 
 
+def test_import_metadata_excludes_every_recognized_action_path():
+    for index in range(3):
+        for importing in ({"id": "PRIVATE_IMPORT"}, {}, False):
+            value = plan()
+            value["resource_changes"][index]["change"]["importing"] = importing
+            result = summary.project(value)
+            assert not result["no_changes_outside_expected_scope"]
+            assert not result["resource_changes"][index]["matches_expected_scope"]
+            assert "configured_code_sha256" not in result["resource_changes"][index]
+            assert "PRIVATE" not in json.dumps(result)
+
+
 def test_sensitive_or_unmatched_collector_hash_is_not_published():
     for change in ("sensitive", "role"):
         value = plan()
