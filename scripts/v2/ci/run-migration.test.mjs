@@ -27,6 +27,48 @@ const taskArn = `${prefix}task/${project}/${'b'.repeat(32)}`;
 const cluster = `${prefix}cluster/${project}`;
 const startedBy = 'migration-123-1';
 
+test('only an opted-in Deploy Web push may use the private migration controller', async () => {
+  const h = harness();
+  Object.assign(h.f.context, {
+    event: 'push', fromDeployWeb: 'true',
+    workflowRef: 'aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/dev',
+  });
+  await runMigration(h.f, h.deps);
+  assert.equal(h.registered.containerDefinitions[0].environment.find(v => v.name === 'AUTOMATIC_MIGRATION')?.value, '1');
+  for (const change of [{ fromDeployWeb: '' }, { workflowRef: 'other' }, { ref: 'refs/heads/main' }]) {
+    const denied = harness();
+    Object.assign(denied.f.context, h.f.context, change);
+    await assert.rejects(runMigration(denied.f, denied.deps));
+    assert.equal(denied.calls.length, 0);
+  }
+});
+
+test('manual migration keeps the explicit override and web policy cannot be weakened in the clone', async () => {
+  const manual = harness();
+  await runMigration(manual.f, manual.deps);
+  assert.equal(manual.registered.containerDefinitions[0].environment.some(v => v.name === 'AUTOMATIC_MIGRATION'), false);
+  const web = harness(undefined, {
+    'register-task-definition': args => {
+      const changed = structuredClone(args);
+      changed.containerDefinitions[0].environment.find(v => v.name === 'AUTOMATIC_MIGRATION').value = '0';
+      return { taskDefinition: { ...changed, taskDefinitionArn: cloneArn, status: 'ACTIVE' } };
+    },
+  });
+  Object.assign(web.f.context, {
+    event: 'push', fromDeployWeb: 'true',
+    workflowRef: 'aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/dev',
+  });
+  await assert.rejects(runMigration(web.f, web.deps), /automatic migration policy/i);
+  assert.equal(web.calls.some(([, operation]) => operation === 'run-task'), false);
+});
+
+test('an unapplied migration capability fails clearly before any AWS operation', async () => {
+  const h = harness();
+  h.f.config = null;
+  await assert.rejects(runMigration(h.f, h.deps), /Migration capability unavailable/);
+  assert.equal(h.calls.length, 0);
+});
+
 function fixture() {
   return {
     context: {
@@ -743,7 +785,8 @@ for (const [codes, category] of [
 
 for (const [message, category] of [
   ['Concurrent migration is already running; retry after it finishes', 'migration lock'],
-  ['Automatic migration blocked: file=fixture, reason=non-transactional-sql', 'automatic SQL policy'],
+  ['Automatic migration blocked: file=fixture, reason=non-transactional-file', 'automatic SQL policy'],
+  ['Automatic migration requires manual bootstrap; run reviewed standalone migrations first', 'manual database bootstrap required'],
   ['Migration advisory lock returned an invalid result', 'invalid migration lock result'],
 ]) test(`failure logs classify ${category}`, async () => checkFailureLogs(message, category));
 

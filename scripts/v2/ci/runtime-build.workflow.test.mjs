@@ -13,11 +13,12 @@ function workflow(name) {
 function credentialsIndex(steps) {
   return steps.findIndex(s => s.uses?.startsWith('aws-actions/configure-aws-credentials'));
 }
-function assertAccountGuards(job) {
+function assertAccountGuards(job, migration = false) {
   assert.equal(job.env.AWS_ACCOUNT_ID_DEV, '${{ secrets.AWS_ACCOUNT_ID_DEV }}');
   const steps = job.steps;
-  const before = steps.findIndex(s => s.run?.includes('runtime-build.mjs check-role'));
-  const after = steps.findIndex(s => s.run?.includes('runtime-build.mjs verify-role'));
+  const suffix = migration ? 'migration-role' : 'role';
+  const before = steps.findIndex(s => s.run?.includes(`runtime-build.mjs check-${suffix}`));
+  const after = steps.findIndex(s => s.run?.includes(`runtime-build.mjs verify-${suffix}`));
   assert.ok(before >= 0 && before < credentialsIndex(steps));
   assert.ok(after > credentialsIndex(steps));
   return after;
@@ -70,7 +71,7 @@ test('reusable migration keeps original caller dispatch guard and separate concu
 test('migration checks expected account and actual STS caller before build, execution and cleanup', () => {
   const w = workflow('deploy-migrations.yml');
   for (const name of ['build', 'migrate']) {
-    const index = assertAccountGuards(w.jobs[name]);
+    const index = assertAccountGuards(w.jobs[name], true);
     const steps = w.jobs[name].steps;
     const write = steps.findIndex(s => s.uses?.startsWith('docker/build-push-action') ||
       s.name === 'Read migration output and run');

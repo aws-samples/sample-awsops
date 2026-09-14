@@ -1,17 +1,20 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3a08c0466fe4 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 16a576db25e5 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
 # Scripts — Reviewer Context
 
+- Web release helpers `v2/ci_web_image.py` and `v2/ci_web_deploy.py` bind producer/source/project/digest. Readonly receipt/ECR proof precedes migrations; promotion retains that digest and requires actual caller/account/read access plus exact healthy ECS evidence. Public receipts contain no account IDs/fingerprints. Unit and workflow contracts are split between `test_ci_web_image.py`, `test_ci_web_workflow.py` and `test_ci_web_deploy.py`.
+- Current-source dev pushes require matching private migrations; explicit older-image rollback requires producer/schema acknowledgement and runs no DDL. Every dev web release prepares private demo credentials and requires full runtime readiness, including login/DB. Standalone and AgentCore migration calls remain dispatch-only. Tests include `test_ci_web_image.py` and `test_ci_web_deploy.py`.
+
 Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-review/`.
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
-- `ci_web_read.py` / `ci_web_deploy.py` are unwired. Only typed transient reads retry within a shared deadline; writes/permissions/identity failures do not retry. Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.
-- `AUTOMATIC_MIGRATION=1` checks every ledger-derived pending SQL file against the transactional subset before pending SQL/ledger/reader changes; unknown/contract SQL needs manual review. Advisory lock acquisition is nonblocking and remains held through reader sync. See `docs/runbooks/release-safety-primitives.md` and the corresponding Python/Node/PostgreSQL tests.
-- `v2/ci_web_image.py` is unwired. CI must use composed `promote`, which verifies the
-  caller/context/source/migration/producer before publishing the validated project's digest.
+- `ci_web_read.py` / `ci_web_deploy.py` serve Deploy Web. Only typed transient reads retry within a shared deadline; writes/permissions/identity failures do not retry. Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.
+- Every web migration caller forces `AUTOMATIC_MIGRATION=1`, checking every ledger-derived pending SQL file against the transactional subset before pending SQL/ledger/reader changes; function defaults (`now()`/`gen_random_uuid()`), `ALTER`, `GRANT`, views and unknown/contract SQL require reviewed standalone migration. Automatic calls reject a missing `public.schema_migrations` under the lock and never call `initializeEmptyDatabase`, regardless of `INITIALIZE_EMPTY_DB`. Complete standalone empty-only bootstrap/historical SQL/reader sync before a fresh web dispatch; no historical exemptions. Advisory lock acquisition is nonblocking and remains held through reader sync. See `docs/runbooks/release-safety-primitives.md` and the corresponding Python/Node/PostgreSQL tests.
+- `v2/ci_web_deploy.py` calls composed `ci_web_image.promote(env, expected_digest=...)`, verifying the
+  caller/context/source/migration/producer; readonly proof shares ECR/config/source-tag checks before DDL.
   A nonempty preflight digest is mandatory; fresh builds must match the registry's source
   tag. Preserve OCI index bytes and verify one ARM64 child plus its digest-bound config.
   Pin ECR registry/media/digest explicitly; do not use image-only accepted-media filters.
@@ -22,14 +25,17 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   except curl's private `-q -K -` config; signed URLs never enter argv. Multi-tag digest rows
   must agree on identity, raw manifest and media.
   Check recognized producer conclusions before timestamps; skip non-success jobs without
-  suppressing another successful receipt. Three-field stdout adds no recovery history.
-  Project selection requires authenticated branch Terraform/verified job output, never inputs.
+  suppressing another successful receipt. Helper stdout is `{digest, image_sha, rollback}`;
+  controller deploy adds `migration`, with no recovery history.
+  Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual Terraform ECR/cluster/service outputs. Never use dispatch inputs.
   Target one verified stack repo per operation; broad IAM is not branch/stack authority.
   Unconfirmed publication is a provider/retry diagnosis, not a rebuild signal; retain equal-effect
   confirmation. Use 0600 manifest files, bounded ZIP reads and ARM-child attestation references.
   Operation labels do not restrict the shared consumer's ECS/STS calls.
   Child PATH is `/usr/local/bin:/usr/bin:/bin`, ignoring caller additions; HOME is omitted, never reassigned.
-  No manually assembled publishing chain. `test_ci_web_image.py` requires jq; the future
+  No manually assembled publishing chain. `test_ci_web_image.py` requires jq;
+  required `test_ci_web_workflow.py` needs PyYAML and Bash; actionlint is optional local lint.
+  Every AWS-facing Deploy Web job needs `AWS_ACCOUNT_ID_DEV`, including main; the guard job does not. The
   receipt steps, main account prerequisite and recovery limits are documented in
   `docs/runbooks/web-image-provenance.md`. Operator CI adds no ADR-005 exception or IAM grant.
 - `ci_readiness_plan_summary.py` runs before encryption only for explicit full dev readiness
@@ -116,7 +122,8 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 - Smoke scripts keep credentials/HTTP scratch in private 0700/0600 files with cleanup; publish
   only fixed phases and validated HTTP status. Never reset credentials to pass verification.
 - Migration credentials stay in memory; verify RDS TLS and immutable baseline/ULID checksums.
-  ULIDs have 26 Crockford-base32 characters (no I/L/O/U). One-shot initialization is atomic;
+  ULIDs have 26 Crockford-base32 characters (no I/L/O/U). Standalone empty-only initialization is atomic;
+  automatic web calls reject a missing ledger before that hook, even with the template's retained flag;
   elevated/missing reader roles and connection/cleanup errors block migration/deployment.
   Worker/migration images are ARM64, nonroot where applicable, and use CMD rather than ENTRYPOINT.
 - PR panel/chair Claude calls require `--strict-mcp-config`; allowed-tools is not a substitute.
@@ -203,7 +210,8 @@ validation time; controller callers pass calibrated `now()` without changing mar
 ## Strict release controller capability
 
 `v2/ci/runtime-release.mjs` drives mandatory dev Deploy Web and manual collect-runtime
-verification. Full releases require collect mode; prepare never establishes full readiness.
+verification. Dev releases verify exact ECS/image proof first and pass `EXPECTED_WEB_DIGEST` from `steps.pin.outputs.digest`.
+Full releases require collect mode (including login/DB); prepare never establishes full readiness.
 Explicit activation remains separate and inactive prerequisites cannot be skipped.
 It binds dev source/account/actual role, applied runtime identity and ARM64 web digest.
 Require the pinned 43-name baseline, source-AST checked; valid growth is allowed up
