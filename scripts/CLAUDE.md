@@ -8,9 +8,10 @@ secrets-manager) — installed by `make deps`.
 ## Key Files
 - `v2/ci_deployment_audit.py` — manual dev audit with existing identity guards, a restrictive session policy, fixed reads/SELECTs and safe projections. Web observations do not claim an applied revision; timestamps do not classify product freshness, and observed types do not establish completeness. Offline fixtures: `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`; operator guide: `docs/runbooks/deployment-audit.md`.
 - `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
-- The opt-in dev profile also sets `ci_readiness_enabled`; saved public CI plans reject it
-  outside dev. Applied readiness plus AgentCore creates only the application verifier group;
-  demo membership additionally requires the managed-demo flag. No admin/IAM authority.
+- Readiness is separate from the runtime profile: `CI_READINESS_ENABLED_DEV=true/false`
+  explicitly overrides `ci_readiness_enabled` on dev; empty/unset preserves operator tfvars
+  and default false. Enabled readiness is rejected outside dev. Applied readiness plus
+  AgentCore creates only the verifier group; demo membership needs create_demo_user. No admin/IAM grant.
 - Dev/preview private discovery requires explicit full-plan rollout and preserves public DNS/certificates. `runtime-ecr-bootstrap` permits exactly three repositories. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy.
 - `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-registry proof before manual full dev activation plans; apply rechecks the approved profile. Automatic PR/push plans never receive the host-probe credential. Database-only proof is rejected; credentials stay private and failures use a fixed code. Flags/policy checks do not prove live access.
 - `v2/agentcore/provision.py` maps the applied `agentcore.deployment_readiness_enabled` boolean

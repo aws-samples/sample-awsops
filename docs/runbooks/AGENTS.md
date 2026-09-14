@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8d2e7ada23a9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 283b0d0734b9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -117,7 +117,9 @@ legacy runbook's steps as the current operational path).
   Only that output boolean enables `DEPLOYMENT_READINESS_ENABLED`; no shell override.
   A reviewed apply with readiness and AgentCore enabled creates only deployment-verifiers;
   membership additionally requires the managed demo flag. No admin/IAM role is granted.
-  Public CI permits readiness only on dev; the existing opt-in profile includes it. False/missing reports `runtime_disabled`. Capped samples cannot
+  Existing ID-token group claims can persist for their remaining 12-hour lifetime unless
+  session revocation rejects them; use the canonical runtime-foundation readiness guidance.
+  Public CI permits readiness only on dev. Dedicated CI_READINESS_ENABLED_DEV=true/false overrides the flag; empty/unset preserves explicit tfvars/default false. The runtime profile alone does not enable it. False/missing reports `runtime_disabled`. Capped samples cannot
   prove absence; missing ledger, partial/failed runs and unknown attributes remain failed readiness.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
   credentials. Prepare checks host registration (optional hostOnly); verify additionally

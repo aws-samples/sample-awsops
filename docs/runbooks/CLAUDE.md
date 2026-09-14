@@ -129,7 +129,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   False/missing is `runtime_disabled`. A reviewed apply creates `deployment-verifiers`
   only with readiness and AgentCore enabled; managed-demo membership additionally requires
   `create_demo_user=true`. No admin membership or IAM role is granted. Public CI permits
-  the flag only on dev; its existing opt-in runtime profile includes it.
+  the flag only on dev. Dedicated CI_READINESS_ENABLED_DEV=true/false overrides the flag;
+  empty/unset preserves explicit tfvars/default false. The runtime profile alone does not enable it.
   Capped samples cannot prove absence. Missing ledger, partial/failed runs and unknown attributes
   remain distinct failures; accepted degraded inventory is not a deployment-readiness exception.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the

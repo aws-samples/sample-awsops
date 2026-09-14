@@ -30,7 +30,7 @@ CORE = set(REPOSITORIES) | PRIVATE_DNS | {
     "aws_sfn_state_machine.workers[0]", "aws_lambda_event_source_mapping.dispatcher[0]",
 }
 OVERRIDES = Path("ci-runtime.auto.tfvars.json")
-RUNTIME_FLAGS = ("agentcore_enabled", "workers_enabled", "steampipe_enabled", "inventory_host_only", "ci_readiness_enabled")
+RUNTIME_FLAGS = ("agentcore_enabled", "workers_enabled", "steampipe_enabled", "inventory_host_only")
 NETWORK_TYPES = {
     "aws_vpc", "aws_subnet", "aws_nat_gateway", "aws_internet_gateway",
     "aws_route", "aws_route_table", "aws_route_table_association",
@@ -44,20 +44,26 @@ def account_id(value):
 
 
 def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest, worker_digest,
-                      rollout, *, advisory=False):
+                      rollout, *, advisory=False, readiness=""):
     if (scope not in SCOPES or enabled not in ("", "false", "true")
             or type(rollout) is not bool):
         raise ValueError("Invalid runtime profile or scope")
+    if readiness not in ("", "false", "true"):
+        raise ValueError("CI_READINESS_ENABLED_DEV must be true or false, or empty to preserve configuration")
+    if readiness == "true" and target != "dev":
+        raise ValueError("CI_READINESS_ENABLED_DEV opt-in requires dev")
+    # Absence is intentional: do not erase an explicit operator tfvars decision.
+    readiness_override = {} if readiness == "" else {"ci_readiness_enabled": readiness == "true"}
     profile = target == "dev" and enabled == "true"
     if target not in DEV_TARGETS:
         if rollout or scope == "runtime-ecr-bootstrap":
             raise ValueError("Runtime operation requires a development target")
-        return {}
+        return readiness_override
     if scope == "runtime-ecr-bootstrap" and target != "dev":
         raise ValueError("Runtime bootstrap is dev-only")
     if rollout and (scope != "full" or advisory or (target == "dev" and not profile)):
         raise ValueError("Runtime rollout requires manual full scope and the dev activation profile on dev")
-    result = {"ci_runtime_profile_enabled": profile, "ci_runtime_rollout": rollout}
+    result = {"ci_runtime_profile_enabled": profile, "ci_runtime_rollout": rollout, **readiness_override}
     if profile or rollout:
         account_id(expected_account)
     if not profile:
@@ -358,6 +364,7 @@ def main():
                 args.target, os.environ.get("CI_READONLY_RUNTIME_DEV", ""), account, args.scope,
                 os.environ.get("STEAMPIPE_IMAGE_DIGEST_DEV", ""), os.environ.get("WORKER_IMAGE_DIGEST_DEV", ""),
                 rollout == "true", advisory=args.advisory == "true",
+                readiness=os.environ.get("CI_READINESS_ENABLED_DEV", ""),
             )
             with OVERRIDES.open("x") as output:
                 json.dump(value, output)

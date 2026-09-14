@@ -202,8 +202,10 @@ Fixed MCP tools read one CloudFront identity; producer freshness and bounded inf
 Nonce/account-bound responses retain completed checks on timeout; administrator or deployment-verifiers membership and process cooldown are required.
 An opt-in apply creates the verifier group only with readiness and AgentCore enabled; membership
 additionally requires the managed demo flag. No admin/IAM role is granted. Public CI permits
-readiness only on dev; standalone private Terraform remains explicitly owner-configured.
-Invocation discovery rejects PENDING/malformed ARNs before caching and stops on an explicitly empty runtime parameter.
+readiness only on dev. CI_READINESS_ENABLED_DEV is a dedicated true/false override; empty/unset
+preserves explicit Terraform configuration and default false. The runtime profile alone does not enable it.
+Web invocation/status discovery rejects PENDING/malformed ARNs before caching and honors the
+web task's explicitly empty runtime parameter. The incident bridge's literal project path is unchanged.
 
 기본 비활성 모드이며 `ci_readiness_enabled=true`를 적용한 output으로 프로비저닝합니다. 환경변수 덮어쓰기는 무시하고 MCP 지정 ID·원본 신선도·제한된 모델 요청만 사용합니다.
 누락 속성은 미평가이며 타임아웃에도 완료 증거를 보존합니다. 관리자/별도 verifier와 호출 간격이 필요하고 PENDING·잘못된 ARN은 캐시하지 않으며 빈 런타임 경로는 호출 조회를 비활성화합니다.

@@ -442,8 +442,10 @@ and `CI_DB_DIAGNOSTICS_DEV` (`false`/unset by default; manual advisory read-only
 Runtime activation also uses default-off `CI_READONLY_RUNTIME_DEV` and verified
 `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV`. These select reviewed deployment
 behavior; account identifiers and credentials stay in secrets. Full activation requires
-real login/DB/host-registry preflight. The opt-in dev profile also enables readiness;
-a reviewed apply creates only the application verifier capability described below.
+real login/DB/host-registry preflight. Readiness is a separate capability controlled by
+`CI_READINESS_ENABLED_DEV`: true/false explicitly overrides the dev Terraform value; empty/unset
+preserves explicit tfvars and its default false. The runtime profile alone never enables it.
+See [readiness capability](runtime-foundation.md#readiness-capability) for billed access and revocation.
 런타임 활성화에는 기본 비활성 `CI_READONLY_RUNTIME_DEV`와 검증된 두 이미지 digest
 변수를 추가로 사용하며 계정 식별자와 자격증명은 시크릿에 둡니다.
 dev의 일반 저장소 변수는 도메인/존 이름 쌍, 기본 `preserve`인 인증서 모드, 기본 `false`인
@@ -1225,7 +1227,6 @@ For verify, apply `agentcore_enabled=true` and `ci_readiness_enabled=true`, then
 Only applied output sets `DEPLOYMENT_READINESS_ENABLED`; false/missing yields `runtime_disabled`, ignoring shell overrides.
 Also enable `steampipe_enabled=true`, `workers_enabled=true` and dispatch, and deploy inventory/ARM64
 worker images as described in [worker deployment](../reference/06-workers.md).
-검증 전 두 플래그를 적용하고 프로비저닝합니다. 환경변수 덮어쓰기나 그룹 권한은 부여하지 않습니다.
 수집·워커 플래그와 디스패치를 활성화하고 인벤토리·ARM64 워커 이미지를 먼저 배포해야 합니다.
 
 Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway schema first.
@@ -1249,22 +1250,24 @@ inventory-reader Lambda so legacy NULL attribute coverage is disclosed as incomp
 `controller-readiness.tf` creates that application group only when readiness and AgentCore are enabled.
 Membership is added only for the Terraform-managed demo when `create_demo_user=true`; no existing
 unmanaged identity is enrolled, and no admin membership or IAM role is granted. Public CI rejects
-readiness outside dev; the existing opt-in dev runtime profile includes the flag. Defaults remain off.
+readiness outside dev. Use the separate CI_READINESS_ENABLED_DEV decision or explicit operator
+Terraform configuration; the runtime profile is not authorization for this billed capability.
 Use a fresh login after membership changes; one in-flight call and a 60-second process cooldown apply.
 
 If the group or managed-demo membership already exists, adopt it through a reviewed import before
 apply rather than deleting/recreating it: group ID `<pool-id>/deployment-verifiers`, membership ID
 `<pool-id>,deployment-verifiers,<managed-username>`. Inspect unexpected roles/memberships first.
-Disabling readiness or AgentCore removes the managed capability on a subsequent reviewed apply;
-it does not reset passwords or delete the demo user. This prerequisite adds no collection workflow.
+Disabling readiness or AgentCore removes the managed group/membership on a subsequent reviewed apply;
+it does not reset passwords or delete the demo user. Existing ID tokens keep their group claims
+until expiry (up to the configured 12 hours) unless session revocation rejects them. Runtime
+disablement independently blocks the probe; membership removal alone is not immediate token
+revocation. See [revocation details](runtime-foundation.md#readiness-capability).
 
 스모크 도구는 자격증명 파일과 같은 0700 디렉터리의 0600 JSON을
 `SMOKE_RUNTIME_CONFIG_FILE`로 받으며 함께 정리합니다. 현재 Deploy Web은 DB 검증만
 연결합니다. 전체 검증 controller가 실제 배포·Lambda 응답으로 파일을 생성해야 합니다.
 prepare는 로그인·DB·활성 호스트를 확인하고 `hostOnly: true`일 때 외부 활성 계정을
 거부합니다. verify는 위 추가 필드로 최신 수집·실제 SSM/runtime·두 워커 완료를 검증합니다.
-검증 API는 관리자 또는 전용 verifier 그룹만 허용합니다. 이 앱 변경은 그룹을 만들지 않습니다. 배포 인프라가 CI 사용자를 verifier에만
-연결해야 하며 관리자·IAM 역할을 주지 않습니다. 그룹 변경 후 새 로그인과 호출 간격이 필요합니다.
 
 ### Authenticated database verification / 인증된 DB 검증
 

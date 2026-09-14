@@ -146,7 +146,7 @@ and [deployment runbook §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-
 | Flag | Gates |
 |------|-------|
 | `agentcore_enabled` | 21 of the AgentCore Lambda slices |
-| `ci_readiness_enabled` | Default-off bounded deployment probe, including model inference. With AgentCore enabled, an applied opt-in creates deployment-verifiers and enrolls only the managed demo. No shell override or admin/IAM grant. |
+| `ci_readiness_enabled` | Default-off bounded billed deployment probe. Dedicated `CI_READINESS_ENABLED_DEV=true/false` overrides the dev value; unset preserves explicit tfvars/default false. The runtime profile alone does not enable it. Public CI permits enabled readiness only on dev. Apply requires AgentCore for the verifier group and `create_demo_user=true` for managed-demo membership. No admin/IAM grant. |
 | `integrations_enabled` | remaining 6 AgentCore Lambda slices |
 | `workers_enabled` | the async worker tier (SQS/SFN/Lambda/Fargate) |
 | `ci_migrations_enabled` | Default-off operator capability: private migration task template, exact-secret task role/policy and 14-day logs. Manual dev CI only; no service or scheduler. Disabling deletes the log group/history. |
@@ -366,7 +366,7 @@ apply에서 바꿀 수 없습니다. 기본 false인 일반 full 계획도 DNS �
 | Flag | 게이트 대상 |
 |------|-------------|
 | `agentcore_enabled` | AgentCore Lambda 슬라이스 21개 |
-| `ci_readiness_enabled` | 기본 비활성 배포 검증(제한된 모델 추론 포함). AgentCore와 함께 명시적으로 적용하면 deployment-verifiers 그룹을 만들고 관리 demo만 등록한다. 환경변수 덮어쓰기나 관리자·IAM 권한 부여는 없다. |
+| `ci_readiness_enabled` | 기본 비활성 유료 배포 검증. 전용 `CI_READINESS_ENABLED_DEV=true/false`가 dev 값을 덮어쓰며 미설정은 명시적 tfvars·기본 false를 유지한다. 런타임 프로필만으로 활성화하지 않고 공개 CI에서는 dev만 허용한다. 적용 시 verifier 그룹에는 AgentCore가, 관리 demo 멤버십에는 `create_demo_user=true`도 필요하다. 관리자·IAM 권한은 부여하지 않는다. |
 | `integrations_enabled` | 나머지 AgentCore Lambda 슬라이스 6개 |
 | `workers_enabled` | 비동기 워커 계층(SQS/SFN/Lambda/Fargate) |
 | `ci_migrations_enabled` | 기본 비활성 운영 기능: 사설 migration 태스크 템플릿·정확한 시크릿 읽기 역할/정책·14일 로그. dev CI 수동 실행 전용이며 서비스·스케줄러는 없다. 비활성화하면 로그 그룹/이력이 삭제된다. |

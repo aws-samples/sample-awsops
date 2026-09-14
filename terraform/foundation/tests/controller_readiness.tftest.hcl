@@ -129,6 +129,10 @@ run "readiness_enabled_output_and_verifier" {
     demo_password        = "fixture-only-Password123!"
   }
   assert {
+    condition     = [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.value if e.name == "SSM_RUNTIME_ARN_PARAM"] == ["/ops/${var.project}/agentcore/runtime_arn"]
+    error_message = "Enabled AgentCore must advertise this web deployment's runtime parameter."
+  }
+  assert {
     condition     = output.agentcore.deployment_readiness_enabled == true && aws_cognito_user_group.deployment_verifiers[0].name == "deployment-verifiers" && aws_cognito_user_group.deployment_verifiers[0].role_arn == null
     error_message = "The applied flag must enable the runtime and only the application verifier group, without IAM role."
   }
