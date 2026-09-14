@@ -156,13 +156,18 @@ function verifyCaller(caller, context) {
 }
 
 function imageDigests(response, deployment, context) {
-  need(empty(response?.failures) && Array.isArray(response?.images) && response.images.length === 1,
+  need(empty(response?.failures) && Array.isArray(response?.images) && response.images.length > 0,
     'expected_web_image_missing');
   const image = response.images[0];
-  need(image.registryId === context.account && image.repositoryName === `${deployment.project}-web` &&
-    (context.expectedWebDigest ? image.imageId?.imageDigest === context.expectedWebDigest
-      : image.imageId?.imageTag === context.imageTag) && DIGEST.test(image.imageId?.imageDigest || '') &&
-    typeof image.imageManifest === 'string' && image.imageManifest.length <= 256_000, 'web_image_identity_mismatch');
+  // Digest queries can return the same manifest once per tag. Validate every alias
+  // before collapsing to one identity and hashing/parsing the canonical manifest.
+  need(response.images.every(entry => object(entry) &&
+    entry.registryId === context.account && entry.repositoryName === `${deployment.project}-web` &&
+    (context.expectedWebDigest ? entry.imageId?.imageDigest === context.expectedWebDigest
+      : entry.imageId?.imageTag === context.imageTag) && DIGEST.test(entry.imageId?.imageDigest || '') &&
+    typeof entry.imageManifest === 'string' && entry.imageManifest.length <= 256_000 &&
+    entry.imageId.imageDigest === image?.imageId?.imageDigest && entry.imageManifest === image?.imageManifest),
+  'web_image_identity_mismatch');
   const digest = `sha256:${createHash('sha256').update(image.imageManifest).digest('hex')}`;
   need(digest === image.imageId.imageDigest, 'web_manifest_digest_mismatch');
   const manifest = json(image.imageManifest);

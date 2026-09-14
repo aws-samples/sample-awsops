@@ -279,6 +279,10 @@ prepare or collect; Deploy Web push/dispatch may collect only. Collect requires 
 lowercase `PIN_SHA`, applied inventory/AgentCore/worker metadata, the exact owned
 collector identity/hash and known CloudFront ID. Web verification binds the running
 ARM64 task role/revision/digest; Deploy Web also requires the approved root digest.
+ECR digest lookup may return multiple tag entries for one manifest. Every entry must
+match the configured account/repository, one digest and identical manifest bytes before
+normalization and hash/ARM64 validation. Tag lookup still binds every entry to the
+requested tag; unrelated entries never become valid aliases.
 Use the [restrictive session contract](runtime-verifier-sessions.md) and private
 0700/0600 credential/state files. Prepare verifies login, DB and the enabled host-only
 registry but is never a full-release result. First-time stacks must complete the

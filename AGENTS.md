@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 92771829b556 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5f5eb6230235 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -59,6 +59,13 @@ additionally uses the locked web driver and TypeScript dependencies. Both Postgr
 No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scripts/v2/package.json` (`make deps` runs `npm ci --prefix scripts/v2`). `next build` fails on app-level type errors but `*.test.ts(x)` type noise is non-blocking.
 
 Dev Deploy Web requires applied inventory (`steampipe_enabled`), AgentCore, workers and readiness, their deployed images/runtime and enabled dispatch. Every activated dev release performs collection, a billed model probe and two real worker jobs. Every current catalog type needs clean post-marker success with known counts/zero unknown attributes; retained operational degraded data does not pass release acceptance. Preserve web identity/image, fresh known resource, SSM/AgentCore/model and both owned worker proofs. Activation and bounded failure policy: `docs/runbooks/runtime-foundation.md`.
+
+The web image provenance helper is unwired. Future dev web wiring must supply real successful
+migration outputs and the named producer-receipt steps, then use composed `promote`.
+`AWS_ACCOUNT_ID_DEV` is required even on main for dev-account exclusion. The helper alone
+changes no release behavior; see `docs/runbooks/web-image-provenance.md`.
+Its required tests need Linux `/proc`, jq and curl on `/usr/local/bin:/usr/bin:/bin`:
+`python3 -m pytest -q scripts/v2/test_ci_web_image.py`. AWS/GitHub are mocked; curl uses localhost.
 
 ## BANNED PATTERNS (enforce in review)
 - **AWS security:** no `0.0.0.0/0` ingress; no IAM `Principal:"*"`/wildcard-action without scoped condition; **no secrets in env/code/IaC** (Secrets Manager / SSM).

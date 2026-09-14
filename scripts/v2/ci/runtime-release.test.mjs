@@ -586,7 +586,7 @@ test('cleanup cannot replace a primary fixed context failure', async () => {
 });
 
 test('existing OCI indexes bind the running ARM64 child and reject indexes without ARM64', async () => {
-  for (const architecture of ['arm64', 'amd64']) {
+  for (const architecture of ['arm64', 'amd64']) for (const aliases of [false, true]) {
     const child = `sha256:${'d'.repeat(64)}`;
     const index = JSON.stringify({ schemaVersion: 2, mediaType: 'application/vnd.oci.image.index.v1+json',
       manifests: [{ digest: child, platform: { architecture, os: 'linux' } }] });
@@ -594,6 +594,10 @@ test('existing OCI indexes bind the running ARM64 child and reject indexes witho
     await withFixture(async f => {
       f.responses['ecr batch-get-image'].images[0].imageManifest = index;
       f.responses['ecr batch-get-image'].images[0].imageId.imageDigest = indexDigest;
+      if (aliases) {
+        const entry = f.responses['ecr batch-get-image'].images[0];
+        f.responses['ecr batch-get-image'].images.push({ ...entry, imageId: { ...entry.imageId, imageTag: 'web-latest' } });
+      }
       f.env.EXPECTED_WEB_DIGEST = indexDigest;
       f.responses['ecs describe-tasks'].tasks[0].containers[0].imageDigest = child;
       const action = f.release();
@@ -604,6 +608,68 @@ test('existing OCI indexes bind the running ARM64 child and reject indexes witho
       }
     });
   }
+});
+
+test('digest lookup accepts the two promotion tags only as one identical image identity', async () => {
+  for (const event of ['push', 'workflow_dispatch']) await withFixture(async f => {
+    f.env.GITHUB_WORKFLOW_REF = 'aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/dev';
+    f.env.GITHUB_EVENT_NAME = event;
+    f.env.EXPECTED_WEB_DIGEST = digest;
+    const entry = f.responses['ecr batch-get-image'].images[0];
+    f.responses['ecr batch-get-image'].images.push({ ...entry, imageId: { ...entry.imageId, imageTag: 'web-latest' } });
+    assert.equal((await f.release()).status, 'full_verified');
+    assert.equal(f.responses['ecr batch-get-image'].images.length, 2);
+    const call = f.calls.find(args => args[0] === 'ecr');
+    assert.ok(call.includes(`imageDigest=${digest}`));
+  });
+});
+
+test('every additional ECR entry must match account repository digest and identical bounded manifest', async () => {
+  for (const change of [
+    { registryId: '999999999999' }, { repositoryName: 'another-repository' },
+    { imageId: { imageTag: 'web-latest', imageDigest: `sha256:${'f'.repeat(64)}` } },
+    { imageManifest: `${body} ` }, { imageManifest: 'x'.repeat(256_001) },
+    { imageManifest: null }, { imageId: null }, null, 'malformed',
+  ]) await withFixture(async f => {
+    f.env.EXPECTED_WEB_DIGEST = digest;
+    const entry = f.responses['ecr batch-get-image'].images[0];
+    const alias = { ...entry, imageId: { ...entry.imageId, imageTag: 'web-latest' } };
+    f.responses['ecr batch-get-image'].images.push(change && typeof change === 'object' ? { ...alias, ...change } : change);
+    await assert.rejects(f.release(), /web_image_identity_mismatch/);
+    assert.equal(f.calls.some(args => args[0] === 'ecs' || args[0] === 'lambda'), false);
+    assert.equal(f.prepared.length, 0);
+  });
+});
+
+test('tag lookup keeps every returned entry bound to the requested tag', async () => {
+  for (const tag of [`web-${sha}`, 'web-latest', undefined]) await withFixture(async f => {
+    const entry = f.responses['ecr batch-get-image'].images[0];
+    f.responses['ecr batch-get-image'].images.push({ ...entry, imageId: { ...entry.imageId, imageTag: tag } });
+    const operation = f.release();
+    if (tag === `web-${sha}`) assert.equal((await operation).status, 'full_verified');
+    else {
+      await assert.rejects(operation, /web_image_identity_mismatch/);
+      assert.equal(f.prepared.length, 0);
+    }
+    assert.ok(f.calls.find(args => args[0] === 'ecr').includes(`imageTag=web-${sha}`));
+  });
+});
+
+test('ECR normalization still rejects empty malformed failed and hash-mismatched responses', async () => {
+  for (const images of [[], undefined, {}, [null], ['malformed']]) await withFixture(async f => {
+    f.responses['ecr batch-get-image'].images = images;
+    await assert.rejects(f.release(), /expected_web_image_missing|web_image_identity_mismatch/);
+    assert.equal(f.prepared.length, 0);
+  });
+  for (const failed of [true, false]) await withFixture(async f => {
+    f.env.EXPECTED_WEB_DIGEST = digest;
+    const response = f.responses['ecr batch-get-image'];
+    if (failed) response.failures = [{ failureCode: 'ImageNotFound' }];
+    else response.images[0].imageManifest = `${body} `;
+    response.images.push({ ...response.images[0], imageId: { ...response.images[0].imageId, imageTag: 'web-latest' } });
+    await assert.rejects(f.release(), failed ? /expected_web_image_missing/ : /web_manifest_digest_mismatch/);
+    assert.equal(f.prepared.length, 0);
+  });
 });
 
 test('post-pin release requires a digest and ignores a moved source tag', async () => {

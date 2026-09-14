@@ -166,3 +166,66 @@ ADR-005에 따라 승인 콜백 이후에도 `awaiting_approval`은 의도적으
 남아 있는 remediation ASL은 비활성 코드이며 실행을 지원하는 경로가 아니다. 실제 SQL
 테스트는 lifecycle 마이그레이션 전후의 거부와 원래 행 보존을 확인한다. 이 경로 활성화나
 조건 확대는 이번 검토 수정의 범위가 아니다.
+
+
+## Trace collection rendering
+
+When a partial graph lacks an explanation, inspect its existing collection fields:
+`nodeDrops`, `edgeDrops`, `orphanSpans`, `invalidSpans`, `unresolvedMessaging`,
+`infraUnavailable`, and per-source `windowStartMs/windowEndMs`. Source reasons and these
+known loss counters explain partial results; arbitrary numeric metadata is not loss evidence.
+Unresolved span parents/links, invalid spans and unresolved messaging spans are not labeled
+as processing limits. The panel discloses positive loss counters and unavailable inventory context, renders
+source windows separately from publication/capture clocks, and does not infer retention
+from losses. `retainedPrevious` alone establishes that a saved graph is being reused.
+The typed collection contract also describes optional additive producer fields; unknown
+runtime data remains defensively normalized. Source-detail totals include saved sources; latest-attempt status counts have separate labels.
+Verify locally with `cd web && npx vitest run components/topology/GraphCollectionStatus.test.tsx`;
+the regression uses the real graph-state reader with a database boundary fixture.
+
+
+## Topology evidence compatibility
+
+**Symptoms:** an IP target remains unresolved, a collection panel omits its query
+window, or source details do not explain a partial graph.
+
+**Interpretation:** the configuration topology page requires independently corroborated
+region/VPC/subnet evidence from RUNNING ECS tasks and pod inventory for EKS. A repeated IP in another
+VPC or an Endpoints row without a corroborating pod cannot establish ownership. The
+page uses the hydrated account scope, cancels earlier loads and rejects late results.
+EKS failures, partial reads and scope-based opt-outs are explicit. Ordinary `entry-only`
+/ `no-entry` clusters are counted as not queried, not failed reads. The existing EKS API
+enumerates its configured region only; the panel names that region and declares other
+regions unassessed. Inventory reads apply account selection only. Host EKS ownership
+is not applied to all/mixed-account targets because their IP key does not establish
+account identity. Unknown per-account run health is one scope notice; normal running
+syncs are not failures. The self-keyed run ledger is an aggregate sweep across accounts:
+its failures/partial results remain visible under every scope, separately from HTTP read
+failures; a failed read does not itself add an unknown aggregate-health notice.
+Aggregate success does not prove member-account health, and member capture
+clocks never borrow its last-success time. Uncorroborated or shared hostNetwork pod IPs
+remain unresolved without making a successful EKS read partial.
+A failed subnet read or the 500-row response cap is disclosed even for an empty graph, alongside retained
+unresolved targets; raw IP labels are not proof that a workload is absent.
+
+For current trace windows and partial-result causes, see [Trace collection rendering](#trace-collection-rendering).
+The browser-built configuration graph uses the currently fetched subnet inventory.
+Persisted service-map ECS labels change only after the next flow rebuild; source
+integration does not trigger that rebuild.
+
+The planned bounded publication companion in `web/lib/graph-store.ts` will supply optional inventory capture/sweep
+clocks, aggregate/account source scope, saved-source provenance and explicit truncation
+flags. The prerequisite accepts those fields without claiming that their producer or
+migration is already live. Missing metadata is unknown, not a failed-collector verdict.
+The accepted shape is documented in [the API contract](../api-reference.md#graph-collection-metadata).
+
+**Local verification:** from `web/`, run:
+
+```bash
+npx vitest run app/topology/page.test.tsx app/topology/subnet-input.test.tsx components/topology/GraphCollectionStatus.test.tsx lib/topology-config.test.ts lib/flow-topology.test.ts
+```
+
+These fixtures exercise real page/builder and graph-state-reader boundaries with local
+transport/database doubles. They do not establish deployed AWS, Runtime or migration
+state. Keep the existing separately authorized rollout procedure above (ADR-005,
+ADR-007) and distinguish source integration from activation.
