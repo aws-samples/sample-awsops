@@ -772,9 +772,12 @@ Task definition 조회가 성공했다면 web container 부재/형식 오류여�
 **AgentCore upgrade prerequisite:** the configured operator-owned CI deployer
 must permit `bedrock-agentcore:GetGateway` on its managed gateway resources,
 in addition to its existing AgentCore list/create/update/target/runtime permissions.
-The provisioner reads the current authorizer/protocol before updating a role, so
-a denied read fails visibly rather than guessing defaults. This is a deployer
-permission, not the web task role's status-page permission.
+The provisioner reads the current role and authorizer/protocol before updating a
+gateway. Any failed read, including a throttle or timeout, records `ERR` and makes
+the run exit nonzero: a matching listed description does not verify the role.
+Known IDs and baseline teardown are retained. A confirmed description-only update
+failure remains `WARN`. This is a deployer permission, not the web task role's
+status-page permission.
 
 Verify the grant in the IAM owner's configuration before dispatch. A role already
 using `AdministratorAccess` already has the IAM allow; this is not a recommendation

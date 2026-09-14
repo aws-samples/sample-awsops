@@ -204,7 +204,7 @@ make agentcore          # arm64 agent 이미지 빌드/푸시 + 멱등 provision
 make agentcore --smoke  # 추가로 호출 검증
 ```
 
-provisioner는 멱등하므로 안전하게 재실행할 수 있습니다(예: 첫 Target 생성이 게이트웨이 미준비로 실패했을 때).
+게이트웨이 미준비로 Target 생성이 실패했다면, 허가된 읽기로 `READY`를 확인한 뒤 provisioner를 재실행하세요. 지속되는 `FAILED`는 별도 진단이 필요하며 자동 삭제·재생성하지 않습니다. 요청 수락과 실제 도구 호출 준비 상태는 별도로 확인해야 합니다.
 
 :::tip 게이트웨이 라우팅은 환경변수로 주입
 `agent.py`는 게이트웨이 URL을 코드에 하드코딩하지 않고 `GATEWAYS_JSON` 환경변수로 주입받습니다. 따라서 게이트웨이 라우팅 변경이 곧바로 Docker 재빌드를 요구하지는 않습니다.

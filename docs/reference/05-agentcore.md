@@ -122,12 +122,23 @@ Terraform; `provision.py` overwrites with real values.
 
 ## Provisioner reconciliation
 
-The deployer needs `bedrock-agentcore:GetGateway`. Existing gateways are read in
-full before reconciling the applied role and catalog description. Updates preserve
+Before upgrading, verify that the operator-owned deployer has
+`bedrock-agentcore:GetGateway` as described in the
+[deployment role prerequisites](../runbooks/dev-repo-setup.md#4-ecr-permissions-for-the-pin-step--ci-deployer-ecr-권한).
+Existing gateways are read in full before reconciling the applied role and catalog description. Updates preserve
 deployed inbound auth/protocol and optional security settings; absent optional
 protocol fields are omitted, never invented from create-time defaults. Known IDs
 remain available to Runtime routing, pruning and all ADR-017 teardown paths after
 read/update failures. Description-only request failures remain warnings.
+
+Role verification is functional, even when the listed description already matches:
+a matching label cannot prove that the gateway uses the applied role. Any failed
+`GetGateway` request, including a throttle or timeout, therefore records `ERR` and
+makes the run exit nonzero while retaining the known ID and baseline teardown.
+This does not claim that role drift was observed; it reports that reconciliation
+could not be verified. Only after a successful read confirms the role may a
+description-only update failure be reported as `WARN`. The old description-only
+path's warning policy does not establish a role-verification success.
 
 Lambda target drift covers the applied Lambda ARN, managed credential-provider
 type and tool definitions (`name`, `description`, `inputSchema`). Target metadata

@@ -204,7 +204,7 @@ make agentcore          # build/push arm64 agent image + idempotent provisioner
 make agentcore --smoke  # additionally validate with an invocation
 ```
 
-The provisioner is idempotent, so it is safe to re-run (e.g., when the first Target creation failed because the gateway was not yet ready).
+If Target creation failed because the gateway was not ready, confirm `READY` through an authorized read before re-running the provisioner. Persistent `FAILED` requires separate diagnosis; there is no automatic deletion/recreation. Request acceptance and readiness for actual tool invocation must be verified separately.
 
 :::tip Gateway routing is injected via env
 `agent.py` does not hardcode gateway URLs — they are injected via the `GATEWAYS_JSON` environment variable. So a gateway-routing change does not immediately require a Docker rebuild.

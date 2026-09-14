@@ -204,7 +204,7 @@ make agentcore          # 构建/推送 arm64 agent 镜像 + 幂等 provisioner
 make agentcore --smoke  # 额外进行调用验证
 ```
 
-provisioner 是幂等的，可以安全地重复执行（例如首次创建 Target 因网关未就绪而失败时）。
+如果 Target 创建因网关未就绪而失败，请通过获授权的读取确认 `READY` 后再重新运行 provisioner。持续的 `FAILED` 需要单独诊断，不会自动删除并重建。请求被接受与实际工具调用就绪需要分别验证。
 
 :::tip 网关路由通过环境变量注入
 `agent.py` 不在代码中硬编码网关 URL，而是通过 `GATEWAYS_JSON` 环境变量注入。因此网关路由的变更并不立即要求重新构建 Docker。
