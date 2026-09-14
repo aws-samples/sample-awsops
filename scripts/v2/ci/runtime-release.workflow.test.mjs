@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -62,6 +62,87 @@ test('all dev web releases require private preparation, contract capture and ful
   assert.ok(mutations.every(step => capture < job.steps.indexOf(step)));
   assert.equal(named(job, 'Clean prepared demo credentials off the runner').if,
     "always() && github.ref == 'refs/heads/dev'");
+});
+
+test('Deploy Web always cleans its captured Terraform cache without deleting other run files', () => {
+  const job = workflow('deploy-web.yml').jobs.deploy;
+  const cleanup = named(job, 'Clean restored terraform config off the runner');
+  assert.equal(cleanup.if, 'always()');
+  assert.equal(cleanup['working-directory'], 'terraform/foundation');
+  assert.equal(job.steps.indexOf(cleanup),
+    job.steps.indexOf(named(job, 'Capture development runtime contract')) + 1);
+  assert.ok(job.steps.indexOf(cleanup) < job.steps.indexOf(named(job, 'Pin web-latest to the approved image')));
+  for (const inputsPresent of [true, false]) {
+    const dir = mkdtempSync(join(tmpdir(), 'terraform-cleanup-'));
+    const foundation = join(dir, cleanup['working-directory']);
+    const sibling = join(dir, 'other-checkout/.terraform');
+    try {
+      mkdirSync(join(foundation, '.terraform'), { recursive: true });
+      mkdirSync(sibling, { recursive: true });
+      writeFileSync(join(foundation, '.terraform/terraform.tfstate'), 'PRIVATE_BACKEND_CACHE');
+      writeFileSync(join(sibling, 'terraform.tfstate'), 'other-run-cache');
+      writeFileSync(join(foundation, 'tfplan'), 'saved-plan');
+      writeFileSync(join(foundation, '.terraform.lock.hcl'), 'provider-lock');
+      const credentials = join(dir, 'credentials.json');
+      writeFileSync(credentials, 'captured-proof-credentials', { mode: 0o600 });
+      if (inputsPresent) for (const name of ['backend.hcl', 'terraform.tfvars'])
+        writeFileSync(join(foundation, name), 'PRIVATE_RESTORED_INPUT');
+      const result = spawnSync('bash', ['--noprofile', '--norc', '-euo', 'pipefail', '-c', cleanup.run],
+        { cwd: foundation, encoding: 'utf8', env: { PATH: process.env.PATH, RUNNER_TEMP: dir } });
+      assert.equal(result.status, 0, result.stderr);
+      for (const name of ['backend.hcl', 'terraform.tfvars', '.terraform'])
+        assert.equal(existsSync(join(foundation, name)), false, name);
+      assert.equal(readFileSync(join(sibling, 'terraform.tfstate'), 'utf8'), 'other-run-cache');
+      assert.equal(readFileSync(join(foundation, 'tfplan'), 'utf8'), 'saved-plan');
+      assert.equal(readFileSync(join(foundation, '.terraform.lock.hcl'), 'utf8'), 'provider-lock');
+      assert.equal(readFileSync(credentials, 'utf8'), 'captured-proof-credentials');
+      assert.equal(result.stdout + result.stderr, '');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test('the real runtime gate passes a private credential file without an inline proof password', () => {
+  const gate = named(workflow('deploy-web.yml').jobs.deploy, 'Authenticated development runtime readiness');
+  assert.equal(gate.env.SMOKE_CREDENTIAL_FILE, '${{ steps.demo.outputs.credential_file }}');
+  assert.doesNotMatch(JSON.stringify(gate.env), /TF_VAR_DEMO_PASSWORD|SMOKE_PASSWORD|demo_password/i);
+  assert.doesNotMatch(gate.run, /--password|TF_VAR_demo_password|SMOKE_PASSWORD/i);
+  const dir = mkdtempSync(join(tmpdir(), 'runtime-gate-'));
+  try {
+    const credentials = join(dir, 'credentials.json');
+    const capture = join(dir, 'controller-input.json');
+    writeFileSync(credentials, JSON.stringify({ email: 'fixture@example.com', password: 'PRIVATE_PROOF_PASSWORD' }),
+      { mode: 0o600 });
+    writeFileSync(join(dir, 'node'), `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const file = process.env.SMOKE_CREDENTIAL_FILE;
+const proof = JSON.parse(fs.readFileSync(file, 'utf8'));
+if ((fs.statSync(file).mode & 0o777) !== 0o600) process.exit(90);
+if (JSON.stringify({ args, env: process.env }).includes(proof.password)) process.exit(91);
+fs.writeFileSync(process.env.TEST_GATE_CAPTURE, JSON.stringify({ args, credential_file: file }));
+`, { mode: 0o700 });
+    const values = {
+      '${{ steps.tf.outputs.url }}': 'https://dev.example.com',
+      '${{ steps.tf.outputs.cloudfront_domain }}': 'd123.cloudfront.net',
+      '${{ steps.demo.outputs.credential_file }}': credentials,
+      '${{ steps.runtime.outputs.deployment_file }}': join(dir, 'runtime-deployment.json'),
+      '${{ steps.workload_session.outputs.session_policy }}': 'restricted-policy',
+      '${{ steps.pin.outputs.digest }}': `sha256:${'a'.repeat(64)}`,
+    };
+    const env = Object.fromEntries(Object.entries(gate.env).map(([key, expression]) => {
+      assert.ok(Object.hasOwn(values, expression), key);
+      return [key, values[expression]];
+    }));
+    const result = spawnSync('bash', ['--noprofile', '--norc', '-euo', 'pipefail', '-c', gate.run], {
+      cwd: root, encoding: 'utf8',
+      env: { ...env, PATH: `${dir}:${process.env.PATH}`, TEST_GATE_CAPTURE: capture },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(capture, 'utf8')), {
+      args: ['scripts/v2/ci/runtime-release.mjs', 'run'], credential_file: credentials,
+    });
+    assert.equal(result.stdout + result.stderr, '');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('dev build and deployment bind configured and actual CI account before ECR or ECS writes', () => {

@@ -171,6 +171,16 @@ Deploy Web passes the pin step's digest as `EXPECTED_WEB_DIGEST`. The verifier q
 
 Verification steps have a 55-minute cap; manual setup has a 75-minute job cap and separate restricted 30-minute backend/one-hour workload sessions. Restored Terraform inputs and backend metadata are removed after capture, with final cleanup retained. Process or runner loss can prevent cleanup. Verification changes no scheduler, concurrency setting, feature flag or IAM grant.
 
+### Operational data and release acceptance
+
+The collector can finish while disclosing unknown attributes, or retain last-good rows after partial/failed work. Those are supported operational data states for diagnosis; they do not satisfy the owner's stricter release condition. Every current catalog type must have succeeded after the marker with known counts and zero unknown attributes. An IAM/SCP denial or hydrate fallback therefore blocks release until its cause is addressed. There is no tolerance override, automatic permission widening or scheduler-disable path.
+
+The existing fifteen-minute schedule remains active. The controller requires both its successful RPC results and strict ledger evidence at the verification observation. It does not attribute the singleton ledger to its own run token. A later scheduled partial/failed/unknown result can intentionally block acceptance, because current incomplete data is not eligible; a current running attempt waits within the shared window. The bounded retry policy never substitutes older success or suppresses the schedule to produce a green result.
+
+The time budget is a fail-closed admission policy, not a guarantee for every workload size. With a fresh marker, the thirteen-minute collection window and 450-second full-invocation allowance mean a new type must start within the first 330 seconds. The verified 420-second Lambda timeout sets that conservative allowance; the same function serves all types. Deployments whose volume, throttling or contention cannot fit must stop for capacity/permission investigation instead of shortening proof checks or accepting incomplete inventory.
+
+A 2026-09-14 operator measurement used the reviewed deployed collector, all 43 catalog types, four synchronous lanes and the same admission floor: all RPCs succeeded with known counts/zero unknown attributes in **57.461 seconds**, with the last admitted call at **39.802 seconds**. A following SQL-reader check verified post-marker ledger evidence for all 43 types. The schedule was enabled before and after the measurement; that alone does not establish an overlapping scheduled invocation or a latency guarantee. This demonstrates feasibility for that measured development workload, not web-role/model/worker readiness or approval of other deployments.
+
 <a id="deployer-verification-permissions--deployer-검증-권한"></a>
 
 ### Deployer verification permissions
