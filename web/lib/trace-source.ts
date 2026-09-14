@@ -61,7 +61,7 @@ export interface ServiceGraphCall {
 // Never use backend exceptions, status messages, SQL, previews or credentials as reasons.
 type Reason = 'missing_configuration' | 'configuration_failed' | 'query_failed' |
   'malformed_payload' | 'malformed_rows' | 'payload_truncated' | 'trace_fetch_failed' |
-  'cap_reached' | 'invalid_request';
+  'cap_reached' | 'invalid_request' | 'incomplete_collection';
 type ReadWindow = Pick<SourceRead<never>, 'windowStartMs' | 'windowEndMs'>;
 type Obj = Record<string, unknown>;
 
@@ -90,7 +90,7 @@ function readResult<T>(
   return {
     items, sourceId, ...window, reasons: unique,
     status: status ?? (unique.length === 0 ? 'ok' :
-      items.length > 0 || unique.every((r) => r === 'cap_reached') ? 'partial' : 'error'),
+      items.length > 0 || unique.every((r) => r === 'cap_reached' || r === 'incomplete_collection') ? 'partial' : 'error'),
   };
 }
 function envelopeReasons(value: unknown): Reason[] {
@@ -98,6 +98,11 @@ function envelopeReasons(value: unknown): Reason[] {
   const reasons: Reason[] = [];
   if (r?.error !== undefined || r?.status === 'error') reasons.push('query_failed');
   if (r?.truncated === true) reasons.push('payload_truncated');
+  if (r && Object.prototype.hasOwnProperty.call(r, 'collectionStatus')) {
+    if (r.collectionStatus === 'error') reasons.push('query_failed');
+    else if (r.collectionStatus === 'partial') reasons.push('incomplete_collection');
+    else if (r.collectionStatus !== 'ok' && r.collectionStatus !== 'empty') reasons.push('malformed_payload');
+  }
   return reasons;
 }
 function inWindow(span: TraceSpan, window: ReadWindow): boolean {

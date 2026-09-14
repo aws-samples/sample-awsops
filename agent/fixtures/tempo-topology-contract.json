@@ -1,0 +1,8 @@
+[
+  {"name":"omitted traces","upstream":{},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"unknown"},"readStatus":"error"},
+  {"name":"null traces","upstream":{"traces":null},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"unknown"},"readStatus":"error"},
+  {"name":"non-list traces","upstream":{"traces":{}},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"unknown"},"readStatus":"error"},
+  {"name":"observed empty","upstream":{"traces":[]},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"empty"},"readStatus":"ok"},
+  {"name":"unfinished jobs","upstream":{"traces":[],"metrics":{"completedJobs":1,"totalJobs":2}},"body":{"truncated":false,"traces":[],"metrics":{"completedJobs":1,"totalJobs":2},"collectionStatus":"partial"},"readStatus":"partial"},
+  {"name":"unknown job completion","upstream":{"traces":[],"metrics":{"totalJobs":2}},"body":{"truncated":false,"traces":[],"metrics":{"totalJobs":2},"collectionStatus":"unknown"},"readStatus":"error"}
+]
