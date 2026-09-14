@@ -5,17 +5,19 @@ import { isTerminalPodPhase, type PodRow } from './eks-resources';
 type Resolution = NonNullable<FlowInput['ipResolved']>[string];
 type Cluster = { name: string; access?: string; region?: string; vpcId?: string };
 
+export type AggregateRunStatus = 'succeeded' | 'running' | 'partial' | 'failed' | 'unknown';
+
 export interface InventoryEvidence {
   capturedAt: string | null;
   capturedThrough: string | null;
   unknownCapture: boolean;
-  status: string;
+  aggregateStatus: AggregateRunStatus;
 }
 
 const validTime = (value: unknown): value is string =>
   typeof value === 'string' && Number.isFinite(Date.parse(value));
 
-/** Row captures are scoped; inventory run metadata currently describes the host only. */
+/** Row captures are scoped; the self-keyed run ledger describes an aggregate account sweep. */
 export function inventoryEvidence(
   rows: { captured_at?: unknown }[],
   run: { status?: unknown; last_success_at?: unknown } | null | undefined,
@@ -32,8 +34,8 @@ export function inventoryEvidence(
     capturedAt: times[0] ?? null,
     capturedThrough: times[times.length - 1] ?? null,
     unknownCapture: rows.some(row => !validTime(row.captured_at)) || times.length === 0,
-    status: host && typeof run?.status === 'string'
-      && ['succeeded', 'running', 'partial', 'failed'].includes(run.status) ? run.status : 'unknown',
+    aggregateStatus: typeof run?.status === 'string'
+      && ['succeeded', 'running', 'partial', 'failed'].includes(run.status) ? run.status as AggregateRunStatus : 'unknown',
   };
 }
 
@@ -102,7 +104,7 @@ export async function fetchEksIpEvidence(signal?: AbortSignal): Promise<EksIpEvi
           };
         }
         const key = scopedTargetIp(cluster.region!, cluster.vpcId!, ip);
-        if (!resolution || candidates.has(key)) degraded = true;
+        // Ambiguous/uncorroborated IPs are ordinary non-evidence, not failed collection.
         // An IP seen in two clusters in the same network scope is never last-wins, even if their
         // workload labels coincide. Unproven records block ownership rather than asserting it.
         candidates.set(key, candidates.has(key) ? null : resolution);

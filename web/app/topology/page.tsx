@@ -10,7 +10,7 @@ import RefreshButton from '@/components/ui/RefreshButton';
 import DetailPanel from '@/components/ui/DetailPanel';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { buildFlowGraph, filterFromEntry, type FlowInput, type FlowKind, type FlowNode } from '@/lib/flow-topology';
-import { fetchEksIpEvidence, inventoryEvidence, type EksIpEvidence, type InventoryEvidence } from '@/lib/topology-config';
+import { fetchEksIpEvidence, inventoryEvidence, type EksIpEvidence, type InventoryEvidence, type AggregateRunStatus } from '@/lib/topology-config';
 import { layoutFlow } from '@/lib/flow-layout';
 import { useTheme } from '@/lib/use-theme';
 import { useActiveScope } from '@/lib/account-context';
@@ -130,59 +130,67 @@ function nodeLabel(n: FlowNode): ReactNode {
 }
 
 const ROW_CAP = 500; // /api/inventory caps limit at 500
-const ISSUE_STATUSES = ['failed', 'partial', 'unavailable', 'error'] as const;
+const ISSUE_STATUSES = ['failed', 'partial'] as const;
 type InventoryIssue = { type: string; status: typeof ISSUE_STATUSES[number] };
 const EVIDENCE_COPY = {
   en: {
-    capture: 'Inventory capture / last success:', unknown: 'unknown', missingCapture: 'Some capture times unknown',
+    capture: 'Capture range (last-success fallback):', unknown: 'unknown', missingCapture: 'Some capture times unknown',
     healthUnknown: 'Run health unknown for this account scope',
     limit: 'Response limit reached; coverage may be incomplete',
-    failures: { failed: 'failed', partial: 'partial', unavailable: 'unavailable', error: 'failed' },
+    failures: { failed: 'failed', partial: 'partial' },
+    runs: 'Aggregate sync runs:', issues: 'Aggregate sync issues:', reads: 'Inventory read failures:',
+    statuses: { succeeded: 'succeeded', running: 'running', partial: 'partial', failed: 'failed', unknown: 'unknown' },
     eks: { failed: 'EKS ownership read failed', partial: 'EKS ownership evidence is partial',
       not_attempted: 'EKS ownership was not attempted for this account scope' },
   },
   ko: {
-    capture: '인벤토리 수집 / 최근 성공:', unknown: '미확인', missingCapture: '일부 수집 시각 미확인',
+    capture: '수집 시각 범위 (최근 성공 시각으로 보완):', unknown: '미확인', missingCapture: '일부 수집 시각 미확인',
     healthUnknown: '이 계정 범위의 수집 실행 상태는 미확인',
     limit: '응답 상한 도달 — 일부 정보가 누락될 수 있음',
-    failures: { failed: '실패', partial: '부분 수집', unavailable: '미가용', error: '실패' },
+    failures: { failed: '실패', partial: '부분 수집' },
+    runs: '전체 계정 집계 수집:', issues: '집계 수집 문제:', reads: '인벤토리 조회 실패:',
+    statuses: { succeeded: '성공', running: '진행 중', partial: '부분 수집', failed: '실패', unknown: '미확인' },
     eks: { failed: 'EKS 소유 근거 조회 실패', partial: 'EKS 소유 근거가 일부만 확인됨',
       not_attempted: '이 계정 범위에서는 EKS 소유 근거를 조회하지 않음' },
   },
   ja: {
-    capture: 'インベントリ取得 / 最終成功:', unknown: '不明', missingCapture: '一部の取得時刻が不明',
+    capture: '取得時刻の範囲（最終成功時刻で補完）:', unknown: '不明', missingCapture: '一部の取得時刻が不明',
     healthUnknown: 'このアカウント範囲の収集実行状態は不明',
     limit: '応答上限に到達 — 情報が不足している可能性があります',
-    failures: { failed: '失敗', partial: '部分収集', unavailable: '利用不可', error: '失敗' },
+    failures: { failed: '失敗', partial: '部分収集' },
+    runs: '全アカウント集計の収集:', issues: '集計収集の問題:', reads: 'インベントリ取得失敗:',
+    statuses: { succeeded: '成功', running: '実行中', partial: '部分収集', failed: '失敗', unknown: '不明' },
     eks: { failed: 'EKS所有情報の取得に失敗', partial: 'EKS所有情報は一部のみ確認済み',
       not_attempted: 'このアカウント範囲ではEKS所有情報を取得していません' },
   },
   zh: {
-    capture: '资产清单采集 / 最近成功:', unknown: '未知', missingCapture: '部分采集时间未知',
+    capture: '采集时间范围（最近成功时间作为回退）:', unknown: '未知', missingCapture: '部分采集时间未知',
     healthUnknown: '此账户范围的采集运行状态未知',
     limit: '已达到响应上限 — 覆盖范围可能不完整',
-    failures: { failed: '失败', partial: '部分采集', unavailable: '不可用', error: '失败' },
+    failures: { failed: '失败', partial: '部分采集' },
+    runs: '所有账户汇总采集:', issues: '汇总采集问题:', reads: '资产清单读取失败:',
+    statuses: { succeeded: '成功', running: '运行中', partial: '部分采集', failed: '失败', unknown: '未知' },
     eks: { failed: 'EKS归属信息读取失败', partial: 'EKS归属证据不完整',
       not_attempted: '此账户范围未尝试读取EKS归属信息' },
   },
 };
 
-async function fetchType(t: InvType | 'vpc' | 'subnet' | 'security_group', account: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; capped: boolean }> {
+async function fetchType(t: InvType | 'vpc' | 'subnet' | 'security_group', account: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; capped: boolean; readFailed: boolean }> {
   try {
     const r = await fetch(`/api/inventory/${t}?limit=${ROW_CAP}&accounts=${encodeURIComponent(account)}`, { signal });
-    if (!r.ok) return { rows: [], capped: false, ...inventoryEvidence([], null, false), status: 'failed' };
+    if (!r.ok) return { rows: [], capped: false, ...inventoryEvidence([], null, false), readFailed: true };
     const d = await r.json();
     if (d.error || d.status === 'error' || !Array.isArray(d.rows)) {
-      return { rows: [], capped: false, ...inventoryEvidence([], null, false), status: 'failed' };
+      return { rows: [], capped: false, ...inventoryEvidence([], null, false), readFailed: true };
     }
     const rows = d.rows as { resource_id: unknown; region: unknown; captured_at?: unknown; data?: object }[];
     return {
       rows: rows.map((x) => ({ ...(x.data ?? {}), resource_id: x.resource_id, region: x.region })),
       ...inventoryEvidence(rows, d.run, account === 'self'),
-      capped: rows.length >= ROW_CAP,
+      capped: rows.length >= ROW_CAP, readFailed: false,
     };
   } catch {
-    return { rows: [], capped: false, ...inventoryEvidence([], null, false), status: 'failed' };
+    return { rows: [], capped: false, ...inventoryEvidence([], null, false), readFailed: true };
   }
 }
 
@@ -241,6 +249,8 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
   const [captureThrough, setCaptureThrough] = useState<string | null>(null);
   const [unknownCapture, setUnknownCapture] = useState(false);
   const [collectionIssues, setCollectionIssues] = useState<InventoryIssue[]>([]);
+  const [readFailures, setReadFailures] = useState<string[]>([]);
+  const [aggregateRuns, setAggregateRuns] = useState<[AggregateRunStatus, number][]>([]);
   const [runHealthUnknown, setRunHealthUnknown] = useState(false);
   const [eksStatus, setEksStatus] = useState<EksIpEvidence['status'] | 'not_attempted'>('not_attempted');
   const [cappedTypes, setCappedTypes] = useState<string[]>([]);
@@ -289,10 +299,14 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
       setSyncedAt(oldest);
       setCaptureThrough(newest);
       setUnknownCapture(results.some(r => r.rows.length > 0 && r.unknownCapture));
-      setRunHealthUnknown(account !== 'self' || results.some(r => r.status === 'unknown'));
+      setRunHealthUnknown(account !== 'self' || results.some(r => r.aggregateStatus === 'unknown'));
       setEksStatus(eks.status);
+      const counts = new Map<AggregateRunStatus, number>();
+      results.filter(r => !r.readFailed).forEach(r => counts.set(r.aggregateStatus, (counts.get(r.aggregateStatus) ?? 0) + 1));
+      setAggregateRuns([...counts]);
+      setReadFailures(results.flatMap((r, i) => r.readFailed ? [types[i]] : []));
       setCollectionIssues(results.flatMap((r, i) => {
-        const status = ISSUE_STATUSES.find(value => value === r.status);
+        const status = ISSUE_STATUSES.find(value => value === r.aggregateStatus);
         return status ? [{ type: types[i], status }] : [];
       }));
       setCappedTypes(capped);
@@ -603,7 +617,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
                 <option key={c.key} value={c.key}>{c.resolved ? `${c.resolved.toUpperCase()} · ${c.cluster}` : c.cluster}</option>
               ))}
             </select>
-            <RefreshButton busy={busy} onClick={load} capturedAt={syncedAt} />
+            <RefreshButton busy={busy} onClick={load} capturedAt={captureThrough} />
             <Link href="/topology/infra" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
               {tt('인프라 배치 →')}
             </Link>
@@ -620,7 +634,9 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
           <span>{copy.capture} {syncedAt ? new Date(syncedAt).toLocaleString() : copy.unknown}</span>
           {captureThrough && captureThrough !== syncedAt && <span> – {new Date(captureThrough).toLocaleString()}</span>}
           {unknownCapture && <span> · {copy.missingCapture}</span>}
-          {collectionIssues.length > 0 && <div role="status">{collectionIssues.map(issue => `${issue.type}: ${copy.failures[issue.status]}`).join(', ')}</div>}
+          {aggregateRuns.length > 0 && <div>{copy.runs} {aggregateRuns.map(([status, count]) => `${copy.statuses[status]} (${count})`).join(', ')}</div>}
+          {readFailures.length > 0 && <div role="status">{copy.reads} {readFailures.map(type => `${type}: ${copy.failures.failed}`).join(', ')}</div>}
+          {collectionIssues.length > 0 && <div role="status">{copy.issues} {collectionIssues.map(issue => `${issue.type}: ${copy.failures[issue.status]}`).join(', ')}</div>}
           {runHealthUnknown && <div>{copy.healthUnknown}</div>}
           {eksStatus !== 'ok' && <div>{copy.eks[eksStatus]}</div>}
         </div>}

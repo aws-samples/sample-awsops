@@ -76,7 +76,7 @@ function serve(options: {
         resource_id: 'subnet-a', region, captured_at: captured, data: { vpc_id: vpcId },
       }] : options.ecs && url.pathname.endsWith('/ecs_task') ? [{
         resource_id: 'task-orders', region, captured_at: captured, data: {
-          task_group: 'service:ecs-orders', cluster_arn: 'cluster/production',
+          last_status: 'RUNNING', task_group: 'service:ecs-orders', cluster_arn: 'cluster/production',
           attachments: [{ Details: [{ Name: 'subnetId', Value: 'subnet-a' }, { Name: 'privateIPv4Address', Value: ip }] }],
         },
       }] : [],
@@ -145,7 +145,8 @@ describe('sample topology evidence', () => {
     serve({ runStatus: 'running' });
     await ready();
     const text = screen.getByLabelText('Inventory collection evidence').textContent;
-    expect(text).not.toContain(': running');
+    expect(text).toContain('Aggregate sync runs: running (18)');
+    expect(text).not.toContain('Aggregate sync issues:');
     expect(text).not.toContain('Run health unknown');
   });
   it('keeps a real member-scope subnet failure separate from unavailable run health', async () => {
@@ -153,8 +154,27 @@ describe('sample topology evidence', () => {
     serve({ runStatus: 'succeeded', subnetStatus: 503 });
     await ready();
     const evidence = screen.getByLabelText('Inventory collection evidence');
-    expect(evidence.querySelector('[role="status"]')?.textContent).toBe('subnet: failed');
+    expect(evidence.querySelector('[role="status"]')?.textContent).toBe('Inventory read failures: subnet: failed');
     expect(evidence.textContent).toContain('Run health unknown for this account scope');
+  });
+  it.each(['failed', 'partial'])('discloses aggregate %s sweeps in member scope without using their clocks', async runStatus => {
+    setActiveScope({ ...DEFAULT_SCOPE, accounts: [member] });
+    serve({ runStatus, rowCapture: null });
+    await ready();
+    const evidence = screen.getByLabelText('Inventory collection evidence');
+    expect(evidence.textContent).toContain(`Aggregate sync runs: ${runStatus} (18)`);
+    expect(evidence.textContent).toContain(`Aggregate sync issues: route53: ${runStatus}`);
+    expect(evidence.textContent).toContain('Run health unknown for this account scope');
+    expect(evidence.textContent).not.toContain(new Date(captured).toLocaleString());
+  });
+  it('labels aggregate success separately from unknown member run health', async () => {
+    setActiveScope({ ...DEFAULT_SCOPE, accounts: [member] });
+    serve({ runStatus: 'succeeded' });
+    await ready();
+    const text = screen.getByLabelText('Inventory collection evidence').textContent;
+    expect(text).toContain('Aggregate sync runs: succeeded (18)');
+    expect(text).toContain('Run health unknown for this account scope');
+    expect(text).not.toContain('Aggregate sync issues:');
   });
   it('does not reload unchanged account queries on a region-only selection change', async () => {
     serve({ runStatus: 'succeeded' });

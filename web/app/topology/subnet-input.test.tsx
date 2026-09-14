@@ -30,7 +30,7 @@ it('passes independently collected subnet rows to the real ECS target resolver',
       resource_id: 'subnet-a', region: 'us-east-1', data: { vpc_id: 'vpc-a' },
     }] : type === 'ecs_task' ? [{
       resource_id: 'task-orders', region: 'us-east-1', data: {
-        task_group: 'service:ecs-orders', cluster_arn: 'cluster/production',
+        last_status: 'RUNNING', task_group: 'service:ecs-orders', cluster_arn: 'cluster/production',
         attachments: [{ Details: [
           { Name: 'subnetId', Value: 'subnet-a' }, { Name: 'privateIPv4Address', Value: '10.0.1.10' },
         ] }],

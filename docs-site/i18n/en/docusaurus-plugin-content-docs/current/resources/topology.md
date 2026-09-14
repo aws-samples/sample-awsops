@@ -52,7 +52,7 @@ To see a service's full path, pick an entry point with the **CloudFront** or **L
 :::
 
 :::info Displayed times
-Source capture/last-success times and query windows in collection evidence use the browser timezone. They are not the current fetch time or proof of live traffic state.
+Configuration topology shows the range of source capture times, using last-success time as a fallback in host scope when captures are missing. Times use the browser timezone; they are neither the current fetch time nor proof of live traffic. Aggregate account-sweep status and inventory read failures are shown separately. Aggregate success does not establish per-account collection health.
 :::
 
 ## AI analysis tips

@@ -185,6 +185,15 @@ application, without guaranteeing cancellation of a server query already started
 | `/api/stream` | GET | SSE 스트림 | 없음 |
 
 
+## Configuration topology inventory evidence
+
+`/api/inventory/{type}` returns scoped row captures and a self-keyed `run` describing
+an aggregate sweep across connected accounts. The configuration page labels aggregate
+status under every account scope, separately from inventory read failures. A successful
+sweep is not per-account health proof; member clocks never borrow aggregate last-success.
+Only RUNNING ECS tasks with subnet/VPC corroboration establish current IP ownership.
+Ordinary EKS pod-IP ambiguity removes attribution without implying a failed read.
+
 ## Trace collection disclosure
 
 The `GraphCollection` / `GraphCollectionSource` TypeScript contract is defined in
