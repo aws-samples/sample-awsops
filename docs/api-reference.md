@@ -32,6 +32,21 @@
 | `/api/inventory/summary` | GET | 타입/카테고리별 카운트·보안 분할은 리전 스코프 반영. `collection.scope=aggregate`는 전체 수집 작업의 configured/readOk/runs이며 계정별 건강 판정이 아님. 누락·실패·unknown 보존 / aggregate job ledger | verifyUser |
 | `/api/inventory/trend` | GET | 일별 리소스 카운트 추세 (`inventory_snapshots`, 기본 14일/최대 90일) — `accounts` 스코프(기본 self, `__all__`은 서버에서 self+스캔 스코프 내 활성 멤버[all_regions 또는 활성 리전 ≥1]로 해석, 검증된 CSV; 리전 차원 없음) + (일자, 타입)별 계정 커버리지·해석된 계정 목록(`accounts`)·계정 레지스트리 조회 실패 시 `degraded: true` 반환, 파생 보안 시리즈(public_s3_buckets 등)는 total에서 제외 | verifyUser |
 
+### Inventory pagination and sweep ledger
+
+`GET /api/inventory/[type]` returns scoped `rows`, using `limit` (at most 500) and
+`offset`, plus nullable `run` metadata. The run is the global per-type sweep row
+with `account_id='self'`, including for member/all-account reads. Its row count
+covers the sweep, not the selected account, region or page.
+
+Topology reads ECS tasks/subnets in at most 20 pages of 500 under the shared
+30-second load budget. It compares status, finish, last-success and row-count
+metadata across pages; rows and ledger are separate reads, not an atomic snapshot.
+Only a stable succeeded sweep permits exclusive ownership. Incomplete or changed
+sweeps retain bounded cached rows with confidence withheld; missing ledger, failed,
+malformed or capped reads never prove absence. Other display reads keep their
+existing row cap. Authentication and type-specific admin checks still apply.
+
 ## eks (10)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|

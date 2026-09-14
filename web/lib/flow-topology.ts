@@ -535,7 +535,7 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
           meta = { ambiguity: issue ?? 'ownership_unverified' };
         }
         // group key includes cluster so same-named workloads in different clusters don't merge
-        if (r) { resolved = r.resolved; key = `${r.resolved}:${str(r.meta?.cluster ?? '')}/${r.label}`; mlabel = r.label; groupLabel = r.label; meta = { ...r.meta, ...(reads?.configurationOnly ? { ownership_evidence: 'cached_configuration' } : {}) }; }
+        if (r) { resolved = r.resolved; key = `${r.resolved}:${str(r.meta?.cluster ?? '')}/${r.label}`; mlabel = r.label; groupLabel = r.label; meta = { ...r.meta }; }
       }
       let g = groups.get(key);
       if (!g) { g = { key, groupLabel, resolved, meta, members: [] }; groups.set(key, g); }
@@ -558,6 +558,7 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
                        ...(total > TARGET_CAP ? { membersTruncated: total - TARGET_CAP } : {}) }),
         ...(g.resolved ? { resolved: g.resolved } : {}),
         ...g.meta,
+        ...(input.ownershipRead?.configurationOnly ? { ownership_evidence: 'cached_configuration' } : {}),
       });
       addEdge(tgId, nodeId);
     }

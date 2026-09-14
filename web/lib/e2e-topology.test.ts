@@ -75,6 +75,20 @@ function expectNoDanglingEdges(graph: { nodes: { id: string }[]; edges: { source
 }
 
 describe('buildE2eGraph — evidence and provenance', () => {
+  it.each([['instance', 'i-cache'], ['ip', '10.0.1.10']])(
+    'keeps cached %s targets out of identity evidence while preserving live scoped joins', (type, id) => {
+      const network = [observation([flow({ local: endpoint(type === 'instance' ? { instanceId: id } : {}) })])];
+      const live = buildE2eGraph(input({ configured: configured([target({ targetType: type, id })]), network }));
+      expect(identityEdges(live)).toHaveLength(1);
+      const cached = buildFlowGraph({ ownershipRead: { configurationOnly: true }, tg: [{
+        resource_id: 'tg-cache', region: REGION, vpc_id: VPC, target_type: type,
+        target_health_descriptions: [{ Target: { Id: id } }],
+      }] });
+      const graph = buildE2eGraph(input({ configured: cached, network }));
+      expect(identityEdges(graph)).toHaveLength(0);
+      expect(graph.summary.ambiguousEndpoints).toBeGreaterThan(0);
+    });
+
   it('does not promote materialized configuration into exclusive identity evidence', () => {
     const graph = buildE2eGraph(input({ configured: configured([target({ ownership_evidence: 'cached_configuration' })]),
       network: [observation()] }));

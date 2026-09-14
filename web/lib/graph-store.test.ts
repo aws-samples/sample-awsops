@@ -53,6 +53,23 @@ function mockPool(invRows: unknown[]) {
 }
 
 describe('rebuildGraph', () => {
+  it.each([['instance', 'i-cache'], ['ip', '10.0.1.10'], ['lambda', 'arn:lambda:cache']])(
+    'tags every materialized %s target as cached configuration', async (type, id) => {
+      const { pool, client } = mockPool([]);
+      pool.query.mockImplementation((...args: unknown[]) => Promise.resolve({
+        rows: String(args[0]).includes('DISTINCT account_id') ? [{ account_id: 'self' }] : [
+          { resource_type: 'target_group', resource_id: 'tg-cache', region: 'us-east-1',
+            data: { target_type: type, vpc_id: 'vpc-cache', target_health_descriptions: [{ Target: { Id: id } }] } },
+        ],
+      }));
+      await rebuildGraph(pool as never, 'CACHED_TARGET');
+      const write = client.query.mock.calls.find(([sql, params]) =>
+        sql.includes('INSERT INTO topology_nodes') && params?.[1] === 'target')!;
+      expect(JSON.parse(String(write[1]?.[3]))).toMatchObject({
+        targetType: type, ownership_evidence: 'cached_configuration',
+      });
+    });
+
   it('materializes ECS scope from the account-scoped synced subnet rows it actually requests', async () => {
     const inventory = [
       { resource_type: 'target_group', resource_id: 'tg-b', region: 'us-east-1', data: {
