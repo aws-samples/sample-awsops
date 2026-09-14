@@ -26,7 +26,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration and opt-in diagnostics (ADR-002/005/016) |
 | [web-image-provenance.md](web-image-provenance.md) | Unwired helper contract: required receipt steps/inputs, enforced promotion chain, main account prerequisite, migration/rollback/expiry limits (ADR-005) |
 | [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |
-| [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
+| [runtime-foundation.md](runtime-foundation.md) | Runtime activation and unwired strict host-only controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage |
 | [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
 | [runtime-verifier-sessions.md](runtime-verifier-sessions.md) | Development verification policies: manual backend/workload phases, Deploy Web workload-only collect, owned collector invocation, synchronous/HTTP proof, and cleanup gates (ADR-002/005/021) |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; saved-plan scope, links to branch-independent artifact inspection/recovery, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
@@ -226,7 +226,18 @@ distinction between operational degraded data and ineligible release evidence.
 Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
 admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
 57.461-second collection sample and its limits; it is not full live readiness.
-The catalog must have 43–128 types; every validated returned type needs strict proof.
+The catalog must include the pinned baseline (currently 43 names, source-AST checked);
+valid growth is allowed up to 128 types and every returned type needs strict proof.
+Both modes require the enabled host only. Collect's authenticated DB/host preflight
+rejects incompatible registries before type calls with `host_only_registry_required`.
+Preserve the AWS CLI environment allowlist, configuration isolation and endpoint restrictions.
+The first chronological terminal failure stops new type admission; admitted work settles
+and untouched types remain `not_started`.
+Partial/unknown outcomes are expected hard stops even under limiter/hydrate pressure.
+Use bounded capacity/reachability/permission diagnosis before an authorized fresh rerun,
+never automatic permission widening, degraded acceptance or scheduler suppression.
+`remaining_prerequisites: "not_assessed"` leaves separate workflow/plan/promotion gates;
+keep the fixed-code table and calibrated `readRuntimeSmokeConfig` parameter documented.
 The 17-minute reserve covers only the single-pass 1,010-second base path plus 10 seconds.
 Extra 35-second reads need at least 25 seconds saved elsewhere; the minimum 180-second
 retry overhead needs at least 170 seconds saved, reusing the original worker allowances.

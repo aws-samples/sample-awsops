@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ad3278aebfae · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4fd52e7c2d86 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -188,6 +188,8 @@ Require full HTTP timeouts remaining, and probe/worker budgets before billing or
 Collection windows are caps; late completion can fail admission.
 Post-marker running attempts with old/null previous success time out as collection_timeout;
 full-policy stale terminal evidence is collection_stale. Login/DB also require full timeouts.
+`readRuntimeSmokeConfig(file, credentialFile, now = Date.now())` accepts a finite numeric
+validation time; controller callers pass calibrated `now()` without changing marker/expiry.
 
 ## Strict release controller capability
 
@@ -195,11 +197,20 @@ full-policy stale terminal evidence is collection_stale. Login/DB also require f
 collect-runtime workflow is absent. No flags/workflows are enabled. Future full
 release integration must require collect, never accept prepare or skip inactive prerequisites.
 It binds dev source/account/actual role, applied runtime identity and ARM64 web digest.
-Reject catalogs below 43 or above 128 types. Every returned type (currently 43)
+Require the pinned 43-name baseline, source-AST checked; valid growth is allowed up
+to 128 types. Every returned type
 needs post-marker succeeded evidence, known counts and
 zero unknowns, with at most four concurrent in-flight synchronous owned calls. Prepare obtains authenticated
 DB time plus host proof; calibration anchors at request start and shifts the existing
 deadline equally. No lower-bound freshness tolerance or rolling prior success is introduced.
+Both modes require the enabled host only; collect's authenticated DB/host preflight
+fails `host_only_registry_required` before type calls. AWS CLI children use an explicit
+credential/settings allowlist, pinned path, disabled config/credential files/metadata
+and endpoint isolation; drop ambient profiles/providers/CA/proxy/hooks and CI secrets.
+First chronological terminal failure stops new type admission; admitted work settles
+and untouched types remain `not_started`. Partial/unknown results are expected hard
+stops under limiter/hydrate load too; investigate capacity, reachability or denials
+before an authorized fresh bounded rerun. No weaker acceptance or scheduler suppression.
 Collector hash/RevisionId must remain stable before/after collection; then full
 SSM/AgentCore/model and both owned worker proofs remain mandatory. Preserve private
 credentials/cleanup, restrictive consumer sessions and reviewed activation prerequisites.
@@ -211,6 +222,8 @@ reusing the original worker allowances. More reads/waits/overhead need more time
 `capture` reads private deployment JSON on stdin and emits `deployment_file` to
 `GITHUB_OUTPUT`; `run` reads `RUNTIME_DEPLOYMENT_FILE`. Both need private credentials.
 Full CLI inputs/timeouts: `docs/runbooks/runtime-foundation.md#controller-cli-contract`.
+`remaining_prerequisites: "not_assessed"` retains separate workflow/plan/promotion gates;
+use the canonical fixed-code operator table in that runbook.
 Tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
 The dated owner requirement supersedes the earlier CloudFront-only proposal.
 Four lanes do not promise fourfold throughput or completion for every workload.

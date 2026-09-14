@@ -280,6 +280,9 @@ checks the host registry; optional hostOnly rejects members. Verify requires com
 fresh collection, real web-role runtime evidence and owned worker completion. The file
 is at most 16 KiB, collectionStartedAt at most 30 minutes old, and queued types unique
 with cloudfront included. The utility alone does not wire a deployment workflow.
+`readRuntimeSmokeConfig(file, credentialFile, now = Date.now())` takes a finite
+numeric validation time. Pass calibrated `now()` from the controller; default callers
+retain their existing behavior without changing the marker or extending expiry.
 
 Verify accepts optional `inventoryPolicy: "full"` and `collectionMode: "release"`;
 other values fail, and omission retains strict checks for every supplied type. Full mode
@@ -306,12 +309,22 @@ performs DB-only verification; `collect-runtime.yml` is absent. This change enab
 no workflow or flag. Future integration must use collect mode for mandatory full
 readiness; prepare is only authenticated login/DB/host registration, never release proof.
 The controller verifies dev source/account/role, applied runtime metadata and ARM64
-web digest, rejects catalogs below 43 or above 128 types, then drives every returned
+web digest, requires every pinned baseline member (currently 43, source-AST checked)
+and permits valid growth up to 128 types, then drives every returned
 type (currently 43) with at most four
 concurrent in-flight synchronous invocations. It requires succeeded results, known counts and zero unknowns.
 It samples the authenticated DB clock before collecting, anchors calibration at request
 start, shifts the existing deadline by the same offset, and retains strict post-marker
 ledger checks. Collector code hash and RevisionId must remain stable through collection.
+Both modes require the enabled host only. Collect's authenticated DB/host preflight
+rejects incompatible registries as `host_only_registry_required` before per-type calls.
+AWS CLI children use an explicit credential/settings allowlist, pinned path, disabled
+config/credential files and metadata, and endpoint isolation; never forward ambient CI
+secrets, profiles, providers, CA/proxy overrides or hooks.
+The first chronological terminal failure stops new type admission; admitted work settles,
+and untouched types remain structured `not_started`. Partial/unknown outcomes intentionally
+stop even under limiter/hydrate pressure. Diagnose capacity, reachability or denials before
+an authorized fresh bounded rerun; do not weaken acceptance or suppress the schedule.
 Full SSM/AgentCore/model and both owned worker proofs remain required afterward.
 Private credentials/configuration and cleanup, restrictive consumer sessions and
 explicit capability activation remain mandatory integration prerequisites.
@@ -323,6 +336,8 @@ the minimum 180-second retry overhead needs at least 170 seconds saved, without 
 workers twice. More reads/waits/overhead need more time; no extras are guaranteed.
 CLI inputs, per-type versus catalog timeouts and prerequisites:
 [controller CLI contract](../docs/runbooks/runtime-foundation.md#controller-cli-contract).
+`remaining_prerequisites: "not_assessed"` preserves separate workflow/plan/promotion gates.
+Use the canonical [fixed-code operator table](../docs/runbooks/runtime-foundation.md#fixed-diagnostics-and-remaining-prerequisites).
 Combined tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
 The owner requires all current types, superseding the earlier CloudFront-only proposal.
 Four lanes are a concurrency ceiling, not a throughput guarantee; the active schedule

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   classifyAwsError, ReleaseError, validateContext, validateDeployment, validateCatalog, captureDeployment, release,
-  MIN_CATALOG_TYPES,
+  MIN_CATALOG_TYPES, REQUIRED_CATALOG_TYPES,
 } from './runtime-release.mjs';
 
 const account = '123456789012', project = 'awsops-fixture', region = 'ap-northeast-2';
@@ -30,6 +30,8 @@ const env = {
   GITHUB_WORKFLOW_REF: 'aws-samples/sample-awsops/.github/workflows/collect-runtime.yml@refs/heads/dev',
   RUNTIME_MODE: 'collect', PIN_SHA: sha,
   PUBLIC_URL: 'https://dev.example.com', CLOUDFRONT_DOMAIN: 'd123.cloudfront.net',
+  AWS_ACCESS_KEY_ID: 'FIXTURE_ACCESS_KEY', AWS_SECRET_ACCESS_KEY: 'FIXTURE_SECRET_KEY',
+  AWS_SESSION_TOKEN: 'FIXTURE_SESSION_TOKEN',
 };
 function deployment() {
   return {
@@ -145,8 +147,11 @@ function runCli(f, mode, extraEnv = {}, input, extraArgs = []) {
 require('node:fs').writeFileSync(${JSON.stringify(called)}, 'called');
 process.exit(99);
 `, { mode: 0o700 });
+  const cliEnv = { ...f.env, PATH: guard, ...extraEnv };
+  // A broken preflight must never reach a real AWS request, even with the pinned child PATH.
+  for (const key of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']) delete cliEnv[key];
   const result = spawnSync(process.execPath, [new URL('./runtime-release.mjs', import.meta.url).pathname,
-    mode, ...extraArgs], { env: { ...f.env, PATH: guard, ...extraEnv }, input, encoding: 'utf8', timeout: 5000 });
+    mode, ...extraArgs], { env: cliEnv, input, encoding: 'utf8', timeout: 5000 });
   assert.equal(result.error, undefined);
   assert.equal(existsSync(called), false, 'The CLI must reject preflight failures before any AWS operation');
   assert.ok(!(result.stdout + result.stderr).includes('FIXTURE_PASSWORD'));
@@ -220,6 +225,50 @@ test('wrong source, role/account or mode fails before AWS calls', async () => {
   assert.doesNotThrow(() => validateContext(env));
 });
 
+test('AWS reads and invokes receive only pinned environment and exported temporary credentials', async () => withFixture(async f => {
+  const poison = Object.fromEntries([
+    'AWS_ENDPOINT_URL', 'AWS_ENDPOINT_URL_STS', 'AWS_ENDPOINT_URL_ECR', 'AWS_ENDPOINT_URL_LAMBDA',
+    'AWS_PROFILE', 'AWS_DEFAULT_PROFILE', 'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE',
+    'AWS_CA_BUNDLE', 'AWS_DATA_PATH', 'AWS_ROLE_ARN', 'AWS_WEB_IDENTITY_TOKEN_FILE',
+    'AWS_CONTAINER_CREDENTIALS_FULL_URI', 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+    'AWS_CONTAINER_AUTHORIZATION_TOKEN', 'AWS_EC2_METADATA_SERVICE_ENDPOINT', 'BOTO_CONFIG',
+    'AWS_IGNORE_CONFIGURED_ENDPOINT_URLS', 'AWS_EC2_METADATA_DISABLED', 'AWS_MAX_ATTEMPTS', 'AWS_PAGER',
+    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+    'SSL_CERT_FILE', 'SSL_CERT_DIR', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE', 'HOME', 'PATH',
+    'XDG_CONFIG_HOME', 'PYTHONPATH', 'LD_PRELOAD', 'BASH_ENV', 'GH_TOKEN', 'GITHUB_TOKEN',
+    'GITHUB_ENV', 'GITHUB_OUTPUT', 'GITHUB_STATE', 'GITHUB_PATH', 'TF_PLAN_ENC_KEY',
+    'LANG', 'LC_ALL',
+  ].map(key => [key, 'PRIVATE_POISON']));
+  const operations = [];
+  await release(deployment(), { env: { ...f.env, ...poison }, authenticate: f.authenticate,
+    run: (cmd, args, options) => {
+      operations.push(args.slice(0, 2).join(' '));
+      assert.deepEqual(options.env, {
+        PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C', LC_ALL: 'C',
+        AWS_ACCESS_KEY_ID: env.AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY: env.AWS_SECRET_ACCESS_KEY,
+        AWS_SESSION_TOKEN: env.AWS_SESSION_TOKEN, AWS_CONFIG_FILE: '/dev/null',
+        AWS_SHARED_CREDENTIALS_FILE: '/dev/null', BOTO_CONFIG: '/dev/null',
+        AWS_EC2_METADATA_DISABLED: 'true', AWS_IGNORE_CONFIGURED_ENDPOINT_URLS: 'true',
+        AWS_MAX_ATTEMPTS: '1', AWS_PAGER: '',
+      });
+      return f.run(cmd, args, options);
+    },
+  });
+  assert.ok(operations.includes('sts get-caller-identity') && operations.includes('lambda invoke'));
+  assert.equal(operations.filter(op => op === 'lambda get-function-configuration').length, 2);
+}));
+
+test('missing exported temporary credentials cannot fall back to profiles or metadata', async () => {
+  for (const key of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']) await withFixture(async f => {
+    delete f.env[key];
+    f.env.AWS_PROFILE = 'default';
+    f.env.AWS_CONTAINER_CREDENTIALS_FULL_URI = 'https://untrusted.invalid';
+    await assert.rejects(f.release(), /aws_credentials_required/);
+    assert.equal(f.calls.length, 0);
+    assert.equal(existsSync(f.directory), false);
+  });
+});
+
 test('the own CloudFront probe waits through busy/superseded without another full fan-out', async () => withFixture(async f => {
   let clock = Date.now() - 30_000, probes = 0;
   await release(deployment(), { env: f.env, now: () => clock, wait: async ms => { clock += ms; },
@@ -244,6 +293,7 @@ test('the own CloudFront probe waits through busy/superseded without another ful
 test('full collection synchronously drives every source catalog type with at most four workers', async () => {
   const types = sourceTypes;
   assert.equal(MIN_CATALOG_TYPES, types.length, 'The runtime floor must match the current registered source catalog');
+  assert.deepEqual(REQUIRED_CATALOG_TYPES, types, 'Pinned membership must match the registered source catalog');
   await withFixture(async f => {
     const policy = JSON.parse(execFileSync('python3', ['-c',
       'import json,sys; sys.path.insert(0,sys.argv[1]); from ci_verifier_sessions import workload_policy; e,d=json.load(sys.stdin); print(json.dumps(workload_policy(e,d)))',
@@ -307,6 +357,70 @@ test('partial type is reported, other types settle, and incomplete collection ca
   assert.ok(!existsSync(f.directory));
 }, { probes: { rds: { type: 'rds', status: 'partial', row_count: 0,
   unknown_attribute_count: 0, unreachable_account_count: 1 } } }));
+
+test('first chronological failure stops new admissions while all admitted types settle', async () => withFixture(async f => {
+  let started, deny, finish;
+  const allStarted = new Promise(resolve => { started = resolve; });
+  const denySecond = new Promise(resolve => { deny = resolve; });
+  const finishOthers = new Promise(resolve => { finish = resolve; });
+  const admitted = [];
+  const pending = release(deployment(), { env: f.env, authenticate: f.authenticate,
+    run: async (cmd, args, options) => {
+      if (args[0] !== 'lambda' || args[1] !== 'invoke') return f.run(cmd, args, options);
+      const { type } = JSON.parse(args[args.indexOf('--payload') + 1]);
+      if (type === 'catalog') return f.run(cmd, args, options);
+      admitted.push(type);
+      if (admitted.length === 4) started();
+      if (type === 'rds') {
+        await denySecond;
+        throw new ReleaseError('aws_access_denied');
+      }
+      await finishOthers;
+      assert.equal(existsSync(f.directory), true, 'Admitted RPCs must settle before cleanup');
+      const response = await f.run(cmd, args, options);
+      if (type === 'cloudfront') writeFileSync(args.at(-1), JSON.stringify({
+        type, status: 'partial', row_count: 0, unknown_attribute_count: 0,
+      }));
+      return response;
+    },
+  });
+  let afterFailure;
+  try {
+    await allStarted;
+    deny();
+    await new Promise(resolve => setImmediate(resolve));
+    afterFailure = [...admitted];
+  } finally { finish(); }
+  await assert.rejects(pending, error => {
+    assert.equal(error.message, 'collection_probe_denied');
+    assert.equal(error.collection_attempts.types.rds.reason, 'collection_probe_denied');
+    assert.equal(error.collection_attempts.types.cloudfront.status, 'partial');
+    assert.equal(error.collection_attempts.counts.succeeded, 2);
+    assert.equal(error.collection_attempts.counts.not_started, sourceTypes.length - 4);
+    for (const type of catalog().types.slice(4)) {
+      assert.equal(error.collection_attempts.types[type].status, 'not_started');
+      assert.equal(error.collection_attempts.types[type].attempts, 0);
+    }
+    return true;
+  });
+  assert.deepEqual(afterFailure, catalog().types.slice(0, 4));
+  assert.deepEqual(admitted, catalog().types.slice(0, 4));
+  assert.equal(f.authenticated.length, 0);
+  assert.equal(existsSync(f.directory), false);
+}));
+
+test('non-object collector results fail as protocol errors without starting runtime proof', async () => withFixture(async f => {
+  await assert.rejects(release(deployment(), { env: f.env, authenticate: f.authenticate,
+    run: async (cmd, args, options) => {
+      const response = await f.run(cmd, args, options);
+      if (args[0] === 'lambda' && args[1] === 'invoke'
+        && JSON.parse(args[args.indexOf('--payload') + 1]).type === 'cloudfront')
+        writeFileSync(args.at(-1), 'null');
+      return response;
+    },
+  }), /collection_probe_protocol/);
+  assert.equal(f.authenticated.length, 0);
+}));
 
 test('reserved dispatcher names cannot enter the synchronous catalog', () => {
   for (const type of ['all', 'catalog'])
@@ -456,6 +570,22 @@ test('full catalog retains upper bound, valid names, unique members and CloudFro
     ['cloudfront', null, ...catalog().types.slice(2)], ['cloudfront', 'bad/type', ...catalog().types.slice(2)]])
     assert.throws(() => validateCatalog({ status: 'catalog', types: invalid }), /invalid_collection_catalog/);
 });
+test('a same-size catalog swap cannot omit a required registered type', async () => withFixture(async f => {
+  f.responses['lambda get-function-configuration'].CodeSha256 = deployment().inventory.sync_code_sha256;
+  const types = catalog().types.map(type => type === 'iam_user' ? 'unrelated_type' : type);
+  await assert.rejects(release(deployment(), { env: f.env, authenticate: f.authenticate,
+    run: async (cmd, args, options) => {
+      const response = await f.run(cmd, args, options);
+      if (args[0] === 'lambda' && args[1] === 'invoke'
+        && JSON.parse(args[args.indexOf('--payload') + 1]).type === 'catalog')
+        writeFileSync(args.at(-1), JSON.stringify({ status: 'catalog', types }));
+      return response;
+    },
+  }), /invalid_collection_catalog/);
+  assert.equal(f.prepared.length, 0);
+  assert.deepEqual(f.calls.filter(a => a[0] === 'lambda' && a[1] === 'invoke')
+    .map(a => JSON.parse(a[a.indexOf('--payload') + 1]).type), ['catalog']);
+}));
 test('collect binds running web, code hash, canonical coverage and the fresh own-workload probe', async () => withFixture(async f => {
   const now = Date.now();
   const result = await f.release({ now: () => now });
@@ -753,7 +883,11 @@ test('runtime proof receives the earlier controller or marker deadline without r
     if (setupMinutes === 26) {
       await assert.rejects(action, error => {
         assert.equal(error.collection_attempts.counts.not_started, sourceTypes.length);
-        assert.equal(error.collection_attempts.counts.deadline, sourceTypes.length);
+        assert.equal(error.collection_attempts.counts.deadline, 4);
+        for (const type of catalog().types.slice(4)) {
+          assert.equal(error.collection_attempts.types[type].status, 'not_started');
+          assert.equal(error.collection_attempts.types[type].attempts, 0);
+        }
         return true;
       });
       assert.equal(f.authenticated.length, 0);
@@ -874,6 +1008,46 @@ test('DB request-start calibration preserves skew and the earlier controller dea
   });
 });
 
+test('real host-only registry proof rejects invalid registries before fan-out and protects the final recheck', async () => {
+  const host = { accountId: account, isHost: true, enabled: true };
+  const foreign = { accountId: '999999999999', isHost: false, enabled: true };
+  for (const [accounts, late] of [[[host, foreign], false], [[], false],
+    [[{ ...host, enabled: 'yes' }], false], [[host, foreign], true]]) await withFixture(async f => {
+    let clock = Date.now(), reads = 0;
+    const phases = [], paths = [];
+    await assert.rejects(release(deployment(), { env: f.env, run: f.run, now: () => clock,
+      authenticate: (input, options) => {
+        phases.push(input.runtimeConfig.mode);
+        assert.equal(input.runtimeConfig.hostOnly, true);
+        return authenticatedSmoke(input, { ...options, runCurl: async (cmd, args) => {
+          const path = new URL(args.at(-1)).pathname, output = args[args.indexOf('--output') + 1];
+          paths.push(path);
+          let body;
+          if (path === '/api/auth/login') {
+            writeFileSync(args[args.indexOf('--cookie-jar') + 1],
+              '#HttpOnly_dev.example.com\tFALSE\t/\tTRUE\t0\tawsops_token\tFIXTURE_COOKIE\n');
+            body = { ok: true };
+          } else if (path === '/api/db') {
+            body = { status: 'ok', public_tables: 1, server_time: new Date(clock).toISOString() };
+          } else {
+            assert.equal(path, '/api/accounts', 'No model or worker request may follow invalid host scope');
+            body = { accounts: late && ++reads === 1 ? [host] : accounts };
+          }
+          clock += 10;
+          writeFileSync(output, JSON.stringify(body));
+          return { stdout: '200' };
+        } });
+      },
+    }), /host_only_registry_required/);
+    const types = f.calls.filter(a => a[0] === 'lambda' && a[1] === 'invoke')
+      .map(a => JSON.parse(a[a.indexOf('--payload') + 1]).type);
+    assert.deepEqual(types, late ? ['catalog', ...catalog().types] : ['catalog']);
+    assert.deepEqual(phases, late ? ['prepare', 'verify'] : ['prepare']);
+    assert.equal(paths.includes('/api/deployment/readiness'), false);
+    assert.equal(existsSync(f.directory), false);
+  });
+});
+
 test('failed prepare or unbound DB clock metadata invokes no collection types', async () => {
   for (const mutate of [
     r => { r.status = 'failed'; }, r => { r.mode = 'database'; }, r => { r.public_tables = 0; },
@@ -901,7 +1075,7 @@ test('failed prepare or unbound DB clock metadata invokes no collection types', 
         mutate(result, () => { raw += 50 * 60_000; });
         return result;
       },
-    }), e => /database_clock_invalid|host_registry|authenticated_runtime_proof_failed|release_timeout/.test(e.message)
+    }), e => /database_clock_invalid|host_only_registry_required|authenticated_runtime_proof_failed|release_timeout/.test(e.message)
       && !e.message.includes('PRIVATE'));
     assert.deepEqual(f.calls.filter(a => a[0] === 'lambda' && a[1] === 'invoke')
       .map(a => JSON.parse(a[a.indexOf('--payload') + 1]).type), ['catalog']);

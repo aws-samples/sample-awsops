@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e557debae42d · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d741673a72d7 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -44,7 +44,7 @@ legacy runbook's steps as the current operational path).
 - Sealing uses OpenSSL stdin without plaintext staging. Captured Terraform uses Linux parent-death protection and escalates a second interrupt after graceful first-interrupt forwarding.
 - Key/storage/seal/publication/cleanup outcomes are distinct. Delete owned ciphertext only after the identified upload succeeds; failed/cancelled/skipped/unknown uploads retain it privately. Audits report pending_upload and final upload/cleanup outcomes; no broad temp sweep, host-loss guarantee or shared-UID isolation.
 - `deployment-audit.md` separates manual dev observations under backend-bound and workload-read sessions. Preserve identity/resource guards and private cleanup. Web and AgentCore observations do not prove applied versions or invocation readiness; observed SQL-reader types never establish complete inventory.
-- `runtime-foundation.md` covers account-bound default-off activation and saved-plan assets. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
+- `runtime-foundation.md` covers activation and the unwired strict host-only controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
 - The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
 - Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
 - `scripts/v2/ci_tf_assets.py` shares Terraform's locked layer installer. Prepare invalidates
@@ -188,7 +188,17 @@ distinction between operational degraded data and ineligible release evidence.
 Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
 admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
 57.461-second collection sample and its limits; it is not full live readiness.
-Require 43–128 catalog types and strict proof for every returned type. The 17-minute
+Require every pinned baseline name (currently 43, source-AST checked); valid growth
+is allowed up to 128 and every returned type needs strict proof. Both modes require
+the enabled host only; collect's authenticated DB/host preflight fails incompatible
+registries before type calls as `host_only_registry_required`. Preserve isolated
+AWS CLI environments, first chronological terminal failure and stopped admission;
+admitted work settles and untouched types remain `not_started`. Partial/unknown
+outcomes intentionally stop even under limiter/hydrate pressure; use bounded
+capacity/reachability/permission diagnosis before an authorized fresh rerun.
+Never widen permissions automatically, weaken acceptance or suppress the schedule.
+Document calibrated config validation and `remaining_prerequisites: "not_assessed"`
+with the separate workflow/plan/promotion gates. The 17-minute
 reserve covers only the single-pass 1,010-second base path plus 10 seconds; extras
 need saved time (at least 25 seconds for another 35-second read, at least 170 seconds
 for the minimum 180-second retry overhead, without counting workers twice).

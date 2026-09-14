@@ -121,6 +121,11 @@ can only shorten it. Authentication, HTTP, cooldowns and workers share the bound
 poll responses still must arrive before the overall deadline to pass. Start promptly after
 the marker; an older marker shortens the available collection and worker budget.
 
+`readRuntimeSmokeConfig(file, credentialFile, now = Date.now())` accepts a finite
+numeric validation timestamp. The controller passes its calibrated `now()` when
+loading the private config; the default preserves ordinary callers. This validates
+the existing marker against the selected clock without changing it or extending expiry.
+
 Collection windows are caps, not a promise that late collection can finish verification.
 Before billing readiness, the helper requires the full 80-second request allowance plus
 370 seconds for each remaining worker (35-second enqueue, 300-second poll and a final
@@ -198,22 +203,35 @@ match the configured account/repository, one digest and identical manifest bytes
 normalization and hash/ARM64 validation. Tag lookup still binds every entry to the
 requested tag; unrelated entries never become valid aliases.
 Use the [restrictive session contract](runtime-verifier-sessions.md) and private
-0700/0600 credential/state files. Prepare verifies login, DB and the enabled host-only
-registry but is never a full-release result. First-time stacks must complete the
+0700/0600 credential/state files. Both controller modes require exactly one enabled
+host matching the configured account and no enabled foreign accounts. This is the
+intended host-only first end-to-end target; the generic smoke helper's optional
+multi-account support does not widen the controller's scope. An incompatible registry
+fails as `host_only_registry_required`. Prepare verifies login/DB/host registration
+but is never a full-release result. First-time stacks must complete the
 [bootstrap sequence](first-web-bootstrap.md) before this existing-web preflight.
 
-Collect validates the owned Lambda catalog, then performs authenticated prepare with
-the optional DB-clock sample before invoking any type. It validates canonical UTC
+Collect checks web identity and the owned Lambda's configuration/catalog, then performs
+authenticated login, DB and host-only preparation with the DB-clock sample. This
+preflight rejects an incompatible registry before any per-type collection call; only
+metadata reads and read-only catalog discovery precede it. It validates canonical UTC
 milliseconds and request/response times inside the observed prepare interval, with
 DB request elapsed time from zero through 35 seconds. The DB timestamp becomes
 `collectionStartedAt`; subsequent time is `rawNow + (DB time - request start)`.
 The existing controller deadline shifts by that same offset, preserving time remaining.
 Every current catalog type (43 at this revision) must succeed after that marker with
-known counts and zero unknown attributes. The controller rejects catalogs below the
-43-type minimum or above 128 types; all validated returned types remain required.
+known counts and zero unknown attributes. The returned catalog must contain every
+member of the controller's pinned baseline of 43 type names, not merely 43 arbitrary
+names. A source-AST regression ties that baseline to the checked-in `QUERIES` and
+`SDK_SYNCS` catalogs. Valid additional returned types are allowed up to 128 total;
+every returned type remains required, permitting growth without replacing a baseline member.
 Prior rolling success is insufficient.
-At most four synchronous owned invocations are concurrent and in flight; all admitted calls settle before
-cleanup or failure. Code hash and a nonempty RevisionId are captured before collection
+At most four synchronous owned invocations are concurrent and in flight. The first
+chronological terminal failure becomes the headline error and stops admission of
+further types. Already-admitted operations settle within their existing bounds before
+cleanup and final failure reporting. Untouched types retain `status: "not_started"`
+and `attempts: 0` in `collection_attempts`; they are never counted as successful proof.
+Code hash and a nonempty RevisionId are captured before collection
 and rechecked within 15 seconds afterward, before final authenticated runtime proof.
 Changed/incomplete code metadata or read failure blocks that proof.
 
@@ -258,7 +276,17 @@ payloads or asynchronous `Event` invocation. No IAM scope is widened.
 
 Operational collection may preserve last-good rows or report degraded data after
 partial, failed or unknown work. Those are supported diagnosis states, but they are
-not eligible release evidence. The controller requires both successful owned RPCs
+expected hard stops for this release gate, including when the controller's own load
+contributes to degradation. An `iam_role` hydrate timeout can produce a succeeded
+fallback with unknown attributes; a limiter-contended host-reachability check can
+produce a partial zero-row result. Neither proves the owner's strict criterion, and
+neither receives an automatic partial/unknown retry inside the release attempt.
+Inspect bounded per-type evidence for limiter/hydrate pressure, reachability and
+actual permission denials; permission widening is not a universal remedy. After
+diagnosing/addressing the cause, an authorized operator may rerun within the same
+finite limits with a fresh marker. Keep the scheduler active and the acceptance
+criteria unchanged; the controller performs no automatic capacity or IAM tuning.
+The controller requires both successful owned RPCs
 and strict post-marker ledger observations for every type. The singleton ledger is
 not bound to this verifier's run token: a later scheduled partial/failed/unknown result
 can block acceptance, while a current running attempt waits within the bounded window.
@@ -319,9 +347,42 @@ do not fabricate Actions metadata to run this as an unrestricted local command.
 | `EXPECTED_WEB_DIGEST` | Required for Deploy Web's `run`: the approved `sha256:` root manifest digest. Manual observation may omit it and verify the selected tag; a supplied digest is still validated. |
 | `INVENTORY_POLICY` | `full` only; omission defaults to `full`. Empty or other values fail, and no degraded policy exists. |
 | `PUBLIC_URL`, `CLOUDFRONT_DOMAIN` | Required application/edge targets for `run`, retaining service Host/SNI/TLS verification. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | All three exported temporary credential values are required for AWS reads; ambient profiles and credential files are not substitutes. |
 
 Process or runner loss can prevent cleanup; future consumers still need always-run
 owned-file cleanup. Neither command adds IAM grants or activates a workflow.
+
+The AWS CLI child receives an explicit environment allowlist, not the full CI
+environment. It uses a pinned CLI search path, explicitly exported credentials and
+fixed region/runtime settings; AWS config and shared-credential files are disabled
+with `/dev/null`, configured endpoint URLs are ignored and instance metadata is disabled.
+Caller-selected profiles, endpoints, credential providers, CA/proxy overrides and
+command hooks cannot replace that evidence path. Account/role and restricted-session
+checks still apply; this isolation grants no additional AWS access.
+
+### Fixed diagnostics and remaining prerequisites
+
+Use fixed codes and the bounded `collection_attempts` / `inventory_quality` fields
+when present. The first chronological per-type terminal error identifies the collection
+stop; later settled outcomes and never-started types remain visible. Do not relay raw
+provider responses or secrets.
+
+| Code | Meaning and bounded operator action |
+| --- | --- |
+| `aws_credentials_required` | One or more exported temporary credential values are missing. Refresh the approved restricted session; do not restore profiles, credential files or alternate endpoint/provider settings. |
+| `host_only_registry_required` | This controller requires the enabled host only. Inspect the expected host and enabled foreign rows before rerunning; do not expand controller scope or change accounts automatically to pass. |
+| `invalid_collection_catalog` | Missing pinned membership, invalid names/shape or bounds. Reconcile the reviewed collector source, applied hash and catalog; do not pad the response or waive required types. |
+| `collection_partial`, `inventory_incomplete`, `collection_probe_incomplete` | Expected hard stop for partial/unknown or unusable counts, including limiter/hydrate degradation. Diagnose capacity, reachability and actual denials before an authorized fresh bounded attempt; no automatic partial/unknown retry or degraded acceptance. |
+| `collection_probe_denied`, `actual_ci_caller_mismatch` | Check configured identity, exported credentials and the exact denied operation under existing session/IAM boundaries. Do not restore ambient profiles/endpoints or grant permissions automatically. |
+| `collection_probe_timeout`, `collection_probe_failed` | Inspect per-type attempts and known delivery evidence. A timeout may mean uncertain delivery or failed admission; use the structured status rather than assuming a safe blind retry. |
+| `inventory_code_mismatch` | Configured hash/revision and live collector evidence disagree or cannot be verified. Reconcile the reviewed deployment; discard the attempt's readiness claim. |
+| `release_timeout`, `runtime_inventory_contention` | The absolute/proof budget or permitted contention retry cannot complete. Inspect recorded timing/contention before a fresh bounded attempt; do not extend the deadline or suppress the scheduler. |
+
+Even a controller `full_verified` result retains
+`remaining_prerequisites: "not_assessed"`. It reports this controller's evidence,
+not workflow installation, plan/apply approval or completion of every promotion
+prerequisite. Future consumers must enforce those separate gates; `prepared` is
+never full runtime readiness. The consumers remain unwired in this prerequisite.
 
 Offline controller, real authentication composition, and clock-helper checks require
 Node.js and Python/PyYAML; the authenticated fixtures also require curl, OpenSSL and
