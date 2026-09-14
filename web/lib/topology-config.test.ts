@@ -68,6 +68,69 @@ async function graphs() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('EKS inventory producer → configuration → service/network graph', () => {
+  it.each(['malformed-cluster', {}])('does not silently skip an unreadable cluster descriptor: %j', invalid => {
+    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+      const url = new URL(input, 'http://localhost');
+      return url.pathname === '/api/eks' ? json({ clusters: [cluster, invalid] })
+        : json({ rows: url.searchParams.get('kind') === 'pods' ? [pod] : [endpoint] });
+    }));
+    return expect(fetchEksIpMap()).resolves.toEqual({});
+  });
+
+  it.each([
+    ['failed pod read', 'pods', null, []],
+    ['failed endpoint read', 'endpoints', null, []],
+    ['null pod row', 'pods', [null], []],
+    ['non-object pod row', 'pods', ['invalid'], []],
+    ['missing pod identity fields', 'pods', [{}], []],
+    ['invalid pod IP', 'pods', [{ ...pod, podIP: {} }], []],
+    ['null endpoint row', 'endpoints', [null], []],
+    ['invalid endpoint IP list', 'endpoints', [{ ...endpoint, ips: ip }], []],
+    ['missing endpoint identity fields', 'endpoints', [{ ips: [], targets: [] }], []],
+    ['missing endpoint references', 'endpoints', [{ ...endpoint, ips: [], targets: undefined }], []],
+    ['invalid target reference', 'endpoints', [{ ...endpoint, targets: [null] }], [pod]],
+  ])('returns no proven map when a later cluster has %s', async (_, kind, badRows, otherRows) => {
+    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+      const url = new URL(input, 'http://localhost');
+      if (url.pathname === '/api/eks') return json({ clusters: [cluster, { ...cluster, name: 'other-cluster' }] });
+      if (url.pathname.includes('/other-cluster/')) {
+        // Let the healthy cluster finish before the competing cluster becomes unavailable.
+        await new Promise(resolve => setTimeout(resolve, 0));
+        if (url.searchParams.get('kind') === kind) return badRows === null
+          ? json({ status: 'error' }, 503) : json({ rows: badRows });
+        return json({ rows: otherRows }); // failed reads cannot rely on knowing the competing IP set
+      }
+      return json({ rows: url.searchParams.get('kind') === 'pods' ? [pod] : [endpoint] });
+    }));
+    const { ipResolved, target, integrated } = await graphs();
+    expect(ipResolved).toEqual({});
+    expect(target.meta?.resolved).toBeUndefined();
+    expect(integrated.edges.filter(edge => edge.meta?.match === 'configured-cluster')).toEqual([]);
+  });
+
+  it('keeps healthy ownership when another cluster successfully returns empty inventory', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+      const url = new URL(input, 'http://localhost');
+      if (url.pathname === '/api/eks') return json({ clusters: [cluster, { ...cluster, name: 'empty-cluster' }] });
+      return json({ rows: url.pathname.includes('/empty-cluster/') ? []
+        : url.searchParams.get('kind') === 'pods' ? [pod] : [endpoint] });
+    }));
+    const { target } = await graphs();
+    expect(target).toMatchObject({ label: 'shop/external-service', meta: { resolved: 'eks', cluster: 'host-cluster' } });
+  });
+
+  it('keeps healthy ownership alongside an unassigned pod with no optional IP', async () => {
+    serve([pod, { name: 'pending-pod', namespace: 'shop' }]);
+    expect((await graphs()).target).toMatchObject({
+      label: 'shop/external-service', meta: { resolved: 'eks', pod: 'orders-a' },
+    });
+  });
+
+  it('cannot rule out a connected cluster with unknown network scope', async () => {
+    serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'unknown-scope', vpcId: '' }] });
+    expect(await fetchEksIpMap()).toEqual({});
+  });
+
   it.each([
     { name: 'empty pod inventory', pods: [] },
     { name: 'failed pod HTTP request', pods: [pod], failure: 'http' as const },

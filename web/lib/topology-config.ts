@@ -4,6 +4,11 @@ import type { PodRow } from './eks-resources';
 
 type Resolution = NonNullable<FlowInput['ipResolved']>[string];
 type Cluster = { name: string; access?: string; region?: string; vpcId?: string };
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+const optionalStrings = (row: Record<string, unknown>, keys: string[]) =>
+  keys.every(key => row[key] == null || typeof row[key] === 'string');
 
 // Endpoints describes Service membership, not cluster ownership. Only an independently listed,
 // unique pod can establish ownership; conflicting references also disqualify the pod fallback.
@@ -12,10 +17,11 @@ export async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved
   try {
     const response = await fetch('/api/eks');
     const list = response.ok ? await response.json() : null;
-    if (list?.error || !Array.isArray(list?.clusters)) return {};
-    await Promise.all((list.clusters as Cluster[]).filter(c =>
-      c.access === 'connected' && c.name && c.region && c.vpcId,
-    ).map(async cluster => {
+    if (list?.error || list?.status === 'error' || !Array.isArray(list?.clusters)) return {};
+    if (!list.clusters.every((c: unknown) => isRecord(c) && nonempty(c.name) && nonempty(c.access))) return {};
+    const clusters = (list.clusters as Cluster[]).filter(c => c.access === 'connected');
+    if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return {};
+    await Promise.all(clusters.map(async cluster => {
       const get = async (kind: string) => {
         try {
           const r = await fetch(`/api/eks/${encodeURIComponent(cluster.name)}/incluster?kind=${kind}`);
@@ -24,6 +30,16 @@ export async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved
         } catch { return null; }
       };
       const [endpoints, pods]: [EndpointRow[] | null, PodRow[] | null] = await Promise.all([get('endpoints'), get('pods')]);
+      // Missing reads cannot enumerate addresses to veto another cluster. Empty arrays can.
+      if (!endpoints || !pods
+        || !pods.every(row => isRecord(row) && typeof row.name === 'string' && typeof row.namespace === 'string'
+          && optionalStrings(row, ['podIP', 'workload']))
+        || !endpoints.every(row => isRecord(row) && typeof row.name === 'string' && typeof row.namespace === 'string'
+          && Array.isArray(row.ips) && row.ips.every(nonempty)
+          && Array.isArray(row.targets) && row.targets.every(target =>
+            isRecord(target) && nonempty(target.ip) && optionalStrings(target, ['pod'])))) {
+        throw new Error('Unavailable or malformed EKS identity inventory');
+      }
       const podsByIp = new Map<string, PodRow[]>();
       for (const pod of pods ?? []) {
         if (pod.podIP) podsByIp.set(pod.podIP, [...(podsByIp.get(pod.podIP) ?? []), pod]);
@@ -60,6 +76,9 @@ export async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved
         candidates.set(key, candidates.has(key) ? null : resolution);
       }
     }));
-  } catch { /* no EKS ownership evidence */ }
+  } catch {
+    // A failed cluster may hide a competing owner; never publish a partial candidate map.
+    return {};
+  }
   return Object.fromEntries([...candidates].filter((entry): entry is [string, Resolution] => entry[1] !== null));
 }

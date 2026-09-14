@@ -186,6 +186,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     }
     const target = candidates.size === 1 ? [...candidates.values()][0] : undefined;
     const targetCluster = target?.node.meta.resolved === 'eks' ? text(target.node.meta.cluster) : '';
+    // Local workload matching may use the current single-region host monitor context,
+    // not independent region/VPC proof. Remote matching needs a scoped EKS target.
     const localCluster = side === 'local' ? monitorCluster : '';
     const cluster = localCluster || targetCluster;
     const namespace = text(data.podNamespace), pod = text(data.podName);
@@ -193,7 +195,15 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       ? [...(workloads.get(key(cluster, namespace, pod)) ?? [])] : [];
     // Do not choose a winner among conflicting scopes, target records, or workload memberships.
     const conflictingClusters = localCluster && targetCluster && localCluster !== targetCluster;
-    if (candidates.size > 1 || matches.length > 1 || conflictingClusters) {
+    const targetNamespace = text(target?.node.meta.namespace);
+    // A grouped workload carries one representative pod, not per-member pod metadata.
+    const targetPod = target && text(target.node.meta.id) === target.value
+      && target.node.meta.members === undefined && target.node.meta.count === undefined
+      ? text(target.node.meta.pod) : '';
+    const conflictingOwner = (targetNamespace && namespace && targetNamespace !== namespace)
+      || (targetPod && pod && targetPod !== pod);
+    const conflictingWorkloadType = target?.node.meta.resolved === 'ecs' && matches.length > 0;
+    if (candidates.size > 1 || matches.length > 1 || conflictingClusters || conflictingOwner || conflictingWorkloadType) {
       endpoint.meta.correlation = 'ambiguous';
       summary.ambiguousEndpoints++;
       return;

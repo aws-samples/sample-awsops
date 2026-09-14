@@ -366,6 +366,78 @@ describe('buildE2eGraph — scoped target identity', () => {
 });
 
 describe('buildE2eGraph — workload identity', () => {
+  it.each(['local', 'remote'] as const)('marks contradictory target pod/namespace evidence ambiguous on the %s side', side => {
+    for (const conflict of [{ pod: 'previous-pod' }, { namespace: 'other-namespace' }]) {
+      const graph = buildE2eGraph(input({
+        configured: configured([target({ resolved: 'eks', cluster: 'app', namespace: 'shop', pod: 'web-1', ...conflict })]),
+        services: services(),
+        network: [observation([flow({ local: {}, remote: {}, [side]: endpoint({ podName: 'web-1', podNamespace: 'shop' }) })])],
+      }));
+      expect(identityEdges(graph)).toEqual([]);
+      expect(graph.summary).toMatchObject({ ambiguousEndpoints: 1, correlatedEndpoints: 0, unmatchedEndpoints: 1 });
+    }
+  });
+
+  it.each([{}, { pod: 'web-1' }, { namespace: 'shop' }, { pod: 'web-1', namespace: 'shop' }])(
+    'keeps agreeing or unknown target metadata distinct from contradictions: %j', metadata => {
+      const graph = buildE2eGraph(input({
+        configured: configured([target({ resolved: 'eks', cluster: 'app', ...metadata })]), services: services(),
+        network: [observation([flow({ local: {}, remote: endpoint({ podName: 'web-1', podNamespace: 'shop' }) })])],
+      }));
+      expect(identityEdges(graph)).toHaveLength(2);
+      expect(graph.summary.ambiguousEndpoints).toBe(0);
+    },
+  );
+
+  it('does not simultaneously identify a local endpoint as an ECS task and an EKS workload', () => {
+    const graph = buildE2eGraph(input({
+      configured: configured([target({ resolved: 'ecs', cluster: 'ecs-app', task: 'task-1' })]), services: services(),
+      network: [observation([flow({ local: endpoint({ podName: 'web-1', podNamespace: 'shop' }), remote: {} })])],
+    }));
+    expect(identityEdges(graph)).toEqual([]);
+    expect(graph.summary).toMatchObject({ ambiguousEndpoints: 1, correlatedEndpoints: 0 });
+  });
+
+  it('retains an ECS registration when no Kubernetes workload identity is asserted', () => {
+    const graph = buildE2eGraph(input({
+      configured: configured([target({ resolved: 'ecs', cluster: 'ecs-app', task: 'task-1' })]), services: services(),
+      network: [observation([flow({ local: endpoint(), remote: {} })])],
+    }));
+    expect(identityEdges(graph)).toHaveLength(1);
+    expect(graph.summary.ambiguousEndpoints).toBe(0);
+  });
+
+  it.each([{}, { podName: 'web-1' }, { podNamespace: 'shop' }])('does not invent a contradiction from missing NFM pod metadata: %j', metadata => {
+    const graph = buildE2eGraph(input({
+      configured: configured([target({ resolved: 'eks', cluster: 'app', pod: 'web-1', namespace: 'shop' })]),
+      services: services(), network: [observation([flow({ local: {}, remote: endpoint(metadata) })])],
+    }));
+    expect(identityEdges(graph)).toHaveLength(1);
+    expect(graph.summary.ambiguousEndpoints).toBe(0);
+  });
+
+  it('does not compare a grouped target representative pod with a different matched replica', () => {
+    const ips = ['10.0.1.10', '10.0.1.11'];
+    const config = buildFlowGraph({
+      tg: [{ resource_id: 'replicas', target_type: 'ip', region: REGION, vpc_id: VPC,
+        target_health_descriptions: ips.map(Id => ({ Target: { Id, Port: 80 } })) }],
+      ipResolved: Object.fromEntries(ips.map((ip, i) => [`${REGION}|${VPC}|${ip}`, {
+        label: 'shop/web', resolved: 'eks' as const,
+        meta: { region: REGION, vpcId: VPC, cluster: 'app', namespace: 'shop', pod: `web-${i + 1}` },
+      }])),
+    });
+    expect(config.nodes.find(node => node.kind === 'target')?.meta).toMatchObject({ count: 2, pod: 'web-1' });
+    const graph = buildE2eGraph(input({ configured: config, services: services(),
+      network: [observation([flow({ local: {}, remote: endpoint({ ip: ips[1], podName: 'web-2', podNamespace: 'shop' }) })])] }));
+    expect(identityEdges(graph)).toHaveLength(2);
+    expect(graph.summary.ambiguousEndpoints).toBe(0);
+    expect(identityEdges(graph).some(edge => edge.meta?.pod === 'web-2')).toBe(true);
+    const conflictingNamespace = buildE2eGraph(input({ configured: config, services: services({ namespace: 'other' }),
+      network: [observation([flow({ local: {}, remote: endpoint({ ip: ips[1], podName: 'web-2', podNamespace: 'other' }) })])] }));
+    expect(identityEdges(conflictingNamespace)).toEqual([]);
+    expect(conflictingNamespace.summary.ambiguousEndpoints).toBe(1);
+  });
+
   it('matches any exact pod membership in the monitor cluster on the local side', () => {
     const graph = buildE2eGraph(input({
       services: services(),
