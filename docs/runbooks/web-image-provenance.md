@@ -12,25 +12,43 @@
 | Migration receipt missing | The future dev web caller must run its private migration phase and pass its successful SHA/project outputs |
 | Branch moved | Dispatch current HEAD and validate the chosen producer again |
 | Schema acknowledgement missing | Do not promote an older image until compatibility is explicitly approved |
+| Preflight digest missing/changed | Revalidate before migration; omitted or empty values cannot bypass the digest guard |
+| Image registry/media/schema/platform mismatch | Verify the protected account/project and the retained image; rebuild if it is not a supported Linux ARM64 image |
+| Image provenance provider request failed | Check credentials, job permissions, tool availability and provider status privately; raw provider output is withheld |
 
 ## Verification and prerequisites
 
-Offline tests: `python3 -B -m pytest -q scripts/v2/test_ci_web_image.py`. They use no AWS/GitHub calls but require **jq** for the large-compare projection fixture. The CLI requires Python 3.12, AWS CLI and GitHub CLI; `gh --jq` filters responses locally before the Python output cap.
+From the repository root:
 
-Supply `GH_TOKEN` with repository contents/actions read access. AWS credentials come from the reviewed branch role and existing OIDC setup; credentials are never written into receipts. Build/deploy identity checks do not provision IAM.
+```bash
+python3 -m pytest -q scripts/v2/test_ci_web_image.py
+```
+
+These offline tests use no AWS/GitHub calls but require **jq** for the large-compare projection fixture. The CLI requires Python 3.12, AWS CLI, GitHub CLI and curl; `gh --jq` filters responses locally before the Python output cap.
+
+Supply `GH_TOKEN` with `contents: read` and `actions: read` in **both** the receipt-producing `build` job and any receipt preflight/promotion job. The current workflow's `contents: read` + `id-token: write` permissions alone are insufficient for receipt metadata. OIDC jobs also retain `id-token: write`. AWS credentials come from the reviewed role for that specific job; credentials are never written into receipts. Build/deploy identity checks do not provision IAM.
+
+The promoting role needs `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer` and `ecr:PutImage` scoped to its own web repository. A read-only preflight needs the first two. Config verification downloads only the manifest-referenced config blob from ECR's signed S3 URL; it checks size/hash and `linux/arm64` without downloading image layers. The helper installs no grants; verify these scopes before wiring it.
 
 `AWS_ACCOUNT_ID_DEV` must be a valid 12-digit **repository secret available to every helper invocation, including main**. Non-main roles must match it; main must differ. Main still requires the production role and target-stack checks in its caller. Do not define this secret only in the development environment or replace it with an invalid production override.
+
+| CLI mode | Job context and prerequisites |
+| --- | --- |
+| `check-role` | Before assuming credentials: validates protected Deploy Web branch/workflow context, the role configured for this job in `CI_ROLE_ARN`, and `AWS_ACCOUNT_ID_DEV`; makes no provider call |
+| `verify-role` | After OIDC: the same context plus actual STS credentials for that role; no receipt/GitHub metadata read |
+| `receipt --output <private-directory>/web-build.json` | Inside `GITHUB_JOB=build` while it is running, after the build push; `CI_ROLE_ARN` is the selected **ci-build role**, with its STS credentials, `AWS_ACCOUNT_ID_DEV`, `GH_TOKEN`, `actions: read`, `IMAGE_PROJECT`, actual `IMAGE_DIGEST`, and GitHub run/SHA/attempt context |
+| `promote` | Reviewed release job with the selected **deployer role**, STS credentials, GitHub read permissions, repository ECR scopes and every promotion input below, including the mandatory preflight digest |
 
 ## Required workflow wiring
 
 The current Deploy Web job/step names include `Build & push (arm64)` and `Build and push (arm64)`. The following two required producer steps **do not exist in the current workflow** and must be added before reuse can work:
 
 1. `Record the image producer`: invoke `python3 scripts/v2/ci_web_image.py receipt --output <private-directory>/web-build.json` in job ID `build`, using the actual Buildx `IMAGE_DIGEST`.
-2. `Retain the build receipt for explicit reuse`: upload exactly `web-build.json` as artifact `web-build-<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>`, with 90-day retention.
+2. `Retain the build receipt for explicit reuse`: use `actions/upload-artifact@v4` or later to upload exactly `web-build.json` as artifact `web-build-<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>`, with 90-day retention. Reuse requires the artifact API's SHA-256 digest of the downloadable ZIP bytes.
 
 Those exact job/step names are part of `BUILD_JOB`/`BUILD_STEPS`; renaming them requires updating this contract and its tests. The receipt records the real build job ID and attempt. Reuse validates artifact SHA-256, one-file archive shape, repository/branch/source/project, actual producing attempt, successful build/publication steps and artifact creation during that job.
 
-The future caller must validate a selected reused receipt and its ECR content **before** running migrations, then pass that selection as `PREFLIGHT_DIGEST` (CLI) or `expected_digest` (controller) to prevent promotion from selecting a different digest afterward. This helper does not implement that preflight/migration controller. For current dev source the controller must run the private migration phase and pass its real success outputs. Current Deploy Web does not produce `MIGRATED_SHA`/`MIGRATED_PROJECT`; never manufacture these values to activate the helper early. Dev migration wiring requires `CI_MIGRATIONS_ENABLED_DEV=true`, applied `ci_migrations_enabled=true`, and a non-null `migration_job` output as described in [CI setup](dev-repo-setup.md).
+The future caller must validate the selected fresh build or reused receipt and its ECR content **before** running migrations, then pass that selection as `PREFLIGHT_DIGEST` (CLI) or `expected_digest` (controller) to prevent promotion from selecting a different digest afterward. The digest is mandatory for **every** promotion, including rollback; an explicit empty `expected_digest` fails even when the environment contains a valid digest. This helper does not implement that preflight/migration controller. For current dev source the controller must run the private migration phase and pass its real success outputs. Current Deploy Web does not produce `MIGRATED_SHA`/`MIGRATED_PROJECT`; never manufacture these values to activate the helper early. Dev migration wiring requires `CI_MIGRATIONS_ENABLED_DEV=true`, applied `ci_migrations_enabled=true`, and a non-null `migration_job` output as described in [CI setup](dev-repo-setup.md).
 
 The reusable `deploy-migrations.yml` currently exposes no `workflow_call` outputs either. Its integration must add success-only source/project evidence after verifying the actual migration task, or pass equivalent verified controller results; copying the requested SHA/project without successful execution is not a migration receipt.
 
@@ -38,7 +56,7 @@ The reusable `deploy-migrations.yml` currently exposes no `workflow_call` output
 
 Use `python3 scripts/v2/ci_web_image.py promote` from the protected integration, or `promote(env, expected_digest=...)` from its reviewed controller. This entrypoint enforces:
 
-`actual caller → validated context → current source/migration or rollback checks → producer digest → final source/migration recheck → digest-checked ECR publication`.
+`actual caller → validated context and required preflight digest → current source/migration or rollback checks → matching producer digest → final source/migration recheck → registry/media/schema/ARM64 checks → fresh source-tag binding → ECR publication`.
 
 The repository is always derived as `<validated IMAGE_PROJECT>-web`; callers cannot pass a different repository to `promote`. `pin_image` is a low-level publishing primitive, **not** the supported CI integration API. Do not assemble a weaker guard chain around it.
 
@@ -52,9 +70,13 @@ The repository is always derived as `<validated IMAGE_PROJECT>-web`; callers can
 | `PIN_SHA` | Full source SHA; defaults to the current GitHub SHA |
 | `MIGRATED_SHA`, `MIGRATED_PROJECT` | Real successful private-migration outputs matching current dev source/project |
 | `ROLLBACK_SCHEMA_COMPATIBLE=true` | Explicit acknowledgement for an older ancestor image |
-| `PREFLIGHT_DIGEST` / `expected_digest` | If supplied, promotion must retain the digest already validated before migration |
+| `PREFLIGHT_DIGEST` / `expected_digest` | Mandatory SHA-256 digest already validated before migration; promotion must retain it. A supplied keyword takes precedence over the environment and must be nonempty |
 
-Fresh builds can promote only their own current SHA/project. Reuse is dispatch-only. A successful attempt-1 build remains eligible after a deploy-only attempt-2 retry, but the operator selects that producer in a new dispatch; the same run cannot recover through its own receipt.
+Fresh builds can promote only their own current SHA/project, and the registry's `web-<PIN_SHA>` tag must still identify that exact build digest in the verified account/repository immediately before publication. This tag is a second binding check, never a fallback that selects a replacement digest. Reuse remains bound to its retained receipt, including when a later build has replaced the source tag. Reuse is dispatch-only. A successful attempt-1 build remains eligible after a deploy-only attempt-2 retry, but the operator selects that producer in a new dispatch; the same run cannot recover through its own receipt.
+
+The helper supports Docker v2/OCI image manifests and OCI indexes/Docker manifest lists with exactly one `linux/arm64` descriptor. It verifies that child's digest, media and size, then its actual ARM64 config. Other declared platforms may coexist; recognized Buildx `unknown/unknown` attestation descriptors are preserved. Missing or duplicate ARM64 children and nested indexes fail closed. The **original index digest and bytes** are published, preserving attached build provenance.
+
+Every ECR read/write pins `--registry-id` to the verified role account and checks registry/repository/digest identity. Manifest reads check SHA-256 and schema 2; any body media declaration must match the supported ECR response media. ECR's media field supplies an omitted body declaration without rewriting manifest bytes. `PutImage` receives the original manifest, explicit digest and `--image-manifest-media-type`. `BatchGetImage` deliberately omits `--accepted-media-types`: its [documented values](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_BatchGetImage.html) contain image manifests but no index/list values, and AWS documents [no manifest translation on digest pulls](https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-manifest-formats.html). Do not copy an image-only accepted-types filter from the provenance-disabled runtime builder into this index-capable helper.
 
 Older-image rollback requires an ancestor SHA, retained successful producer and schema acknowledgement, and rejects any `MIGRATED_*` values. It runs no migrations and does not undo schema changes. The helper performs only ECR publication; the future caller must verify the exact ECS deployment/running digest and authenticated application/DB responses.
 
@@ -71,10 +93,10 @@ For receipt-enabled rollback or a failed deploy retry:
 3. Run `promote` with the selected producer/SHA and preflight digest. If identity, branch HEAD, receipt, manifest or migration evidence fails, stop before ECS rollout and select/rebuild through the same reviewed path. A fresh build cannot be used as an older-source rollback.
 4. After publication, use the future controller's bounded ECS rollout and authenticated verification. If rollout or verification fails after the tag changed, stop further promotion; record the previous/candidate digests and observed ECS deployment. An ECR tag change is not a service rollback, and this helper performs no automatic recovery or schema reversal.
 
-Reuse examines at most 100 artifacts and 20 matching receipts, with a 1 MiB provider/archive cap and 4 KiB receipt cap; expired or incomplete evidence fails closed. Each provider command has a 90-second timeout. The wiring must add an overall job/controller deadline and bounded deployment verification; these per-call limits alone do not bound the whole release. The requested 90-day retention is a wiring setting, not proof that a receipt is still available.
+Reuse examines at most 100 artifacts and 20 matching receipts, with a 1 MiB provider/archive cap and 4 KiB receipt cap. Expired or unsuccessful receipts are skipped; incomplete/unverifiable evidence or no remaining successful receipt blocks reuse. Image indexes are capped at 20 descriptors, configs at 1 MiB. Each provider command has a 90-second timeout. The wiring must add an overall job/controller deadline and bounded deployment verification; these per-call limits alone do not bound the whole release. The requested 90-day retention is a wiring setting, not proof that a receipt is still available.
 
 For new receipt-enabled releases, rebuild the current reviewed source or choose another retained successful producer. If neither is possible, stop this helper path. Any separate operator recovery requires independent trusted source/digest evidence, schema approval and scoped write authorization; do not fabricate a receipt, treat an image label as evidence, or silently downgrade to the legacy mutable-tag path.
 
 ## Related files and boundary
 
-See `scripts/v2/ci_web_image.py`, `scripts/v2/test_ci_web_image.py`, `.github/workflows/deploy-web.yml`, and [CI setup](dev-repo-setup.md). This operator CI publication is not product remediation/autonomy and adds no ADR-005 exception or IAM grant.
+See `scripts/v2/ci_web_image.py`, `scripts/v2/test_ci_web_image.py`, `.github/workflows/deploy-web.yml`, [CI setup](dev-repo-setup.md), and the AWS [PutImage](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_PutImage.html) / [GetDownloadUrlForLayer](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_GetDownloadUrlForLayer.html) contracts. This operator CI publication is not product remediation/autonomy and adds no ADR-005 exception or IAM grant.

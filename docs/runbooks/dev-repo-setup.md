@@ -642,6 +642,11 @@ owner. The application workflow does not grant IAM. See the
 The deploy jobs re-point `:web-latest` at the approved `web-<sha>` before rolling,
 so each deployer role needs `ecr:BatchGetImage` + `ecr:PutImage` scoped to its own
 stack's web ECR repository (plus the auth-token action it already has).
+Future wiring of the [web provenance helper](web-image-provenance.md) additionally
+requires repository-scoped `ecr:GetDownloadUrlForLayer` for digest-bound ARM64 config
+verification. Its producer and receipt-consuming jobs need `actions: read`; the
+producer uses its ci-build role, while promotion uses the deployer role. The
+currently unwired helper grants none of these permissions.
 
 Backend image builds require additional **repository scopes**, which the web grants above do not establish. Verify the configured roles before using the runtime build workflows:
 

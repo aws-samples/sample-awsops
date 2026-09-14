@@ -42,11 +42,11 @@ gated files (measured), but narrowing the check to top-level attributes only is 
 
 ## Runner Usage
 
-Use Node.js 20 (CI and web runtime; migration runtime image uses 22), Python 3.12, curl, OpenSSL, Terraform **1.15.7**
+Use Node.js 20 (CI and web runtime; migration runtime image uses 22), Python 3.12, curl, OpenSSL, jq, Terraform **1.15.7**
 and a reachable Docker daemon. Install dependencies from the repository root. The private
 migration suites use locked `pg` and AWS SDK dependencies from `scripts/v2/package-lock.json`.
 The web connection-phase suite uses the locked driver and TypeScript from `web/`.
-CI·웹 런타임 Node 20(migration 런타임 이미지 22)·Python 3.12·curl·OpenSSL·Terraform **1.15.7**·접근 가능한 Docker를
+CI·웹 런타임 Node 20(migration 런타임 이미지 22)·Python 3.12·curl·OpenSSL·jq·Terraform **1.15.7**·접근 가능한 Docker를
 준비한다. private migration 테스트는 `scripts/v2`의 잠긴 `pg`·AWS SDK 의존성을,
 웹 연결 단계 테스트는 `web/`의 잠긴 드라이버·TypeScript를 사용한다.
 

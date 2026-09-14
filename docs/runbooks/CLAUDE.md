@@ -37,6 +37,10 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 - The web image provenance helper is not yet wired. Its future caller must add the documented
   receipt steps and current-dev migration outputs; use the composed `promote` entrypoint,
   never manually mint migration evidence or silently fall back to mutable-tag authority.
+  Require a nonempty preflight digest on all paths and fresh digest/source-tag agreement.
+  Preserve OCI indexes with unambiguous ARM64 verification. Document the producer's
+  ci-build role, both jobs' `actions: read`, upload-artifact v4+, and repository-scoped
+  config-download permission; publication uses the deployer role and explicit ECR media.
 - Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). The helper supplies policies and installs neither consumer path. Deploy Web integration must be dev-only with activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
 - Private saved-plan inspection authenticates run/checkout/assets before 32 MiB-bounded rendering; it never authorizes apply.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.

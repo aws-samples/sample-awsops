@@ -8,7 +8,12 @@ secrets-manager) — installed by `make deps`.
 ## Key Files
 - `v2/ci_web_image.py` — preparatory web provenance helper; no workflow caller yet.
   `promote` composes caller/context/source/migration/producer checks before publishing only
-  the validated project's digest. Do not call the low-level publisher from CI.
+  the validated project's digest. Every promotion requires a nonempty preflight digest;
+  fresh builds also bind it to `web-<SHA>` in the verified registry/repository. Preserve
+  original OCI index bytes/provenance and verify exactly one ARM64 child plus its config.
+  ECR reads omit image-only accepted-media filters; writes specify media/digest/registry.
+  Config reads require scoped `ecr:GetDownloadUrlForLayer` and curl. CLI errors expose only
+  fixed `ImageError` diagnostics, never provider data. Do not call the low-level publisher from CI.
   `v2/test_ci_web_image.py` tests the contract; jq is required for compare projection.
   See `docs/runbooks/web-image-provenance.md` for future receipt-step names, inputs and
   expiry/rollback limits. Operator CI publication adds no ADR-005 exception or IAM grant.
