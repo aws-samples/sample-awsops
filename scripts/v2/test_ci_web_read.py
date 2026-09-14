@@ -185,6 +185,21 @@ class ReadTransportTest(unittest.TestCase):
                 self.assert_fatal(self.read)
                 self.assertEqual(len(calls), 1)
 
+    def test_current_cli_error_prefix_preserves_root_error_classification(self):
+        errors = [
+            ("aws: [ERROR]: An error occurred (ThrottlingException) when calling the DescribeServices operation: busy", True),
+            (f'aws: [ERROR]: Read timeout on endpoint URL: "{SENSITIVE}"', True),
+            ("aws: [ERROR]: An error occurred (AccessDeniedException) when calling the DescribeServices operation: ThrottlingException", False),
+        ]
+        for text, retryable in errors:
+            program = f"import sys; sys.stderr.write({text!r}); sys.exit(254)"
+            with self.subTest(retryable=retryable), self.cli([program]):
+                if retryable:
+                    with self.assertRaises(self.subject.TransientReadError):
+                        self.read()
+                else:
+                    self.assert_fatal(self.read)
+
     def test_network_error_shapes_retry_but_unknown_text_and_wrong_operations_do_not(self):
         retryable = [
             f'Read timeout on endpoint URL: "{SENSITIVE}"',
