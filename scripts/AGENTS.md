@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: df7a7faf230f · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 16a576db25e5 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -27,8 +27,7 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   Check recognized producer conclusions before timestamps; skip non-success jobs without
   suppressing another successful receipt. Helper stdout is `{digest, image_sha, rollback}`;
   controller deploy adds `migration`, with no recovery history.
-  Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual
-  Terraform ECR/cluster/service outputs. Never use dispatch inputs.
+  Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual Terraform ECR/cluster/service outputs. Never use dispatch inputs.
   Target one verified stack repo per operation; broad IAM is not branch/stack authority.
   Unconfirmed publication is a provider/retry diagnosis, not a rebuild signal; retain equal-effect
   confirmation. Use 0600 manifest files, bounded ZIP reads and ARM-child attestation references.

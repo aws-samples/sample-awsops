@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8d534ce0ce68 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7b6cc36b5aad · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -34,12 +34,9 @@ legacy runbook's steps as the current operational path).
   need `actions: read`, dedicated fresh-only consumers do not.
   Document upload-artifact v4 with required Artifact API digest and scoped config-download permission; ECR publication
   supplies explicit media.
-  Helper stdout is `{digest, image_sha, rollback}`; controller deploy adds `migration`, with no history API. Recovery requires independently retained
-  source/digest evidence. Automatic receipt cleanup removes the fixed GitHub run/attempt
-  path; manual leftover cleanup verifies ownership. Migration/preflight assertions
+  Helper stdout is `{digest, image_sha, rollback}`; controller deploy adds `migration`, with no history API. Recovery requires independently retained source/digest evidence. Automatic receipt cleanup removes the fixed GitHub run/attempt path; manual leftover cleanup verifies ownership. Migration/preflight assertions
   come from verified job outputs, never dispatch inputs.
-  Build/image-proof select IMAGE_PROJECT from protected branch tfvars; deploy cross-checks actual
-  Terraform ECR/cluster/service outputs. Existing broad IAM is not stack authority: one verified repo
+  Build/image-proof select IMAGE_PROJECT from protected branch tfvars; deploy cross-checks actual Terraform ECR/cluster/service outputs. Existing broad IAM is not stack authority: one verified repo
   per operation, exact repo ARNs for new grants. Distinguish publication/provider failures
   from invalid candidates and document completed-producer/superseded-push handling.
   Provider subprocesses disable AWS config files, isolate GH config and filter endpoint/profile/model/provider/CA/proxy

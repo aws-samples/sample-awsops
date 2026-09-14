@@ -23,8 +23,7 @@ secrets-manager) — installed by `make deps`.
   Digest reads may return identical rows for multiple tags; reject conflicting row evidence.
   Recognized non-success producer jobs skip timestamp checks; successful jobs still require
   the artifact window. Helper stdout stays `{digest, image_sha, rollback}`; controller deploy adds `migration`; recovery evidence is caller-owned.
-  Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual
-  Terraform ECR/cluster/service outputs. Never use dispatch input. Each operation targets one verified stack repo; broad CI-account IAM is
+  Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual Terraform ECR/cluster/service outputs. Never use dispatch input. Each operation targets one verified stack repo; broad CI-account IAM is
   not stack authority. Publication failure is distinct from candidate validation and may
   succeed only after an independent equal-effect tag check. Manifests use owned 0600 files;
   ZIP payload reads are bounded and attestations must reference the verified ARM64 child.

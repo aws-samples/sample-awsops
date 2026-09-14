@@ -62,15 +62,9 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   Preserve OCI indexes with unambiguous ARM64 verification. Document the producer's
   ci-build role, producer/reuse-consumer `actions: read`, upload-artifact v4 plus required Artifact API digest, and repository-scoped
   config-download permission; publication uses the deployer role and explicit ECR media.
-  Helper stdout is `{digest, image_sha, rollback}`; controller deploy adds `migration`, with no tag history. Recovery
-  requires independently retained source/digest evidence. Legacy images without receipts
-  use the separately approved private-host recovery runbook with source/digest evidence
-  and schema approval, never fabricated receipts or a workflow bypass. Automatic receipt
-  cleanup removes only the fixed GitHub run/attempt path; manual leftover cleanup checks
-  ownership. Migration/preflight assertions use verified job outputs,
+  Helper stdout is `{digest, image_sha, rollback}`; controller deploy adds `migration`, with no tag history. Recovery requires independently retained source/digest evidence. Legacy images without receipts use the separately approved private-host recovery runbook with source/digest evidence and schema approval, never fabricated receipts or a workflow bypass. Automatic receipt cleanup removes only the fixed GitHub run/attempt path; manual leftover cleanup checks ownership. Migration/preflight assertions use verified job outputs,
   never dispatch inputs. Fresh-only consumers do not need `actions: read`.
-  Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual
-  Terraform ECR/cluster/service outputs. Broad current CI-account IAM does not
+  Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual Terraform ECR/cluster/service outputs. Broad current CI-account IAM does not
   supply stack authority; each operation selects one verified repo and any new grant uses
   its exact ARN. Publication confirmation failure calls for provider checks/revalidation,
   not rebuilding a validated candidate; document completed-producer and superseded-push cases.
