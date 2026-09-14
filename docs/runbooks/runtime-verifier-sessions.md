@@ -167,11 +167,12 @@ symlink/public/non-regular input files, or an existing output policy file.
 
 Collect consumers must use `RequestResponse` on the pinned function's
 unqualified ARN, without a version or alias qualifier.
-Each event must explicitly contain exactly `{"type":"catalog"}` or
-`{"type":"cloudfront"}`. **An absent `type` defaults to `all`**, which triggers
-asynchronous fan-out; empty events, `type=all`, other types and `Event` invocation
-are forbidden in this verifier. **IAM cannot constrain the Lambda event body**;
-the reviewed workflow/controller must enforce these exact payloads.
+Each event must contain exactly one explicit `type`: `catalog` for discovery or
+a member of the code-verified catalog for collection. **An absent `type` defaults
+to `all`**, which triggers asynchronous fan-out; empty payloads, `type=all`,
+unregistered types and `Event` invocation are forbidden. **IAM cannot constrain
+the Lambda event body**; the reviewed controller enforces these payloads and the
+at-most-four concurrent collector limit.
 
 The existing collector can upsert/prune application inventory and ledger rows in
 Aurora and replace that day's inventory snapshot rows. This is explicitly
