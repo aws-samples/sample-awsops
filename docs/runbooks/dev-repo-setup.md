@@ -1015,6 +1015,14 @@ DNS·출처 검사도 배포 ref의 코드이므로 코드 변경에 대한 보�
 
 #### Runtime images / 런타임 이미지
 
+The build helper uses BuildKit's configuration digest and pushes only `linux/arm64`
+(Docker API 1.46+), so containerd manifest/index IDs are not treated as configuration IDs.
+Steampipe retains its pinned engine/plugin and installs a version/SHA-256-pinned standalone
+Python runtime; this avoids unavailable packages in the frozen base's Debian repositories.
+helper는 BuildKit의 configuration digest를 사용하고 `linux/arm64`만 push한다(Docker API 1.46 이상).
+containerd의 manifest/index ID를 configuration ID로 취급하지 않는다. Steampipe 엔진·플러그인은 유지하고
+버전·SHA-256으로 고정한 독립 Python runtime을 사용해 오래된 기반 이미지의 Debian 패키지 누락을 피한다.
+
 After the reviewed Terraform ECR bootstrap, dispatch **Build Development Runtime Image** (`build-runtime-images.yml`) on `dev` with `component=steampipe` or `component=worker`. The repository must already exist: `steampipe_enabled`, `workers_enabled` and `agentcore_enabled` gate the respective `-steampipe`, `-worker` and `-agentcore`
 repositories. The helper checks the independently configured secret account, configured CI role and actual STS identity before writes; it never creates repositories. It builds one Linux/ARM64 manifest, verifies the
 uploaded configuration and manifest hashes, and returns the project and immutable digest. Record those verified digests for the full infrastructure plan; the build itself deploys no service. Repository preflight and
