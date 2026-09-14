@@ -312,13 +312,14 @@ test('release discloses catalog degradation with a recent last success, never co
     const result = await f.run({ ...config, collectionMode: 'release' });
     assert.deepEqual(result.collection, { status: 'degraded', completeness: 'unknown', freshness_minutes: 30,
       degraded_types: [{ type: 'ec2', status: change.status || 'succeeded',
-        unknown_attributes: Object.hasOwn(change, 'unknown_attributes') ? change.unknown_attributes : false }] });
+        unknown_attributes: ['running', 'failed'].includes(change.status) ? null
+          : Object.hasOwn(change, 'unknown_attributes') ? change.unknown_attributes : false }] });
     assert.equal(result.catalog_types, 2);
     assert.equal(result.collected_types, undefined);
     assert.equal(result.workers, 2);
   }
 });
-test('release refuses missing, stale and malformed catalog evidence without running runtime or worker probes', async () => {
+test('release refuses missing, stale and malformed catalog evidence without starting workers', async () => {
   const old = new Date(Date.parse(start) - 31 * 60_000).toISOString();
   for (const [change, reason] of [
     [null, 'collection_missing'],
@@ -336,7 +337,7 @@ test('release refuses missing, stale and malformed catalog evidence without runn
       })),
     } }) });
     await assert.rejects(f.run({ ...config, collectionMode: 'release' }), new RegExp(`Runtime smoke: ${reason}$`));
-    assert.ok(f.calls.every(c => c.path !== '/api/deployment/readiness' && c.path !== '/api/jobs'));
+    assert.ok(f.calls.every(c => c.path !== '/api/jobs'));
   }
 });
 test('release freshness uses observation time even when the marker was recorded earlier', async () => {
@@ -355,18 +356,35 @@ test('release freshness uses observation time even when the marker was recorded 
     else await assert.rejects(f.run({ ...config, collectionMode: 'release' }), /collection_stale$/);
   }
 });
-test('release still rejects partial or unknown CloudFront even when other catalog types are current', async () => {
-  for (const [change, reason] of [[{ status: 'partial' }, 'collection_partial'],
-    [{ unknown_attribute_count: 1, unknown_attributes: true }, 'inventory_incomplete']]) {
+test('a newer scheduled CloudFront attempt cannot invalidate the owned proof but is disclosed', async () => {
+  for (const status of ['running', 'partial', 'failed', 'succeeded']) {
     const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
       configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
         type, accountId: 'self', status: 'succeeded', row_count: 1, started_at: start,
         last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false,
-        ...(type === 'cloudfront' ? change : {}),
+        ...(type === 'cloudfront' ? { status, started_at: new Date(Date.parse(start) + 500).toISOString(),
+          unknown_attribute_count: 1, unknown_attributes: true } : {}),
       })),
     } }) });
-    await assert.rejects(f.run({ ...config, collectionMode: 'release' }), new RegExp(`${reason}$`));
+    const result = await f.run({ ...config, collectionMode: 'release' });
+    assert.deepEqual(result.collection.degraded_types, [{ type: 'cloudfront', status,
+      unknown_attributes: ['running', 'failed'].includes(status) ? null : true }]);
+    assert.equal(result.collection.completeness, 'unknown');
+    assert.ok(f.calls.findIndex(c => c.path === '/api/deployment/readiness') <
+      f.calls.findIndex(c => c.path.startsWith('/api/inventory/summary')));
+    assert.equal(result.workers, 2);
   }
+});
+test('an older CloudFront success cannot pass even when the current attempt is newer', async () => {
+  const previous = new Date(Date.parse(start) - 1000).toISOString();
+  const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
+    configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
+      type, accountId: 'self', status: 'running', row_count: null, started_at: start,
+      last_success_at: type === 'cloudfront' ? previous : start,
+      unknown_attribute_count: null, unknown_attributes: null,
+    })),
+  } }) });
+  await assert.rejects(f.run({ ...config, collectionMode: 'release' }), /collection_stale$/);
 });
 test('degraded catalog acceptance never substitutes for own SSM/model and terminal worker proof', async () => {
   const summary = () => ({ collection: {

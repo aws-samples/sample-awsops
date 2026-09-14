@@ -32,7 +32,6 @@ Host-only removes only collector AssumeRole; Agent MCP grants remain. IAM includ
 S3 steady denials remain unknown: rows carry `attributes_unknown`, the ledger increments
 `unknown_attribute_count`, and freshness is `degraded`. The release reports this degradation;
 it does not certify complete inventory. Its CloudFront runtime proof still requires zero unknowns.
-S3 지속 거부는 행별 미확인 속성·원장 unknown 수·degraded 신선도로 드러나며 완전한 배포 검증을 통과하지 않는다.
 The digest/host-preflight profile is dev-only. Preview retains operator-configured mutable tags or digests and multi-account scope, without dev host verification; account/role and private-DNS ownership checks still apply.
 digest·호스트 사전 검증은 dev 프로필 전용이다. preview는 운영자 설정 태그/digest·다중 계정 범위를 유지하며 계정·역할·사설 DNS 소유권만 공통으로 검증한다.
 
@@ -95,10 +94,17 @@ The controller reads the complete catalog from the code-checked inventory Lambda
 Catalog admission has a 450-second budget and retries only confirmed Lambda throttling. The CloudFront probe has a 900-second budget; each invocation needs at least 450 seconds remaining for the verified function timeout of at most 420 seconds plus transport overhead. Confirmed throttling, `busy`, and the producer's exact superseded result wait ten seconds before another bounded attempt. Denied, uncertain-delivery, partial, failed, and invalid-protocol outcomes fail distinctly. A successful RPC alone is not readiness proof.
 
 The release marker is recorded after catalog discovery and **before** the first CloudFront
-probe, and survives retries. CloudFront requires a succeeded ledger row whose start and last
-success are at or after that marker, zero unknown attributes, and the known record captured
-after the marker. The AgentCore probe separately requires that exact record and the producer's
-configured freshness policy. Neither an old known record nor a successful RPC alone passes.
+probe, and survives retries. The synchronous owned response must itself report `succeeded`,
+a valid row count and zero unknown attributes. The known record must be captured after the
+marker. The AgentCore probe separately requires that exact record and the producer's configured
+freshness policy. Capture this actual runtime/known-record proof before the longer catalog wait;
+failures while obtaining it still block. Neither an old known record nor a successful RPC alone passes.
+
+The later catalog read requires durable CloudFront `last_success_at` at or after the marker.
+Its singleton ledger row may now describe a newer scheduled attempt: running/partial/failed
+or unknown-attribute results are disclosed as degraded, without revoking the owned proof
+already obtained. Failed/running attempts report attribute coverage as unassessed rather than
+reusing an earlier attempt's zero. A pre-marker success never satisfies this check.
 
 Every other catalog type requires `last_success_at` within thirty minutes of the collection
 observation, independently of the release marker. The producer preserves this timestamp when a

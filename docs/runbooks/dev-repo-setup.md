@@ -1231,8 +1231,9 @@ worker images as described in [worker deployment](../reference/06-workers.md).
 
 Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway
 schema first. The web scan is capped at 500 rows; not finding the ID does not prove absence.
-The owned CloudFront probe, its ledger and known record must pass after the release marker,
-with zero unknown attributes. Other catalog types require last-success evidence within thirty
+The owned CloudFront probe must succeed with zero unknown attributes; the known record and durable
+CloudFront last success must be post-marker. Actual runtime proof precedes the longer catalog wait,
+so a newer scheduled attempt is disclosed without revoking that proof. Other catalog types require last-success evidence within thirty
 minutes of observation. Newer running/partial/failed attempts or unknown attributes are disclosed
 as degraded, never as complete collection. Missing/stale evidence still blocks. See the
 [collection contract](runtime-foundation.md#collection-contention--수집-경합) and
@@ -1316,7 +1317,7 @@ ECS 안정화와 `/api/health` 성공에 이어 실제 `POST /api/auth/login`의
 `ok: true`, 유효한 secure·호스트 전용 `awsops_token` cookie를 요구한다. 그 cookie로
 `GET /api/db`가 HTTP 200, `status: "ok"`, 양의 안전 정수 `public_tables`를 반환해야
 완료된다. CloudFront 연결에서도 Host/SNI·TLS 검증을 유지하며 redirect를 따라가지 않는다.
-수행한다. 실제 암호의 유효성은 rollout 후 로그인에서 확인한다. 실패하면 기존 사용자와 보호된
+실제 암호의 유효성은 rollout 후 로그인에서 확인한다. 실패하면 기존 사용자와 보호된
 암호 공급원을 비공개로 확인하고, **검사를 통과시키려고 기존 사용자 암호를 재설정하지 않는다.**
 이 워크플로는 사용자를 생성하거나 암호를 설정하지 않는다.
 
@@ -1330,7 +1331,6 @@ image pinning or rollout.
 로그인 401은 설정된 자격증명, 403은 Cognito 사용자/인증 상태, 502는 상위 연결을 확인한다.
 DB 503은 서비스 설정, 500은 DB 자격증명·IAM·연결을 확인한다. 전송/TLS 오류에는 HTTP
 응답이 없을 수 있다. 비공개 앱 로그로 조사하고 응답 본문을 출력하거나 암호를 재설정하지 않는다.
-이미지 pin·rollout은 그 이후에만 진행한다.
 
 Offline checks for this path (Node 20, curl, OpenSSL, Python 3 with PyYAML, and Terraform 1.15.7):
 

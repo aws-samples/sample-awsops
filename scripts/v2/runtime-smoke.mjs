@@ -95,7 +95,7 @@ export async function verifyRuntimeSmoke(configuration, request, {
   const releaseWindow = config.collectionMode === 'release';
   let collectionFailure = 'collection_timeout';
   let collectionEvidence;
-  await poll(async () => {
+  const collect = () => poll(async () => {
     const summary = await request('/api/inventory/summary?accounts=self&view=collection');
     const c = summary?.collection;
     if (!object(c) || c.configured !== true || c.readOk !== true || !Array.isArray(c.runs)) fail('collection_unavailable');
@@ -108,20 +108,22 @@ export async function verifyRuntimeSmoke(configuration, request, {
       if (rows.length === 0) { missing = true; complete = false; continue; }
       if (rows.length !== 1) fail('collection_protocol');
       const row = rows[0];
-      if (releaseWindow && type !== 'cloudfront') {
+      if (releaseWindow) {
         if (!['running', 'succeeded', 'partial', 'failed'].includes(row.status)
             || !(row.unknown_attribute_count === null ? row.unknown_attributes === null
               : finiteCount(row.unknown_attribute_count)
                 && row.unknown_attributes === (row.unknown_attribute_count > 0))
             || (row.status === 'succeeded' && !finiteCount(row.row_count))) fail('collection_protocol');
-        // A later failed/running attempt preserves the producer's last success.
-        // This proves recent collection activity, never complete attributes.
-        if (!freshTime(row.last_success_at, observed - 30 * 60_000, observed)) {
+        // The controller verified its synchronous CloudFront response, including
+        // zero unknowns. A later scheduled attempt cannot revoke that proof.
+        const cutoff = type === 'cloudfront' ? started : observed - 30 * 60_000;
+        if (!freshTime(row.last_success_at, cutoff, observed)) {
           complete = false;
           stale = true;
         }
         if (row.status !== 'succeeded' || row.unknown_attributes !== false) {
-          degraded.push({ type, status: row.status, unknown_attributes: row.unknown_attributes });
+          degraded.push({ type, status: row.status,
+            unknown_attributes: ['running', 'failed'].includes(row.status) ? null : row.unknown_attributes });
         }
         continue;
       }
@@ -142,6 +144,7 @@ export async function verifyRuntimeSmoke(configuration, request, {
       freshness_minutes: 30, degraded_types: degraded };
     return complete;
   }, () => collectionFailure, releaseWindow ? 1200 : 600);
+  if (!releaseWindow) await collect();
 
   let found = false;
   for (let offset = 0; offset < 500 && !found; offset += 5) {
@@ -178,6 +181,9 @@ export async function verifyRuntimeSmoke(configuration, request, {
       || !finiteCount(agent.inventory?.count) || agent.inventory.count < 1 || agent.inventory.count > 500
       || !finiteCount(agent.inventory?.ageMinutes) || agent.inventory.ageMinutes > 1440) fail('runtime_protocol');
 
+  // Capture the actual runtime/known-record proof before the long catalog wait.
+  // Runtime failures here still fail; later ledger changes are disclosed below.
+  if (releaseWindow) await collect();
   for (const [type, runtimeName] of [['noop', 'lambda'], ['noop-heavy', 'fargate']]) {
     const job = await request('/api/jobs', { method: 'POST', status: '202', body: {
       type, payload: {}, dry_run: false, idempotency_key: `readiness:${nonce}:${type}`,

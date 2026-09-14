@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a02ff94c1dfd · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 21f870ce9919 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -120,8 +120,8 @@ legacy runbook's steps as the current operational path).
   does not provision these resources; do not separately create the Terraform-managed group.
   `CI_READONLY_RUNTIME_DEV=true` enables readiness in the public dev profile; public CI rejects
   the flag outside dev. Private deployments outside public CI set it explicitly before apply/provisioning.
-  False/missing reports `runtime_disabled`. Capped samples cannot prove absence. CloudFront
-  partial/failed runs and unknown attributes remain failures. Other catalog types may report
+  False/missing reports `runtime_disabled`. Capped samples cannot prove absence. The owned CloudFront probe fails
+  on partial/failed results or unknown attributes; newer attempts disclose degradation. Other catalog types may report
   degradation only with recent last-success evidence; complete inventory is never inferred.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
   credentials. Prepare checks host registration (optional hostOnly); verify additionally
@@ -137,4 +137,4 @@ legacy runbook's steps as the current operational path).
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
 - Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
 
-Release mode reads the code-checked catalog and invokes only the owned CloudFront collector. CloudFront ledger/known-record proof remains post-marker with zero unknowns; other catalog types require last success within thirty minutes of observation. Newer running/partial/failed attempts and unknown attributes are disclosed as degraded, with completeness always unknown. Missing/stale or malformed catalog evidence blocks; standalone smoke remains strict for all supplied types. SSM/model and both owned worker proofs are mandatory. Catalog/probe budgets remain 450/900 seconds; release polling is twenty minutes, standalone ten. Only confirmed throttling/busy/superseded probe outcomes retry. See docs/runbooks/runtime-foundation.md for timing, cleanup and existing-stack adoption; no scheduler or IAM repair is performed.
+Release mode reads the code-checked catalog and invokes only the owned CloudFront collector. The owned CloudFront response must succeed with zero unknowns; its known record and durable last success remain post-marker. Capture actual runtime proof before the catalog wait; later CloudFront attempts disclose degradation without revoking that proof; other catalog types require last success within thirty minutes of observation. Newer running/partial/failed attempts and unknown attributes are disclosed as degraded, with completeness always unknown. Missing/stale or malformed catalog evidence blocks; standalone smoke remains strict for all supplied types. SSM/model and both owned worker proofs are mandatory. Catalog/probe budgets remain 450/900 seconds; release polling is twenty minutes, standalone ten. Only confirmed throttling/busy/superseded probe outcomes retry. See docs/runbooks/runtime-foundation.md for timing, cleanup and existing-stack adoption; no scheduler or IAM repair is performed.

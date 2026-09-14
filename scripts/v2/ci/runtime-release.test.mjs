@@ -43,9 +43,9 @@ function catalog() {
   return { status: 'catalog', types: ['cloudfront', 'rds'] };
 }
 const currentCollection = { status: 'current', completeness: 'unknown', freshness_minutes: 30, degraded_types: [] };
-test('release preserves degraded catalog evidence without claiming complete collection', async () => {
+for (const type of ['rds', 'cloudfront']) test(`release preserves ${type} degradation after a successful owned probe`, async () => {
   const collection = { ...currentCollection, status: 'degraded',
-    degraded_types: [{ type: 'rds', status: 'partial', unknown_attributes: null }] };
+    degraded_types: [{ type, status: 'partial', unknown_attributes: null }] };
   const f = fixture({ authResult: { status: 'ok', mode: 'verify', catalog_types: 2, workers: 2, collection } });
   try {
     const result = await release(deployment(), { env: f.env, run: f.run, authenticate: f.authenticate });
@@ -60,7 +60,7 @@ test('release refuses missing, fabricated or foreign collection proof', async ()
     { ...currentCollection, status: 'degraded',
       degraded_types: [{ type: 'foreign', status: 'partial', unknown_attributes: true }] },
     { ...currentCollection, status: 'degraded',
-      degraded_types: [{ type: 'cloudfront', status: 'partial', unknown_attributes: true }] }]) {
+      degraded_types: [{ type: 'cloudfront', status: 'succeeded', unknown_attributes: false }] }]) {
     const f = fixture({ authResult: { status: 'ok', mode: 'verify', catalog_types: 2, workers: 2, collection } });
     try {
       await assert.rejects(release(deployment(), { env: f.env, run: f.run, authenticate: f.authenticate }),
@@ -111,7 +111,7 @@ function fixture(overrides = {}) {
       const { type } = JSON.parse(args[args.indexOf('--payload') + 1]);
       assert.ok(['catalog', 'cloudfront'].includes(type));
       writeFileSync(output, JSON.stringify(type === 'catalog' ? (overrides.catalog || catalog())
-        : (overrides.probe || { type, status: 'succeeded' })), { mode: 0o600 });
+        : (overrides.probe || { type, status: 'succeeded', row_count: 1, unknown_attribute_count: 0 })), { mode: 0o600 });
       return JSON.stringify(overrides.invoke || { StatusCode: 200, ExecutedVersion: '$LATEST' });
     }
     if (overrides.throwAt === key) throw new Error('PRIVATE_REMOTE_DETAIL');
@@ -162,7 +162,7 @@ test('the own CloudFront probe waits through busy/superseded without another ful
           probes++;
           assert.equal(options.timeout, 450_000);
           assert.equal(args[args.indexOf('--invocation-type') + 1], 'RequestResponse');
-          writeFileSync(args.at(-1), JSON.stringify({ type: 'cloudfront',
+          writeFileSync(args.at(-1), JSON.stringify({ type: 'cloudfront', row_count: 1, unknown_attribute_count: 0,
             status: probes === 1 ? 'busy' : probes === 2 ? 'failed' : 'succeeded',
             ...(probes === 2 ? { error: 'inventory sync superseded' } : {}) }));
           return JSON.stringify({ StatusCode: 200, ExecutedVersion: '$LATEST' });
@@ -204,7 +204,7 @@ test('a long busy probe can finish and retry without an arbitrary call-count lim
           assert.equal(options.env.AWS_MAX_ATTEMPTS, '1');
           assert.equal(options.timeout, 450_000);
           clock += 420_000;
-          writeFileSync(args.at(-1), JSON.stringify({ type: 'cloudfront',
+          writeFileSync(args.at(-1), JSON.stringify({ type: 'cloudfront', row_count: 1, unknown_attribute_count: 0,
             status: probes === 1 ? 'busy' : 'succeeded' }));
           return JSON.stringify({ StatusCode: 200, ExecutedVersion: '$LATEST' });
         }
@@ -305,6 +305,7 @@ test('bad invocation acknowledgement never starts smoke, and database-only retur
     { invoke: { StatusCode: 200, FunctionError: 'Unhandled' } },
     { catalog: { ...catalog(), status: 'partial' } },
     { probe: { type: 'cloudfront', status: 'partial' } },
+    { probe: { type: 'cloudfront', status: 'failed' } },
     { probe: { type: 'other', status: 'succeeded' } },
     { authResult: { status: 'ok', mode: 'database' } },
     { authResult: { status: 'ok', mode: 'verify' } },
@@ -313,6 +314,18 @@ test('bad invocation acknowledgement never starts smoke, and database-only retur
     try {
       await assert.rejects(release(deployment(), { env: f.env, run: f.run, authenticate: f.authenticate }));
       assert.ok(!existsSync(f.directory));
+    } finally { f.cleanup(); }
+  }
+});
+test('the owned probe must itself disclose zero unknown attributes before authentication', async () => {
+  for (const change of [{ unknown_attribute_count: 1 }, { unknown_attribute_count: null },
+    { unknown_attribute_count: undefined }, { row_count: null }]) {
+    const f = fixture({ probe: { type: 'cloudfront', status: 'succeeded', row_count: 1,
+      unknown_attribute_count: 0, ...change } });
+    try {
+      await assert.rejects(release(deployment(), { env: f.env, run: f.run, authenticate: f.authenticate }),
+        /collection_probe_incomplete/);
+      assert.equal(f.authenticated.length, 0);
     } finally { f.cleanup(); }
   }
 });

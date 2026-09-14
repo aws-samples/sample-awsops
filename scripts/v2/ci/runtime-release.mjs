@@ -288,6 +288,7 @@ export async function release(deployment, {
           }
           if (['failed', 'partial'].includes(result.status)) throw new ReleaseError(`collection_${result.status}`);
           need(result.status === 'succeeded', 'collection_probe_protocol');
+          need(integer(result.row_count) && result.unknown_attribute_count === 0, 'collection_probe_incomplete');
           return result;
         }
       };
@@ -321,12 +322,12 @@ export async function release(deployment, {
         'completeness,degraded_types,freshness_minutes,status' &&
         collection.completeness === 'unknown' && collection.freshness_minutes === 30 &&
         Array.isArray(collection.degraded_types) &&
-        collection.degraded_types.length < config.expectedQueuedTypes.length &&
+        collection.degraded_types.length <= config.expectedQueuedTypes.length &&
         collection.status === (collection.degraded_types.length ? 'degraded' : 'current') &&
         new Set(collection.degraded_types.map(row => row?.type)).size === collection.degraded_types.length &&
         collection.degraded_types.every(row => object(row) &&
           Object.keys(row).sort().join(',') === 'status,type,unknown_attributes' &&
-          row.type !== 'cloudfront' && config.expectedQueuedTypes.includes(row.type) &&
+          config.expectedQueuedTypes.includes(row.type) &&
           ['running', 'succeeded', 'partial', 'failed'].includes(row.status) &&
           (row.unknown_attributes === null || typeof row.unknown_attributes === 'boolean') &&
           (row.status !== 'succeeded' || row.unknown_attributes !== false)), 'collection_proof_required');
