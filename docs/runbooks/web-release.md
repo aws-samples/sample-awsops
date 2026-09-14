@@ -53,7 +53,7 @@ Main pushes build only. For manual, environment-gated production rollout, use th
 
 ## Verification, recovery and runtime integration
 
-New runs do not cancel in-flight rollouts. Superseded source checks fail even if DDL already applied. Verification binds account/project, deployment ID, revision, desired count, task/container health and digest. Wrong-image rollback or moved `web-latest` fails. The mutable-tag circuit breaker cannot recover a bad image; post-pin failures may leave state changed. Inspect it before an explicit release/rollback request.
+New runs do not cancel in-flight rollouts. Superseded source checks fail even if DDL already applied. Verification binds account/project, deployment ID, revision, desired count, task/container health and digest. Wrong-image rollback or moved `web-latest` fails. The controller does not initiate rollback or count an ECS rollback as release success. Post-pin failures may leave state changed; inspect it before an explicit release/rollback request.
 
 The separate runtime gate consumes root/ARM64 digests after exact ECS verification. Job outputs `expected_image_digest` and `expected_runtime_digest` require a successful deploy job. Within that job pass:
 
