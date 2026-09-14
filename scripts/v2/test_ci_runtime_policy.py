@@ -188,6 +188,52 @@ class RuntimePolicyTests(unittest.TestCase):
         return {"address": address, "type": kind,
                 "change": {"actions": actions or ["create"], "before": None, "after": after, "after_unknown": {}}}
 
+    def test_canonical_cli_boolean_inputs_preserve_fail_closed_metadata_checks(self):
+        for key in ("ci_runtime_rollout", "ci_runtime_profile_enabled", "ci_readiness_enabled"):
+            plan = self.plan()
+            plan["variables"][key]["value"] = "false"
+            self.module.check_plan(plan, "dev", "full", ACCOUNT)
+            for invalid in (None, 0, 1, 0.0, 1.0, "TRUE", "False", " true", "false ", "1", [], {}):
+                with self.subTest(key=key, invalid=invalid), self.assertRaisesRegex(ValueError, "boolean"):
+                    plan["variables"][key]["value"] = invalid
+                    self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        plan = self.plan()
+        plan["variables"]["ci_readiness_enabled"]["value"] = "true"
+        with self.assertRaisesRegex(ValueError, "dev-only"):
+            self.module.check_plan(plan, "main", "full", ACCOUNT)
+
+    def test_real_cli_readiness_plan_retains_raw_string_but_applies_boolean(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            root.joinpath("main.tf").write_text(
+                'variable "ci_readiness_enabled" { type = bool }\n'
+                'output "readiness" { value = var.ci_readiness_enabled }\n')
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("AWS_", "TF_"))}
+            env.update(CHECKPOINT_DISABLE="1", AWS_EC2_METADATA_DISABLED="true",
+                       AWS_CONFIG_FILE="/dev/null", AWS_SHARED_CREDENTIALS_FILE="/dev/null",
+                       TF_CLI_CONFIG_FILE="/dev/null")
+            for setting in ("true", "false"):
+                with self.subTest(setting=setting):
+                    for command in (
+                        ["terraform", "init", "-backend=false", "-input=false"],
+                        ["terraform", "plan", "-input=false", "-out=tfplan",
+                         f"-var=ci_readiness_enabled={setting}"],
+                    ):
+                        result = subprocess.run(command, cwd=root, env=env, capture_output=True,
+                                                text=True, timeout=15)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    planned = json.loads(subprocess.check_output(
+                        ["terraform", "show", "-json", "tfplan"], cwd=root, env=env, text=True,
+                        timeout=15))
+                    self.assertIs(planned["planned_values"]["outputs"]["readiness"]["value"],
+                                  setting == "true")
+                    plan = self.plan()
+                    plan["variables"]["ci_readiness_enabled"] = planned["variables"]["ci_readiness_enabled"]
+                    self.module.check_plan(plan, "dev", "full", ACCOUNT)
+                    if setting == "true":
+                        with self.assertRaisesRegex(ValueError, "dev-only"):
+                            self.module.check_plan(plan, "main", "full", ACCOUNT)
+
     def test_repository_bootstrap_cannot_mutate_any_other_resource(self):
         changes = [self.change("aws_ecr_repository.steampipe[0]", "aws_ecr_repository",
                                {"name": "awsops-dev-steampipe"})]

@@ -239,17 +239,25 @@ def _check_accounts(value, expected):
                 raise ValueError("A runtime resource belongs to a different account")
 
 
+def _boolean_plan_input(value):
+    # Terraform records raw -var inputs as strings even for declared bool variables.
+    # Accept its canonical spellings only; never use Python truthiness on input.
+    if type(value) is bool:
+        return value
+    if type(value) is str and value in ("true", "false"):
+        return value == "true"
+    raise ValueError("Runtime operation metadata must be boolean")
+
+
 def check_plan(plan, target, scope, expected_account, *, advisory=False):
     if scope not in SCOPES or not isinstance(plan, dict) or not plan.get("format_version"):
         raise ValueError("Invalid runtime plan scope or document")
     variables = _variables(plan)
-    rollout = variables.get("ci_runtime_rollout", False)
-    profile = variables.get("ci_runtime_profile_enabled", False)
-    readiness = variables.get("ci_readiness_enabled", False)
+    rollout = _boolean_plan_input(variables.get("ci_runtime_rollout", False))
+    profile = _boolean_plan_input(variables.get("ci_runtime_profile_enabled", False))
+    readiness = _boolean_plan_input(variables.get("ci_readiness_enabled", False))
     if variables.get("ci_runtime_retire", False) is not False:
         raise ValueError("Runtime retirement is not supported by this workflow")
-    if any(type(value) is not bool for value in (rollout, profile, readiness)):
-        raise ValueError("Runtime operation metadata must be boolean")
     if readiness and target != "dev":
         raise ValueError("Deployment readiness is public dev-only")
     if profile and target != "dev":

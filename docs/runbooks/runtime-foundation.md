@@ -46,6 +46,11 @@ The digest/host-preflight profile is dev-only. Preview retains operator-configur
 | `false` | Explicitly sets it false, overriding a true value in restored tfvars. |
 | Empty/unset | Emits no readiness override; preserves explicit tfvars and the default false. Unsetting is not revocation. |
 
+Terraform's saved-plan JSON can retain raw command-line boolean inputs as strings.
+The runtime policy accepts actual booleans and exactly `true`/`false` strings for
+its operation metadata; numbers, nulls, whitespace and other spellings still fail.
+Enabled readiness remains dev-only after normalization.
+
 Other values are rejected. The workflow forwards this variable only on dev; helper opt-in and public-CI plan checks reject enabled readiness elsewhere. Direct Terraform remains explicit operator configuration. With readiness and AgentCore both enabled, a reviewed apply creates `deployment-verifiers`; automatic membership additionally requires the Terraform-managed demo (`create_demo_user=true`). No admin or IAM role is granted. Every holder of that shared demo login can then access the existing bounded billed model probe, so this must be a separate operator decision. The endpoint retains authentication, one in-flight request and a per-process cooldown; group creation is not deployment-readiness proof.
 
 Use a fresh normal login to obtain new group claims. `terraform/foundation/auth.tf` configures **12-hour ID/access tokens**; `web/lib/auth.ts` reads groups from the ID token and checks the existing session-revocation store. Removing membership does not rewrite issued tokens: they can retain verifier authorization for their remaining lifetime, up to 12 hours, unless session revocation rejects them. Disabling the runtime is a separate control and can block the probe even while an old group claim remains. For urgent removal, use the existing [offboarding/session-revocation procedure](user-offboarding.md); do not reset a password to make verification pass.
