@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 1d616fc033f2 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 54a0173f82d3 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -155,7 +155,8 @@ legacy runbook's steps as the current operational path).
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
 - Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
 
-Runtime probes accept verify-only full policy and release mode (shared 20min poll vs 10min).
+Runtime probes accept verify-only full policy and release mode (nominal shared 20min cap vs 10min,
+clipped by absolute/proof budgets; no guaranteed twenty-minute controller wait).
 Calls with runtime configuration expire at marker+30min/prepare-entry+30min, or an earlier bound.
 Quality/gaps are programmatic; the CLI stays fixed. Distinguish collection_stale,
 release_timeout and runtime_inventory_contention. Require full HTTP timeouts and remaining

@@ -18,7 +18,8 @@ const REGION = 'ap-northeast-2', REPO = 'aws-samples/sample-awsops';
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const SHA = /^[a-f0-9]{40}$/;
 // Five 35s HTTP calls, an 80s probe and two 370s worker paths need 995s.
-// Reserve 17m including 25s setup margin; extra pages/retries must still fit.
+// The 15s collector recheck brings the minimum to 1010s; reserve 17m with 10s margin.
+// Extra pages/retries must still fit.
 const REQUIRED_PROOF_MS = 17 * 60_000;
 const VERBS = new Set(['sts get-caller-identity', 'ecr batch-get-image',
   'ecs describe-services', 'ecs describe-task-definition', 'ecs list-tasks', 'ecs describe-tasks',
@@ -270,6 +271,7 @@ export async function release(deployment, {
       const lambdaConfig = await aws(['lambda', 'get-function-configuration', '--function-name', expected.sync_function_arn]);
       need(lambdaConfig.FunctionName === expected.sync_function_name && lambdaConfig.FunctionArn === expected.sync_function_arn &&
         lambdaConfig.CodeSha256 === expected.sync_code_sha256 && lambdaConfig.State === 'Active' &&
+        typeof lambdaConfig.RevisionId === 'string' && lambdaConfig.RevisionId.trim().length > 0 &&
         lambdaConfig.LastUpdateStatus === 'Successful' && Array.isArray(lambdaConfig.Architectures) &&
         lambdaConfig.Architectures.length === 1 && lambdaConfig.Architectures[0] === 'arm64' &&
         Number.isInteger(lambdaConfig.Timeout) && lambdaConfig.Timeout > 0 && lambdaConfig.Timeout <= 420,
@@ -347,7 +349,7 @@ export async function release(deployment, {
       await Promise.all(Array.from({ length: Math.min(4, types.length) }, async () => {
         while (cursor < types.length) {
           const type = types[cursor++], state = states[type];
-          try { await invoke(type, Math.min(900_000, collectionDeadline - now()), state); }
+          try { await invoke(type, collectionDeadline - now(), state); }
           catch (error) {
             state.reason = error instanceof ReleaseError ? error.message : 'collection_probe_failed';
             if (state.status === 'not_started')
@@ -369,6 +371,14 @@ export async function release(deployment, {
         error.inventory_quality = { status: 'not_verified', catalog_types: types, counts: null, types: null };
         throw error;
       }
+      const collectedConfig = await aws(['lambda', 'get-function-configuration',
+        '--function-name', expected.sync_function_arn], undefined, 15_000);
+      need(collectedConfig.FunctionName === expected.sync_function_name &&
+        collectedConfig.FunctionArn === expected.sync_function_arn &&
+        collectedConfig.CodeSha256 === lambdaConfig.CodeSha256 &&
+        collectedConfig.RevisionId === lambdaConfig.RevisionId &&
+        collectedConfig.State === 'Active' && collectedConfig.LastUpdateStatus === 'Successful',
+      'inventory_code_mismatch');
     }
     validateRuntimeSmokeConfig(config, now());
     const verificationDeadline = runtimeSmokeDeadline(config, now(), deadline);

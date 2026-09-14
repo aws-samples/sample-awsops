@@ -201,7 +201,8 @@ The release controller synchronously collects every code-checked catalog type th
 4. Always include the related file paths.
 
 The reusable runtime probe supports verify-only inventoryPolicy=full and collectionMode=release
-(20-minute rather than 10-minute collection polling). Rechecks share the first window; all
+(nominal 20-minute rather than 10-minute collection wait caps, clipped by remaining
+absolute/proof budgets). The controller does not promise that whole wait. Rechecks share the first window; all
 runtime callers have marker+30min/prepare-entry+30min deadlines, shortened by explicit bounds.
 Programmatic quality/gaps do not imply CLI JSON output or catalog discovery. Document
 collection_stale, release_timeout and repeated runtime_inventory_contention distinctly.

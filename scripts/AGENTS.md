@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3703acbc1039 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e1f0554a75ff · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -164,7 +164,8 @@ Manual session scopes and cleanup follow `docs/runbooks/runtime-verifier-session
 
 Runtime smoke accepts verify-only inventoryPolicy=full and collectionMode=release; omission
 keeps strict supplied-type checks. Full quality is programmatic; the caller discovers types.
-Collection polls share 10 minutes, or 20 in release mode. Every runtime call is bounded by
+Collection polls share a nominal 10-minute cap, or 20 in release mode, clipped by remaining
+absolute/proof budgets; the controller does not reserve a full twenty-minute wait. Every runtime call is bounded by
 marker+30min (prepare: entry+30min), shortened by explicit deadlines. One proven collision
 permits a cooldown/revalidation retry. No workflow or billed capability is activated.
 Require full HTTP timeouts remaining, and probe/worker budgets before billing or enqueue:

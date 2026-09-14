@@ -255,8 +255,9 @@ Manual verification requires separate [backend/workload policies](../docs/runboo
 The reusable helper's verify mode accepts optional `inventoryPolicy: "full"` and `collectionMode: "release"`;
 other values fail, and omission retains strict checks for every supplied type. Full mode
 returns programmatic quality/gaps; CLI output stays fixed and catalog discovery belongs
-to the caller. Release mode extends collection polling from 10 to 20 minutes, with one
-shared window across rechecks. All runtime callers have a finite deadline: marker+30min
+to the caller. The helper selects a nominal 10-minute wait cap, or 20 in release mode, shared across rechecks.
+Remaining absolute time and proof admission can shorten it; the controller does not promise
+a twenty-minute wait after collecting the catalog. All runtime callers have a finite deadline: marker+30min
 for verify, entry+30min for prepare; an explicit deadline only shortens it. One proven
 CloudFront running collision permits a 65-second-cooldown retry after complete revalidation.
 A repeated collision is runtime_inventory_contention, initial waiting is collection_timeout,

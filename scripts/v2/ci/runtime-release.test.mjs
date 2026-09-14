@@ -72,6 +72,7 @@ function fixture(overrides = {}) {
     }], failures: [] },
     'lambda get-function-configuration': { FunctionName: `${project}-inv-sync`,
       FunctionArn: deployment().inventory.sync_function_arn, CodeSha256: deployment().inventory.sync_code_sha256,
+      RevisionId: '11111111-1111-4111-8111-111111111111',
       State: 'Active', LastUpdateStatus: 'Successful', Architectures: ['arm64'], Timeout: 420 },
   };
   const calls = [], authenticated = [];
@@ -172,11 +173,22 @@ test('full collection synchronously drives every source catalog type with at mos
   assert.equal(invocation.length, 1);
   assert.equal(invocation[0].Effect, 'Allow');
   assert.deepEqual(invocation[0].Condition, { StringEquals: { 'aws:RequestedRegion': region } });
-  let active = 0, peak = 0;
+  let active = 0, peak = 0, configReads = 0;
   const invoked = [];
   try {
-    const result = await release(deployment(), { env: f.env, authenticate: f.authenticate,
+    const result = await release(deployment(), { env: f.env,
+      authenticate: (...args) => {
+        assert.equal(configReads, 2, 'Recheck the collector before authentication and workers');
+        return f.authenticate(...args);
+      },
       run: async (cmd, args, options) => {
+        if (args[0] === 'lambda' && args[1] === 'get-function-configuration' && ++configReads === 2) {
+          assert.equal(active, 0, 'All owned collection RPCs must settle before the recheck');
+          assert.deepEqual([...invoked].sort(), [...types].sort());
+          assert.equal(options.timeout, 15_000);
+          assert.equal(args[args.indexOf('--function-name') + 1], deployment().inventory.sync_function_arn);
+          assert.ok(!args.includes('--qualifier'));
+        }
         if (args[0] !== 'lambda' || args[1] !== 'invoke') return f.run(cmd, args, options);
         assert.equal(args[args.indexOf('--function-name') + 1], invocation[0].Resource);
         const payload = JSON.parse(args[args.indexOf('--payload') + 1]);
@@ -395,6 +407,9 @@ test('identity, wrong task role/revision/image/architecture and Lambda code fail
     { 'ecs describe-tasks': { tasks: [{ ...r['ecs describe-tasks'].tasks[0], containers: [{ name: 'web', lastStatus: 'RUNNING', imageDigest: `sha256:${'f'.repeat(64)}` }] }], failures: [] } },
     { 'ecs list-tasks': { taskArns: [taskArn], nextToken: 'more' } },
     { 'lambda get-function-configuration': { ...r['lambda get-function-configuration'], CodeSha256: Buffer.alloc(32, 4).toString('base64') } },
+    ...[undefined, null, '', '   ', 123, {}].map(RevisionId => ({
+      'lambda get-function-configuration': { ...r['lambda get-function-configuration'], RevisionId },
+    })),
     { throwAt: 'lambda get-function-configuration' },
   ];
   for (const change of changes) {
@@ -407,6 +422,36 @@ test('identity, wrong task role/revision/image/architecture and Lambda code fail
       assert.ok(!existsSync(f.directory));
     } finally { f.cleanup(); }
   }
+});
+
+for (const [label, change, readError] of [
+  ['changed hash', { CodeSha256: Buffer.alloc(32, 4).toString('base64') }],
+  ['same hash with a new revision', { RevisionId: '22222222-2222-4222-8222-222222222222' }],
+  ['missing revision', { RevisionId: undefined }],
+  ['update in progress', { LastUpdateStatus: 'InProgress' }],
+  ...['aws_timeout', 'aws_access_denied', 'aws_throttled'].map(code => [code, {}, code]),
+]) test(`collector recheck rejects ${label} before authentication and workers`, async () => {
+  const f = fixture();
+  let configReads = 0;
+  try {
+    await assert.rejects(release(deployment(), { env: f.env, authenticate: f.authenticate,
+      run: async (cmd, args, options) => {
+        if (args[0] === 'lambda' && args[1] === 'get-function-configuration'
+          && ++configReads === 2 && readError) throw new ReleaseError(readError);
+        if (args[0] === 'lambda' && args[1] === 'invoke'
+          && JSON.parse(args[args.indexOf('--payload') + 1]).type === 'cloudfront')
+          Object.assign(f.responses['lambda get-function-configuration'], change);
+        return f.run(cmd, args, options);
+      },
+    }), error => {
+      assert.equal(error.message, readError || 'inventory_code_mismatch');
+      assert.equal(error.collection_attempts.counts.succeeded, 2);
+      return true;
+    });
+    assert.equal(configReads, 2);
+    assert.equal(f.authenticated.length, 0);
+    assert.equal(existsSync(f.directory), false);
+  } finally { f.cleanup(); }
 });
 
 test('bad invocation acknowledgement never starts smoke, and database-only return cannot pass collect', async () => {

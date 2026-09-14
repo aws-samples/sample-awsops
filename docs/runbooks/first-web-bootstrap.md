@@ -312,12 +312,12 @@ false and follow [runtime activation](runtime-foundation.md):
    gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true
    ```
 
-   Require the deployed revision's complete mandatory AI/CI and authenticated
-   runtime release checks, including web identity, SSM/AgentCore/model access,
-   collection evidence and Lambda/Fargate jobs. A revision whose Deploy Web only
-   checks health or optional DB smoke cannot establish that full evidence; the
-   mandatory verifier must be integrated before publication. This runbook adds
-   no skip input or health-only alternative.
+   Current Deploy Web integrates `runtime-release.mjs`: require the complete
+   mandatory AI/CI and authenticated checks, including web identity/image,
+   every catalog type's clean post-marker collection, SSM/AgentCore/model access
+   and both owned Lambda/Fargate jobs. Legacy revisions with only health or
+   optional DB smoke cannot establish this proof. Publication requires the full
+   integrated gate; this runbook provides no skip input.
 5. Only after the full gate passes, use the separately authorized service A
    publication stage in [domain rollout](dev-domain-rollout.md), with a fresh
    reviewed saved plan. Bootstrap completion is never a full-ready report.
@@ -346,6 +346,10 @@ Command path checked against source on 2026-09-14; this is not a live execution 
 - [Authenticated smoke](../../scripts/v2/authenticated-smoke.mjs),
   [runtime smoke](../../scripts/v2/runtime-smoke.mjs),
   [account route](../../web/app/api/accounts/route.ts): login/DB/host preparation.
+- [Release controller](../../scripts/v2/ci/runtime-release.mjs),
+  [Deploy Web](../../.github/workflows/deploy-web.yml),
+  [manual collect-runtime](../../.github/workflows/collect-runtime.yml):
+  full-catalog collection, bounded authenticated proof and both owned workers.
 
 Related ADRs: 001 (data), 002/009 (auth/ownership), 005 (mutation freeze),
 011 (account scope), 016 (deployment/domain boundaries).
