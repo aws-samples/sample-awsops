@@ -25,6 +25,11 @@ BUCKET, KEY = 'private-backend-fixture', 'offline-ci-authentication-key'
 ROLE = f'arn:aws:iam::{ACCOUNT}:role/path/fixture-deployer'
 KEY_ID = '12345678-1234-1234-1234-123456789012'
 KEY_ARN = f'arn:aws:kms:{REGION}:{ACCOUNT}:key/{KEY_ID}'
+LIFECYCLE_RULE = {
+    'Status': 'Enabled', 'Filter': {'Prefix': 'ci/tfplans/'},
+    'Expiration': {'Days': 7}, 'NoncurrentVersionExpiration': {'NoncurrentDays': 7},
+    'AbortIncompleteMultipartUpload': {'DaysAfterInitiation': 1},
+}
 NOW = 1789380000
 
 def digest(data):
@@ -49,6 +54,8 @@ class Fixture:
                      dict(id=2, run_id=23, run_attempt=1, head_sha=SHA, name='Publish private plan', status='in_progress', conclusion=None)]
         self.branch = self.checkout = SHA
         self.owner, self.algorithm, self.versioning, self.public = ACCOUNT, 'aws:kms', 'Enabled', False
+        self.region = REGION
+        self.aws_overrides, self.gh_overrides = {}, {}
         self.default_key = None
         self.key_metadata = dict(Arn=KEY_ARN, KeyId=KEY_ID, AWSAccountId=ACCOUNT,
                                  Enabled=True, KeyState='Enabled', KeyUsage='ENCRYPT_DECRYPT',
@@ -122,8 +129,8 @@ class Fixture:
             self.case.assertEqual(env.get('AWS_MAX_ATTEMPTS'), '1')
             service = next(x for x in ['sts', 's3api', 'kms'] if x in args)
             op = args[args.index(service) + 1]
-            self.case.assertEqual(flag('--region'), REGION)
-            self.case.assertEqual(flag('--endpoint-url'), f'https://{"s3" if service == "s3api" else service}.{REGION}.amazonaws.com')
+            self.case.assertEqual(flag('--region'), self.region)
+            self.case.assertEqual(flag('--endpoint-url'), f'https://{"s3" if service == "s3api" else service}.{self.region}.amazonaws.com')
             if service == 'sts':
                 value = {'Account': self.owner, 'Arn': f'arn:aws:sts::{self.owner}:assumed-role/fixture-deployer/session'}
             elif service == 'kms':
@@ -134,7 +141,7 @@ class Fixture:
                 self.case.assertEqual(flag('--bucket'), BUCKET)
                 self.case.assertEqual(flag('--expected-bucket-owner'), ACCOUNT)
                 if op == 'get-bucket-location':
-                    value = {'LocationConstraint': REGION}
+                    value = {'LocationConstraint': self.region}
                 elif op == 'get-public-access-block':
                     value = {'PublicAccessBlockConfiguration': {x: not self.public for x in
                         ['BlockPublicAcls', 'IgnorePublicAcls', 'BlockPublicPolicy', 'RestrictPublicBuckets']}}
@@ -144,6 +151,8 @@ class Fixture:
                     value = {'OwnershipControls': {'Rules': [{'ObjectOwnership': 'BucketOwnerEnforced'}]}}
                 elif op == 'get-bucket-policy-status':
                     value = {'PolicyStatus': {'IsPublic': self.public}}
+                elif op == 'get-bucket-lifecycle-configuration':
+                    value = {'Rules': copy.deepcopy([LIFECYCLE_RULE])}
                 elif op == 'get-bucket-encryption':
                     value = {'ServerSideEncryptionConfiguration': {'Rules': [{
                         'ApplyServerSideEncryptionByDefault': {'SSEAlgorithm': self.algorithm,
@@ -194,6 +203,12 @@ class Fixture:
             value = b'PRIVATE_RENDERED_PLAN'
         else:
             raise AssertionError('unexpected executable')
+        if args[0] == 'aws' and op in self.aws_overrides:
+            value = self.aws_overrides[op]
+        if args[0] == 'gh' and url in self.gh_overrides:
+            value = self.gh_overrides[url]
+        if isinstance(value, Exception):
+            raise value
         data = value if isinstance(value, bytes) else value.encode() if isinstance(value, str) else json.dumps(value).encode()
         Path(output).write_bytes(data)
         os.chmod(output, 0o600)
@@ -403,6 +418,237 @@ class PrivatePlanTests(unittest.TestCase):
             self.assertFalse(self.fake.objects)
             setattr(self.fake, field, previous)
             self.reset_policy()
+
+    def posture_operation(self, region=REGION):
+        self.fake.region = region
+        self.fake.key_metadata['Arn'] = KEY_ARN.replace(REGION, region)
+        op = self.module.Operation(self.root, self.env, self.fake, lambda: NOW,
+                                   REPO, 'dev', SHA, '23', 'full')
+        op.backend = {**self.module.parse_backend(self.backend, {}), 'region': region}
+        op.ctx, op.account = self.fake.context, ACCOUNT
+        return op
+
+    def test_bucket_location_normalizes_only_null_and_historical_eu(self):
+        for region, location, allowed in [('us-east-1', None, True), ('eu-west-1', 'EU', True),
+                ('eu-west-1', 'eu-west-1', True), (REGION, REGION, True),
+                (REGION, None, False), (REGION, 'EU', False), (REGION, 'us-east-1', False),
+                ('us-east-1', '', False), ('us-east-1', False, False)]:
+            with self.subTest(region=region, location=location):
+                self.fake.aws_overrides = {'get-bucket-location': {'LocationConstraint': location}}
+                op = self.posture_operation(region)
+                if allowed:
+                    op.posture()
+                    self.assertEqual(op.encryption[0], KEY_ARN.replace(REGION, region))
+                else:
+                    with self.assertRaisesRegex(self.module.PrivatePlanError, '^bucket_region_mismatch$'):
+                        op.posture()
+                    self.assertIsNone(op.encryption)
+
+    def test_each_public_access_block_flag_is_independently_required(self):
+        good = {key: True for key in ['BlockPublicAcls', 'IgnorePublicAcls', 'BlockPublicPolicy', 'RestrictPublicBuckets']}
+        for key in good:
+            for value in [False, None, 'true', 'missing']:
+                with self.subTest(flag=key, value=value):
+                    flags = {**good, key: value}
+                    if value == 'missing':
+                        flags.pop(key)
+                    self.fake.aws_overrides = {'get-public-access-block': {'PublicAccessBlockConfiguration': flags}}
+                    op = self.posture_operation()
+                    with self.assertRaisesRegex(self.module.PrivatePlanError, '^bucket_not_private$'):
+                        op.posture()
+                    self.assertIsNone(op.encryption)
+        self.assertFalse(self.fake.objects)
+
+    def test_ownership_and_encryption_shapes_fail_independently(self):
+        ownership = {'ObjectOwnership': 'BucketOwnerEnforced'}
+        encrypted = {'ApplyServerSideEncryptionByDefault': {'SSEAlgorithm': 'aws:kms'}}
+        cases = [('get-bucket-ownership-controls', {'OwnershipControls': {'Rules': rules}}, 'bucket_ownership_invalid')
+                 for rules in [None, [], [ownership, ownership], [None],
+                               [{'ObjectOwnership': 'BucketOwnerPreferred'}], [{'ObjectOwnership': 'ObjectWriter'}]]]
+        cases += [('get-bucket-encryption', {'ServerSideEncryptionConfiguration': {'Rules': rules}}, 'bucket_encryption_invalid')
+                  for rules in [None, [], [encrypted, encrypted], [None]]]
+        cases += [('get-bucket-encryption', {'ServerSideEncryptionConfiguration': {'Rules': [{**encrypted, 'BucketKeyEnabled': value}]}},
+                   'bucket_encryption_invalid') for value in [None, 0, 'false']]
+        cases += [('get-public-access-block', {'PublicAccessBlockConfiguration': None}, 'bucket_not_private'),
+                  ('get-bucket-policy-status', {'PolicyStatus': {'IsPublic': True}}, 'bucket_not_private'),
+                  ('get-bucket-policy-status', {'PolicyStatus': None}, 'bucket_not_private'),
+                  ('get-bucket-versioning', {'Status': None}, 'bucket_not_versioned'),
+                  ('get-bucket-encryption', {'ServerSideEncryptionConfiguration': {'Rules': [
+                      {'ApplyServerSideEncryptionByDefault': None}]}}, 'bucket_encryption_invalid')]
+        for verb, reply, reason in cases:
+            with self.subTest(verb=verb, reply=reply):
+                self.fake.aws_overrides = {verb: reply}
+                op = self.posture_operation()
+                with self.assertRaisesRegex(self.module.PrivatePlanError, '^' + reason + '$'):
+                    op.posture()
+                self.assertIsNone(op.encryption)
+        self.assertFalse(self.fake.objects)
+
+    def test_no_bucket_policy_is_the_only_tolerated_policy_error(self):
+        for reason in ['no_bucket_policy', 's3_access_denied', 'command_failed', 'object_not_found']:
+            self.fake.aws_overrides = {'get-bucket-policy-status': self.module.PrivatePlanError(reason)}
+            op = self.posture_operation()
+            if reason == 'no_bucket_policy':
+                op.posture()
+                self.assertEqual(op.encryption, (KEY_ARN, True))
+            else:
+                with self.assertRaisesRegex(self.module.PrivatePlanError, '^' + reason + '$'):
+                    op.posture()
+                self.assertIsNone(op.encryption)
+
+    def test_disabled_or_absent_bucket_key_emits_the_explicit_negative_put_flag(self):
+        for setting in [{}, {'BucketKeyEnabled': False}]:
+            self.fake.aws_overrides = {'get-bucket-encryption': {'ServerSideEncryptionConfiguration': {'Rules': [
+                {'ApplyServerSideEncryptionByDefault': {'SSEAlgorithm': 'aws:kms'}, **setting}]}}}
+            op = self.posture_operation()
+            op.posture()
+            op.upload('plan', self.fake.plan)
+            put = next(args for args, _ in self.fake.calls if 'put-object' in args)
+            self.assertIn('--no-bucket-key-enabled', put)
+            self.assertNotIn('--bucket-key-enabled', put)
+            self.assertEqual(op.encryption, (KEY_ARN, False))
+            self.fake.objects.clear()
+            self.fake.calls.clear()
+            for p in self.root.glob('command-*'):
+                p.unlink()
+
+    def test_bucket_default_rotation_does_not_rebind_historical_object_keys(self):
+        self.ready()
+        rotated_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        rotated = f'arn:aws:kms:{REGION}:{ACCOUNT}:key/{rotated_id}'
+        self.fake.default_key = rotated
+        self.fake.key_metadata.update(Arn=rotated, KeyId=rotated_id)
+        inspected = self.inspect(backend=self.backend)
+        self.assertEqual(json.loads(Path(inspected['receipt_file']).read_text())['plan_sha256'], digest(self.fake.plan))
+        self.env.update(GITHUB_JOB='apply', GITHUB_RUN_ID='24')
+        restored = self.invoke('restore', backend=self.backend, foundation=self.foundation,
+                               reviewed_plan_sha256=digest(self.fake.plan))
+        self.assertEqual(Path(restored['plan_file']).read_bytes(), self.fake.plan)
+        self.assertTrue(restored['assets_verified'])
+        self.assert_public_safe(inspected, restored)
+
+    def test_lifecycle_requires_exact_unqualified_seven_day_rule(self):
+        for changes in [{'Status': 'Disabled'}, {'Filter': {'Prefix': 'other/'}},
+                {'Filter': {'And': {'Prefix': 'ci/tfplans/', 'Tags': [{'Key': 'fixture', 'Value': 'yes'}]}}},
+                {'Filter': {'And': {'Prefix': 'ci/tfplans/', 'ObjectSizeGreaterThan': 0}}},
+                {'Expiration': {'Days': 6}}, {'NoncurrentVersionExpiration': {'NoncurrentDays': 6}},
+                {'NoncurrentVersionExpiration': {'NoncurrentDays': 7, 'NewerNoncurrentVersions': 1}},
+                {'AbortIncompleteMultipartUpload': {'DaysAfterInitiation': 2}},
+                {'Expiration': None}, {'Expiration': {'Days': 7.0}}]:
+            with self.subTest(changes=changes):
+                self.fake.aws_overrides = {'get-bucket-lifecycle-configuration': {'Rules': [
+                    {**copy.deepcopy(LIFECYCLE_RULE), **changes}]}}
+                with self.assertRaisesRegex(self.module.PrivatePlanError, '^bucket_lifecycle_(required|invalid)$'):
+                    self.posture_operation().posture()
+        self.assertFalse(self.fake.objects)
+
+    def test_lifecycle_rejects_overlapping_early_expiry_or_archive_but_preserves_unrelated_rules(self):
+        for action in [{'Expiration': {'Days': 4}}, {'Expiration': {'Date': '2000-01-01T00:00:00Z'}},
+                {'NoncurrentVersionExpiration': {'NoncurrentDays': 1, 'NewerNoncurrentVersions': 2}},
+                {'Transitions': [{'Days': 1, 'StorageClass': 'GLACIER'}]},
+                {'NoncurrentVersionTransitions': [{'NoncurrentDays': 1, 'StorageClass': 'DEEP_ARCHIVE'}]}]:
+            for filtering in [{'Prefix': ''}, {'Prefix': 'ci/tfplans/example/'},
+                    {'And': {'Prefix': 'ci/', 'Tags': [{'Key': 'fixture', 'Value': 'yes'}]}}]:
+                with self.subTest(action=action, filtering=filtering):
+                    self.fake.aws_overrides = {'get-bucket-lifecycle-configuration': {'Rules': [
+                        copy.deepcopy(LIFECYCLE_RULE), {'Status': 'Enabled', 'Filter': filtering, **action}]}}
+                    with self.assertRaisesRegex(self.module.PrivatePlanError, '^bucket_lifecycle_conflict$'):
+                        self.posture_operation().posture()
+        for other in [
+                {'Status': 'Enabled', 'Filter': {'Prefix': 'state/'}, 'Expiration': {'Days': 1}},
+                {'Status': 'Disabled', 'Filter': {}, 'Expiration': {'Days': 1}},
+                {'Status': 'Enabled', 'Filter': {}, 'Expiration': {'ExpiredObjectDeleteMarker': True}},
+                {'Status': 'Enabled', 'Filter': {}, 'Expiration': {'Days': 5}},
+                {'Status': 'Enabled', 'Filter': {}, 'Transitions': [{'Days': 0, 'StorageClass': 'INTELLIGENT_TIERING'}]},
+                {'Status': 'Enabled', 'Filter': {}, 'NoncurrentVersionExpiration': {'NoncurrentDays': 8}}]:
+            rules = [copy.deepcopy(LIFECYCLE_RULE), other]
+            self.fake.aws_overrides = {'get-bucket-lifecycle-configuration': {'Rules': rules}}
+            self.posture_operation().posture()
+            self.assertEqual(self.fake.aws_overrides['get-bucket-lifecycle-configuration']['Rules'], rules)
+        self.assertFalse(self.fake.objects)
+
+    def test_lifecycle_missing_denied_malformed_and_policy_scope(self):
+        for response, reason in [(self.module.PrivatePlanError('bucket_lifecycle_missing'), 'bucket_lifecycle_missing'),
+                (self.module.PrivatePlanError('bucket_lifecycle_denied'), 'bucket_lifecycle_denied'),
+                ({'Rules': []}, 'bucket_lifecycle_invalid'), ({'Rules': [None]}, 'bucket_lifecycle_invalid'),
+                ({'Rules': [{**LIFECYCLE_RULE, 'Filter': {'And': None}}]}, 'bucket_lifecycle_invalid')]:
+            self.fake.aws_overrides = {'get-bucket-lifecycle-configuration': response}
+            op = self.posture_operation()
+            with self.assertRaisesRegex(self.module.PrivatePlanError, '^' + reason + '$'):
+                op.posture()
+            self.assertIsNone(op.encryption)
+        for code, reason in [('NoSuchLifecycleConfiguration', 'bucket_lifecycle_missing'),
+                             ('AccessDenied', 'bucket_lifecycle_denied')]:
+            raw = f'An error occurred ({code}) when calling the GetBucketLifecycleConfiguration operation: PRIVATE'.encode()
+            self.assertEqual(self.module.command_error(['aws', 's3api', 'get-bucket-lifecycle-configuration'], raw), reason)
+        self.fake.aws_overrides = {}
+        result = self.policy()
+        policy = json.loads(Path(result['session_policy_file']).read_text())
+        rule = next(s for s in policy['Statement'] if 's3:GetLifecycleConfiguration' in s['Action'])
+        self.assertEqual(rule['Resource'], f'arn:aws:s3:::{BUCKET}')
+        self.assertEqual(rule['Condition']['StringEquals']['aws:ResourceAccount'], ACCOUNT)
+        self.assertLessEqual(len(self.module.canonical(policy)), 2048)
+        self.assertNotIn('s3:PutLifecycleConfiguration', json.dumps(policy))
+
+    def test_inspect_requires_foundation_before_any_command(self):
+        env = {**self.env, 'GITHUB_ACTIONS': 'false'}
+        with self.assertRaisesRegex(self.module.PrivatePlanError, '^invalid_arguments$'):
+            self.module.execute('inspect', repository=REPO, branch='dev', commit=SHA, run_id='23', scope='full',
+                env=env, transport=self.fake, backend=self.backend, destination=self.root / 'review', profile='samples')
+        self.assertFalse(self.fake.calls)
+        self.assertFalse((self.root / 'review').exists())
+
+    def test_non_object_github_and_aws_replies_have_fixed_categories(self):
+        for route in [f'repos/{REPO}/actions/runs/23/attempts/1',
+                      f'repos/{REPO}/actions/runs/23/attempts/1/jobs?per_page=100',
+                      f'repos/{REPO}/git/ref/heads/dev']:
+            for value in [None, []]:
+                self.fake.gh_overrides = {route: value}
+                with self.assertRaisesRegex(self.module.PrivatePlanError, '^github_response_invalid$'):
+                    self.posture_operation().source(True)
+        self.fake.gh_overrides = {f'repos/{REPO}/git/ref/heads/dev': {'object': None}}
+        with self.assertRaisesRegex(self.module.PrivatePlanError, '^branch_moved$'):
+            self.posture_operation().source(True)
+        self.fake.gh_overrides = {f'repos/{REPO}/actions/runs/23/artifacts?per_page=100': []}
+        with self.assertRaisesRegex(self.module.PrivatePlanError, '^github_response_invalid$'):
+            self.posture_operation().artifact(self.fake.run, True)
+        self.fake.gh_overrides = {}
+        self.fake.artifact_changes = {'workflow_run': None}
+        with self.assertRaisesRegex(self.module.PrivatePlanError, '^artifact_source_mismatch$'):
+            self.posture_operation().artifact(self.fake.run, True)
+        self.fake.aws_overrides = {'get-bucket-location': []}
+        with self.assertRaisesRegex(self.module.PrivatePlanError, '^aws_response_invalid$'):
+            self.posture_operation().posture()
+
+    def test_final_publish_explicitly_rejects_context_rebinding(self):
+        original = self.module.Operation.source
+        calls = 0
+        def changed(op, publishing=False):
+            nonlocal calls
+            run = original(op, publishing)
+            calls += 1
+            if calls == 3:
+                op.ctx = {**op.ctx, 'attempt': 2}
+            return run
+        with mock.patch.object(self.module.Operation, 'source', changed):
+            with self.assertRaisesRegex(self.module.PrivatePlanError, '^attempt_mismatch$'):
+                self.publish()
+        self.assertFalse((self.root / 'reference').exists())
+        self.assertEqual(len(self.fake.objects), 3)  # private orphans; no deletion authority
+
+    def test_version_option_prefixes_and_head_error_categories_fail_closed(self):
+        op = self.posture_operation()
+        for version in ['-version', '--profile', '-', 'null']:
+            self.assertFalse(self.module.valid_version(version))
+            entry = {'key': self.module.prefix(op.ctx) + f'plan-{digest(self.fake.plan)}.bin',
+                     'version_id': version, 'bytes': len(self.fake.plan), 'sha256': digest(self.fake.plan)}
+            with self.assertRaisesRegex(self.module.PrivatePlanError, '^object_version_missing$'):
+                op.download(entry, 'plan')
+        self.assertFalse(self.fake.calls)
+        for code, reason in [('403', 's3_access_denied'), ('404', 'object_not_found')]:
+            text = f'An error occurred ({code}) when calling the HeadObject operation: PRIVATE'.encode()
+            self.assertEqual(self.module.command_error(['aws', 's3api', 'head-object'], text), reason)
+            self.assertEqual(self.module.command_error(['aws', 's3api', 'put-object'], text), 'command_failed')
 
     def test_uncertain_upload_versions_checksums_or_conflicts_never_emit_reference(self):
         for changes in [{'VersionId': 'null'}, {'VersionId': ''}, {'ChecksumSHA256': 'wrong'}]:

@@ -1,5 +1,7 @@
 # Private plan transport helper
 
+## Purpose
+
 `scripts/v2/ci_private_plan.py` is an **unwired module prerequisite**. The current
 `.github/workflows/terraform.yml` still uses its existing encrypted GitHub artifact
 flow: it does **not** call this helper, publish private S3 plans or produce a private
@@ -11,8 +13,11 @@ separate.
 This is operator CI artifact transport, **not an ADR-005 exception** or a product
 mutation/autonomy path. The module enables no frozen feature. ADR-005's product
 boundary remains unchanged; ADR bodies are maintained in the private upstream repo.
+It is also separate from ADR-007's product data connectors and governed external writes.
 
-## Four modes and their boundaries
+## Current design
+
+### Four modes and their boundaries
 
 | Mode | Required contract | Result |
 |---|---|---|
@@ -28,7 +33,7 @@ and restore validate the backend before any command or network request; there is
 bucket enumeration/discovery fallback. Publication uses the policy mode's validated
 backend store. Callers must protect backend/configuration inputs and generated files.
 
-## Required future workflow integration
+### Required future workflow integration
 
 The consumer must retain the existing manual-dispatch, branch/SHA, authorization,
 DNS/runtime and exact reviewed-plan gates. It must provide:
@@ -43,11 +48,22 @@ DNS/runtime and exact reviewed-plan gates. It must provide:
    may the consumer overwrite it with exactly `reference.json`. The helper verifies
    authenticated artifact identity, complete bounded enumeration, expiry and ZIP digest;
    it does not upload, replace or delete GitHub artifacts itself.
+   This is a coordinated migration from the base artifact named `tfplan`: update
+   both Plan publication and Apply download in the same consumer change. The existing
+   `ci_plan_inspect.py` hardcodes `tfplan` and remains for historical encrypted artifacts;
+   new S3 runs require this helper's `inspect` mode. Do not rename old artifacts or
+   use the historical inspector to approve new-format plans.
+   `actions/upload-artifact@v4` implements same-run `overwrite: true` through its
+   runtime-token artifact client, not a `GITHUB_TOKEN` REST delete. This does **not**
+   require increasing `actions: read` to `actions: write`. Keep read permission for
+   authenticated run/artifact metadata; a future REST deletion would need a separate
+   permission review.
 3. A fresh, protected deployer session using the generated nonempty policy. Its scope
    is the selected bucket's posture reads, this run's object prefix and constrained KMS
    use, not backend state access or infrastructure/IAM mutation. Required bucket posture
    requires owner/region agreement, Enabled versioning, all four public-access blocks,
-   BucketOwnerEnforced and matching default SSE-KMS settings. Existing role/key policies
+   BucketOwnerEnforced, a nonpublic bucket policy (or no bucket policy), valid
+   default SSE-KMS settings and the plan-prefix lifecycle below. Existing role/key policies
    must grant the required S3/KMS operations; the session policy only restricts them.
    This module installs none of those prerequisites.
    All four dev-family CI branches require the independent configured account ID.
@@ -55,7 +71,13 @@ DNS/runtime and exact reviewed-plan gates. It must provide:
    enabled symmetric ENCRYPT_DECRYPT key in the expected account/region. The backend's
    state-object key is independently configured and is not compared with that bucket default.
    Existing IAM/key policies must permit DescribeKey; its session statement is separately
-   scoped by account, region and key ARN, without S3-only encryption-context conditions.
+   scoped to the account/region's `key/*` ARN pattern, without S3-only encryption-context
+   conditions. Policy generation makes no AWS request, so the resolved key is not yet
+   known; existing identity/key policies must constrain effective access as appropriate.
+   `policy` is publisher-only and cannot generate an Apply/restore policy. The helper
+   checks caller identity but cannot prove which session policy was attached: the
+   consumer must install the generated policy and test that wiring. Restore uses the
+   separately protected Apply role and its existing deployment authorization.
 4. `TF_PLAN_ENC_KEY` for publish/restore and the existing plan packing operation.
    Publication decrypts the handoff and verifies the existing authenticated asset
    archive before storage writes; restore verifies the same plan/context/asset contract.
@@ -64,12 +86,33 @@ DNS/runtime and exact reviewed-plan gates. It must provide:
    Mask private inputs **before** step-environment logging and prevent shell tracing.
    Helper stdout cannot redact a caller's logs. Apply must use the restored saved plan,
    retain all existing gates and own its final cleanup; restore is not apply authority.
+6. An owner-reviewed lifecycle configuration, verified by the helper before publication
+   and private reads,
+   filtered to exactly `ci/tfplans/`: expire current objects after seven days, delete
+   noncurrent versions after seven days without retaining a minimum number of versions,
+   and abort incomplete multipart uploads after one day. Do not broaden this filter
+   to backend state or replace unrelated bucket lifecycle rules. Add expired delete-marker
+   cleanup separately if needed. The helper requires `s3:GetLifecycleConfiguration`,
+   checks the configured rule and rejects overlapping expiry/archive actions that
+   invalidate the five-day read window. It installs no lifecycle configuration.
+   Consumer wiring must retain this fail-closed check and its fixed diagnostics.
 
 These names and boundaries are executable helper requirements, not claims that the
 base workflow already implements them. Consumer workflow tests belong with that
 integration, not this module.
 
-## Public and private data
+### Public and private data
+
+The GitHub handoff is application-encrypted with `TF_PLAN_ENC_KEY`. Publication
+decrypts it in private scratch and stores the plan/assets **without that application
+envelope**, using mandatory S3 SSE-KMS encryption at rest and TLS in transit. They are
+not unencrypted on S3 storage. Authorized S3 GET returns decrypted bytes: principals
+with effective `s3:GetObject`/`s3:GetObjectVersion` and `kms:Decrypt` access to these
+objects can read them without the CI key. That reader population can be wider than
+the original envelope's key holders, including existing state-bucket administrators.
+Review prefix-scoped identity, bucket and key policies before rollout; do not assume
+Block Public Access prevents an authorized account principal from reading secrets.
+This deliberate tradeoff allows private operator inspection without sharing the CI key.
 
 The public reference has exactly `schema`, `storage`, `context` and `manifest`.
 `context` contains only repository, branch, commit, run ID, attempt and scope;
@@ -92,6 +135,12 @@ The receipt carries the private plan/backend hashes for review, explicitly marke
 `inspected_not_approved`; it is not human attestation. Limits are 2 MiB metadata,
 16 KiB reference/manifest, 64 MiB plan, 136 MiB assets and 32 MiB per rendered file.
 The five-day reference age/expiry checks do not install or prove an S3 lifecycle policy.
+Seven-day current expiration in a versioned bucket first creates a delete marker;
+the bytes then await noncurrent expiration. The seven-day noncurrent clock starts
+when the version becomes noncurrent, so eligibility can be about fourteen days
+after publication, plus S3's asynchronous deletion delay. Reference expiry is neither
+an erasure deadline nor evidence that retained versions were deleted. Lifecycle also
+covers orphan uploads; operators must monitor configuration and expired-version cleanup.
 
 Errors use fixed categories without provider output. Cleanup covers only owned local
 scratch/output paths. Partial uploads never produce a success reference and are not
@@ -99,7 +148,28 @@ automatically deleted. Same-attempt retries can recover a confirmed identical up
 they do not bypass source/attempt or encrypted-handoff checks. There is **no arbitrary
 orphan recovery/delete mode or legacy-artifact fallback**.
 
-## Offline verification
+## Decisions
+
+Use versioned private S3 storage for key-free operator reads, preserve the authenticated
+CI asset contract for publication/restore, and require exact reviewed bytes at Apply.
+Grant no IAM permissions or product mutation capabilities from this helper.
+
+## Key files
+
+- `scripts/v2/ci_private_plan.py`: four-mode transport and validation.
+- `scripts/v2/test_ci_private_plan.py`: offline transport/security fixtures.
+- `scripts/v2/ci_plan_inspect.py`: historical encrypted-artifact inspector.
+- `.github/workflows/terraform.yml`: future consumer; currently unwired.
+- [CI/OIDC runbook](../runbooks/dev-repo-setup.md): existing operator procedures.
+
+## Status
+
+Module and offline tests only. No S3 publication, lifecycle rollout, permission grant
+or successful deployment is established by this prerequisite.
+
+## Learnings
+
+### Offline verification
 
 Use the existing Python test dependencies in `scripts/v2/requirements-test.txt`,
 OpenSSL and the repository's Terraform test version (1.15.7). These tests use fake
@@ -116,3 +186,13 @@ GitHub CLI, AWS CLI v2 supporting conditional PUT/checksum arguments, and Terraf
 environment; the offline tests neither install that consumer nor prove live access.
 
 Related decision: ADR-005 — operator-controlled CI transport, not a carve-out.
+
+## Source
+
+- [S3 expiration behavior](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-expire-general-considerations.html):
+  current/noncurrent versions and asynchronous deletion.
+- [SSE-KMS permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingKMSEncryption.html):
+  server-side encryption and authorized reads.
+- [Upload action overwrite implementation](https://github.com/actions/upload-artifact/blob/v4/src/upload/upload-artifact.ts)
+  and [artifact client's internal deletion](https://github.com/actions/toolkit/blob/main/packages/artifact/src/internal/delete/delete-artifact.ts):
+  same-run runtime-token transport is distinct from REST deletion.

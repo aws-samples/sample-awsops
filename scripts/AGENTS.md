@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 63952f144ba1 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: bfb6734c82f9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -184,3 +184,7 @@ Contract: `docs/reference/private-plan-transport.md`. Run `v2/test_ci_private_pl
 with the existing crypto/inspection/context suites; no additional dependency or live access.
 Classify this as operator CI artifact transport, not an ADR-005 exception; no frozen
 product capability is enabled.
+S3 SSE-KMS replaces the GitHub envelope for operator reads; effective S3/KMS readers
+need no CI key. Consumer wiring must review access, verify plan-prefix lifecycle
+(7-day current/noncurrent expiry, 1-day multipart abort), and migrate the legacy
+artifact/inspector contract together. Generated session policy is publisher-only.

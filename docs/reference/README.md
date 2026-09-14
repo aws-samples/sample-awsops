@@ -47,11 +47,6 @@ flowchart LR
 각 컴포넌트는 한 단락으로 요약하고, 상세는 해당 레퍼런스 문서로 링크한다. The current decision
 baseline for all of them is [`../decisions/BASELINE.md`](../decisions/BASELINE.md).
 
-**Private plan transport — [private-plan-transport.md](private-plan-transport.md).**
-Unwired operator CI helper for private S3 publication, inspection and exact restore.
-It grants no IAM permission, provisions no storage and does not enable product mutation
-or an ADR-005 exception. The consumer workflow integration remains a separate prerequisite.
-
 **Edge & Networking — [`01-edge-network.md`](01-edge-network.md).** CloudFront(TLS) → **VPC Origin
 `https-only:443`** → **internal ALB HTTPS:443** (regional ACM) → HTTP → Fargate web. No public ALB;
 the ALB SG allows 443 from the CloudFront managed SG. VPC is newly created or reused via the
@@ -92,6 +87,12 @@ web task role an **EKS Access Entry + AWS-managed view policy** (cluster-scoped,
 exposing endpoint/CA so the dashboard can run **read-only** Kubernetes queries. EKS Access Entry +
 view 정책(읽기 전용).
 
+**Private plan transport — [private-plan-transport.md](private-plan-transport.md).**
+Unwired operator CI helper with four modes: policy, publication, inspection and restore.
+It grants no IAM permission, provisions no storage and does not enable product mutation
+or an ADR-005 exception. Consumer wiring, scoped access and plan-prefix lifecycle
+verification remain prerequisites.
+
 | Component | Reference | Key files |
 |---|---|---|
 | Edge & Networking | [01-edge-network.md](01-edge-network.md) | `terraform/foundation/edge.tf` (+ `network.tf`, `workload.tf`) |
@@ -101,6 +102,7 @@ view 정책(읽기 전용).
 | AgentCore Agents | [05-agentcore.md](05-agentcore.md) | `scripts/v2/agentcore/` (`catalog.py`, `provision.py`; `terraform/foundation/ai.tf`) |
 | Async Worker Backbone | [06-workers.md](06-workers.md) | `terraform/foundation/workers.tf` (+ `scripts/v2/workers/`) |
 | EKS Onboarding | [07-eks.md](07-eks.md) | `terraform/foundation/eks.tf` (+ `scripts/v2/configure.mjs`) |
+| Private plan transport | [private-plan-transport.md](private-plan-transport.md) | `scripts/v2/ci_private_plan.py` (unwired prerequisite) |
 
 ## Status / 상태
 

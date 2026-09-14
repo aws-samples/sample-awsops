@@ -2,7 +2,7 @@
 import argparse
 import base64
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 import hashlib
 import hmac
 import json
@@ -39,6 +39,7 @@ BACKEND_KEYS = {'bucket', 'key', 'region', 'encrypt', 'use_lockfile',
 AWS_OPERATIONS = {'sts': {'get-caller-identity'}, 'kms': {'describe-key'}, 's3api': {
     'get-bucket-location', 'get-public-access-block', 'get-bucket-versioning',
     'get-bucket-ownership-controls', 'get-bucket-policy-status', 'get-bucket-encryption',
+    'get-bucket-lifecycle-configuration',
     'head-object', 'get-object', 'put-object'}}
 
 
@@ -146,6 +147,13 @@ def command_error(args, error):
     if args[index] == 'kms':
         return {'AccessDeniedException': 'kms_access_denied', 'AccessDenied': 'kms_access_denied',
                 'NotFoundException': 'kms_key_missing'}.get(code, 'command_failed')
+    if verb == 'get-bucket-lifecycle-configuration':
+        if code == 'NoSuchLifecycleConfiguration':
+            return 'bucket_lifecycle_missing'
+        if code in {'AccessDenied', 'AccessDeniedException', '403'}:
+            return 'bucket_lifecycle_denied'
+    if verb == 'head-object' and code in {'403', '404'}:
+        return 's3_access_denied' if code == '403' else 'object_not_found'
     if code in {'AccessDenied', 'AccessDeniedException'}:
         return 's3_access_denied'
     if verb == 'put-object':
@@ -280,7 +288,7 @@ def timestamp(value):
 
 
 def valid_version(value):
-    return isinstance(value, str) and value != 'null' and re.fullmatch(r'[A-Za-z0-9+/_=.~-]{1,1024}', value)
+    return isinstance(value, str) and value != 'null' and not value.startswith('-') and re.fullmatch(r'[A-Za-z0-9+/_=.~-]{1,1024}', value)
 
 
 def role_identity(arn):
@@ -303,7 +311,7 @@ def session_policy(backend, account, ctx):
     result = {'Version': '2012-10-17', 'Statement': [
         {'Effect': 'Allow', 'Action': ['s3:GetBucketLocation', 's3:GetBucketVersioning',
             's3:GetEncryptionConfiguration', 's3:GetBucketPublicAccessBlock',
-            's3:GetBucketOwnershipControls', 's3:GetBucketPolicyStatus'], 'Resource': bucket,
+            's3:GetBucketOwnershipControls', 's3:GetBucketPolicyStatus', 's3:GetLifecycleConfiguration'], 'Resource': bucket,
          'Condition': {'StringEquals': {'aws:ResourceAccount': account}}},
         {'Effect': 'Allow', 'Action': ['s3:PutObject', 's3:GetObject', 's3:GetObjectVersion'], 'Resource': objects,
          'Condition': {'StringEquals': {'aws:ResourceAccount': account}}},
@@ -361,7 +369,11 @@ class Operation:
 
     def gh(self, path, *, binary=False, limit=META_LIMIT):
         raw = self.command(['gh', 'api', '--hostname', 'github.com', path], 'github', limit=limit)
-        return raw if binary else parse_json(raw)
+        if binary:
+            return raw
+        value = parse_json(raw)
+        require(isinstance(value, dict), 'github_response_invalid')
+        return value
 
     def ci_context(self, publishing):
         repo, branch, commit, run_id, scope = self.identity
@@ -423,7 +435,8 @@ class Operation:
     def branch_current(self):
         repo, branch, commit, _, _ = self.identity
         response = self.gh(f'repos/{repo}/git/ref/heads/{branch}')
-        require(response.get('object', {}).get('sha') == commit, 'branch_moved')
+        obj = response.get('object')
+        require(isinstance(obj, dict) and obj.get('sha') == commit, 'branch_moved')
 
     def revalidate_source(self):
         original = self.ctx
@@ -447,7 +460,7 @@ class Operation:
                 and self.now() < expiry and self.now() - created <= 5 * 86400
                 and 0 < expiry - created <= 5 * 86400 + 60, 'artifact_expired')
         wr = item.get('workflow_run', {})
-        require(wr.get('id') == ctx['run_id'] and wr.get('head_sha') == ctx['commit']
+        require(isinstance(wr, dict) and wr.get('id') == ctx['run_id'] and wr.get('head_sha') == ctx['commit']
                 and wr.get('head_branch') == ctx['branch']
                 and positive(run['repository'].get('id')) and positive(run['head_repository'].get('id'))
                 and wr.get('repository_id') == run['repository']['id']
@@ -483,7 +496,9 @@ class Operation:
         if self.profile:
             cmd += ['--profile', self.profile]
         cmd += [service, operation, '--output', 'json', *map(str, args)]
-        return parse_json(self.command(cmd, 'aws', timeout=180))
+        value = parse_json(self.command(cmd, 'aws', timeout=180))
+        require(isinstance(value, dict), 'aws_response_invalid')
+        return value
 
     def caller(self, expected_account=None, expected_role=None):
         if self.env.get('GITHUB_ACTIONS') == 'true' and self.identity[1] in DEV_TARGETS:
@@ -506,26 +521,37 @@ class Operation:
                         '--expected-bucket-owner', self.account, *args)
 
     def posture(self):
-        require((self.bucket_call('get-bucket-location').get('LocationConstraint') or 'us-east-1') == self.backend['region'], 'bucket_region_mismatch')
+        location = self.bucket_call('get-bucket-location').get('LocationConstraint')
+        location = 'us-east-1' if location is None else 'eu-west-1' if location == 'EU' else location
+        require(location == self.backend['region'], 'bucket_region_mismatch')
         pab = self.bucket_call('get-public-access-block').get('PublicAccessBlockConfiguration', {})
-        require(all(pab.get(k) is True for k in ['BlockPublicAcls', 'IgnorePublicAcls', 'BlockPublicPolicy', 'RestrictPublicBuckets']), 'bucket_not_private')
+        require(isinstance(pab, dict) and all(pab.get(k) is True for k in ['BlockPublicAcls', 'IgnorePublicAcls', 'BlockPublicPolicy', 'RestrictPublicBuckets']), 'bucket_not_private')
         require(self.bucket_call('get-bucket-versioning').get('Status') == 'Enabled', 'bucket_not_versioned')
-        own = self.bucket_call('get-bucket-ownership-controls').get('OwnershipControls', {}).get('Rules')
-        require(isinstance(own, list) and len(own) == 1 and own[0].get('ObjectOwnership') == 'BucketOwnerEnforced', 'bucket_ownership_invalid')
+        own = self.bucket_call('get-bucket-ownership-controls').get('OwnershipControls')
+        require(isinstance(own, dict), 'bucket_ownership_invalid')
+        own = own.get('Rules')
+        require(isinstance(own, list) and len(own) == 1 and isinstance(own[0], dict)
+                and own[0].get('ObjectOwnership') == 'BucketOwnerEnforced', 'bucket_ownership_invalid')
         try:
-            require(self.bucket_call('get-bucket-policy-status').get('PolicyStatus', {}).get('IsPublic') is False, 'bucket_not_private')
+            policy = self.bucket_call('get-bucket-policy-status').get('PolicyStatus')
+            require(isinstance(policy, dict) and policy.get('IsPublic') is False, 'bucket_not_private')
         except PrivatePlanError as error:
             if str(error) != 'no_bucket_policy':
                 raise
-        rules = self.bucket_call('get-bucket-encryption').get('ServerSideEncryptionConfiguration', {}).get('Rules')
+        encryption = self.bucket_call('get-bucket-encryption').get('ServerSideEncryptionConfiguration')
+        require(isinstance(encryption, dict), 'bucket_encryption_invalid')
+        rules = encryption.get('Rules')
         require(isinstance(rules, list) and len(rules) == 1, 'bucket_encryption_invalid')
         rule = rules[0]
+        require(isinstance(rule, dict), 'bucket_encryption_invalid')
         encryption = rule.get('ApplyServerSideEncryptionByDefault', {})
+        require(isinstance(encryption, dict), 'bucket_encryption_invalid')
         require(encryption.get('SSEAlgorithm') == 'aws:kms', 'bucket_not_sse_kms')
         key = encryption.get('KMSMasterKeyID')
         key = 'alias/aws/s3' if key is None else key
         require(key_identifier(key, self.backend['region'], self.account), 'bucket_key_invalid')
         metadata = self.aws('kms', 'describe-key', '--key-id', key).get('KeyMetadata', {})
+        require(isinstance(metadata, dict), 'bucket_key_invalid')
         arn = metadata.get('Arn')
         require(key_identifier(arn, self.backend['region'], self.account, canonical_only=True)
                 and metadata.get('AWSAccountId') == self.account
@@ -536,7 +562,79 @@ class Operation:
                 and metadata.get('KeyUsage') == 'ENCRYPT_DECRYPT'
                 and metadata.get('KeySpec') == 'SYMMETRIC_DEFAULT', 'bucket_key_unusable')
         require(type(rule.get('BucketKeyEnabled', False)) is bool, 'bucket_encryption_invalid')
+        self.lifecycle()
         self.encryption = (arn, rule.get('BucketKeyEnabled', False))
+
+    def lifecycle(self):
+        rules = self.bucket_call('get-bucket-lifecycle-configuration').get('Rules')
+        require(isinstance(rules, list) and 0 < len(rules) <= 1000, 'bucket_lifecycle_invalid')
+        required = False
+        def late(action, field, *, transition=False):
+            extras = {'StorageClass'} if transition else set()
+            if field == 'NoncurrentDays':
+                extras.add('NewerNoncurrentVersions')
+            require(isinstance(action, dict) and set(action) <= {field, 'Date'} | extras,
+                    'bucket_lifecycle_invalid')
+            if 'NewerNoncurrentVersions' in action:
+                require(positive(action['NewerNoncurrentVersions']), 'bucket_lifecycle_invalid')
+            if 'Date' in action:
+                require(field == 'Days' and field not in action, 'bucket_lifecycle_invalid')
+                try:
+                    return timestamp(action['Date']) - self.now() >= 5 * 86400
+                except (ValueError, TypeError):
+                    raise PrivatePlanError('bucket_lifecycle_invalid') from None
+            days = action.get(field)
+            require(type(days) is int and days >= (0 if transition else 1), 'bucket_lifecycle_invalid')
+            return days >= 5
+        for rule in rules:
+            require(isinstance(rule, dict) and rule.get('Status') in ('Enabled', 'Disabled'), 'bucket_lifecycle_invalid')
+            if rule['Status'] == 'Disabled':
+                continue
+            require(('Filter' in rule) != ('Prefix' in rule), 'bucket_lifecycle_invalid')
+            filt = rule.get('Filter', {'Prefix': rule.get('Prefix')})
+            require(isinstance(filt, dict) and set(filt) <= {'Prefix', 'Tag', 'And', 'ObjectSizeGreaterThan', 'ObjectSizeLessThan'},
+                    'bucket_lifecycle_invalid')
+            terms = filt.get('And', filt)
+            require(isinstance(terms, dict) and ('And' not in filt or set(filt) == {'And'}), 'bucket_lifecycle_invalid')
+            require(len(filt) <= 1 and set(terms) <= {'Prefix', 'Tag', 'Tags', 'ObjectSizeGreaterThan', 'ObjectSizeLessThan'},
+                    'bucket_lifecycle_invalid')
+            scope = terms.get('Prefix', '')
+            require(isinstance(scope, str), 'bucket_lifecycle_invalid')
+            if not (scope.startswith('ci/tfplans/') or 'ci/tfplans/'.startswith(scope)):
+                continue
+            actions = {'Expiration', 'NoncurrentVersionExpiration', 'Transitions',
+                       'NoncurrentVersionTransitions', 'AbortIncompleteMultipartUpload'}
+            require(set(rule) <= actions | {'ID', 'Status', 'Filter', 'Prefix'} and bool(actions & set(rule)),
+                    'bucket_lifecycle_invalid')
+            tags = [terms['Tag']] if 'Tag' in terms else terms.get('Tags', [])
+            require(isinstance(tags, list) and all(exact(tag, ['Key', 'Value'])
+                    and all(isinstance(tag[k], str) for k in ('Key', 'Value')) for tag in tags),
+                    'bucket_lifecycle_invalid')
+            for key in ('ObjectSizeGreaterThan', 'ObjectSizeLessThan'):
+                if key in terms:
+                    require(type(terms[key]) is int and terms[key] >= 0, 'bucket_lifecycle_invalid')
+            for name, field in [('Expiration', 'Days'), ('NoncurrentVersionExpiration', 'NoncurrentDays')]:
+                if name in rule:
+                    action = rule[name]
+                    marker_cleanup = name == 'Expiration' and exact(action, ['ExpiredObjectDeleteMarker']) and action['ExpiredObjectDeleteMarker'] is True
+                    require(marker_cleanup or late(action, field), 'bucket_lifecycle_conflict')
+            for name, field in [('Transitions', 'Days'), ('NoncurrentVersionTransitions', 'NoncurrentDays')]:
+                transitions = rule.get(name, [])
+                require(isinstance(transitions, list), 'bucket_lifecycle_invalid')
+                for action in transitions:
+                    delayed = late(action, field, transition=True)
+                    storage = action.get('StorageClass')
+                    require(storage in {'GLACIER', 'DEEP_ARCHIVE', 'GLACIER_IR', 'STANDARD_IA', 'ONEZONE_IA', 'INTELLIGENT_TIERING'},
+                            'bucket_lifecycle_invalid')
+                    require(storage not in {'GLACIER', 'DEEP_ARCHIVE'} or delayed, 'bucket_lifecycle_conflict')
+            abort = rule.get('AbortIncompleteMultipartUpload')
+            if 'AbortIncompleteMultipartUpload' in rule:
+                require(exact(abort, ['DaysAfterInitiation']) and positive(abort['DaysAfterInitiation']), 'bucket_lifecycle_invalid')
+            required |= (filt == {'Prefix': 'ci/tfplans/'}
+                         and rule.get('Expiration') == {'Days': 7}
+                         and rule.get('NoncurrentVersionExpiration') == {'NoncurrentDays': 7}
+                         and abort == {'DaysAfterInitiation': 1})
+        require(required, 'bucket_lifecycle_required')
 
     def upload(self, kind, data):
         require(0 < len(data) <= (PLAN_LIMIT if kind == 'plan' else ASSET_LIMIT if kind == 'assets' else SMALL_LIMIT), 'object_too_large')
@@ -676,6 +774,7 @@ class Operation:
         # A completed upload cannot bless a moved branch, cancelled run or newer
         # attempt. Unreferenced private objects are deliberately not deleted.
         self.source(True)
+        require(self.same_context(config['context']), 'attempt_mismatch')
         reference = {'schema': 1, 'storage': STORAGE, 'context': self.ctx,
                      'manifest': {'sha256': manifest_entry['sha256'], 'bytes': manifest_entry['bytes']}}
         return reference
@@ -729,6 +828,7 @@ def execute(mode, *, repository, branch, commit, run_id, scope, backend=None, ro
     try:
         legacy.validate_identity(repository, branch, commit, run_id)
         require(scope in assets.SCOPES and mode in ['policy', 'publish', 'restore', 'inspect'], 'invalid_arguments')
+        require(mode == 'policy' or foundation is not None, 'invalid_arguments')
         if profile is not None:
             require(mode == 'inspect' and isinstance(profile, str) and re.fullmatch(r'[A-Za-z0-9_@.-]{1,128}', profile), 'invalid_profile')
         if mode == 'inspect':
