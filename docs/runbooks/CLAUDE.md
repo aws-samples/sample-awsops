@@ -177,8 +177,9 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 - Deploy Web `verify_database=true` is dev-only and runs after required migrations. It prepares
   effective demo credentials privately with unwrapped Terraform before rollout, then verifies
   login and edge-authenticated `/api/db`. A positive table count is not a full ledger audit.
-- Credentials and HTTP scratch share one 0700 run directory with 0600 files, covered by
-  always-cleanup. Public diagnostics contain only fixed phases and validated HTTP status.
+- Credentials and HTTP scratch share one 0700 run directory with 0600 files. Normal
+  finalizers clean them; process/runner loss can prevent cleanup. Public diagnostics
+  contain only fixed phases and validated HTTP status.
   Never relay Terraform diagnostics, response bodies or cookies, or reset a user's password.
 - Curl/OpenSSL, PyYAML and Terraform 1.15.7 are mandatory for the authenticated smoke fixtures;
   missing tools fail the shared runner. Only final fmt/validate diagnostics are informational.
@@ -199,3 +200,14 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 2. Use an existing runbook's structure as a template (`start-services.md`, `deploy-new-version.md`).
 3. Follow the symptoms → diagnosis → action order strictly.
 4. Always include the related file paths.
+
+The reusable runtime probe supports verify-only inventoryPolicy=full and collectionMode=release
+(20-minute rather than 10-minute collection polling). Rechecks share the first window; all
+runtime callers have marker+30min/prepare-entry+30min deadlines, shortened by explicit bounds.
+Programmatic quality/gaps do not imply CLI JSON output or catalog discovery. Document
+collection_stale, release_timeout and repeated runtime_inventory_contention distinctly.
+Before billed readiness or worker enqueue, require the remaining probe/worker allowances;
+collection windows are caps and late completion can fail admission. Retry admission includes
+cooldown, recheck, probe and both workers. HTTP requests need their full timeout remaining.
+Keep the probe contract before Related/ADR references. From the repository root run
+`node --test scripts/v2/deployment-smoke.test.mjs`; it imports the runtime-smoke test suite.

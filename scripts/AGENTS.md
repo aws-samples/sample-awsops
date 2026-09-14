@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: bdd1205a01f4 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 017d930a5536 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -156,9 +156,27 @@ under workers, steampipe, incident and remediation; update all with verified whe
 The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and validator.
 `v2/test_ci_tf_assets.py` covers these contracts and recovery.
 
+Runtime smoke accepts verify-only inventoryPolicy=full and collectionMode=release; omission
+keeps strict supplied-type checks. Full quality is programmatic; the caller discovers types.
+Collection polls share 10 minutes, or 20 in release mode. Every runtime call is bounded by
+marker+30min (prepare: entry+30min), shortened by explicit deadlines. One proven collision
+permits a cooldown/revalidation retry. No workflow or billed capability is activated.
+Require full HTTP timeouts remaining, and probe/worker budgets before billing or enqueue:
+80s probe, 370s per worker; retry also needs 65s cooldown and a 35s collection read.
+Collection windows are caps; late completion can fail admission.
+Post-marker running attempts with old/null previous success time out as collection_timeout;
+full-policy stale terminal evidence is collection_stale. Login/DB also require full timeouts.
+
+
+## Private plan transport
+
 Private S3 helpers require a private backend file and existing bucket/IAM/KMS posture.
 Publish/apply enter branch environments; only backend/tfvars absence soft-skips.
 Public references omit storage bindings and plan hashes; CLI results omit plan hashes.
 Mask the reviewed input before step environments. Private digests select exact bytes;
 CI still checks asset HMAC and original gates. No automatic expiry or cleanup guarantee:
 use scoped discovery/version purge after seven days and current-run scratch cleanup.
+The workflow wires the four helper modes with Plan / Publish private plan job contracts,
+attempt-specific tfplan-N references, protected storage sessions and existing apply guards.
+The helper has no orphan recovery, legacy fallback or Terraform apply operation. Contract:
+`docs/reference/private-plan-transport.md`; validate both helper and consumer workflow tests.

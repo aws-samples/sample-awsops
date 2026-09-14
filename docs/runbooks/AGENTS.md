@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 01b0ffe3cd4a · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5a36ee832e26 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -156,7 +156,17 @@ legacy runbook's steps as the current operational path).
 
 - Dev-only `verify_database=true` prepares effective demo credentials privately before rollout,
   then verifies login and edge-authenticated `/api/db`; positive table count is not a ledger audit.
-- Unwrapped Terraform and private 0600/0700 files are required. The CLI's HTTP scratch shares
-  the prepared credential directory and always-cleanup; expose only phases/validated HTTP status,
+- Unwrapped Terraform and private 0600/0700 files are required. CLI scratch shares the
+  credential directory; normal finalizers own cleanup, which process/runner loss can prevent.
+  Expose only phases/validated HTTP status,
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
 - Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
+
+Runtime probes accept verify-only full policy and release mode (shared 20min poll vs 10min).
+Calls with runtime configuration expire at marker+30min/prepare-entry+30min, or an earlier bound.
+Quality/gaps are programmatic; the CLI stays fixed. Distinguish collection_stale,
+release_timeout and runtime_inventory_contention. Require full HTTP timeouts and remaining
+probe/worker allowances before billing or enqueue; retry includes cooldown and recheck.
+Collection windows are caps, so late completion may fail admission. Keep the probe contract
+before Related/ADR references. Run `node --test scripts/v2/deployment-smoke.test.mjs`
+from the repository root; it imports the runtime-smoke suite.

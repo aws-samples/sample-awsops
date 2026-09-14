@@ -8,13 +8,14 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { smokeConnectionArgs } from './deployment-smoke.mjs';
 import { cleanupSmokeCredentials, readSmokeCredentials } from './prepare-smoke-credentials.mjs';
-import { readRuntimeSmokeConfig, verifyRuntimeSmoke, RuntimeSmokeError } from './runtime-smoke.mjs';
+import { readRuntimeSmokeConfig, validateRuntimeSmokeConfig, runtimeSmokeDeadline, verifyRuntimeSmoke, RuntimeSmokeError } from './runtime-smoke.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const execute = promisify(execFile);
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_INVENTORY_RESPONSE_BYTES = 2 * 1024 * 1024;
-class SmokeError extends Error {}
+// Only fixed or validated diagnostic messages are passed to this class.
+export class SmokeError extends Error {}
 
 function readPrivateResponse(file, limit = MAX_RESPONSE_BYTES) {
   const fd = openSync(file, 'r');
@@ -50,7 +51,7 @@ function hasSessionCookie(contents, hostname) {
 
 export async function authenticatedSmoke(
   { publicUrl, cloudfrontDomain, email, password, runtimeConfig },
-  { runCurl = execute, tempRoot = resolve(process.env.RUNNER_TEMP || tmpdir()) } = {},
+  { runCurl = execute, tempRoot = resolve(process.env.RUNNER_TEMP || tmpdir()), now = Date.now, deadline = Infinity } = {},
 ) {
   let directory;
   let previousUmask;
@@ -59,6 +60,10 @@ export async function authenticatedSmoke(
   const cancel = () => controller.abort();
   const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
   try {
+    if (runtimeConfig !== undefined) {
+      validateRuntimeSmokeConfig(runtimeConfig, now());
+      deadline = runtimeSmokeDeadline(runtimeConfig, now(), deadline);
+    }
     const connectionArgs = smokeConnectionArgs(publicUrl, cloudfrontDomain);
     const url = new URL(publicUrl);
     failure = 'requires a configured demo username';
@@ -99,6 +104,8 @@ export async function authenticatedSmoke(
     let requestCounter = 0;
     const request = async (args, path, status = '200', timeout = 35_000,
       maxResponseBytes = MAX_RESPONSE_BYTES, withStatus = false) => {
+      const remaining = deadline - now();
+      if (remaining <= timeout) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
       if (maxResponseBytes !== MAX_RESPONSE_BYTES
           && !(path.startsWith('/api/inventory/cloudfront?') && maxResponseBytes === MAX_INVENTORY_RESPONSE_BYTES)) {
         throw new Error();
@@ -112,9 +119,11 @@ export async function authenticatedSmoke(
           '--max-filesize', String(maxResponseBytes), '--output', response, ...args, `${url.origin}${path}`,
         ], { ...options, timeout }));
       } catch (error) {
+        if (now() >= deadline) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
         recordStatus(error?.stdout);
         throw new Error();
       }
+      if (now() >= deadline) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
       recordStatus(stdout);
       if (controller.signal.aborted || !(Array.isArray(status) ? status.includes(stdout) : stdout === status)) throw new Error();
       const body = JSON.parse(readPrivateResponse(response, maxResponseBytes));
@@ -149,13 +158,17 @@ export async function authenticatedSmoke(
           args.push('--header', 'Content-Type: application/json', '--data-binary', `@${bodyFile}`);
         }
         return request(args, path, status, timeout, maxResponseBytes, withStatus);
-      }, { wait: ms => delay(ms, undefined, { signal: controller.signal }) });
+      }, { now, deadline, wait: ms => delay(ms, undefined, { signal: controller.signal }) });
       return { ...runtimeResult, public_tables: database.public_tables };
     }
     return { status: 'ok', public_tables: database.public_tables };
   } catch (error) {
     // Never expose curl exceptions, response bodies, credentials or cookies.
-    if (error instanceof RuntimeSmokeError) throw new SmokeError(error.message);
+    if (error instanceof RuntimeSmokeError) {
+      const failure = new SmokeError(error.message);
+      failure.inventory_quality = error.inventory_quality;
+      throw failure;
+    }
     throw new SmokeError(`Authenticated smoke: ${failure}`);
   } finally {
     signals.forEach(signal => process.removeListener(signal, cancel));
@@ -191,7 +204,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       runtimeConfig: process.env.SMOKE_RUNTIME_CONFIG_FILE === undefined ? undefined
         : readRuntimeSmokeConfig(process.env.SMOKE_RUNTIME_CONFIG_FILE, file),
     }, {
-      // The existing always() credential cleanup also owns scratch after SIGKILL.
+      // Workflow cleanup can recover CLI scratch while the runner remains available.
       tempRoot: dirname(file),
     });
     completedMode = completed.mode;

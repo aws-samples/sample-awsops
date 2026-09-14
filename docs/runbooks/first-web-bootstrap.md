@@ -244,6 +244,11 @@ publication. Successful health proves process/edge liveness only.
 
 ### 5. Perform real login, database and host-registry preparation
 
+Prepare expires at most 30 minutes after entry, including login and database requests;
+an earlier caller limit shortens it. Insufficient request time reports `release_timeout`
+even in prepare mode. Stop, inspect the cause and rerun with fresh private credentials;
+see the [runtime probe contract](runtime-foundation.md#reusable-runtime-probe-contract).
+
 Use the existing `authenticated-smoke.mjs` CLI in `prepare` mode. Have the
 authorized operator supply a Secrets Manager secret containing the normal login
 as JSON fields `email` and `password`; it must match the provisioned account.

@@ -103,6 +103,64 @@ Retain runtime resources and restore reviewed prior digests/settings. Manual dev
 
 Sequence: merge reviewed code to dev → reviewed dev apply and full live readiness → main promotion → reviewed production apply. Do not promote this IAM narrowing until live dev exercises verify gateway-backed chat, worker diagnosis, and an SFN/Fargate run with managed tags. Record actual identities, outcomes and denied operations privately; a mock plan or IAM document alone cannot satisfy this promotion gate. This dev PR is the prerequisite for that evidence, not production deployment authorization.
 
+## Reusable runtime probe contract
+
+Every supplied type requires post-marker success, known counts and zero unknown attributes.
+Verify accepts optional `inventoryPolicy: "full"` for structured quality/gap return values;
+omission retains strict checks and other policies fail. These payloads are programmatic:
+the CLI keeps fixed status/error messages. The caller supplies the intended catalog; the
+helper does not discover it. Gap categories can overlap and must not be summed as disjoint counts.
+Quality may be absent before the first ledger read; `collection_unavailable` supplies
+`counts: null` and `types: null`. Other collection outcomes carry categorized arrays and
+timestamps. Categories describe the latest ledger row, including prior attempts; only
+the verified set establishes post-marker success.
+
+Optional `collectionMode: "release"` allows a 20-minute collection poll window instead of
+10 minutes. Both the initial poll and a contention recheck share that original window.
+Every runtime entry point has a finite deadline: verify expires 30 minutes after
+`collectionStartedAt`, while prepare gets at most 30 minutes from entry. A caller deadline
+can only shorten it. Authentication, HTTP, cooldowns and workers share the bound. Admitted
+poll responses still must arrive before the overall deadline to pass. Start promptly after
+the marker; an older marker shortens the available collection and worker budget.
+
+Collection windows are caps, not a promise that late collection can finish verification.
+Before billing readiness, the helper requires the full 80-second request allowance plus
+370 seconds for each remaining worker (35-second enqueue, 300-second poll and a final
+35-second status request). It checks worker allowances again before each enqueue.
+Every HTTP request needs its full configured timeout remaining; it is never shortened
+to start a request that cannot finish within the overall bound.
+With a new marker, billed readiness must start before about 16 minutes 20 seconds
+(30 minutes minus the 820-second probe/worker allowance). Earlier deadlines and preceding
+login, database and inventory reads reduce the available collection time further.
+
+A validated inventory-incomplete/stale response permits one retry only when the ledger
+shows a unique fresh running CloudFront attempt with a fresh prior success. After a
+65-second cooldown, every supplied type must be complete again before retrying. A second
+proven collision after successful revalidation, or insufficient shared-window time to
+admit revalidation, is `runtime_inventory_contention`. Admission also requires time for
+cooldown, a 35-second collection read, another full probe and both worker allowances.
+The latter fails before wasting the
+cooldown; delayed wakeups are checked again. Initial or continuous collection waiting
+exhausts as `collection_timeout`. Full-policy stale
+coverage can end as `collection_stale`; the overall bound is `release_timeout`.
+A post-marker running attempt stays a collection wait even when its previous success
+is old or null; exhausting that wait is `collection_timeout`, never verified coverage.
+Partial/failed/unknown evidence and unrelated protocol, authorization or model failures
+never pass. Workers start only after ready. One additional AgentCore probe may be billed.
+
+`/api/inventory/summary?view=collection` authenticates normally and reads only the sanitized
+aggregate ledger, avoiding dashboard aggregations. Account/region filters do not narrow
+this collector-wide ledger or establish per-account health. Normal authentication governs
+this GET view. The separate default-off capability governs the billed readiness POST; this
+utility does not enable a workflow.
+
+```bash
+node --test scripts/v2/deployment-smoke.test.mjs
+```
+
+Implementation: `scripts/v2/runtime-smoke.mjs`, `scripts/v2/authenticated-smoke.mjs`
+and `web/app/api/inventory/summary/route.ts`. Worker ownership follows ADR-009.
+
 <a id="related--관련"></a>
 
 ## Related

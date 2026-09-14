@@ -29,8 +29,38 @@
 | `/api/inventory/cloudtrail/events` | GET | CloudTrail `LookupEvents` 조회 — 드릴다운(`raw`+`accessKeyId`)은 admin 전용 subset, 그 외 사용자는 flat 필드만 | verifyUser |
 | `/api/inventory/ebs_volume/related` | GET | 볼륨 드릴다운 — 스냅샷 20개 + 연결 EC2 enrichment (Aurora 교차조회, 계정 스코프) | verifyUser |
 | `/api/inventory/security_group/inbound` | GET | SG 인바운드 규칙 체이닝 — 첨부 SG(≤20)의 인바운드 규칙 파싱 (Aurora 교차조회, 계정 스코프) | verifyUser |
-| `/api/inventory/summary` | GET | 타입/카테고리별 카운트·보안 분할은 리전 스코프 반영. `collection.scope=aggregate`는 전체 수집 작업의 configured/readOk/runs이며 계정별 건강 판정이 아님. 누락·실패·unknown 보존 / aggregate job ledger | verifyUser |
+| `/api/inventory/summary` | GET | Default returns account/region-filtered resource counts and security splits plus `collection`. `?view=collection` returns only `{ collection }`, skipping fleet aggregation. `collection.scope=aggregate` is the job-level ledger and is not narrowed by those filters; missing, failed and unknown evidence remains explicit and does not establish per-account health. | verifyUser |
 | `/api/inventory/trend` | GET | 일별 리소스 카운트 추세 (`inventory_snapshots`, 기본 14일/최대 90일) — `accounts` 스코프(기본 self, `__all__`은 서버에서 self+스캔 스코프 내 활성 멤버[all_regions 또는 활성 리전 ≥1]로 해석, 검증된 CSV; 리전 차원 없음) + (일자, 타입)별 계정 커버리지·해석된 계정 목록(`accounts`)·계정 레지스트리 조회 실패 시 `degraded: true` 반환, 파생 보안 시리즈(public_s3_buckets 등)는 total에서 제외 | verifyUser |
+
+### Inventory pagination and sweep ledger
+
+In normal row mode, `GET /api/inventory/[type]` returns scoped `rows` plus nullable
+`run` metadata. `limit` defaults to 100 and is upper-capped at 500; `offset` defaults
+to 0. The route uses numeric coercion/defaults, without positive/integer validation
+or a lower-bound clamp. Callers should send a positive integer limit and nonnegative
+integer offset; negative/fractional values can reach PostgreSQL, with row-mode errors
+returned as HTTP 500 and an error message rather than a validation 400.
+
+`?view=agg` instead returns totals, state/distribution counts and facets, without
+`rows` or `run`. Both modes retain authentication, type-specific admin checks and
+the same account/region/global scope filters.
+
+The normal-mode `run` is global per-type job/sweep metadata under `account_id='self'`,
+including for member/all-account reads; its `row_count` is not the selected-scope
+or page count. The collector marks the job `running` before row writes. A successful
+finish advances `finished_at` and `last_success_at`; partial/failed finishes do not
+advance the last-success timestamp. The endpoint exposes `status`, `finished_at`,
+`row_count`, `error` and `last_success_at`, not a per-account completion certificate.
+
+Rows and run metadata are separate reads, not an atomic snapshot across one request
+or multiple pages. Missing run/timestamps, `running`/`partial`/`failed`, stale last
+success or changed metadata between pages must not be read as fresh complete coverage.
+Even stable successful metadata does not certify atomic page contents or AWS absence.
+Bounded paging, freshness and coverage decisions belong to the caller.
+
+Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
+[row/ledger reads](../web/lib/inventory.ts), and
+[collector lifecycle](../scripts/v2/steampipe/sync_lambda.py).
 
 ## eks (10)
 | 경로 | 메서드 | 역할 | 인증 |
