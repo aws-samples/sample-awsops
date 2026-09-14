@@ -69,6 +69,7 @@ jobs:
           node-version: 20
 
       - uses: actions/setup-python@v5
+        id: provision_python
         with:
           python-version: "3.12"
 
@@ -214,4 +215,5 @@ jobs:
         if: always() && steps.provision_sdk.outputs.directory != ''
         env:
           PROVISION_SDK_DIRECTORY: ${{ steps.provision_sdk.outputs.directory }}
-        run: python3 scripts/v2/ci/setup-provision-python.py cleanup
+          PROVISION_BASE_PYTHON: ${{ steps.provision_python.outputs.python-path }}
+        run: '"$PROVISION_BASE_PYTHON" scripts/v2/ci/setup-provision-python.py cleanup'

@@ -73,3 +73,49 @@ def test_cleanup_rejects_foreign_paths_and_symlinks(tmp_path):
         with pytest.raises(ValueError, match="invalid_provision_sdk_directory"):
             module.cleanup(tmp_path, path)
     assert other.exists()
+
+
+def test_cleanup_os_error_warns_without_overwriting_deployment_result(tmp_path, monkeypatch, capsys):
+    path = tmp_path / (module.PREFIX + "fixture")
+    path.mkdir()
+    monkeypatch.setattr(module.shutil, "rmtree", lambda path: (_ for _ in ()).throw(PermissionError("PRIVATE")))
+    assert module.cleanup(tmp_path, str(path)) is False
+    assert capsys.readouterr().err.strip() == "::warning::provision_sdk_cleanup_failed"
+
+
+def test_mkdtemp_failure_is_a_fixed_preparation_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(module.tempfile, "mkdtemp", lambda **kwargs: (_ for _ in ()).throw(OSError("PRIVATE")))
+    with pytest.raises(RuntimeError, match="^provision_python_create_failed$"):
+        module.prepare(environment(tmp_path))
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_preflight_derives_late_and_passed_method_operations(tmp_path, monkeypatch, missing):
+    import sys
+    import types
+    source = tmp_path / "provision.py"
+    source.write_text("def configure(ctrl):\n    ctrl.synchronize_gateway_targets()\n    use(ctrl.list_gateways)\n\ndef smoke():\n    data.invoke_agent_runtime()\n")
+    pins = tmp_path / "pins.txt"
+    pins.write_text("boto3==1.43.93 --hash=sha256:fixture\nbotocore==1.43.93 --hash=sha256:fixture\n")
+    boto = types.ModuleType("boto3")
+    core = types.ModuleType("botocore")
+    session = types.ModuleType("botocore.session")
+    boto.__version__ = core.__version__ = "1.43.93"
+    mapping = {"SynchronizeGatewayTargets": "synchronize_gateway_targets",
+               "ListGateways": "list_gateways", "InvokeAgentRuntime": "invoke_agent_runtime"}
+    core.xform_name = mapping.__getitem__
+    core.session = session
+    def model(name):
+        operations = ["InvokeAgentRuntime"] if name == "bedrock-agentcore" else ["ListGateways"]
+        if not missing and name != "bedrock-agentcore":
+            operations.append("SynchronizeGatewayTargets")
+        return types.SimpleNamespace(operation_names=operations)
+    session.get_session = lambda: types.SimpleNamespace(get_service_model=model)
+    for name, value in [("boto3", boto), ("botocore", core), ("botocore.session", session)]:
+        monkeypatch.setitem(sys.modules, name, value)
+    monkeypatch.setattr(sys, "argv", ["-c", str(source), str(pins)])
+    if missing:
+        with pytest.raises(AssertionError, match="synchronize_gateway_targets"):
+            exec(module.PREFLIGHT, {})
+    else:
+        exec(module.PREFLIGHT, {})
