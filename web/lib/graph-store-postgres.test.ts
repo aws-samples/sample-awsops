@@ -103,6 +103,29 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await state('infra')).toMatchObject({ status: 'partial', retainedPrevious: false });
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='infra'")).rows).toEqual([]);
   });
+  it.each([2, null])('retains a prior graph when nonempty input cannot reconcile producer count %s', async count => {
+    await seed('infra');
+    await build('infra');
+    const previous = await state('infra');
+    await pool.query("UPDATE inventory_resources SET resource_id='replacement'");
+    await pool.query("UPDATE inventory_sync_runs SET row_count=$1 WHERE resource_type='vpc'", [count]);
+    expect(await build('infra')).toMatchObject({ published: 0, retained: 1 });
+    expect(await state('infra')).toMatchObject({ status: 'partial', retainedPrevious: true, captured_at: previous.captured_at });
+    expect((await state('infra')).sources).toContainEqual(expect.objectContaining({
+      sourceId: 'inventory:vpc', reasons: expect.arrayContaining(['count_not_confirmed']),
+    }));
+    expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
+  });
+  it('reconciles the aggregate count across accounts rather than treating it as a host count', async () => {
+    await seed('infra');
+    await pool.query(`INSERT INTO inventory_resources(resource_type,account_id,resource_id,data,captured_at)
+      VALUES ('vpc','111122223333','member','{}',$1)`, [recent]);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=2 WHERE resource_type='vpc'");
+    await build('infra');
+    expect(await state('infra')).toMatchObject({ status: 'ok', retainedPrevious: false });
+    expect((await pool.query("SELECT id FROM topology_nodes WHERE account_id='self' AND class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
+  });
+
   it('ignores unrelated failed inventory sources without dropping contributing failure guards', async () => {
     await seed('infra');
     await pool.query(`INSERT INTO inventory_sync_runs(resource_type,status) VALUES ('iam_role','failed')`);
@@ -331,6 +354,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await pool.query(`INSERT INTO inventory_resources(resource_type,account_id,resource_id,data,captured_at)
       SELECT 'vpc','self','vpc-'||n,'{}',$1 FROM generate_series(1,2001) n`, [recent]);
     await seed('infra', recent, '111122223333');
+    await pool.query("UPDATE inventory_sync_runs SET row_count=2002 WHERE resource_type='vpc'");
     expect(await build('infra')).toMatchObject({ published: 1, retained: 1, reasons: ['snapshot_limit'] });
     expect(await state('infra', '111122223333')).toMatchObject({ retainedPrevious: false, status: 'ok' });
   });
@@ -374,6 +398,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       SELECT 'ec2','instance-'||n,jsonb_build_object('security_group_ids',
         (SELECT jsonb_agg('sg-'||n||'-'||m) FROM generate_series(1,500) m)), $1
       FROM generate_series(1,9) n`, [recent]);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=9 WHERE resource_type='ec2'");
     expect(await build('infra')).toMatchObject({ retained: 1, reasons: ['graph_limit'] });
     expect(await state('infra')).toMatchObject({ status: 'partial', retainedPrevious: true, graphTruncated: true });
     expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);

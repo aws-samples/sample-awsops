@@ -67,15 +67,14 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
       FROM budgeted ORDER BY resource_type, region, resource_id`,
     [account, types, cls, INFRA_FIELDS, ROW_CAP + 1, ROW_BYTES, SNAPSHOT_BYTES]);
     const rows = result.rows as InventoryRow[];
-    // A succeeded aggregate proves host participation: sync() requires host rows or its host
-    // probe before marking success. Reconcile the full type count to avoid interpreting missing
-    // input as empty. Never extrapolate this proof to unobserved members.
-    const emptyTypes = account === 'self' ? runs.rows.filter(run => run.account_id === 'self'
-      && run.status === 'succeeded' && !rows.some(row => row.resource_type === run.resource_type))
-      .map(run => run.resource_type) : [];
-    const counts = emptyTypes.length ? await client.query(`SELECT resource_type, count(*)::int AS count
-      FROM inventory_resources WHERE resource_type=ANY($1) GROUP BY resource_type`, [emptyTypes]) : { rows: [] };
-    const aggregateCounts = new Map<string, number>(emptyTypes.map(type => [type, 0]));
+    // Reconcile every succeeded aggregate, including nonempty input, before any sweep.
+    // The producer count spans accounts; it is not this account's local row count.
+    // A matching aggregate still does not prove an unobserved member participated.
+    const countTypes = runs.rows.filter(run => run.account_id === 'self'
+      && run.status === 'succeeded').map(run => run.resource_type);
+    const counts = countTypes.length ? await client.query(`SELECT resource_type, count(*)::int AS count
+      FROM inventory_resources WHERE resource_type=ANY($1) GROUP BY resource_type`, [countTypes]) : { rows: [] };
+    const aggregateCounts = new Map<string, number>(countTypes.map(type => [type, 0]));
     for (const row of counts.rows) aggregateCounts.set(row.resource_type, row.count);
     return { rows, runs: runs.rows as Run[], previous: prior.rows[0]?.sources,
       aggregateCounts, truncated: rows.length > ROW_CAP || rows.some(row => row.oversized) };
@@ -113,10 +112,12 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
     const lastSuccessAtMs = stamp(run?.last_success_at);
     const producerStatus = ['succeeded', 'failed', 'partial', 'running'].includes(run?.status) ? run!.status : 'unknown';
     const validCount = Number.isSafeInteger(run?.row_count) && run!.row_count >= 0;
-    const confirmedEmpty = !unknownScope && validCount && (account === 'self'
-      ? aggregateCounts.get(type) === run!.row_count : direct?.row_count === 0);
+    const countConfirmed = validCount && (direct && account !== 'self'
+      ? items.length === direct.row_count : aggregateCounts.get(type) === run!.row_count);
+    const confirmedEmpty = !unknownScope && countConfirmed;
     const blockers = !run ? ['missing_ledger'] : producerStatus === 'failed' ? ['source_failed']
       : unknownScope ? ['unknown_account_coverage'] : producerStatus !== 'succeeded' ? ['incomplete_collection']
+      : items.length > 0 && !countConfirmed ? ['count_not_confirmed']
       : !items.length && !confirmedEmpty ? ['empty_not_confirmed']
       : !lastSuccessAtMs || (items.length > 0 && capturedAtMs === null) ? ['unknown_capture'] : [];
     if (blockers.length) safe = false;
