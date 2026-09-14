@@ -35,7 +35,7 @@ The helpers support `ap-northeast-2` and the owned `web-latest` task configurati
 
 ```bash
 python3 - <<'PY'
-import os, re, sys
+import json, os, re, subprocess, sys
 sys.path.insert(0, "scripts/v2")
 from ci_web_deploy import aws_request, runtime_digest, snapshot, start, verify
 from ci_web_image import require, pin_image
@@ -47,6 +47,14 @@ require(re.fullmatch(r"[0-9]{12}", c["account"]) and
 require(os.environ.get("RECOVERY_SCHEMA_APPROVED") == "true", "Schema approval required")
 require(not any(k.startswith("AWS_ENDPOINT_URL") and v for k, v in os.environ.items()),
         "Endpoint overrides forbidden")
+# Export the approved profile only in memory; helper children ignore profile files.
+try:
+    session = json.loads(subprocess.check_output(["aws", "configure", "export-credentials", "--format", "process"], text=True, stderr=subprocess.PIPE))
+except (subprocess.SubprocessError, OSError, ValueError):
+    raise SystemExit("Temporary operator session export failed") from None
+keys = {"AWS_ACCESS_KEY_ID": "AccessKeyId", "AWS_SECRET_ACCESS_KEY": "SecretAccessKey", "AWS_SESSION_TOKEN": "SessionToken"}
+require(isinstance(session, dict) and all(session.get(k) for k in keys.values()), "Temporary operator session required")
+os.environ.update({key: session[value] for key, value in keys.items()})
 identity = aws_request("sts", "get-caller-identity", [])
 require(identity.get("Account") == c["account"] and
         identity.get("Arn", "").startswith(f'arn:aws:sts::{c["account"]}:assumed-role/{role}/'),
