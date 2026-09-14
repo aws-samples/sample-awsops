@@ -119,6 +119,37 @@ Session policies cannot supply a permission missing from the underlying role.
 No identity-policy grant is part of this change; access changes belong to the IAM
 owner's reviewed least-privilege configuration, not an automatic deployer expansion.
 
+## Privilege review
+
+The existing CI role must already allow the following reads. Session policies
+only restrict those grants; they cannot create a missing permission. Verify the
+external, owner-managed role rather than assuming that a repository-managed
+application role covers the audit. In particular, the web status role's
+`GetAgentRuntime`/`List*` grant does not establish CI access to `GetGateway` or
+`GetGatewayTarget`. A denied read is a failed audit with retained partial evidence.
+
+| Phase | Required actions | Scope checked by the audit/session |
+|---|---|---|
+| Identity | `sts:GetCallerIdentity` | Expected development account and configured role |
+| Backend | `s3:GetObject`, `s3:ListBucket`, `s3:GetBucketLocation` | Configured bucket/state key and resource-owner account |
+| Encrypted backend | `kms:Decrypt` when required by S3 | Configured key when supplied; S3 service, resource-owner account and bucket/object encryption context |
+| ECS | `ecs:ListTasks`, `ecs:DescribeServices`, `ecs:DescribeTasks` | Project cluster condition and service/task ARN scope |
+| Collector | `lambda:GetFunctionConfiguration`, `lambda:GetPolicy` | Own inventory-sync function |
+| Schedule | `events:DescribeRule`, `events:ListTargetsByRule` | Own inventory-sync rule |
+| Metrics | `cloudwatch:GetMetricData` | Deployment region; fixed rule/function dimensions |
+| Runtime parameter | `ssm:GetParameter` | Own runtime-ARN parameter |
+| AgentCore control | `bedrock-agentcore:ListGateways`, `GetAgentRuntime`, `GetGateway`, `ListGatewayTargets`, `GetGatewayTarget` (all with the `bedrock-agentcore:` prefix) | Region-bound authorization; validated runtime/data-gateway/RDS-target selection |
+| Database metadata | `rds:DescribeDBClusters` | Own Aurora cluster |
+| Fixed SQL reads | `rds-data:ExecuteStatement` | Own cluster, fixed SELECTs and the restricted SQL-reader DB role |
+| Data API credential use | `secretsmanager:GetSecretValue` | Exact captured SQL-reader secret ARN; no direct secret-value API call by the helper |
+
+The current trust model is reviewed workflow code on a trusted runner using
+restricted sessions of the existing role. It does not isolate against malicious
+future workflow code or a compromised runner that can request another OIDC
+session. A dedicated audit role is a separate IAM-owner hardening follow-up, not
+an added grant or an ADR-005 exception in this workflow. Do not infer immutable
+IAM isolation from the audit's read-only behavior.
+
 Offline prerequisites: Python 3.12, Node.js 20 and bash. Install
 `python3 -m pip install -r scripts/v2/requirements-test.txt`, then run
 `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`. Test SDK versions
