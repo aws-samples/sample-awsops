@@ -1,8 +1,10 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 33a08703ce3b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 06ffbb3e8de1 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
-> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
+> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
-# Documentation review
+# Documentation — Reviewer Context
+
+## Scope
 
 Use the current component references and scoped runbooks. Historical plans and
 status records do not establish current deployment, approval or feature enablement.
@@ -10,6 +12,10 @@ ADR bodies and the BASELINE register live in the private upstream repository, no
 this public tree. Cite ADR numbers for traceability; do not require local copies.
 AWS-resource mutation and autonomy remain **ADR-005 FROZEN (do-not-enable)**.
 Historical plans or status records cannot override current gates.
+Follow root `CLAUDE.md` for the granted ADR-015 exception and the ordinary ADR-019
+analysis gate; neither permits other mutation or autonomy.
+
+## Conventions
 
 All `CLAUDE.md` and `AGENTS.md` context files are English-only regardless of
 directory. Flag new Korean or bilingual context text anywhere in the repository.
@@ -28,7 +34,9 @@ runbook conventions for operational procedures. Verify commands and route descri
 against source; reference documents aid navigation, not hand-maintained count authority.
 Keep application/runtime implementation outside this documentation tree.
 
-Never commit credentials or tokens. Use placeholders for environment-specific
-account IDs, ARNs and domains throughout this public documentation tree. Distinguish source-supported
-capability from actual execution evidence, and check commands and links against
-this public checkout.
+## Review checklist
+
+- Reject credentials, tokens and environment-specific account IDs, ARNs or live domains
+  in new documentation; require placeholders for those identifiers.
+- Distinguish source-supported capability from actual execution evidence.
+- Check commands and documentation links against this public checkout.

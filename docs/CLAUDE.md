@@ -1,6 +1,6 @@
 # Documentation
 
-Project documentation organized by purpose. Each subdirectory has its own CLAUDE.md.
+Project documentation organized by purpose. Read applicable scoped CLAUDE.md instructions before editing.
 
 ## Structure
 
@@ -31,15 +31,19 @@ Project documentation organized by purpose. Each subdirectory has its own CLAUDE
   repository**, not in this public tree — docs here cite ADR numbers (e.g. ADR-005) for
   traceability only. AWS-resource mutation and autonomy remain **ADR-005 FROZEN
   (do-not-enable)**; historical plans or status records cannot override current gates.
+  Follow root `CLAUDE.md` for the granted ADR-015 exception and the ordinary ADR-019
+  analysis gate; neither permits other mutation or autonomy.
 - Keep application/runtime implementation outside this documentation tree. Generated
   diagrams and illustrative code remain documentation artifacts. Verify commands and
   route descriptions against current source; reference documents are navigation aids.
+  Distinguish source-supported capability from actual execution evidence and check
+  documentation links against this public checkout.
 - Runbooks follow the rules in `docs/runbooks/CLAUDE.md`.
-- Never commit credentials or tokens. Use placeholders for environment-specific
-  account IDs, ARNs and domains in this public sample.
+- Reject credentials, tokens and environment-specific account IDs, ARNs or live domains
+  in new documentation. Use placeholders for those identifiers in this public sample.
 
 ## Related Skills
 - `/sync-docs` — auto-sync CLAUDE.md
-- `/project-init:add-adr` — create a new ADR
+- `/project-init:add-adr` — create a new ADR in the private upstream repository
 - `/project-init:add-runbook` — create a new runbook
 - `/project-init:health-check` — verify documentation coverage
