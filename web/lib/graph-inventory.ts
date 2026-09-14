@@ -16,6 +16,13 @@ export const INFRA_TYPES = ['vpc', 'subnet', 'security_group', 'ec2', 'lambda', 
 const INFRA_FIELDS = ['vpc_id', 'subnet_id', 'subnet_ids', 'vpc_subnet_ids', 'subnets',
   'availability_zones', 'security_groups', 'security_group_ids', 'vpc_security_group_ids',
   'vpc_security_groups', 'endpoint_address', 'group_name', 'title', 'name', 'tags'];
+// Flow joins and safe display fields consumed by buildFlowGraph; unused provider blobs
+// must not exhaust the transfer budget or override authoritative identity columns.
+const FLOW_FIELDS = ['name', 'arn', 'dns_name', 'domain_name', 'aliases', 'origins', 'web_acl_id',
+  'target_group_name', 'target_type', 'target_health_descriptions', 'load_balancer_arns',
+  'vpc_id', 'scheme', 'private_zone', 'alias_target', 'records', 'type', 'last_status',
+  'task_group', 'cluster_arn', 'attachments', 'origin_refs', 'api_id', 'integration_uri',
+  'connection_type', 'tags', 'status', 'enabled', 'protocol', 'port', 'subnet_ids', 'security_groups'];
 export type InventoryRow = Row & { resource_type: string; captured_at?: unknown; account_id: string };
 type Run = Record<string, any>;
 const ROW_CAP = 2000;
@@ -53,26 +60,25 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
           AND (a.all_regions OR EXISTS (SELECT 1 FROM account_regions ar
             WHERE ar.account_id=a.account_id AND ar.enabled)))
       ORDER BY s.resource_type,s.captured_at DESC`, [account, types]);
-    // No raw all-account aggregation. Infra strips unused provider payloads; flow retains the
-    // existing builder's row contract. SQL byte guards prevent oversized JSON reaching Node.
+    // Both classes project their consumed fields before SQL byte guards prevent oversized
+    // provider payloads from reaching Node. Identity columns remain authoritative.
     const result = await client.query(`WITH bounded AS MATERIALIZED (
       SELECT account_id, resource_type, resource_id, region, captured_at,
-        CASE WHEN $3='infra' THEN
-          (SELECT coalesce(jsonb_object_agg(key,value), '{}'::jsonb)
-           FROM jsonb_each(data) WHERE key=ANY($4)) ELSE data END AS data
+        (SELECT coalesce(jsonb_object_agg(key,value), '{}'::jsonb)
+         FROM jsonb_each(data) WHERE key=ANY($3)) AS data
       FROM inventory_resources WHERE account_id=$1 AND resource_type=ANY($2)
-      ORDER BY resource_type, region, resource_id LIMIT $5
+      ORDER BY resource_type, region, resource_id LIMIT $4
     ), sized AS MATERIALIZED (
       SELECT *, octet_length(data::text)+octet_length(resource_id)+octet_length(region) AS bytes FROM bounded
     ), budgeted AS (
       SELECT *, sum(bytes) OVER (ORDER BY resource_type, region, resource_id) AS total_bytes FROM sized
     ) SELECT account_id, resource_type,
-      CASE WHEN bytes <= $6 AND total_bytes <= $7 THEN resource_id ELSE '' END AS resource_id,
-      CASE WHEN bytes <= $6 AND total_bytes <= $7 THEN region ELSE '' END AS region, captured_at,
-      CASE WHEN bytes <= $6 AND total_bytes <= $7 THEN data ELSE NULL END AS data,
-      bytes > $6 OR total_bytes > $7 AS oversized
+      CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN resource_id ELSE '' END AS resource_id,
+      CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN region ELSE '' END AS region, captured_at,
+      CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN data ELSE NULL END AS data,
+      bytes > $5 OR total_bytes > $6 AS oversized
       FROM budgeted ORDER BY resource_type, region, resource_id`,
-    [account, types, cls, INFRA_FIELDS, ROW_CAP + 1, ROW_BYTES, SNAPSHOT_BYTES]);
+    [account, types, cls === 'infra' ? INFRA_FIELDS : FLOW_FIELDS, ROW_CAP + 1, ROW_BYTES, SNAPSHOT_BYTES]);
     const rows = result.rows as InventoryRow[];
     // Reconcile every succeeded aggregate, including nonempty input, before any sweep.
     // The producer count spans accounts; it is not this account's local row count.

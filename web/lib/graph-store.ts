@@ -169,7 +169,7 @@ export async function rebuildGraph(pool: Pool, runId: string = randomUUID()) {
     const input: FlowInput = {};
     for (const row of rows) {
       const key = TYPE_TO_KEY[row.resource_type];
-      if (key) (input[key] ??= []).push({ resource_id: row.resource_id, region: row.region, ...(row.data as object ?? {}) });
+      if (key) (input[key] ??= []).push({ ...(row.data as object ?? {}), resource_id: row.resource_id, region: row.region });
     }
     const graph = buildFlowGraph(input);
     const kinds = new Map(graph.nodes.map(node => [node.id, node.kind]));

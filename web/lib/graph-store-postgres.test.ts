@@ -350,6 +350,19 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(snapshot.rows[0].data).toEqual({ name: 'fixture' });
     expect((await build('infra')).published).toBe(1);
   });
+  it('projects unused flow fields before byte limits while preserving its real graph inputs', async () => {
+    await seed('flow');
+    await pool.query(`UPDATE inventory_resources SET data=data || jsonb_build_object(
+      'raw_unused',repeat('x',1000000),'resource_id','spoofed','region','spoofed')`);
+    const snapshot = await inventorySnapshot(pool, 'flow', 'self', ['alb']);
+    expect(snapshot.truncated).toBe(false);
+    expect(snapshot.rows[0].data).toEqual({ arn: 'arn:alb', dns_name: 'web.example.test' });
+    expect((await build('flow')).published).toBe(1);
+    const nodes = (await pool.query("SELECT id,meta FROM topology_nodes WHERE class='flow'")).rows;
+    expect(nodes[0].id).toBe('alb:arn:alb');
+    expect(nodes[0].meta.row.resource_id).toBe('one');
+    expect(JSON.stringify(nodes)).not.toContain('raw_unused');
+  });
   it('retains every row when aggregate projected input exceeds the byte budget', async () => {
     await seed('infra');
     await build('infra');
