@@ -291,16 +291,24 @@ DB request elapsed time from zero through 35 seconds. The DB timestamp becomes
 `collectionStartedAt`; subsequent time is `rawNow + (DB time - request start)`.
 The existing controller deadline shifts by that same offset, preserving time remaining.
 Every current catalog type (43 at this revision) must succeed after that marker with
-known counts and zero unknown attributes. Prior rolling success is insufficient.
+known counts and zero unknown attributes. The controller rejects catalogs below the
+43-type minimum or above 128 types; all validated returned types remain required.
+Prior rolling success is insufficient.
 At most four synchronous owned invocations are concurrent and in flight; all admitted calls settle before
 cleanup or failure. Code hash and a nonempty RevisionId are captured before collection
 and rechecked within 15 seconds afterward, before final authenticated runtime proof.
 Changed/incomplete code metadata or read failure blocks that proof.
 
 The outer controller cap is 50 minutes; verification also expires at DB marker plus
-30 minutes, whichever comes first. Reserve 17 minutes after collection: the existing
-995-second minimum proof plus the 15-second code/revision recheck, leaving 10 seconds
-of margin. Initial prepare adds three bounded 35-second HTTP reads/requests; its DB
+30 minutes, whichever comes first. The 17-minute reserve covers only the single-pass
+base path: five 35-second HTTP calls, one 80-second probe, two 370-second worker paths
+and the 15-second code/revision recheck total 1,010 seconds, leaving 10 seconds.
+This assumes one collection-ledger read and the known CloudFront row on the first
+inventory page. Each extra page or collection re-poll needs another full 35-second
+request allowance. If collection used its maximum window, one extra request needs
+at least 25 seconds saved elsewhere; otherwise proof admission fails. Additional
+requests, polling waits and local overhead consume more time. The reserve does not
+promise those extras fit. Initial prepare adds three bounded 35-second HTTP reads/requests; its DB
 request and subsequent host proof consume the nominal 13-minute collection window,
 as does local overhead. Each type needs at least 450 seconds remaining before admission;
 confirmed busy/superseded or throttled retries share that remaining global window.
@@ -310,7 +318,11 @@ Final proof repeats authentication and requires strict fresh inventory/known Clo
 SSM/AgentCore/model evidence and terminal success of both owned worker types. The shared
 probe's one contention retry is conditional: after validating the collision, admission
 needs 65 seconds of cooldown, a 35-second recheck, an 80-second probe and both 370-second
-worker allowances still available. Additional reads consume time too; no retry is promised.
+worker allowances still available. The minimum added retry allowance is 180 seconds:
+the not-yet-started workers reuse their original allowances and are not counted twice.
+After maximum-window collection, even that minimum needs at least 170 seconds saved
+elsewhere; collision-validation reads and other overhead need more. Without enough
+remaining time, admission fails before cooldown. No retry or extra page is promised.
 Collection invokes may upsert/prune application inventory in Aurora, and full proof may
 bill a bounded model call and submit internal worker jobs. These are operator verification
 effects, not an ADR-005 AWS-resource mutation exception. No direct CI model/SQS/DB grants
@@ -369,7 +381,33 @@ can never fit, not a throughput guarantee. It does not include the complete
 authentication/model/worker proof, establish future or larger-workload latency, or
 authorize another deployment.
 
-Offline controller, real authentication composition, and clock-helper checks:
+### Controller CLI contract
+
+Both dev workflows use these CLI interfaces. Use their actual dev workflow/account/role
+context from the [session contract](runtime-verifier-sessions.md#action-and-integration-contract);
+do not fabricate Actions metadata to run this as an unrestricted local command.
+
+| Command | Input and result |
+| --- | --- |
+| `node scripts/v2/ci/runtime-release.mjs capture` | Reads at most 16 KiB of applied `runtime_deployment` JSON from stdin, validates it, and writes private state beside the prepared credential file. Appends `deployment_file=<path>` to `GITHUB_OUTPUT`; prints no deployment payload. |
+| `node scripts/v2/ci/runtime-release.mjs run` | Reads `RUNTIME_DEPLOYMENT_FILE`, runs the selected operation and cleans the owned credential directory on handled success/failure. Full success reports `full_verified`; prepare reports only `prepared`. |
+
+| Environment input | Contract |
+| --- | --- |
+| `SMOKE_CREDENTIAL_FILE` | Existing producer-owned absolute 0600 credential file in a 0700 directory, required by both commands. Never pass a password inline. |
+| `GITHUB_OUTPUT` | Required output channel for `capture`; its `deployment_file` value becomes the later `RUNTIME_DEPLOYMENT_FILE`. |
+| `RUNTIME_DEPLOYMENT_FILE` | Required by `run`; use the captured 0600 state file directly beside the credentials. |
+| `RUNTIME_MODE`, `PIN_SHA` | Manual `prepare` requires empty `PIN_SHA`; collect requires a full lowercase 40-character reviewed image SHA. Deploy Web supports collect only. |
+| `EXPECTED_WEB_DIGEST` | Required for Deploy Web's `run`: the approved `sha256:` root manifest digest. Manual observation may omit it and verify the selected tag; a supplied digest is still validated. |
+| `INVENTORY_POLICY` | `full` only; omission defaults to `full`. Empty or other values fail, and no degraded policy exists. |
+| `PUBLIC_URL`, `CLOUDFRONT_DOMAIN` | Required application/edge targets for `run`, retaining service Host/SNI/TLS verification. |
+
+Both workflows retain always-run owned-file cleanup, which process or runner loss can
+still prevent. Neither controller command changes IAM grants or feature flags.
+
+Offline controller, real authentication composition, and clock-helper checks require
+Node.js and Python/PyYAML; the authenticated fixtures also require curl, OpenSSL and
+Terraform 1.15.7. From the repository root:
 
 ```bash
 node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs
@@ -381,5 +419,5 @@ node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.t
 
 [Manual deployment observations](deployment-audit.md) separate deployed resources, schedule execution and observed inventory after provisioning.
 [CI setup/assets](dev-repo-setup.md) · [SQL reader](agent-sql-reader.md) · [Multi-account](onboard-target-account.md) · [Inventory rollback](steampipe-quota-and-staleness.md).
-Sources: `scripts/v2/ci_readiness_plan_summary.py`, `scripts/v2/test_ci_readiness_plan_summary.py`, `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `scripts/v2/ci/runtime-release.mjs`, `terraform/foundation/runtime-read-scope.tf`, `terraform/foundation/controller-readiness.tf`, `.github/workflows/terraform.yml`, `.github/workflows/collect-runtime.yml`, `.github/workflows/deploy-web.yml`.
-ADRs: 001, 002, 005, 007, 011, 016, 021. Infrastructure apply is not live readiness proof.
+Sources: `scripts/v2/ci_readiness_plan_summary.py`, `scripts/v2/test_ci_readiness_plan_summary.py`, `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `scripts/v2/ci/runtime-release.mjs`, `scripts/v2/ci/runtime-release.test.mjs`, `scripts/v2/runtime-smoke.mjs`, `scripts/v2/authenticated-smoke.mjs`, `web/app/api/db/route.ts`, `terraform/foundation/runtime-read-scope.tf`, `terraform/foundation/controller-readiness.tf`, `.github/workflows/terraform.yml`, `.github/workflows/collect-runtime.yml`, `.github/workflows/deploy-web.yml`.
+ADRs: 001, 002, 005, 007, 009, 011, 016, 021. Infrastructure apply is not live readiness proof.

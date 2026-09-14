@@ -198,19 +198,22 @@ raw AWS errors. Each synchronous response must have `StatusCode=200`, no
 
 | Payload | Required result |
 | --- | --- |
-| `catalog` | Exactly `status: "catalog"` and a bounded, nonempty, unique `types` list containing `cloudfront`; no result `type` or counts are expected |
+| `catalog` | Exactly `status: "catalog"` and 43–128 unique registered types including `cloudfront`; fewer than 43 is rejected. No result `type` or counts are expected. |
 | Each catalog member | `status: "succeeded"`, exact requested `type`, nonnegative safe-integer `row_count`, and `unknown_attribute_count: 0` |
 
 `busy`, `failed` (including superseded), `partial`, unknown-type errors and
 malformed results never prove collection. A bounded retry of explicit contention
 — invocation-level throttling or a busy/superseded result — may succeed only
 through a later valid owned response; scheduled work cannot substitute for
-any required successful owned RPC. The catalog has a 450-second budget; per-type
-calls and retries share the remaining global collection window, with a full
-450-second allowance required before each admission. There is no separate
-900-second per-type budget. Disable automatic SDK/CLI invoke retries; for collection use
-a read timeout longer than the verified function timeout (currently at most
-420 seconds), inside an explicit controller deadline.
+any required successful owned RPC. Catalog discovery has a 450-second total budget,
+including retries: each request has a process cap of at most 150 seconds, a CLI read
+timeout of at most 120 seconds, and a 15-second admission floor. Remaining time can
+shorten those request limits; catalog discovery does no resource collection.
+Per-type calls and retries share the remaining global collection window, with a full
+450-second allowance required before each admission. Their 440-second CLI read timeout
+exceeds the verified function timeout of at most 420 seconds; that comparison applies
+only to per-type collection, not catalog discovery. There is no separate 900-second
+per-type budget. Disable automatic SDK/CLI invoke retries.
 
 After catalog validation and before any type is invoked, authenticated prepare
 must verify login, DB and the host registry and obtain the DB-clock sample.
@@ -232,7 +235,10 @@ must complete each owned RPC and the authenticated verifier must independently
 observe strict post-marker evidence for every returned type. The shared helper's
 nominal 1,200-second release-mode poll cap is clipped by the existing deadline;
 it does not extend the marker's 30-minute lifetime or the controller's 50-minute cap.
-The controller reserves 17 minutes for its final code/revision read and full proof.
+The controller's 17-minute reserve covers only the single-pass 1,010-second base proof
+and code/revision read, plus 10 seconds of margin. Extra pages/re-polls and the
+conditional contention retry require time saved elsewhere; they are not guaranteed
+after maximum-window collection.
 See [the controller budget and operational acceptance contract](runtime-foundation.md#strict-release-controller-capability).
 
 There is no rolling prior-success substitute or degraded-release acceptance.
@@ -258,8 +264,9 @@ IAM-owner work, outside this policy helper.
 
 ## Related files and decisions
 
-- `.github/workflows/collect-runtime.yml`, `.github/workflows/deploy-web.yml`, and `scripts/v2/ci/runtime-release.mjs`
-
+- `.github/workflows/collect-runtime.yml`, `.github/workflows/deploy-web.yml`,
+  `scripts/v2/ci/runtime-release.mjs` and `scripts/v2/ci/runtime-release.test.mjs`;
+  [controller CLI inputs and combined tests](runtime-foundation.md#controller-cli-contract)
 - `scripts/v2/ci_verifier_sessions.py` and `scripts/v2/test_ci_verifier_sessions.py`
 - `scripts/v2/ci_deployment_audit.py` and `scripts/v2/test_ci_deployment_audit.py`
 - `scripts/v2/ci_runtime_policy.py`

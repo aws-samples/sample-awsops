@@ -217,3 +217,11 @@ distinction between operational degraded data and ineligible release evidence.
 Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
 admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
 57.461-second collection sample and its limits; it is not full live readiness.
+The catalog must have 43–128 types; every validated returned type needs strict proof.
+The 17-minute reserve covers only the single-pass 1,010-second base path plus 10 seconds.
+Extra 35-second reads need at least 25 seconds saved elsewhere; the minimum 180-second
+retry overhead needs at least 170 seconds saved, reusing the original worker allowances.
+Additional reads/waits/overhead require more time; no extras are guaranteed.
+Preserve the CLI/input and catalog/per-type timeout distinction in
+`runtime-foundation.md#controller-cli-contract` and `runtime-verifier-sessions.md`.
+Combined checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.

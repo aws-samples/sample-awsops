@@ -17,9 +17,12 @@ const execute = promisify(execFile);
 const REGION = 'ap-northeast-2', REPO = 'aws-samples/sample-awsops';
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const SHA = /^[a-f0-9]{40}$/;
+// Current owner-required catalog floor; the source-AST test keeps this contract in sync.
+export const MIN_CATALOG_TYPES = 43;
 // Five 35s HTTP calls, an 80s probe and two 370s worker paths need 995s.
 // The 15s collector recheck brings the minimum to 1010s; reserve 17m with 10s margin.
-// Extra pages/retries must still fit.
+// This reserves only the single-pass proof; no extra pages, polls or retries are allocated.
+// Extras require earlier calls to finish below their allowances, otherwise the gate fails.
 const REQUIRED_PROOF_MS = 17 * 60_000;
 const VERBS = new Set(['sts get-caller-identity', 'ecr batch-get-image',
   'ecs describe-services', 'ecs describe-task-definition', 'ecs list-tasks', 'ecs describe-tasks',
@@ -126,7 +129,7 @@ export function captureDeployment(value, env = process.env) {
 export function validateCatalog(value) {
   need(object(value) && Object.keys(value).sort().join(',') === 'status,types', 'invalid_collection_catalog');
   const types = value.types;
-  need(value.status === 'catalog' && Array.isArray(types) && types.length >= 1 && types.length <= 128 &&
+  need(value.status === 'catalog' && Array.isArray(types) && types.length >= MIN_CATALOG_TYPES && types.length <= 128 &&
     new Set(types).size === types.length && types.includes('cloudfront') &&
     types.every(t => typeof t === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(t)
       && !['all', 'catalog'].includes(t)), 'invalid_collection_catalog');
@@ -480,6 +483,11 @@ async function main() {
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try { await main(); } catch (error) {
+    // Run preflight can fail before release() owns cleanup; capture must retain its files.
+    if (process.argv[2] === 'run') {
+      try { cleanupSmokeCredentials(process.env.SMOKE_CREDENTIAL_FILE); }
+      catch { /* Preserve the primary diagnostic when cleanup refuses or fails. */ }
+    }
     console.error(`Runtime release: ${error instanceof ReleaseError ? error.message : 'failed'}`);
     if (error instanceof ReleaseError && error.inventory_quality)
       console.error(JSON.stringify({ status: 'not_verified', inventory_quality: error.inventory_quality }));
