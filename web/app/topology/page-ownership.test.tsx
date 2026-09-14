@@ -146,7 +146,7 @@ describe('live topology inventory adapter', () => {
   it('retains the prior graph when an incomplete target-group sweep returns no rows', async () => {
     let incomplete = false;
     serve({ inventoryReply: (url, body) => Response.json(incomplete && url.pathname.endsWith('/target_group')
-      ? { rows: [], run: { ...body.run, status: 'partial' } } : body) });
+      ? { ...body, rows: [], run: { ...body.run, status: 'partial' } } : body) });
     render(<TopologyPage />);
     await screen.findByRole('option', { name: 'ECS · ecs-app' });
     incomplete = true;
@@ -154,6 +154,7 @@ describe('live topology inventory adapter', () => {
     await screen.findByText('조회 실패로 이전 결과를 표시합니다.');
     search('ecs-api'); expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
     expect(screen.queryByText(/그래프로 그릴 리소스가 없습니다/)).toBeNull();
+    expect(screen.queryByText(/invalid inventory response/)).toBeNull();
   });
 
   it.each([false, true])('retains same-account graph provenance after total refresh failure (partial: %s)', async partial => {
@@ -208,6 +209,55 @@ function largeInventory(type: string) {
     type === 'ecs_task' ? task('ecs-api') : type === 'target_group' ? targets : row('subnet-app', { vpc_id: vpcId })];
 }
 describe('bounded ownership inventory paging', () => {
+  it('limits every TYPES and NET read to two lanes, including sequential critical pages', async () => {
+    const pending: (() => void)[] = [];
+    let active = 0, peak = 0, completed = 0;
+    const requests = serve({
+      inventory: Object.fromEntries(['target_group', 'ecs_task', 'subnet'].map(type => [type, largeInventory(type)])),
+      inventoryReply: async (_url, body, signal) => {
+        active++; peak = Math.max(peak, active);
+        await new Promise<void>(resolve => {
+          pending.push(resolve);
+          signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        active--; completed++;
+        return Response.json(body);
+      },
+    });
+    const view = render(<TopologyPage />);
+    try {
+      await waitFor(() => expect(pending.length).toBeGreaterThan(0));
+      expect(peak).toBeLessThanOrEqual(2);
+      while (completed < 21) {
+        await waitFor(() => expect(pending.length).toBeGreaterThan(0));
+        await act(async () => { pending.splice(0).forEach(resolve => resolve()); });
+        expect(peak).toBeLessThanOrEqual(2);
+      }
+      await screen.findByRole('option', { name: 'ECS · ecs-app' });
+      const inventoryReads = requests.filter(url => url.pathname.startsWith('/api/inventory/'));
+      expect(new Set(inventoryReads.map(url => url.pathname)).size).toBe(18);
+      expect(inventoryReads).toHaveLength(21);
+      expect(inventoryReads.every(url => url.searchParams.get('accounts') === 'self')).toBe(true);
+      for (const type of ['target_group', 'ecs_task', 'subnet']) {
+        expect(inventoryReads.filter(url => url.pathname.endsWith(`/${type}`))
+          .map(url => url.searchParams.get('offset'))).toEqual(['0', '500']);
+      }
+    } finally {
+      view.unmount();
+      pending.splice(0).forEach(resolve => resolve());
+    }
+  });
+
+  it('does not claim a 10000-row cap when an incomplete sweep stops at the first 500 rows', async () => {
+    const requests = serve({ inventory: { target_group: largeInventory('target_group') },
+      inventoryReply: (url, body) => Response.json(url.pathname.endsWith('/target_group')
+        ? { ...body, run: { ...body.run, status: 'partial' } } : body) });
+    render(<TopologyPage />);
+    await screen.findByText('인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.');
+    expect(requests.filter(url => url.pathname.endsWith('/target_group'))).toHaveLength(1);
+    expect(screen.queryByText(/응답 상한 도달/)).toBeNull();
+    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
+  });
   it.each([['self', 'ecs_task'], ['self', 'subnet'], ['self', 'target_group'], ['123456789012', 'ecs_task'], ['123456789012', 'subnet'], ['123456789012', 'target_group']])('pages %s / %s without paging display types', async (account, type) => {
     const requests = serve({ inventory: { [type]: largeInventory(type) } });
     render(<TopologyPage />);

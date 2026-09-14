@@ -103,6 +103,23 @@ async function ready() {
 }
 
 describe('sample topology evidence', () => {
+  it('keeps week-old inventory stale in the Refresh chip after another read', async () => {
+    const old = '2026-09-07T12:00:00Z';
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-14T12:00:00Z'));
+    try {
+      serve({ rowCapture: old, runStatus: 'succeeded' });
+      await ready();
+      const label = new Date(old).toLocaleString('en-US');
+      expect(screen.getByText(/^업데이트:/).textContent).toContain(label);
+      expect(screen.getByText(/^업데이트:/).textContent).toContain('(오래됨)');
+      const reads = vi.mocked(fetch).mock.calls.length;
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+      await waitFor(() => expect(vi.mocked(fetch).mock.calls.length).toBeGreaterThan(reads));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toHaveProperty('disabled', false));
+      expect(screen.getByText(/^업데이트:/).textContent).toContain(label);
+      expect(screen.getByText(/^업데이트:/).textContent).toContain('(오래됨)');
+    } finally { clock.mockRestore(); }
+  });
   it('supplies collected subnets to corroborate an ECS attachment IP', async () => {
     serve({ ecs: true });
     expect((await ready()).textContent).toBe('ecs-orders');
@@ -151,6 +168,8 @@ describe('sample topology evidence', () => {
     expect(text).toContain('Not-connected clusters not queried: 1');
     expect(text).toContain('EKS ownership evidence is partial');
     expect(text).not.toContain('EKS ownership read failed');
+    expect(screen.getByRole('alert', { name: 'EKS 식별 상태' }).textContent).toContain('cluster_not_connected');
+    expect(screen.getByRole('alert', { name: 'EKS 식별 상태' }).textContent).not.toContain('cluster_unreadable');
   });
   it('discloses the configured-region boundary even after successful connected reads', async () => {
     serve({ runStatus: 'succeeded' });

@@ -106,10 +106,10 @@ export interface InventoryAggregates {
   facets: Record<string, AggBucket[]>;
 }
 
-// Server-side bound for the aggregation statement (the auth.ts SET LOCAL precedent: the
+// Server-side bound shared by aggregate and row/ledger read statements (the auth.ts SET LOCAL precedent: the
 // timeout must be a literal integer — SET LOCAL can't take a bound parameter).
-const AGG_STATEMENT_TIMEOUT_MS = 15000;
-if (!Number.isInteger(AGG_STATEMENT_TIMEOUT_MS)) throw new Error('AGG_STATEMENT_TIMEOUT_MS must be a literal integer');
+const INVENTORY_STATEMENT_TIMEOUT_MS = 15000;
+if (!Number.isInteger(INVENTORY_STATEMENT_TIMEOUT_MS)) throw new Error('INVENTORY_STATEMENT_TIMEOUT_MS must be a literal integer');
 
 /** Full-fleet aggregates for a capped inventory page (gap L102, v1 parity): GROUP BYs over
  *  the WHOLE scoped fleet for the spec's stateKey/distKey/distKey2/filterKeys, plus the true
@@ -157,7 +157,7 @@ export async function readAggregates(
   let rows: { k: string; name: string | null; value: number }[];
   try {
     await clientConn.query('BEGIN');
-    await clientConn.query(`SET LOCAL statement_timeout = ${AGG_STATEMENT_TIMEOUT_MS}`);
+    await clientConn.query(`SET LOCAL statement_timeout = ${INVENTORY_STATEMENT_TIMEOUT_MS}`);
     rows = (await clientConn.query(parts.join(' UNION ALL '), params)).rows;
     await clientConn.query('COMMIT');
   } catch (e) {
@@ -188,7 +188,7 @@ export async function readResources(type: string, { limit, offset, regions = '__
   let discard = false;
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    await client.query(`SET LOCAL statement_timeout = ${AGG_STATEMENT_TIMEOUT_MS}`);
+    await client.query(`SET LOCAL statement_timeout = ${INVENTORY_STATEMENT_TIMEOUT_MS}`);
     const r = await client.query(
       `SELECT resource_id, region, account_id, data, captured_at FROM inventory_resources
        WHERE ${where} ORDER BY ${worstFirstOrderBy(type)}captured_at DESC, account_id ASC, region ASC, resource_id ASC LIMIT $${params.length - 1} OFFSET $${params.length}`,

@@ -59,9 +59,11 @@ discards it. Statements are bounded to 15 seconds. No additional fleet count or 
 completion certificate is implied, and `view=agg` is a separate response/transaction.
 
 Topology reads target groups/ECS tasks/subnets in at most 20 pages of 500 under one
-30-second browser load budget shared with EKS. Each critical page must carry the marker;
+30-second browser load budget shared with EKS. All inventory and VPC/security-group
+enrichment requests share two lanes per load; critical pages run sequentially within a
+lane. This bounds this loader’s fan-out against the shared pool. Each critical page must carry the marker;
 legacy/missing markers fail closed. Succeeded status, finish, last-success and row-count
-must remain stable across pages. This removes browser/Aurora clock comparisons and
+must remain stable across pages. Ownership decisions do not compare browser and database clocks. The snapshot
 prevents a finalizing sweep from mixing one page's rows with another ledger snapshot.
 Separate pages/types are not a single snapshot; success still proves neither freshness
 nor complete AWS coverage. All ECS snapshot labels,
@@ -74,7 +76,10 @@ Inventory and EKS reads share the abort signal; superseded loads are aborted
 and late completions cannot overwrite newer results. If a failed/incomplete load builds
 an empty graph, the previous nonempty same-account graph and its provenance are retained;
 a complete empty load replaces it. Target-node `targetCapturedAt` dates only the
-target-group row, not the independent task/subnet/pod evidence.
+target-group row, not the independent task/subnet/pod evidence. The Refresh chip uses
+the newest source/eligible last-success capture time, so a new read does not reset old
+data freshness. Onboarding gaps use `cluster_not_connected` separately from actual
+read failures; their unknown ownership scopes remain blocked.
 
 Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
 [row/ledger reads](../web/lib/inventory.ts),

@@ -111,14 +111,29 @@ describe('EKS inventory producer → configuration', () => {
   });
   it('keeps unreadable scope evidence when no IP could be enumerated', async () => {
     serve([], [], { clusters: [{ ...cluster, access: 'no-entry' }] });
-    expect(await fetchEksIpMap()).toEqual({ map: {}, status: 'unavailable', reasons: ['cluster_unreadable'], notConnected: 1,
+    expect(await fetchEksIpMap()).toEqual({ map: {}, status: 'unavailable', reasons: ['cluster_not_connected'], notConnected: 1,
       blockedScopes: [`${region}|${vpcId}|`], coveredRegions: [region], globalUnknown: false });
   });
   it.each(['unknown', 'no-entry'])('keeps a healthy different VPC when access is %s', access => {
     serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'unreadable', vpcId: 'vpc-other', access }] });
-    return expect(fetchEksIpMap()).resolves.toMatchObject({ status: 'partial', reasons: ['cluster_unreadable'],
+    return expect(fetchEksIpMap()).resolves.toMatchObject({ status: 'partial', reasons: [access === 'no-entry' ? 'cluster_not_connected' : 'cluster_unreadable'],
       map: { [scopedTargetIp(region, vpcId, ip)]: { resolved: 'eks' } } });
   });
+  it.each(['entry-only', 'no-entry'])('still blocks a connected candidate sharing an unqueried %s scope', async access => {
+    serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'not-onboarded', access }] });
+    const result = await fetchEksIpMap();
+    expect(result).toMatchObject({ reasons: ['cluster_not_connected'], notConnected: 1,
+      blockedScopes: [`${region}|${vpcId}|`], map: { [scopedTargetIp(region, vpcId, ip)]: null } });
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/not-onboarded/'))).toBe(false);
+  });
+  it.each(['US-EAST-1', ' us-east-1', '<region>', 'a'.repeat(65), null])(
+    'rejects an invalid declared or cluster region before querying pods: %s', async invalid => {
+      vi.stubGlobal('fetch', vi.fn(async () => json({
+        region: invalid, truncated: false, clusters: [{ ...cluster, region: invalid }],
+      })));
+      expect(await fetchEksIpMap()).toMatchObject({ globalUnknown: true, status: 'unavailable', coveredRegions: [] });
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
 
   it.each([24, 25])('reports only a possible listing cap at %i clusters', async count => {
     serve([pod], [endpoint], { clusters: Array.from({ length: count }, (_, i) => ({ ...cluster, name: `cluster-${i}`, vpcId: `vpc-${i}` })) });

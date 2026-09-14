@@ -130,6 +130,10 @@ function nodeLabel(n: FlowNode): ReactNode {
 }
 
 const ROW_CAP = 500; // /api/inventory caps limit at 500
+const INVENTORY_LANES = 2; // Shared max:3 PG pool also serves authentication and other reads.
+const CRITICAL_PAGES = 20;
+const CRITICAL_TYPES = new Set<string>(['target_group', 'ecs_task', 'subnet']);
+const rowLimit = (type: string) => ROW_CAP * (CRITICAL_TYPES.has(type) ? CRITICAL_PAGES : 1);
 const ISSUE_STATUSES = ['failed', 'partial'] as const;
 type InventoryIssue = { type: string; status: typeof ISSUE_STATUSES[number] };
 const EVIDENCE_COPY = {
@@ -191,13 +195,13 @@ const record = (v: unknown): v is Row => v !== null && typeof v === 'object' && 
 const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
 async function fetchType(t: InvType | 'vpc' | 'security_group', account: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean }> {
-  const critical = t === 'target_group' || t === 'ecs_task' || t === 'subnet';
+  const critical = CRITICAL_TYPES.has(t);
   const rows: Row[] = [], seen = new Set<string>();
   let version: string | undefined, finishedAt: string | null = null;
   let firstRun: Row | null = null;
   const result = (capped: boolean, incomplete = false) => ({ rows, finishedAt, capped, incomplete, ...inventoryEvidence(rows, firstRun, account === 'self') });
   try {
-    for (let page = 0; page < (critical ? 20 : 1); page++) {
+    for (let page = 0; page < (critical ? CRITICAL_PAGES : 1); page++) {
       if (signal.aborted) throw new Error();
       const qs = new URLSearchParams({ limit: String(ROW_CAP), offset: String(page * ROW_CAP), accounts: account });
       const r = await fetch(`/api/inventory/${t}?${qs}`, { signal });
@@ -206,7 +210,7 @@ async function fetchType(t: InvType | 'vpc' | 'security_group', account: string,
       if (signal.aborted || !record(d) || d.error || d.status === 'error'
         || !Array.isArray(d.rows) || d.rows.length > ROW_CAP) throw new Error();
       const run = record(d.run) ? d.run : null;
-      let incomplete = critical && ['running', 'partial', 'failed'].includes(String(run?.status));
+      const incomplete = critical && ['running', 'partial', 'failed'].includes(String(run?.status));
       if (critical) {
         if (d.consistency !== 'repeatable-read') throw new Error();
         // The global type sweep covers every account. Only a stable success permits ownership.
@@ -232,7 +236,7 @@ async function fetchType(t: InvType | 'vpc' | 'security_group', account: string,
       }
       finishedAt = run && typeof run.finished_at === 'string' ? run.finished_at : null;
       // Keep a bounded cached page during a sweep, without mixing mutable pages or proving absence.
-      if (incomplete || d.rows.length < ROW_CAP) return result(d.rows.length === ROW_CAP, incomplete);
+      if (incomplete || d.rows.length < ROW_CAP) return result(false, incomplete);
     }
     return result(true); // 10,000 critical rows still need an end-of-data proof.
   } catch {
@@ -293,7 +297,6 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
   const [syncedAt, setSyncedAt] = useState<string | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
-  const [capturedAt, setCapturedAt] = useState<string | null>(null);
   const [captureThrough, setCaptureThrough] = useState<string | null>(null);
   const [unknownCapture, setUnknownCapture] = useState(false);
   const [collectionIssues, setCollectionIssues] = useState<InventoryIssue[]>([]);
@@ -331,7 +334,6 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
       setData(null);
       setSelected(null);
       setNetMaps(emptyNetMaps());
-      setCapturedAt(null);
       setSyncedAt(null);
       setCappedTypes([]);
       setSyncIncomplete(false);
@@ -346,13 +348,24 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
         catch { return { rows: [] as Row[], finishedAt: null, capped: false, incomplete: false,
           ...inventoryEvidence([], null, false), readFailed: true, error: `${type}: invalid inventory response` }; }
       };
-      const [res, eks, net] = await Promise.all([
-        Promise.all(TYPES.map(read)),
+      const types = [...TYPES, ...NET];
+      const results: Awaited<ReturnType<typeof read>>[] = new Array(types.length);
+      let next = 0;
+      const lane = async () => {
+        for (;;) {
+          const index = next++;
+          if (index >= types.length) return;
+          // fetchType stops before issuing a request when aborted; fill every result slot
+          // so queued/unread types cannot be mistaken for successful empty inventories.
+          results[index] = await read(types[index]);
+        }
+      };
+      const [, eks] = await Promise.all([
+        Promise.all(Array.from({ length: INVENTORY_LANES }, lane)),
         account === 'self' ? fetchEksIpMap(controller.signal) : Promise.resolve(null),
-        Promise.all(NET.map(read)),
       ]);
       if (!current()) return;
-      const types = [...TYPES, ...NET], results = [...res, ...net];
+      const res = results.slice(0, TYPES.length), net = results.slice(TYPES.length);
       const failed = results.filter(result => result.readFailed);
       setErr(failed.map(result => result.error).join('; '));
       if (res.every(result => result.readFailed)) {
@@ -407,7 +420,6 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
       setRetained(false);
       setSyncedAt(oldest);
       setCappedTypes(capped);
-      setCapturedAt(new Date().toISOString());
     } catch {
       if (current()) {
         setErr('topology: invalid inventory response');
@@ -715,7 +727,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
                 <option key={c.key} value={c.key}>{c.resolved ? `${c.resolved.toUpperCase()} · ${c.cluster}` : c.cluster}</option>
               ))}
             </select>
-            <RefreshButton busy={busy} onClick={load} capturedAt={capturedAt} />
+            <RefreshButton busy={busy} onClick={load} capturedAt={captureThrough} />
             <Link href="/topology/infra" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
               {tt('인프라 배치 →')}
             </Link>
@@ -731,7 +743,8 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
           {tt('EKS 조회 범위 밖의 대상은 소유권 미확인입니다. 조회 리전:')} {eksResolution?.coveredRegions.join(', ')}
         </div>}
         {(eksResolution?.status === 'unavailable' || eksResolution?.status === 'partial') && <div role="alert" aria-label={tt('EKS 식별 상태')} className="text-[13px] text-warning">
-          {tt('EKS 조회 실패 또는 수집 범위 제한으로 IP 소유자를 확인할 수 없습니다.')} ({eksResolution.reasons.join(', ')})
+          {eksResolution.reasons.length > 0 && eksResolution.reasons.every(reason => reason === 'cluster_not_connected')
+            ? copy.eksNotConnected : tt('EKS 조회 실패 또는 수집 범위 제한으로 IP 소유자를 확인할 수 없습니다.')} ({eksResolution.reasons.join(', ')})
         </div>}
         {(data?.ownershipRead?.targetGroup || data?.ownershipRead?.ecsTask || data?.ownershipRead?.subnet) && <div role="status" className="text-[13px] text-warning">
           {tt(syncIncomplete ? '인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.' : '인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.')}
@@ -750,7 +763,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
           {eksCoverage && <div>{copy.eksScope} {eksCoverage.region ?? copy.unknown}; {copy.eksOtherRegions}</div>}
           {!!eksCoverage?.notConnected && <div>{copy.eksNotConnected}: {eksCoverage.notConnected}</div>}
           {eksStatus !== 'ok' && <div>{copy.eks[eksStatus]}</div>}
-          {cappedTypes.length > 0 && <div className="text-warning">{copy.limit}: {cappedTypes.map(type => `${type} (${['target_group', 'ecs_task', 'subnet'].includes(type) ? 10000 : ROW_CAP})`).join(', ')}</div>}
+          {cappedTypes.length > 0 && <div className="text-warning">{copy.limit}: {cappedTypes.map(type => `${type} (${rowLimit(type)})`).join(', ')}</div>}
         </div>}
         {data && (
           full.nodes.length === 0 ? (
