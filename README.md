@@ -146,7 +146,7 @@ and [deployment runbook §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-
 | Flag | Gates |
 |------|-------|
 | `agentcore_enabled` | 21 of the AgentCore Lambda slices |
-| `ci_readiness_enabled` | Default-off bounded deployment probe, including model inference. Applied output controls activation; the controller grants managed demo only deployment-verifiers membership, no admin/IAM role or shell override. |
+| `ci_readiness_enabled` | Default-off bounded deployment probe, including model inference. Applied output controls activation; public CI permits the flag only on dev. With AgentCore enabled, Terraform grants the managed demo deployment-verifiers membership, no admin/IAM role or shell override. |
 | `integrations_enabled` | remaining 6 AgentCore Lambda slices |
 | `workers_enabled` | the async worker tier (SQS/SFN/Lambda/Fargate) |
 | `ci_migrations_enabled` | Default-off operator capability: private migration task template, exact-secret task role/policy and 14-day logs. Manual dev CI only; no service or scheduler. Disabling deletes the log group/history. |
@@ -366,7 +366,7 @@ apply에서 바꿀 수 없습니다. 기본 false인 일반 full 계획도 DNS �
 | Flag | 게이트 대상 |
 |------|-------------|
 | `agentcore_enabled` | AgentCore Lambda 슬라이스 21개 |
-| `ci_readiness_enabled` | 기본 비활성 배포 검증(제한된 모델 추론 포함). 적용된 output으로 활성화하며 관리 demo에 전용 verifier 멤버십만 부여한다. 관리자·IAM 역할이나 환경변수 덮어쓰기는 없다. |
+| `ci_readiness_enabled` | 기본 비활성 배포 검증(제한된 모델 추론 포함). 적용된 output으로 활성화하며 공개 CI는 dev에서만 허용한다. AgentCore가 켜져 있을 때 Terraform이 관리 demo에 verifier 멤버십만 부여한다. 관리자·IAM 역할이나 환경변수 덮어쓰기는 없다. |
 | `integrations_enabled` | 나머지 AgentCore Lambda 슬라이스 6개 |
 | `workers_enabled` | 비동기 워커 계층(SQS/SFN/Lambda/Fargate) |
 | `ci_migrations_enabled` | 기본 비활성 운영 기능: 사설 migration 태스크 템플릿·정확한 시크릿 읽기 역할/정책·14일 로그. dev CI 수동 실행 전용이며 서비스·스케줄러는 없다. 비활성화하면 로그 그룹/이력이 삭제된다. |

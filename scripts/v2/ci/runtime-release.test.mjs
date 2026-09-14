@@ -82,6 +82,10 @@ function fixture(overrides = {}) {
     const key = args.slice(0, 2).join(' ');
     if (key === 'lambda invoke') {
       const output = args.at(-1);
+      if (args[args.indexOf('--invocation-type') + 1] === 'Event') {
+        writeFileSync(output, '', { mode: 0o600 });
+        return JSON.stringify({ StatusCode: 202 });
+      }
       writeFileSync(output, JSON.stringify(overrides.ack || ack()), { mode: 0o600 });
       return JSON.stringify(overrides.invoke || { StatusCode: 200, ExecutedVersion: '$LATEST' });
     }
@@ -121,6 +125,31 @@ test('wrong source, role/account or mode fails before AWS calls', async () => {
     } finally { f.cleanup(); }
   }
   assert.doesNotThrow(() => validateContext(env));
+});
+
+test('collection retries invoke only acknowledged types on the owned function, at most twice', async () => {
+  const f = fixture();
+  try {
+    await release(deployment(), { env: f.env, run: f.run, authenticate: async (input, options) => {
+      const result = await f.authenticate(input, options);
+      assert.equal(typeof options.retryCollection, 'function');
+      const before = f.calls.length;
+      await assert.rejects(options.retryCollection(['unacknowledged']), /invalid_collection_retry/);
+      await assert.rejects(options.retryCollection(['rds', 'rds']), /invalid_collection_retry/);
+      assert.equal(f.calls.length, before);
+      await options.retryCollection(['rds']);
+      await options.retryCollection(['rds']);
+      await assert.rejects(options.retryCollection(['rds']), /collection_retry_limit/);
+      return result;
+    } });
+    const retries = f.calls.filter(args => args.slice(0, 2).join(' ') === 'lambda invoke' &&
+      args[args.indexOf('--invocation-type') + 1] === 'Event');
+    assert.equal(retries.length, 2);
+    for (const args of retries) {
+      assert.equal(args[args.indexOf('--function-name') + 1], deployment().inventory.sync_function_arn);
+      assert.deepEqual(JSON.parse(args[args.indexOf('--payload') + 1]), { type: 'rds' });
+    }
+  } finally { f.cleanup(); }
 });
 
 test('Terraform schema is snake_case and collect cannot accept disabled/partial configuration', () => {
@@ -237,6 +266,24 @@ test('capture persists only validated deployment metadata in the credential dire
     assert.equal(statSync(file).mode & 0o777, 0o600);
     assert.throws(() => captureDeployment(deployment(), f.env)); // no overwrite/symlink following
   } finally { f.cleanup(); }
+});
+
+test('disabled runtime features fail capture before any deployment contract or AWS call', () => {
+  const f = fixture();
+  try {
+    const value = deployment();
+    value.features.inventory = false;
+    assert.throws(() => captureDeployment(value, f.env), /runtime_not_enabled/);
+    assert.equal(existsSync(join(f.directory, 'runtime-deployment.json')), false);
+    assert.equal(f.calls.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('cleanup cannot replace a primary fixed context failure', async () => {
+  await assert.rejects(release(deployment(), {
+    env: { ...env, GITHUB_REPOSITORY: 'wrong/repo', SMOKE_CREDENTIAL_FILE: '/invalid/credentials.json' },
+    run: async () => { throw new Error('AWS must not run'); },
+  }), error => error.message === 'invalid_dev_source');
 });
 
 test('existing OCI indexes bind the running ARM64 child and reject indexes without ARM64', async () => {

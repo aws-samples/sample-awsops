@@ -36,7 +36,7 @@ secrets-manager) — installed by `make deps`.
   ECS force-new-deployment → wait stable → smoke `/api/health`. `deployment-smoke.mjs`
   preserves service Host/SNI/TLS via CloudFront `--connect-to` before service DNS publication.
   The `DOCKER` env defaults to `sudo docker`.
-- `v2/prepare-smoke-credentials.mjs` — Deploy Web's dev-only opt-in preparation: privately
+- `v2/prepare-smoke-credentials.mjs` — Deploy Web's required preparation for every dev release: privately
   evaluate effective Terraform demo credentials, require unwrapped Terraform, strip TF logging/
   argument overrides, and publish only a 0600 credential-file path inside a 0700 directory.
   Private init is bounded to 10 minutes; output/console each to 2 minutes.
@@ -205,3 +205,5 @@ private hostOnly verify configuration, fresh collection and actual web-role/runt
 proof. Manual collect-runtime prepare accepts disabled backends and reports prepared,
 never ready. Typed authenticated-smoke failures retain sanitized diagnostics; other errors
 remain generic. All private credentials/configuration/scratch are covered by cleanup.
+
+Controller collection contention: the retry callback keeps a 15-minute collection window, waits 60 seconds before/between attempts, retries only stale terminal types at most twice each in batches of eight, and invokes only acknowledged types on the owned sync Lambda. Running/missing rows are not re-dispatched; fresh partial/failed/unknown-attribute results still fail. The schedule is unchanged. The standalone smoke without the callback retains its 10-minute collection window. CI requires zero unknown attributes; product degraded views do not waive release acceptance.

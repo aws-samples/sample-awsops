@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7ab6a68b36e6 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 402cba36d155 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -113,18 +113,20 @@ legacy runbook's steps as the current operational path).
 - Apply both `agentcore_enabled` and `ci_readiness_enabled`, then provision AgentCore.
   Verify also requires active inventory/dispatch, `workers_enabled=true` and deployed ARM64 worker images.
   Only that output boolean enables `DEPLOYMENT_READINESS_ENABLED`; no shell override. The controller grants only verifier membership to the managed demo;
-  no admin/IAM role. False/missing reports `runtime_disabled`. Capped samples cannot
+  no admin/IAM role, and only with AgentCore enabled. Public CI restricts the readiness flag to dev. False/missing reports `runtime_disabled`. Capped samples cannot
   prove absence; missing ledger, partial/failed runs and unknown attributes remain failed readiness.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
   credentials. Prepare checks host registration (optional hostOnly); verify additionally
   requires applied CloudFront identity, complete queued types and pre-dispatch timestamp,
   fresh collection, web-role SSM/AgentCore proof and Lambda/Fargate completion. Every dev Deploy Web
   release requires the controller-generated verify file regardless of verify_database. The billed readiness
-  route requires admin or deployment-verifiers, one in-flight call and a 60-second cooldown.
+  route requires admin or deployment-verifiers, one in-flight call and a per-process 60-second cooldown; replicas have independent cooldowns.
 
-- Dev-only `verify_database=true` prepares effective demo credentials privately before rollout,
+- Every dev release prepares effective demo credentials privately before rollout, regardless of the legacy input,
   then verifies login and edge-authenticated `/api/db`; positive table count is not a ledger audit.
 - Unwrapped Terraform and private 0600/0700 files are required. The CLI's HTTP scratch shares
   the prepared credential directory and always-cleanup; expose only phases/validated HTTP status,
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
 - Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
+
+The controller retries only stale terminal collection types: 60-second grace/backoff, at most two per type, batches of eight, within a 15-minute collection window. Fresh partial/failed runs and unknown attributes fail the full gate; no schedule mutation or degraded-data allowance exists. The runtime-foundation runbook lists exact deployer read/invoke scopes and the existing-stack apply/provision prerequisites.

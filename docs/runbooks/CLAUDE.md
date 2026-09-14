@@ -125,7 +125,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   provisioning, active inventory/dispatch, `workers_enabled=true` and deployed ARM64 worker images.
   Only the output boolean sets `DEPLOYMENT_READINESS_ENABLED`, with no shell override.
   False/missing is `runtime_disabled`; the controller creates only the verifier group and
-  managed demo membership, never an admin or IAM role.
+  managed demo membership only while AgentCore is enabled, never an admin or IAM role. Public CI permits the readiness flag only on dev.
   Capped samples cannot prove absence. Missing ledger, partial/failed runs and unknown attributes
   remain distinct failures; accepted degraded inventory is not a deployment-readiness exception.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
@@ -133,9 +133,9 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   requires applied CloudFront identity, complete queued types and pre-dispatch timestamp,
   fresh collection, web-role SSM/AgentCore proof and Lambda/Fargate completion. Every dev Deploy Web
   release requires the controller-generated verify file regardless of verify_database. The billed readiness
-  route requires admin or deployment-verifiers, one in-flight call and a 60-second cooldown.
+  route requires admin or deployment-verifiers, one in-flight call and a per-process 60-second cooldown; replicas have independent cooldowns.
 
-- Deploy Web `verify_database=true` is dev-only and runs after required migrations. It prepares
+- Every dev Deploy Web release requires verification after migrations, regardless of the legacy input. It prepares
   effective demo credentials privately with unwrapped Terraform before rollout, then verifies
   login and edge-authenticated `/api/db`. A positive table count is not a full ledger audit.
 - Credentials and HTTP scratch share one 0700 run directory with 0600 files, covered by
@@ -160,3 +160,5 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 2. Use an existing runbook's structure as a template (`start-services.md`, `deploy-new-version.md`).
 3. Follow the symptoms → diagnosis → action order strictly.
 4. Always include the related file paths.
+
+The controller retries only stale terminal collection types: 60-second grace/backoff, at most two per type, batches of eight, within a 15-minute collection window. Fresh partial/failed runs and unknown attributes fail the full gate; no schedule mutation or degraded-data allowance exists. The runtime-foundation runbook lists exact deployer read/invoke scopes and the existing-stack apply/provision prerequisites.

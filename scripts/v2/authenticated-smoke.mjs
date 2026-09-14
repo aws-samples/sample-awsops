@@ -51,7 +51,7 @@ function hasSessionCookie(contents, hostname) {
 
 export async function authenticatedSmoke(
   { publicUrl, cloudfrontDomain, email, password, runtimeConfig },
-  { runCurl = execute, tempRoot = resolve(process.env.RUNNER_TEMP || tmpdir()) } = {},
+  { runCurl = execute, tempRoot = resolve(process.env.RUNNER_TEMP || tmpdir()), retryCollection } = {},
 ) {
   let directory;
   let previousUmask;
@@ -150,7 +150,7 @@ export async function authenticatedSmoke(
           args.push('--header', 'Content-Type: application/json', '--data-binary', `@${bodyFile}`);
         }
         return request(args, path, status, timeout, maxResponseBytes, withStatus);
-      }, { wait: ms => delay(ms, undefined, { signal: controller.signal }) });
+      }, { wait: ms => delay(ms, undefined, { signal: controller.signal }), retryCollection });
       return { ...runtimeResult, public_tables: database.public_tables };
     }
     return { status: 'ok', public_tables: database.public_tables };

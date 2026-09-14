@@ -126,7 +126,7 @@ the deployment suite's Terraform requirement. The **required CI mock-test step**
 `terraform-test.sh` requires 1.15.7, copies tracked working-tree files into a disposable directory,
 strips deployment credentials/TF variables, initializes with
 `-backend=false -input=false -lockfile=readonly` in a fresh `TF_DATA_DIR`, validates and runs
-`tests/dns_deferred.tftest.hcl` and `tests/runtime_iam.tftest.hcl`. Providers are mocked; no real backend is initialized and no
+`tests/dns_deferred.tftest.hcl`, `tests/runtime_iam.tftest.hcl` and `tests/controller_readiness.tftest.hcl`. Providers are mocked; no real backend is initialized and no
 AWS/DNS API is called. Local `.terraform`, backend config, tfvars and state are not copied.
 Initialization installs locked providers; for fully offline use, point `TF_CLI_CONFIG_FILE`
 at an existing filesystem mirror containing them with no `direct` fallback.

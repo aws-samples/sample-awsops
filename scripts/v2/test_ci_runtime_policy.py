@@ -133,6 +133,14 @@ class RuntimePolicyTests(unittest.TestCase):
         plan["variables"]["ci_runtime_profile_enabled"]["value"] = True
         self.module.check_plan(plan, "dev", "full", ACCOUNT)
 
+    def test_readiness_is_public_dev_only_even_without_the_runtime_profile(self):
+        plan = self.plan()
+        plan["variables"]["ci_readiness_enabled"] = {"value": True}
+        self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        for target in ("main", "atomoh", "ssminji", "whchoi"):
+            with self.assertRaisesRegex(ValueError, "readiness.*dev-only"):
+                self.module.check_plan(plan, target, "full", ACCOUNT)
+
     def test_retirement_is_unsupported_in_saved_plans_and_workflow_inputs(self):
         plan = self.plan()
         plan["variables"]["ci_runtime_retire"] = {"value": True}

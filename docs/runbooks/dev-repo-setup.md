@@ -342,7 +342,7 @@ logs), never variables; every credentials step sets `mask-aws-account-id`.
 Cognito users: dev/preview stacks get the shared regular **demo user**
 (`demo_email` defaults to `demo@awsops.local`; its password rides as the
 `TF_VAR_DEMO_PASSWORD` repo secret, bound as `TF_VAR_demo_password` only in
-Terraform's plan step and Deploy Web's opt-in private credential-preparation step).
+Terraform's plan step and Deploy Web's required dev credential-preparation step).
 `create_demo_user` defaults to
 **false** (fail-closed): a dev-tier stack opts in with `create_demo_user =
 true` in its tfvars blob, so the shared credential can never reach a stack —
@@ -1013,6 +1013,9 @@ protections remain required.
 DNS·출처 검사도 배포 ref의 코드이므로 코드 변경에 대한 보안 경계를 대신하지 않는다.
 기존 리뷰·보호 환경 절차를 계속 적용한다.
 
+Full controller verification also requires the narrowly scoped ECS/Lambda reads and owned sync invocation in [deployer verification permissions](runtime-foundation.md#deployer-verification-permissions--deployer-검증-권한). The pre-mutation feature check and existing-stack rollout order are documented there.
+전체 controller 검증의 ECS/Lambda 조회·자체 sync 호출 권한과 변경 전 기능 검사·기존 스택 배포 순서는 해당 런타임 절차를 따른다.
+
 #### Runtime images / 런타임 이미지
 
 The build helper uses BuildKit's configuration digest and pushes only `linux/arm64`
@@ -1237,7 +1240,7 @@ and succeeded Lambda/Fargate jobs. Missing/partial/stale is never healthy zero; 
 inventory-reader Lambda so legacy NULL attribute coverage is disclosed as incomplete.
 
 `POST /api/deployment/readiness` requires an administrator or separately provisioned `deployment-verifiers`.
-When ci_readiness_enabled=true, controller-readiness.tf creates the verifier group and, if the managed
+Public CI rejects ci_readiness_enabled outside dev. When both ci_readiness_enabled and agentcore_enabled are true, controller-readiness.tf creates the verifier group and, if the managed
 demo user is enabled, its membership. It grants no admin or IAM authority.
 Use a fresh login after membership changes; one in-flight call and a 60-second process cooldown apply.
 
@@ -1246,7 +1249,7 @@ Use a fresh login after membership changes; one in-flight call and a 60-second p
 실제 배포·Lambda 응답으로 생성한 전체 검증 설정을 사용하며 verify_database로 생략할 수 없습니다.
 prepare는 로그인·DB·활성 호스트를 확인하고 `hostOnly: true`일 때 외부 활성 계정을
 거부합니다. verify는 위 추가 필드로 최신 수집·실제 SSM/runtime·두 워커 완료를 검증합니다.
-검증 API는 관리자 또는 전용 verifier 그룹만 허용합니다. ci_readiness_enabled가 켜지면 Terraform이 그룹과 활성 관리 demo의 verifier 멤버십만
+검증 API는 관리자 또는 전용 verifier 그룹만 허용합니다. 공개 CI는 ci_readiness_enabled를 dev에서만 허용하며 AgentCore도 켜져 있어야 Terraform이 그룹과 활성 관리 demo의 verifier 멤버십만
 만듭니다. 관리자·IAM 역할을 주지 않습니다. 그룹 변경 후 새 로그인과 호출 간격이 필요합니다.
 
 ### Authenticated database verification / 인증된 DB 검증
@@ -1277,9 +1280,9 @@ may accompany phase errors; response bodies, cookies and Terraform diagnostics s
 
 ```bash
 # After successful migration; use the already-built image for this reviewed dev HEAD:
-gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f verify_database=true
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev
 # If this HEAD's web image still needs building, use this instead:
-gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true -f verify_database=true
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true
 ```
 
 Require ECS stability and the normal `/api/health` smoke, then **POST `/api/auth/login`**
@@ -1297,7 +1300,7 @@ user's password to make this smoke pass.** This workflow does not create users o
 passwords.
 
 필수 DB 마이그레이션 성공을 확인한 후 `dev`의 **Deploy Web**을
-`verify_database=true`로 실행한다. 먼저 검토한 Terraform 저장 plan을 실제 apply하여
+실행한다. 전체 검증은 기존 verify_database 입력과 무관하게 필수다. 먼저 검토한 Terraform 저장 plan을 실제 apply하여
 개발 state에 `demo_username` 출력을 저장해야 한다. plan만으로는 저장되지 않는다.
 복원되는 `TF_TFVARS_DEV`는 `create_demo_user=true`여야 하며 유효 `demo_email`이
 적용된 사용자명과 정확히 같아야 한다. 사용할 암호는 기존 사용자의 실제 암호와 일치해야 한다.
@@ -1326,13 +1329,13 @@ Troubleshoot by phase and safe status: login 401 points to the configured creden
 Cognito user/challenge state; 502 to its upstream connection. Database 503 points to missing
 service configuration; 500 to database credentials, IAM or connectivity. A transport/TLS failure
 may have no HTTP response. Inspect private application logs; never print response bodies or
-reset a password to make a check pass. Opt-in preparation performs its own bounded private
+reset a password to make a check pass. Required dev preparation performs its own bounded private
 Terraform init (10 minutes) before output/console (2 minutes each); it must finish before
 image pinning or rollout.
 로그인 401은 설정된 자격증명, 403은 Cognito 사용자/인증 상태, 502는 상위 연결을 확인한다.
 DB 503은 서비스 설정, 500은 DB 자격증명·IAM·연결을 확인한다. 전송/TLS 오류에는 HTTP
 응답이 없을 수 있다. 비공개 앱 로그로 조사하고 응답 본문을 출력하거나 암호를 재설정하지 않는다.
-선택적 준비 단계는 비공개 Terraform init을 10분 내 완료한 뒤 output/console을 각각 2분 내 읽으며,
+필수 dev 준비 단계는 비공개 Terraform init을 10분 내 완료한 뒤 output/console을 각각 2분 내 읽으며,
 이미지 pin·rollout은 그 이후에만 진행한다.
 
 Offline checks for this path (Node 20, curl, OpenSSL, Python 3 with PyYAML, and Terraform 1.15.7):

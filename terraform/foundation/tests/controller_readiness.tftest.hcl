@@ -138,6 +138,18 @@ run "readiness_enabled_output_and_verifier" {
   }
 }
 
+run "disabled_agentcore_never_grants_verifier_access" {
+  command = plan
+  variables {
+    agentcore_enabled = false
+    ci_readiness_enabled = true
+  }
+  assert {
+    condition = length(aws_cognito_user_group.deployment_verifiers) == 0 && length(aws_cognito_user_in_group.demo_readiness) == 0
+    error_message = "A disabled AgentCore deployment must not create verifier membership."
+  }
+}
+
 run "readiness_without_managed_demo" {
   command = plan
   variables {

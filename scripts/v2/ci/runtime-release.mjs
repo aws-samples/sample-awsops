@@ -205,12 +205,12 @@ async function verifyWeb(aws, deployment, context) {
   need(empty(running.failures) && Array.isArray(running.tasks) && running.tasks.length === arns.length &&
     new Set(running.tasks.map(t => t.taskArn)).size === arns.length, 'web_tasks_unavailable');
   for (const task of running.tasks) {
-    const web = Array.isArray(task.containers) ? task.containers.filter(c => c.name === 'web') : [];
+    const taskWeb = Array.isArray(task.containers) ? task.containers.filter(c => c.name === 'web') : [];
     need(arns.includes(task.taskArn) && task.clusterArn === cluster &&
       task.group === `service:${deployment.web.service}` && task.taskDefinitionArn === service.taskDefinition &&
       task.lastStatus === 'RUNNING' && task.desiredStatus === 'RUNNING' && task.healthStatus === 'HEALTHY' &&
-      task.platformFamily === 'Linux' && web.length === 1 && web[0].lastStatus === 'RUNNING' &&
-      web[0].healthStatus === 'HEALTHY' && digests.has(web[0].imageDigest), 'running_web_mismatch');
+      task.platformFamily === 'Linux' && taskWeb.length === 1 && taskWeb[0].lastStatus === 'RUNNING' &&
+      taskWeb[0].healthStatus === 'HEALTHY' && digests.has(taskWeb[0].imageDigest), 'running_web_mismatch');
   }
   return running.tasks.length;
 }
@@ -218,29 +218,30 @@ async function verifyWeb(aws, deployment, context) {
 export async function release(deployment, {
   env = process.env, run = command, authenticate = authenticatedSmoke, now = Date.now,
 } = {}) {
+  let failed = false;
   try {
     const context = validateContext(env);
     validateDeployment(deployment, context);
     try { smokeConnectionArgs(env.PUBLIC_URL, env.CLOUDFRONT_DOMAIN); }
     catch { throw new ReleaseError('invalid_application_target'); }
     const directory = privateDirectory(env);
-    const aws = async (args, outputFile) => {
+    const aws = async (args, outputFile, timeout = 150_000) => {
       need(VERBS.has(args.slice(0, 2).join(' ')), 'forbidden_aws_operation');
       const commandArgs = [...args, '--region', REGION, '--output', 'json', '--no-cli-pager',
         '--cli-connect-timeout', '5', '--cli-read-timeout', '120'];
       if (outputFile) commandArgs.push(outputFile);
-      return json(await run('aws', commandArgs, { env }));
+      return json(await run('aws', commandArgs, { env, timeout }));
     };
     verifyCaller(await aws(['sts', 'get-caller-identity']), context);
     const webTasks = await verifyWeb(aws, deployment, context);
     let config = { schemaVersion: 1, mode: 'prepare', hostOnly: true, expectedAccountId: context.account };
     if (context.mode === 'collect') {
       const expected = deployment.inventory;
-      const config = await aws(['lambda', 'get-function-configuration', '--function-name', expected.sync_function_arn]);
-      need(config.FunctionName === expected.sync_function_name && config.FunctionArn === expected.sync_function_arn &&
-        config.CodeSha256 === expected.sync_code_sha256 && config.State === 'Active' &&
-        config.LastUpdateStatus === 'Successful' && Array.isArray(config.Architectures) &&
-        config.Architectures.length === 1 && config.Architectures[0] === 'arm64', 'inventory_code_mismatch');
+      const lambdaConfig = await aws(['lambda', 'get-function-configuration', '--function-name', expected.sync_function_arn]);
+      need(lambdaConfig.FunctionName === expected.sync_function_name && lambdaConfig.FunctionArn === expected.sync_function_arn &&
+        lambdaConfig.CodeSha256 === expected.sync_code_sha256 && lambdaConfig.State === 'Active' &&
+        lambdaConfig.LastUpdateStatus === 'Successful' && Array.isArray(lambdaConfig.Architectures) &&
+        lambdaConfig.Architectures.length === 1 && lambdaConfig.Architectures[0] === 'arm64', 'inventory_code_mismatch');
     }
     if (context.mode === 'collect') {
       const responseFile = join(directory, 'collection-response.json');
@@ -260,13 +261,32 @@ export async function release(deployment, {
     const configFile = join(directory, 'runtime-smoke.json');
     writePrivate(configFile, config);
     const credentials = readSmokeCredentials(env.SMOKE_CREDENTIAL_FILE);
+    const retried = new Map();
+    let retryFiles = 0;
+    const retryCollection = config.mode === 'verify' ? async types => {
+      need(Array.isArray(types) && types.length > 0 && types.length <= 8 &&
+        new Set(types).size === types.length && types.every(t => config.expectedQueuedTypes.includes(t)),
+      'invalid_collection_retry');
+      for (const type of types) {
+        need((retried.get(type) || 0) < 2, 'collection_retry_limit');
+        const remaining = Date.parse(config.collectionStartedAt) + 900_000 - now();
+        need(remaining > 0, 'collection_retry_timeout');
+        retried.set(type, (retried.get(type) || 0) + 1);
+        const output = join(directory, `collection-retry-${++retryFiles}.json`);
+        writePrivate(output, {});
+        const accepted = await aws(['lambda', 'invoke', '--function-name', deployment.inventory.sync_function_arn,
+          '--invocation-type', 'Event', '--cli-binary-format', 'raw-in-base64-out',
+          '--payload', JSON.stringify({ type })], output, Math.min(30_000, remaining));
+        need(accepted.StatusCode === 202 && !Object.hasOwn(accepted, 'FunctionError'), 'collection_retry_not_accepted');
+      }
+    } : undefined;
     let result;
     try {
       result = await authenticate({
         publicUrl: env.PUBLIC_URL, cloudfrontDomain: env.CLOUDFRONT_DOMAIN,
         email: credentials?.email, password: credentials?.password,
         runtimeConfig: readRuntimeSmokeConfig(configFile, env.SMOKE_CREDENTIAL_FILE),
-      }, { tempRoot: directory });
+      }, { tempRoot: directory, retryCollection });
     } catch (error) {
       throw new ReleaseError(error instanceof SmokeError ? error.message : 'authenticated_runtime_proof_failed');
     }
@@ -277,8 +297,12 @@ export async function release(deployment, {
       ? { status: 'ready', mode: 'verify', collected_types: config.expectedQueuedTypes.length, web_tasks: webTasks }
       : { status: 'prepared', mode: 'prepare', web_tasks: webTasks };
   } catch (error) {
+    failed = true;
     throw error instanceof ReleaseError ? error : new ReleaseError('runtime_release_failed');
-  } finally { cleanupSmokeCredentials(env.SMOKE_CREDENTIAL_FILE); }
+  } finally {
+    try { cleanupSmokeCredentials(env.SMOKE_CREDENTIAL_FILE); }
+    catch { if (!failed) throw new ReleaseError('private_cleanup_failed'); }
+  }
 }
 
 async function main() {

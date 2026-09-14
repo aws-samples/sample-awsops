@@ -9,7 +9,7 @@ Use Terraform 1.15.7 and both `scripts/v2/requirements-test.txt` and `scripts/v2
 python3 -m pytest -q scripts/v2/test_ci_*.py
 bash scripts/v2/terraform-test.sh
 python3 -m pytest -q scripts/v2/steampipe/test_host_scope.py
-node --test scripts/v2/ci/prepare-runtime-host.test.mjs
+node --test scripts/v2/ci/prepare-runtime-host.test.mjs scripts/v2/ci/runtime-release.test.mjs scripts/v2/ci/runtime-release.workflow.test.mjs
 ```
 
 ## Activation / 활성화
@@ -49,12 +49,11 @@ Every dev Deploy Web release now verifies the running web role/revision/digest, 
 inventory Lambda code, fresh completed collection, actual SSM/AgentCore/model access and
 owned Lambda/Fargate job completion. `verify_database` cannot disable this gate.
 The dev runtime profile also enables `ci_readiness_enabled`; Terraform creates only the
-verifier application group and the managed demo membership, with no admin/IAM role.
+verifier application group and managed demo membership only while AgentCore is enabled. Public CI rejects the readiness flag outside dev; no admin/IAM role is granted.
 
 모든 dev Deploy Web 배포는 실제 웹 역할·revision·digest, 수집 Lambda 코드, 최신 수집,
 SSM·AgentCore·모델 권한과 두 워커 완료를 검증합니다. 기존 입력으로 생략할 수 없습니다.
-프로필은 검증 플래그도 켜며, Terraform은 관리자·IAM 역할 없이 검증 그룹과 관리 demo의
-멤버십만 생성합니다.
+프로필은 검증 플래그도 켭니다. 공개 CI는 이 플래그를 dev에서만 허용하고, Terraform은 AgentCore가 켜져 있을 때만 검증 그룹·관리 demo 멤버십을 생성합니다. 관리자·IAM 역할은 부여하지 않습니다.
 
 For a new inactive stack, first apply the reviewed base plan so runtime_deployment exists;
 never disable an already-active profile to repeat bootstrap. Prepare the existing host,
@@ -76,8 +75,38 @@ promote the user to admin. Runtime retirement remains unsupported by this workfl
 prepare는 배포 성공이 아니며 수동 collect에는 배포된 image_sha가 필요합니다. 암호·관리자
 권한을 변경해 검증을 통과시키지 않습니다. 이 워크플로는 런타임 삭제를 지원하지 않습니다.
 
+### Existing stacks and rollback / 기존 스택과 롤백
+
+Before the first gated release, apply the reviewed runtime/readiness configuration, complete private migrations and provision the matching AgentCore image. This applies to existing stacks too. `Capture development runtime contract` validates feature flags **before** the image pin and ECS rollout; absent runtime features fail there. Actual access/data/worker proof still runs after rollout. Roll back to a reviewed prior image with these runtime prerequisites intact; there is no health-only escape or password reset.
+기존 스택도 첫 필수 검증 배포 전에 검토된 runtime/readiness 설정 적용·사설 migration·AgentCore provisioning을 완료한다. runtime contract 캡처는 이미지 pin·ECS rollout 전에 기능 플래그를 검사한다. 실제 접근·데이터·워커 검증은 rollout 후에도 필수다. 롤백은 런타임 전제조건을 유지한 채 검토된 이전 이미지를 사용하며 health-only 우회나 암호 재설정은 없다.
+
+### Collection contention / 수집 경합
+
+The controller retains the original pre-dispatch timestamp and waits up to 15 minutes for fresh complete collection. After a 60-second grace period, it may re-dispatch only acknowledged types whose latest ledger row is terminal and started before that timestamp: at most two retries per type, at least 60 seconds apart, batches capped at eight. Retries use `Event` invocation on the same code-checked sync function, have a 30-second request cap and stop within 15 minutes of dispatch. The scheduler is unchanged. Running or missing rows are not flooded with duplicates; fresh partial/failed runs and NULL/nonzero unknown coverage fail immediately. An accepted retry is not completion evidence. The standalone smoke without the callback retains its 10-minute window; the workflow's 30-minute gate bounds the whole verification.
+컨트롤러는 최초 dispatch 전 timestamp를 유지하고 최대 15분 동안 최신 완전 수집을 기다린다. 60초 유예 뒤 원장 최신 행이 종료 상태이며 시작 시각이 marker보다 오래된 승인 타입만 재요청한다. 타입당 최대 두 번·최소 60초 간격·한 번에 최대 여덟 개이며, 같은 검증된 sync 함수의 Event 호출만 사용한다. 요청은 30초 이내, 최초 dispatch 후 15분 이내로 제한하고 스케줄은 변경하지 않는다. running·누락 행에 중복을 쏟지 않으며 최신 partial/failed 또는 NULL·양수 unknown은 즉시 실패한다. 접수 응답은 완료 증거가 아니다. callback 없는 독립 smoke는 10분, workflow 전체 gate는 30분 제한을 유지한다.
+
+CI deliberately requires zero unknown attributes; the product may still display degraded inventory. There is no baseline/allowlist exception for release. Timeout means complete readiness was not established within the bound; inspect contention, throughput and permissions rather than accepting stale or incomplete data.
+제품은 degraded 인벤토리를 표시할 수 있지만 CI 수락 기준은 unknown 0이다. 배포용 baseline·allowlist 예외는 없다. timeout은 제한 시간 내 완전한 준비 상태를 입증하지 못했다는 뜻이며 오래되거나 불완전한 데이터를 허용하지 말고 경합·처리량·권한을 조사한다.
+
+### Deployer verification permissions / Deployer 검증 권한
+
+The configured dev deployer needs these scopes before the first gated release. They supplement the existing build/pin/roll permissions; this controller does not grant IAM. Replace placeholders with the independently configured account, deployment region and project. Never grant wildcard Lambda invocation to pass the gate.
+첫 필수 검증 배포 전 dev deployer에 아래 범위가 필요하다. 기존 build/pin/roll 권한과 구분하며 컨트롤러는 IAM을 부여하지 않는다. placeholder는 검증된 계정·리전·프로젝트로 바꾸고 gate 통과를 위해 Lambda 호출을 전체 리소스로 넓히지 않는다.
+
+| Action | Resource / condition |
+|---|---|
+| `ecr:BatchGetImage` | `arn:aws:ecr:<region>:<account>:repository/<project>-web` |
+| `ecs:DescribeServices` | `arn:aws:ecs:<region>:<account>:service/<project>/<project>-web` |
+| `ecs:DescribeTasks` | `arn:aws:ecs:<region>:<account>:task/<project>/*` |
+| `ecs:ListTasks` | `Resource: "*"`; `ArnEquals` `ecs:cluster` = `arn:aws:ecs:<region>:<account>:cluster/<project>` and deployment `aws:RequestedRegion` |
+| `ecs:DescribeTaskDefinition` | `Resource: "*"` with deployment `aws:RequestedRegion`; AWS defines no task-definition resource scope for this action |
+| `lambda:GetFunctionConfiguration`, `lambda:InvokeFunction` | `arn:aws:lambda:<region>:<account>:function:<project>-inv-sync` only, for initial dispatch and bounded retries |
+
+ListTasks is constrained by its cluster condition for this Fargate/service query; do not substitute task-definition ARNs for unsupported resource scoping. STS caller verification remains mandatory. An API failure means access is unverified, not permission to broaden grants. Scope references: `https://docs.aws.amazon.com/service-authorization/latest/reference/list_ecs.html` and `https://docs.aws.amazon.com/service-authorization/latest/reference/list_lambda.html`.
+ListTasks는 이 Fargate/service 조회에서 cluster 조건으로 제한하며 지원되지 않는 resource scope를 task-definition ARN으로 꾸미지 않는다. STS 호출자 검증도 필수다. API 실패는 접근 미검증이지 권한 확대 승인이 아니다.
+
 ## Related / 관련
 
 [CI setup/assets](dev-repo-setup.md) · [SQL reader](agent-sql-reader.md) · [Multi-account](onboard-target-account.md) · [Inventory rollback](steampipe-quota-and-staleness.md).
 Sources: `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `scripts/v2/ci/runtime-release.mjs`, `terraform/foundation/runtime-read-scope.tf`, `terraform/foundation/controller-readiness.tf`, `.github/workflows/terraform.yml`, `.github/workflows/collect-runtime.yml`, `.github/workflows/deploy-web.yml`.
-ADRs: 001, 002, 005, 007, 011, 016. Infrastructure apply is not live readiness proof. 인프라 적용만으로 실제 권한·수집·워커 검증을 통과한 것으로 처리하지 않는다.
+ADRs: ADR-001, ADR-002, ADR-005, ADR-007, ADR-011, ADR-016, ADR-017, ADR-021. Infrastructure apply is not live readiness proof. 인프라 적용만으로 실제 권한·수집·워커 검증을 통과한 것으로 처리하지 않는다.

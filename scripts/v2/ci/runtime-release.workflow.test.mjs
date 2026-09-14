@@ -34,6 +34,10 @@ test('all dev web releases require private preparation, contract capture and ful
   assert.ok(job.steps.indexOf(gate) > job.steps.indexOf(named(job, 'Wait for services-stable')));
   assert.ok(job.steps.indexOf(named(job, 'Capture development runtime contract')) <
     job.steps.indexOf(named(job, 'Clean restored terraform config off the runner')));
+  const capture = job.steps.indexOf(named(job, 'Capture development runtime contract'));
+  const mutations = job.steps.filter(step => /ecr put-image|ecs update-service/.test(step.run || ''));
+  assert.equal(mutations.length, 2);
+  assert.ok(mutations.every(step => capture < job.steps.indexOf(step)));
   assert.equal(named(job, 'Clean prepared demo credentials off the runner').if,
     "always() && github.ref == 'refs/heads/dev'");
 });

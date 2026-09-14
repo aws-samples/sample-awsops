@@ -239,10 +239,13 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
     variables = _variables(plan)
     rollout = variables.get("ci_runtime_rollout", False)
     profile = variables.get("ci_runtime_profile_enabled", False)
+    readiness = variables.get("ci_readiness_enabled", False)
     if variables.get("ci_runtime_retire", False) is not False:
         raise ValueError("Runtime retirement is not supported by this workflow")
-    if any(type(value) is not bool for value in (rollout, profile)):
+    if any(type(value) is not bool for value in (rollout, profile, readiness)):
         raise ValueError("Runtime operation metadata must be boolean")
+    if readiness and target != "dev":
+        raise ValueError("Deployment readiness is public dev-only")
     if profile and target != "dev":
         raise ValueError("The generated runtime profile is dev-only")
     if target == "dev" and variables.get("inventory_host_only") is True and not profile:

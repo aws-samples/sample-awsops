@@ -5,6 +5,7 @@ Single Terraform root for all v2 infra — one `foundation/` manages edge/auth/A
 AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
 
 ## Key Files (`foundation/`)
+- `controller-readiness.tf` — default-off, AgentCore-dependent verifier group and managed-demo membership for the public dev release gate.
 - `runtime-read-scope.tf` — default-off runtime rollout/host-only inventory controls, optional inventory/worker digests and the `runtime_deployment` identity output. IAM includes all known regions (including future opt-ins) and global-service reads;
   task/runtime IAM narrowing applies on the next apply to already-enabled stacks including main, independently of the dev profile; scopes are three web SSM parameters, runtime discovery/token actions, own-cluster task control and Claude-only models. This output describes configuration, not proof of effective permissions. The host-only renderer verifies STS and the account registry before rendering; Terraform omits
   only the collector cross-account grant. Agent MCP cross-account grants retain their existing behavior. Official MCP's conditional credential policy also permits GetWorkloadAccessToken only for the own default directory and external-obs
@@ -40,12 +41,14 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
 
 ## Flag Gates
 - CI always generates ignored `ci-runtime.auto.tfvars.json`; `CI_READONLY_RUNTIME_DEV=true` enables
-  inventory/AgentCore/workers and host-only inventory on dev. A manual full activation first
+  inventory/AgentCore/workers, host-only inventory and `ci_readiness_enabled` on dev. A manual full activation first
   verifies the deployed login and host registry. Saved profile metadata enforces read-only
   flags even without a discovery rollout. Default-false
   `ci_runtime_rollout` records explicit private-DNS activation in the saved plan.
 - `ci_readiness_enabled` in `ai.tf` defaults false. Its AgentCore output boolean controls the
-  provisioner's `DEPLOYMENT_READINESS_ENABLED`; it grants no Cognito group or IAM permission.
+  provisioner's `DEPLOYMENT_READINESS_ENABLED`. Public CI rejects this flag outside dev.
+  `controller-readiness.tf` creates the verifier group and managed-demo membership only when
+  AgentCore is also enabled; no administrator group or IAM role is granted.
 - `existing_cf_certificate_arn` / `existing_alb_certificate_arn` are nullable string inputs:
   JSON null retains Terraform-managed certificates; the string `"null"` does not. External
   ARNs must be operator-selected or already attached. Routine CI refuses managed-to-external

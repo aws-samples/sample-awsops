@@ -69,9 +69,10 @@ function readinessFailure(value, nonce, account) {
 }
 
 export async function verifyRuntimeSmoke(configuration, request, {
-  now = Date.now, wait = ms => delay(ms),
+  now = Date.now, wait = ms => delay(ms), retryCollection,
 } = {}) {
   const config = validateRuntimeSmokeConfig(configuration, now());
+  if (retryCollection !== undefined && typeof retryCollection !== 'function') fail('configuration');
   const { accounts } = await request('/api/accounts');
   if (!Array.isArray(accounts) || accounts.length > 1000
       || accounts.some(a => !object(a) || typeof a.enabled !== 'boolean' || typeof a.isHost !== 'boolean')
@@ -90,18 +91,22 @@ export async function verifyRuntimeSmoke(configuration, request, {
     fail(typeof phase === 'function' ? phase() : phase);
   }
   const started = Date.parse(config.collectionStartedAt);
+  const retries = new Map();
   let collectionFailure = 'collection_timeout';
   await poll(async () => {
     const summary = await request('/api/inventory/summary?accounts=self');
     const c = summary?.collection;
     if (!object(c) || c.configured !== true || c.readOk !== true || !Array.isArray(c.runs)) fail('collection_unavailable');
     let complete = true, missing = false;
-    const failures = new Set();
+    const failures = new Set(), staleTerminal = [];
     for (const type of config.expectedQueuedTypes) {
       const rows = c.runs.filter(r => r?.type === type && r.accountId === 'self');
       if (rows.length === 0) { missing = true; complete = false; continue; }
       if (rows.length !== 1) fail('collection_protocol');
       const row = rows[0];
+      if (['succeeded', 'partial', 'failed'].includes(row.status)
+          && Number.isFinite(Date.parse(row.started_at)) && Date.parse(row.started_at) < started)
+        staleTerminal.push(type);
       if (freshTime(row.started_at, started, now()) && ['partial', 'failed'].includes(row.status))
         failures.add(`collection_${row.status}`);
       if (row.status === 'succeeded' && freshTime(row.started_at, started, now())
@@ -114,9 +119,19 @@ export async function verifyRuntimeSmoke(configuration, request, {
     // Inspect every acknowledged type before selecting a fixed diagnostic.
     for (const reason of ['inventory_incomplete', 'collection_partial', 'collection_failed'])
       if (failures.has(reason)) fail(reason);
+    if (!complete && retryCollection) {
+      const eligible = staleTerminal.filter(type => {
+        const previous = retries.get(type);
+        return (previous?.count || 0) < 2 && now() >= (previous?.at ?? started) + 60_000;
+      }).slice(0, 8);
+      if (eligible.length) {
+        for (const type of eligible) retries.set(type, { count: (retries.get(type)?.count || 0) + 1, at: now() });
+        try { await retryCollection(eligible); } catch { fail('collection_retry_failed'); }
+      }
+    }
     collectionFailure = missing ? 'collection_missing' : 'collection_timeout';
     return complete;
-  }, () => collectionFailure, 600);
+  }, () => collectionFailure, retryCollection ? 900 : 600);
 
   let found = false;
   for (let offset = 0; offset < 500 && !found; offset += 5) {
