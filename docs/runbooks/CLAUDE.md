@@ -195,3 +195,10 @@ session; automatic plans publish no handoff. A successful attempt replaces its o
 ciphertext with a five-day nonsecret reference. Operators inspect through AWS profiles;
 apply requires reviewed_plan_sha256 and all original checks. S3 retention is not inferred
 from reference expiry. Public summaries remain advisory, never full-plan approval.
+
+Private-plan publication and apply both enter the branch environment; main publication
+requires production approval. Skip publication when the plan skips an unconfigured stack.
+Keep plan hashes out of public references/publication output; a privately obtained hash
+binds bytes but does not attest that a human read them. No S3 expiry is installed: the
+deployment owner uses the expired-attempt version-purge procedure after seven days.
+Apply cleanup removes only its current run/attempt scratch; runner loss can prevent it.

@@ -239,7 +239,8 @@ class PrivatePlanTests(unittest.TestCase):
         raw = Path(r['reference_file']).read_text()
         reference = json.loads(raw)
         self.assertEqual(reference['context'], self.fake.context)
-        self.assertEqual(reference['plan_sha256'], digest(self.fake.plan))
+        self.assertNotIn('plan_sha256', reference)
+        self.assertNotIn(digest(self.fake.plan), raw + json.dumps(r))
         self.assertEqual(reference['bucket_sha256'], digest(BUCKET.encode()))
         self.assertEqual(len(self.fake.objects), 3)
         for private in [BUCKET, ACCOUNT, ROLE, 'dev/terraform.tfstate', KEY, 'SYNTHETIC_PRIVATE_VALUE']:
@@ -248,7 +249,10 @@ class PrivatePlanTests(unittest.TestCase):
     def test_inspection_needs_no_ci_key_or_assets(self):
         r = self.ready()
         result = self.inspect(backend=self.backend)
-        self.assertEqual(result['plan_sha256'], r['plan_sha256'])
+        receipt = json.loads(Path(result['receipt_file']).read_text())
+        self.assertEqual(receipt['plan_sha256'], digest(self.fake.plan))
+        self.assertEqual(receipt['status'], 'inspected_not_approved')
+        self.assertNotIn('plan_sha256', result)
         self.assertEqual({p.name for p in (self.root / 'review').iterdir()}, {'plan.txt', 'plan.json', 'receipt.json'})
         self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in (self.root / 'review').iterdir()))
         self.assertEqual((self.root / 'review').stat().st_mode & 0o777, 0o700)
@@ -256,12 +260,16 @@ class PrivatePlanTests(unittest.TestCase):
         self.assertFalse((self.foundation / '.build').exists())
 
     def test_restore_uses_reviewed_hash_and_existing_asset_authentication(self):
-        r = self.ready()
+        self.ready()
+        inspected = self.inspect(backend=self.backend)
+        reviewed = json.loads(Path(inspected['receipt_file']).read_text())['plan_sha256']
+        self.fake.calls.clear()
         self.env.update(GITHUB_JOB='apply', GITHUB_RUN_ID='24')
         with self.assertRaises(self.module.PrivatePlanError):
             self.invoke('restore', backend=self.backend, foundation=self.foundation, reviewed_plan_sha256='0' * 64)
         self.assertFalse((self.foundation / 'tfplan').exists())
-        result = self.invoke('restore', backend=self.backend, foundation=self.foundation, reviewed_plan_sha256=r['plan_sha256'])
+        result = self.invoke('restore', backend=self.backend, foundation=self.foundation, reviewed_plan_sha256=reviewed)
+        self.assertEqual(result['plan_sha256'], reviewed)
         self.assertTrue(result['assets_verified'])
         self.assertEqual((self.foundation / 'tfplan').read_bytes(), self.fake.plan)
         self.assertEqual((self.foundation / '.build/function.zip').read_bytes(), b'exact signed Lambda bytes')
@@ -288,7 +296,7 @@ class PrivatePlanTests(unittest.TestCase):
         published = self.ready()
         self.env.update(GITHUB_JOB='apply', GITHUB_RUN_ID='24')
         restored = self.invoke('restore', backend=self.backend, foundation=self.foundation,
-                                reviewed_plan_sha256=published['plan_sha256'])
+                                reviewed_plan_sha256=digest(self.fake.plan))
         self.assertTrue(restored['assets_verified'])
         for name, (mode, content) in expected.items():
             self.assertEqual(stat.S_IMODE((self.foundation / name).stat().st_mode), mode)
@@ -458,7 +466,8 @@ class PrivatePlanTests(unittest.TestCase):
         result = self.ready()
         base = json.loads(Path(result['reference_file']).read_text())
         for change in [lambda r: r.update(bucket=BUCKET), lambda r: r['context'].update(attempt=True),
-                       lambda r: r.update(backend_sha256='0' * 64)]:
+                       lambda r: r.update(backend_sha256='0' * 64),
+                       lambda r: r.update(plan_sha256=digest(self.fake.plan))]:
             reference = copy.deepcopy(base)
             change(reference)
             self.fake.zip = zip_bytes([('reference.json', json.dumps(reference).encode())])
@@ -524,7 +533,7 @@ class PrivatePlanTests(unittest.TestCase):
         self.env.update(GITHUB_JOB='apply', GITHUB_RUN_ID='24', TF_PLAN_ENC_KEY='wrong-key')
         with self.assertRaises(self.module.PrivatePlanError):
             self.invoke('restore', backend=self.backend, foundation=self.foundation,
-                        reviewed_plan_sha256=result['plan_sha256'])
+                        reviewed_plan_sha256=digest(self.fake.plan))
         self.assertFalse((self.foundation / 'tfplan').exists())
 
     def test_asset_tar_links_cannot_be_published_even_in_a_digest_valid_encrypted_handoff(self):
@@ -577,7 +586,7 @@ class PrivatePlanTests(unittest.TestCase):
         inspected = self.inspect(backend=self.backend)
         document = json.loads((self.root / 'review/plan.json').read_text())
         self.assertEqual(document['planned_values']['root_module']['resources'][0]['values']['input'], 'private source content')
-        self.assertEqual(inspected['plan_sha256'], digest(self.fake.plan))
+        self.assertEqual(json.loads(Path(inspected['receipt_file']).read_text())['plan_sha256'], digest(self.fake.plan))
         self.assertFalse((self.foundation / '.build').exists())
         self.assertFalse(any('/assets-' in key for key in self.fake.downloaded))
 
@@ -646,5 +655,105 @@ class PrivatePlanTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.PrivatePlanError, 'attempt_mismatch'):
             self.module.execute('restore', repository=REPO, branch='dev', commit=SHA, run_id='23', scope='full',
                 env=self.env, transport=rerun_after_download, now=lambda: NOW,
-                backend=self.backend, foundation=self.foundation, reviewed_plan_sha256=result['plan_sha256'])
+                backend=self.backend, foundation=self.foundation, reviewed_plan_sha256=digest(self.fake.plan))
+
+    def test_reviewed_hash_is_checked_against_private_manifest_before_plan_download(self):
+        self.ready()
+        self.env.update(GITHUB_JOB='apply', GITHUB_RUN_ID='24')
+        self.change_manifest(lambda m: m['objects']['plan'].update(
+            sha256='0' * 64, key=self.module.prefix(self.fake.context) + 'plan-' + '0' * 64 + '.bin'))
+        with self.assertRaisesRegex(self.module.PrivatePlanError, 'reviewed_hash_mismatch'):
+            self.invoke('restore', backend=self.backend, foundation=self.foundation,
+                        reviewed_plan_sha256=digest(self.fake.plan))
+        self.assertTrue(any('/manifest-' in key for key in self.fake.downloaded))
+        self.assertFalse(any('/plan-' in key or '/assets-' in key for key in self.fake.downloaded))
+        self.assertFalse((self.foundation / 'tfplan').exists())
+
+    def test_ci_scratch_is_current_run_attempt_scoped_and_local_inspection_stays_random(self):
+        real = self.fake
+        seen = []
+        def observe(args, output, **kw):
+            path = Path(kw['env']['TMPDIR'])
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+            seen.append(path)
+            return real(args, output, **kw)
+        self.fake = observe
+        result = self.publish()
+        self.assertTrue(all(p.name.startswith('.private-plan-23-1-') for p in seen))
+        real.completed(result['reference_file'])
+        seen.clear()
+        self.env.update(GITHUB_JOB='apply', GITHUB_RUN_ID='24', GITHUB_RUN_ATTEMPT='3')
+        foreign = [self.foundation.parent / name for name in
+                   ['.private-plan-25-3-other-run', '.private-plan-24-4-other-attempt']]
+        for path in foreign:
+            path.mkdir(mode=0o700)
+            (path / 'keep').write_text('other operation')
+        self.invoke('restore', backend=self.backend, foundation=self.foundation,
+                    reviewed_plan_sha256=digest(real.plan))
+        self.assertTrue(all(p.parent == self.foundation.parent and p.name.startswith('.private-plan-24-3-') for p in seen))
+        self.assertTrue(all(not p.exists() for p in seen))
+        self.assertTrue(all((p / 'keep').read_text() == 'other operation' for p in foreign))
+        seen.clear()
+        self.inspect(backend=self.backend)
+        self.assertTrue(all(p.name.startswith('.private-plan-') and not p.name.startswith('.private-plan-24-3-') for p in seen))
+
+    def test_invalid_ci_scratch_identity_fails_before_commands_or_files(self):
+        for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT']:
+            for value in ['', '0', '../other', '1\n', '01']:
+                with self.subTest(name=name, value=value), mock.patch.dict(self.env, {name: value}):
+                    with self.assertRaisesRegex(self.module.PrivatePlanError, 'invalid_ci_context'):
+                        self.policy()
+                self.assertFalse(self.fake.calls)
+                self.assertFalse(list(self.root.glob('.private-plan-*')))
+
+    def test_s3_error_taxonomy_requires_exact_aws_verb_and_exception_envelope(self):
+        tool = self.root / 'tools'
+        tool.mkdir()
+        body = f'#!{sys.executable}\nimport os,sys\nsys.stderr.write(os.environ["ERROR_FIXTURE"])\nsys.exit(1)\n'
+        for name in ['aws', 'gh', 'git', 'terraform']:
+            path = tool / name
+            path.write_text(body)
+            path.chmod(0o700)
+        cases = [
+            ('aws', 'get-bucket-ownership-controls', 'OwnershipControlsNotFoundError', 'GetBucketOwnershipControls', 'bucket_ownership_missing'),
+            ('aws', 'get-public-access-block', 'NoSuchPublicAccessBlockConfiguration', 'GetPublicAccessBlock', 'bucket_public_access_block_missing'),
+            ('aws', 'get-bucket-policy-status', 'NoSuchBucketPolicy', 'GetBucketPolicyStatus', 'no_bucket_policy'),
+            ('aws', 'get-bucket-versioning', 'AccessDenied', 'GetBucketVersioning', 's3_access_denied'),
+            ('aws', 'get-object', 'AccessDeniedException', 'GetObject', 's3_access_denied'),
+            ('aws', 'head-object', 'NoSuchBucketPolicy', 'GetBucketPolicyStatus', 'command_failed'),
+            *[(name, 'get-bucket-policy-status', 'NoSuchBucketPolicy', 'GetBucketPolicyStatus', 'command_failed')
+              for name in ['gh', 'git', 'terraform']],
+        ]
+        for index, (exe, verb, code, operation, wanted) in enumerate(cases):
+            message = f'An error occurred ({code}) when calling the {operation} operation: SYNTHETIC_PRIVATE_VALUE\n'
+            with self.subTest(exe=exe, verb=verb):
+                with self.assertRaisesRegex(self.module.PrivatePlanError, '^' + wanted + '$'):
+                    self.module.run_command([exe, '--region', REGION, '--profile', 's3api', 's3api', verb],
+                        self.root / f'error-{index}', env={'PATH': str(tool), 'ERROR_FIXTURE': message}, timeout=5)
+        message = 'x' * 70000 + '\nAn error occurred (AccessDenied) when calling the GetObject operation: PRIVATE\n'
+        with self.assertRaisesRegex(self.module.PrivatePlanError, '^s3_access_denied$'):
+            self.module.run_command(['aws', 's3api', 'get-object'], self.root / 'long-error',
+                env={'PATH': str(tool), 'ERROR_FIXTURE': message}, timeout=5)
+
+    def test_artifact_clock_skew_is_bounded_without_extending_expiry(self):
+        self.ready()
+        original_created = self.fake.run['created_at']
+        for subject, offset in [('artifact', 60), ('artifact', 61), ('run', 60), ('run', 61)]:
+            future = '2026-09-14T10:01:' + ('00Z' if offset == 60 else '01Z')
+            self.fake.run['created_at'] = future if subject == 'run' else original_created
+            self.fake.artifact_changes = {
+                'created_at': future,
+                'expires_at': '2026-09-19T10:01:00Z',
+            }
+            if offset == 60:
+                self.assertEqual(self.inspect(backend=self.backend)['status'], 'inspected')
+                shutil.rmtree(self.root / 'review')
+            else:
+                with self.assertRaisesRegex(self.module.PrivatePlanError,
+                                             'source_expired' if subject == 'run' else 'artifact_expired'):
+                    self.inspect(backend=self.backend)
+        self.fake.run['created_at'] = original_created
+        self.fake.artifact_changes = {'expires_at': '2026-09-14T10:00:00Z'}
+        with self.assertRaisesRegex(self.module.PrivatePlanError, 'artifact_expired'):
+            self.inspect(backend=self.backend)
         self.assertFalse((self.foundation / 'tfplan').exists())

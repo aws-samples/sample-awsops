@@ -53,6 +53,59 @@ def test_private_publication_is_required_and_uses_a_scoped_protected_session():
     assert "terraform apply" not in str(publish)
 
 
+def test_unconfigured_stack_skips_publication_without_failing_manual_plan():
+    config = workflow()["jobs"]
+    assert config["plan"]["outputs"]["skip"] == "${{ steps.restore.outputs.skip }}"
+    gate = config["publish"]["if"]
+    assert "needs.plan.result == 'success'" in gate
+    assert "needs.plan.outputs.skip != '1'" in gate
+
+
+def test_apply_finalizer_removes_only_current_run_private_scratch(tmp_path):
+    foundation = tmp_path / "terraform/foundation"
+    foundation.mkdir(parents=True)
+    owned = foundation.parent / ".private-plan-123-2-fixture"
+    other = foundation.parent / ".private-plan-999-1-fixture"
+    owned.mkdir()
+    other.mkdir()
+    (owned / "tfplan").write_text("private fixture")
+    (other / "tfplan").write_text("other operation")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    step = named(workflow()["jobs"]["apply"], "Clean sensitive files off the runner")
+    assert step["if"] == "always()"
+    result = subprocess.run(["bash", "-c", step["run"]], cwd=foundation,
+                            env={**os.environ, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2",
+                                 "PRIVATE_PLAN_DIR": ""}, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert not owned.exists()
+    assert (other / "tfplan").read_text() == "other operation"
+
+
+@pytest.mark.parametrize("case", ["expired", "recent", "broad_prefix", "state_key", "unversioned", "truncated"])
+def test_documented_purge_preparation_rejects_unsafe_deletions(tmp_path, case):
+    document = (ROOT / "docs/runbooks/dev-repo-setup.md").read_text()
+    code = document.split('python3 - "$PLAN_PREFIX" "$PURGE_DIR" <<\'PY\'\n', 1)[1].split("\nPY", 1)[0]
+    prefix = "ci/tfplans/aws-samples/sample-awsops/dev/" + "a" * 40 + "/123/1/"
+    row = {"Key": prefix + "plan-" + "b" * 64 + ".bin", "VersionId": "fixture-version",
+           "LastModified": "2020-01-01T00:00:00Z"}
+    data = {"Versions": [row]}
+    if case == "recent":
+        row["LastModified"] = "2999-01-01T00:00:00Z"
+    elif case == "broad_prefix":
+        prefix = "ci/tfplans/"
+    elif case == "state_key":
+        row["Key"] = "state/terraform.tfstate"
+    elif case == "unversioned":
+        row["VersionId"] = "null"
+    elif case == "truncated":
+        data["NextToken"] = "more"
+    (tmp_path / "versions.json").write_text(json.dumps(data))
+    result = subprocess.run([sys.executable, "-c", code, prefix, str(tmp_path)],
+                            text=True, capture_output=True)
+    assert (result.returncode == 0) is (case == "expired")
+    assert (tmp_path / "delete.json").exists() is (case == "expired")
+
+
 @pytest.mark.parametrize("target,missing,expected", [
     ("main", None, ("PRIVATE_MAIN_ROLE", "PRIVATE_MAIN_BACKEND")),
     ("dev", None, ("PRIVATE_DEV_ROLE", "PRIVATE_DEV_BACKEND")),

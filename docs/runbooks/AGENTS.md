@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f185d7f7cc29 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 701e77bce71b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -153,9 +153,10 @@ legacy runbook's steps as the current operational path).
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
 - Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
 
-Private S3 plans use ci_private_plan.py and the existing protected deployer restricted to
-storage operations. No new IAM/bucket configuration is granted. Validate source/attempt,
-reference/manifest, pinned versions and hashes. Operator inspection needs IAM/KMS, no CI key;
-CI restore still requires asset HMAC and reviewed_plan_sha256 before original apply gates.
-Only manual plans publish; successful publication replaces ciphertext with a safe reference.
-Reference expiry is not S3 object deletion. Public summaries never replace private review.
+Private-plan runbook review: document branch-environment approval for publication and
+apply (including main plans), unconfigured-stack skips, and privately obtained byte hashes
+without claiming human review attestation. CI alone verifies asset HMAC. Public references
+and publication output must omit the plan hash. No S3 expiry is installed; the deployment
+owner purges expired attempt versions after seven days using the scoped runbook procedure.
+Current-run scratch cleanup is required, without a runner-loss guarantee. Public summaries
+never replace full private review.

@@ -34,6 +34,10 @@ BUCKET = re.compile(r'[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]')
 STORAGE = 's3-private-plan'
 BACKEND_KEYS = {'bucket', 'key', 'region', 'encrypt', 'use_lockfile',
                 'kms_key_id', 'workspace_key_prefix', 'workspace'}
+AWS_OPERATIONS = {'sts': {'get-caller-identity'}, 's3api': {
+    'list-buckets', 'get-bucket-location', 'get-public-access-block', 'get-bucket-versioning',
+    'get-bucket-ownership-controls', 'get-bucket-policy-status', 'get-bucket-encryption',
+    'head-object', 'get-object', 'put-object'}}
 
 
 class PrivatePlanError(ValueError):
@@ -92,8 +96,14 @@ def cleanup_owned(path):
 
 
 @contextmanager
-def scratch(parent):
-    path = Path(tempfile.mkdtemp(prefix='.private-plan-', dir=parent))
+def scratch(parent, env, *, ci):
+    prefix = '.private-plan-'
+    if ci:
+        ids = [env.get(key) for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT')]
+        require(all(isinstance(value, str) and re.fullmatch(r'[1-9][0-9]{0,19}', value)
+                    for value in ids), 'invalid_ci_context')
+        prefix += '-'.join(ids) + '-'
+    path = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
     failed = False
     try:
         yield path
@@ -108,11 +118,44 @@ def scratch(parent):
                 raise PrivatePlanError('cleanup_failed') from None
 
 
+def command_error(args, error):
+    """Recognize only the first AWS exception envelope for the invoked S3 verb."""
+    index = 1
+    while index < len(args) and args[index].startswith('--'):
+        flag = args[index]
+        if flag == '--no-cli-pager':
+            index += 1
+        elif flag in {'--region', '--endpoint-url', '--profile', '--output',
+                      '--cli-connect-timeout', '--cli-read-timeout'}:
+            index += 2
+        else:
+            return 'command_failed'
+    if (not args or args[0] != 'aws' or len(args) <= index + 1
+            or args[index] != 's3api' or args[index + 1] not in AWS_OPERATIONS['s3api']):
+        return 'command_failed'
+    match = re.search(rb'(?m)^An error occurred \(([A-Za-z0-9]+)\) when calling the ([A-Za-z0-9]+) operation:', error)
+    if not match:
+        return None
+    code, operation = (value.decode('ascii') for value in match.groups())
+    verb = args[index + 1]
+    if operation != ''.join(word.title() for word in verb.split('-')):
+        return 'command_failed'
+    if code in {'AccessDenied', 'AccessDeniedException'}:
+        return 's3_access_denied'
+    return {
+        ('get-bucket-ownership-controls', 'OwnershipControlsNotFoundError'): 'bucket_ownership_missing',
+        ('get-public-access-block', 'NoSuchPublicAccessBlockConfiguration'): 'bucket_public_access_block_missing',
+        ('get-public-access-block', 'NoSuchPublicAccessBlock'): 'bucket_public_access_block_missing',
+        ('get-bucket-policy-status', 'NoSuchBucketPolicy'): 'no_bucket_policy',
+    }.get((verb, code), 'command_failed')
+
+
 def run_command(args, output, *, cwd=None, env=None, limit=META_LIMIT, timeout=120):
     """Bound stdout and stderr while keeping all provider diagnostics private."""
     fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     process = None
     error = bytearray()
+    category = None
     end = time.monotonic() + timeout
     try:
         written = 0
@@ -132,13 +175,13 @@ def run_command(args, output, *, cwd=None, env=None, limit=META_LIMIT, timeout=1
                         written += len(data)
                         require(written <= limit, 'output_limit')
                     else:
-                        error.extend(data[:max(0, 65536 - len(error))])
-                        require(len(error) < 65536, 'command_failed')
+                        error.extend(data)
+                        if category is None:
+                            category = command_error(args, error)
+                        del error[:-65536]
             code = process.wait(timeout=max(0.01, end - time.monotonic()))
         if code:
-            if b'An error occurred (NoSuchBucketPolicy)' in error:
-                raise PrivatePlanError('no_bucket_policy')
-            raise PrivatePlanError('command_failed')
+            raise PrivatePlanError(category or 'command_failed')
     finally:
         if process is not None:
             if process.poll() is None:
@@ -323,7 +366,7 @@ class Operation:
         else:
             ci_plan_context.validate_run(run, repo, branch, commit)
         self.ctx = context(repo, branch, commit, run_id, scope, run['run_attempt'])
-        require(0 <= self.now() - timestamp(run.get('created_at')) <= 5 * 86400, 'source_expired')
+        require(-60 <= self.now() - timestamp(run.get('created_at')) <= 5 * 86400, 'source_expired')
         attempt = self.ctx['attempt']
         bound = self.gh(f'repos/{repo}/actions/runs/{run_id}/attempts/{attempt}')
         require(type(bound.get('id')) is int and type(bound.get('run_attempt')) is int
@@ -372,7 +415,7 @@ class Operation:
                 and isinstance(item.get('digest'), str) and re.fullmatch(r'sha256:[a-f0-9]{64}', item['digest']), 'artifact_invalid')
         created, expiry = timestamp(item.get('created_at')), timestamp(item.get('expires_at'))
         require(timestamp(run['created_at']) <= created <= self.now() + 60
-                and created <= self.now() < expiry and self.now() - created <= 5 * 86400
+                and self.now() < expiry and self.now() - created <= 5 * 86400
                 and 0 < expiry - created <= 5 * 86400 + 60, 'artifact_expired')
         wr = item.get('workflow_run', {})
         require(wr.get('id') == ctx['run_id'] and wr.get('head_sha') == ctx['commit']
@@ -402,11 +445,7 @@ class Operation:
         return result
 
     def aws(self, service, operation, *args):
-        allowed = {'sts': {'get-caller-identity'}, 's3api': {
-            'list-buckets', 'get-bucket-location', 'get-public-access-block', 'get-bucket-versioning',
-            'get-bucket-ownership-controls', 'get-bucket-policy-status', 'get-bucket-encryption',
-            'head-object', 'get-object', 'put-object'}}
-        require(operation in allowed.get(service, set()), 'forbidden_operation')
+        require(operation in AWS_OPERATIONS.get(service, set()), 'forbidden_operation')
         region = self.backend['region'] if self.backend else self.region
         endpoint = f"https://{'s3' if service == 's3api' else 'sts'}.{region}.amazonaws.com"
         cmd = ['aws', '--region', region, '--endpoint-url', endpoint, '--no-cli-pager',
@@ -583,24 +622,21 @@ class Operation:
         reference = {'schema': 1, 'storage': STORAGE, 'context': self.ctx,
                      'region': self.backend['region'], 'bucket_sha256': digest(self.backend['bucket'].encode()),
                      'backend_sha256': config['backend_sha256'],
-                     'manifest': {'sha256': manifest_entry['sha256'], 'bytes': manifest_entry['bytes']},
-                     'plan_sha256': objects['plan']['sha256']}
+                     'manifest': {'sha256': manifest_entry['sha256'], 'bytes': manifest_entry['bytes']}}
         return reference
 
     def receive(self, backend=None, reviewed=None):
         run = self.source(False)
         reference = parse_json(self.artifact(run, False)['reference.json'])
         require(exact(reference, ['schema', 'storage', 'context', 'region', 'bucket_sha256',
-                                  'backend_sha256', 'manifest', 'plan_sha256'])
+                                  'backend_sha256', 'manifest'])
                 and type(reference['schema']) is int and reference['schema'] == 1
                 and reference['storage'] == STORAGE and self.same_context(reference['context'])
                 and isinstance(reference['region'], str) and REGION.fullmatch(reference['region'])
-                and all(hashed(reference[k]) for k in ['bucket_sha256', 'backend_sha256', 'plan_sha256'])
+                and all(hashed(reference[k]) for k in ['bucket_sha256', 'backend_sha256'])
                 and exact(reference['manifest'], ['sha256', 'bytes'])
                 and hashed(reference['manifest']['sha256']) and positive(reference['manifest']['bytes'], SMALL_LIMIT),
                 'invalid_reference')
-        if reviewed is not None:
-            require(hashed(reviewed) and reviewed == reference['plan_sha256'], 'reviewed_hash_mismatch')
         self.region = reference['region']
         self.caller()
         expected_backend = parse_backend(backend, self.env) if backend else None
@@ -633,7 +669,8 @@ class Operation:
         self.backend = actual_backend
         for kind in ('plan', 'assets'):
             self.check_entry(manifest['objects'][kind], kind)
-        require(manifest['objects']['plan'].get('sha256') == reference['plan_sha256'], 'plan_binding_mismatch')
+        if reviewed is not None:
+            require(hashed(reviewed) and reviewed == manifest['objects']['plan']['sha256'], 'reviewed_hash_mismatch')
         return reference, manifest
 
 
@@ -673,7 +710,7 @@ def execute(mode, *, repository, branch, commit, run_id, scope, backend=None, ro
             require(destination is not None, 'invalid_arguments')
             destination = legacy.new_destination(destination)
             parent = destination.parent
-        with scratch(parent) as work:
+        with scratch(parent, env, ci=mode != 'inspect') as work:
             op = Operation(work, env, transport or run_command, now or time.time,
                            repository, branch, commit, run_id, scope, profile)
             if mode == 'policy':
@@ -688,8 +725,7 @@ def execute(mode, *, repository, branch, commit, run_id, scope, backend=None, ro
                 reference = op.publish(store, foundation)
                 finish_files(destination, {'reference.json': canonical(reference)})
                 created = destination
-                result = {'status': 'published', 'reference_file': str(destination / 'reference.json'),
-                          'plan_sha256': reference['plan_sha256']}
+                result = {'status': 'published', 'reference_file': str(destination / 'reference.json')}
             else:
                 if mode == 'restore':
                     op.ci_context(False)
@@ -705,13 +741,12 @@ def execute(mode, *, repository, branch, commit, run_id, scope, backend=None, ro
                         outputs[name] = op.command(['terraform', 'show', option, str(path)], 'render', cwd=foundation,
                             env_extra={'TF_DATA_DIR': str(foundation / '.terraform')}, limit=RENDER_LIMIT)
                     outputs['receipt.json'] = canonical({'schema': 1, 'context': op.ctx,
-                        'plan_sha256': reference['plan_sha256'], 'backend_sha256': reference['backend_sha256'],
+                        'plan_sha256': manifest['objects']['plan']['sha256'], 'backend_sha256': reference['backend_sha256'],
                         'status': 'inspected_not_approved'})
                     op.revalidate_source()
                     finish_files(destination, outputs)
                     created = destination
-                    result = {'status': 'inspected', 'receipt_file': str(destination / 'receipt.json'),
-                              'plan_sha256': reference['plan_sha256']}
+                    result = {'status': 'inspected', 'receipt_file': str(destination / 'receipt.json')}
                 else:
                     bundle = work / 'tfassets.tar.gz'
                     private_write(bundle, op.download(manifest['objects']['assets'], 'assets'))
@@ -728,7 +763,7 @@ def execute(mode, *, repository, branch, commit, run_id, scope, backend=None, ro
                         raise PrivatePlanError('asset_verification_failed') from None
                     (foundation / '.build').chmod(0o700)
                     result = {'status': 'restored', 'plan_file': str(foundation / 'tfplan'),
-                              'plan_sha256': reference['plan_sha256'], 'assets_verified': True}
+                              'plan_sha256': reviewed_plan_sha256, 'assets_verified': True}
         return result
     except BaseException as error:
         if created_plan is not None:

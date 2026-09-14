@@ -9,14 +9,17 @@ name: Terraform
 # override only dev (including PR base dev); CERTIFICATE_MODE_DEV defaults to
 # preserve. See docs/runbooks/dev-domain-rollout.md for the staged DNS gate.
 # Repo-level, not environment-scoped: the automatic plan job must run ungated
-# on PRs/pushes. Environments gate ONLY the dispatch-time apply. Until a
-# stack's secrets are populated, its plan skips with a warning.
+# on PRs/pushes. Environments gate manual private publication AND apply.
+# A main plan dispatch therefore waits for production approval before publication.
+# Until a stack's secrets are populated, its plan and publisher skip with a warning.
 # Fork-PR guard: plan runs only for same-repo PRs — GitHub already denies fork
 # runs secrets and id-token, and the fork's branch controls the workflow file
 # on pull_request events, so we don't even start the job for forks.
 #
-# Mutation gate: `plan` is automatic (PR/push) and read-only (ci-terraform-plan,
-# ReadOnlyAccess). `apply` is workflow_dispatch-only and applies the EXACT
+# Mutation gate: the `plan` JOB uses ci-terraform-plan/ReadOnlyAccess. A manual
+# plan DISPATCH also runs `publish`: it assumes the existing deployer role with
+# an S3/KMS-only inline session restriction, without workload mutation authority.
+# `apply` is workflow_dispatch-only and applies the EXACT
 # privately inspected S3 plan from the dispatch in `plan_run_id`, bound to
 # `reviewed_plan_sha256` and an authenticated GitHub reference —
 # automatic PR/push plans are advisory and cannot be applied —
@@ -86,6 +89,8 @@ defaults:
 jobs:
   plan:
     name: Plan
+    outputs:
+      skip: ${{ steps.restore.outputs.skip }}
     if: >-
       (github.event_name != 'workflow_dispatch' || inputs.mode == 'plan') &&
       (github.event_name != 'pull_request' ||
@@ -466,7 +471,7 @@ jobs:
   publish:
     name: Publish private plan
     needs: [plan]
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'plan' && needs.plan.result == 'success'
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'plan' && needs.plan.result == 'success' && needs.plan.outputs.skip != '1'
     runs-on: sample-awsops
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     timeout-minutes: 20
@@ -820,3 +825,4 @@ jobs:
         run: |
           rm -f tfplan tfplan.enc tfassets.tar.gz tfassets.enc terraform.tfvars backend.hcl
           [ -n "$(git ls-files -- .build)" ] || rm -rf .build
+          rm -rf -- ../.private-plan-"$GITHUB_RUN_ID"-"$GITHUB_RUN_ATTEMPT"-*

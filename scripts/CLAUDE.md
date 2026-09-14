@@ -13,7 +13,8 @@ secrets-manager) — installed by `make deps`.
   with a nonsecret reference. Operators use IAM/KMS, not the CI key; apply still verifies
   asset HMAC plus reviewed_plan_sha256, exact source/attempt/scope and existing gates.
   Local-only inspection reads the plan into new0700/0600 files; bounded bucket-hash discovery
-  reads no state. References last five days; S3 objects follow existing bucket retention.
+  reads no state. References last five days; no S3 expiry is configured. The operator purge procedure
+  removes expired attempt versions after seven days.
 - `v2/ci_plan_inspect.py` is the legacy encrypted-artifact inspector: it verifies plan-run identity, checkout SHA
   and the existing signed plan/assets before local private rendering. No backend init/apply;
   new 0700 destination with 0600 bounded outputs. It refuses execution inside Actions.
@@ -241,3 +242,10 @@ checks the host registry; optional hostOnly rejects members. Verify requires com
 fresh collection, real web-role runtime evidence and owned worker completion. The file
 is at most 16 KiB, collectionStartedAt at most 30 minutes old, and queued types unique
 with cloudfront included. The utility alone does not wire a deployment workflow.
+
+Private-plan publication and apply both enter the branch environment; main publication
+requires production approval. Skip publication when the plan skips an unconfigured stack.
+Keep plan hashes out of public references/publication output; a privately obtained hash
+binds bytes but does not attest that a human read them. No S3 expiry is installed: the
+deployment owner uses the expired-attempt version-purge procedure after seven days.
+Apply cleanup removes only its current run/attempt scratch; runner loss can prevent it.

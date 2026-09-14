@@ -79,9 +79,9 @@ mutation roles. Role-to-sub matrix:
 | Role | Used by | Trust `sub` | Permissions scope |
 |---|---|---|---|
 | `sample-awsops-ci-build` | main build (no environment) | StringEquals `repo:aws-samples/sample-awsops:ref:refs/heads/main` | prod ECR push |
-| `sample-awsops-ci-deployer` | main roll / apply / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway` |
+| `sample-awsops-ci-deployer` | main roll / apply / private-plan publication / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway` |
 | `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | dev + user stacks' ECR push |
-| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway` — **never production** |
+| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls/apply/private-plan publication, dev agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway` — **never production** |
 | `sample-awsops-ci-terraform-plan` | plan (PR/push incl. user-branch own-stack plans, read-only) | StringLike: `...:pull_request` + refs `main`, `dev`, `atomoh`, `ssminji`, `whchoi` | ReadOnlyAccess |
 | `sample-awsops-ci-review` | AI pr-review | StringEquals: verified subject prefix + environments `ci-review-auto` / `ci-review-recovery`, or legacy refs `main` / `dev`; no bare `pull_request` subject | Bedrock / Mantle policies — inspect actual permissions before approval |
 
@@ -91,7 +91,10 @@ roles must therefore trust the environment sub (pinning them to a branch ref
 makes every deploy fail AssumeRoleWithWebIdentity). Which branches can reach an
 environment is enforced by the environment's own deployment branch policy
 (`production` → main only; `development` → dev, atomoh, ssminji, whchoi).
-Build/plan jobs carry no environment and present branch-ref subs. Fork PRs can
+Build and read-only plan jobs carry no environment and present branch-ref subs.
+Manual plan dispatches also enter the branch environment for private publication:
+the existing deployer role is restricted by an S3/KMS-only session policy.
+Main publication waits for production approval, as does its separate apply dispatch. Fork PRs can
 never mint tokens (GitHub withholds id-token from forks) and `terraform.yml`
 skips non-same-repo PRs outright.
 
@@ -379,7 +382,7 @@ Saved plans and rendered assets can contain credentials. Manual plans use the co
 | Channel | Contents and conditions |
 |---|---|
 | `tfplan-<attempt>` | Initially an encrypted one-day handoff; successful publication overwrites it with only `reference.json` for five days. The reference has source/digest metadata, no bucket/account/ARN/version/private values. |
-| Private S3 | Exact plan and HMAC-authenticated assets, pinned versions/checksums and a private manifest. Existing bucket retention applies; reference expiry does not delete S3 objects or authorize stale apply. |
+| Private S3 | Exact plan and HMAC-authenticated assets, pinned versions/checksums and a private manifest. No S3 expiry is configured by this change; purge expired attempts using the procedure below. Reference expiry does not delete objects or authorize stale apply. |
 | `terraform-failure-<phase>-<attempt>` | One validated ciphertext file for an explicit failed/cancelled dispatch, five-day artifact retention. Local ciphertext is deleted only after confirmed upload success; failed/cancelled/skipped uploads retain it privately. |
 | Job log and step summary | Fixed command/capture/retention classifications, subsequent upload/cleanup status and numeric Terraform success action counts; no raw command output or arbitrary `Error:` text. Advisory PR/push failures are classified but retain no raw log. |
 
@@ -430,8 +433,10 @@ callers; this agreement is not proof of effective permissions or an independent 
 The distinct NAMES are the isolation: a dev/preview job can never fall back to the
 production pair. From then on, terraform changes flow through `terraform.yml`.
 Automatic PR/push plans are advisory. Apply requires a successful explicit `mode=plan`
-dispatch at the same repository, branch and SHA, followed by `mode=apply` with its run ID,
-gated by the branch's environment (`production` carries the reviewer approval). See §5
+dispatch at the same repository, branch and SHA, followed by `mode=apply` with its run ID
+and privately obtained `reviewed_plan_sha256`. Both publication and apply enter the branch's
+environment; main requires production approval for each dispatch. Publication assumes
+the deployer role under its required S3/KMS-only session restriction. See §5
 for DNS restrictions; the manual Terraform commands above alone do not enforce them.
 
 <a id="dev-db-diagnostics"></a>
@@ -885,7 +890,9 @@ asset HMAC verification remains mandatory inside publication and apply. The help
 refreshes, re-plans, approves or applies, and rejects execution inside GitHub Actions.
 
 After reviewing the complete plan, take `plan_sha256` from its private receipt and pass it
-as `REVIEWED_PLAN_SHA256`. The apply input is required even when all summary checks passed:
+as `REVIEWED_PLAN_SHA256`. The public reference contains no plan hash. This is explicit
+byte selection, not proof that a human read the plan; review is still an operator duty.
+The apply input is required even when all summary checks passed:
 
 ```bash
 REVIEWED_PLAN_SHA256=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plan_sha256"])' /private/review/new-plan-directory/receipt.json)
@@ -899,11 +906,79 @@ new DNS changes nor a different plan. Apply authenticates the reference, pinned 
 reviewed hash and existing HMAC/plan/asset binding before the original host, DNS/runtime and
 branch checks and `terraform apply -input=false tfplan`. It never re-plans. A newer attempt
 or changed plan requires a fresh private inspection. Reference lifetime is five days;
-private S3 copies follow the existing bucket policy and are not claimed to expire with it.
+S3 copies have no automatic expiry configured here. Follow the purge procedure below;
+reference expiry does not remove current or noncurrent S3 versions.
 
 Wrong context, unsafe paths, missing schemas, oversized/tampered data or failed cleanup
 produce fixed errors without printing private contents. Only owned scratch is cleaned;
 runner/process loss can prevent finalizers. No public summary is full-plan approval.
+
+| Diagnostic | Operator check |
+|---|---|
+| `bucket_ownership_missing` | Confirm explicit BucketOwnerEnforced ownership controls with the bucket owner; this workflow does not configure them. |
+| `bucket_public_access_block_missing` | Confirm the bucket's four public-access blocks; missing settings cannot establish private storage. |
+| `s3_access_denied` | Check the selected profile/session, expected bucket owner and scoped S3/KMS permissions privately. No missing-object or empty-state inference is valid. |
+
+These codes come only from the matching AWS S3 operation's exception envelope.
+Other command failures remain generic; provider text is not published. Apply finalizers
+remove only `.private-plan-<current-run>-<current-attempt>-*` under its Terraform directory.
+
+### Purge expired plan versions
+
+This change installs **no S3 lifecycle rule**. The deployment owner must remove expired
+attempts after seven days, including failed-publication orphans and noncurrent versions.
+The five-day GitHub reference is an apply limit, not storage expiry. Use the operator
+profile; publisher sessions deliberately cannot delete objects.
+
+Set `PLAN_BUCKET`, `PLAN_OWNER` and `PLAN_REGION` from the privately reviewed backend/account.
+Set `PLAN_PREFIX` to one expired attempt's exact
+`ci/tfplans/aws-samples/sample-awsops/<branch>/<commit>/<run>/<attempt>/` prefix.
+The following preparation rejects broader prefixes, truncated listings, unexpected names,
+unversioned entries and any version less than seven days old:
+
+```bash
+set -euo pipefail
+umask 077
+PURGE_DIR=$(mktemp -d "$HOME/awsops-plan-purge.XXXXXX")
+aws s3api list-object-versions --profile samples --region "$PLAN_REGION" \
+  --bucket "$PLAN_BUCKET" --expected-bucket-owner "$PLAN_OWNER" \
+  --prefix "$PLAN_PREFIX" --max-items 1000 > "$PURGE_DIR/versions.json"
+python3 - "$PLAN_PREFIX" "$PURGE_DIR" <<'PY'
+import datetime as dt, json, pathlib, re, sys
+prefix, root = sys.argv[1], pathlib.Path(sys.argv[2])
+assert re.fullmatch(r"ci/tfplans/aws-samples/sample-awsops/(main|dev|atomoh|ssminji|whchoi)/[0-9a-f]{40}/[1-9][0-9]*/[1-9][0-9]*/", prefix)
+data = json.loads((root / "versions.json").read_text())
+assert not data.get("NextToken") and not data.get("IsTruncated")
+rows = data.get("Versions", []) + data.get("DeleteMarkers", [])
+assert 0 < len(rows) <= 1000
+cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
+objects = []
+for row in rows:
+    assert re.fullmatch(re.escape(prefix) + r"(plan-[0-9a-f]{64}\.bin|assets-[0-9a-f]{64}\.tar\.gz|manifest-[0-9a-f]{64}\.json)", row["Key"])
+    assert isinstance(row.get("VersionId"), str) and row["VersionId"] not in ("", "null")
+    assert dt.datetime.fromisoformat(row["LastModified"].replace("Z", "+00:00")) < cutoff
+    objects.append({"Key": row["Key"], "VersionId": row["VersionId"]})
+(root / "delete.json").write_text(json.dumps({"Objects": objects, "Quiet": True}))
+print("Expired versions prepared:", len(objects))
+PY
+```
+
+Review the private candidate file against that expired attempt, then delete its versions:
+
+```bash
+aws s3api delete-objects --profile samples --region "$PLAN_REGION" \
+  --bucket "$PLAN_BUCKET" --expected-bucket-owner "$PLAN_OWNER" \
+  --delete "file://$PURGE_DIR/delete.json" > "$PURGE_DIR/delete-result.json"
+python3 - "$PURGE_DIR/delete-result.json" <<'PY'
+import json, sys
+assert not json.load(open(sys.argv[1])).get("Errors"), "Version purge incomplete"
+PY
+```
+
+List the same prefix again and confirm no versions or delete markers remain before
+removing the owned local directory. Retain failed cleanup evidence privately and resolve
+it; do not claim expiry from reference deletion or use a bucket-wide recursive delete.
+No state key is covered by this prefix.
 
 ### Legacy encrypted-artifact inspection
 
@@ -1226,9 +1301,12 @@ Other events fail before work. Existing explicit plan/apply dispatches retain th
 Real targeted plans omit untargeted Lambda resources from planned_values even when prior_state
 retains them; their old ZIPs are not required. Keep the known-planned-ZIP completeness check.
 The 0600 `tfassets.tar.gz` is private scratch, like the plaintext plan. It can contain rendered
-Cognito signing keys and **must never be uploaded**. The utility has no upload path; the integrating
-Terraform workflow encrypts it and cleans plaintext scratch; plan/apply now wire pack/restore,
-and Terraform layer provisioners use the locked installer.
+Cognito signing keys and must never be uploaded as plaintext to GitHub. Pack validation
+runs for all plans. Manual plans encrypt a one-day handoff; the protected publisher
+decrypts and verifies HMAC before uploading to private SSE-KMS S3. Apply downloads pinned
+private versions and re-verifies HMAC through `ci_private_plan.py restore`, without
+decrypting a public artifact. Normal finalizers clean owned plaintext scratch; process
+or runner loss can prevent cleanup. Terraform layer provisioners use the locked installer.
 
 From the repository root, test with `python3 -m pytest scripts/v2/test_ci_tf_assets.py -q`.
 The Terraform workflow supplies the secret without CLI arguments. Run from the foundation root,
@@ -1240,7 +1318,8 @@ cd terraform/foundation
 printf '%s' '{"steampipe_enabled":true,"workers_enabled":true}' | python3 ../../scripts/v2/ci_tf_assets.py prepare --scope full
 # After a reviewed tfplan exists; GITHUB_SHA and TF_PLAN_ENC_KEY must already be set:
 python3 ../../scripts/v2/ci_tf_assets.py pack --scope full
-# After the Terraform workflow encrypts/transports/decrypts both private files:
+# Local utility only: after obtaining the matching plan/archive and CI key privately.
+# CI apply uses ci_private_plan.py restore to authenticate S3 source, versions and HMAC:
 python3 ../../scripts/v2/ci_tf_assets.py restore --scope full
 python3 ../../scripts/v2/ci_tf_assets.py check-layer --layer inv_layer # only if inventory is enabled
 python3 ../../scripts/v2/ci_tf_assets.py check-layer --layer pg8000_layer # only if workers are enabled

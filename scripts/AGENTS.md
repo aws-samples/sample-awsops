@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 970041db265b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ff1d13e01f0c · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -156,3 +156,8 @@ reference/manifest, pinned versions and hashes. Operator inspection needs IAM/KM
 CI restore still requires asset HMAC and reviewed_plan_sha256 before original apply gates.
 Only manual plans publish; successful publication replaces ciphertext with a safe reference.
 Reference expiry is not S3 object deletion. Public summaries never replace private review.
+
+Publication and apply enter branch environments, including main plan approval. Preserve
+soft skips, private-only plan hashes and current-run scratch cleanup. Hashes bind bytes,
+not human review. No S3 expiry is installed; the runbook requires operator version purge
+after seven days. Finalizers do not guarantee cleanup after runner loss.
