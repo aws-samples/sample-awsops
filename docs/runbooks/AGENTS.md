@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f7a8150404e9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f40e6ce5316a · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -99,8 +99,9 @@ legacy runbook's steps as the current operational path).
 ## Conventions
 - Filename: `kebab-case.md`, domain-then-topic order.
 - Structure: symptoms → candidate causes → verification commands → action → related files/ADRs.
-- New or rewritten developer/runbook prose is English-only; preserve existing multilingual
-  backlog/anchors and the separate product-guide and root README/CHANGELOG policies.
+- New or rewritten runbook bodies and context files are English-only. Preserve facts
+  when maintaining old bilingual documents; do not require parallel translations.
+  Multilingual product guides remain under `docs-site/`.
 - Commands should be copy-paste ready; cite the related ADR number(s) at the bottom.
 - Do not let a runbook embed secrets, AWS account IDs, ARNs, or live domains.
 

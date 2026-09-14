@@ -153,9 +153,10 @@ The release reads the pinned inventory catalog and probes only CloudFront; it do
 ## Conventions
 - Filename: `kebab-case.md`, domain-then-topic order.
 - Structure: **symptoms → candidate causes → verification commands → action → related files/ADRs**.
-- New or rewritten developer/runbook prose is English-only. Preserve existing multilingual
-  backlog and anchors; product docs-site guides and root README/CHANGELOG retain their own
-  localization policies. Context files remain English-only.
+- New or rewritten runbook bodies and context files are English-only, as defined in
+  `docs/CLAUDE.md`. Preserve operational facts when maintaining an existing bilingual
+  body; do not restore parallel translations. Multilingual product guides remain
+  under `docs-site/`.
 - Commands should be copy-paste ready.
 - Cite the related ADR number(s) at the bottom.
 - Do not let a runbook embed secrets, AWS account IDs, ARNs, or live domains.
