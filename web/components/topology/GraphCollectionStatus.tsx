@@ -2,11 +2,36 @@
 
 import { useI18n } from '@/components/shell/LanguageProvider';
 
+export interface GraphCollectionSource {
+  sourceId: string;
+  status: string;
+  reasons?: string[];
+  itemCount?: number;
+  scope?: 'aggregate' | 'account';
+  windowStartMs?: number;
+  windowEndMs?: number;
+  capturedAtMs?: number | null;
+  lastSuccessAtMs?: number | null;
+}
+
+/** Additive wire contract; unknown API input is still normalized at the render boundary. */
 export interface GraphCollection {
   status: string;
   stale: boolean;
   retainedPrevious?: boolean;
-  sources?: { sourceId: string; status: string; reasons?: string[]; itemCount?: number }[];
+  sources?: GraphCollectionSource[];
+  publishedSources?: GraphCollectionSource[];
+  attempted_at?: string | null;
+  captured_at?: string | null;
+  evidenceKind?: 'inventory' | 'trace';
+  inputTruncated?: boolean;
+  graphTruncated?: boolean;
+  nodeDrops?: number;
+  edgeDrops?: number;
+  orphanSpans?: number;
+  invalidSpans?: number;
+  unresolvedMessaging?: number;
+  infraUnavailable?: boolean;
 }
 
 // Defensive compatibility with producers that supply collection metadata.
@@ -21,6 +46,11 @@ const COPY = {
     sourceCapture: '원본 행 수집 시각', lastSuccess: '최근 성공한 수집', inventoryEmpty: '성공한 수집의 그래프가 비어 있음',
     savedSources: '저장된 그래프의 원본', refresh: '최근 그래프 갱신 시도',
     sourceDetails: '원본 상세', limited: '처리 한도 초과 — 이전 그래프를 유지합니다.',
+    limitedPartial: '처리 한도로 인해 그래프 범위가 불완전합니다.', nodeDrops: '누락 노드', edgeDrops: '누락 엣지',
+    infraUnavailable: '인벤토리 정보를 사용할 수 없음', windowStart: '원본 조회 시작', windowEnd: '원본 조회 종료',
+    orphanSpans: '부모 또는 링크 미확인 스팬', invalidSpans: '잘못된 스팬', unresolvedMessaging: '메시징 연결 미확인 스팬',
+    attemptSources: '최근 시도 원본', savedSourceCount: '저장 원본',
+    counts: { ok: '성공', empty: '빈 결과', partial: '부분', unavailable: '미가용', error: '실패', unknown: '미확인' },
   },
   en: {
     ok: 'Latest collection succeeded', empty: 'No observations in this window', partial: 'Partial collection — coverage is incomplete',
@@ -30,6 +60,11 @@ const COPY = {
     sourceCapture: 'Source capture', lastSuccess: 'Last successful sweep', inventoryEmpty: 'Successful collection produced an empty graph',
     savedSources: 'Sources used by saved graph', refresh: 'Latest graph refresh attempt',
     sourceDetails: 'Source details', limited: 'Processing limit reached — previous graph retained.',
+    limitedPartial: 'Processing limit reached — graph coverage is incomplete.', nodeDrops: 'Nodes omitted', edgeDrops: 'Edges omitted',
+    infraUnavailable: 'Inventory context unavailable', windowStart: 'Source window start', windowEnd: 'Source window end',
+    orphanSpans: 'Unresolved span parents/links', invalidSpans: 'Invalid spans', unresolvedMessaging: 'Unresolved messaging spans',
+    attemptSources: 'Latest attempt sources', savedSourceCount: 'Saved sources',
+    counts: { ok: 'ok', empty: 'empty', partial: 'partial', unavailable: 'unavailable', error: 'failed', unknown: 'unknown' },
   },
   ja: {
     ok: '最新の収集に成功', empty: '対象期間に観測値なし', partial: '部分収集 — 全体の状態は未確認',
@@ -39,6 +74,11 @@ const COPY = {
     sourceCapture: '元データの収集時刻', lastSuccess: '最後に成功した収集', inventoryEmpty: '成功した収集のグラフは空です',
     savedSources: '保存されたグラフの元データ', refresh: '最新のグラフ更新試行',
     sourceDetails: '元データの詳細', limited: '処理上限に到達 — 以前のグラフを保持します。',
+    limitedPartial: '処理上限によりグラフの範囲は不完全です。', nodeDrops: '省略ノード', edgeDrops: '省略エッジ',
+    infraUnavailable: 'インベントリ情報を利用できません', windowStart: '元データの照会開始', windowEnd: '元データの照会終了',
+    orphanSpans: '親またはリンク未解決のスパン', invalidSpans: '無効なスパン', unresolvedMessaging: '接続先未解決のメッセージングスパン',
+    attemptSources: '最新試行のソース', savedSourceCount: '保存済みソース',
+    counts: { ok: '成功', empty: '空', partial: '部分', unavailable: '利用不可', error: '失敗', unknown: '不明' },
   },
   zh: {
     ok: '最近一次采集成功', empty: '查询时间范围内无观测值', partial: '部分采集 — 覆盖范围不完整',
@@ -48,6 +88,11 @@ const COPY = {
     sourceCapture: '源数据采集时间', lastSuccess: '最后成功采集', inventoryEmpty: '成功采集的图为空',
     savedSources: '已保存图使用的源数据', refresh: '最近一次图刷新尝试',
     sourceDetails: '源数据详情', limited: '达到处理上限 — 保留上一次的图。',
+    limitedPartial: '达到处理上限 — 图的覆盖范围不完整。', nodeDrops: '省略节点', edgeDrops: '省略边',
+    infraUnavailable: '资产清单上下文不可用', windowStart: '源查询开始', windowEnd: '源查询结束',
+    orphanSpans: '父级或链接未解析的跨度', invalidSpans: '无效跨度', unresolvedMessaging: '消息目标未解析的跨度',
+    attemptSources: '最新尝试的数据源', savedSourceCount: '已保存的数据源',
+    counts: { ok: '成功', empty: '空', partial: '部分', unavailable: '不可用', error: '失败', unknown: '未知' },
   },
 };
 const record = (value: unknown): Record<string, unknown> =>
@@ -61,7 +106,12 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
   const data = record(collection);
   const status = statusOf(data.status);
   const retained = data.retainedPrevious === true;
-  const warning = data.stale === true || retained || ['partial', 'unavailable', 'error'].includes(status);
+  const losses = (['nodeDrops', 'edgeDrops', 'orphanSpans', 'invalidSpans', 'unresolvedMessaging'] as const).filter(key =>
+    typeof data[key] === 'number' && Number.isSafeInteger(data[key]) && (data[key] as number) > 0);
+  const limited = data.inputTruncated === true || data.graphTruncated === true
+    || losses.some(key => key === 'nodeDrops' || key === 'edgeDrops');
+  const warning = data.stale === true || retained || limited || losses.length > 0 || data.infraUnavailable === true
+    || ['partial', 'unavailable', 'error'].includes(status);
   const sources = Array.isArray(data.sources) ? data.sources.map(record) : [];
   const published = retained && Array.isArray(data.publishedSources) ? data.publishedSources.map(record) : [];
   const counts = sources.reduce<Record<string, number>>((result, source) => {
@@ -69,11 +119,15 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
     result[key] = (result[key] ?? 0) + 1;
     return result;
   }, {});
-  const sourceTimes = (source: Record<string, unknown>) => (['capturedAtMs', 'lastSuccessAtMs'] as const).map(key => {
+  const clockLabels = {
+    capturedAtMs: copy.sourceCapture, lastSuccessAtMs: copy.lastSuccess,
+    windowStartMs: copy.windowStart, windowEndMs: copy.windowEnd,
+  };
+  const sourceTimes = (source: Record<string, unknown>) => (Object.keys(clockLabels) as (keyof typeof clockLabels)[]).map(key => {
     const value = source[key];
     if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 8640000000000000) return null;
     const iso = new Date(value).toISOString();
-    return <span key={key} className="block">{key === 'capturedAtMs' ? copy.sourceCapture : copy.lastSuccess}
+    return <span key={key} className="block">{clockLabels[key]}
       {' · '}<time dateTime={iso}>{new Date(value).toLocaleString()}</time></span>;
   });
   return (
@@ -82,7 +136,9 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
         ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-ink-200 bg-card text-ink-600'}`}>
       <p className="font-medium">{status === 'empty' && data.evidenceKind === 'inventory' ? copy.inventoryEmpty : copy[status]}{data.stale === true ? ` · ${copy.stale}` : ''}</p>
       {retained && <p className="mt-1">{copy.retained}</p>}
-      {(data.inputTruncated === true || data.graphTruncated === true) && <p>{copy.limited}</p>}
+      {limited && <p>{retained ? copy.limited : copy.limitedPartial}</p>}
+      {losses.map(key => <p key={key}>{copy[key]}: {String(data[key])}</p>)}
+      {data.infraUnavailable === true && <p>{copy.infraUnavailable}</p>}
       {(['attempted_at', 'captured_at'] as const).map(key => {
         const value = data[key];
         return typeof value === 'string' && Number.isFinite(Date.parse(value))
@@ -91,8 +147,11 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
       })}
       {sources.length + published.length > 0 && <details className="mt-1">
         <summary className="cursor-pointer break-words font-medium">
-          {copy.sourceDetails} ({sources.length})
-          {STATUSES.filter(key => counts[key]).map(key => <span key={key}> · {counts[key]} {copy[key]}</span>)}
+          {copy.sourceDetails} ({sources.length + published.length})
+          {sources.length > 0 && <span> · {copy.attemptSources}: {sources.length}
+            {STATUSES.filter(key => counts[key]).map(key => <span key={key}> · {counts[key]} {copy.counts[key]}</span>)}
+          </span>}
+          {published.length > 0 && <span> · {copy.savedSourceCount}: {published.length}</span>}
         </summary>
         <div data-source-details className="max-h-[18vh] overflow-y-auto overscroll-contain">
       {sources.length > 0 && <ul className="mt-1 space-y-1">

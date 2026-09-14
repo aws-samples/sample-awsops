@@ -183,3 +183,50 @@ application, without guaranteeing cancellation of a server query already started
 | `/api/security` | GET | 보안 findings (`inventory_resources` 파생, read-only) + ECR 이미지 스캔 CVE(라이브, 실패 시 빈 탭) — `accounts` 파라미터 해석(`__all__` 포함) | verifyUser |
 | `/api/security/refresh` | POST | 보안 관련 인벤토리 타입 재동기화 | verifyUser |
 | `/api/stream` | GET | SSE 스트림 | 없음 |
+
+
+## Configuration topology inventory evidence
+
+`/api/inventory/{type}` returns scoped row captures and a self-keyed `run` describing
+an aggregate sweep across connected accounts. The configuration page labels aggregate
+status under every account scope, separately from inventory read failures. A successful
+sweep is not per-account health proof; member clocks never borrow aggregate last-success.
+Only RUNNING ECS tasks with subnet/VPC corroboration establish current IP ownership.
+Ordinary EKS pod-IP ambiguity removes attribution without implying a failed read.
+
+## Trace collection disclosure
+
+The `GraphCollection` / `GraphCollectionSource` TypeScript contract is defined in
+`web/components/topology/GraphCollectionStatus.tsx`; runtime input is still normalized.
+Trace `sources[].windowStartMs/windowEndMs` identify the source query window, separately
+from top-level `attempted_at/captured_at` and optional source capture/last-success clocks.
+Positive `nodeDrops/edgeDrops/orphanSpans/invalidSpans/unresolvedMessaging` and
+`infraUnavailable` remain visible for older persisted envelopes as well as newer producer flags.
+Only node/edge drops or explicit truncation flags imply a processing limit; malformed spans
+and unresolved parent/link/messaging evidence are distinct partial-result causes. Losses alone do not prove retention:
+`retainedPrevious` is required for that claim. Source-detail totals include saved sources, with latest-attempt status counts labeled separately.
+Missing collection metadata stays unknown rather than implying collector failure.
+
+
+## Graph collection metadata
+
+`GET /api/graph` returns an optional `collection` envelope. The shared TypeScript
+contract is `GraphCollection` / `GraphCollectionSource` in
+`web/components/topology/GraphCollectionStatus.tsx`; the renderer also validates unknown
+runtime payloads for compatibility with older or malformed responses.
+
+| Fields | Meaning |
+| --- | --- |
+| `status`, `stale`, `retainedPrevious` | Collection result and snapshot age/retention; a retained graph does not establish current traffic. Missing metadata stays unknown. |
+| `attempted_at`, `captured_at` | Latest graph attempt and saved publication clocks, serialized as timestamps; neither substitutes for the source query window. |
+| `sources[].sourceId/status/reasons/itemCount` | Per-source collection result and bounded reason vocabulary. |
+| `sources[].windowStartMs/windowEndMs` | Actual trace query window, in epoch milliseconds; displayed independently of publication time. |
+| `nodeDrops`, `edgeDrops`, `orphanSpans`, `invalidSpans`, `unresolvedMessaging`, `infraUnavailable` | Existing trace loss counters and unavailable inventory context; span/messaging problems are distinct from processing limits. Positive losses are visible even for older rows without newer truncation flags. Loss alone does not imply that a previous graph was retained. |
+| `evidenceKind`, `inputTruncated`, `graphTruncated` | Optional additive producer metadata; `inventory` changes the empty-result wording, and truncation is disclosed conservatively. |
+| `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Optional source scope/capture/sweep clocks and saved-source provenance used by the graph-publication companion. Absent fields are not fabricated. |
+
+The UI supports the existing trace envelope and optional inventory/saved-source
+fields emitted by the bounded publication implementation in `web/lib/graph-store.ts`.
+Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded; their count
+includes saved-source entries. Runtime, Lambda and migration rollout remain separate
+from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
