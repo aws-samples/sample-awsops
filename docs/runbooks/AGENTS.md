@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a5ab89db1e67 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: db3a68e5cead · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -22,6 +22,10 @@ legacy runbook's steps as the current operational path).
   Preserve three-field stdout with no history API. Recovery requires independently retained
   source/digest evidence and owned run/attempt cleanup; migration/preflight assertions
   come from verified job outputs, never dispatch inputs.
+  IMAGE_PROJECT comes from authenticated branch Terraform/verified job output and independent
+  ECR/cluster/service checks. Existing broad IAM is not stack authority: one verified repo
+  per operation, exact repo ARNs for new grants. Distinguish publication/provider failures
+  from invalid candidates and document completed-producer/superseded-push handling.
   Provider subprocesses disable AWS config files, isolate GH config and filter endpoint/profile/model/provider/CA/proxy
   overrides, retain explicit exported auth, and keep signed curl URLs in private stdin.
   Multi-tag digest reads require consistent identities and identical manifest bytes/media.

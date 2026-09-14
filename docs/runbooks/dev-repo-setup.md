@@ -89,7 +89,7 @@ mutation roles. Role-to-sub matrix:
 | `sample-awsops-ci-build` | main build (no environment) | StringEquals `repo:aws-samples/sample-awsops:ref:refs/heads/main` | prod ECR push |
 | `sample-awsops-ci-deployer` | main roll / apply / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway` |
 | `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | dev + user stacks' ECR push |
-| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway` — **never production** |
+| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | Development/preview workflow targets; current `AdministratorAccess` baseline includes wider account access, so authenticated branch/stack checks are required |
 | `sample-awsops-ci-terraform-plan` | plan (PR/push incl. user-branch own-stack plans, read-only) | StringLike: `...:pull_request` + refs `main`, `dev`, `atomoh`, `ssminji`, `whchoi` | ReadOnlyAccess |
 | `sample-awsops-ci-review` | AI pr-review | StringEquals: verified subject prefix + environments `ci-review-auto` / `ci-review-recovery`, or legacy refs `main` / `dev`; no bare `pull_request` subject | Bedrock / Mantle policies — inspect actual permissions before approval |
 
@@ -406,8 +406,8 @@ gh secret set TF_TFVARS_DEV -R aws-samples/sample-awsops \
   --body "$(base64 -w0 terraform/foundation/terraform.tfvars)"
 ```
 
-The secret `AWS_ACCOUNT_ID_DEV` is required for configured development and preview stacks.
-The configured role and STS caller must match it before AWS reads/writes. A missing backend
+Store `AWS_ACCOUNT_ID_DEV` as a repository-wide secret identifying the shared development
+and preview account. Those stacks' configured role and STS caller must match it before AWS reads/writes. A missing backend
 may skip an advisory plan; missing account verification on a configured stack fails.
 
 The preparatory [web image provenance helper](web-image-provenance.md) additionally requires
@@ -648,13 +648,19 @@ owner. The application workflow does not grant IAM. See the
 [AgentCore reconciliation contract](../reference/05-agentcore.md#provisioner-reconciliation).
 
 The deploy jobs re-point `:web-latest` at the approved `web-<sha>` before rolling,
-so each deployer role needs `ecr:BatchGetImage` + `ecr:PutImage` scoped to its own
-stack's web ECR repository (plus the auth-token action it already has).
+so the selected role needs `ecr:BatchGetImage` + `ecr:PutImage` on the verified
+branch stack's web ECR repository (plus the auth-token action it already has).
+The samples dev deployer's current `AdministratorAccess` baseline and the build
+role's CI-account repository-wide ECR policy are broader than one stack; they do
+not establish branch-to-stack authority. Each operation must target exactly the
+independently verified stack repository. Scope any new ECR grants to that repository's ARN.
 Future wiring of the [web provenance helper](web-image-provenance.md) additionally
 requires repository-scoped `ecr:GetDownloadUrlForLayer` for digest-bound ARM64 config
 verification. Its producer and receipt-consuming jobs need `actions: read`; the
 producer uses its ci-build role, while promotion uses the deployer role. The
-currently unwired helper grants none of these permissions.
+currently unwired helper grants none of these permissions. Its `IMAGE_PROJECT`
+must come from branch-selected authenticated Terraform outputs or a verified
+job output derived from them, with ECR/cluster/service cross-checks, never dispatch input.
 
 Backend image builds require additional **repository scopes**, which the web grants above do not establish. Verify the configured roles before using the runtime build workflows:
 

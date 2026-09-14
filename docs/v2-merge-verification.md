@@ -46,9 +46,13 @@ Use Node.js 20 (CI and web runtime; migration runtime image uses 22), Python 3.1
 and a reachable Docker daemon. Install dependencies from the repository root. The private
 migration suites use locked `pg` and AWS SDK dependencies from `scripts/v2/package-lock.json`.
 The web connection-phase suite uses the locked driver and TypeScript from `web/`.
+The required web-image helper suite also needs Linux `/proc` and curl installed
+on its fixed provider PATH, `/usr/local/bin:/usr/bin:/bin`; its network fixture is localhost-only.
 CI·웹 런타임 Node 20(migration 런타임 이미지 22)·Python 3.12·curl·OpenSSL·jq·Terraform **1.15.7**·접근 가능한 Docker를
 준비한다. private migration 테스트는 `scripts/v2`의 잠긴 `pg`·AWS SDK 의존성을,
 웹 연결 단계 테스트는 `web/`의 잠긴 드라이버·TypeScript를 사용한다.
+필수 웹 이미지 도우미 테스트에는 Linux `/proc`와 고정 provider PATH
+`/usr/local/bin:/usr/bin:/bin`의 curl도 필요하며, 네트워크 fixture는 localhost만 사용한다.
 
 ```bash
 (cd web && npm ci)

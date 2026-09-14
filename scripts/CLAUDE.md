@@ -21,6 +21,12 @@ secrets-manager) — installed by `make deps`.
   Digest reads may return identical rows for multiple tags; reject conflicting row evidence.
   Recognized non-success producer jobs skip timestamp checks; successful jobs still require
   the artifact window. Stdout stays `{digest, image_sha, rollback}`; recovery evidence is caller-owned.
+  `IMAGE_PROJECT` requires branch-selected authenticated Terraform/verified job output, never
+  dispatch input. Each operation targets one verified stack repo; broad CI-account IAM is
+  not stack authority. Publication failure is distinct from candidate validation and may
+  succeed only after an independent equal-effect tag check. Manifests use owned 0600 files;
+  ZIP payload reads are bounded and attestations must reference the verified ARM64 child.
+  Provider operation labels are diagnostic only; shared command support for ECS/STS remains.
   `v2/test_ci_web_image.py` tests the contract; jq is required for compare projection.
   See `docs/runbooks/web-image-provenance.md` for future receipt-step names, inputs and
   expiry/rollback limits. Operator CI publication adds no ADR-005 exception or IAM grant.

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8ed3be52b45a · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: de0437bccd43 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -21,6 +21,11 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   must agree on identity, raw manifest and media.
   Check recognized producer conclusions before timestamps; skip non-success jobs without
   suppressing another successful receipt. Three-field stdout adds no recovery history.
+  Project selection requires authenticated branch Terraform/verified job output, never inputs.
+  Target one verified stack repo per operation; broad IAM is not branch/stack authority.
+  Unconfirmed publication is a provider/retry diagnosis, not a rebuild signal; retain equal-effect
+  confirmation. Use 0600 manifest files, bounded ZIP reads and ARM-child attestation references.
+  Operation labels do not restrict the shared consumer's ECS/STS calls.
   Child PATH is `/usr/local/bin:/usr/bin:/bin`, ignoring caller additions; HOME is omitted, never reassigned.
   No manually assembled publishing chain. `test_ci_web_image.py` requires jq; the future
   receipt steps, main account prerequisite and recovery limits are documented in

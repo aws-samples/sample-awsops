@@ -36,6 +36,18 @@ LAYER_MEDIA = {"application/vnd.docker.image.rootfs.diff.tar.gzip",
                "application/vnd.oci.image.layer.v1.tar",
                "application/vnd.oci.image.layer.v1.tar+gzip",
                "application/vnd.oci.image.layer.v1.tar+zstd"}
+# Diagnostic labels only: command() also serves the consumer's ECS/STS calls.
+AWS_OPERATION_LABELS = {
+    ("sts", "get-caller-identity"): "sts:GetCallerIdentity",
+    ("ecr", "batch-get-image"): "ecr:BatchGetImage",
+    ("ecr", "get-download-url-for-layer"): "ecr:GetDownloadUrlForLayer",
+    ("ecr", "put-image"): "ecr:PutImage",
+    ("ecs", "update-service"): "ecs:UpdateService",
+    ("ecs", "describe-services"): "ecs:DescribeServices",
+    ("ecs", "list-tasks"): "ecs:ListTasks",
+    ("ecs", "describe-tasks"): "ecs:DescribeTasks",
+    ("ecs", "describe-task-definition"): "ecs:DescribeTaskDefinition",
+}
 
 
 class ImageError(Exception):
@@ -96,16 +108,18 @@ def command(args, *, binary=False, stdin_payload=None):
     require(args[0] != "curl" or args[:2] == ["curl", "-q"], "Default curl configuration is forbidden")
     require(stdin_payload is None or (args[:4] == ["curl", "-q", "-K", "-"]
             and isinstance(stdin_payload, bytes)), "Only explicit curl configuration may use stdin")
+    label = (AWS_OPERATION_LABELS.get(tuple(args[1:3]), "aws") if args[0] == "aws"
+             else {"gh": "github:api", "curl": "curl:config-download"}[args[0]])
     try:
         with tempfile.TemporaryDirectory(prefix="web-image-config-") as config_dir:
             input_options = {"stdin": subprocess.DEVNULL} if stdin_payload is None else {"input": stdin_payload}
             result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     timeout=90, check=True, env=child_environment(args[0], config_dir),
                                     **input_options)
-        require(len(result.stdout) <= 1024 * 1024, "Oversized provider response")
+        require(len(result.stdout) <= 1024 * 1024, f"Oversized provider response [{label}]")
         return result.stdout if binary else json.loads(result.stdout)
     except (subprocess.SubprocessError, OSError, ValueError):
-        raise ImageError("Image provenance provider request failed") from None
+        raise ImageError(f"Image provenance provider request failed [{label}]") from None
 
 
 def github(path, binary=False):
@@ -155,7 +169,8 @@ def validate_producing_job(job, receipt, artifact):
             and job.get("head_sha") == receipt["sha"] and job.get("name") == BUILD_JOB
             and job.get("status") == "completed",
             "Receipt must belong to a completed matching build job")
-    require(job.get("conclusion") in {"success", "failure", "cancelled", "timed_out", "skipped", "neutral", "action_required"},
+    require(job.get("conclusion") in {"success", "failure", "cancelled", "timed_out", "skipped",
+                                     "neutral", "action_required", "stale", "startup_failure"},
             "Producing job has an unknown conclusion")
     if job["conclusion"] != "success":
         return False
@@ -180,7 +195,10 @@ def receipt_from_archive(data, artifact):
                     and 0 < entries[0].file_size <= 4096
                     and stat.S_IFMT(entries[0].external_attr >> 16) in (0, stat.S_IFREG),
                     "Invalid build artifact contents")
-            return json.loads(archive.read(entries[0]))
+            with archive.open(entries[0]) as receipt_file:
+                body = receipt_file.read(4097)
+            require(0 < len(body) <= 4096, "Invalid build artifact contents")
+            return json.loads(body)
     except (ValueError, OSError, zipfile.BadZipFile, RuntimeError):
         raise ImageError("Invalid build artifact") from None
 
@@ -367,7 +385,7 @@ def verify_arm_image(repository, image, account, aws):
         entries = body.get("manifests")
         require(isinstance(entries, list) and 0 < len(entries) <= 20
                 and "config" not in body and "layers" not in body, "Invalid image index")
-        arm = []
+        arm, attestation_refs = [], []
         for entry in entries:
             descriptor(entry, IMAGE_MEDIA)
             platform = entry.get("platform")
@@ -380,11 +398,12 @@ def verify_arm_image(repository, image, account, aws):
                 annotations = entry.get("annotations", {})
                 require(platform == {"os": "unknown", "architecture": "unknown"}
                         and isinstance(annotations, dict)
-                        and annotations.get("vnd.docker.reference.type") == "attestation-manifest"
-                        and annotations.get("vnd.docker.reference.digest") in {
-                            e.get("digest") for e in entries if isinstance(e, dict)},
+                        and annotations.get("vnd.docker.reference.type") == "attestation-manifest",
                         "Unrecognized image index attestation")
+                attestation_refs.append(annotations.get("vnd.docker.reference.digest"))
         require(len(arm) == 1, "Image index must contain exactly one linux/arm64 image")
+        require(all(reference == arm[0]["digest"] for reference in attestation_refs),
+                "Image index attestation must reference its ARM64 image")
         child = get_image(repository, arm[0]["digest"], account, aws)
         body = manifest_body(child)
         require(body["mediaType"] == arm[0]["mediaType"]
@@ -428,8 +447,9 @@ def verify_arm_image(repository, image, account, aws):
             "Approved image must run linux/arm64")
 
 
-def pin_image(repository, digest, aws=aws_request, *, account, source_tag=None):
+def pin_image(repository, digest, aws=None, *, account, source_tag=None):
     """Low-level publisher; CI callers must use promote() for the guard chain."""
+    aws = aws_request if aws is None else aws
     require(matches(PROJECT, repository.removesuffix("-web")) and repository.endswith("-web")
             and matches(DIGEST, digest) and matches(ACCOUNT, account), "Invalid image selection")
     image = get_image(repository, digest, account, aws)
@@ -438,21 +458,30 @@ def pin_image(repository, digest, aws=aws_request, *, account, source_tag=None):
         require(re.fullmatch(r"web-[a-f0-9]{40}", source_tag), "Invalid source image tag")
         get_image(repository, digest, account, aws, source_tag)
     try:
-        result = aws("put-image", {"registry-id": account, "repository-name": repository,
-                     "image-tag": "web-latest", "image-digest": digest,
-                     "image-manifest": image["imageManifest"],
-                     "image-manifest-media-type": image["imageManifestMediaType"]})
-    except ImageError:
-        # ImageAlreadyExists is harmless only if an independent read confirms the
-        # desired digest. Never trust a substring in a CLI error message.
-        current = get_image(repository, digest, account, aws, "web-latest")
-    else:
-        require(isinstance(result, dict), "Invalid image promotion response")
-        current = result.get("image")
-        image_identity(current, repository, digest, account, "web-latest")
-    manifest_body(current)
-    require(current["imageManifestMediaType"] == image["imageManifestMediaType"],
-            "Promoted image media type mismatch")
+        try:
+            # NamedTemporaryFile creates an owned 0600 file and cleans it on
+            # normal success/failure; file:// avoids Linux's per-argument cap.
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                    prefix="web-image-manifest-", suffix=".json") as manifest_file:
+                manifest_file.write(image["imageManifest"])
+                manifest_file.flush()
+                result = aws("put-image", {"registry-id": account, "repository-name": repository,
+                             "image-tag": "web-latest", "image-digest": digest,
+                             "image-manifest": "file://" + manifest_file.name,
+                             "image-manifest-media-type": image["imageManifestMediaType"]})
+        except ImageError:
+            # Any failed PutImage is harmless only if an independent read proves
+            # the desired effect. A still-old tag is not an invalid candidate.
+            current = get_image(repository, digest, account, aws, "web-latest")
+        else:
+            require(isinstance(result, dict), "Invalid image promotion response")
+            current = result.get("image")
+            image_identity(current, repository, digest, account, "web-latest")
+        manifest_body(current)
+        require(current["imageManifestMediaType"] == image["imageManifestMediaType"],
+                "Promoted image media type mismatch")
+    except (ImageError, ValueError, KeyError, TypeError, AttributeError, OSError):
+        raise ImageError("Image publication could not be confirmed") from None
 
 
 def promote(env=None, *, api=None, aws=None, caller=None, expected_digest=None):
@@ -494,9 +523,14 @@ def main():
     if args.mode == "verify-role":
         return
     c = environment_context(env)
+    validate_context(c)
     require(env.get("GITHUB_JOB") == "build" and args.output is not None, "Build job/output required")
     response = github(f"repos/{REPOSITORY}/actions/runs/{c['run_id']}/attempts/{c['attempt']}/jobs?per_page=100")
-    require(response.get("total_count") == len(response.get("jobs", [])), "Incomplete build job listing")
+    require(isinstance(response, dict) and isinstance(response.get("jobs"), list)
+            and all(isinstance(job, dict) for job in response["jobs"])
+            and type(response.get("total_count")) is int
+            and response["total_count"] == len(response["jobs"]) <= 100,
+            "Incomplete build job listing")
     jobs = [j for j in response["jobs"] if j.get("name") == BUILD_JOB
             and str(j.get("run_id")) == c["run_id"] and str(j.get("run_attempt")) == c["attempt"]
             and j.get("head_sha") == c["sha"] and j.get("status") == "in_progress"]

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: aa8ae5bc3f69 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f13995f7ee4b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -62,6 +62,8 @@ The web image provenance helper is unwired. Future dev web wiring must supply re
 migration outputs and the named producer-receipt steps, then use composed `promote`.
 `AWS_ACCOUNT_ID_DEV` is required even on main for dev-account exclusion. The helper alone
 changes no release behavior; see `docs/runbooks/web-image-provenance.md`.
+Its required tests need Linux `/proc`, jq and curl on `/usr/local/bin:/usr/bin:/bin`:
+`python3 -m pytest -q scripts/v2/test_ci_web_image.py`. AWS/GitHub are mocked; curl uses localhost.
 
 ## BANNED PATTERNS (enforce in review)
 - **AWS security:** no `0.0.0.0/0` ingress; no IAM `Principal:"*"`/wildcard-action without scoped condition; **no secrets in env/code/IaC** (Secrets Manager / SSM).
