@@ -23,7 +23,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
-| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC and protected review recovery; ECR preflight; state-preserving DNS deferral, certificate ownership, dispatch-only same-SHA saved plans and private authenticated assets, Host/SNI smoke, default-off manual private DB migration, opt-in authenticated verification and manual opt-in advisory read-only DB diagnostics (ADR-002/005/016) |
+| [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC and protected review recovery; ECR preflight; state-preserving DNS deferral, certificate ownership, dispatch-only same-SHA saved plans and private authenticated assets, Host/SNI smoke, default-off manual private DB migration, mandatory full authenticated dev release verification and manual opt-in advisory read-only DB diagnostics (ADR-002/005/016) |
 | [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; explicit saved-plan domain scope, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
 | [steampipe-quota-and-staleness.md](steampipe-quota-and-staleness.md) | Steampipe quota guard — rate limiter knobs, partial runs, freshness ledger/staleness response |
@@ -124,8 +124,12 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 - Verify requires applied `agentcore_enabled=true` and `ci_readiness_enabled=true`, then AgentCore
   provisioning, active inventory/dispatch, `workers_enabled=true` and deployed ARM64 worker images.
   Only the output boolean sets `DEPLOYMENT_READINESS_ENABLED`, with no shell override.
-  False/missing is `runtime_disabled`; the controller creates only the verifier group and
-  managed demo membership only while AgentCore is enabled, never an admin or IAM role. Public CI permits the readiness flag only on dev.
+  False/missing is `runtime_disabled`. At Terraform apply, `controller-readiness.tf` creates
+  `deployment-verifiers` only when both flags are true; managed-demo membership additionally
+  requires `create_demo_user=true`. No admin membership or IAM role is granted. The release
+  controller does not provision either resource; do not separately create the Terraform-managed group.
+  `CI_READONLY_RUNTIME_DEV=true` enables readiness through the public dev profile; public CI
+  rejects the flag outside dev. Private deployments outside public CI set it explicitly before apply/provisioning.
   Capped samples cannot prove absence. Missing ledger, partial/failed runs and unknown attributes
   remain distinct failures; accepted degraded inventory is not a deployment-readiness exception.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the

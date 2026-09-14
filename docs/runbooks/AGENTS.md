@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 402cba36d155 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3d38c61913b2 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -112,8 +112,13 @@ legacy runbook's steps as the current operational path).
 ## Authenticated development verification
 - Apply both `agentcore_enabled` and `ci_readiness_enabled`, then provision AgentCore.
   Verify also requires active inventory/dispatch, `workers_enabled=true` and deployed ARM64 worker images.
-  Only that output boolean enables `DEPLOYMENT_READINESS_ENABLED`; no shell override. The controller grants only verifier membership to the managed demo;
-  no admin/IAM role, and only with AgentCore enabled. Public CI restricts the readiness flag to dev. False/missing reports `runtime_disabled`. Capped samples cannot
+  Only that output boolean enables `DEPLOYMENT_READINESS_ENABLED`; no shell override.
+  Terraform apply creates the verifier group when both flags are true; managed-demo membership
+  also requires `create_demo_user=true`. No admin/IAM role is granted. The release controller
+  does not provision these resources; do not separately create the Terraform-managed group.
+  `CI_READONLY_RUNTIME_DEV=true` enables readiness in the public dev profile; public CI rejects
+  the flag outside dev. Private deployments outside public CI set it explicitly before apply/provisioning.
+  False/missing reports `runtime_disabled`. Capped samples cannot
   prove absence; missing ledger, partial/failed runs and unknown attributes remain failed readiness.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
   credentials. Prepare checks host registration (optional hostOnly); verify additionally
