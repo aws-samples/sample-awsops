@@ -22,7 +22,6 @@ AC = {
     "readiness_protocol_available": True, "readiness_inventory_enabled": True,
     "deployment_readiness_enabled": True,
 }
-GW_IDS = {key: f"gw-{key}" for key in provision.catalog.GATEWAYS}
 RID = "awsops_v2_agent-AbCd123456"
 ARN = f"arn:aws:bedrock-agentcore:ap-northeast-2:{ACCOUNT}:runtime/{RID}"
 ENV = {
@@ -67,7 +66,7 @@ class RuntimeImageTest(unittest.TestCase):
             ctrl.update_agent_runtime.return_value = {"agentRuntimeArn": ARN, "agentRuntimeId": RID}
             with mock.patch.dict(os.environ, {"AGENT_IMAGE_DIGEST": DIGEST}), \
                     mock.patch.object(provision, "_wait_runtime_ready", return_value=True):
-                self.assertEqual(provision.ensure_runtime(ctrl, AC, GW_IDS), ARN)
+                self.assertEqual(provision.ensure_runtime(ctrl, AC, {}), ARN)
             call = ctrl.update_agent_runtime if existing else ctrl.create_agent_runtime
             self.assertEqual(call.call_args.kwargs["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"],
                              AC["ecr_uri"] + "@" + DIGEST)
@@ -78,7 +77,7 @@ class RuntimeImageTest(unittest.TestCase):
             ctrl.list_agent_runtimes.return_value = {"agentRuntimes": []}
             with mock.patch.dict(os.environ, {**ENV, "AGENT_IMAGE_DIGEST": value}), \
                     mock.patch.object(provision, "_wait_runtime_ready", return_value=False):
-                self.assertEqual(provision.ensure_runtime(ctrl, AC, GW_IDS), "")
+                self.assertEqual(provision.ensure_runtime(ctrl, AC, {}), "")
             self.assertEqual(ctrl.mock_calls, [])
 
     def test_legacy_tag_remains_when_no_digest_was_requested(self):
@@ -91,13 +90,13 @@ class RuntimeImageTest(unittest.TestCase):
             ctrl.create_agent_runtime.return_value = {"agentRuntimeArn": ARN, "agentRuntimeId": RID}
             with mock.patch.dict(os.environ, {"DEPLOYMENT_READINESS_ENABLED": "true"}), \
                     mock.patch.object(provision, "_wait_runtime_ready", return_value=True):
-                provision.ensure_runtime(ctrl, {**AC, "deployment_readiness_enabled": value}, GW_IDS)
+                provision.ensure_runtime(ctrl, {**AC, "deployment_readiness_enabled": value}, {})
             self.assertEqual(ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"]["DEPLOYMENT_READINESS_ENABLED"],
                              "true" if value is True else "false")
         ctrl.reset_mock()
         missing = {key: value for key, value in AC.items() if key != "deployment_readiness_enabled"}
         with mock.patch.object(provision, "_wait_runtime_ready", return_value=True):
-            provision.ensure_runtime(ctrl, missing, GW_IDS)
+            provision.ensure_runtime(ctrl, missing, {})
         self.assertEqual(ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"]["DEPLOYMENT_READINESS_ENABLED"], "false")
 
     def test_pending_or_foreign_runtime_is_not_reported_ready(self):
@@ -107,7 +106,7 @@ class RuntimeImageTest(unittest.TestCase):
             ctrl.create_agent_runtime.return_value = {"agentRuntimeArn": value, "agentRuntimeId": RID}
             with mock.patch.dict(os.environ, ENV), \
                     mock.patch.object(provision, "_wait_runtime_ready", return_value=True):
-                self.assertEqual(provision.ensure_runtime(ctrl, AC, GW_IDS), "")
+                self.assertEqual(provision.ensure_runtime(ctrl, AC, {}), "")
 
     def test_dev_static_mismatch_fails_before_client_creation(self):
         for change in ({"AWS_ACCOUNT_ID_DEV": ""}, {"AWS_ACCOUNT_ID_DEV": "999999999999"},

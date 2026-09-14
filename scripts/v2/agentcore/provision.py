@@ -597,15 +597,10 @@ def _retire_gateway_target(ctrl, gw_id, existing, tname, reason):
         log(f"target:{tname}", "ERR", str(e)[:140])
 
 
-def ensure_mcp_server_targets(ctrl, ac, gw_ids, secrets=None, secrets_read_ok=None, allow_provision=True,
-                              runtime_unchanged=False):
+def ensure_mcp_server_targets(ctrl, ac, gw_ids, secrets=None, secrets_read_ok=None, allow_provision=True):
     """ADR-017: register curated official-vendor MCP servers as remote `mcpServer` gateway targets.
 
-    runtime_unchanged=True is only for deliberately skipped Runtime mutation due
-    to incomplete gateway identity. Defer positive provisioning without inferring
-    a failed rollout; explicit teardown conditions still apply to known IDs.
-
-    allow_provision=False (unless runtime_unchanged): the caller confirmed the runtime revision
+    allow_provision=False (review MAJOR, follow-up): the caller confirmed the runtime revision
     carrying OFFICIAL_MCP_TOOL_ALLOWLIST_JSON is NOT live this run (ensure_runtime failed or never
     reached READY). Every TEARDOWN path below (blocked endpoint, no endpoint, stale/missing ack,
     missing credential, the RETIRED_MCP_SERVER_TARGETS tombstone pass) still runs unconditionally —
@@ -759,7 +754,7 @@ def ensure_mcp_server_targets(ctrl, ac, gw_ids, secrets=None, secrets_read_ok=No
 
         # ── Runtime-allowlist gate (provisioning only — every teardown branch above already ran
         # regardless) ────────────────────────────────────────────────────────────────────────────
-        if not allow_provision and not runtime_unchanged:
+        if not allow_provision:
             # An ELIGIBLE preset with a LIVE target is retired here, not skipped (PR #207 review
             # MAJOR, 3 cells independent): "left untouched" meant a target created by a PRE-allowlist
             # revision kept serving 100% of the vendor's tools — write tools included — through
@@ -801,13 +796,6 @@ def ensure_mcp_server_targets(ctrl, ac, gw_ids, secrets=None, secrets_read_ok=No
             log(f"target:{tname}", "SKIP", f"no stored credential for preset '{preset_key}' (Connectors tab)")
             _retire_gateway_target(ctrl, gw_id, existing, tname, "no stored credential — retiring")
             _delete_api_key_provider(ctrl, provider_name)  # see the no-endpoint branch's note
-            continue
-
-        # Incomplete gateway identity deliberately left Runtime untouched. Do not
-        # infer a failed rollout and retire otherwise-eligible existing vendors.
-        # Explicit retirement paths above still run; no positive provisioning does.
-        if runtime_unchanged:
-            log(f"target:{tname}", "SKIP", "gateway_inventory_incomplete")
             continue
 
         # INFORMATIONAL only (dead-code reminder) — does NOT gate target creation. The legacy
@@ -1059,14 +1047,7 @@ def ensure_interpreter(ctrl):
         return ""
 
 
-def gateway_identity_complete(gw_ids):
-    return all(isinstance(gw_ids.get(key), str) and bool(gw_ids[key]) for key in catalog.GATEWAYS)
-
-
 def ensure_runtime(ctrl, ac, gw_ids):
-    if not gateway_identity_complete(gw_ids):
-        log("runtime", "ERR", "gateway_inventory_incomplete")
-        return ""
     region = ac["region"]
     gateways_json = json.dumps({k: gateway_url(v, region) for k, v in gw_ids.items()})
     try:
@@ -1334,7 +1315,6 @@ def _provision(args):
     # reordering is a pure reorder — the new runtime revision (allowlist included) is live before any
     # mcpServer target that depends on it can exist.
     diagnostics.stage("runtime")
-    runtime_unchanged = not gateway_identity_complete(gw_ids)
     runtime_arn = ensure_runtime(ctrl, ac, gw_ids)
     # review MAJOR (follow-up): the reorder above closes the WINDOW between target-creation and
     # allowlist-deployment, but ensure_runtime can still fail outright, or accept the request
@@ -1345,8 +1325,7 @@ def _provision(args):
     # runs; only its internal create/update/sync path is gated on allow_provision.
     diagnostics.stage("mcp_targets")
     ensure_mcp_server_targets(ctrl, ac, gw_ids, secrets=secrets, secrets_read_ok=secrets_read_ok,
-                               allow_provision=bool(runtime_arn),
-                               runtime_unchanged=runtime_unchanged)  # ADR-017 curated official-vendor MCP presets
+                               allow_provision=bool(runtime_arn))  # ADR-017 curated official-vendor MCP presets
     diagnostics.stage("prune")
     prune_moved_targets(ctrl, gw_ids)  # remove split-brain orphans after a catalog gateway move
     diagnostics.stage("memory")

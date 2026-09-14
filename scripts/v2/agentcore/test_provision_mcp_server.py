@@ -830,8 +830,7 @@ class TestEnsureRuntimeFailClosed(unittest.TestCase):
         ctrl.update_agent_runtime.return_value = {"agentRuntimeArn": "arn:rt"}
         ac = {"region": "ap-northeast-2", "role_arn": "arn:aws:iam::1:role/r", "ecr_uri": "e"}
         with mock.patch.object(provision, "_wait_runtime_ready", side_effect=ValueError("boom")):
-            self.assertEqual(provision.ensure_runtime(
-                ctrl, ac, {key: f"gw-{key}" for key in provision.catalog.GATEWAYS}), "")
+            self.assertEqual(provision.ensure_runtime(ctrl, ac, {}), "")
         self.assertIn(("runtime:ready", "ERR"), [(r[0], r[1]) for r in provision.report])
 
 

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 2abc75ee74f7 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 52c42795a4d6 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -85,7 +85,7 @@ No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scr
 7. **Routing:** golden-routing fixture labels must match `route.ts` RULES order (first-match-wins); `observability` chat key must resolve to a real gateway at runtime.
 
 ## Do-not-"fix" traps (real bugs that look wrong, and aren't)
-- **AgentCore reconciliation:** preserve known gateway IDs for Runtime routing and ADR-017 teardown after read/update failures. API acceptance and configuration match do not prove readiness. Keep deployed auth/protocol; do not add automatic destructive `FAILED` recovery. Incomplete identity leaves Runtime untouched and defers new vendor provisioning without retiring otherwise-eligible existing vendors; explicit teardown remains active. Canonical contract: `docs/reference/05-agentcore.md`.
+- **AgentCore reconciliation:** preserve known gateway IDs after read/update failures for baseline Runtime routing and ADR-017 teardown. Keep deployed auth/protocol; reconcile only managed role/Lambda ARN/credential type/tool schema. The deployer needs `bedrock-agentcore:GetGateway`. Request acceptance/configuration match does not prove readiness; no new wait/recovery rules or automatic destructive `FAILED` recreation. Canonical contract: `docs/reference/05-agentcore.md`.
 - **Gateway key-derivation mismatch (`agent/agent.py:_resolve_gateway_key`):** `_discover_gateways` derives keys via `name.replace("awsops-","").replace("-gateway","")`, so `awsops-v2-external-obs-gateway` yields `v2-external-obs` — but the `GATEWAYS_JSON` env fallback and the `observability`→`external-obs` alias use the canonical `external-obs` (no `v2-` prefix). `_resolve_gateway_key` tries BOTH the canonical key and the `v2-` variant on purpose (coexistence shim across the two key-naming paths); do not "simplify" it to a single lookup — that reopens the exact silent-fallback-to-`ops` bug the shim fixed.
 - **Cross-account self-assume trap (`agent/agent.py`/`cross_account.py`):** v2 is single-account, but if chat picks the host account, the agent used to force `target_account_id=<host>` and then self-assume `AWSopsReadOnlyRole` — a role that only exists in v1 *target* accounts, not the host — causing an `AccessDenied` the agent misdiagnosed as "cross-account blocked." `cross_account.get_role_arn()` now returns `None` when the target is the host (use the exec role directly instead). Do not "fix" this back to assuming a role on the host.
 

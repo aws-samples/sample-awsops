@@ -17,7 +17,7 @@ CODES = {
     "invalid_agent_image_digest", "agentcore_output_unavailable", "runtime_identity_unconfirmed",
     "aws_access_denied", "aws_credentials_expired", "aws_throttled", "aws_request_failed",
     "aws_validation_failed", "aws_conflict", "aws_resource_not_found", "sdk_validation_failed",
-    "gateway_configuration_unavailable", "gateway_inventory_incomplete",
+    "gateway_configuration_unavailable",
     "read_timeout", "invalid_json", "unexpected_error", "runtime_unavailable",
     "readiness_confirmed", "readiness_protocol_unavailable", "readiness_configuration_unavailable",
     "inventory_disabled", "inventory_configuration_unavailable", "legacy_invocation_only",

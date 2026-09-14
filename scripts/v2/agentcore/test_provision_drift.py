@@ -257,8 +257,7 @@ class TestReadinessFlag(unittest.TestCase):
             ctrl.create_agent_runtime.return_value = {"agentRuntimeId": "fixture", "agentRuntimeArn": "fixture"}
             with mock.patch.dict(os.environ, {"DEPLOYMENT_READINESS_ENABLED": "true"}), \
                  mock.patch.object(provision, "_wait_runtime_ready", return_value=True):
-                provision.ensure_runtime(ctrl, {**ac, "deployment_readiness_enabled": value},
-                                         {key: f"gw-{key}" for key in provision.catalog.GATEWAYS})
+                provision.ensure_runtime(ctrl, {**ac, "deployment_readiness_enabled": value}, {})
             env = ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"]
             self.assertEqual(env["DEPLOYMENT_READINESS_ENABLED"], "true" if value is True else "false")
 

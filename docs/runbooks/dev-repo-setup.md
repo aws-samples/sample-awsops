@@ -69,9 +69,9 @@ mutation roles. Role-to-sub matrix:
 | Role | Used by | Trust `sub` | Permissions scope |
 |---|---|---|---|
 | `sample-awsops-ci-build` | main build (no environment) | StringEquals `repo:aws-samples/sample-awsops:ref:refs/heads/main` | prod ECR push |
-| `sample-awsops-ci-deployer` | main roll / apply / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply |
+| `sample-awsops-ci-deployer` | main roll / apply / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway` |
 | `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | dev + user stacks' ECR push |
-| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply — **never production** |
+| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway` — **never production** |
 | `sample-awsops-ci-terraform-plan` | plan (PR/push incl. user-branch own-stack plans, read-only) | StringLike: `...:pull_request` + refs `main`, `dev`, `atomoh`, `ssminji`, `whchoi` | ReadOnlyAccess |
 | `sample-awsops-ci-review` | AI pr-review | StringEquals: verified subject prefix + environments `ci-review-auto` / `ci-review-recovery`, or legacy refs `main` / `dev`; no bare `pull_request` subject | Bedrock / Mantle policies — inspect actual permissions before approval |
 
@@ -768,6 +768,20 @@ Task definition 조회가 성공했다면 web container 부재/형식 오류여�
 식별했으면 true, 판단할 수 없으면 null이며 영향을 받는 파생 필드는 미확인으로 유지한다.
 
 ### 4. ECR permissions for the pin step / ci-deployer ECR 권한
+
+**AgentCore upgrade prerequisite:** the configured operator-owned CI deployer
+must permit `bedrock-agentcore:GetGateway` on its managed gateway resources,
+in addition to its existing AgentCore list/create/update/target/runtime permissions.
+The provisioner reads the current authorizer/protocol before updating a role, so
+a denied read fails visibly rather than guessing defaults. This is a deployer
+permission, not the web task role's status-page permission.
+
+Verify the grant in the IAM owner's configuration before dispatch. A role already
+using `AdministratorAccess` already has the IAM allow; this is not a recommendation
+to add AdministratorAccess for a read, nor evidence that another stack's role is
+configured correctly. Least-privilege roles need the scoped read added by their
+owner. The application workflow does not grant IAM. See the
+[AgentCore reconciliation contract](../reference/05-agentcore.md#provisioner-reconciliation).
 
 The deploy jobs re-point `:web-latest` at the approved `web-<sha>` before rolling,
 so each deployer role needs `ecr:BatchGetImage` + `ecr:PutImage` scoped to its own

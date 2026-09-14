@@ -1,4 +1,4 @@
-"""Identity failures must not truncate routing or masquerade as failed rollouts."""
+"""Known IDs preserve baseline routing and ADR-017 behavior after read failures."""
 import json
 import os
 import sys
@@ -57,7 +57,7 @@ class TestGatewayIdentityAndTeardown(TestCase):
                 ctrl.delete_api_key_credential_provider.assert_called_once()
                 ctrl.create_gateway_target.assert_not_called()
 
-    def test_identity_deferral_blocks_new_presets_but_not_tombstones(self):
+    def test_unconfirmed_runtime_blocks_new_presets_but_not_tombstones(self):
         ctrl = mock.Mock()
         ctrl.list_gateway_targets.return_value = {"items": [{"name": "removed-target", "targetId": "old"}]}
         with mock.patch.object(provision.catalog, "MCP_SERVER_TARGETS", PRESET), \
@@ -66,7 +66,7 @@ class TestGatewayIdentityAndTeardown(TestCase):
                 ctrl, {**AC, "official_mcp_endpoints": {"datadog": ENDPOINT},
                        "official_mcp_read_only_ack": {"datadog": ENDPOINT}},
                 {"external-obs": "gw-external-obs"}, secrets={"mcp:datadog": {"token": "fixture"}},
-                secrets_read_ok=True, allow_provision=False, runtime_unchanged=True)
+                secrets_read_ok=True, allow_provision=False)
         ctrl.delete_gateway_target.assert_called_once_with(gatewayIdentifier="gw-external-obs", targetId="old")
         ctrl.create_api_key_credential_provider.assert_not_called()
         ctrl.update_api_key_credential_provider.assert_not_called()
@@ -74,12 +74,9 @@ class TestGatewayIdentityAndTeardown(TestCase):
         ctrl.update_gateway_target.assert_not_called()
         ctrl.synchronize_gateway_targets.assert_not_called()
 
-    def _main(self, missing_ops=False, eligible=False, runtime_fails=False):
+    def _main(self, eligible=False, runtime_fails=False):
         ctrl = mock.Mock()
-        ctrl.list_gateways.return_value = {"items": [
-            gateway("external-obs"), *([] if missing_ops else [gateway("ops")])]}
-        ctrl.create_gateway.side_effect = provision.ClientError(
-            {"Error": {"Code": "AccessDeniedException", "Message": "not printed"}}, "CreateGateway")
+        ctrl.list_gateways.return_value = {"items": [gateway("external-obs"), gateway("ops")]}
 
         def get_gateway(gatewayIdentifier):
             if gatewayIdentifier == "gw-external-obs":
@@ -127,25 +124,6 @@ class TestGatewayIdentityAndTeardown(TestCase):
         self.assertIn("gw-external-obs", urls["external-obs"])
         self.assertEqual(targets.call_args.args[2], {"ops": "gw-ops", "external-obs": "gw-external-obs"})
         ctrl.delete_gateway_target.assert_called_once_with(gatewayIdentifier="gw-external-obs", targetId="t-1")
-
-    def test_missing_gateway_id_blocks_runtime_mutation_but_keeps_known_teardown(self):
-        ctrl, _, ssm, result = self._main(missing_ops=True)
-        self.assertEqual(result, 1)
-        ctrl.list_agent_runtimes.assert_not_called()
-        ctrl.create_agent_runtime.assert_not_called()
-        ctrl.update_agent_runtime.assert_not_called()
-        self.assertEqual(ssm.call_args.args[1], "")
-        ctrl.delete_gateway_target.assert_called_once_with(gatewayIdentifier="gw-external-obs", targetId="t-1")
-
-    def test_untouched_runtime_does_not_retire_otherwise_eligible_vendors(self):
-        ctrl, _, _, result = self._main(missing_ops=True, eligible=True)
-        self.assertEqual(result, 1)
-        ctrl.update_agent_runtime.assert_not_called()
-        ctrl.delete_gateway_target.assert_not_called()
-        ctrl.delete_api_key_credential_provider.assert_not_called()
-        ctrl.create_api_key_credential_provider.assert_not_called()
-        ctrl.create_gateway_target.assert_not_called()
-        ctrl.synchronize_gateway_targets.assert_not_called()
 
     def test_attempted_failed_runtime_rollout_retains_baseline_retirement(self):
         ctrl, _, _, result = self._main(eligible=True, runtime_fails=True)

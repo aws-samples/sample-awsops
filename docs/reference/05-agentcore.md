@@ -136,12 +136,11 @@ state-based recovery is added. `CREATED`/`UPDATED` mean request acceptance;
 `EXISTS` means configuration match. None proves readiness or tool invocation.
 Existing Runtime and curated MCP-target readiness/retirement behavior remains.
 
-If any catalog gateway ID is unknown, Runtime is deliberately not changed and its
-SSM pointer is preserved. New vendor provisioning is deferred. This is distinct
-from an attempted but unconfirmed Runtime rollout: incomplete identity alone does
-not retire otherwise-eligible existing vendors. Explicit disabled/blocked
-endpoints, revoked acknowledgments, missing credentials and tombstones still
-retire on every known gateway.
+Runtime construction and ADR-017 enforcement keep their baseline behavior.
+There is no new identity-completeness gate or retirement exemption. Explicit
+disabled/blocked endpoints, revoked acknowledgments, missing credentials and
+tombstones still retire on known gateways; an unconfirmed allowlist-carrying
+Runtime still invokes the existing fail-closed retirement policy.
 
 Validation/conflict/not-found/SDK-validation failures have fixed public codes;
 raw messages, configuration, credentials and ARNs are not emitted. An old
