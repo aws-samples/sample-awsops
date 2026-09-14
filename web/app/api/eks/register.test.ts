@@ -12,7 +12,11 @@ const hasAccessEntry = vi.fn();
 const onboardingGuide = vi.fn();
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
 vi.mock('@/lib/admin', () => ({ isAdmin: (...a: unknown[]) => isAdmin(...a) }));
-vi.mock('@/lib/aws', () => ({ listClusters: (...a: unknown[]) => listClusters(...a) }));
+vi.mock('@/lib/aws', () => ({
+  listClusters: (...a: unknown[]) => listClusters(...a),
+  listClusterInventory: async (...a: unknown[]) =>
+    ({ clusters: await listClusters(...a), region: 'ap-northeast-2', truncated: false }),
+}));
 vi.mock('@/lib/eks-registry', () => ({
   getAllowedClusters: (...a: unknown[]) => getAllowedClusters(...a),
   isAllowed: (...a: unknown[]) => isAllowed(...a),
