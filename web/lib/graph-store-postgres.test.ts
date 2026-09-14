@@ -415,13 +415,14 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     const projection = readFileSync(resolve(migrations, readdirSync(migrations).find(f => f.endsWith('_graph_projection_parity.sql'))!), 'utf8');
     await pool.query(projection); await pool.query(projection);
     await pool.query(`INSERT INTO topology_graph_state(account_id,class,status,attempted_at,details)
-      VALUES ('self','infra','unavailable',now(),$1)`, [{ sourceAttempted: false,
+      VALUES ('self','infra','unavailable',now(),$1)`, [{ sourceAttempted: false, lastSourceAttemptedAtMs: 1000,
       failureReason: 'not_attempted', secret: 'PRIVATE', sources: [{ sourceId: 'inventory:vpc',
         status: 'partial', producerStatus: 'succeeded', itemCount: 1, reasons: ['count_not_confirmed','PRIVATE'] }] }]);
     const row = (await pool.query('SELECT details FROM sql_reader.topology_graph_state')).rows[0];
     expect(row.details).toMatchObject({ sourceAttempted: false, failureReason: 'not_attempted' });
     expect(row.details.sources[0].reasons).toEqual(['count_not_confirmed']);
     expect(JSON.stringify(row)).not.toContain('PRIVATE');
+    expect(row.details).not.toHaveProperty('lastSourceAttemptedAtMs');
   });
 
   it('does not overwrite a newer collection attempt with older skip evidence', async () => {
@@ -437,6 +438,22 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await pool.query(`INSERT INTO topology_graph_state(account_id,class,status,attempted_at,details)
       VALUES ('self','infra','ok',$1,'{}'),($2,'infra','unavailable',$1,'{"sourceAttempted":false}')`, [recent, member]);
     expect((await inventoryAccounts(pool, 'infra', INFRA_TYPES))?.[0]).toBe(member);
+  });
+  it.each(['flow', 'infra'])('rotates all accounts over repeated two-account %s passes', async cls => {
+    const accounts = ['self', ...Array.from({ length: 6 }, (_, i) => `10000000000${i}`)];
+    for (const account of accounts) await seed(cls, recent, account);
+    await pool.query('UPDATE inventory_sync_runs SET row_count=$1 WHERE resource_type=$2',
+      [accounts.length, cls === 'flow' ? 'alb' : 'vpc']);
+    for (let pass = 0; pass < 4; pass++) {
+      let ticks = 0;
+      const timer = vi.spyOn(performance, 'now').mockImplementation(() => ticks++ <= 2 ? 0 : 31_000);
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now + pass * 1000);
+      try { expect(await build(cls)).toMatchObject({ published: 2, skipped: 5 }); }
+      finally { timer.mockRestore(); clock.mockRestore(); }
+    }
+    const published = (await pool.query('SELECT DISTINCT account_id FROM topology_nodes WHERE class=$1', [cls]))
+      .rows.map(row => row.account_id).sort();
+    expect(published).toEqual([...accounts].sort());
   });
   it('continues later accounts after a source read fails and preserves the original failure', async () => {
     const member = '111122223333';

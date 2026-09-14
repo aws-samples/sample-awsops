@@ -41,7 +41,10 @@ export async function inventoryAccounts(pool: Pool, cls: GraphClass, types: stri
       UNION SELECT account_id FROM inventory_resources WHERE resource_type=ANY($2)
       UNION SELECT account_id FROM inventory_sync_runs WHERE resource_type=ANY($2)
     ) accounts LEFT JOIN topology_graph_state s ON s.account_id=accounts.account_id AND s.class=$1
-    ORDER BY CASE WHEN s.details->>'sourceAttempted'='false' THEN NULL ELSE s.attempted_at END NULLS FIRST,
+    ORDER BY CASE WHEN s.details->>'sourceAttempted'='false' THEN
+      CASE WHEN jsonb_typeof(s.details->'lastSourceAttemptedAtMs')='number'
+        THEN (s.details->>'lastSourceAttemptedAtMs')::numeric END
+      ELSE extract(epoch FROM s.attempted_at)*1000 END NULLS FIRST,
       (accounts.account_id='self') DESC, accounts.account_id LIMIT 101`, [cls, types]);
     return result.rows.map(row => row.account_id as string);
   });
@@ -60,7 +63,10 @@ export async function recordUnattempted(pool: Pool, cls: GraphClass, lock: numbe
       ON CONFLICT(account_id,class) DO UPDATE SET status=EXCLUDED.status, attempted_at=EXCLUDED.attempted_at,
         details=EXCLUDED.details || jsonb_build_object(
           'retainedPrevious',topology_graph_state.captured_at IS NOT NULL OR (EXCLUDED.details->>'retainedPrevious')::boolean,
-          'publishedSources',coalesce(topology_graph_state.details->'publishedSources','[]'::jsonb))
+          'publishedSources',coalesce(topology_graph_state.details->'publishedSources','[]'::jsonb),
+          'lastSourceAttemptedAtMs',CASE WHEN topology_graph_state.details->>'sourceAttempted'='false'
+            THEN topology_graph_state.details->'lastSourceAttemptedAtMs'
+            ELSE to_jsonb(extract(epoch FROM topology_graph_state.attempted_at)*1000) END)
       WHERE topology_graph_state.attempted_at < EXCLUDED.attempted_at`, [cls, accounts, at]);
     return true;
   });
