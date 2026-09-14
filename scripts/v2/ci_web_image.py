@@ -80,7 +80,7 @@ def child_environment(tool, config_dir):
         env.update({key: os.environ[key] for key in keys})
         env.update(AWS_CONFIG_FILE=os.devnull, AWS_SHARED_CREDENTIALS_FILE=os.devnull,
                    BOTO_CONFIG=os.devnull, AWS_EC2_METADATA_DISABLED="true",
-                   AWS_IGNORE_CONFIGURED_ENDPOINT_URLS="true", AWS_PAGER="")
+                   AWS_IGNORE_CONFIGURED_ENDPOINT_URLS="true", AWS_MAX_ATTEMPTS="1", AWS_PAGER="")
     elif tool == "gh":
         token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
         require(token, "Explicit GitHub token is required")

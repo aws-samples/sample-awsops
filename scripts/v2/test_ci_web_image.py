@@ -842,7 +842,7 @@ class SubprocessBoundaryTest(unittest.TestCase):
             "AWS_CA_BUNDLE", "AWS_DATA_PATH", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE",
             "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
             "AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_EC2_METADATA_SERVICE_ENDPOINT", "BOTO_CONFIG",
-            "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", "AWS_EC2_METADATA_DISABLED",
+            "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", "AWS_EC2_METADATA_DISABLED", "AWS_MAX_ATTEMPTS",
             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy",
             "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE",
             "REQUESTS_CA_BUNDLE", "GH_HOST", "GH_CONFIG_DIR", "GH_HTTP_UNIX_SOCKET", "GH_DEBUG",
@@ -869,6 +869,7 @@ class SubprocessBoundaryTest(unittest.TestCase):
                 self.assertEqual(child["BOTO_CONFIG"], os.devnull)
                 self.assertEqual(child["AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"], "true")
                 self.assertEqual(child["AWS_EC2_METADATA_DISABLED"], "true")
+                self.assertEqual(child["AWS_MAX_ATTEMPTS"], "1")
                 self.assertNotIn("GH_TOKEN", child)
             else:
                 self.assertTrue(all(k not in child for k in AUTH if k.startswith("AWS_")))
