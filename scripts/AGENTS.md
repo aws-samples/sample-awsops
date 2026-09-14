@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e1f0554a75ff · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 146447359b32 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -157,7 +157,7 @@ The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and 
 
 ## Development release controller
 
-Dev releases require identity/image/code, complete post-marker collection for every catalog type with known counts/zero unknowns, fresh known CloudFront, SSM/model and both workers. Collect synchronously through at most four workers; no partial/degraded fallback.
+Dev releases require identity/image/code, complete post-marker collection for every catalog type with known counts/zero unknowns, fresh known CloudFront, SSM/model and both workers. Collect synchronously through at most four workers; no partial/degraded fallback. Use authenticated DB time and conservative request-start calibration; preserve strict lower bounds/deadlines and stop on missing clock evidence.
 Preserve the strict proof-budget, digest and retry contract in `docs/runbooks/runtime-foundation.md`.
 Prepare is existing-web only; no password reset, admin promotion or full-gate bypass.
 Manual session scopes and cleanup follow `docs/runbooks/runtime-verifier-sessions.md`.

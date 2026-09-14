@@ -247,7 +247,7 @@ with cloudfront included. The utility alone does not wire a deployment workflow.
 
 ## Development release controller
 
-Every dev release requires `v2/ci/runtime-release.mjs` identity/image/code, complete post-marker collection for every catalog type, fresh known CloudFront, SSM/model and both worker proofs. At most four synchronous collectors run; partial/failed/stale/missing/unknown evidence blocks release.
+Every dev release requires `v2/ci/runtime-release.mjs` identity/image/code, complete post-marker collection for every catalog type, fresh known CloudFront, SSM/model and both worker proofs. At most four synchronous collectors run; partial/failed/stale/missing/unknown evidence blocks release. The marker comes from authenticated Aurora time; request-start calibration preserves exact post-marker comparisons and existing deadlines. Missing clock evidence stops type invocation.
 The [runtime contract](../docs/runbooks/runtime-foundation.md) owns strict data policy, proof budgets, digest binding, retry and adoption rules.
 Manual prepare is neither first-web bootstrap nor readiness; never reset passwords or promote a verifier to admin.
 Manual verification requires separate [backend/workload policies](../docs/runbooks/runtime-verifier-sessions.md) and private-file cleanup.
