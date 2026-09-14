@@ -32,7 +32,7 @@ Future timestamps are conservatively stale, not assumed provider clock skew.
 ## Verification commands
 
 Use browser developer tools on an already-authorized page to distinguish HTTP503/busy,
-500/timeout, and successful partial reads. The page preserves the safe envelope and offers
+500/timeout, and successful partial reads.401/login redirects require sign-in;403 is access denial; other4xx responses require correcting the request. These are distinct from a read outage. The page preserves the safe envelope and offers
 refresh; it does not display a bare status code or treat a failed read as empty collection.
 Application logs contain fixed `[graph-read] shed` or SQLSTATE diagnostics. In the local
 fixture below, run `npx vitest run lib/graph-read-postgres.test.ts lib/graph-fetch.test.ts`

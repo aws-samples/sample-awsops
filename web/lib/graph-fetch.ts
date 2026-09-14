@@ -1,5 +1,10 @@
 import type { GraphCollection } from '@/components/topology/GraphCollectionStatus';
 
+export type GraphFetchFailure = 'unauthenticated' | 'forbidden' | 'rejected';
+export class GraphFetchError extends Error {
+  constructor(readonly reason: GraphFetchFailure) { super(reason); }
+}
+
 interface GraphData {
   nodes: { id: string; kind: string; label: string; meta?: Record<string, unknown> }[];
   edges: { source: string; target: string; rel: string }[];
@@ -16,6 +21,11 @@ export async function fetchGraph(url: string, signal: AbortSignal): Promise<Grap
   });
   try {
     const response = await fetch(url, { signal });
+    if (response.status === 401 || (response.redirected && new URL(response.url).pathname === '/login')) {
+      throw new GraphFetchError('unauthenticated');
+    }
+    if (response.status === 403) throw new GraphFetchError('forbidden');
+    if (response.status >= 400 && response.status < 500) throw new GraphFetchError('rejected');
     const body = await response.json();
     if (!response.ok) {
       const reason = body?.collection?.readReason;
@@ -23,7 +33,7 @@ export async function fetchGraph(url: string, signal: AbortSignal): Promise<Grap
     }
     return Array.isArray(body?.nodes) && Array.isArray(body?.edges) ? body : unavailable('query_failed');
   } catch (error) {
-    if (signal.aborted) throw error;
+    if (signal.aborted || error instanceof GraphFetchError) throw error;
     return unavailable('query_failed');
   }
 }

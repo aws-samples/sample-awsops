@@ -86,16 +86,19 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
 
   it('retains the requested root when a reachable subgraph exceeds the node cap', async () => {
     await pool.query(`INSERT INTO topology_nodes(account_id,id,kind,label,class,run_id)
-      SELECT 'self',CASE WHEN i=1 THEN 'zz:root' ELSE 'n:'||i END,'vpc','node','infra','read-fixture'
+      SELECT 'self',CASE WHEN i=1 THEN 'zz:root' WHEN i<=18 THEN 'z:near:'||i WHEN i<=307 THEN 'm:mid:'||i ELSE 'a:far:'||i END,'vpc','node','infra','read-fixture'
       FROM generate_series(1,5220) i;
       INSERT INTO topology_edges(account_id,source,target,class,run_id)
-      SELECT 'self',CASE WHEN ((i-2)/17)+1=1 THEN 'zz:root' ELSE 'n:'||(((i-2)/17)+1) END,
-        'n:'||i,'infra','read-fixture' FROM generate_series(2,5220) i`);
+      SELECT 'self',CASE WHEN ((i-2)/17)+1=1 THEN 'zz:root' WHEN ((i-2)/17)+1<=18 THEN 'z:near:'||(((i-2)/17)+1) ELSE 'm:mid:'||(((i-2)/17)+1) END,
+        CASE WHEN i<=18 THEN 'z:near:'||i WHEN i<=307 THEN 'm:mid:'||i ELSE 'a:far:'||i END,'infra','read-fixture' FROM generate_series(2,5220) i`);
     const response = await GET(new Request('http://localhost/api/graph?class=infra&from=zz%3Aroot&depth=3'));
     const body = await response.json();
     expect(response.status).toBe(200);
     expect(body.nodes).toHaveLength(4000);
     expect(body.nodes[0].id).toBe('zz:root');
+    expect(body.nodes.filter((node: { id: string }) => node.id.startsWith('z:near:'))).toHaveLength(17);
+    expect(body.nodes.filter((node: { id: string }) => node.id.startsWith('m:mid:'))).toHaveLength(289);
+    expect(body.nodes.slice(1,18).every((node: { id: string }) => node.id.startsWith('z:near:'))).toBe(true);
     expect(body.collection.readTruncated).toBe(true);
     expect(body.capped).toBe(false); // 17 neighbors do not exceed the per-hop fan-out cap.
     const ids = new Set(body.nodes.map((node: { id: string }) => node.id));
