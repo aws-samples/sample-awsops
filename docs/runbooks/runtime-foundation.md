@@ -45,18 +45,27 @@ the controller must still check fresh complete results for every returned type.
 
 ## Readiness capability
 
-After the existing runtime/DNS checks, a manual dev plan publishes a bounded
-`bounded_readiness_rollout` summary without raw plan values. It recognizes only
+After the existing runtime/DNS checks, a manual full dev plan with
+`CI_READINESS_ENABLED_DEV=true` publishes an advisory `bounded_readiness_rollout`
+summary without raw plan values. It recognizes only
 creation of the verifier group in the existing pool with no IAM role, enrollment
 of the existing managed demo, and a code-only inventory Lambda update. Supported
 output changes are the AgentCore readiness Boolean and the
 collector fingerprint. Resource identities and private values remain undisclosed;
 the report uses fixed resource addresses, checks and a package hash.
 
-`all_changes_match_expected_scope: true` describes this narrow comparison, not
-approval, invocation readiness or a general infrastructure review. Unknown resource
-or output changes, differing identities/roles/configuration, and a capped result
-make it false. Review those plans with the existing private exact-plan inspector.
+`no_changes_outside_expected_scope: true` only describes reported changes. It can
+be true for an empty plan; it does not confirm resource presence, readiness or
+approval. Separate `planned_changes` booleans indicate which group, enrollment,
+collector update and readiness-output activation are present. Unrecognized changes,
+wrong identities/IAM roles, non-code collector changes, unsupported operations and
+truncation make the scope comparison false. Description/precedence of a role-less
+group are not checked. Disable/retirement/import plans are outside this enable-only
+view. The combined resource/output report is capped at 256 rows.
+
+Summary failure is advisory and cannot prevent encrypted artifact publication.
+An unavailable, incomplete or unsupported summary requires
+[private exact-plan inspection](dev-repo-setup.md#private-exact-plan-inspection).
 The original encrypted artifacts, provenance and exact-saved-plan apply gates
 remain required; no check or credential boundary is bypassed.
 
@@ -97,5 +106,5 @@ Sequence: merge reviewed code to dev → reviewed dev apply and full live readin
 
 [Manual deployment observations](deployment-audit.md) separate deployed resources, schedule execution and observed inventory after provisioning.
 [CI setup/assets](dev-repo-setup.md) · [SQL reader](agent-sql-reader.md) · [Multi-account](onboard-target-account.md) · [Inventory rollback](steampipe-quota-and-staleness.md).
-Sources: `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `terraform/foundation/runtime-read-scope.tf`, `.github/workflows/terraform.yml`.
+Sources: `scripts/v2/ci_readiness_plan_summary.py`, `scripts/v2/test_ci_readiness_plan_summary.py`, `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `terraform/foundation/runtime-read-scope.tf`, `.github/workflows/terraform.yml`.
 ADRs: 001, 005, 007, 011, 016. Infrastructure apply is not live readiness proof.

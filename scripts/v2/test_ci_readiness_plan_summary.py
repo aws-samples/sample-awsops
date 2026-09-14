@@ -29,10 +29,51 @@ def plan():
 
 def test_expected_rollout_projects_checks_without_values():
     result = summary.project(plan())
-    assert result["all_changes_match_expected_scope"]
+    assert result["no_changes_outside_expected_scope"]
     assert len(result["resource_changes"]) == 3
     assert "PRIVATE" not in json.dumps(result)
     assert result["resource_changes"][-1]["configured_code_sha256"] == HASH
+    assert result["planned_changes"] == {
+        "verifier_group_created": True, "managed_demo_enrolled": True,
+        "collector_code_updated": True, "readiness_enabled_in_output": False}
+
+
+def test_no_changes_is_not_resource_presence_or_readiness_confirmation():
+    result = summary.project({"format_version": "1.2"})
+    assert result["no_changes_outside_expected_scope"]
+    assert not any(result["planned_changes"].values())
+    assert result["resource_changes"] == result["output_changes"] == []
+
+
+def test_imports_unknown_shapes_and_action_invocations_remain_unreviewed():
+    for change in ("import", "unknown", "action", "deferred"):
+        value = plan()
+        row = value["resource_changes"][0]
+        if change == "import":
+            row["change"]["actions"] = ["no-op"]
+            row["importing"] = {"id": "PRIVATE_ID"}
+        elif change == "unknown":
+            row["change"]["after_unknown"] = True
+        elif change == "action":
+            value["action_invocations"] = [{"config": "PRIVATE_ACTION"}]
+        else:
+            value["deferred_changes"] = [{"reason": "PRIVATE_REASON"}]
+        result = summary.project(value)
+        assert not result["no_changes_outside_expected_scope"]
+        assert "PRIVATE" not in json.dumps(result)
+
+
+def test_sensitive_or_unmatched_collector_hash_is_not_published():
+    for change in ("sensitive", "role"):
+        value = plan()
+        row = value["resource_changes"][2]
+        if change == "sensitive":
+            row["change"]["after_sensitive"] = {"source_code_hash": True}
+        else:
+            row["change"]["after"]["role"] = "PRIVATE_OTHER_ROLE"
+        result = summary.project(value)
+        assert not result["planned_changes"]["collector_code_updated"]
+        assert "configured_code_sha256" not in result["resource_changes"][2]
 
 
 def test_unexpected_resource_and_sensitive_key_are_never_published():
@@ -40,7 +81,7 @@ def test_unexpected_resource_and_sensitive_key_are_never_published():
     value["resource_changes"][0]["address"] = 'aws_iam_role.items["PRIVATE_PASSWORD"]'
     value["resource_changes"][0]["change"]["after"] = {"secret": "PRIVATE_SECRET"}
     result = summary.project(value)
-    assert not result["all_changes_match_expected_scope"]
+    assert not result["no_changes_outside_expected_scope"]
     assert result["resource_changes"][0]["resource"] == "other_resource"
     assert "PRIVATE" not in json.dumps(result)
 
@@ -54,7 +95,7 @@ def test_membership_role_and_collector_scope_mismatches_are_not_reviewed_as_expe
         value = plan()
         value["resource_changes"][index]["change"]["after"][field] = replacement
         result = summary.project(value)
-        assert not result["all_changes_match_expected_scope"]
+        assert not result["no_changes_outside_expected_scope"]
         assert "PRIVATE" not in json.dumps(result)
 
 
@@ -64,7 +105,7 @@ def test_deletes_unknown_roles_and_unrecognized_outputs_remain_unreviewed():
     value["resource_changes"][1]["change"]["actions"] = ["delete"]
     value["output_changes"] = {"PRIVATE_OUTPUT": {"actions": ["update"], "after": "PRIVATE_SECRET"}}
     result = summary.project(value)
-    assert not result["all_changes_match_expected_scope"]
+    assert not result["no_changes_outside_expected_scope"]
     assert "PRIVATE" not in json.dumps(result)
 
 
@@ -80,11 +121,11 @@ def test_only_the_two_expected_output_deltas_are_projected():
     }
     original = copy.deepcopy(value)
     result = summary.project(value)
-    assert result["all_changes_match_expected_scope"]
+    assert result["no_changes_outside_expected_scope"]
     assert value == original
     assert "PRIVATE" not in json.dumps(result)
     value["output_changes"]["agentcore"]["after"]["role_arn"] = "PRIVATE_OTHER_ROLE"
-    assert not summary.project(value)["all_changes_match_expected_scope"]
+    assert not summary.project(value)["no_changes_outside_expected_scope"]
 
 
 def test_output_changes_share_the_report_row_budget():
@@ -98,7 +139,7 @@ def test_output_changes_share_the_report_row_budget():
         result = summary.project(value)
         assert result["truncated"]
         assert len(result["resource_changes"]) + len(result["output_changes"]) == 256
-        assert not result["all_changes_match_expected_scope"]
+        assert not result["no_changes_outside_expected_scope"]
         assert "PRIVATE" not in json.dumps(result)
 
 
@@ -108,7 +149,7 @@ def test_capped_changes_cannot_be_mistaken_for_complete_review():
     result = summary.project(value)
     assert result["truncated"]
     assert len(result["resource_changes"]) == 256
-    assert not result["all_changes_match_expected_scope"]
+    assert not result["no_changes_outside_expected_scope"]
 
 
 def test_workflow_projects_only_manual_dev_plans_before_encryption():
@@ -118,7 +159,8 @@ def test_workflow_projects_only_manual_dev_plans_before_encryption():
     index = next(i for i, step in enumerate(steps)
                  if step.get("name") == "Project bounded readiness changes without private plan values")
     step = steps[index]
-    assert step["if"] == "github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev'"
+    assert step["if"] == "github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READINESS_ENABLED_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'"
+    assert step["continue-on-error"] is True
     assert next(i for i, s in enumerate(steps) if s.get("name") == "Check planned DNS operations") < index
     assert index < next(i for i, s in enumerate(steps) if s.get("name") == "Encrypt plan artifact")
     assert step["run"].strip() == (

@@ -370,7 +370,8 @@ jobs:
               --target "$TARGET" --advisory "$ADVISORY" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Project bounded readiness changes without private plan values
-        if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev'
+        if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READINESS_ENABLED_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
+        continue-on-error: true
         run: |
           set -euo pipefail
           terraform show -json tfplan 2>/dev/null |

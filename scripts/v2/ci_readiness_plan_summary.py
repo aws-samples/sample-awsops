@@ -39,13 +39,16 @@ def project(plan):
     pool = prior.get("aws_cognito_user_pool.main", {}).get("id")
     user = prior.get("aws_cognito_user.demo[0]", {}).get("username")
     collector = prior.get(COLLECTOR, {}).get("function_name")
-    changes, complete, new_hash, truncated = [], True, None, False
+    unsupported = bool(plan.get("action_invocations") or plan.get("deferred_changes"))
+    changes, complete, new_hash, truncated = [], not unsupported, None, False
+    presence = {"verifier_group_created": False, "managed_demo_enrolled": False,
+                "collector_code_updated": False, "readiness_enabled_in_output": False}
     for item in plan.get("resource_changes", []):
         change = item["change"]
         actions = change["actions"]
         if not isinstance(actions, list) or not actions or any(a not in ACTIONS for a in actions):
             raise ValueError()
-        if actions in (["no-op"], ["read"]):
+        if actions in (["no-op"], ["read"]) and not item.get("importing"):
             continue
         if len(changes) == 256:
             complete, truncated = False, True
@@ -53,6 +56,12 @@ def project(plan):
         address = item.get("address")
         before, after = change.get("before") or {}, change.get("after") or {}
         unknown = change.get("after_unknown") or {}
+        if not isinstance(unknown, dict):
+            changes.append({"resource": address if address in {GROUP, MEMBER, COLLECTOR} else "other_resource",
+                            "actions": actions, "matches_expected_scope": False,
+                            "checks": {"known_configuration": False}})
+            complete = False
+            continue
         checks = {}
         if address == GROUP:
             checks = {
@@ -83,15 +92,22 @@ def project(plan):
                     if key not in {"code_sha256", "last_modified"}
                 }),
             }
-            if checks["known_code_hash"]:
-                new_hash = after["source_code_hash"]
+            sensitive = change.get("after_sensitive") or {}
+            checks["public_code_hash"] = isinstance(sensitive, dict) and not sensitive.get("source_code_hash")
         else:
             # Do not expose dynamic resource keys, names, module paths or values.
             address = "other_resource"
         matched = bool(checks) and all(checks.values())
+        if matched and address == GROUP:
+            presence["verifier_group_created"] = True
+        elif matched and address == MEMBER:
+            presence["managed_demo_enrolled"] = True
+        elif matched and address == COLLECTOR:
+            presence["collector_code_updated"] = True
+            new_hash = after["source_code_hash"]
         complete = complete and matched
         row = {"resource": address, "actions": actions, "matches_expected_scope": matched, "checks": checks}
-        if address == COLLECTOR and new_hash:
+        if address == COLLECTOR and matched:
             row["configured_code_sha256"] = new_hash
         changes.append(row)
     outputs = []
@@ -106,18 +122,23 @@ def project(plan):
         if name == "agentcore" and isinstance(before, dict) and isinstance(after, dict):
             enabled = after.pop("deployment_readiness_enabled", None)
             old_enabled = before.pop("deployment_readiness_enabled", None)
-            matched = type(old_enabled) is bool and enabled is True and before == after
+            matched = (change.get("actions") == ["update"] and type(old_enabled) is bool
+                       and enabled is True and before == after)
         elif name == "runtime_deployment" and isinstance(before, dict) and isinstance(after, dict):
             previous = before.get("inventory", {}).pop("sync_code_sha256", None)
             current = after.get("inventory", {}).pop("sync_code_sha256", None)
-            matched = digest(previous) and digest(current) and current == new_hash and before == after
+            matched = (change.get("actions") == ["update"] and digest(previous) and digest(current)
+                       and current == new_hash and before == after)
         matched = matched and not has_unknown(change.get("after_unknown"))
+        if name == "agentcore" and matched:
+            presence["readiness_enabled_in_output"] = True
         complete = complete and matched
         outputs.append({"output": name if name in {"agentcore", "runtime_deployment"} else "other_output",
                         "matches_expected_scope": matched})
     return {"schema_version": 1, "review_kind": "bounded_readiness_rollout",
-            "all_changes_match_expected_scope": complete,
+            "no_changes_outside_expected_scope": complete, "planned_changes": presence,
             "resource_changes": changes, "output_changes": outputs, "truncated": truncated,
+            "unsupported_operations": unsupported,
             "limitation": "Other changes require private exact-plan inspection; this report is not approval."}
 
 

@@ -117,15 +117,21 @@ secrets-manager) — installed by `make deps`.
   `lifecycle_source_integrity=unverified_text`, `lifecycle_injection_possible=true` and unknown
   probe outcome. Authenticated/authorized messages require log_connections (PostgreSQL default
   off; not enabled here); the effective setting is uninspected, `log_connections_enabled=null`.
-  Only this optional workflow step tolerates failure (eight-minute timeout); DNS/CI/readiness
-  gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
+  This optional workflow step tolerates failure (eight-minute timeout), as does the separate
+  advisory readiness-plan summary; DNS/CI/readiness gates remain required.
+  Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
-- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets}.py` —
+- `v2/ci_readiness_plan_summary.py` reports only fixed resource addresses, checks and a known
+  public collector code hash for explicit full dev readiness plans. It is advisory, not
+  approval or resource-presence proof; unknown changes require private inspection.
+  Presence booleans are separate, with a combined 256-row bound and no private values.
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,readiness_plan_summary,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets}.py` —
   workflow fixtures, real no-provider plans and a localhost state backend verify deployment
   gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active
-  rollout's public zone name/ID/NS. Diagnostics also publish bounded numeric metric values;
+  rollout's public zone name/ID/NS. The readiness summary adds fixed scope/presence checks and
+  a known configured collector hash. Diagnostics also publish bounded numeric metric values;
   never raw configuration, ARNs, account IDs, state or plans.
 - `v2/terraform-test.sh` — Terraform 1.15.7 validate/mock tests in a disposable tracked-file
   copy, `init -backend=false`, fresh data dir, no deployment credentials or real backend.

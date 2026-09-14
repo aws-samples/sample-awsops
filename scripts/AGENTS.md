@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: bc70ee041309 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9c44d0e01fe3 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -27,8 +27,8 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   State-account/STS consistency does not authorize access or detect the wrong same-account stack.
   Use existing read-only grants and a fixed CLI verb allowlist; no new grants/writes/DB connection.
 - Run only after encrypted plan upload. Opt-in publishes fenced safe JSON, including posture
-  booleans, to the public Actions log and step summary. Only this optional step tolerates
-  failure (eight-minute limit); DNS/CI/readiness gates remain required.
+  booleans, to the public Actions log and step summary. This optional DB step tolerates failure (eight-minute limit), as does the separate
+  advisory readiness-plan summary; DNS/CI/readiness gates remain required.
 - Retain all four sections independently: `logs`, `configuration`, `server_logs`, `rds_metrics`. Capped/failed reads with
   retained evidence are partial; distinguish unavailable source reads from unknown derived
   fields. Early context/input/identity failure returns only `{"status":"unavailable"}`.
@@ -136,3 +136,9 @@ The pin gate covers `v2/ci/pg8000-requirements.txt` and the four requirements
 under workers, steampipe, incident and remediation; update all with verified wheel hashes.
 The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and validator.
 `v2/test_ci_tf_assets.py` covers these contracts and recovery.
+
+- `ci_readiness_plan_summary.py` runs only for explicit full dev readiness plans. It publishes
+  fixed scope/presence checks, fixed resource addresses and a known collector code hash,
+  never private values. Its combined 256-row advisory view is not approval or resource
+  presence proof; unknown changes require private inspection. Report failure cannot block
+  encrypted artifacts or weaken existing DNS/runtime/exact-plan gates.

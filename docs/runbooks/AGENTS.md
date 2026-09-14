@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d1891efe78a5 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b5d8e261eaa1 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -34,7 +34,8 @@ legacy runbook's steps as the current operational path).
   dev plans with literal flag `true`, `--target dev`, and region `ap-northeast-2`. Invalid context
   causes no reads; state-account/STS is consistency only, not authorization or stack isolation.
   Run after encrypted plan upload. Opt-in publishes fenced safe JSON including posture booleans
-  to the public Actions log/summary; only this optional step tolerates failure.
+  to the public Actions log/summary; this optional DB step and the separate advisory
+  readiness-plan summary tolerate failure.
   Keep DNS/CI/readiness gates required and the fixed read-only CLI verb allowlist.
   Retain all four sections independently (`logs`, `configuration`, `server_logs`, `rds_metrics`): partial for retained capped/failed reads,
   separate unavailable source and unknown derived fields. Early failure is only
@@ -143,3 +144,9 @@ legacy runbook's steps as the current operational path).
   the prepared credential directory and always-cleanup; expose only phases/validated HTTP status,
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
 - Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
+
+- `ci_readiness_plan_summary.py` runs only for explicit full dev readiness plans. It publishes
+  fixed scope/presence checks, fixed resource addresses and a known collector code hash,
+  never private values. Its combined 256-row advisory view is not approval or resource
+  presence proof; unknown changes require private inspection. Report failure cannot block
+  encrypted artifacts or weaken existing DNS/runtime/exact-plan gates.
