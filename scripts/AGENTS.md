@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 89126507f23b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 83f8f8a0bfcd · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -19,7 +19,7 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   files, private GH config and no inherited endpoint/profile/model/provider/CA/proxy overrides. Stdin is closed
   except curl's private `-q -K -` config; signed URLs never enter argv. Multi-tag digest rows
   must agree on identity, raw manifest and media.
-  Child PATH is `/usr/local/bin:/usr/bin:/bin`, ignoring caller additions; HOME stays unchanged.
+  Child PATH is `/usr/local/bin:/usr/bin:/bin`, ignoring caller additions; HOME is omitted, never reassigned.
   No manually assembled publishing chain. `test_ci_web_image.py` requires jq; the future
   receipt steps, main account prerequisite and recovery limits are documented in
   `docs/runbooks/web-image-provenance.md`. Operator CI adds no ADR-005 exception or IAM grant.

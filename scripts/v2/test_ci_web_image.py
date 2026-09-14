@@ -846,7 +846,7 @@ class SubprocessBoundaryTest(unittest.TestCase):
             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy",
             "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE",
             "REQUESTS_CA_BUNDLE", "GH_HOST", "GH_CONFIG_DIR", "GH_HTTP_UNIX_SOCKET", "GH_DEBUG",
-            "PATH", "CURL_HOME", "XDG_CONFIG_HOME", "PYTHONPATH", "LD_PRELOAD", "BASH_ENV", "GITHUB_ENV")}
+            "HOME", "PATH", "CURL_HOME", "XDG_CONFIG_HOME", "PYTHONPATH", "LD_PRELOAD", "BASH_ENV", "GITHUB_ENV")}
         env.update(poison)
         def checked_run(argv, **kwargs):
             if argv[0] == "gh":
@@ -860,7 +860,7 @@ class SubprocessBoundaryTest(unittest.TestCase):
             for key, value in poison.items():
                 self.assertNotEqual(child.get(key), value, (argv[0], key))
             self.assertEqual(child["PATH"], "/usr/local/bin:/usr/bin:/bin")
-            self.assertEqual(child.get("HOME"), env.get("HOME"))
+            self.assertNotIn("HOME", child)
             if argv[0] == "aws":
                 self.assertEqual({k: child[k] for k in AUTH if k.startswith("AWS_")},
                                  {k: v for k, v in AUTH.items() if k.startswith("AWS_")})

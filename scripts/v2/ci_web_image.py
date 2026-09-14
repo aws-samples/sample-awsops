@@ -72,7 +72,7 @@ def build_receipt(c, digest):
 def child_environment(tool, config_dir):
     # Runner-installed AWS CLI, gh and curl only, never caller-selected tools,
     # profiles, credential providers, CA bundles, proxies or command hooks.
-    env = {key: os.environ[key] for key in ("HOME", "TMPDIR", "LANG", "LC_ALL")
+    env = {key: os.environ[key] for key in ("TMPDIR", "LANG", "LC_ALL")
            if key in os.environ}
     env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
     if tool == "aws":
