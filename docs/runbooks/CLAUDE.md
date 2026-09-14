@@ -35,13 +35,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
-- `release-safety-primitives.md` defines unwired web read/controller contracts and
-  opt-in transactional pending-SQL admission. The empty-only frozen baseline precedes
-  the pending guard. Column/view changes and non-transactional SQL require manual review.
-  Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads
-  retry within a shared budget; writes and identity/permission failures do not retry.
-  Receipt verification gives the known old PRIMARY 15 seconds of visibility grace;
-  start confirmation retains its separate 120-second bound.
+- `release-safety-primitives.md` defines unwired web read/controller contracts and opt-in transactional pending-SQL admission. The empty-only frozen baseline precedes the pending guard. Column/view changes and non-transactional SQL require manual review. Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads retry within a shared budget; writes and identity/permission failures do not retry. Receipt verification gives the known old PRIMARY 15 seconds of visibility grace; start confirmation retains its separate 120-second bound.
 
 - Private S3 plans require the configured backend file, verified bucket posture and existing
   base-role/key-policy permissions; publication grants none. Operators use IAM/KMS, not the

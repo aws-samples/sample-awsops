@@ -422,7 +422,7 @@ AWS 자격증명을 사용하지 않습니다.
 마지막 fmt/validate 진단만 참고용입니다. Terraform mock 테스트에는 **1.15.7**과
 설치/캐시된 provider가 필요합니다. 도우미는 추적된
 작업 파일만 복사해 `init -backend=false`, validate, test를 실행하며 실제 backend를 사용하지 않습니다.
-필수 `test_ci_web_read.py`·`test_ci_web_deploy.py` 테스트는 Python 3.12와 Linux `/proc`, POSIX 프로세스 그룹, `os.geteuid`가 필요하며 외부 provider를 모의하므로 AWS CLI·gh·curl·jq를 실행하지 않습니다.
+필수 `test_ci_web_read.py`·`test_ci_web_deploy.py` 테스트는 Python 3.12와 Linux `/proc`, POSIX 프로세스 그룹, `os.geteuid`가 필요하며 외부 provider를 모의하므로 AWS CLI·gh·curl·jq를 실행하지 않습니다. 아직 연결되지 않은 컨트롤러와 자동 SQL 정책은 `docs/runbooks/release-safety-primitives.md`에 설명되어 있습니다.
 오프라인 [웹 이미지 출처 검증 도우미](docs/runbooks/web-image-provenance.md) 테스트에는 **jq**, Linux `/proc`, `/usr/local/bin:/usr/bin:/bin`의 curl도 필요합니다.
 이 도우미를 호출하는 워크플로는 아직 없으며, 가이드에서 향후 영수증·승격·복구 계약을 정의합니다. [배포 안전 도구](docs/runbooks/release-safety-primitives.md)에서 아직 연결되지 않은 컨트롤러를 설명합니다.
 

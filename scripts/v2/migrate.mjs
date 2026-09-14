@@ -26,7 +26,7 @@ import {
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const MIG_DIR = join(ROOT, 'terraform/foundation/migrations');
 const SCHEMA = join(ROOT, 'terraform/foundation/data/schema.sql');
-const LOCK_KEY = 4729411; // unchanged: serializes old CLI and new runtime runners
+const LOCK_KEY = 4729411; // shared exclusion key; a competing runner fails promptly
 
 function tf(output) {
   try {

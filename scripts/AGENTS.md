@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9342264082aa · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 89db05f35af0 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,13 +8,8 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
-- `ci_web_read.py` / `ci_web_deploy.py` are unwired. Only typed transient reads
-  retry within a shared deadline; writes/permissions/identity failures do not retry.
-  Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.
-- `AUTOMATIC_MIGRATION=1` checks every ledger-derived pending SQL file against the
-  transactional subset before pending SQL/ledger/reader changes; unknown/contract SQL needs manual review.
-  Advisory lock acquisition is nonblocking and remains held through reader sync.
-  See `docs/runbooks/release-safety-primitives.md` and the corresponding Python/Node/PostgreSQL tests.
+- `ci_web_read.py` / `ci_web_deploy.py` are unwired. Only typed transient reads retry within a shared deadline; writes/permissions/identity failures do not retry. Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.
+- `AUTOMATIC_MIGRATION=1` checks every ledger-derived pending SQL file against the transactional subset before pending SQL/ledger/reader changes; unknown/contract SQL needs manual review. Advisory lock acquisition is nonblocking and remains held through reader sync. See `docs/runbooks/release-safety-primitives.md` and the corresponding Python/Node/PostgreSQL tests.
 - `v2/ci_web_image.py` is unwired. CI must use composed `promote`, which verifies the
   caller/context/source/migration/producer before publishing the validated project's digest.
   A nonempty preflight digest is mandatory; fresh builds must match the registry's source
