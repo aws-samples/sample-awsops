@@ -10,15 +10,15 @@ secrets-manager) — installed by `make deps`.
   Only allowlisted idempotent reads raise typed transient errors; one shared deadline
   bounds retries and subprocess cleanup. Identity/permission/unknown failures are fatal;
   writes remain single-attempt. Exact failed/replaced ECS deployments fail promptly,
-  with at most 15 seconds for the known old PRIMARY projection. Tests are
+  with at most 15 seconds for the known old PRIMARY in receipt verification. Tests are
   `v2/test_ci_web_read.py` and `v2/test_ci_web_deploy.py`.
 - `v2/automatic-migration-policy.mjs` admits a conservative additive SQL subset only
-  when `AUTOMATIC_MIGRATION=1`, forced by every web migration caller. Check all actual pending files before SQL/ledger/reader
-  changes; unknown syntax requires reviewed standalone migration. `migrate.mjs` uses
+  when `AUTOMATIC_MIGRATION=1`, forced by every web migration caller. Check all actual pending files before pending SQL, ledger upgrades or reader
+  synchronization; unknown syntax requires reviewed standalone migration. `migrate.mjs` uses
   `pg_try_advisory_lock` and holds acquired locks through SQL-reader synchronization;
   contention fails immediately. Tests: `v2/ci/automatic-migration-policy.test.mjs`,
   `migration-runtime.test.mjs` and real PostgreSQL `migration.itest.mjs`.
-  Contract and operator scope: `docs/runbooks/release-safety-primitives.md` (ADR-001/005/021).
+  Contract and operator scope: `docs/runbooks/release-safety-primitives.md` (ADR-001/005).
 - `v2/ci_web_image.py` — web provenance helper called by `ci_web_deploy.py`.
   `promote` composes caller/context/source/migration/producer checks before publishing only
   the validated project's digest. Every promotion requires a nonempty preflight digest;

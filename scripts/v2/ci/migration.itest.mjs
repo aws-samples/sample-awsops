@@ -88,30 +88,45 @@ test('a concurrent initializer fails immediately without initializing, then a re
   });
 });
 
-test('the migration lock stays held after the baseline commits and until ULIDs finish', { timeout: 45_000 }, async () => {
+test('two real runners: one owns the lock, the other fails promptly, then retries without duplicate DDL', { timeout: 15_000 }, async () => {
   const database = await postgres.database();
   const directory = mkdtempSync(join(tmpdir(), 'awsops-lock-test-'));
-  writeFileSync(join(directory, `${testId}_lock.sql`),
-    'SELECT pg_advisory_lock(4729412); SELECT pg_advisory_unlock(4729412); CREATE TABLE lock_marker(id int);');
   try {
+    await run(database, { migrationDir: directory });
+    writeFileSync(join(directory, `${testId}_lock.sql`),
+      'CREATE TABLE lock_marker(id int); CREATE INDEX lock_target_idx ON lock_target(id);');
+    const options = { migrationDir: directory, env: { ...env, AUTOMATIC_MIGRATION: '1' } };
     await inspect(database, async observer => {
-      await observer.query('SELECT pg_advisory_lock(4729412)');
-      const first = run(database, { migrationDir: directory }, { ...lockRunnerOptions, application_name: 'first-lock-runner' });
+      // A relation lock controls the first runner's DDL; only that runner takes
+      // advisory key 4729411. Both runners use real PostgreSQL connections.
+      await observer.query('CREATE TABLE lock_target(id int)');
+      await observer.query('BEGIN; LOCK TABLE lock_target IN ACCESS EXCLUSIVE MODE');
+      const first = run(database, options, { ...lockRunnerOptions, application_name: 'first-lock-runner' });
       first.catch(() => {}); // observed below, even if the runner rejects during polling
       try {
-        await waitForQuery(observer, "SELECT wait_event FROM pg_stat_activity WHERE application_name='first-lock-runner'",
-          rows => rows.some(row => row.wait_event === 'advisory'));
+        // The lock holder's open transaction caches activity snapshots.
+        await inspect(database, monitor => waitForQuery(monitor,
+          "SELECT wait_event FROM pg_stat_activity WHERE application_name='first-lock-runner'",
+          rows => rows.some(row => row.wait_event === 'relation')));
         assert.equal((await observer.query("SELECT version FROM schema_migrations WHERE version='baseline'")).rowCount, 1);
         assert.equal((await observer.query(`SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON l.pid=a.pid
           WHERE a.application_name='first-lock-runner' AND l.locktype='advisory' AND l.objid=4729411 AND l.granted`)).rowCount, 1);
-        await assert.rejects(run(database, { migrationDir: directory },
-          { ...lockRunnerOptions, application_name: 'second-lock-runner' }), /Concurrent migration/);
+        const start = performance.now();
+        await assert.rejects(run(database, options, { ...lockRunnerOptions, application_name: 'second-lock-runner' }),
+          /Concurrent migration/);
+        assert.ok(performance.now() - start < 2500, 'the second runner must not queue behind the owner');
+        assert.equal((await observer.query('SELECT 1 FROM schema_migrations WHERE version=$1', [testId])).rowCount, 0);
       } finally {
-        await observer.query('SELECT pg_advisory_unlock(4729412)');
+        await observer.query('ROLLBACK');
         await first;
       }
-      await run(database, { migrationDir: directory });
+      const firstLedger = await ledger(observer);
+      await run(database, options, { application_name: 'second-lock-runner' });
+      assert.deepEqual(await ledger(observer), firstLedger);
       assert.equal((await observer.query('SELECT 1 FROM schema_migrations WHERE version=$1', [testId])).rowCount, 1);
+      assert.deepEqual((await observer.query(
+        "SELECT to_regclass('lock_marker') AS t, to_regclass('lock_target_idx') AS i")).rows,
+      [{ t: 'lock_marker', i: 'lock_target_idx' }]);
     });
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
@@ -121,9 +136,9 @@ test('automatic additive SQL works with recurring initialization and an unchange
   const database = await postgres.database();
   try {
     writeFileSync(join(directory, `${testId}_table.sql`),
-      "CREATE TABLE additive_example(id bigint PRIMARY KEY); ALTER TABLE additive_example ADD label text, ADD meta jsonb DEFAULT '{}'::jsonb;");
+      "CREATE TABLE additive_example(id bigint PRIMARY KEY, label text, meta jsonb DEFAULT '{}'::jsonb);");
     writeFileSync(join(directory, '01ARZ3NDEKTSV4RRFFQ69G5FAW_index.sql'),
-      '-- migrate:no-transaction\nCREATE INDEX CONCURRENTLY additive_idx ON additive_example(label);');
+      'CREATE INDEX additive_idx ON additive_example(label);');
     const options = { migrationDir: directory, env: { ...env, AUTOMATIC_MIGRATION: '1' } };
     await run(database, options);
     const first = await inspect(database, ledger);
@@ -136,6 +151,50 @@ test('automatic additive SQL works with recurring initialization and an unchange
     });
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+for (const [label, sql, manualSucceeds] of [
+  ['no-transaction single statement', '-- migrate:no-transaction\nCREATE TABLE rejected_table(id int)', true],
+  ['no-transaction multiple statements', '-- migrate:no-transaction\nCREATE TABLE rejected_table(id int); CREATE TABLE later_table(id int)', true],
+  ['concurrent index without flag', 'CREATE INDEX CONCURRENTLY rejected_idx ON retained(id)', false],
+  ['conditional concurrent index with flag', '-- migrate:no-transaction\nCREATE INDEX CONCURRENTLY IF NOT EXISTS rejected_idx ON retained(id)', true],
+  ['bare column addition', 'ALTER TABLE retained ADD label text', true],
+  ['paired column and reader view', 'ALTER TABLE retained ADD label text; CREATE OR REPLACE VIEW sql_reader.retained AS SELECT id, label FROM retained', true],
+]) {
+  test(`automatic admission rejects ${label} before any pending DDL, ledger upgrade or reader sync`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'awsops-automatic-reject-'));
+    const database = await postgres.database();
+    const messages = [];
+    try {
+      await run(database, { migrationDir: directory });
+      await inspect(database, db => db.query(`CREATE TABLE retained(id int); INSERT INTO retained VALUES (42);
+        CREATE SCHEMA sql_reader; CREATE VIEW sql_reader.retained AS SELECT id FROM retained;
+        ALTER TABLE schema_migrations DROP COLUMN checksum, DROP COLUMN app_version;`));
+      writeFileSync(join(directory, `${testId}_earlier.sql`), 'CREATE TABLE earlier_table(id int);');
+      writeFileSync(join(directory, '01ARZ3NDEKTSV4RRFFQ69G5FAW_rejected.sql'), sql);
+      const first = await inspect(database, ledger);
+      for (const dry of [false, true]) {
+        await assert.rejects(run(database, { migrationDir: directory, logger: { log: text => messages.push(text) },
+          env: { AUTOMATIC_MIGRATION: '1', SQL_READER_SYNC_MODE: 'secret', SQL_READER_SECRET_ARN: 'reader',
+            ...(dry ? { DRY_RUN: '1' } : { INITIALIZE_EMPTY_DB: '1' }) },
+        }), /Automatic migration blocked.*01ARZ3NDEKTSV4RRFFQ69G5FAW_rejected.sql.*reason=/);
+        // Full rows include column keys: no ledger metadata upgrade is allowed.
+        assert.deepEqual(await inspect(database, ledger), first);
+        await inspect(database, async db => {
+          for (const relation of ['earlier_table', 'rejected_table', 'later_table', 'rejected_idx']) {
+            assert.equal((await db.query('SELECT to_regclass($1) AS t', [relation])).rows[0].t, null);
+          }
+          assert.deepEqual((await db.query('SELECT * FROM retained')).rows, [{ id: 42 }]);
+          assert.deepEqual((await db.query('SELECT * FROM sql_reader.retained')).rows, [{ id: 42 }]);
+        });
+      }
+      assert.doesNotMatch(messages.join('\n'), /CREATE |ALTER |password synced|applied \d+ migration/);
+      // Default/manual mode keeps the original SQL and transaction behavior.
+      if (manualSucceeds) await run(database, { migrationDir: directory });
+      else await assert.rejects(run(database, { migrationDir: directory }),
+        /SQLSTATE=25001.*active SQL transaction.*standalone.*transaction mode/);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+}
 
 test('all actual pending SQL is guarded before ledger upgrades, pending DDL and reader sync; manual override works', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'awsops-automatic-contract-'));
@@ -240,7 +299,7 @@ for (const [code, timeouts, diagnosis] of [
     try {
       await run(database, { migrationDir: directory });
       await inspect(database, db => db.query('CREATE TABLE ddl_target(id int)'));
-      writeFileSync(join(directory, `${testId}_blocked.sql`), 'ALTER TABLE ddl_target ADD label text');
+      writeFileSync(join(directory, `${testId}_blocked.sql`), 'CREATE INDEX ddl_target_idx ON ddl_target(id)');
       await inspect(database, async blocker => {
         await blocker.query('BEGIN; LOCK TABLE ddl_target IN ACCESS EXCLUSIVE MODE');
         try {

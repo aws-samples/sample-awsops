@@ -4,7 +4,7 @@
 // --status and DRY_RUN=1 OFFLINE=1 never need credentials or a database.
 // Fargate uses explicit AURORA_* settings, Secrets Manager in memory, verified
 // RDS TLS, and INITIALIZE_EMPTY_DB=1 for safe first installation.
-// AUTOMATIC_MIGRATION=1 admits only the conservative additive pending SQL subset.
+// AUTOMATIC_MIGRATION=1 admits only transactional new tables and ordinary indexes.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, realpathSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -193,7 +193,8 @@ export async function migrateDatabase(client, {
     const { rows: [lock] } = await db.query('SELECT pg_try_advisory_lock($1) AS acquired', [LOCK_KEY]);
     if (lock?.acquired === false) {
       throw new MigrationError('Concurrent migration is already running; retry after it finishes '
-        + '(including standalone migration and SQL-reader password synchronization)');
+        + '(including standalone migration and SQL-reader password synchronization); '
+        + 'if it persists, inspect pg_locks and pg_stat_activity for advisory key 4729411');
     }
     if (lock?.acquired !== true) throw new MigrationError('Migration advisory lock returned an invalid result');
     locked = true;

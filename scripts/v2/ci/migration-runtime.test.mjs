@@ -280,8 +280,10 @@ test('database diagnostics reject arbitrary SQLSTATE text and non-Error throws',
   }).message, /ERR_TLS_CERT_ALTNAME_INVALID/);
 });
 
-test('lock and cancellation SQLSTATEs give distinct fixed guidance without attributing DDL locks to migrations', () => {
+test('transaction, lock, deadlock and cancellation SQLSTATEs give fixed guidance without exposing server text', () => {
   for (const [code, diagnosis] of [
+    ['25001', /active SQL transaction.*standalone.*transaction mode/i],
+    ['40P01', /database deadlock detected.*blocking transactions/i],
     ['55P03', /database lock unavailable.*blocking transactions/i],
     ['57014', /query canceled.*statement timeout.*cancellation/i],
   ]) {
@@ -313,7 +315,7 @@ test('failed advisory acquisition closes the client without unlocking, SQL, or r
         migrationDir: directory,
         env: { INITIALIZE_EMPTY_DB: '1', SQL_READER_SYNC_MODE: 'secret', SQL_READER_SECRET_ARN: 'reader' },
         readSecret: () => assert.fail('contending runner must not sync reader'),
-      }), acquired === false ? /Concurrent migration.*retry.*standalone/i : /advisory lock.*invalid/i);
+      }), acquired === false ? /Concurrent migration.*retry.*standalone.*pg_locks.*pg_stat_activity/i : /advisory lock.*invalid/i);
       assert.deepEqual(calls, ['connect', 'SELECT pg_try_advisory_lock($1) AS acquired', 'end']);
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }

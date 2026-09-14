@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9f51d2a4f1e3 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: cf7672db9d69 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -13,11 +13,11 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 ## Diagnostic and deployment boundaries
 - `ci_web_read.py` / `ci_web_deploy.py` serve Deploy Web. Only typed transient reads
   retry within a shared deadline; writes/permissions/identity failures do not retry.
-  Failed/replaced ECS deployments are terminal; known old PRIMARY visibility gets 15 seconds.
+  Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.
 - `AUTOMATIC_MIGRATION=1` checks every ledger-derived pending SQL file against the
-  conservative additive subset before mutations; unknown/contract SQL needs manual review.
+  transactional subset before pending SQL/ledger/reader changes; unknown/contract SQL needs manual review.
   Advisory lock acquisition is nonblocking and remains held through reader sync.
-  See `release-safety-primitives.md` and the corresponding Python/Node/PostgreSQL tests.
+  See `docs/runbooks/release-safety-primitives.md` and the corresponding Python/Node/PostgreSQL tests.
 - `v2/ci_web_deploy.py` calls composed `ci_web_image.promote(env, expected_digest=...)`, verifying the
   caller/context/source/migration/producer; readonly proof shares ECR/config/source-tag checks before DDL.
   A nonempty preflight digest is mandatory; fresh builds must match the registry's source

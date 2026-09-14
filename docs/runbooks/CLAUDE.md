@@ -24,7 +24,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration and opt-in diagnostics (ADR-002/005/016) |
-| [release-safety-primitives.md](release-safety-primitives.md) | Bounded web reads/controller, opt-in pending-SQL admission, immediate migration contention and operator recovery (ADR-001/005/021) |
+| [release-safety-primitives.md](release-safety-primitives.md) | Bounded web reads/controller, opt-in pending-SQL admission, immediate migration contention and operator recovery (ADR-001/005) |
 | [web-release.md](web-release.md) | Digest-bound web release, private migration ordering, mandatory dev login/DB checks and explicit image rollback (ADR-001/005) |
 | [legacy-web-image-recovery.md](legacy-web-image-recovery.md) | Explicitly approved private-host recovery for images without receipts: trusted source/digest evidence, schema approval, exact image verification, no migrations (ADR-001/005) |
 | [web-image-provenance.md](web-image-provenance.md) | Helper contract: receipt steps/inputs, composed promotion, main account prerequisite, migration/rollback/expiry limits (ADR-005) |
@@ -37,6 +37,13 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
+- `release-safety-primitives.md` defines web read/controller contracts and
+  opt-in transactional pending-SQL admission. The empty-only frozen baseline precedes
+  the pending guard. Column/view changes and non-transactional SQL require manual review.
+  Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads
+  retry within a shared budget; writes and identity/permission failures do not retry.
+  Receipt verification gives the known old PRIMARY 15 seconds of visibility grace;
+  start confirmation retains its separate 120-second bound.
 
 - Private S3 plans require the configured backend file, verified bucket posture and existing
   base-role/key-policy permissions; publication grants none. Operators use IAM/KMS, not the

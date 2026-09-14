@@ -145,3 +145,5 @@ For new receipt-enabled releases, rebuild the current reviewed source or choose 
 ## Related files and boundary
 
 See `scripts/v2/ci_web_image.py`, `scripts/v2/test_ci_web_image.py`, `.github/workflows/deploy-web.yml`, [CI setup](dev-repo-setup.md), and the AWS [PutImage](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_PutImage.html) / [GetDownloadUrlForLayer](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_GetDownloadUrlForLayer.html) contracts. This operator CI publication is not product remediation/autonomy and adds no ADR-005 exception or IAM grant.
+
+The existing but unwired web controller and bounded read transport are described in [release safety primitives](release-safety-primitives.md); their presence does not activate a workflow.

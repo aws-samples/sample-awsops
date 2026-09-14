@@ -16,9 +16,10 @@ DO NOTHING`. Concurrent branches kept **preempting the same integer** (manual re
 2. Create `terraform/foundation/migrations/<ULID>_<snake_name>.sql`, e.g.
    `01J9Z8XK3P7QF2VN6T0BC4D5EH_opencost_config.sql`.
 3. Put **only DDL/data** in the file. **Do NOT** write `schema_migrations` — the runner stamps it
-   (version + sha256 checksum) in the same transaction. Do NOT use `ON CONFLICT DO NOTHING` on the ledger.
+   (version + sha256 checksum) in the same transaction for ordinary files. Do NOT use `ON CONFLICT DO NOTHING` on the ledger.
 4. Non-transactional statements (`CREATE INDEX CONCURRENTLY`, some `ALTER TYPE … ADD VALUE`) — put
-   `-- migrate:no-transaction` as the first line; the runner runs that file in autocommit.
+   `-- migrate:no-transaction` as the first line; the standalone runner runs that file in autocommit,
+   with a separate ledger write. These files require manual failure/retry review and are refused in automatic mode.
 5. Declare the release with a `-- since: <semver>` header (e.g. `-- since: 2.1.0`) — the version the
    migration is introduced in. Recorded in the `app_version` ledger column at apply. Optional: with no
    header the runner stamps the deploying app's version (`web/package.json`) instead.
@@ -30,13 +31,40 @@ DO NOTHING`. Concurrent branches kept **preempting the same integer** (manual re
 
 ## Apply
 - Install locked runtime dependencies first: `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`.
-- `make migrate` — apply pending (advisory-locked, pending-only, fail-loud, version-stamped). `make deploy` runs it first.
+- `make migrate` — apply pending after nonblocking `pg_try_advisory_lock(4729411)` admission.
+  A busy lock fails immediately instead of queueing; that runner performs no initialization, DDL or reader sync.
+  The owner holds the session lock through reader password synchronization. `make deploy` runs migration first.
 - `make migrate-status` — offline summary: the deploying app version + each migration's declared release. No DB.
-- `DRY_RUN=1 make migrate` — list pending + SQL, no exec. `DRY_RUN=1 OFFLINE=1` — no DB connection.
+- `DRY_RUN=1 make migrate` — list pending + SQL, no exec; automatic admission still applies if enabled.
+  `DRY_RUN=1 OFFLINE=1` — no DB connection or admission check.
 - `BOOTSTRAP=1 make migrate` — **one-time, controller-confirmed**: migrates the legacy `schema_migrations.version`
   INTEGER→TEXT + adds the `checksum` + `app_version` columns + a `baseline` marker. Run during a coordinated quiet
   window (concurrent sessions may still INSERT integer rows). Legacy integer rows (v1..vN) are preserved as applied;
   the baseline `schema.sql` stays as the one-time bootstrap of those tables.
+
+### Automatic migration admission
+
+`AUTOMATIC_MIGRATION=1` opts into the conservative policy in
+`scripts/v2/automatic-migration-policy.mjs`. Under the session lock, after checksum validation,
+it checks **all ledger-derived pending files**, including gaps below newer applied IDs.
+Only supported `CREATE TABLE` definitions and ordinary, non-unique, column-only B-tree
+`CREATE INDEX` statements are admitted. Allowlisted built-in column types, constant defaults,
+and new-table `NOT NULL`/`PRIMARY KEY`/`UNIQUE` constraints are supported; indexes may use
+ordering, `INCLUDE`, and `IF NOT EXISTS`. This is a limited syntax subset, not complete schema validation.
+
+Every `-- migrate:no-transaction` file is rejected, even if its SQL could run transactionally.
+`CREATE INDEX CONCURRENTLY` is rejected with or without that header or `IF NOT EXISTS`.
+All `ALTER TABLE` statements, including nullable `ADD COLUMN`, require standalone review:
+base-column changes and their `sql_reader` view/grant refresh must remain together.
+Do not remove a paired refresh to pass admission. Destructive SQL, procedural/dynamic SQL,
+data statements and other unsupported forms also require the manual path.
+
+A rejected file produces only safe file/id/reason metadata and fixed guidance, before any pending
+DDL, ledger upgrade or reader sync. Online `DRY_RUN=1` still rejects disallowed pending files
+instead of printing their SQL; supported files can be previewed. Unset `AUTOMATIC_MIGRATION`
+for a reviewed standalone migration or full SQL preview. Checksums and the lock still apply.
+`--status`/`STATUS=1` and offline preview inspect files without validating live pending admission.
+False positives intentionally require manual review; never edit immutable SQL/headers or ledger checksums to bypass them.
 
 ### Empty database / 빈 데이터베이스
 
@@ -56,19 +84,24 @@ Aurora에 사설 연결 가능한 승인된 호스트에서 새 빈 DB에 한해
 The frozen baseline's one legacy BEGIN/COMMIT pair is removed **only in memory**. All baseline
 sections, INTEGER→TEXT ledger conversion and the baseline checksum commit atomically. ULIDs then
 commit individually under the same session lock (`4729411`), held through reader synchronization.
+A concurrent runner fails immediately before initialization; it does not wait for this lock.
 A later ULID failure leaves the committed baseline/prior ULIDs available for retry. Existing ledgers
 skip initialization; existing INTEGER ledgers still require the separate `BOOTSTRAP=1` gate.
+The trusted empty-only baseline hook precedes automatic pending-SQL admission: a fresh baseline
+may remain committed when an unsafe pending ULID is rejected. Recurring `INITIALIZE_EMPTY_DB=1`
+on the dedicated CI template is not itself an automatic-mode rejection.
 `INITIALIZE_EMPTY_DB=1` cannot be combined with an online `DRY_RUN=1`; `--status`/`STATUS=1`
 and `DRY_RUN=1 OFFLINE=1` remain credential-free inspection modes.
 
 기존 SQL 파일을 바꾸지 않고 메모리에서만 wrapper를 제거한다. baseline 전체·TEXT 변환·checksum은
-한 트랜잭션으로 반영하고, 같은 advisory lock을 유지해 ULID별 적용과 reader 동기화를 진행한다.
+한 트랜잭션으로 반영하고, advisory lock(4729411)을 대기 없이 획득한 실행만 잠금을 유지해
+ULID별 적용과 reader 동기화를 진행한다. 잠금이 사용 중이면 초기화 전에 즉시 실패한다.
 후속 ULID 실패 시 완료된 baseline/이전 ULID는 유지되어 재시도 가능하다. 원장이 있으면 초기화를
 건너뛰며 INTEGER 원장은 별도 `BOOTSTRAP=1`이 필요하다. 온라인 dry-run과 초기화는 함께 쓰지 않는다.
 상태 조회와 오프라인 preview에는 자격증명이 필요 없다.
 
-Every run, including online preview, checks stored non-null baseline and ULID checksums before
-ledger changes or password sync. Legacy null baseline checksums remain supported; this is not
+After empty-only initialization, every online run, including preview, checks stored non-null
+baseline and ULID checksums before pending ledger changes or password sync. Legacy null baseline checksums remain supported; this is not
 permission to retag/edit existing SQL or to rewrite ledger checksums.
 온라인 preview도 저장된 non-null baseline/ULID checksum을 검증한다. 레거시 null checksum은
 허용하지만 기존 SQL의 `-- since:` 변경·수정이나 원장 checksum 덮어쓰기는 허용하지 않는다.
@@ -95,6 +128,7 @@ reader output이 정의된 빈 문자열이면 비밀번호 동기화를 끄지�
 | `SQL_READER_SECRET_ARN` | Required only with `secret`; omit or empty with `disabled`. JSON username must be exactly `awsops_sql_reader`, password a nonempty string / reader 전용 시크릿 |
 | `INITIALIZE_EMPTY_DB` | Optional `1` for verified empty DB; one-shot host command, retained in the private CI template for manual and guarded current-source dev web releases |
 | `BOOTSTRAP` | Optional controller-confirmed `1` for legacy INTEGER ledger / 기존 INTEGER 원장 전환 |
+| `AUTOMATIC_MIGRATION` | Optional literal `1` restricts all pending files to supported transactional new tables and ordinary non-unique indexes. Unset preserves reviewed standalone SQL; online dry-run also enforces the policy above. |
 | `APP_VERSION` | Optional release stamp fallback; otherwise `web/package.json`; `-- since:` takes precedence / release 기록 |
 | `STATUS`, `DRY_RUN`, `OFFLINE` | `1` enables the inspection modes described above / 위 조회 모드 |
 

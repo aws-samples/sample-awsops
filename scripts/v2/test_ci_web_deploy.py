@@ -307,6 +307,25 @@ class DeploymentTests(unittest.TestCase):
                 self.verify(proof)
             self.assertEqual(self.tick, 0)
 
+    def test_prior_deployment_grace_requires_a_distinct_valid_identity(self):
+        proof = self.proof()
+        for old_id in (NEW, "other", 1, [], {}):
+            with self.subTest(old_id=old_id), self.assertRaisesRegex(ImageError, "prior deployment"):
+                self.verify(proof | {"old_deployment_id": old_id})
+            self.assertEqual(self.tick, 0)
+
+    def test_missing_rollout_state_can_converge_but_missing_identity_is_fatal(self):
+        proof = self.proof()
+        stale = copy.deepcopy(self.aws.service)
+        stale["deployments"][0].pop("rolloutState")
+        self.aws.responses["describe-services"] = [{"services": [stale], "failures": []}]
+        self.verify(proof)
+        self.assertEqual(self.tick, 5)
+        self.aws.service["deployments"].append({"status": "ACTIVE"})
+        with self.assertRaisesRegex(ImageError, "deployment identity"):
+            self.verify(proof)
+        self.assertEqual(self.tick, 5)
+
     def test_transient_post_update_and_final_tag_reads_retry_without_another_write(self):
         proof = self.proof()
         failures = {"describe-services": 1, "batch-get-image": 1}
