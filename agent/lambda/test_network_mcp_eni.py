@@ -68,14 +68,14 @@ class Ec2Evidence:
         self.omitted = set()
         self.route_calls = []
 
-    def response(self, key, rows, scope):
-        if scope in self.errors:
+    def response(self, key, rows, scope, resource_id=None):
+        if scope in self.errors or resource_id in self.errors:
             raise ClientError({"Error": {"Code": "UnauthorizedOperation",
                                          "Message": "fixture read denied"}}, scope)
         result = {key: copy.deepcopy(rows)}
-        if scope in self.omitted:
+        if scope in self.omitted or resource_id in self.omitted:
             result.pop(key)
-        if scope in self.tokens:
+        if scope in self.tokens or resource_id in self.tokens:
             result["NextToken"] = "more-fixture-evidence"
         return result
 
@@ -84,8 +84,10 @@ class Ec2Evidence:
         return self.response("NetworkInterfaces", self.enis, "eni")
 
     def describe_security_groups(self, **kwargs):
-        assert kwargs == {"GroupIds": ["sg-test"]}
-        return self.response("SecurityGroups", self.groups, "securityGroups")
+        assert kwargs in ({"GroupIds": [sg["GroupId"]]} for sg in self.enis[0]["Groups"])
+        sg_id = kwargs["GroupIds"][0]
+        groups = [sg for sg in self.groups if sg["GroupId"] == sg_id]
+        return self.response("SecurityGroups", groups, "securityGroups", sg_id)
 
     def describe_network_acls(self, **kwargs):
         assert kwargs == {"Filters": [{"Name": "association.subnet-id", "Values": ["subnet-test"]}]}
@@ -126,6 +128,21 @@ def ec2(monkeypatch):
     monkeypatch.setattr(network, "get_client", get_client)
     yield client
     ca._host_account_id.cache_clear()
+
+
+@pytest.fixture
+def multi_sg_ec2(ec2):
+    ec2.groups.extend([
+        {**copy.deepcopy(ec2.groups[0]), "GroupId": "sg-unassessed", "GroupName": "unassessed"},
+        {"GroupId": "sg-ruleless", "GroupName": "ruleless", "VpcId": "vpc-test",
+         "IpPermissions": [], "IpPermissionsEgress": []},
+        {"GroupId": "sg-after", "GroupName": "after", "VpcId": "vpc-test",
+         "IpPermissions": [permission(IpRanges=[{"CidrIp": "192.0.2.0/24"}])],
+         "IpPermissionsEgress": [permission(Ipv6Ranges=[{"CidrIpv6": "2001:db8::/64"}])]},
+    ])
+    ec2.enis[0]["Groups"] = [
+        {"GroupId": sg["GroupId"], "GroupName": sg["GroupName"]} for sg in ec2.groups]
+    return ec2
 
 
 def call_eni(**args):
@@ -278,6 +295,7 @@ def test_peerless_rule_is_unknown_not_a_crash_or_silent_omission(ec2):
     assert row["source"] is None
     assert row["peerType"] == "unknown"
     assert_unknown(body, "securityGroups", "peer_missing")
+    assert body["securityGroups"][0].get("partial") is True
 
 
 def test_ipv6_nacl_keeps_icmp_details_and_rule_order(ec2):
@@ -353,6 +371,36 @@ def test_component_read_failure_preserves_other_eni_evidence(ec2, scope):
         assert body["routes"] == []
     else:
         assert body["routes"][0]["target"] == "nat-main"
+
+
+@pytest.mark.parametrize("failure,reason", [
+    ("errors", "read_failed"), ("tokens", "truncated"), ("omitted", "response_missing")])
+def test_multi_sg_read_unknown_identifies_only_affected_group(multi_sg_ec2, failure, reason):
+    getattr(multi_sg_ec2, failure).add("sg-unassessed")
+    body = call_eni()
+    expected = {"component": "securityGroups", "resourceId": "sg-unassessed", "reason": reason}
+    if reason == "read_failed":
+        expected["errorCode"] = "UnauthorizedOperation"
+    assert body["partial"] is True
+    assert body["unknown"] == [expected]
+
+
+@pytest.mark.parametrize("failure", ["errors", "tokens", "omitted"])
+def test_multi_sg_incomplete_read_differs_from_confirmed_ruleless_group(multi_sg_ec2, failure):
+    getattr(multi_sg_ec2, failure).add("sg-unassessed")
+    body = call_eni()
+    groups = {sg["id"]: sg for sg in body["securityGroups"]}
+    assert {sg_id: sg.get("partial") for sg_id, sg in groups.items()} == {
+        "sg-test": False, "sg-unassessed": True, "sg-ruleless": False, "sg-after": False,
+    }
+    assert groups["sg-unassessed"]["inbound"] == groups["sg-ruleless"]["inbound"] == []
+    assert groups["sg-unassessed"]["outbound"] == groups["sg-ruleless"]["outbound"] == []
+    assert [row["source"] for row in groups["sg-test"]["inbound"]] == ["10.0.0.0/16"]
+    assert [row["dest"] for row in groups["sg-test"]["outbound"]] == ["0.0.0.0/0"]
+    assert [row["source"] for row in groups["sg-after"]["inbound"]] == ["192.0.2.0/24"]
+    assert [row["dest"] for row in groups["sg-after"]["outbound"]] == ["2001:db8::/64"]
+    assert body["naclId"] == "acl-test"
+    assert body["routes"][0]["target"] == "nat-main"
 
 
 @pytest.mark.parametrize("attribute,component", [("groups", "securityGroups"), ("nacls", "nacl")])

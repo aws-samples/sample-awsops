@@ -11,21 +11,24 @@ from botocore.exceptions import BotoCoreError, ClientError
 from cross_account import get_client, get_role_arn, resolve_tool_name
 
 
-def _eni_read(read, key, unknown, component, **kwargs):
+def _eni_read(read, key, unknown, component, *, resource_id=None, **kwargs):
     """One bounded describe call; failed/truncated evidence must not look complete."""
+    scope = {"component": component}
+    if resource_id is not None:
+        scope["resourceId"] = resource_id
     try:
         response = read(**kwargs)
     except (ClientError, BotoCoreError) as exc:
         code = (exc.response.get("Error", {}).get("Code") if isinstance(exc, ClientError)
                 else type(exc).__name__)
-        unknown.append({"component": component, "reason": "read_failed", "errorCode": code})
+        unknown.append({**scope, "reason": "read_failed", "errorCode": code})
         return [], "read_failed"
     rows = response.get(key)
     if not isinstance(rows, list):
-        unknown.append({"component": component, "reason": "response_missing"})
+        unknown.append({**scope, "reason": "response_missing"})
         return [], "response_missing"
     if response.get("NextToken"):
-        unknown.append({"component": component, "reason": "truncated"})
+        unknown.append({**scope, "reason": "truncated"})
         return rows, "truncated"
     return rows, None
 
@@ -130,22 +133,26 @@ def _get_eni_details(ec2, eni_id):
     unknown, sgs, nacl_rules = [], [], []
     for sg in eni.get("Groups") or []:
         sg_id = sg.get("GroupId")
-        projected = {"id": sg_id, "name": sg.get("GroupName"), "inbound": [], "outbound": []}
+        projected = {"id": sg_id, "name": sg.get("GroupName"), "inbound": [], "outbound": [],
+                     "partial": True}
         sgs.append(projected)
         if not sg_id:
             unknown.append({"component": "securityGroups", "reason": "identity_missing"})
             continue
         groups, reason = _eni_read(ec2.describe_security_groups, "SecurityGroups",
-                                   unknown, "securityGroups", GroupIds=[sg_id])
+                                   unknown, "securityGroups", resource_id=sg_id, GroupIds=[sg_id])
         if reason:
             continue
         if len(groups) != 1 or groups[0].get("GroupId") != sg_id:
             unknown.append({"component": "securityGroups", "resourceId": sg_id,
                             "reason": "missing" if not groups else "ambiguous"})
             continue
+        unknown_before_rules = len(unknown)
         for key, side, peer_key in (("IpPermissions", "inbound", "source"),
                                     ("IpPermissionsEgress", "outbound", "dest")):
             projected[side] = _eni_permissions(groups[0].get(key) or [], peer_key, sg_id, unknown)
+        # Completeness is local to this group, including any missing rule peers.
+        projected["partial"] = len(unknown) != unknown_before_rules
 
     nacl_id = None
     if subnet_id:
