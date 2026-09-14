@@ -88,6 +88,24 @@ guard — see the section below.
     `query_inventory`/`get_topology`). So it's allowlist projection, and the `data` allowlist
     must be a superset of `inventory_read_mcp.PROJECTIONS` —
     `agent/lambda/test_inventory_view_contract.py` fails the build on drift.
+  - `sql_reader.topology_nodes.meta` is a named-key allowlist, currently owned by
+    `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Any unlisted key,
+    including ownership, ambiguity or target-time fields a future writer might add, remains
+    absent until a reviewed additive migration exposes it. This is a projection rule, not a
+    claim that current raw writers emit those fields.
+  - Interpret evidence per class: flow/infra labels are cached configuration, not live
+    ownership. Trace service/database account or region metadata, when present, is telemetry
+    attribution; database `infra_ref` is a host-name/prefix inference, not identity proof.
+    Trace queues explicitly carry `identityProvenance='telemetry_claim'`; destination ARN
+    qualifiers become nullable `claimedAccountId`/`claimedRegion`, never verified ownership.
+    Missing qualifiers never establish confidence.
+  - Node `captured_at` is graph materialization time, not underlying inventory or event time.
+    `sql_reader.topology_graph_state` supplies trace status, observation-window and retained
+    evidence; its current writer records only `class='trace'`, not flow/infra coverage.
+  - The topology assertions in `test_inventory_view_contract.py` still read the original
+    `01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql`; they do not enforce the current
+    topology projection. Inspect its current owner and the queue/view tests in
+    `scripts/v2/workers/test_graph_collection.py` separately.
   - Effect: a new base-table column is **invisible** until someone adds it to a view (silently
     absent instead of silently exposed — the right direction for a model-invocable tool).
   - `search_path = sql_reader, pg_catalog` → an unqualified `FROM worker_jobs` written by the

@@ -248,13 +248,16 @@ Applied `data/schema.sql` + all 37 ULID migrations in order. Three role migratio
 roles RDS provides (`rds_iam`, `awsops_admin`); create them first on a vanilla server. Then, as
 `awsops_sql_reader`:
 
+These are the recorded 2026-08-03 baseline results, not a new execution of the current
+projection. The current view owner and test limitations are described below.
+
 | 검사 / Check | 결과 / Result |
 |---|---|
 | `SELECT ... FROM public.inventory_resources` | `ERROR: permission denied for table` |
 | `UPDATE sql_reader.inventory_resources` | `ERROR: permission denied for view` |
 | `SELECT task_token FROM sql_reader.worker_jobs` | `ERROR: column "task_token" does not exist` |
 | CloudFront `data` 투영 / projection | `{"id","aliases","enabled","origins":[{"DomainName":...}]}` — `CustomHeaders` 값 부재, `cache_behaviors` 부재 / value absent, absent |
-| `topology_nodes.meta` 투영 / projection | `{"invType":...}` — `row` 아래 전체 행 복사본 부재 / the whole-row copy under `row` absent |
+| `topology_nodes.meta` projection | Baseline fixture retained `invType` and omitted the whole-row `row` copy; this is not the complete current named-key schema. |
 
 origins 케이스는 그 투영을 수정할 때마다 다시 돌려볼 값어치가 있다: `DomainName` 은 유지해야 하고
 ("CloudFront (empty origin)" finding 이 그것을 읽는다) `CustomHeaders[].HeaderValue`(origin secret)는
@@ -263,6 +266,45 @@ origins 케이스는 그 투영을 수정할 때마다 다시 돌려볼 값어�
 The origins case is the one worth re-running after any edit to that projection: it must keep
 `DomainName` (the "CloudFront (empty origin)" finding reads it) while dropping
 `CustomHeaders[].HeaderValue` (an origin secret). Both halves failed at some point during review.
+
+### Current topology evidence contract
+
+The current owner of `sql_reader.topology_nodes.meta` is
+[`01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`](../../terraform/foundation/migrations/01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql).
+It selects named JSON keys with type checks for telemetry fields and a trace-queue
+exception. Any unlisted key is excluded, including ownership/ambiguity/target-time
+fields if a future writer introduces them. Do not infer that such fields already
+exist in raw rows, or that a short example enumerates every excluded field. Exposing
+another key requires a reviewed additive migration; this document changes no projection
+or grant (ADR-004 §7, maintained in the private upstream repository).
+
+The projection is not an ownership validator:
+
+- `class='flow'` and `class='infra'` describe cached configuration relationships,
+  not exclusive or live ownership.
+- Trace service account/region and Kubernetes names come from telemetry. Any such
+  fields present on other trace nodes, including database nodes, remain telemetry
+  claims; the current database writer does not populate every allowed identity key.
+  A database `infra_ref` is inferred from an eligible host-name/prefix match, not
+  independent AWS identity proof.
+- Trace queues explicitly expose `identityProvenance='telemetry_claim'` and nullable
+  destination-ARN-derived `claimedAccountId`/`claimedRegion`. Queue `accountId`,
+  `region` and `infra_ref` are removed. Neither parsed ARN syntax nor a storage
+  partition's `account_id` proves telemetry ownership.
+
+The node's exposed `captured_at` is graph materialization time, not its underlying
+inventory capture or observation time. For trace collection quality, consult
+`sql_reader.topology_graph_state`: status, attempt/publication times, observation
+window, retained flag and projected source reasons. The current writer records only
+`class='trace'`; a missing flow/infra state row is not evidence of complete or empty
+coverage. Missing qualifiers or timestamps never establish confidence.
+
+`agent/lambda/test_inventory_view_contract.py` still reads the original
+`01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql` for its topology assertions.
+Those baseline text assertions do **not** enforce the current topology projection.
+Inspect the current migration and the queue/view cases in
+`scripts/v2/workers/test_graph_collection.py`; this clarification does not retarget
+tests or claim a fresh PostgreSQL execution.
 
 ### Trace queue projection / 트레이스 큐 투영
 
@@ -285,6 +327,8 @@ Lambda도 배포해야 한다. [적용 절차 / Rollout](source-sync-observabili
 
 ## 관련 / Related
 
-- `terraform/foundation/migrations/01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql` — 롤 + 뷰 / role + views
+- [Original reader-role/view migration](../../terraform/foundation/migrations/01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql)
+- [Current topology-node projection](../../terraform/foundation/migrations/01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql)
+- [Trace collection-state and edge projections](../../terraform/foundation/migrations/01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql)
 - `scripts/v2/migrate.mjs` (`syncSqlReaderPassword`) — 동기화 / the sync
-- `docs/decisions/004-agentcore-gateways-runtime.md` §7 — `execute_sql` 보안 모델 / security model
+- ADR-004 §7 — SQL reader security model; the ADR body is maintained in the private upstream repository.

@@ -8,13 +8,14 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { smokeConnectionArgs } from './deployment-smoke.mjs';
 import { cleanupSmokeCredentials, readSmokeCredentials } from './prepare-smoke-credentials.mjs';
-import { readRuntimeSmokeConfig, verifyRuntimeSmoke, RuntimeSmokeError } from './runtime-smoke.mjs';
+import { readRuntimeSmokeConfig, validateRuntimeSmokeConfig, runtimeSmokeDeadline, verifyRuntimeSmoke, RuntimeSmokeError } from './runtime-smoke.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const execute = promisify(execFile);
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_INVENTORY_RESPONSE_BYTES = 2 * 1024 * 1024;
-class SmokeError extends Error {}
+// Only fixed or validated diagnostic messages are passed to this class.
+export class SmokeError extends Error {}
 
 function readPrivateResponse(file, limit = MAX_RESPONSE_BYTES) {
   const fd = openSync(file, 'r');
@@ -48,9 +49,22 @@ function hasSessionCookie(contents, hostname) {
   });
 }
 
+function validatedDatabaseClock(value, timing) {
+  const started = timing?.request_started_at_ms, observed = timing?.response_observed_at_ms;
+  const parsed = typeof value === 'string' ? Date.parse(value) : NaN;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+      || !Number.isFinite(parsed) || new Date(parsed).toISOString() !== value
+      || !Number.isSafeInteger(started) || !Number.isSafeInteger(observed)
+      || observed < started || observed - started > 35_000) {
+    throw new RuntimeSmokeError('Runtime smoke: database_clock_invalid');
+  }
+  return { server_time: value, request_started_at_ms: started, response_observed_at_ms: observed };
+}
+
 export async function authenticatedSmoke(
   { publicUrl, cloudfrontDomain, email, password, runtimeConfig },
-  { runCurl = execute, tempRoot = resolve(process.env.RUNNER_TEMP || tmpdir()) } = {},
+  { runCurl = execute, tempRoot = resolve(process.env.RUNNER_TEMP || tmpdir()), now = Date.now,
+    deadline = Infinity, includeDatabaseClock = false } = {},
 ) {
   let directory;
   let previousUmask;
@@ -59,6 +73,13 @@ export async function authenticatedSmoke(
   const cancel = () => controller.abort();
   const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
   try {
+    if (typeof includeDatabaseClock !== 'boolean' || (includeDatabaseClock && runtimeConfig?.mode !== 'prepare')) {
+      throw new RuntimeSmokeError('Runtime smoke: configuration');
+    }
+    if (runtimeConfig !== undefined) {
+      validateRuntimeSmokeConfig(runtimeConfig, now());
+      deadline = runtimeSmokeDeadline(runtimeConfig, now(), deadline);
+    }
     const connectionArgs = smokeConnectionArgs(publicUrl, cloudfrontDomain);
     const url = new URL(publicUrl);
     failure = 'requires a configured demo username';
@@ -97,8 +118,11 @@ export async function authenticatedSmoke(
       if (typeof stdout === 'string' && /^[1-5][0-9]{2}$/.test(stdout)) failure += `; HTTP status ${stdout}`;
     };
     let requestCounter = 0;
+    let databaseTiming;
     const request = async (args, path, status = '200', timeout = 35_000,
       maxResponseBytes = MAX_RESPONSE_BYTES, withStatus = false) => {
+      const remaining = deadline - now();
+      if (remaining <= timeout) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
       if (maxResponseBytes !== MAX_RESPONSE_BYTES
           && !(path.startsWith('/api/inventory/cloudfront?') && maxResponseBytes === MAX_INVENTORY_RESPONSE_BYTES)) {
         throw new Error();
@@ -106,15 +130,23 @@ export async function authenticatedSmoke(
       const response = join(directory, `response-${++requestCounter}.json`);
       writeFileSync(response, '', { mode: 0o600, flag: 'wx' });
       let stdout;
+      const sampleClock = includeDatabaseClock && path === '/api/db';
+      const requestStartedAt = sampleClock ? now() : undefined;
       try {
         ({ stdout } = await runCurl('curl', [
           ...commonArgs, ...(timeout > 35_000 ? ['--max-time', String((timeout - 5000) / 1000)] : []),
           '--max-filesize', String(maxResponseBytes), '--output', response, ...args, `${url.origin}${path}`,
         ], { ...options, timeout }));
       } catch (error) {
+        if (now() >= deadline) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
         recordStatus(error?.stdout);
         throw new Error();
       }
+      const responseObservedAt = now();
+      if (responseObservedAt >= deadline) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
+      if (sampleClock) databaseTiming = {
+        request_started_at_ms: requestStartedAt, response_observed_at_ms: responseObservedAt,
+      };
       recordStatus(stdout);
       if (controller.signal.aborted || !(Array.isArray(status) ? status.includes(stdout) : stdout === status)) throw new Error();
       const body = JSON.parse(readPrivateResponse(response, maxResponseBytes));
@@ -133,6 +165,7 @@ export async function authenticatedSmoke(
     const database = await request(['--request', 'GET', '--cookie', jar], '/api/db');
     if (database?.status !== 'ok' || !Number.isSafeInteger(database.public_tables)
         || database.public_tables <= 0) throw new Error();
+    const databaseClock = includeDatabaseClock ? validatedDatabaseClock(database.server_time, databaseTiming) : undefined;
     if (runtimeConfig !== undefined) {
       failure = 'runtime verification failed';
       const runtimeResult = await verifyRuntimeSmoke(runtimeConfig, async (path, {
@@ -149,13 +182,18 @@ export async function authenticatedSmoke(
           args.push('--header', 'Content-Type: application/json', '--data-binary', `@${bodyFile}`);
         }
         return request(args, path, status, timeout, maxResponseBytes, withStatus);
-      }, { wait: ms => delay(ms, undefined, { signal: controller.signal }) });
-      return { ...runtimeResult, public_tables: database.public_tables };
+      }, { now, deadline, wait: ms => delay(ms, undefined, { signal: controller.signal }) });
+      return { ...runtimeResult, public_tables: database.public_tables,
+        ...(includeDatabaseClock ? { database_clock: databaseClock } : {}) };
     }
     return { status: 'ok', public_tables: database.public_tables };
   } catch (error) {
     // Never expose curl exceptions, response bodies, credentials or cookies.
-    if (error instanceof RuntimeSmokeError) throw new SmokeError(error.message);
+    if (error instanceof RuntimeSmokeError) {
+      const failure = new SmokeError(error.message);
+      failure.inventory_quality = error.inventory_quality;
+      throw failure;
+    }
     throw new SmokeError(`Authenticated smoke: ${failure}`);
   } finally {
     signals.forEach(signal => process.removeListener(signal, cancel));
@@ -191,7 +229,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       runtimeConfig: process.env.SMOKE_RUNTIME_CONFIG_FILE === undefined ? undefined
         : readRuntimeSmokeConfig(process.env.SMOKE_RUNTIME_CONFIG_FILE, file),
     }, {
-      // The existing always() credential cleanup also owns scratch after SIGKILL.
+      // Workflow cleanup can recover CLI scratch while the runner remains available.
       tempRoot: dirname(file),
     });
     completedMode = completed.mode;
