@@ -12,8 +12,9 @@ Review each consumer's credential-assumption steps separately; helper availabili
 alone does not establish that a workflow uses a restricted session.
 
 **Current wiring:** this checkout does not contain `collect-runtime.yml`.
-Deploy Web's existing smoke is dispatch-only database verification; it does not
-capture `runtime_deployment` or prepare authenticated runtime proof for push runs.
+Deploy Web's existing smoke is dispatch-only database verification. It never
+captures `runtime_deployment`; its `verify_database` credential path exists only
+for dispatch runs.
 The integration requirements below do not describe already-wired verification
 steps. The helper change does not install either consumer path.
 
@@ -130,7 +131,10 @@ workload policy:
   `features.inventory`, `features.agentcore` and `features.workers` must all be
   true in applied state, with the owned collector code hash and known CloudFront
   identity. Complete reviewed runtime/readiness activation before deployment
-  mutations and mandatory verification. Feature-off bootstrap uses the
+  mutations and mandatory verification. The consumer must validate those captured
+  fields and abort before image re-pinning or service rollout if any is missing;
+  the later workload-policy build is not a substitute for this pre-mutation check.
+  Feature-off bootstrap uses the
   [first-web procedure](first-web-bootstrap.md) and manual prepare path; collect
   is not its fallback. Missing activation or proof must fail closed, not silently
   skip verification or restore an unrestricted session.
