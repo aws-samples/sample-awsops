@@ -2,13 +2,11 @@
 
 ## Purpose
 
-`scripts/v2/ci_private_plan.py` is an **unwired module prerequisite**. The current
-`.github/workflows/terraform.yml` still uses its existing encrypted GitHub artifact
-flow: it does **not** call this helper, publish private S3 plans or produce a private
-`reference.json`. This module provisions no bucket, IAM policy, role or workflow.
-Do not use its operator commands against that base workflow; the consumer integration
-must land and produce the required artifacts first. Existing operator procedures remain
-separate.
+`scripts/v2/ci_private_plan.py` implements private saved-plan transport for
+`.github/workflows/terraform.yml`. Manual planning publishes through the protected
+storage session; local inspection uses the private backend and operator profile;
+apply restores exact reviewed bytes with existing gates. The helper itself creates
+no bucket, IAM policy or role. Use the [operator prerequisites and procedures](../runbooks/dev-repo-setup.md#private-exact-plan-inspection).
 
 This is operator CI artifact transport, **not an ADR-005 exception** or a product
 mutation/autonomy path. The module enables no frozen feature. ADR-005's product
@@ -33,10 +31,10 @@ and restore validate the backend before any command or network request; there is
 bucket enumeration/discovery fallback. Publication uses the policy mode's validated
 backend store. Callers must protect backend/configuration inputs and generated files.
 
-### Required future workflow integration
+### Workflow integration contract
 
-The consumer must retain the existing manual-dispatch, branch/SHA, authorization,
-DNS/runtime and exact reviewed-plan gates. It must provide:
+The workflow retains the existing manual-dispatch, branch/SHA, authorization,
+DNS/runtime and exact reviewed-plan gates. Its required interfaces are:
 
 1. Source workflow `.github/workflows/terraform.yml`, successful job display name
    `Plan`, and publisher job ID `publish` with display name **`Publish private plan`**.
@@ -48,8 +46,8 @@ DNS/runtime and exact reviewed-plan gates. It must provide:
    may the consumer overwrite it with exactly `reference.json`. The helper verifies
    authenticated artifact identity, complete bounded enumeration, expiry and ZIP digest;
    it does not upload, replace or delete GitHub artifacts itself.
-   This is a coordinated migration from the base artifact named `tfplan`: update
-   both Plan publication and Apply download in the same consumer change. The existing
+   This integration migrates both Plan publication and Apply download together from
+   the former artifact named `tfplan`. The existing
    `ci_plan_inspect.py` hardcodes `tfplan` and remains for historical encrypted artifacts;
    new S3 runs require this helper's `inspect` mode. Do not rename old artifacts or
    use the historical inspector to approve new-format plans.
@@ -60,7 +58,9 @@ DNS/runtime and exact reviewed-plan gates. It must provide:
    permission review.
 3. A fresh, protected deployer session using the generated nonempty policy. Its scope
    is the selected bucket's posture reads, this run's object prefix and constrained KMS
-   use, not backend state access or infrastructure/IAM mutation. Required bucket posture
+   use, not backend state access or infrastructure/IAM mutation. A separate PUT
+   statement requires explicit SSE-KMS;
+   object reads do not require a request encryption header. Bucket posture
    requires owner/region agreement, Enabled versioning, all four public-access blocks,
    BucketOwnerEnforced, a nonpublic bucket policy (or no bucket policy), valid
    default SSE-KMS settings and the plan-prefix lifecycle below. Existing role/key policies
@@ -76,7 +76,7 @@ DNS/runtime and exact reviewed-plan gates. It must provide:
    known; existing identity/key policies must constrain effective access as appropriate.
    `policy` is publisher-only and cannot generate an Apply/restore policy. The helper
    checks caller identity but cannot prove which session policy was attached: the
-   consumer must install the generated policy and test that wiring. Restore uses the
+   workflow installs the generated policy and tests that wiring. Restore uses the
    separately protected Apply role and its existing deployment authorization.
 4. `TF_PLAN_ENC_KEY` for publish/restore and the existing plan packing operation.
    Publication decrypts the handoff and verifies the existing authenticated asset
@@ -93,13 +93,15 @@ DNS/runtime and exact reviewed-plan gates. It must provide:
    and abort incomplete multipart uploads after one day. Do not broaden this filter
    to backend state or replace unrelated bucket lifecycle rules. Add expired delete-marker
    cleanup separately if needed. The helper requires `s3:GetLifecycleConfiguration`,
-   checks the configured rule and rejects overlapping expiry/archive actions that
-   invalidate the five-day read window. It installs no lifecycle configuration.
-   Consumer wiring must retain this fail-closed check and its fixed diagnostics.
+   checks the configured rule and rejects overlapping expiry/archive actions at or
+   before the five-day read-window boundary. It installs no lifecycle configuration.
+   The workflow retains this fail-closed check and its fixed diagnostics. Owners may
+   enable the optional `terraform/bootstrap` retention resource after reconciling
+   lifecycle ownership; the workflow never applies that bootstrap configuration.
 
-These names and boundaries are executable helper requirements, not claims that the
-base workflow already implements them. Consumer workflow tests belong with that
-integration, not this module.
+These names and boundaries are executable helper requirements.
+`test_ci_private_plan_workflow.py` checks the consumer wiring, input masking, source
+guards and cleanup; helper tests exercise storage integrity independently.
 
 ### Public and private data
 
@@ -158,32 +160,36 @@ Grant no IAM permissions or product mutation capabilities from this helper.
 
 - `scripts/v2/ci_private_plan.py`: four-mode transport and validation.
 - `scripts/v2/test_ci_private_plan.py`: offline transport/security fixtures.
+- `scripts/v2/test_ci_private_plan_workflow.py`: workflow adapters and executable operator procedures.
 - `scripts/v2/ci_plan_inspect.py`: historical encrypted-artifact inspector.
-- `.github/workflows/terraform.yml`: future consumer; currently unwired.
+- `.github/workflows/terraform.yml`: protected publication and exact-plan Apply.
+- `terraform/bootstrap/`: optional owner-run plan-prefix retention.
 - [CI/OIDC runbook](../runbooks/dev-repo-setup.md): existing operator procedures.
 
 ## Status
 
-Module and offline tests only. No S3 publication, lifecycle rollout, permission grant
-or successful deployment is established by this prerequisite.
+Workflow integration and offline tests are present. Owners must configure storage
+and permissions before use. Source availability alone does not establish a live S3
+publication, applied lifecycle configuration or successful deployment.
 
 ## Learnings
 
 ### Offline verification
 
 Use the existing Python test dependencies in `scripts/v2/requirements-test.txt`,
-OpenSSL and the repository's Terraform test version (1.15.7). These tests use fake
+Node.js, OpenSSL and the repository's Terraform test version (1.15.7). These tests use fake
 GitHub/AWS CLI responses, real local crypto/archive checks and local Terraform fixtures:
 
 ```bash
 python3 -m pytest -q -p no:cacheprovider \
-  scripts/v2/test_ci_private_plan.py scripts/v2/test_ci_tf_assets.py \
+  scripts/v2/test_ci_private_plan.py scripts/v2/test_ci_private_plan_workflow.py \
+  scripts/v2/test_ci_tf_assets.py \
   scripts/v2/test_ci_plan_inspect.py scripts/v2/test_ci_plan_context.py
 ```
 
-This adds no Python dependency. Runtime integration additionally needs authenticated
-GitHub CLI, AWS CLI v2 supporting conditional PUT/checksum arguments, and Terraform/provider schemas in the appropriate protected
-environment; the offline tests neither install that consumer nor prove live access.
+This adds no Python dependency. Runtime execution requires authenticated GitHub CLI,
+AWS CLI v2 supporting conditional PUT/checksum arguments and Terraform/provider schemas.
+Offline tests do not prove live access or successful deployment.
 
 Related decision: ADR-005 — operator-controlled CI transport, not a carve-out.
 

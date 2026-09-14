@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: db3a68e5cead · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8ec1d4420ab9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -10,6 +10,18 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
+
+- S3 runbooks must state backend-file, bucket-posture and existing role/key-policy prerequisites,
+  branch-environment approval for publication/apply, missing-backend/tfvars soft skips and
+  hard failures for missing publisher roles. No automatic permission/configuration changes.
+- Public references contain source context and manifest hash only; no storage bindings or
+  plan digest. Mask the reviewed input before any step environment; hashes select bytes,
+  not human review. CI asset HMAC remains mandatory. Require owner-installed plan-prefix
+  lifecycle (7-day current/noncurrent, 1-day multipart abort), rejecting conflicting
+  expiry/archive at or before five days. The workflow never applies the optional bootstrap.
+  Expiration is asynchronous; optional purge and runner-loss cleanup remain separate.
+  Review effective S3/KMS readers; they need no CI envelope key. Publisher policy requires
+  SSE-KMS on PUT independently of read permissions.
 - The web provenance helper is unwired; `web-image-provenance.md` defines future receipt
   steps, current-dev migration outputs and recovery limits. Require composed `promote`;
   never fabricate migration evidence or fall back to mutable tags as provenance.
@@ -36,8 +48,8 @@ legacy runbook's steps as the current operational path).
   fixed scope/presence checks, fixed addresses and a known collector hash, never private values.
   The combined 256-row view is not approval or resource-presence proof; unknown changes require
   private inspection. Membership checks include the existing/planned group's lack of an IAM role.
-  Reporting cannot weaken DNS/runtime/exact-plan gates or block later encrypted artifacts.
-- Private saved-plan inspection authenticates run/checkout/assets before 32 MiB-bounded rendering; it never authorizes apply.
+  Reporting cannot weaken DNS/runtime/exact-plan gates or block the encrypted handoff or private publication.
+- Private S3 plan inspection validates source/reference, manifest, version and hash before bounded local rendering; CI alone verifies asset HMAC. Inspection never authorizes apply.
 - Branch-independent artifact inspection/recovery lives in `dev-repo-setup.md`; domain rollout remains dev-only. Linux capture forwards the first interrupt, kills the child group on a second and arms parent-death SIGKILL; cancellation is not rollback.
 - Plan/apply capture drains a 1 MiB tail in memory, preserving the command exit independently of scratch writes. Fixed audits include capture/retention classes and available numeric success action counts; no raw automatic-run diagnostics.
 - Only an owned single ciphertext file can be uploaded for dispatch failure/cancellation, under an attempt-specific name. Schema-2 failure HMAC uses a separate domain; recovery authenticates the original attempt. Keep AWS_SESSION_TOKEN while removing GitHub channels/tokens, encryption keys, TF_LOG* and TF_CLI_ARGS* from Terraform child environments.
@@ -52,8 +64,8 @@ legacy runbook's steps as the current operational path).
   untargeted Lambdas are absent from targeted planned_values. TF_PLAN_ENC_KEY HMAC binds plan/SHA/scope and
   file paths/modes/hashes. Both APIs permit push/pull_request/workflow_dispatch, or explicit
   local commits without an event. Old signed bundles require their matching prior key after rotation.
-  The 0600 archive may contain signing keys; integrating callers must encrypt before upload
-  and clean their plaintext/staging. Terraform plan/apply now wire pack/restore.
+  The 0600 archive may contain signing keys; use encrypted GitHub handoff or private SSE-KMS
+  storage and clean owned plaintext/staging. Terraform plan/apply now wire pack/restore.
   CI_ASSETS_READY=true validates restored layers without reinstalling. See
   `scripts/v2/ci/pg8000-requirements.txt`, `scripts/v2/test_ci_tf_assets.py` and
   `docs/reference/06-workers.md`.

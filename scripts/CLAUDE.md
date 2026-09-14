@@ -30,25 +30,27 @@ secrets-manager) — installed by `make deps`.
   `v2/test_ci_web_image.py` tests the contract; jq is required for compare projection.
   See `docs/runbooks/web-image-provenance.md` for future receipt-step names, inputs and
   expiry/rollback limits. Operator CI publication adds no ADR-005 exception or IAM grant.
-- `v2/ci_plan_inspect.py` verifies authenticated successful plan-run identity, checkout SHA
+- `v2/ci_private_plan.py` provides policy/publish/restore/inspect for private saved plans.
+  The read-only plan job keeps asset validation and stages manual attempt-specific ciphertext.
+  A protected publisher uses the existing deployer with an S3/KMS-only session, verifies
+  the HMAC bundle, stores pinned objects/private manifest and replaces the GitHub artifact
+  with a nonsecret reference. Operators use IAM/KMS, not the CI key; apply still verifies
+  asset HMAC plus reviewed_plan_sha256, exact source/attempt/scope and existing gates.
+  Local-only inspection requires the private backend file and writes a new 0700 directory
+  with 0600 files; it reads no state. Public references contain no backend identifiers/digests.
+  References last five days. Mandatory read-only lifecycle validation requires plan-prefix
+  7-day current/noncurrent expiry and 1-day multipart abort; operators configure it through
+  the separately reviewed bootstrap. Expiration is asynchronous, not an erasure guarantee.
+  SSE-KMS readers need no CI envelope key, so review effective S3/KMS access before rollout.
+  Policy mode is publisher-only; Apply retains its own authorization. Legacy `tfplan` runs
+  keep the historical inspector. Optional purge is the manual AWS-CLI runbook procedure
+  for reviewed expired attempt versions, not another helper mode.
+  Contract: `docs/reference/private-plan-transport.md`;
+  tests: `v2/test_ci_private_plan.py`, `v2/test_ci_private_plan_workflow.py` and the existing crypto/context suites.
+  This is operator CI artifact transport, not an ADR-005 exception or product mutation path.
+- `v2/ci_plan_inspect.py` is the legacy encrypted-artifact inspector: it verifies plan-run identity, checkout SHA
   and the existing signed plan/assets before local private rendering. No backend init/apply;
   new 0700 destination with 0600 bounded outputs. It refuses execution inside Actions.
-- `v2/ci_private_plan.py` is an **unwired** four-mode CLI (`policy`, `publish`, `inspect`,
-  `restore`), not a workflow or IAM rollout. The base Terraform workflow does not publish
-  private S3 plans or `reference.json`; operator use requires the later consumer integration.
-  That integration must provide publisher job ID `publish` / display name `Publish private plan`,
-  successful `Plan`, attempt artifact `tfplan-N`, protected scoped sessions and the CI HMAC key.
-  Inspection requires a private backend file; no bucket discovery or legacy-artifact fallback.
-  Public reference fields are only schema/storage tags, CI context and manifest hash/size;
-  plan/backend/bucket hashes and storage identities stay private. Inspection is not approval,
-  restore never applies, and no orphan-recovery operation is supplied.
-  Contract: `docs/reference/private-plan-transport.md`; offline tests: `v2/test_ci_private_plan.py`
-  with the existing `test_ci_{tf_assets,plan_inspect,plan_context}.py` suites.
-  This is operator CI artifact transport, not an ADR-005 exception or a product mutation path.
-  S3 SSE-KMS replaces the GitHub handoff's application envelope for operator reads;
-  effective S3/KMS readers need no CI key. Future wiring must review that access scope,
-  verify prefix-only lifecycle (7-day current/noncurrent expiry, 1-day multipart abort)
-  and coordinate the legacy artifact/inspector migration. Policy mode is publisher-only.
 - `v2/ci_failure_diagnostics.py` drains bounded output in memory until Terraform exits; no scratch-write error may kill apply or replace its result. Linux supervision forwards one graceful interrupt, escalates a second, and kills Terraform if its capture parent dies. Retain the last 1 MiB and signed total/capture status. No success/advisory raw log is written.
 - Strip GitHub command-file/token variables, encryption keys, TF_LOG* and TF_CLI_ARGS* from captured Terraform and pre-apply scope-check children; keep AWS STS credentials including AWS_SESSION_TOKEN. Publish only a validated owned single ciphertext path, gated by dispatch plus failure/cancellation, with attempt-specific artifact names and five-day retention.
 - Fixed public audit fields distinguish command, capture, retention and cleanup status; numeric standard Terraform success counts never include resource/output text. Missing summaries stay unavailable. Schema-2 failure HMAC uses its own domain with the existing CBC cipher/key. Recovery verifies the exact failed attempt and emits fixed timeout/errors; private inspection remains authenticated and bounded to 32 MiB.
@@ -85,7 +87,7 @@ secrets-manager) — installed by `make deps`.
   local callers supply an explicit commit without a GitHub event. Other events fail before work.
   Pack/restore require `TF_PLAN_ENC_KEY` for HMAC authentication. The 0600 plaintext tarball is
   private scratch and may contain rendered secrets; this utility cannot upload it. Callers must
-  encrypt before publication and clean plaintext files afterward.
+  encrypt for GitHub handoff or use private SSE-KMS storage, and clean plaintext files afterward.
   `v2/ci/pg8000-requirements.txt` is the single layer-install lock. Both Terraform paths call
   build-layer, or check-layer when CI_ASSETS_READY=true; lock/script changes trigger rebuilding.
   Prepare invalidates old markers and removes stale regular ZIPs before building; it rejects
@@ -268,6 +270,16 @@ secrets-manager) — installed by `make deps`.
   for ULIDs).
 
 ## Rules
+- Private-plan publication/apply require branch environments, including main plan approval.
+  Only missing backend/tfvars blobs soft-skip; absent publisher roles fail. Inspection requires
+  the private backend file. Public references omit storage identifiers/bare hashes and plan
+  digests; every CLI result omits the plan digest. Mask the reviewed input before logging.
+  Digests bind bytes, not human review. Existing bucket/IAM/KMS prerequisites are checked,
+  never granted. Owner-installed plan-prefix lifecycle is mandatory; the optional owner-run
+  bootstrap supplies it, never the workflow. Manual AWS-CLI purge is optional early cleanup
+  or orphan investigation. Its age cutoff covers data versions, not delete markers; a complete
+  listing must show no young data versions before deletion. Local cleanup is current-run
+  scoped without a runner-loss guarantee.
 - Scripts assume they run from the repo root (they resolve resource addresses via
   `terraform -chdir=terraform/foundation output`) — prefer the Makefile targets over running
   scripts directly.

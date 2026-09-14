@@ -174,7 +174,7 @@ def bundle_assets(root, output, commit, scope):
     if len(payload) > 4 * 1024 * 1024:
         raise ValueError("Asset manifest is too large")
     # Private 0600 scratch, like tfplan itself. This utility has no upload path.
-    # The caller must encrypt before publication; archives can contain rendered secrets.
+    # Rendered secrets require an encrypted GitHub handoff or private SSE-KMS storage.
     fd, temporary = tempfile.mkstemp(prefix=".assets-", dir=output.parent)
     os.close(fd)
     try:
