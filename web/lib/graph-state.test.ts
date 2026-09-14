@@ -4,6 +4,13 @@ import { inventorySourcesStale, readGraphState } from './graph-state';
 afterEach(() => vi.unstubAllEnvs());
 
 describe('graph state during rollout', () => {
+  it('preserves the legacy unknown trace envelope while inventory kind remains explicit', async () => {
+    const pool = { query: vi.fn().mockResolvedValue({ rows: [] }) };
+    expect(await readGraphState(pool as never, 'self', 'trace')).toEqual({
+      status: 'unknown', stale: true, attempted_at: null, captured_at: null, sources: [],
+    });
+    expect(await readGraphState(pool as never, 'self', 'infra')).toMatchObject({ evidenceKind: 'inventory' });
+  });
   it('reports unknown collection before its additive migration is applied', async () => {
     const pool = { query: vi.fn(async () => { throw Object.assign(new Error('missing relation'), { code: '42P01' }); }) };
     await expect(readGraphState(pool as never, 'self')).resolves.toMatchObject({ status: 'unknown', stale: true });

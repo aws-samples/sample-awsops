@@ -43,7 +43,7 @@ export async function writeGraphState(client: PoolClient, account: string, attem
 
 export async function readGraphState(pool: Pick<Pool, 'query'>, account: string, cls: GraphClass = 'trace') {
   const unknown = { status: 'unknown', stale: true, attempted_at: null, captured_at: null, sources: [],
-    evidenceKind: cls === 'trace' ? 'trace' : 'inventory' };
+    ...(cls !== 'trace' ? { evidenceKind: 'inventory' } : {}) };
   // A host state is not evidence for an account union. No unbounded per-account payload.
   if (account === '__all__' && cls !== 'trace') return { ...unknown, coverage: 'unknown' };
   const storageAccount = cls === 'trace' && account === '__all__' ? 'self' : account;
