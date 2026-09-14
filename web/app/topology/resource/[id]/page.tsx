@@ -41,6 +41,8 @@ export default function ResourceTopologyPage({ params }: { params: { id: string 
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
 
+  const unavailable = (graph?.collection as { readStatus?: string } | undefined)?.readStatus === 'unavailable';
+
   useEffect(() => {
     let live = true;
     const controller = new AbortController();
@@ -111,7 +113,7 @@ export default function ResourceTopologyPage({ params }: { params: { id: string 
         {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
         {graph?.captured_at && <span>{tt('그래프 시점:')} {new Date(graph.captured_at).toLocaleString()}</span>}
         {graph?.capped && <span className="text-amber-600">{tt('일부 허브는 이웃이 많아 상위 일부만 표시됩니다 (cap).')}</span>}
-        {graph && graph.nodes.length === 0 && !busy && <span>{tt('표시할 관계 노드가 없습니다. 수집 상태를 확인하세요.')}</span>}
+        {graph && !unavailable && graph.nodes.length === 0 && !busy && <span>{tt('표시할 관계 노드가 없습니다. 수집 상태를 확인하세요.')}</span>}
       </div>
       {!busy && !err && graph ? <div className="shrink-0 px-4"><GraphCollectionStatus collection={graph.collection} /></div> : null}
       <div className="min-h-[240px] flex-1">

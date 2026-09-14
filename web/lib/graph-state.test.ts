@@ -32,7 +32,7 @@ describe('inventory capture quality', () => {
   });
   it.each(['0', '1441', 'NaN', '30.5'])('invalid threshold %s falls back to the inventory 30 minute policy', threshold => {
     vi.stubEnv('INVENTORY_STALE_AFTER_MINUTES', threshold);
-    expect(inventorySourcesStale([{ status: 'empty', itemCount: 0, lastSuccessAtMs: Date.now() - 31 * 60_000 }])).toBe(true);
+    expect(inventorySourcesStale([{ status: 'empty', producerStatus: 'succeeded', itemCount: 0, lastSuccessAtMs: Date.now() - 31 * 60_000 }])).toBe(true);
   });
 });
 
@@ -63,5 +63,12 @@ it('projects bounded HTTP collection metadata and removes injected read fields',
   expect(result).not.toHaveProperty('coverage');
   expect(result).toMatchObject({ metadataTruncated: true, stale: true });
   expect(result.sources).toHaveLength(128);
-  expect(result.publishedSources[0]).toEqual({ sourceId: 'inventory:vpc', status: 'partial', producerStatus: 'running' });
+  expect(result.publishedSources?.[0]).toEqual({ sourceId: 'inventory:vpc', status: 'partial', producerStatus: 'running', reasons: [] });
+});
+
+it('rejects future publication clocks and contradictory empty source counts', async () => {
+  const query = vi.fn().mockResolvedValue({ rows: [{ status: 'ok', captured_at: new Date(Date.now() + 60000), details: { sources: [] } }] });
+  expect((await readGraphState({ query } as never, 'self')).stale).toBe(true);
+  expect(inventorySourcesStale([{ status: 'empty', producerStatus: 'succeeded', itemCount: 1,
+    capturedAtMs: Date.now() - 1000, lastSuccessAtMs: Date.now() - 1000 }])).toBe(true);
 });

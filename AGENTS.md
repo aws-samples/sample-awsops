@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f13995f7ee4b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 570c26465da2 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -64,6 +64,8 @@ migration outputs and the named producer-receipt steps, then use composed `promo
 changes no release behavior; see `docs/runbooks/web-image-provenance.md`.
 Its required tests need Linux `/proc`, jq and curl on `/usr/local/bin:/usr/bin:/bin`:
 `python3 -m pytest -q scripts/v2/test_ci_web_image.py`. AWS/GitHub are mocked; curl uses localhost.
+
+The required `test_ci_web_read.py` and `test_ci_web_deploy.py` suites use Python 3.12 on Linux with `/proc`, POSIX process groups and `os.geteuid`; provider boundaries are simulated and those two suites do not invoke AWS CLI, gh, curl or jq. The unwired controller and automatic SQL policy are documented in `docs/runbooks/release-safety-primitives.md`.
 
 ## BANNED PATTERNS (enforce in review)
 - **AWS security:** no `0.0.0.0/0` ingress; no IAM `Principal:"*"`/wildcard-action without scoped condition; **no secrets in env/code/IaC** (Secrets Manager / SSM).

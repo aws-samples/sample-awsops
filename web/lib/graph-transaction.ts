@@ -2,27 +2,51 @@ import type { Pool, PoolClient } from 'pg';
 
 const activeRequests = new WeakMap<Pool, number>();
 export class GraphReadBusy extends Error {}
+export class GraphReadDeadline extends Error {
+  constructor(readonly phase: 'acquire' | 'transaction') { super('graph read deadline exceeded'); }
+}
+type ReadLease = { client?: PoolClient; expired: boolean; released: boolean };
 
-/** Admit at most two graph requests per max:3 shared pool; leave one slot for auth. */
+/** Two admitted requests leave an auth slot. Keep admission until a late checkout settles. */
 export async function graphReadTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>) {
   const active = activeRequests.get(pool) ?? 0;
   if (active >= 2) throw new GraphReadBusy('graph read busy');
   activeRequests.set(pool, active + 1);
-  try { return await runTransaction(pool, true, fn, true); }
-  finally {
+  const lease: ReadLease = { expired: false, released: false };
+  const operation = runTransaction(pool, true, fn, true, lease).finally(() => {
     const remaining = (activeRequests.get(pool) ?? 1) - 1;
     if (remaining) activeRequests.set(pool, remaining); else activeRequests.delete(pool);
-  }
+  });
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      lease.expired = true;
+      reject(new GraphReadDeadline(lease.client ? 'transaction' : 'acquire'));
+      if (lease.client && !lease.released) {
+        lease.released = true;
+        try { lease.client.release(true); } catch { /* never replace the deadline */ }
+      }
+    }, 2000);
+  });
+  try { return await Promise.race([operation, deadline]); }
+  finally { clearTimeout(timer!); }
 }
 
 export async function graphTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: PoolClient) => Promise<T>) {
   return runTransaction(pool, readOnly, fn, false);
 }
 
-/** One shared-pool slot for a short transaction. No lock waits or remote IO in the callback.
+/** One shared-pool slot for a short transaction. Bounded lock waits and no remote IO in the callback.
  * PG17 transaction_timeout also bounds the sum of individually short statements. */
-async function runTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: PoolClient) => Promise<T>, requestBudget: boolean) {
+async function runTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: PoolClient) => Promise<T>, requestBudget: boolean, lease?: ReadLease) {
   const client = await pool.connect();
+  if (lease) {
+    lease.client = client;
+    if (lease.expired) {
+      lease.released = true; client.release();
+      throw new GraphReadDeadline('acquire');
+    }
+  }
   // pg-pool removes its idle error listener while checked out. A fatal query response
   // can be followed by a separate error event while ROLLBACK is pending.
   let clientError: Error | undefined;
@@ -45,7 +69,7 @@ async function runTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: Poo
     const unusable = (error as { message?: unknown } | null)?.message
       === 'Client has encountered a connection error and is not queryable';
     const failure = unusable && clientError ? clientError : error;
-    if (!clientError) {
+    if (!clientError && !lease?.released) {
       try { await client.query('ROLLBACK'); }
       catch { discard = true; }
     }
@@ -53,7 +77,12 @@ async function runTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: Poo
   } finally {
     // Keep local handling until release hands ownership back to pg-pool. Never reuse
     // a disconnected client or one whose transaction could not be rolled back.
-    try { client.release(discard || !!clientError); }
+    try {
+      if (!lease?.released) {
+        if (lease) lease.released = true;
+        client.release(discard || !!clientError);
+      }
+    }
     finally { client.removeListener('error', onError); }
   }
 }

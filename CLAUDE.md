@@ -20,6 +20,8 @@ The required web-image helper tests need Linux with `/proc`, jq, and curl instal
 on `/usr/local/bin:/usr/bin:/bin`. Run `python3 -m pytest -q scripts/v2/test_ci_web_image.py`;
 AWS/GitHub responses are mocked and the real curl fixture uses localhost only.
 
+The required `test_ci_web_read.py` and `test_ci_web_deploy.py` suites use Python 3.12 on Linux with `/proc`, POSIX process groups and `os.geteuid`; provider boundaries are simulated and those two suites do not invoke AWS CLI, gh, curl or jq. The unwired controller and automatic SQL policy are documented in `docs/runbooks/release-safety-primitives.md`.
+
 ## Architecture (v2)
 - **IaC**: **Terraform** (CDK retired). Single root at `terraform/foundation/`, **partial S3 backend** (`backend.hcl`, `awsops-v2-tfstate`, `use_lockfile` — no DynamoDB). TF ≥1.15, provider `~>6.0`.
 - **Edge**: CloudFront (TLS) → **VPC Origin `https-only:443`** → **internal ALB HTTPS:443** (regional ACM) → HTTP → Fargate `awsops-v2-web:3000`. **No public ALB.** The ALB SG allows 443 only from the CloudFront-managed SG `CloudFront-VPCOrigins-Service-SG` (VPC-CIDR-only causes a 504).

@@ -48,6 +48,7 @@ migration suites use locked `pg` and AWS SDK dependencies from `scripts/v2/packa
 The web connection-phase suite uses the locked driver and TypeScript from `web/`.
 The required web-image helper suite also needs Linux `/proc` and curl installed
 on its fixed provider PATH, `/usr/local/bin:/usr/bin:/bin`; its network fixture is localhost-only.
+The required `test_ci_web_read.py` and `test_ci_web_deploy.py` suites use Python 3.12 on Linux with `/proc`, POSIX process groups and `os.geteuid`; provider boundaries are simulated and those two suites do not invoke AWS CLI, gh, curl or jq. The unwired controller and automatic SQL policy are documented in `docs/runbooks/release-safety-primitives.md`.
 CI·웹 런타임 Node 20(migration 런타임 이미지 22)·Python 3.12·curl·OpenSSL·jq·Terraform **1.15.7**·접근 가능한 Docker를
 준비한다. private migration 테스트는 `scripts/v2`의 잠긴 `pg`·AWS SDK 의존성을,
 웹 연결 단계 테스트는 `web/`의 잠긴 드라이버·TypeScript를 사용한다.
@@ -167,7 +168,7 @@ aggregate-run false failures.
    The provisioner fixture imports boto3/botocore; install `agent/requirements.txt` for local runs too.
 5. Run `node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs`
    against disposable PostgreSQL. Keep all migration cases:
-   real initialization/ULIDs, rollback/retry/checksums, lock serialization, reader guards,
+   real initialization/ULIDs, rollback/retry/checksums, concurrent lock exclusion, actionable contention/retry, automatic SQL rejection, reader guards,
    permission denial, password rotation and TLS rejection. Also verify the web connection
    observer's phase/timing and error propagation. Docker failure is a gate failure.
 6. Run `bash scripts/v2/terraform-test.sh`: required validate/mock-plan tests in an isolated tracked copy,

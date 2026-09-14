@@ -40,10 +40,17 @@ an available auth pool slot. These local timings are not an Aurora p99 benchmark
 real-provider tests are separate operator work, and the conservative failure envelope
 remains required when a deployed read cannot finish inside the budget.
 
+The request deadline also covers pool acquisition. A late checkout is returned without
+starting SQL, and its admission remains held until settlement to prevent a queued backlog.
+Annotation normalization and serialization run after release; SQL deadlines remain defense
+in depth. The graph-attempt window has labels distinct from each source query window.
+
 ## Operator action
 
 Apply `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql` and
-`01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql` through the existing authorized
+`01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`,
+`01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql` and
+`01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql` through the existing authorized
 `make migrate` flow from the operator/VPC context. Apply the reviewed Terraform web
 `INVENTORY_STALE_AFTER_MINUTES` environment binding and deploy the matching web image
 separately. This document supplies no deployment authorization. Check the canonical
