@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: bfb6734c82f9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 318669d0a2f7 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,14 +8,36 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
+- `v2/ci_web_image.py` is unwired. CI must use composed `promote`, which verifies the
+  caller/context/source/migration/producer before publishing the validated project's digest.
+  A nonempty preflight digest is mandatory; fresh builds must match the registry's source
+  tag. Preserve OCI index bytes and verify one ARM64 child plus its digest-bound config.
+  Pin ECR registry/media/digest explicitly; do not use image-only accepted-media filters.
+  Config reads need scoped `ecr:GetDownloadUrlForLayer` and curl. CLI diagnostics are
+  fixed `ImageError` messages, never provider data.
+  Provider children use explicit temporary AWS credentials / GitHub token, disabled AWS config
+  files, private GH config and no inherited endpoint/profile/model/provider/CA/proxy overrides. Stdin is closed
+  except curl's private `-q -K -` config; signed URLs never enter argv. Multi-tag digest rows
+  must agree on identity, raw manifest and media.
+  Check recognized producer conclusions before timestamps; skip non-success jobs without
+  suppressing another successful receipt. Three-field stdout adds no recovery history.
+  Project selection requires authenticated branch Terraform/verified job output, never inputs.
+  Target one verified stack repo per operation; broad IAM is not branch/stack authority.
+  Unconfirmed publication is a provider/retry diagnosis, not a rebuild signal; retain equal-effect
+  confirmation. Use 0600 manifest files, bounded ZIP reads and ARM-child attestation references.
+  Operation labels do not restrict the shared consumer's ECS/STS calls.
+  Child PATH is `/usr/local/bin:/usr/bin:/bin`, ignoring caller additions; HOME is omitted, never reassigned.
+  No manually assembled publishing chain. `test_ci_web_image.py` requires jq; the future
+  receipt steps, main account prerequisite and recovery limits are documented in
+  `docs/runbooks/web-image-provenance.md`. Operator CI adds no ADR-005 exception or IAM grant.
 - `ci_readiness_plan_summary.py` runs before encryption only for explicit full dev readiness
   plans, with a two-minute timeout and fenced JSON output. Its failure-tolerant report publishes
   fixed scope/presence checks, fixed addresses and a known collector hash, never private values.
   The combined 256-row view is not approval or resource-presence proof; unknown changes require
   private inspection. Membership checks include the existing/planned group's lack of an IAM role.
-  Reporting cannot weaken DNS/runtime/exact-plan gates or block later encrypted artifacts.
+  Reporting cannot weaken DNS/runtime/exact-plan gates or block the encrypted handoff or private publication.
 - `CI_READINESS_ENABLED_DEV` is separate from the runtime profile: true/false explicitly overrides readiness on dev, while empty/unset preserves operator tfvars/default false. Public CI rejects enabled readiness elsewhere. The applied group requires AgentCore, and automatic membership requires the managed demo; no admin/IAM grant.
-- `v2/ci_plan_inspect.py` is local-only: authenticate successful plan-run context, checkout
+- `v2/ci_plan_inspect.py` is the legacy encrypted-artifact inspector, local-only: authenticate successful plan-run context, checkout
   SHA and existing signed plan/assets before private rendering. No backend init/apply.
   Outputs are bounded 0600 files in a new 0700 destination.
 - `v2/ci_failure_diagnostics.py` drains bounded output in memory until Terraform exits; no scratch-write error may kill apply or replace its result. Linux supervision forwards one graceful interrupt, escalates a second, and kills Terraform if its capture parent dies. Retain the last 1 MiB and signed total/capture status. No success/advisory raw log is written.
@@ -147,7 +169,7 @@ Deferred archives without known hashes are excluded. Both pack/restore APIs allo
 push, pull_request and workflow_dispatch only, or explicit local commits without a GitHub event.
 They use TF_PLAN_ENC_KEY HMAC.
 The 0600 tarball is private secret-bearing scratch, with no upload path;
-callers must encrypt before publication and clean plaintext files.
+callers require encrypted GitHub handoff or private SSE-KMS storage and owned cleanup.
 Both Terraform layer paths use the same locked build-layer command, or check-layer for
 CI_ASSETS_READY=true, also exported by plan/apply. Prepare invalidates markers, removes stale regular ZIPs and rejects ZIP
 symlinks. Schema-2 markers bind file hashes; validation checks a fixed required-import list.
@@ -167,24 +189,24 @@ Collection windows are caps; late completion can fail admission.
 Post-marker running attempts with old/null previous success time out as collection_timeout;
 full-policy stale terminal evidence is collection_stale. Login/DB also require full timeouts.
 
-## Unwired private plan transport
 
-`v2/ci_private_plan.py` exposes only policy/publish/inspect/restore. The base Terraform
-workflow does not call it or publish private S3 references; operator use requires the
-later consumer integration. No workflow/IAM/bucket provisioning ships with the module.
-Require successful Plan plus publisher ID `publish` / name `Publish private plan`,
-attempt artifact `tfplan-N`, private backend/store, protected scoped credentials and
-publish/restore CI HMAC verification. Inspection requires an explicit private backend
-and profile, never bucket discovery or the CI key. Public reference fields are only
-schema/storage tags, CI context and manifest hash/size; no public plan/backend/bucket
-hashes or storage identities. A cap/failure does not create a usable reference.
-Private inspection is not approval; restore never applies and supplies no orphan recovery.
-Consumers own safe artifact overwrite, masking before logging, existing gates and cleanup.
-Contract: `docs/reference/private-plan-transport.md`. Run `v2/test_ci_private_plan.py`
-with the existing crypto/inspection/context suites; no additional dependency or live access.
-Classify this as operator CI artifact transport, not an ADR-005 exception; no frozen
-product capability is enabled.
-S3 SSE-KMS replaces the GitHub envelope for operator reads; effective S3/KMS readers
-need no CI key. Consumer wiring must review access, verify plan-prefix lifecycle
-(7-day current/noncurrent expiry, 1-day multipart abort), and migrate the legacy
-artifact/inspector contract together. Generated session policy is publisher-only.
+## Private plan transport
+
+Private S3 helpers require a private backend file and existing bucket/IAM/KMS posture.
+Publish/apply enter branch environments; only backend/tfvars absence soft-skips.
+Public references omit storage bindings and plan hashes; CLI results omit plan hashes.
+Mask the reviewed input before step environments. Private digests select exact bytes;
+CI still checks asset HMAC and original gates. Read-only lifecycle validation requires
+the owner-configured plan-prefix 7-day current/noncurrent expiry and 1-day multipart abort.
+Expiration is asynchronous; scoped purge and current-run scratch cleanup remain separate.
+Purge is a manual AWS-CLI runbook procedure, not a helper mode or a required scheduled task.
+Its complete listing must contain no young data versions; delete markers need no age cutoff.
+SSE-KMS readers need no CI envelope key: review effective S3/KMS access before rollout.
+Generated policy is publisher-only; Apply retains its own authorization. Legacy `tfplan`
+runs use the historical inspector.
+The workflow wires the four helper modes with Plan / Publish private plan job contracts,
+attempt-specific tfplan-N references, protected storage sessions and existing apply guards.
+The helper has no orphan recovery, legacy fallback or Terraform apply operation. Contract:
+`docs/reference/private-plan-transport.md`; validate both helper and consumer workflow tests.
+
+This is operator CI artifact transport, not an ADR-005 exception; no frozen product capability is enabled.

@@ -32,8 +32,10 @@ class RuntimeWorkflowTests(unittest.TestCase):
         uploads = {step["with"]["name"]: step for step in steps
                    if step.get("uses", "").startswith("actions/upload-artifact")}
         failure_name = "terraform-failure-plan-${{ github.run_attempt }}"
-        self.assertEqual(set(uploads), {"tfplan", failure_name})
-        upload = uploads["tfplan"]
+        handoff_name = "tfplan-${{ github.run_attempt }}"
+        self.assertEqual(set(uploads), {handoff_name, failure_name})
+        upload = uploads[handoff_name]
+        self.assertIn("github.event_name == 'workflow_dispatch'", upload["if"])
         self.assertEqual(set(upload["with"]["path"].split()), {
             "terraform/foundation/tfplan.enc", "terraform/foundation/tfassets.enc",
         })
@@ -47,11 +49,13 @@ class RuntimeWorkflowTests(unittest.TestCase):
 
     def test_apply_verifies_assets_and_runtime_scope_before_any_terraform_apply(self):
         steps = self.workflow()["jobs"]["apply"]["steps"]
-        restore = [i for i, step in enumerate(steps) if "ci_tf_assets.py restore" in step.get("run", "")]
+        restore = [i for i, step in enumerate(steps) if "ci_private_plan.py restore" in step.get("run", "")]
         apply = [i for i, step in enumerate(steps) if "terraform apply -input=false tfplan" in step.get("run", "")]
         self.assertEqual(len(restore), 1)
         self.assertEqual(len(apply), 1)
         self.assertLess(restore[0], apply[0])
+        self.assertEqual(steps[restore[0]]["env"]["TF_PLAN_ENC_KEY"], "${{ secrets.TF_PLAN_ENC_KEY }}")
+        self.assertIn('--reviewed-plan-sha256 "$REVIEWED_PLAN_SHA256"', steps[restore[0]]["run"])
         self.assertIn("ci_runtime_policy.py check-plan", steps[apply[0]]["run"])
         self.assertEqual(steps[apply[0]]["env"]["CI_ASSETS_READY"], "true")
         self.assertNotIn("-auto-approve", steps[apply[0]]["run"])

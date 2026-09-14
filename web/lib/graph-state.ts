@@ -21,7 +21,7 @@ export function graphDiagnostic(stage: string, error: unknown): string {
 /** Caller holds the class advisory lock and publishes rows in this same transaction.
  * captured_at is the successful publication; source clocks belong to publishedSources.
  * Failed attempts preserve both. Trace keeps its existing window-end timestamp default. */
-export async function writeGraphState(client: PoolClient, account: string, attempt: GraphAttempt, cls: GraphClass = 'trace') {
+export async function writeGraphState(client: PoolClient, account: string, attempt: GraphAttempt, cls: GraphClass) {
   const result = await client.query(
     `INSERT INTO topology_graph_state (account_id, class, status, attempted_at, captured_at, details)
      VALUES ($1, $6, $2, $3::timestamptz,
@@ -42,16 +42,18 @@ export async function writeGraphState(client: PoolClient, account: string, attem
 }
 
 export async function readGraphState(pool: Pick<Pool, 'query'>, account: string, cls: GraphClass = 'trace') {
-  const unknown = { status: 'unknown', stale: true, attempted_at: null, captured_at: null, sources: [] };
+  const unknown = { status: 'unknown', stale: true, attempted_at: null, captured_at: null, sources: [],
+    evidenceKind: cls === 'trace' ? 'trace' : 'inventory' };
   // A host state is not evidence for an account union. No unbounded per-account payload.
-  if (account === '__all__') return { ...unknown, coverage: 'unknown' };
+  if (account === '__all__' && cls !== 'trace') return { ...unknown, coverage: 'unknown' };
+  const storageAccount = cls === 'trace' && account === '__all__' ? 'self' : account;
   let row;
   try {
     const result = await pool.query(
       `SELECT status, attempted_at, captured_at, details
          FROM topology_graph_state
         WHERE class = $2 AND account_id = $1`,
-      [account, cls],
+      [storageAccount, cls],
     );
     row = result.rows[0];
   } catch (error) {
@@ -79,7 +81,7 @@ export function inventorySourcesStale(value: unknown): boolean {
     if (!source || typeof source !== 'object') return true;
     if (!Number.isSafeInteger(source.itemCount) || source.itemCount < 0) return true;
     const clocks = [source.lastSuccessAtMs, ...(source.itemCount > 0 ? [source.capturedAtMs] : [])];
-    return !['ok', 'empty'].includes(source.status) || clocks.some(clock =>
+    return source.producerStatus !== 'succeeded' || !['ok', 'empty'].includes(source.status) || clocks.some(clock =>
       typeof clock !== 'number' || !Number.isFinite(clock) || clock <= 0
       || clock > Date.now() || Date.now() - clock > minutes * 60_000);
   });

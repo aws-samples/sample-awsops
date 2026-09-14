@@ -1,9 +1,16 @@
+import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const auth = vi.hoisted(() => vi.fn());
 const query = vi.hoisted(() => vi.fn());
+const connection = vi.hoisted(() => ({ current: null as unknown as EventEmitter, release: vi.fn() }));
+beforeEach(() => {
+  connection.release.mockReset();
+  connection.current = Object.assign(new EventEmitter(), { query, release: connection.release });
+});
 vi.mock('@/lib/auth', () => ({ verifyUser: auth }));
-vi.mock('@/lib/db', () => ({ getPool: () => ({ query, connect: async () => ({ query, release() {} }) }) }));
+const sharedPool = vi.hoisted(() => ({ query, connect: async () => connection.current }));
+vi.mock('@/lib/db', () => ({ getPool: () => sharedPool }));
 import { GET } from './route';
 import claimCases from '../../../lib/fixtures/trace-queue-claims.json';
 afterEach(() => vi.restoreAllMocks());
@@ -30,6 +37,81 @@ describe('graph collection evidence API', () => {
       sources: [{ sourceId: 'tempo:1', status: 'error' }],
     });
     expect(body.captured_at).toBe('2026-09-11T01:00:00Z');
+  });
+
+  it('bounds reads before any graph query starts', async () => {
+    await GET(new Request('http://localhost/api/graph'));
+    const calls = query.mock.calls.map(([sql]) => sql as string);
+    const read = calls.findIndex(sql => sql.includes('FROM topology_graph_state'));
+    for (const setting of ['statement_timeout', 'lock_timeout', 'idle_in_transaction_session_timeout', 'transaction_timeout']) {
+      const at = calls.findIndex(sql => sql.startsWith(`SET LOCAL ${setting}`));
+      expect(at).toBeGreaterThan(0);
+      expect(at).toBeLessThan(read);
+    }
+  });
+  it('discards a connection when rollback fails without exposing either failure', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM topology_nodes')) throw Object.assign(new Error('private query failure'), { code: '42501' });
+      if (sql === 'ROLLBACK') throw new Error('private rollback failure');
+      return { rows: [] };
+    });
+    const response = await GET(new Request('http://localhost/api/graph'));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ status: 'error', message: 'Graph read failed',
+      collection: { status: 'unknown', readStatus: 'unavailable', readReason: 'query_failed' } });
+    expect(connection.release).toHaveBeenCalledWith(true);
+  });
+  it('handles a checked-out client error event and discards the fatal connection', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    let unhandled = false;
+    const fatal = Object.assign(new Error('private disconnect'), { code: '57P01' });
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM topology_nodes')) {
+        try { connection.current.emit('error', fatal); } catch { unhandled = true; }
+        throw fatal;
+      }
+      return { rows: [] };
+    });
+    const response = await GET(new Request('http://localhost/api/graph'));
+    expect(response.status).toBe(500);
+    expect(unhandled).toBe(false);
+    expect(connection.release).toHaveBeenCalledWith(true);
+    expect(connection.current.listenerCount('error')).toBe(0);
+  });
+
+  it('keeps the legacy row clock separate when inventory collection state is absent', async () => {
+    query.mockImplementation(async (sql: string) => ({ rows: sql.includes('FROM topology_nodes')
+      ? [{ id: 'vpc:one', captured_at: '2026-09-14T10:00:00Z' }] : [] }));
+    const body = await (await GET(new Request('http://localhost/api/graph?class=infra&account=self'))).json();
+    expect(body.captured_at).toBe('2026-09-14T10:00:00Z');
+    expect(body.collection).toMatchObject({ status: 'unknown', captured_at: null, stale: true });
+  });
+  it('commits and releases before serializing the response and uses a sub-revocation budget', async () => {
+    const json = Response.json.bind(Response);
+    vi.spyOn(Response, 'json').mockImplementation((body, init) => {
+      expect(connection.release).toHaveBeenCalled();
+      return json(body, init);
+    });
+    await GET(new Request('http://localhost/api/graph'));
+    expect(query).toHaveBeenCalledWith("SET LOCAL transaction_timeout = '2s'");
+  });
+  it('sheds an overlapping graph request before pool checkout without inventing collector failure', async () => {
+    let release!: () => void, started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM topology_graph_state')) { started(); await pending; }
+      return { rows: [] };
+    });
+    const first = GET(new Request('http://localhost/api/graph'));
+    await ready;
+    try {
+      const second = await GET(new Request('http://localhost/api/graph'));
+      expect(second.status).toBe(503);
+      expect((await second.json()).collection).toMatchObject({ status: 'unknown', readStatus: 'unavailable', readReason: 'busy' });
+    } finally { release(); await first; }
+    expect((await GET(new Request('http://localhost/api/graph'))).status).toBe(200);
   });
 
   it('does not expose collection state to an unauthenticated request', async () => {
@@ -72,7 +154,7 @@ describe('graph collection evidence API', () => {
     const response = await GET(new Request('http://localhost/api/graph?class=infra'));
     const body = await response.json();
     expect(response.status).toBe(200);
-    expect(body.collection).toMatchObject({ status: 'error', stale: true, failureReason: 'state_read_failed' });
+    expect(body.collection).toMatchObject({ status: 'unknown', stale: true, evidenceKind: 'inventory', failureReason: 'state_read_failed' });
     expect(body.nodes).toHaveLength(1);
     expect(JSON.stringify(body)).not.toContain('credential');
     expect(log).toHaveBeenCalledWith('[graph-read] failed {"stage":"graph_state","code":"42501"}');
@@ -82,7 +164,8 @@ describe('graph collection evidence API', () => {
     query.mockRejectedValue(Object.assign(new Error('credential=secret'), { code: 'credential=secret' }));
     const response = await GET(new Request('http://localhost/api/graph'));
     expect(response.status).toBe(500);
-    expect(await response.json()).toEqual({ status: 'error', message: 'Graph read failed' });
+    expect(await response.json()).toMatchObject({ status: 'error', message: 'Graph read failed',
+      collection: { status: 'unknown', readStatus: 'unavailable', readReason: 'query_failed' } });
     expect(log).toHaveBeenCalledWith('[graph-read] failed {"stage":"graph_read","code":"unknown"}');
   });
 });
