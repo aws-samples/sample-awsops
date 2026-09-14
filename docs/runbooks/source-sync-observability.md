@@ -166,3 +166,16 @@ ADR-005에 따라 승인 콜백 이후에도 `awaiting_approval`은 의도적으
 남아 있는 remediation ASL은 비활성 코드이며 실행을 지원하는 경로가 아니다. 실제 SQL
 테스트는 lifecycle 마이그레이션 전후의 거부와 원래 행 보존을 확인한다. 이 경로 활성화나
 조건 확대는 이번 검토 수정의 범위가 아니다.
+
+
+## Trace collection rendering
+
+When a partial graph lacks an explanation, inspect its existing collection fields:
+`nodeDrops`, `edgeDrops`, `infraUnavailable`, and per-source `windowStartMs/windowEndMs`.
+The panel discloses positive loss counters and unavailable inventory context, renders
+source windows separately from publication/capture clocks, and does not infer retention
+from losses. `retainedPrevious` alone establishes that a saved graph is being reused.
+The typed collection contract also describes optional additive producer fields; unknown
+runtime data remains defensively normalized. Source-detail counts include saved sources.
+Verify locally with `cd web && npx vitest run components/topology/GraphCollectionStatus.test.tsx`;
+the regression uses the real graph-state reader with a database boundary fixture.

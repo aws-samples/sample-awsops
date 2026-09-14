@@ -183,3 +183,15 @@ application, without guaranteeing cancellation of a server query already started
 | `/api/security` | GET | 보안 findings (`inventory_resources` 파생, read-only) + ECR 이미지 스캔 CVE(라이브, 실패 시 빈 탭) — `accounts` 파라미터 해석(`__all__` 포함) | verifyUser |
 | `/api/security/refresh` | POST | 보안 관련 인벤토리 타입 재동기화 | verifyUser |
 | `/api/stream` | GET | SSE 스트림 | 없음 |
+
+
+## Trace collection disclosure
+
+The `GraphCollection` / `GraphCollectionSource` TypeScript contract is defined in
+`web/components/topology/GraphCollectionStatus.tsx`; runtime input is still normalized.
+Trace `sources[].windowStartMs/windowEndMs` identify the source query window, separately
+from top-level `attempted_at/captured_at` and optional source capture/last-success clocks.
+Positive `nodeDrops/edgeDrops` and `infraUnavailable` remain visible for older persisted
+envelopes as well as newer producer flags. Losses alone do not prove retention:
+`retainedPrevious` is required for that claim. Source-detail totals include saved sources.
+Missing collection metadata stays unknown rather than implying collector failure.
