@@ -20,7 +20,7 @@ OUTPUTS = ("runtime_deployment", "agentcore", "agent_sql_reader_secret_arn", "au
 READER_SQL = """SELECT current_user = 'awsops_sql_reader' AS reader,
 NOT (rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls) AS restricted
 FROM pg_catalog.pg_roles WHERE rolname = current_user"""
-LEDGER_SQL = """SELECT resource_type, status, row_count, unknown_attribute_count,
+LEDGER_SQL = """SELECT resource_type, status, row_count, last_success_row_count, unknown_attribute_count,
 to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS started_at,
 to_char(finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS finished_at,
 to_char(last_success_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS last_success_at
@@ -31,6 +31,7 @@ to_char(max(captured_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ne
 FROM sql_reader.inventory_resources WHERE account_id IN ('self', :host)
 GROUP BY resource_type ORDER BY resource_type LIMIT 257"""
 CLOUDFRONT_SQL = """SELECT count(*) AS row_count,
+to_char(min(captured_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS oldest_at,
 to_char(max(captured_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS newest_at
 FROM sql_reader.inventory_resources WHERE account_id IN ('self', :host)
 AND resource_type = 'cloudfront' AND resource_id = :distribution"""
@@ -79,6 +80,42 @@ def validate_context(env):
             and env.get("AWS_REGION") == REGION)
     require(re.fullmatch(r"[a-z][a-z0-9-]{1,39}", env.get("EXPECTED_PROJECT", "")))
     verify_role(env.get("AWS_ACCOUNT_ID_DEV"), env.get("RUNTIME_ROLE_ARN"))
+
+
+def session_policy(env):
+    """Intersect the existing role with audit reads; this grants no role permissions."""
+    validate_context(env)
+    account, project = env["AWS_ACCOUNT_ID_DEV"], env["EXPECTED_PROJECT"]
+    arn = lambda service, resource: f"arn:aws:{service}:{REGION}:{account}:{resource}"
+    policy = {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": [
+            "sts:GetCallerIdentity", "s3:GetObject", "s3:ListBucket", "s3:GetBucketLocation",
+        ], "Resource": "*", "Condition": {"StringEquals": {"aws:PrincipalAccount": account}}},
+        {"Effect": "Allow", "Action": ["cloudwatch:GetMetricData", "rds:DescribeDBClusters"],
+         "Resource": "*", "Condition": {"StringEquals": {
+             "aws:PrincipalAccount": account, "aws:RequestedRegion": REGION}}},
+        {"Effect": "Allow", "Action": [
+            "ecs:DescribeServices", "ecs:ListTasks", "ecs:DescribeTasks",
+            "lambda:GetFunctionConfiguration", "lambda:GetPolicy",
+            "events:DescribeRule", "events:ListTargetsByRule", "ssm:GetParameter",
+            "bedrock-agentcore:GetAgentRuntime", "rds-data:ExecuteStatement", "secretsmanager:GetSecretValue",
+        ], "Resource": [
+            arn("ecs", f"cluster/{project}"), arn("ecs", f"service/{project}/{project}-*"),
+            arn("ecs", f"task/{project}/*"), arn("lambda", f"function:{project}-inv-sync"),
+            arn("events", f"rule/{project}-inv-sync-ec2"),
+            arn("ssm", f"parameter/ops/{project}/agentcore/runtime_arn"),
+            arn("bedrock-agentcore", "runtime/awsops_v2_agent-*"),
+            arn("rds", f"cluster:{project}-aurora"),
+            arn("secretsmanager", f"secret:ops/{project}/agent/sql-reader-??????"),
+        ], "Condition": {"StringEquals": {"aws:RequestedRegion": REGION}}},
+        {"Effect": "Allow", "Action": ["kms:Decrypt"], "Resource": "*",
+         "Condition": {"StringEquals": {
+             "kms:CallerAccount": account,
+             "kms:ViaService": [f"s3.{REGION}.amazonaws.com", f"secretsmanager.{REGION}.amazonaws.com"],
+         }}},
+    ]}
+    require(len(json.dumps(policy, separators=(",", ":"))) <= 2048)
+    return policy
 
 
 def validate_outputs(outputs, env):
@@ -178,7 +215,8 @@ def ecs_snapshot(read, runtime, component):
              and healthy == desired and revisions == [target_revision]
              and state_matches is not False
              and all(t.get("lastStatus") == "RUNNING" for t in tasks))
-    return {"status": "UNKNOWN" if incomplete or unknown_health else "READY" if ready else "NOT_READY",
+    best_status = "READY" if state_matches is True else "OBSERVED"
+    return {"status": "UNKNOWN" if incomplete or unknown_health else best_status if ready else "NOT_READY",
             "desired": desired, "running": running, "pending": pending, "healthy_tasks": healthy,
             "unknown_health_tasks": unknown_health, "target_revision": target_revision,
             "running_revisions": revisions, "target_matches_state": state_matches,
@@ -242,15 +280,19 @@ def metric_snapshot(read, runtime, now):
         "Period": 60, "Stat": "Sum",
     }} for key, (ns, name, dimension, value) in specs.items()]
     response = read("cloudwatch", "get_metric_data", MetricDataQueries=queries,
-                    StartTime=start, EndTime=end, MaxDatapoints=360, ScanBy="TimestampAscending")
+                    StartTime=start, EndTime=end, MaxDatapoints=1000, ScanBy="TimestampAscending")
     result = {key: {"status": "UNKNOWN", "sum": None, "datapoints": 0} for key in specs}
-    result.update(window_start=stamp(start), window_end=stamp(end), attribution="not_correlated")
+    result.update(window_start=stamp(start), window_end=stamp(end), attribution="not_correlated", read_errors=0)
     rows = response["MetricDataResults"]
     for key in specs:
         matches = [r for r in rows if r.get("Id") == key]
         if len(matches) != 1:
             continue
         row = matches[0]
+        if row.get("StatusCode") in ("Forbidden", "InternalError"):
+            result[key]["reason"] = "access_denied" if row["StatusCode"] == "Forbidden" else "read_unavailable"
+            result["read_errors"] += 1
+            continue
         times, values = row.get("Timestamps", []), row.get("Values", [])
         if (response.get("NextToken") or response.get("Messages") or row.get("Messages")
                 or row.get("StatusCode") != "Complete" or not 0 < len(times) == len(values) <= 120):
@@ -277,7 +319,7 @@ def runtime_snapshot(read, runtime):
     require(item["agentRuntimeArn"] == value and item["agentRuntimeName"] == "awsops_v2_agent")
     matches = item.get("roleArn") == agent["role_arn"]
     state = item.get("status")
-    require(state in ("CREATING", "CREATE_FAILED", "UPDATING", "UPDATE_FAILED", "READY", "DELETING"))
+    require(state in ("CREATING", "CREATE_FAILED", "UPDATING", "UPDATE_FAILED", "READY", "DELETING", "DELETE_FAILED"))
     version = item.get("agentRuntimeVersion")
     require(isinstance(version, str) and re.fullmatch(r"[1-9]\d*", version))
     return {"status": "READY" if state == "READY" and matches else "NOT_READY",
@@ -285,7 +327,7 @@ def runtime_snapshot(read, runtime):
             "role_matches_state": matches, "version": int(version)}
 
 
-def data_snapshot(read, runtime, outputs, now):
+def data_snapshot(read, runtime, outputs):
     account, project = runtime["account_id"], runtime["project"]
     cluster = f"arn:aws:rds:{REGION}:{account}:cluster:{project}-aurora"
     clusters = read("rds", "describe_db_clusters", DBClusterIdentifier=f"{project}-aurora")["DBClusters"]
@@ -323,15 +365,14 @@ def data_snapshot(read, runtime, outputs, now):
         if ledger:
             state = row.get("status")
             result["status"] = state if state in ("running", "succeeded", "partial", "failed") else "UNKNOWN"
+            result["last_success_row_count"] = number(row.get("last_success_row_count"))
             result["unknown_attribute_count"] = number(row.get("unknown_attribute_count"))
-        reference = result.get("last_success_at" if ledger else "newest_at")
-        result["fresh_within_2h"] = (0 <= (now - datetime.fromisoformat(reference.replace("Z", "+00:00"))).total_seconds() <= 7200
-                                    if reference else None)
         return result
 
     require(len(known) == 1)
     return {"status": "OBSERVED", "coverage": "observed_types_only", "completeness": "UNKNOWN",
-            "ledger_scope": "collector_aggregate_self", "resource_scope": "host_self_and_account",
+            "inventory_enabled": runtime["features"]["inventory"],
+            "ledger_scope": "collector_aggregate_self", "resource_scope": "persisted_self_or_host_id",
             "truncated": len(ledger) > 256 or len(counts) > 256,
             "ledger": [project_row(r, True) for r in ledger[:256]],
             "resource_counts": [project_row(r) for r in counts[:256]],
@@ -347,9 +388,10 @@ def collect(outputs, env, read, now=None):
     def observe(fn):
         try:
             return fn()
-        except (ClientError, BotoCoreError, ValueError, KeyError, TypeError, IndexError) as error:
+        except (ClientError, BotoCoreError, ValueError, KeyError, TypeError, IndexError, AttributeError) as error:
             code = error.response.get("Error", {}).get("Code") if isinstance(error, ClientError) else None
-            reason = "access_denied" if code in ("AccessDenied", "AccessDeniedException", "UnauthorizedOperation") else "read_unavailable"
+            reason = ("access_denied" if code in ("AccessDenied", "AccessDeniedException", "UnauthorizedOperation")
+                      else "read_unavailable" if isinstance(error, (ClientError, BotoCoreError)) else "unexpected_state")
             errors.append(reason)
             return {"status": "UNKNOWN", "reason": reason}
 
@@ -367,10 +409,11 @@ def collect(outputs, env, read, now=None):
             "schedule": observe(lambda: schedule_snapshot(read, runtime)) if enabled["inventory"] else disabled,
             "metrics": observe(lambda: metric_snapshot(read, runtime, now)) if enabled["inventory"] else disabled,
         },
-        "data": observe(lambda: data_snapshot(read, runtime, outputs, now)) if enabled["agentcore"] else {
-            "status": "UNKNOWN", "reason": "reader_not_configured", "completeness": "UNKNOWN"},
+        "data": observe(lambda: data_snapshot(read, runtime, outputs)) if enabled["agentcore"] else {
+            "status": "UNKNOWN", "reason": "reader_not_configured", "completeness": "UNKNOWN",
+            "inventory_enabled": enabled["inventory"]},
     }
-    report["read_errors"] = len(errors)
+    report["read_errors"] = len(errors) + report["events"]["metrics"].get("read_errors", 0)
     return report
 
 
@@ -382,6 +425,10 @@ def main(argv=None):
     try:
         validate_context(os.environ)
         if args.mode == "guard":
+            policy = json.dumps(session_policy(os.environ), separators=(",", ":"))
+            if os.environ.get("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                    output.write(f"session_policy={policy}\n")
             return 0
         import boto3
         read = ReadAPI(boto3.client)
@@ -397,13 +444,18 @@ def main(argv=None):
             outputs[key] = json.loads(path.read_text())
         report = collect(outputs, os.environ, read)
         code = 1 if report["read_errors"] else 0
+    except Exception as error:
+        reason = "read_only_violation" if isinstance(error, ReadOnlyViolation) else "audit_failed"
+        report, code = {"status": "UNKNOWN", "reason": reason}, 1
+    try:
+        text = json.dumps(report, indent=2, allow_nan=False)
+        if os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+                summary.write("## Development deployment observations\n\n```json\n" + text + "\n```\n")
+        print(text)
     except Exception:
-        report, code = {"status": "UNKNOWN", "reason": "audit_failed"}, 1
-    text = json.dumps(report, indent=2, allow_nan=False)
-    print(text)
-    if os.environ.get("GITHUB_STEP_SUMMARY"):
-        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
-            summary.write("## Development deployment observations\n\n```json\n" + text + "\n```\n")
+        print('{"status":"UNKNOWN","reason":"report_failed"}', file=sys.stderr)
+        return 1
     return code
 
 

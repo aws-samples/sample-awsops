@@ -2,6 +2,7 @@
 import base64
 from copy import deepcopy
 from datetime import datetime, timezone
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -129,14 +130,16 @@ class FakeAWS:
                 records = [{"reader": True, "restricted": True}]
             elif sql == audit.LEDGER_SQL:
                 records = [{"resource_type": "cloudfront", "status": "succeeded", "row_count": 1,
-                            "unknown_attribute_count": 0, "started_at": "2026-09-14T03:30:00Z",
+                            "last_success_row_count": 1, "unknown_attribute_count": 0,
+                            "started_at": "2026-09-14T03:30:00Z",
                             "finished_at": "2026-09-14T03:31:00Z",
                             "last_success_at": "2026-09-14T03:31:00Z"}]
             elif sql == audit.COUNTS_SQL:
                 records = [{"resource_type": "cloudfront", "row_count": 1,
                             "oldest_at": "2026-09-14T03:31:00Z", "newest_at": "2026-09-14T03:31:00Z"}]
             elif sql == audit.CLOUDFRONT_SQL:
-                records = [{"row_count": 1, "newest_at": "2026-09-14T03:31:00Z"}]
+                records = [{"row_count": 1, "oldest_at": "2026-09-14T03:31:00Z",
+                            "newest_at": "2026-09-14T03:31:00Z"}]
             else:
                 raise AssertionError("Unexpected SQL")
             return {"formattedRecords": json.dumps(records)}
@@ -180,7 +183,8 @@ def test_foreign_outputs_rejected_before_any_api(path, value):
 def test_complete_observations_are_not_complete_inventory():
     aws = FakeAWS()
     report = audit.collect(outputs(), ENV, aws, NOW)
-    assert report["deployment"]["web"]["status"] == "READY"
+    assert report["deployment"]["web"]["status"] == "OBSERVED"
+    assert report["deployment"]["web"]["target_matches_state"] is None
     assert report["deployment"]["steampipe"]["running_revisions"] == [3]
     assert report["deployment"]["sync_lambda"]["code_matches_state"] is True
     assert report["deployment"]["agentcore"]["role_matches_state"] is True
@@ -240,7 +244,7 @@ def test_errors_are_safe_and_other_sections_survive():
         {"Error": {"Code": "AccessDeniedException", "Message": "SECRET raw-token=never-print"}}, "GetFunctionConfiguration")
     report = audit.collect(outputs(), ENV, aws, NOW)
     assert report["deployment"]["sync_lambda"] == {"status": "UNKNOWN", "reason": "access_denied"}
-    assert report["deployment"]["web"]["status"] == "READY"
+    assert report["deployment"]["web"]["status"] == "OBSERVED"
     assert report["read_errors"] == 1
     assert "SECRET" not in json.dumps(report) and "raw-token" not in json.dumps(report)
 
@@ -342,7 +346,7 @@ def test_actual_cli_retains_safe_partial_report_and_fails_on_read_error(tmp_path
     assert audit.main(["audit", "--directory", str(tmp_path)]) == 1
     text = capsys.readouterr().out
     report = json.loads(text)
-    assert report["deployment"]["web"]["status"] == "READY"
+    assert report["deployment"]["web"]["status"] == "OBSERVED"
     assert report["read_errors"] == 1
     assert "SECRET_SHOULD_NOT_APPEAR" not in text + (tmp_path / "summary").read_text()
 
@@ -416,3 +420,101 @@ def test_foreign_runtime_role_is_not_ready():
         "roleArn": RUNTIME_ROLE.replace(PROJECT, "foreign"), "agentRuntimeVersion": "2"}
     item = audit.collect(outputs(), ENV, aws, NOW)["deployment"]["agentcore"]
     assert item["status"] == "NOT_READY" and item["role_matches_state"] is False
+
+
+def test_session_policy_cannot_authorize_mutations_or_master_secret():
+    policy = audit.session_policy(ENV)
+    def permits(action, resource):
+        return any(s["Effect"] == "Allow" and action in s["Action"]
+                   and any(fnmatch.fnmatchcase(resource, pattern)
+                           for pattern in ([s["Resource"]] if isinstance(s["Resource"], str) else s["Resource"]))
+                   for s in policy["Statement"])
+    assert permits("ecs:DescribeServices", f"arn:aws:ecs:{REGION}:{ACCOUNT}:service/{PROJECT}/{PROJECT}-web")
+    assert permits("lambda:GetFunctionConfiguration", FUNCTION)
+    assert permits("rds-data:ExecuteStatement", f"arn:aws:rds:{REGION}:{ACCOUNT}:cluster:{PROJECT}-aurora")
+    assert permits("secretsmanager:GetSecretValue", outputs()["agent_sql_reader_secret_arn"])
+    assert not permits("secretsmanager:GetSecretValue",
+                       f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:rds!cluster-master")
+    assert not permits("ssm:GetParameter", f"arn:aws:ssm:{REGION}:{ACCOUNT}:parameter/foreign/password")
+    for action in ("ecs:RunTask", "ecs:StopTask", "ecs:UpdateService", "lambda:InvokeFunction",
+                   "events:PutRule", "iam:PutRolePolicy", "s3:PutObject"):
+        assert not permits(action, FUNCTION)
+    for statement in policy["Statement"]:
+        assert all("*" not in action for action in statement["Action"])
+        if statement["Resource"] == "*":
+            assert statement["Condition"]
+
+
+def test_session_policy_fits_sts_limit_at_max_project_length():
+    policy = audit.session_policy({**ENV, "EXPECTED_PROJECT": "a" * 40})
+    assert len(json.dumps(policy, separators=(",", ":"))) <= 2048
+
+
+def test_guard_publishes_only_validated_session_restriction(tmp_path, monkeypatch):
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    assert audit.main(["guard"]) == 0
+    name, value = output.read_text().strip().split("=", 1)
+    assert name == "session_policy" and json.loads(value) == audit.session_policy(ENV)
+    workflow_config = workflow()["jobs"]["audit"]["steps"]
+    credential_step = next(s for s in workflow_config if s.get("uses", "").startswith("aws-actions/"))
+    assert credential_step["with"]["inline-session-policy"] == "${{ steps.scope.outputs.session_policy }}"
+    assert credential_step["with"]["role-duration-seconds"] == 900
+
+
+def test_mixed_capture_times_are_reported_without_invented_product_freshness():
+    aws = FakeAWS()
+    def read(service, operation, **params):
+        result = aws(service, operation, **params)
+        if operation == "execute_statement" and params["sql"] == audit.COUNTS_SQL:
+            rows = json.loads(result["formattedRecords"])
+            rows[0]["oldest_at"] = "2026-09-13T01:00:00Z"
+            result["formattedRecords"] = json.dumps(rows)
+        return result
+    result = audit.collect(outputs(), ENV, read, NOW)["data"]
+    assert result["resource_counts"][0]["oldest_at"] == "2026-09-13T01:00:00Z"
+    assert "fresh_within_2h" not in json.dumps(result)
+    assert result["completeness"] == "UNKNOWN"
+
+
+def test_malformed_section_retains_other_observations():
+    aws = FakeAWS()
+    aws.overrides["events", "list_targets_by_rule"] = {"Targets": [None]}
+    result = audit.collect(outputs(), ENV, aws, NOW)
+    assert result["events"]["schedule"] == {"status": "UNKNOWN", "reason": "unexpected_state"}
+    assert result["data"]["status"] == "OBSERVED"
+
+
+def test_metric_forbidden_counts_as_read_error_without_losing_other_groups():
+    aws = FakeAWS()
+    aws.overrides["cloudwatch", "get_metric_data"] = {"MetricDataResults": [
+        {"Id": "lambda_errors", "StatusCode": "Forbidden", "Timestamps": [], "Values": []}]}
+    result = audit.collect(outputs(), ENV, aws, NOW)
+    assert result["events"]["metrics"]["lambda_errors"]["reason"] == "access_denied"
+    assert result["read_errors"] == 1
+    assert result["data"]["status"] == "OBSERVED"
+
+
+def test_summary_write_error_does_not_publish_exception(tmp_path, monkeypatch, capsys):
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    for key, value in outputs().items():
+        (tmp_path / f"{key}.json").write_text(json.dumps(value))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path))
+    monkeypatch.setattr(audit, "ReadAPI", lambda factory: FakeAWS())
+    assert audit.main(["audit", "--directory", str(tmp_path)]) == 1
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert json.loads(captured.err) == {"status": "UNKNOWN", "reason": "report_failed"}
+    assert str(tmp_path) not in captured.err
+
+
+def test_inventory_disabled_remains_explicit_when_reader_is_available():
+    data = outputs()
+    data["runtime_deployment"]["features"]["inventory"] = False
+    result = audit.collect(data, ENV, FakeAWS(), NOW)
+    assert result["data"]["inventory_enabled"] is False
+    assert result["data"]["completeness"] == "UNKNOWN"
+    assert result["events"]["schedule"]["status"] == "DISABLED"
