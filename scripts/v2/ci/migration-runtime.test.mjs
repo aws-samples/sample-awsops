@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, mkdtempSync, symlinkSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -279,6 +280,45 @@ test('database diagnostics reject arbitrary SQLSTATE text and non-Error throws',
   }).message, /ERR_TLS_CERT_ALTNAME_INVALID/);
 });
 
+test('lock and cancellation SQLSTATEs give distinct fixed guidance without attributing DDL locks to migrations', () => {
+  for (const [code, diagnosis] of [
+    ['55P03', /database lock unavailable.*blocking transactions/i],
+    ['57014', /query canceled.*statement timeout.*cancellation/i],
+  ]) {
+    const message = databaseFailure('Reviewed SQL failed', {
+      code, message: 'do-not-echo-secret', detail: 'do-not-echo-secret',
+    }, { migrationSql: true }).message;
+    assert.match(message, new RegExp(`SQLSTATE=${code}`));
+    assert.match(message, diagnosis);
+    assert.doesNotMatch(message, /another migration|concurrent migration|do-not-echo-secret/i);
+  }
+});
+
+test('failed advisory acquisition closes the client without unlocking, SQL, or reader sync', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'awsops-try-lock-'));
+  try {
+    for (const acquired of [false, undefined, 'true']) {
+      const calls = [];
+      class Client extends EventEmitter {
+        async connect() { calls.push('connect'); }
+        async query(sql, parameters) {
+          calls.push(sql);
+          assert.equal(sql, 'SELECT pg_try_advisory_lock($1) AS acquired');
+          assert.deepEqual(parameters, [4729411]);
+          return { rows: [{ acquired }] };
+        }
+        async end() { calls.push('end'); }
+      }
+      await assert.rejects(runner.migrateDatabase(new Client(), {
+        migrationDir: directory,
+        env: { INITIALIZE_EMPTY_DB: '1', SQL_READER_SYNC_MODE: 'secret', SQL_READER_SECRET_ARN: 'reader' },
+        readSecret: () => assert.fail('contending runner must not sync reader'),
+      }), acquired === false ? /Concurrent migration.*retry.*standalone/i : /advisory lock.*invalid/i);
+      assert.deepEqual(calls, ['connect', 'SELECT pg_try_advisory_lock($1) AS acquired', 'end']);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('filesystem errors retain safe errno without paths or SQLSTATE misclassification', () => {
   for (const code of ['ENOENT', 'EACCES', 'EPERM', 'EPIPE', 'EBUSY']) {
     const error = databaseFailure('Read frozen baseline failed', {
@@ -342,6 +382,7 @@ for (const phase of ['connect', 'idle-secret', 'reader-event', 'reader-reject',
             if (phase === 'connect') await this.fail();
           }
           async query(sql) {
+            if (sql.includes('pg_try_advisory_lock')) return { rows: [{ acquired: true }] };
             if (sql.startsWith('ALTER ROLE')) {
               this.emit('notice', raw());
               if (phase === 'reader-event') await this.fail();

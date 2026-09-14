@@ -1,0 +1,222 @@
+"""Bounded, single-attempt AWS reads for the release controller (stdlib only).
+
+Integration contract::
+
+    with read_window(deadline, now=now):  # absolute deadline, same clock as wait_for
+        try:
+            ready = check()  # nested read_request calls inherit the remaining budget
+        except TransientReadError:
+            ready = False   # wait_for owns backoff/retry, within its existing deadline
+
+read_request(service, operation, args) takes CLI names and a mapping of option
+names (without "--") to strings or lists of strings, and returns a JSON object.
+Only the seven explicit operations below are admitted. Region is ap-northeast-2.
+Each call makes ONE attempt; there are no sleeps, SDK retries, automatic pages,
+or mutating requests. A ListTasks nextToken is returned for the caller to handle.
+Successful AWS response bodies still need the controller's domain validation.
+
+TransientReadError is an ImageError subtype for recognized transport failures
+and exhausted read budgets. All other ImageError failures remain fatal, including
+authorization, identity, unknown errors, response limits and cleanup failures.
+Diagnostics contain fixed operation labels, never provider output or arguments.
+Keep writes on ci_web_image.command; do not catch ImageError as retryable.
+
+Outside a window, each call has a 30-second cap. Nested windows can only shorten
+it. A real monotonic subprocess watchdog enforces the computed remaining budget
+even with an injected test clock. Cleanup time is reserved INSIDE that budget;
+timeout kills the owned process group and waits boundedly for the direct child.
+Normal OS scheduling/process creation latency is not a hard realtime guarantee.
+"""
+from contextlib import contextmanager
+from contextvars import ContextVar
+import json
+import math
+import os
+import re
+import selectors
+import signal
+import subprocess
+import tempfile
+import time
+
+from ci_web_image import ImageError, child_environment, require
+
+__all__ = ["TransientReadError", "read_window", "read_request"]
+MAX_REQUEST_SECONDS = 30.0
+MAX_RESPONSE_BYTES = 1024 * 1024
+MAX_ERROR_BYTES = 64 * 1024
+
+# This is an authorization boundary, independent of the base diagnostic labels.
+_OPERATIONS = {
+    ("ecs", "describe-services"): ("ecs:DescribeServices", {"cluster", "services", "include"}),
+    ("ecs", "describe-tasks"): ("ecs:DescribeTasks", {"cluster", "tasks", "include"}),
+    ("ecs", "describe-task-definition"): (
+        "ecs:DescribeTaskDefinition", {"task-definition", "include"}),
+    ("ecs", "list-tasks"): ("ecs:ListTasks", {
+        "cluster", "container-instance", "family", "started-by", "service-name",
+        "desired-status", "launch-type", "next-token", "max-results"}),
+    ("ecr", "batch-get-image"): ("ecr:BatchGetImage", {
+        "registry-id", "repository-name", "image-ids", "accepted-media-types"}),
+    ("ecr", "get-download-url-for-layer"): ("ecr:GetDownloadUrlForLayer", {
+        "registry-id", "repository-name", "layer-digest"}),
+    ("sts", "get-caller-identity"): ("sts:GetCallerIdentity", set()),
+}
+_RETRY_CODES = frozenset({
+    "Throttling", "ThrottlingException", "ThrottledException",
+    "TooManyRequestsException", "RequestLimitExceeded",
+    "RequestThrottled", "RequestThrottledException", "SlowDown",
+    "ServiceUnavailable", "ServiceUnavailableException", "ServiceUnavailableError",
+    "InternalFailure", "InternalError", "InternalServerError", "InternalServerException",
+    "ServerException", "RequestTimeout", "RequestTimeoutException", "429",
+})
+_SERVICE_ERROR = re.compile(
+    r"An error occurred \(([A-Za-z0-9]+)\) when calling the ([A-Za-z0-9]+)"
+    r" operation(?: \(reached max retries: [0-9]+\))?:[\s\S]*")
+_NETWORK_ERRORS = re.compile(
+    r'(?:(?:Read timeout on endpoint URL|Connect timeout on endpoint URL|'
+    r'Could not connect to the endpoint URL): "[^\r\n]*"|'
+    r'Connection was closed before we received a valid response from endpoint URL: '
+    r'"[^\r\n]*"\.?|Connection reset by peer(?:: [^\r\n]*)?)')
+_WINDOWS = ContextVar("ci_web_read_windows", default=())
+
+
+class TransientReadError(ImageError):
+    """A failed single read attempt that the bounded outer poll may retry."""
+
+
+def _finite(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+@contextmanager
+def read_window(deadline, now=time.monotonic):
+    """Apply an already computed absolute deadline/clock to all nested reads.
+
+    Context-local and reset on every exit, including exceptions. No fresh timeout
+    is created here: repeated checks share the original poll's deadline.
+    """
+    require(_finite(deadline) and callable(now), "Invalid AWS read window")
+    token = _WINDOWS.set(_WINDOWS.get() + ((deadline, now),))
+    try:
+        yield
+    finally:
+        _WINDOWS.reset(token)
+
+
+def _budget():
+    remaining = MAX_REQUEST_SECONDS
+    for deadline, now in _WINDOWS.get():
+        current = now()
+        require(_finite(current), "Invalid AWS read clock")
+        remaining = min(remaining, deadline - current)
+    return remaining
+
+
+def _argv(service, operation, args):
+    require(isinstance(service, str) and isinstance(operation, str)
+            and (service, operation) in _OPERATIONS, "Unsupported AWS read operation")
+    label, allowed = _OPERATIONS[(service, operation)]
+    require(isinstance(args, dict) and all(key in allowed for key in args),
+            f"Invalid AWS read arguments [{label}]")
+    argv = ["aws", service, operation, "--region", "ap-northeast-2", "--output", "json",
+            "--no-cli-pager", "--no-paginate"]
+    total = 0
+    for key, value in args.items():
+        values = [value] if isinstance(value, str) else value
+        require(isinstance(values, (list, tuple)) and 0 < len(values) <= 100,
+                f"Invalid AWS read arguments [{label}]")
+        for item in values:
+            require(isinstance(item, str) and 0 < len(item) <= 16384
+                    and not item.startswith("-") and all(ord(c) >= 32 and ord(c) != 127 for c in item)
+                    and not any(s in item.lower() for s in ("file://", "fileb://", "http://", "https://"))
+                    and "@=" not in item, f"Invalid AWS read arguments [{label}]")
+            total += len(item.encode("utf-8"))
+        argv += ["--" + key, *values]
+    require(total <= 65536, f"Invalid AWS read arguments [{label}]")
+    return argv, label
+
+
+def _transient(stderr, label):
+    # Parse the root error, not retry words inside an arbitrary provider message.
+    text = stderr.decode("utf-8", errors="replace").strip()
+    service_error = _SERVICE_ERROR.fullmatch(text)
+    if service_error:
+        code, operation = service_error.groups()
+        return (operation == label.split(":", 1)[1]
+                and (code in _RETRY_CODES or re.fullmatch(r"5[0-9]{2}", code) is not None))
+    return _NETWORK_ERRORS.fullmatch(text) is not None
+
+
+def _stop(proc, deadline, label):
+    # Kill the group even when its leader exited but a descendant kept a pipe open.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        raise ImageError(f"AWS read process cleanup failed [{label}]") from None
+
+
+def _capture(argv, env, seconds, label):
+    deadline = time.monotonic() + seconds
+    # Reserve up to 250ms for group kill/reap, with no extra wait after the budget.
+    capture_deadline = deadline - min(0.25, seconds / 4)
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env=env, bufsize=0, start_new_session=True)
+    buffers = [bytearray(), bytearray()]
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(proc.stdout, selectors.EVENT_READ, (0, MAX_RESPONSE_BYTES))
+            selector.register(proc.stderr, selectors.EVENT_READ, (1, MAX_ERROR_BYTES))
+            while selector.get_map():
+                remaining = capture_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TransientReadError(f"AWS read timed out [{label}]")
+                for key, _ in selector.select(remaining):
+                    index, limit = key.data
+                    # Bounded pipes and bounded reads, not communicate()'s growing buffer.
+                    chunk = os.read(key.fd, min(65536, limit - len(buffers[index]) + 1))
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    buffers[index].extend(chunk)
+                    require(len(buffers[index]) <= limit, f"Oversized AWS read response [{label}]")
+            try:
+                code = proc.wait(timeout=max(0.0, capture_deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                raise TransientReadError(f"AWS read timed out [{label}]") from None
+        return code, bytes(buffers[0]), bytes(buffers[1])
+    finally:
+        try:
+            _stop(proc, deadline, label)
+        finally:
+            proc.stdout.close()
+            proc.stderr.close()
+
+
+def read_request(service, operation, args):
+    """Perform exactly one allowlisted CLI read under the current read_window."""
+    argv, label = _argv(service, operation, args)
+    try:
+        # Fixed, trusted child environment, including AWS_MAX_ATTEMPTS=1.
+        # Recompute budget after setup so setup cannot extend the outer deadline.
+        request_deadline = time.monotonic() + MAX_REQUEST_SECONDS
+        with tempfile.TemporaryDirectory(prefix="web-read-config-") as config_dir:
+            env = child_environment("aws", config_dir)
+            seconds = min(_budget(), request_deadline - time.monotonic())
+            if seconds <= 0:
+                raise TransientReadError(f"AWS read budget exhausted [{label}]")
+            code, stdout, stderr = _capture(argv, env, seconds, label)
+        if code != 0:
+            if _transient(stderr, label):
+                raise TransientReadError(f"AWS read temporarily unavailable [{label}]")
+            raise ImageError(f"AWS read failed [{label}]")
+        result = json.loads(stdout)
+        require(isinstance(result, dict), f"Invalid AWS read response [{label}]")
+        if _budget() <= 0 or time.monotonic() >= request_deadline:
+            raise TransientReadError(f"AWS read budget exhausted [{label}]")
+        return result
+    except (OSError, ValueError, RecursionError, subprocess.SubprocessError):
+        raise ImageError(f"AWS read failed [{label}]") from None

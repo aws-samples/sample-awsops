@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: db3a68e5cead · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 689c9026a543 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -10,6 +10,10 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
+- Release safety primitives remain unwired to web workflows. Automatic pending-SQL
+  checks are opt-in; standalone overrides require reviewed cutovers. Contention fails
+  immediately under the shared lock. Read retries share a deadline and never retry writes;
+  failed/replaced ECS deployment evidence is terminal. See `release-safety-primitives.md`.
 - The web provenance helper is unwired; `web-image-provenance.md` defines future receipt
   steps, current-dev migration outputs and recovery limits. Require composed `promote`;
   never fabricate migration evidence or fall back to mutable tags as provenance.
