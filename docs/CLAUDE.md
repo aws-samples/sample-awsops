@@ -23,7 +23,8 @@ Project documentation organized by purpose. Each subdirectory has its own CLAUDE
   Existing bodies are a migration backlog, not a bilingual-authoring requirement.
   Preserve explicit heading anchors or update inbound links when headings change.
 - Keep multilingual product guides under `docs-site/` and application translations.
-  Root `README.md` and `CHANGELOG.md` retain the localization rules in root `CLAUDE.md`.
+  Root `README.md` stays bilingual (English/Korean). `CHANGELOG.md` follows the
+  English/Korean parity rule in root `CLAUDE.md`.
   Generated archify artifacts under `docs/diagrams/` (spec JSON and delivered HTML)
   are English-only; regenerate them through the skill rather than hand-translating HTML.
 - ADR bodies and the BASELINE decision register are maintained in the **private upstream

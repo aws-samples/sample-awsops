@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7478e6ed1001 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 33a08703ce3b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -18,8 +18,9 @@ New or rewritten developer/reviewer documents under `docs/`, including operation
 runbooks and context files, are English-only. Preserve facts while maintaining old
 bilingual bodies; do not require parallel translations. Preserve explicit heading
 anchors or update inbound links when headings change. Multilingual product guides
-under `docs-site/` and application translations remain. Root `README.md` and
-`CHANGELOG.md` retain the localization rules in root `CLAUDE.md`.
+under `docs-site/` and application translations remain. Root `README.md` stays
+bilingual (English/Korean). `CHANGELOG.md` follows the English/Korean parity rule
+in root `CLAUDE.md`.
 
 Generated archify spec/HTML artifacts are English-only. Regenerate delivered HTML
 from its source using the skill instead of hand-translating it. Follow the scoped
