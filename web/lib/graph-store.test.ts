@@ -59,7 +59,7 @@ describe('rebuildGraph', () => {
         target_type: 'ip', vpc_id: 'vpc-b', target_health_descriptions: [{ Target: { Id: '10.0.1.10' } }],
       } },
       { resource_type: 'ecs_task', resource_id: 'task-b', region: 'us-east-1', data: {
-        cluster_arn: 'cluster/b', task_group: 'service:orders', attachments: [{ Details: [
+        cluster_arn: 'cluster/b', task_group: 'service:orders', last_status: 'RUNNING', attachments: [{ Details: [
           { Name: 'subnetId', Value: 'subnet-b' }, { Name: 'privateIPv4Address', Value: '10.0.1.10' },
         ] }],
       } },

@@ -13,7 +13,7 @@ type Body = { rows: ReturnType<typeof row>[]; run: typeof RUN };
 const targets = row('tg-app', { vpc_id: vpcId, target_type: 'ip', target_health_descriptions:
   ['10.0.1.2', '10.0.1.3'].map(Id => ({ Target: { Id, Port: 80 } })) });
 const task = (name: string) => row(`task-${name}`, {
-  task_group: `service:${name}`, cluster_arn: 'cluster/ecs-app',
+  task_group: `service:${name}`, cluster_arn: 'cluster/ecs-app', last_status: 'RUNNING',
   attachments: [{ Details: [{ Name: 'subnetId', Value: 'subnet-app' }, { Name: 'privateIPv4Address', Value: '10.0.1.2' }] }],
 });
 beforeEach(() => {
@@ -121,17 +121,33 @@ describe('live topology inventory adapter', () => {
     expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
   });
 
-  it('retains previous same-account data after total refresh failure but clears it on account switch', async () => {
-    const failures = new Set<string>(); serve({ failures }); render(<TopologyPage />);
-    await screen.findByRole('option', { name: 'ECS · ecs-app' });
+  it.each([false, true])('retains same-account graph provenance after total refresh failure (partial: %s)', async partial => {
+    const failures = new Set<string>();
+    const options = { failures, eks: { clusters: [
+      { name: 'good', region, vpcId, access: 'connected' },
+      { name: 'blocked', region, vpcId: 'vpc-other', access: partial ? 'no-entry' : 'connected' },
+    ] },
+      inventoryReply: (url: URL, body: Body) => Response.json(partial && url.pathname.endsWith('/ecs_task')
+        ? { ...body, run: { ...body.run, status: 'partial' } } : body) };
+    serve(options); render(<TopologyPage />);
+    await screen.findByText(/인벤토리 동기화:/);
     await waitFor(() => expect(document.querySelector('.react-flow')).not.toBeNull());
+    const label = partial ? 'ambiguous:' : 'ecs-api';
+    const syncWarning = '인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.';
+    expect(!!screen.queryByRole('alert', { name: 'EKS 식별 상태' })).toBe(partial);
+    expect(!!screen.queryByText(syncWarning)).toBe(partial);
     failures.add('*');
+    options.eks = { clusters: partial ? [] : [{ name: 'blocked', region, vpcId, access: 'no-entry' }] };
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     await screen.findByText('조회 실패로 이전 결과를 표시합니다.');
     expect(document.querySelector('.react-flow')).not.toBeNull();
-    search('ecs-api'); expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
+    search(label); expect(screen.getByRole('button', { name: partial ? /×2/ : /ecs-api/ })).toBeTruthy();
+    expect(!!screen.queryByRole('alert', { name: 'EKS 식별 상태' })).toBe(partial);
+    expect(!!screen.queryByText(syncWarning)).toBe(partial);
     act(() => setActiveAccount('123456789012'));
-    await waitFor(() => expect(screen.queryByRole('button', { name: /ecs-api/ })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('button', { name: partial ? /×2/ : /ecs-api/ })).toBeNull());
+    expect(screen.queryByRole('alert', { name: 'EKS 식별 상태' })).toBeNull();
+    expect(screen.queryByText(syncWarning)).toBeNull();
     expect(screen.queryByText('조회 실패로 이전 결과를 표시합니다.')).toBeNull();
     expect(screen.queryByText(/그래프로 그릴 리소스가 없습니다/)).toBeNull();
   });

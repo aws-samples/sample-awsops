@@ -74,6 +74,8 @@ function ecsIpMap(tasks: Row[], subnets: Row[]): Map<string, { label: string; re
     subnetVpcs.set(key, vpcs);
   }
   for (const t of tasks) {
+    const status = str(t.last_status).toUpperCase();
+    if (status === 'STOPPED') continue; // A terminal task no longer owns its former ENI address.
     const region = str(t.region);
     const group = str(t.task_group);
     const svc = group.startsWith('service:') ? group.slice(8) : group;
@@ -95,7 +97,7 @@ function ecsIpMap(tasks: Row[], subnets: Row[]): Map<string, { label: string; re
           if (map.get(key) === null) continue;
           const cluster = str(t.cluster_arn).split('/').pop();
           const previous = map.get(key);
-          if (previous && (previous.meta.task !== taskId || previous.meta.cluster !== cluster
+          if (status !== 'RUNNING' || previous && (previous.meta.task !== taskId || previous.meta.cluster !== cluster
             || previous.meta.subnetId !== subnetId)) {
             map.set(key, null);
             continue;

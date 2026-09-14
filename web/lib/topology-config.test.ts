@@ -224,6 +224,19 @@ describe('EKS inventory producer → configuration → service/network graph', (
     expect(integrated.edges.filter(e => e.meta?.match === 'configured-cluster')).toHaveLength(1);
   });
 
+  it.each([undefined, 'orders-a'])('distinguishes a manual backend from an unresolved pod reference: %s', async reference => {
+    serve([], [{ ...endpoint, targets: [{ ip, pod: reference }] }]);
+    const { map } = await fetchEksIpMap();
+    const graph = buildFlowGraph({ ipResolved: map,
+      tg: [{ resource_id: 'tg', region, vpc_id: vpcId, target_type: 'ip', target_health_descriptions: [{ Target: { Id: ip } }] }],
+      ecsTask: [{ resource_id: 'task', region, last_status: 'RUNNING', attachments: [{ Details: [
+        { Name: 'subnetId', Value: 'subnet' }, { Name: 'privateIPv4Address', Value: ip },
+      ] }] }], subnet: [{ resource_id: 'subnet', region, vpc_id: vpcId }],
+    });
+    expect(map[scopedTargetIp(region, vpcId, ip)]).toBe(reference ? null : undefined);
+    expect(graph.nodes.find(node => node.kind === 'target')?.meta?.resolved).toBe(reference ? 'ambiguous' : 'ecs');
+  });
+
   it('rejects duplicate cluster candidates even with identical workload names', async () => {
     serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'other-cluster' }] });
     const { ipResolved, integrated } = await graphs();

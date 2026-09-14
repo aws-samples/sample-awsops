@@ -157,7 +157,7 @@ describe('buildE2eGraph — evidence and provenance', () => {
       configuredNodes: 6, serviceNodes: 4, networkFlows: 1,
       correlatedEndpoints: 2, unmatchedEndpoints: 0, ambiguousEndpoints: 0, observationsUnsupported: false,
     });
-    expect(identityEdges(graph)).toHaveLength(3);
+    expect(identityEdges(graph)).toHaveLength(2);
     expect(graph.edges.some(e => e.evidence === 'context' && e.meta?.match === 'monitor-cluster')).toBe(true);
     const cf = graph.nodes.find(n => n.kind === 'cloudfront')!;
     const focused = selectE2eGraph(graph, { focusId: cf.id });
@@ -398,7 +398,8 @@ describe('buildE2eGraph — workload identity', () => {
         configured: configured([target({ resolved: 'eks', cluster: 'app', ...metadata })]), services: services(),
         network: [observation([flow({ local: {}, remote: endpoint({ podName: 'web-1', podNamespace: 'shop' }) })])],
       }));
-      expect(identityEdges(graph)).toHaveLength(2);
+      expect(identityEdges(graph)).toHaveLength(1);
+      expect(graph.edges.some(edge => edge.evidence === 'context' && edge.meta?.match === 'configured-cluster')).toBe(true);
       expect(graph.summary.ambiguousEndpoints).toBe(0);
     },
   );
@@ -443,28 +444,38 @@ describe('buildE2eGraph — workload identity', () => {
     expect(config.nodes.find(node => node.kind === 'target')?.meta).toMatchObject({ count: 2, pod: 'web-1' });
     const graph = buildE2eGraph(input({ configured: config, services: services(),
       network: [observation([flow({ local: {}, remote: endpoint({ ip: ips[1], podName: 'web-2', podNamespace: 'shop' }) })])] }));
-    expect(identityEdges(graph)).toHaveLength(2);
+    expect(identityEdges(graph)).toHaveLength(1);
     expect(graph.summary.ambiguousEndpoints).toBe(0);
-    expect(identityEdges(graph).some(edge => edge.meta?.pod === 'web-2')).toBe(true);
+    expect(graph.edges.some(edge => edge.evidence === 'context' && edge.meta?.pod === 'web-2')).toBe(true);
     const conflictingNamespace = buildE2eGraph(input({ configured: config, services: services({ namespace: 'other' }),
       network: [observation([flow({ local: {}, remote: endpoint({ ip: ips[1], podName: 'web-2', podNamespace: 'other' }) })])] }));
     expect(identityEdges(conflictingNamespace)).toEqual([]);
     expect(conflictingNamespace.summary.ambiguousEndpoints).toBe(1);
   });
 
-  it.each([REGION, 'us-west-2'])('keeps unscoped monitor/workload naming from trace region %s as context', region => {
+  it.each([
+    ['local', REGION], ['local', 'us-west-2'], ['remote', REGION], ['remote', 'us-west-2'],
+  ] as const)('keeps %s workload naming from trace region %s as context', (side, region) => {
+    const cluster = side === 'local' ? 'app' : 'remote-cluster';
     const trace = buildTraceGraph([{ traceId: 'trace', spanId: 'span', service: 'web', kind: 'server',
-      startMs: 1, durationMs: 1, sourceId: 'traces', region, k8sCluster: 'app', k8sNamespace: 'shop',
+      startMs: 1, durationMs: 1, sourceId: 'traces', region, k8sCluster: cluster, k8sNamespace: 'shop',
       k8sDeployment: 'web', k8sPod: 'web-2' }], [], []);
     const graph = buildE2eGraph(input({
+      configured: side === 'remote' ? configured([target({ resolved: 'eks', cluster })]) : input().configured,
       services: { ...trace, captured_at: CAPTURED_AT },
-      network: [observation([flow({ local: endpoint({ podName: 'web-2', podNamespace: 'shop' }) })])],
+      network: [observation([flow({ local: {}, remote: {}, [side]: endpoint({ podName: 'web-2', podNamespace: 'shop' }) })])],
     }));
-    expect(identityEdges(graph)).toHaveLength(0);
-    expect(graph.edges.find(e => e.evidence === 'context')?.meta).toMatchObject({
-      match: 'monitor-cluster', cluster: 'app', namespace: 'shop', pod: 'web-2', side: 'local',
+    expect(identityEdges(graph)).toHaveLength(side === 'remote' ? 1 : 0);
+    if (side === 'remote') expect(identityEdges(graph)[0]).toMatchObject({
+      target: graph.nodes.find(n => n.kind === 'target')!.id, meta: { match: 'ip-region-vpc', region: REGION, vpcId: VPC },
     });
-    expect(graph.summary).toMatchObject({ correlatedEndpoints: 0, unmatchedEndpoints: 2 });
+    expect(graph.edges.find(e => e.evidence === 'context')).toMatchObject({
+      target: graph.nodes.find(n => n.kind === 'workload')!.id, relation: 'name-context', directed: false,
+      meta: { match: side === 'local' ? 'monitor-cluster' : 'configured-cluster', cluster, namespace: 'shop', pod: 'web-2', side },
+    });
+    expect(graph.summary).toMatchObject({
+      correlatedEndpoints: side === 'remote' ? 1 : 0, unmatchedEndpoints: side === 'remote' ? 1 : 2,
+    });
     const focused = selectE2eGraph(graph, { focusId: graph.nodes.find(n => n.kind === 'workload')!.id });
     expect(focused.nodes.filter(n => n.kind === 'connection')).toHaveLength(1);
     expect(focused.edges.filter(e => e.evidence === 'network')).toHaveLength(2);
@@ -499,22 +510,6 @@ describe('buildE2eGraph — workload identity', () => {
       network: [observation([flow({ local: {}, remote: endpoint({ vpcId, podName: 'web-1', podNamespace: 'shop' }), category })], { category })] }));
     expect(identityEdges(graph)).toEqual([]);
     expect(graph.summary.unmatchedEndpoints).toBe(2);
-  });
-
-  it('matches a remote workload only using a unique scoped EKS target as cluster proof', () => {
-    const graph = buildE2eGraph(input({
-      configured: configured([target({ resolved: 'eks', cluster: 'remote-cluster' })]),
-      services: services({ cluster: 'remote-cluster' }),
-      network: [observation([flow({
-        local: {}, remote: endpoint({ podName: 'web-1', podNamespace: 'shop' }),
-      })])],
-    }));
-    expect(identityEdges(graph)).toHaveLength(2);
-    expect(identityEdges(graph).find(e => e.meta?.match === 'configured-cluster')?.meta).toMatchObject({
-      cluster: 'remote-cluster', namespace: 'shop', pod: 'web-1', side: 'remote',
-    });
-    expect(identityEdges(graph).some(e => e.meta?.match === 'monitor-cluster')).toBe(false);
-    expect(graph.summary).toMatchObject({ correlatedEndpoints: 1, unmatchedEndpoints: 1 });
   });
 
   it.each(['ecs', undefined])('does not take Kubernetes cluster proof from a %j target', resolved => {
@@ -701,10 +696,11 @@ describe('selectE2eGraph — filtering before bounds', () => {
     });
   });
 
-  it('never traverses a shared construct to another connection when focusing or searching', () => {
-    const graph = buildE2eGraph(input({ network: [observation([
-      flow({ local: { ip: '10.1.1.1' }, remote: { ip: '10.1.1.2' }, traversedIds: ['NAT:nat-shared'] }),
-      flow({ local: { ip: '10.2.2.1' }, remote: { ip: '10.2.2.2' }, traversedIds: ['NAT:nat-shared'] }),
+  it.each(['construct', 'workload'])('never traverses shared %s context to another connection when focusing or searching', context => {
+    const pod = context === 'workload' ? { podName: 'web-1', podNamespace: 'shop' } : {};
+    const graph = buildE2eGraph(input({ services: context === 'workload' ? services() : null, network: [observation([
+      flow({ local: { ip: '10.1.1.1', ...pod }, remote: { ip: '10.1.1.2' }, traversedIds: ['NAT:nat-shared'] }),
+      flow({ local: { ip: '10.2.2.1', ...pod }, remote: { ip: '10.2.2.2' }, traversedIds: ['NAT:nat-shared'] }),
     ])] }));
     const first = graph.nodes.find(n => n.kind === 'connection')!;
     for (const view of [
@@ -714,6 +710,7 @@ describe('selectE2eGraph — filtering before bounds', () => {
       expect(view.nodes.filter(n => n.kind === 'connection')).toHaveLength(1);
       expect(view.nodes.filter(n => n.kind === 'construct')).toHaveLength(1);
       expect(view.nodes.filter(n => n.kind === 'endpoint')).toHaveLength(2);
+      expect(view.nodes.filter(n => n.kind === 'workload')).toHaveLength(context === 'workload' ? 1 : 0);
       expectNoDanglingEdges(view);
     }
   });

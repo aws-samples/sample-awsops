@@ -10,7 +10,7 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
   const task = {
     resource_id: 'arn:aws:ecs:us-east-1:123456789012:task/cluster-b/task-b', region,
     cluster_arn: 'arn:aws:ecs:us-east-1:123456789012:cluster/cluster-b', task_group: 'service:service-b',
-    attachments: [attachment('subnet-b')],
+    last_status: 'RUNNING', attachments: [attachment('subnet-b')],
   };
   const subnet = { resource_id: 'subnet-b', region, vpc_id: 'vpc-b' };
   const tg = {
@@ -147,10 +147,13 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
       .toMatchObject({ label: 'service-a', meta: { resolved: 'ecs', cluster: 'cluster-a', vpcId: 'vpc-a' } });
   });
 
-  it('rejects competing tasks within the same proven scope', () => {
-    expect(target({
-      tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task, { ...task, resource_id: 'task-other' }], subnet: [subnet],
-    }).meta?.resolved).toBe('ambiguous');
+  it.each(['RUNNING', 'running', 'STOPPED', 'PENDING', undefined, 'unknown'])('arbitrates task status %s before claiming a reused IP', status => {
+    for (const competitor of [false, true]) {
+      const claims = [{ ...task, last_status: status }, ...(competitor ? [{ ...task, resource_id: 'task-other' }] : [])];
+      const expected = status === 'STOPPED' ? competitor ? 'ecs' : undefined
+        : status?.toUpperCase() === 'RUNNING' && !competitor ? 'ecs' : 'ambiguous';
+      expect(target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: claims, subnet: [subnet] }).meta?.resolved).toBe(expected);
+    }
   });
 
   it('does not hide an unknown-scope same-IP competitor behind a known task', () => {
@@ -200,9 +203,9 @@ describe('scoped endpoint resolution for network correlation', () => {
   it('leaves an ECS IP ambiguous when different tasks share it across network scopes', () => {
     const graph = buildFlowGraph({
       tg: [tg], ecsTask: [
-        { resource_id: 'task-a', cluster_arn: 'cluster/alpha', task_group: 'service:a', region: 'us-east-1',
+        { resource_id: 'task-a', last_status: 'RUNNING', cluster_arn: 'cluster/alpha', task_group: 'service:a', region: 'us-east-1',
           attachments: [{ Details: [{ Name: 'privateIPv4Address', Value: '10.0.1.10' }] }] },
-        { resource_id: 'task-b', cluster_arn: 'cluster/beta', task_group: 'service:b', region: 'us-east-1',
+        { resource_id: 'task-b', last_status: 'RUNNING', cluster_arn: 'cluster/beta', task_group: 'service:b', region: 'us-east-1',
           attachments: [{ Details: [{ Name: 'privateIPv4Address', Value: '10.0.1.10' }] }] },
       ],
     });
@@ -673,7 +676,7 @@ describe('buildFlowGraph — backend resolution (instance/lambda)', () => {
   it('resolves an ip target to an ECS service via synced ecsTask (attachments PascalCase)', () => {
     const tgIp = { resource_id: 'arn:tg:ip', target_group_name: 'ip', target_type: 'ip', region: 'ap-northeast-2', vpc_id: 'vpc-1',
       target_health_descriptions: [{ Target: { Id: '10.20.11.244' }, TargetHealth: { State: 'healthy' } }] };
-    const task = { resource_id: 'arn:aws:ecs:ap-northeast-2:1:task/cl/abc', region: 'ap-northeast-2', cluster_arn: 'arn:aws:ecs:ap-northeast-2:1:cluster/prod', task_group: 'service:ai-trader-api',
+    const task = { resource_id: 'arn:aws:ecs:ap-northeast-2:1:task/cl/abc', last_status: 'RUNNING', region: 'ap-northeast-2', cluster_arn: 'arn:aws:ecs:ap-northeast-2:1:cluster/prod', task_group: 'service:ai-trader-api',
       attachments: [{ Type: 'ElasticNetworkInterface', Details: [
         { Name: 'privateIPv4Address', Value: '10.20.11.244' }, { Name: 'subnetId', Value: 'subnet-1' },
       ] }] };

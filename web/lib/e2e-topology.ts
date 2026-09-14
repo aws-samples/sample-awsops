@@ -168,7 +168,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     }
     const target = candidates.size === 1 ? [...candidates.values()][0] : undefined;
     const targetCluster = target?.node.meta.resolved === 'eks' ? text(target.node.meta.cluster) : '';
-    // A monitor name supplies display context only. Remote matching needs a scoped EKS target.
+    // Neither monitor nor configured-cluster names verify a trace workload's immutable scope.
     const localCluster = side === 'local' ? monitorCluster : '';
     const cluster = localCluster || targetCluster;
     const namespace = text(data.podNamespace), pod = text(data.podName);
@@ -202,8 +202,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     }
     if (matches.length === 1) {
       addEdge({
-        source: endpoint.id, target: matches[0].id, relation: localCluster ? 'name-context' : 'same-identity',
-        evidence: localCluster ? 'context' : 'identity', directed: false,
+        source: endpoint.id, target: matches[0].id, relation: 'name-context',
+        evidence: 'context', directed: false,
         meta: {
           match: localCluster ? 'monitor-cluster' : 'configured-cluster',
           account: input.account, cluster, namespace, pod, side,
@@ -211,8 +211,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
         },
       });
     }
-    endpoint.meta.correlation = target || (!localCluster && matches.length) ? 'correlated' : matches.length ? 'context' : 'unmatched';
-    if (target || (!localCluster && matches.length)) summary.correlatedEndpoints++;
+    endpoint.meta.correlation = target ? 'correlated' : matches.length ? 'context' : 'unmatched';
+    if (target) summary.correlatedEndpoints++;
     else summary.unmatchedEndpoints++;
   };
 
@@ -355,12 +355,14 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
         }
       }
     }
-    // Use a snapshot so even chains of context relations do not become traversable.
-    const traversed = new Set(visited);
-    for (const edge of edges) {
-      if (edge.evidence !== 'context') continue;
-      if (traversed.has(edge.source) && allowed.has(edge.target)) visited.add(edge.target);
-      if (traversed.has(edge.target) && allowed.has(edge.source)) visited.add(edge.source);
+    // Attach context once, then direct stored service neighbors; never traverse context again.
+    for (const evidence of ['context', 'service'] as const) {
+      const traversed = new Set(visited);
+      for (const edge of edges) {
+        if (edge.evidence !== evidence) continue;
+        if (traversed.has(edge.source) && allowed.has(edge.target)) visited.add(edge.target);
+        if (traversed.has(edge.target) && allowed.has(edge.source)) visited.add(edge.source);
+      }
     }
     // Context may admit a connection or endpoint; complete its own unit without transit.
     const touched = new Set(visited);

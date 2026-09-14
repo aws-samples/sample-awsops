@@ -271,8 +271,6 @@ export default function TopologyPage() {
       const failed = results.flatMap((result, i) => result.status === 'rejected'
         ? [result.reason instanceof Error ? result.reason.message : `${TYPES[i]}: unavailable`] : []);
       setErr(failed.join('; '));
-      setSyncIncomplete(results.some(r => r.status === 'fulfilled' && r.value.incomplete));
-      setEksResolution(eks);
       if (failed.length === TYPES.length) {
         setRetained(displayedAccount.current === account);
         return;
@@ -301,6 +299,8 @@ export default function TopologyPage() {
         if (res[i].capped) capped.push(t);
       });
       setData(out);
+      setSyncIncomplete(results.some(r => r.status === 'fulfilled' && r.value.incomplete));
+      setEksResolution(eks);
       displayedAccount.current = account;
       setSelected(null);
       setRetained(false);
