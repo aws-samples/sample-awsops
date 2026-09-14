@@ -41,7 +41,7 @@ gh run watch "$MIGRATION_RUN_ID" -R aws-samples/sample-awsops --exit-status
 gh run view "$MIGRATION_RUN_ID" -R aws-samples/sample-awsops --json status,conclusion,headSha,jobs
 ```
 
-Require **SUCCESS** (`status=completed`, `conclusion=success`), migration-container exit `0` and completed reader synchronization. Then start a fresh `build=true` web dispatch below; do not rerun an obsolete failed web run. If dev moves, reassess the new pending set. With an initialized ledger and no unsupported pending SQL, release directly. Contract cutovers also require the coordination procedure below.
+Require **SUCCESS** (`status=completed`, `conclusion=success`), migration-container exit `0` and completed reader synchronization. Then start a fresh `build=true` web dispatch below; do not rerun an obsolete failed web run. If dev moves, reassess the new pending set. With an initialized ledger and no unsupported pending SQL, release directly. Contract cutovers also require the coordination procedure below. The following fresh-build and retained-image reuse commands are mutually exclusive alternatives; select one.
 
 ```bash
 gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true
@@ -85,9 +85,9 @@ Fetch manifests by `imageDigest`; `PIN_SHA` is source metadata, never authority 
 ## Related files, validation and decisions
 
 - `.github/workflows/deploy-web.yml`, `deploy-migrations.yml`: release order and guarded private execution. `scripts/v2/ci_web_image.py`, `ci_web_deploy.py`: provenance, permission preflight and ECS checks.
-- `scripts/v2/ci/run-migration.mjs`, `prepare-smoke-credentials.mjs`, `ci/runtime-release.mjs`: migrations, private credentials and full runtime verification; `.github/workflows/collect-runtime.yml` provides manual preparation/collection. `terraform/foundation/ci-migrations.tf`: default-off task/secret scopes.
+- `scripts/v2/ci/run-migration.mjs`, `scripts/v2/prepare-smoke-credentials.mjs`, `scripts/v2/ci/runtime-release.mjs`: migrations, private credentials and full runtime verification; `.github/workflows/collect-runtime.yml` provides manual preparation/collection. `terraform/foundation/ci-migrations.tf`: default-off task/secret scopes.
 - [Deployment setup](dev-repo-setup.md), [branch strategy](branch-strategy.md), [SQL reader](agent-sql-reader.md): prerequisites and recovery.
 
 Mandatory CI checks include `python3 -B -m pytest -q scripts/v2/test_ci_web_image.py scripts/v2/test_ci_web_read.py scripts/v2/test_ci_web_deploy.py scripts/v2/test_ci_web_workflow.py` and `node --test scripts/v2/ci/*.test.mjs scripts/v2/deployment-smoke.test.mjs`; the workflow suite needs PyYAML and Bash. Optional local lint requires separately installed `actionlint` on PATH: `actionlint .github/workflows/deploy-web.yml .github/workflows/deploy-migrations.yml`. CI does not install/run actionlint; `.github/actionlint.yaml` declares the existing `sample-awsops` runner label. Offline checks do not prove live IAM/deployment.
 
-ADR-001 governs immutable migrations; ADR-005 keeps product autonomy frozen while permitting these operator-authorized deployments.
+ADR-001 governs immutable migrations; ADR-005 separates operator deployments from frozen product autonomy.

@@ -194,10 +194,4 @@ branches); production stays behind the `production` environment approval. See
 - `dev → main` merge, then production dispatch: waits for the `production`
   environment approval, smokes against the `public_url` output.
 
-For a missing ledger or unsupported pending SQL (`DEFAULT now()`/`gen_random_uuid()`,
-`ALTER`, `GRANT`, views), run `gh workflow run deploy-migrations.yml -R aws-samples/sample-awsops --ref dev`.
-Inspect that exact run for **SUCCESS**, source SHA, migration-container exit `0` and reader sync
-as described in [web release](web-release.md), then run
-`gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true`.
-Automatic runs never initialize a missing ledger or exempt historical pending files;
-standalone migrations retain locks/checksums, and contract cutovers need the documented coordination.
+For a missing ledger or unsupported pending SQL (`DEFAULT now()`/`gen_random_uuid()`, `ALTER`, `GRANT`, views), run `gh workflow run deploy-migrations.yml -R aws-samples/sample-awsops --ref dev`. Inspect that exact run for **SUCCESS**, source SHA, migration-container exit `0` and reader sync as described in [web release](web-release.md), then run `gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true`. Automatic runs never initialize a missing ledger or exempt historical pending files; standalone migrations retain locks/checksums, and contract cutovers need the documented coordination.

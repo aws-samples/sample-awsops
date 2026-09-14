@@ -114,7 +114,7 @@ reader output이 정의된 빈 문자열이면 비밀번호 동기화를 끄지�
 | `SQL_READER_SECRET_ARN` | Required only with `secret`; omit or empty with `disabled`. JSON username must be exactly `awsops_sql_reader`, password a nonempty string / reader 전용 시크릿 |
 | `INITIALIZE_EMPTY_DB` | Optional `1` for standalone/manual empty-DB initialization; retained in the private CI template, but automatic web calls refuse a missing ledger before initialization / 수동 빈 DB 초기화에만 `1`; private CI 템플릿에 유지되지만 자동 웹 호출은 원장이 없으면 초기화 전에 거부 |
 | `BOOTSTRAP` | Optional controller-confirmed `1` for legacy INTEGER ledger / 기존 INTEGER 원장 전환 |
-| `AUTOMATIC_MIGRATION` | Optional literal `1` restricts all pending files to supported transactional new tables and ordinary non-unique indexes. Unset preserves reviewed standalone SQL; online dry-run also enforces the policy above. |
+| `AUTOMATIC_MIGRATION` | Forced to literal `1` by web-driven migrations; optional for standalone callers. It restricts all pending files to supported transactional new tables and ordinary non-unique indexes. Unset preserves reviewed standalone SQL; online dry-run also enforces the policy above. |
 | `APP_VERSION` | Optional release stamp fallback; otherwise `web/package.json`; `-- since:` takes precedence / release 기록 |
 | `STATUS`, `DRY_RUN`, `OFFLINE` | `1` enables the inspection modes described above / 위 조회 모드 |
 

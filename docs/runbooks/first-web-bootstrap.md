@@ -231,11 +231,7 @@ installs the frozen baseline transactionally and upgrades the ledger to text.
 An existing ledger skips initialization; pending checksum-verified ULID migrations
 still run. `BOOTSTRAP=1` is for legacy integer ledgers, not this installation.
 Never manually import `schema.sql` or remove a ledger to make initialization pass.
-This standalone migration completes the historical corpus and reader sync before
-web release. Automatic web migration refuses a missing ledger before initialization;
-it does not bootstrap historical SQL. If the private migration capability is already
-applied, the standalone `deploy-migrations.yml` dispatch in [web release](web-release.md)
-is the alternative to the private-host command; require its successful completion first.
+This standalone migration completes the historical corpus and reader sync before web release. Automatic web migration refuses a missing ledger before initialization; it does not bootstrap historical SQL. If the private migration capability is already applied, the standalone `deploy-migrations.yml` dispatch in [web release](web-release.md) is the alternative to the private-host command; require its successful completion first.
 
 `make deploy` runs migrations again, then ECR login, ARM64 build/push, a
 force-new-deployment of the **current** ECS service task definition, a
@@ -315,7 +311,7 @@ false and follow [runtime activation](runtime-foundation.md):
    catalog acknowledgement alone is insufficient. Investigate failures using
    [inventory diagnostics](steampipe-quota-and-staleness.md); never fabricate
    ledger rows or declare an unseeded catalog ready.
-4. Confirm step 4's standalone migration and reader sync succeeded. If bootstrap
+4. Confirm section §4's standalone migration and reader sync succeeded. If bootstrap
    remains incomplete or any pending SQL is outside the automatic subset (including
    `DEFAULT now()`/`gen_random_uuid()`, `ALTER`, `GRANT` or views), first run:
 
