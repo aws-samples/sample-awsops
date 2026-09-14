@@ -45,6 +45,21 @@ the controller must still check fresh complete results for every returned type.
 
 ## Readiness capability
 
+After the existing runtime/DNS checks, a manual dev plan publishes a bounded
+`bounded_readiness_rollout` summary without raw plan values. It recognizes only
+creation of the verifier group in the existing pool with no IAM role, enrollment
+of the existing managed demo, and a code-only inventory Lambda update. Supported
+output changes are readiness activation/known CloudFront identity and the
+collector fingerprint. Resource identities and private values remain undisclosed;
+the report uses fixed resource addresses, checks and a package hash.
+
+`all_changes_match_expected_scope: true` describes this narrow comparison, not
+approval, invocation readiness or a general infrastructure review. Unknown resource
+or output changes, differing identities/roles/configuration, and a capped result
+make it false. Review those plans with the existing private exact-plan inspector.
+The original encrypted artifacts, provenance and exact-saved-plan apply gates
+remain required; no check or credential boundary is bypassed.
+
 Saved-plan JSON can retain CLI Boolean inputs as the exact strings `true`/`false`,
 while Terraform's effective values are Boolean. The readiness policy decodes only
 those canonical spellings and real Booleans; other strings, numbers and null remain
