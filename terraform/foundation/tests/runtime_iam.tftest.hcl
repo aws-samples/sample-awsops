@@ -6,6 +6,12 @@ mock_provider "aws" {
   mock_data "aws_iam_policy_document" { defaults = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" } }
   mock_data "aws_vpc" { defaults = { cidr_block = "10.20.0.0/16" } }
   mock_data "aws_security_groups" { defaults = { ids = ["sg-0123456789abcdef0"] } }
+  mock_resource "aws_ecr_repository" {
+    defaults = { repository_url = "123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/awsops-fixture-web" }
+  }
+  mock_resource "aws_cognito_user_pool" { defaults = { id = "ap-northeast-2_fixture" } }
+  mock_resource "aws_cognito_user_pool_client" { defaults = { id = "fixture-client" } }
+  mock_resource "aws_sqs_queue" { defaults = { url = "https://sqs.ap-northeast-2.amazonaws.com/123456789012/awsops-fixture-jobs" } }
   mock_resource "aws_iam_role" { defaults = { arn = "arn:aws:iam::123456789012:role/fixture" } }
   mock_resource "aws_kms_key" { defaults = { arn = "arn:aws:kms:ap-northeast-2:123456789012:key/11111111-1111-1111-1111-111111111111" } }
   mock_resource "aws_secretsmanager_secret" { defaults = { arn = "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:fixture" } }
@@ -52,6 +58,10 @@ variables {
 
 run "defaults_remain_dark" {
   command = plan
+  assert {
+    condition     = { for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.name => e.value }["SSM_RUNTIME_ARN_PARAM"] == ""
+    error_message = "Disabled AgentCore must not advertise an unavailable runtime parameter."
+  }
   assert {
     condition     = (length(aws_iam_role_policy.agentcore) == 0 && length(aws_iam_role_policy.official_mcp_credentials) == 0 && length(aws_iam_role_policy.steampipe_task) == 0 && length(aws_iam_role_policy.worker_lambda) == 0 && !var.inventory_host_only && var.steampipe_image_digest == null && var.worker_image_digest == null && !var.remediation_enabled && !var.diagnosis_notify_enabled && !var.integrations_write_enabled)
     error_message = "Core runtime and host/image overrides must remain opt-in."

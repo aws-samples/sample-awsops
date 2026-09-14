@@ -18,7 +18,7 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
   `make configure`. Deployment `init` must pass `-backend-config=backend.hcl`.
   Offline mock tests instead use `bash scripts/v2/terraform-test.sh` from the repository root:
   Terraform 1.15.7, an isolated copy of tracked working files, fresh `TF_DATA_DIR`,
-  `init -backend=false`, validate and both DNS/runtime-IAM mock suites. Never initialize a real
+  `init -backend=false`, validate and DNS/runtime-IAM/controller-readiness mock suites. Never initialize a real
   backend for tests; providers are mocked and local state/config is excluded.
 - `staging.tfvars` — **Contains the plaintext `admin_email`/`admin_password`. Gitignored via
   `terraform/**/staging.tfvars` since 2026-08-19, but still never commit** — check for any
@@ -30,6 +30,10 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
 - `ci-migrations.tf` — default-off operator migration task template, exact-secret task IAM,
   14-day log group and `migration_job` output. The manual development CI controller owns
   launch/cleanup; no app service or scheduler starts it. Disabling deletes retained logs.
+- `controller-readiness.tf` — application-only `deployment-verifiers` group when readiness
+  and AgentCore are enabled; membership additionally requires the Terraform-managed demo.
+  No administrator membership or IAM role. Disabled AgentCore emits an empty runtime SSM
+  parameter path; the BFF respects it instead of falling back to another project.
 - `migrations/*.sql` — DB migrations, applied by `make migrate` (scripts/v2), not Terraform.
   Baseline is `data/schema.sql` (v9, frozen) — schema changes always go into a new migration
   file.
@@ -40,12 +44,15 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
 
 ## Flag Gates
 - CI always generates ignored `ci-runtime.auto.tfvars.json`; `CI_READONLY_RUNTIME_DEV=true` enables
-  inventory/AgentCore/workers and host-only inventory on dev. A manual full activation first
+  inventory/AgentCore/workers, host-only inventory and `ci_readiness_enabled` on dev. A manual full activation first
   verifies the deployed login and host registry. Saved profile metadata enforces read-only
   flags even without a discovery rollout. Default-false
   `ci_runtime_rollout` records explicit private-DNS activation in the saved plan.
 - `ci_readiness_enabled` in `ai.tf` defaults false. Its AgentCore output boolean controls the
-  provisioner's `DEPLOYMENT_READINESS_ENABLED`; it grants no Cognito group or IAM permission.
+  provisioner's `DEPLOYMENT_READINESS_ENABLED`. Public CI rejects readiness outside dev.
+  A reviewed apply creates the application verifier group only with AgentCore enabled;
+  managed-demo membership additionally requires `create_demo_user=true`. No admin/IAM
+  authority is granted. Standalone private Terraform inputs remain explicit owner choices.
 - `existing_cf_certificate_arn` / `existing_alb_certificate_arn` are nullable string inputs:
   JSON null retains Terraform-managed certificates; the string `"null"` does not. External
   ARNs must be operator-selected or already attached. Routine CI refuses managed-to-external

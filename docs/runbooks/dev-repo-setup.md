@@ -12,6 +12,7 @@
 `scripts/v2/prepare-smoke-credentials.mjs`, `scripts/v2/authenticated-smoke.mjs`,
 `terraform/foundation/outputs.tf` (`demo_username`),
 `scripts/v2/ci/run-migration.mjs`, `terraform/foundation/ci-migrations.tf`,
+`terraform/foundation/controller-readiness.tf`, `terraform/foundation/tests/controller_readiness.tftest.hcl`,
 `terraform/foundation/tests/dns_deferred.tftest.hcl`, `docs/reference/01-edge-network.md`,
 `docs/reference/03-data-aurora.md`
 
@@ -436,8 +437,8 @@ and `CI_DB_DIAGNOSTICS_DEV` (`false`/unset by default; manual advisory read-only
 Runtime activation also uses default-off `CI_READONLY_RUNTIME_DEV` and verified
 `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV`. These select reviewed deployment
 behavior; account identifiers and credentials stay in secrets. Full activation requires
-real login/DB/host-registry preflight. Verifier-group provisioning belongs to the later
-full-release integration and is not granted by this foundation change.
+real login/DB/host-registry preflight. The opt-in dev profile also enables readiness;
+a reviewed apply creates only the application verifier capability described below.
 런타임 활성화에는 기본 비활성 `CI_READONLY_RUNTIME_DEV`와 검증된 두 이미지 digest
 변수를 추가로 사용하며 계정 식별자와 자격증명은 시크릿에 둡니다.
 dev의 일반 저장소 변수는 도메인/존 이름 쌍, 기본 `preserve`인 인증서 모드, 기본 `false`인
@@ -1239,9 +1240,18 @@ deployment and owned Lambda evidence. It requires fresh complete collection, web
 and succeeded Lambda/Fargate jobs. Missing/partial/stale is never healthy zero; deploy the updated
 inventory-reader Lambda so legacy NULL attribute coverage is disclosed as incomplete.
 
-`POST /api/deployment/readiness` requires an administrator or separately provisioned `deployment-verifiers`.
-Release infrastructure grants the CI identity only verifier membership, never admin/IAM authority.
+`POST /api/deployment/readiness` requires an administrator or `deployment-verifiers` membership.
+`controller-readiness.tf` creates that application group only when readiness and AgentCore are enabled.
+Membership is added only for the Terraform-managed demo when `create_demo_user=true`; no existing
+unmanaged identity is enrolled, and no admin membership or IAM role is granted. Public CI rejects
+readiness outside dev; the existing opt-in dev runtime profile includes the flag. Defaults remain off.
 Use a fresh login after membership changes; one in-flight call and a 60-second process cooldown apply.
+
+If the group or managed-demo membership already exists, adopt it through a reviewed import before
+apply rather than deleting/recreating it: group ID `<pool-id>/deployment-verifiers`, membership ID
+`<pool-id>,deployment-verifiers,<managed-username>`. Inspect unexpected roles/memberships first.
+Disabling readiness or AgentCore removes the managed capability on a subsequent reviewed apply;
+it does not reset passwords or delete the demo user. This prerequisite adds no collection workflow.
 
 스모크 도구는 자격증명 파일과 같은 0700 디렉터리의 0600 JSON을
 `SMOKE_RUNTIME_CONFIG_FILE`로 받으며 함께 정리합니다. 현재 Deploy Web은 DB 검증만

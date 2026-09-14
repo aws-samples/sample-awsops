@@ -30,7 +30,7 @@ CORE = set(REPOSITORIES) | PRIVATE_DNS | {
     "aws_sfn_state_machine.workers[0]", "aws_lambda_event_source_mapping.dispatcher[0]",
 }
 OVERRIDES = Path("ci-runtime.auto.tfvars.json")
-RUNTIME_FLAGS = ("agentcore_enabled", "workers_enabled", "steampipe_enabled", "inventory_host_only")
+RUNTIME_FLAGS = ("agentcore_enabled", "workers_enabled", "steampipe_enabled", "inventory_host_only", "ci_readiness_enabled")
 NETWORK_TYPES = {
     "aws_vpc", "aws_subnet", "aws_nat_gateway", "aws_internet_gateway",
     "aws_route", "aws_route_table", "aws_route_table_association",
@@ -239,10 +239,13 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
     variables = _variables(plan)
     rollout = variables.get("ci_runtime_rollout", False)
     profile = variables.get("ci_runtime_profile_enabled", False)
+    readiness = variables.get("ci_readiness_enabled", False)
     if variables.get("ci_runtime_retire", False) is not False:
         raise ValueError("Runtime retirement is not supported by this workflow")
-    if any(type(value) is not bool for value in (rollout, profile)):
+    if any(type(value) is not bool for value in (rollout, profile, readiness)):
         raise ValueError("Runtime operation metadata must be boolean")
+    if readiness and target != "dev":
+        raise ValueError("Deployment readiness is public dev-only")
     if profile and target != "dev":
         raise ValueError("The generated runtime profile is dev-only")
     if target == "dev" and variables.get("inventory_host_only") is True and not profile:

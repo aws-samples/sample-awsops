@@ -36,7 +36,7 @@ class RuntimePolicyTests(unittest.TestCase):
         value = self.module.runtime_overrides("dev", "true", ACCOUNT, "runtime-ecr-bootstrap", "", "", False)
         self.assertEqual(value, {
             "agentcore_enabled": True, "workers_enabled": True, "steampipe_enabled": True,
-            "inventory_host_only": True, "ci_runtime_profile_enabled": True,
+            "inventory_host_only": True, "ci_readiness_enabled": True, "ci_runtime_profile_enabled": True,
             "ci_runtime_rollout": False,
         })
 
@@ -84,7 +84,7 @@ class RuntimePolicyTests(unittest.TestCase):
             "ci_runtime_rollout": rollout, "ci_domain_rollout": False,
             "ci_runtime_profile_enabled": profile,
             "agentcore_enabled": False, "workers_enabled": False,
-            "steampipe_enabled": False, "inventory_host_only": False,
+            "steampipe_enabled": False, "inventory_host_only": False, "ci_readiness_enabled": False,
             "remediation_enabled": False, "integrations_write_enabled": False,
             "rca_writeback_enabled": False, "diagnosis_notify_enabled": False,
             "create_network": True,
@@ -132,6 +132,14 @@ class RuntimePolicyTests(unittest.TestCase):
             self.module.check_plan(plan, "dev", "full", ACCOUNT)
         plan["variables"]["ci_runtime_profile_enabled"]["value"] = True
         self.module.check_plan(plan, "dev", "full", ACCOUNT)
+
+    def test_readiness_is_public_dev_only_even_without_the_runtime_profile(self):
+        plan = self.plan()
+        plan["variables"]["ci_readiness_enabled"] = {"value": True}
+        self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        for target in ("main", "atomoh", "ssminji", "whchoi"):
+            with self.assertRaisesRegex(ValueError, "readiness.*dev-only"):
+                self.module.check_plan(plan, target, "full", ACCOUNT)
 
     def test_retirement_is_unsupported_in_saved_plans_and_workflow_inputs(self):
         plan = self.plan()

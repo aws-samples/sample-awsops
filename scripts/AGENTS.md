@@ -1,8 +1,11 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: cbefc69f6d87 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4133ef57738e · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
 # Scripts — Reviewer Context
+
+The opt-in dev runtime profile includes ci_readiness_enabled; public CI rejects readiness outside dev. A reviewed apply with AgentCore enabled grants only the deployment-verifiers application group, and only the managed demo can gain automatic membership. No admin/IAM authority is added.
+
 
 Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-review/`.
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
