@@ -106,10 +106,13 @@ function fixture(overrides = {}) {
     }
     if (args[1] === 'get-login-password') return 'SECRET_PASSWORD';
     if (args[0] === 'image' && args[1] === 'inspect') {
-      return JSON.stringify([{ Id: configDigest, Architecture: overrides.arch || 'arm64', Os: 'linux' }]);
+      return JSON.stringify([{ Id: overrides.inspectId || configDigest, Architecture: overrides.arch || 'arm64', Os: 'linux' }]);
     }
     if (args[1] === 'batch-get-image') return JSON.stringify(remote(p));
     if (args[0] === 'buildx') {
+      const metadata = args.indexOf('--metadata-file');
+      if (metadata !== -1) writeFileSync(args[metadata + 1],
+        JSON.stringify({ 'containerimage.config.digest': overrides.metadataConfig || configDigest }));
       if (overrides.requireUserPlugin) {
         assert.ok(existsSync(join(options.env.DOCKER_CONFIG, 'cli-plugins/docker-buildx')),
           'buildx is installed only in the original Docker configuration');
@@ -141,7 +144,8 @@ test('worker build stages required modules and verifies image before returning d
     assert.ok(build.options.timeout > 20 * 60_000);
     assert.ok(build.args.at(-1).startsWith(f.dir));
     assert.ok(!f.calls.some(c => c.args.some(a => /describe-repositories|create-repository|put-role|:latest$/.test(a))));
-    assert.deepEqual(f.calls.find(c => c.args[0] === 'push').args, ['push', `${f.p.uri}:${f.p.tag}`]);
+    assert.deepEqual(f.calls.find(c => c.args[0] === 'push').args,
+      ['push', '--platform', 'linux/arm64', `${f.p.uri}:${f.p.tag}`]);
     assert.equal(f.calls.find(c => c.args[0] === 'login').options.input, 'SECRET_PASSWORD');
     assert.ok(!existsSync(build.args.at(-1)));
     const auth = f.calls.filter(c => c.command === 'docker' && ['login', 'push'].includes(c.args[0]));
@@ -153,6 +157,25 @@ test('worker build stages required modules and verifies image before returning d
     for (const call of f.calls.filter(c => c.command === 'docker' && !auth.includes(c))) {
       assert.equal(call.options.env.DOCKER_CONFIG, originalConfig);
     }
+  } finally { f.cleanup(); }
+});
+
+test('containerd image IDs do not substitute for the build configuration digest', () => {
+  const f = fixture({ inspectId: digest });
+  try {
+    const result = buildImage({ env: { ...env, RUNNER_TEMP: f.dir }, project: 'awsops-dev',
+      component: 'worker', root: f.dir, run: f.run });
+    assert.equal(result.digest, digest);
+    assert.ok(f.calls.find(c => c.args[0] === 'buildx').args.includes('--metadata-file'));
+  } finally { f.cleanup(); }
+});
+
+test('invalid build configuration metadata prevents a push', () => {
+  const f = fixture({ metadataConfig: 'not-a-digest' });
+  try {
+    assert.throws(() => buildImage({ env: { ...env, RUNNER_TEMP: f.dir }, project: 'awsops-dev',
+      component: 'worker', root: f.dir, run: f.run }), /build_metadata_invalid/);
+    assert.ok(!f.calls.some(c => c.args[0] === 'push'));
   } finally { f.cleanup(); }
 });
 
