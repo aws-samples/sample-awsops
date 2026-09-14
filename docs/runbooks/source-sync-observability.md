@@ -27,6 +27,8 @@ samples의 CI·OIDC·브랜치/배포 정책과 Terraform 경로를 유지한다
 
 ## Additive migrations / 추가 마이그레이션
 
+- `01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`: bounded `sourceAttempted`, `not_attempted` and `count_not_confirmed` disclosure in the existing collection view; no grant changes.
+
 - `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql`: current collection-state view with bounded flow/infra source clocks, scope, producer status and saved-source provenance; no raw provider JSON or new grants.
 
 - `01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql`: collection attempts,
@@ -247,3 +249,16 @@ These fixtures exercise real page/builder and graph-state-reader boundaries with
 transport/database doubles. They do not establish deployed AWS, Runtime or migration
 state. Keep the existing separately authorized rollout procedure above (ADR-005,
 ADR-007) and distinguish source integration from activation.
+
+
+### Bounded rebuild scheduling
+
+Inventory accounts are ordered by their oldest actual attempt, with unattempted reads
+prioritized. One account failure does not prevent later accounts from progressing; the
+original exception is still returned after that bounded pass. Duplicate admission is per
+pool and graph class. Before the run budget is exhausted, a final bounded transaction
+records skipped source reads as unavailable with `sourceAttempted=false`; publication
+clocks and graph rows remain unchanged. Concurrent newer attempts win. If the database
+or class lock prevents that best-effort metadata write, the CLI reports the recording gap.
+This is scheduling within the existing invocation, not a new retry loop or publication
+permission. Failed collection and hard budget breaches still retain last-good data.

@@ -34,14 +34,35 @@ export async function inventoryAccounts(pool: Pool, cls: GraphClass, types: stri
     const schema = await client.query("SELECT to_regclass('public.topology_graph_state') IS NOT NULL AS ready");
     if (!schema.rows[0]?.ready) return null;
     // Bounded keys only; all accounts beyond the sentinel retain their prior publication.
-    const result = await client.query(`SELECT account_id FROM (
+    const result = await client.query(`SELECT accounts.account_id FROM (
       SELECT 'self'::text AS account_id
       UNION SELECT account_id FROM topology_nodes WHERE class=$1
       UNION SELECT account_id FROM topology_graph_state WHERE class=$1
       UNION SELECT account_id FROM inventory_resources WHERE resource_type=ANY($2)
       UNION SELECT account_id FROM inventory_sync_runs WHERE resource_type=ANY($2)
-    ) accounts ORDER BY (account_id='self') DESC, account_id LIMIT 101`, [cls, types]);
+    ) accounts LEFT JOIN topology_graph_state s ON s.account_id=accounts.account_id AND s.class=$1
+    ORDER BY CASE WHEN s.details->>'sourceAttempted'='false' THEN NULL ELSE s.attempted_at END NULLS FIRST,
+      (accounts.account_id='self') DESC, accounts.account_id LIMIT 101`, [cls, types]);
     return result.rows.map(row => row.account_id as string);
+  });
+}
+
+/** One bounded metadata write for skipped accounts; never touches graph rows or publication clocks. */
+export async function recordUnattempted(pool: Pool, cls: GraphClass, lock: number, accounts: string[], at: string) {
+  if (!accounts.length) return true;
+  return graphTransaction(pool, false, async client => {
+    if (!(await client.query('SELECT pg_try_advisory_xact_lock($1) AS acquired', [lock])).rows[0]?.acquired) return false;
+    await client.query(`INSERT INTO topology_graph_state(account_id,class,status,attempted_at,captured_at,details)
+      SELECT account,$1,'unavailable',$3::timestamptz,NULL,
+        jsonb_build_object('sources','[]'::jsonb,'sourceAttempted',false,'failureReason','not_attempted',
+          'retainedPrevious',EXISTS(SELECT 1 FROM topology_nodes WHERE account_id=account AND class=$1))
+      FROM unnest($2::text[]) pending(account)
+      ON CONFLICT(account_id,class) DO UPDATE SET status=EXCLUDED.status, attempted_at=EXCLUDED.attempted_at,
+        details=EXCLUDED.details || jsonb_build_object(
+          'retainedPrevious',topology_graph_state.captured_at IS NOT NULL OR (EXCLUDED.details->>'retainedPrevious')::boolean,
+          'publishedSources',coalesce(topology_graph_state.details->'publishedSources','[]'::jsonb))
+      WHERE topology_graph_state.attempted_at < EXCLUDED.attempted_at`, [cls, accounts, at]);
+    return true;
   });
 }
 

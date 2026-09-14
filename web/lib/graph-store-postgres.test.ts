@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } from './graph-store';
-import { inventorySnapshot, INFRA_TYPES } from './graph-inventory';
+import { inventorySnapshot, inventoryAccounts, recordUnattempted, INFRA_TYPES } from './graph-inventory';
 import { HOST_ONLY_TREND_TYPES } from './trend-utils';
 import { readGraphState, writeGraphState } from './graph-state';
 import type { ServiceGraphCall, SourceRead } from './trace-source';
@@ -383,6 +383,63 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await build('infra')).toMatchObject({ published: 1, retained: 1, reasons: ['snapshot_limit'] });
     expect(await state('infra', '111122223333')).toMatchObject({ retainedPrevious: false, status: 'ok' });
   });
+  it('projects skip/count reasons without widening reader metadata', async () => {
+    const projection = readFileSync(resolve(migrations, readdirSync(migrations).find(f => f.endsWith('_graph_attempt_disclosure.sql'))!), 'utf8');
+    await pool.query(projection); await pool.query(projection);
+    await pool.query(`INSERT INTO topology_graph_state(account_id,class,status,attempted_at,details)
+      VALUES ('self','infra','unavailable',now(),$1)`, [{ sourceAttempted: false,
+      failureReason: 'not_attempted', secret: 'PRIVATE', sources: [{ sourceId: 'inventory:vpc',
+        status: 'partial', producerStatus: 'succeeded', itemCount: 1, reasons: ['count_not_confirmed','PRIVATE'] }] }]);
+    const row = (await pool.query('SELECT details FROM sql_reader.topology_graph_state')).rows[0];
+    expect(row.details).toMatchObject({ sourceAttempted: false, failureReason: 'not_attempted' });
+    expect(row.details.sources[0].reasons).toEqual(['count_not_confirmed']);
+    expect(JSON.stringify(row)).not.toContain('PRIVATE');
+  });
+
+  it('does not overwrite a newer collection attempt with older skip evidence', async () => {
+    await seed('infra'); await build('infra');
+    const previous = await state('infra');
+    await recordUnattempted(pool, 'infra', 0x696e6672, ['self'], old);
+    expect(await state('infra')).toEqual(previous);
+  });
+
+  it('prioritizes accounts whose source reads were not attempted', async () => {
+    const member = '111122223333';
+    await seed('infra'); await seed('infra', recent, member);
+    await pool.query(`INSERT INTO topology_graph_state(account_id,class,status,attempted_at,details)
+      VALUES ('self','infra','ok',$1,'{}'),($2,'infra','unavailable',$1,'{"sourceAttempted":false}')`, [recent, member]);
+    expect((await inventoryAccounts(pool, 'infra', INFRA_TYPES))?.[0]).toBe(member);
+  });
+  it('continues later accounts after a source read fails and preserves the original failure', async () => {
+    const member = '111122223333';
+    await seed('infra'); await seed('infra', recent, member);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=2 WHERE resource_type='vpc'");
+    const failure = Object.assign(new Error('fixture source failure'), { code: '42501' });
+    const wrapped = { connect: async () => {
+      const client = await pool.connect(), query = client.query.bind(client);
+      return { on: client.on.bind(client), removeListener: client.removeListener.bind(client),
+        release: client.release.bind(client), query: (sql: string, args?: unknown[]) => {
+          if (sql.includes('WITH bounded') && args?.[0] === 'self') return Promise.reject(failure);
+          return query(sql, args);
+        } };
+    } };
+    await expect(rebuildInfraGraph(wrapped as never)).rejects.toBe(failure);
+    expect(await state('infra', member)).toMatchObject({ status: 'ok', retainedPrevious: false });
+    expect((await pool.query("SELECT id FROM topology_nodes WHERE account_id=$1", [member])).rows).toEqual([{ id: 'vpc:one' }]);
+  });
+  it('records budget-skipped source reads without changing the saved graph', async () => {
+    await seed('infra'); await build('infra');
+    const previous = await state('infra');
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + 1000);
+    const timer = vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValue(31_000);
+    try {
+      expect(await build('infra')).toMatchObject({ skipped: 1, reasons: ['time_limit'] });
+      expect(await state('infra')).toMatchObject({ status: 'unavailable', sourceAttempted: false,
+        failureReason: 'not_attempted', retainedPrevious: true, captured_at: previous.captured_at });
+      expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
+    } finally { timer.mockRestore(); clock.mockRestore(); }
+  });
+
   it('uses one per-pool rebuild admission slot and leaves request reads available', async () => {
     await seed('infra');
     let unblock!: () => void;
@@ -406,6 +463,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await ready;
     try {
       expect(await rebuildInfraGraph(wrapped as never)).toMatchObject({ skipped: 1, reasons: ['rebuild_busy'] });
+      expect((await rebuildGraph(wrapped as never)).reasons).not.toContain('rebuild_busy');
       expect((await pool.query('SELECT 42 AS value')).rows[0].value).toBe(42);
     } finally { unblock(); await first; }
   });

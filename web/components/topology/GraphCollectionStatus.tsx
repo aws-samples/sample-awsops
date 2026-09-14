@@ -27,7 +27,8 @@ export interface GraphCollection {
   attempted_at?: string | null;
   captured_at?: string | null;
   evidenceKind?: 'inventory' | 'trace';
-  failureReason?: 'publication_failed' | 'source_read_failed' | 'state_read_failed';
+  failureReason?: 'publication_failed' | 'source_read_failed' | 'state_read_failed' | 'not_attempted';
+  sourceAttempted?: boolean;
   coverage?: 'unknown';
   windowStartMs?: number;
   windowEndMs?: number;
@@ -46,6 +47,7 @@ export interface GraphCollection {
 // not evidence of a collector failure.
 const COPY = {
   ko: {
+    notAttempted: '실행 예산으로 원본 조회를 시도하지 않음',
     ok: '최근 수집 성공', empty: '조회한 시간 범위에 관측값 없음', partial: '부분 수집 — 전체 상태를 확정할 수 없음',
     unavailable: '데이터소스 미연결 또는 미가용', error: '수집 실패', unknown: '수집 상태 미확인',
     stale: '오래된 데이터', retained: '이전 그래프를 표시합니다. 현재 트래픽 상태를 의미하지 않습니다.',
@@ -60,6 +62,7 @@ const COPY = {
     counts: { ok: '성공', empty: '빈 결과', partial: '부분', unavailable: '미가용', error: '실패', unknown: '미확인' },
   },
   en: {
+    notAttempted: 'Source read not attempted because the run budget was exhausted.',
     ok: 'Latest collection succeeded', empty: 'No observations in this window', partial: 'Partial collection — coverage is incomplete',
     unavailable: 'Datasource unavailable or not configured', error: 'Collection failed', unknown: 'Collection state unknown',
     stale: 'Stale data', retained: 'Showing the previous graph; it does not establish current traffic state.',
@@ -74,6 +77,7 @@ const COPY = {
     counts: { ok: 'ok', empty: 'empty', partial: 'partial', unavailable: 'unavailable', error: 'failed', unknown: 'unknown' },
   },
   ja: {
+    notAttempted: '実行予算の上限によりソース取得を試行していません。',
     ok: '最新の収集に成功', empty: '対象期間に観測値なし', partial: '部分収集 — 全体の状態は未確認',
     unavailable: 'データソース未設定または利用不可', error: '収集失敗', unknown: '収集状態不明',
     stale: '古いデータ', retained: '以前のグラフを表示しています。現在の通信状態を示すものではありません。',
@@ -88,6 +92,7 @@ const COPY = {
     counts: { ok: '成功', empty: '空', partial: '部分', unavailable: '利用不可', error: '失敗', unknown: '不明' },
   },
   zh: {
+    notAttempted: '运行预算已耗尽，未尝试读取数据源。',
     ok: '最近一次采集成功', empty: '查询时间范围内无观测值', partial: '部分采集 — 覆盖范围不完整',
     unavailable: '数据源不可用或未配置', error: '采集失败', unknown: '采集状态未知',
     stale: '数据已过期', retained: '正在显示上一次的图，不能据此判断当前流量状态。',
@@ -142,6 +147,7 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
       className={`my-2 max-h-[36vh] shrink-0 overflow-y-auto rounded-md border px-3 py-2 text-xs ${warning
         ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-ink-200 bg-card text-ink-600'}`}>
       <p className="font-medium">{status === 'empty' && data.evidenceKind === 'inventory' ? copy.inventoryEmpty : copy[status]}{data.stale === true ? ` · ${copy.stale}` : ''}</p>
+      {data.sourceAttempted === false && <p>{copy.notAttempted}</p>}
       {retained && <p className="mt-1">{copy.retained}</p>}
       {limited && <p>{retained ? copy.limited : copy.limitedPartial}</p>}
       {losses.map(key => <p key={key}>{copy[key]}: {String(data[key])}</p>)}

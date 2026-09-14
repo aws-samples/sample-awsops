@@ -170,6 +170,12 @@ describe('GraphCollectionStatus', () => {
     expect(screen.getByRole('alert').textContent).not.toContain('invalid');
   });
 
+  it('discloses an unattempted source read without claiming collection failure', () => {
+    render(<GraphCollectionStatus collection={{ status: 'unavailable', sourceAttempted: false,
+      failureReason: 'not_attempted', retainedPrevious: true }} />);
+    expect(screen.getByRole('alert').textContent).toContain('실행 예산으로 원본 조회를 시도하지 않음');
+  });
+
   it('renders attempt and saved timestamps while omitting invalid values', () => {
     const attempted = '2026-09-12T12:00:00Z';
     const captured = '2026-09-11T12:00:00Z';

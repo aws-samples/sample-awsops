@@ -255,7 +255,8 @@ runtime payloads for compatibility with older or malformed responses.
 | `attempted_at`, `captured_at` | Latest graph attempt and saved publication clocks, serialized as timestamps; neither substitutes for the source query window. |
 | `sources[].sourceId/status/reasons/itemCount` | Per-source collection result and bounded reason vocabulary. |
 | `sources[].producerStatus/attemptedAtMs/finishedAtMs` | Underlying inventory job outcome and start/finish clocks; not graph publication time or per-account success proof. |
-| `failureReason` | Bounded failure category: `publication_failed`, `source_read_failed`, or API-only `state_read_failed`. |
+| `failureReason` | Bounded failure category: `publication_failed`, `source_read_failed`, `not_attempted`, or API-only `state_read_failed`. |
+| `sourceAttempted` | Explicit `false` means this bounded rebuild did not start a source read; it does not change the saved graph clock. |
 | `coverage` | `unknown` for an `__all__` union; host state cannot prove union coverage, and top-level `captured_at` is null. |
 | `windowStartMs/windowEndMs` | Optional graph-attempt window, distinct from per-source query windows and saved publication time. |
 | `sources[].windowStartMs/windowEndMs` | Actual trace query window, in epoch milliseconds; displayed independently of publication time. |

@@ -6,7 +6,7 @@ import type { TraceSource, TraceSpan, ServiceGraphCall, SourceRead } from './tra
 import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
 import { writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
 import { currentAccountId } from './account';
-import { graphTransaction, inventoryAccounts, inventorySnapshot, inventoryAttempt, inventoryTypesForAccount, INFRA_TYPES, type InventoryRow } from './graph-inventory';
+import { graphTransaction, inventoryAccounts, inventorySnapshot, inventoryAttempt, inventoryTypesForAccount, recordUnattempted, INFRA_TYPES, type InventoryRow } from './graph-inventory';
 export { resolveInfraRef } from './trace-graph';
 
 /** Structural (duck-typed) interface for a Prometheus/Mimir service-graph metrics source — matches
@@ -86,8 +86,8 @@ async function writeGraph(pool: Pool, cls: GraphClass, lockKey: number, accountI
   }
 }
 
-// One inventory rebuild at a time per request-serving pool; concurrent callers skip, not queue.
-const inventoryBusy = new WeakSet<Pool>();
+// Duplicate calls for the same class skip; distinct class locks may progress independently.
+const inventoryBusy = new WeakMap<Pool, Set<GraphClass>>();
 
 async function replaceGraph(client: PoolClient, cls: GraphClass, account: string,
   nodes: GNode[], edges: GEdge[], runId: string) {
@@ -117,51 +117,68 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
   types: string[], build: (rows: InventoryRow[]) => { nodes: GNode[]; edges: GEdge[] }): Promise<GraphRebuildResult> {
   const totals = emptyResult();
   const reason = (value: string) => { if (!totals.reasons.includes(value)) totals.reasons.push(value); };
-  if (inventoryBusy.has(pool)) return { ...totals, skipped: 1, reasons: ['rebuild_busy'] };
-  inventoryBusy.add(pool);
-  const attemptedAt = new Date(Date.now()).toISOString();
+  const active = inventoryBusy.get(pool) ?? new Set<GraphClass>();
+  if (active.has(cls)) return { ...totals, skipped: 1, reasons: ['rebuild_busy'] };
+  active.add(cls); inventoryBusy.set(pool, active);
+  const runStartedAt = new Date(Date.now()).toISOString();
   const deadline = performance.now() + 30_000;
-  let account = 'self';
-  let attempt: GraphAttempt | undefined;
-  let publishing = false;
+  let failed = false, firstFailure: unknown;
   try {
-    const accounts = await inventoryAccounts(pool, cls, types);
+    let accounts;
+    try { accounts = await inventoryAccounts(pool, cls, types); }
+    catch (error) {
+      await writeGraph(pool, cls, lock, 'self', [], [], runId, { attemptedAt: runStartedAt, status: 'error', publish: false,
+        details: { sources: [], retainedPrevious: true, failureReason: 'source_read_failed' } }).catch(() => {});
+      throw error;
+    }
     if (!accounts) return { ...totals, skipped: 1, reasons: ['state_schema_missing'] };
     if (accounts.length > 100) { totals.skipped++; totals.accountsTruncated = true; reason('account_limit'); }
-    for (const [index, current] of accounts.slice(0, 100).entries()) {
-      if (performance.now() >= deadline) {
-        totals.skipped += Math.min(accounts.length, 100) - index; reason('time_limit'); break;
+    const selected = accounts.slice(0, 100);
+    for (const [index, account] of selected.entries()) {
+      // Reserve a bounded transaction for skip evidence instead of silently abandoning the tail.
+      if (performance.now() >= deadline - 4_000) {
+        totals.skipped += selected.length - index; reason('time_limit');
+        try {
+          if (!await recordUnattempted(pool, cls, lock, selected.slice(index), runStartedAt)) reason('skip_record_busy');
+        } catch { reason('skip_record_failed'); }
+        break;
       }
-      account = current; attempt = undefined; publishing = false;
-      const accountTypes = inventoryTypesForAccount(types, account);
-      const snapshot = await inventorySnapshot(pool, cls, account, accountTypes);
-      attempt = inventoryAttempt(snapshot, accountTypes, cls, account, attemptedAt);
-      if (snapshot.truncated) reason('snapshot_limit');
-      const graph = attempt.publish ? build(snapshot.rows) : { nodes: [], edges: [] };
-      if (graph.nodes.length > 4000 || graph.edges.length > 8000
-        || Buffer.byteLength(JSON.stringify(graph)) > 8 * 1024 * 1024) {
-        attempt.publish = false; attempt.status = 'partial';
-        attempt.details = { ...attempt.details, retainedPrevious: true, graphTruncated: true };
-        reason('graph_limit');
-      } else if (attempt.publish && attempt.status !== 'partial') {
-        attempt.status = graph.nodes.length ? 'ok' : 'empty';
+      const attemptedAt = new Date(Date.now()).toISOString();
+      let attempt: GraphAttempt | undefined, publishing = false;
+      try {
+        const accountTypes = inventoryTypesForAccount(types, account);
+        const snapshot = await inventorySnapshot(pool, cls, account, accountTypes);
+        attempt = inventoryAttempt(snapshot, accountTypes, cls, account, attemptedAt);
+        if (snapshot.truncated) reason('snapshot_limit');
+        const graph = attempt.publish ? build(snapshot.rows) : { nodes: [], edges: [] };
+        if (graph.nodes.length > 4000 || graph.edges.length > 8000
+          || Buffer.byteLength(JSON.stringify(graph)) > 8 * 1024 * 1024) {
+          attempt.publish = false; attempt.status = 'partial';
+          attempt.details = { ...attempt.details, retainedPrevious: true, graphTruncated: true };
+          reason('graph_limit');
+        } else if (attempt.publish && attempt.status !== 'partial') {
+          attempt.status = graph.nodes.length ? 'ok' : 'empty';
+        }
+        publishing = true;
+        const outcome = await writeGraph(pool, cls, lock, account, graph.nodes, graph.edges, runId, attempt);
+        for (const key of ['nodes', 'edges', 'published', 'retained', 'skipped', 'degraded'] as const) totals[key] += outcome[key];
+        outcome.reasons.forEach(reason);
+      } catch (error) {
+        if (!publishing) await writeGraph(pool, cls, lock, account, [], [], runId, { attemptedAt, status: 'error', publish: false,
+          details: { sources: attempt?.details.sources ?? [], retainedPrevious: true,
+            failureReason: attempt ? 'publication_failed' : 'source_read_failed' } }).catch(() => {});
+        if (!failed) firstFailure = error;
+        failed = true; totals.retained++; reason('account_failed');
       }
-      publishing = true;
-      const outcome = await writeGraph(pool, cls, lock, account, graph.nodes, graph.edges, runId, attempt);
-      for (const key of ['nodes', 'edges', 'published', 'retained', 'skipped', 'degraded'] as const) totals[key] += outcome[key];
-      outcome.reasons.forEach(reason);
-      // Yield between accounts, with no pool connection or lock held.
       await new Promise<void>(resolve => setImmediate(resolve));
     }
+    // Preserve the existing unexpected-error/CLI contract, after allowing later accounts to progress.
+    if (failed) throw firstFailure;
     return totals;
-  } catch (error) {
-    // Failed publication rolls back rows AND state. Record only a bounded safe category;
-    // preserve previous sources/clocks. A newer publication still wins the ordering guard.
-    if (!publishing) await writeGraph(pool, cls, lock, account, [], [], runId, { attemptedAt, status: 'error', publish: false,
-      details: { sources: attempt?.details.sources ?? [], retainedPrevious: true,
-        failureReason: attempt ? 'publication_failed' : 'source_read_failed' } }).catch(() => {});
-    throw error;
-  } finally { inventoryBusy.delete(pool); }
+  } finally {
+    active.delete(cls);
+    if (!active.size) inventoryBusy.delete(pool);
+  }
 }
 
 export async function rebuildGraph(pool: Pool, runId: string = randomUUID()) {
