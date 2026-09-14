@@ -1,0 +1,263 @@
+// @vitest-environment jsdom
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ReactNode } from 'react';
+import type { FlowNode } from '@/lib/flow-topology';
+import { ALL_ACCOUNTS, DEFAULT_SCOPE, setActiveAccount, setActiveScope } from '@/lib/account-context';
+import ScopeSelector from '@/components/shell/ScopeSelector';
+
+vi.mock('@/components/shell/LanguageProvider', () => ({
+  useI18n: () => ({ lang: 'en', tt: (s: string) => s, t: (s: string) => s }),
+}));
+vi.mock('@/lib/use-theme', () => ({ useTheme: () => 'light' }));
+// Keep the page's real data fetching, flow builder and layout; inspect the graph handed to the canvas.
+vi.mock('next/dynamic', () => ({
+  default: () => ({ nodes, onNodeClick }: {
+    nodes: { id: string; data: { label: ReactNode; fnode: FlowNode } }[];
+    onNodeClick: (event: unknown, node: unknown) => void;
+  }) =>
+    <div aria-label="flow graph">{nodes.map(n =>
+      <button key={n.id} data-testid={n.data.fnode.kind} data-region={n.data.fnode.meta?.region}
+        data-vpc={n.data.fnode.meta?.vpcId} onClick={() => onNodeClick({}, n)}>{n.data.fnode.label}</button>)}</div>,
+}));
+import TopologyPage from './page';
+
+const region = 'us-east-1', vpcId = 'vpc-a', ip = '10.0.1.10';
+const captured = '2026-09-01T10:00:00Z', failed = '2026-09-14T10:00:00Z';
+const pod = { name: 'orders-a', namespace: 'shop', podIP: ip, workload: 'orders', status: 'Running' };
+const member = '123456789012';
+const memberCapture = '2026-09-13T12:00:00Z';
+function deferred<T>() {
+  let resolve!: (value: T) => void, reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+function serve(options: {
+  pods?: unknown[]; rowCapture?: string | null; clusterVpc?: string; ecs?: boolean;
+  hostPods?: Promise<Response>; hostInventory?: Promise<Response>; memberInventory?: Promise<Response>;
+  subnetStatus?: number; subnetRows?: unknown[];
+} = {}) {
+  vi.stubGlobal('fetch', vi.fn(async (input: string, _init?: RequestInit) => {
+    const url = new URL(input, 'http://localhost');
+    if (url.pathname === '/api/accounts') return Response.json({
+      accounts: [{ accountId: '111111111111', alias: 'Host', isHost: true },
+        { accountId: member, alias: 'Member', isHost: false }],
+    });
+    if (url.pathname === '/api/accounts/regions') return Response.json({ regions: [] });
+    if (url.pathname === '/api/eks') return Response.json({
+      clusters: options.ecs ? [] : [{ name: 'production', access: 'connected', region, vpcId: options.clusterVpc ?? vpcId }],
+    });
+    if (url.searchParams.get('kind') === 'pods') return options.hostPods ?? Response.json({ rows: options.pods ?? [pod] });
+    if (url.searchParams.get('kind') === 'endpoints') return Response.json({
+      rows: [{ name: 'orders-service', namespace: 'shop', ips: [ip], targets: [{ ip, pod: pod.name }] }],
+    });
+    if (url.pathname.startsWith('/api/inventory/')) {
+      if (url.pathname.endsWith('/subnet') && options.subnetStatus) {
+        return Response.json({ error: 'subnet read failed' }, { status: options.subnetStatus });
+      }
+      if (url.pathname.endsWith('/subnet') && options.subnetRows) {
+        return Response.json({ rows: options.subnetRows, run: { status: 'succeeded', last_success_at: captured } });
+      }
+      const host = url.searchParams.get('accounts') === 'self';
+      if (url.pathname.endsWith('/target_group')) {
+        const pending = host ? options.hostInventory : options.memberInventory;
+        if (pending) return pending; // Deliberately ignores abort: late completions must also be rejected.
+      }
+      return Response.json({
+      rows: url.pathname.endsWith('/target_group') ? [{
+        resource_id: 'tg-orders', region,
+        captured_at: options.rowCapture === undefined ? (host ? captured : memberCapture) : options.rowCapture,
+        data: { vpc_id: vpcId, target_type: 'ip', target_health_descriptions: [{ Target: { Id: ip, Port: 80 } }] },
+      }] : options.ecs && url.pathname.endsWith('/subnet') ? [{
+        resource_id: 'subnet-a', region, captured_at: captured, data: { vpc_id: vpcId },
+      }] : options.ecs && url.pathname.endsWith('/ecs_task') ? [{
+        resource_id: 'task-orders', region, captured_at: captured, data: {
+          task_group: 'service:ecs-orders', cluster_arn: 'cluster/production',
+          attachments: [{ Details: [{ Name: 'subnetId', Value: 'subnet-a' }, { Name: 'privateIPv4Address', Value: ip }] }],
+        },
+      }] : [],
+      run: { status: 'failed', last_success_at: captured, finished_at: failed, error: 'collection failed' },
+    });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+}
+beforeEach(() => {
+  window.localStorage.clear();
+  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => window.setTimeout(() => cb(0), 0));
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id));
+});
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+async function ready() {
+  render(<TopologyPage />);
+  await waitFor(() => expect(screen.queryByText('로딩 중…')).toBeNull());
+  return screen.getByTestId('target');
+}
+
+describe('sample topology evidence', () => {
+  it('supplies collected subnets to corroborate an ECS attachment IP', async () => {
+    serve({ ecs: true });
+    expect((await ready()).textContent).toBe('ecs-orders');
+  });
+  it('discloses a failed subnet read while retaining the unresolved target', async () => {
+    serve({ ecs: true, subnetStatus: 503 });
+    expect((await ready()).textContent).toBe(ip);
+    expect(screen.getByLabelText('Inventory collection evidence').textContent).toContain('subnet: failed');
+  });
+  it('discloses the subnet cap when attachment evidence lies beyond the returned rows', async () => {
+    serve({ ecs: true, subnetRows: Array.from({ length: 500 }, (_, index) => ({
+      resource_id: `subnet-other-${index}`, region, captured_at: captured, data: { vpc_id: vpcId },
+    })) });
+    expect((await ready()).textContent).toBe(ip);
+    expect(screen.getByText(/subnet 500개 초과/)).toBeTruthy();
+  });
+  it('resolves a corroborated pod using its independently listed region and VPC', async () => {
+    serve();
+    const target = await ready();
+    expect(target.textContent).toBe('shop/orders-service');
+    expect(target.getAttribute('data-region')).toBe(region);
+    expect(target.getAttribute('data-vpc')).toBe(vpcId);
+  });
+  it('leaves the same IP in another VPC unresolved', async () => {
+    serve({ clusterVpc: 'vpc-other' });
+    expect((await ready()).textContent).toBe(ip);
+  });
+  it('does not infer pod ownership from Endpoints without pod inventory', async () => {
+    serve({ pods: [] });
+    expect((await ready()).textContent).toBe(ip);
+  });
+  it('shows retained capture evidence and failed collection, never failed-attempt freshness', async () => {
+    serve();
+    await ready();
+    expect(document.body.textContent).not.toContain(new Date(failed).toLocaleString());
+    const evidence = screen.getByLabelText('Inventory collection evidence');
+    expect(evidence.textContent).toContain(new Date(captured).toLocaleString());
+    expect(evidence.textContent).not.toContain(new Date(failed).toLocaleString());
+    expect(evidence.textContent).toContain('failed');
+  });
+  it('uses last success when the host rows have no capture timestamp', async () => {
+    serve({ rowCapture: null });
+    await ready();
+    expect(screen.getByLabelText('Inventory collection evidence').textContent)
+      .toContain(new Date(captured).toLocaleString());
+  });
+  it('does not borrow the host last-success evidence for a member scope', async () => {
+    setActiveScope({ ...DEFAULT_SCOPE, accounts: [member] });
+    serve({ rowCapture: null });
+    await ready();
+    const evidence = screen.getByLabelText('Inventory collection evidence');
+    expect(evidence.textContent).toContain('unknown');
+    expect(evidence.textContent).not.toContain(new Date(captured).toLocaleString());
+    expect(screen.getByTestId('target').textContent).toBe(ip);
+  });
+});
+
+function eksRequests() {
+  return vi.mocked(fetch).mock.calls.filter(([url]) => String(url).startsWith('/api/eks'));
+}
+function pendingInventoryResponse() {
+  return Response.json({ rows: [{
+    resource_id: 'tg-orders', region, captured_at: memberCapture,
+    data: { vpc_id: vpcId, target_type: 'ip', target_health_descriptions: [{ Target: { Id: ip, Port: 80 } }] },
+  }] });
+}
+async function hostPodsStarted() {
+  await waitFor(() => expect(eksRequests().some(([url]) => String(url).includes('kind=pods'))).toBe(true));
+}
+
+describe('topology scope lifecycle through real hooks and events', () => {
+  it('follows member and all-account selection through the mounted ScopeSelector, including Refresh', async () => {
+    serve();
+    render(<><ScopeSelector /><TopologyPage /></>);
+    await waitFor(() => expect(screen.getByTestId('target').textContent).toBe('shop/orders-service'));
+    fireEvent.click(await screen.findByLabelText('Member'));
+    fireEvent.click(screen.getByLabelText('Host (scope.host)'));
+    await waitFor(() => expect(screen.getByTestId('target').textContent).toBe(ip));
+    const hostReads = eksRequests().length;
+    fireEvent.click(screen.getByLabelText('scope.allAccounts'));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) =>
+      String(url).includes('accounts=__all__'))).toBe(true));
+    await screen.findByRole('button', { name: 'Refresh' });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await screen.findByRole('button', { name: 'Refresh' });
+    expect(screen.getByTestId('target').textContent).toBe(ip);
+    expect(eksRequests()).toHaveLength(hostReads);
+  });
+
+  it.each([member, ALL_ACCOUNTS])('never starts a speculative host load for saved scope %s', async account => {
+    setActiveScope({ ...DEFAULT_SCOPE, accounts: account === ALL_ACCOUNTS ? account : [account] });
+    const late = deferred<Response>();
+    serve({ hostPods: late.promise });
+    await ready();
+    expect(eksRequests()).toHaveLength(0);
+    await act(async () => { late.resolve(Response.json({ rows: [pod] })); });
+    expect(screen.getByTestId('target').textContent).toBe(ip);
+  });
+
+  // The legacy setter also emits scopechange. Before the fix its accountchange lets these
+  // tests reproduce the publication race independently of the missing scope subscription.
+  it.each([member, ALL_ACCOUNTS])('rejects late host results after scope %s completes', async account => {
+    const late = deferred<Response>();
+    serve({ hostPods: late.promise });
+    render(<TopologyPage />);
+    await hostPodsStarted();
+    act(() => setActiveAccount(account));
+    await waitFor(() => expect(screen.getByTestId('target').textContent).toBe(ip));
+    fireEvent.click(screen.getByTestId('target'));
+    const currentEvidence = screen.getByLabelText('Inventory collection evidence').textContent;
+    await act(async () => { late.resolve(Response.json({ rows: [pod] })); });
+    expect(screen.getByTestId('target').textContent).toBe(ip);
+    expect(document.body.textContent).not.toContain('shop/orders-service');
+    expect(screen.getByLabelText('Inventory collection evidence').textContent).toBe(currentEvidence);
+    expect((screen.getByRole('button', { name: 'Refresh' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it.each([member, ALL_ACCOUNTS])('clears visible host graph, details and evidence while scope %s loads', async account => {
+    const next = deferred<Response>();
+    serve({ memberInventory: next.promise });
+    await ready();
+    fireEvent.click(screen.getByTestId('target'));
+    expect(document.body.textContent).toContain('shop/orders-service');
+    act(() => setActiveAccount(account));
+    expect(screen.queryByTestId('target')).toBeNull();
+    expect(document.body.textContent).not.toContain('shop/orders-service');
+    expect(screen.queryByLabelText('Inventory collection evidence')).toBeNull();
+    expect(document.body.textContent).not.toContain(new Date(captured).toLocaleString());
+    await act(async () => { next.resolve(pendingInventoryResponse()); });
+    expect(screen.getByTestId('target').textContent).toBe(ip);
+  });
+
+  it.each(['resolve', 'reject'] as const)('late host %s cannot clear a member load busy state or publish an error', async outcome => {
+    const host = deferred<Response>(), next = deferred<Response>();
+    serve({ hostInventory: host.promise, memberInventory: next.promise });
+    render(<TopologyPage />);
+    await hostPodsStarted();
+    act(() => setActiveAccount(member));
+    await act(async () => {
+      if (outcome === 'reject') host.reject(new Error('late host failure'));
+      else host.resolve(pendingInventoryResponse());
+    });
+    expect(document.body.textContent).not.toContain('late host failure');
+    expect(screen.queryByTestId('target')).toBeNull();
+    expect((screen.getByRole('button', { name: '수집 중…' }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { next.resolve(pendingInventoryResponse()); });
+    expect(screen.getByTestId('target').textContent).toBe(ip);
+    expect((screen.getByRole('button', { name: 'Refresh' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('cancels every in-flight host fetch when switching scope and current fetches on unmount', async () => {
+    const late = deferred<Response>();
+    serve({ hostPods: late.promise });
+    const view = render(<TopologyPage />);
+    await hostPodsStarted();
+    const hostCalls = [...vi.mocked(fetch).mock.calls];
+    act(() => setActiveScope({ ...DEFAULT_SCOPE, accounts: [member] }));
+    await waitFor(() => expect(screen.getByTestId('target').textContent).toBe(ip));
+    expect(hostCalls.length).toBeGreaterThan(0);
+    for (const [, init] of hostCalls) expect(init?.signal?.aborted).toBe(true);
+    const currentCalls = vi.mocked(fetch).mock.calls.slice(hostCalls.length);
+    view.unmount();
+    for (const [, init] of currentCalls) expect(init?.signal?.aborted).toBe(true);
+    await act(async () => { late.resolve(Response.json({ rows: [pod] })); });
+  });
+});

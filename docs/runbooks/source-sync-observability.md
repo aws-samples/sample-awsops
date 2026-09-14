@@ -179,3 +179,39 @@ The typed collection contract also describes optional additive producer fields; 
 runtime data remains defensively normalized. Source-detail counts include saved sources.
 Verify locally with `cd web && npx vitest run components/topology/GraphCollectionStatus.test.tsx`;
 the regression uses the real graph-state reader with a database boundary fixture.
+
+
+## Topology evidence compatibility
+
+**Symptoms:** an IP target remains unresolved, a collection panel omits its query
+window, or source details do not explain a partial graph.
+
+**Interpretation:** the configuration topology page requires independently corroborated
+region/VPC/subnet evidence for ECS and pod inventory for EKS. A repeated IP in another
+VPC or an Endpoints row without a corroborating pod cannot establish ownership. The
+page uses the hydrated account scope, cancels earlier loads and rejects late results.
+A failed subnet read or the 500-row response cap is disclosed alongside retained
+unresolved targets; raw IP labels are not proof that a workload is absent.
+
+The existing trace producer emits `windowStartMs/windowEndMs` on sources and
+`nodeDrops/edgeDrops/infraUnavailable` on collection details. The panel renders these
+fields, including persisted older envelopes. A limit warning does not claim retention
+unless `retainedPrevious` is true. Attempt/publication and source query windows remain
+separate clocks, rendered in the viewer's timezone.
+
+The graph-publication companion additionally supplies optional inventory capture/sweep
+clocks, aggregate/account source scope, saved-source provenance and explicit truncation
+flags. The prerequisite accepts those fields without claiming that their producer or
+migration is already live. Missing metadata is unknown, not a failed-collector verdict.
+The accepted shape is documented in [the API contract](../api-reference.md#graph-collection-metadata).
+
+**Local verification:** from `web/`, run:
+
+```bash
+npx vitest run app/topology/page.test.tsx app/topology/subnet-input.test.tsx components/topology/GraphCollectionStatus.test.tsx lib/topology-config.test.ts lib/flow-topology.test.ts
+```
+
+These fixtures exercise real page/builder and graph-state-reader boundaries with local
+transport/database doubles. They do not establish deployed AWS, Runtime or migration
+state. Keep the existing separately authorized rollout procedure above (ADR-005,
+ADR-007) and distinguish source integration from activation.

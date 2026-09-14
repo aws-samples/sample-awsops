@@ -10,9 +10,10 @@ import RefreshButton from '@/components/ui/RefreshButton';
 import DetailPanel from '@/components/ui/DetailPanel';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { buildFlowGraph, filterFromEntry, type FlowInput, type FlowKind, type FlowNode } from '@/lib/flow-topology';
+import { fetchEksIpMap, inventoryEvidence, type InventoryEvidence } from '@/lib/topology-config';
 import { layoutFlow } from '@/lib/flow-layout';
 import { useTheme } from '@/lib/use-theme';
-import { useActiveAccount } from '@/lib/account-context';
+import { scopeParams, useActiveScope } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
 // ReactFlow touches the DOM on mount — load it client-only to avoid SSR mismatch.
@@ -130,74 +131,29 @@ function nodeLabel(n: FlowNode): ReactNode {
 
 const ROW_CAP = 500; // /api/inventory caps limit at 500
 
-async function fetchType(t: InvType, account: string): Promise<{ rows: Row[]; finishedAt: string | null; capped: boolean }> {
-  // account scope: 'self' | 12-digit | '__all__' — the inventory read route's `accounts` param.
-  const r = await fetch(`/api/inventory/${t}?limit=${ROW_CAP}&accounts=${encodeURIComponent(account)}`);
-  if (!r.ok) return { rows: [], finishedAt: null, capped: false };
+async function fetchType(t: InvType | 'vpc' | 'subnet' | 'security_group', account: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; capped: boolean }> {
+  const r = await fetch(`/api/inventory/${t}?limit=${ROW_CAP}&accounts=${encodeURIComponent(account)}`, { signal });
+  if (!r.ok) return { rows: [], capped: false, ...inventoryEvidence([], null, false), status: 'failed' };
   const d = await r.json();
-  const rows = (d.rows ?? []) as { resource_id: unknown; region: unknown; data?: object }[];
+  if (d.error || d.status === 'error' || !Array.isArray(d.rows)) {
+    return { rows: [], capped: false, ...inventoryEvidence([], null, false), status: 'failed' };
+  }
+  const rows = d.rows as { resource_id: unknown; region: unknown; captured_at?: unknown; data?: object }[];
   return {
-    rows: rows.map((x) => ({ resource_id: x.resource_id, region: x.region, ...(x.data ?? {}) })),
-    finishedAt: d.run?.finished_at ?? null,
-    capped: rows.length >= ROW_CAP, // hit the cap → more rows exist, surfaced below (no silent truncation)
+    rows: rows.map((x) => ({ ...(x.data ?? {}), resource_id: x.resource_id, region: x.region })),
+    ...inventoryEvidence(rows, d.run, account === 'self'),
+    capped: rows.length >= ROW_CAP,
   };
-}
-
-// Resolve ALB/NLB ip targets to EKS workloads: for each connected cluster, map pod IP →
-// "namespace/workload" (Deployment). Best-effort — failures per cluster are skipped.
-async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved']>> {
-  const map: NonNullable<FlowInput['ipResolved']> = {};
-  try {
-    const list = await fetch('/api/eks').then((r) => (r.ok ? r.json() : null));
-    // NOTE: /api/eks returns { clusters: [...] } (matches the EKS page + fleet). Reading `rows` here
-    // silently yielded [] → EKS pod resolution never ran (every EKS ip-target showed as a raw IP).
-    const clusters: string[] = (list?.clusters ?? [])
-      .filter((c: { access?: string }) => c.access === 'connected')
-      .map((c: { name?: string }) => c.name)
-      .filter(Boolean);
-    await Promise.all(clusters.map(async (name) => {
-      try {
-        const get = (kind: string) => fetch(`/api/eks/${name}/incluster?kind=${kind}`).then((x) => (x.ok ? x.json() : null));
-        const [eps, pods] = await Promise.all([get('endpoints'), get('pods')]);
-        // pod IP → owning workload (fallback when an IP isn't fronted by a Service)
-        const podByIp = new Map<string, { podIP?: string; namespace?: string; name?: string; workload?: string }>();
-        for (const p of (pods?.rows ?? []) as { podIP?: string; namespace?: string; name?: string; workload?: string }[]) {
-          if (p.podIP) podByIp.set(p.podIP, p);
-        }
-        // Service mapping (preferred): an Endpoints object's name == the Service name; its addresses
-        // are the backing pod IPs. More stable than the pod/workload — a TG ip-target fronts a Service.
-        for (const e of (eps?.rows ?? []) as { name?: string; namespace?: string; ips?: string[] }[]) {
-          for (const ip of e.ips ?? []) {
-            const pod = podByIp.get(ip);
-            map[ip] = {
-              label: `${e.namespace ?? ''}/${e.name ?? ''}`,
-              resolved: 'eks',
-              meta: { cluster: name, namespace: e.namespace, service: e.name, pod: pod?.name, workload: pod?.workload },
-            };
-          }
-        }
-        for (const [ip, p] of podByIp) {
-          if (!map[ip]) map[ip] = {
-            label: `${p.namespace ?? ''}/${p.workload || p.name || ''}`,
-            resolved: 'eks',
-            meta: { cluster: name, namespace: p.namespace, workload: p.workload, pod: p.name },
-          };
-        }
-      } catch { /* skip this cluster */ }
-    }));
-  } catch { /* no EKS resolution */ }
-  return map;
 }
 
 // ---- VPC / subnet / security-group id → name resolution (for the detail panel) ----
 type NetMaps = { vpc: Map<string, string>; subnet: Map<string, string>; sg: Map<string, string> };
 const emptyNetMaps = (): NetMaps => ({ vpc: new Map(), subnet: new Map(), sg: new Map() });
 
-// inventory row {resource_id, data:{...}} → a human name (Name tag / group_name), else the id.
-function invName(invRow: { resource_id?: unknown; data?: Record<string, unknown> }): string {
-  const d = invRow.data ?? {};
-  const tags = (d.tags ?? {}) as Record<string, unknown>;
-  return String(tags.Name ?? d.group_name ?? d.title ?? d.name ?? invRow.resource_id ?? '');
+// Flattened inventory row → a human name (Name tag / group_name), else the id.
+function invName(row: Row): string {
+  const tags = (row.tags ?? {}) as Record<string, unknown>;
+  return String(tags.Name ?? row.group_name ?? row.title ?? row.name ?? row.resource_id ?? '');
 }
 // pull ids from the many shapes a row uses: 'sg-x' | {GroupId} | {SubnetId} | {Id} | availability_zones[].SubnetId
 function idsFrom(v: unknown): string[] {
@@ -227,59 +183,80 @@ function networkNames(row: Record<string, unknown>, nm: NetMaps): Record<string,
 }
 
 export default function TopologyPage() {
+  const [scope, , ready] = useActiveScope();
+  // Remount all graph/detail/evidence state on selection changes. A saved member/all scope
+  // must be known before the first load; the hook's hydration default is not a host selection.
+  if (!ready) return null;
+  const account = Array.isArray(scope.accounts) ? scope.accounts.join(',') : scope.accounts;
+  return <ScopedTopologyPage key={scopeParams(scope)} activeAccount={account} />;
+}
+
+function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
   const { tt } = useI18n();
-  const [activeAccount] = useActiveAccount();
   const [data, setData] = useState<FlowInput | null>(null);
   const [syncedAt, setSyncedAt] = useState<string | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
-  const [capturedAt, setCapturedAt] = useState<string | null>(null);
+  const [captureThrough, setCaptureThrough] = useState<string | null>(null);
+  const [unknownCapture, setUnknownCapture] = useState(false);
+  const [collectionIssues, setCollectionIssues] = useState<string[]>([]);
   const [cappedTypes, setCappedTypes] = useState<string[]>([]);
   const [entryId, setEntryId] = useState<string>('');
   const [clusterFilter, setClusterFilter] = useState<string>('');
   const [selected, setSelected] = useState<FlowNode | null>(null);
   const [query, setQuery] = useState('');
   const [netMaps, setNetMaps] = useState<NetMaps>(emptyNetMaps);
+  const request = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    const { signal } = controller;
     setBusy(true);
     try {
       const account = activeAccount || 'self';
       const NET = ['vpc', 'subnet', 'security_group'] as const;
       const [res, ipResolved, net] = await Promise.all([
-        Promise.all(TYPES.map((t) => fetchType(t, account))),
-        fetchEksIpMap(),
-        // VPC/subnet/SG inventory → id→name maps for the detail panel (lookup only, not graph nodes)
-        Promise.all(NET.map((t) => fetch(`/api/inventory/${t}?limit=500&accounts=${encodeURIComponent(account)}`).then((r) => (r.ok ? r.json() : { rows: [] })).catch(() => ({ rows: [] })))),
+        Promise.all(TYPES.map((t) => fetchType(t, account, signal))),
+        account === 'self' ? fetchEksIpMap(signal) : Promise.resolve({}),
+        // Subnets also establish each ECS attachment's VPC; never infer it from a target group.
+        Promise.all(NET.map((t) => fetchType(t, account, signal))),
       ]);
-      const mk = (rows: { resource_id?: unknown; data?: Record<string, unknown> }[]) =>
-        new Map((rows ?? []).map((r) => [String(r.resource_id), invName(r)]));
-      setNetMaps({ vpc: mk(net[0]?.rows), subnet: mk(net[1]?.rows), sg: mk(net[2]?.rows) });
-      const out: FlowInput = { ipResolved, subnet: (net[1]?.rows ?? []).map(
-        (row: { resource_id?: unknown; region?: unknown; data?: Record<string, unknown> }) =>
-          ({ ...(row.data ?? {}), resource_id: row.resource_id, region: row.region }),
-      ) };
-      let newest: string | null = null;
+      // Fetch/test transports may complete even after cancellation. Only this request owns
+      // publication, including the catch/finally paths that control errors and busy state.
+      if (signal.aborted) return;
+      const mk = (rows: Row[]) => new Map(rows.map((r) => [String(r.resource_id), invName(r)]));
+      setNetMaps({ vpc: mk(net[0].rows), subnet: mk(net[1].rows), sg: mk(net[2].rows) });
+      const out: FlowInput = { ipResolved, subnet: net[1].rows };
+      let oldest: string | null = null, newest: string | null = null;
       const capped: string[] = [];
-      TYPES.forEach((t, i) => {
-        out[FLOW_KEY[t]] = res[i].rows;
-        const f = res[i].finishedAt;
-        if (f && (!newest || f > newest)) newest = f;
-        if (res[i].capped) capped.push(t);
+      TYPES.forEach((t, i) => { out[FLOW_KEY[t]] = res[i].rows; });
+      const types = [...TYPES, ...NET], results = [...res, ...net];
+      results.forEach((r, i) => {
+        const f = r.capturedAt, through = r.capturedThrough;
+        if (f && (!oldest || Date.parse(f) < Date.parse(oldest))) oldest = f;
+        if (through && (!newest || Date.parse(through) > Date.parse(newest))) newest = through;
+        if (r.capped) capped.push(types[i]);
       });
       setData(out);
-      setSyncedAt(newest);
+      setSyncedAt(oldest);
+      setCaptureThrough(newest);
+      setUnknownCapture(results.some(r => r.unknownCapture));
+      setCollectionIssues(results.flatMap((r, i) => r.status !== 'succeeded' ? [`${types[i]}: ${r.status}`] : []));
       setCappedTypes(capped);
       setErr('');
-      setCapturedAt(new Date().toISOString());
     } catch (e) {
-      setErr(String(e));
+      if (!signal.aborted) setErr(String(e));
     } finally {
-      setBusy(false);
+      if (!signal.aborted) setBusy(false);
     }
   }, [activeAccount]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => request.current?.abort();
+  }, [load]);
 
   // Deep-link from the service map (/topology/services): ?cluster=<resolved:name> seeds the cluster
   // filter so a trace workload click lands on this cluster's request path. Reads directly from
@@ -575,7 +552,7 @@ export default function TopologyPage() {
                 <option key={c.key} value={c.key}>{c.resolved ? `${c.resolved.toUpperCase()} · ${c.cluster}` : c.cluster}</option>
               ))}
             </select>
-            <RefreshButton busy={busy} onClick={load} capturedAt={capturedAt} />
+            <RefreshButton busy={busy} onClick={load} capturedAt={syncedAt} />
             <Link href="/topology/infra" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
               {tt('인프라 배치 →')}
             </Link>
@@ -588,6 +565,12 @@ export default function TopologyPage() {
       <div className="flex-1 min-h-0 flex flex-col gap-4 px-8 py-6">
         {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
         {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
+        {data && !err && <div aria-label="Inventory collection evidence" className="text-[12px] text-ink-400">
+          <span>{tt('Inventory capture / last success:')} {syncedAt ? new Date(syncedAt).toLocaleString() : 'unknown'}</span>
+          {captureThrough && captureThrough !== syncedAt && <span> – {new Date(captureThrough).toLocaleString()}</span>}
+          {unknownCapture && <span> · {tt('Some capture times unknown')}</span>}
+          {collectionIssues.length > 0 && <div role="status">{collectionIssues.join(', ')}</div>}
+        </div>}
         {data && !err && (
           full.nodes.length === 0 ? (
             <div className="rounded-md border border-ink-100 bg-ink-50 px-3 py-3 text-[13px] text-ink-400">
@@ -597,7 +580,6 @@ export default function TopologyPage() {
             <>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-ink-400">
                 <span>{tt(`노드 ${nodes.length} · 엣지 ${edges.length}`)}</span>
-                {syncedAt && <span>{tt('인벤토리 동기화:')} {new Date(syncedAt).toLocaleString()}</span>}
                 {cappedTypes.length > 0 && (
                   <span className="text-warning">{tt(`⚠ ${cappedTypes.join(', ')} ${ROW_CAP}개 초과 — 일부만 표시`)}</span>
                 )}

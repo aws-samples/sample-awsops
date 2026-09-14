@@ -195,3 +195,27 @@ Positive `nodeDrops/edgeDrops` and `infraUnavailable` remain visible for older p
 envelopes as well as newer producer flags. Losses alone do not prove retention:
 `retainedPrevious` is required for that claim. Source-detail totals include saved sources.
 Missing collection metadata stays unknown rather than implying collector failure.
+
+
+## Graph collection metadata
+
+`GET /api/graph` returns an optional `collection` envelope. The shared TypeScript
+contract is `GraphCollection` / `GraphCollectionSource` in
+`web/components/topology/GraphCollectionStatus.tsx`; the renderer also validates unknown
+runtime payloads for compatibility with older or malformed responses.
+
+| Fields | Meaning |
+| --- | --- |
+| `status`, `stale`, `retainedPrevious` | Collection result and snapshot age/retention; a retained graph does not establish current traffic. Missing metadata stays unknown. |
+| `attempted_at`, `captured_at` | Latest graph attempt and saved publication clocks, serialized as timestamps; neither substitutes for the source query window. |
+| `sources[].sourceId/status/reasons/itemCount` | Per-source collection result and bounded reason vocabulary. |
+| `sources[].windowStartMs/windowEndMs` | Actual trace query window, in epoch milliseconds; displayed independently of publication time. |
+| `nodeDrops`, `edgeDrops`, `infraUnavailable` | Existing trace producer loss counters and unavailable inventory context. Positive losses are visible even for older rows without newer truncation flags. Loss alone does not imply that a previous graph was retained. |
+| `evidenceKind`, `inputTruncated`, `graphTruncated` | Optional additive producer metadata; `inventory` changes the empty-result wording, and truncation is disclosed conservatively. |
+| `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Optional source scope/capture/sweep clocks and saved-source provenance used by the graph-publication companion. Absent fields are not fabricated. |
+
+The prerequisite UI supports both the existing trace envelope and the companion's
+optional inventory/saved-source fields. It does not itself install that producer or
+activate collection. Source details are collapsed and height-bounded; their count
+includes saved-source entries. Runtime, Lambda and migration rollout remain separate
+from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
