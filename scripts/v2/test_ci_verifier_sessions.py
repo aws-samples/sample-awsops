@@ -237,6 +237,9 @@ def test_cli_masks_and_publishes_a_nonempty_restriction_and_fails_closed(tmp_pat
     assert json.loads(published["session_policy"]) == expected
     assert result.stdout.splitlines()[0] == "::add-mask::" + published["session_policy"]
     assert all(line.startswith("::add-mask::") for line in result.stdout.splitlines())
+    assert "::add-mask::fixture-state" in result.stdout.splitlines()
+    assert "::add-mask::fixture-state/dev/terraform.tfstate" in result.stdout.splitlines()
+    assert f"::add-mask::{ACCOUNT}" in result.stdout.splitlines()
     path = Path(published["policy_file"])
     assert path.parent == tmp_path and path.stat().st_mode & 0o777 == 0o600
     assert json.loads(path.read_text()) == expected

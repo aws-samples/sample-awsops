@@ -174,6 +174,9 @@ def main():
         items = statement["Resource"]
         resources.update(item for item in (items if isinstance(items, list) else [items])
                          if item.startswith("arn:"))
+    resources.update(item.removeprefix("arn:aws:s3:::") for item in tuple(resources)
+                     if item.startswith("arn:aws:s3:::"))
+    resources.add(os.environ["AWS_ACCOUNT_ID_DEV"])
     # Standard Actions masking commands precede publishing the step output. No
     # policy/ARN text is emitted by the CLI outside the guarded Actions context.
     for masked in [text, *sorted(resources)]:
