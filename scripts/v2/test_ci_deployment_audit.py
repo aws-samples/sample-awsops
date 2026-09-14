@@ -3,6 +3,7 @@ import base64
 from copy import deepcopy
 from datetime import datetime, timezone
 import fnmatch
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,10 @@ FUNCTION = f"arn:aws:lambda:{REGION}:{ACCOUNT}:function:{PROJECT}-inv-sync"
 RULE = f"arn:aws:events:{REGION}:{ACCOUNT}:rule/{PROJECT}-inv-sync-ec2"
 RUNTIME = f"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT}:runtime/awsops_v2_agent-fixture"
 CODE_SHA = base64.b64encode(b"x" * 32).decode()
+GATEWAY_ID = "awsops-v2-data-gateway-abcdefgh12"
+GATEWAY_ARN = f"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT}:gateway/{GATEWAY_ID}"
+TARGET_ID = "Abcd123456"
+RDS_LAMBDA = f"arn:aws:lambda:{REGION}:{ACCOUNT}:function:{PROJECT}-agent-rds-mcp"
 NOW = datetime(2026, 9, 14, 4, 0, tzinfo=timezone.utc)
 ENV = {
     "GITHUB_REPOSITORY": "aws-samples/sample-awsops",
@@ -32,6 +37,7 @@ ENV = {
     "AWS_REGION": REGION, "AWS_ACCOUNT_ID_DEV": ACCOUNT, "RUNTIME_ROLE_ARN": ROLE,
     "EXPECTED_PROJECT": PROJECT,
 }
+BACKEND = 'bucket = "fixture-state"\nkey = "dev/terraform.tfstate"\nregion = "ap-northeast-2"\nencrypt = true\nuse_lockfile = true\n'
 
 
 def definition(component, revision=3):
@@ -55,6 +61,7 @@ def outputs():
             "known": {"cloudfront_distribution_id": "E123456789ABC"},
         },
         "agentcore": {"project": PROJECT, "region": REGION, "role_arn": RUNTIME_ROLE,
+                      "lambda_arns": {"rds-mcp": RDS_LAMBDA},
                       "ssm_runtime_arn": f"/ops/{PROJECT}/agentcore/runtime_arn"},
         "agent_sql_reader_secret_arn":
             f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:ops/{PROJECT}/agent/sql-reader-Ab1234",
@@ -118,6 +125,18 @@ class FakeAWS:
         if operation == "get_agent_runtime":
             return {"agentRuntimeArn": RUNTIME, "agentRuntimeName": "awsops_v2_agent",
                     "status": "READY", "roleArn": RUNTIME_ROLE, "agentRuntimeVersion": "2"}
+        if operation == "list_gateways":
+            return {"items": [{"name": "awsops-v2-data-gateway", "gatewayId": GATEWAY_ID}]}
+        if operation == "get_gateway":
+            return {"gatewayId": GATEWAY_ID, "gatewayArn": GATEWAY_ARN,
+                    "name": "awsops-v2-data-gateway", "roleArn": RUNTIME_ROLE,
+                    "status": "READY", "statusReasons": []}
+        if operation == "list_gateway_targets":
+            return {"items": [{"name": "rds-mcp-target", "targetId": TARGET_ID}]}
+        if operation == "get_gateway_target":
+            return {"gatewayArn": GATEWAY_ARN, "targetId": TARGET_ID, "name": "rds-mcp-target",
+                    "status": "READY", "statusReasons": [],
+                    "targetConfiguration": {"mcp": {"lambda": {"lambdaArn": RDS_LAMBDA}}}}
         if operation == "describe_db_clusters":
             return {"DBClusters": [{
                 "DBClusterArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:cluster:{PROJECT}-aurora",
@@ -227,6 +246,13 @@ def test_pending_and_foreign_runtime_never_reach_control_api(runtime):
     aws.overrides["ssm", "get_parameter"] = {"Parameter": {"Value": runtime}}
     assert audit.collect(outputs(), ENV, aws, NOW)["deployment"]["agentcore"]["status"] != "READY"
     assert not any(op == "get_agent_runtime" for _, op, _ in aws.calls)
+
+
+def test_runtime_ready_is_only_observed_without_endpoint_or_applied_version_proof():
+    result = audit.collect(outputs(), ENV, FakeAWS(), NOW)["deployment"]["agentcore"]
+    assert result["status"] == "OBSERVED"
+    assert result["runtime_status"] == "READY"
+    assert result["invocation_readiness"] == "UNKNOWN"
 
 
 def test_wrong_caller_stops_after_sts():
@@ -413,6 +439,16 @@ def test_wrong_schedule_target_or_permission_never_looks_ready():
     assert audit.collect(outputs(), ENV, aws, NOW)["events"]["schedule"]["permission_matches"] is False
 
 
+def test_absent_lambda_policy_preserves_schedule_observations():
+    aws = FakeAWS()
+    aws.overrides["lambda", "get_policy"] = ClientError(
+        {"Error": {"Code": "ResourceNotFoundException", "Message": "private detail"}}, "GetPolicy")
+    item = audit.collect(outputs(), ENV, aws, NOW)["events"]["schedule"]
+    assert item["status"] == "NOT_READY"
+    assert item["enabled"] is True and item["target_all_matches"] is True
+    assert item["permission_matches"] is False
+
+
 def test_foreign_runtime_role_is_not_ready():
     aws = FakeAWS()
     aws.overrides["bedrock-agentcore-control", "get_agent_runtime"] = {
@@ -423,7 +459,7 @@ def test_foreign_runtime_role_is_not_ready():
 
 
 def test_session_policy_cannot_authorize_mutations_or_master_secret():
-    policy = audit.session_policy(ENV)
+    policy = audit.session_policy(ENV, outputs())
     def permits(action, resource):
         return any(s["Effect"] == "Allow" and action in s["Action"]
                    and any(fnmatch.fnmatchcase(resource, pattern)
@@ -446,7 +482,8 @@ def test_session_policy_cannot_authorize_mutations_or_master_secret():
 
 
 def test_session_policy_fits_sts_limit_at_max_project_length():
-    policy = audit.session_policy({**ENV, "EXPECTED_PROJECT": "a" * 40})
+    data = json.loads(json.dumps(outputs()).replace(PROJECT, "a" * 40))
+    policy = audit.session_policy({**ENV, "EXPECTED_PROJECT": "a" * 40}, data)
     assert len(json.dumps(policy, separators=(",", ":"))) <= 2048
 
 
@@ -455,13 +492,77 @@ def test_guard_publishes_only_validated_session_restriction(tmp_path, monkeypatc
         monkeypatch.setenv(key, value)
     output = tmp_path / "output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("BACKEND_B64", base64.b64encode(BACKEND.encode()).decode())
     assert audit.main(["guard"]) == 0
     name, value = output.read_text().strip().split("=", 1)
-    assert name == "session_policy" and json.loads(value) == audit.session_policy(ENV)
+    assert name == "session_policy"
+    assert json.loads(value) == audit.backend_policy({**ENV, "BACKEND_B64": base64.b64encode(BACKEND.encode()).decode()})
     workflow_config = workflow()["jobs"]["audit"]["steps"]
     credential_step = next(s for s in workflow_config if s.get("uses", "").startswith("aws-actions/"))
     assert credential_step["with"]["inline-session-policy"] == "${{ steps.scope.outputs.session_policy }}"
     assert credential_step["with"]["role-duration-seconds"] == 900
+
+
+def test_missing_policy_output_sink_fails_closed(monkeypatch, capsys):
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("BACKEND_B64", base64.b64encode(BACKEND.encode()).decode())
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    assert audit.main(["guard"]) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "UNKNOWN"
+
+
+def test_list_tasks_uses_resource_star_and_cluster_condition():
+    policy = audit.session_policy(ENV, outputs())
+    grant = next(s for s in policy["Statement"] if "ecs:ListTasks" in s["Action"])
+    assert grant["Resource"] == "*"
+    assert grant["Condition"]["ArnEquals"]["ecs:cluster"] == CLUSTER
+    assert grant["Condition"]["StringEquals"]["aws:RequestedRegion"] == REGION
+
+
+def test_backend_policy_scopes_state_and_kms_encryption_context():
+    policy = audit.backend_policy({**ENV, "BACKEND_B64": base64.b64encode(BACKEND.encode()).decode()})
+    s3 = next(s for s in policy["Statement"] if "s3:GetObject" in s["Action"])
+    assert s3["Resource"] == ["arn:aws:s3:::fixture-state", "arn:aws:s3:::fixture-state/dev/terraform.tfstate"]
+    assert s3["Condition"]["StringEquals"]["aws:ResourceAccount"] == ACCOUNT
+    kms = next(s for s in policy["Statement"] if "kms:Decrypt" in s["Action"])
+    conditions = kms["Condition"]["StringEquals"]
+    assert conditions["aws:ResourceAccount"] == ACCOUNT
+    assert conditions["kms:EncryptionContext:aws:s3:arn"] == s3["Resource"]
+    assert conditions["kms:ViaService"] == "s3.ap-northeast-2.amazonaws.com"
+    assert "kms:CallerAccount" not in conditions
+    assert len(json.dumps(policy, separators=(",", ":"))) <= 2048
+
+
+@pytest.mark.parametrize("extra", [
+    'bucket = "other"\n', 'profile = "other"\n', 'role_arn = "anything"\n',
+    'endpoints = {}\n', 'key = "*"\n', 'region = "us-east-1"\n',
+])
+def test_backend_scope_rejects_duplicate_or_unsupported_configuration(extra):
+    with pytest.raises(ValueError):
+        audit.backend_policy({**ENV, "BACKEND_B64": base64.b64encode((BACKEND + extra).encode()).decode()})
+
+
+def test_workload_policy_is_published_after_private_capture_without_aws(tmp_path, monkeypatch, capsys):
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    for key, value in outputs().items():
+        (tmp_path / f"{key}.json").write_text(json.dumps(value))
+    output = tmp_path / "policy-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(audit, "ReadAPI", lambda _: pytest.fail("policy construction must not call AWS"))
+    assert audit.main(["audit-policy", "--directory", str(tmp_path)]) == 0
+    policy = json.loads(output.read_text().strip().split("=", 1)[1])
+    assert policy == audit.session_policy(ENV, outputs())
+    assert not any(action.startswith(("s3:", "kms:")) for s in policy["Statement"] for action in s["Action"])
+    assert "::add-mask::" in capsys.readouterr().out
+    steps = workflow()["jobs"]["audit"]["steps"]
+    captures = next(i for i, s in enumerate(steps) if s.get("name", "").startswith("Capture only"))
+    scope = next(i for i, s in enumerate(steps) if s.get("id") == "read_scope")
+    credentials = [i for i, s in enumerate(steps) if s.get("uses", "").startswith("aws-actions/")]
+    assert credentials[0] < captures < scope < credentials[1]
+    assert steps[credentials[1]]["with"]["inline-session-policy"] == "${{ steps.read_scope.outputs.session_policy }}"
 
 
 def test_mixed_capture_times_are_reported_without_invented_product_freshness():
@@ -518,3 +619,48 @@ def test_inventory_disabled_remains_explicit_when_reader_is_available():
     assert result["data"]["inventory_enabled"] is False
     assert result["data"]["completeness"] == "UNKNOWN"
     assert result["events"]["schedule"]["status"] == "DISABLED"
+
+
+def test_gateway_role_and_lambda_drift_are_hashed_without_following_foreign_arns():
+    aws = FakeAWS()
+    foreign_role = RUNTIME_ROLE.replace(PROJECT, "old-project")
+    foreign_lambda = RDS_LAMBDA.replace(ACCOUNT, "999999999999")
+    reason = f"Role denied access to lambda {foreign_lambda}; SECRET_FIXTURE"
+    aws.overrides["bedrock-agentcore-control", "get_gateway"] = {
+        "gatewayId": GATEWAY_ID, "gatewayArn": GATEWAY_ARN, "name": "awsops-v2-data-gateway",
+        "roleArn": foreign_role, "status": "READY", "statusReasons": []}
+    aws.overrides["bedrock-agentcore-control", "get_gateway_target"] = {
+        "gatewayArn": GATEWAY_ARN, "targetId": TARGET_ID, "name": "rds-mcp-target",
+        "status": "UPDATE_UNSUCCESSFUL", "statusReasons": [reason],
+        "targetConfiguration": {"mcp": {"lambda": {"lambdaArn": foreign_lambda}}}}
+    result = audit.collect(outputs(), ENV, aws, NOW)["deployment"]["data_gateway"]
+    assert result["gateway_role_matches_state"] is False
+    assert result["target_lambda_matches_state"] is False
+    assert result["gateway_role_sha256"] == hashlib.sha256(foreign_role.encode()).hexdigest()
+    assert result["target_lambda_sha256"] == hashlib.sha256(foreign_lambda.encode()).hexdigest()
+    assert result["target_status_reasons"]["items"][0]["sha256"] == hashlib.sha256(reason.encode()).hexdigest()
+    assert "mentions_permission" in result["target_status_reasons"]["items"][0]["categories"]
+    assert "arn:aws" not in json.dumps(result) and "SECRET_FIXTURE" not in json.dumps(result)
+    assert not any(foreign_lambda in json.dumps(params, default=str) for _, _, params in aws.calls)
+    assert next(params for _, op, params in aws.calls if op == "get_gateway")["gatewayIdentifier"] == GATEWAY_ID
+
+
+def test_foreign_data_gateway_identifier_is_rejected_before_get():
+    aws = FakeAWS()
+    aws.overrides["bedrock-agentcore-control", "list_gateways"] = {
+        "items": [{"name": "awsops-v2-data-gateway", "gatewayId": "another-gateway-abcdefgh12"}]}
+    result = audit.collect(outputs(), ENV, aws, NOW)["deployment"]["data_gateway"]
+    assert result["status"] == "UNKNOWN"
+    assert not any(op == "get_gateway" for _, op, _ in aws.calls)
+
+
+def test_gateway_role_evidence_survives_target_read_denial():
+    aws = FakeAWS()
+    aws.overrides["bedrock-agentcore-control", "get_gateway_target"] = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "PRIVATE"}}, "GetGatewayTarget")
+    result = audit.collect(outputs(), ENV, aws, NOW)
+    gateway = result["deployment"]["data_gateway"]
+    assert gateway["gateway_role_matches_state"] is True
+    assert gateway["target_status"] == "UNKNOWN"
+    assert gateway["target_reason"] == "access_denied"
+    assert result["read_errors"] == 1

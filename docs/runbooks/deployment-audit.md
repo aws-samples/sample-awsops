@@ -28,17 +28,25 @@ The workflow uses the self-hosted runner label `sample-awsops`, the existing
 and STS caller must agree; there is no local-profile/default-account fallback.
 Project, region and resource identities are checked before service reads.
 
-The existing role assumption receives a 900-second **restrictive session policy**,
-not new role grants. It permits the audit reads and backend access, with workload
-ARNs scoped to the selected account/project. Resource-less metrics/metadata reads
-retain account/region conditions; backend reads retain existing role permissions.
-KMS decrypt is limited to S3/Secrets Manager service use. No mutation action is
-permitted except the required `rds-data:ExecuteStatement`, whose database access
-uses the read-only SQL-reader role. Data API requires IAM
-`secretsmanager:GetSecretValue` on the one named reader secret as well as
-`rds-data:ExecuteStatement` on the cluster. The helper never calls the secret API;
-the reader password is nevertheless within the session's authorized credential
-scope. The fixed SELECT allowlist provides the additional in-process SQL boundary.
+Two 900-second restricted sessions of the existing role separate backend capture
+from workload reads; neither grants new role permissions. Before OIDC, the first
+policy is built from the existing backend secret's literal bucket/key/region. S3
+access is limited to that bucket/state object in the expected account. KMS decrypt
+requires the S3 service and that bucket/object encryption context, additionally
+using the exact key ARN when configured. The standard flat backend settings are
+accepted; interpolation, credential overrides and non-default workspaces fail
+closed. Policy publication must succeed before credentials can be assumed.
+
+After capture and backend cleanup, the second session uses validated output
+identities and has no backend access. `ecs:ListTasks` requires a wildcard resource
+with an exact `ecs:cluster` condition; other workload reads use scoped ARNs.
+Data API requires `rds-data:ExecuteStatement` on the cluster and IAM
+`secretsmanager:GetSecretValue` on the exact captured reader-secret ARN. The helper
+never calls the secret API; the password is nevertheless within the session's
+credential scope. The current Terraform reader secret uses the AWS-managed
+Secrets Manager key, so this workload session grants no KMS access. Fixed SELECTs
+and the existing read-only database role bound SQL access. Policy strings and
+backend identifiers are masked before being passed between workflow steps.
 
 Only the backend is restored into private scratch. Terraform reads four existing
 outputs: `runtime_deployment`, `agentcore`, `agent_sql_reader_secret_arn`, and
@@ -54,15 +62,21 @@ files, secret values or raw exceptions are published.
   `OBSERVED`: current tasks match the current live service, but the existing web
   output has no applied task-definition ARN (`target_matches_state: null`).
   Steampipe can report `READY` only when its applied revision also matches.
-  Unknown health, capped lists and rolling-deployment snapshot mismatches stay
-  unknown. Disabled infrastructure reports `DISABLED`.
+  AgentCore's best summary is also `OBSERVED`: its literal `runtime_status`, role
+  match and version are shown, while DEFAULT endpoint/invocation readiness and
+  applied-version matching remain unknown. Unknown health, capped lists and count
+  races stay unknown; consistent mixed-revision rollouts are `NOT_READY`.
+  Disabled infrastructure reports `DISABLED`.
 - **Events:** the own `-inv-sync-ec2` rule, `rate(15 minutes)`, one own Lambda target
   with `{"type":"all"}`, and matching EventBridge grant are checked separately from
   execution. A matching grant does not prove effective permissions. Three metrics
   cover a rolling two-hour window ending at the last minute boundary; recent
   CloudWatch data can lag. Missing/partial/denied metrics are **UNKNOWN**, never zero.
-  An observed zero needs a real datapoint. Rule attempts and Lambda invocations
-  are not correlated: `type:all` fans out, so their counts need not match.
+  An observed zero needs a real datapoint. A missing Lambda policy is an absent
+  grant (`permission_matches: false`), preserving the rule/target observations.
+  Rule attempts and Lambda invocations are not correlated: `type:all` fans out,
+  so their counts need not match. Lambda Errors=0 is not collection success:
+  the collector can return per-type failures without raising an invocation error.
 - **Data:** fixed SELECTs first verify the expected reader identity and direct
   role attributes, then project safe `sql_reader` metadata. The `self` ledger is a
   collector-wide job summary. Resource counts select persisted `self` or host-ID
@@ -73,6 +87,13 @@ files, secret values or raw exceptions are published.
   configured freshness policy. The known CloudFront row is checked separately.
   Up to 256 observed types are shown with truncation disclosed. Required deployed
   type coverage is not derived; completeness always remains **UNKNOWN**.
+
+The data-gateway diagnostic reads only `awsops-v2-data-gateway` and its
+`rds-mcp-target`. It compares the live role and target Lambda URI with applied
+Terraform, publishing match flags and SHA-256 fingerprints, not raw ARNs. Provider
+`statusReasons` are represented by fixed text-match categories and hashes (up to
+eight reasons); these are observations, not inferred causes. Gateway-role evidence
+survives a denied target read. No gateway/target update is performed.
 
 ## Action
 
@@ -90,14 +111,16 @@ Session policies cannot supply a permission missing from the underlying role.
 No identity-policy grant is part of this change; access changes belong to the IAM
 owner's reviewed least-privilege configuration, not an automatic deployer expansion.
 
-Offline prerequisites: Python 3.9+, pytest, PyYAML, boto3/botocore (CI uses Python
-3.12 and the pinned SDK). Run `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`.
+Offline prerequisites: Python 3.12, pytest, PyYAML and boto3/botocore (the workflow
+uses the pinned SDK). Run `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`.
 
 ## Related
 
 [Runtime activation](runtime-foundation.md) · [SQL reader](agent-sql-reader.md) ·
-[CI setup](dev-repo-setup.md).
+[CI setup](dev-repo-setup.md) · [Inventory freshness](steampipe-quota-and-staleness.md).
 
 Sources: `.github/workflows/audit-deployment.yml`, `scripts/v2/ci_deployment_audit.py`,
-`scripts/v2/test_ci_deployment_audit.py`, `terraform/foundation/runtime-read-scope.tf`.
-ADRs: 001, 005, 007, 010. Read-only observations are not live readiness proof.
+`scripts/v2/test_ci_deployment_audit.py`, `scripts/v2/ci_runtime_policy.py`,
+`terraform/foundation/runtime-read-scope.tf`.
+ADRs: 001, 005, 010, 021. This is not an ADR-005 carve-out; read-only observations
+are not live readiness proof.

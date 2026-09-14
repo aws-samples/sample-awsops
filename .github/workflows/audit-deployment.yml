@@ -59,6 +59,8 @@ jobs:
           terraform_wrapper: false
       - name: Check context and configured account before OIDC
         id: scope
+        env:
+          BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
         run: python3 scripts/v2/ci_deployment_audit.py guard
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -79,6 +81,7 @@ jobs:
           umask 077
           mkdir -m 700 "$AUDIT_DIR"
           export TF_DATA_DIR="$AUDIT_DIR/tfdata"
+          export TF_WORKSPACE=default
           trap 'rm -rf -- "$TF_DATA_DIR"; rm -f -- "$AUDIT_DIR/backend.hcl"' EXIT
           # No tfvars, plans, full state, Terraform debug logs or CLI overrides.
           for name in ${!TF_LOG@} ${!TF_CLI_ARGS@}; do unset "$name"; done
@@ -99,6 +102,18 @@ jobs:
           done
           rm -rf -- "$TF_DATA_DIR"
           rm -f -- "$AUDIT_DIR/backend.hcl"
+      - name: Validate captured identities and restrict the audit session
+        id: read_scope
+        run: python3 scripts/v2/ci_deployment_audit.py audit-policy --directory "$AUDIT_DIR"
+      - name: Assume the existing role for workload reads only
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          role-duration-seconds: 900
+          inline-session-policy: ${{ steps.read_scope.outputs.session_policy }}
       - name: Read deployment, schedule execution and database observations
         timeout-minutes: 8
         run: python3 scripts/v2/ci_deployment_audit.py audit --directory "$AUDIT_DIR"

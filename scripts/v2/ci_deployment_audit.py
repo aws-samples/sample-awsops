@@ -1,6 +1,7 @@
 """Manual development audit. Fixed reads only; public output is an explicit projection."""
 import argparse
 import base64
+import hashlib
 from datetime import datetime, timedelta, timezone
 import json
 import math
@@ -43,6 +44,10 @@ READS = {
     ("events", "describe_rule"), ("events", "list_targets_by_rule"),
     ("cloudwatch", "get_metric_data"), ("ssm", "get_parameter"),
     ("bedrock-agentcore-control", "get_agent_runtime"),
+    ("bedrock-agentcore-control", "list_gateways"),
+    ("bedrock-agentcore-control", "get_gateway"),
+    ("bedrock-agentcore-control", "list_gateway_targets"),
+    ("bedrock-agentcore-control", "get_gateway_target"),
     ("rds", "describe_db_clusters"), ("rds-data", "execute_statement"),
 }
 
@@ -82,40 +87,90 @@ def validate_context(env):
     verify_role(env.get("AWS_ACCOUNT_ID_DEV"), env.get("RUNTIME_ROLE_ARN"))
 
 
-def session_policy(env):
-    """Intersect the existing role with audit reads; this grants no role permissions."""
+def backend_policy(env):
+    """Bind the bootstrap session to the configured default-workspace state object."""
     validate_context(env)
+    require(env.get("TF_WORKSPACE", "default") in ("", "default"))
+    encoded = env.get("BACKEND_B64", "")
+    require(isinstance(encoded, str) and 0 < len(encoded) <= 22000)
+    text = base64.b64decode("".join(encoded.split()), validate=True).decode()
+    require(len(text) <= 16384)
+    fields = {}
+    allowed = {"bucket", "key", "region", "encrypt", "use_lockfile", "workspace_key_prefix", "kms_key_id"}
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith(("#", "//")):
+            continue
+        match = re.fullmatch(r'\s*(\w+)\s*=\s*("(?:[^"\\]|\\.)*"|true|false)\s*(?:(?:#|//).*)?', line)
+        require(match and match[1] in allowed and match[1] not in fields)
+        fields[match[1]] = json.loads(match[2])
+    bucket, key = fields.get("bucket", ""), fields.get("key", "")
+    require(isinstance(bucket, str) and re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", bucket))
+    require(isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9._/-]{1,512}", key))
+    require(fields.get("region") == REGION and fields.get("encrypt", True) is True)
+    require(all(isinstance(v, (str, bool)) and "${" not in str(v) and "%{" not in str(v) for v in fields.values()))
+    account = env["AWS_ACCOUNT_ID_DEV"]
+    resources = [f"arn:aws:s3:::{bucket}", f"arn:aws:s3:::{bucket}/{key}"]
+    kms = fields.get("kms_key_id", "*")
+    require(kms == "*" or re.fullmatch(re.escape(f"arn:aws:kms:{REGION}:{account}:key/") + r"[a-f0-9-]{36}", kms))
+    return {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": ["sts:GetCallerIdentity"], "Resource": "*",
+         "Condition": {"StringEquals": {"aws:RequestedRegion": REGION}}},
+        {"Effect": "Allow", "Action": ["s3:GetObject", "s3:ListBucket", "s3:GetBucketLocation"],
+         "Resource": resources, "Condition": {"StringEquals": {"aws:ResourceAccount": account}}},
+        {"Effect": "Allow", "Action": ["kms:Decrypt"], "Resource": kms,
+         "Condition": {"StringEquals": {"aws:ResourceAccount": account,
+             "kms:ViaService": f"s3.{REGION}.amazonaws.com",
+             "kms:EncryptionContext:aws:s3:arn": resources}}},
+    ]}
+
+
+def session_policy(env, outputs):
+    """Audit-only session, after the separately restricted backend capture is gone."""
+    runtime = validate_outputs(outputs, env)
     account, project = env["AWS_ACCOUNT_ID_DEV"], env["EXPECTED_PROJECT"]
     arn = lambda service, resource: f"arn:aws:{service}:{REGION}:{account}:{resource}"
+    actions = ["ecs:DescribeServices", "ecs:DescribeTasks", "lambda:GetFunctionConfiguration",
+               "lambda:GetPolicy", "events:DescribeRule", "events:ListTargetsByRule",
+               "ssm:GetParameter", "bedrock-agentcore:GetAgentRuntime", "rds:DescribeDBClusters",
+               "bedrock-agentcore:GetGateway", "bedrock-agentcore:ListGatewayTargets", "bedrock-agentcore:GetGatewayTarget"]
+    resources = [arn("ecs", f"service/{project}/{project}-*"), arn("ecs", f"task/{project}/*"),
+                 arn("lambda", f"function:{project}-inv-sync"), arn("events", f"rule/{project}-inv-sync-ec2"),
+                 arn("ssm", f"parameter/ops/{project}/agentcore/runtime_arn"),
+                 arn("bedrock-agentcore", "runtime/awsops_v2_agent-*"), arn("rds", f"cluster:{project}-aurora"),
+                 arn("bedrock-agentcore", "gateway/awsops-v2-data-gateway-*")]
+    if runtime["features"]["agentcore"]:
+        actions += ["rds-data:ExecuteStatement", "secretsmanager:GetSecretValue"]
+        resources.append(outputs["agent_sql_reader_secret_arn"])
     policy = {"Version": "2012-10-17", "Statement": [
-        {"Effect": "Allow", "Action": [
-            "sts:GetCallerIdentity", "s3:GetObject", "s3:ListBucket", "s3:GetBucketLocation",
-        ], "Resource": "*", "Condition": {"StringEquals": {"aws:PrincipalAccount": account}}},
-        {"Effect": "Allow", "Action": ["cloudwatch:GetMetricData", "rds:DescribeDBClusters"],
-         "Resource": "*", "Condition": {"StringEquals": {
-             "aws:PrincipalAccount": account, "aws:RequestedRegion": REGION}}},
-        {"Effect": "Allow", "Action": [
-            "ecs:DescribeServices", "ecs:ListTasks", "ecs:DescribeTasks",
-            "lambda:GetFunctionConfiguration", "lambda:GetPolicy",
-            "events:DescribeRule", "events:ListTargetsByRule", "ssm:GetParameter",
-            "bedrock-agentcore:GetAgentRuntime", "rds-data:ExecuteStatement", "secretsmanager:GetSecretValue",
-        ], "Resource": [
-            arn("ecs", f"cluster/{project}"), arn("ecs", f"service/{project}/{project}-*"),
-            arn("ecs", f"task/{project}/*"), arn("lambda", f"function:{project}-inv-sync"),
-            arn("events", f"rule/{project}-inv-sync-ec2"),
-            arn("ssm", f"parameter/ops/{project}/agentcore/runtime_arn"),
-            arn("bedrock-agentcore", "runtime/awsops_v2_agent-*"),
-            arn("rds", f"cluster:{project}-aurora"),
-            arn("secretsmanager", f"secret:ops/{project}/agent/sql-reader-??????"),
-        ], "Condition": {"StringEquals": {"aws:RequestedRegion": REGION}}},
-        {"Effect": "Allow", "Action": ["kms:Decrypt"], "Resource": "*",
-         "Condition": {"StringEquals": {
-             "kms:CallerAccount": account,
-             "kms:ViaService": [f"s3.{REGION}.amazonaws.com", f"secretsmanager.{REGION}.amazonaws.com"],
-         }}},
+        {"Effect": "Allow", "Action": ["sts:GetCallerIdentity", "cloudwatch:GetMetricData",
+                                      "bedrock-agentcore:ListGateways"],
+         "Resource": "*", "Condition": {"StringEquals": {"aws:RequestedRegion": REGION}}},
+        # ListTasks without containerInstance needs Resource:*; cluster ARN resources do not authorize it.
+        {"Effect": "Allow", "Action": ["ecs:ListTasks"], "Resource": "*", "Condition": {
+            "ArnEquals": {"ecs:cluster": arn("ecs", f"cluster/{project}")},
+            "StringEquals": {"aws:RequestedRegion": REGION}}},
+        {"Effect": "Allow", "Action": actions, "Resource": resources,
+         "Condition": {"StringEquals": {"aws:RequestedRegion": REGION}}},
     ]}
     require(len(json.dumps(policy, separators=(",", ":"))) <= 2048)
     return policy
+
+
+def publish_policy(policy):
+    # Missing/failed output publication must stop before configure-aws-credentials can run.
+    require(os.environ.get("GITHUB_OUTPUT"))
+    text = json.dumps(policy, separators=(",", ":"))
+    require(len(text) <= 2048)
+    for statement in policy["Statement"]:
+        resources = statement["Resource"]
+        for resource in resources if isinstance(resources, list) else [resources]:
+            if resource.startswith("arn:"):
+                print("::add-mask::" + resource)
+                if resource.startswith("arn:aws:s3:::"):
+                    print("::add-mask::" + resource.removeprefix("arn:aws:s3:::"))
+    print("::add-mask::" + text)
+    with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+        output.write(f"session_policy={text}\n")
 
 
 def validate_outputs(outputs, env):
@@ -147,6 +202,10 @@ def validate_outputs(outputs, env):
                 == f"/ops/{project}/agentcore/runtime_arn")
         require(re.fullmatch(re.escape(arn("secretsmanager", f"secret:ops/{project}/agent/sql-reader-"))
                              + r"[A-Za-z0-9]{6}", outputs["agent_sql_reader_secret_arn"]))
+        require(isinstance(ac.get("lambda_arns", {}), dict))
+        expected_rds = ac.get("lambda_arns", {}).get("rds-mcp")
+        if expected_rds is not None:
+            require(expected_rds == arn("lambda", f"function:{project}-agent-rds-mcp"))
     require(outputs["aurora_database"] == "awsops")
     require(re.fullmatch(r"[A-Z0-9]{8,32}", runtime["known"]["cloudfront_distribution_id"]))
     return runtime
@@ -183,6 +242,9 @@ def ecs_snapshot(read, runtime, component):
     service = f"{project}-{component}"
     cluster = f"arn:aws:ecs:{REGION}:{account}:cluster/{project}"
     response = read("ecs", "describe_services", cluster=cluster, services=[service])
+    if not response.get("services") and response.get("failures") and all(
+            failure.get("reason") == "MISSING" for failure in response["failures"]):
+        return {"status": "NOT_READY", "reason": "service_missing"}
     require(not response.get("failures") and len(response["services"]) == 1)
     item = response["services"][0]
     require(item["clusterArn"] == cluster and item["serviceName"] == service
@@ -232,9 +294,9 @@ def lambda_snapshot(read, runtime):
     matches = sha == inventory["sync_code_sha256"]
     state, update = item.get("State"), item.get("LastUpdateStatus")
     require(state in ("Pending", "Active", "Inactive", "Failed")
-            and update in ("Successful", "Failed", "InProgress"))
+            and update in ("Successful", "Failed", "InProgress", None))
     return {"status": "READY" if state == "Active" and update == "Successful" and matches else "NOT_READY",
-            "state": state, "update_status": update, "code_sha256": sha,
+            "state": state, "update_status": update or "UNKNOWN", "code_sha256": sha,
             "code_matches_state": matches, "last_modified": stamp(item.get("LastModified"))}
 
 
@@ -252,7 +314,12 @@ def schedule_snapshot(read, runtime):
                       and targets[0].get("Id") == "inv-sync-ec2"
                       and json.loads(targets[0].get("Input", "null")) == {"type": "all"}
                       and not targets[0].get("InputPath") and not targets[0].get("InputTransformer"))
-    policy = json.loads(read("lambda", "get_policy", FunctionName=function)["Policy"])
+    try:
+        policy = json.loads(read("lambda", "get_policy", FunctionName=function)["Policy"])
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+            raise
+        policy = {"Statement": []}
     statements = policy.get("Statement", [])
     statements = [statements] if isinstance(statements, dict) else statements
     permission = any(
@@ -322,9 +389,86 @@ def runtime_snapshot(read, runtime):
     require(state in ("CREATING", "CREATE_FAILED", "UPDATING", "UPDATE_FAILED", "READY", "DELETING", "DELETE_FAILED"))
     version = item.get("agentRuntimeVersion")
     require(isinstance(version, str) and re.fullmatch(r"[1-9]\d*", version))
-    return {"status": "READY" if state == "READY" and matches else "NOT_READY",
+    return {"status": "OBSERVED" if state == "READY" and matches else "NOT_READY",
+            "invocation_readiness": "UNKNOWN", "applied_version_matches": None,
             "runtime_parameter_ready": True, "runtime_status": state,
             "role_matches_state": matches, "version": int(version)}
+
+
+def gateway_snapshot(read, runtime, outputs):
+    """Only the named data gateway/RDS target; provider prose and ARNs never escape."""
+    expected_role = outputs["agentcore"]["role_arn"]
+    expected_lambda = outputs["agentcore"].get("lambda_arns", {}).get("rds-mcp")
+    if not expected_lambda:
+        return {"status": "UNKNOWN", "reason": "rds_target_not_configured"}
+    control = "bedrock-agentcore-control"
+    listing = read(control, "list_gateways", maxResults=100)
+    require(not listing.get("nextToken"))
+    matches = [g for g in listing["items"] if g.get("name") == "awsops-v2-data-gateway"]
+    if not matches:
+        return {"status": "NOT_READY", "reason": "data_gateway_missing"}
+    require(len(matches) == 1)
+    gid = matches[0]["gatewayId"]
+    require(re.fullmatch(r"awsops-v2-data-gateway-[a-z0-9]{10}", gid))
+    gateway_arn = f"arn:aws:bedrock-agentcore:{REGION}:{runtime['account_id']}:gateway/{gid}"
+    gateway = read(control, "get_gateway", gatewayIdentifier=gid)
+    require(gateway["gatewayArn"] == gateway_arn and gateway["gatewayId"] == gid
+            and gateway["name"] == "awsops-v2-data-gateway")
+    role = gateway["roleArn"]
+    require(re.fullmatch(r"arn:aws:iam::\d{12}:role/[A-Za-z0-9_+=,.@/-]+", role))
+
+    def fingerprint(value):
+        return hashlib.sha256(value.encode()).hexdigest()
+
+    def reasons(values):
+        require(isinstance(values, list))
+        projected = []
+        for text in values[:8]:
+            require(isinstance(text, str))
+            sample = text[:4096].lower()
+            categories = [name for name, tokens in (
+                ("mentions_permission", ("denied", "unauthorized", "forbidden")),
+                ("mentions_role", ("role",)), ("mentions_lambda", ("lambda",)),
+                ("mentions_schema", ("schema",)), ("mentions_quota", ("quota",)),
+                ("mentions_timeout", ("timeout", "timed out")),
+            ) if any(token in sample for token in tokens)]
+            projected.append({"categories": categories or ["unclassified"],
+                              "sha256": fingerprint(text), "classification_truncated": len(text) > 4096})
+        return {"count": len(values), "truncated": len(values) > 8, "items": projected}
+
+    states = {"CREATING", "UPDATING", "UPDATE_UNSUCCESSFUL", "DELETING", "READY", "FAILED",
+              "SYNCHRONIZING", "SYNCHRONIZE_UNSUCCESSFUL", "CREATE_PENDING_AUTH",
+              "UPDATE_PENDING_AUTH", "SYNCHRONIZE_PENDING_AUTH"}
+    result = {"status": "OBSERVED",
+              "gateway_status": gateway.get("status") if gateway.get("status") in states else "UNKNOWN",
+              "gateway_role_matches_state": role == expected_role,
+              "gateway_role_sha256": fingerprint(role), "expected_role_sha256": fingerprint(expected_role),
+              "gateway_status_reasons": reasons(gateway.get("statusReasons", [])),
+              "gateway_updated_at": stamp(gateway.get("updatedAt"))}
+    try:
+        targets = read(control, "list_gateway_targets", gatewayIdentifier=gid, maxResults=100)
+        require(not targets.get("nextToken"))
+        matches = [t for t in targets["items"] if t.get("name") == "rds-mcp-target"]
+        if not matches:
+            return {**result, "target_status": "MISSING", "target_lambda_matches_state": False}
+        require(len(matches) == 1 and re.fullmatch(r"[A-Za-z0-9]{10}", matches[0]["targetId"]))
+        target = read(control, "get_gateway_target", gatewayIdentifier=gid, targetId=matches[0]["targetId"])
+        require(target["gatewayArn"] == gateway_arn and target["targetId"] == matches[0]["targetId"]
+                and target["name"] == "rds-mcp-target")
+        actual_lambda = target.get("targetConfiguration", {}).get("mcp", {}).get("lambda", {}).get("lambdaArn")
+        require(actual_lambda is None or re.fullmatch(
+            r"arn:aws:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?", actual_lambda))
+        result.update(target_status=target.get("status") if target.get("status") in states else "UNKNOWN",
+                      target_lambda_matches_state=actual_lambda == expected_lambda,
+                      target_lambda_sha256=fingerprint(actual_lambda) if actual_lambda else None,
+                      expected_lambda_sha256=fingerprint(expected_lambda),
+                      target_status_reasons=reasons(target.get("statusReasons", [])),
+                      target_updated_at=stamp(target.get("updatedAt")))
+        return result
+    except ClientError as error:
+        code = error.response.get("Error", {}).get("Code")
+        reason = "access_denied" if code in ("AccessDenied", "AccessDeniedException") else "read_unavailable"
+        return {**result, "status": "PARTIAL", "target_status": "UNKNOWN", "target_reason": reason, "read_errors": 1}
 
 
 def data_snapshot(read, runtime, outputs):
@@ -404,6 +548,7 @@ def collect(outputs, env, read, now=None):
             "steampipe": observe(lambda: ecs_snapshot(read, runtime, "steampipe")) if enabled["inventory"] else disabled,
             "sync_lambda": observe(lambda: lambda_snapshot(read, runtime)) if enabled["inventory"] else disabled,
             "agentcore": observe(lambda: runtime_snapshot(read, runtime)) if enabled["agentcore"] else disabled,
+            "data_gateway": observe(lambda: gateway_snapshot(read, runtime, outputs)) if enabled["agentcore"] else disabled,
         },
         "events": {
             "schedule": observe(lambda: schedule_snapshot(read, runtime)) if enabled["inventory"] else disabled,
@@ -413,26 +558,25 @@ def collect(outputs, env, read, now=None):
             "status": "UNKNOWN", "reason": "reader_not_configured", "completeness": "UNKNOWN",
             "inventory_enabled": enabled["inventory"]},
     }
-    report["read_errors"] = len(errors) + report["events"]["metrics"].get("read_errors", 0)
+    report["read_errors"] = (len(errors) + report["events"]["metrics"].get("read_errors", 0)
+                             + report["deployment"]["data_gateway"].get("read_errors", 0))
     return report
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("guard", "caller", "audit"))
+    parser.add_argument("mode", choices=("guard", "caller", "audit-policy", "audit"))
     parser.add_argument("--directory", type=Path)
     args = parser.parse_args(argv)
     try:
         validate_context(os.environ)
         if args.mode == "guard":
-            policy = json.dumps(session_policy(os.environ), separators=(",", ":"))
-            if os.environ.get("GITHUB_OUTPUT"):
-                with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-                    output.write(f"session_policy={policy}\n")
+            require(os.environ.get("GITHUB_OUTPUT"))
+            publish_policy(backend_policy(os.environ))
             return 0
-        import boto3
-        read = ReadAPI(boto3.client)
         if args.mode == "caller":
+            import boto3
+            read = ReadAPI(boto3.client)
             verify_caller(read("sts", "get_caller_identity"), os.environ["AWS_ACCOUNT_ID_DEV"],
                           os.environ["RUNTIME_ROLE_ARN"])
             return 0
@@ -442,6 +586,11 @@ def main(argv=None):
             path = args.directory / f"{key}.json"
             require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 131072)
             outputs[key] = json.loads(path.read_text())
+        if args.mode == "audit-policy":
+            publish_policy(session_policy(os.environ, outputs))
+            return 0
+        import boto3
+        read = ReadAPI(boto3.client)
         report = collect(outputs, os.environ, read)
         code = 1 if report["read_errors"] else 0
     except Exception as error:
