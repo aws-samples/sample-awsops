@@ -29,13 +29,13 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |
 | [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
 | [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
-| [runtime-verifier-sessions.md](runtime-verifier-sessions.md) | Manual-verifier policy prerequisite: separate backend/workload sessions, owned collector invocation, synchronous/HTTP proof, and integration cleanup gates (ADR-002/005/021) |
+| [runtime-verifier-sessions.md](runtime-verifier-sessions.md) | Development verification policies: manual backend/workload phases, Deploy Web workload-only collect, owned collector invocation, synchronous/HTTP proof, and cleanup gates (ADR-002/005/021) |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; saved-plan scope, links to branch-independent artifact inspection/recovery, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
 | [steampipe-quota-and-staleness.md](steampipe-quota-and-staleness.md) | Steampipe quota guard — rate limiter knobs, partial runs, freshness ledger/staleness response |
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
-- Manual verifier session policies are a prerequisite; the collection workflow/controller lands separately. Backend and workload sessions must use nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
+- Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). The helper supplies policies and installs neither consumer path. Deploy Web integration must be dev-only with activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
 - Private saved-plan inspection authenticates run/checkout/assets before 32 MiB-bounded rendering; it never authorizes apply.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.
 - Linux capture forwards the first interrupt, kills the child group on a second, and arms parent-death SIGKILL before exec; cancellation is not infrastructure rollback.
@@ -173,8 +173,9 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   Current-source releases require matching private migrations; explicit rollback runs no DDL. It prepares
   effective demo credentials privately with unwrapped Terraform before rollout, then verifies
   login and edge-authenticated `/api/db`. A positive table count is not a full ledger audit.
-- Credentials and HTTP scratch share one 0700 run directory with 0600 files, covered by
-  always-cleanup. Public diagnostics contain only fixed phases and validated HTTP status.
+- Credentials and HTTP scratch share one 0700 run directory with 0600 files. Normal
+  finalizers clean them; process/runner loss can prevent cleanup. Public diagnostics
+  contain only fixed phases and validated HTTP status.
   Never relay Terraform diagnostics, response bodies or cookies, or reset a user's password.
 - Curl/OpenSSL, PyYAML and Terraform 1.15.7 are mandatory for the authenticated smoke fixtures;
   missing tools fail the shared runner. Only final fmt/validate diagnostics are informational.
@@ -195,3 +196,14 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 2. Use an existing runbook's structure as a template (`start-services.md`, `deploy-new-version.md`).
 3. Follow the symptoms → diagnosis → action order strictly.
 4. Always include the related file paths.
+
+The reusable runtime probe supports verify-only inventoryPolicy=full and collectionMode=release
+(20-minute rather than 10-minute collection polling). Rechecks share the first window; all
+runtime callers have marker+30min/prepare-entry+30min deadlines, shortened by explicit bounds.
+Programmatic quality/gaps do not imply CLI JSON output or catalog discovery. Document
+collection_stale, release_timeout and repeated runtime_inventory_contention distinctly.
+Before billed readiness or worker enqueue, require the remaining probe/worker allowances;
+collection windows are caps and late completion can fail admission. Retry admission includes
+cooldown, recheck, probe and both workers. HTTP requests need their full timeout remaining.
+Keep the probe contract before Related/ADR references. From the repository root run
+`node --test scripts/v2/deployment-smoke.test.mjs`; it imports the runtime-smoke test suite.
