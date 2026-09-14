@@ -16,6 +16,8 @@ CODES = {
     "invalid_wait_timeout", "invalid_dev_deployment", "actual_dev_caller_mismatch",
     "invalid_agent_image_digest", "agentcore_output_unavailable", "runtime_identity_unconfirmed",
     "aws_access_denied", "aws_credentials_expired", "aws_throttled", "aws_request_failed",
+    "aws_validation_failed", "aws_conflict", "aws_resource_not_found", "sdk_validation_failed",
+    "gateway_configuration_unavailable",
     "read_timeout", "invalid_json", "unexpected_error", "runtime_unavailable",
     "readiness_confirmed", "readiness_protocol_unavailable", "readiness_configuration_unavailable",
     "inventory_disabled", "inventory_configuration_unavailable", "legacy_invocation_only",
@@ -56,6 +58,14 @@ def error_code(error):
         return "aws_credentials_expired"
     if code in ("Throttling", "ThrottlingException", "TooManyRequestsException"):
         return "aws_throttled"
+    if code == "ValidationException":
+        return "aws_validation_failed"
+    if code == "ConflictException":
+        return "aws_conflict"
+    if code == "ResourceNotFoundException":
+        return "aws_resource_not_found"
+    if type(error).__name__ == "ParamValidationError":
+        return "sdk_validation_failed"
     if type(error).__name__ in ("ReadTimeoutError", "ConnectTimeoutError", "TimeoutExpired"):
         return "read_timeout"
     if type(error).__name__ == "JSONDecodeError":

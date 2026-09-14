@@ -11,6 +11,10 @@ Runs with `python3 -m unittest test_provision_drift` (no network — the control
 import os
 import sys
 import unittest
+import copy
+import io
+import json
+from contextlib import redirect_stdout
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -31,13 +35,27 @@ _TARGETS = {
 }
 
 
-def _run(deployed_tools):
+def _target(deployed_tools, **changes):
+    return {
+        "targetId": "t-1", "status": "READY", "description": "RDS",
+        "credentialProviderConfigurations": [{"credentialProviderType": "GATEWAY_IAM_ROLE"}],
+        "targetConfiguration": {"mcp": {"lambda": {
+            "lambdaArn": "arn:aws:lambda:x:1:function:f",
+            "toolSchema": {"inlinePayload": deployed_tools}}}},
+        **changes,
+    }
+
+
+def _run(deployed_tools, snapshot=None):
     ctrl = mock.Mock()
     ctrl.list_gateway_targets.return_value = {
         "items": [{"name": "rds-mcp-target", "targetId": "t-1"}]}
-    ctrl.get_gateway_target.return_value = {
-        "targetConfiguration": {"mcp": {"lambda": {"toolSchema": {
-            "inlinePayload": deployed_tools}}}}}
+    ctrl.get_gateway_target.return_value = snapshot or _target(deployed_tools)
+    def updated_target(**request):
+        ctrl.get_gateway_target.return_value = {**ctrl.get_gateway_target.return_value,
+                                                **request, "status": "READY"}
+        return {"targetId": "t-1"}
+    ctrl.update_gateway_target.side_effect = updated_target
     provision.report.clear()
     with mock.patch.object(provision.catalog, "TARGETS", _TARGETS):
         provision.ensure_targets(
@@ -85,13 +103,79 @@ class TestProvisionDrift(unittest.TestCase):
              {"inputSchema": {"x": 1, "type": "object"}, "name": "b", "description": "B"}]
         self.assertEqual(provision.tool_fingerprint(a), provision.tool_fingerprint(b))
 
+    def test_lambda_arn_drift_with_unchanged_schema_is_updated(self):
+        current = _target(_deployed(_SCHEMA_NEW))
+        current["targetConfiguration"]["mcp"]["lambda"]["lambdaArn"] = "arn:aws:lambda:x:1:function:old"
+        ctrl, statuses = _run(_deployed(_SCHEMA_NEW), current)
+        self.assertIn("UPDATED", statuses)
+        self.assertEqual(ctrl.update_gateway_target.call_args.kwargs["targetConfiguration"]["mcp"]["lambda"]["lambdaArn"],
+                         "arn:aws:lambda:x:1:function:f")
 
-def _run_gateways(deployed_description):
+    def test_credential_and_target_description_drift_are_updated(self):
+        for changes in (
+            {"credentialProviderConfigurations": [{"credentialProviderType": "API_KEY"}]},
+            {"credentialProviderConfigurations": None},
+            {"description": "old target description"},
+        ):
+            with self.subTest(changes=changes):
+                ctrl, statuses = _run(_deployed(_SCHEMA_NEW), _target(_deployed(_SCHEMA_NEW), **changes))
+                self.assertIn("UPDATED", statuses)
+                self.assertEqual(ctrl.update_gateway_target.call_args.kwargs["credentialProviderConfigurations"],
+                                 [{"credentialProviderType": "GATEWAY_IAM_ROLE"}])
+
+    def test_update_preserves_target_metadata_and_waits_until_ready(self):
+        current = _target(_deployed(_SCHEMA_OLD),
+                          metadataConfiguration={"allowedRequestHeaders": ["x-correlation-id"]})
+        ctrl, statuses = _run(_deployed(_SCHEMA_NEW), current)
+        self.assertIn("UPDATED", statuses)
+        self.assertEqual(ctrl.update_gateway_target.call_args.kwargs["metadataConfiguration"],
+                         current["metadataConfiguration"])
+        self.assertGreaterEqual(ctrl.get_gateway_target.call_count, 2)
+
+    def test_update_readiness_failure_is_not_reported_as_updated(self):
+        ctrl = mock.Mock()
+        ctrl.list_gateway_targets.return_value = {"items": [{"name": "rds-mcp-target", "targetId": "t-1"}]}
+        ctrl.get_gateway_target.side_effect = [_target(_deployed(_SCHEMA_OLD)), {"status": "FAILED"}]
+        provision.report.clear()
+        with mock.patch.object(provision.catalog, "TARGETS", _TARGETS):
+            provision.ensure_targets(ctrl, {"lambda_arns": {"rds-mcp": "arn:aws:lambda:x:1:function:f"}},
+                                     {"data": "gw-1"})
+        self.assertNotIn("UPDATED", {row[1] for row in provision.report})
+        self.assertIn("ERR", {row[1] for row in provision.report})
+
+    def test_target_waits_for_updated_values_not_an_old_ready_snapshot(self):
+        old = _target(_deployed(_SCHEMA_NEW))
+        old["targetConfiguration"]["mcp"]["lambda"]["lambdaArn"] = "arn:old"
+        ctrl = mock.Mock()
+        ctrl.list_gateway_targets.return_value = {"items": [{"name": "rds-mcp-target", "targetId": "t-1"}]}
+        ctrl.get_gateway_target.side_effect = [old, old, _target(_deployed(_SCHEMA_NEW))]
+        provision.report.clear()
+        with mock.patch.object(provision.catalog, "TARGETS", _TARGETS), \
+             mock.patch.object(provision.time, "sleep") as sleep:
+            provision.ensure_targets(ctrl, {"lambda_arns": {"rds-mcp": "arn:aws:lambda:x:1:function:f"}},
+                                     {"data": "gw-1"})
+        self.assertEqual(ctrl.get_gateway_target.call_count, 3)
+        sleep.assert_called_once()
+        self.assertIn("UPDATED", {row[1] for row in provision.report})
+
+
+def _gateway(description="new text", **changes):
+    return {"name": "awsops-v2-ops-gateway", "gatewayId": "gw-ops", "status": "READY",
+            "description": description, "roleArn": "arn:aws:iam::1:role/r",
+            "protocolType": "MCP", "authorizerType": "NONE", **changes}
+
+
+def _run_gateways(deployed_description, **changes):
     """ensure_gateways with one existing gateway whose live description is as given."""
     ctrl = mock.Mock()
     ctrl.list_gateways.return_value = {"items": [{
         "name": "awsops-v2-ops-gateway", "gatewayId": "gw-ops",
         "description": deployed_description}]}
+    ctrl.get_gateway.return_value = _gateway(deployed_description, **changes)
+    def updated_gateway(**request):
+        ctrl.get_gateway.return_value = {**ctrl.get_gateway.return_value, **request, "status": "READY"}
+        return {"gatewayId": "gw-ops"}
+    ctrl.update_gateway.side_effect = updated_gateway
     provision.report.clear()
     with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]), \
          mock.patch.object(provision.catalog, "GATEWAY_DESCRIPTIONS", {"ops": "new text"}):
@@ -127,6 +211,7 @@ class TestGatewayDescriptionDrift(unittest.TestCase):
         ctrl = mock.Mock()
         ctrl.list_gateways.return_value = {"items": [{
             "name": "awsops-v2-ops-gateway", "gatewayId": "gw-ops", "description": "stale"}]}
+        ctrl.get_gateway.return_value = _gateway("stale")
         ctrl.update_gateway.side_effect = provision.ClientError(
             {"Error": {"Code": "AccessDenied", "Message": "no"}}, "UpdateGateway")
         provision.report.clear()
@@ -140,6 +225,95 @@ class TestGatewayDescriptionDrift(unittest.TestCase):
         statuses = {r[1] for r in provision.report}
         self.assertIn("WARN", statuses)
         self.assertNotIn("ERR", statuses)
+
+    def test_role_drift_reconciles_even_when_description_matches(self):
+        ctrl, ids, statuses = _run_gateways("new text", roleArn="arn:aws:iam::1:role/old")
+        self.assertIn("UPDATED", statuses)
+        self.assertEqual(ctrl.update_gateway.call_args.kwargs["roleArn"], "arn:aws:iam::1:role/r")
+        self.assertEqual(ids, {"ops": "gw-ops"})
+        self.assertGreaterEqual(ctrl.get_gateway.call_count, 2)
+
+    def test_existing_auth_protocol_and_security_settings_are_preserved(self):
+        settings = {
+            "authorizerType": "CUSTOM_JWT",
+            "authorizerConfiguration": {"customJWTAuthorizer": {
+                "discoveryUrl": "https://issuer.example.test/.well-known/openid-configuration",
+                "allowedAudience": ["fixture-audience"]}},
+            "protocolConfiguration": {"mcp": {"supportedVersions": ["2025-03-26"]}},
+            "kmsKeyArn": "arn:aws:kms:x:1:key/fixture",
+            "exceptionLevel": "DEBUG",
+            "policyEngineConfiguration": {"arn": "arn:fixture:policy", "mode": "ENFORCE"},
+            "interceptorConfigurations": [{"interceptionPoints": ["REQUEST"],
+                                          "interceptor": {"lambda": {"arn": "arn:fixture:interceptor"}}}],
+        }
+        original = copy.deepcopy(settings)
+        ctrl, _, statuses = _run_gateways("stale", **settings)
+        self.assertIn("UPDATED", statuses)
+        for key, value in original.items():
+            self.assertEqual(ctrl.update_gateway.call_args.kwargs[key], value, key)
+        self.assertEqual(settings, original)
+        ctrl, _, _ = _run_gateways("stale", authorizerType="AWS_IAM")
+        self.assertEqual(ctrl.update_gateway.call_args.kwargs["authorizerType"], "AWS_IAM")
+
+    def test_missing_existing_auth_never_defaults_to_none(self):
+        ctrl, ids, statuses = _run_gateways("stale", authorizerType=None)
+        ctrl.update_gateway.assert_not_called()
+        self.assertIn("ERR", statuses)
+        self.assertEqual(ids, {})
+
+    def test_role_update_failure_blocks_dependent_gateway_id(self):
+        ctrl = mock.Mock()
+        ctrl.list_gateways.return_value = {"items": [_gateway(roleArn="arn:aws:iam::1:role/old")]}
+        ctrl.get_gateway.return_value = _gateway(roleArn="arn:aws:iam::1:role/old")
+        ctrl.update_gateway.side_effect = provision.ClientError(
+            {"Error": {"Code": "ConflictException", "Message": "SECRET_SENTINEL"}}, "UpdateGateway")
+        provision.report.clear()
+        with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]):
+            ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"})
+        self.assertEqual(ids, {})
+        self.assertIn("ERR", {row[1] for row in provision.report})
+
+    def test_failed_gateway_does_not_receive_target_work(self):
+        ctrl, ids, statuses = _run_gateways("new text", status="FAILED")
+        ctrl.update_gateway.assert_not_called()
+        self.assertEqual(ids, {})
+        self.assertIn("ERR", statuses)
+
+    def test_gateway_waits_for_updated_role_not_an_old_ready_snapshot(self):
+        old = _gateway(roleArn="arn:old")
+        ctrl = mock.Mock()
+        ctrl.list_gateways.return_value = {"items": [old]}
+        ctrl.get_gateway.side_effect = [old, old, _gateway()]
+        provision.report.clear()
+        with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]), \
+             mock.patch.object(provision.catalog, "GATEWAY_DESCRIPTIONS", {"ops": "new text"}), \
+             mock.patch.object(provision.time, "sleep") as sleep:
+            ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"})
+        self.assertEqual(ids, {"ops": "gw-ops"})
+        self.assertEqual(ctrl.get_gateway.call_count, 3)
+        sleep.assert_called_once()
+
+
+class TestTypedProvisionErrors(unittest.TestCase):
+    def test_target_errors_preserve_safe_codes_without_messages(self):
+        for error_code, expected in (
+            ("ValidationException", "aws_validation_failed"),
+            ("ConflictException", "aws_conflict"),
+            ("ResourceNotFoundException", "aws_resource_not_found"),
+        ):
+            with self.subTest(error_code=error_code):
+                ctrl = mock.Mock()
+                ctrl.list_gateway_targets.return_value = {"items": []}
+                ctrl.create_gateway_target.side_effect = provision.ClientError(
+                    {"Error": {"Code": error_code, "Message": "SECRET_SENTINEL"}}, "CreateGatewayTarget")
+                output = io.StringIO()
+                with mock.patch.object(provision.catalog, "TARGETS", _TARGETS), redirect_stdout(output):
+                    provision.diagnostics.reset()
+                    provision.ensure_targets(ctrl, {"lambda_arns": {"rds-mcp": "arn:fixture:lambda"}},
+                                             {"data": "gw-1"})
+                records = [json.loads(line) for line in output.getvalue().splitlines()]
+                self.assertEqual(records[-1]["code"], expected)
+                self.assertNotIn("SECRET_SENTINEL", output.getvalue())
 
 
 class TestReadinessFlag(unittest.TestCase):

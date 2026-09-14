@@ -125,42 +125,54 @@ def gateway_url(gw_id, region):
 
 
 def ensure_gateways(ctrl, ac):
-    """9 gateways, idempotent by exact name. Returns {short_key: gateway_id}.
+    """Reconcile role/description for exact catalog names; return only ready gateways.
 
-    Description drift converges too (PR #246 review): a catalog description edit used to apply
-    only at create_gateway — an already-live gateway kept the stale text forever (observed: the
-    ops gateway still advertised "Steampipe SQL ..." long after ADR-001/010 removed live
-    Steampipe). list_gateways already returns each gateway's description, so drift detection is
-    free; on mismatch, update_gateway is called with exactly the same required fields
-    create_gateway sends (name/roleArn/protocolType/authorizerType) — same converge-on-catalog
-    posture ensure_targets already has for tool schemas.
+    Existing inbound auth, protocol and other security settings belong to the
+    deployed gateway. Read its full configuration and preserve them on update.
     """
     existing = {g.get("name"): g for g in _list_all(ctrl.list_gateways)}
     ids = {}
     for key in catalog.GATEWAYS:
         name = f"awsops-v2-{key}-gateway"  # v2-namespaced: isolate from v1 awsops-* in shared accounts
         if name in existing:
-            gw = existing[name]
-            ids[key] = gw.get("gatewayId")
-            want = catalog.GATEWAY_DESCRIPTIONS.get(key, key)
-            if gw.get("description") != want:
-                try:
-                    ctrl.update_gateway(
-                        gatewayIdentifier=gw.get("gatewayId"),
-                        name=name,
-                        roleArn=ac["role_arn"],
-                        protocolType="MCP",
-                        authorizerType="NONE",
-                        description=want,
-                    )
-                    log(f"gateway:{key}", "UPDATED", "description drift")
-                except ClientError as e:
-                    # Description convergence is cosmetic — never fail the provisioning run on it.
-                    # WARN, not ERR: main() exits 1 on any ERR in the report (provision.py tail),
-                    # which would fail `make agentcore` over a label.
-                    log(f"gateway:{key}", "WARN", f"description update failed: {str(e)[:120]}")
-            else:
-                log(f"gateway:{key}", "EXISTS", name)
+            gid = existing[name]["gatewayId"]
+            try:
+                gw = _wait_gateway_ready(ctrl, gid, key)
+                if gw is None:
+                    continue
+                want = catalog.GATEWAY_DESCRIPTIONS.get(key, key)
+                role_drift = gw.get("roleArn") != ac["role_arn"]
+                if role_drift or gw.get("description") != want:
+                    if not gw.get("authorizerType") or not gw.get("protocolType"):
+                        log(f"gateway:{key}", "ERR", "gateway_configuration_unavailable")
+                        continue
+                    # Do not reconstruct an existing gateway using create-time defaults.
+                    preserve = ("authorizerType", "authorizerConfiguration", "protocolType",
+                                "protocolConfiguration", "kmsKeyArn", "interceptorConfigurations",
+                                "policyEngineConfiguration", "exceptionLevel",
+                                "customTransformConfiguration", "wafConfiguration")
+                    request = {field: copy.deepcopy(gw[field]) for field in preserve
+                               if gw.get(field) is not None}
+                    try:
+                        ctrl.update_gateway(gatewayIdentifier=gid, name=name,
+                                            roleArn=ac["role_arn"], description=want, **request)
+                    except (ClientError, BotoCoreError) as error:
+                        # A rejected cosmetic edit keeps the already-ready gateway usable.
+                        # Role reconciliation is mandatory; never hand a stale role to targets.
+                        log(f"gateway:{key}", "ERR" if role_drift else "WARN",
+                            diagnostics.error_code(error))
+                        if not role_drift:
+                            ids[key] = gid
+                        continue
+                    if _wait_gateway_ready(ctrl, gid, key, expected={
+                            "roleArn": ac["role_arn"], "description": want}) is None:
+                        continue
+                    log(f"gateway:{key}", "UPDATED", "managed configuration drift")
+                else:
+                    log(f"gateway:{key}", "EXISTS", name)
+                ids[key] = gid
+            except (ClientError, BotoCoreError) as error:
+                log(f"gateway:{key}", "ERR", diagnostics.error_code(error))
             continue
         try:
             resp = ctrl.create_gateway(
@@ -170,10 +182,13 @@ def ensure_gateways(ctrl, ac):
                 authorizerType="NONE",
                 description=catalog.GATEWAY_DESCRIPTIONS.get(key, key),
             )
-            ids[key] = resp["gatewayId"]
-            log(f"gateway:{key}", "CREATED", name)
-        except ClientError as e:
-            log(f"gateway:{key}", "ERR", str(e)[:140])
+            if _wait_gateway_ready(ctrl, resp["gatewayId"], key, expected={
+                    "roleArn": ac["role_arn"],
+                    "description": catalog.GATEWAY_DESCRIPTIONS.get(key, key)}) is not None:
+                ids[key] = resp["gatewayId"]
+                log(f"gateway:{key}", "CREATED", name)
+        except (ClientError, BotoCoreError) as error:
+            log(f"gateway:{key}", "ERR", diagnostics.error_code(error))
     return ids
 
 
@@ -216,8 +231,24 @@ def tool_fingerprint(tools):
         sort_keys=True, separators=(",", ":"))
 
 
+def _lambda_target_matches(current, desired):
+    """Compare the full managed Lambda contract, ignoring service-echoed defaults."""
+    deployed = current.get("targetConfiguration", {}).get("mcp", {}).get("lambda", {})
+    wanted = desired["targetConfiguration"]["mcp"]["lambda"]
+    credentials = [
+        {field: value for field, value in credential.items()
+         if not (field == "credentialProvider" and value in (None, {}))}
+        for credential in (current.get("credentialProviderConfigurations") or [])
+    ]
+    return (deployed.get("lambdaArn") == wanted["lambdaArn"]
+            and current.get("description") == desired["description"]
+            and credentials == desired["credentialProviderConfigurations"]
+            and tool_fingerprint(deployed.get("toolSchema", {}).get("inlinePayload", []))
+            == tool_fingerprint(wanted["toolSchema"]["inlinePayload"]))
+
+
 def ensure_targets(ctrl, ac, gw_ids, skip_names=frozenset()):
-    """Slice targets, idempotent by name. update_gateway_target on tool-schema drift.
+    """Reconcile each managed Lambda target's ARN, credentials, description and tools.
 
     skip_names: legacy TARGETS names that ensure_mcp_server_targets owns THIS run (the preset is
     active or actively cutting over). Without this, ensure_targets (which only looks at whether
@@ -243,27 +274,36 @@ def ensure_targets(ctrl, ac, gw_ids, skip_names=frozenset()):
         tools = _inject_account(spec["tools"])
         cfg = {"mcp": {"lambda": {"lambdaArn": lambda_arn, "toolSchema": {"inlinePayload": tools}}}}
         creds = [{"credentialProviderType": "GATEWAY_IAM_ROLE"}]
-        existing = {t.get("name"): t for t in _list_all(ctrl.list_gateway_targets, gatewayIdentifier=gw_id)}
+        desired = {"description": spec["description"], "targetConfiguration": cfg,
+                   "credentialProviderConfigurations": creds}
         try:
+            existing = {t.get("name"): t for t in _list_all(ctrl.list_gateway_targets, gatewayIdentifier=gw_id)}
             if tname in existing:
                 tid = existing[tname]["targetId"]
                 cur = ctrl.get_gateway_target(gatewayIdentifier=gw_id, targetId=tid)
-                cur_tools = cur.get("targetConfiguration", {}).get("mcp", {}).get("lambda", {}).get("toolSchema", {}).get("inlinePayload", [])
-                # Drift = the full managed tool definition (name + description + inputSchema), not
-                # just the name set — an in-place schema edit keeping the same name re-syncs too.
-                if tool_fingerprint(cur_tools) == tool_fingerprint(tools):
+                if cur.get("status") != "READY":
+                    if not _wait_target_ready(ctrl, gw_id, tid, tname):
+                        continue
+                    cur = ctrl.get_gateway_target(gatewayIdentifier=gw_id, targetId=tid)
+                if _lambda_target_matches(cur, desired):
                     log(f"target:{tname}", "EXISTS", f"{len(tools)} tools")
                 else:
+                    preserve = {field: copy.deepcopy(cur[field])
+                                for field in ("metadataConfiguration", "privateEndpoint")
+                                if cur.get(field) is not None}
                     ctrl.update_gateway_target(gatewayIdentifier=gw_id, targetId=tid, name=tname,
                                                 description=spec["description"], targetConfiguration=cfg,
-                                                credentialProviderConfigurations=creds)
-                    log(f"target:{tname}", "UPDATED", f"{len(tools)} tools (schema drift)")
+                                                credentialProviderConfigurations=creds, **preserve)
+                    if _wait_target_ready(ctrl, gw_id, tid, tname, expected_lambda=desired):
+                        log(f"target:{tname}", "UPDATED", f"{len(tools)} tools (managed configuration drift)")
             else:
-                ctrl.create_gateway_target(gatewayIdentifier=gw_id, name=tname, description=spec["description"],
-                                            targetConfiguration=cfg, credentialProviderConfigurations=creds)
-                log(f"target:{tname}", "CREATED", f"{len(tools)} tools")
-        except ClientError as e:
-            log(f"target:{tname}", "ERR", str(e)[:140])
+                created = ctrl.create_gateway_target(
+                    gatewayIdentifier=gw_id, name=tname, description=spec["description"],
+                    targetConfiguration=cfg, credentialProviderConfigurations=creds)
+                if _wait_target_ready(ctrl, gw_id, created["targetId"], tname, expected_lambda=desired):
+                    log(f"target:{tname}", "CREATED", f"{len(tools)} tools")
+        except (ClientError, BotoCoreError) as error:
+            log(f"target:{tname}", "ERR", diagnostics.error_code(error))
 
 
 def _endpoint_blocked(endpoint, spec=None):
@@ -510,6 +550,28 @@ _TARGET_TERMINAL_FAILURE_STATUSES = {"FAILED", "UPDATE_UNSUCCESSFUL", "SYNCHRONI
 _RUNTIME_TERMINAL_FAILURE_STATUSES = ("CREATE_FAILED", "UPDATE_FAILED")
 
 
+def _wait_gateway_ready(ctrl, gateway_id, key, timeout_s=60, interval_s=2, expected=None):
+    """Return a ready full snapshot before dependent work; never log status reasons."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            current = ctrl.get_gateway(gatewayIdentifier=gateway_id)
+        except (ClientError, BotoCoreError) as error:
+            log(f"gateway:{key}:ready", "ERR", diagnostics.error_code(error))
+            return None
+        status = current.get("status")
+        if status == "READY" and (expected is None or all(
+                current.get(field) == value for field, value in expected.items())):
+            return current
+        if status not in ("CREATING", "UPDATING", "READY"):
+            log(f"gateway:{key}:ready", "ERR", "readiness_terminal")
+            return None
+        if time.monotonic() >= deadline:
+            log(f"gateway:{key}:ready", "ERR", "readiness_timeout")
+            return None
+        time.sleep(interval_s)
+
+
 def _wait_runtime_ready(ctrl, runtime_id, timeout_s=300, interval_s=5):
     """Poll GetAgentRuntime until status=READY (True), a terminal failure status (False, logged),
     or timeout_s elapses (False, logged).
@@ -548,7 +610,7 @@ def _wait_runtime_ready(ctrl, runtime_id, timeout_s=300, interval_s=5):
         time.sleep(interval_s)
 
 
-def _wait_target_ready(ctrl, gw_id, target_id, tname, timeout_s=30, interval_s=2):
+def _wait_target_ready(ctrl, gw_id, target_id, tname, timeout_s=30, interval_s=2, expected_lambda=None):
     """Poll GetGatewayTarget until status=READY (True), a terminal failure status (False, logged),
     or timeout_s elapses (False, logged). create/update_gateway_target return as soon as the
     request is ACCEPTED, not once the target is actually usable — retiring the legacy target right
@@ -557,11 +619,12 @@ def _wait_target_ready(ctrl, gw_id, target_id, tname, timeout_s=30, interval_s=2
     deadline = time.monotonic() + timeout_s
     while True:
         try:
-            status = ctrl.get_gateway_target(gatewayIdentifier=gw_id, targetId=target_id).get("status")
-        except ClientError as e:
-            log(f"target:{tname}:ready", "ERR", str(e)[:140])
+            current = ctrl.get_gateway_target(gatewayIdentifier=gw_id, targetId=target_id)
+            status = current.get("status")
+        except (ClientError, BotoCoreError) as error:
+            log(f"target:{tname}:ready", "ERR", diagnostics.error_code(error))
             return False
-        if status == "READY":
+        if status == "READY" and (expected_lambda is None or _lambda_target_matches(current, expected_lambda)):
             return True
         if status in _TARGET_TERMINAL_FAILURE_STATUSES:
             log(f"target:{tname}:ready", "ERR", f"reached terminal status {status}, never became READY")
