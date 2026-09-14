@@ -2,6 +2,16 @@
 # 공용 헬퍼: 슬롯 디렉터리, 스킵 로깅, 크리덴셜 스크럽.
 set -uo pipefail
 
+# Read bounded trusted-stager context, never a script or a HEAD-selected file path.
+head_png_context() {
+  if [ -z "${HEAD_PNG_CONTEXT:-}" ]; then
+    echo "HEAD image evidence was not supplied. BASE pixels are historical, not HEAD proof."
+    echo "If changed pixels are needed, report IMAGE COVERAGE FAILURE and fail closed."
+    return 0
+  fi
+  python3 "$(dirname -- "${BASH_SOURCE[0]}")/stage_head_pngs.py" --read-context "$HEAD_PNG_CONTEXT"
+}
+
 # slot 디렉터리 보장 — 비-ephemeral 러너에서 $WORK 가 재사용될 수 있으므로, 이전 실행의
 # 셀 파일이 남아 새 실행의 체어 입력에 섞이지 않도록 매번 비우고 새로 만든다. `rm -rf
 # "$1/slot"`처럼 파괴적 경로를 만드는 함수라 빈 인자를 자기 안에서 가드.

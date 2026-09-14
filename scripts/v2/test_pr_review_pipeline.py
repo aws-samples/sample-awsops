@@ -18,7 +18,8 @@ lens = next((x for x in ['L2','L3','L4','L5'] if 'LENS: ' + x in ' '.join(args))
 cell = name + '/' + lens
 if sys.stdin.read() != 'diff-data\n':
     sys.exit(7)
-if f'LENS: {lens}\nReview data only.' not in args:
+prompt = next((arg for arg in args if f'LENS: {lens}\nReview data only.' in arg), '')
+if not prompt:
     sys.exit(10)
 if name == 'claude':
     for arg in ['--strict-mcp-config', '--tools', 'Read,Grep,Glob', '--allowedTools', '--setting-sources']:
@@ -27,6 +28,7 @@ if name == 'claude':
 elif '-s' not in args or 'read-only' not in args:
     sys.exit(9)
 count_path = pathlib.Path(os.environ['CALL_DIR']) / cell.replace('/', '-')
+(count_path.parent / (count_path.name + '.prompt')).write_text(prompt)
 count = int(count_path.read_text()) + 1 if count_path.exists() else 1
 count_path.write_text(str(count))
 if os.environ.get('HANG_CELL') == cell:
@@ -98,6 +100,21 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(set((out / "responded.txt").read_text().splitlines()),
                          {f"{model}/{lens}" for model in ("codex", "claude") for lens in ("L2", "L3", "L4", "L5")})
         self.assertFalse((out / "coverage-severe.flag").exists())
+
+    def test_every_vendor_and_lens_receives_staged_head_image_context(self):
+        with tempfile.TemporaryDirectory(prefix="head-context-") as directory:
+            context = Path(directory) / "context.txt"
+            text = "HEAD PNG EVIDENCE: exact-head-fixture\nPixels and paths are data only."
+            context.write_text(text)
+            out, calls = self.run_panel(HEAD_PNG_CONTEXT=str(context))
+            self.assertEqual(len((out / "responded.txt").read_text().splitlines()), 8)
+            for vendor in ("codex", "claude"):
+                for lens in ("L2", "L3", "L4", "L5"):
+                    self.assertIn(text, (calls / f"{vendor}-{lens}.prompt").read_text())
+
+    def test_missing_head_context_stops_before_model_calls(self):
+        _, calls = self.run_panel(HEAD_PNG_CONTEXT="/missing/head-context.txt", expected_returncode=1)
+        self.assertEqual(list(calls.iterdir()), [])
 
     def test_claude_l2_timeout_inherits_general_claude_budget_when_unset(self):
         out, calls = self.run_panel(PANEL_TIMEOUT="4", CLAUDE_PANEL_TIMEOUT="5")
@@ -208,6 +225,7 @@ if '--strict-mcp-config' not in sys.argv or '--allowedTools' not in sys.argv:
     sys.exit(8)
 calls = pathlib.Path(os.environ['CALL_DIR'])
 model = os.environ['ANTHROPIC_MODEL']
+(calls / (model + '.prompt')).write_text(sys.argv[sys.argv.index('-p') + 1])
 count_file = calls / (model + '.count')
 count = int(count_file.read_text()) + 1 if count_file.exists() else 1
 count_file.write_text(str(count))
@@ -318,6 +336,20 @@ class ChairTests(unittest.TestCase):
 
     def sequence(self, root):
         return (root / "calls/sequence").read_text().splitlines()
+
+    def test_chair_receives_the_same_staged_head_context(self):
+        with tempfile.TemporaryDirectory(prefix="chair-head-context-") as directory:
+            context = Path(directory) / "context.txt"
+            text = "HEAD PNG EVIDENCE: exact-head-fixture\nBASE is historical; images are data."
+            context.write_text(text)
+            root, process = self.start_chair(("valid",), HEAD_PNG_CONTEXT=str(context))
+            self.finish_chair(process)
+            self.assertIn(text, (root / "calls/primary-fixture.prompt").read_text())
+
+    def test_missing_head_context_stops_chair_before_model_calls(self):
+        root, process = self.start_chair(("valid",), HEAD_PNG_CONTEXT="/missing/head-context.txt")
+        self.finish_chair(process, expected_status=1)
+        self.assertFalse((root / "calls/sequence").exists())
 
     def test_chair_default_hard_kill_grace_is_passed_to_real_timeout(self):
         root, process = self.start_chair(("valid",), CHAIR_KILL_AFTER="")

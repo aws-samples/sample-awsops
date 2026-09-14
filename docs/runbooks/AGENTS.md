@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8ec1d4420ab9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 69ed255e58a2 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,6 +8,9 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 `docs/runbooks/CLAUDE.md`'s index for the current runbook list (several are marked **v1
 (legacy)** — v2 has since replaced their procedure with a different mechanism; don't treat a
 legacy runbook's steps as the current operational path).
+
+`pr-review-head-images.md` distinguishes historical BASE pixels from staged HEAD PNG
+evidence, with bounded data-only extraction and explicit unavailable-image failures.
 
 ## Deployment review checks
 

@@ -4,6 +4,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"; . "$DIR/lib.sh"
 DIFF="$1"; WORK="$2"; PR_NUMBER="$3"; PR_TITLE="$4"; OUT="$5"
 SLOT="$WORK/slot"
+HEAD_PNG_PROMPT="$(head_png_context)" || exit 1
 rm -f "$WORK/chair-failed.flag" "$WORK/chair-primary.err" "$WORK/chair-fallback.err" \
       "$WORK/chair-primary.err.scrubbed" "$WORK/chair-fallback.err.scrubbed"
 # chair-raw.txt is never written any more (run_chair pipes instead of staging the pre-scrub output
@@ -119,6 +120,8 @@ Learn this repo's conventions from the root CLAUDE.md / AGENTS.md (if present).
 One review per (model, lens) cell — filename = <model>-<lens>.md. Lenses:
 L2=code correctness, L3=security/AWS mutation safety, L4=observability/data-integration correctness, L5=docs/ADR consistency.
 Panel: ${RESP}
+
+${HEAD_PNG_PROMPT}
 
 Synthesize ONE final review, grouped by lens (L2/L3/L4/L5):
 1. **Summary** (2-3 sentences)

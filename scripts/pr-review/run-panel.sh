@@ -8,6 +8,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"; . "$DIR/lib.sh"
 ensure_slots "$WORK"
 SLOT="$WORK/slot"; RESP="$WORK/responded.txt"; : > "$RESP"
 rm -f "$WORK/coverage-severe.flag"
+HEAD_PNG_PROMPT="$(head_png_context)" || { : > "$WORK/coverage-severe.flag"; exit 1; }
 T="${PANEL_TIMEOUT:-300}"
 CLAUDE_TIMEOUT="${CLAUDE_PANEL_TIMEOUT:-600}"
 CLAUDE_L2_TIMEOUT="${CLAUDE_PANEL_L2_TIMEOUT:-$CLAUDE_TIMEOUT}"
@@ -48,6 +49,7 @@ try_panel() {
 for lens_file in "${LENS_FILES[@]}"; do
   lens="$(basename "$lens_file" .txt)"
   LENS_PROMPT="$(cat "$lens_file")"
+  LENS_PROMPT+=$'\n\n'"$HEAD_PNG_PROMPT"
   if command -v codex >/dev/null 2>&1; then
     ( try_panel "$SLOT/codex-$lens.md" "$SLOT/codex-$lens.err" \
         env AWS_REGION="${CODEX_AWS_REGION:-us-east-1}" AWS_DEFAULT_REGION="${CODEX_AWS_REGION:-us-east-1}" \

@@ -23,6 +23,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
+| [pr-review-head-images.md](pr-review-head-images.md) | Trusted HEAD PNG staging, BASE context distinction, bounds and unavailable-image coverage failures |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration and opt-in diagnostics (ADR-002/005/016) |
 | [web-image-provenance.md](web-image-provenance.md) | Unwired helper contract: required receipt steps/inputs, enforced promotion chain, main account prerequisite, migration/rollback/expiry limits (ADR-005) |
 | [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |

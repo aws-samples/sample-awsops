@@ -254,6 +254,11 @@ secrets-manager) — installed by `make deps`.
 - `pr-review/` — lens×model review panel: `run-panel.sh` (parallel fan-out, one `*.txt` prompt
   per lens), `synthesize.sh` (chair synthesis), `lib.sh` (slot/credential scrubbing).
   `review_context.py` pins the trusted CI checkout and reviewed PR/base metadata.
+  `stage_head_pngs.py` stages bounded regular HEAD PNG Git blobs as read-only data before
+  review credentials; every panel lens and chair receives the same manifest/paths.
+  BASE pixels are historical, never replacement evidence for changed HEAD images.
+  Missing/unsupported required image evidence fails coverage; no finding suppression,
+  HEAD execution or added permissions. See `docs/runbooks/pr-review-head-images.md`.
   `v2/ci_review_access.py` produces the protected-environment/IAM trust plan without API writes.
   - **Every Claude panel/chair call MUST pass `--strict-mcp-config`.** A user-scope MCP server (e.g. github)
     loads at session init; if its auth is broken, `claude -p` waits silently for the tool until

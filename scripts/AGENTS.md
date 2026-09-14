@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 318669d0a2f7 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5a17b245eae3 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -6,6 +6,11 @@
 
 Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-review/`.
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
+
+Changed HEAD PNG evidence is staged from bounded Git blobs before review credentials.
+All panel lenses and the chair share its manifest and read-only generated paths;
+BASE pixels are historical. Required unavailable images fail coverage, never suppress
+findings. No HEAD execution or permission expansion. See `docs/runbooks/pr-review-head-images.md`.
 
 ## Diagnostic and deployment boundaries
 - `v2/ci_web_image.py` is unwired. CI must use composed `promote`, which verifies the

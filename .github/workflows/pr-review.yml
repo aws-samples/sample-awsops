@@ -113,6 +113,7 @@ jobs:
           command -v codex >/dev/null 2>&1 || echo "::warning::codex not found on runner (image needs rebuild)"
 
       - name: Get PR diff
+        id: diff
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.review_context.outputs.head_sha }}
@@ -133,6 +134,8 @@ jobs:
           # commit + head (both shallow, single SHA — no full-history fetch needed), then a plain
           # two-dot diff between merge-base and head is exactly equivalent to BASE...HEAD.
           MERGE_BASE_SHA=$(gh api "repos/${{ github.repository }}/compare/${BASE_SHA}...${HEAD_SHA}" --jq '.merge_base_commit.sha')
+          [[ "$MERGE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Invalid merge-base SHA"; exit 1; }
+          echo "merge_base_sha=$MERGE_BASE_SHA" >> "$GITHUB_OUTPUT"
           git fetch --depth=1 origin "$MERGE_BASE_SHA" "$HEAD_SHA" "$BASE_SHA"
           # TWO passes, code first: git emits hunks in tree (alphabetical) order, so on a >3000-line
           # PR the docs/ diff (sorting before scripts/terraform/web) ate the truncation budget and
@@ -275,6 +278,20 @@ jobs:
           if [ -s /tmp/pr-diff-omitted-source.txt ]; then
             echo "omitted_source_paths=$(tr '\n' ' ' < /tmp/pr-diff-omitted-source.txt)" >> "$GITHUB_ENV"
           fi
+
+      - name: Stage changed HEAD PNG evidence (trusted Git blobs, no HEAD checkout)
+        id: head_images
+        env:
+          HEAD_SHA: ${{ steps.review_context.outputs.head_sha }}
+          MERGE_BASE_SHA: ${{ steps.diff.outputs.merge_base_sha }}
+        run: |
+          set -euo pipefail
+          HEAD_PNG_ROOT=$(mktemp -d "$RUNNER_TEMP/pr-review-head-png.XXXXXX")
+          echo "root=$HEAD_PNG_ROOT" >> "$GITHUB_OUTPUT"
+          echo "context=$HEAD_PNG_ROOT/images/context.txt" >> "$GITHUB_OUTPUT"
+          python3 "$GITHUB_WORKSPACE/scripts/pr-review/stage_head_pngs.py" \
+            --repo "$GITHUB_WORKSPACE" --head "$HEAD_SHA" --merge-base "$MERGE_BASE_SHA" \
+            --output "$HEAD_PNG_ROOT/images"
 
       - name: Build lens prompts (L2-L5 — each self-contained, one lens only)
         run: |
@@ -433,6 +450,7 @@ jobs:
         id: panel_review
         env:
           BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
+          HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}
           # Every Codex/Claude lens has the same bounded review budget.
           # All eight cells run in parallel; the longest-cell ceiling is unchanged.
           PANEL_TIMEOUT: "1200"
@@ -467,6 +485,7 @@ jobs:
           PR_NUMBER: ${{ steps.review_context.outputs.number }}
           PR_TITLE: ${{ fromJSON(steps.review_context.outputs.title_json) }}
           BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
+          HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}
         run: |
           set -euo pipefail
           SCRIPT_ROOT="$GITHUB_WORKSPACE/scripts/pr-review"
@@ -553,3 +572,19 @@ jobs:
         run: |
           echo "AI Review failed: ${{ steps.gate.outputs.reason }}"
           exit 1
+
+      - name: Remove current-run HEAD image evidence
+        if: always()
+        env:
+          HEAD_PNG_ROOT: ${{ steps.head_images.outputs.root }}
+        run: |
+          set -euo pipefail
+          if [ -n "$HEAD_PNG_ROOT" ]; then
+            case "$HEAD_PNG_ROOT" in
+              "$RUNNER_TEMP"/pr-review-head-png.*)
+                chmod u+w "$HEAD_PNG_ROOT/images" 2>/dev/null || true
+                rm -rf -- "$HEAD_PNG_ROOT"
+                ;;
+              *) echo "::error::Unexpected HEAD PNG cleanup path"; exit 1 ;;
+            esac
+          fi
