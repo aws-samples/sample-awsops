@@ -105,7 +105,9 @@ Every authorized [domain-stage plan](../runbooks/dev-domain-rollout.md) sets
 toggle. Ordinary full plans retain broad DNS behavior only with explicit DNS permission.
 Published old-domain retirement needs a separate expressly authorized old-configuration plan.
 Public summaries include certificate suffixes/publication, change counts/addresses and,
-for active rollout, public zone name/ID/NS; never raw state/plan or full ARNs/account IDs.
+for active rollout, public zone name/ID/NS. The explicit full-dev readiness summary additionally
+publishes fixed scope/presence checks and a configured collector hash, never private values.
+These summaries do not publish raw state/plan or full ARNs/account IDs.
 
 DNS 금지 dispatch는 상태를 읽어 Terraform 관리 인증서를 JSON null로 유지하고 기존 서비스
 별칭을 보존합니다. 외부 인증서는 기존 연결을 우선하며 이 상태의 관리 인증서는 검색에서
