@@ -404,7 +404,7 @@ Artifact channels are covered too: public-repository artifacts are publicly acce
 | `terraform-failure-<phase>-<attempt>` | One validated ciphertext file for an explicit failed/cancelled dispatch, five-day artifact retention. Local ciphertext is deleted only after confirmed upload success; failed/cancelled/skipped uploads retain it privately. |
 | Job log and step summary | Fixed command/capture/retention classifications, subsequent upload/cleanup status and numeric Terraform success action counts; no raw command output or arbitrary `Error:` text. Advisory PR/push failures are classified but retain no raw log. |
 
-This applies to main, dev and supported user branches. Use [private exact-plan inspection](dev-domain-rollout.md#private-exact-plan-inspection) before approval and [encrypted failure recovery](dev-domain-rollout.md#encrypted-failure-recovery) for a specific failed attempt. The inspector authenticates before rendering and never applies. Captured Terraform and pre-apply scope-check children do not receive GitHub command-file/token variables, encryption keys, `TF_LOG*` or `TF_CLI_ARGS*`; their AWS STS credentials, including `AWS_SESSION_TOKEN`, remain. Captured output and its sealing payload stay in memory and reach OpenSSL through stdin. The child has a separate session and receives only the first forwarded parent interrupt. Storage/sealing/publication failures are distinct and do not replace the command exit or authorize a retry. A valid pointer identifies only the parent's owned ciphertext, never an arbitrary runner file. Abrupt runner termination can prevent retention or its final audit.
+This applies to main, dev and supported user branches. Use [private exact-plan inspection](#private-exact-plan-inspection) before approval and [encrypted failure recovery](#encrypted-failure-recovery) for a specific failed attempt. The inspector authenticates before rendering and never applies. Captured Terraform and pre-apply scope-check children do not receive GitHub command-file/token variables, encryption keys, `TF_LOG*` or `TF_CLI_ARGS*`; their AWS STS credentials, including `AWS_SESSION_TOKEN`, remain. Captured output and its sealing payload stay in memory and reach OpenSSL through stdin. The Linux child runs in a separate session: one interrupt requests graceful shutdown, a second kills its process group, and parent death kills the Terraform process. Storage/sealing/publication failures are distinct and do not replace the command exit or authorize a retry. A valid pointer identifies only the parent's owned ciphertext, never an arbitrary runner file. Abrupt runner termination can prevent retention or its final audit.
 (공개 리포는 Actions 로그도 공개 — 역할 ARN 등 계정 ID 포함 값은 변수 금지·시크릿
 전용. demo 사용자 비밀번호는 `TF_VAR_DEMO_PASSWORD` 시크릿으로 공급하되 production은
 `create_demo_user=false` 또는 자체 tfvars 블롭의 `demo_password` override로 공유
@@ -1059,6 +1059,76 @@ dev AgentCore도 `agent-<commit SHA>` 태그와 같은 계정·digest 검증을 
 AgentCore smoke를 끄고, 수집 후 전체 앱 배포 검증을 실행한다. provisioning 성공만으로 앱을 정상 판정하지 않는다. 짧은 CLI/Terraform 호출은 2분, dev 빌드·push·provisioning은 각각 35/10/45분으로 제한한다. 조회 시간을 포함한 전체 build helper는 48분, agent CLI 단계는 각각 50분이며, 갱신한 역할 확인은
 2분·workflow 단계는 52분 이내로 새 1시간 세션 안에 묶는다. dev job은 setup과 두 단계를 포함해 120분이고 수동 이미지 빌드는 QEMU/buildx setup 후 자격을 받아 50분 안에 끝낸다. 별도 credential process나 역할 최대 세션 시간 변경은 없다. 필요한 IAM 범위는 사전에 준비해야 하며 워크플로가 권한을 부여하지 않는다. 공개 진단은 고정
 단계/코드·catalog key·상태별 개수를 보존하고 resource event 240개 초과는 dropped 개수로 알린다. 자식 종료 코드는 보존하며 ARN·자격증명· endpoint·SDK 오류 원문은 전달하지 않는다.
+
+## Private exact-plan inspection
+
+These inspection and recovery procedures support main, dev and supported user branches.
+They do not authorize dev-only domain-rollout stages on another branch.
+
+Use a trusted checkout at the plan's full commit SHA and its already installed Terraform
+provider schemas (`terraform/foundation/.terraform`). Authenticate `gh` normally and make
+the existing `TF_PLAN_ENC_KEY` available through the approved private secret mechanism.
+Never put the key in command arguments, source, shell history or public logs.
+
+```bash
+python3 scripts/v2/ci_plan_inspect.py \
+  --repository aws-samples/sample-awsops --branch dev \
+  --commit "$PLAN_SHA" --run-id "$PLAN_RUN_ID" --scope full \
+  --foundation /private/checkout/terraform/foundation \
+  --destination /private/review/new-plan-directory
+```
+
+The helper reads authenticated GitHub metadata and downloads `tfplan` from that run.
+It requires a successful explicit plan dispatch from the same repository, branch and
+SHA, verifies the checkout, decrypts both existing artifacts, and calls the existing
+HMAC/plan/asset verifier **before** `terraform show`. It writes only `plan.txt` and
+`plan.json` into a new 0700 directory, with 0600 files. Read these privately; they can
+contain passwords or rendered signing material. It never initializes a backend,
+refreshes, plans, approves or applies. Its GitHub Actions environment refusal is an accident guard for trusted operators, not an authorization boundary.
+Historical inspection does not make a plan apply-eligible; all current apply gates still run.
+
+Wrong context/key, missing or altered artifacts, unsafe/existing output paths, unavailable
+provider schemas and oversized output fail closed without printing plan/error contents.
+Inputs are bounded; each rendered file is capped at 32 MiB. Only the new review directory
+is retained after success; cleanup removes owned decrypted scratch on handled failures.
+Cleanup errors are reported without raw paths; inspect any owned residue privately.
+
+## Encrypted failure recovery
+
+The wrapper drains Terraform plan/apply output into bounded memory while the command runs. It retains the last 1 MiB, including terminal errors, and counts all observed output bytes. After Terraform exits, the diagnostic payload goes directly to OpenSSL stdin; only ciphertext is written to the owned 0700 directory, with mode 0600. No plaintext log or staging capsule is written during capture or sealing. Handled capture or storage failures do not SIGKILL Terraform or replace its observed exit status.
+
+Every captured command reports fixed JSON audit fields to the job log and step summary. Successful standard Terraform summaries supply numeric add/change/destroy counts; absent or unreadable summaries remain unavailable, not zero. Failure classifications are bounded hints such as state-lock, access-denied, authentication, provider-install, invalid-plan, configuration, interrupted or generic command failure. Arbitrary `Error:` lines and resource/output values are never echoed. A failed launch is distinct from Terraform itself exiting 127.
+
+The capture parent removes GitHub command-file paths, action/token variables, encryption keys, `TF_LOG*` and `TF_CLI_ARGS*` from the Terraform child environment. AWS temporary credentials, including `AWS_SESSION_TOKEN`, remain available. The pre-apply show/policy subprocesses receive the same isolation in a subshell. On Linux CI runners, each captured Terraform child runs in a separate session. The first SIGINT or SIGTERM requests graceful shutdown once; a second interrupt kills its process group. The exec launcher arms Linux parent-death SIGKILL before Terraform starts, so killing the capture parent cannot leave the Terraform process running. A launch-status pipe closes on exec and keeps launcher errors distinct from Terraform exit codes. A handled interrupt remains classified as interrupted even when Terraform returns 1. Original argv, branch/provenance/asset/DNS/runtime checks and exact saved-plan apply remain unchanged; this does not sandbox hostile processes sharing the same OS user.
+
+Raw retention is only for explicit dispatch failures. `policy_not_retained`, `key_missing`, `context_invalid`, `storage_failed`, `seal_failed` and `publication_failed` are distinct from `sealed`. Capture and cleanup status are reported separately. A partially applied command with unavailable diagnostics still requires private state reconciliation; no automatic retry or success inference is made.
+
+Failure capsules use schema 2 with the existing CBC/PBKDF2 cipher and key and a separate diagnostic HMAC domain. The signed manifest binds source/run/attempt/phase, observed exit/launch status, timestamp, total and retained bytes, capture/truncation status and content hash. This newly introduced diagnostic format is not an apply artifact or a migration from a published earlier capsule format. Never relabel metadata or skip authentication to force recovery. Saved-plan artifact compatibility is unchanged.
+
+Only the parent's validated single ciphertext file can be published. Ownership, private modes, regular-file/link checks, a literal non-glob path and the recorded ciphertext hash are checked before the output pointer is written. The generated directory is non-hidden; the upload explicitly permits hidden ancestors for this one file, not a directory or wildcard. Artifacts are named `terraform-failure-plan-<attempt>` or `terraform-failure-apply-<attempt>` and retained for five days, so later attempts do not collide with earlier ones.
+
+Uploads require the real workflow dispatch event plus failure or cancellation and a validated nonempty pointer. The capture audit reports `pending_upload` after sealing. The always-run cleanup step reads the identified upload step's outcome and deletes only the owned ciphertext after literal `success`. Failed, cancelled, skipped or unknown uploads retain the file and report `retained_unpublished`; the final audit records the upload status plus `complete`, `failed` or `not_available` when applicable. If pointer publication fails, the sealed file also remains for private owner recovery; a missing pointer does not prove no ciphertext exists.
+
+Cancellation does not roll back AWS operations already accepted by services. After an interrupted or forced termination, inspect the actual resources, state and lock owner before retrying or considering a manual unlock; never infer that cancellation made the infrastructure unchanged.
+
+Cancellation recovery is best effort: SIGKILL, host loss or an exhausted runner timeout may prevent capture/upload/audit entirely. Unpublished ciphertext remains in its owned `RUNNER_TEMP/tf-diagnostics-<run>-<attempt>-<phase>-*` directory. There is no broad runner-temp sweep. Do not publish an arbitrary replacement file or delete another run's directory.
+
+On a trusted private operator machine, authenticate `gh` normally and provide the corresponding `TF_PLAN_ENC_KEY` using the approved private mechanism. Select the original failed SHA, attempt and phase. The helper verifies that exact authenticated attempt even after a later rerun. A new destination is required. The `GITHUB_ACTIONS` refusal is an accident guard, not an authorization boundary; do not recover raw logs in shared CI.
+
+```bash
+gh run download "$FAILED_RUN_ID" --repo aws-samples/sample-awsops \
+  --name "terraform-failure-plan-$FAILED_ATTEMPT" --dir /private/download
+python3 scripts/v2/ci_failure_diagnostics.py recover \
+  --repository aws-samples/sample-awsops --branch dev \
+  --commit "$FAILED_SHA" --run-id "$FAILED_RUN_ID" --attempt "$FAILED_ATTEMPT" \
+  --phase plan --file /private/download/diagnostics.enc \
+  --destination /private/review/new-failure-directory
+```
+
+Recovery authenticates the failed dispatch, attempt, HMAC, context and content before writing 0600 `diagnostics.log` and `metadata.json` inside a new 0700 directory. Timeouts and verification errors expose fixed categories only. It does not deploy or approve anything. Key rotation requires the corresponding old key for old ciphertext; file modes and handled cleanup are not guarantees against hostile shared-UID processes or abrupt host loss. Inspect owned residue privately.
+
+Initialization and earlier policy failures are outside command-tail capture. Existing policy diagnostics remain, and advisory PR/push command failures still receive fixed classifications without raw retention. The saved-plan inspector keeps its strict 32 MiB render bound and fail-closed verification.
+
 
 ## Private development database migration / 비공개 개발 DB 마이그레이션
 

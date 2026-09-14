@@ -235,69 +235,12 @@ Host/SNI/TLS를 유지한 `/api/health` 생존 확인이며 **DB·인증 준비 
 상위 운영자는 마이그레이션·인증 경로를 별도로 검증한 뒤 A를 게시한다. AgentCore가 범위에
 포함되면 dev의 사설 재사용 migration→배포를 사용한다(main/preview는 `make migrate` 유지). `smoke=true`는 provisioning 후 실행하며 dev에서는 배포된 readiness/inventory 의존성이 필수이고 다른 스택에서는 참고용이다. 별도 실행 승인은 필요하다.
 
-## Private exact-plan inspection
+## Inspecting saved artifacts
 
-Use a trusted checkout at the plan's full commit SHA and its already installed Terraform
-provider schemas (`terraform/foundation/.terraform`). Authenticate `gh` normally and make
-the existing `TF_PLAN_ENC_KEY` available through the approved private secret mechanism.
-Never put the key in command arguments, source, shell history or public logs.
-
-```bash
-python3 scripts/v2/ci_plan_inspect.py \
-  --repository aws-samples/sample-awsops --branch dev \
-  --commit "$PLAN_SHA" --run-id "$PLAN_RUN_ID" --scope full \
-  --foundation /private/checkout/terraform/foundation \
-  --destination /private/review/new-plan-directory
-```
-
-The helper reads authenticated GitHub metadata and downloads `tfplan` from that run.
-It requires a successful explicit plan dispatch from the same repository, branch and
-SHA, verifies the checkout, decrypts both existing artifacts, and calls the existing
-HMAC/plan/asset verifier **before** `terraform show`. It writes only `plan.txt` and
-`plan.json` into a new 0700 directory, with 0600 files. Read these privately; they can
-contain passwords or rendered signing material. It never initializes a backend,
-refreshes, plans, approves or applies. Its GitHub Actions environment refusal is an accident guard for trusted operators, not an authorization boundary.
-Historical inspection does not make a plan apply-eligible; all current apply gates still run.
-
-Wrong context/key, missing or altered artifacts, unsafe/existing output paths, unavailable
-provider schemas and oversized output fail closed without printing plan/error contents.
-Inputs are bounded; each rendered file is capped at 32 MiB. Only the new review directory
-is retained after success; cleanup removes owned decrypted scratch on handled failures.
-Cleanup errors are reported without raw paths; inspect any owned residue privately.
-
-## Encrypted failure recovery
-
-The wrapper drains Terraform plan/apply output into bounded memory while the command runs. It retains the last 1 MiB, including terminal errors, and counts all observed output bytes. After Terraform exits, the diagnostic payload goes directly to OpenSSL stdin; only ciphertext is written to the owned 0700 directory, with mode 0600. No plaintext log or staging capsule is written during capture or sealing. Handled capture or storage failures do not SIGKILL Terraform or replace its observed exit status.
-
-Every captured command reports fixed JSON audit fields to the job log and step summary. Successful standard Terraform summaries supply numeric add/change/destroy counts; absent or unreadable summaries remain unavailable, not zero. Failure classifications are bounded hints such as state-lock, access-denied, authentication, provider-install, invalid-plan, configuration, interrupted or generic command failure. Arbitrary `Error:` lines and resource/output values are never echoed. A failed launch is distinct from Terraform itself exiting 127.
-
-The capture parent removes GitHub command-file paths, action/token variables, encryption keys, `TF_LOG*` and `TF_CLI_ARGS*` from the Terraform child environment. AWS temporary credentials, including `AWS_SESSION_TOKEN`, remain available. The pre-apply show/policy subprocesses receive the same isolation in a subshell. Each captured Terraform child runs in a separate session; the parent forwards only its first SIGINT or SIGTERM, avoiding duplicate interrupts from process-group cancellation or repeated parent signals. Original argv, branch/provenance/asset/DNS/runtime checks and exact saved-plan apply remain unchanged; this does not sandbox hostile processes sharing the same OS user.
-
-Raw retention is only for explicit dispatch failures. `policy_not_retained`, `key_missing`, `context_invalid`, `storage_failed`, `seal_failed` and `publication_failed` are distinct from `sealed`. Capture and cleanup status are reported separately. A partially applied command with unavailable diagnostics still requires private state reconciliation; no automatic retry or success inference is made.
-
-Failure capsules use schema 2 with the existing CBC/PBKDF2 cipher and key and a separate diagnostic HMAC domain. The signed manifest binds source/run/attempt/phase, observed exit/launch status, timestamp, total and retained bytes, capture/truncation status and content hash. This newly introduced diagnostic format is not an apply artifact or a migration from a published earlier capsule format. Never relabel metadata or skip authentication to force recovery. Saved-plan artifact compatibility is unchanged.
-
-Only the parent's validated single ciphertext file can be published. Ownership, private modes, regular-file/link checks, a literal non-glob path and the recorded ciphertext hash are checked before the output pointer is written. The generated directory is non-hidden; the upload explicitly permits hidden ancestors for this one file, not a directory or wildcard. Artifacts are named `terraform-failure-plan-<attempt>` or `terraform-failure-apply-<attempt>` and retained for five days, so later attempts do not collide with earlier ones.
-
-Uploads require the real workflow dispatch event plus failure or cancellation and a validated nonempty pointer. The capture audit reports `pending_upload` after sealing. The always-run cleanup step reads the identified upload step's outcome and deletes only the owned ciphertext after literal `success`. Failed, cancelled, skipped or unknown uploads retain the file and report `retained_unpublished`; the final audit records the upload status plus `complete`, `failed` or `not_available` when applicable. If pointer publication fails, the sealed file also remains for private owner recovery; a missing pointer does not prove no ciphertext exists.
-
-Cancellation recovery is best effort: SIGKILL, host loss or an exhausted runner timeout may prevent capture/upload/audit entirely. Unpublished ciphertext remains in its owned `RUNNER_TEMP/tf-diagnostics-<run>-<attempt>-<phase>-*` directory. There is no broad runner-temp sweep. Do not publish an arbitrary replacement file or delete another run's directory.
-
-On a trusted private operator machine, authenticate `gh` normally and provide the corresponding `TF_PLAN_ENC_KEY` using the approved private mechanism. Select the original failed SHA, attempt and phase. The helper verifies that exact authenticated attempt even after a later rerun. A new destination is required. The `GITHUB_ACTIONS` refusal is an accident guard, not an authorization boundary; do not recover raw logs in shared CI.
-
-```bash
-gh run download "$FAILED_RUN_ID" --repo aws-samples/sample-awsops \
-  --name "terraform-failure-plan-$FAILED_ATTEMPT" --dir /private/download
-python3 scripts/v2/ci_failure_diagnostics.py recover \
-  --repository aws-samples/sample-awsops --branch dev \
-  --commit "$FAILED_SHA" --run-id "$FAILED_RUN_ID" --attempt "$FAILED_ATTEMPT" \
-  --phase plan --file /private/download/diagnostics.enc \
-  --destination /private/review/new-failure-directory
-```
-
-Recovery authenticates the failed dispatch, attempt, HMAC, context and content before writing 0600 `diagnostics.log` and `metadata.json` inside a new 0700 directory. Timeouts and verification errors expose fixed categories only. It does not deploy or approve anything. Key rotation requires the corresponding old key for old ciphertext; file modes and handled cleanup are not guarantees against hostile shared-UID processes or abrupt host loss. Inspect owned residue privately.
-
-Initialization and earlier policy failures are outside command-tail capture. Existing policy diagnostics remain, and advisory PR/push command failures still receive fixed classifications without raw retention. The saved-plan inspector keeps its strict 32 MiB render bound and fail-closed verification.
+The branch-independent [exact-plan inspector](dev-repo-setup.md#private-exact-plan-inspection)
+and [encrypted failure recovery](dev-repo-setup.md#encrypted-failure-recovery) apply to
+main, dev and supported user branches. Use those procedures to review this rollout's
+saved artifacts; they do not extend the dev-only domain stages or grant apply authority.
 
 ## Boundaries and recovery / 제한과 복구
 

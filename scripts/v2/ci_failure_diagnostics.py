@@ -1,5 +1,6 @@
 """Bounded private Terraform diagnostics; capture never writes while Terraform runs."""
 import base64
+import ctypes
 from datetime import datetime, timezone
 import errno
 import hashlib
@@ -48,7 +49,7 @@ def child_environment(env):
 class OutputCapture:
     def __init__(self, phase):
         self.phase, self.tail, self.pending = phase, b"", b""
-        self.total, self.damaged, self.overflow = 0, False, False
+        self.total, self.damaged, self.overflow, self.interrupted = 0, False, False, False
         self.counts, self.categories = None, set()
 
     def line(self, value):
@@ -82,7 +83,7 @@ class OutputCapture:
         if self.pending and not self.overflow and not self.damaged:
             self.line(self.pending)
         category = (None if code == 0 else "launch_failed" if not launched else
-                    "interrupted" if code in (130, 143) else
+                    "interrupted" if self.interrupted or code in (130, 143) else
                     next((name for name in CATEGORIES if name in self.categories), "command_failed"))
         return {
             "phase": self.phase, "launched": launched, "exit_code": code if launched else None,
@@ -95,32 +96,62 @@ class OutputCapture:
         }
 
 
-def collect_command(args, env, output):
-    """Drain into bounded memory; no scratch I/O and no capture-induced SIGKILL."""
+def supervised_exec(parent, status_fd, args):
+    """Arm Linux parent-death protection before exec; report launcher failure privately."""
     try:
-        process = subprocess.Popen(args, env=child_environment(env), stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   start_new_session=True)
+        os.set_inheritable(status_fd, False)
+        if (args[:2] not in (["terraform", "plan"], ["terraform", "apply"])
+                or args[1] == "apply" and args != ["terraform", "apply", "-input=false", "tfplan"]):
+            raise ValueError("invalid capture command")
+        # Use a fresh exec process, never preexec_fn in a potentially threaded parent.
+        if sys.platform != "linux" or os.getppid() != parent:
+            raise OSError("supervision unavailable")
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0 or os.getppid() != parent:
+            raise OSError("supervision unavailable")
+        os.execvp(args[0], args)
+    except (OSError, ValueError, AttributeError):
+        os.write(status_fd, b"1")
+        return 127
+
+
+def collect_command(args, env, output):
+    """Bounded memory capture; cancellation escalates independently of capture errors."""
+    read_fd, write_fd = os.pipe()
+    try:
+        process = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "_exec_supervised",
+             str(os.getpid()), str(write_fd), *args],
+            env=child_environment(env), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
+            pass_fds=(write_fd,))
     except (OSError, ValueError):
+        os.close(read_fd)
+        os.close(write_fd)
         return 127, False
+    os.close(write_fd)
     handlers = {}
     forwarded = False
 
-    def forward_once(number, frame):
+    def cancel(number, frame):
         nonlocal forwarded
-        if not forwarded:
-            forwarded = True
-            try:
+        output.interrupted = True
+        try:
+            if forwarded:
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                forwarded = True
                 process.send_signal(number)
-            except ProcessLookupError:
-                pass
+        except ProcessLookupError:
+            pass
 
     try:
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                handlers[sig] = signal.signal(sig, forward_once)
+                handlers[sig] = signal.signal(sig, cancel)
             except ValueError:  # Library use outside the main thread has no signal ownership.
                 pass
+        launched = not os.read(read_fd, 1)
         while True:
             try:
                 chunk = process.stdout.read1(65536)
@@ -148,11 +179,12 @@ def collect_command(args, env, output):
                     output.damaged = True
                     output.tail, output.pending, output.counts = b"", b"", None
         code = process.wait()
-        return (code if code >= 0 else 128 - code), True
+        return (code if code >= 0 else 128 - code), launched
     finally:
         # A capture/storage failure never kills Terraform or invents its exit status.
         process.wait()
         process.stdout.close()
+        os.close(read_fd)
         for sig, handler in handlers.items():
             signal.signal(sig, handler)
 
@@ -398,6 +430,8 @@ def publish_status(audit, env):
 
 def main():
     try:
+        if sys.argv[1:2] == ["_exec_supervised"]:
+            return supervised_exec(int(sys.argv[2]), int(sys.argv[3]), sys.argv[4:])
         parser = Parser(description=__doc__)
         sub = parser.add_subparsers(dest="command", required=True)
         capture_parser = sub.add_parser("capture")

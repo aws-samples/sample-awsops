@@ -373,17 +373,68 @@ class FailureReviewTests(unittest.TestCase):
             while not stopped.exists() and time.monotonic() < deadline:
                 time.sleep(.01)
             self.assertTrue(stopped.exists())
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
             stdout, stderr = process.communicate(timeout=5)
-            self.assertEqual(process.returncode, 1, "A second interrupt must not force an immediate exit")
+            self.assertEqual(process.returncode, 1)
             self.assertEqual(stopped.read_text(), "1")
             self.assertEqual(json.loads(stdout)["exit_code"], 1)
+            self.assertEqual(json.loads(stdout)["failure_category"], "interrupted")
             self.assertNotIn("Traceback", stderr)
         finally:
             if process.poll() is None:
                 process.kill()
                 process.wait()
+
+    def test_cancellation_escalates_and_parent_death_stops_detached_terraform(self):
+        for parent_death in (False, True):
+            with self.subTest(parent_death=parent_death):
+                started = self.root / f"started-{parent_death}"
+                stopped = self.root / f"interrupted-{parent_death}"
+                self.program(
+                    "import os,pathlib,signal,time\n"
+                    "def stop(number,frame):\n"
+                    f" pathlib.Path({str(stopped)!r}).write_text('interrupted')\n"
+                    "signal.signal(signal.SIGINT,stop)\nsignal.signal(signal.SIGTERM,stop)\n"
+                    f"pathlib.Path({str(started)!r}).write_text(str(os.getpid()))\n"
+                    "time.sleep(30)\n")
+                process = subprocess.Popen([sys.executable, self.module.__file__, "capture", "--phase", "apply",
+                    "--", "terraform", "apply", "-input=false", "tfplan"], start_new_session=True,
+                    env={**self.env, "GITHUB_JOB": "apply"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True)
+                child = None
+                try:
+                    deadline = time.monotonic() + 3
+                    while not started.exists() and time.monotonic() < deadline:
+                        time.sleep(.01)
+                    self.assertTrue(started.exists())
+                    child = int(started.read_text())
+                    if parent_death:
+                        process.kill()
+                    else:
+                        os.killpg(process.pid, signal.SIGINT)
+                        while not stopped.exists() and time.monotonic() < deadline:
+                            time.sleep(.01)
+                        self.assertTrue(stopped.exists())
+                        os.killpg(process.pid, signal.SIGTERM)
+                    stdout, stderr = process.communicate(timeout=3)
+                    if not parent_death:
+                        self.assertEqual(process.returncode, 137)
+                        self.assertEqual(json.loads(stdout)["failure_category"], "interrupted")
+                    # An adopted zombie has stopped executing even before init reaps it.
+                    status = Path(f"/proc/{child}/stat")
+                    deadline = time.monotonic() + 2
+                    while status.exists() and status.read_text().split(") ", 1)[1][0] != "Z" and time.monotonic() < deadline:
+                        time.sleep(.01)
+                    self.assertTrue(not status.exists() or status.read_text().split(") ", 1)[1][0] == "Z")
+                    self.assertNotIn("Traceback", stderr)
+                finally:
+                    if child:
+                        try:
+                            os.killpg(child, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    if process.poll() is None:
+                        process.kill()
+                    process.communicate(timeout=3)
 
     def test_graceful_cancellation_preserves_exit_and_produces_only_ciphertext(self):
         started = self.root / "started"
