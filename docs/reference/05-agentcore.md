@@ -140,8 +140,12 @@ could not be verified. Only after a successful read confirms the role may a
 description-only update failure be reported as `WARN`. The old description-only
 path's warning policy does not establish a role-verification success.
 
-**Verified deployment prerequisite, 2026-09-14:** `audit-deployment.yml` run
-`34819307611` on dev commit `cdb8d4b13b9ab2dbc9b38ac0534f4d50ef58fbdd`
+**Verified deployment prerequisite, 2026-09-14:** the public repository's historical
+dev-branch [audit workflow at the audited commit](https://github.com/aws-samples/sample-awsops/blob/cdb8d4b13b9ab2dbc9b38ac0534f4d50ef58fbdd/.github/workflows/audit-deployment.yml)
+completed [run `34819307611`](https://github.com/aws-samples/sample-awsops/actions/runs/34819307611).
+These links identify the workflow and execution at dev commit
+`cdb8d4b13b9ab2dbc9b38ac0534f4d50ef58fbdd`, independently of which workflow files
+exist in a reader's checkout. That run
 successfully read the data gateway and RDS target using a restricted read session
 of `AWS_CI_DEPLOYER_DEV_ROLE_ARN` in the configured development account.
 The READY resources had a role and Lambda ARN that did not match applied state.
