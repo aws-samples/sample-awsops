@@ -94,6 +94,9 @@ export async function GET(request: Request) {
   const ACC = `(${accountCond(accounts)}) AND (${regionCond(regions, includeGlobal)})`;
   try {
     const pool = getPool();
+    if (url.searchParams.get('view') === 'collection') {
+      return Response.json({ collection: await readCollectionStatus(pool) });
+    }
     const r = await pool.query<{ resource_type: string; n: number }>(
       `SELECT resource_type, count(*)::int AS n FROM inventory_resources
        WHERE ${ACC} GROUP BY resource_type`,

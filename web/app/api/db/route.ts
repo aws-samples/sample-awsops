@@ -9,11 +9,14 @@ export async function GET() {
   }
   try {
     const r = await getPool().query(
-      "SELECT count(*)::int AS public_tables FROM pg_tables WHERE schemaname = 'public'",
+      `SELECT count(*)::int AS public_tables,
+              to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS server_time
+       FROM pg_tables WHERE schemaname = 'public'`,
     );
     return NextResponse.json({
       status: 'ok',
       public_tables: r.rows[0].public_tables,
+      server_time: r.rows[0].server_time,
     });
   } catch (e) {
     // CloudFront authenticates this route; it is not in the edge public-path allowlist.
