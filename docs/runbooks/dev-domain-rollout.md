@@ -216,19 +216,19 @@ apply한다. apply의 DNS 허용·scope도 일치시킨다. 게시 플래그는 
 실시간 검증하지 않는다. 소유권·폐기 제한은 유지하며 실제 인증서 검증은 dispatch에서 수행한다.
 
 The issuance stage changes validation CNAMEs/TLS consumers while A remains absent.
-Then the parent runs [Deploy Web's `deploy` / `Smoke test`](../../.github/workflows/deploy-web.yml)
-using [deployment-smoke.mjs](../../scripts/v2/deployment-smoke.mjs): `/api/health`
-through CloudFront with the service Host/SNI/TLS preserved. This proves liveness,
-**not DB or authentication readiness**. Complete migrations and authenticated route
-checks separately before A publication. If AgentCore deployment is in scope,
-[Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml) runs the reusable private migration on dev; main/preview retain `make migrate`. Optional post-provision
-`smoke=true` requires deployed readiness/inventory dependencies on dev and remains advisory on other stacks. It is not a
-web-login test. These live actions need their own existing authorization.
-
-발급 단계는 A 미게시 상태로 CNAME·TLS를 변경한다. 이후 Deploy Web의 `Smoke test`는
-Host/SNI/TLS를 유지한 `/api/health` 생존 확인이며 **DB·인증 준비 완료 증거가 아니다**.
-상위 운영자는 마이그레이션·인증 경로를 별도로 검증한 뒤 A를 게시한다. AgentCore가 범위에
-포함되면 dev의 사설 재사용 migration→배포를 사용한다(main/preview는 `make migrate` 유지). `smoke=true`는 provisioning 후 실행하며 dev에서는 배포된 readiness/inventory 의존성이 필수이고 다른 스택에서는 참고용이다. 별도 실행 승인은 필요하다.
+A standalone [deployment-smoke.mjs](../../scripts/v2/deployment-smoke.mjs) request
+checks `/api/health` through CloudFront with service Host/SNI/TLS preserved; that
+request alone proves liveness only. Dev [Deploy Web](../../.github/workflows/deploy-web.yml)
+requires the [full authenticated runtime gate](runtime-foundation.md#required-development-release-check--개발-배포-필수-검증), not health alone.
+Before A publication, complete that guide's runtime adoption, migrations and verification.
+Its `collect-runtime.yml` prepare mode validates existing web/login/host registration;
+it neither bootstraps first web nor proves readiness. New stacks need a separate
+reviewed bootstrap procedure; there is no health-only bypass or password reset.
+[Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml) runs the reusable
+private migration on dev; main/preview retain `make migrate`. Optional
+post-provision `smoke=true` requires deployed readiness/inventory dependencies on
+dev and remains advisory elsewhere; it is not a web-login test. Follow existing
+operator authorization for these actions.
 
 ## Boundaries and recovery / 제한과 복구
 
@@ -266,7 +266,7 @@ Host/SNI/TLS를 유지한 `/api/health` 생존 확인이며 **DB·인증 준비 
 
 ## Rollback / 롤백
 
-Before A publication, leave A absent and stop the rollout if TLS or DB/auth checks
+Before A publication, leave A absent and stop the rollout if TLS or required runtime checks
 fail. Prepare a fresh same-SHA reviewed plan to restore a supported same-domain
 configuration. After publication, unpublishing the **new** service A needs explicit
 DNS permission and a scoped reviewed plan. Preserve all Terraform-owned validation
@@ -275,12 +275,6 @@ rollback after managed issuance. Any required managed-certificate externalizatio
 token retirement or old-domain restoration needs a separate expressly authorized
 procedure under the appropriate configuration. Never remove resources from state
 or accept unknown DNS identities to make rollback pass.
-
-A 게시 전 TLS·DB·인증 실패 시 미게시 상태로 중단하고 지원되는 동일 도메인 설정의 새 계획을
-검토한다. 게시 후 **새 도메인** A를 내리는 경우도 DNS 명시 승인과 범위 제한 계획이 필요하다.
-관리 검증 CNAME·인증서 소유권은 유지한다. managed 발급 후 이전 외부 ARN을 다시 넣는 것은
-안전한 롤백이 아니다. 소유권 이전·토큰 폐기·이전 도메인 복구는 적절한 설정의 별도 승인
-절차로 진행하며, 상태 삭제나 미확정 DNS 허용으로 우회하지 않는다.
 
 Related / 관련: `.github/workflows/terraform.yml`, `scripts/v2/ci_dns_policy.py`,
 `scripts/v2/ci_dev_domain.py`, `terraform/foundation/edge.tf`;

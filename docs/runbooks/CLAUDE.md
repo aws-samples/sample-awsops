@@ -115,7 +115,9 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   addresses and active-rollout public zone name/ID/NS; diagnostics additionally permit bounded
   metric values. Never expose full ARNs, account IDs or
   raw configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
-  CLI; health is liveness only. DB/auth checks precede service A publication.
+  CLI; standalone health proves liveness only. Every dev Deploy Web release requires
+  the full authenticated runtime gate before service A publication. Existing-web
+  prepare does not create first web or bypass readiness; follow runtime adoption first.
 - Offline Terraform checks use `bash scripts/v2/terraform-test.sh` from the repo root:
   Terraform 1.15.7, tracked working files copied in isolation, fresh `TF_DATA_DIR`,
   `init -backend=false`, mocked providers and no real backend. Test dependencies are declared in

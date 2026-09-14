@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 21f870ce9919 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 95bb6cb8d860 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -90,7 +90,9 @@ legacy runbook's steps as the current operational path).
 - Public summaries permit certificate suffixes, publication, change counts/addresses and
   active-rollout public zone name/ID/NS; diagnostics permit bounded metric values. Never expose full ARNs, account IDs or raw
   configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
-  CLI; health proves liveness only. Verify DB/auth separately before service A publication.
+  CLI; standalone health proves liveness only. Every dev Deploy Web release requires the
+  authenticated runtime gate before service A publication. Existing-web prepare neither creates
+  first web nor bypasses readiness; follow runtime adoption before the first gated release.
 - From the repo root, `bash scripts/v2/terraform-test.sh` runs Terraform 1.15.7 in an isolated
   tracked-file copy with fresh `TF_DATA_DIR`, `init -backend=false` and mocked providers.
   Never initialize a real backend for tests. Dependencies: `scripts/v2/requirements-test.txt`;

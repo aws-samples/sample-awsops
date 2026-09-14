@@ -252,8 +252,6 @@ export async function release(deployment, {
         lambdaConfig.Architectures.length === 1 && lambdaConfig.Architectures[0] === 'arm64' &&
         Number.isInteger(lambdaConfig.Timeout) && lambdaConfig.Timeout > 0 && lambdaConfig.Timeout <= 420,
       'inventory_code_mismatch');
-    }
-    if (context.mode === 'collect') {
       let files = 0;
       const invoke = async (type, budget) => {
         const deadline = now() + budget;
@@ -322,7 +320,6 @@ export async function release(deployment, {
         'completeness,degraded_types,freshness_minutes,status' &&
         collection.completeness === 'unknown' && collection.freshness_minutes === 30 &&
         Array.isArray(collection.degraded_types) &&
-        collection.degraded_types.length <= config.expectedQueuedTypes.length &&
         collection.status === (collection.degraded_types.length ? 'degraded' : 'current') &&
         new Set(collection.degraded_types.map(row => row?.type)).size === collection.degraded_types.length &&
         collection.degraded_types.every(row => object(row) &&
