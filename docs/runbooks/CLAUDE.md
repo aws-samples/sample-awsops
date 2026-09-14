@@ -24,6 +24,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration, mandatory full dev runtime verification and opt-in diagnostics (ADR-002/005/016) |
+| [release-safety-primitives.md](release-safety-primitives.md) | Unwired bounded web reads/controller, opt-in pending-SQL admission, immediate migration contention and operator recovery (ADR-001/005) |
 | [web-image-provenance.md](web-image-provenance.md) | Unwired helper contract: required receipt steps/inputs, enforced promotion chain, main account prerequisite, migration/rollback/expiry limits (ADR-005) |
 | [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |
 | [runtime-foundation.md](runtime-foundation.md) | Runtime activation and strict host-only release controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage |
@@ -34,6 +35,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
+- `release-safety-primitives.md` defines unwired web read/controller contracts and opt-in transactional pending-SQL admission. The empty-only frozen baseline precedes the pending guard. Column/view changes and non-transactional SQL require manual review. Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads retry within a shared budget; writes and identity/permission failures do not retry. Receipt verification gives the known old PRIMARY 15 seconds of visibility grace; start confirmation retains its separate 120-second bound.
 
 - Private S3 plans require the configured backend file, verified bucket posture and existing
   base-role/key-policy permissions; publication grants none. Operators use IAM/KMS, not the
@@ -275,9 +277,18 @@ Use bounded capacity/reachability/permission diagnosis before an authorized fres
 never automatic permission widening, degraded acceptance or scheduler suppression.
 `remaining_prerequisites: "not_assessed"` leaves separate workflow/plan/promotion gates;
 keep the fixed-code table and calibrated `readRuntimeSmokeConfig` parameter documented.
-The 17-minute reserve covers only the single-pass 1,010-second base path plus 10 seconds.
-Extra 35-second reads need at least 25 seconds saved elsewhere; the minimum 180-second
-retry overhead needs at least 170 seconds saved, reusing the original worker allowances.
+Collect's closing service/list-tasks/describe-tasks reads must match the initial opaque
+deployment ID, immutable task-definition ARN, count and ECR digest set before success;
+never resolve the tag again. A changed ID fails even with the same task definition.
+Equal snapshots are not continuous identity/history proof or an atomic lock; prepare is unchanged.
+The 18-minute reserve covers the single-pass 1,060-second path plus 20 seconds.
+Auth proof ends 50 seconds before the original proof deadline for three closing reads
+at 15 seconds each plus five seconds overhead, all inside that original deadline.
+Collection has at most 720 seconds; the 450-second floor requires admission by 270
+seconds minus clock preparation/earlier bounds. An extra 35-second read needs 15 seconds
+saved. Full retry overhead is at least 215 seconds, needing 195 saved: a 35-second
+confirmation precedes the helper's remaining 180-second admission allowance, with the
+original worker allowances reused rather than counted twice.
 Additional reads/waits/overhead require more time; no extras are guaranteed.
 CLI inputs and fixture prerequisites: `runtime-foundation.md#controller-cli-contract`.
 Catalog/per-type timeouts: `runtime-verifier-sessions.md#collection-effects-and-proof`.

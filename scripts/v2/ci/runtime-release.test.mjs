@@ -66,7 +66,7 @@ function fixture(overrides = {}) {
     'ecs describe-services': { services: [{ serviceName: `${project}-web`,
       serviceArn: `${prefix}service/${project}/${project}-web`, clusterArn, status: 'ACTIVE',
       taskDefinition, desiredCount: 1, runningCount: 1, pendingCount: 0,
-      deployments: [{ status: 'PRIMARY', taskDefinition, rolloutState: 'COMPLETED' }] }], failures: [] },
+      deployments: [{ id: 'ecs-svc/fixture-initial', status: 'PRIMARY', taskDefinition, rolloutState: 'COMPLETED' }] }], failures: [] },
     'ecs describe-task-definition': { taskDefinition: {
       taskDefinitionArn: taskDefinition, taskRoleArn: deployment().web.task_role_arn,
       runtimePlatform: { cpuArchitecture: 'ARM64', operatingSystemFamily: 'LINUX' },
@@ -488,7 +488,7 @@ test('catalog admission retries only confirmed throttling', async () => withFixt
 }));
 
 test('a long busy probe retries only when the next complete call preserves the proof reserve', async () => {
-  for (const duration of [300_000, 420_000]) await withFixture(async f => {
+  for (const duration of [260_000, 300_000, 420_000]) await withFixture(async f => {
     let clock = Date.now() - 900_000, probes = 0;
     const began = clock;
     let remainingFast = sourceTypes.length - 1, finishFast;
@@ -513,15 +513,15 @@ test('a long busy probe retries only when the next complete call preserves the p
           && --remainingFast === 0) finishFast();
         return result;
       }, authenticate: f.authenticate });
-    if (duration === 420_000) {
+    if (duration >= 300_000) {
       await assert.rejects(action, /collection_probe_busy/);
       assert.equal(probes, 1);
-      assert.equal(clock - began, 430_000);
+      assert.equal(clock - began, duration + 10_000);
       assert.equal(f.authenticated.length, 0);
     } else {
       await action;
       assert.equal(probes, 2);
-      assert.equal(clock - began, 610_000);
+      assert.equal(clock - began, 530_000);
       assert.equal(f.authenticated[0].input.runtimeConfig.collectionStartedAt, new Date(began).toISOString());
     }
   });
@@ -628,6 +628,10 @@ test('identity, wrong task role/revision/image/architecture and Lambda code fail
     { 'ecs describe-tasks': { tasks: [{ ...r['ecs describe-tasks'].tasks[0], taskDefinitionArn: taskDefinition.replace(':7', ':6') }], failures: [] } },
     { 'ecs describe-tasks': { tasks: [{ ...r['ecs describe-tasks'].tasks[0], containers: [{ name: 'web', lastStatus: 'RUNNING', imageDigest: `sha256:${'f'.repeat(64)}` }] }], failures: [] } },
     { 'ecs list-tasks': { taskArns: [taskArn], nextToken: 'more' } },
+    ...[undefined, null, '', '   ', 123, {}].map(id => ({
+      'ecs describe-services': { services: [{ ...r['ecs describe-services'].services[0],
+        deployments: [{ ...r['ecs describe-services'].services[0].deployments[0], id }] }] },
+    })),
     { 'lambda get-function-configuration': { ...r['lambda get-function-configuration'], CodeSha256: Buffer.alloc(32, 4).toString('base64') } },
     ...[undefined, null, '', '   ', 123, {}].map(RevisionId => ({
       'lambda get-function-configuration': { ...r['lambda get-function-configuration'], RevisionId },
@@ -670,6 +674,114 @@ for (const [label, change, readError] of [
   assert.equal(existsSync(f.directory), false);
 }));
 
+test('final web proof uses only three bounded ECS reads after authentication and retains the initial image identity', async () => withFixture(async f => {
+  let clock = Date.now(), finalProof = false;
+  const reads = [];
+  const result = await f.release({
+    now: () => clock,
+    authenticate: async (input, options) => {
+      const result = await f.authenticate(input, options);
+      if (!options.includeDatabaseClock) {
+        assert.equal(options.deadline, Date.parse(input.runtimeConfig.collectionStartedAt) + 30 * 60_000 - 50_000);
+        clock = options.deadline - 1;
+        finalProof = true;
+        // A tag change alone cannot replace the expected digest captured at admission.
+        f.responses['ecr batch-get-image'].images[0].imageManifest = 'MOVED_TAG';
+      }
+      return result;
+    },
+    run: async (cmd, args, options) => {
+      if (finalProof) {
+        reads.push(args.slice(0, 2).join(' '));
+        assert.equal(options.timeout, 15_000);
+        clock += 14_999;
+      }
+      return f.run(cmd, args, options);
+    },
+  });
+  assert.equal(result.status, 'full_verified');
+  assert.deepEqual(reads, ['ecs describe-services', 'ecs list-tasks', 'ecs describe-tasks']);
+  assert.equal(f.calls.filter(a => a[0] === 'ecr').length, 1);
+  assert.equal(f.calls.filter(a => a[1] === 'describe-task-definition').length, 1);
+  assert.equal(existsSync(f.directory), false);
+}));
+
+for (const change of ['task_definition', 'digest', 'deployment_id', 'restored_definition_new_id', 'count', 'moved_tag'])
+  test(`final web proof rejects ${change} after successful authenticated proof`, async () => withFixture(async f => {
+    await assert.rejects(f.release({
+      authenticate: async (input, options) => {
+        const result = await f.authenticate(input, options);
+        if (!options.includeDatabaseClock) {
+          const service = f.responses['ecs describe-services'].services[0];
+          const task = f.responses['ecs describe-tasks'].tasks[0];
+          if (change === 'task_definition') {
+            service.taskDefinition = service.deployments[0].taskDefinition = task.taskDefinitionArn = taskDefinition.replace(':7', ':8');
+          } else if (change === 'deployment_id' || change === 'restored_definition_new_id') {
+            if (change === 'restored_definition_new_id') {
+              service.taskDefinition = taskDefinition.replace(':7', ':8');
+              service.taskDefinition = taskDefinition; // This fixture restores the TD with a different observed ID.
+            }
+            service.deployments[0].id = 'ecs-svc/fixture-replacement';
+          } else if (change === 'count') service.runningCount = service.desiredCount = 2;
+          else {
+            const moved = JSON.stringify({ ...JSON.parse(body), layers: [{ digest: `sha256:${'e'.repeat(64)}` }] });
+            task.containers[0].imageDigest = `sha256:${createHash('sha256').update(moved).digest('hex')}`;
+            if (change === 'moved_tag') Object.assign(f.responses['ecr batch-get-image'].images[0], {
+              imageManifest: moved, imageId: { imageTag: `web-${sha}`, imageDigest: task.containers[0].imageDigest },
+            });
+          }
+        }
+        return result;
+      },
+    }), error => error.message === 'web_identity_changed');
+    assert.equal(f.authenticated.length, 1);
+    assert.equal(f.calls.filter(a => a[0] === 'ecr').length, 1);
+    assert.equal(existsSync(f.directory), false);
+  }));
+
+test('final web reads fail closed on each read error, malformed response or per-call overrun', async () => {
+  for (const operation of ['describe-services', 'list-tasks', 'describe-tasks'])
+    for (const failure of ['aws_access_denied', 'aws_timeout', 'malformed', 'late']) await withFixture(async f => {
+      let clock = Date.now(), finalProof = false;
+      await assert.rejects(f.release({
+        now: () => clock,
+        authenticate: async (input, options) => {
+          const result = await f.authenticate(input, options);
+          if (!options.includeDatabaseClock) finalProof = true;
+          return result;
+        },
+        run: async (cmd, args, options) => {
+          if (finalProof && args[1] === operation) {
+            if (failure === 'malformed') return '{}';
+            if (failure === 'late') clock += 15_000;
+            else throw new ReleaseError(failure);
+          }
+          return f.run(cmd, args, options);
+        },
+      }), error => error.message === (failure === 'aws_access_denied' ? failure
+        : failure === 'malformed' ? 'web_identity_changed' : 'web_recheck_timeout'));
+      assert.equal(f.authenticated.length, 1);
+      assert.equal(existsSync(f.directory), false);
+    });
+});
+
+test('authentication cannot consume the reserved final web window even when it reports success', async () => {
+  for (const lateBy of [0, 1]) await withFixture(async f => {
+    let clock = Date.now();
+    await assert.rejects(f.release({
+      now: () => clock,
+      authenticate: async (input, options) => {
+        const result = await f.authenticate(input, options);
+        if (!options.includeDatabaseClock)
+          clock = Date.parse(input.runtimeConfig.collectionStartedAt) + 30 * 60_000 - 50_000 + lateBy;
+        return result;
+      },
+    }), error => error.message === 'release_timeout');
+    assert.equal(f.calls.filter(a => a[1] === 'describe-services').length, 1);
+    assert.equal(existsSync(f.directory), false);
+  });
+});
+
 test('bad invocation acknowledgement never starts smoke, and database-only return cannot pass collect', async () => {
   for (const change of [
     { invoke: { StatusCode: 200, FunctionError: 'Unhandled' } },
@@ -686,6 +798,7 @@ test('bad invocation acknowledgement never starts smoke, and database-only retur
 
 test('prepare uses ordinary authenticated account preparation before backend boot, without Lambda access', async () => withFixture(async f => {
   f.env.RUNTIME_MODE = 'prepare'; f.env.PIN_SHA = '';
+  delete f.responses['ecs describe-services'].services[0].deployments[0].id;
   const value = deployment();
   value.features = { inventory: false, agentcore: false, workers: false };
   value.inventory = { sync_function_name: null, sync_function_arn: null, sync_code_sha256: null };
@@ -700,6 +813,7 @@ test('prepare uses ordinary authenticated account preparation before backend boo
   assert.equal((await release(value, { env: f.env, run, authenticate: f.authenticate })).mode, 'prepare');
   assert.equal(f.authenticated[0].input.runtimeConfig.mode, 'prepare');
   assert.ok(!f.calls.some(a => a[0] === 'lambda'));
+  assert.equal(f.calls.filter(a => a[1] === 'describe-services').length, 1);
 }));
 
 test('capture persists only validated deployment metadata in the credential directory', async () => withFixture(async f => {
@@ -882,7 +996,7 @@ test('controller total budget emits a typed failure before the outer step timeou
 }));
 
 test('runtime proof receives the earlier controller or marker deadline without resetting it', async () => {
-  for (const setupMinutes of [0, 25, 26]) await withFixture(async f => {
+  for (const setupMinutes of [0, 24, 25]) await withFixture(async f => {
     const start = Date.now() - setupMinutes * 60_000 - 1000;
     let clock = start;
     const action = release(deployment(), { env: f.env, now: () => clock, authenticate: f.authenticate,
@@ -890,7 +1004,7 @@ test('runtime proof receives the earlier controller or marker deadline without r
         if (args[0] === 'sts') clock += setupMinutes * 60_000;
         return f.run(cmd, args);
       } });
-    if (setupMinutes === 26) {
+    if (setupMinutes === 25) {
       await assert.rejects(action, error => {
         assert.equal(error.collection_attempts.counts.not_started, sourceTypes.length - 4);
         assert.equal(error.collection_attempts.counts.deadline, 4);
@@ -907,12 +1021,12 @@ test('runtime proof receives the earlier controller or marker deadline without r
     await action;
     const { input, options } = f.authenticated[0];
     const marker = Date.parse(input.runtimeConfig.collectionStartedAt);
-    assert.equal(options.deadline, Math.min(start + 50 * 60_000, marker + 30 * 60_000));
+    assert.equal(options.deadline, Math.min(start + 50 * 60_000, marker + 30 * 60_000) - 50_000);
   });
 });
 
 test('late batches cannot spend the authentication and runtime proof reserve', async () => {
-  for (const setupMinutes of [0, 25]) {
+  for (const setupMinutes of [0, 24]) {
     const first = ['cloudfront', 'rds', 'ec2', 's3', 'iam_user'];
     const types = [...first, ...sourceTypes.filter(type => !first.includes(type))];
     await withFixture(async f => {
@@ -929,7 +1043,7 @@ test('late batches cannot spend the authentication and runtime proof reserve', a
             if (type !== 'catalog') {
               invoked.push(type);
               if (invoked.length === 4) {
-                clock += setupMinutes ? 31_000 : 331_000;
+                clock += setupMinutes ? 31_000 : 271_000;
                 finishBatch();
               }
               await batch;
@@ -986,7 +1100,7 @@ test('release freshness starts before the owned probe and is not reset by its re
 }));
 
 test('DB request-start calibration preserves skew and the earlier controller deadline', async () => {
-  for (const skew of [-5000, 5000]) for (const setup of [0, 25 * 60_000]) await withFixture(async f => {
+  for (const skew of [-5000, 5000]) for (const setup of [0, 24 * 60_000]) await withFixture(async f => {
     const began = Date.now();
     let raw = began, requestStarted;
     const result = await release(deployment(), { env: f.env, now: () => raw,
@@ -1014,9 +1128,9 @@ test('DB request-start calibration preserves skew and the earlier controller dea
     const { input, options } = f.authenticated[0];
     assert.equal(input.runtimeConfig.collectionStartedAt, new Date(requestStarted + skew).toISOString());
     assert.equal(options.now(), raw + skew);
-    assert.equal(options.deadline, Math.min(began + 50 * 60_000, requestStarted + 30 * 60_000) + skew);
+    assert.equal(options.deadline, Math.min(began + 50 * 60_000, requestStarted + 30 * 60_000) + skew - 50_000);
     assert.equal(options.deadline - options.now(),
-      Math.min(began + 50 * 60_000, requestStarted + 30 * 60_000) - raw);
+      Math.min(began + 50 * 60_000, requestStarted + 30 * 60_000) - raw - 50_000);
   });
 });
 

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 44e8fa711564 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 05f1345f2c93 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -10,6 +10,7 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
+- Release safety primitives remain unwired to web workflows. Automatic transactional pending-SQL checks are opt-in; column/view and non-transactional changes require reviewed cutovers. The empty-only frozen baseline precedes pending admission. Contention fails immediately under the shared lock. Read retries share a deadline and never retry writes; failed/replaced ECS deployment evidence is terminal. See `release-safety-primitives.md`.
 
 - S3 runbooks must state backend-file, bucket-posture and existing role/key-policy prerequisites,
   branch-environment approval for publication/apply, missing-backend/tfvars soft skips and
@@ -219,10 +220,18 @@ outcomes intentionally stop even under limiter/hydrate pressure; use bounded
 capacity/reachability/permission diagnosis before an authorized fresh rerun.
 Never widen permissions automatically, weaken acceptance or suppress the schedule.
 Document calibrated config validation and `remaining_prerequisites: "not_assessed"`
-with the separate workflow/plan/promotion gates. The 17-minute
-reserve covers only the single-pass 1,010-second base path plus 10 seconds; extras
-need saved time (at least 25 seconds for another 35-second read, at least 170 seconds
-for the minimum 180-second retry overhead, without counting workers twice).
+with the separate workflow/plan/promotion gates. Collect's closing service/list/tasks
+reads must match the original opaque deployment ID, immutable task-definition ARN,
+count and ECR digest set, without another tag lookup. Changed ID fails even with the
+same task definition; equal snapshots are not continuous/history proof or an atomic
+lock. Prepare has no closing recheck.
+The 18-minute reserve covers the single-pass 1,060-second path plus 20 seconds.
+Auth proof ends 50 seconds early for three 15-second closing reads plus five seconds
+overhead, within the original deadline. Collection is at most 720 seconds; the
+450-second floor requires admission by 270 seconds minus preparation/earlier bounds.
+An extra 35-second read needs 15 seconds saved. Full retry overhead is at least
+215 seconds, needing 195 saved: confirmation spends 35 seconds before the helper's
+remaining 180-second admission allowance, without counting workers twice.
 Additional reads/waits/overhead need more time.
 CLI inputs and fixture prerequisites: `runtime-foundation.md#controller-cli-contract`.
 Catalog/per-type timeouts: `runtime-verifier-sessions.md#collection-effects-and-proof`.

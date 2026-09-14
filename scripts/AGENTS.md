@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 89bbc93fda96 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3a08c0466fe4 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,6 +8,8 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
+- `ci_web_read.py` / `ci_web_deploy.py` are unwired. Only typed transient reads retry within a shared deadline; writes/permissions/identity failures do not retry. Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.
+- `AUTOMATIC_MIGRATION=1` checks every ledger-derived pending SQL file against the transactional subset before pending SQL/ledger/reader changes; unknown/contract SQL needs manual review. Advisory lock acquisition is nonblocking and remains held through reader sync. See `docs/runbooks/release-safety-primitives.md` and the corresponding Python/Node/PostgreSQL tests.
 - `v2/ci_web_image.py` is unwired. CI must use composed `promote`, which verifies the
   caller/context/source/migration/producer before publishing the validated project's digest.
   A nonempty preflight digest is mandatory; fresh builds must match the registry's source
@@ -227,11 +229,19 @@ before an authorized fresh bounded rerun. No weaker acceptance or scheduler supp
 Collector hash/RevisionId must remain stable before/after collection; then full
 SSM/AgentCore/model and both owned worker proofs remain mandatory. Preserve private
 credentials/cleanup, restrictive consumer sessions and reviewed activation prerequisites.
+Collect's closing service/list/tasks reads reuse the original opaque deployment ID,
+immutable task-definition ARN, count and digest set; never resolve the ECR tag again.
+A changed ID fails even with the same task definition. Matching snapshots are not
+continuous/history proof or an atomic lock. Prepare has no closing recheck.
 Budgets and boundaries: `docs/runbooks/runtime-foundation.md#strict-release-controller-capability`
-and `runtime-verifier-sessions.md`. The 17-minute reserve covers only the single-pass
-1,010-second base path plus 10 seconds. Extra 35-second reads need at least 25 seconds
-saved elsewhere; the minimum 180-second retry overhead needs at least 170 seconds saved,
-reusing the original worker allowances. More reads/waits/overhead need more time.
+and `runtime-verifier-sessions.md`. The 18-minute reserve covers a single-pass
+1,060-second path plus 20 seconds. Auth proof ends 50 seconds before the original
+deadline for three 15-second closing reads plus five seconds overhead, still within
+the original window. Collection is at most 720 seconds; 450-second admission requires
+a start by 270 seconds minus preparation/earlier bounds. An extra 35-second read
+needs at least 15 seconds saved. Full retry overhead is at least 215 seconds and
+needs 195 saved: confirmation spends 35 seconds before the helper's remaining
+180-second allowance. Worker allowances are reused. Extras are not guaranteed.
 `capture` reads private deployment JSON on stdin and emits `deployment_file` to
 `GITHUB_OUTPUT`; `run` reads `RUNTIME_DEPLOYMENT_FILE`. Both need private credentials.
 CLI inputs and fixture prerequisites: `docs/runbooks/runtime-foundation.md#controller-cli-contract`.

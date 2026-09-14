@@ -30,10 +30,11 @@ export const REQUIRED_CATALOG_TYPES = Object.freeze([
 ]);
 export const MIN_CATALOG_TYPES = REQUIRED_CATALOG_TYPES.length;
 // Five 35s HTTP calls, an 80s probe and two 370s worker paths need 995s.
-// The 15s collector recheck brings the minimum to 1010s; reserve 17m with 10s margin.
+// The 15s collector and 50s final web rechecks bring this to 1060s; reserve 18m with 20s margin.
 // This reserves only the single-pass proof; no extra pages, polls or retries are allocated.
 // Extras require earlier calls to finish below their allowances, otherwise the gate fails.
-const REQUIRED_PROOF_MS = 17 * 60_000;
+const REQUIRED_PROOF_MS = 18 * 60_000;
+const POST_WEB_RECHECK_MS = 50_000;
 const VERBS = new Set(['sts get-caller-identity', 'ecr batch-get-image',
   'ecs describe-services', 'ecs describe-task-definition', 'ecs list-tasks', 'ecs describe-tasks',
   'lambda get-function-configuration', 'lambda invoke']);
@@ -214,57 +215,70 @@ function imageDigests(response, deployment, context) {
   return allowed;
 }
 
-async function verifyWeb(aws, deployment, context) {
+async function verifyWeb(aws, deployment, context, baseline) {
   const { web, project } = deployment;
   const prefix = `arn:aws:ecs:${REGION}:${context.account}:`;
   const cluster = `${prefix}cluster/${web.cluster}`;
-  const images = await aws(['ecr', 'batch-get-image', '--registry-id', context.account,
-    '--repository-name', `${project}-web`, '--image-ids', context.expectedWebDigest
-      ? `imageDigest=${context.expectedWebDigest}` : `imageTag=${context.imageTag}`]);
-  const digests = imageDigests(images, deployment, context);
+  const check = (condition, code) => need(condition, baseline ? 'web_identity_changed' : code);
+  let digests = baseline?.digests;
+  if (!baseline) {
+    const images = await aws(['ecr', 'batch-get-image', '--registry-id', context.account,
+      '--repository-name', `${project}-web`, '--image-ids', context.expectedWebDigest
+        ? `imageDigest=${context.expectedWebDigest}` : `imageTag=${context.imageTag}`]);
+    digests = imageDigests(images, deployment, context);
+  }
   const services = await aws(['ecs', 'describe-services', '--cluster', cluster, '--services', web.service]);
-  need(empty(services.failures) && Array.isArray(services.services) && services.services.length === 1,
+  check(empty(services.failures) && Array.isArray(services.services) && services.services.length === 1,
     'web_service_unavailable');
   const service = services.services[0];
-  need(service.serviceName === web.service && service.clusterArn === cluster &&
+  check(service.serviceName === web.service && service.clusterArn === cluster &&
     service.serviceArn === `${prefix}service/${project}/${web.service}` && service.status === 'ACTIVE' &&
     integer(service.desiredCount) && service.desiredCount >= 1 && service.desiredCount <= 100 &&
     service.runningCount === service.desiredCount && service.pendingCount === 0 &&
     Array.isArray(service.deployments) && service.deployments.length === 1 &&
     service.deployments[0].status === 'PRIMARY' && service.deployments[0].rolloutState === 'COMPLETED' &&
     service.deployments[0].taskDefinition === service.taskDefinition &&
+    (context.mode !== 'collect' || (typeof service.deployments[0].id === 'string' &&
+      service.deployments[0].id.trim().length > 0)) &&
     new RegExp(`^${prefix}task-definition/${project}-web:[1-9][0-9]*$`).test(service.taskDefinition || ''),
   'web_service_not_stable');
-  const definition = (await aws(['ecs', 'describe-task-definition', '--task-definition', service.taskDefinition])).taskDefinition;
-  const containers = definition?.containerDefinitions;
-  need(definition?.taskDefinitionArn === service.taskDefinition && definition.taskRoleArn === web.task_role_arn &&
-    definition.runtimePlatform?.cpuArchitecture === 'ARM64' &&
-    definition.runtimePlatform.operatingSystemFamily === 'LINUX' && Array.isArray(containers),
-  'web_task_definition_mismatch');
-  const webContainers = containers.filter(c => c.name === 'web');
-  const repository = `${context.account}.dkr.ecr.${REGION}.amazonaws.com/${project}-web`;
-  need(webContainers.length === 1 && webContainers[0].essential === true &&
-    ([`${repository}:web-latest`, `${repository}:${context.imageTag}`].includes(webContainers[0].image) ||
-      [...digests].some(d => webContainers[0].image === `${repository}@${d}`)), 'web_container_mismatch');
+  check(!baseline || (service.taskDefinition === baseline.taskDefinition &&
+    service.deployments[0].id === baseline.deploymentId && service.desiredCount === baseline.count),
+  'web_identity_changed');
+  // Reuse the immutable task-definition proof and initial ECR digest set on the final read.
+  if (!baseline) {
+    const definition = (await aws(['ecs', 'describe-task-definition', '--task-definition', service.taskDefinition])).taskDefinition;
+    const containers = definition?.containerDefinitions;
+    need(definition?.taskDefinitionArn === service.taskDefinition && definition.taskRoleArn === web.task_role_arn &&
+      definition.runtimePlatform?.cpuArchitecture === 'ARM64' &&
+      definition.runtimePlatform.operatingSystemFamily === 'LINUX' && Array.isArray(containers),
+    'web_task_definition_mismatch');
+    const webContainers = containers.filter(c => c.name === 'web');
+    const repository = `${context.account}.dkr.ecr.${REGION}.amazonaws.com/${project}-web`;
+    need(webContainers.length === 1 && webContainers[0].essential === true &&
+      ([`${repository}:web-latest`, `${repository}:${context.imageTag}`].includes(webContainers[0].image) ||
+        [...digests].some(d => webContainers[0].image === `${repository}@${d}`)), 'web_container_mismatch');
+  }
   const listed = await aws(['ecs', 'list-tasks', '--cli-input-json', JSON.stringify({
     cluster, serviceName: web.service, desiredStatus: 'RUNNING', maxResults: 100,
   }), '--no-paginate']);
   const arns = listed.taskArns;
-  need(!listed.nextToken && Array.isArray(arns) && arns.length === service.desiredCount &&
+  check(!listed.nextToken && Array.isArray(arns) && arns.length === service.desiredCount &&
     new Set(arns).size === arns.length && arns.every(a => typeof a === 'string' &&
       new RegExp(`^${prefix}task/${project}/[a-f0-9]{32}$`).test(a)), 'web_task_list_incomplete');
   const running = await aws(['ecs', 'describe-tasks', '--cluster', cluster, '--tasks', ...arns]);
-  need(empty(running.failures) && Array.isArray(running.tasks) && running.tasks.length === arns.length &&
+  check(empty(running.failures) && Array.isArray(running.tasks) && running.tasks.length === arns.length &&
     new Set(running.tasks.map(t => t.taskArn)).size === arns.length, 'web_tasks_unavailable');
   for (const task of running.tasks) {
     const taskWeb = Array.isArray(task.containers) ? task.containers.filter(c => c.name === 'web') : [];
-    need(arns.includes(task.taskArn) && task.clusterArn === cluster &&
+    check(arns.includes(task.taskArn) && task.clusterArn === cluster &&
       task.group === `service:${deployment.web.service}` && task.taskDefinitionArn === service.taskDefinition &&
       task.lastStatus === 'RUNNING' && task.desiredStatus === 'RUNNING' && task.healthStatus === 'HEALTHY' &&
       task.platformFamily === 'Linux' && taskWeb.length === 1 && taskWeb[0].lastStatus === 'RUNNING' &&
       taskWeb[0].healthStatus === 'HEALTHY' && digests.has(taskWeb[0].imageDigest), 'running_web_mismatch');
   }
-  return running.tasks.length;
+  return { count: running.tasks.length, taskDefinition: service.taskDefinition,
+    deploymentId: service.deployments[0].id, digests };
 }
 
 export async function release(deployment, {
@@ -300,7 +314,7 @@ export async function release(deployment, {
       return json(raw);
     };
     verifyCaller(await aws(['sts', 'get-caller-identity']), context);
-    const webTasks = await verifyWeb(aws, deployment, context);
+    const webIdentity = await verifyWeb(aws, deployment, context);
     let config = { schemaVersion: 1, mode: 'prepare', hostOnly: true, expectedAccountId: context.account };
     if (context.mode === 'collect') {
       const expected = deployment.inventory;
@@ -445,7 +459,8 @@ export async function release(deployment, {
     }
     validateRuntimeSmokeConfig(config, now());
     const verificationDeadline = runtimeSmokeDeadline(config, now(), deadline);
-    need(now() < verificationDeadline, 'release_timeout');
+    const authDeadline = verificationDeadline - (config.mode === 'verify' ? POST_WEB_RECHECK_MS : 0);
+    need(now() < authDeadline, 'release_timeout');
     const configFile = join(directory, 'runtime-smoke.json');
     writePrivate(configFile, config);
     const credentials = readSmokeCredentials(env.SMOKE_CREDENTIAL_FILE);
@@ -455,15 +470,15 @@ export async function release(deployment, {
         publicUrl: env.PUBLIC_URL, cloudfrontDomain: env.CLOUDFRONT_DOMAIN,
         email: credentials?.email, password: credentials?.password,
         runtimeConfig: readRuntimeSmokeConfig(configFile, env.SMOKE_CREDENTIAL_FILE, now()),
-      }, { tempRoot: directory, now, deadline: verificationDeadline });
+      }, { tempRoot: directory, now, deadline: authDeadline });
     } catch (error) {
-      need(now() < verificationDeadline, 'release_timeout');
+      need(now() < authDeadline, 'release_timeout');
       const failure = smokeFailure(error);
       if (error instanceof SmokeError) failure.inventory_quality = error.inventory_quality;
       failure.collection_attempts = collectionAttempts;
       throw failure;
     }
-    need(now() < verificationDeadline, 'release_timeout');
+    need(now() < authDeadline, 'release_timeout');
     need(result?.status === 'ok' && result.mode === config.mode, 'runtime_proof_required');
     // Authenticate performs the actual checks; reject incomplete adapter results as well.
     if (config.mode === 'verify') {
@@ -477,12 +492,28 @@ export async function release(deployment, {
         ['partial', 'failed', 'stale', 'missing', 'unknown', 'pending', 'invalid'].every(key =>
           quality.counts[key] === 0 && Array.isArray(quality.types?.[key]) && quality.types[key].length === 0) &&
         quality.status === 'complete' && result.workers === 2, 'complete_runtime_proof_required');
+      const recheckDeadline = Math.min(verificationDeadline, now() + POST_WEB_RECHECK_MS);
+      await verifyWeb(async args => {
+        need(recheckDeadline - now() >= 15_000, 'web_recheck_timeout');
+        const started = now();
+        let response;
+        try { response = await aws(args, undefined, 15_000); }
+        catch (error) {
+          need(now() < recheckDeadline && now() - started < 15_000 &&
+            !(error instanceof ReleaseError && ['aws_timeout', 'release_timeout'].includes(error.message)),
+          'web_recheck_timeout');
+          throw error;
+        }
+        need(now() < recheckDeadline && now() - started < 15_000, 'web_recheck_timeout');
+        return response;
+      }, deployment, context, webIdentity);
+      need(now() < recheckDeadline, 'web_recheck_timeout');
     }
     return config.mode === 'verify'
       ? { status: 'full_verified', mode: 'verify',
         inventory_policy: config.inventoryPolicy, inventory_quality: result.inventory_quality,
-        collection_attempts: collectionAttempts, web_tasks: webTasks, workers: 2, remaining_prerequisites: 'not_assessed' }
-      : { status: 'prepared', mode: 'prepare', web_tasks: webTasks };
+        collection_attempts: collectionAttempts, web_tasks: webIdentity.count, workers: 2, remaining_prerequisites: 'not_assessed' }
+      : { status: 'prepared', mode: 'prepare', web_tasks: webIdentity.count };
   } catch (error) {
     failed = true;
     const failure = error instanceof ReleaseError ? error : new ReleaseError('runtime_release_failed');

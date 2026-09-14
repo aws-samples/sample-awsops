@@ -6,6 +6,8 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
+- `v2/ci_web_read.py` and `v2/ci_web_deploy.py` are unwired web release primitives. Only allowlisted idempotent reads raise typed transient errors; one shared deadline bounds retries and subprocess cleanup. Identity/permission/unknown failures are fatal; writes remain single-attempt. Exact failed/replaced ECS deployments fail promptly, with at most 15 seconds for the known old PRIMARY in receipt verification. Tests are `v2/test_ci_web_read.py` and `v2/test_ci_web_deploy.py`.
+- `v2/automatic-migration-policy.mjs` admits a conservative additive SQL subset only when `AUTOMATIC_MIGRATION=1`. Check all actual pending files before pending SQL, ledger upgrades or reader synchronization; unknown syntax requires reviewed standalone migration. `migrate.mjs` uses `pg_try_advisory_lock` and holds acquired locks through SQL-reader synchronization; contention fails immediately. Tests: `v2/ci/automatic-migration-policy.test.mjs`, `migration-runtime.test.mjs` and real PostgreSQL `migration.itest.mjs`. Contract and operator scope: `docs/runbooks/release-safety-primitives.md` (ADR-001/005).
 - `v2/ci_web_image.py` — preparatory web provenance helper; no workflow caller yet.
   `promote` composes caller/context/source/migration/producer checks before publishing only
   the validated project's digest. Every promotion requires a nonempty preflight digest;
@@ -358,14 +360,24 @@ Identical RPC/ledger suffixes are not interchangeable. Partial/unknown outcomes 
 stop even under limiter/hydrate pressure. Diagnose capacity, reachability or denials before
 an authorized fresh bounded rerun; do not weaken acceptance or suppress the schedule.
 Full SSM/AgentCore/model and both owned worker proofs remain required afterward.
+Collect then rechecks service/list-tasks/describe-tasks against the original opaque
+PRIMARY deployment ID, immutable task-definition ARN, count and ECR digest set before
+`full_verified`, without another ECR/tag lookup. A changed ID fails even with the same
+task definition. These are start/end observations, not continuous or atomic history proof.
+Prepare has no closing recheck.
 Private credentials/configuration and cleanup, restrictive consumer sessions and
 explicit capability activation remain mandatory integration prerequisites.
 See [runtime-foundation.md](../docs/runbooks/runtime-foundation.md#strict-release-controller-capability)
 for budgets and [runtime-verifier-sessions.md](../docs/runbooks/runtime-verifier-sessions.md)
-for session boundaries. The 17-minute reserve covers only the single-pass 1,010-second
-base path plus 10 seconds. Extra 35-second reads need at least 25 seconds saved elsewhere;
-the minimum 180-second retry overhead needs at least 170 seconds saved, without counting
-workers twice. More reads/waits/overhead need more time; no extras are guaranteed.
+for session boundaries. The 18-minute reserve covers the single-pass 1,060-second
+path plus 20 seconds. Auth proof ends 50 seconds before the original proof deadline,
+reserving three sequential 15-second closing reads plus five seconds overhead.
+Collection has at most 720 seconds; the 450-second floor puts last admission at
+270 seconds minus clock preparation/earlier bounds. Extra 35-second reads need at
+least 15 seconds saved. Full retry overhead is at least 215 seconds, needing 195 saved:
+the helper's remaining 180-second admission allowance follows a 35-second confirmation
+read. Worker allowances are reused, not counted twice. More reads/waits/overhead need
+more time; no extras or continuous identity guarantee are promised.
 CLI inputs and fixture prerequisites:
 [controller CLI contract](../docs/runbooks/runtime-foundation.md#controller-cli-contract).
 Catalog/per-type timeouts:

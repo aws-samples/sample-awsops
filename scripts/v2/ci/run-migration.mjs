@@ -322,13 +322,16 @@ async function failureLogs(record, e, deps) {
         'database connectivity'],
         [has(/^SQLSTATE=(28P01|28000)$/), 'database authentication'],
         [has(/^SQLSTATE=42501$/), 'database permission'],
-        [has(/^SQLSTATE=(55P03|40P01)$/), 'migration lock'],
+        [has(/^SQLSTATE=(55P03|40P01)$/), 'database lock contention'],
         [has(/^SQLSTATE=57014$/), 'database timeout'],
         ...groups.filter(label => label !== 'database connectivity').map(label => [true, label]),
         [/^(?:.*: )?(?:Aurora secret requires nonempty username and password strings|SQL-reader secret requires username awsops_sql_reader and a nonempty password string|Secret must contain a JSON object in SecretString)$/m.test(messages), 'secret configuration'],
         [/^sql-reader: awsops_sql_reader has elevated attributes \(/m.test(messages), 'SQL-reader elevation'],
         [/^sql-reader sync enabled but awsops_sql_reader is missing; apply its migration first$/m.test(messages), 'SQL-reader missing role'],
         [/^checksum drift: applied (baseline|migration) /m.test(messages), 'migration checksum'],
+        [/^Concurrent migration is already running;/m.test(messages), 'migration lock'],
+        [/^Automatic migration blocked: /m.test(messages), 'automatic SQL policy'],
+        [/^Migration advisory lock returned an invalid result$/m.test(messages), 'invalid migration lock result'],
         [/^Refusing initialization of a non-empty database without schema_migrations$/m.test(messages), 'bootstrap refused nonempty database'],
       ].filter(([matched]) => matched).map(([, label]) => label);
       summary = `Migration failure logs inspected; categories: ${categories.join(', ') || 'unclassified (inspect the private log stream)'}`;

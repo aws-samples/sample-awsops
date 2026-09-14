@@ -290,6 +290,15 @@ ECR digest lookup may return multiple tag entries for one manifest. Every entry 
 match the configured account/repository, one digest and identical manifest bytes before
 normalization and hash/ARM64 validation. Tag lookup still binds every entry to the
 requested tag; unrelated entries never become valid aliases.
+Collect records the initial opaque PRIMARY `deployment.id`, immutable task-definition
+ARN, task count and validated ECR digest set. After HTTP/model/worker proof and before
+`full_verified`, service, task-list and task-description reads must still match that
+original baseline and the required stable/healthy state. A changed deployment ID fails
+even if the task-definition ARN is unchanged. The closing check reuses the original
+task-definition proof and digest set; it never resolves the ECR tag again.
+These are bounded start/end observations, not a continuous-identity guarantee, atomic
+lock or history audit; an unobserved intermediate change/restore is not disproved.
+Prepare retains its existing result and has no closing web recheck.
 Use the [restrictive session contract](runtime-verifier-sessions.md) and private
 0700/0600 credential/state files. Both controller modes require exactly one enabled
 host matching the configured account and no enabled foreign accounts. This is the
@@ -330,30 +339,37 @@ Code hash and a nonempty RevisionId are captured before collection
 and rechecked within 15 seconds afterward, before final authenticated runtime proof.
 Changed/incomplete code metadata or read failure blocks that proof.
 
-The outer controller cap is 50 minutes; verification also expires at DB marker plus
-30 minutes, whichever comes first. The 17-minute reserve covers only the single-pass
+The outer controller cap is 50 minutes. In collect mode, the original proof deadline
+is the earlier of that cap and DB marker plus 30 minutes. Authentication/model/worker
+proof receives a deadline 50 seconds earlier. The closing web check is then capped
+at the earlier of the original proof deadline and 50 seconds from its own start:
+three sequential AWS reads capped at 15 seconds each, plus five seconds for overhead.
+Prepare's deadline handling is unchanged.
+The 18-minute reserve covers only the single-pass
 base path: five 35-second HTTP calls, one 80-second probe, two 370-second worker paths
-and the 15-second code/revision recheck total 1,010 seconds, leaving 10 seconds.
+plus the 15-second collector recheck and 50-second closing web check total 1,060 seconds,
+leaving 20 seconds of margin.
 This assumes one collection-ledger read and the known CloudFront row on the first
 inventory page. Each extra page or collection re-poll needs another full 35-second
 request allowance. If collection used its maximum window, one extra request needs
-at least 25 seconds saved elsewhere; otherwise proof admission fails. Additional
+at least 15 seconds saved by earlier work; otherwise proof admission fails. Additional
 requests, polling waits and local overhead consume more time. The reserve does not
 promise those extras fit. Initial prepare adds three bounded 35-second HTTP reads/requests; its DB
-request and subsequent host proof consume the nominal 13-minute collection window,
+request and subsequent host proof consume the nominal 12-minute collection window,
 as does local overhead. Each type needs at least 450 seconds remaining before admission;
 confirmed busy/superseded or throttled retries share that remaining global window.
 Transport uncertainty, partial/failed/unknown results cannot become success.
 
 Final proof repeats authentication and requires strict fresh inventory/known CloudFront,
 SSM/AgentCore/model evidence and terminal success of both owned worker types. The shared
-probe's one contention retry is conditional: after validating the collision, admission
-needs 65 seconds of cooldown, a 35-second recheck, an 80-second probe and both 370-second
-worker allowances still available. The minimum added retry allowance is 180 seconds:
-the not-yet-started workers reuse their original allowances and are not counted twice.
-After maximum-window collection, even that minimum needs at least 170 seconds saved
-elsewhere; collision-validation reads and other overhead need more. Without enough
-remaining time, admission fails before cooldown. No retry or extra page is promised.
+probe's one contention retry is conditional. Its full additional allowance is at least
+215 seconds: a 35-second confirmation ledger read before retry admission, a 65-second
+cooldown, a 35-second collection recheck and an 80-second retry probe. At admission the
+confirmation read is already spent, so the helper requires the remaining 180 seconds
+plus both 370-second worker allowances. Those workers reuse their original allowances
+and are not counted twice. After maximum-window collection, the full retry needs at
+least 195 seconds saved by earlier work; additional reads, waits and overhead need more.
+Insufficient remaining time fails before cooldown. No retry or extra page is promised.
 Collection invokes may upsert/prune application inventory in Aurora, and full proof may
 bill a bounded model call and submit internal worker jobs. These are operator verification
 effects, not an ADR-005 AWS-resource mutation exception. No direct CI model/SQS/DB grants
@@ -400,15 +416,16 @@ must fail for capacity/permission investigation. The separate deployment audit r
 observation-only and makes no collection invokes.
 
 The budget is a fail-closed admission policy, not a worst-case completion guarantee.
-With the full 780-second collection allocation, a new type needs admission by
-330 seconds to retain its 450-second call allowance; clock-prepare time and an earlier
+With the full 720-second collection allocation, a new type needs admission by
+270 seconds to retain its 450-second call allowance; clock-prepare time and an earlier
 outer deadline shorten that opportunity. A 420-second Lambda timeout is an upper
 bound, not an assumed duration for every type. Slow or contended workloads can
 intentionally leave later types unstarted and block release.
 
 A sanitized operator measurement on 2026-09-14 used a hash-verified deployed collector,
 all 43 catalog types, four synchronous lanes, reserved concurrency four, a 450-second
-admission floor and a 780-second global collection budget. All 43 per-type results succeeded
+admission floor and the then-current 780-second global collection budget (the current
+allocation is 720 seconds). All 43 per-type results succeeded
 with known counts and zero unknown attributes in **57.461 seconds**; the last admitted
 call was at **39.802 seconds**. A following SQL-reader check verified post-marker ledger
 evidence for all 43 types with no gaps. The EC2 result records three attempts, but the
@@ -419,7 +436,7 @@ The operator separately verified the running Steampipe task configuration as
 `max_concurrency = 4`, `bucket_size = 4`, `fill_rate = 2.0`. The measured collection
 phase is therefore a concrete feasibility counterexample to a claim that the catalog
 can never fit, not a throughput guarantee. It does not include the complete
-authentication/model/worker proof, establish future or larger-workload latency, or
+authentication/model/worker or closing web proof, establish future or larger-workload latency, or
 authorize another deployment.
 
 ### Controller CLI contract
@@ -517,6 +534,8 @@ context/source, deployment/web identity, collection/proof and local execution fa
 | `web_service_unavailable`, `web_service_not_stable` | The expected ECS service is missing, ambiguous, inactive or not fully stable at the selected revision/count. Inspect the actual rollout before verification. |
 | `web_task_definition_mismatch`, `web_container_mismatch` | Task role/platform or the essential web container/image does not match the deployment. Reconcile the reviewed task definition and image rather than weakening identity checks. |
 | `web_task_list_incomplete`, `web_tasks_unavailable`, `running_web_mismatch` | Task enumeration is incomplete, task reads failed, or running task health/revision/digest disagrees. Obtain complete matching task evidence; a partial list is not full deployment proof. |
+| `web_identity_changed` | Closing validation could not reconfirm the original deployment ID/task definition/count/digest set or required stable/healthy state. Inspect the observed rollout; even a new deployment ID with the same task definition fails. Do not adopt a new baseline or re-resolve the tag to pass. This code is not a history audit. |
+| `web_recheck_timeout` | A closing read could not fit its full 15-second allowance, timed out, or exhausted the bounded 50-second closing phase inside the original proof window. Inspect the metadata-read timing before a fresh bounded attempt; do not extend the deadline or accept HTTP proof alone. |
 | `aws_throttled`, `aws_timeout`, `aws_request_failed`, `aws_access_denied` | AWS metadata read/recheck failed, including the final collector recheck. These are distinct from remapped invoke failures. Identify the read and investigate throttling, timing/provider failure or access under existing bounds; never treat unavailable metadata as empty or valid. |
 | `invalid_collection_catalog` | Missing pinned membership, invalid names/shape or bounds. Reconcile the reviewed collector source, applied hash and catalog; do not pad the response or waive required types. |
 | `inventory_code_mismatch` | Configured hash/revision and live collector evidence disagree or cannot be verified. Reconcile the reviewed deployment; discard the attempt's readiness claim. |

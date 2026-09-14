@@ -253,10 +253,21 @@ must complete each owned RPC and the authenticated verifier must independently
 observe strict post-marker evidence for every returned type. The shared helper's
 nominal 1,200-second release-mode poll cap is clipped by the existing deadline;
 it does not extend the marker's 30-minute lifetime or the controller's 50-minute cap.
-The controller's 17-minute reserve covers only the single-pass 1,010-second base proof
-and code/revision read, plus 10 seconds of margin. Extra pages/re-polls and the
-conditional contention retry require time saved elsewhere; they are not guaranteed
-after maximum-window collection.
+The controller reserves 18 minutes: the single-pass proof, collector recheck and
+50-second closing web check total 1,060 seconds, leaving 20 seconds of margin.
+Authentication/model/workers must finish 50 seconds before the original proof deadline.
+Closing service/list-tasks/describe-tasks reads each have a 15-second cap, with five
+seconds of overhead, and stay inside the original deadline. They reuse the initial
+deployment ID, immutable task-definition proof, count and ECR digest set without a
+new tag lookup. Matching start/end observations do not prove continuous identity or
+exclude an unseen intermediate restore. Prepare has no closing recheck.
+Collection has at most 720 seconds; the 450-second admission floor leaves a latest
+start of 270 seconds, reduced by clock preparation and earlier deadlines. An extra
+35-second read needs at least 15 seconds saved. A full retry adds at least 215 seconds
+(35-second confirmation, 65-second cooldown, 35-second recheck, 80-second probe),
+requiring at least 195 seconds saved. The helper checks the remaining 180 seconds
+plus worker allowances only after confirmation; workers are not counted twice.
+Extra reads/waits/overhead need more time, and no extras are guaranteed.
 See [the controller budget and operational acceptance contract](runtime-foundation.md#strict-release-controller-capability).
 
 There is no rolling prior-success substitute or degraded-release acceptance.
