@@ -56,7 +56,7 @@ secrets-manager) — installed by `make deps`.
 - Fixed public audit fields distinguish command, capture, retention and cleanup status; numeric standard Terraform success counts never include resource/output text. Missing summaries stay unavailable. Schema-2 failure HMAC uses its own domain with the existing CBC cipher/key. Recovery verifies the exact failed attempt and emits fixed timeout/errors; private inspection remains authenticated and bounded to 32 MiB.
 - The sealing payload reaches OpenSSL through stdin, with no plaintext staging file. Captured Terraform runs in a separate session; first-interrupt forwarding, second-interrupt group kill and parent-death protection govern cancellation. Sealing/storage/publication failures preserve the command exit.
 - Cleanup deletes only after the identified upload's literal success; failed/cancelled/skipped/unknown outcomes retain ciphertext privately. Audits distinguish pending_upload, retained_unpublished and final cleanup outcomes. No broad runner-temp sweep, shared-UID isolation or SIGKILL guarantee.
-- `v2/ci_deployment_audit.py` — manual dev audit with existing identity guards, a restrictive session policy, fixed reads/SELECTs and safe projections. It shares only backend parsing with `ci_verifier_sessions.py`; its grants and no-invoke behavior are unchanged. Web observations do not claim an applied revision; timestamps do not classify product freshness, and observed types do not establish completeness. Offline fixtures: `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`; operator guide: `docs/runbooks/deployment-audit.md`.
+- `v2/ci_deployment_audit.py` — manual dev audit with existing identity guards, a restrictive session policy, fixed reads/SELECTs and safe projections. It shares backend parsing and state-KMS resource selection with `ci_verifier_sessions.py`; the decrypt resource follows the shared `encrypt` rule. State-object/account/S3-context restrictions and the no-invoke boundary remain. Web observations do not claim an applied revision; timestamps do not classify product freshness, and observed types do not establish completeness. Offline fixtures: `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`; operator guide: `docs/runbooks/deployment-audit.md`.
 - `v2/ci_verifier_sessions.py` — pure policy generator for manual collection and Deploy Web verification:
   backend state-read and workload policies, never persistent IAM changes or AWS calls.
   Manual `collect-runtime.yml` dev dispatches support both phases and prepare/collect.
@@ -351,9 +351,10 @@ The first chronological terminal failure stops new type admission; admitted work
 and untouched types remain structured `not_started`. Six status counts partition
 `expected`; a selected type whose first call is blocked by the 450-second floor is `deadline`/zero attempts,
 while never-selected types are `not_started`/zero attempts. Inventory quality gaps can
-still overlap. Preserve the full `Runtime release: <reason>` envelope and nested
-`Runtime smoke:` / `Authenticated smoke:` prefixes; identical RPC/ledger suffixes
-are not interchangeable. Partial/unknown outcomes intentionally
+still overlap. Preserve the full `Runtime release: <reason>` envelope. Passed-through
+`SmokeError` messages retain nested `Runtime smoke:` / `Authenticated smoke:` prefixes;
+direct `RuntimeSmokeError` config exceptions can become controller fallbacks.
+Identical RPC/ledger suffixes are not interchangeable. Partial/unknown outcomes intentionally
 stop even under limiter/hydrate pressure. Diagnose capacity, reachability or denials before
 an authorized fresh bounded rerun; do not weaken acceptance or suppress the schedule.
 Full SSM/AgentCore/model and both owned worker proofs remain required afterward.
@@ -365,8 +366,10 @@ for session boundaries. The 17-minute reserve covers only the single-pass 1,010-
 base path plus 10 seconds. Extra 35-second reads need at least 25 seconds saved elsewhere;
 the minimum 180-second retry overhead needs at least 170 seconds saved, without counting
 workers twice. More reads/waits/overhead need more time; no extras are guaranteed.
-CLI inputs, per-type versus catalog timeouts and prerequisites:
+CLI inputs and fixture prerequisites:
 [controller CLI contract](../docs/runbooks/runtime-foundation.md#controller-cli-contract).
+Catalog/per-type timeouts:
+[collection effects and proof](../docs/runbooks/runtime-verifier-sessions.md#collection-effects-and-proof).
 `remaining_prerequisites: "not_assessed"` preserves separate workflow/plan/promotion gates.
 Use the canonical [fixed-code operator table](../docs/runbooks/runtime-foundation.md#fixed-diagnostics-and-remaining-prerequisites).
 Combined tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.

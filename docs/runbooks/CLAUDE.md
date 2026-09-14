@@ -266,9 +266,10 @@ and untouched types remain `not_started`.
 A selected type whose first call is refused by the 450-second floor is `deadline` with zero attempts;
 never-selected types are `not_started` with zero attempts. Do not classify by attempts alone
 or apply this partition rule to overlapping `inventory_quality` gaps.
-Preserve exact diagnostics: outer `Runtime release: <reason>`, with helper
-`Runtime smoke:` / `Authenticated smoke:` prefixes retained. RPC and ledger suffixes
-are not interchangeable; the operator table documents full reasons.
+Preserve exact diagnostics: outer `Runtime release: <reason>`; passed-through `SmokeError`
+messages retain `Runtime smoke:` / `Authenticated smoke:` prefixes. Direct `RuntimeSmokeError`
+config failures can become controller fallbacks. RPC and ledger suffixes are not
+interchangeable; the operator table enumerates controller reasons and describes helper families.
 Partial/unknown outcomes are expected hard stops even under limiter/hydrate pressure.
 Use bounded capacity/reachability/permission diagnosis before an authorized fresh rerun,
 never automatic permission widening, degraded acceptance or scheduler suppression.
@@ -278,6 +279,6 @@ The 17-minute reserve covers only the single-pass 1,010-second base path plus 10
 Extra 35-second reads need at least 25 seconds saved elsewhere; the minimum 180-second
 retry overhead needs at least 170 seconds saved, reusing the original worker allowances.
 Additional reads/waits/overhead require more time; no extras are guaranteed.
-Preserve the CLI/input and catalog/per-type timeout distinction in
-`runtime-foundation.md#controller-cli-contract` and `runtime-verifier-sessions.md`.
+CLI inputs and fixture prerequisites: `runtime-foundation.md#controller-cli-contract`.
+Catalog/per-type timeouts: `runtime-verifier-sessions.md#collection-effects-and-proof`.
 Combined checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.

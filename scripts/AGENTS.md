@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4bc66bb0e4b8 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 89bbc93fda96 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -45,7 +45,7 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 - Fixed public audit fields distinguish command, capture, retention and cleanup status; numeric standard Terraform success counts never include resource/output text. Missing summaries stay unavailable. Schema-2 failure HMAC uses its own domain with the existing CBC cipher/key. Recovery verifies the exact failed attempt and emits fixed timeout/errors; private inspection remains authenticated and bounded to 32 MiB.
 - The sealing payload reaches OpenSSL through stdin, with no plaintext staging file. Captured Terraform runs in a separate session; first-interrupt forwarding, second-interrupt group kill and parent-death protection govern cancellation. Sealing/storage/publication failures preserve the command exit.
 - Cleanup deletes only after the identified upload's literal success; failed/cancelled/skipped/unknown outcomes retain ciphertext privately. Audits distinguish pending_upload, retained_unpublished and final cleanup outcomes. No broad runner-temp sweep, shared-UID isolation or SIGKILL guarantee.
-- `v2/ci_deployment_audit.py` is manual dev-only, with a restrictive session and fixed reads/SELECTs. It shares only backend parsing with `ci_verifier_sessions.py`; grants and no-invoke behavior stay unchanged. Preserve identity/resource guards and safe output projection; current web status, event metrics and observed SQL-reader rows never establish full deployment readiness. Tests: `test_ci_deployment_audit.py`; guide: `docs/runbooks/deployment-audit.md`.
+- `v2/ci_deployment_audit.py` is manual dev-only, with a restrictive session and fixed reads/SELECTs. It shares backend parsing and state-KMS resource selection with `ci_verifier_sessions.py`; the decrypt resource follows the shared `encrypt` rule. State-object/account/S3-context restrictions and the no-invoke boundary remain. Preserve identity/resource guards and safe output projection; current web status, event metrics and observed SQL-reader rows never establish full deployment readiness. Tests: `test_ci_deployment_audit.py`; guide: `docs/runbooks/deployment-audit.md`.
 - `v2/ci_verifier_sessions.py` supplies policies for manual collection and Deploy Web verification:
   backend/workload restrictions, no AWS calls or persistent IAM changes. Workload state must
   come from the consumer's private capture. Manual dev collect-runtime dispatches support
@@ -219,8 +219,9 @@ and untouched types remain `not_started`. Six status buckets partition `expected
 a selected type unable to admit its first call under the 450-second floor is
 `deadline`/zero attempts; never-selected is
 `not_started`/zero attempts. Inventory quality gaps may overlap. Keep the outer
-`Runtime release:` and nested helper prefixes; RPC/ledger suffixes identify different
-reasons and must not be normalized together. Partial/unknown results are expected hard
+`Runtime release:` and the prefixes of passed-through `SmokeError` messages;
+direct `RuntimeSmokeError` config failures can become controller fallbacks.
+RPC/ledger suffixes must not be normalized together. Partial/unknown results are expected hard
 stops under limiter/hydrate load too; investigate capacity, reachability or denials
 before an authorized fresh bounded rerun. No weaker acceptance or scheduler suppression.
 Collector hash/RevisionId must remain stable before/after collection; then full
@@ -233,7 +234,8 @@ saved elsewhere; the minimum 180-second retry overhead needs at least 170 second
 reusing the original worker allowances. More reads/waits/overhead need more time.
 `capture` reads private deployment JSON on stdin and emits `deployment_file` to
 `GITHUB_OUTPUT`; `run` reads `RUNTIME_DEPLOYMENT_FILE`. Both need private credentials.
-Full CLI inputs/timeouts: `docs/runbooks/runtime-foundation.md#controller-cli-contract`.
+CLI inputs and fixture prerequisites: `docs/runbooks/runtime-foundation.md#controller-cli-contract`.
+Catalog/per-type timeouts: `docs/runbooks/runtime-verifier-sessions.md#collection-effects-and-proof`.
 `remaining_prerequisites: "not_assessed"` retains separate workflow/plan/promotion gates;
 use the canonical fixed-code operator table in that runbook.
 Tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
