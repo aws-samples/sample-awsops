@@ -1364,7 +1364,7 @@ class PrivatePlanTests(unittest.TestCase):
             work = self.root / f'policy-error-{index}'
             work.mkdir(mode=0o700)
             message = f'\naws: [ERROR]: An error occurred ({code}) when calling the GetBucketPolicyStatus operation: PRIVATE\n'
-            def transport(args, output, **kwargs):
+            def transport(args, output, message=message, **kwargs):
                 if 'get-bucket-policy-status' in args:
                     return self.module.run_command(args, output,
                         env={'PATH': str(tool), 'ERROR_FIXTURE': message}, timeout=5)
@@ -1379,3 +1379,14 @@ class PrivatePlanTests(unittest.TestCase):
                 operation.posture()
                 self.assertEqual(operation.encryption[0], KEY_ARN)
         self.assertFalse(self.fake.objects)
+
+    def test_captured_aws_cli_23511_error_maps_to_the_observed_missing_policy(self):
+        root = Path(__file__).parent / 'fixtures/aws-cli'
+        metadata = json.loads((root / '2.35.11-get-bucket-policy-status-no-policy.json').read_text())
+        captured = (root / metadata['fixture']).read_bytes()
+        self.assertEqual(hashlib.sha256(captured).hexdigest(), metadata['sha256'])
+        self.assertEqual(metadata['cli_version'], 'aws-cli/2.35.11')
+        self.assertEqual(self.module.command_error(
+            ['aws', 's3api', 'get-bucket-policy-status'], captured), 'no_bucket_policy')
+        self.assertEqual(self.module.command_error(
+            ['aws', 's3api', 'get-bucket-encryption'], captured), 'command_failed')

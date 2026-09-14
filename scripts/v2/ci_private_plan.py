@@ -137,7 +137,8 @@ def command_error(args, error):
             or args[index] not in {'s3api', 'kms'}
             or args[index + 1] not in AWS_OPERATIONS[args[index]]):
         return 'command_failed'
-    # AWS CLI emits both legacy headers and the newer explicit error-level prefix.
+    # AWS CLI 2.35.11 errorformat.write_error emits this optional prefix.
+    # Its captured, identifier-free response is in fixtures/aws-cli.
     match = re.search(rb'(?m)^(?:aws: \[ERROR\]: )?An error occurred \(([A-Za-z0-9]+)\) when calling the ([A-Za-z0-9]+) operation:', error)
     if not match:
         return None
