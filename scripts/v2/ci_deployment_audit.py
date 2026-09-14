@@ -161,16 +161,13 @@ def publish_policy(policy):
     require(os.environ.get("GITHUB_OUTPUT"))
     text = json.dumps(policy, separators=(",", ":"))
     require(len(text) <= 2048)
-    for statement in policy["Statement"]:
-        resources = statement["Resource"]
-        for resource in resources if isinstance(resources, list) else [resources]:
-            if resource.startswith("arn:"):
-                print("::add-mask::" + resource)
-                if resource.startswith("arn:aws:s3:::"):
-                    print("::add-mask::" + resource.removeprefix("arn:aws:s3:::"))
-    print("::add-mask::" + text)
+    directory = Path(os.environ["AUDIT_DIR"])
+    require(directory.is_dir() and not directory.is_symlink() and directory.stat().st_mode & 0o077 == 0)
+    path = directory / "session-policy.json"
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as file:
+        file.write(text)
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-        output.write(f"session_policy={text}\n")
+        output.write(f"policy_file={path}\n")
 
 
 def validate_outputs(outputs, env):

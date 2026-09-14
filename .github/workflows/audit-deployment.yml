@@ -61,7 +61,37 @@ jobs:
         id: scope
         env:
           BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
-        run: python3 scripts/v2/ci_deployment_audit.py guard
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -m 700 "$AUDIT_DIR"
+          python3 scripts/v2/ci_deployment_audit.py guard
+      - name: Mask and publish the backend session policy
+        id: backend_session
+        uses: actions/github-script@v7
+        env:
+          POLICY_FILE: ${{ steps.scope.outputs.policy_file }}
+        with:
+          script: |
+            const fs = require('fs');
+            const file = process.env.POLICY_FILE;
+            try {
+              if (file !== `${process.env.AUDIT_DIR}/session-policy.json`) throw new Error();
+              const text = fs.readFileSync(file, 'utf8');
+              const policy = JSON.parse(text);
+              core.setSecret(text);
+              for (const statement of policy.Statement) {
+                for (const arn of [].concat(statement.Resource)) {
+                  if (arn.startsWith('arn:')) core.setSecret(arn);
+                  if (arn.startsWith('arn:aws:s3:::')) core.setSecret(arn.slice('arn:aws:s3:::'.length));
+                }
+              }
+              core.setOutput('session_policy', text);
+            } catch {
+              core.setFailed('audit_policy_publication_failed');
+            } finally {
+              if (file === `${process.env.AUDIT_DIR}/session-policy.json`) fs.rmSync(file, {force: true});
+            }
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
@@ -69,7 +99,7 @@ jobs:
           mask-aws-account-id: true
           unset-current-credentials: true
           role-duration-seconds: 900
-          inline-session-policy: ${{ steps.scope.outputs.session_policy }}
+          inline-session-policy: ${{ steps.backend_session.outputs.session_policy }}
       - name: Verify the existing development caller
         run: python3 scripts/v2/ci_deployment_audit.py caller
       - name: Capture only named outputs and remove backend immediately
@@ -79,7 +109,6 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          mkdir -m 700 "$AUDIT_DIR"
           export TF_DATA_DIR="$AUDIT_DIR/tfdata"
           export TF_WORKSPACE=default
           trap 'rm -rf -- "$TF_DATA_DIR"; rm -f -- "$AUDIT_DIR/backend.hcl"' EXIT
@@ -105,6 +134,31 @@ jobs:
       - name: Validate captured identities and restrict the audit session
         id: read_scope
         run: python3 scripts/v2/ci_deployment_audit.py audit-policy --directory "$AUDIT_DIR"
+      - name: Mask and publish the workload session policy
+        id: workload_session
+        uses: actions/github-script@v7
+        env:
+          POLICY_FILE: ${{ steps.read_scope.outputs.policy_file }}
+        with:
+          script: |
+            const fs = require('fs');
+            const file = process.env.POLICY_FILE;
+            try {
+              if (file !== `${process.env.AUDIT_DIR}/session-policy.json`) throw new Error();
+              const text = fs.readFileSync(file, 'utf8');
+              const policy = JSON.parse(text);
+              core.setSecret(text);
+              for (const statement of policy.Statement) {
+                for (const arn of [].concat(statement.Resource)) {
+                  if (arn.startsWith('arn:')) core.setSecret(arn);
+                }
+              }
+              core.setOutput('session_policy', text);
+            } catch {
+              core.setFailed('audit_policy_publication_failed');
+            } finally {
+              if (file === `${process.env.AUDIT_DIR}/session-policy.json`) fs.rmSync(file, {force: true});
+            }
       - name: Assume the existing role for workload reads only
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -113,7 +167,7 @@ jobs:
           mask-aws-account-id: true
           unset-current-credentials: true
           role-duration-seconds: 900
-          inline-session-policy: ${{ steps.read_scope.outputs.session_policy }}
+          inline-session-policy: ${{ steps.workload_session.outputs.session_policy }}
       - name: Read deployment, schedule execution and database observations
         timeout-minutes: 8
         run: python3 scripts/v2/ci_deployment_audit.py audit --directory "$AUDIT_DIR"

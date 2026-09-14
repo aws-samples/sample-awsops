@@ -318,6 +318,7 @@ def test_actual_workflow_guard_accepts_development():
 @pytest.mark.parametrize("failure", ["", "init", "output"])
 def test_actual_capture_keeps_outputs_private_and_removes_backend(tmp_path, failure):
     directory, binaries = tmp_path / "audit", tmp_path / "bin"
+    directory.mkdir(mode=0o700)
     binaries.mkdir()
     fake = binaries / "terraform"
     fake.write_text("""#!/usr/bin/env python3
@@ -487,19 +488,22 @@ def test_session_policy_fits_sts_limit_at_max_project_length():
     assert len(json.dumps(policy, separators=(",", ":"))) <= 2048
 
 
-def test_guard_publishes_only_validated_session_restriction(tmp_path, monkeypatch):
+def test_guard_publishes_only_validated_session_restriction(tmp_path, monkeypatch, capsys):
     for key, value in ENV.items():
         monkeypatch.setenv(key, value)
     output = tmp_path / "output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("AUDIT_DIR", str(tmp_path))
     monkeypatch.setenv("BACKEND_B64", base64.b64encode(BACKEND.encode()).decode())
     assert audit.main(["guard"]) == 0
     name, value = output.read_text().strip().split("=", 1)
-    assert name == "session_policy"
-    assert json.loads(value) == audit.backend_policy({**ENV, "BACKEND_B64": base64.b64encode(BACKEND.encode()).decode()})
+    assert name == "policy_file"
+    assert json.loads(Path(value).read_text()) == audit.backend_policy({**ENV, "BACKEND_B64": base64.b64encode(BACKEND.encode()).decode()})
+    assert Path(value).stat().st_mode & 0o777 == 0o600
+    assert not capsys.readouterr().out
     workflow_config = workflow()["jobs"]["audit"]["steps"]
     credential_step = next(s for s in workflow_config if s.get("uses", "").startswith("aws-actions/"))
-    assert credential_step["with"]["inline-session-policy"] == "${{ steps.scope.outputs.session_policy }}"
+    assert credential_step["with"]["inline-session-policy"] == "${{ steps.backend_session.outputs.session_policy }}"
     assert credential_step["with"]["role-duration-seconds"] == 900
 
 
@@ -551,18 +555,48 @@ def test_workload_policy_is_published_after_private_capture_without_aws(tmp_path
         (tmp_path / f"{key}.json").write_text(json.dumps(value))
     output = tmp_path / "policy-output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("AUDIT_DIR", str(tmp_path))
     monkeypatch.setattr(audit, "ReadAPI", lambda _: pytest.fail("policy construction must not call AWS"))
     assert audit.main(["audit-policy", "--directory", str(tmp_path)]) == 0
-    policy = json.loads(output.read_text().strip().split("=", 1)[1])
+    policy_file = Path(output.read_text().strip().split("=", 1)[1])
+    policy = json.loads(policy_file.read_text())
     assert policy == audit.session_policy(ENV, outputs())
     assert not any(action.startswith(("s3:", "kms:")) for s in policy["Statement"] for action in s["Action"])
-    assert "::add-mask::" in capsys.readouterr().out
+    assert not capsys.readouterr().out
     steps = workflow()["jobs"]["audit"]["steps"]
     captures = next(i for i, s in enumerate(steps) if s.get("name", "").startswith("Capture only"))
     scope = next(i for i, s in enumerate(steps) if s.get("id") == "read_scope")
     credentials = [i for i, s in enumerate(steps) if s.get("uses", "").startswith("aws-actions/")]
     assert credentials[0] < captures < scope < credentials[1]
-    assert steps[credentials[1]]["with"]["inline-session-policy"] == "${{ steps.read_scope.outputs.session_policy }}"
+    assert steps[credentials[1]]["with"]["inline-session-policy"] == "${{ steps.workload_session.outputs.session_policy }}"
+
+
+@pytest.mark.parametrize("step_id", ["backend_session", "workload_session"])
+def test_workflow_masks_policy_before_output_and_removes_private_file(tmp_path, step_id):
+    policy = audit.backend_policy({**ENV, "BACKEND_B64": base64.b64encode(BACKEND.encode()).decode()})
+    path = tmp_path / "session-policy.json"
+    path.write_text(json.dumps(policy))
+    step = next(s for s in workflow()["jobs"]["audit"]["steps"] if s.get("id") == step_id)
+    harness = """
+const masked = [];
+let published = false;
+const core = {
+  setSecret: text => masked.push(text),
+  setOutput: (name, text) => {
+    if (!masked.includes(text)) throw new Error('policy must be masked first');
+    published = name === 'session_policy';
+  },
+  setFailed: () => { process.exitCode = 1; }
+};
+"""
+    result = subprocess.run(["node", "-e", harness + step["with"]["script"] +
+                             "\nconsole.log(JSON.stringify({published, masks: masked.length}));"],
+                            env={**os.environ, "POLICY_FILE": str(path), "AUDIT_DIR": str(tmp_path)},
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["published"] and summary["masks"] > 1
+    assert not path.exists()
 
 
 def test_mixed_capture_times_are_reported_without_invented_product_freshness():
