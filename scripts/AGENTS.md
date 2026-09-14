@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b1ad1d4c6357 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f31c646f9291 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -57,7 +57,7 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   needs an activated runtime and private proof credentials/state for both push and dispatch.
   Missing proof fails closed; each refresh needs a nonempty policy. State must share the selected private directory.
   Prepare has no Lambda grant; collect permits only the
-  owned collector. The consumer enforces explicit catalog/CloudFront RequestResponse payloads
+  owned collector. The consumer enforces explicit catalog and validated per-type RequestResponse payloads
   (missing type means all), distinct catalog/succeeded replies and post-marker authenticated
   freshness/runtime/worker proof. Application inventory writes are operator collection, not an
   ADR-005 exception. Tests: `test_ci_verifier_sessions.py`; guide: `docs/runbooks/runtime-verifier-sessions.md`.
@@ -190,6 +190,62 @@ Require full HTTP timeouts remaining, and probe/worker budgets before billing or
 Collection windows are caps; late completion can fail admission.
 Post-marker running attempts with old/null previous success time out as collection_timeout;
 full-policy stale terminal evidence is collection_stale. Login/DB also require full timeouts.
+`readRuntimeSmokeConfig(file, credentialFile, now = Date.now())` accepts a finite numeric
+validation time; controller callers pass calibrated `now()` without changing marker/expiry.
+
+## Strict release controller capability
+
+`v2/ci/runtime-release.mjs` is unwired: Deploy Web remains DB-only and the manual
+collect-runtime workflow is absent. No flags/workflows are enabled. Future full
+release integration must require collect, never accept prepare or skip inactive prerequisites.
+It binds dev source/account/actual role, applied runtime identity and ARM64 web digest.
+Require the pinned 43-name baseline, source-AST checked; valid growth is allowed up
+to 128 types. Every returned type
+needs post-marker succeeded evidence, known counts and
+zero unknowns, with at most four concurrent in-flight synchronous owned calls. Prepare obtains authenticated
+DB time plus host proof; calibration anchors at request start and shifts the existing
+deadline equally. No lower-bound freshness tolerance or rolling prior success is introduced.
+Both modes require the enabled host only; collect's authenticated DB/host preflight
+fails `host_only_registry_required` before type calls. AWS CLI children use an explicit
+credential/settings allowlist, pinned path, disabled config/credential files/metadata
+and endpoint isolation; drop ambient profiles/providers/CA/proxy/hooks and CI secrets.
+First chronological terminal failure stops new type admission; admitted work settles
+and untouched types remain `not_started`. Six status buckets partition `expected`:
+a selected type unable to admit its first call under the 450-second floor is
+`deadline`/zero attempts; never-selected is
+`not_started`/zero attempts. Inventory quality gaps may overlap. Keep the outer
+`Runtime release:` and the prefixes of passed-through `SmokeError` messages;
+direct `RuntimeSmokeError` config failures can become controller fallbacks.
+RPC/ledger suffixes must not be normalized together. Partial/unknown results are expected hard
+stops under limiter/hydrate load too; investigate capacity, reachability or denials
+before an authorized fresh bounded rerun. No weaker acceptance or scheduler suppression.
+Collector hash/RevisionId must remain stable before/after collection; then full
+SSM/AgentCore/model and both owned worker proofs remain mandatory. Preserve private
+credentials/cleanup, restrictive consumer sessions and reviewed activation prerequisites.
+Collect's closing service/list/tasks reads reuse the original opaque deployment ID,
+immutable task-definition ARN, count and digest set; never resolve the ECR tag again.
+A changed ID fails even with the same task definition. Matching snapshots are not
+continuous/history proof or an atomic lock. Prepare has no closing recheck.
+Budgets and boundaries: `docs/runbooks/runtime-foundation.md#strict-release-controller-capability`
+and `runtime-verifier-sessions.md`. The 18-minute reserve covers a single-pass
+1,060-second path plus 20 seconds. Auth proof ends 50 seconds before the original
+deadline for three 15-second closing reads plus five seconds overhead, still within
+the original window. Collection is at most 720 seconds; 450-second admission requires
+a start by 270 seconds minus preparation/earlier bounds. An extra 35-second read
+needs at least 15 seconds saved. Full retry overhead is at least 215 seconds and
+needs 195 saved: confirmation spends 35 seconds before the helper's remaining
+180-second allowance. Worker allowances are reused. Extras are not guaranteed.
+`capture` reads private deployment JSON on stdin and emits `deployment_file` to
+`GITHUB_OUTPUT`; `run` reads `RUNTIME_DEPLOYMENT_FILE`. Both need private credentials.
+CLI inputs and fixture prerequisites: `docs/runbooks/runtime-foundation.md#controller-cli-contract`.
+Catalog/per-type timeouts: `docs/runbooks/runtime-verifier-sessions.md#collection-effects-and-proof`.
+`remaining_prerequisites: "not_assessed"` retains separate workflow/plan/promotion gates;
+use the canonical fixed-code operator table in that runbook.
+Tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
+The dated owner requirement supersedes the earlier CloudFront-only proposal.
+Four lanes do not promise fourfold throughput or completion for every workload.
+Keep the schedule active and fail closed on budget/permission/contention failures;
+the runbook records one feasible measured workload, not a latency guarantee.
 
 
 ## Private plan transport
