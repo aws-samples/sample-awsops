@@ -139,6 +139,9 @@ def _argv(service, operation, args):
 def _transient(stderr, label):
     # Parse the root error, not retry words inside an arbitrary provider message.
     text = stderr.decode("utf-8", errors="replace").strip()
+    # Current CLI releases wrap both service and transport errors. Strip only
+    # that fixed outer prefix; retry words inside a denial never change its type.
+    text = text.removeprefix("aws: [ERROR]: ").lstrip()
     service_error = _SERVICE_ERROR.fullmatch(text)
     if service_error:
         code, operation = service_error.groups()
