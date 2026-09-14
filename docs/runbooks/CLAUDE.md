@@ -24,6 +24,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration and opt-in diagnostics (ADR-002/005/016) |
+| [web-image-provenance.md](web-image-provenance.md) | Unwired helper contract: required receipt steps/inputs, enforced promotion chain, main account prerequisite, migration/rollback/expiry limits (ADR-005) |
 | [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |
 | [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
 | [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
@@ -33,6 +34,26 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
+- The web image provenance helper is not yet wired. Its future caller must add the documented
+  receipt steps and current-dev migration outputs; use the composed `promote` entrypoint,
+  never manually mint migration evidence or silently fall back to mutable-tag authority.
+  Require a nonempty preflight digest on all paths and fresh digest/source-tag agreement.
+  Preserve OCI indexes with unambiguous ARM64 verification. Document the producer's
+  ci-build role, producer/reuse-consumer `actions: read`, upload-artifact v4 plus required Artifact API digest, and repository-scoped
+  config-download permission; publication uses the deployer role and explicit ECR media.
+  Success stdout remains `{digest, image_sha, rollback}` with no tag history. Recovery
+  requires independently retained source/digest evidence; receipt cleanup targets only an
+  owned run/attempt directory. Migration/preflight assertions use verified job outputs,
+  never dispatch inputs. Fresh-only consumers do not need `actions: read`.
+  `IMAGE_PROJECT` likewise needs branch-selected authenticated Terraform/verified job output,
+  cross-checked against ECR/cluster/service metadata. Broad current CI-account IAM does not
+  supply stack authority; each operation selects one verified repo and any new grant uses
+  its exact ARN. Publication confirmation failure calls for provider checks/revalidation,
+  not rebuilding a validated candidate; document completed-producer and superseded-push cases.
+  Provider children require explicit exported auth, disabled AWS config files, private GH config and filtered
+  environments; signed curl URLs use private stdin, never argv. Multi-tag digest rows
+  are accepted only with matching identity and byte-identical manifest/media evidence.
+  Provider PATH is pinned to standard CLI directories; caller HOME is omitted, never reassigned.
 - Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). The helper supplies policies and installs neither consumer path. Deploy Web integration must be dev-only with activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
 - Private saved-plan inspection authenticates run/checkout/assets before 32 MiB-bounded rendering; it never authorizes apply.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.
