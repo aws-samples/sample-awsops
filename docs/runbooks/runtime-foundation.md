@@ -188,9 +188,9 @@ lower bound, or extends an existing expiry/deadline.
 
 ## Strict release controller capability
 
-`scripts/v2/ci/runtime-release.mjs` is available for future CI integration. Current
-Deploy Web still performs DB-only verification, and the manual `collect-runtime.yml`
-workflow is absent. Adding this controller enables no workflow, feature flag or IAM
+`scripts/v2/ci/runtime-release.mjs` is available for future CI integration. Dev Deploy Web
+verifies the exact ECS deployment and image digest plus authenticated login/DB. The
+manual `collect-runtime.yml` workflow is absent. This runtime controller enables no workflow, feature flag or IAM
 grant. Integrating the mandatory release gate is separate work; it must not silently
 skip disabled prerequisites or accept health-only/DB-only proof as a full release.
 

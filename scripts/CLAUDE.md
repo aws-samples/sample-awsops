@@ -342,9 +342,9 @@ The outer authenticated login/DB wrapper also refuses shortened request timeouts
 
 ## Strict release controller capability
 
-`v2/ci/runtime-release.mjs` is an unwired CI prerequisite. Current Deploy Web still
-performs DB-only verification; `collect-runtime.yml` is absent. This change enables
-no workflow or flag. Future integration must use collect mode for mandatory full
+`v2/ci/runtime-release.mjs` is an unwired CI prerequisite. Dev Deploy Web verifies the
+exact ECS deployment and image digest plus authenticated login/DB; `collect-runtime.yml`
+is absent. This runtime capability enables no workflow or flag. Future integration must use collect mode for mandatory full
 readiness; prepare is only authenticated login/DB/host registration, never release proof.
 The controller verifies dev source/account/role, applied runtime metadata and ARM64
 web digest, requires every pinned baseline member (currently 43, source-AST checked)

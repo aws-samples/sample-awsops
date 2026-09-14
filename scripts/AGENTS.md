@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: ee2b367ae746 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a4ae3b3c5da3 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -211,8 +211,9 @@ validation time; controller callers pass calibrated `now()` without changing mar
 
 ## Strict release controller capability
 
-`v2/ci/runtime-release.mjs` is unwired: Deploy Web remains DB-only and the manual
-collect-runtime workflow is absent. No flags/workflows are enabled. Future full
+`v2/ci/runtime-release.mjs` is unwired. Dev Deploy Web verifies the exact ECS deployment
+and image digest plus authenticated login/DB; the manual collect-runtime workflow is
+absent. This runtime capability enables no flags/workflows. Future full
 release integration must require collect, never accept prepare or skip inactive prerequisites.
 It binds dev source/account/actual role, applied runtime identity and ARM64 web digest.
 Require the pinned 43-name baseline, source-AST checked; valid growth is allowed up
