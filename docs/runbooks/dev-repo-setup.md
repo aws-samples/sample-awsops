@@ -1506,7 +1506,9 @@ CI_ASSETS_READY=true terraform apply -input=false tfplan
 Missing/mismatched authentication, plan or content requires a fresh reviewed plan/bundle,
 not rebuilding under an old approval. See `scripts/v2/ci_tf_assets.py`,
 `scripts/v2/ci/pg8000-requirements.txt` and `scripts/v2/test_ci_tf_assets.py`.
-Verification of older signed bundles after key rotation requires their matching prior key. Dependency updates must change the lock,
+Current CI verifies with its configured key. Historical offline recovery of an older bundle
+requires its matching prior key; rotation does not erase previously published ciphertext.
+Dependency updates must change the lock,
 its verified wheel hashes and the four shared-layer pins in
 `scripts/v2/{workers,steampipe,incident,remediation}/requirements.txt`; the validator checks all five.
 The separate `scripts/v2/steampipe/Dockerfile` image pin/installer is outside the Lambda lock.
@@ -1514,7 +1516,7 @@ See [worker build inputs](../reference/06-workers.md).
 Check `LAYER_IMPORTS` when updating wheels. A killed restore may retain a private previous-build
 directory; retrying a verified restore is safe. Its integrating job owns later cleanup, after
 the retained copy is no longer needed. Never blindly delete another job's staging directory.
-시크릿 교체 시 기존 bundle도 무효화됩니다. 의존성 변경은 lock·wheel 해시와
+의존성 변경은 lock·wheel 해시와
 workers/steampipe/incident/remediation의 네 requirements pin을 함께 갱신하며 다섯 pin을 검사합니다.
 별도 Steampipe Dockerfile의 이미지 pin·설치기는 Lambda lock 밖입니다.
 불일치는 새 검토 계획/bundle로 해결합니다. 제품 변경 경계는 ADR-005를 따릅니다.
