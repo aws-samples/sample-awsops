@@ -51,6 +51,7 @@ export interface GraphCollection {
 // not evidence of a collector failure.
 const COPY = {
   ko: {
+    notRecorded: '이 그래프에 기록된 수집 상태가 없습니다.',
     attemptWindowStart: '그래프 시도 구간 시작', attemptWindowEnd: '그래프 시도 구간 종료', notAttempted: '실행 예산으로 원본 조회를 시도하지 않음',
     readTimeout: '그래프 조회 시간이 초과되었습니다. 다시 조회하세요.', metadataLimited: '일부 수집 메타데이터가 생략되어 범위가 불완전합니다.',
     readLimited: '그래프 조회 한도 — 반환된 범위가 불완전합니다.', readUnavailable: '그래프 조회 불가 — 수집 상태를 확인할 수 없습니다.', stateReadFailed: '수집 메타데이터를 조회할 수 없습니다.', producerStatus: '원본 작업 상태', sourceAttempt: '원본 작업 시작', sourceFinished: '원본 작업 종료', unknownCoverage: '선택한 계정 집합의 수집 범위 미확인',
@@ -68,6 +69,7 @@ const COPY = {
     counts: { ok: '성공', empty: '빈 결과', partial: '부분', unavailable: '미가용', error: '실패', unknown: '미확인' },
   },
   en: {
+    notRecorded: 'No collection state recorded for this graph.',
     attemptWindowStart: 'Graph attempt window start', attemptWindowEnd: 'Graph attempt window end', notAttempted: 'Source read not attempted because the run budget was exhausted.',
     readTimeout: 'Graph read timed out. Refresh to try again.', metadataLimited: 'Collection metadata is incomplete; some entries were omitted.',
     readLimited: 'Graph read limit reached — returned coverage is incomplete.', readUnavailable: 'Graph read unavailable — collection outcome is not established.', stateReadFailed: 'Collection metadata could not be read.', producerStatus: 'Producer status', sourceAttempt: 'Source job start', sourceFinished: 'Source job finish', unknownCoverage: 'Collection coverage of the selected account union is unknown.',
@@ -85,6 +87,7 @@ const COPY = {
     counts: { ok: 'ok', empty: 'empty', partial: 'partial', unavailable: 'unavailable', error: 'failed', unknown: 'unknown' },
   },
   ja: {
+    notRecorded: 'このグラフの収集状態はまだ記録されていません。',
     attemptWindowStart: 'グラフ試行期間の開始', attemptWindowEnd: 'グラフ試行期間の終了', notAttempted: '実行予算の上限によりソース取得を試行していません。',
     readTimeout: 'グラフ取得がタイムアウトしました。更新して再試行してください。', metadataLimited: '一部の収集メタデータが省略され、範囲は不完全です。',
     readLimited: 'グラフ取得上限 — 返された範囲は不完全です。', readUnavailable: 'グラフ取得不可 — 収集結果を確認できません。', stateReadFailed: '収集メタデータを取得できませんでした。', producerStatus: 'ソースジョブの状態', sourceAttempt: 'ソースジョブ開始', sourceFinished: 'ソースジョブ終了', unknownCoverage: '選択したアカウント集合の収集範囲は不明です。',
@@ -102,6 +105,7 @@ const COPY = {
     counts: { ok: '成功', empty: '空', partial: '部分', unavailable: '利用不可', error: '失敗', unknown: '不明' },
   },
   zh: {
+    notRecorded: '此图尚未记录采集状态。',
     attemptWindowStart: '图尝试窗口开始', attemptWindowEnd: '图尝试窗口结束', notAttempted: '运行预算已耗尽，未尝试读取数据源。',
     readTimeout: '图读取超时。请刷新重试。', metadataLimited: '部分采集元数据已省略，覆盖范围不完整。',
     readLimited: '图读取达到上限 — 返回范围不完整。', readUnavailable: '图读取不可用 — 无法确认采集结果。', stateReadFailed: '无法读取采集元数据。', producerStatus: '源任务状态', sourceAttempt: '源任务开始', sourceFinished: '源任务完成', unknownCoverage: '所选账号集合的采集覆盖范围未知。',
@@ -134,10 +138,15 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
     typeof data[key] === 'number' && Number.isSafeInteger(data[key]) && (data[key] as number) > 0);
   const limited = data.inputTruncated === true || data.graphTruncated === true
     || losses.some(key => key === 'nodeDrops' || key === 'edgeDrops');
-  const warning = data.metadataTruncated === true || data.readStatus === 'partial' || data.readStatus === 'unavailable' || data.failureReason === 'state_read_failed' || data.stale === true || retained || limited || losses.length > 0 || data.infraUnavailable === true
-    || ['partial', 'unavailable', 'error'].includes(status);
   const sources = Array.isArray(data.sources) ? data.sources.map(record) : [];
   const published = Array.isArray(data.publishedSources) ? data.publishedSources.map(record) : [];
+  const unrecorded = data.status === 'unknown' && data.attempted_at === null && data.captured_at === null
+    && Array.isArray(data.sources)
+    && sources.length === 0 && published.length === 0 && !data.failureReason
+    && data.readStatus !== 'partial' && data.readStatus !== 'unavailable' && data.readTruncated !== true
+    && !retained && !limited && !losses.length && data.infraUnavailable !== true && data.metadataTruncated !== true;
+  const warning = data.metadataTruncated === true || data.readStatus === 'partial' || data.readStatus === 'unavailable' || data.failureReason === 'state_read_failed' || (data.stale === true && !unrecorded) || retained || limited || losses.length > 0 || data.infraUnavailable === true
+    || ['partial', 'unavailable', 'error'].includes(status);
   const counts = sources.reduce<Record<string, number>>((result, source) => {
     const key = statusOf(source.status);
     result[key] = (result[key] ?? 0) + 1;
@@ -162,14 +171,14 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
     <div role={warning ? 'alert' : 'status'}
       className={`my-2 max-h-[36vh] shrink-0 overflow-y-auto rounded-md border px-3 py-2 text-xs ${warning
         ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-ink-200 bg-card text-ink-600'}`}>
-      <p className="font-medium">{status === 'empty' && data.evidenceKind === 'inventory' ? copy.inventoryEmpty : copy[status]}{data.stale === true ? ` · ${copy.stale}` : ''}</p>
+      <p className="font-medium">{unrecorded ? (data.coverage === 'unknown' ? copy.unknownCoverage : copy.notRecorded) : status === 'empty' && data.evidenceKind === 'inventory' ? copy.inventoryEmpty : copy[status]}{data.stale === true && !unrecorded ? ` · ${copy.stale}` : ''}</p>
       {data.sourceAttempted === false && <p>{copy.notAttempted}</p>}
       {data.metadataTruncated === true && <p>{copy.metadataLimited}</p>}
       {data.readReason === 'timeout' && <p>{copy.readTimeout}</p>}
       {data.readTruncated === true && <p>{copy.readLimited}</p>}
       {data.readStatus === 'unavailable' && <p>{copy.readUnavailable}</p>}
       {data.failureReason === 'state_read_failed' && <p>{copy.stateReadFailed}</p>}
-      {data.coverage === 'unknown' && <p>{copy.unknownCoverage}</p>}
+      {data.coverage === 'unknown' && !unrecorded && <p>{copy.unknownCoverage}</p>}
       {sourceTimes({ windowStartMs: data.windowStartMs, windowEndMs: data.windowEndMs }, { windowStartMs: copy.attemptWindowStart, windowEndMs: copy.attemptWindowEnd })}
       {retained && <p className="mt-1">{copy.retained}</p>}
       {limited && <p>{retained ? copy.limited : copy.limitedPartial}</p>}
