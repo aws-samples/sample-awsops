@@ -636,18 +636,41 @@ def test_metric_forbidden_counts_as_read_error_without_losing_other_groups():
     assert result["data"]["status"] == "OBSERVED"
 
 
-def test_summary_write_error_does_not_publish_exception(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("api_error", [False, True])
+def test_summary_write_error_does_not_publish_exception(tmp_path, monkeypatch, capsys, api_error):
     for key, value in ENV.items():
         monkeypatch.setenv(key, value)
     for key, value in outputs().items():
         (tmp_path / f"{key}.json").write_text(json.dumps(value))
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path))
-    monkeypatch.setattr(audit, "ReadAPI", lambda factory: FakeAWS())
-    assert audit.main(["audit", "--directory", str(tmp_path)]) == 1
+    aws = FakeAWS()
+    if api_error:
+        aws.overrides["lambda", "get_function_configuration"] = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "PRIVATE"}}, "GetFunctionConfiguration")
+    monkeypatch.setattr(audit, "ReadAPI", lambda factory: aws)
+    assert audit.main(["audit", "--directory", str(tmp_path)]) == int(api_error)
     captured = capsys.readouterr()
-    assert not captured.out
-    assert json.loads(captured.err) == {"status": "UNKNOWN", "reason": "report_failed"}
+    report = json.loads(captured.out)
+    assert report["deployment"]["web"]["status"] == "OBSERVED" and report["read_errors"] == int(api_error)
+    assert captured.err.strip() == "::warning::audit_summary_unavailable"
     assert str(tmp_path) not in captured.err
+
+
+@pytest.mark.parametrize("kind", ["backend", "workload"])
+@pytest.mark.parametrize("value,allowed", [("", False), (" \n\t", False), ('{"Statement":[]}', True)])
+def test_empty_policy_stops_actual_shell_before_credentials(tmp_path, kind, value, allowed):
+    steps = workflow()["jobs"]["audit"]["steps"]
+    index = next(i for i, step in enumerate(steps)
+                 if step.get("name") == f"Require the {kind} session restriction")
+    assertion, credentials = steps[index], steps[index + 1]
+    assert credentials["uses"] == "aws-actions/configure-aws-credentials@v4"
+    assert credentials["if"] == "${{ success() && steps." + kind + "_session.outputs.session_policy != '' }}"
+    marker = tmp_path / "credentials-called"
+    result = subprocess.run(["bash", "-c", assertion["run"] + '\nprintf called > "$CREDENTIAL_MARKER"\n'],
+                            env={**os.environ, "SESSION_POLICY": value, "CREDENTIAL_MARKER": str(marker)},
+                            capture_output=True, text=True)
+    assert (result.returncode == 0) == allowed
+    assert marker.exists() == allowed
 
 
 def test_inventory_disabled_remains_explicit_when_reader_is_available():

@@ -106,8 +106,10 @@ The report is public Actions output; no gateway/target update is performed.
 Read/API failures (including per-series Forbidden/InternalError) retain other
 groups, use fixed reason codes and fail the job. Unexpected response shapes use
 `unexpected_state`; early context/identity failures produce only `audit_failed`.
-A programming violation uses `read_only_violation`; emission failure uses
-`report_failed`. Missing/partial metrics or `NOT_READY` can still produce a green
+A programming violation uses `read_only_violation`; stdout emission failure uses
+`report_failed`. A summary-file failure warns with `audit_summary_unavailable`
+while preserving the stdout report and original verdict.
+Missing/partial metrics or `NOT_READY` can still produce a green
 reporting job. Green means observations were collected, not deployment readiness.
 
 Resolve provisioning, migration or access issues through their separate reviewed

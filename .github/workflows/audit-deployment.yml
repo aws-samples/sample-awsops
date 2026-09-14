@@ -93,7 +93,16 @@ jobs:
             } finally {
               if (file === `${process.env.AUDIT_DIR}/session-policy.json`) fs.rmSync(file, {force: true});
             }
+      - name: Require the backend session restriction
+        env:
+          SESSION_POLICY: ${{ steps.backend_session.outputs.session_policy }}
+        run: |
+          set -euo pipefail
+          [ -n "${SESSION_POLICY//[[:space:]]/}" ] || {
+            echo "::error::audit_session_policy_missing"; exit 1;
+          }
       - uses: aws-actions/configure-aws-credentials@v4
+        if: ${{ success() && steps.backend_session.outputs.session_policy != '' }}
         with:
           role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
           aws-region: ap-northeast-2
@@ -171,7 +180,16 @@ jobs:
             } finally {
               if (file === `${process.env.AUDIT_DIR}/session-policy.json`) fs.rmSync(file, {force: true});
             }
+      - name: Require the workload session restriction
+        env:
+          SESSION_POLICY: ${{ steps.workload_session.outputs.session_policy }}
+        run: |
+          set -euo pipefail
+          [ -n "${SESSION_POLICY//[[:space:]]/}" ] || {
+            echo "::error::audit_session_policy_missing"; exit 1;
+          }
       - name: Assume the existing role for workload reads only
+        if: ${{ success() && steps.workload_session.outputs.session_policy != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}

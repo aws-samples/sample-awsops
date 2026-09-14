@@ -591,13 +591,16 @@ def main(argv=None):
         report, code = {"status": "UNKNOWN", "reason": reason}, 1
     try:
         text = json.dumps(report, indent=2, allow_nan=False)
-        if os.environ.get("GITHUB_STEP_SUMMARY"):
-            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
-                summary.write("## Development deployment observations\n\n```json\n" + text + "\n```\n")
         print(text)
     except Exception:
         print('{"status":"UNKNOWN","reason":"report_failed"}', file=sys.stderr)
         return 1
+    try:
+        if os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+                summary.write("## Development deployment observations\n\n```json\n" + text + "\n```\n")
+    except Exception:
+        print("::warning::audit_summary_unavailable", file=sys.stderr)
     return code
 
 
