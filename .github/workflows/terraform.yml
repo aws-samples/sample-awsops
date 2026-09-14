@@ -27,12 +27,12 @@ name: Terraform
 on:
   pull_request:
     branches: [main, dev]
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
     # The workflow file itself is in the path filter so a workflow change
     # self-tests with a real plan on the branch it lands on.
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   workflow_dispatch:
     inputs:
       mode:
@@ -368,6 +368,22 @@ jobs:
             python3 ../../scripts/v2/ci_dns_policy.py check-plan \
               --allow-dns "$ALLOW_DNS_CHANGES" --scope "$PLAN_SCOPE" \
               --target "$TARGET" --advisory "$ADVISORY" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Project bounded readiness changes without private plan values
+        if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READINESS_ENABLED_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          readiness_rc=0
+          readiness_summary="$(terraform show -json tfplan 2>/dev/null |
+            python3 ../../scripts/v2/ci_readiness_plan_summary.py)" || readiness_rc=$?
+          {
+            printf '### Bounded readiness plan changes\n\n```json\n'
+            printf '%s\n' "$readiness_summary"
+            printf '```\n'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$readiness_rc"
 
       # A plan file embeds every input variable value in plaintext (sensitive
       # ones included), and artifacts on a public repo are downloadable by any

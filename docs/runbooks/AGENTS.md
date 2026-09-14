@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d6ab8897ce4a · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e61dd05102d0 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -10,6 +10,12 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
+- `ci_readiness_plan_summary.py` runs before encryption only for explicit full dev readiness
+  plans, with a two-minute timeout and fenced JSON output. Its failure-tolerant report publishes
+  fixed scope/presence checks, fixed addresses and a known collector hash, never private values.
+  The combined 256-row view is not approval or resource-presence proof; unknown changes require
+  private inspection. Membership checks include the existing/planned group's lack of an IAM role.
+  Reporting cannot weaken DNS/runtime/exact-plan gates or block later encrypted artifacts.
 - Private saved-plan inspection authenticates run/checkout/assets before 32 MiB-bounded rendering; it never authorizes apply.
 - Branch-independent artifact inspection/recovery lives in `dev-repo-setup.md`; domain rollout remains dev-only. Linux capture forwards the first interrupt, kills the child group on a second and arms parent-death SIGKILL; cancellation is not rollback.
 - Plan/apply capture drains a 1 MiB tail in memory, preserving the command exit independently of scratch writes. Fixed audits include capture/retention classes and available numeric success action counts; no raw automatic-run diagnostics.
@@ -34,7 +40,8 @@ legacy runbook's steps as the current operational path).
   dev plans with literal flag `true`, `--target dev`, and region `ap-northeast-2`. Invalid context
   causes no reads; state-account/STS is consistency only, not authorization or stack isolation.
   Run after encrypted plan upload. Opt-in publishes fenced safe JSON including posture booleans
-  to the public Actions log/summary; only this optional step tolerates failure.
+  to the public Actions log/summary; this optional DB step and the separate advisory
+  readiness-plan summary tolerate failure.
   Keep DNS/CI/readiness gates required and the fixed read-only CLI verb allowlist.
   Retain all four sections independently (`logs`, `configuration`, `server_logs`, `rds_metrics`): partial for retained capped/failed reads,
   separate unavailable source and unknown derived fields. Early failure is only
@@ -94,7 +101,8 @@ legacy runbook's steps as the current operational path).
   permission. No private-DNS exception. Authorized cutovers set `allow_dns_changes=true` on
   both plan and apply; documentation is not authorization.
 - Public summaries permit certificate suffixes, publication, change counts/addresses and
-  active-rollout public zone name/ID/NS; diagnostics permit bounded metric values. Never expose full ARNs, account IDs or raw
+  active-rollout public zone name/ID/NS; readiness reports add fixed posture/presence checks
+  and a known collector hash; diagnostics permit bounded metric values. Never expose full ARNs, account IDs or raw
   configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
   CLI; health proves liveness only. Verify DB/auth separately before service A publication.
 - From the repo root, `bash scripts/v2/terraform-test.sh` runs Terraform 1.15.7 in an isolated

@@ -60,7 +60,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   authorization or same-account stack validation. Use existing read-only grants and an exact
   CLI verb allowlist. No IAM/resource writes or DB connection. Opt-in publishes fenced safe
   JSON, including posture booleans, to the public Actions log/summary.
-  Only this optional step tolerates failure; DNS/CI/readiness gates remain required.
+  This optional step and the separate advisory readiness-plan summary tolerate failure;
+  DNS/CI/readiness gates remain required.
   Retain all four sections independently: `logs`, `configuration`, `server_logs`, `rds_metrics`.
   Distinguish unavailable sources from unknown derived comparisons; early input/context/identity
   failure returns only `{"status":"unavailable"}`, not fabricated empty sections.
@@ -121,7 +122,12 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   `allow_dns_changes=true` on both plan and apply dispatches; examples do not grant permission.
 - Public summaries include managed/external certificate suffixes, publication, change counts/
   addresses and active-rollout public zone name/ID/NS; diagnostics additionally permit bounded
-  metric values. Never expose full ARNs, account IDs or
+  metric values. Explicit full dev readiness plans may also publish fixed scope/presence
+  checks and a known configured collector hash through `ci_readiness_plan_summary.py`.
+  That advisory summary does not establish approval or resource presence; unknown changes
+  require private inspection. Its two-minute, failure-tolerant step runs before encryption,
+  renders fenced JSON, and must not block encrypted artifacts.
+  Never expose full ARNs, account IDs or
   raw configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
   CLI; health is liveness only. DB/auth checks precede service A publication.
 - Offline Terraform checks use `bash scripts/v2/terraform-test.sh` from the repo root:

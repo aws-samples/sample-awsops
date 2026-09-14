@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: bc70ee041309 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f8b72349a6b4 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,6 +8,12 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
+- `ci_readiness_plan_summary.py` runs before encryption only for explicit full dev readiness
+  plans, with a two-minute timeout and fenced JSON output. Its failure-tolerant report publishes
+  fixed scope/presence checks, fixed addresses and a known collector hash, never private values.
+  The combined 256-row view is not approval or resource-presence proof; unknown changes require
+  private inspection. Membership checks include the existing/planned group's lack of an IAM role.
+  Reporting cannot weaken DNS/runtime/exact-plan gates or block later encrypted artifacts.
 - `CI_READINESS_ENABLED_DEV` is separate from the runtime profile: true/false explicitly overrides readiness on dev, while empty/unset preserves operator tfvars/default false. Public CI rejects enabled readiness elsewhere. The applied group requires AgentCore, and automatic membership requires the managed demo; no admin/IAM grant.
 - `v2/ci_plan_inspect.py` is local-only: authenticate successful plan-run context, checkout
   SHA and existing signed plan/assets before private rendering. No backend init/apply.
@@ -27,8 +33,8 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   State-account/STS consistency does not authorize access or detect the wrong same-account stack.
   Use existing read-only grants and a fixed CLI verb allowlist; no new grants/writes/DB connection.
 - Run only after encrypted plan upload. Opt-in publishes fenced safe JSON, including posture
-  booleans, to the public Actions log and step summary. Only this optional step tolerates
-  failure (eight-minute limit); DNS/CI/readiness gates remain required.
+  booleans, to the public Actions log and step summary. This optional DB step tolerates failure (eight-minute limit), as does the separate
+  advisory readiness-plan summary; DNS/CI/readiness gates remain required.
 - Retain all four sections independently: `logs`, `configuration`, `server_logs`, `rds_metrics`. Capped/failed reads with
   retained evidence are partial; distinguish unavailable source reads from unknown derived
   fields. Early context/input/identity failure returns only `{"status":"unavailable"}`.
