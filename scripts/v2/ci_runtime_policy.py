@@ -246,6 +246,10 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
     rollout = variables.get("ci_runtime_rollout", False)
     profile = variables.get("ci_runtime_profile_enabled", False)
     readiness = variables.get("ci_readiness_enabled", False)
+    # Terraform show records CLI input spelling even for a declared bool variable.
+    # Decode only its two canonical literals; never use truthiness for a string.
+    if type(readiness) is str and readiness in ("true", "false"):
+        readiness = readiness == "true"
     if variables.get("ci_runtime_retire", False) is not False:
         raise ValueError("Runtime retirement is not supported by this workflow")
     if any(type(value) is not bool for value in (rollout, profile, readiness)):
