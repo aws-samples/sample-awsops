@@ -49,7 +49,7 @@ After the existing runtime/DNS checks, a manual dev plan publishes a bounded
 `bounded_readiness_rollout` summary without raw plan values. It recognizes only
 creation of the verifier group in the existing pool with no IAM role, enrollment
 of the existing managed demo, and a code-only inventory Lambda update. Supported
-output changes are readiness activation/known CloudFront identity and the
+output changes are the AgentCore readiness Boolean and the
 collector fingerprint. Resource identities and private values remain undisclosed;
 the report uses fixed resource addresses, checks and a package hash.
 

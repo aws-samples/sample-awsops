@@ -70,12 +70,10 @@ def test_deletes_unknown_roles_and_unrecognized_outputs_remain_unreviewed():
 
 def test_only_the_two_expected_output_deltas_are_projected():
     value = plan()
-    value["prior_state"]["values"]["root_module"]["resources"].append({
-        "address": "aws_cloudfront_distribution.main", "values": {"id": "PRIVATE_CF"}})
     value["output_changes"] = {
         "agentcore": {"actions": ["update"],
-                      "before": {"role_arn": "PRIVATE_ROLE", "deployment_readiness_enabled": False, "readiness_cloudfront_id": None},
-                      "after": {"role_arn": "PRIVATE_ROLE", "deployment_readiness_enabled": True, "readiness_cloudfront_id": "PRIVATE_CF"}},
+                      "before": {"role_arn": "PRIVATE_ROLE", "deployment_readiness_enabled": False},
+                      "after": {"role_arn": "PRIVATE_ROLE", "deployment_readiness_enabled": True}},
         "runtime_deployment": {"actions": ["update"],
                                "before": {"inventory": {"sync_code_sha256": "TYwIZpErPrCndYW8xYnWWh3mI1YW6yiPScDIEh+Q+o8="}},
                                "after": {"inventory": {"sync_code_sha256": HASH}}},
@@ -87,6 +85,21 @@ def test_only_the_two_expected_output_deltas_are_projected():
     assert "PRIVATE" not in json.dumps(result)
     value["output_changes"]["agentcore"]["after"]["role_arn"] = "PRIVATE_OTHER_ROLE"
     assert not summary.project(value)["all_changes_match_expected_scope"]
+
+
+def test_output_changes_share_the_report_row_budget():
+    for resources in ([], plan()["resource_changes"]):
+        value = plan()
+        value["resource_changes"] = resources
+        value["output_changes"] = {
+            f"PRIVATE_{i}": {"actions": ["update"], "before": "PRIVATE_OLD", "after": "PRIVATE_NEW"}
+            for i in range(257)
+        }
+        result = summary.project(value)
+        assert result["truncated"]
+        assert len(result["resource_changes"]) + len(result["output_changes"]) == 256
+        assert not result["all_changes_match_expected_scope"]
+        assert "PRIVATE" not in json.dumps(result)
 
 
 def test_capped_changes_cannot_be_mistaken_for_complete_review():

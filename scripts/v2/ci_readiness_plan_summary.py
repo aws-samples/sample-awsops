@@ -38,7 +38,6 @@ def project(plan):
     prior = resources(plan.get("prior_state", {}).get("values", {}))
     pool = prior.get("aws_cognito_user_pool.main", {}).get("id")
     user = prior.get("aws_cognito_user.demo[0]", {}).get("username")
-    cloudfront = prior.get("aws_cloudfront_distribution.main", {}).get("id")
     collector = prior.get(COLLECTOR, {}).get("function_name")
     changes, complete, new_hash, truncated = [], True, None, False
     for item in plan.get("resource_changes", []):
@@ -99,15 +98,15 @@ def project(plan):
     for name, change in plan.get("output_changes", {}).items():
         if change.get("actions") in (["no-op"], ["read"]):
             continue
+        if len(changes) + len(outputs) == 256:
+            complete, truncated = False, True
+            break
         before, after = copy.deepcopy(change.get("before")), copy.deepcopy(change.get("after"))
         matched = False
         if name == "agentcore" and isinstance(before, dict) and isinstance(after, dict):
             enabled = after.pop("deployment_readiness_enabled", None)
             old_enabled = before.pop("deployment_readiness_enabled", None)
-            known = after.pop("readiness_cloudfront_id", None)
-            before.pop("readiness_cloudfront_id", None)
-            matched = (type(old_enabled) is bool and enabled is True and bool(cloudfront)
-                       and known == cloudfront and before == after)
+            matched = type(old_enabled) is bool and enabled is True and before == after
         elif name == "runtime_deployment" and isinstance(before, dict) and isinstance(after, dict):
             previous = before.get("inventory", {}).pop("sync_code_sha256", None)
             current = after.get("inventory", {}).pop("sync_code_sha256", None)
