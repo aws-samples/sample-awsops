@@ -6,6 +6,30 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
+- `v2/ci_web_image.py` — preparatory web provenance helper; no workflow caller yet.
+  `promote` composes caller/context/source/migration/producer checks before publishing only
+  the validated project's digest. Every promotion requires a nonempty preflight digest;
+  fresh builds also bind it to `web-<SHA>` in the verified registry/repository. Preserve
+  original OCI index bytes/provenance and verify exactly one ARM64 child plus its config.
+  ECR reads omit image-only accepted-media filters; writes specify media/digest/registry.
+  Config reads require scoped `ecr:GetDownloadUrlForLayer` and curl. CLI errors expose only
+  fixed `ImageError` diagnostics, never provider data. Do not call the low-level publisher from CI.
+  Child processes require exported temporary AWS credentials / an explicit GitHub token,
+  disable AWS config/credential files, isolate GH config and drop endpoint/profile/model/provider/CA/proxy overrides.
+  Pin child PATH to `/usr/local/bin:/usr/bin:/bin`; omit caller HOME without reassigning it.
+  Only curl receives explicit private stdin (`-q -K -`); no signed URL enters argv.
+  Digest reads may return identical rows for multiple tags; reject conflicting row evidence.
+  Recognized non-success producer jobs skip timestamp checks; successful jobs still require
+  the artifact window. Stdout stays `{digest, image_sha, rollback}`; recovery evidence is caller-owned.
+  `IMAGE_PROJECT` requires branch-selected authenticated Terraform/verified job output, never
+  dispatch input. Each operation targets one verified stack repo; broad CI-account IAM is
+  not stack authority. Publication failure is distinct from candidate validation and may
+  succeed only after an independent equal-effect tag check. Manifests use owned 0600 files;
+  ZIP payload reads are bounded and attestations must reference the verified ARM64 child.
+  Provider operation labels are diagnostic only; shared command support for ECS/STS remains.
+  `v2/test_ci_web_image.py` tests the contract; jq is required for compare projection.
+  See `docs/runbooks/web-image-provenance.md` for future receipt-step names, inputs and
+  expiry/rollback limits. Operator CI publication adds no ADR-005 exception or IAM grant.
 - `v2/ci_private_plan.py` provides policy/publish/restore/inspect for private saved plans.
   The read-only plan job keeps asset validation and stages manual attempt-specific ciphertext.
   A protected publisher uses the existing deployer with an S3/KMS-only session, verifies
@@ -159,7 +183,7 @@ secrets-manager) — installed by `make deps`.
   It runs before encryption with a two-minute timeout and fenced JSON output.
   Presence booleans are separate, with a combined 256-row bound and no private values;
   new enrollment checks the existing or planned group's absence of an IAM role.
-- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,readiness_plan_summary,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets,verifier_sessions}.py` —
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,readiness_plan_summary,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets,verifier_sessions,web_image}.py` —
   the suites collectively use policy/workflow fixtures, real no-provider plans and a localhost
   state backend to verify gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active
