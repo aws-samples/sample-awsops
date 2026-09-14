@@ -36,6 +36,8 @@ The left sidebar lists your recent reports — completed rows carry inline **MD/
 - Use the top buttons to export as **MD / DOCX / PDF**, or open **Print view** — a new tab with a white A4 layout (cover, numbered TOC, per-section page breaks) for direct browser Print-to-PDF.
 
 ### Insight badges
+- **Invariant assessment coverage** separates total, assessed, passed, violated and unassessed counts. Unassessed reasons appear in the UI, report body and exports; unassessed results or an empty violation list do not establish health or improvement. Historical reports without recorded coverage show **assessment unavailable**.
+- The current collector path still needs relationship-resolution and encryption-aggregate integration, so its six invariant kinds remain unassessed. Read these separately from observations in other diagnosis sections.
 - An **intended-vs-actual / change insights** badge row summarizes invariant violations and changes versus the previous report.
 - The **Intent (invariant candidates)** panel lets you propose, accept, and reject candidates. (Admin-only; read-only for everyone else.)
 

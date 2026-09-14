@@ -43,6 +43,11 @@ on:
         type: boolean
         required: false
         default: false
+      verify_database:
+        description: "After deployment, sign in as the configured dev demo user and verify /api/db (dev branch only)."
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -68,6 +73,15 @@ jobs:
       DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
       USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
     steps:
+      - name: Validate database verification ref
+        env:
+          VERIFY_DATABASE: ${{ inputs.verify_database }}
+        run: |
+          if [ "$VERIFY_DATABASE" = "true" ] && [ "$GITHUB_REF" != "refs/heads/dev" ]; then
+            echo "::error::Database verification is only supported on the dev branch."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - name: Select the branch's stack (fail-closed — no cross-branch fallback)
@@ -109,6 +123,22 @@ jobs:
           PROJECT=$(echo "$V" | base64 -d | sed -nE 's/^[[:space:]]*project[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' | head -1)
           PROJECT="${PROJECT:-awsops-v2}"   # variables.tf default
           echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the web ECR repository exists before building
+        env:
+          PROJECT: ${{ steps.stack.outputs.project }}
+        run: |
+          set -euo pipefail
+          # Use an existing push permission, not DescribeRepositories. A valid,
+          # intentionally absent digest returns LayerNotFound for an existing repo.
+          # A missing repo or denied access makes the CLI fail before the build.
+          if ! aws ecr batch-check-layer-availability --region ap-northeast-2 \
+            --repository-name "${PROJECT}-web" \
+            --layer-digests "sha256:$(printf '%064d' 0)" \
+            --no-cli-pager >/dev/null; then
+            echo "::error::Cannot access the web ECR repository. Review/apply an ecr-bootstrap plan for this stack before building; retain all permission checks."
+            exit 1
+          fi
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -157,10 +187,24 @@ jobs:
       USER_BACKEND_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', github.ref_name)] }}
       USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
     steps:
+      - name: Validate database verification ref
+        env:
+          VERIFY_DATABASE: ${{ inputs.verify_database }}
+        run: |
+          if [ "$VERIFY_DATABASE" = "true" ] && [ "$GITHUB_REF" != "refs/heads/dev" ]; then
+            echo "::error::Database verification is only supported on the dev branch."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - uses: hashicorp/setup-terraform@v3
         with:
+          terraform_version: 1.15.7
           terraform_wrapper: false
 
       - name: Select the branch's stack (fail-closed — no cross-branch fallback)
@@ -183,6 +227,8 @@ jobs:
 
       - name: Restore terraform.foundation backend
         working-directory: terraform/foundation
+        env:
+          VERIFY_DATABASE: ${{ inputs.verify_database }}
         run: |
           case "$BRANCH" in
             main) B="$MAIN_BACKEND_B64"; V="$MAIN_TFVARS_B64";;
@@ -194,9 +240,25 @@ jobs:
             echo "::error::TF backend secrets for '$BRANCH' are not set — provision its stack first (docs/runbooks/branch-strategy.md). No cross-branch fallback, by design."
             exit 1
           fi
+          umask 077
+          # Recreate only this checkout's restored files; truncation preserves old modes.
+          rm -f -- backend.hcl terraform.tfvars
+          set -o noclobber
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
-          terraform init -backend-config=backend.hcl -input=false
+          if [ "$VERIFY_DATABASE" != "true" ]; then
+            terraform init -backend-config=backend.hcl -input=false
+          fi
+
+      - name: Prepare configured demo credentials
+        if: github.event_name == 'workflow_dispatch' && inputs.verify_database
+        id: demo
+        working-directory: terraform/foundation
+        env:
+          TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
+        # Includes init: even parse errors can contain password-bearing HCL.
+        # The shared secret is only a default; restored tfvars take precedence.
+        run: node ../../scripts/v2/prepare-smoke-credentials.mjs
 
       - name: Resolve ECS cluster/service/URL + ECR repo
         id: tf
@@ -205,6 +267,7 @@ jobs:
           echo "cluster=$(terraform output -raw ecs_cluster_name)" >> "$GITHUB_OUTPUT"
           echo "service=$(terraform output -raw ecs_service_name)" >> "$GITHUB_OUTPUT"
           echo "url=$(terraform output -raw public_url)" >> "$GITHUB_OUTPUT"
+          echo "cloudfront_domain=$(terraform output -raw cloudfront_domain)" >> "$GITHUB_OUTPUT"
           echo "ecr_repo=$(terraform output -raw ecr_web_uri | sed 's|^[^/]*/||')" >> "$GITHUB_OUTPUT"
 
       # The runner is persistent and shared — never leave the restored stack
@@ -270,4 +333,28 @@ jobs:
             --region ap-northeast-2
 
       - name: Smoke test
-        run: curl -fsS --max-time 15 "${{ steps.tf.outputs.url }}/api/health" && echo
+        # Connect to CloudFront directly while preserving the configured Host,
+        # SNI and certificate verification. Service DNS can be published later.
+        env:
+          PUBLIC_URL: ${{ steps.tf.outputs.url }}
+          CLOUDFRONT_DOMAIN: ${{ steps.tf.outputs.cloudfront_domain }}
+        run: |
+          set -euo pipefail
+          node scripts/v2/deployment-smoke.mjs "$PUBLIC_URL" "$CLOUDFRONT_DOMAIN"
+          echo
+
+      - name: Authenticated database smoke
+        if: github.event_name == 'workflow_dispatch' && inputs.verify_database
+        env:
+          PUBLIC_URL: ${{ steps.tf.outputs.url }}
+          CLOUDFRONT_DOMAIN: ${{ steps.tf.outputs.cloudfront_domain }}
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+        run: |
+          set -euo pipefail
+          node scripts/v2/authenticated-smoke.mjs
+
+      - name: Clean prepared demo credentials off the runner
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.verify_database
+        env:
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+        run: node scripts/v2/prepare-smoke-credentials.mjs --cleanup

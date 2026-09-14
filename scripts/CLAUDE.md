@@ -6,21 +6,175 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
+- `v2/ci_plan_inspect.py` verifies authenticated successful plan-run identity, checkout SHA
+  and the existing signed plan/assets before local private rendering. No backend init/apply;
+  new 0700 destination with 0600 bounded outputs. It refuses execution inside Actions.
+- `v2/ci_failure_diagnostics.py` privately drains plan/apply output, preserves the command's
+  failure code and retains at most 1 MiB encrypted for explicit dispatch failures only.
+  Recovery authenticates the exact failed attempt/context/content. Existing CBC transport
+  and manifest HMAC remain; keys never reach the captured Terraform process.
+  Only owned ciphertext is uploaded for five days. Cleanup failures are reported safely;
+  successful commands cannot pass with failed plaintext cleanup. Host loss can leave residue.
+  Tests: `test_ci_plan_inspect.py` and `test_ci_failure_diagnostics.py`.
+- `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
+- Dev/preview private discovery requires explicit full-plan rollout and preserves public DNS/certificates. `runtime-ecr-bootstrap` permits exactly three repositories. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy.
+- `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-registry proof before manual full dev activation plans; apply rechecks the approved profile. Automatic PR/push plans never receive the host-probe credential. Database-only proof is rejected; credentials stay private and failures use a fixed code. Flags/policy checks do not prove live access.
+- `v2/agentcore/provision.py` maps the applied `agentcore.deployment_readiness_enabled` boolean
+  to `DEPLOYMENT_READINESS_ENABLED`; missing/false is off and shell overrides are ignored.
+
+- `v2/ci_tf_assets.py` prepares hash-locked pg8000 layers and transports plan/SHA/scope-bound
+  Lambda assets, validating paths, modes and hashes. Pack requires every ZIP with a known
+  saved-plan hash and verifies its bytes; deferred archives without known hashes are excluded.
+  Pack/restore share an event allowlist: push, pull_request or workflow_dispatch in GitHub;
+  local callers supply an explicit commit without a GitHub event. Other events fail before work.
+  Pack/restore require `TF_PLAN_ENC_KEY` for HMAC authentication. The 0600 plaintext tarball is
+  private scratch and may contain rendered secrets; this utility cannot upload it. Callers must
+  encrypt before publication and clean plaintext files afterward.
+  `v2/ci/pg8000-requirements.txt` is the single layer-install lock. Both Terraform paths call
+  build-layer, or check-layer when CI_ASSETS_READY=true; lock/script changes trigger rebuilding.
+  Prepare invalidates old markers and removes stale regular ZIPs before building; it rejects
+  ZIP symlinks. Schema-2 markers bind installed-file hashes; validation also checks the fixed
+  required-import list. The pin validator checks this lock and all four shared-layer consumers:
+  `v2/{workers,steampipe,incident,remediation}/requirements.txt`. Update these together with
+  verified wheel hashes. The separate Steampipe container's `v2/steampipe/Dockerfile` pin and
+  installer are outside the Lambda lock/validator. `v2/test_ci_tf_assets.py` covers these
+  contracts and restore recovery.
+  Plan/apply export literal `CI_ASSETS_READY=true` for the same verification contract.
 - `v2/configure.mjs` — `make configure`: interactive TUI → `terraform.tfvars` + `backend.hcl`.
   AWS access shells out to the `aws` CLI, not the SDK.
 - `v2/deploy.mjs` — `make deploy` (runs migrate first): arm64 build → ECR push →
-  ECS force-new-deployment → wait stable → smoke `/api/health`. The `DOCKER` env defaults to
-  `sudo docker`.
+  ECS force-new-deployment → wait stable → smoke `/api/health`. `deployment-smoke.mjs`
+  preserves service Host/SNI/TLS via CloudFront `--connect-to` before service DNS publication.
+  The `DOCKER` env defaults to `sudo docker`.
+- `v2/prepare-smoke-credentials.mjs` — Deploy Web's dev-only opt-in preparation: privately
+  evaluate effective Terraform demo credentials, require unwrapped Terraform, strip TF logging/
+  argument overrides, and publish only a 0600 credential-file path inside a 0700 directory.
+  Private init is bounded to 10 minutes; output/console each to 2 minutes.
+- `v2/authenticated-smoke.mjs` — login plus edge-authenticated `/api/db` verification. Preserve
+  Host/SNI/TLS; report only the phase and validated HTTP status, never bodies/cookies/passwords.
+  The CLI keeps HTTP scratch files under the prepared credential directory so the workflow's
+  always-cleanup owns them; standalone calls prefer RUNNER_TEMP. Response files default to 64 KiB; only the bounded CloudFront inventory leg permits 2 MiB.
+- `v2/ci_dns_policy.py` — reads Terraform state to preserve managed certificate ownership
+  (JSON null) and existing service aliases; verifies operator-selected/attached certificates
+  without account-wide selection. Redacts public summaries. Blocks all Route53/Cloud Map
+  mutations when DNS is prohibited (including private DNS, validation and registered ECS).
+  Routine CI always blocks managed-certificate externalization and owned validation-CNAME
+  retirement/replacement, regardless of DNS permission.
+- `v2/ci_dev_domain.py` — dev repo names/mode plus explicit `domain_rollout` dispatch input.
+  Generates gitignored `ci-domain.auto.tfvars.json` for console/plan; the workflow rejects
+  tracked overrides. `ci_domain_rollout` is declared default-false metadata in the saved plan:
+  only true dev/full plans narrow DNS to configured A/ACM CNAME owners in the selected zone.
+  Ordinary full plans retain broad DNS behavior with explicit permission. Apply reads only
+  the saved marker. Dev advisory preflight preserves ownership from state without live
+  certificate validation; advisory DNS allowance is reporting only.
+- `v2/ci_db_diagnostics.py` — manual opt-in dev CI plan diagnostics (`CI_DB_DIAGNOSTICS_DEV=true`).
+  Require `workflow_dispatch`, literal flag `true`, `--target dev`, and region `ap-northeast-2`.
+  Wrong invocation context is rejected before any AWS read. The state-account/STS comparison
+  is a consistency check, not authorization or same-account stack validation.
+  Use only the fixed read-only CLI verbs. Run after encrypted plan upload; publish fenced safe
+  JSON (including posture booleans) to the public Actions log/step summary.
+  Independently retain all four sections: `logs`, `configuration`, `server_logs`, `rds_metrics`.
+  Partial/unavailable reads are advisory, not readiness gates.
+  `no_matching_events` labels empty accepted samples; `no_error_inference=true` prohibits health
+  conclusions from any status's zero counts. Interpretation requires a known DB probe within
+  the returned one-hour window. A successful task-definition read stays source-available even
+  if its web container is missing/malformed; use `web_container_found` and derived-unknown flags.
+  Web logs use a fixed one-hour `[start,end)` window, oldest-first, at most three pages of 100
+  using `--next-token`/`--limit`; disclose bounds, category counts, ignored/unparsed and truncation.
+  JSON `evt` OR selects `db_ping_failed` plus `db_connection_failed`; the latter exposes only
+  seven allowed phases, eight milestone keys and finite 0–3,600,000 ms durations (milestones
+  cannot exceed elapsed). Count phases and retain the latest valid timing in the sample.
+  Server logs select the latest two observed PostgreSQL filenames from at most three listing
+  pages for `<project>-aurora-1`; at most two downloads of 500 newest lines without Marker
+  (1 MiB cap per file). Count only FATAL/ERROR/PANIC web-role lines as errors.
+  `benign_role_mentions` counts exactly non-error-severity lines mentioning `awsops_web`;
+  lines for other database roles are ignored. Never print names/lines. Tail/listing truncation is independent;
+  failed downloads retain listing metadata as partial. Capped web samples are also partial.
+  Sources and unknown derived fields have separate flags. Accept single-object IAM Statement.
+  HBA failures are distinct from TLS; pool-acquire timeout differs from unexpected connection
+  loss, and PostgreSQL slot/client limits are recognized. Metadata is the service target definition, not running
+  revision proof; credential env/secrets names and environment-file presence are declarations
+  only. SG/inline connect-Allow matches do not prove effective access under SCPs/boundaries.
+  Emit fixed labels/bounded metric values/counts/timestamps/booleans/nulls only; withhold raw messages, credentials
+  and ARNs, including Terraform stderr. Unset/false is off; no writes or new IAM grants.
+  Early input/context/identity failure returns only `{"status":"unavailable"}` with nonzero exit.
+  Discarded milestones or regex inputs shortened to 4,096 characters mark samples partial.
+  Read-only violations escape partial-read handlers and fail with a fixed reason, never raw args.
+  One bounded CloudWatch `get-metric-data` request adds seven IAM-auth Sum series plus CPU
+  Average, free-memory Minimum and capacity Average, scoped to the configured first instance.
+  Preserve fixed IDs, status/missing/invalid flags and at most 60 minute points each; never
+  remote labels/messages/tokens. Instance-wide metrics cannot attribute a probe outcome.
+  Metric read status is separate from presence: clean Complete+empty is available/missing;
+  Forbidden/InternalError is unavailable, PartialData or malformed/degraded reads are partial.
+  `read_ok` describes the response envelope, not an auth outcome.
+  Expose configured min/max ACUs as bounded numbers or null; change no capacity/auth/timeout setting.
+  Every server lifecycle count requires the web user in a recognized RDS prefix and anchored
+  PG messages, separately from error categories. This rejects bare/mid-line tokens, but
+  multiline SQL with a full prefix and RAISE LOG can forge matching text. Always retain
+  `lifecycle_source_integrity=unverified_text`, `lifecycle_injection_possible=true` and unknown
+  probe outcome. Authenticated/authorized messages require log_connections (PostgreSQL default
+  off; not enabled here); the effective setting is uninspected, `log_connections_enabled=null`.
+  Only this optional workflow step tolerates failure (eight-minute timeout); DNS/CI/readiness
+  gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
+- `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
+  the exact deployment repository, branch and SHA; PR/push plans are advisory.
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads,tf_assets}.py` —
+  workflow fixtures, real no-provider plans and a localhost state backend verify deployment
+  gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
+  Summaries allow certificate suffixes/publication/change counts and addresses, plus active
+  rollout's public zone name/ID/NS. Diagnostics also publish bounded numeric metric values;
+  never raw configuration, ARNs, account IDs, state or plans.
+- `v2/terraform-test.sh` — Terraform 1.15.7 validate/mock tests in a disposable tracked-file
+  copy, `init -backend=false`, fresh data dir, no deployment credentials or real backend.
+  `v2/requirements-test.txt` declares pytest/PyYAML; the shared merge script runs Node smoke tests.
 - `v2/workers.mjs` — `make workers`: builds and pushes the worker image **only**. The Fargate
   worker is not an ECS service — SFN `RunTask` pulls `:worker-latest` at job time. Short jobs
   deploy as Lambda zips and need no image. Run after applying with `workers_enabled=true`.
 - `v2/migrate.mjs` + `migrate-core.mjs` — `make migrate`: advisory-lock, checksum, stamps the
   release version from the `-- since:` header. `DRY_RUN=1` previews; `--status` gives an
-  offline summary. Credentials come from `terraform output aurora_secret_arn` → Secrets
-  Manager (collision-free, fail-loud migration runner).
-- `v2/agentcore.mjs` + `agentcore/` — `make agentcore`: arm64 agent image + idempotent
-  provisioner, writes to SSM.
+  offline summary. Default CLI credentials come from Terraform outputs → Secrets Manager.
+  Any AURORA_ENDPOINT/DATABASE/SECRET_ARN env selects explicit runtime mode (no Terraform
+  fallback), requiring AWS_REGION and SQL_READER_SYNC_MODE=secret|disabled; secret mode also
+  requires SQL_READER_SECRET_ARN. AURORA_SECRET_ARN means master here. TLS verifies the
+  bundled RDS CA and hostname. `initialize-db.mjs` atomically initializes only a verified-empty
+  DB with INITIALIZE_EMPTY_DB=1 (one-shot host command; manual CI template retains the
+  guarded flag). Existing integer ledgers still require BOOTSTRAP=1.
+  Non-null baseline/ULID checksums are immutable. Reader elevation is checked even in disabled
+  mode; enabled sync with a missing role fails. `migration-errors.mjs` preserves bounded,
+  encoded NOTICE/P0001 text and validated identifiers only during reviewed baseline/ULID SQL.
+  Secret/connection/reader-sync phases expose only safe codes/context, never secret bodies.
+  Client error events and cleanup failures fail closed; success follows connection cleanup.
+  `v2/ci/Dockerfile.migration` is the ARM64 nonroot/read-only-filesystem runtime, using CMD.
+- `v2/ci/run-migration.mjs` — manual development controller used by
+  `.github/workflows/deploy-migrations.yml`: clone the reviewed ARM64 template with an
+  immutable image digest, run one private task, verify ownership/exit, and clean up only that run.
+  Read retries are bounded; public failure categories use the runtime diagnostic contract.
+- `v2/ci/runtime-build.mjs` — manual dev transport for existing backend repositories.
+  Require secret `AWS_ACCOUNT_ID_DEV`, configured-role and actual STS agreement, and verified
+  Linux/ARM64 manifest digests. Build-role ECR scopes cover `-steampipe`/`-worker`; deployer scopes
+  cover `-agentcore`. IAM is provisioned separately; web-only grants are insufficient.
+  Preflight rejects missing repositories/denied access. No repository creation or latest-tag writes.
+- `v2/agentcore.mjs` + `agentcore/` — dev uses applied `ci_migrations_enabled=true`
+  (`CI_MIGRATIONS_ENABLED_DEV=true`) and non-null `migration_job`, then private migration and
+  digest-bound build-only/provision-only phases. Fresh sessions of the same role follow setup
+  and separate the bounded phases; provision-only rechecks identity/tag/digest without rebuilding.
+  Dev guards are selected by `TARGET=dev` or `GITHUB_REF=refs/heads/dev`; main/preview retain the legacy path.
+  Diagnostics expose bounded fixed stages/codes/catalog counts, never raw errors, ARNs or credentials.
+  Optional smoke honors applied readiness enablement, nonce/account and producer freshness;
+  other stacks retain advisory compatibility with transport failures still fatal. It is not the
+  full web/collection/worker release gate. Exact timing and wire contracts: `docs/reference/05-agentcore.md`.
 - `v2/*.itest.mjs` — migration integration tests against a disposable PostgreSQL 17 container.
+- `v2/ci/*.test.mjs` — migration runtime/controller/workflow tests and mocked Terraform plans; install locked scripts/v2
+  dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`; Python PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform 1.15.7 are also required.
+  `v2/ci/migration.itest.mjs` includes initializer regressions. It and
+  `v2/ci/web-db-connection.itest.mjs` are **required fail-hard exceptions** to the legacy
+  optional itest convention: bare `docker` on PATH, OpenSSL, postgres:17,
+  no automatic sudo/DOCKER override, no skip if Docker is unavailable.
+  See `docs/v2-merge-verification.md`; PR fixtures must remain without AWS credentials/OIDC.
+- `v2/ci/web-db-connection.itest.mjs` — real PostgreSQL/verified-TLS regressions for the
+  web connection observer's phase/timing logs, async password resolution and error propagation.
+  Uses the locked web driver and TypeScript via `npm ci --prefix web`, plus scripts/v2
+  dependencies for the disposable fixture. Merge Verify runs it alongside all migration cases.
 - `v2/upgrade.sh` — `make upgrade`: RDS snapshot → migrate → deploy. Previews unless
   `CONFIRM=go`.
 - `pr-review/` — lens×model review panel: `run-panel.sh` (parallel fan-out, one `*.txt` prompt
@@ -46,3 +200,9 @@ secrets-manager) — installed by `make deps`.
   `terraform -chdir=terraform/foundation output`) — prefer the Makefile targets over running
   scripts directly.
 - For the emergency IAM `put-role-policy` convention, see `terraform/CLAUDE.md`.
+
+`v2/runtime-smoke.mjs` accepts explicit private prepare/verify configuration. Prepare
+checks the host registry; optional hostOnly rejects members. Verify requires complete
+fresh collection, real web-role runtime evidence and owned worker completion. The file
+is at most 16 KiB, collectionStartedAt at most 30 minutes old, and queued types unique
+with cloudfront included. The utility alone does not wire a deployment workflow.

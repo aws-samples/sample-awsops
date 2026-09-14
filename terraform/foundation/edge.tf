@@ -4,6 +4,7 @@ data "aws_route53_zone" "main" {
 }
 
 resource "aws_acm_certificate" "cf" {
+  count                     = var.existing_cf_certificate_arn == null ? 1 : 0
   provider                  = aws.use1
   domain_name               = var.domain_name
   subject_alternative_names = var.extra_domain_aliases
@@ -11,14 +12,23 @@ resource "aws_acm_certificate" "cf" {
   lifecycle { create_before_destroy = true }
 }
 
+# ACM shares validation tokens across Regions within the account. Keep one record
+# owner (and the existing cf_validation addresses) even when only ALB is managed.
+# With both certificates supplied, the empty set plans no validation DNS writes.
+locals {
+  certificate_validation_options = var.existing_cf_certificate_arn == null ? aws_acm_certificate.cf[0].domain_validation_options : (
+    var.existing_alb_certificate_arn == null ? aws_acm_certificate.alb[0].domain_validation_options : []
+  )
+}
+
 resource "aws_route53_record" "cf_validation" {
-  for_each = !var.defer_dns_validation_records ? {
-    for dvo in aws_acm_certificate.cf.domain_validation_options : dvo.domain_name => {
+  for_each = {
+    for dvo in local.certificate_validation_options : dvo.domain_name => {
       name   = dvo.resource_record_name
       record = dvo.resource_record_value
       type   = dvo.resource_record_type
     }
-  } : {}
+  }
   zone_id         = data.aws_route53_zone.main.zone_id
   name            = each.value.name
   type            = each.value.type
@@ -28,10 +38,21 @@ resource "aws_route53_record" "cf_validation" {
 }
 
 resource "aws_acm_certificate_validation" "cf" {
-  count                   = !var.defer_edge_until_dns ? 1 : 0
+  count                   = var.existing_cf_certificate_arn == null ? 1 : 0
   provider                = aws.use1
-  certificate_arn         = aws_acm_certificate.cf.arn
-  validation_record_fqdns = [for dvo in aws_acm_certificate.cf.domain_validation_options : dvo.resource_record_name]
+  certificate_arn         = aws_acm_certificate.cf[0].arn
+  validation_record_fqdns = [for r in aws_route53_record.cf_validation : r.fqdn]
+}
+
+# Preserve existing managed certificates when the optional ARN remains null.
+moved {
+  from = aws_acm_certificate.cf
+  to   = aws_acm_certificate.cf[0]
+}
+
+moved {
+  from = aws_acm_certificate_validation.cf
+  to   = aws_acm_certificate_validation.cf[0]
 }
 
 data "aws_cloudfront_cache_policy" "disabled" {
@@ -51,8 +72,6 @@ data "aws_cloudfront_origin_request_policy" "all_viewer" {
 # (409 CannotUpdateEntityWhileInUse). create_before_destroy + a distinct name lets Terraform stand up the
 # new https-only origin, repoint the distribution, then delete the old http-only origin — the AWS-supported swap.
 resource "aws_cloudfront_vpc_origin" "alb" {
-  count      = !var.defer_edge_until_dns ? 1 : 0
-  depends_on = [aws_lb_listener.https]
   vpc_origin_endpoint_config {
     name                   = "${var.project}-alb-origin-tls"
     arn                    = aws_lb.internal.arn
@@ -70,7 +89,6 @@ resource "aws_cloudfront_vpc_origin" "alb" {
 }
 
 resource "aws_cloudfront_distribution" "main" {
-  count       = !var.defer_edge_until_dns ? 1 : 0
   enabled     = true
   comment     = "AWSops v2 spine — ${var.domain_name}"
   aliases     = concat([var.domain_name], var.extra_domain_aliases)
@@ -80,7 +98,7 @@ resource "aws_cloudfront_distribution" "main" {
     domain_name = var.domain_name
     origin_id   = "alb-vpc-origin"
     vpc_origin_config {
-      vpc_origin_id            = aws_cloudfront_vpc_origin.alb[0].id
+      vpc_origin_id            = aws_cloudfront_vpc_origin.alb.id
       origin_read_timeout      = 60
       origin_keepalive_timeout = 5
     }
@@ -121,20 +139,20 @@ resource "aws_cloudfront_distribution" "main" {
   }
 
   viewer_certificate {
-    acm_certificate_arn      = aws_acm_certificate_validation.cf[0].certificate_arn
+    acm_certificate_arn      = var.existing_cf_certificate_arn != null ? var.existing_cf_certificate_arn : aws_acm_certificate_validation.cf[0].certificate_arn
     ssl_support_method       = "sni-only"
     minimum_protocol_version = "TLSv1.2_2021"
   }
 }
 
 resource "aws_route53_record" "alias" {
-  for_each = !var.defer_edge_until_dns && !var.defer_dns_alias_records ? toset(concat([var.domain_name], var.extra_domain_aliases)) : toset([])
+  for_each = var.publish_service_dns ? toset(concat([var.domain_name], var.extra_domain_aliases)) : toset([])
   zone_id  = data.aws_route53_zone.main.zone_id
   name     = each.value
   type     = "A"
   alias {
-    name                   = aws_cloudfront_distribution.main[0].domain_name
-    zone_id                = aws_cloudfront_distribution.main[0].hosted_zone_id
+    name                   = aws_cloudfront_distribution.main.domain_name
+    zone_id                = aws_cloudfront_distribution.main.hosted_zone_id
     evaluate_target_health = false
   }
 }

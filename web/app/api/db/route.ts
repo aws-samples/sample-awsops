@@ -16,11 +16,9 @@ export async function GET() {
       public_tables: r.rows[0].public_tables,
     });
   } catch (e) {
-    // This route is in the edge `is_public()` allowlist, so it answers unauthenticated callers.
-    // Returning the raw driver message leaked host/database/schema detail from connection and
-    // query errors, and the database name was echoed on the success path — ADR-002 §2-4 documented
-    // that as "non-sensitive", which is a weaker claim than it should be for an unauthenticated
-    // route. Log the detail, return a generic message (kiro review, PR #199).
+    // CloudFront authenticates this route; it is not in the edge public-path allowlist.
+    // The BFF intentionally skips verifyUser() here under ADR-002 §2-4.
+    // Keep connection/schema details in server logs and return only a generic client error.
     console.warn(
       JSON.stringify({ evt: 'db_ping_failed', err: e instanceof Error ? e.message : String(e) }),
     );

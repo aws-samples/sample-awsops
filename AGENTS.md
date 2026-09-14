@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 23616e58b0fb · generated-at: 2026-09-02 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 38c635d6d51e · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -31,8 +31,14 @@ v2 = ops dashboard + AI diagnosis. **Current form = diagnosis + remediation *pro
 cd web && npm ci && npm run build       # next build (standalone)
 cd web && npx vitest run                 # web test suite (vitest)
 
+# Required database CI tests (repo root; no AWS credentials/OIDC)
+npm ci --prefix web
+npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund
+node --test scripts/v2/ci/*.test.mjs
+node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs
+
 # agent (Python)
-cd agent && python3 -m pytest test_agent.py -q
+cd agent && python3 -m pytest test_agent.py test_readiness.py -q
 
 # Terraform (controller runs apply on shared infra; agents do NOT auto-approve)
 terraform -chdir=terraform/foundation init -backend-config=backend.hcl
@@ -40,11 +46,16 @@ terraform -chdir=terraform/foundation validate
 terraform -chdir=terraform/foundation plan -out tfplan   # controller runs `apply tfplan`
 
 # Makefile
-make migrate     # ULID migrations + awsops_sql_reader password sync — REQUIRED before agentcore
+make migrate     # CLI/private-host migrations + reader sync, before make agentcore
 make deploy      # migrate → buildx arm64 → ECR push → ECS roll → wait stable → smoke /api/health
 make agentcore   # arm64 agent image + idempotent AgentCore provisioner (MCP Lambda code ships via terraform apply, NOT this)
 make workers     # arm64 worker image push (after apply with workers_enabled=true)
 ```
+Dev Deploy AgentCore runs reusable private `deploy-migrations.yml` before its split build/provision phases. It requires `CI_MIGRATIONS_ENABLED_DEV=true` and applied `ci_migrations_enabled=true` with a non-null `migration_job` output before dispatch. Main/preview and direct private-host CLI retain `make migrate`
+before `make agentcore`. Migrations and reader password sync always precede AgentCore provisioning. Private migration offline `scripts/v2/ci/*.test.mjs` fixtures require locked Node dependencies, Python PyYAML and boto3/botocore (`pip install -r agent/requirements.txt`), and Terraform
+1.15.7; runtime/controller/workflow and mock-plan checks make no AWS calls. Both `scripts/v2/ci/migration.itest.mjs` and `scripts/v2/ci/web-db-connection.itest.mjs` require bare `docker` on PATH, a reachable daemon and OpenSSL, with no automatic `sudo`/`DOCKER` override. The web connection-phase suite
+additionally uses the locked web driver and TypeScript dependencies. Both PostgreSQL suites are fail-hard exceptions to legacy optional `scripts/v2/*.itest.mjs`; missing Docker is never a skip.
+
 No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scripts/v2/package.json` (`make deps` runs `npm ci --prefix scripts/v2`). `next build` fails on app-level type errors but `*.test.ts(x)` type noise is non-blocking.
 
 ## BANNED PATTERNS (enforce in review)
@@ -55,7 +66,7 @@ No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scr
 - **arm64 required** for web/agent/worker images (`buildx --platform linux/arm64`).
 - **`HOSTNAME=0.0.0.0` must be a runtime env** (task-def `environment`) for Next standalone — image ENV is insufficient (ECS overwrites → health check UNHEALTHY).
 - **Fargate worker Dockerfiles use `CMD`, not exec-form `ENTRYPOINT`** (SFN `containerOverrides.command` appends to ENTRYPOINT → argv doubles).
-- **ECS `secrets` valueFrom needs execution-role perms** (not task role) — else `ResourceInitializationError`.
+- **Where ECS `secrets`/`valueFrom` is used (e.g. optional Steampipe), execution-role permissions are required**, otherwise `ResourceInitializationError`. The web pool instead uses task-role `rds-db:connect` as `awsops_web`; it receives no Aurora master password.
 - **No `-auto-approve` on shared infra** — saved `tfplan` only; long applies run by the controller.
 - **Flag-gate large new features** (`agentcore_enabled`, `workers_enabled`, `steampipe_enabled`, `hybrid_routing_enabled`, `finops_baseline_enabled` — default false → `plan` = No changes, $0).
 

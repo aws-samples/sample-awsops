@@ -7,13 +7,14 @@
 AWSops is a real-time AWS/Kubernetes operations dashboard. v2 rebuilds v1's single-EC2 monolith as a **Terraform-based MSA**: private edge (CloudFront VPC Origin → internal ALB → Fargate), Cognito Lambda@Edge auth, Aurora persistent state, AgentCore section agents (live AWS queries), and an OOM-safe async worker tier.
 
 ## Commands (web/, day-to-day dev)
-All app code/tests live under `web/` — there is no root `package.json`. See `web/CLAUDE.md` for the `npm` build/test invocations.
+App code and unit tests live under `web/`; required database integration tests are listed below. There is no root `package.json`. See `web/CLAUDE.md` for the `npm` build/test invocations.
 ```
 npx vitest run lib/anfw.test.ts          # a single test file
 npx vitest run -t "test name substring"  # filter by test name
 npx tsc --noEmit -p .                    # typecheck — no npm script wraps this; run directly
 ```
 No lint script/config exists (no ESLint) — don't go looking for one. Integration tests for the migration/backfill scripts live outside `web/` as `scripts/v2/*.itest.mjs`, run directly with `node scripts/v2/<name>.itest.mjs` — each spins up a disposable `postgres:17` container via `sudo docker` (skips cleanly if Docker is unreachable), not the live Aurora instance.
+**Required database CI exception:** from the repo root, install locked dependencies with `npm ci --prefix web` and `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`. Run `node --test scripts/v2/ci/*.test.mjs` (migration runtime/controller/workflow fixtures and mocked Terraform plans), then `node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs` (real PostgreSQL 17 initializer/runner and web connection-phase regressions). The offline fixtures require Node, Python PyYAML and boto3/botocore (`pip install -r agent/requirements.txt`), and Terraform 1.15.7. Both PostgreSQL suites require bare `docker` on PATH, a reachable daemon and OpenSSL; the web connection suite uses the locked web driver and TypeScript dependencies. Missing prerequisites fail hard, never skip, with no automatic `sudo`/`DOCKER` override. No AWS credentials/OIDC or live AWS calls.
 
 ## Architecture (v2)
 - **IaC**: **Terraform** (CDK retired). Single root at `terraform/foundation/`, **partial S3 backend** (`backend.hcl`, `awsops-v2-tfstate`, `use_lockfile` — no DynamoDB). TF ≥1.15, provider `~>6.0`.
@@ -55,7 +56,8 @@ Live environment: account `<ACCOUNT_ID>`, domain `awsops-v2.atomai.click`, reusi
 
 ### Data / Config
 - App state lives in **Aurora** (node-pg). Not `data/*.json` (the v1 pattern). Schema = `terraform/foundation/data/schema.sql` + `schema_migrations`.
-- ECS `secrets` valueFrom (Aurora secret) requires **execution-role** permissions (not the task role) — otherwise `ResourceInitializationError`.
+- The web pool (`web/lib/db.ts`) authenticates as `awsops_web` using task-role `rds-db:connect` and a fresh IAM token per physical connection; no Aurora master password is injected into the web task.
+- ECS `secrets` valueFrom (where used, e.g. optional Steampipe) requires **execution-role** permissions (not the task role) — otherwise `ResourceInitializationError`.
 - AgentCore config's **source of truth is SSM** (provision.py writes it → the web BFF reads it at runtime). No valueFrom (avoids a race).
 
 ### Containers / Deployment
@@ -72,7 +74,8 @@ Live environment: account `<ACCOUNT_ID>`, domain `awsops-v2.atomai.click`, reusi
 - `secret-rotation.tf` — web self-restart on Aurora secret rotation (`secret_rotation_redeploy_enabled`) — **the sole ADR-015 owner-override exception**, default-off
 
 ## Deployment
-`/deploy`, or the `make` targets. **`make migrate` is required before `make agentcore`** — agentcore doesn't run it, and skipping it makes `execute_sql`/inventory-read fail Data API auth (`docs/runbooks/agent-sql-reader.md`).
+Migrations and `awsops_sql_reader` password sync must succeed before AgentCore provisioning. Dev Deploy AgentCore runs the reusable private `deploy-migrations.yml` workflow first, then the split image-build/provision phases. Before dispatch, set `CI_MIGRATIONS_ENABLED_DEV=true` and
+apply the reviewed plan with `ci_migrations_enabled=true` so `migration_job` is non-null. Main/preview and direct private-host CLI use `make migrate` before `make agentcore`; that target does not run migrations itself. See `docs/runbooks/agent-sql-reader.md`.
 
 ## Known Issues / Lessons (key reusable knowledge)
 - **Edge 504→200**: CF→ALB is TLS end-to-end (VPC Origin `https-only` + origin domain = public FQDN so SNI matches), the ALB is HTTPS:443 + regional ACM, and the ALB SG allows 443 from `CloudFront-VPCOrigins-Service-SG`. The VPC Origin protocol can't be changed in-place → use `create_before_destroy` + `-replace`.
@@ -94,3 +97,6 @@ Architecture decision records (ADRs 001–021 + the BASELINE invariant register)
 Per-layer implementation references live under `docs/reference/` (index: [README](docs/reference/README.md)) — [01 Edge Network](docs/reference/01-edge-network.md) · [02 Auth](docs/reference/02-auth.md) · [03 Aurora Data](docs/reference/03-data-aurora.md) · [04 Web BFF](docs/reference/04-web-bff.md) · [05 AgentCore](docs/reference/05-agentcore.md) · [06 Workers](docs/reference/06-workers.md) · [07 EKS](docs/reference/07-eks.md).
 Full overview: [docs/architecture.md](docs/architecture.md) (bilingual + mermaid) · New joiners: [docs/onboarding.md](docs/onboarding.md) · Full API index (99 routes): [docs/api-reference.md](docs/api-reference.md) · Operations: [docs/runbooks/](docs/runbooks/).
 <!-- /AUTO-MANAGED:references -->
+
+Agent readiness changes require `cd agent && python3 -m pytest test_agent.py test_readiness.py -q`.
+Bounded operator permission probes wait for AgentCore; heavy domain work remains queued.

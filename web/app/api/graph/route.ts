@@ -2,8 +2,14 @@ import { verifyUser } from '@/lib/auth';
 import { getPool } from '@/lib/db';
 import { downstream, upstream, FANOUT_CAP } from '@/lib/graph-query';
 import { readGraphState } from '@/lib/graph-state';
+import { queueClaimMeta } from '@/lib/trace-evidence';
 
 export const dynamic = 'force-dynamic';
+
+function evidenceNodes(rows: Record<string, any>[], cls: string) {
+  return cls !== 'trace' ? rows : rows.map(node =>
+    node.kind === 'queue' ? { ...node, meta: queueClaimMeta(node.meta ?? {}) } : node);
+}
 
 function evidenceEdges(rows: Record<string, any>[], cls: string) {
   if (cls !== 'trace') return rows;
@@ -35,8 +41,8 @@ export async function GET(request: Request) {
   }
   const cls = raw;
   // Account scope: 'self' (default) | 12-digit member id | '__all__' (union across accounts).
-  // Trace is host-scoped by construction (spans carry no AWS-account dimension) — its rows only
-  // exist under 'self', so member scopes honestly return an empty trace graph.
+  // Trace snapshots live under host storage scope 'self'. Claimed accounts in span/queue
+  // telemetry do not change this scope or verify AWS ownership.
   const acctRaw = url.searchParams.get('account') ?? 'self';
   const account = acctRaw === '' ? 'self' : acctRaw;
   if (account !== 'self' && account !== '__all__' && !/^\d{12}$/.test(account)) {
@@ -69,7 +75,7 @@ export async function GET(request: Request) {
                       GROUP BY source HAVING count(*) > $3) t) AS capped`, [cls, ids, FANOUT_CAP, account]),
       ]);
       return Response.json({
-        from, depth, class: cls, account, nodes: nodes.rows, edges: evidenceEdges(edges.rows, cls),
+        from, depth, class: cls, account, nodes: evidenceNodes(nodes.rows, cls), edges: evidenceEdges(edges.rows, cls),
         captured_at: collection?.captured_at ?? nodes.rows[0]?.captured_at ?? null,
         capped: cap.rows[0]?.capped ?? false, collection,
       });
@@ -81,7 +87,7 @@ export async function GET(request: Request) {
       pool.query(`SELECT DISTINCT source, target, rel, confidence, to_jsonb(e)->'meta' AS meta FROM topology_edges e
                     WHERE ($2 = '__all__' OR account_id = $2) AND class = $1`, [cls, account]),
     ]);
-    return Response.json({ class: cls, account, nodes: nodes.rows, edges: evidenceEdges(edges.rows, cls),
+    return Response.json({ class: cls, account, nodes: evidenceNodes(nodes.rows, cls), edges: evidenceEdges(edges.rows, cls),
       captured_at: collection?.captured_at ?? nodes.rows[0]?.captured_at ?? null, collection });
   } catch (e) {
     return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: 500 });

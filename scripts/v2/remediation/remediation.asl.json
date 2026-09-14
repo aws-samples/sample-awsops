@@ -1,5 +1,5 @@
 {
-  "Comment": "AWSops v2 ADR-029+036 remediation SM. Reuses the P2 ledger (worker_jobs) + idempotency (execution name == job_id). Flow: mandatory dry-run -> 4-eyes approval Task-Token (fail-closed on timeout) -> route by $.runtime (ssm via startAutomationExecution + .waitForTaskToken/EventBridge, OR lambda/fargate code executor) -> Catch -> rollback -> terminal MANUAL_INTERVENTION_REQUIRED on rollback failure (never infinite retry). status_updater (P2) records terminal failures (SFN cannot write VPC Aurora).",
+  "Comment": "ADR-005 FROZEN dark substrate: awaiting_approval is DELIBERATELY unclaimable by db.claim_running, even after approval. This is not an enabled execution path; do not widen the claim predicate. Historical AWSops v2 ADR-029+036 remediation SM. Reuses the P2 ledger (worker_jobs) + idempotency (execution name == job_id). Flow: mandatory dry-run -> 4-eyes approval Task-Token (fail-closed on timeout) -> route by $.runtime (ssm via startAutomationExecution + .waitForTaskToken/EventBridge, OR lambda/fargate code executor) -> Catch -> rollback -> terminal MANUAL_INTERVENTION_REQUIRED on rollback failure (never infinite retry). status_updater (P2) records terminal failures (SFN cannot write VPC Aurora).",
   "StartAt": "DryRunFirst",
   "States": {
     "DryRunFirst": {
@@ -15,7 +15,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
       "TimeoutSeconds": 86400,
-      "Comment": "4-eyes approval. The approval-notifier Lambda records 'awaiting_approval' + persists the token; an operator approves via /api/actions/[id] execute (P2-path) which SendTaskSuccess. Timeout fails CLOSED (no execution).",
+      "Comment": "ADR-005 FROZEN: awaiting_approval remains deliberately unclaimable after a callback. Historical 4-eyes approval flow: the approval-notifier Lambda records 'awaiting_approval' + persists the token; an operator approves via /api/actions/[id] execute (P2-path) which SendTaskSuccess. Timeout fails CLOSED (no execution).",
       "Parameters": { "FunctionName": "${approval_fn_arn}", "Payload": { "job_id.$": "$.job_id", "plan_id.$": "$.plan_id", "action.$": "$.action", "taskToken.$": "$$.Task.Token" } },
       "Catch": [ { "ErrorEquals": ["States.Timeout"], "ResultPath": "$.errorInfo", "Next": "MarkFailed" }, { "ErrorEquals": ["States.ALL"], "ResultPath": "$.errorInfo", "Next": "MarkFailed" } ],
       "Next": "Route"

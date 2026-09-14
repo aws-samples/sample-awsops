@@ -226,7 +226,7 @@
       "title": "Honest Freshness",
       "items": [
         "run_token CAS keeps last_success_at truthful across superseding and failed runs",
-        "A succeeded run with unknown_attribute_count > 0 is disclosed as degraded, never healthy",
+        "A succeeded run with unknown_attribute_count null or > 0 is disclosed as degraded, never healthy",
         "query_inventory and inventory_summary carry the per-type freshness block; the sql_reader view still excludes error and run_token"
       ]
     }

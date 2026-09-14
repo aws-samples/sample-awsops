@@ -29,7 +29,7 @@
 | `/api/inventory/cloudtrail/events` | GET | CloudTrail `LookupEvents` 조회 — 드릴다운(`raw`+`accessKeyId`)은 admin 전용 subset, 그 외 사용자는 flat 필드만 | verifyUser |
 | `/api/inventory/ebs_volume/related` | GET | 볼륨 드릴다운 — 스냅샷 20개 + 연결 EC2 enrichment (Aurora 교차조회, 계정 스코프) | verifyUser |
 | `/api/inventory/security_group/inbound` | GET | SG 인바운드 규칙 체이닝 — 첨부 SG(≤20)의 인바운드 규칙 파싱 (Aurora 교차조회, 계정 스코프) | verifyUser |
-| `/api/inventory/summary` | GET | 타입/카테고리별 카운트 + 보안 분할(ec2 running, 미암호화 EBS 등) — `regions`/`includeGlobal` 스코프 반영(홈 대시보드 카운트 포함) | verifyUser |
+| `/api/inventory/summary` | GET | 타입/카테고리별 카운트·보안 분할은 리전 스코프 반영. `collection.scope=aggregate`는 전체 수집 작업의 configured/readOk/runs이며 계정별 건강 판정이 아님. 누락·실패·unknown 보존 / aggregate job ledger | verifyUser |
 | `/api/inventory/trend` | GET | 일별 리소스 카운트 추세 (`inventory_snapshots`, 기본 14일/최대 90일) — `accounts` 스코프(기본 self, `__all__`은 서버에서 self+스캔 스코프 내 활성 멤버[all_regions 또는 활성 리전 ≥1]로 해석, 검증된 CSV; 리전 차원 없음) + (일자, 타입)별 계정 커버리지·해석된 계정 목록(`accounts`)·계정 레지스트리 조회 실패 시 `degraded: true` 반환, 파생 보안 시리즈(public_s3_buckets 등)는 total에서 제외 | verifyUser |
 
 ## eks (10)
@@ -71,7 +71,7 @@
 ## dx (1)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
-| `/api/dx` | GET | Direct Connect 커넥션/VIF/게이트웨이 목록+분석 — AWS/DX 메트릭 다운 감지·피크 사용률·BGP 라우트 가시성 (호스티드 <1G는 커넥션 레벨 Bps 미발행 → VIF 레벨). 부분 실패는 정직 강등: `degradedRegions`·`metricsDegradedRegions`·`gatewaysDegraded`·행 단위 `associationsAvailable`·`totals.gatewaysAssociationsUnknown` | verifyUser |
+| `/api/dx` | GET | Direct Connect 커넥션/VIF/게이트웨이 목록+분석 — AWS/DX 메트릭 다운 감지·피크 사용률·BGP 라우트 가시성 (호스티드 <1G는 커넥션 레벨 Bps 미발행 → VIF 레벨). `locations[]`는 `available/down` owned·hosted의 확인된 위치/리전별 집계, `totals.locations`는 고유 위치명 수. 기타·미확인 상태는 원본 목록에 남지만 위치·상태·SLA 평가에서 제외·미평가로 고지하며 SLA는 owned만 대상. / Known deployed sites only; raw inventory remains available, excluded states are unassessed. 부분 실패는 정직 강등: `degradedRegions`·`metricsDegradedRegions`·`gatewaysDegraded`·행 단위 `associationsAvailable`·`totals.gatewaysAssociationsUnknown` | verifyUser |
 
 ## ip-inventory (1)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -91,7 +91,7 @@
 ## 기타 (54)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
-| `/api/accounts` | GET, POST, PATCH, DELETE | 등록 계정 CRUD (admin) — POST는 role assume + `GetCallerIdentity` anti-spoof 검증 후 insert | verifyUser |
+| `/api/accounts` | GET, POST, PATCH, DELETE | 등록 계정 CRUD (admin) — POST는 role assume + `GetCallerIdentity` anti-spoof 검증 후 insert; 호스트 전용 모드의 외부 계정 POST는 409 / host-only foreign account POST returns 409 | verifyUser |
 | `/api/accounts/regions` | GET, POST, DELETE | 계정별 리전 활성/비활성 (`'self'` → 호스트 실제 id 해석) — 조회 auth / 변경 admin | verifyUser |
 | `/api/actions` | GET, POST | 액션 목록/생성 (ADR-007[legacy 040/041], admin) | verifyUser |
 | `/api/actions/[id]` | GET, POST | 액션 상세/실행 (admin) — kill-switch 분기(integrations-write vs mutating-actions), 빈 이름 fail-closed | verifyUser |
@@ -117,7 +117,7 @@
 | `/api/datasources/[id]/cards` | GET | 사전 생성 대시보드 카드 조회 (read-only, auth) | verifyUser |
 | `/api/datasources/[id]/default` | POST | kind별 기본 인스턴스 지정 — 트랜잭션으로 기존 기본 해제 (admin) | verifyUser |
 | `/api/datasources/[id]/diag-signals` | GET | 사전 정의 진단 시그널 — Explore 칩 (DB read only, egress 없음). kind 범위: prometheus/mimir/loki 는 결정론 카탈로그, clickhouse 는 결정론 엔트리가 없어 폴백 전용. tempo 는 `tags_or_services` matcher 가 introspect 된 어떤 스키마에도 매칭되어 항상 ready 이므로 폴백에 도달하지 않는다. **LLM 폴백(`diag_signal_querygen_enabled`)은 clickhouse 전용이 아니다** — ready 0행인 *모든* 배선 kind 에서 발동하므로 라벨 미탐지로 0행이 된 loki 인스턴스의 칩에도 `provenance='generated'` 가 섞일 수 있다(리뷰 MAJOR-9). 생성 행은 칩 전용 — 리포트 경로 제외, 플래그 OFF 면 read 에서도 제외. jaeger/dynatrace/datadog 는 아직 배선 없음(빈 응답) | verifyUser |
-| `/api/db` | GET | Aurora ping — public 테이블 카운트, `AURORA_ENDPOINT` 미설정 시 503 | 없음 |
+| `/api/db` | GET | Aurora ping — public 테이블 카운트, `AURORA_ENDPOINT` 미설정 시 503 | CloudFront Edge 인증; BFF `verifyUser()` 생략(ADR-002 §2-4) |
 | `/api/diagnosis` | GET, POST | AI 종합진단 리포트 목록/생성 — worker enqueue + 멱등키 | verifyUser |
 | `/api/diagnosis/intent` | GET, POST | Plan-2 Intent Engine — `architecture_intent` 조회(auth) + 쓰기(admin) | verifyUser |
 | `/api/diagnosis/schedule` | GET, PUT | 사용자별 자동 진단 스케줄 — row read/write만 (실행은 worker `schedule_dispatcher`) | verifyUser |
@@ -126,7 +126,7 @@
 | `/api/diagnosis/subscribers/test` | POST | 진단 알림 테스트 발송 — 토픽 한정 SNS Publish 1건 (admin 전용) | verifyUser |
 | `/api/diagnosis/[id]` | GET, PATCH, DELETE | 리포트 단건 조회/수정/삭제 | verifyUser |
 | `/api/diagnosis/[id]/download` | GET | 산출물(md/docx/pdf) S3 프록시 다운로드 (presign 아님) | verifyUser |
-| `/api/graph` | GET | 토폴로지 그래프 (legacy 043 — BASELINE §2 deferred 옵션, read-only) — class `flow\|infra`, `?from=`으로 서브그래프 | verifyUser |
+| `/api/graph` | GET | 읽기 전용 토폴로지 그래프 — class `flow\|infra\|trace`, `?from=`으로 서브그래프. `trace`는 `collection` 수집·보존 상태 및 관측 edge count를 노출. 큐 `meta.claimedAccountId/claimedRegion`은 보존된 행도 destination ARN에서만 재계산하고 비-ARN/누락 한정자는 null; `identityProvenance=telemetry_claim` 고정, 호출자 폴백·AWS 인벤토리 bridge 없음. 동일 ARN은 데이터소스·환경 안에서만 호출자 간 연결. / Queue claims derive only from destination ARNs; unverified, scoped by datasource/environment, never inventory authority. [계약·배포 / Contract and rollout](runbooks/source-sync-observability.md) | verifyUser |
 | `/api/health` | GET | 헬스체크 — 컨테이너/타깃그룹 health 경로와 일치 필수 | 없음 (공개) |
 | `/api/incidents` | GET, POST | 인시던트 목록 + 수동 트리거 (ADR-006[legacy 032], admin) | verifyUser |
 | `/api/incidents/prevention` | GET | 교차 인시던트 예방 인사이트 (admin, read-only) — Aurora 미설정/실패도 200 + 빈 목록 | verifyUser |
@@ -137,6 +137,7 @@
 | `/api/integrations` | GET, POST, PUT | 통합 등록 — egress 커넥터 + ingress 웹훅 소스 (ADR-007[legacy 039], admin, SSRF 가드) | verifyUser |
 | `/api/integrations/credential` | GET, PUT | 통합 크리덴셜 저장 — 단일 Secrets Manager secret에 slug(kind) 키 (admin) | verifyUser |
 | `/api/integrations/schema` | GET, POST | 인스턴스 스키마 introspect/캐시 (admin) | verifyUser |
+| `/api/deployment/readiness` | POST | 실제 웹 역할·SSM·AgentCore·인벤토리·모델 검증. nonce/account/known CloudFront 입력, no-store, 401/403/429/503. 프로세스당 단일 실행·60초 제한 / bounded deployment evidence | verifyUser + admin or deployment-verifiers |
 | `/api/jobs` | GET, POST | 비동기 작업 enqueue/목록 (P2 — `worker_jobs` + SQS) | verifyUser |
 | `/api/jobs/[id]` | GET | 작업 상태 단건 조회 — UUID 검증 + 소유자 또는 관리자 / owner-or-admin | verifyUser |
 | `/api/jobs/observability` | GET | 접수 기간별 작업 시간·완료 목표: `windowHours` 1–168, 선택적 `type` 및 `targetMs` 1–86400000. 소유자/관리자 범위, 최대 2000건 표본·최근 50건 상세, 누락·잘림 시 미확정 / ownership-scoped workload observations | verifyUser |
