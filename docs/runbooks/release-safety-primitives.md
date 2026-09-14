@@ -35,7 +35,7 @@ The automatic subset permits only transactional files containing simple new tabl
 
 The caller must set this flag from its verified automatic web context, never a dispatch input or a caller-supplied SQL annotation. Standalone manual migration leaves it unset and is the explicit override for approved contract cutovers. Keep web releases disabled and queues drained during those cutovers; keep required AI/CI checks enabled. Re-enable only after compatible consumers are verified.
 
-This implementation adds no product autonomy, AWS-resource remediation flag or exception to ADR-005. Automatic caller activation remains a separately reviewed operator deployment change. `DRY_RUN=1` combined with automatic mode still validates the subset and rejects unsupported SQL rather than previewing rejected statements.
+This implementation adds no product autonomy, AWS-resource remediation flag or exception to ADR-005. Deploy Web enables the policy as part of the reviewed operator deployment workflow. `DRY_RUN=1` combined with automatic mode still validates the subset and rejects unsupported SQL rather than previewing rejected statements.
 
 `pg_try_advisory_lock(4729411)` fails immediately when another runner holds the lock. No pending SQL or reader synchronization starts in that case. Acquired locks remain held through reader synchronization. Wait for the other release and start a new verified run; never remove the lock or repeat a mutation blindly. SQLSTATE `55P03` reports a database lock conflict, while `57014` reports query cancellation/timeout; neither alone proves another migration owns the advisory lock.
 
