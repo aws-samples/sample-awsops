@@ -114,24 +114,28 @@ Optional `collectionMode: "release"` allows a 20-minute collection poll window i
 Every runtime entry point has a finite deadline: verify expires 30 minutes after
 `collectionStartedAt`, while prepare gets at most 30 minutes from entry. A caller deadline
 can only shorten it. Authentication, HTTP, cooldowns and workers share the bound. Admitted
-poll responses still must arrive before the overall deadline to pass.
+poll responses still must arrive before the overall deadline to pass. Start promptly after
+the marker; an older marker shortens the available collection and worker budget.
 
 A validated inventory-incomplete/stale response permits one retry only when the ledger
 shows a unique fresh running CloudFront attempt with a fresh prior success. After a
 65-second cooldown, every supplied type must be complete again before retrying. A second
-proven collision after successful revalidation is `runtime_inventory_contention`; an
-initial or continuous collection wait exhausts as `collection_timeout`. Full-policy stale
+proven collision after successful revalidation, or insufficient shared-window time to
+admit revalidation, is `runtime_inventory_contention`. The latter fails before wasting the
+cooldown; delayed wakeups are checked again. Initial or continuous collection waiting
+exhausts as `collection_timeout`. Full-policy stale
 coverage can end as `collection_stale`; the overall bound is `release_timeout`.
 Partial/failed/unknown evidence and unrelated protocol, authorization or model failures
 never pass. Workers start only after ready. One additional AgentCore probe may be billed.
 
 `/api/inventory/summary?view=collection` authenticates normally and reads only the sanitized
 aggregate ledger, avoiding dashboard aggregations. Account/region filters do not narrow
-this collector-wide ledger or establish per-account health. The existing default-off
-readiness capability still governs access; this utility does not enable a workflow.
+this collector-wide ledger or establish per-account health. Normal authentication governs
+this GET view. The separate default-off capability governs the billed readiness POST; this
+utility does not enable a workflow.
 
 ```bash
-node --test scripts/v2/runtime-smoke.test.mjs scripts/v2/deployment-smoke.test.mjs
+node --test scripts/v2/deployment-smoke.test.mjs
 ```
 
 <a id="related--관련"></a>

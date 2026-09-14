@@ -157,21 +157,24 @@ export async function verifyRuntimeSmoke(configuration, send, {
       fail('collection_unavailable', { status: 'unavailable', catalog_types: required, counts: null, types: null });
     return c;
   };
-  const verifyCollection = () => poll(async () => {
-    const c = await readCollection();
-    quality = inventoryQuality(config.expectedQueuedTypes, c.runs, started, now());
-    const has = category => required.some(type => quality.types[category].includes(type));
-    if (has('invalid')) fail('collection_protocol', quality);
-    const recent = c.runs.filter(row => required.includes(row?.type) && row.accountId === 'self'
-      && freshTime(row.started_at, started, now()));
-    if (recent.some(row => row.status === 'succeeded' && freshTime(row.last_success_at, started, now())
-      && (row.unknown_attribute_count !== 0 || row.unknown_attributes !== false))) fail('inventory_incomplete', quality);
-    for (const status of ['partial', 'failed'])
-      if (recent.some(row => row.status === status)) fail(`collection_${status}`, quality);
-    collectionFailure = has('missing') ? 'collection_missing'
-      : config.inventoryPolicy && has('stale') ? 'collection_stale' : 'collection_timeout';
-    return required.every(type => quality.types.verified.includes(type));
-  }, () => collectionFailure, releaseWindow ? 1200 : 600, collectionEnd);
+  const verifyCollection = () => {
+    collectionFailure = 'collection_timeout';
+    return poll(async () => {
+      const c = await readCollection();
+      quality = inventoryQuality(config.expectedQueuedTypes, c.runs, started, now());
+      const has = category => required.some(type => quality.types[category].includes(type));
+      if (has('invalid')) fail('collection_protocol', quality);
+      const recent = c.runs.filter(row => required.includes(row?.type) && row.accountId === 'self'
+        && freshTime(row.started_at, started, now()));
+      if (recent.some(row => row.status === 'succeeded' && freshTime(row.last_success_at, started, now())
+        && (row.unknown_attribute_count !== 0 || row.unknown_attributes !== false))) fail('inventory_incomplete', quality);
+      for (const status of ['partial', 'failed'])
+        if (recent.some(row => row.status === status)) fail(`collection_${status}`, quality);
+      collectionFailure = has('missing') ? 'collection_missing'
+        : config.inventoryPolicy && has('stale') ? 'collection_stale' : 'collection_timeout';
+      return required.every(type => quality.types.verified.includes(type));
+    }, () => collectionFailure, releaseWindow ? 1200 : 600, collectionEnd);
+  };
   await verifyCollection();
 
   let found = false;
@@ -204,9 +207,13 @@ export async function verifyRuntimeSmoke(configuration, send, {
       && freshTime(rows[0].started_at, started, now()) && freshTime(rows[0].last_success_at, started, now());
     if (!competing) fail(reason, quality);
     if (attempt === 1) fail('runtime_inventory_contention', quality);
-    // Respect the BFF's 60-second cooldown; successful old evidence never admits partial data.
-    if (now() + 65_000 >= deadline) fail('release_timeout');
+    // Allow the per-process BFF cooldown only when the shared recheck window can still admit work.
+    const retryAt = now() + 65_000;
+    if (retryAt >= deadline) fail('release_timeout', quality);
+    if (retryAt >= collectionEnd) fail('runtime_inventory_contention', quality);
     await wait(65_000);
+    if (now() >= deadline) fail('release_timeout', quality);
+    if (now() >= collectionEnd) fail('runtime_inventory_contention', quality);
     await verifyCollection();
   }
   const runtime = response?.body;

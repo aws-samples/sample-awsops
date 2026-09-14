@@ -55,8 +55,8 @@ secrets-manager) — installed by `make deps`.
   Private init is bounded to 10 minutes; output/console each to 2 minutes.
 - `v2/authenticated-smoke.mjs` — login plus edge-authenticated `/api/db` verification. Preserve
   Host/SNI/TLS; report only the phase and validated HTTP status, never bodies/cookies/passwords.
-  The CLI keeps HTTP scratch files under the prepared credential directory so the workflow's
-  always-cleanup owns them; standalone calls prefer RUNNER_TEMP. Response files default to 64 KiB; only the bounded CloudFront inventory leg permits 2 MiB.
+  CLI HTTP scratch belongs to the prepared credential directory and normal finalizers;
+  process/runner loss can prevent cleanup. Standalone calls prefer RUNNER_TEMP. Response files default to 64 KiB; only the bounded CloudFront inventory leg permits 2 MiB.
 - `v2/ci_dns_policy.py` — reads Terraform state to preserve managed certificate ownership
   (JSON null) and existing service aliases; verifies operator-selected/attached certificates
   without account-wide selection. Redacts public summaries. Blocks all Route53/Cloud Map

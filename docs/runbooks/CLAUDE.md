@@ -163,8 +163,9 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 - Deploy Web `verify_database=true` is dev-only and runs after required migrations. It prepares
   effective demo credentials privately with unwrapped Terraform before rollout, then verifies
   login and edge-authenticated `/api/db`. A positive table count is not a full ledger audit.
-- Credentials and HTTP scratch share one 0700 run directory with 0600 files, covered by
-  always-cleanup. Public diagnostics contain only fixed phases and validated HTTP status.
+- Credentials and HTTP scratch share one 0700 run directory with 0600 files. Normal
+  finalizers clean them; process/runner loss can prevent cleanup. Public diagnostics
+  contain only fixed phases and validated HTTP status.
   Never relay Terraform diagnostics, response bodies or cookies, or reset a user's password.
 - Curl/OpenSSL, PyYAML and Terraform 1.15.7 are mandatory for the authenticated smoke fixtures;
   missing tools fail the shared runner. Only final fmt/validate diagnostics are informational.

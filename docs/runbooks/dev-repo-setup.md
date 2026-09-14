@@ -1043,10 +1043,13 @@ worker images as described in [worker deployment](../reference/06-workers.md).
 Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway schema first.
 The web API scan remains capped at 500 rows. Failures distinguish `known_resource_unverified`,
 `collection_partial`, `collection_failed`, `collection_missing` after waiting, and `inventory_incomplete`.
+The optional-mode paragraph below also defines `collection_stale`, `release_timeout` and
+`runtime_inventory_contention`.
 Degraded inventory never passes release readiness. A missing match is not proof that the resource is absent in AWS.
 
 `SMOKE_RUNTIME_CONFIG_FILE` is an absolute 0600 JSON file beside credentials in the same 0700 directory;
-cleanup covers both. Its 16 KiB cap, 30-minute verify window and unique type list including cloudfront are required.
+Normal finalizers cover both; process or runner loss can prevent cleanup. The 16 KiB cap,
+30-minute verify window and unique type list including cloudfront are required.
 The release controller must supply actual deployment/dispatch evidence; current Deploy Web remains DB-only.
 
 `schemaVersion: 1`, `mode: "prepare"` and `expectedAccountId` check login/DB and the enabled host.
@@ -1068,7 +1071,9 @@ login/DB, HTTP, cooldowns and worker proof, and no later deadline can extend it.
 Full-policy stale coverage can fail as `collection_stale`; the overall limit reports
 `release_timeout`. A validated CloudFront running-sweep collision permits one 65-second
 cooldown and strict collection recheck before another AgentCore probe. A second confirmed
-collision is `runtime_inventory_contention`; a continuous initial wait is `collection_timeout`.
+collision, or too little shared collection time to admit revalidation, is
+`runtime_inventory_contention`; a continuous initial wait is `collection_timeout`.
+Start verification promptly: an older valid marker leaves less than the advertised poll window.
 Other failures do not retry. See [probe contracts](runtime-foundation.md#reusable-runtime-probe-contract).
 
 `POST /api/deployment/readiness` requires an administrator or `deployment-verifiers` membership.
@@ -1216,7 +1221,7 @@ python3 ../../scripts/v2/ci_tf_assets.py check-layer --layer inv_layer # only if
 python3 ../../scripts/v2/ci_tf_assets.py check-layer --layer pg8000_layer # only if workers are enabled
 # Controller only, after the existing identity/review/DNS gates approve this saved plan:
 CI_ASSETS_READY=true terraform apply -input=false tfplan
-# The Terraform workflow's always-cleanup removes its own plaintext plan/bundle/staging.
+# Workflow finalizers remove owned plaintext while the runner remains available; abrupt loss can prevent cleanup.
 ```
 
 Missing/mismatched authentication, plan or content requires a fresh reviewed plan/bundle,

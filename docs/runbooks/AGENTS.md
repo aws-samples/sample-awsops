@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 371efa38aea8 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 769110e2e5f9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -147,12 +147,13 @@ legacy runbook's steps as the current operational path).
 
 - Dev-only `verify_database=true` prepares effective demo credentials privately before rollout,
   then verifies login and edge-authenticated `/api/db`; positive table count is not a ledger audit.
-- Unwrapped Terraform and private 0600/0700 files are required. The CLI's HTTP scratch shares
-  the prepared credential directory and always-cleanup; expose only phases/validated HTTP status,
+- Unwrapped Terraform and private 0600/0700 files are required. CLI scratch shares the
+  credential directory; normal finalizers own cleanup, which process/runner loss can prevent.
+  Expose only phases/validated HTTP status,
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
 - Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
 
-Runtime probes accept verify-only full policy and release mode (shared 20min poll vs10min).
-All entry points expire at marker+30min/prepare-entry+30min, or an earlier supplied bound.
+Runtime probes accept verify-only full policy and release mode (shared 20min poll vs 10min).
+Calls with runtime configuration expire at marker+30min/prepare-entry+30min, or an earlier bound.
 Quality/gaps are programmatic; the CLI stays fixed. Use the real runtime-smoke and
 deployment-smoke test files and keep the probe contract before Related/ADR references.

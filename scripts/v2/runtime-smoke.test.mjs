@@ -383,7 +383,7 @@ test('release collection never accepts stale, missing, partial or unknown eviden
   }
 });
 
-function contentionFixture({ repeat = false, evidence = {}, afterRetry = {}, deadline = Infinity, initialDelay = 0 } = {}) {
+function contentionFixture({ repeat = false, evidence = {}, afterRetry = {}, deadline = Infinity, initialDelay = 0, cooldownOvershoot = 0 } = {}) {
   const types = ['cloudfront', 'ec2', ...Array.from({ length: 41 }, (_, i) => `catalog_type_${i}`)];
   let attempts = 0, reads = 0;
   const times = [];
@@ -407,7 +407,9 @@ function contentionFixture({ repeat = false, evidence = {}, afterRetry = {}, dea
         status: 'not_ready', reason: 'inventory_incomplete',
       } } : readyReply(options);
     },
-  }, { deadline });
+  }, { deadline, ...(cooldownOvershoot ? {
+    wait: async ms => { f.advance(ms + (ms === 65_000 ? cooldownOvershoot : 0)); },
+  } : {}) });
   return { ...f, times, attempts: () => attempts, reads: () => reads,
     run: () => f.run({ ...config, inventoryPolicy: 'full', expectedQueuedTypes: types }) };
 }
@@ -477,9 +479,18 @@ test('default and later caller deadlines cannot outlive the verification marker 
   }
 });
 
-test('a contention retry shares the original collection window', async () => {
+test('contention fails before cooldown when the original collection window is exhausted', async () => {
   const f = contentionFixture({ initialDelay: 9 * 60_000 + 30_000 });
-  await assert.rejects(f.run(), /Runtime smoke: collection_timeout$/);
+  await assert.rejects(f.run(), /Runtime smoke: runtime_inventory_contention$/);
+  assert.equal(f.attempts(), 1);
+  assert.equal(f.reads(), 2);
+  assert.equal(f.now() - Date.parse(start), 9 * 60_000 + 31_000);
+  assert.ok(!f.calls.some(c => c.path === '/api/jobs'));
+});
+
+test('a delayed cooldown cannot reset the shared collection window', async () => {
+  const f = contentionFixture({ cooldownOvershoot: 10 * 60_000 });
+  await assert.rejects(f.run(), /Runtime smoke: runtime_inventory_contention$/);
   assert.equal(f.attempts(), 1);
   assert.equal(f.reads(), 2);
   assert.ok(!f.calls.some(c => c.path === '/api/jobs'));
