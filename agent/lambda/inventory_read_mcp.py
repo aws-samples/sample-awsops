@@ -325,7 +325,8 @@ def _fetch_trace_collection(cls="trace"):
     or state row means unknown; a failed query must never certify a retained graph.
     """
     unknown = {"status": "unknown", "stale": True, "attempted_at": None,
-               "captured_at": None, "sources": []}
+               "captured_at": None, "sources": [],
+               **({"evidenceKind": "inventory"} if cls != "trace" else {})}
     # Probe the same search-path relation we actually read (the sql_reader view). Deployment may
     # precede either the state-table migration or its reader-view projection. No public fallback,
     # and no permission/connection error is caught or reclassified as an absent schema.
@@ -386,7 +387,7 @@ def _fetch_trace_collection(cls="trace"):
             clocks = [source.get("lastSuccessAtMs")]
             if source["itemCount"] > 0:
                 clocks.append(source.get("capturedAtMs"))
-            stale = stale or source.get("status") not in ("ok", "empty") or any(
+            stale = stale or source.get("producerStatus") != "succeeded" or source.get("status") not in ("ok", "empty") or any(
                 type(clock) not in (int, float) or not math.isfinite(clock) or clock <= 0
                 or clock > time.time() * 1000
                 or time.time() * 1000 - clock > _inventory_stale_after_minutes() * 60_000
