@@ -26,7 +26,7 @@ node --test scripts/v2/ci/prepare-runtime-host.test.mjs
 2. A new inactive stack needs foundation, migration and working login first. `CI_READONLY_RUNTIME_DEV=true` enables core runtime, without enabling the separate readiness capability; manual full plan/apply require real login/DB and an enabled host registry with no enabled foreign rows.
 3. `runtime-ecr-bootstrap` creates only three repositories. Build ARM64 images and set verified `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV` before a full plan.
 4. Dev/preview private discovery requires full-plan `runtime_rollout=true` and DNS permission; dev also requires the profile. Keep `domain_rollout=false`. Profile/rollout require remediation, RCA write-back, integrations write and diagnosis notifications off; governed external writes are not reclassified as FROZEN.
-5. Review/apply the same branch/SHA plan and encrypted assets. Preserve public DNS, certificates and network topology; unchanged owned ECS registration still requires DNS permission. Missing/mismatched bundles require a new plan. `CI_ASSETS_READY=true` selects layer verification, not rebuilding.
+5. Inspect the same branch/SHA plan privately in S3 and supply its `reviewed_plan_sha256` to apply; CI verifies pinned assets and HMAC. Preserve public DNS, certificates and network topology; unchanged owned ECS registration still requires DNS permission. Missing/mismatched bundles require a new plan. `CI_ASSETS_READY=true` selects layer verification, not rebuilding.
 
 ```bash
 # After the profile, base application and verified digests are configured:
@@ -44,6 +44,8 @@ scheduling work. Catalog acknowledgement alone never proves collection completen
 the controller must still check fresh complete results for every returned type.
 
 ## Readiness capability
+
+Review the entire saved plan through [private S3 inspection](dev-repo-setup.md#private-exact-plan-inspection) and pass its verified hash to apply. The bounded summary below is advisory for this rollout.
 
 After the existing runtime/DNS checks, a manual full dev plan with
 `CI_READINESS_ENABLED_DEV=true` publishes an advisory `bounded_readiness_rollout`
@@ -64,11 +66,11 @@ group are not checked. Imports, state address moves, disabling features and reti
 resources fall outside this view. The combined resource/output report is capped at 256 rows.
 
 The summary step has a two-minute timeout and renders fenced JSON. Reporting failure
-or timeout is advisory and does not fail the later encrypted-artifact steps.
+or timeout is advisory and does not block the encrypted plan-job handoff or private S3 publication.
 An unavailable, incomplete or unsupported summary requires
 [private exact-plan inspection](dev-repo-setup.md#private-exact-plan-inspection).
-The original encrypted artifacts, provenance and exact-saved-plan apply gates
-remain required; no check or credential boundary is bypassed.
+The completed source/publisher reference, pinned S3 versions, privately selected plan hash,
+asset HMAC and exact-saved-plan apply checks remain required; no boundary is bypassed.
 
 Saved-plan JSON can retain CLI Boolean inputs as the exact strings `true`/`false`,
 while Terraform's effective values are Boolean. The readiness policy decodes only

@@ -49,7 +49,10 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
    (`awsops-dev.whchoi.net`) via `deploy-web.yml` (build → pin → roll → smoke).
 3. **`main`** — promotion PR `dev → main` (ordinary same-repo PR). The production
    ECS roll stays workflow_dispatch + `production` environment reviewer approval;
-   terraform apply likewise (saved-plan, dispatch, per-branch environment).
+   Terraform apply likewise (saved-plan, dispatch, per-branch environment). A manual
+   Terraform plan also enters that environment for private publication: its publisher
+   assumes the deployer role under an S3/KMS-only session policy. Main publication
+   waits for production approval; the separate automatic plan job remains read-only.
 
 ## External (fork) PRs / 외부 PR
 
