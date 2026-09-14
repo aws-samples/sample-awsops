@@ -6,6 +6,7 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
+- `v2/ci_deployment_audit.py` — manual dev audit with existing identity guards, a restrictive session policy, fixed reads/SELECTs and safe projections. Web observations do not claim an applied revision; timestamps do not classify product freshness, and observed types do not establish completeness. Offline fixtures: `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`; operator guide: `docs/runbooks/deployment-audit.md`.
 - `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
 - The opt-in dev profile also sets `ci_readiness_enabled`; saved public CI plans reject it
   outside dev. Applied readiness plus AgentCore creates only the application verifier group;

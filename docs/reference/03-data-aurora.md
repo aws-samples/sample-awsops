@@ -108,6 +108,12 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
 
 ## Key files / 핵심 파일
 
+- `scripts/v2/ci_deployment_audit.py`, `.github/workflows/audit-deployment.yml` —
+  manual dev observations under restricted sessions: ECS/Lambda/AgentCore status,
+  schedule metrics and fixed SQL-reader metadata queries. Counts and capture/
+  last-success timestamps remain separate from product freshness or completeness
+  verdicts. No workload invocation or resource mutation. See the
+  [deployment audit runbook](../runbooks/deployment-audit.md).
 - `scripts/v2/ci_db_diagnostics.py`, `.github/workflows/terraform.yml`,
   `scripts/v2/test_ci_db_diagnostics.py` — default-off manual dev-plan diagnostics
   (`CI_DB_DIAGNOSTICS_DEV=true`, `workflow_dispatch`, `ap-northeast-2`), after encrypted plan upload.
