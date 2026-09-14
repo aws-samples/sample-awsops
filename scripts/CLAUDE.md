@@ -49,7 +49,14 @@ secrets-manager) — installed by `make deps`.
   ECS force-new-deployment → wait stable → smoke `/api/health`. `deployment-smoke.mjs`
   preserves service Host/SNI/TLS via CloudFront `--connect-to` before service DNS publication.
   The `DOCKER` env defaults to `sudo docker`.
-- `v2/prepare-smoke-credentials.mjs` — Deploy Web's dev-only opt-in preparation: privately
+- `v2/ci_web_image.py` — current-build digest or authenticated retained producer receipt,
+  bound to repository/workflow/branch/SHA/job/project. Account is verified at runtime;
+  publish no account ID or deterministic account fingerprint in the public receipt.
+- `v2/ci_web_deploy.py` — verify caller, owned service and required read access before
+  web promotion; require source/project migration evidence for current dev source, or
+  explicit schema-compatible older-image rollback. Bounded ECS consistency polling
+  must converge to the exact deployment and healthy running digest, never a stable rollback.
+- `v2/prepare-smoke-credentials.mjs` — every dev Deploy Web release's preparation: privately
   evaluate effective Terraform demo credentials, require unwrapped Terraform, strip TF logging/
   argument overrides, and publish only a 0600 credential-file path inside a 0700 directory.
   Private init is bounded to 10 minutes; output/console each to 2 minutes.
@@ -121,7 +128,7 @@ secrets-manager) — installed by `make deps`.
   gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
-- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets}.py` —
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets,web_image,web_deploy}.py` —
   workflow fixtures, real no-provider plans and a localhost state backend verify deployment
   gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active
@@ -140,7 +147,7 @@ secrets-manager) — installed by `make deps`.
   fallback), requiring AWS_REGION and SQL_READER_SYNC_MODE=secret|disabled; secret mode also
   requires SQL_READER_SECRET_ARN. AURORA_SECRET_ARN means master here. TLS verifies the
   bundled RDS CA and hostname. `initialize-db.mjs` atomically initializes only a verified-empty
-  DB with INITIALIZE_EMPTY_DB=1 (one-shot host command; manual CI template retains the
+  DB with INITIALIZE_EMPTY_DB=1 (one-shot host command; private CI template retains the
   guarded flag). Existing integer ledgers still require BOOTSTRAP=1.
   Non-null baseline/ULID checksums are immutable. Reader elevation is checked even in disabled
   mode; enabled sync with a missing role fails. `migration-errors.mjs` preserves bounded,
@@ -148,10 +155,12 @@ secrets-manager) — installed by `make deps`.
   Secret/connection/reader-sync phases expose only safe codes/context, never secret bodies.
   Client error events and cleanup failures fail closed; success follows connection cleanup.
   `v2/ci/Dockerfile.migration` is the ARM64 nonroot/read-only-filesystem runtime, using CMD.
-- `v2/ci/run-migration.mjs` — manual development controller used by
+- `v2/ci/run-migration.mjs` — private development controller used by
   `.github/workflows/deploy-migrations.yml`: clone the reviewed ARM64 template with an
   immutable image digest, run one private task, verify ownership/exit, and clean up only that run.
   Read retries are bounded; public failure categories use the runtime diagnostic contract.
+  Standalone/AgentCore calls are dispatch-only. The explicit Deploy Web caller also
+  accepts current-source dev pushes; generic runtime builds do not inherit that opt-in.
 - `v2/ci/runtime-build.mjs` — manual dev transport for existing backend repositories.
   Require secret `AWS_ACCOUNT_ID_DEV`, configured-role and actual STS agreement, and verified
   Linux/ARM64 manifest digests. Build-role ECR scopes cover `-steampipe`/`-worker`; deployer scopes

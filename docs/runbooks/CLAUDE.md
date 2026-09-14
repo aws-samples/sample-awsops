@@ -24,6 +24,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration and opt-in diagnostics (ADR-002/005/016) |
+| [web-release.md](web-release.md) | Digest-bound web release, private migration ordering, mandatory dev login/DB checks and explicit image rollback (ADR-001/005) |
 | [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
 | [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; saved-plan scope, links to branch-independent artifact inspection/recovery, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
@@ -95,7 +96,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   Service-target/declaration comparisons and error categories are hypotheses, not proof of
   running revisions, effective access, runtime credentials, connectivity or readiness.
 - `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is a default-off operator capability.
-  Dev Deploy AgentCore requires the reviewed `true` plan already applied and a non-null `migration_job` output; a repository variable or plan alone does not provision it.
+  Dev Deploy AgentCore and current-source dev Deploy Web require the reviewed `true` plan already applied and a non-null `migration_job` output; a repository variable or plan alone does not provision it. The guarded Deploy Web caller also permits dev pushes; standalone and AgentCore use remain dispatch-only. Explicit older-image rollback skips this workflow.
   `deploy-migrations.yml` builds an ARM64 image and `run-migration.mjs` launches/verifies one
   private task. The task role reads exact Aurora secrets; DDL uses DB credentials. This is
   operator CI, not product autonomy or an ADR-005 AWS-resource-mutation exception.
@@ -149,11 +150,13 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
   credentials. Prepare checks host registration (optional hostOnly); verify additionally
   requires applied CloudFront identity, complete queued types and pre-dispatch timestamp,
-  fresh collection, web-role SSM/AgentCore proof and Lambda/Fargate completion. Current Deploy
-  Web remains DB-only until the release controller supplies this file. The billed readiness
+  fresh collection, web-role SSM/AgentCore proof and Lambda/Fargate completion. Deploy Web
+  verifies exact ECS/image deployment plus mandatory dev login/DB; the broader runtime
+  smoke capability remains separate until its own workflow integration supplies this file. The billed readiness
   route requires admin or deployment-verifiers, one in-flight call and a 60-second cooldown.
 
-- Deploy Web `verify_database=true` is dev-only and runs after required migrations. It prepares
+- Every dev Deploy Web release verifies login/DB; the compatibility input cannot disable it.
+  Current-source releases require matching private migrations; explicit rollback runs no DDL. It prepares
   effective demo credentials privately with unwrapped Terraform before rollout, then verifies
   login and edge-authenticated `/api/db`. A positive table count is not a full ledger audit.
 - Credentials and HTTP scratch share one 0700 run directory with 0600 files, covered by

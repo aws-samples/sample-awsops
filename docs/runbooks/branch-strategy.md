@@ -46,7 +46,9 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
    merge-verify + AI pr-review + terraform plan (when `terraform/foundation/**`
    changed; same-repo PRs only).
 2. **`dev`** — integration branch; every push auto-deploys the DEV stack
-   (`awsops-dev.whchoi.net`) via `deploy-web.yml` (build → pin → roll → smoke).
+   via `deploy-web.yml` (build → matching private migration → digest promotion →
+   exact ECS verification → login/DB smoke). The applied private migration
+   capability is required; a dev push fails closed when it is absent.
 3. **`main`** — promotion PR `dev → main` (ordinary same-repo PR). The production
    ECS roll stays workflow_dispatch + `production` environment reviewer approval;
    terraform apply likewise (saved-plan, dispatch, per-branch environment).
@@ -178,7 +180,9 @@ branches); production stays behind the `production` environment approval. See
 
 - User PR → `dev`: merge-verify + AI review green; a fork PR shows no plan job.
 - PR to `main` from anything but `dev`: `guard-main-prs` fails the PR.
-- Push to `dev`: `deploy-web.yml` ends green, smoke against
-  `awsops-dev.whchoi.net/api/health`.
+- Push to `dev`: `deploy-web.yml` builds ARM64, applies the matching-source private
+  migration, verifies the new ECS deployment and actual image digest, then requires
+  login/DB smoke. Configure `CI_MIGRATIONS_ENABLED_DEV=true` and apply
+  `ci_migrations_enabled=true` before this path; the workflow cannot provision it.
 - `dev → main` merge, then production dispatch: waits for the `production`
   environment approval, smokes against the `public_url` output.

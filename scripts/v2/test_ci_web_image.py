@@ -27,10 +27,14 @@ def context(**overrides):
 
 
 class ProvenanceTest(unittest.TestCase):
-    def test_public_receipt_binds_account_without_publishing_configured_identifier(self):
+    def test_public_receipt_has_no_account_identifier_or_enumerable_hash(self):
         receipt = build_receipt(context(), DIGEST)
         self.assertNotIn(context()["account"], json.dumps(receipt))
-        self.assertEqual(receipt["account_sha256"], hashlib.sha256(context()["account"].encode()).hexdigest())
+        self.assertNotIn(hashlib.sha256(context()["account"].encode()).hexdigest(), json.dumps(receipt))
+        self.assertNotIn("account_sha256", receipt)
+        self.assertEqual(set(receipt), {"schema", "repository", "workflow", "branch", "sha",
+                                        "run_id", "attempt", "job_id", "project", "digest"})
+        self.assertEqual(receipt, build_receipt(context(account="999999999999"), DIGEST))
 
     def producer(self, *, receipt=None, run_changes=None, artifact_changes=None, job_changes=None):
         body = receipt or build_receipt(context(), DIGEST)
@@ -323,6 +327,33 @@ class WorkflowTest(unittest.TestCase):
         with self.assertRaises(ImageError):
             verify_caller(env, lambda: {"Account": "123456789012",
                 "Arn": "arn:aws:sts::123456789012:assumed-role/Other/GitHub"})
+
+    def test_every_dev_tier_branch_requires_the_configured_development_account(self):
+        for branch in ("dev", "atomoh", "ssminji", "whchoi"):
+            env = {
+                "GITHUB_REPOSITORY": REPO, "GITHUB_REF_NAME": branch,
+                "GITHUB_REF": f"refs/heads/{branch}", "GITHUB_EVENT_NAME": "push",
+                "GITHUB_WORKFLOW_REF": f"{REPO}/.github/workflows/deploy-web.yml@refs/heads/{branch}",
+                "CI_ROLE_ARN": "arn:aws:iam::123456789012:role/CI",
+                "AWS_ACCOUNT_ID_DEV": "123456789012",
+            }
+            with self.subTest(branch=branch):
+                self.assertEqual(role_context(env), ("123456789012", "CI"))
+                for account in ("", "999999999999"):
+                    with self.assertRaises(ImageError):
+                        role_context(env | {"AWS_ACCOUNT_ID_DEV": account})
+
+    def test_main_cannot_use_the_development_account(self):
+        env = {
+            "GITHUB_REPOSITORY": REPO, "GITHUB_REF_NAME": "main", "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_WORKFLOW_REF": f"{REPO}/.github/workflows/deploy-web.yml@refs/heads/main",
+            "CI_ROLE_ARN": "arn:aws:iam::999999999999:role/ProductionCI",
+            "AWS_ACCOUNT_ID_DEV": "123456789012",
+        }
+        self.assertEqual(role_context(env), ("999999999999", "ProductionCI"))
+        with self.assertRaises(ImageError):
+            role_context(env | {"CI_ROLE_ARN": "arn:aws:iam::123456789012:role/CI"})
 
     def test_rollback_is_explicit_and_never_runs_current_migrations(self):
         script = self.workflow("deploy-web.yml")["jobs"]["guard"]["steps"][0]["run"]

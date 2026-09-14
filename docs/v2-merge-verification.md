@@ -184,13 +184,13 @@ PR 코드는 `pull_request`·`contents: read`에서 배포 자격증명·시크�
 `pull_request_target` 전환이나 secret 접근을 추가하지 않는다. private migration 검사는
 runtime·controller·workflow와 모의 Terraform 계획을 포함하며 실제 AWS는 호출하지 않는다.
 
-## Manual Gates Outside CI
+## Runtime and live validation outside Merge Verify
 
 A runtime image build can be checked locally using the
 [migration guide](../terraform/foundation/migrations/README.md). Merge Verify does not build it;
-the manually dispatched Migrate Development Database workflow builds the ARM64 image before execution.
-Merge Verify는 이미지를 빌드하지 않는다. 수동 Migrate Development Database 워크플로는
-실행 전에 ARM64 이미지를 빌드하며 로컬 검증 방법은 migration 안내를 따른다.
+the Migrate Development Database workflow builds the ARM64 image before execution.
+It is called manually or by the guarded current-source dev web release, including dev pushes.
+The migration guide describes the separate local image-build checks.
 
 Before the final merge, run the routing accuracy gate against real Bedrock:
 This is a live manual gate, separate from the offline commands above; it requires the intended

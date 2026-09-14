@@ -53,7 +53,6 @@ def build_receipt(c, digest):
     return {"schema": 2, "repository": c["repository"], "workflow": WORKFLOW,
             "branch": c["branch"], "sha": c["sha"], "run_id": c["run_id"],
             "attempt": c["attempt"], "job_id": c["job_id"],
-            "account_sha256": hashlib.sha256(c["account"].encode()).hexdigest(),
             "project": c["project"], "digest": digest}
 
 
@@ -180,7 +179,7 @@ def resolve_digest(c, *, pin_sha, fresh_digest="", fresh_project="", producer_ru
         expected = build_receipt(c | {"sha": pin_sha, "run_id": producer_run,
             "attempt": attempt, "job_id": receipt.get("job_id")}, receipt.get("digest"))
         require(receipt == expected and artifact["name"] == f"web-build-{producer_run}-{attempt}",
-                "Build receipt source, job, account or stack mismatch")
+                "Build receipt source, job or stack mismatch")
         produced = api(run_path + f"/attempts/{attempt}")
         validate_run(produced, c, pin_sha, producer_run)
         require(str(produced["run_attempt"]) == attempt, "Producing attempt mismatch")
@@ -206,8 +205,10 @@ def role_context(env):
     role = re.fullmatch(r"arn:aws:iam::([0-9]{12}):role/([A-Za-z0-9_+=,.@/-]+)",
                         env.get("CI_ROLE_ARN", ""))
     require(role, "Explicit branch release role is required")
-    if branch == "dev":
+    if branch != "main":
         require(role[1] == env.get("AWS_ACCOUNT_ID_DEV"), "Development role account mismatch")
+    else:
+        require(role[1] != env.get("AWS_ACCOUNT_ID_DEV"), "Production role must not use the development account")
     return role[1], role[2].split("/")[-1]
 
 

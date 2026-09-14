@@ -37,7 +37,7 @@
 - it fails at *Restore terraform.foundation backend* with
   `this branch's TF backend secrets are not set`, or
 - a preview dispatch fails the same way for `TF_*_PREVIEW_<USER>`, or
-- the deploy job's *Pin web-latest* step fails with an ECR `AccessDenied`, or
+- the deploy job's *Promote the verified image and start its deployment* step fails with an ECR `AccessDenied`, or
 - AI review waits for a protected-environment approval or fails `AssumeRoleWithWebIdentity`, or
 - `Deployment preflight refused`, `DNS change prohibited`, or an unavailable certificate stops
   a dispatch (§5), or
@@ -611,7 +611,7 @@ wildcard or another policy grant.
 
 <a id="4-ecr-permissions-for-the-pin-step--ci-deployer-ecr-권한"></a>
 
-### 4. ECR permissions for the pin step
+### 4. Image promotion and web verification permissions
 
 **AgentCore upgrade prerequisite:** the configured operator-owned CI deployer
 must permit `bedrock-agentcore:GetGateway` on its managed gateway resources,
@@ -630,9 +630,26 @@ configured correctly. Least-privilege roles need the scoped read added by their
 owner. The application workflow does not grant IAM. See the
 [AgentCore reconciliation contract](../reference/05-agentcore.md#provisioner-reconciliation).
 
-The deploy jobs re-point `:web-latest` at the approved `web-<sha>` before rolling,
+The deploy jobs re-point `:web-latest` at the build/producer receipt's verified digest before rolling,
 so each deployer role needs `ecr:BatchGetImage` + `ecr:PutImage` scoped to its own
-stack's web ECR repository (plus the auth-token action it already has).
+stack's web ECR repository (plus the auth-token action it already has). A mutable
+`web-<sha>` lookup alone is not image provenance.
+
+Provision the following reads before releasing. The web snapshot checks them
+before changing the image tag or ECS service; missing effective permission
+stops promotion. SCPs and boundaries can still deny an otherwise correct policy.
+
+| Operation | Required scope |
+| --- | --- |
+| `ecs:DescribeServices`, `ecs:UpdateService` | The configured web service ARN; restrict its cluster |
+| `ecs:ListTasks` | `Resource: "*"` with `ecs:cluster` restricted to the configured cluster; a cluster ARN is not a valid Resource for this action |
+| `ecs:DescribeTasks` | The configured cluster's task ARN prefix, with the cluster condition |
+| `ecs:DescribeTaskDefinition` | `Resource: "*"` with `aws:RequestedRegion` restricted to the deployment region; this action does not support task-definition resource scoping |
+| `ecr:BatchGetImage`, `ecr:PutImage` | The configured web repository ARN |
+
+Verification uses bounded retries for stale PRIMARY and task/health reads. A
+persistent rollback, wrong running image, missing permission or timeout still
+fails. These grants belong to the deployment role, not the application's task role.
 
 Backend image builds require additional **repository scopes**, which the web grants above do not establish. Verify the configured roles before using the runtime build workflows:
 

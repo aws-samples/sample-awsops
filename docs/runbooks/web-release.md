@@ -4,7 +4,30 @@ Use this procedure when a web release needs migration, image provenance or
 rollout verification. Terraform/tool/AgentCore/worker deployment and broad runtime
 or collection readiness remain separate procedures; this workflow changes no IaC.
 
-## Current-source development releases
+## Symptoms and candidate causes
+
+| Symptom | Candidate cause |
+| --- | --- |
+| Migration capability is unavailable | The reviewed capability plan was not applied, or the selected stack differs |
+| Current-source release stops before promotion | Migration failed, source moved, or required deployment reads are denied |
+| Reused image is rejected | Producer/run/source differs, receipt expired, or build/publication did not succeed |
+| Verification times out | ECS observations did not converge, the rollout failed, or task/image health differs |
+| Login/DB smoke fails | Configured demo credentials, edge authentication or the application's DB connection failed |
+
+## Verification commands
+
+From the repository root:
+
+```bash
+gh pr checks <PR_NUMBER> -R aws-samples/sample-awsops
+gh run view <RUN_ID> -R aws-samples/sample-awsops --json status,conclusion,jobs
+```
+
+The called `migrate-dev` jobs contain the bounded migration failure categories;
+inspect their step results as well as the deploy job. Do not publish raw
+Terraform state, credentials or response bodies to diagnose a failure.
+
+## Action: current-source development releases
 
 A matching `dev` push builds ARM64, completes the reusable private migration,
 then promotes the verified digest and checks the exact ECS deployment and running
@@ -16,8 +39,18 @@ Before enabling this path, review/apply `ci_migrations_enabled=true` with
 The configured dev account, build/deployer roles and private migration network
 must already work. A missing output or failed migration blocks promotion with
 an explicit capability/migration failure; no gate is automatically enabled.
-Protect dev push/merge access and the development environment for this
-operator-authorized automation.
+This deliberately runs required DDL unattended after an authorized dev push
+once the operator has applied the capability. It is operator deployment
+automation under ADR-005, not product/agent autonomy or a new AWS-mutation exception.
+
+The repository settings verified on 2026-09-14 use the active `protect-main-dev`
+ruleset: PRs are required for main/dev, bypass actors are absent, and force pushes
+and branch deletion are blocked. The ruleset has no required approving-review
+count or required-status-check rule. The `development` environment allows dev
+and the three documented preview branches, with no environment reviewer gate.
+Thus a merge intentionally starts dev DDL without another manual approval.
+The maintained PR procedure still requires latest-HEAD AI review and successful
+CI before merge; do not mistake the environment branch filter for a human approval.
 
 ```bash
 # Build the dispatched dev source, migrate that source, deploy and verify:
@@ -51,8 +84,10 @@ Receipts are
 retained for 90 days. Expired, missing, legacy or unverifiable receipts fail closed:
 rebuild the current source, choose another retained producer, or use a separately
 reviewed operator recovery procedure. There is no mutable-tag-only fallback.
-Receipts contain a digest of the account identifier rather than the raw configured
-account, and contain no credentials, role ARN or tfvars.
+Public receipts contain no account identifier or deterministic account fingerprint,
+credentials, role ARN or tfvars. The configured account and actual assumed role
+are verified at runtime; repository, workflow, branch, source, project and image
+content remain bound to the authenticated producer.
 
 ## Explicit older-image rollback
 
@@ -126,6 +161,19 @@ Targeted offline verification:
 ```bash
 python3 -B -m pytest -q scripts/v2/test_ci_web_image.py scripts/v2/test_ci_web_deploy.py
 node --test scripts/v2/ci/run-migration.test.mjs scripts/v2/ci/run-migration.workflow.test.mjs scripts/v2/ci/runtime-build.test.mjs scripts/v2/deployment-smoke.test.mjs
+actionlint .github/workflows/deploy-web.yml .github/workflows/deploy-migrations.yml
 ```
 
 These tests and workflow lint do not establish live deployment or effective IAM.
+`.github/actionlint.yaml` declares the existing `sample-awsops` runner label.
+
+## Related files and decisions
+
+- `.github/workflows/deploy-web.yml` and `deploy-migrations.yml`: release ordering and guarded private execution.
+- `scripts/v2/ci_web_image.py` and `ci_web_deploy.py`: producer evidence, IAM preflight and ECS verification.
+- `scripts/v2/ci/run-migration.mjs`, `prepare-smoke-credentials.mjs` and `authenticated-smoke.mjs`: migration, private credentials and login/DB checks.
+- `terraform/foundation/ci-migrations.tf`: default-off task and secret scopes.
+- [Deployment setup](dev-repo-setup.md), [branch strategy](branch-strategy.md), and [SQL reader](agent-sql-reader.md): prerequisites and recovery.
+
+ADR-001 governs immutable database migrations; ADR-005 keeps product remediation
+and autonomy frozen while allowing these operator-authorized deployment steps.

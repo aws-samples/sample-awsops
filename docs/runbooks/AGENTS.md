@@ -1,6 +1,6 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d1891efe78a5 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 2fdfb9138f5f · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
-> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
+> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
 # Runbooks — Reviewer Context
 
@@ -67,8 +67,7 @@ legacy runbook's steps as the current operational path).
   and unknown probe outcome.
   Genuine auth-success logging needs log_connections, which defaults off in PostgreSQL and
   is not enabled here. Its effective value is uninspected and reported as null. Never tune from these counts.
-- `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is default-off. The manual
-  dev AgentCore workflow requires the reviewed true plan applied and non-null `migration_job` output before dispatch; setting a variable or generating a plan alone is insufficient. The manual
+- `ci_migrations_enabled` / `CI_MIGRATIONS_ENABLED_DEV` is default-off. Dev AgentCore and current-source dev Deploy Web require the reviewed true plan applied and non-null `migration_job` output before execution; setting a variable or generating a plan alone is insufficient. Guarded dev web pushes also call
   `deploy-migrations.yml` + `run-migration.mjs` controller starts one verified private
   ARM64 task. Its IAM reads exact Aurora secrets; DB DDL uses those credentials.
   It enables no product AWS-resource mutation/autonomy (ADR-005).
@@ -133,12 +132,14 @@ legacy runbook's steps as the current operational path).
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
   credentials. Prepare checks host registration (optional hostOnly); verify additionally
   requires applied CloudFront identity, complete queued types and pre-dispatch timestamp,
-  fresh collection, web-role SSM/AgentCore proof and Lambda/Fargate completion. Current Deploy
-  Web remains DB-only until the release controller supplies this file. The billed readiness
+  fresh collection, web-role SSM/AgentCore proof and Lambda/Fargate completion. Deploy Web verifies
+  the exact ECS/image deployment and dev login/DB; broader runtime proof remains a separate integration. The billed readiness
   route requires admin or deployment-verifiers, one in-flight call and a 60-second cooldown.
 
-- Dev-only `verify_database=true` prepares effective demo credentials privately before rollout,
-  then verifies login and edge-authenticated `/api/db`; positive table count is not a ledger audit.
+- Every dev web release prepares effective demo credentials privately and verifies login/DB.
+  Current source requires matching private migrations; explicit older-image rollback runs no DDL.
+  The compatibility input cannot disable checks; positive table count is not a ledger audit.
+  `web-release.md` documents producer receipts, IAM preflight, unattended dev execution and rollback (ADR-001/005).
 - Unwrapped Terraform and private 0600/0700 files are required. The CLI's HTTP scratch shares
   the prepared credential directory and always-cleanup; expose only phases/validated HTTP status,
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
