@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8422d550d773 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 2ed90c7f27c3 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -15,6 +15,10 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   Pin ECR registry/media/digest explicitly; do not use image-only accepted-media filters.
   Config reads need scoped `ecr:GetDownloadUrlForLayer` and curl. CLI diagnostics are
   fixed `ImageError` messages, never provider data.
+  Provider children use explicit temporary AWS credentials / GitHub token, disabled AWS config
+  files, private GH config and no inherited endpoint/profile/model/provider/CA/proxy overrides. Stdin is closed
+  except curl's private `-q -K -` config; signed URLs never enter argv. Multi-tag digest rows
+  must agree on identity, raw manifest and media.
   No manually assembled publishing chain. `test_ci_web_image.py` requires jq; the future
   receipt steps, main account prerequisite and recovery limits are documented in
   `docs/runbooks/web-image-provenance.md`. Operator CI adds no ADR-005 exception or IAM grant.

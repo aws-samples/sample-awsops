@@ -11,6 +11,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 from urllib.parse import urlsplit
 import zipfile
 
@@ -68,11 +69,38 @@ def build_receipt(c, digest):
             "project": c["project"], "digest": digest}
 
 
-def command(args, *, binary=False):
+def child_environment(tool, config_dir):
+    # Retain normal executable paths/locale, never caller-selected endpoints,
+    # profiles, credential providers, CA bundles, proxies or command hooks.
+    env = {key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
+           if key in os.environ}
+    if tool == "aws":
+        keys = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
+        require(all(os.environ.get(key) for key in keys), "Exported temporary AWS credentials are required")
+        env.update({key: os.environ[key] for key in keys})
+        env.update(AWS_CONFIG_FILE=os.devnull, AWS_SHARED_CREDENTIALS_FILE=os.devnull,
+                   BOTO_CONFIG=os.devnull, AWS_EC2_METADATA_DISABLED="true",
+                   AWS_IGNORE_CONFIGURED_ENDPOINT_URLS="true", AWS_PAGER="")
+    elif tool == "gh":
+        token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        require(token, "Explicit GitHub token is required")
+        env.update(GH_TOKEN=token, GH_CONFIG_DIR=config_dir, GH_PROMPT_DISABLED="1",
+                   GH_NO_UPDATE_NOTIFIER="1")
+    return env
+
+
+def command(args, *, binary=False, stdin_payload=None):
     # Never surface stderr, which can contain authentication or registry details.
+    require(args and args[0] in {"aws", "gh", "curl"}, "Unsupported image provider")
+    require(args[0] != "curl" or args[:2] == ["curl", "-q"], "Default curl configuration is forbidden")
+    require(stdin_payload is None or (args[:4] == ["curl", "-q", "-K", "-"]
+            and isinstance(stdin_payload, bytes)), "Only explicit curl configuration may use stdin")
     try:
-        result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                timeout=90, check=True)
+        with tempfile.TemporaryDirectory(prefix="web-image-config-") as config_dir:
+            input_options = {"stdin": subprocess.DEVNULL} if stdin_payload is None else {"input": stdin_payload}
+            result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=90, check=True, env=child_environment(args[0], config_dir),
+                                    **input_options)
         require(len(result.stdout) <= 1024 * 1024, "Oversized provider response")
         return result.stdout if binary else json.loads(result.stdout)
     except (subprocess.SubprocessError, OSError, ValueError):
@@ -294,10 +322,17 @@ def get_image(repository, digest, account, aws, tag=None):
     result = aws("batch-get-image", {"registry-id": account, "repository-name": repository,
                  "image-ids": f"imageTag={tag}" if tag else f"imageDigest={digest}"})
     require(isinstance(result, dict) and not result.get("failures")
-            and isinstance(result.get("images"), list) and len(result["images"]) == 1,
+            and isinstance(result.get("images"), list) and result["images"],
             "Approved image digest is unavailable")
     image = result["images"][0]
     image_identity(image, repository, digest, account, tag)
+    # ECR digest reads can return one identical row per tag (live-confirmed).
+    # Only the tag may differ; never select images[0] across conflicting evidence.
+    for other in result["images"][1:]:
+        image_identity(other, repository, digest, account, tag)
+        require(other.get("imageManifest") == image.get("imageManifest")
+                and other.get("imageManifestMediaType") == image.get("imageManifestMediaType"),
+                "Conflicting image manifests for the approved digest")
     return image
 
 
@@ -365,16 +400,20 @@ def verify_arm_image(repository, image, account, aws):
                    "repository-name": repository, "layer-digest": config["digest"]})
     require(isinstance(response, dict) and response.get("layerDigest") == config["digest"]
             and isinstance(response.get("downloadUrl"), str), "Image configuration is unavailable")
-    url = urlsplit(response["downloadUrl"])
+    download_url = response["downloadUrl"]
+    require(all(33 <= ord(char) < 127 for char in download_url),
+            "Invalid image configuration download URL")
+    url = urlsplit(download_url)
     require(url.scheme == "https" and not url.username and not url.password
             and url.port in (None, 443) and re.fullmatch(
                 r"[a-z0-9.-]+\.s3[.-]ap-northeast-2\.amazonaws\.com", url.hostname or ""),
             "Invalid image configuration download URL")
     # No redirects; download only the config blob, never image layers. Provider
     # URLs/config bytes stay private, and command() suppresses raw error output.
-    data = command(["curl", "--fail", "--silent", "--show-error", "--proto", "=https",
-                    "--max-time", "90", "--max-filesize", str(1024 * 1024),
-                    "--url", response["downloadUrl"]], binary=True)
+    payload = ('url = "' + download_url.replace("\\", "\\\\").replace('"', '\\"') + '"\n').encode()
+    data = command(["curl", "-q", "-K", "-", "--fail", "--silent", "--show-error", "--proto", "=https",
+                    "--max-time", "90", "--max-filesize", str(1024 * 1024)],
+                   binary=True, stdin_payload=payload)
     require(isinstance(data, bytes) and len(data) == config["size"]
             and "sha256:" + hashlib.sha256(data).hexdigest() == config["digest"],
             "Image configuration digest mismatch")
