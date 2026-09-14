@@ -1390,3 +1390,61 @@ class PrivatePlanTests(unittest.TestCase):
             ['aws', 's3api', 'get-bucket-policy-status'], captured), 'no_bucket_policy')
         self.assertEqual(self.module.command_error(
             ['aws', 's3api', 'get-bucket-encryption'], captured), 'command_failed')
+
+    def test_captured_retry_annotation_reaches_transport_and_posture(self):
+        root = Path(__file__).parent / 'fixtures/aws-cli'
+        metadata = json.loads((root / '2.35.11-max-attempts-1-no-policy.json').read_text())
+        captured = root / metadata['fixture']
+        self.assertEqual(hashlib.sha256(captured.read_bytes()).hexdigest(), metadata['sha256'])
+        self.assertEqual(metadata['operation'], 'GetBucketPolicyStatus')
+        self.assertEqual(metadata['error_code'], 'NoSuchBucketPolicy')
+        self.assertEqual(metadata['exit_code'], 254)
+        tool = self.root / 'captured-policy-tools'
+        tool.mkdir()
+        executable = tool / 'aws'
+        executable.write_text(
+            f'#!{sys.executable}\nimport os,sys\nfrom pathlib import Path\n'
+            'assert os.environ["AWS_MAX_ATTEMPTS"] == "1"\n'
+            'sys.stderr.buffer.write(Path(os.environ["ERROR_FIXTURE_PATH"]).read_bytes())\n'
+            'sys.exit(int(os.environ["ERROR_EXIT_CODE"]))\n')
+        executable.chmod(0o700)
+        calls = []
+        def transport(args, output, **kwargs):
+            if 'get-bucket-policy-status' in args:
+                calls.append(args)
+                self.assertEqual(kwargs['env']['AWS_MAX_ATTEMPTS'],
+                                 metadata['environment']['AWS_MAX_ATTEMPTS'])
+                kwargs['env'] = {**kwargs['env'], 'PATH': str(tool),
+                                'ERROR_FIXTURE_PATH': str(captured.resolve()),
+                                'ERROR_EXIT_CODE': str(metadata['exit_code'])}
+                return self.module.run_command(args, output, **kwargs)
+            return self.fake(args, output, **kwargs)
+        operation = self.posture_operation()
+        operation.transport = transport
+        operation.posture()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(operation.encryption, (KEY_ARN, True))
+
+    def test_retry_annotation_keeps_error_identity_and_first_envelope(self):
+        for prefix in ('', 'aws: [ERROR]: '):
+            for retries in ('0', '2'):
+                with self.subTest(prefix=prefix, retries=retries):
+                    denied = (f'{prefix}An error occurred (AccessDenied) when calling the '
+                              f'GetBucketPolicyStatus operation (reached max retries: {retries}): PRIVATE\n')
+                    missing = (f'{prefix}An error occurred (NoSuchBucketPolicy) when calling the '
+                               f'GetBucketPolicyStatus operation (reached max retries: {retries}): PRIVATE\n')
+                    args = ['aws', 's3api', 'get-bucket-policy-status']
+                    self.assertEqual(self.module.command_error(args, denied.encode()), 's3_access_denied')
+                    self.assertEqual(self.module.command_error(args, (denied + missing).encode()),
+                                     's3_access_denied')
+                    self.assertEqual(self.module.command_error(
+                        ['aws', 's3api', 'get-bucket-encryption'], missing.encode()), 'command_failed')
+                    kms = denied.replace('GetBucketPolicyStatus', 'DescribeKey')
+                    self.assertEqual(self.module.command_error(
+                        ['aws', 'kms', 'describe-key'], kms.encode()), 'kms_access_denied')
+        for suffix in (' (reached max retries: -1)', ' (reached max retries: unknown)',
+                       ' (retry: 0)', ' (reached max retries: 0) extra'):
+            message = ('aws: [ERROR]: An error occurred (NoSuchBucketPolicy) when calling '
+                       f'the GetBucketPolicyStatus operation{suffix}: PRIVATE').encode()
+            self.assertIsNone(self.module.command_error(
+                ['aws', 's3api', 'get-bucket-policy-status'], message))
