@@ -16,7 +16,7 @@ function workflow(file) {
 function step(file, job, name) {
   return workflow(file).jobs[job].steps.find(v => v.name === name);
 }
-async function shell(script, env = {}, files = {}) {
+async function shell(script, env = {}, files = {}, { cwd = '.' } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'migration-workflow-'));
   try {
     for (const folder of ['bin', 'terraform/foundation', 'scripts/v2/ci', 'temp']) {
@@ -24,6 +24,9 @@ async function shell(script, env = {}, files = {}) {
     }
     await copyFile(new URL('./run-migration.mjs', import.meta.url), join(dir, 'scripts/v2/ci/run-migration.mjs'));
     await copyFile(new URL('../migration-errors.mjs', import.meta.url), join(dir, 'scripts/v2/migration-errors.mjs'));
+    for (const name of ['ci_failure_diagnostics.py', 'ci_plan_inspect.py', 'ci_plan_context.py', 'ci_tf_assets.py']) {
+      await copyFile(new URL(`../${name}`, import.meta.url), join(dir, 'scripts/v2', name));
+    }
     await writeFile(join(dir, 'bin/terraform'), `#!/usr/bin/env python3
 import json,os,sys
 with open(os.environ["CALLS"],"a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")
@@ -45,8 +48,8 @@ if "output" in sys.argv: print("null")
       GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1',
       CALLS: join(dir, 'calls'), ...env,
     };
-    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], {
-      cwd: dir, env: environment, encoding: 'utf8', timeout: 15_000,
+    const result = spawnSync('bash', ['--noprofile', '--norc', '-euo', 'pipefail', '-c', script], {
+      cwd: join(dir, cwd), env: environment, encoding: 'utf8', timeout: 15_000,
     });
     return {
       ...result,
@@ -190,7 +193,8 @@ test('Terraform plan takes the nonsecret flag from dev target (including PR base
   ]) {
     const result = await shell(script, {
       TF_VAR_ci_migrations_enabled: value, DISPATCH: 'false', TARGET: target,
-    }, { 'ci-deployment.tfvars.json': '{"ci_migrations_enabled":false}' });
+    }, { 'terraform/foundation/ci-deployment.tfvars.json': '{"ci_migrations_enabled":false}' },
+    { cwd: 'terraform/foundation' });
     assert.equal(result.status === 0, value !== 'invalid', result.stderr);
     if (result.status === 0) {
       assert.equal(result.calls[0].at(-1), `-var=ci_migrations_enabled=${value}`);

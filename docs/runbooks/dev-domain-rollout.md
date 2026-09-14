@@ -92,6 +92,11 @@ current repo variables or the apply dispatch's `domain_rollout` input.
 
 ## Verify first / 먼저 확인
 
+For an existing domain with issued certificates, DNS registration and a successful
+TLS/health check do not establish database, AgentCore, collection or worker readiness.
+Complete those separate release checks before claiming deployment completion. The tools
+below inspect existing deployment artifacts; they do not add a certless bootstrap mode.
+
 1. Confirm the assumed dev identity, Region, backend, and current branch/commit.
    A delegated child NS set does **not** establish that the zone exists in that
    AWS account. Run the account check with the intended dev credentials and
@@ -230,6 +235,13 @@ Host/SNI/TLS를 유지한 `/api/health` 생존 확인이며 **DB·인증 준비 
 상위 운영자는 마이그레이션·인증 경로를 별도로 검증한 뒤 A를 게시한다. AgentCore가 범위에
 포함되면 dev의 사설 재사용 migration→배포를 사용한다(main/preview는 `make migrate` 유지). `smoke=true`는 provisioning 후 실행하며 dev에서는 배포된 readiness/inventory 의존성이 필수이고 다른 스택에서는 참고용이다. 별도 실행 승인은 필요하다.
 
+## Inspecting saved artifacts
+
+The branch-independent [exact-plan inspector](dev-repo-setup.md#private-exact-plan-inspection)
+and [encrypted failure recovery](dev-repo-setup.md#encrypted-failure-recovery) apply to
+main, dev and supported user branches. Use those procedures to review this rollout's
+saved artifacts; they do not extend the dev-only domain stages or grant apply authority.
+
 ## Boundaries and recovery / 제한과 복구
 
 - **Active domain-rollout** DNS permission covers only canonical `alias` A and `cf_validation` CNAME
@@ -282,7 +294,7 @@ A 게시 전 TLS·DB·인증 실패 시 미게시 상태로 중단하고 지원�
 안전한 롤백이 아니다. 소유권 이전·토큰 폐기·이전 도메인 복구는 적절한 설정의 별도 승인
 절차로 진행하며, 상태 삭제나 미확정 DNS 허용으로 우회하지 않는다.
 
-Related / 관련: `.github/workflows/terraform.yml`, `scripts/v2/ci_dns_policy.py`,
+Related / 관련: `.github/workflows/terraform.yml`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_failure_diagnostics.py`, `scripts/v2/ci_dns_policy.py`,
 `scripts/v2/ci_dev_domain.py`, `terraform/foundation/edge.tf`;
 ADR-005 (AWS-resource mutation + autonomy freeze / AWS 리소스 변경·자율 실행 동결),
 ADR-016 (v1 decommission / domain-certificate cutover / v1 폐기·도메인/인증서 전환).

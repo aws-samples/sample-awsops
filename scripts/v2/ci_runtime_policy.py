@@ -44,20 +44,26 @@ def account_id(value):
 
 
 def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest, worker_digest,
-                      rollout, *, advisory=False):
+                      rollout, *, advisory=False, readiness=""):
     if (scope not in SCOPES or enabled not in ("", "false", "true")
             or type(rollout) is not bool):
         raise ValueError("Invalid runtime profile or scope")
+    if readiness not in ("", "false", "true"):
+        raise ValueError("CI_READINESS_ENABLED_DEV must be true or false, or empty to preserve configuration")
+    if readiness == "true" and target != "dev":
+        raise ValueError("CI_READINESS_ENABLED_DEV opt-in requires dev")
+    # Absence is intentional: do not erase an explicit operator tfvars decision.
+    readiness_override = {} if readiness == "" else {"ci_readiness_enabled": readiness == "true"}
     profile = target == "dev" and enabled == "true"
     if target not in DEV_TARGETS:
         if rollout or scope == "runtime-ecr-bootstrap":
             raise ValueError("Runtime operation requires a development target")
-        return {}
+        return readiness_override
     if scope == "runtime-ecr-bootstrap" and target != "dev":
         raise ValueError("Runtime bootstrap is dev-only")
     if rollout and (scope != "full" or advisory or (target == "dev" and not profile)):
         raise ValueError("Runtime rollout requires manual full scope and the dev activation profile on dev")
-    result = {"ci_runtime_profile_enabled": profile, "ci_runtime_rollout": rollout}
+    result = {"ci_runtime_profile_enabled": profile, "ci_runtime_rollout": rollout, **readiness_override}
     if profile or rollout:
         account_id(expected_account)
     if not profile:
@@ -239,10 +245,13 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
     variables = _variables(plan)
     rollout = variables.get("ci_runtime_rollout", False)
     profile = variables.get("ci_runtime_profile_enabled", False)
+    readiness = variables.get("ci_readiness_enabled", False)
     if variables.get("ci_runtime_retire", False) is not False:
         raise ValueError("Runtime retirement is not supported by this workflow")
-    if any(type(value) is not bool for value in (rollout, profile)):
+    if any(type(value) is not bool for value in (rollout, profile, readiness)):
         raise ValueError("Runtime operation metadata must be boolean")
+    if readiness and target != "dev":
+        raise ValueError("Deployment readiness is public dev-only")
     if profile and target != "dev":
         raise ValueError("The generated runtime profile is dev-only")
     if target == "dev" and variables.get("inventory_host_only") is True and not profile:
@@ -355,6 +364,7 @@ def main():
                 args.target, os.environ.get("CI_READONLY_RUNTIME_DEV", ""), account, args.scope,
                 os.environ.get("STEAMPIPE_IMAGE_DIGEST_DEV", ""), os.environ.get("WORKER_IMAGE_DIGEST_DEV", ""),
                 rollout == "true", advisory=args.advisory == "true",
+                readiness=os.environ.get("CI_READINESS_ENABLED_DEV", ""),
             )
             with OVERRIDES.open("x") as output:
                 json.dump(value, output)

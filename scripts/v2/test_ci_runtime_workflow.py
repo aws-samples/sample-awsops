@@ -29,10 +29,21 @@ class RuntimeWorkflowTests(unittest.TestCase):
         self.assertIn("ci_tf_assets.py prepare", text)
         self.assertIn("ci_tf_assets.py pack", text)
         self.assertIn("-in tfassets.tar.gz -out tfassets.enc", text)
-        upload = next(step for step in steps if step.get("uses", "").startswith("actions/upload-artifact"))
+        uploads = {step["with"]["name"]: step for step in steps
+                   if step.get("uses", "").startswith("actions/upload-artifact")}
+        failure_name = "terraform-failure-plan-${{ github.run_attempt }}"
+        self.assertEqual(set(uploads), {"tfplan", failure_name})
+        upload = uploads["tfplan"]
         self.assertEqual(set(upload["with"]["path"].split()), {
             "terraform/foundation/tfplan.enc", "terraform/foundation/tfassets.enc",
         })
+        failure = uploads[failure_name]
+        self.assertIn("failure()", failure["if"])
+        self.assertIn("cancelled()", failure["if"])
+        self.assertIn("github.event_name == 'workflow_dispatch'", failure["if"])
+        self.assertEqual(failure["with"]["path"], "${{ steps.private_plan.outputs.diagnostics_file }}")
+        self.assertTrue(failure["with"]["include-hidden-files"])
+        self.assertEqual(failure["with"]["retention-days"], 5)
 
     def test_apply_verifies_assets_and_runtime_scope_before_any_terraform_apply(self):
         steps = self.workflow()["jobs"]["apply"]["steps"]
