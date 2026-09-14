@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 913e3739cc8d · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3cbfea50ed82 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -10,6 +10,18 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
+
+- S3 runbooks must state backend-file, bucket-posture and existing role/key-policy prerequisites,
+  branch-environment approval for publication/apply, missing-backend/tfvars soft skips and
+  hard failures for missing publisher roles. No automatic permission/configuration changes.
+- Public references contain source context and manifest hash only; no storage bindings or
+  plan digest. Mask the reviewed input before any step environment; hashes select bytes,
+  not human review. CI asset HMAC remains mandatory. Require owner-installed plan-prefix
+  lifecycle (7-day current/noncurrent, 1-day multipart abort), rejecting conflicting
+  expiry/archive at or before five days. The workflow never applies the optional bootstrap.
+  Expiration is asynchronous; optional purge and runner-loss cleanup remain separate.
+  Review effective S3/KMS readers; they need no CI envelope key. Publisher policy requires
+  SSE-KMS on PUT independently of read permissions.
 - The web provenance helper is unwired; `web-image-provenance.md` defines future receipt
   steps, current-dev migration outputs and recovery limits. Require composed `promote`;
   never fabricate migration evidence or fall back to mutable tags as provenance.
@@ -36,15 +48,15 @@ legacy runbook's steps as the current operational path).
   fixed scope/presence checks, fixed addresses and a known collector hash, never private values.
   The combined 256-row view is not approval or resource-presence proof; unknown changes require
   private inspection. Membership checks include the existing/planned group's lack of an IAM role.
-  Reporting cannot weaken DNS/runtime/exact-plan gates or block later encrypted artifacts.
-- Private saved-plan inspection authenticates run/checkout/assets before 32 MiB-bounded rendering; it never authorizes apply.
+  Reporting cannot weaken DNS/runtime/exact-plan gates or block the encrypted handoff or private publication.
+- Private S3 plan inspection validates source/reference, manifest, version and hash before bounded local rendering; CI alone verifies asset HMAC. Inspection never authorizes apply.
 - Branch-independent artifact inspection/recovery lives in `dev-repo-setup.md`; domain rollout remains dev-only. Linux capture forwards the first interrupt, kills the child group on a second and arms parent-death SIGKILL; cancellation is not rollback.
 - Plan/apply capture drains a 1 MiB tail in memory, preserving the command exit independently of scratch writes. Fixed audits include capture/retention classes and available numeric success action counts; no raw automatic-run diagnostics.
 - Only an owned single ciphertext file can be uploaded for dispatch failure/cancellation, under an attempt-specific name. Schema-2 failure HMAC uses a separate domain; recovery authenticates the original attempt. Keep AWS_SESSION_TOKEN while removing GitHub channels/tokens, encryption keys, TF_LOG* and TF_CLI_ARGS* from Terraform child environments.
 - Sealing uses OpenSSL stdin without plaintext staging. Captured Terraform uses Linux parent-death protection and escalates a second interrupt after graceful first-interrupt forwarding.
 - Key/storage/seal/publication/cleanup outcomes are distinct. Delete owned ciphertext only after the identified upload succeeds; failed/cancelled/skipped/unknown uploads retain it privately. Audits report pending_upload and final upload/cleanup outcomes; no broad temp sweep, host-loss guarantee or shared-UID isolation.
 - `deployment-audit.md` separates manual dev observations under backend-bound and workload-read sessions. Preserve identity/resource guards and private cleanup. Web and AgentCore observations do not prove applied versions or invocation readiness; observed SQL-reader types never establish complete inventory.
-- `runtime-foundation.md` covers account-bound default-off activation and saved-plan assets. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
+- `runtime-foundation.md` covers activation and the strict host-only release controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
 - The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
 - Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
 - `scripts/v2/ci_tf_assets.py` shares Terraform's locked layer installer. Prepare invalidates
@@ -52,8 +64,8 @@ legacy runbook's steps as the current operational path).
   untargeted Lambdas are absent from targeted planned_values. TF_PLAN_ENC_KEY HMAC binds plan/SHA/scope and
   file paths/modes/hashes. Both APIs permit push/pull_request/workflow_dispatch, or explicit
   local commits without an event. Old signed bundles require their matching prior key after rotation.
-  The 0600 archive may contain signing keys; integrating callers must encrypt before upload
-  and clean their plaintext/staging. Terraform plan/apply now wire pack/restore.
+  The 0600 archive may contain signing keys; use encrypted GitHub handoff or private SSE-KMS
+  storage and clean owned plaintext/staging. Terraform plan/apply now wire pack/restore.
   CI_ASSETS_READY=true validates restored layers without reinstalling. See
   `scripts/v2/ci/pg8000-requirements.txt`, `scripts/v2/test_ci_tf_assets.py` and
   `docs/reference/06-workers.md`.
@@ -190,7 +202,17 @@ distinction between operational degraded data and ineligible release evidence.
 Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
 admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
 57.461-second collection sample and its limits; it is not full live readiness.
-Require 43–128 catalog types and strict proof for every returned type. The 17-minute
+Require every pinned baseline name (currently 43, source-AST checked); valid growth
+is allowed up to 128 and every returned type needs strict proof. Both modes require
+the enabled host only; collect's authenticated DB/host preflight fails incompatible
+registries before type calls as `host_only_registry_required`. Preserve isolated
+AWS CLI environments, first chronological terminal failure and stopped admission;
+admitted work settles and untouched types remain `not_started`. Partial/unknown
+outcomes intentionally stop even under limiter/hydrate pressure; use bounded
+capacity/reachability/permission diagnosis before an authorized fresh rerun.
+Never widen permissions automatically, weaken acceptance or suppress the schedule.
+Document calibrated config validation and `remaining_prerequisites: "not_assessed"`
+with the separate workflow/plan/promotion gates. The 17-minute
 reserve covers only the single-pass 1,010-second base path plus 10 seconds; extras
 need saved time (at least 25 seconds for another 35-second read, at least 170 seconds
 for the minimum 180-second retry overhead, without counting workers twice).

@@ -37,6 +37,7 @@ python3 -m pip install -r scripts/v2/requirements-test.txt
 python3 -m pytest scripts/v2/test_ci_verifier_sessions.py -q
 python3 -m pytest scripts/v2/test_ci_deployment_audit.py -q
 python3 -m pytest scripts/v2/test_ci_runtime_policy.py -q
+node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs
 ```
 
 Tests cover allowed operations, denied sibling resources/regions/actions,
@@ -48,6 +49,8 @@ The size test confirms policies with maximum-length project names fit STS's
 2,048-character limit; it does not exercise oversized-policy rejection.
 These are offline policy-boundary
 checks, not an assertion of effective live access under every IAM/SCP policy.
+The Node fixtures require the tools listed in the
+[controller CLI contract](runtime-foundation.md#controller-cli-contract).
 
 ## Action and integration contract
 
@@ -75,6 +78,12 @@ access, nor infrastructure deployment permissions. SSM/model/worker proof belong
 to the authenticated HTTP/BFF path, not direct CI service calls. The backend
 session cannot write state or lock files; it supports private initialization,
 console/output capture, not Terraform plan/apply.
+
+The controller isolates the AWS CLI environment as well as restricting IAM: only
+explicitly allowlisted credentials/settings reach a pinned CLI path. It disables
+AWS config/shared-credential files and instance metadata, ignores configured endpoints,
+and drops ambient profile, provider, endpoint, CA/proxy and command-hook overrides.
+Those safeguards do not replace the configured/actual caller or nonempty session-policy checks.
 
 The workload input is the private Terraform `runtime_deployment` document
 (`schema_version`, account/region/project, web identity and feature/resource
@@ -198,7 +207,7 @@ raw AWS errors. Each synchronous response must have `StatusCode=200`, no
 
 | Payload | Required result |
 | --- | --- |
-| `catalog` | Exactly `status: "catalog"` and 43–128 unique registered types including `cloudfront`; fewer than 43 is rejected. No result `type` or counts are expected. |
+| `catalog` | Exactly `status: "catalog"` and a unique catalog containing every pinned baseline member (currently 43), with valid growth allowed up to 128 total. The source-AST test binds baseline membership to the checked-in collector. No result `type` or counts are expected. |
 | Each catalog member | `status: "succeeded"`, exact requested `type`, nonnegative safe-integer `row_count`, and `unknown_attribute_count: 0` |
 
 `busy`, `failed` (including superseded), `partial`, unknown-type errors and
@@ -215,8 +224,12 @@ exceeds the verified function timeout of at most 420 seconds; that comparison ap
 only to per-type collection, not catalog discovery. There is no separate 900-second
 per-type budget. Disable automatic SDK/CLI invoke retries.
 
-After catalog validation and before any type is invoked, authenticated prepare
-must verify login, DB and the host registry and obtain the DB-clock sample.
+Both prepare and collect require the enabled host only, rejecting enabled foreign
+accounts as `host_only_registry_required`; generic multi-account smoke behavior is
+outside this controller's scope. After web/configuration/catalog checks and before
+any per-type invocation, collect's authenticated prepare verifies login, DB and that
+host-only registry and obtains the DB-clock sample. An unsupported registry is
+rejected at this preflight, before spending the collection window on type calls.
 Use that DB timestamp as the marker and calibrate subsequent time at request
 start, shifting the existing deadline by the same offset. Then require every
 catalog type's ledger `started_at` and durable `last_success_at` at or after
@@ -243,7 +256,14 @@ See [the controller budget and operational acceptance contract](runtime-foundati
 
 There is no rolling prior-success substitute or degraded-release acceptance.
 Operational collection can preserve partial/last-good data for diagnosis, but
-partial, failed, stale, missing or unknown evidence blocks release. A current
+partial or unknown outcomes are intentional terminal hard stops even when shared
+limiter pressure or hydrate/reachability failures cause them. Diagnose capacity,
+connectivity or actual denials before an authorized fresh bounded rerun; do not
+automatically retry those outcomes, widen permissions or disable the schedule.
+The first chronological terminal failure stops new type admission; all already-admitted
+operations settle before cleanup. Unassigned types remain `not_started` with zero
+attempts in the structured report. Partial, failed, stale, missing or unknown
+evidence blocks release. A current
 running attempt waits within the shared window. The singleton ledger is not
 owned by this verifier's run token: a later scheduled failed/partial/unknown result
 can also block release, even after the owned RPC succeeded. The schedule remains
@@ -251,6 +271,8 @@ enabled, and no scheduler attribution is inferred from verifier-produced freshne
 Fresh known-host CloudFront, actual AgentCore/model proof and both owned workers
 remain mandatory. The policy generator neither invokes types nor repairs failures;
 the strict controller supplies collection orchestration for both workflows.
+Its `remaining_prerequisites: "not_assessed"` result does not approve the separate
+workflow/plan/promotion gates; see the [fixed diagnostics](runtime-foundation.md#fixed-diagnostics-and-remaining-prerequisites).
 
 Verifier-triggered collection changes freshness timestamps. Do not label those
 observations as EventBridge execution or schedule attribution. The separate
@@ -275,5 +297,5 @@ IAM-owner work, outside this policy helper.
 - Terraform v1.15.7: `internal/backend/remote-state/s3/backend_state.go`, workspace listing.
 
 ADRs: 002 (authenticated application access), 005 (no product mutation/autonomy
-relaxation), 021 (quota-limited inventory collection).
+relaxation), 009 (worker ownership), 021 (quota-limited inventory collection).
 This change is not an ADR-005 exception.

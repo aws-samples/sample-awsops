@@ -13,3 +13,9 @@ variable "state_bucket_name" {
   description = "Globally-unique S3 bucket for Terraform state. Override per account."
   default     = "awsops-v2-tfstate"
 }
+
+variable "private_plan_retention_enabled" {
+  type        = bool
+  default     = false
+  description = "Manage plan-prefix lifecycle on this bucket. Enable only after reviewing ownership of the entire bucket lifecycle configuration and preserving any unrelated rules."
+}

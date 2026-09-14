@@ -17,8 +17,18 @@ const execute = promisify(execFile);
 const REGION = 'ap-northeast-2', REPO = 'aws-samples/sample-awsops';
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const SHA = /^[a-f0-9]{40}$/;
-// Current owner-required catalog floor; the source-AST test keeps this contract in sync.
-export const MIN_CATALOG_TYPES = 43;
+// Current owner-required membership; the source-AST test keeps this contract in sync.
+export const REQUIRED_CATALOG_TYPES = Object.freeze([
+  'ec2', 'lambda', 'rds', 'ebs_volume', 'vpc', 'subnet', 'security_group',
+  'iam_role', 'iam_user', 'dynamodb', 'ecs_cluster', 'ecs_service', 'ecr',
+  'cloudfront', 'alb', 'nlb', 'target_group', 'route53', 'ecs_task', 'elasticache',
+  'opensearch', 'route_table', 'nat_gateway', 'internet_gateway', 'transit_gateway',
+  'elasticache_replication_group', 'iam_policy', 'neptune_cluster', 'msk', 'waf',
+  'waf_rule_group', 'waf_ip_set', 'cloudwatch_alarm', 'cloudtrail', 'apigatewayv2_api',
+  'apigatewayv2_integration', 'apigatewayv2_route', 'ebs_snapshot', 's3',
+  'opensearch_serverless', 'cloudfront_vpc_origin', 'alb_listener_rule', 's3_public_access',
+]);
+export const MIN_CATALOG_TYPES = REQUIRED_CATALOG_TYPES.length;
 // Five 35s HTTP calls, an 80s probe and two 370s worker paths need 995s.
 // The 15s collector recheck brings the minimum to 1010s; reserve 17m with 10s margin.
 // This reserves only the single-pass proof; no extra pages, polls or retries are allocated.
@@ -39,6 +49,22 @@ const need = (condition, code) => { if (!condition) throw new ReleaseError(code)
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const empty = value => value === undefined || (Array.isArray(value) && value.length === 0);
 const integer = value => Number.isSafeInteger(value) && value >= 0;
+function awsChildEnvironment(env) {
+  const keys = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN'];
+  need(keys.every(key => typeof env[key] === 'string' && env[key].trim()), 'aws_credentials_required');
+  return {
+    PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C', LC_ALL: 'C',
+    ...Object.fromEntries(keys.map(key => [key, env[key]])),
+    AWS_CONFIG_FILE: '/dev/null', AWS_SHARED_CREDENTIALS_FILE: '/dev/null', BOTO_CONFIG: '/dev/null',
+    AWS_EC2_METADATA_DISABLED: 'true', AWS_IGNORE_CONFIGURED_ENDPOINT_URLS: 'true',
+    AWS_MAX_ATTEMPTS: '1', AWS_PAGER: '',
+  };
+}
+function smokeFailure(error) {
+  return new ReleaseError(error instanceof SmokeError
+    ? error.message === 'Runtime smoke: host_registry' ? 'host_only_registry_required' : error.message
+    : 'authenticated_runtime_proof_failed');
+}
 function json(text) {
   try { return JSON.parse(text); } catch { throw new ReleaseError('invalid_response'); }
 }
@@ -131,6 +157,7 @@ export function validateCatalog(value) {
   const types = value.types;
   need(value.status === 'catalog' && Array.isArray(types) && types.length >= MIN_CATALOG_TYPES && types.length <= 128 &&
     new Set(types).size === types.length && types.includes('cloudfront') &&
+    REQUIRED_CATALOG_TYPES.every(type => types.includes(type)) &&
     types.every(t => typeof t === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(t)
       && !['all', 'catalog'].includes(t)), 'invalid_collection_catalog');
   return types;
@@ -267,7 +294,7 @@ export async function release(deployment, {
       let raw;
       try {
         raw = await run('aws', commandArgs, {
-          env: args[0] === 'lambda' && args[1] === 'invoke' ? { ...env, AWS_MAX_ATTEMPTS: '1' } : env, timeout,
+          env: awsChildEnvironment(env), timeout,
         });
       } finally { need(now() < deadline, 'release_timeout'); }
       return json(raw);
@@ -316,7 +343,7 @@ export async function release(deployment, {
             response.ExecutedVersion === '$LATEST', 'collection_probe_failed');
           const result = readPrivate(output, directory);
           if (type === 'catalog') return result;
-          need(result.type === type, 'collection_probe_protocol');
+          need(object(result) && result.type === type, 'collection_probe_protocol');
           if (state) for (const field of ['row_count', 'unknown_attribute_count', 'unreachable_account_count'])
             state[field] = integer(result[field]) ? result[field] : null;
           if (result.status === 'busy' || (result.status === 'failed' && result.error === 'inventory sync superseded')) {
@@ -353,7 +380,7 @@ export async function release(deployment, {
         }, { tempRoot: directory, includeDatabaseClock: true, now, deadline });
       } catch (error) {
         need(now() < deadline, 'release_timeout');
-        throw new ReleaseError(error instanceof SmokeError ? error.message : 'authenticated_runtime_proof_failed');
+        throw smokeFailure(error);
       }
       const prepareFinished = now(), clock = prepared?.database_clock;
       need(prepareFinished < deadline, 'release_timeout');
@@ -382,9 +409,9 @@ export async function release(deployment, {
         status: 'not_started', attempts: 0, last_outcome: 'not_started',
         row_count: null, unknown_attribute_count: null, unreachable_account_count: null,
       }]));
-      let cursor = 0;
+      let cursor = 0, firstFailure;
       await Promise.all(Array.from({ length: Math.min(4, types.length) }, async () => {
-        while (cursor < types.length) {
+        while (!firstFailure && cursor < types.length) {
           const type = types[cursor++], state = states[type];
           try { await invoke(type, collectionDeadline - now(), state); }
           catch (error) {
@@ -392,6 +419,7 @@ export async function release(deployment, {
             if (state.status === 'not_started')
               state.status = state.reason === 'release_timeout' ? 'deadline' : 'failed';
             if (state.last_outcome === 'running') state.last_outcome = state.status;
+            firstFailure ??= new ReleaseError(state.reason);
           }
         }
       }));
@@ -401,12 +429,10 @@ export async function release(deployment, {
           .map(status => [status, types.filter(type => states[type].status === status).length])),
         not_started: types.filter(type => states[type].attempts === 0).length,
       } };
-      const failedType = types.find(type => states[type].status !== 'succeeded');
-      if (failedType) {
-        const error = new ReleaseError(states[failedType].reason);
-        error.collection_attempts = collectionAttempts;
-        error.inventory_quality = { status: 'not_verified', catalog_types: types, counts: null, types: null };
-        throw error;
+      if (firstFailure) {
+        firstFailure.collection_attempts = collectionAttempts;
+        firstFailure.inventory_quality = { status: 'not_verified', catalog_types: types, counts: null, types: null };
+        throw firstFailure;
       }
       const collectedConfig = await aws(['lambda', 'get-function-configuration',
         '--function-name', expected.sync_function_arn], undefined, 15_000);
@@ -432,7 +458,7 @@ export async function release(deployment, {
       }, { tempRoot: directory, now, deadline: verificationDeadline });
     } catch (error) {
       need(now() < verificationDeadline, 'release_timeout');
-      const failure = new ReleaseError(error instanceof SmokeError ? error.message : 'authenticated_runtime_proof_failed');
+      const failure = smokeFailure(error);
       if (error instanceof SmokeError) failure.inventory_quality = error.inventory_quality;
       failure.collection_attempts = collectionAttempts;
       throw failure;

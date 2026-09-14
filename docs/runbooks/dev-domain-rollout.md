@@ -202,23 +202,15 @@ or `managed` mode; do not put their ARNs into those inputs.
 외부 인증서 재사용 입력은 `existing_cf_certificate_arn`, `existing_alb_certificate_arn`이다.
 Terraform 소유 또는 `managed` 모드에서는 두 입력을 비우며 관리 인증서 ARN을 넣지 않는다.
 
-For each stage, dispatch **plan** from `dev`, review its summary and exact saved
-plan, then dispatch **apply** from the same branch/SHA with that successful
-`plan_run_id` and matching DNS permission/scope. The encrypted saved plan contains
-the publication setting; changing inputs or repository variables on the apply
-dispatch does not alter it. Create a fresh plan after any intended input change.
-PR/push plans remain read-only and **never apply-eligible**. Their DNS allowance is
-reporting only, with `ci_domain_rollout=false`. Dev advisory preflight preserves
-ownership/publication from state without live ACM, SAN or trust validation, so
-bootstrap or a hostname change alone does not require live certificates to plan.
-Ownership/retirement guards still apply. Dispatch performs the live validation.
-
-각 단계에서 dev의 plan을 검토한 뒤 같은 브랜치/SHA에서 성공한 `plan_run_id`로
-apply한다. apply의 DNS 허용·scope도 일치시킨다. 게시 플래그는 암호화된 저장 plan에
-포함되므로 apply 입력이나 저장소 변수 변경으로 plan을 바꾸지 않는다. 입력 변경
-시 새 plan을 만든다. PR/push는 읽기 전용이고 **적용할 수 없다**. DNS 허용은 보고용이며
-`ci_domain_rollout=false`다. dev 참고 계획은 상태의 소유권·게시를 보존하되 ACM·SAN·신뢰 체인을
-실시간 검증하지 않는다. 소유권·폐기 제한은 유지하며 실제 인증서 검증은 dispatch에서 수행한다.
+For each stage, dispatch **plan** from `dev`, inspect the full saved plan privately
+through [S3 plan inspection](dev-repo-setup.md#private-exact-plan-inspection), then dispatch
+**apply** at the same branch/SHA with `plan_run_id`, `reviewed_plan_sha256` and matching DNS
+permission/scope. The saved plan contains the publication setting; changing apply inputs
+or repository variables cannot change those bytes. New intended inputs require a fresh plan.
+PR/push plans remain read-only and never apply-eligible. Their DNS allowance is reporting
+only, with `ci_domain_rollout=false`. Advisory preflight preserves ownership/publication
+from state without live ACM, SAN or trust validation; those ownership/retirement guards
+remain required. Manual dispatch performs live certificate validation.
 
 The issuance stage changes validation CNAMEs/TLS consumers while A remains absent.
 A standalone [deployment-smoke.mjs](../../scripts/v2/deployment-smoke.mjs) request
@@ -289,7 +281,7 @@ token retirement or old-domain restoration needs a separate expressly authorized
 procedure under the appropriate configuration. Never remove resources from state
 or accept unknown DNS identities to make rollback pass.
 
-Related: `.github/workflows/terraform.yml`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_failure_diagnostics.py`, `scripts/v2/ci_dns_policy.py`,
+Related: `.github/workflows/terraform.yml`, `scripts/v2/ci_private_plan.py`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_failure_diagnostics.py`, `scripts/v2/ci_dns_policy.py`,
 `scripts/v2/ci_dev_domain.py`, `terraform/foundation/edge.tf`;
 ADR-005 (AWS-resource mutation + autonomy freeze / AWS 리소스 변경·자율 실행 동결),
 ADR-016 (v1 decommission / domain-certificate cutover / v1 폐기·도메인/인증서 전환).

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 1d750f4a9b4c · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 279a34e30342 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -35,9 +35,9 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   fixed scope/presence checks, fixed addresses and a known collector hash, never private values.
   The combined 256-row view is not approval or resource-presence proof; unknown changes require
   private inspection. Membership checks include the existing/planned group's lack of an IAM role.
-  Reporting cannot weaken DNS/runtime/exact-plan gates or block later encrypted artifacts.
+  Reporting cannot weaken DNS/runtime/exact-plan gates or block the encrypted handoff or private publication.
 - `CI_READINESS_ENABLED_DEV` is separate from the runtime profile: true/false explicitly overrides readiness on dev, while empty/unset preserves operator tfvars/default false. Public CI rejects enabled readiness elsewhere. The applied group requires AgentCore, and automatic membership requires the managed demo; no admin/IAM grant.
-- `v2/ci_plan_inspect.py` is local-only: authenticate successful plan-run context, checkout
+- `v2/ci_plan_inspect.py` is the legacy encrypted-artifact inspector, local-only: authenticate successful plan-run context, checkout
   SHA and existing signed plan/assets before private rendering. No backend init/apply.
   Outputs are bounded 0600 files in a new 0700 destination.
 - `v2/ci_failure_diagnostics.py` drains bounded output in memory until Terraform exits; no scratch-write error may kill apply or replace its result. Linux supervision forwards one graceful interrupt, escalates a second, and kills Terraform if its capture parent dies. Retain the last 1 MiB and signed total/capture status. No success/advisory raw log is written.
@@ -168,7 +168,7 @@ Deferred archives without known hashes are excluded. Both pack/restore APIs allo
 push, pull_request and workflow_dispatch only, or explicit local commits without a GitHub event.
 They use TF_PLAN_ENC_KEY HMAC.
 The 0600 tarball is private secret-bearing scratch, with no upload path;
-callers must encrypt before publication and clean plaintext files.
+callers require encrypted GitHub handoff or private SSE-KMS storage and owned cleanup.
 Both Terraform layer paths use the same locked build-layer command, or check-layer for
 CI_ASSETS_READY=true, also exported by plan/apply. Prepare invalidates markers, removes stale regular ZIPs and rejects ZIP
 symlinks. Schema-2 markers bind file hashes; validation checks a fixed required-import list.
@@ -195,6 +195,8 @@ Require full HTTP timeouts remaining, and probe/worker budgets before billing or
 Collection windows are caps; late completion can fail admission.
 Post-marker running attempts with old/null previous success time out as collection_timeout;
 full-policy stale terminal evidence is collection_stale. Login/DB also require full timeouts.
+`readRuntimeSmokeConfig(file, credentialFile, now = Date.now())` accepts a finite numeric
+validation time; controller callers pass calibrated `now()` without changing marker/expiry.
 
 ## Strict release controller capability
 
@@ -202,11 +204,20 @@ full-policy stale terminal evidence is collection_stale. Login/DB also require f
 verification. Full releases require collect mode; prepare never establishes full readiness.
 Explicit activation remains separate and inactive prerequisites cannot be skipped.
 It binds dev source/account/actual role, applied runtime identity and ARM64 web digest.
-Reject catalogs below 43 or above 128 types. Every returned type (currently 43)
+Require the pinned 43-name baseline, source-AST checked; valid growth is allowed up
+to 128 types. Every returned type
 needs post-marker succeeded evidence, known counts and
 zero unknowns, with at most four concurrent in-flight synchronous owned calls. Prepare obtains authenticated
 DB time plus host proof; calibration anchors at request start and shifts the existing
 deadline equally. No lower-bound freshness tolerance or rolling prior success is introduced.
+Both modes require the enabled host only; collect's authenticated DB/host preflight
+fails `host_only_registry_required` before type calls. AWS CLI children use an explicit
+credential/settings allowlist, pinned path, disabled config/credential files/metadata
+and endpoint isolation; drop ambient profiles/providers/CA/proxy/hooks and CI secrets.
+First chronological terminal failure stops new type admission; admitted work settles
+and untouched types remain `not_started`. Partial/unknown results are expected hard
+stops under limiter/hydrate load too; investigate capacity, reachability or denials
+before an authorized fresh bounded rerun. No weaker acceptance or scheduler suppression.
 Collector hash/RevisionId must remain stable before/after collection; then full
 SSM/AgentCore/model and both owned worker proofs remain mandatory. Preserve private
 credentials/cleanup, restrictive consumer sessions and reviewed activation prerequisites.
@@ -218,30 +229,32 @@ reusing the original worker allowances. More reads/waits/overhead need more time
 `capture` reads private deployment JSON on stdin and emits `deployment_file` to
 `GITHUB_OUTPUT`; `run` reads `RUNTIME_DEPLOYMENT_FILE`. Both need private credentials.
 Full CLI inputs/timeouts: `docs/runbooks/runtime-foundation.md#controller-cli-contract`.
+`remaining_prerequisites: "not_assessed"` retains separate workflow/plan/promotion gates;
+use the canonical fixed-code operator table in that runbook.
 Tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
 The dated owner requirement supersedes the earlier CloudFront-only proposal.
 Four lanes do not promise fourfold throughput or completion for every workload.
 Keep the schedule active and fail closed on budget/permission/contention failures;
 the runbook records one feasible measured workload, not a latency guarantee.
 
-## Unwired private plan transport
 
-`v2/ci_private_plan.py` exposes only policy/publish/inspect/restore. The base Terraform
-workflow does not call it or publish private S3 references; operator use requires the
-later consumer integration. No workflow/IAM/bucket provisioning ships with the module.
-Require successful Plan plus publisher ID `publish` / name `Publish private plan`,
-attempt artifact `tfplan-N`, private backend/store, protected scoped credentials and
-publish/restore CI HMAC verification. Inspection requires an explicit private backend
-and profile, never bucket discovery or the CI key. Public reference fields are only
-schema/storage tags, CI context and manifest hash/size; no public plan/backend/bucket
-hashes or storage identities. A cap/failure does not create a usable reference.
-Private inspection is not approval; restore never applies and supplies no orphan recovery.
-Consumers own safe artifact overwrite, masking before logging, existing gates and cleanup.
-Contract: `docs/reference/private-plan-transport.md`. Run `v2/test_ci_private_plan.py`
-with the existing crypto/inspection/context suites; no additional dependency or live access.
-Classify this as operator CI artifact transport, not an ADR-005 exception; no frozen
-product capability is enabled.
-S3 SSE-KMS replaces the GitHub envelope for operator reads; effective S3/KMS readers
-need no CI key. Consumer wiring must review access, verify plan-prefix lifecycle
-(7-day current/noncurrent expiry, 1-day multipart abort), and migrate the legacy
-artifact/inspector contract together. Generated session policy is publisher-only.
+## Private plan transport
+
+Private S3 helpers require a private backend file and existing bucket/IAM/KMS posture.
+Publish/apply enter branch environments; only backend/tfvars absence soft-skips.
+Public references omit storage bindings and plan hashes; CLI results omit plan hashes.
+Mask the reviewed input before step environments. Private digests select exact bytes;
+CI still checks asset HMAC and original gates. Read-only lifecycle validation requires
+the owner-configured plan-prefix 7-day current/noncurrent expiry and 1-day multipart abort.
+Expiration is asynchronous; scoped purge and current-run scratch cleanup remain separate.
+Purge is a manual AWS-CLI runbook procedure, not a helper mode or a required scheduled task.
+Its complete listing must contain no young data versions; delete markers need no age cutoff.
+SSE-KMS readers need no CI envelope key: review effective S3/KMS access before rollout.
+Generated policy is publisher-only; Apply retains its own authorization. Legacy `tfplan`
+runs use the historical inspector.
+The workflow wires the four helper modes with Plan / Publish private plan job contracts,
+attempt-specific tfplan-N references, protected storage sessions and existing apply guards.
+The helper has no orphan recovery, legacy fallback or Terraform apply operation. Contract:
+`docs/reference/private-plan-transport.md`; validate both helper and consumer workflow tests.
+
+This is operator CI artifact transport, not an ADR-005 exception; no frozen product capability is enabled.
