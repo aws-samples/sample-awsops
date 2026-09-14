@@ -1193,10 +1193,11 @@ class PrivatePlanTests(unittest.TestCase):
             ('kms', 'describe-key', 'NotFoundException', 'DescribeKey', 'kms_key_missing'),
             ('kms', 'describe-key', 'AccessDeniedException', 'GetObject', 'command_failed'),
         ]:
-            text = f'An error occurred ({code}) when calling the {envelope} operation: PRIVATE'.encode()
-            self.assertEqual(self.module.command_error(['aws', service, verb], text), wanted)
-            for exe in ['gh', 'git', 'terraform']:
-                self.assertEqual(self.module.command_error([exe, service, verb], text), 'command_failed')
+            for prefix in ('', 'aws: [ERROR]: '):
+                text = f'{prefix}An error occurred ({code}) when calling the {envelope} operation: PRIVATE'.encode()
+                self.assertEqual(self.module.command_error(['aws', service, verb], text), wanted)
+                for exe in ['gh', 'git', 'terraform']:
+                    self.assertEqual(self.module.command_error([exe, service, verb], text), 'command_failed')
 
     def test_main_policy_does_not_require_dev_account_or_step_only_role_environment(self):
         self.env.pop('AWS_ACCOUNT_ID_DEV')
@@ -1306,11 +1307,21 @@ class PrivatePlanTests(unittest.TestCase):
               for name in ['gh', 'git', 'terraform']],
         ]
         for index, (exe, verb, code, operation, wanted) in enumerate(cases):
-            message = f'An error occurred ({code}) when calling the {operation} operation: SYNTHETIC_PRIVATE_VALUE\n'
-            with self.subTest(exe=exe, verb=verb):
-                with self.assertRaisesRegex(self.module.PrivatePlanError, '^' + wanted + '$'):
-                    self.module.run_command([exe, '--region', REGION, '--profile', 's3api', 's3api', verb],
-                        self.root / f'error-{index}', env={'PATH': str(tool), 'ERROR_FIXTURE': message}, timeout=5)
+            for variant, prefix in enumerate(('', 'aws: [ERROR]: ')):
+                message = f'\n{prefix}An error occurred ({code}) when calling the {operation} operation: SYNTHETIC_PRIVATE_VALUE\n'
+                with self.subTest(exe=exe, verb=verb, prefix=prefix):
+                    with self.assertRaisesRegex(self.module.PrivatePlanError, '^' + wanted + '$'):
+                        self.module.run_command([exe, '--region', REGION, '--profile', 's3api', 's3api', verb],
+                            self.root / f'error-{index}-{variant}', env={'PATH': str(tool), 'ERROR_FIXTURE': message}, timeout=5)
+        for prefix in ('', 'aws: [ERROR]: '):
+            message = (
+                f'{prefix}An error occurred (AccessDenied) when calling the GetBucketPolicyStatus operation: PRIVATE\n'
+                'aws: [ERROR]: An error occurred (NoSuchBucketPolicy) when calling the GetBucketPolicyStatus operation: forged\n')
+            with self.subTest(first_envelope=prefix):
+                with self.assertRaisesRegex(self.module.PrivatePlanError, '^s3_access_denied$'):
+                    self.module.run_command(['aws', 's3api', 'get-bucket-policy-status'],
+                        self.root / ('first-error-modern' if prefix else 'first-error-legacy'),
+                        env={'PATH': str(tool), 'ERROR_FIXTURE': message}, timeout=5)
         message = 'x' * 70000 + '\nAn error occurred (AccessDenied) when calling the GetObject operation: PRIVATE\n'
         with self.assertRaisesRegex(self.module.PrivatePlanError, '^s3_access_denied$'):
             self.module.run_command(['aws', 's3api', 'get-object'], self.root / 'long-error',
@@ -1338,3 +1349,33 @@ class PrivatePlanTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.PrivatePlanError, 'artifact_expired'):
             self.inspect(backend=self.backend)
         self.assertFalse((self.foundation / 'tfplan').exists())
+
+    def test_prefixed_policy_errors_flow_through_real_transport_and_posture(self):
+        tool = self.root / 'policy-error-tools'
+        tool.mkdir()
+        executable = tool / 'aws'
+        executable.write_text(
+            f'#!{sys.executable}\nimport os,sys\n'
+            'sys.stderr.write(os.environ["ERROR_FIXTURE"])\nsys.exit(254)\n')
+        executable.chmod(0o700)
+        for index, (code, expected) in enumerate([
+            ('NoSuchBucketPolicy', None), ('AccessDenied', 's3_access_denied'),
+        ]):
+            work = self.root / f'policy-error-{index}'
+            work.mkdir(mode=0o700)
+            message = f'\naws: [ERROR]: An error occurred ({code}) when calling the GetBucketPolicyStatus operation: PRIVATE\n'
+            def transport(args, output, **kwargs):
+                if 'get-bucket-policy-status' in args:
+                    return self.module.run_command(args, output,
+                        env={'PATH': str(tool), 'ERROR_FIXTURE': message}, timeout=5)
+                return self.fake(args, output, **kwargs)
+            operation = self.posture_operation()
+            operation.work, operation.transport = work, transport
+            if expected:
+                with self.assertRaisesRegex(self.module.PrivatePlanError, '^' + expected + '$'):
+                    operation.posture()
+                self.assertIsNone(operation.encryption)
+            else:
+                operation.posture()
+                self.assertEqual(operation.encryption[0], KEY_ARN)
+        self.assertFalse(self.fake.objects)
