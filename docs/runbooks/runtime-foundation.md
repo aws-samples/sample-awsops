@@ -41,7 +41,9 @@ The digest/host-preflight profile is dev-only. Preview retains operator-configur
 Deploy the collector's read-only `type=catalog` mode before enabling the full-release
 controller. It returns the registered type names without collecting resources or
 scheduling work. Catalog acknowledgement alone never proves collection completeness;
-the controller must still check fresh complete results for every returned type.
+the release controller checks its owned CloudFront proof and bounded last-success
+evidence for every returned type, reporting degradation with completeness unknown
+as specified in the [collection contract](#collection-contention--수집-경합).
 
 ## Readiness capability
 
