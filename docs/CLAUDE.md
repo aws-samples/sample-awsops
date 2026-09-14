@@ -15,12 +15,15 @@ Project documentation organized by purpose. Each subdirectory has its own CLAUDE
 | [api-reference.md](api-reference.md) | API route reference |
 
 ## Conventions
+- All `CLAUDE.md` and `AGENTS.md` context files are English-only regardless of
+  directory. Reviewers should flag new Korean or bilingual context text anywhere.
 - New or rewritten developer/reviewer documentation under `docs/` is English-only,
   including references, operational runbooks and context files. Preserve facts when
   maintaining an existing bilingual document; do not add parallel translations.
   Existing bodies are a migration backlog, not a bilingual-authoring requirement.
   Preserve explicit heading anchors or update inbound links when headings change.
 - Keep multilingual product guides under `docs-site/` and application translations.
+  Root `README.md` and `CHANGELOG.md` retain the localization rules in root `CLAUDE.md`.
   Generated archify artifacts under `docs/diagrams/` (spec JSON and delivered HTML)
   are English-only; regenerate them through the skill rather than hand-translating HTML.
 - ADR bodies and the BASELINE decision register are maintained in the **private upstream
