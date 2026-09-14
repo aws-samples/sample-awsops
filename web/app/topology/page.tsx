@@ -133,7 +133,7 @@ const ROW_CAP = 500; // /api/inventory caps limit at 500
 const record = (v: unknown): v is Row => v !== null && typeof v === 'object' && !Array.isArray(v);
 const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
-async function fetchType(t: InvType, account: string, signal: AbortSignal): Promise<{ rows: Row[]; finishedAt: string | null; capped: boolean }> {
+async function fetchType(t: InvType, account: string, signal: AbortSignal): Promise<{ rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean }> {
   const critical = t === 'ecs_task' || t === 'subnet';
   const rows: Row[] = [], seen = new Set<string>();
   let version: string | undefined, finishedAt: string | null = null;
@@ -147,13 +147,14 @@ async function fetchType(t: InvType, account: string, signal: AbortSignal): Prom
       if (signal.aborted || !record(d) || d.error || d.status === 'error'
         || !Array.isArray(d.rows) || d.rows.length > ROW_CAP) throw new Error();
       const run = record(d.run) ? d.run : null;
+      const incomplete = critical && ['running', 'partial', 'failed'].includes(String(run?.status));
       if (critical) {
-        // The public run tuple is a consistency guard, not an atomic database snapshot.
-        if (!run || run.status !== 'succeeded' || !nonempty(run.finished_at) || !Number.isFinite(Date.parse(run.finished_at))
+        // The global type sweep covers every account. Only a stable success permits ownership.
+        if (!run || (!incomplete && (run.status !== 'succeeded' || !nonempty(run.finished_at) || !Number.isFinite(Date.parse(run.finished_at))
           || !nonempty(run.last_success_at) || !Number.isFinite(Date.parse(run.last_success_at))
-          || !Number.isSafeInteger(run.row_count) || (run.row_count as number) < 0) throw new Error();
+          || !Number.isSafeInteger(run.row_count) || (run.row_count as number) < 0))) throw new Error();
         const current = JSON.stringify([run.status, run.finished_at, run.last_success_at, run.row_count]);
-        if (version !== undefined && version !== current) throw new Error();
+        if (version !== undefined && version !== current) return { rows, finishedAt, capped: true, incomplete: true };
         version = current;
       }
       for (const row of d.rows) {
@@ -168,7 +169,8 @@ async function fetchType(t: InvType, account: string, signal: AbortSignal): Prom
         rows.push({ ...row.data, account_id: row.account_id, resource_id: row.resource_id, region: row.region });
       }
       finishedAt = run && typeof run.finished_at === 'string' ? run.finished_at : null;
-      if (d.rows.length < ROW_CAP) return { rows, finishedAt, capped: false };
+      // Keep a bounded cached page during a sweep, without mixing mutable pages or proving absence.
+      if (incomplete || d.rows.length < ROW_CAP) return { rows, finishedAt, capped: d.rows.length === ROW_CAP, incomplete };
     }
     return { rows, finishedAt, capped: true }; // 10,000 critical rows still need an end-of-data proof.
   } catch {
@@ -223,6 +225,7 @@ export default function TopologyPage() {
   const [busy, setBusy] = useState(false);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
   const [cappedTypes, setCappedTypes] = useState<string[]>([]);
+  const [syncIncomplete, setSyncIncomplete] = useState(false);
   const [entryId, setEntryId] = useState<string>('');
   const [clusterFilter, setClusterFilter] = useState<string>('');
   const [selected, setSelected] = useState<FlowNode | null>(null);
@@ -251,6 +254,7 @@ export default function TopologyPage() {
       setCapturedAt(null);
       setSyncedAt(null);
       setCappedTypes([]);
+      setSyncIncomplete(false);
       setRetained(false);
       setErr('');
       setEksResolution(null);
@@ -259,7 +263,7 @@ export default function TopologyPage() {
       const NET = ['vpc', 'security_group'] as const;
       const [results, eks, net] = await Promise.all([
         Promise.allSettled(TYPES.map((t) => fetchType(t, account, controller.signal))),
-        account === 'self' ? fetchEksIpMap() : Promise.resolve(null),
+        account === 'self' ? fetchEksIpMap(controller.signal) : Promise.resolve(null),
         // Subnets are fetched once with flow inventory and reused for detail names.
         Promise.all(NET.map((t) => fetch(`/api/inventory/${t}?limit=500&accounts=${encodeURIComponent(account)}`, { signal: controller.signal }).then((r) => (r.ok ? r.json() : { rows: [] })).catch(() => ({ rows: [] })))),
       ]);
@@ -267,20 +271,21 @@ export default function TopologyPage() {
       const failed = results.flatMap((result, i) => result.status === 'rejected'
         ? [result.reason instanceof Error ? result.reason.message : `${TYPES[i]}: unavailable`] : []);
       setErr(failed.join('; '));
+      setSyncIncomplete(results.some(r => r.status === 'fulfilled' && r.value.incomplete));
       setEksResolution(eks);
       if (failed.length === TYPES.length) {
         setRetained(displayedAccount.current === account);
         return;
       }
       const res = results.map(result => result.status === 'fulfilled'
-        ? result.value : { rows: [] as Row[], finishedAt: null, capped: false });
+        ? result.value : { rows: [] as Row[], finishedAt: null, capped: false, incomplete: false });
       const mk = (rows: { resource_id?: unknown; data?: Record<string, unknown> }[]) =>
         new Map((rows ?? []).map((r) => [String(r.resource_id), invName(r)]));
       setNetMaps({ vpc: mk(net[0]?.rows), sg: mk(net[1]?.rows),
         subnet: mk(res[TYPES.indexOf('subnet')].rows.map(row => ({ resource_id: row.resource_id, data: row }))) });
       const readIssue = (type: InvType): 'failed' | 'capped' | undefined => {
         const i = TYPES.indexOf(type);
-        return results[i].status === 'rejected' ? 'failed' : res[i].capped ? 'capped' : undefined;
+        return results[i].status === 'rejected' || res[i].incomplete ? 'failed' : res[i].capped ? 'capped' : undefined;
       };
       const out: FlowInput = { ipResolved: eks?.map, ownershipRead: {
         ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
@@ -625,7 +630,7 @@ export default function TopologyPage() {
           {tt('EKS 조회 실패 또는 수집 범위 제한으로 IP 소유자를 확인할 수 없습니다.')} ({eksResolution.reasons.join(', ')})
         </div>}
         {(data?.ownershipRead?.ecsTask || data?.ownershipRead?.subnet) && <div role="status" className="text-[13px] text-warning">
-          {tt('인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.')}
+          {tt(syncIncomplete ? '인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.' : '인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.')}
         </div>}
         {retained && <div role="status" className="text-[13px] text-warning">{tt('조회 실패로 이전 결과를 표시합니다.')}</div>}
         {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}

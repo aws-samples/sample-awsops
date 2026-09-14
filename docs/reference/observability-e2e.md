@@ -8,15 +8,16 @@ codes, windows, caps and source quality; query bounds never prove all-traffic co
 The host live view arbitrates IP ownership only in the region reported by `/api/eks`.
 Unreadable known region/VPC scopes block all matching IPs, including unenumerated ones.
 Unknown scope, incomplete enumeration or an unqueried region withholds identity confidence.
-The web enumeration reads at most 25 clusters and discloses continuation; legacy responses
+The web enumeration reads at most 25 clusters and reports truncation; legacy responses
 without a completeness marker remain conservative at that limit.
 
 Member-account views and materialized flow graphs are configuration-only: their ECS labels
 record cached attachment facts, not live EKS arbitration or exclusive ownership. They carry
 `ownership_evidence=cached_configuration` and cannot establish E2E identity links.
-ECS task/subnet reads use bounded pagination; remaining limits, read errors or changed pages
-withhold confidence with a distinct inventory-incomplete reason. The localized user guides
-ship with the combined operator view.
+The global type-sweep ledger covers host and member rows. Bounded ECS/subnet reads retain
+cached rows during incomplete sweeps or version changes, without exclusive ownership. EKS
+reads share the abort budget. Local monitor-name workload matches are context, never identity.
+The localized user guides ship with the combined operator view.
 
 **Goal:** Connect workload evidence, execution state, changes and cost without treating
 missing observations as healthy.

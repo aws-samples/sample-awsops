@@ -3,10 +3,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TopologyPage from './page';
 import { setActiveAccount } from '@/lib/account-context';
+import * as topology from '@/lib/flow-topology';
 
 const region = 'us-east-1', vpcId = 'vpc-app';
 const row = (resource_id: string, data: object) => ({ account_id: 'self', resource_id, region, data });
-const RUN = { status: 'succeeded', finished_at: '2026-09-11T12:00:00Z', last_success_at: '2026-09-11T12:00:00Z', row_count: 1 };
+// One global type-sweep ledger, shared by host/member reads; not this scope's row count.
+const RUN = { status: 'succeeded', finished_at: '2026-09-11T12:00:00Z', last_success_at: '2026-09-11T12:00:00Z', row_count: 20000 };
 type Body = { rows: ReturnType<typeof row>[]; run: typeof RUN };
 const targets = row('tg-app', { vpc_id: vpcId, target_type: 'ip', target_health_descriptions:
   ['10.0.1.2', '10.0.1.3'].map(Id => ({ Target: { Id, Port: 80 } })) });
@@ -52,7 +54,7 @@ function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; 
         : type === 'subnet' ? [row('subnet-app', { vpc_id: vpcId, tags: { Name: 'App subnet' } })] : []);
       const offset = Number(url.searchParams.get('offset') ?? 0), limit = Number(url.searchParams.get('limit'));
       const rows = all.slice(offset, offset + limit).map(r => ({ ...r, account_id: url.searchParams.get('accounts') === '__all__' ? r.account_id : host ? 'self' : url.searchParams.get('accounts')! }));
-      const body = { rows, run: { ...RUN, row_count: all.length } };
+      const body = { rows, run: { ...RUN } };
       return options.inventoryReply?.(url, body, init?.signal) ?? Response.json(body);
     }
     throw new Error(`Unexpected request: ${url}`);
@@ -187,12 +189,12 @@ describe('bounded ownership inventory paging', () => {
     expect(await screen.findByText('eks_not_enumerated')).toBeTruthy();
   });
 
-  it.each(['status', 'finished_at', 'last_success_at', 'row_count', 'missing-run', 'missing-version', 'duplicate', 'malformed', 'http', 'json'])(
+  it.each(['finished_at', 'last_success_at', 'row_count', 'missing-run', 'missing-version', 'duplicate', 'malformed', 'http', 'json'])(
     'withholds ownership for a %s paging inconsistency', async defect => {
+      const graph = vi.spyOn(topology, 'buildFlowGraph');
       const inventory = largeInventory('ecs_task');
       const requests = serve({ inventory: { ecs_task: inventory }, inventoryReply: (url, body) => {
         if (!url.pathname.endsWith('/ecs_task')) return Response.json(body);
-        if (defect === 'status') return Response.json({ ...body, run: { ...body.run, status: 'running' } });
         if (url.searchParams.get('offset') !== '500') return Response.json(body);
         if (defect === 'http') return Response.json({ message: 'secret=canary' }, { status: 503 });
         if (defect === 'json') return new Response('secret=canary is not JSON');
@@ -203,7 +205,10 @@ describe('bounded ownership inventory paging', () => {
         return Response.json({ ...body, run: { ...body.run, [defect]: defect === 'row_count' ? 502 : '2026-09-11T12:01:00Z' } });
       } });
       render(<TopologyPage />);
-      await screen.findByText(/ecs_task: invalid inventory response/);
+      if (['finished_at', 'last_success_at', 'row_count'].includes(defect)) {
+        await screen.findByText('인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.');
+        expect(graph.mock.calls.at(-1)?.[0].ecsTask).toHaveLength(500);
+      } else await screen.findByText(/ecs_task: invalid inventory response/);
       expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
       expect(document.body.textContent).not.toContain('secret=canary');
       expect(requests.filter(u => u.pathname.endsWith('/ecs_task')).length).toBeLessThanOrEqual(2);
@@ -214,6 +219,17 @@ describe('bounded ownership inventory paging', () => {
     await screen.findByText('인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.');
     expect(requests.filter(u => u.pathname.endsWith('/subnet'))).toHaveLength(20);
     expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
+  });
+
+  it.each(['running', 'partial', 'failed'])('retains cached %s rows without asserting exclusive ownership', async status => {
+    const graph = vi.spyOn(topology, 'buildFlowGraph');
+    serve({ inventoryReply: (url, body) => Response.json(url.pathname.endsWith('/ecs_task')
+      ? { ...body, run: { ...body.run, status, finished_at: status === 'running' ? null : RUN.finished_at, row_count: status === 'running' ? null : 1 } } : body) });
+    render(<TopologyPage />);
+    await screen.findByText('인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.');
+    expect(graph.mock.calls.at(-1)?.[0].ecsTask).toHaveLength(1);
+    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
+    expect(screen.queryByText(/invalid inventory response/)).toBeNull();
   });
 
   it.each([false, true])('clears the load deadline after settling (invalid JSON: %s)', async invalid => {
@@ -227,18 +243,25 @@ describe('bounded ownership inventory paging', () => {
     expect(cleared).toHaveBeenCalledWith(deadlines[0]);
   });
 
-  it('aborts a stalled later page at the shared thirty-second budget', async () => {
+  it.each(['inventory', 'eks-list', 'eks-pods'])('aborts stalled %s reads at the shared thirty-second budget', async stage => {
     vi.useFakeTimers();
     let signal: AbortSignal | null | undefined;
-    serve({ inventory: { ecs_task: largeInventory('ecs_task') }, inventoryReply: (url, body, abort) => {
-      if (!url.pathname.endsWith('/ecs_task') || url.searchParams.get('offset') !== '500') return Response.json(body);
-      signal = abort;
-      return new Promise((_, reject) => abort?.addEventListener('abort', () => reject(new Error('secret=canary')), { once: true }));
-    } });
+    serve({ inventory: { ecs_task: largeInventory('ecs_task') } });
+    const normal = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const url = new URL(String(input), 'http://localhost');
+      const stalled = stage === 'inventory' ? url.pathname.endsWith('/ecs_task') && url.searchParams.get('offset') === '500'
+        : stage === 'eks-list' ? url.pathname === '/api/eks' : url.searchParams.get('kind') === 'pods';
+      if (!stalled) return normal(input, init);
+      signal = init?.signal;
+      return new Promise((_, reject) => signal?.addEventListener('abort', () => reject(new Error('secret=canary')), { once: true }));
+    });
     render(<TopologyPage />);
     await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
     expect(signal?.aborted).toBe(true);
-    expect(screen.getByText(/ecs_task: invalid inventory response/)).toBeTruthy();
+    if (stage === 'inventory') expect(screen.getByText(/ecs_task: invalid inventory response/)).toBeTruthy();
+    else expect(screen.getByRole('alert', { name: 'EKS 식별 상태' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toHaveProperty('disabled', false);
     expect(document.body.textContent).not.toContain('secret=canary');
   });
 });

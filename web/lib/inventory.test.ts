@@ -23,13 +23,14 @@ describe('readResources', () => {
     expect(query.mock.calls.filter(([sql]) => String(sql).includes('FROM inventory_resources'))
       .map(([, params]) => params.at(-1))).toEqual([0, 5, 10]);
   });
-  it('returns rows + run status', async () => {
+  it.each([['self'], ['123456789012'], '__all__'] as const)('returns scoped rows and the global sweep ledger for %j', async accounts => {
+    const ledger = { status: 'partial', finished_at: '2026-09-14T00:00:00Z', last_success_at: '2026-09-13T00:00:00Z', row_count: 1200 };
     query.mockResolvedValueOnce({ rows: [{ resource_id: 'i-1', data: { instance_type: 't3.micro' }, captured_at: 't' }] })
-         .mockResolvedValueOnce({ rows: [{ status: 'succeeded', finished_at: 't', row_count: 1 }] });
+         .mockResolvedValueOnce({ rows: [ledger] });
     const { readResources } = await import('./inventory');
-    const out = await readResources('ec2', { limit: 50, offset: 0 });
-    expect(out.rows[0].resource_id).toBe('i-1');
-    expect(out.run.status).toBe('succeeded');
+    const out = await readResources('ec2', { limit: 50, offset: 0, accounts: accounts === '__all__' ? accounts : [...accounts] });
+    expect(out.rows[0].resource_id).toBe('i-1'); expect(out.run).toEqual(ledger);
+    expect(query.mock.calls[1][0]).toContain("account_id = 'self'"); expect(query.mock.calls[1][1]).toEqual(['ec2']);
   });
 
   it('__all__ regions (default) → no region predicate in the WHERE clause', async () => {

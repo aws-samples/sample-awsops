@@ -222,6 +222,36 @@ class RuntimePolicyTests(unittest.TestCase):
         plan["variables"]["ci_runtime_profile_enabled"]["value"] = True
         self.module.check_plan(plan, "dev", "full", ACCOUNT)
 
+    def test_real_saved_plan_cli_readiness_booleans_keep_their_meaning(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            root.joinpath("main.tf").write_text(
+                'variable "ci_readiness_enabled" {\n type = bool\n default = false\n nullable = false\n}\n'
+                'output "effective" { value = var.ci_readiness_enabled }\n')
+            subprocess.run(["terraform", "init", "-backend=false", "-input=false", "-no-color"],
+                           cwd=root, check=True, capture_output=True)
+            for literal in ("true", "false"):
+                subprocess.run(["terraform", "plan", "-input=false", "-no-color", "-out=plan",
+                                f"-var=ci_readiness_enabled={literal}"], cwd=root, check=True, capture_output=True)
+                actual = json.loads(subprocess.check_output(["terraform", "show", "-json", "plan"], cwd=root))
+                self.assertIs(actual["planned_values"]["outputs"]["effective"]["value"], literal == "true")
+                plan = self.plan()
+                plan["variables"]["ci_readiness_enabled"] = actual["variables"]["ci_readiness_enabled"]
+                self.assertEqual(self.module.check_plan(plan, "dev", "full", ACCOUNT)["runtime_policy"], "verified")
+                if literal == "true":
+                    with self.assertRaisesRegex(ValueError, "readiness.*dev-only"):
+                        self.module.check_plan(plan, "main", "full", ACCOUNT)
+                else:
+                    self.assertEqual(self.module.check_plan(plan, "main", "full", ACCOUNT)["runtime_policy"], "not_applicable")
+
+    def test_saved_readiness_rejects_noncanonical_or_nonboolean_values(self):
+        for value in (None, 0, 1, [], {}, "TRUE", "False", " true ", "1", ""):
+            with self.subTest(value=value):
+                plan = self.plan()
+                plan["variables"]["ci_readiness_enabled"] = {"value": value}
+                with self.assertRaisesRegex(ValueError, "metadata must be boolean"):
+                    self.module.check_plan(plan, "dev", "full", ACCOUNT)
+
     def test_readiness_is_public_dev_only_even_without_the_runtime_profile(self):
         plan = self.plan()
         plan["variables"]["ci_readiness_enabled"] = {"value": True}

@@ -34,7 +34,7 @@ AgentCore는 Amazon Bedrock AgentCore Runtime과 Gateway를 기반으로 AI 어�
 | **Code Interpreter / Memory** | 이름에 하이픈 불가, 언더스코어만 사용 |
 | **Memory Store** | 최대 365일 보관(`eventExpiryDuration`) |
 | **설정 source of truth** | **SSM** `/ops/awsops-v2/agentcore/{runtime_arn,interpreter_id,memory_id}` — `provision.py`가 기록, web BFF가 런타임에 읽음(UI에는 노출되지 않음) |
-| **Runtime 업데이트** | 멱등 provisioner(`scripts/v2/agentcore/provision.py`) 재실행으로 반영 — 갓 생성된 Gateway가 READY 전이면 첫 target 생성이 실패할 수 있으나 재실행으로 해소 |
+| **Runtime 업데이트** | 멱등 provisioner(`scripts/v2/agentcore/provision.py`)로 변경 요청을 제출합니다. 갓 생성한 Gateway는 `READY` 확인 후 재실행합니다. 지속적인 `FAILED`는 원인 진단이 필요하며 자동 삭제·재생성하지 않습니다. |
 
 ## AgentCore Runtime
 

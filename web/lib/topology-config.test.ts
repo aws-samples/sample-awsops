@@ -69,6 +69,12 @@ async function graphs() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('EKS inventory producer → configuration → service/network graph', () => {
+  it('does not start EKS reads for an already-aborted load', async () => {
+    const request = vi.fn(); vi.stubGlobal('fetch', request);
+    const controller = new AbortController(); controller.abort();
+    expect(await fetchEksIpMap(controller.signal)).toMatchObject({ map: {}, globalUnknown: true });
+    expect(request).not.toHaveBeenCalled();
+  });
   it('distinguishes valid empty enumeration from unreadable clusters', async () => {
     serve([], [], { clusters: [] });
     expect(await fetchEksIpMap()).toEqual({ map: {}, blockedScopes: [], coveredRegions: [region], globalUnknown: false, status: 'empty', reasons: [] });
@@ -76,13 +82,10 @@ describe('EKS inventory producer → configuration → service/network graph', (
     expect(await fetchEksIpMap()).toEqual({ map: { [scopedTargetIp(region, vpcId, ip)]: null },
       blockedScopes: [`${region}|${vpcId}|`], coveredRegions: [region], globalUnknown: false, status: 'unavailable', reasons: ['cluster_unreadable'] });
   });
-  it('retains explicit region coverage for an empty response', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => json({ clusters: [], region })));
-    expect(await fetchEksIpMap()).toMatchObject({ coveredRegions: [region], globalUnknown: false, status: 'empty' });
-  });
-  it('cannot infer a region from a legacy empty response', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => json({ clusters: [] })));
-    expect(await fetchEksIpMap()).toMatchObject({ coveredRegions: [], globalUnknown: true });
+  it.each([region, undefined])('requires a declared region for empty enumeration: %s', async declared => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ clusters: [], region: declared })));
+    expect(await fetchEksIpMap()).toMatchObject({ coveredRegions: declared ? [declared] : [],
+      globalUnknown: !declared, status: declared ? 'empty' : 'unavailable' });
   });
   it('does not certify an empty first page when the API reports more clusters', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ clusters: [], region, truncated: true })));

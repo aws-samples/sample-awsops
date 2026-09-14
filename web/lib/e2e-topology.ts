@@ -130,47 +130,27 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       edges.push({ ...edge, id: `edge:${key(input.account, String(edges.length))}` });
     }
   };
-  for (const raw of list(input.configured?.nodes)) {
-    const node = record(raw), id = text(node.id);
-    if (!id) continue;
-    addNode({
-      id: nodeId('configuration', input.account, id), layer: 'configuration',
-      kind: text(node.kind), label: text(node.label) || id, meta: { ...record(node.meta) },
-    });
-  }
+  const appendLayer = (layer: 'configuration' | 'service', source: unknown) => {
+    const data = record(source), extra = layer === 'service' ? { capturedAt: data.captured_at ?? null } : {};
+    for (const raw of list(data.nodes)) {
+      const node = record(raw), id = text(node.id);
+      if (id) addNode({ id: nodeId(layer, input.account, id), layer, kind: text(node.kind),
+        label: text(node.label) || id, meta: { ...record(node.meta), ...extra } });
+    }
+    for (const raw of list(data.edges)) {
+      const edge = record(raw);
+      addEdge({ source: nodeId(layer, input.account, text(edge.source)),
+        target: nodeId(layer, input.account, text(edge.target)),
+        relation: layer === 'configuration' ? 'configuration' : text(edge.rel), evidence: layer, directed: true,
+        ...(layer === 'configuration' && text(edge.label) ? { label: text(edge.label) } : {}),
+        meta: { confidence: edge.confidence, ...extra } });
+    }
+  };
+  appendLayer('configuration', input.configured);
   summary.configuredNodes = nodes.length;
-  for (const raw of list(input.configured?.edges)) {
-    const edge = record(raw);
-    addEdge({
-      source: nodeId('configuration', input.account, text(edge.source)),
-      target: nodeId('configuration', input.account, text(edge.target)),
-      relation: 'configuration', evidence: 'configuration', directed: true,
-      ...(text(edge.label) ? { label: text(edge.label) } : {}),
-      meta: { confidence: edge.confidence },
-    });
-  }
-  // Neither observation source carries attribution for the selected external/all account.
   if (summary.observationsUnsupported) return graph;
-
-  for (const raw of list(input.services?.nodes)) {
-    const node = record(raw), id = text(node.id);
-    if (!id) continue;
-    addNode({
-      id: nodeId('service', input.account, id), layer: 'service',
-      kind: text(node.kind), label: text(node.label) || id,
-      meta: { ...record(node.meta), capturedAt: input.services?.captured_at ?? null },
-    });
-  }
+  appendLayer('service', input.services);
   summary.serviceNodes = nodes.length - summary.configuredNodes;
-  for (const raw of list(input.services?.edges)) {
-    const edge = record(raw);
-    addEdge({
-      source: nodeId('service', input.account, text(edge.source)),
-      target: nodeId('service', input.account, text(edge.target)),
-      relation: text(edge.rel), evidence: 'service', directed: true,
-      meta: { confidence: edge.confidence, capturedAt: input.services?.captured_at ?? null },
-    });
-  }
   const targets = targetIndex(nodes, edges);
   const workloads = workloadIndex(nodes);
 
@@ -188,8 +168,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     }
     const target = candidates.size === 1 ? [...candidates.values()][0] : undefined;
     const targetCluster = target?.node.meta.resolved === 'eks' ? text(target.node.meta.cluster) : '';
-    // Local workload matching may use the current single-region host monitor context,
-    // not independent region/VPC proof. Remote matching needs a scoped EKS target.
+    // A monitor name supplies display context only. Remote matching needs a scoped EKS target.
     const localCluster = side === 'local' ? monitorCluster : '';
     const cluster = localCluster || targetCluster;
     const namespace = text(data.podNamespace), pod = text(data.podName);
@@ -223,8 +202,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     }
     if (matches.length === 1) {
       addEdge({
-        source: endpoint.id, target: matches[0].id, relation: 'same-identity',
-        evidence: 'identity', directed: false,
+        source: endpoint.id, target: matches[0].id, relation: localCluster ? 'name-context' : 'same-identity',
+        evidence: localCluster ? 'context' : 'identity', directed: false,
         meta: {
           match: localCluster ? 'monitor-cluster' : 'configured-cluster',
           account: input.account, cluster, namespace, pod, side,
@@ -232,8 +211,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
         },
       });
     }
-    endpoint.meta.correlation = target || matches.length ? 'correlated' : 'unmatched';
-    if (target || matches.length) summary.correlatedEndpoints++;
+    endpoint.meta.correlation = target || (!localCluster && matches.length) ? 'correlated' : matches.length ? 'context' : 'unmatched';
+    if (target || (!localCluster && matches.length)) summary.correlatedEndpoints++;
     else summary.unmatchedEndpoints++;
   };
 
@@ -330,6 +309,20 @@ export function filterE2eEvidence(graph: E2eGraph, enabled?: E2eEvidence[]): E2e
   return { ...graph, nodes, edges };
 }
 
+type ConnectionGroup = { nodes: Set<string>; edges: Set<string> };
+function connectionGroups(edges: E2eEdge[], byId: Map<string, E2eNode>): Map<string, ConnectionGroup> {
+  const groups = new Map<string, ConnectionGroup>();
+  for (const edge of edges) {
+    if (edge.evidence !== 'network') continue;
+    const id = [edge.source, edge.target].find(id => byId.get(id)?.kind === 'connection');
+    if (!id) continue;
+    const group = groups.get(id) ?? { nodes: new Set<string>(), edges: new Set<string>() };
+    group.nodes.add(edge.source).add(edge.target); group.edges.add(edge.id);
+    groups.set(id, group);
+  }
+  return groups;
+}
+
 /**
  * Focus/search select connected evidence in both directions, preserving edge direction for display.
  * Context attaches once after traversal: a shared NAT/TGW never grants transit reachability.
@@ -340,6 +333,7 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
   const filtered = filterE2eEvidence(graph, selection.evidence);
   const byId = new Map(filtered.nodes.map(node => [node.id, node]));
   const { edges } = filtered;
+  const allGroups = connectionGroups(edges, byId);
   const eligible = new Set(byId.keys());
   const adjacency = new Map<string, string[]>();
   for (const edge of edges) {
@@ -368,12 +362,12 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
       if (traversed.has(edge.source) && allowed.has(edge.target)) visited.add(edge.target);
       if (traversed.has(edge.target) && allowed.has(edge.source)) visited.add(edge.source);
     }
-    // A construct seed can admit a connection through context. Include that
-    // connection's own endpoints, without another traversal through the construct.
-    for (const edge of edges) {
-      if (edge.evidence !== 'network') continue;
-      if (byId.get(edge.source)?.kind === 'connection' && visited.has(edge.source) && allowed.has(edge.target)) visited.add(edge.target);
-      if (byId.get(edge.target)?.kind === 'connection' && visited.has(edge.target) && allowed.has(edge.source)) visited.add(edge.source);
+    // Context may admit a connection or endpoint; complete its own unit without transit.
+    const touched = new Set(visited);
+    for (const group of allGroups.values()) {
+      if ([...group.nodes].some(id => touched.has(id))) {
+        for (const id of group.nodes) if (allowed.has(id)) visited.add(id);
+      }
     }
     return visited;
   };
@@ -425,11 +419,11 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
         const group = [id, ...endpoints];
         group.forEach(node => groupedNetwork.add(node));
         if (append(group, true)) {
-          const identities = neighbors(endpoints, ['identity']);
-          append(identities);
-          append(neighbors(identities, ['service']));
+          const associations = neighbors(endpoints, ['identity', 'context']);
+          append(associations);
+          append(neighbors(associations, ['service']));
           // Configured parents and traversed constructs are context, never transit hops.
-          context.push(...neighbors(identities, ['configuration']), ...neighbors([id], ['context']));
+          context.push(...neighbors(associations, ['configuration']), ...neighbors([id], ['context']));
         }
       }
       if (services[i]) {
@@ -444,18 +438,10 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
   }
   // Apply the same indivisible flow unit to overview, focus and search, including edge limits.
   const maxEdges = bound(selection.maxEdges, 700);
-  const groups = new Map<string, { nodes: Set<string>; edges: Set<string> }>();
-  for (const edge of selectedEdges) {
-    if (edge.evidence !== 'network') continue;
-    const connection = [edge.source, edge.target].find(id => byId.get(id)?.kind === 'connection');
-    if (!connection) continue;
-    const group = groups.get(connection) ?? { nodes: new Set<string>(), edges: new Set<string>() };
-    group.nodes.add(edge.source).add(edge.target);
-    group.edges.add(edge.id);
-    groups.set(connection, group);
+  const membership = new Map<string, ConnectionGroup>();
+  for (const group of connectionGroups(selectedEdges, byId).values()) {
+    for (const id of group.nodes) membership.set(id, group);
   }
-  const membership = new Map<string, { nodes: Set<string>; edges: Set<string> }>();
-  for (const group of groups.values()) for (const id of group.nodes) membership.set(id, group);
   const visibleIds = new Set<string>(), requiredEdges = new Set<string>();
   for (const id of ordered) {
     const group = membership.get(id);

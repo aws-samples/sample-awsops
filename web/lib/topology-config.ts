@@ -22,16 +22,17 @@ const optionalStrings = (row: Record<string, unknown>, keys: string[]) =>
 
 // Endpoints describes Service membership, not cluster ownership. Only an independently listed,
 // unique pod can establish ownership; conflicting references also disqualify the pod fallback.
-export async function fetchEksIpMap(): Promise<EksIpResolution> {
+export async function fetchEksIpMap(signal?: AbortSignal): Promise<EksIpResolution> {
   const candidates = new Map<string, Resolution | null>();
   const blockedScopes = new Set<string>();
   let coveredRegions: string[] = [];
   try {
-    const response = await fetch('/api/eks');
+    if (signal?.aborted) return unavailable();
+    const response = await fetch('/api/eks', { signal });
     const list = response.ok ? await response.json() : null;
-    if (list?.error || list?.status === 'error' || !Array.isArray(list?.clusters)) return unavailable();
+    if (signal?.aborted || list?.error || list?.status === 'error' || !Array.isArray(list?.clusters)) return unavailable();
     if (!list.clusters.every((c: unknown) => isRecord(c) && nonempty(c.name) && nonempty(c.access))) return unavailable();
-    // The current API returns at most 25 descriptors without a continuation token.
+    // The current API returns at most 25 descriptors and reports truncation.
     if (list.truncated === true || (list.truncated !== false && list.clusters.length >= 25)) return unavailable('cluster_limit_possible');
     const clusters = list.clusters as Cluster[];
     if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return unavailable();
@@ -42,9 +43,10 @@ export async function fetchEksIpMap(): Promise<EksIpResolution> {
       if (cluster.access !== 'connected') { blockedScopes.add(scope); return; }
       const get = async (kind: string) => {
         try {
-          const r = await fetch(`/api/eks/${encodeURIComponent(cluster.name)}/incluster?kind=${kind}`);
+          if (signal?.aborted) return null;
+          const r = await fetch(`/api/eks/${encodeURIComponent(cluster.name)}/incluster?kind=${kind}`, { signal });
           const d = r.ok ? await r.json() : null;
-          return !d?.error && d?.status !== 'error' && Array.isArray(d?.rows) ? d.rows : null;
+          return !signal?.aborted && !d?.error && d?.status !== 'error' && Array.isArray(d?.rows) ? d.rows : null;
         } catch { return null; }
       };
       const [endpoints, pods]: [EndpointRow[] | null, PodRow[] | null] = await Promise.all([get('endpoints'), get('pods')]);
@@ -98,6 +100,7 @@ export async function fetchEksIpMap(): Promise<EksIpResolution> {
     // Unknown scope or enumeration failure can hide an owner anywhere in the account.
     return unavailable();
   }
+  if (signal?.aborted) return unavailable();
   const map = Object.fromEntries([...candidates].map(([key, value]) =>
     [key, blockedScopes.has(key.slice(0, key.lastIndexOf('|') + 1)) ? null : value]));
   return { map, blockedScopes: [...blockedScopes].sort(), coveredRegions, globalUnknown: false, status: blockedScopes.size ? Object.values(map).some(Boolean) ? 'partial' : 'unavailable'

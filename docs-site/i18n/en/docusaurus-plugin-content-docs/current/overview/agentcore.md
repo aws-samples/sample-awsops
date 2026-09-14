@@ -34,7 +34,7 @@ AgentCore handles tool execution for the [AI Assistant](../overview/assistant), 
 | **Code Interpreter / Memory** | No hyphens in name, underscores only |
 | **Memory Store** | Max 365-day retention (`eventExpiryDuration`) |
 | **Config source of truth** | **SSM** `/ops/awsops-v2/agentcore/{runtime_arn,interpreter_id,memory_id}` — written by `provision.py`, read by the web BFF at runtime (never exposed in the UI) |
-| **Runtime updates** | Re-running the idempotent provisioner (`scripts/v2/agentcore/provision.py`) applies changes — a just-created Gateway not yet READY can make the first target creation fail; re-run resolves it |
+| **Runtime updates** | Submit changes with the idempotent provisioner (`scripts/v2/agentcore/provision.py`). For a newly created Gateway, confirm `READY` before retrying. Persistent `FAILED` requires diagnosis; no automatic deletion/recreation is performed. |
 
 ## AgentCore Runtime
 
