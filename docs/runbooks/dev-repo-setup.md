@@ -663,9 +663,11 @@ so the selected role needs `ecr:BatchGetImage` + `ecr:PutImage` on the independe
 verified stack's web repository (plus the auth-token action it already has). A mutable
 `web-<sha>` lookup alone is not image provenance.
 
-Provision the following reads before releasing. The web snapshot checks them
-before changing the image tag or ECS service; missing effective permission
-stops promotion. SCPs and boundaries can still deny an otherwise correct policy.
+Provision the following read and deployment permissions before releasing. The web snapshot
+preflights the ECS read operations before changing the image tag or service; writes are
+checked when invoked. SCPs and boundaries can still deny an otherwise correct policy.
+A write failure after publication requires the partial-state inspection and recovery in
+[web release](web-release.md); a changed tag alone does not prove a successful rollout.
 
 | Operation | Required scope |
 | --- | --- |
@@ -854,8 +856,9 @@ which validates destinations and passes curl arguments without shell interpolati
 They connect to `cloudfront_domain` with curl
 `--connect-to` while requesting `public_url`. This preserves the service Host,
 SNI and certificate verification before service DNS is published. `/api/health`
-checks process liveness; complete the required database migrations and verify
-authenticated application routes separately.
+checks process liveness. Dev Deploy Web also requires private migrations before current-source
+promotion and runs mandatory authenticated login/DB smoke after rollout. Manual and
+main/preview releases retain operator-managed migration and authenticated verification.
 For an authorized AgentCore deployment, [Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml)
 first runs the private reusable migration workflow on `dev`; other branches retain `make migrate`. Before dev dispatch, apply `ci_migrations_enabled=true` using `CI_MIGRATIONS_ENABLED_DEV=true` and confirm a non-null `migration_job` output. Optional `smoke=true` runs after provisioning. On dev it requires
 the matching readiness producer, `runtime_deployment`, enabled inventory and producer-classified freshness. The applied `agentcore.deployment_readiness_enabled` output must be boolean true; the provisioner keeps the runtime probe disabled for missing/false values, ignoring

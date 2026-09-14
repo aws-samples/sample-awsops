@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b7dba0d307be · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5de2f8d20e50 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -39,7 +39,8 @@ legacy runbook's steps as the current operational path).
   Document upload-artifact v4 with required Artifact API digest and scoped config-download permission; ECR publication
   supplies explicit media.
   Preserve three-field stdout with no history API. Recovery requires independently retained
-  source/digest evidence and owned run/attempt cleanup; migration/preflight assertions
+  source/digest evidence. Automatic receipt cleanup removes the fixed GitHub run/attempt
+  path; manual leftover cleanup verifies ownership. Migration/preflight assertions
   come from verified job outputs, never dispatch inputs.
   IMAGE_PROJECT comes from authenticated branch Terraform/verified job output and independent
   ECR/cluster/service checks. Existing broad IAM is not stack authority: one verified repo

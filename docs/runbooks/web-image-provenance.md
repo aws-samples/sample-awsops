@@ -72,15 +72,16 @@ Those exact job/step names are part of `BUILD_JOB`/`BUILD_STEPS`; renaming them 
 
 ### Owned receipt output and retries
 
-`receipt` uses `O_CREAT|O_EXCL` and never overwrites an existing output. In the configured producer job, allocate a fresh private directory and carry that exact path to its upload and cleanup steps:
+`receipt` uses `O_CREAT|O_EXCL` and never overwrites an existing output. The wired producer uses a private run/attempt directory; `mkdir` fails if that path already exists. Upload and cleanup use the same GitHub-generated run/attempt path:
 
 ```bash
 umask 077
-receipt_dir=$(mktemp -d "${RUNNER_TEMP:?}/web-proof-${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:?}-XXXXXX")
+receipt_dir="${RUNNER_TEMP:?}/web-proof-${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:?}"
+mkdir "$receipt_dir"
 python3 scripts/v2/ci_web_image.py receipt --output "$receipt_dir/web-build.json"
 ```
 
-Cleanup may remove only the regular receipt file and then the empty directory recorded as owned by that run/attempt, after upload is confirmed or the attempt is deliberately abandoned. Confirm ownership, the run/attempt path and absence of symlinks or an active publisher; preserve the retained GitHub artifact. If ownership cannot be established, use a new private directory instead of deleting it. Never sweep shared `RUNNER_TEMP`. After `Producer attempt changed`, let the producer finish and start a **new dispatch** from current HEAD; repeat receipt/ECR preflight and the required migration procedure, without copying stale preflight or migration assertions into the new run.
+The workflow's `always()` cleanup removes that run/attempt directory with `rm -rf`, including on a failed attempt; it does not perform separate ownership checks or delete the retained GitHub artifact. The fixed path relies on GitHub-generated run/attempt identifiers and a trusted runner scratch directory. For manual leftover cleanup, confirm ownership, absence of symlinks and that no publisher is active before removing only the receipt and empty directory. Never sweep shared `RUNNER_TEMP`. After `Producer attempt changed`, let the producer finish and start a **new dispatch** from current HEAD; repeat receipt/ECR preflight and the required migration procedure, without copying stale preflight or migration assertions into the new run.
 
 The readonly `image-proof` job validates the selected receipt and ECR content **before** migrations. Deploy passes that selection as `PREFLIGHT_DIGEST`; `ci_web_deploy.py` checks it before snapshot/read preflight and calls `promote(env, expected_digest=digest)`. Publication must retain that validated project/digest. Dev migrations require `CI_MIGRATIONS_ENABLED_DEV=true`, applied `ci_migrations_enabled=true`, and a non-null `migration_job` output as described in [CI setup](dev-repo-setup.md). The preflight digest is mandatory for every promotion, including rollback; an explicit empty `expected_digest` fails even when the environment contains a valid digest.
 
@@ -94,7 +95,7 @@ Use `python3 scripts/v2/ci_web_image.py promote` from the protected integration,
 
 `actual caller → validated context and required preflight digest → current source/migration or rollback checks → matching producer digest → final source/migration recheck → registry/media/schema/ARM64 checks → fresh source-tag binding → ECR publication`.
 
-The repository is always derived as `<validated IMAGE_PROJECT>-web`; callers cannot pass a different repository to `promote`. `pin_image` is a low-level publishing primitive, **not** the supported CI integration API. Do not assemble a weaker guard chain around it.
+The repository is always derived as `<validated IMAGE_PROJECT>-web`; callers cannot pass a different repository to `promote`. `pin_image` is a low-level publishing primitive, **not** the supported CI integration API. Do not assemble a weaker guard chain around it in Actions. The separately approved [legacy private-host recovery](legacy-web-image-recovery.md) is an operator procedure with independent evidence, not a workflow integration.
 
 On success, the library returns and the CLI prints one JSON object with exactly **`{digest, image_sha, rollback}`**: the selected manifest/index digest, source commit SHA, and rollback boolean. It does not capture or return prior tag history or a previous digest. Recovery evidence is the controller/operator's responsibility below.
 
@@ -146,4 +147,4 @@ For new receipt-enabled releases, rebuild the current reviewed source or choose 
 
 See `scripts/v2/ci_web_image.py`, `scripts/v2/test_ci_web_image.py`, `.github/workflows/deploy-web.yml`, [CI setup](dev-repo-setup.md), and the AWS [PutImage](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_PutImage.html) / [GetDownloadUrlForLayer](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_GetDownloadUrlForLayer.html) contracts. This operator CI publication is not product remediation/autonomy and adds no ADR-005 exception or IAM grant.
 
-The existing but unwired web controller and bounded read transport are described in [release safety primitives](release-safety-primitives.md); their presence does not activate a workflow.
+Deploy Web uses the web controller and bounded read transport described in [release safety primitives](release-safety-primitives.md). Current-source dev releases run private migrations with forced automatic SQL admission before promotion, followed by exact ECS/image and mandatory login/DB verification.

@@ -29,7 +29,7 @@ env:
   MIGRATION_FROM_DEPLOY_WEB: ${{ inputs.from_deploy_web }}
 
 # Web pushes cannot displace a pending operator/AgentCore run. The database
-# advisory lock still serializes SQL across these queues; lock waits are bounded.
+# advisory lock admits one runner across these queues; contention fails immediately.
 concurrency:
   group: migration-development-${{ inputs.from_deploy_web && 'web' || 'operator' }}
   cancel-in-progress: false

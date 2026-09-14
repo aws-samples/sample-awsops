@@ -4,6 +4,8 @@
 
 An older production image may predate build receipts or outlive their 90-day retention. Actions correctly refuses reuse without that evidence. This is an explicitly approved operator recovery, not a receipt bypass in Actions. Never manufacture a receipt or treat a mutable SHA tag or image label as source provenance.
 
+`RECOVERY_SCHEMA_APPROVED=true` records the operator's own acknowledgement; it is not independent approval evidence. Never copy this private-host snippet into a workflow.
+
 ## Required evidence and approval
 
 Record privately: target account/project/region and operator role, the older source SHA, exact image digest, trusted successful build/deployment records tying that digest to the source, reviewed controller checkout SHA, current schema compatibility approval, and change owner/window. Original authenticated Actions run metadata plus its successful build's digest log can establish the legacy binding. If the binding is unavailable, stop; a separately reviewed rebuild is a new candidate, not proof of the old image.
