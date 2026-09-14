@@ -34,6 +34,8 @@ export interface FlowGraph { nodes: FlowNode[]; edges: FlowEdge[] }
 export interface FlowInput {
   route53?: Row[]; cloudfront?: Row[]; alb?: Row[]; nlb?: Row[]; tg?: Row[]; waf?: Row[];
   ec2?: Row[]; lambda?: Row[]; ecsTask?: Row[];
+  // Existing synced subnets corroborate an ECS IP's own ENI attachment VPC (tasks lack vpc_id).
+  subnet?: Row[];
   // s3 buckets (resource_id = bucket name, carries arn) — lets a CloudFront S3 origin resolve to
   // the REAL bucket resource (full row + ARN) instead of a synthesized placeholder.
   s3?: Row[];
@@ -49,28 +51,70 @@ export interface FlowInput {
   // 'integrations/<id>') label the apigw→backend edge.
   alb_listener_rule?: Row[];
   apigatewayv2_route?: Row[];
-  // ip-target resolution (Spec 2): pod/ENI IP → friendly label + meta. EKS comes live from the
+  // ip-target resolution (Spec 2): region|VPC|IP → friendly label + meta (legacy raw IP also accepted). EKS comes live from the
   // page (ipResolved); ECS is derived here from synced ecsTask rows. Builder stays pure.
   ipResolved?: Record<string, { label: string; resolved: 'eks' | 'ecs'; meta?: Record<string, unknown> }>;
 }
 
-/** ECS task ENI private IP → service/task. attachments[].Details[Name=privateIPv4Address].Value (PascalCase). */
-function ecsIpMap(tasks: Row[]): Map<string, { label: string; resolved: 'ecs'; meta: Record<string, unknown> }> {
+/** ECS IP identity must be scoped by its own attachment, never by the TG it happens to match. */
+function ecsIpMap(tasks: Row[], subnets: Row[]): Map<string, { label: string; resolved: 'ecs'; meta: Record<string, unknown> }> {
   const map = new Map<string, { label: string; resolved: 'ecs'; meta: Record<string, unknown> }>();
+  const ambiguous = new Set<string>();
+  const unknownScope = new Set<string>();
+  const subnetVpcs = new Map<string, Set<string>>();
+  for (const subnet of subnets) {
+    const region = str(subnet.region), id = str(subnet.resource_id), vpc = str(subnet.vpc_id);
+    if (!region || !id) continue;
+    const key = `${region}|${id}`;
+    const vpcs = subnetVpcs.get(key) ?? new Set<string>();
+    vpcs.add(vpc); // Empty/conflicting VPCs also prevent corroboration.
+    subnetVpcs.set(key, vpcs);
+  }
   for (const t of tasks) {
+    const region = str(t.region);
     const group = str(t.task_group);
     const svc = group.startsWith('service:') ? group.slice(8) : group;
     const taskId = str(t.resource_id).split('/').pop() || str(t.resource_id);
     for (const att of arr(t.attachments)) {
-      for (const d of arr(att.Details)) {
+      const details = arr(att.Details);
+      const subnetIds = new Set(details.filter(d => str(d.Name) === 'subnetId').map(d => str(d.Value)));
+      const subnetId = subnetIds.size === 1 ? [...subnetIds][0] : '';
+      const vpcs = subnetId ? subnetVpcs.get(`${region}|${subnetId}`) : undefined;
+      const vpcId = vpcs?.size === 1 ? [...vpcs][0] : '';
+      for (const d of details) {
         if (str(d.Name) === 'privateIPv4Address' && d.Value) {
-          map.set(str(d.Value), { label: svc || taskId, resolved: 'ecs', meta: { ecsService: svc, task: taskId, cluster: str(t.cluster_arn).split('/').pop() } });
+          const ip = str(d.Value);
+          if (!region || !vpcId || (t.vpc_id && str(t.vpc_id) !== vpcId)) {
+            unknownScope.add(`${region}|${ip}`);
+            continue;
+          }
+          const key = scopedTargetIp(region, vpcId, ip);
+          if (ambiguous.has(key)) continue;
+          const cluster = str(t.cluster_arn).split('/').pop();
+          const previous = map.get(key);
+          if (previous && (previous.meta.task !== taskId || previous.meta.cluster !== cluster
+            || previous.meta.subnetId !== subnetId)) {
+            map.delete(key);
+            ambiguous.add(key);
+            continue;
+          }
+          map.set(key, { label: svc || taskId, resolved: 'ecs', meta: {
+            ecsService: svc, task: taskId, cluster, region, vpcId, subnetId,
+          } });
         }
       }
     }
   }
+  // A competing task whose VPC is unknown cannot be ruled out by selecting a scoped candidate.
+  for (const key of map.keys()) {
+    const [region, , ip] = key.split('|');
+    if (unknownScope.has(`${region}|${ip}`) || unknownScope.has(`|${ip}`)) map.delete(key);
+  }
   return map;
 }
+
+/** Qualify private addresses before resolving them across multiple VPCs. */
+export const scopedTargetIp = (region: string, vpcId: string, ip: string): string => `${region}|${vpcId}|${ip}`;
 
 /** CloudFront `aliases` jsonb → string[] (PascalCase {Items:[...]} or a plain array). */
 function aliasesOf(c: Row): string[] {
@@ -179,7 +223,7 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
   const lambdaByArn = new Map<string, string>(); // function arn → function name
   for (const e of input.ec2 ?? []) ec2ById.set(str(e.resource_id), str(e.name) || str(e.resource_id));
   for (const l of input.lambda ?? []) if (l.arn) lambdaByArn.set(str(l.arn), str(l.resource_id) || str(l.arn));
-  const ecsByIp = ecsIpMap(input.ecsTask ?? []); // ECS task ENI IP → service (from synced inventory)
+  const ecsByIp = ecsIpMap(input.ecsTask ?? [], input.subnet ?? []);
   // S3 buckets by NAME (resource_id) — join key for resolving CloudFront S3 origins to the real
   // bucket row. Bucket names are globally unique, so this is region-agnostic (a us-east-1 bucket
   // fronted by an ap-northeast-2 app still matches). Depends on the s3 inventory pk being 'name'.
@@ -458,7 +502,14 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
       if (ttype === 'instance') { resolved = ec2ById.has(targetId) ? 'ec2' : ''; key = 'ec2'; mlabel = ec2ById.get(targetId) || targetId; groupLabel = 'EC2 instances'; }
       else if (ttype === 'lambda') { resolved = lambdaByArn.has(targetId) ? 'lambda' : ''; key = `lambda:${targetId}`; mlabel = lambdaByArn.get(targetId) || targetId; groupLabel = mlabel; }
       else if (ttype === 'ip') {
-        const r = input.ipResolved?.[targetId] ?? ecsByIp.get(targetId); // EKS (live) then ECS (synced)
+        const pod = input.ipResolved?.[scopedTargetIp(str(t.region), str(t.vpc_id), targetId)] ?? input.ipResolved?.[targetId];
+        const inScope = (candidate: typeof pod) => candidate
+          && (candidate.resolved !== 'ecs' || (t.region && t.vpc_id
+            && candidate.meta?.region === t.region && candidate.meta?.vpcId === t.vpc_id))
+          && !(candidate.meta?.region && t.region && candidate.meta.region !== t.region)
+          && !(candidate.meta?.vpcId && t.vpc_id && candidate.meta.vpcId !== t.vpc_id);
+        const task = ecsByIp.get(scopedTargetIp(str(t.region), str(t.vpc_id), targetId));
+        const r = inScope(pod) ? pod : inScope(task) ? task : undefined;
         // group key includes cluster so same-named workloads in different clusters don't merge
         if (r) { resolved = r.resolved; key = `${r.resolved}:${str(r.meta?.cluster ?? '')}/${r.label}`; mlabel = r.label; groupLabel = r.label; meta = r.meta ?? {}; }
       }

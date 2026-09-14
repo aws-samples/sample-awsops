@@ -100,6 +100,36 @@ describe('nfmMonitorForCluster', () => {
 });
 
 describe('nfmTopContributors', () => {
+  it('keeps the original observation window on cache hits and discloses a full top-contributor result', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-11T12:00:00Z'));
+    try {
+      nfmSend.mockImplementation(async (cmd: Cmd) => {
+        switch (cmd.constructor.name) {
+          case 'StartQueryMonitorTopContributorsCommand': return { queryId: 'q-window' };
+          case 'GetQueryStatusMonitorTopContributorsCommand': return { status: 'SUCCEEDED' };
+          case 'GetQueryResultsMonitorTopContributorsCommand':
+            return { topContributors: [{ localIp: '10.0.1.1', value: 100 }, { localIp: '10.0.1.2', value: 200 }] };
+          default: throw new Error('unexpected command');
+        }
+      });
+      const { nfmTopContributors } = await import('./nfm');
+      const first = await nfmTopContributors('monitor-a', 'DATA_TRANSFERRED', 'INTER_AZ', 900, 2);
+      expect(first).toMatchObject({
+        startTime: '2026-09-11T11:45:00.000Z',
+        endTime: '2026-09-11T12:00:00.000Z',
+        queriedAt: '2026-09-11T12:00:00.000Z',
+        capped: true,
+      });
+      vi.setSystemTime(new Date('2026-09-11T12:01:00Z'));
+      const cached = await nfmTopContributors('monitor-a', 'DATA_TRANSFERRED', 'INTER_AZ', 900, 2);
+      expect(cached.endTime).toBe('2026-09-11T12:00:00.000Z');
+      expect(cached.queriedAt).toBe('2026-09-11T12:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('runs start → status → results and normalizes rows (k8s metadata, traversed dedupe, unit)', async () => {
     nfmSend.mockImplementation(async (cmd: Cmd) => {
       switch (cmd.constructor.name) {

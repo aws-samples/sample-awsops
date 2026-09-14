@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Service/network topology correlation foundation: scope workload identities by account, region and VPC; retain Network Flow Monitor query windows and coverage limits; prioritize complete observed connections over unrelated inventory within graph display limits. Configuration, service relationships and network observations remain distinct evidence.
+
 - Deployment dependency readiness: authenticated probes verify the actual web-role account and fresh AgentCore SSM reads, then require a nonce-bound runtime response proving curated inventory access, a known fresh CloudFront record and a bounded model call. With an explicit private runtime configuration, the smoke utility checks collection and owned Lambda/Fargate completion. Current Deploy Web wiring still supplies only database verification; full runtime gating requires the release controller. The billed probe is restricted to administrators or deployment-verifiers, with one in-flight call and a per-process cooldown.
 
 - Web database connection-phase diagnostics: failed physical connections log only the current phase and elapsed milestone timings across TCP, TLS, IAM token generation and PostgreSQL authentication, with required PostgreSQL/TLS regression coverage. Optional manual dev diagnostics add bounded IAM-auth and pressure metrics for the configured instance, ACU bounds and advisory server lifecycle text; empty reads remain distinct from failures, and individual-probe outcomes remain unknown.
@@ -651,6 +653,8 @@ First release of the **v2 line** (versioned independently from the v1 1.x line, 
 ## [Unreleased]
 
 ### Added
+
+- 서비스·네트워크 토폴로지 상관관계 기반: 계정·리전·VPC로 워크로드 식별 범위를 한정하고 Network Flow Monitor의 조회 시간과 수집 한도를 보존합니다. 그래프 표시 한도 안에서 관측된 연결 전체를 무관한 인벤토리보다 우선하며 구성·서비스 관계·네트워크 관측을 별도 근거로 유지합니다.
 
 - 배포 의존성 검증: 인증된 요청으로 실제 웹 역할의 계정과 최신 AgentCore SSM 조회를 확인하고, nonce로 연결된 런타임 응답에서 지정 인벤토리 도구 접근·알려진 최신 CloudFront 레코드·제한된 모델 호출의 성공을 검증합니다. 명시적 비공개 런타임 설정을 전달하면 스모크 도구가 수집과 사용자 소유 Lambda·Fargate 완료를 검사합니다. 현재 Deploy Web은 DB 검증만 연결하며 전체 검증에는 release controller가 필요합니다. 유료 probe는 관리자·deployment-verifiers로 제한하고 프로세스별 단일 실행·호출 간격을 적용합니다.
 
