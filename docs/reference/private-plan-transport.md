@@ -30,6 +30,11 @@ parsing accepts only supported static fields and the default workspace. Inspecti
 and restore validate the backend before any command or network request; there is no
 bucket enumeration/discovery fallback. Publication uses the policy mode's validated
 backend store. Callers must protect backend/configuration inputs and generated files.
+The optional backend `encrypt` flag is state-backend metadata, not the artifact
+encryption control. Omission normalizes to Terraform's default `false`; explicit
+booleans are preserved in the private binding. This changes no backend file or
+state encryption setting. Publication and reads still require the private bucket's
+SSE-KMS posture, and uploads explicitly request and verify the resolved KMS key.
 
 ### Workflow integration contract
 
@@ -195,6 +200,8 @@ Related decision: ADR-005 — operator-controlled CI transport, not a carve-out.
 
 ## Source
 
+- [Terraform 1.15.7 S3 backend](https://github.com/hashicorp/terraform/blob/v1.15.7/internal/backend/remote-state/s3/backend.go):
+  `encrypt` is optional and `boolAttr` defaults an omitted value to false.
 - [S3 expiration behavior](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-expire-general-considerations.html):
   current/noncurrent versions and asynchronous deletion.
 - [SSE-KMS permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingKMSEncryption.html):

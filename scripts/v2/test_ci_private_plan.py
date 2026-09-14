@@ -350,7 +350,7 @@ class PrivatePlanTests(unittest.TestCase):
     def test_backend_rejects_unknown_duplicate_expression_and_reserved_state_fields(self):
         original = self.backend.read_text()
         variants = [original + 'bucket="other"\n', original + 'endpoint="https://bad.invalid"\n',
-                    original + 'profile="samples"\n', original.replace('encrypt=true', 'encrypt=false'),
+                    original + 'profile="samples"\n', original.replace('encrypt=true', 'encrypt="false"'),
                     original.replace(BUCKET, '${var.bucket}'), original.replace('dev/terraform.tfstate', 'ci/tfplans/state'),
                     original.replace('use_lockfile=true', 'use_lockfile=1')]
         for body in variants:
@@ -359,6 +359,60 @@ class PrivatePlanTests(unittest.TestCase):
                 self.policy()
             self.assertFalse((self.root / 'policy').exists())
         self.assertFalse(self.fake.objects)
+
+    def test_omitted_state_encrypt_defaults_false_without_changing_artifact_encryption(self):
+        original = self.backend.read_text()
+        self.backend.write_text(original.replace('encrypt=true\n', ''))
+        self.ready()
+        store = json.loads((self.root / 'policy/store.json').read_text())
+        self.assertIs(store['backend']['encrypt'], False)
+        # Explicit false has the same Terraform semantics as an omitted option.
+        self.backend.write_text(original.replace('encrypt=true', 'encrypt=false'))
+        inspected = self.inspect(backend=self.backend)
+        reviewed = json.loads(Path(inspected['receipt_file']).read_text())['plan_sha256']
+        self.env.update(GITHUB_JOB='apply', GITHUB_RUN_ID='24')
+        result = self.invoke('restore', backend=self.backend, foundation=self.foundation,
+                             reviewed_plan_sha256=reviewed)
+        self.assertTrue(result['assets_verified'])
+        puts = [args for args, _ in self.fake.calls if 'put-object' in args]
+        self.assertEqual(len(puts), 3)
+        for args in puts:
+            self.assertEqual(args[args.index('--server-side-encryption') + 1], 'aws:kms')
+            self.assertEqual(args[args.index('--ssekms-key-id') + 1], KEY_ARN)
+
+    def test_state_encrypt_false_cannot_bypass_private_artifact_posture(self):
+        self.backend.write_text(self.backend.read_text().replace('encrypt=true', 'encrypt=false'))
+        for field, bad in [('public', True), ('algorithm', 'AES256'), ('versioning', 'Suspended')]:
+            original = getattr(self.fake, field)
+            setattr(self.fake, field, bad)
+            with self.assertRaises(self.module.PrivatePlanError):
+                self.publish()
+            self.assertFalse(self.fake.objects)
+            setattr(self.fake, field, original)
+            self.reset_policy()
+        self.fake.aws_overrides = {'get-bucket-lifecycle-configuration':
+                                   self.module.PrivatePlanError('bucket_lifecycle_missing')}
+        with self.assertRaisesRegex(self.module.PrivatePlanError, 'bucket_lifecycle_missing'):
+            self.publish()
+        self.assertFalse(self.fake.objects)
+
+    def test_state_encrypt_change_is_still_part_of_private_backend_binding(self):
+        self.ready()
+        self.backend.write_text(self.backend.read_text().replace('encrypt=true', 'encrypt=false'))
+        with self.assertRaises(self.module.PrivatePlanError):
+            self.inspect(backend=self.backend)
+        self.assertFalse((self.root / 'review').exists())
+
+    def test_backend_shape_errors_are_fixed_categories_without_private_values(self):
+        original = self.backend.read_text()
+        for body, category in [
+            (original.replace('region=', 'private_region='), 'backend_field_invalid'),
+            (original.replace(f'region="{REGION}"\n', ''), 'backend_required_fields_missing'),
+            (original + 'private syntax payload\n', 'backend_syntax_invalid'),
+        ]:
+            self.backend.write_text(body)
+            with self.assertRaisesRegex(self.module.PrivatePlanError, '^' + category + '$'):
+                self.module.parse_backend(self.backend, {})
 
     def test_session_policy_cannot_read_state_mutate_infrastructure_or_delete_artifacts(self):
         import fnmatch

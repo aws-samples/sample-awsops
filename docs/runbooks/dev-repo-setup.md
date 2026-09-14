@@ -886,8 +886,11 @@ preserved; ARNs, credentials, endpoints and raw SDK errors are not relayed.
 
 Use the configured backend bucket and its private `backend.hcl` for publication,
 inspection and apply. The backend's `encrypt=true` alone does not establish the
-bucket's default encryption or access controls. This transport requires versioning
-Enabled, all four public-access blocks, BucketOwnerEnforced ownership and default
+bucket's default encryption or access controls.
+The optional backend `encrypt` field defaults to `false`, matching Terraform, and is
+bound as metadata even when omitted. It does not control private plan-object encryption:
+the helper verifies bucket SSE-KMS and explicitly sets/verifies the upload key.
+This transport requires versioning Enabled, all four public-access blocks, BucketOwnerEnforced ownership and default
 SSE-KMS in the same account/region. `terraform/bootstrap/main.tf` provisions the
 versioning, public-access blocks and SSE-KMS settings for new state buckets;
 inspect existing bucket ownership and writer compatibility before changing them.
@@ -1037,6 +1040,8 @@ runner/process loss can prevent finalizers. No public summary is full-plan appro
 
 | Diagnostic | Operator check |
 |---|---|
+| `backend_required_fields_missing` | Supply static bucket, key and region fields; `encrypt` and `use_lockfile` are optional booleans whose omitted value is false. |
+| `backend_syntax_invalid` / `backend_field_invalid` | Check the backend file privately for unsupported syntax, unknown fields or duplicate keys. No source line or value is printed. |
 | `bucket_ownership_missing` | Confirm explicit BucketOwnerEnforced ownership controls with the bucket owner; this workflow does not configure them. |
 | `bucket_public_access_block_missing` | Confirm the bucket's four public-access blocks; missing settings cannot establish private storage. |
 | `s3_access_denied` | Check the selected profile/session, expected bucket owner and scoped S3/KMS permissions privately. No missing-object or empty-state inference is valid. |

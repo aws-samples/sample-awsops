@@ -233,7 +233,7 @@ def validate_backend(value):
     require(isinstance(key, str) and re.fullmatch(r'[A-Za-z0-9_./-]{1,512}', key)
             and all(p not in ('', '.', '..') for p in key.split('/'))
             and not key.startswith('ci/tfplans/') and key != 'ci/tfplans', 'reserved_or_invalid_state_key')
-    require(isinstance(region, str) and REGION.fullmatch(region) and value['encrypt'] is True
+    require(isinstance(region, str) and REGION.fullmatch(region) and type(value['encrypt']) is bool
             and type(value['use_lockfile']) is bool and value['workspace'] == 'default', 'invalid_backend')
     workspace_prefix = value['workspace_key_prefix']
     require(isinstance(workspace_prefix, str) and len(workspace_prefix) <= 512
@@ -253,15 +253,17 @@ def parse_backend(path, env):
         if not line.strip() or line.lstrip().startswith(('#', '//')):
             continue
         match = re.fullmatch(r'\s*([a-z_]+)\s*=\s*("(?:[^"\\]|\\.)*"|true|false)\s*(?:(?:#|//).*)?', line)
-        require(match is not None, 'invalid_backend')
+        require(match is not None, 'backend_syntax_invalid')
         key, raw = match.groups()
-        require(key in BACKEND_KEYS - {'workspace'} and key not in values, 'invalid_backend')
+        require(key in BACKEND_KEYS - {'workspace'} and key not in values, 'backend_field_invalid')
         value = parse_json(raw)
         require(not isinstance(value, str) or '${' not in value and '%{' not in value
                 and not any(ord(c) < 32 for c in value), 'invalid_backend')
         values[key] = value
-    require({'bucket', 'key', 'region', 'encrypt'} <= set(values), 'invalid_backend')
-    return validate_backend({'use_lockfile': False, 'kms_key_id': None,
+    require({'bucket', 'key', 'region'} <= set(values), 'backend_required_fields_missing')
+    # Terraform's optional state-encryption request defaults to false. Preserve its
+    # semantics as backend metadata; artifact SSE-KMS is enforced independently.
+    return validate_backend({'encrypt': False, 'use_lockfile': False, 'kms_key_id': None,
                              'workspace_key_prefix': 'env:', 'workspace': 'default', **values})
 
 
