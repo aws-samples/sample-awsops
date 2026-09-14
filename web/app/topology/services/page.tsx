@@ -7,7 +7,8 @@ import { useRouter } from 'next/navigation';
 import { Background, Controls, Position, type Node, type Edge, type ReactFlowInstance } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import PageHeader from '@/components/ui/PageHeader';
-import { fetchGraph } from '@/lib/graph-fetch';
+import { fetchGraph, GraphFetchError, type GraphFetchFailure } from '@/lib/graph-fetch';
+import GraphReadError from '@/components/topology/GraphReadError';
 import { layoutFlow } from '@/lib/flow-layout';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import GraphCollectionStatus, { type GraphCollection } from '@/components/topology/GraphCollectionStatus';
@@ -48,7 +49,7 @@ export default function ServiceMapPage() {
   const { tt } = useI18n();
   const router = useRouter();
   const [graph, setGraph] = useState<Graph | null>(null);
-  const [err, setErr] = useState('');
+  const [err, setErr] = useState<GraphFetchFailure | null>(null);
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
   const [environment, setEnvironment] = useState('');
@@ -59,9 +60,10 @@ export default function ServiceMapPage() {
     let live = true;
     const controller = new AbortController();
     setBusy(true);
+    setErr(null);
     fetchGraph('/api/graph?class=trace', controller.signal)
-      .then((d) => { if (live) { setGraph(d); setErr(''); } })
-      .catch((e) => { if (live) setErr(String(e instanceof Error ? e.message : e)); })
+      .then((d) => { if (live) { setGraph(d); setErr(null); } })
+      .catch((e) => { if (live) { setGraph(null); setErr(e instanceof GraphFetchError ? e.reason : 'rejected'); } })
       .finally(() => { if (live) setBusy(false); });
     return () => { live = false; controller.abort(); };
   }, [revision]);
@@ -168,12 +170,12 @@ export default function ServiceMapPage() {
             {environments.map((value) => <option key={value} value={value}>{value}</option>)}
           </select>
         </label>
-        <button type="button" disabled={busy} onClick={() => setRevision((n) => n + 1)}
+        <button type="button" disabled={busy || err !== null} onClick={() => setRevision((n) => n + 1)}
           className="rounded border border-ink-200 bg-card px-2 py-1 disabled:opacity-50">
           {tt('새로고침')}
         </button>
         {busy && <span>{tt('불러오는 중…')}</span>}
-        {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
+        {err && <GraphReadError reason={err} />}
         {graph?.captured_at && <span>{tt('그래프 시점:')} {new Date(graph.captured_at).toLocaleString()}</span>}
       </div>
       <div ref={canvas} className="min-h-0 flex-1">
