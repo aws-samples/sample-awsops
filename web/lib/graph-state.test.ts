@@ -19,12 +19,26 @@ describe('inventory capture quality', () => {
     expect(inventorySourcesStale([{ status: 'ok', itemCount, lastSuccessAtMs: Date.now() - 1000 }])).toBe(true);
   });
   it('requires capture for nonempty data but allows durable successful zero', () => {
-    const source = { status: 'ok', itemCount: 1, lastSuccessAtMs: Date.now() - 1000 };
+    const source = { status: 'ok', producerStatus: 'succeeded', itemCount: 1, lastSuccessAtMs: Date.now() - 1000 };
     expect(inventorySourcesStale([source])).toBe(true);
     expect(inventorySourcesStale([{ ...source, status: 'empty', itemCount: 0 }])).toBe(false);
   });
   it.each(['0', '1441', 'NaN', '30.5'])('invalid threshold %s falls back to the inventory 30 minute policy', threshold => {
     vi.stubEnv('INVENTORY_STALE_AFTER_MINUTES', threshold);
     expect(inventorySourcesStale([{ status: 'empty', itemCount: 0, lastSuccessAtMs: Date.now() - 31 * 60_000 }])).toBe(true);
+  });
+});
+
+describe('graph producer and scope honesty', () => {
+  it.each(['failed', 'running', 'partial', 'unknown', undefined])('does not certify fresh producer status %s', producerStatus => {
+    expect(inventorySourcesStale([{ status: 'empty', producerStatus, itemCount: 0, lastSuccessAtMs: Date.now() - 1000 }])).toBe(true);
+  });
+  it('reads the host trace state for an all-account selector without extending inventory coverage', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{ status: 'ok', captured_at: new Date().toISOString(), details: {} }] });
+    expect(await readGraphState({ query } as never, '__all__', 'trace')).toMatchObject({ status: 'ok' });
+    expect(query.mock.calls[0][1]).toEqual(['self', 'trace']);
+    query.mockClear();
+    expect(await readGraphState({ query } as never, '__all__', 'infra')).toMatchObject({ status: 'unknown', coverage: 'unknown', evidenceKind: 'inventory' });
+    expect(query).not.toHaveBeenCalled();
   });
 });
