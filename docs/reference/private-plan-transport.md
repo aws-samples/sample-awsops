@@ -199,6 +199,13 @@ python3 -m pytest -q -p no:cacheprovider \
 This adds no Python dependency. Runtime execution requires authenticated GitHub CLI,
 AWS CLI v2 supporting conditional PUT/checksum arguments and Terraform/provider schemas.
 Offline tests do not prove live access or successful deployment.
+Error classification accepts the legacy AWS exception header and the
+`aws: [ERROR]:` header observed with AWS CLI 2.35.11. The identifier-free captured
+response and version/source metadata live under `scripts/v2/fixtures/aws-cli/`;
+the regression reads those bytes rather than constructing that fixture from the
+parser expression. This records an observed version, not the first release using
+the format. Unknown formats remain generic failures; they are not evidence of
+denied permission or an absent bucket policy.
 
 Related decision: ADR-005 — operator-controlled CI transport, not a carve-out.
 
@@ -206,6 +213,9 @@ Related decision: ADR-005 — operator-controlled CI transport, not a carve-out.
 
 - [Terraform S3 backend configuration](https://developer.hashicorp.com/terraform/language/backend/s3#encrypt):
   public `encrypt` and `kms_key_id` configuration reference.
+- [AWS CLI 2.35.11 error formatting](https://github.com/aws/aws-cli/blob/2.35.11/awscli/errorformat.py)
+  and [error handlers](https://github.com/aws/aws-cli/blob/2.35.11/awscli/errorhandler.py):
+  the fixed `aws: [ERROR]:` prefix and enhanced error rendering.
 - [Terraform 1.15.7 S3 backend](https://github.com/hashicorp/terraform/blob/v1.15.7/internal/backend/remote-state/s3/backend.go):
   `encrypt` is optional and `boolAttr` defaults an omitted value to false.
 - [S3 expiration behavior](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-expire-general-considerations.html):
