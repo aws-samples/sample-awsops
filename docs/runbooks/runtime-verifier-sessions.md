@@ -12,9 +12,9 @@ Review each consumer's credential-assumption steps separately; helper availabili
 alone does not establish that a workflow uses a restricted session.
 
 **Current wiring:** this checkout does not contain `collect-runtime.yml`.
-Deploy Web's existing smoke is dispatch-only database verification. It never
-captures `runtime_deployment`; its `verify_database` credential path exists only
-for dispatch runs.
+Deploy Web verifies login/database access for every dev release, including pushes;
+its compatibility `verify_database` input cannot disable those checks. This web
+proof does not capture `runtime_deployment` or wire the broader runtime verifier.
 The integration requirements below do not describe already-wired verification
 steps. The helper change does not install either consumer path.
 
@@ -141,8 +141,9 @@ workload policy:
 - Prepare the existing configured HTTP proof credentials and capture validated
   `runtime_deployment` privately in the same run, before deployment mutations,
   under the existing deployment credentials and backend/account guards. These
-  steps and cleanup must cover push as well as manual dev runs; the current
-  dispatch-only `verify_database` credential path is insufficient for push.
+  steps and cleanup must cover push as well as manual dev runs. Current dev
+  credential preparation already covers both; runtime-deployment capture and
+  scoped runtime verification still require this separate integration.
 - Resolve `PIN_SHA` exactly as the image-promotion step:
   `${{ inputs.image_sha || github.sha }}`. Require a full lower-case 40-character
   commit SHA; reject invalid values rather than substituting a different image.

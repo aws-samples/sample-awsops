@@ -86,7 +86,7 @@ The readonly `image-proof` job validates the selected receipt and ECR content **
 
 The reusable `deploy-migrations.yml` exposes `source_sha`/`project` only after its migration controller succeeds. Deploy consumes them as `MIGRATED_SHA`/`MIGRATED_PROJECT`. Copying requested values without successful execution is not a migration receipt.
 
-In future workflow wiring, `MIGRATED_SHA`/`MIGRATED_PROJECT` must come from `needs.<verified-migration-job>.outputs.source_sha` / `.project`, and `PREFLIGHT_DIGEST` from `needs.<verified-image-proof-job>.outputs.digest`. These jobs must verify their work before exposing successful outputs. Never source these assertions from `inputs.*` or fabricate them from the requested SHA/project. An in-process controller must use the equivalent verified results.
+In Deploy Web, `MIGRATED_SHA`/`MIGRATED_PROJECT` must come from `needs.<verified-migration-job>.outputs.source_sha` / `.project`, and `PREFLIGHT_DIGEST` from `needs.<verified-image-proof-job>.outputs.digest`. These jobs must verify their work before exposing successful outputs. Never source these assertions from `inputs.*` or fabricate them from the requested SHA/project. An in-process controller must use the equivalent verified results.
 
 ## Promotion entrypoint
 

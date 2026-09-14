@@ -34,12 +34,32 @@ test('only an opted-in Deploy Web push may use the private migration controller'
     workflowRef: 'aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/dev',
   });
   await runMigration(h.f, h.deps);
+  assert.equal(h.registered.containerDefinitions[0].environment.find(v => v.name === 'AUTOMATIC_MIGRATION')?.value, '1');
   for (const change of [{ fromDeployWeb: '' }, { workflowRef: 'other' }, { ref: 'refs/heads/main' }]) {
     const denied = harness();
     Object.assign(denied.f.context, h.f.context, change);
     await assert.rejects(runMigration(denied.f, denied.deps));
     assert.equal(denied.calls.length, 0);
   }
+});
+
+test('manual migration keeps the explicit override and web policy cannot be weakened in the clone', async () => {
+  const manual = harness();
+  await runMigration(manual.f, manual.deps);
+  assert.equal(manual.registered.containerDefinitions[0].environment.some(v => v.name === 'AUTOMATIC_MIGRATION'), false);
+  const web = harness(undefined, {
+    'register-task-definition': args => {
+      const changed = structuredClone(args);
+      changed.containerDefinitions[0].environment.find(v => v.name === 'AUTOMATIC_MIGRATION').value = '0';
+      return { taskDefinition: { ...changed, taskDefinitionArn: cloneArn, status: 'ACTIVE' } };
+    },
+  });
+  Object.assign(web.f.context, {
+    event: 'push', fromDeployWeb: 'true',
+    workflowRef: 'aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/dev',
+  });
+  await assert.rejects(runMigration(web.f, web.deps), /automatic migration policy/i);
+  assert.equal(web.calls.some(([, operation]) => operation === 'run-task'), false);
 });
 
 test('an unapplied migration capability fails clearly before any AWS operation', async () => {

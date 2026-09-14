@@ -60,7 +60,7 @@ permissions:
 
 # Per-job concurrency with separate build/rollout groups (a pending production
 # rollout must never be displaced by a push's build-only run). main queues;
-# every other branch is newest-wins.
+# other builds are newest-wins; deployment jobs do not cancel active rollouts.
 
 jobs:
   guard:
@@ -533,6 +533,7 @@ jobs:
           WEB_DIGEST: ${{ steps.pin.outputs.digest }}
           WEB_RUNTIME_DIGEST: ${{ steps.pin.outputs.runtime_digest }}
           WEB_DEPLOYMENT_ID: ${{ steps.pin.outputs.deployment_id }}
+          WEB_OLD_DEPLOYMENT_ID: ${{ steps.pin.outputs.old_deployment_id }}
           WEB_TASK_REVISION: ${{ steps.pin.outputs.task_revision }}
           WEB_DESIRED_COUNT: ${{ steps.pin.outputs.desired_count }}
         run: python3 scripts/v2/ci_web_deploy.py verify

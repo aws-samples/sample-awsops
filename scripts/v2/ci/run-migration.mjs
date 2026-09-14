@@ -130,12 +130,17 @@ function registration(t, config, c, e, expectedArn = config.task_template_arn, s
   'Unexpected migration container configuration');
   const names = ['AWS_REGION', 'AURORA_ENDPOINT', 'AURORA_DATABASE', 'AURORA_SECRET_ARN',
     'SQL_READER_SECRET_ARN', 'SQL_READER_SYNC_MODE', 'INITIALIZE_EMPTY_DB'];
+  const automatic = c.fromDeployWeb === 'true';
+  if (automatic && expectedArn !== config.task_template_arn) names.push('AUTOMATIC_MIGRATION');
   requireThat(Array.isArray(container.environment) && container.environment.length === names.length &&
     container.environment.every(v => allowedKeys(v, ['name', 'value']) &&
       names.includes(v.name) && typeof v.value === 'string') &&
     new Set(container.environment.map(v => v.name)).size === names.length,
   'Only the nonsecret migration environment is permitted');
   const env = Object.fromEntries(container.environment.map(v => [v.name, v.value]));
+  if (automatic && expectedArn !== config.task_template_arn) {
+    requireThat(env.AUTOMATIC_MIGRATION === '1', 'Registered automatic migration policy changed');
+  }
   const secretPrefix = `arn:aws:secretsmanager:${REGION}:${e.account}:secret:`;
   requireThat(env.AWS_REGION === REGION && env.AURORA_DATABASE === 'awsops' &&
     env.INITIALIZE_EMPTY_DB === '1' &&
@@ -159,7 +164,9 @@ function registration(t, config, c, e, expectedArn = config.task_template_arn, s
     runtimePlatform: { cpuArchitecture: 'ARM64', operatingSystemFamily: 'LINUX' },
     containerDefinitions: [{
       name: 'migration', image: c.image, essential: true, user: '1000:1000',
-      readonlyRootFilesystem: true, stopTimeout: 30, environment: container.environment,
+      readonlyRootFilesystem: true, stopTimeout: 30,
+      environment: [...container.environment.filter(v => v.name !== 'AUTOMATIC_MIGRATION'),
+        ...(automatic ? [{ name: 'AUTOMATIC_MIGRATION', value: '1' }] : [])],
       logConfiguration: container.logConfiguration,
     }],
   };
@@ -335,6 +342,10 @@ async function failureLogs(record, e, deps) {
         [/^sql-reader: awsops_sql_reader has elevated attributes \(/m.test(messages), 'SQL-reader elevation'],
         [/^sql-reader sync enabled but awsops_sql_reader is missing; apply its migration first$/m.test(messages), 'SQL-reader missing role'],
         [/^checksum drift: applied (baseline|migration) /m.test(messages), 'migration checksum'],
+        [/^Concurrent migration is already running;/m.test(messages),
+          'concurrent migration in progress; retry after the other release finishes'],
+        [/^Automatic migration blocked: /m.test(messages),
+          'automatic SQL policy; review the rejected file in the private log before standalone cutover'],
         [/^Refusing initialization of a non-empty database without schema_migrations$/m.test(messages), 'bootstrap refused nonempty database'],
       ].filter(([matched]) => matched).map(([, label]) => label);
       summary = `Migration failure logs inspected; categories: ${categories.join(', ') || 'unclassified (inspect the private log stream)'}`;
