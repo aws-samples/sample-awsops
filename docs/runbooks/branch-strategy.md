@@ -46,7 +46,7 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
    merge-verify + AI pr-review + terraform plan (when `terraform/foundation/**`
    changed; same-repo PRs only).
 2. **`dev`** — integration branch; every push auto-deploys the DEV stack
-   (`awsops-dev.whchoi.net`) via `deploy-web.yml` (build → pin → roll → smoke).
+   (`awsops-dev.whchoi.net`) via `deploy-web.yml` (build → preflight → pin → roll → full runtime verification).
 3. **`main`** — promotion PR `dev → main` (ordinary same-repo PR). The production
    ECS roll stays workflow_dispatch + `production` environment reviewer approval;
    Terraform apply likewise (saved-plan, dispatch, per-branch environment). A manual
@@ -118,7 +118,7 @@ Provisioning **without publishing service DNS** still needs a configured hostnam
 trusted certificates for both TLS hops. `public_url` is the service URL, while
 `cloudfront_domain` is the connection destination used by
 [Deploy Web's smoke step](../../.github/workflows/deploy-web.yml) to preserve Host/SNI/TLS
-before A publication. `/api/health` proves liveness; DB/auth checks are separate.
+before A publication. `/api/health` proves liveness only. Dev releases additionally require login/DB, a fresh known CloudFront record, complete post-marker success with known counts and zero unknown attributes for every current catalog type, web-role SSM/AgentCore/model access and both worker completions. Missing, partial, failed, stale or unknown evidence blocks release.
 After reviewing the deployed distribution, decide whether to attach `awsops.whchoi.net`:
 
 - `awsops.whchoi.net` is **currently in use by an existing deployment** — attaching
@@ -181,7 +181,7 @@ branches); production stays behind the `production` environment approval. See
 
 - User PR → `dev`: merge-verify + AI review green; a fork PR shows no plan job.
 - PR to `main` from anything but `dev`: `guard-main-prs` fails the PR.
-- Push to `dev`: `deploy-web.yml` ends green, smoke against
-  `awsops-dev.whchoi.net/api/health`.
+- Push to `dev`: `deploy-web.yml` must pass its full runtime gate; health alone cannot pass.
+  Manual `collect-runtime.yml` provides pre-activation host preparation or collection verification.
 - `dev → main` merge, then production dispatch: waits for the `production`
   environment approval, smokes against the `public_url` output.
