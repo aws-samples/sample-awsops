@@ -10,7 +10,7 @@ mock_provider "aws" {
   mock_resource "aws_kms_key" { defaults = { arn = "arn:aws:kms:ap-northeast-2:123456789012:key/11111111-1111-1111-1111-111111111111" } }
   mock_resource "aws_secretsmanager_secret" { defaults = { arn = "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:fixture" } }
   mock_resource "aws_ecs_cluster" { defaults = { arn = "arn:aws:ecs:ap-northeast-2:123456789012:cluster/awsops-fixture" } }
-  mock_resource "aws_lambda_function" { defaults = { arn = "arn:aws:lambda:ap-northeast-2:123456789012:function:fixture" } }
+  mock_resource "aws_lambda_function" { defaults = { arn = "arn:aws:lambda:ap-northeast-2:123456789012:function:fixture", code_sha256 = "TYwIZpErPrCndYW8xYnWWh3mI1YW6yiPScDIEh+Q+o8=" } }
   mock_resource "aws_s3_bucket" { defaults = { arn = "arn:aws:s3:::awsops-fixture-artifacts", bucket = "awsops-fixture-artifacts" } }
   mock_resource "aws_rds_cluster" { defaults = { arn = "arn:aws:rds:ap-northeast-2:123456789012:cluster:fixture", cluster_resource_id = "cluster-EXAMPLE", endpoint = "fixture.cluster.example.test", master_user_secret = [{ kms_key_id = "mock-key", secret_arn = "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:mock", secret_status = "active" }] } }
 }
@@ -20,6 +20,12 @@ mock_provider "aws" {
 }
 mock_provider "archive" { override_during = plan }
 mock_provider "random" { override_during = plan }
+
+override_data {
+  target          = data.archive_file.inv_sync_src[0]
+  override_during = plan
+  values          = { output_base64sha256 = "ilglk4b1XbT9KO4x3Ab6UOVhOCHcbDb++ZbFlkZfdOw=" }
+}
 
 override_resource {
   target          = aws_ecr_repository.agentcore[0]
@@ -53,8 +59,27 @@ variables {
 run "defaults_remain_dark" {
   command = plan
   assert {
+    condition     = output.runtime_deployment.inventory.sync_code_sha256 == null
+    error_message = "Disabled inventory must not publish a collector fingerprint."
+  }
+  assert {
     condition     = (length(aws_iam_role_policy.agentcore) == 0 && length(aws_iam_role_policy.official_mcp_credentials) == 0 && length(aws_iam_role_policy.steampipe_task) == 0 && length(aws_iam_role_policy.worker_lambda) == 0 && !var.inventory_host_only && var.steampipe_image_digest == null && var.worker_image_digest == null && !var.remediation_enabled && !var.diagnosis_notify_enabled && !var.integrations_write_enabled)
     error_message = "Core runtime and host/image overrides must remain opt-in."
+  }
+}
+
+run "inventory_fingerprint_uses_the_deployed_archive" {
+  command = plan
+  variables {
+    steampipe_enabled = true
+  }
+  assert {
+    condition = (
+      output.runtime_deployment.inventory.sync_code_sha256 == data.archive_file.inv_sync_src[0].output_base64sha256 &&
+      output.runtime_deployment.inventory.sync_code_sha256 == aws_lambda_function.inv_sync[0].source_code_hash &&
+      output.runtime_deployment.inventory.sync_code_sha256 != aws_lambda_function.inv_sync[0].code_sha256
+    )
+    error_message = "Readiness must compare live code with the intended archive, not a stale or drifted provider observation."
   }
 }
 
