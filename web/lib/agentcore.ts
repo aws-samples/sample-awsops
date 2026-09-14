@@ -158,7 +158,10 @@ async function* streamEvents(resp: unknown): AsyncGenerator<AgentEvent> {
 function buildCommand(input: InvokeInput, arn: string): InvokeAgentRuntimeCommand {
   const body: Record<string, unknown> = { gateway: input.gateway, messages: input.messages };
   if (input.systemPromptOverride) body.systemPromptOverride = input.systemPromptOverride;
-  if (input.toolAllowlist) body.toolAllowlist = input.toolAllowlist;
+  // A nonempty impossible identity also denies all in older runtimes where [] meant unrestricted.
+  if (input.toolAllowlist !== undefined) {
+    body.toolAllowlist = input.toolAllowlist.length ? input.toolAllowlist : ['!awsops-deny-all!'];
+  }
   if (input.agentName) body.agentName = input.agentName;
   if (input.agentVersion !== undefined) body.agentVersion = input.agentVersion;
   if (input.skillHashes) body.skillHashes = input.skillHashes;

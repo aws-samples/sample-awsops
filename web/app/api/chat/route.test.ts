@@ -5,6 +5,7 @@ const verifyUser = vi.fn();
 const invokeAgent = vi.fn();
 const pickGateway = vi.fn();
 const getEnabledCustomAgents = vi.fn();
+let policyUnavailable = false;
 const pickCustomAgent = vi.fn();
 const resolveAgent = vi.fn();
 const isCustomAgentEnabled = vi.fn();
@@ -67,7 +68,12 @@ vi.mock('@/lib/classifier', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/classifier')>()),
   classifyPrompt: (...a: unknown[]) => classifyPrompt(...a),
 }));
-vi.mock('@/lib/catalog-source', () => ({ getEnabledCustomAgents: (...a: unknown[]) => getEnabledCustomAgents(...a) }));
+vi.mock('@/lib/catalog-source', () => ({
+  getEnabledCustomAgents: (...a: unknown[]) => getEnabledCustomAgents(...a),
+  getCustomAgentContext: async (...a: unknown[]) => policyUnavailable
+    ? { status: 'unavailable', agents: [], space: null }
+    : { status: 'available', agents: await getEnabledCustomAgents(...a), space: null },
+}));
 vi.mock('@/lib/agent-resolver', () => ({
   pickCustomAgent: (...a: unknown[]) => pickCustomAgent(...a),
   resolveAgent: (...a: unknown[]) => resolveAgent(...a),
@@ -135,6 +141,7 @@ beforeEach(() => {
   invokeAgent.mockReset();
   pickGateway.mockReset();
   getEnabledCustomAgents.mockReset();
+  policyUnavailable = false;
   pickCustomAgent.mockReset();
   resolveAgent.mockReset();
   isCustomAgentEnabled.mockReset();
@@ -428,7 +435,7 @@ describe('hybrid routing (ADR-038)', () => {
     invokeAgent.mockResolvedValue('ok');
     const { POST } = await import('./route');
     await readStream(await POST(req({ prompt: 'run a CIS benchmark', sessionId: 's'.repeat(36) })));
-    expect(isCustomAgentEnabled).toHaveBeenCalledWith('compliance');
+    expect(isCustomAgentEnabled).toHaveBeenCalledWith('compliance', { throwOnError: true });
     expect(resolveAgent).toHaveBeenCalledWith('security', expect.anything(), null, [], []); // gateway, not the revoked custom
   });
 
@@ -1098,3 +1105,30 @@ describe('chat sessionId — bound to the caller, never client-trusted', () => {
   });
 });
 
+
+
+it('returns an explicit unavailable response before dispatch when custom policy cannot be read', async () => {
+  policyUnavailable = true;
+  verifyUser.mockResolvedValue({ sub: 'u', email: 'u@example.com' });
+  pickGateway.mockReturnValue('ops');
+  const { POST } = await import('./route');
+  const res = await POST(req({ prompt: 'inspect', sessionId: 's'.repeat(36) }));
+  expect(res.status).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Custom-agent policy unavailable' });
+  expect(invokeAgent).not.toHaveBeenCalled();
+});
+
+
+it('keeps explicit built-in routing usable when custom policy is unavailable', async () => {
+  policyUnavailable = true;
+  process.env.HYBRID_ROUTING_ENABLED = 'true';
+  verifyUser.mockResolvedValue({ sub: 'u' });
+  classifyRoute.mockResolvedValue({ primary: 'cost', source: 'pin', candidates: [] });
+  resolveAgent.mockReturnValue({ tier: 'builtin', gateway: 'cost', skill: 'cost', agentName: 'cost', skillHashes: [] });
+  invokeAgent.mockResolvedValue('ok');
+  const { POST } = await import('./route');
+  const res = await POST(req({ prompt: 'inspect', section: 'cost', sessionId: 's'.repeat(36) }));
+  expect(res.status).toBe(200);
+  expect(await readStream(res)).toContain('ok');
+  expect(pickCustomAgent).not.toHaveBeenCalled();
+});

@@ -44,3 +44,8 @@ describe('skill-validation', () => {
     expect(validateSkill({ name: 'sk', description: 'd', instructions: 'i', toolAllowlist: [], referenceKeys: [1] as unknown as string[] }).ok).toBe(false);
   });
 });
+
+
+it.each(['security', 'observability', 'code', 'auto'])('reserves the %s command identity', name => {
+  expect(validateAgent({ name, description: 'd', persona: '', gateway: 'ops', routingKeywords: ['test'] }).ok).toBe(false);
+});

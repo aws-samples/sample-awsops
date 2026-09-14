@@ -117,3 +117,12 @@ describe('PUT /api/customization (op:space)', () => {
     }));
   });
 });
+
+
+it('returns unavailable instead of global mode when the Agent Space policy read fails', async () => {
+  getAgentSpace.mockRejectedValueOnce(new Error('policy unavailable'));
+  const { GET } = await import('./route');
+  const res = await GET(getReq());
+  expect(res.status).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Customization policy unavailable' });
+});

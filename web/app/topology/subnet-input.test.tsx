@@ -7,7 +7,6 @@ vi.mock('@/components/shell/LanguageProvider', () => ({
   useI18n: () => ({ lang: 'en', tt: (s: string) => s, t: (s: string) => s }),
 }));
 vi.mock('@/lib/use-theme', () => ({ useTheme: () => 'light' }));
-vi.mock('@/lib/account-context', () => ({ useActiveAccount: () => ['self'] }));
 vi.mock('next/dynamic', () => ({
   default: () => ({ nodes }: { nodes: { id: string; data: { fnode: FlowNode } }[] }) =>
     <div>{nodes.map(n => <span key={n.id} data-testid={n.data.fnode.kind}>{n.data.fnode.label}</span>)}</div>,

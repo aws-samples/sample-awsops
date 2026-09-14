@@ -6,7 +6,7 @@ vi.mock('@/lib/db', () => ({ getPool: () => ({ query }) }));
 
 import { computeSkillHash, upsertSkill, upsertAgent, listSkills, listAgentsWithSkills, writeAudit, isCustomAgentEnabled } from './catalog';
 
-beforeEach(() => query.mockReset());
+beforeEach(() => { query.mockReset(); });
 
 describe('catalog', () => {
   it('computeSkillHash is stable and order-independent on tool_allowlist', () => {
@@ -136,4 +136,58 @@ describe('isCustomAgentEnabled (fail-closed revocation)', () => {
     query.mockRejectedValueOnce(new Error('db down'));
     await expect(isCustomAgentEnabled('x')).resolves.toBe(false);
   });
+
+  it('preserves query failure for dispatch callers that distinguish unavailable from disabled', async () => {
+    query.mockRejectedValueOnce(new Error('db down'));
+    await expect(isCustomAgentEnabled('x', { throwOnError: true })).rejects.toThrow('db down');
+  });
+
+  it('still returns false for a confirmed missing row in strict dispatch mode', async () => {
+    query.mockResolvedValueOnce({ rows: [] });
+    await expect(isCustomAgentEnabled('x', { throwOnError: true })).resolves.toBe(false);
+  });
+});
+
+
+it('preserves disabled-binding restriction metadata when there are no enabled skills', async () => {
+  query.mockResolvedValueOnce({ rows: [{ id: 1, name: 'audit', gateway: 'security', tier: 'custom',
+    enabled: true, tool_policy_configured: true, skills: [] }] });
+  expect((await listAgentsWithSkills())[0]).toMatchObject({ toolPolicyConfigured: true, skills: [] });
+  const [sql] = query.mock.calls[0];
+  expect(sql).toMatch(/bool_or\(jsonb_array_length\(s\.tool_allowlist\) > 0\)/);
+  expect(sql).toMatch(/FILTER \(WHERE s\.id IS NOT NULL AND s\.enabled = true\)/);
+  expect(sql).not.toMatch(/LEFT JOIN skills s ON s\.id = ags\.skill_id AND s\.enabled/);
+});
+
+
+it.skipIf(!process.env.POLICY_TEST_POSTGRES_SOCKET)('revokes a disabled scoped skill through the real PostgreSQL catalog query', async () => {
+  const { Client } = await import('pg');
+  const { resolveAgent } = await import('./agent-resolver');
+  const client = new Client({ host: process.env.POLICY_TEST_POSTGRES_SOCKET, database: 'awsops', user: 'postgres' });
+  await client.connect();
+  try {
+    await client.query(`
+      CREATE TEMP TABLE agents (id int PRIMARY KEY, name text, description text, persona text,
+        gateway text, tier text, version int, enabled boolean, routing_keywords jsonb,
+        agent_type text, gateways jsonb, response_language text);
+      CREATE TEMP TABLE skills (id int PRIMARY KEY, name text, instructions text, content_hash text,
+        tool_allowlist jsonb, enabled boolean);
+      CREATE TEMP TABLE agent_skills (agent_id int, skill_id int, ord int);
+      INSERT INTO agents VALUES (1,'audit','d','Read only','security','custom',1,true,'[]','generic','[]',null);
+      INSERT INTO skills VALUES (1,'scoped','Scoped instructions','h1','["list_users"]',true),
+        (2,'tone','Be concise','h2','[]',true);
+      INSERT INTO agent_skills VALUES (1,1,0),(1,2,1);
+    `);
+    query.mockImplementation((sql, params) => client.query(sql, params));
+    const before = await listAgentsWithSkills({ enabledOnly: true });
+    expect(resolveAgent('audit', before).toolAllowlist).toEqual(['iam-mcp-target___list_users']);
+    await client.query('UPDATE skills SET enabled=false WHERE id=1');
+    const after = await listAgentsWithSkills({ enabledOnly: true });
+    expect(after[0].toolPolicyConfigured).toBe(true);
+    expect(after[0].skills.map(skill => skill.name)).toEqual(['tone']);
+    expect(resolveAgent('audit', after).toolAllowlist).toEqual([]);
+    expect(resolveAgent('audit', after).systemPromptOverride).not.toContain('Scoped instructions');
+  } finally {
+    await client.end();
+  }
 });

@@ -16,7 +16,7 @@ import { sanitizeHistory } from '@/lib/chat-context';
 import { synthesizeStream } from '@/lib/synthesize';
 import { assistantAnswer, isProductHelpIntent } from '@/lib/assistant';
 import { sectionByKey } from '@/lib/sections';
-import { getEnabledCustomAgents } from '@/lib/catalog-source';
+import { getCustomAgentContext } from '@/lib/catalog-source';
 import { isCustomAgentEnabled } from '@/lib/catalog';
 import { getEnabledIntegrations } from '@/lib/integrations';
 import { pickCustomAgent, resolveAgent } from '@/lib/agent-resolver';
@@ -26,7 +26,6 @@ import { currentAccountId, currentAccountAlias } from '@/lib/account';
 import { listConfiguredSchemas, renderSchemaForPrompt } from '@/lib/datasource-schema';
 import { listDatasources } from '@/lib/datasources';
 import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
-import { getAgentSpace } from '@/lib/agent-space';
 import { randomUUID, createHash } from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -437,30 +436,38 @@ export async function POST(request: Request) {
       accountAlias = target.alias || undefined;
     }
   }
-  const customAgents = await getEnabledCustomAgents(accountId);   // [] when Aurora off / no customs
-  const space = await getAgentSpace(accountId);                   // null ⇒ Phase-1
+  const customContext = await getCustomAgentContext(accountId);
+  const { agents: customAgents, space } = customContext;
   const pinIsBuiltin = !!(body.section && sectionByKey(body.section));
+  // A failed policy read cannot become an unrestricted custom dispatch. An explicit
+  // built-in pin bypasses custom routing and remains usable without the custom catalog.
+  if (customContext.status === 'unavailable' && !(hybridOn && pinIsBuiltin)) {
+    return Response.json({ error: 'Custom-agent policy unavailable' }, { status: 503 });
+  }
   // ADR-044 §2: an explicit pin (picker / pin chip) may target a CUSTOM agent, not only a built-in
   // section — and it sits ABOVE keyword-matched custom agents and the classifier in the ladder.
   // A non-built-in `section` is a custom-agent pin attempt (hybrid path only; legacy is unchanged).
   const customPinTarget = (hybridOn && body.section && !pinIsBuiltin) ? body.section : null;
-  const customPinEnabled = customPinTarget
-    ? (customAgents.some((a) => a.name === customPinTarget) && (await isCustomAgentEnabled(customPinTarget)))
-    : false;
-  // ADR-044 §2: a pin to an agent disabled/absent in this Agent Space gets an HONEST message,
-  // never a silent fallback to keyword/classifier routing.
-  const unavailablePin = !!customPinTarget && !customPinEnabled;
-  // ADR-031/039 fail-closed revocation: pickCustomAgent matches against the 30s-cached enabled
-  // set; re-check the picked custom agent against Aurora (authoritative) before routing to it, so
-  // a just-disabled agent is unusable immediately on every instance (not after the cache TTL).
-  const customPick = unavailablePin
-    ? null
-    : customPinEnabled
-      ? customPinTarget                                   // explicit custom pin — highest precedence
-      : (hybridOn && pinIsBuiltin) ? null : pickCustomAgent(prompt, customAgents);
-  let routeKey = customPinEnabled
-    ? customPinTarget!
-    : (customPick && (await isCustomAgentEnabled(customPick)) ? customPick : gateway);
+  let customPinEnabled: boolean, unavailablePin: boolean, customPick: string | null, routeKey: string;
+  try {
+    customPinEnabled = customPinTarget
+      ? (customAgents.some((a) => a.name === customPinTarget) && (await isCustomAgentEnabled(customPinTarget, { throwOnError: true })))
+      : false;
+    // ADR-044 §2: a confirmed disabled/absent pin gets an honest message, never a fallback.
+    unavailablePin = !!customPinTarget && !customPinEnabled;
+    // Recheck enablement after the fresh catalog read to catch a concurrent revocation.
+    customPick = unavailablePin
+      ? null
+      : customPinEnabled
+        ? customPinTarget                                   // explicit custom pin — highest precedence
+        : (hybridOn && pinIsBuiltin) ? null : pickCustomAgent(prompt, customAgents);
+    routeKey = customPinEnabled
+      ? customPinTarget!
+      : (customPick && (await isCustomAgentEnabled(customPick, { throwOnError: true })) ? customPick : gateway);
+  } catch {
+    // An unavailable final read is not a revocation and must not discard the custom policy.
+    return Response.json({ error: 'Custom-agent policy unavailable' }, { status: 503 });
+  }
   // v1 priority-10 'aws-data' local handler: when the routing decision (pin included — a pinned
   // built-in section reaches here as `gateway`) lands on aws-data, answer with live Steampipe SQL
   // instead of an AgentCore gateway. Fail-open like the code route: Steampipe unreachable /

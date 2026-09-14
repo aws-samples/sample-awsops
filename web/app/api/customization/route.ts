@@ -27,13 +27,14 @@ export async function GET(request: Request) {
   const g = await gate(request);
   if (g.resp) return g.resp;
   const accountId = currentAccountId();
-  return json({
-    aurora: true,
-    accountId,
-    agents: await listAgentsWithSkills(),
-    skills: await listSkills(),
-    space: await getAgentSpace(accountId), // null ⇒ Phase-1 (UI shows "global" mode)
-  }, 200);
+  try {
+    const [agents, skills, space] = await Promise.all([
+      listAgentsWithSkills(), listSkills(), getAgentSpace(accountId),
+    ]);
+    return json({ aurora: true, accountId, agents, skills, space }, 200);
+  } catch {
+    return json({ error: 'Customization policy unavailable' }, 503);
+  }
 }
 
 export async function POST(request: Request) {

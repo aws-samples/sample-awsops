@@ -5,6 +5,12 @@
 // AWS-domain gateways + `observability` (external-obs: Prometheus/ClickHouse). Mirrors the
 // agent.py SKILL_BASE roles (which include an "observability" persona, aliased to external-obs).
 // Custom agents may target any of these.
+import { sectionByKey } from './sections';
+
+export function isReservedAgentName(name: string): boolean {
+  return name === 'auto' || name === 'code' || !!sectionByKey(name);
+}
+
 export const KNOWN_GATEWAYS = ['network', 'container', 'iac', 'data', 'security', 'monitoring', 'cost', 'ops', 'observability'] as const;
 // ADR-039 agent-type lifecycle roles. SOURCE OF TRUTH shared with the migration
 // `agents_agent_type_check` CHECK (01KTY39P4SV1SQES36KCS8BESY_custom_agent_platform_p1.sql) — keep in sync.
@@ -35,6 +41,7 @@ export function validateSkill(s: { name?: string; description?: string; instruct
 export function validateAgent(a: { name?: string; description?: string; persona?: string; gateway?: string; routingKeywords?: unknown; agentType?: unknown; gateways?: unknown }): ValidationResult {
   const errors: string[] = [];
   if (!a.name || !NAME_RE.test(a.name)) errors.push('name must be kebab-case, 2-64 chars');
+  else if (isReservedAgentName(a.name)) errors.push('name is reserved for built-in chat routing');
   if (!a.description?.trim()) errors.push('description is required');
   if ((a.persona?.length ?? 0) > MAX_PERSONA) errors.push(`persona exceeds ${MAX_PERSONA} chars`);
   if (!(KNOWN_GATEWAYS as readonly string[]).includes(a.gateway ?? '')) errors.push(`gateway must be one of ${KNOWN_GATEWAYS.join(', ')}`);
