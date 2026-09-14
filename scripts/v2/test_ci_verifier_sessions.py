@@ -128,7 +128,7 @@ def test_backend_kms_requires_the_own_s3_service_and_bound_encryption_context(ex
     BACKEND + 'key = "other"\n',
     BACKEND.replace("dev/terraform.tfstate", "*"),
     BACKEND.replace("dev/terraform.tfstate", "${other}"),
-    BACKEND.replace('encrypt = true', 'encrypt = false'),
+    BACKEND.replace('encrypt = true', 'encrypt = "false"'),
     BACKEND.replace(REGION, "us-east-1"),
     BACKEND + 'workspace_key_prefix = ""\n',
     BACKEND + 'workspace_key_prefix = "team/*"\n',
@@ -137,6 +137,38 @@ def test_backend_kms_requires_the_own_s3_service_and_bound_encryption_context(ex
 def test_invalid_backend_cannot_create_a_session_policy(backend):
     with pytest.raises(ValueError):
         helpers().backend_policy({**ENV, "BACKEND_B64": base64.b64encode(backend.encode()).decode()})
+
+@pytest.mark.parametrize("encrypt", [None, False, True])
+def test_backend_encryption_defaults_match_private_plan_semantics(tmp_path, encrypt):
+    private = importlib.import_module("ci_private_plan")
+    line = "" if encrypt is None else f"encrypt = {str(encrypt).lower()}\n"
+    text = BACKEND.replace("encrypt = true\n", line)
+    path = tmp_path / "backend.hcl"
+    path.write_text(text)
+    encoded = base64.b64encode(text.encode()).decode()
+    fields = helpers().parse_backend_fields(encoded, ACCOUNT)
+    expected = encrypt is True
+    assert fields["encrypt"] is expected
+    assert private.parse_backend(path, {})["encrypt"] is expected
+    policy = helpers().backend_policy({**ENV, "BACKEND_B64": encoded})
+    assert permitted(policy, "s3:GetObject", STATE, {"aws:ResourceAccount": ACCOUNT})
+    assert not permitted(policy, "s3:PutObject", STATE, {"aws:ResourceAccount": ACCOUNT})
+
+
+@pytest.mark.parametrize("encrypt", [None, False, True])
+def test_inert_state_key_does_not_select_a_wrong_verifier_decrypt_key(encrypt):
+    key = f"arn:aws:kms:{REGION}:{ACCOUNT}:key/11111111-1111-1111-1111-111111111111"
+    line = "" if encrypt is None else f"encrypt = {str(encrypt).lower()}\n"
+    text = BACKEND.replace("encrypt = true\n", line) + f'kms_key_id = "{key}"\n'
+    policy = helpers().backend_policy({**ENV, "BACKEND_B64": base64.b64encode(text.encode()).decode()})
+    decrypt = next(s for s in policy["Statement"] if "kms:Decrypt" in s["Action"])
+    assert decrypt["Resource"] == (key if encrypt is True else "*")
+    context = {"aws:ResourceAccount": ACCOUNT, "aws:RequestedRegion": REGION,
+               "kms:ViaService": f"s3.{REGION}.amazonaws.com",
+               "kms:EncryptionContext:aws:s3:arn": STATE}
+    assert permitted(policy, "kms:Decrypt", key, context)
+    assert not permitted(policy, "kms:Decrypt", key, {**context, "kms:ViaService": None})
+    assert not permitted(policy, "kms:Decrypt", key, {**context, "kms:EncryptionContext:aws:s3:arn": "other"})
 
 
 @pytest.mark.parametrize("key,value", [

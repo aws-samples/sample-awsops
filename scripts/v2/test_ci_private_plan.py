@@ -366,19 +366,22 @@ class PrivatePlanTests(unittest.TestCase):
         self.ready()
         store = json.loads((self.root / 'policy/store.json').read_text())
         self.assertIs(store['backend']['encrypt'], False)
-        # Explicit false has the same Terraform semantics as an omitted option.
-        self.backend.write_text(original.replace('encrypt=true', 'encrypt=false'))
-        inspected = self.inspect(backend=self.backend)
-        reviewed = json.loads(Path(inspected['receipt_file']).read_text())['plan_sha256']
-        self.env.update(GITHUB_JOB='apply', GITHUB_RUN_ID='24')
-        result = self.invoke('restore', backend=self.backend, foundation=self.foundation,
-                             reviewed_plan_sha256=reviewed)
-        self.assertTrue(result['assets_verified'])
         puts = [args for args, _ in self.fake.calls if 'put-object' in args]
         self.assertEqual(len(puts), 3)
         for args in puts:
             self.assertEqual(args[args.index('--server-side-encryption') + 1], 'aws:kms')
             self.assertEqual(args[args.index('--ssekms-key-id') + 1], KEY_ARN)
+        # Explicit false has the same Terraform semantics as an omitted option.
+        self.backend.write_text(original.replace('encrypt=true', 'encrypt=false'))
+        inspected = self.inspect(backend=self.backend)
+        reviewed = json.loads(Path(inspected['receipt_file']).read_text())['plan_sha256']
+        self.env.update(GITHUB_JOB='apply', GITHUB_RUN_ID='24')
+        self.fake.calls.clear()
+        result = self.invoke('restore', backend=self.backend, foundation=self.foundation,
+                             reviewed_plan_sha256=reviewed)
+        self.assertTrue(result['assets_verified'])
+        self.assertFalse(any('put-object' in args for args, _ in self.fake.calls))
+        self.assert_public_safe(inspected, result)
 
     def test_state_encrypt_false_cannot_bypass_private_artifact_posture(self):
         self.backend.write_text(self.backend.read_text().replace('encrypt=true', 'encrypt=false'))

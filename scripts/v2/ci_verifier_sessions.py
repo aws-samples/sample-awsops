@@ -38,13 +38,18 @@ def parse_backend_fields(encoded, account, workspace="default"):
     bucket, key = fields.get("bucket", ""), fields.get("key", "")
     require(isinstance(bucket, str) and re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", bucket))
     require(isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9._/-]{1,512}", key))
-    require(fields.get("region") == REGION and fields.get("encrypt", True) is True)
+    require(fields.get("region") == REGION and type(fields.get("encrypt", False)) is bool)
     require(all(isinstance(v, (str, bool)) and "${" not in str(v) and "%{" not in str(v)
                 for v in fields.values()))
     kms = fields.get("kms_key_id", "*")
     require(isinstance(kms, str) and (kms == "*" or re.fullmatch(
         re.escape(f"arn:aws:kms:{REGION}:{account}:key/") + r"[a-f0-9-]{36}", kms)))
-    return fields
+    return {"encrypt": False, **fields}
+
+
+def state_kms_resource(fields):
+    """A configured state key is active only with Terraform's encrypt=true."""
+    return fields.get("kms_key_id", "*") if fields.get("encrypt", False) else "*"
 
 
 def context(env, *, workload=False):
@@ -93,7 +98,7 @@ def backend_policy(env):
         # Terraform 1.15.7 lists workspace_key_prefix + "/" even for default workspace.
         allow(["s3:ListBucket"], bucket, {"StringEquals": {
             "aws:ResourceAccount": account, "s3:prefix": [fields["key"], prefix + "/"]}}),
-        allow(["kms:Decrypt"], fields.get("kms_key_id", "*"), {"StringEquals": {
+        allow(["kms:Decrypt"], state_kms_resource(fields), {"StringEquals": {
             "aws:ResourceAccount": account, "aws:RequestedRegion": REGION,
             "kms:ViaService": f"s3.{REGION}.amazonaws.com",
             "kms:EncryptionContext:aws:s3:arn": [bucket, state_object]}}),

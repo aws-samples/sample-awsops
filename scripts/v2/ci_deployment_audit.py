@@ -13,7 +13,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from ci_runtime_policy import verify_caller, verify_role
-from ci_verifier_sessions import parse_backend_fields
+from ci_verifier_sessions import parse_backend_fields, state_kms_resource
 
 
 REGION = "ap-northeast-2"
@@ -94,7 +94,7 @@ def backend_policy(env):
     fields = parse_backend_fields(env.get("BACKEND_B64", ""), account, env.get("TF_WORKSPACE", "default"))
     bucket, key = fields["bucket"], fields["key"]
     resources = [f"arn:aws:s3:::{bucket}", f"arn:aws:s3:::{bucket}/{key}"]
-    kms = fields.get("kms_key_id", "*")
+    kms = state_kms_resource(fields)
     return {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": ["sts:GetCallerIdentity"], "Resource": "*",
          "Condition": {"StringEquals": {"aws:RequestedRegion": REGION}}},
