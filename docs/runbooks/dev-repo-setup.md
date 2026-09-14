@@ -885,9 +885,18 @@ preserved; ARNs, credentials, endpoints and raw SDK errors are not relayed.
 ### Storage and role prerequisites
 
 Use the configured backend bucket and its private `backend.hcl` for publication,
-inspection and apply. The backend's `encrypt=true` alone does not establish the
-bucket's default encryption or access controls. This transport requires versioning
-Enabled, all four public-access blocks, BucketOwnerEnforced ownership and default
+inspection and apply. A backend encryption request flag alone does not establish the
+bucket's default encryption or access controls.
+The optional backend `encrypt` field defaults to `false`, matching Terraform, and is
+bound as metadata even when omitted. It does not control private plan-object encryption:
+the helper verifies bucket SSE-KMS and explicitly sets/verifies the upload key.
+The verifier/audit parser uses the same optional boolean semantics. State at-rest
+encryption follows Terraform's request settings and bucket defaults; these metadata
+values are not proof of the active key. With `encrypt=false`, a declared state
+`kms_key_id` is inactive, so verifier/audit KMS reads retain the existing account,
+S3-service and state-context restrictions without selecting that inactive key.
+This transport requires versioning Enabled, all four public-access blocks,
+BucketOwnerEnforced ownership and default
 SSE-KMS in the same account/region. `terraform/bootstrap/main.tf` provisions the
 versioning, public-access blocks and SSE-KMS settings for new state buckets;
 inspect existing bucket ownership and writer compatibility before changing them.
@@ -1037,21 +1046,25 @@ runner/process loss can prevent finalizers. No public summary is full-plan appro
 
 | Diagnostic | Operator check |
 |---|---|
+| `backend_required_fields_missing` | Supply static bucket, key and region fields; `encrypt` and `use_lockfile` are optional booleans whose omitted value is false. |
+| `backend_syntax_invalid` / `backend_field_invalid` | Check the backend file privately for unsupported syntax, unknown fields or duplicate keys. No source line or value is printed. |
+| `invalid_backend` / `backend_binding_mismatch` | Check static value types and normalized backend settings. Changing an encryption boolean or another bound value after publication requires a fresh plan and review; omission and explicit false normalize identically. |
 | `bucket_ownership_missing` | Confirm explicit BucketOwnerEnforced ownership controls with the bucket owner; this workflow does not configure them. |
 | `bucket_public_access_block_missing` | Confirm the bucket's four public-access blocks; missing settings cannot establish private storage. |
 | `s3_access_denied` | Check the selected profile/session, expected bucket owner and scoped S3/KMS permissions privately. No missing-object or empty-state inference is valid. |
 | `bucket_region_mismatch` | Confirm the private backend region matches GetBucketLocation. A failed regional endpoint request is not proof of a match. |
 | `bucket_not_private` / `bucket_not_versioned` | Establish the four public-access blocks and Enabled versioning through the reviewed bucket configuration. |
 | `bucket_ownership_invalid` | Confirm BucketOwnerEnforced ownership; other ownership modes are not supported by this transport. |
-| `bucket_not_sse_kms` / `bucket_encryption_missing` / `bucket_encryption_invalid` | Confirm one supported default SSE-KMS rule; backend `encrypt=true` is not evidence of that setting. |
+| `bucket_not_sse_kms` / `bucket_encryption_missing` / `bucket_encryption_invalid` | Confirm one supported default SSE-KMS rule; a backend request flag is not evidence of that setting. |
 | `backend_key_mismatch` / `bucket_key_invalid` / `bucket_key_unusable` | Check identifier format and the resolved artifact key's account, region, Enabled state and symmetric ENCRYPT_DECRYPT use. Backend state-key metadata is independent. |
 | `kms_access_denied` / `kms_key_missing` | Verify direct DescribeKey authorization and the configured key/alias; no key material is requested. |
 | `bucket_lifecycle_missing` / `bucket_lifecycle_denied` | Confirm an existing lifecycle and GetLifecycleConfiguration permission with the bucket owner; publication and private reads require both. |
 | `bucket_lifecycle_invalid` / `bucket_lifecycle_required` / `bucket_lifecycle_conflict` | Establish the exact plan-only 7/7/1 rule through the owning bootstrap and remove conflicting early expiry/archive rules. Do not bypass the check or broaden expiry to state. |
 | `object_already_exists` / `object_upload_retry_exhausted` | Conditional PUT recovery requires a pinned GET proving exact bytes, hash, length and key; at most three identical PUTs are attempted. Wrong objects are never overwritten. |
 
-These codes come only from the matching AWS S3 operation's exception envelope.
-Other command failures remain generic; provider text is not published. Apply finalizers
+AWS error categories are parsed from the matching S3/KMS operation's exception envelope;
+backend, binding and posture-validation categories are generated locally. Other command
+failures remain generic; provider text is not published. Apply finalizers
 remove only `.private-plan-<current-run>-<current-attempt>-*` under its Terraform directory.
 
 ### Purge expired plan versions

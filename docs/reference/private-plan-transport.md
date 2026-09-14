@@ -30,6 +30,15 @@ parsing accepts only supported static fields and the default workspace. Inspecti
 and restore validate the backend before any command or network request; there is no
 bucket enumeration/discovery fallback. Publication uses the policy mode's validated
 backend store. Callers must protect backend/configuration inputs and generated files.
+The optional backend `encrypt` flag is state-backend metadata, not the artifact
+encryption control. Omission normalizes to Terraform's default `false`; the private
+binding covers normalized backend semantics, so omission and explicit false agree.
+The shared verifier/audit parser uses the same boolean rule. This changes no backend file or
+state encryption setting. Publication and reads still require the private bucket's
+SSE-KMS posture, and uploads explicitly request and verify the resolved KMS key.
+A declared state `kms_key_id` is inactive when `encrypt` is false. It remains bound
+metadata, not proof of the active key. Verifier/audit sessions then use their existing
+account/S3/state-context-restricted KMS wildcard instead of selecting an inactive key.
 
 ### Workflow integration contract
 
@@ -195,6 +204,10 @@ Related decision: ADR-005 — operator-controlled CI transport, not a carve-out.
 
 ## Source
 
+- [Terraform S3 backend configuration](https://developer.hashicorp.com/terraform/language/backend/s3#encrypt):
+  public `encrypt` and `kms_key_id` configuration reference.
+- [Terraform 1.15.7 S3 backend](https://github.com/hashicorp/terraform/blob/v1.15.7/internal/backend/remote-state/s3/backend.go):
+  `encrypt` is optional and `boolAttr` defaults an omitted value to false.
 - [S3 expiration behavior](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-expire-general-considerations.html):
   current/noncurrent versions and asynchronous deletion.
 - [SSE-KMS permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingKMSEncryption.html):
