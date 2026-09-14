@@ -63,21 +63,41 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.15.7
           terraform_wrapper: false
       - name: Validate configured development account
         run: python3 scripts/v2/ci_runtime_policy.py verify-role
+      - name: Build restricted backend session
+        id: backend_session
+        env:
+          BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
+        run: |
+          set -euo pipefail
+          umask 077
+          directory="$(mktemp -d "$RUNNER_TEMP/awsops-verifier-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")"
+          printf 'directory=%s\n' "$directory" >> "$GITHUB_OUTPUT"
+          python3 scripts/v2/ci_verifier_sessions.py backend --directory "$directory"
+          rm -f -- "$directory/backend-policy.json"
       - uses: aws-actions/configure-aws-credentials@v4
+        if: ${{ success() && steps.backend_session.outputs.session_policy != '' }}
         with:
           role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
           aws-region: ap-northeast-2
           mask-aws-account-id: true
           unset-current-credentials: true
+          role-duration-seconds: 1800
+          inline-session-policy: ${{ steps.backend_session.outputs.session_policy }}
       - name: Verify actual development caller
+        env:
+          BACKEND_SESSION_POLICY: ${{ steps.backend_session.outputs.session_policy }}
         run: |
           set -euo pipefail
+          [ -n "${BACKEND_SESSION_POLICY//[[:space:]]/}" ] || { echo "::error::backend_session_policy_missing"; exit 1; }
           aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
             python3 scripts/v2/ci_runtime_policy.py verify-caller
       - name: Restore private development inputs
@@ -109,15 +129,31 @@ jobs:
           echo "url=$(terraform -chdir=terraform/foundation output -raw public_url)" >> "$GITHUB_OUTPUT"
           echo "cloudfront_domain=$(terraform -chdir=terraform/foundation output -raw cloudfront_domain)" >> "$GITHUB_OUTPUT"
       - name: Remove captured Terraform inputs
-        run: rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars
+        if: always()
+        run: |
+          rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars
+          rm -rf terraform/foundation/.terraform
+      - name: Build restricted workload session
+        id: workload_session
+        env:
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+          RUNTIME_DEPLOYMENT_FILE: ${{ steps.runtime.outputs.deployment_file }}
+        run: |
+          set -euo pipefail
+          [ -n "$SMOKE_CREDENTIAL_FILE" ] && [ -n "$RUNTIME_DEPLOYMENT_FILE" ] || exit 1
+          directory="$(dirname -- "$SMOKE_CREDENTIAL_FILE")"
+          python3 scripts/v2/ci_verifier_sessions.py workload --directory "$directory" --deployment-file "$RUNTIME_DEPLOYMENT_FILE"
+          rm -f -- "$directory/workload-policy.json"
       - name: Refresh development credentials for runtime verification
         uses: aws-actions/configure-aws-credentials@v4
+        if: ${{ success() && steps.workload_session.outputs.session_policy != '' }}
         with:
           role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
           aws-region: ap-northeast-2
           mask-aws-account-id: true
           unset-current-credentials: true
           role-duration-seconds: 3600
+          inline-session-policy: ${{ steps.workload_session.outputs.session_policy }}
       - name: Run development collection operation
         timeout-minutes: 55
         env:
@@ -125,12 +161,19 @@ jobs:
           CLOUDFRONT_DOMAIN: ${{ steps.runtime.outputs.cloudfront_domain }}
           SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
           RUNTIME_DEPLOYMENT_FILE: ${{ steps.runtime.outputs.deployment_file }}
-        run: node scripts/v2/ci/runtime-release.mjs run
+          WORKLOAD_SESSION_POLICY: ${{ steps.workload_session.outputs.session_policy }}
+        run: |
+          set -euo pipefail
+          [ -n "${WORKLOAD_SESSION_POLICY//[[:space:]]/}" ] || { echo "::error::workload_session_policy_missing"; exit 1; }
+          node scripts/v2/ci/runtime-release.mjs run
       - name: Clean private development files
         if: always()
         env:
           SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+          BACKEND_POLICY_DIR: ${{ steps.backend_session.outputs.directory }}
         run: |
           set -euo pipefail
           rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars
+          rm -rf terraform/foundation/.terraform
+          if [ -n "$BACKEND_POLICY_DIR" ]; then rm -rf -- "$BACKEND_POLICY_DIR"; fi
           node scripts/v2/prepare-smoke-credentials.mjs --cleanup

@@ -226,24 +226,17 @@ eventually fail the rolling freshness bound. Inspect collector execution and per
 separately; a timeout does not identify dropped events. Capacity or permission repairs remain
 separate reviewed operations. No type is omitted to make the gate pass.
 
-Both verification steps have a 55-minute workflow cap with a fresh one-hour session for the same configured role; the manual job allows 75 minutes including setup. These are outer limits, not promises that every combination of slow calls will fit. Restored Terraform inputs are deleted immediately after capture, with final cleanup retained as a fallback. No schedule, feature flag or infrastructure setting is changed by the verifier.
+Both verification steps have a 55-minute cap; manual verification uses a restricted 30-minute backend session followed by a restricted one-hour workload session of the same configured role. The manual job allows 75 minutes including setup. These are outer limits, not promises that every combination of slow calls will fit. Restored Terraform inputs and backend metadata are deleted immediately after capture, with final cleanup retained. The verifier changes no schedule, feature flag or infrastructure setting.
 
 <a id="deployer-verification-permissions--deployer-검증-권한"></a>
 
 ### Deployer verification permissions
 
-The configured dev deployer needs these scopes before the first gated release. They supplement the existing build/pin/roll permissions; this controller does not grant IAM. Replace placeholders with the independently configured account, deployment region and project. Never grant wildcard Lambda invocation to pass the gate.
-
-| Action | Resource / condition |
-|---|---|
-| `ecr:BatchGetImage` | `arn:aws:ecr:<region>:<account>:repository/<project>-web` |
-| `ecs:DescribeServices` | `arn:aws:ecs:<region>:<account>:service/<project>/<project>-web` |
-| `ecs:DescribeTasks` | `arn:aws:ecs:<region>:<account>:task/<project>/*` |
-| `ecs:ListTasks` | `Resource: "*"`; `ArnEquals` `ecs:cluster` = `arn:aws:ecs:<region>:<account>:cluster/<project>` and deployment `aws:RequestedRegion` |
-| `ecs:DescribeTaskDefinition` | `Resource: "*"` with deployment `aws:RequestedRegion`; AWS defines no task-definition resource scope for this action |
-| `lambda:GetFunctionConfiguration`, `lambda:InvokeFunction` | `arn:aws:lambda:<region>:<account>:function:<project>-inv-sync` only, for catalog discovery and the bounded CloudFront probe |
-
-ListTasks is constrained by its cluster condition for this Fargate/service query; do not substitute task-definition ARNs for unsupported resource scoping. STS caller verification remains mandatory. An API failure means access is unverified, not permission to broaden grants. Scope references: `https://docs.aws.amazon.com/service-authorization/latest/reference/list_ecs.html` and `https://docs.aws.amazon.com/service-authorization/latest/reference/list_lambda.html`.
+The [session contract](runtime-verifier-sessions.md#action-and-integration-contract)
+defines backend S3/KMS and workload ECS/ECR/owned-Lambda permissions and action-specific
+resource/region conditions. The manual workflow requires each exact nonempty policy;
+it cannot fall back to the deployer's unrestricted session. STS caller verification
+remains mandatory. The controller grants no IAM; a denied read is not permission to widen scope.
 
 <a id="related--관련"></a>
 

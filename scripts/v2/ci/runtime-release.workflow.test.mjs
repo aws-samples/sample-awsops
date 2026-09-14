@@ -93,6 +93,42 @@ test('manual collection removes restored Terraform secrets immediately after cap
   assert.equal(named(job, 'Clean private development files').if, 'always()');
 });
 
+test('manual verification requires separate backend and workload session policies', () => {
+  const job = workflow('collect-runtime.yml').jobs.verify;
+  const assumes = job.steps.filter(s => s.uses?.startsWith('aws-actions/configure-aws-credentials'));
+  assert.equal(assumes.length, 2);
+  for (const [step, phase, duration] of [[assumes[0], 'backend_session', 1800],
+    [assumes[1], 'workload_session', 3600]]) {
+    assert.equal(step.with['inline-session-policy'], `\${{ steps.${phase}.outputs.session_policy }}`);
+    assert.equal(step.if, `\${{ success() && steps.${phase}.outputs.session_policy != '' }}`);
+    assert.equal(step.with['role-duration-seconds'], duration);
+    assert.equal(step.with['unset-current-credentials'], true);
+    assert.ok(job.steps.findIndex(s => s.id === phase) < job.steps.indexOf(step));
+  }
+  assert.ok(job.steps.findIndex(s => s.id === 'backend_session') <
+    job.steps.indexOf(named(job, 'Restore private development inputs')));
+  assert.ok(job.steps.indexOf(named(job, 'Remove captured Terraform inputs')) <
+    job.steps.findIndex(s => s.id === 'workload_session'));
+});
+
+test('missing session policy fails before caller or runtime commands can run', () => {
+  const job = workflow('collect-runtime.yml').jobs.verify;
+  for (const [name, variable] of [
+    ['Verify actual development caller', 'BACKEND_SESSION_POLICY'],
+    ['Run development collection operation', 'WORKLOAD_SESSION_POLICY'],
+  ]) {
+    const guarded = 'aws(){ echo UNGUARDED_COMMAND >&2; exit 9; }\n'
+      + 'node(){ echo UNGUARDED_COMMAND >&2; exit 9; }\n' + named(job, name).run;
+    const r = spawnSync('bash', ['-euo', 'pipefail', '-c', guarded], {
+      cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH, [variable]: '',
+        AWS_EC2_METADATA_DISABLED: 'true', AWS_CONFIG_FILE: '/dev/null',
+        AWS_SHARED_CREDENTIALS_FILE: '/dev/null' },
+    });
+    assert.notEqual(r.status, 0);
+    assert.doesNotMatch(r.stderr, /UNGUARDED_COMMAND/);
+  }
+});
+
 test('verification refreshes the same dev role after setup and stays within the new session', () => {
   for (const [file, jobName, gateName] of [['collect-runtime.yml', 'verify', 'Run development collection operation'],
     ['deploy-web.yml', 'deploy', 'Authenticated development runtime readiness']]) {

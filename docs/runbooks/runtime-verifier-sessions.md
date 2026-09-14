@@ -6,11 +6,9 @@ A manual development verifier cannot create its session policy, or its deployer
 credentials permit operations beyond the controller's command allowlist.
 Application-level allowlists do not restrict the underlying AWS session.
 
-This is a **prerequisite**, not a deployed collection workflow. The proposed
-`collect-runtime.yml` and `ci/runtime-release.mjs` consumer land separately;
-they are not added by the policy-helper change. Their final workflow wiring must
-be reviewed after integration. Do not infer that a manual dispatch is available
-from the presence of this helper.
+The manual [collection workflow](../../.github/workflows/collect-runtime.yml) uses
+these policies for existing-web preparation and runtime verification. Policy creation
+is not a deployment, an IAM grant or proof of readiness.
 
 ## Candidate causes
 
@@ -78,7 +76,7 @@ Only same-repository manual dev dispatches with
 are accepted. `CI_ROLE_ARN` is the configured deployer role and
 `BACKEND_B64` is the private encoded backend input used only by the backend phase.
 
-The follow-up workflow must:
+The workflow must:
 
 1. Validate the manual dev source, configured role/account and mode before AWS
    access. Use fresh per-run private directories and files with 0700/0600 permissions.

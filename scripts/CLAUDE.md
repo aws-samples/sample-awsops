@@ -243,15 +243,12 @@ with cloudfront included. The utility alone does not wire a deployment workflow.
 
 ## Development release controller
 
-`v2/ci/runtime-release.mjs` validates account/role, running web revision/digest/ARM64 and
-owned inventory Lambda code before dispatch. Every dev Deploy Web release requires its
-private hostOnly verify configuration, fresh collection and actual web-role/runtime/worker
-proof, regardless of `verify_database`. Manual collect-runtime prepare accepts disabled backends
-and reports prepared, never ready; it requires an existing working web stack. Collect requires
-the deployed web image SHA. New stacks need a separate reviewed bootstrap procedure. Typed authenticated-smoke failures retain sanitized diagnostics; other errors
-remain generic. All private credentials/configuration/scratch are covered by cleanup.
-
-The collector identity uses the configured archive `source_code_hash` from the applied output,
-compared with live `CodeSha256`; a stale provider observation is not the expected-code authority.
-
-Release mode reads the code-checked catalog and invokes only the owned CloudFront collector. The owned CloudFront response must succeed with zero unknowns; its known record and durable last success remain post-marker. Capture actual runtime proof before the catalog wait; later CloudFront attempts disclose degradation without revoking that proof; other catalog types require last success within thirty minutes of observation. Newer running/partial/failed attempts and unknown attributes are disclosed as degraded, with completeness always unknown. Missing/stale or malformed catalog evidence blocks; standalone smoke remains strict for all supplied types. SSM/model and both owned worker proofs are mandatory. Catalog/probe budgets remain 450/900 seconds; release polling is twenty minutes, standalone ten. Only confirmed throttling/busy/superseded probe outcomes retry. See docs/runbooks/runtime-foundation.md for timing, cleanup and existing-stack adoption; no scheduler or IAM repair is performed.
+Every dev Deploy Web release uses `v2/ci/runtime-release.mjs`: verify the running web
+identity/image and collector code, then require owned CloudFront, SSM/AgentCore/model
+and both Lambda/Fargate proofs. Manual prepare checks existing web/host registration;
+it is neither first-web bootstrap nor readiness. No password reset or admin promotion.
+The [runtime contract](../docs/runbooks/runtime-foundation.md#collection-contention--수집-경합)
+defines post-marker CloudFront proof, thirty-minute catalog success, disclosed degradation,
+unknown completeness and the single confirmed-contention retry. Keep all required proofs.
+Manual verification uses separate mandatory backend/workload session policies and private
+credential/configuration cleanup; see [session scope](../docs/runbooks/runtime-verifier-sessions.md).
