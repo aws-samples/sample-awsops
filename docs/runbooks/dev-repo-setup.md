@@ -336,8 +336,10 @@ anything carrying the account id live in repo **secrets** (auto-masked in
 logs), never variables; every credentials step sets `mask-aws-account-id`.
 Cognito users: dev/preview stacks get the shared regular **demo user**
 (`demo_email` defaults to `demo@awsops.local`; its password rides as the
-`TF_VAR_DEMO_PASSWORD` repo secret, bound as `TF_VAR_demo_password` only in
-Terraform's plan step and Deploy Web's opt-in private credential-preparation step).
+`TF_VAR_DEMO_PASSWORD` repo secret, bound as `TF_VAR_demo_password` in Terraform's
+plan and private host-credential preparation steps, and in the credential-preparation
+steps of Deploy Web and manual `collect-runtime.yml`). Each binding is step-scoped;
+the credential helper publishes only a private file path, never the password.
 `create_demo_user` defaults to
 **false** (fail-closed): a dev-tier stack opts in with `create_demo_user =
 true` in its tfvars blob, so the shared credential can never reach a stack —
@@ -849,6 +851,8 @@ The DNS/provenance scripts run from the deployment ref. They are safety checks f
 code, not a security boundary against changes to that ref; normal review and environment
 protections remain required.
 
+Full controller verification also requires the narrowly scoped ECS/Lambda reads and owned sync invocation in [deployer verification permissions](runtime-foundation.md#deployer-verification-permissions--deployer-검증-권한). The pre-mutation feature check and existing-stack rollout order are documented there.
+
 #### AgentCore provisioner Python
 
 In the deploy job (after the separate private migration job), Deploy AgentCore prepares a private Python 3.12 virtual environment before that job's AWS credential setup and agent image build. `requirements-provision.txt` pins the host SDK closure by version and hash. `setup-provision-python.py` derives control-plane operations from the provisioner's `ctrl` references and runtime operations from `smoke`, verifies model availability and exact SDK versions, and imports the provisioner through `--help` without AWS credentials. This checks local SDK compatibility, not live IAM, quotas, input-shape compatibility or runtime health.
@@ -1333,37 +1337,29 @@ The manual controller adds no product autonomy or DNS exception.
 For a provisioned dev stack, the web workflow should build, pin, roll and pass the
 Host/SNI-preserving smoke through `cloudfront_domain`, even before `public_url` resolves.
 For production, dispatch Deploy Web from the reviewed main commit through the normal
-environment approval. Health is process liveness, not proof that migrations/authenticated
-routes work. Inspect certificate preflight and plan-gate output; a DNS refusal or moved
+environment approval. Standalone health is process liveness only. Every dev Deploy Web release additionally requires
+the full authenticated runtime gate; complete [runtime adoption](runtime-foundation.md#required-development-release-check--개발-배포-필수-검증) before dispatch or service A publication. Inspect certificate preflight and plan-gate output; a DNS refusal or moved
 branch requires investigation and a fresh plan, never bypassing checks.
 
 <a id="runtime-probe-capability--런타임-검증-기능"></a>
 
 ### Runtime probe capability
 
-For verify, apply `agentcore_enabled=true` and `ci_readiness_enabled=true`, then provision AgentCore.
+Before the first mandatory dev release gate, explicitly opt in with `CI_READINESS_ENABLED_DEV=true`
+(or explicit operator `ci_readiness_enabled=true` configuration when the override is unset),
+apply it with `agentcore_enabled=true`, then provision AgentCore. `CI_READONLY_RUNTIME_DEV`
+alone never enables readiness. See [runtime adoption](runtime-foundation.md#required-development-release-check--개발-배포-필수-검증).
 Only applied output sets `DEPLOYMENT_READINESS_ENABLED`; false/missing yields `runtime_disabled`, ignoring shell overrides.
 Also enable `steampipe_enabled=true`, `workers_enabled=true` and dispatch, and deploy inventory/ARM64
 worker images as described in [worker deployment](../reference/06-workers.md).
+Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway
+schema first. The web scan is capped at 500 rows; not finding the ID does not prove absence.
+The [collection contract](runtime-foundation.md#collection-contention--수집-경합) requires complete post-marker success with known counts and zero unknown attributes for every current catalog type, a fresh known CloudFront record and runtime/worker proof. Missing, partial, failed, stale or unknown evidence blocks release. See also [runtime endpoint authorization](../reference/05-agentcore.md).
 
-Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway schema first.
-The web API scan remains capped at 500 rows. Failures distinguish `known_resource_unverified`,
-`collection_partial`, `collection_failed`, `collection_missing` after waiting, and `inventory_incomplete`.
-The optional-mode paragraph below also defines `collection_stale`, `release_timeout` and
-`runtime_inventory_contention`.
-Degraded inventory never passes release readiness. A missing match is not proof that the resource is absent in AWS.
+`SMOKE_RUNTIME_CONFIG_FILE` is an absolute 0600 JSON file beside credentials in a 0700 directory. Normal finalizers clean both; process or runner loss can prevent cleanup. The file is limited to 16 KiB, and verify requires a marker no older than thirty minutes and unique types including cloudfront. Verification itself expires at marker plus thirty minutes, or an earlier caller deadline.
+Every dev Deploy Web release supplies the applied deployment, code-checked catalog and synchronous collection evidence for every type. The legacy `verify_database` input cannot skip this gate.
 
-`SMOKE_RUNTIME_CONFIG_FILE` is an absolute 0600 JSON file beside credentials in the same 0700 directory;
-Normal finalizers cover both; process or runner loss can prevent cleanup. The 16 KiB cap,
-30-minute verify window and unique type list including cloudfront are required.
-The release controller must supply actual deployment/dispatch evidence; current Deploy Web remains DB-only.
-
-`schemaVersion: 1`, `mode: "prepare"` and `expectedAccountId` check login/DB and the enabled host.
-Optional `hostOnly: true` also rejects enabled members. Verify adds `expectedCloudfrontId`,
-caller-supplied `expectedQueuedTypes` and the pre-dispatch `collectionStartedAt`, from applied
-deployment and owned Lambda evidence. It requires fresh complete collection, web SSM/runtime calls
-and succeeded Lambda/Fargate jobs. Missing/partial/stale is never healthy zero; deploy the updated
-inventory-reader Lambda so legacy NULL attribute coverage is disclosed as incomplete.
+`schemaVersion: 1`, `mode: "prepare"` and `expectedAccountId` check login/DB and the enabled host. Optional `hostOnly: true` also rejects enabled members. Verify adds `expectedCloudfrontId`, the full catalog in `expectedQueuedTypes` and the pre-collection `collectionStartedAt`. The controller selects full policy and release mode; all types still require clean post-marker success. Web-role SSM/runtime/model calls and succeeded Lambda/Fargate jobs remain mandatory. Legacy NULL attribute coverage is unassessed, never healthy zero.
 
 Verify also accepts `inventoryPolicy: "full"` and `collectionMode: "release"`; prepare rejects
 both. Only those values are supported. The policy adds structured quality/gaps for
@@ -1394,7 +1390,10 @@ Membership is added only for the Terraform-managed demo when `create_demo_user=t
 unmanaged identity is enrolled, and no admin membership or IAM role is granted. Public CI rejects
 readiness outside dev. Use the separate CI_READINESS_ENABLED_DEV decision or explicit operator
 Terraform configuration; the runtime profile is not authorization for this billed capability.
-Use a fresh login after membership changes; one in-flight call and a 60-second process cooldown apply.
+The release controller verifies authenticated readiness access; it does not inspect or create
+the live group/membership resources. Do not separately
+create a Terraform-managed verifier group. Use a fresh login after membership changes; one
+in-flight call and a 60-second process cooldown apply.
 
 If the group or managed-demo membership already exists, adopt it through a reviewed import before
 apply rather than deleting/recreating it: group ID `<pool-id>/deployment-verifiers`, membership ID
@@ -1403,14 +1402,15 @@ Disabling readiness or AgentCore removes the managed group/membership on a subse
 it does not reset passwords or delete the demo user. Existing ID tokens keep their group claims
 until expiry (up to the configured 12 hours) unless session revocation rejects them. Runtime
 disablement independently blocks the probe; membership removal alone is not immediate token
-revocation. See [revocation details](runtime-foundation.md#readiness-capability).
+revocation. See [revocation details](runtime-foundation.md#readiness-capability) and the
+[reviewed adoption procedure](runtime-foundation.md#adopting-an-existing-verifier-group--기존-검증-그룹-채택).
 
 <a id="authenticated-database-verification--인증된-db-검증"></a>
 
 ### Authenticated database verification
 
-After the required database migrations succeed, run **Deploy Web** on `dev` with
-`verify_database=true`. Before dispatch, ensure the reviewed Terraform saved-plan apply
+After the required database migrations succeed, run **Deploy Web** on `dev`; full runtime
+verification is mandatory regardless of the legacy verify_database input. Before dispatch, ensure the reviewed Terraform saved-plan apply
 has persisted the new **`demo_username` output** in dev state. A plan alone does not
 persist it. The restored `TF_TFVARS_DEV` must enable `create_demo_user=true`, and its
 effective `demo_email` must exactly match that applied username.
@@ -1436,9 +1436,9 @@ may accompany phase errors; response bodies, cookies and Terraform diagnostics s
 
 ```bash
 # After successful migration; use the already-built image for this reviewed dev HEAD:
-gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f verify_database=true
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev
 # If this HEAD's web image still needs building, use this instead:
-gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true -f verify_database=true
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true
 ```
 
 Require ECS stability and the normal `/api/health` smoke, then **POST `/api/auth/login`**
@@ -1447,8 +1447,7 @@ with HTTP **200**, boolean **`ok: true`** and a usable secure host-specific
 **200**, **`status: "ok"`** and a **positive safe-integer `public_tables`**. Both requests
 retain service Host/SNI and TLS verification through CloudFront; neither follows
 redirects. These checks verify login and the BFF's database connection/table presence,
-not the entire migration ledger. `verify_database=false` retains the ordinary health-only
-deployment path.
+not the entire migration ledger. Dev deployments additionally require full runtime verification regardless of verify_database.
 
 A configured credential can still be stale: only the post-rollout login validates the
 actual password. If login fails, inspect the existing identity and protected credential
@@ -1460,7 +1459,7 @@ Troubleshoot by phase and safe status: login 401 points to the configured creden
 Cognito user/challenge state; 502 to its upstream connection. Database 503 points to missing
 service configuration; 500 to database credentials, IAM or connectivity. A transport/TLS failure
 may have no HTTP response. Inspect private application logs; never print response bodies or
-reset a password to make a check pass. Opt-in preparation performs its own bounded private
+reset a password to make a check pass. Required dev preparation performs its own bounded private
 Terraform init (10 minutes) before output/console (2 minutes each); it must finish before
 image pinning or rollout.
 

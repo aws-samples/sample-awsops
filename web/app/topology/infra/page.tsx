@@ -10,7 +10,8 @@ import '@xyflow/react/dist/style.css';
 import PageHeader from '@/components/ui/PageHeader';
 import GraphCollectionStatus from '@/components/topology/GraphCollectionStatus';
 import { useI18n } from '@/components/shell/LanguageProvider';
-import { fetchGraph } from '@/lib/graph-fetch';
+import { fetchGraph, GraphFetchError, type GraphFetchFailure } from '@/lib/graph-fetch';
+import GraphReadError from '@/components/topology/GraphReadError';
 import { layoutFlow } from '@/lib/flow-layout';
 import InfraMapView from '@/components/topology/InfraMapView';
 import K8sMapView from '@/components/topology/K8sMapView';
@@ -45,7 +46,7 @@ function GraphView({ q }: { q: string }) {
   const { tt } = useI18n();
   const [activeAccount] = useActiveAccount();
   const [graph, setGraph] = useState<Graph | null>(null);
-  const [err, setErr] = useState('');
+  const [err, setErr] = useState<GraphFetchFailure | null>(null);
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
 
@@ -55,10 +56,11 @@ function GraphView({ q }: { q: string }) {
     let live = true;
     const controller = new AbortController();
     setBusy(true);
+    setErr(null);
     setGraph(null);
     fetchGraph(`/api/graph?class=infra&${accountParam(activeAccount) || 'account=self'}`, controller.signal)
-      .then((d) => { if (live) { setGraph(d); setErr(''); } })
-      .catch((e) => { if (live) setErr(String(e instanceof Error ? e.message : e)); })
+      .then((d) => { if (live) { setGraph(d); setErr(null); } })
+      .catch((e) => { if (live) { setGraph(null); setErr(e instanceof GraphFetchError ? e.reason : 'rejected'); } })
       .finally(() => { if (live) setBusy(false); });
     return () => { live = false; controller.abort(); };
   }, [activeAccount, revision]);
@@ -116,9 +118,9 @@ function GraphView({ q }: { q: string }) {
   return (
     <>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-1 text-[11px] text-ink-500">
-        <button type="button" disabled={busy} onClick={() => setRevision(n => n + 1)} className="rounded border border-ink-200 px-2 py-1 disabled:opacity-50">{tt('새로고침')}</button>
+        <button type="button" disabled={busy || err !== null} onClick={() => setRevision(n => n + 1)} className="rounded border border-ink-200 px-2 py-1 disabled:opacity-50">{tt('새로고침')}</button>
         {busy && <span>{tt('불러오는 중…')}</span>}
-        {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
+        {err && <GraphReadError reason={err} />}
         {graph && !unavailable && <span>{tt(`노드 ${graph.nodes.length.toLocaleString()} · 엣지 ${graph.edges.length.toLocaleString()}`)}</span>}
         {q.trim() && <span className="font-semibold text-brand-700">{tt(`매치 ${matches.size}개`)}</span>}
         {LEGEND.map((l) => {

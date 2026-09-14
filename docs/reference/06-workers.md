@@ -21,6 +21,10 @@ same read-only substrate, not an escalation path for mutating actions.
 영구 동결(FROZEN, do-not-enable)이며, 향후 추가되는 비동기 작업도 같은 read-only substrate 안에
 머문다(mutate 작업으로 가는 확장 경로가 아니다).
 
+## Development release proof
+
+After runtime/readiness activation, every dev Deploy Web release submits one owned `noop` Lambda job and one owned `noop-heavy` Fargate job through the authenticated application. Both must reach `succeeded` with matching identity/runtime and a successful result after complete catalog and AgentCore/model proof. These are real, billed executions; enqueue acknowledgement does not pass. Worker dispatch must remain enabled for this gate. See the [runtime release contract](../runbooks/runtime-foundation.md#collection-contention--수집-경합).
+
 ## Current design / 현행 설계
 
 **Flow / 흐름**

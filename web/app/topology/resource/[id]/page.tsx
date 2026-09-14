@@ -8,7 +8,8 @@ import { Background, Controls, Position, type Node, type Edge } from '@xyflow/re
 import '@xyflow/react/dist/style.css';
 import PageHeader from '@/components/ui/PageHeader';
 import GraphCollectionStatus from '@/components/topology/GraphCollectionStatus';
-import { fetchGraph } from '@/lib/graph-fetch';
+import { fetchGraph, GraphFetchError, type GraphFetchFailure } from '@/lib/graph-fetch';
+import GraphReadError from '@/components/topology/GraphReadError';
 import { layoutFlow } from '@/lib/flow-layout';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
@@ -37,7 +38,7 @@ export default function ResourceTopologyPage({ params }: { params: { id: string 
   const [activeAccount] = useActiveAccount();
   const [depth, setDepth] = useState(2);
   const [graph, setGraph] = useState<Graph | null>(null);
-  const [err, setErr] = useState('');
+  const [err, setErr] = useState<GraphFetchFailure | null>(null);
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
 
@@ -47,10 +48,11 @@ export default function ResourceTopologyPage({ params }: { params: { id: string 
     let live = true;
     const controller = new AbortController();
     setBusy(true);
+    setErr(null);
     setGraph(null);
     fetchGraph(`/api/graph?class=infra&from=${encodeURIComponent(fromId)}&depth=${depth}&${accountParam(activeAccount) || 'account=self'}`, controller.signal)
-      .then((d) => { if (live) { setGraph(d); setErr(''); } })
-      .catch((e) => { if (live) setErr(String(e instanceof Error ? e.message : e)); })
+      .then((d) => { if (live) { setGraph(d); setErr(null); } })
+      .catch((e) => { if (live) { setGraph(null); setErr(e instanceof GraphFetchError ? e.reason : 'rejected'); } })
       .finally(() => { if (live) setBusy(false); });
     return () => { live = false; controller.abort(); };
   }, [fromId, depth, activeAccount, revision]);
@@ -108,9 +110,9 @@ export default function ResourceTopologyPage({ params }: { params: { id: string 
         }
       />
       <div className="flex items-center gap-3 px-4 py-1 text-[11px] text-ink-500">
-        <button type="button" disabled={busy} onClick={() => setRevision(n => n + 1)} className="rounded border border-ink-200 px-2 py-1 disabled:opacity-50">{tt('새로고침')}</button>
+        <button type="button" disabled={busy || err !== null} onClick={() => setRevision(n => n + 1)} className="rounded border border-ink-200 px-2 py-1 disabled:opacity-50">{tt('새로고침')}</button>
         {busy && <span>{tt('불러오는 중…')}</span>}
-        {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
+        {err && <GraphReadError reason={err} />}
         {graph?.captured_at && <span>{tt('그래프 시점:')} {new Date(graph.captured_at).toLocaleString()}</span>}
         {graph?.capped && <span className="text-amber-600">{tt('일부 허브는 이웃이 많아 상위 일부만 표시됩니다 (cap).')}</span>}
         {graph && !unavailable && graph.nodes.length === 0 && !busy && <span>{tt('표시할 관계 노드가 없습니다. 수집 상태를 확인하세요.')}</span>}

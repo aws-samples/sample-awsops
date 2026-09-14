@@ -1,0 +1,21 @@
+{
+  "cli_version": "aws-cli/2.35.11",
+  "platform": "Linux/aarch64",
+  "operation": "GetBucketPolicyStatus",
+  "error_code": "NoSuchBucketPolicy",
+  "exit_code": 254,
+  "environment": {
+    "AWS_MAX_ATTEMPTS": "1",
+    "AWS_CLI_AUTO_PROMPT": "off",
+    "AWS_PAGER": ""
+  },
+  "transport": "non-TTY stdout/stderr pipes; --output json; explicit regional endpoint and timeouts; profile and resource values omitted",
+  "fixture": "2.35.11-max-attempts-1-no-policy.stderr",
+  "sha256": "2b534f0b6b52fffe56d1ec524e7575ee62e2cb42ee94363fffe9cade77de7fee",
+  "redactions": "None. The captured error contains no account, bucket, state-key, credential or endpoint value.",
+  "scope": "Observed output using the private-plan child environment; the retry annotation does not authorize another API attempt.",
+  "upstream_sources": [
+    "https://github.com/boto/botocore/blob/1.42.97/botocore/exceptions.py",
+    "https://github.com/aws/aws-cli/blob/2.36.44/awscli/errorhandler.py"
+  ]
+}
