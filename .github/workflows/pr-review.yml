@@ -498,13 +498,31 @@ jobs:
 
       - name: Check for blocking issues
         id: gate
+        if: always() && !cancelled() && steps.review_context.outcome == 'success' && steps.diff.outcome == 'success'
+        env:
+          IMAGE_STAGE_OUTCOME: ${{ steps.head_images.outcome }}
+          PANEL_OUTCOME: ${{ steps.panel_review.outcome }}
+          CHAIR_OUTCOME: ${{ steps.chair_review.outcome }}
         run: |
           # Fail-closed first: if an oversized line was dropped from a real source/IaC file (not a
           # known generated/export type), no lens saw that content — force BLOCKED regardless of the
           # chair's VERDICT, matching the pre-cap behaviour where the oversized line failed the job.
-          if [ -n "${omitted_source_paths:-}" ]; then
+          if [ "$IMAGE_STAGE_OUTCOME" != "success" ]; then
+            printf '%s\n' "HEAD image evidence preparation failed (trust or IO error). Review incomplete; not an application finding." "IMAGE_COVERAGE: FAILED" "VERDICT: FAIL" > /tmp/review.md
+            echo "image_coverage_failed=1" >> "$GITHUB_ENV"
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            echo "reason=HEAD image evidence unavailable" >> "$GITHUB_OUTPUT"
+          elif [ "$PANEL_OUTCOME" != "success" ] || [ "$CHAIR_OUTCOME" != "success" ]; then
+            printf '%s\n' "Review preparation failed; required panel/chair execution is incomplete. This is not an application finding." "VERDICT: FAIL" > /tmp/review.md
+            echo "chair_failed=1" >> "$GITHUB_ENV"
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            echo "reason=Required review execution incomplete" >> "$GITHUB_OUTPUT"
+          elif [ -n "${omitted_source_paths:-}" ]; then
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=oversized line(s) omitted from reviewable source/IaC file(s): ${omitted_source_paths} — no lens saw them, fail-closed" >> "$GITHUB_OUTPUT"
+          elif [ "${image_coverage_failed:-0}" = "1" ]; then
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            echo "reason=Image coverage unavailable — review incomplete, not an application finding" >> "$GITHUB_OUTPUT"
           elif grep -q "^VERDICT: FAIL$" /tmp/review.md; then
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=VERDICT: FAIL" >> "$GITHUB_OUTPUT"
@@ -517,6 +535,7 @@ jobs:
           fi
 
       - name: Post review comment (upsert)
+        if: always() && !cancelled() && steps.gate.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.review_context.outputs.number }}
@@ -530,7 +549,9 @@ jobs:
             exit 1
           fi
           MARKER="<!-- multi-ai-pr-review -->"
-          if [ "$GATE_RESULT" = "fail" ] && [ "${chair_failed:-0}" = "1" ]; then
+          if [ "$GATE_RESULT" = "fail" ] && [ "${image_coverage_failed:-0}" = "1" ]; then
+            STATUS_BADGE="**Status: BLOCKED** — image coverage unavailable; review incomplete, not an application finding"
+          elif [ "$GATE_RESULT" = "fail" ] && [ "${chair_failed:-0}" = "1" ]; then
             # The chair (both Fable 5 and Opus 5) failed to produce a review due to a
             # timeout/connection error — still BLOCKED (fail-closed), but this does NOT mean
             # the code has a CRITICAL/MAJOR, so the message says so distinctly
@@ -568,7 +589,7 @@ jobs:
           fi
 
       - name: Fail if CRITICAL or MAJOR
-        if: steps.gate.outputs.result == 'fail'
+        if: always() && steps.gate.outputs.result == 'fail'
         run: |
           echo "AI Review failed: ${{ steps.gate.outputs.reason }}"
           exit 1
@@ -582,7 +603,18 @@ jobs:
           if [ -n "$HEAD_PNG_ROOT" ]; then
             case "$HEAD_PNG_ROOT" in
               "$RUNNER_TEMP"/pr-review-head-png.*)
-                chmod u+w "$HEAD_PNG_ROOT/images" 2>/dev/null || true
+                python3 - "$HEAD_PNG_ROOT/images" <<'PY'
+          import os, sys
+          try:
+              fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+          except FileNotFoundError:
+              pass
+          else:
+              try:
+                  os.fchmod(fd, 0o700)
+              finally:
+                  os.close(fd)
+          PY
                 rm -rf -- "$HEAD_PNG_ROOT"
                 ;;
               *) echo "::error::Unexpected HEAD PNG cleanup path"; exit 1 ;;

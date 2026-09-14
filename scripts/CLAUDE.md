@@ -255,10 +255,17 @@ secrets-manager) — installed by `make deps`.
   per lens), `synthesize.sh` (chair synthesis), `lib.sh` (slot/credential scrubbing).
   `review_context.py` pins the trusted CI checkout and reviewed PR/base metadata.
   `stage_head_pngs.py` stages bounded regular HEAD PNG Git blobs as read-only data before
-  review credentials; every panel lens and chair receives the same manifest/paths.
+  review credentials; prompts use 200-character safe path labels, exact names stay in JSON data.
+  Codex receives hash-checked `--image` attachments; Claude Read uses the same generated files.
   BASE pixels are historical, never replacement evidence for changed HEAD images.
+  `image_coverage.py` validates bounded full reports before truncation/verdict: each of
+  eight cells plus chair must declare plain `IMAGE_COVERAGE: COMPLETE` when images
+  are staged. Explicit failure always blocks; quoted/fenced/prose examples do not count.
   Missing/unsupported required image evidence fails coverage; no finding suppression,
   HEAD execution or added permissions. See `docs/runbooks/pr-review-head-images.md`.
+  Per-entry unavailable evidence preserves good files and publishes a deterministic FAIL.
+  Preparation faults also reach a fixed failure comment after context/diff validation.
+  The existing panel-prompt structure runner executes both pipeline and image fixture suites.
   `v2/ci_review_access.py` produces the protected-environment/IAM trust plan without API writes.
   - **Every Claude panel/chair call MUST pass `--strict-mcp-config`.** A user-scope MCP server (e.g. github)
     loads at session init; if its auth is broken, `claude -p` waits silently for the tool until

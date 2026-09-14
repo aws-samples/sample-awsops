@@ -7,8 +7,15 @@ DIFF="$1"; LENSES_DIR="$2"; WORK="$3"
 DIR="$(cd "$(dirname "$0")" && pwd)"; . "$DIR/lib.sh"
 ensure_slots "$WORK"
 SLOT="$WORK/slot"; RESP="$WORK/responded.txt"; : > "$RESP"
-rm -f "$WORK/coverage-severe.flag"
+rm -f "$WORK/coverage-severe.flag" "$WORK/image-coverage-failed.flag"
 HEAD_PNG_PROMPT="$(head_png_context)" || { : > "$WORK/coverage-severe.flag"; exit 1; }
+HEAD_PNG_REQUIRED="$(head_png_required)" || { mark_image_coverage_failure "manifest"; exit 1; }
+HEAD_PNG_UNAVAILABLE="$(head_png_unavailable)" || { mark_image_coverage_failure "manifest"; exit 1; }
+[ "$HEAD_PNG_UNAVAILABLE" = "0" ] || mark_image_coverage_failure "unavailable evidence"
+head_png_attachments > "$WORK/head-image-paths.bin" || { mark_image_coverage_failure "attachments"; exit 1; }
+mapfile -d '' -t HEAD_IMAGE_FILES < "$WORK/head-image-paths.bin"
+CODEX_IMAGE_ARGS=()
+for image in "${HEAD_IMAGE_FILES[@]}"; do CODEX_IMAGE_ARGS+=(--image "$image"); done
 T="${PANEL_TIMEOUT:-300}"
 CLAUDE_TIMEOUT="${CLAUDE_PANEL_TIMEOUT:-600}"
 CLAUDE_L2_TIMEOUT="${CLAUDE_PANEL_L2_TIMEOUT:-$CLAUDE_TIMEOUT}"
@@ -53,7 +60,8 @@ for lens_file in "${LENS_FILES[@]}"; do
   if command -v codex >/dev/null 2>&1; then
     ( try_panel "$SLOT/codex-$lens.md" "$SLOT/codex-$lens.err" \
         env AWS_REGION="${CODEX_AWS_REGION:-us-east-1}" AWS_DEFAULT_REGION="${CODEX_AWS_REGION:-us-east-1}" \
-        timeout --kill-after="$KILL_AFTER" "$T" codex exec -s read-only --skip-git-repo-check "$LENS_PROMPT" ) &
+        timeout --kill-after="$KILL_AFTER" "$T" codex exec -s read-only --skip-git-repo-check \
+          "${CODEX_IMAGE_ARGS[@]}" -- "$LENS_PROMPT" ) &
   else echo "[skip] codex/$lens (binary absent)" >&2; : > "$SLOT/codex-$lens.md"; fi
 
   if command -v claude >/dev/null 2>&1; then

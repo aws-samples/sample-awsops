@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: adfa7b96e07e · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: de4ec9d73a0a · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,9 +8,16 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 Changed HEAD PNG evidence is staged from bounded Git blobs before review credentials.
-All panel lenses and the chair share its manifest and read-only generated paths;
+All panel lenses and chair share safe labels and read-only generated paths; exact
+names remain in JSON data. Codex gets hash-checked --image attachments, Claude uses Read;
 BASE pixels are historical. Required unavailable images fail coverage, never suppress
 findings. No HEAD execution or permission expansion. See `docs/runbooks/pr-review-head-images.md`.
+Bounded full-report validation requires a plain `IMAGE_COVERAGE: COMPLETE` from all
+eight cells and chair for staged images. Explicit failure overrides PASS even without
+images; examples inside quotes/fences/prose do not count as declarations.
+Unsupported/over-limit entries preserve staged files but force published coverage FAIL.
+Preparation faults publish fixed failures after context/diff validation. Both image
+and pipeline fixture suites are run by the existing panel-prompt structure check.
 
 ## Diagnostic and deployment boundaries
 - `v2/ci_web_image.py` is unwired. CI must use composed `promote`, which verifies the

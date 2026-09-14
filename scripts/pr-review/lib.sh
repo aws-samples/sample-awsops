@@ -6,10 +6,36 @@ set -uo pipefail
 head_png_context() {
   if [ -z "${HEAD_PNG_CONTEXT:-}" ]; then
     echo "HEAD image evidence was not supplied. BASE pixels are historical, not HEAD proof."
-    echo "If changed pixels are needed, report IMAGE COVERAGE FAILURE and fail closed."
+    echo "If required pixels cannot be inspected, emit IMAGE_COVERAGE: FAILED on its own unquoted line."
+    echo "Do not quote or fence your outcome. With no required images, the marker is optional."
     return 0
   fi
   python3 "$(dirname -- "${BASH_SOURCE[0]}")/stage_head_pngs.py" --read-context "$HEAD_PNG_CONTEXT"
+}
+
+head_png_required() {
+  if [ -z "${HEAD_PNG_CONTEXT:-}" ]; then echo 0; return 0; fi
+  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" required "$HEAD_PNG_CONTEXT"
+}
+
+head_png_unavailable() {
+  if [ -z "${HEAD_PNG_CONTEXT:-}" ]; then echo 0; return 0; fi
+  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" unavailable "$HEAD_PNG_CONTEXT"
+}
+
+head_png_attachments() {
+  [ -n "${HEAD_PNG_CONTEXT:-}" ] || return 0
+  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" attachments "$HEAD_PNG_CONTEXT"
+}
+
+image_coverage_valid() {
+  python3 "$(dirname -- "${BASH_SOURCE[0]}")/image_coverage.py" report "$1" "${HEAD_PNG_REQUIRED:-0}"
+}
+
+mark_image_coverage_failure() {
+  : > "$WORK/image-coverage-failed.flag"
+  : > "$WORK/coverage-severe.flag"
+  echo "[image coverage unavailable] $1" >&2
 }
 
 # slot 디렉터리 보장 — 비-ephemeral 러너에서 $WORK 가 재사용될 수 있으므로, 이전 실행의
@@ -31,6 +57,10 @@ ensure_slots() {
 record_result() {
   local slot="$1" label="$2" responded="$3"
   echo "[preview] $label: $(scrub_secrets < "$slot" | head -c 200 | tr '\n' ' ')" >&2
+  if [ "${HEAD_PNG_UNAVAILABLE:-0}" = "1" ] || ! image_coverage_valid "$slot"; then
+    mark_image_coverage_failure "$label"
+    return 0
+  fi
   if [ -s "$slot" ]; then
     echo "$label" >> "$responded"
   else
