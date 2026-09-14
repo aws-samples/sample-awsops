@@ -91,7 +91,7 @@ at a 30-minute cadence in both readers. Failed/partial/retained evidence keeps i
 Apply the Lambda environment binding through Terraform along with the reader code deployment;
 updating the code alone does not configure the cadence.
 
-웹과 inventory-reader Lambda에 같은 `graph_rebuild_interval_mins`를 전달한다. 신선도 기준은
+웹과 inventory-reader Lambda에 같은 `graph_rebuild_interval_mins`를 전달한다. 그래프 게시 시점의 신선도 기준은
 수집 주기의 두 배이며 최소 15분이고, 0에서도 이 최소값을 유지한다. 30분 주기에서 정상적으로
 수집된 20분 전 스냅샷은 양쪽에서 최신으로 판정한다. 실패·부분·보존 데이터의 기존 판정은
 유지하며, 코드 배포와 함께 Terraform의 Lambda 환경설정도 반영해야 한다.

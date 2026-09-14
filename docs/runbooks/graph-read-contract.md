@@ -8,10 +8,10 @@ Missing graph clocks can mean legacy rows without collection state; missing meta
 
 `GET /api/graph` reads nodes, edges and collection state in one repeatable-read
 transaction. The shared helper bounds statements, lock waits and transaction
-duration, handles checked-out client errors, and discards failed connections. One graph
-request per pool is admitted; others receive 503 without queueing a checkout. Request
-statements/idle time are bounded to 1.5s, total transaction to 2s; writer helper budgets
-stay unchanged. Serialization happens after release. Reads cap nodes/raw edges at
+duration, handles checked-out client errors, and discards failed connections. At most two graph
+requests per pool are admitted, leaving one of the three pool slots for auth; others receive 503 without queueing a checkout. Request
+statements/idle time are bounded to 1.5s, total transaction to 2s; publication helpers use 2s statements and a 4s total transaction budget, separately
+from the stricter request budget. Serialization happens after release. Reads cap nodes/raw edges at
 4000/8000 plus a sentinel; returned edges reference visible nodes. Read limits and
 500/503 failures are disclosed separately from collector status.
 PostgreSQL 17 is required for the total transaction timeout.
@@ -27,6 +27,18 @@ or public grants. `INVENTORY_STALE_AFTER_MINUTES` governs inventory source age
 independently of the graph publication cadence. A producer must be succeeded with
 ok/empty source evidence and valid clocks; published-source clocks remain visible.
 Future timestamps are conservatively stale, not assumed provider clock skew.
+
+## Verification commands
+
+Use browser developer tools on an already-authorized page to distinguish HTTP503/busy,
+500/timeout, and successful partial reads. The page preserves the safe envelope and offers
+refresh; it does not display a bare status code or treat a failed read as empty collection.
+Application logs contain fixed `[graph-read] shed` or SQLSTATE diagnostics. In the local
+fixture below, run `npx vitest run lib/graph-read-postgres.test.ts lib/graph-fetch.test.ts`
+to exercise the 5220-node root-cap case, HTTP metadata projection and stalled reads with
+an available auth pool slot. These local timings are not an Aurora p99 benchmark;
+real-provider tests are separate operator work, and the conservative failure envelope
+remains required when a deployed read cannot finish inside the budget.
 
 ## Operator action
 
@@ -75,5 +87,5 @@ not live AWS or deployment acceptance.
 
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
 `web/lib/graph-read-postgres.test.ts`, `web/components/topology/GraphCollectionStatus.tsx`.
-ADR-005 (read-only product), ADR-004 (SQL-reader projection), ADR-043 (graph reads;
+ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-043 (graph reads;
 decision bodies are maintained upstream).

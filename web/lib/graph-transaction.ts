@@ -1,14 +1,18 @@
 import type { Pool, PoolClient } from 'pg';
 
-const requestBusy = new WeakSet<Pool>();
+const activeRequests = new WeakMap<Pool, number>();
 export class GraphReadBusy extends Error {}
 
-/** Admit at most one graph request per shared pool; no queued graph backlog ahead of auth. */
+/** Admit at most two graph requests per max:3 shared pool; leave one slot for auth. */
 export async function graphReadTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>) {
-  if (requestBusy.has(pool)) throw new GraphReadBusy('graph read busy');
-  requestBusy.add(pool);
+  const active = activeRequests.get(pool) ?? 0;
+  if (active >= 2) throw new GraphReadBusy('graph read busy');
+  activeRequests.set(pool, active + 1);
   try { return await runTransaction(pool, true, fn, true); }
-  finally { requestBusy.delete(pool); }
+  finally {
+    const remaining = (activeRequests.get(pool) ?? 1) - 1;
+    if (remaining) activeRequests.set(pool, remaining); else activeRequests.delete(pool);
+  }
 }
 
 export async function graphTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: PoolClient) => Promise<T>) {
@@ -36,10 +40,11 @@ async function runTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: Poo
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    // Keep an original SQLSTATE ahead of later client/rollback errors. If pg only reports
-    // "not queryable" after an idle disconnect, the earlier client event owns the cause.
-    const code = (error as { code?: unknown } | null)?.code;
-    const failure = typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) ? error : clientError ?? error;
+    // Preserve the original query/application error. Only pg's generic follow-on rejection
+    // after an idle disconnect is replaced by the earlier fatal client event.
+    const unusable = (error as { message?: unknown } | null)?.message
+      === 'Client has encountered a connection error and is not queryable';
+    const failure = unusable && clientError ? clientError : error;
     if (!clientError) {
       try { await client.query('ROLLBACK'); }
       catch { discard = true; }

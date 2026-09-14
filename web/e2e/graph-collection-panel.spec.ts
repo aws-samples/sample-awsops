@@ -60,3 +60,30 @@ for (const path of ['/topology/infra', '/topology/resource/vpc%3Aone']) {
     });
   }
 }
+
+
+for (const path of ['/topology/infra', '/topology/resource/vpc%3Aone', '/topology/services']) {
+  for (const width of [1440, 390]) {
+    test(`${path} discloses a failed read and recovers on refresh at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.addInitScript(() => localStorage.setItem('awsops-lang', 'en'));
+      const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+      let reads = 0;
+      await page.route('**/api/**', route => {
+        if (new URL(route.request().url()).pathname !== '/api/graph') return route.fulfill({ json: { accounts: [], rows: [], clusters: [] } });
+        if (++reads === 1) return route.fulfill({ status: 503, json: { message: 'PRIVATE',
+          collection: { status: 'unknown', stale: true, readStatus: 'unavailable', readReason: 'busy' } } });
+        return route.fulfill({ json: { nodes: [{ id: 'vpc:one', kind: 'vpc', label: 'Example VPC' }], edges: [],
+          captured_at: null, collection: { status: 'ok', stale: false, sources: [] } } });
+      });
+      await page.goto(path);
+      await expect(page.getByRole('alert').filter({ hasText: 'Graph read unavailable' })).toBeVisible();
+      await expect(page.locator('body')).not.toContainText('PRIVATE');
+      await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
+      await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+      await expect(page.getByRole('status').filter({ hasText: 'Latest collection succeeded' })).toBeVisible();
+      await expect(page.getByRole('alert').filter({ hasText: 'Graph read unavailable' })).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+  }
+}
