@@ -143,7 +143,7 @@ path's warning policy does not establish a role-verification success.
 **Verified deployment prerequisite, 2026-09-14:** `audit-deployment.yml` run
 `34819307611` on dev commit `cdb8d4b13b9ab2dbc9b38ac0534f4d50ef58fbdd`
 successfully read the data gateway and RDS target using a restricted read session
-of the configured `AWS_CI_DEPLOYER_DEV_ROLE_ARN` in account `061525506239`.
+of `AWS_CI_DEPLOYER_DEV_ROLE_ARN` in the configured development account.
 The READY resources had a role and Lambda ARN that did not match applied state.
 This verifies the new read prerequisite for that deployment identity; other
 installations must verify their own grant before upgrading. The snapshot proves
