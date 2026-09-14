@@ -54,6 +54,7 @@ jobs:
       AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
       CI_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       RUNTIME_MODE: ${{ inputs.mode }}
+      INVENTORY_POLICY: full
       PIN_SHA: ${{ inputs.image_sha }}
     steps:
       - uses: actions/checkout@v4

@@ -248,13 +248,12 @@ zero-row run. Missing, malformed, duplicate or mismatched identity rows and conn
 keep the account unverified: the run remains partial and its last-good inventory, snapshot and
 last-success fields remain intact. This verifies the same Steampipe connection's identity, not
 every service/region read; it does not establish complete collection coverage.
-The mandatory dev release mode requires its owned CloudFront probe with zero unknown
-attributes and the validated AgentCore proof, plus recent durable success for every
-catalog type. It discloses later or non-CloudFront degradation with completeness
-`unknown`; hydrate fallback does not automatically fail that bounded release mode.
-Standalone smoke without release mode retains strict complete evidence for all
-acknowledged types and rejects incomplete evidence. Both modes reject missing or stale
-required proof. See the [release collection contract](runtime-foundation.md#collection-contention--수집-경합)
+The mandatory dev release synchronously collects every current catalog type and requires
+complete post-marker success with known counts and zero unknown attributes for each type.
+Hydrate fallback with unknown attributes blocks this gate, even when the producer records
+`succeeded`. Partial, failed, stale, missing or unknown evidence cannot pass. Standalone
+and release modes use the same strict data criteria; release mode changes only the bounded
+collection wait. Runtime/model and both owned worker proofs remain mandatory. See the [release collection contract](runtime-foundation.md#collection-contention--수집-경합)
 for the exact boundaries and single confirmed-contention retry.
 
 `unknown_attribute_count`는 steady-state denial(예: SCP로 막힌 bucket의 PAB/policy-status/versioning/encryption/logging 읽기)로 blind 처리된 attribute read 수다. 이 값은 공개되는 freshness를 degrade시키지만 stale row pruning이나 durable `last_success_at`을 막지 않는다 — 하나의 denied bucket이 pruning을 영구히 비활성화하면 안 되기 때문이다. 반대로 transient 실패(throttle 등)로 일부 attribute가 unknown이 된 rec은 아예 upsert하지 않고 건너뛴다: upsert는 `sdk_partial`이 prune을 막기 *전에* 실행되므로, 쓰면 이미 알고 있던 값이 NULL로 덮이면서 `captured_at`은 최신으로 갱신된다. rec을 건너뛰면 counted failure가 run을 partial로 유지하고, 건너뛴 prune이 그 row의 last-known-good 내용을 그대로 보존한다. CloudFront VPC origin의 `get_distribution_config` 실패도 모든 row의 origin-ref 귀속을 불완전하게 만들므로 같은 이유로 rows 전체를 버린다.

@@ -199,6 +199,7 @@ jobs:
       AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
       CI_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       RUNTIME_MODE: collect
+      INVENTORY_POLICY: full
       PIN_SHA: ${{ inputs.image_sha || github.sha }}
       MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
       DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
@@ -323,6 +324,7 @@ jobs:
         run: rm -f terraform.tfvars backend.hcl
 
       - name: Pin web-latest to the approved image
+        id: pin
         # The task definition references :web-latest, and this step is that
         # tag's ONLY writer (build never touches it). Point it at the EXACT
         # web-<sha> this run was approved for (dispatch input, defaulting to
@@ -351,6 +353,8 @@ jobs:
             echo "::error::No image tagged web-${PIN_SHA} in ${{ steps.tf.outputs.ecr_repo }} — build it first (push, or dispatch with a built SHA)."
             exit 1
           fi
+          MANIFEST_DIGEST=$(printf '%s' "$MANIFEST" | python3 -c 'import hashlib,sys; print("sha256:" + hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
+          [[ "$MANIFEST_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
           # put-image errors with ImageAlreadyExistsException when web-latest
           # already points at this manifest — that's success for our purposes.
           OUT=$(aws ecr put-image \
@@ -361,6 +365,7 @@ jobs:
               echo "$OUT" | grep -q ImageAlreadyExistsException || { echo "$OUT" >&2; exit 1; }
             }
           echo "web-latest -> web-${PIN_SHA}"
+          echo "digest=$MANIFEST_DIGEST" >> "$GITHUB_OUTPUT"
 
       - name: ECS force-new-deployment
         run: |
@@ -420,6 +425,7 @@ jobs:
           SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
           RUNTIME_DEPLOYMENT_FILE: ${{ steps.runtime.outputs.deployment_file }}
           WORKLOAD_SESSION_POLICY: ${{ steps.workload_session.outputs.session_policy }}
+          EXPECTED_WEB_DIGEST: ${{ steps.pin.outputs.digest }}
         run: |
           set -euo pipefail
           [ -n "${WORKLOAD_SESSION_POLICY//[[:space:]]/}" ] || { echo "::error::workload_session_policy_missing"; exit 1; }

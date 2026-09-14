@@ -115,7 +115,7 @@ Provisioning **without publishing service DNS** still needs a configured hostnam
 trusted certificates for both TLS hops. `public_url` is the service URL, while
 `cloudfront_domain` is the connection destination used by
 [Deploy Web's smoke step](../../.github/workflows/deploy-web.yml) to preserve Host/SNI/TLS
-before A publication. `/api/health` proves liveness only. Dev releases additionally require login/DB, a fresh owned CloudFront proof, bounded last-success evidence for every deployed catalog type, web-role SSM/AgentCore/model access and both worker completions. Current collection degradation remains explicit; inventory completeness stays unknown.
+before A publication. `/api/health` proves liveness only. Dev releases additionally require login/DB, a fresh known CloudFront record, complete post-marker success with known counts and zero unknown attributes for every current catalog type, web-role SSM/AgentCore/model access and both worker completions. Missing, partial, failed, stale or unknown evidence blocks release.
 After reviewing the deployed distribution, decide whether to attach `awsops.whchoi.net`:
 
 - `awsops.whchoi.net` is **currently in use by an existing deployment** — attaching

@@ -23,7 +23,7 @@ secrets-manager) — installed by `make deps`.
   for push and dispatch and requires the activated-runtime collect prerequisites; missing proof fails closed.
   Require a nonempty policy for each refresh; bind workload state to the selected private directory.
   Prepare cannot invoke Lambda; collect allows only the owned collector. The consumer must
-  enforce explicit catalog/CloudFront RequestResponse payloads (absent type defaults to all),
+  enforce explicit catalog/per-type RequestResponse payloads (absent type defaults to all),
   distinct catalog/succeeded result shapes and post-marker authenticated freshness/runtime/worker proof.
   Operator collection writes application inventory, not AWS resources; this is not an ADR-005 exception.
   Tests: `v2/test_ci_verifier_sessions.py`; contract: `docs/runbooks/runtime-verifier-sessions.md`.
@@ -73,8 +73,8 @@ secrets-manager) — installed by `make deps`.
   Private init is bounded to 10 minutes; output/console each to 2 minutes.
 - `v2/authenticated-smoke.mjs` — login plus edge-authenticated `/api/db` verification. Preserve
   Host/SNI/TLS; report only the phase and validated HTTP status, never bodies/cookies/passwords.
-  The CLI keeps HTTP scratch files under the prepared credential directory so the workflow's
-  always-cleanup owns them; standalone calls prefer RUNNER_TEMP. Response files default to 64 KiB; only the bounded CloudFront inventory leg permits 2 MiB.
+  CLI HTTP scratch belongs to the prepared credential directory and normal finalizers;
+  process/runner loss can prevent cleanup. Standalone calls prefer RUNNER_TEMP. Response files default to 64 KiB; only the bounded CloudFront inventory leg permits 2 MiB.
 - `v2/ci_dns_policy.py` — reads Terraform state to preserve managed certificate ownership
   (JSON null) and existing service aliases; verifies operator-selected/attached certificates
   without account-wide selection. Redacts public summaries. Blocks all Route53/Cloud Map
@@ -239,15 +239,33 @@ secrets-manager) — installed by `make deps`.
 - For the emergency IAM `put-role-policy` convention, see `terraform/CLAUDE.md`.
 
 `v2/runtime-smoke.mjs` accepts explicit private prepare/verify configuration. Prepare
-checks the host registry; optional hostOnly rejects members. Verify requires collection
-evidence, real web-role runtime evidence and owned worker completion. Without release mode,
-all types need strict post-marker success; release mode uses the bounded catalog contract below.
+checks the host registry; optional hostOnly rejects members. Verify requires complete post-marker
+collection for every supplied type, real web-role runtime evidence and owned worker completion.
+Release mode changes the bounded polling window, not the strict data criteria.
 The file is at most 16 KiB, collectionStartedAt at most 30 minutes old at validation, and types unique
 with cloudfront included. The utility alone does not wire a deployment workflow.
 
 ## Development release controller
 
-Every dev release requires `v2/ci/runtime-release.mjs` identity/image/code, CloudFront, SSM/model and both worker proofs.
-The [runtime contract](../docs/runbooks/runtime-foundation.md) owns freshness, degradation, retry and adoption rules.
+Every dev release requires `v2/ci/runtime-release.mjs` identity/image/code, complete post-marker collection for every catalog type, fresh known CloudFront, SSM/model and both worker proofs. At most four synchronous collectors run; partial/failed/stale/missing/unknown evidence blocks release.
+The [runtime contract](../docs/runbooks/runtime-foundation.md) owns strict data policy, proof budgets, digest binding, retry and adoption rules.
 Manual prepare is neither first-web bootstrap nor readiness; never reset passwords or promote a verifier to admin.
 Manual verification requires separate [backend/workload policies](../docs/runbooks/runtime-verifier-sessions.md) and private-file cleanup.
+
+The reusable helper's verify mode accepts optional `inventoryPolicy: "full"` and `collectionMode: "release"`;
+other values fail, and omission retains strict checks for every supplied type. Full mode
+returns programmatic quality/gaps; CLI output stays fixed and catalog discovery belongs
+to the caller. Release mode extends collection polling from 10 to 20 minutes, with one
+shared window across rechecks. All runtime callers have a finite deadline: marker+30min
+for verify, entry+30min for prepare; an explicit deadline only shortens it. One proven
+CloudFront running collision permits a 65-second-cooldown retry after complete revalidation.
+A repeated collision is runtime_inventory_contention, initial waiting is collection_timeout,
+stale full-policy data is collection_stale and the outer limit is release_timeout. Workers
+start after ready. The helper and collection-only BFF view do not activate a workflow/flag.
+Requests require their full timeout remaining. Before billed readiness, require its 80s
+allowance plus 370s per worker (35s enqueue, 300s poll, final 35s request); recheck remaining
+workers before enqueue. Retry admission includes 65s cooldown, one 35s collection read,
+the probe and both workers. Collection windows are caps; late completion may fail admission.
+Fresh running collection attempts with old/null previous success remain pending and time
+out as collection_timeout. Stale terminal evidence remains collection_stale in full mode.
+The outer authenticated login/DB wrapper also refuses shortened request timeouts.

@@ -263,7 +263,7 @@ enabled, then provision. `CI_READINESS_ENABLED_DEV=true` supplies this separate 
 Only the applied `agentcore.deployment_readiness_enabled` sets `DEPLOYMENT_READINESS_ENABLED`; shell overrides are ignored.
 Fixed MCP tools read one CloudFront identity; producer freshness and bounded inference leave unknown attributes unassessed.
 Nonce/account-bound responses retain completed checks on timeout. Administrator or deployment-verifiers membership, one in-flight request and a 60-second process cooldown are required.
-The mandatory release gate combines web-role SSM/AgentCore/model proof with owned CloudFront, bounded catalog and Lambda/Fargate evidence under the [collection contract](../runbooks/runtime-foundation.md#collection-contention--수집-경합); collection completeness remains `unknown`.
+The mandatory release gate combines web-role SSM/AgentCore/model proof, a fresh known CloudFront record, complete post-marker evidence for every current catalog type and both owned workers under the [collection contract](../runbooks/runtime-foundation.md#collection-contention--수집-경합). Partial, failed, stale or unknown evidence cannot pass; the configured catalog does not establish universal AWS-resource coverage.
 An opt-in apply creates the verifier group only with readiness and AgentCore enabled; membership
 additionally requires the managed demo flag. No admin/IAM role is granted. Public CI permits
 readiness only on dev. CI_READINESS_ENABLED_DEV is a dedicated true/false override; empty/unset

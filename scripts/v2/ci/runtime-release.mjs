@@ -11,17 +11,22 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { authenticatedSmoke, SmokeError } from '../authenticated-smoke.mjs';
 import { smokeConnectionArgs } from '../deployment-smoke.mjs';
 import { readSmokeCredentials, cleanupSmokeCredentials } from '../prepare-smoke-credentials.mjs';
-import { readRuntimeSmokeConfig, validateRuntimeSmokeConfig } from '../runtime-smoke.mjs';
+import { readRuntimeSmokeConfig, validateRuntimeSmokeConfig, runtimeSmokeDeadline } from '../runtime-smoke.mjs';
 
 const execute = promisify(execFile);
 const REGION = 'ap-northeast-2', REPO = 'aws-samples/sample-awsops';
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const SHA = /^[a-f0-9]{40}$/;
+// Five 35s HTTP calls, an 80s probe and two 370s worker paths need 995s.
+// Reserve 17m including 25s setup margin; extra pages/retries must still fit.
+const REQUIRED_PROOF_MS = 17 * 60_000;
 const VERBS = new Set(['sts get-caller-identity', 'ecr batch-get-image',
   'ecs describe-services', 'ecs describe-task-definition', 'ecs list-tasks', 'ecs describe-tasks',
   'lambda get-function-configuration', 'lambda invoke']);
 export class ReleaseError extends Error {}
 export function classifyAwsError(error) {
+  if (error?.killed === true || error?.code === 'ETIMEDOUT'
+      || /^(Read|Connect) timeout on endpoint URL:/m.test(error?.stderr || '')) return new ReleaseError('aws_timeout');
   const code = /An error occurred \((TooManyRequestsException|AccessDeniedException|AccessDenied)\)/.exec(error?.stderr || '')?.[1];
   return new ReleaseError(code === 'TooManyRequestsException' ? 'aws_throttled'
     : code ? 'aws_access_denied' : 'aws_request_failed');
@@ -36,6 +41,8 @@ function json(text) {
 
 export function validateContext(env) {
   const mode = env.RUNTIME_MODE;
+  const inventoryPolicy = env.INVENTORY_POLICY ?? 'full';
+  need(inventoryPolicy === 'full', 'invalid_inventory_policy');
   const workflow = `${REPO}/.github/workflows/`;
   need(env.TARGET === 'dev' && env.GITHUB_REPOSITORY === REPO && env.GITHUB_REF === 'refs/heads/dev' &&
     env.AWS_REGION === REGION && SHA.test(env.GITHUB_SHA || ''), 'invalid_dev_source');
@@ -51,7 +58,8 @@ export function validateContext(env) {
   const role = /^arn:aws:iam::([0-9]{12}):role\/((?:[\x21-\x7e]+\/)?)([A-Za-z0-9+=,.@_-]{1,64})$/
     .exec((env.CI_ROLE_ARN || '').trim());
   need(role && role[1] === account && role[2].length <= 511, 'configured_role_mismatch');
-  return { mode, account, roleName: role[3], imageTag: mode === 'prepare' ? 'web-latest' : `web-${env.PIN_SHA}` };
+  return { mode, account, inventoryPolicy, promoting: web, roleName: role[3],
+    imageTag: mode === 'prepare' ? 'web-latest' : `web-${env.PIN_SHA}` };
 }
 
 export function validateDeployment(value, context) {
@@ -119,7 +127,8 @@ export function validateCatalog(value) {
   const types = value.types;
   need(value.status === 'catalog' && Array.isArray(types) && types.length >= 1 && types.length <= 128 &&
     new Set(types).size === types.length && types.includes('cloudfront') &&
-    types.every(t => typeof t === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(t)), 'invalid_collection_catalog');
+    types.every(t => typeof t === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(t)
+      && !['all', 'catalog'].includes(t)), 'invalid_collection_catalog');
   return types;
 }
 
@@ -147,7 +156,8 @@ function imageDigests(response, deployment, context) {
     'expected_web_image_missing');
   const image = response.images[0];
   need(image.registryId === context.account && image.repositoryName === `${deployment.project}-web` &&
-    image.imageId?.imageTag === context.imageTag && DIGEST.test(image.imageId?.imageDigest || '') &&
+    (context.expectedWebDigest ? image.imageId?.imageDigest === context.expectedWebDigest
+      : image.imageId?.imageTag === context.imageTag) && DIGEST.test(image.imageId?.imageDigest || '') &&
     typeof image.imageManifest === 'string' && image.imageManifest.length <= 256_000, 'web_image_identity_mismatch');
   const digest = `sha256:${createHash('sha256').update(image.imageManifest).digest('hex')}`;
   need(digest === image.imageId.imageDigest, 'web_manifest_digest_mismatch');
@@ -173,7 +183,8 @@ async function verifyWeb(aws, deployment, context) {
   const prefix = `arn:aws:ecs:${REGION}:${context.account}:`;
   const cluster = `${prefix}cluster/${web.cluster}`;
   const images = await aws(['ecr', 'batch-get-image', '--registry-id', context.account,
-    '--repository-name', `${project}-web`, '--image-ids', `imageTag=${context.imageTag}`]);
+    '--repository-name', `${project}-web`, '--image-ids', context.expectedWebDigest
+      ? `imageDigest=${context.expectedWebDigest}` : `imageTag=${context.imageTag}`]);
   const digests = imageDigests(images, deployment, context);
   const services = await aws(['ecs', 'describe-services', '--cluster', cluster, '--services', web.service]);
   need(empty(services.failures) && Array.isArray(services.services) && services.services.length === 1,
@@ -224,21 +235,32 @@ export async function release(deployment, {
   env = process.env, run = command, authenticate = authenticatedSmoke, now = Date.now, wait = delay,
 } = {}) {
   let failed = false;
+  let collectionAttempts;
+  const deadline = now() + 50 * 60_000;
   try {
     const context = validateContext(env);
+    context.expectedWebDigest = env.EXPECTED_WEB_DIGEST || undefined;
+    need(!context.promoting || context.expectedWebDigest, 'expected_web_digest_required');
+    need(!context.expectedWebDigest || DIGEST.test(context.expectedWebDigest), 'invalid_expected_web_digest');
     validateDeployment(deployment, context);
     try { smokeConnectionArgs(env.PUBLIC_URL, env.CLOUDFRONT_DOMAIN); }
     catch { throw new ReleaseError('invalid_application_target'); }
     const directory = privateDirectory(env);
     const aws = async (args, outputFile, timeout = 150_000) => {
       need(VERBS.has(args.slice(0, 2).join(' ')), 'forbidden_aws_operation');
+      need(deadline - now() >= 15_000, 'release_timeout');
+      timeout = Math.min(timeout, deadline - now());
       const commandArgs = [...args, '--region', REGION, '--output', 'json', '--no-cli-pager',
         '--cli-connect-timeout', '5', '--cli-read-timeout',
         String(Math.min(timeout >= 450_000 ? 440 : 120, Math.floor((timeout - 10_000) / 1000)))];
       if (outputFile) commandArgs.push(outputFile);
-      return json(await run('aws', commandArgs, {
-        env: args[0] === 'lambda' && args[1] === 'invoke' ? { ...env, AWS_MAX_ATTEMPTS: '1' } : env, timeout,
-      }));
+      let raw;
+      try {
+        raw = await run('aws', commandArgs, {
+          env: args[0] === 'lambda' && args[1] === 'invoke' ? { ...env, AWS_MAX_ATTEMPTS: '1' } : env, timeout,
+        });
+      } finally { need(now() < deadline, 'release_timeout'); }
+      return json(raw);
     };
     verifyCaller(await aws(['sts', 'get-caller-identity']), context);
     const webTasks = await verifyWeb(aws, deployment, context);
@@ -253,24 +275,29 @@ export async function release(deployment, {
         Number.isInteger(lambdaConfig.Timeout) && lambdaConfig.Timeout > 0 && lambdaConfig.Timeout <= 420,
       'inventory_code_mismatch');
       let files = 0;
-      const invoke = async (type, budget) => {
-        const deadline = now() + budget;
-        let last = 'throttled';
+      const invoke = async (type, budget, state) => {
+        const end = Math.min(deadline, now() + budget);
+        let last = 'timeout';
         for (;;) {
-          const remaining = deadline - now();
+          need(now() < deadline, 'release_timeout');
+          const remaining = end - now();
+          if (state && remaining < 450_000) state.status = 'deadline';
           need(remaining >= (type === 'catalog' ? 15_000 : 450_000), `collection_probe_${last}`);
           const output = join(directory, `collection-probe-${++files}.json`);
           writePrivate(output, {});
           let response;
           try {
+            if (state) { state.attempts++; state.last_outcome = 'running'; }
             response = await aws(['lambda', 'invoke', '--function-name', deployment.inventory.sync_function_arn,
               '--invocation-type', 'RequestResponse', '--cli-binary-format', 'raw-in-base64-out',
               '--payload', JSON.stringify({ type })], output, Math.min(type === 'catalog' ? 150_000 : 450_000, remaining));
           } catch (error) {
+            if (error instanceof ReleaseError && error.message === 'release_timeout') throw error;
             if (!(error instanceof ReleaseError) || error.message !== 'aws_throttled')
               throw new ReleaseError(error instanceof ReleaseError && error.message === 'aws_access_denied'
-                ? 'collection_probe_denied' : 'collection_probe_failed');
+                ? 'collection_probe_denied' : error?.message === 'aws_timeout' ? 'collection_probe_timeout' : 'collection_probe_failed');
             last = 'throttled';
+            if (state) state.last_outcome = last;
             await wait(10_000);
             continue;
           }
@@ -279,25 +306,73 @@ export async function release(deployment, {
           const result = readPrivate(output, directory);
           if (type === 'catalog') return result;
           need(result.type === type, 'collection_probe_protocol');
+          if (state) for (const field of ['row_count', 'unknown_attribute_count', 'unreachable_account_count'])
+            state[field] = integer(result[field]) ? result[field] : null;
           if (result.status === 'busy' || (result.status === 'failed' && result.error === 'inventory sync superseded')) {
             last = 'busy';
+            if (state) state.last_outcome = result.status === 'busy' ? 'busy' : 'superseded';
             await wait(10_000);
             continue;
           }
-          if (['failed', 'partial'].includes(result.status)) throw new ReleaseError(`collection_${result.status}`);
+          if (['failed', 'partial'].includes(result.status)) {
+            if (state) state.status = result.status;
+            throw new ReleaseError(`collection_${result.status}`);
+          }
           need(result.status === 'succeeded', 'collection_probe_protocol');
-          need(integer(result.row_count) && result.unknown_attribute_count === 0, 'collection_probe_incomplete');
+          if (!integer(result.row_count) || !integer(result.unknown_attribute_count)) {
+            if (state) state.status = 'unknown';
+            throw new ReleaseError('collection_probe_incomplete');
+          }
+          if (result.unknown_attribute_count > 0) {
+            if (state) state.status = 'unknown';
+            throw new ReleaseError('inventory_incomplete');
+          }
+          if (state) state.status = state.last_outcome = 'succeeded';
           return result;
         }
       };
       const types = validateCatalog(await invoke('catalog', 450_000));
       const collectionStartedAt = new Date(now()).toISOString();
-      await invoke('cloudfront', 900_000);
       config = { schemaVersion: 1, mode: 'verify', hostOnly: true, expectedAccountId: context.account,
         expectedCloudfrontId: deployment.known.cloudfront_distribution_id,
-        expectedQueuedTypes: types, collectionStartedAt, collectionMode: 'release' };
+        expectedQueuedTypes: types, collectionStartedAt, collectionMode: 'release',
+        inventoryPolicy: context.inventoryPolicy };
+      validateRuntimeSmokeConfig(config, now());
+      const collectionDeadline = runtimeSmokeDeadline(config, now(), deadline) - REQUIRED_PROOF_MS;
+      const states = Object.fromEntries(types.map(type => [type, {
+        status: 'not_started', attempts: 0, last_outcome: 'not_started',
+        row_count: null, unknown_attribute_count: null, unreachable_account_count: null,
+      }]));
+      let cursor = 0;
+      await Promise.all(Array.from({ length: Math.min(4, types.length) }, async () => {
+        while (cursor < types.length) {
+          const type = types[cursor++], state = states[type];
+          try { await invoke(type, Math.min(900_000, collectionDeadline - now()), state); }
+          catch (error) {
+            state.reason = error instanceof ReleaseError ? error.message : 'collection_probe_failed';
+            if (state.status === 'not_started')
+              state.status = state.reason === 'release_timeout' ? 'deadline' : 'failed';
+            if (state.last_outcome === 'running') state.last_outcome = state.status;
+          }
+        }
+      }));
+      collectionAttempts = { source: 'collector_rpc', types: states, counts: {
+        expected: types.length,
+        ...Object.fromEntries(['succeeded', 'partial', 'failed', 'unknown', 'deadline']
+          .map(status => [status, types.filter(type => states[type].status === status).length])),
+        not_started: types.filter(type => states[type].attempts === 0).length,
+      } };
+      const failedType = types.find(type => states[type].status !== 'succeeded');
+      if (failedType) {
+        const error = new ReleaseError(states[failedType].reason);
+        error.collection_attempts = collectionAttempts;
+        error.inventory_quality = { status: 'not_verified', catalog_types: types, counts: null, types: null };
+        throw error;
+      }
     }
     validateRuntimeSmokeConfig(config, now());
+    const verificationDeadline = runtimeSmokeDeadline(config, now(), deadline);
+    need(now() < verificationDeadline, 'release_timeout');
     const configFile = join(directory, 'runtime-smoke.json');
     writePrivate(configFile, config);
     const credentials = readSmokeCredentials(env.SMOKE_CREDENTIAL_FILE);
@@ -307,35 +382,39 @@ export async function release(deployment, {
         publicUrl: env.PUBLIC_URL, cloudfrontDomain: env.CLOUDFRONT_DOMAIN,
         email: credentials?.email, password: credentials?.password,
         runtimeConfig: readRuntimeSmokeConfig(configFile, env.SMOKE_CREDENTIAL_FILE),
-      }, { tempRoot: directory });
+      }, { tempRoot: directory, now, deadline: verificationDeadline });
     } catch (error) {
-      throw new ReleaseError(error instanceof SmokeError ? error.message : 'authenticated_runtime_proof_failed');
+      need(now() < verificationDeadline, 'release_timeout');
+      const failure = new ReleaseError(error instanceof SmokeError ? error.message : 'authenticated_runtime_proof_failed');
+      if (error instanceof SmokeError) failure.inventory_quality = error.inventory_quality;
+      failure.collection_attempts = collectionAttempts;
+      throw failure;
     }
-    need(result?.status === 'ok' && result.mode === config.mode, 'full_runtime_proof_required');
+    need(now() < verificationDeadline, 'release_timeout');
+    need(result?.status === 'ok' && result.mode === config.mode, 'runtime_proof_required');
+    // Authenticate performs the actual checks; reject incomplete adapter results as well.
     if (config.mode === 'verify') {
-      need(result.catalog_types === config.expectedQueuedTypes.length && result.workers === 2,
-        'complete_runtime_proof_required');
-      const collection = result.collection;
-      need(object(collection) && Object.keys(collection).sort().join(',') ===
-        'completeness,degraded_types,freshness_minutes,status' &&
-        collection.completeness === 'unknown' && collection.freshness_minutes === 30 &&
-        Array.isArray(collection.degraded_types) &&
-        collection.status === (collection.degraded_types.length ? 'degraded' : 'current') &&
-        new Set(collection.degraded_types.map(row => row?.type)).size === collection.degraded_types.length &&
-        collection.degraded_types.every(row => object(row) &&
-          Object.keys(row).sort().join(',') === 'status,type,unknown_attributes' &&
-          config.expectedQueuedTypes.includes(row.type) &&
-          ['running', 'succeeded', 'partial', 'failed'].includes(row.status) &&
-          (row.unknown_attributes === null || typeof row.unknown_attributes === 'boolean') &&
-          (row.status !== 'succeeded' || row.unknown_attributes !== false)), 'collection_proof_required');
+      const quality = result.inventory_quality, verified = quality?.types?.verified;
+      need(result.inventory_policy === config.inventoryPolicy &&
+        Array.isArray(quality?.catalog_types) && quality.catalog_types.join(',') === config.expectedQueuedTypes.join(',') &&
+        quality.counts?.expected === config.expectedQueuedTypes.length &&
+        quality.counts.verified === config.expectedQueuedTypes.length &&
+        Array.isArray(verified) && verified.length === config.expectedQueuedTypes.length &&
+        new Set(verified).size === verified.length && config.expectedQueuedTypes.every(type => verified.includes(type)) &&
+        ['partial', 'failed', 'stale', 'missing', 'unknown', 'pending', 'invalid'].every(key =>
+          quality.counts[key] === 0 && Array.isArray(quality.types?.[key]) && quality.types[key].length === 0) &&
+        quality.status === 'complete' && result.workers === 2, 'complete_runtime_proof_required');
     }
     return config.mode === 'verify'
-      ? { status: 'ready', mode: 'verify', catalog_types: result.catalog_types,
-        collection: result.collection, web_tasks: webTasks }
+      ? { status: 'full_verified', mode: 'verify',
+        inventory_policy: config.inventoryPolicy, inventory_quality: result.inventory_quality,
+        collection_attempts: collectionAttempts, web_tasks: webTasks, workers: 2, remaining_prerequisites: 'not_assessed' }
       : { status: 'prepared', mode: 'prepare', web_tasks: webTasks };
   } catch (error) {
     failed = true;
-    throw error instanceof ReleaseError ? error : new ReleaseError('runtime_release_failed');
+    const failure = error instanceof ReleaseError ? error : new ReleaseError('runtime_release_failed');
+    if (collectionAttempts) failure.collection_attempts = collectionAttempts;
+    throw failure;
   } finally {
     try { cleanupSmokeCredentials(env.SMOKE_CREDENTIAL_FILE); }
     catch { if (!failed) throw new ReleaseError('private_cleanup_failed'); }
@@ -363,6 +442,10 @@ async function main() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try { await main(); } catch (error) {
     console.error(`Runtime release: ${error instanceof ReleaseError ? error.message : 'failed'}`);
+    if (error instanceof ReleaseError && error.inventory_quality)
+      console.error(JSON.stringify({ status: 'not_verified', inventory_quality: error.inventory_quality }));
+    if (error instanceof ReleaseError && error.collection_attempts)
+      console.error(JSON.stringify({ status: 'not_verified', collection_attempts: error.collection_attempts }));
     process.exitCode = 1;
   }
 }

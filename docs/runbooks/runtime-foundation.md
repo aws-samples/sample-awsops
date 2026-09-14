@@ -33,7 +33,7 @@ node --test scripts/v2/ci/prepare-runtime-host.test.mjs
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev -f mode=plan -f plan_scope=full -f runtime_rollout=true -f allow_dns_changes=true
 ```
 Host-only removes only collector AssumeRole; Agent MCP grants remain. IAM includes known regions regardless of current opt-in; newly launched AWS regions require a fresh apply. IAM narrowing also applies to already-enabled main/preview stacks independently of the dev profile.
-S3 steady denials remain unknown: rows carry `attributes_unknown`, the ledger increments `unknown_attribute_count`, and freshness is `degraded`. The release discloses this degradation and keeps completeness `unknown`; its owned CloudFront proof still requires zero unknown attributes. Other catalog types must retain recent successful collection as defined in the [collection contract](#collection-contention--수집-경합).
+S3 steady denials remain unknown: rows carry `attributes_unknown`, the ledger increments `unknown_attribute_count`, and freshness is `degraded`. This incomplete evidence blocks release readiness for the affected catalog type, as defined in the [collection contract](#collection-contention--수집-경합).
 The digest/host-preflight profile is dev-only. Preview retains operator-configured mutable tags or digests and multi-account scope, without dev host verification; account/role and private-DNS ownership checks still apply.
 
 ## Collector catalog prerequisite
@@ -41,9 +41,8 @@ The digest/host-preflight profile is dev-only. Preview retains operator-configur
 Deploy the collector's read-only `type=catalog` mode before enabling the full-release
 controller. It returns the registered type names without collecting resources or
 scheduling work. Catalog acknowledgement alone never proves collection completeness;
-the release controller checks its owned CloudFront proof and bounded last-success
-evidence for every returned type, reporting degradation with completeness unknown
-as specified in the [collection contract](#collection-contention--수집-경합).
+the release controller requires fresh, complete post-marker evidence for every returned
+type as specified in the [collection contract](#collection-contention--수집-경합).
 
 ## Readiness capability
 
@@ -107,7 +106,7 @@ Sequence: merge reviewed code to dev → reviewed dev apply and full live readin
 
 ## Required development release check
 
-Every dev Deploy Web release verifies web role/revision/digest, collector code, fresh owned CloudFront and recent catalog evidence, SSM/AgentCore/model access, and owned Lambda/Fargate completion. `verify_database` cannot disable this gate.
+Every dev Deploy Web release verifies web role/revision/digest, collector code, complete post-marker collection for every current catalog type, a fresh known CloudFront record, SSM/AgentCore/model access and owned Lambda/Fargate completion. `verify_database` cannot disable this gate.
 
 Before release, explicitly set `CI_READINESS_ENABLED_DEV=true` (or `ci_readiness_enabled=true` in operator inputs with the override unset), review/apply runtime and readiness, then provision AgentCore from applied output. `CI_READONLY_RUNTIME_DEV` alone does not enable readiness. The [capability contract](#readiness-capability) defines dev-only enablement, verifier group and managed-demo conditions, token lifetime and the absence of admin/IAM grants.
 
@@ -154,43 +153,87 @@ Group import uses a slash; membership uses comma-separated pool/group/username. 
 
 <a id="collection-contention--수집-경합"></a>
 
-### Collection contention
+### Mandatory full collection
 
-Before invocation, the controller compares live `CodeSha256` with `runtime_deployment.inventory.sync_code_sha256`, derived from configured `source_code_hash`. Apply reviewed configuration to persist this expected fingerprint; a plan or variable change cannot refresh it. Provider observations cannot authorize unreviewed code.
+Before invocation, the controller compares live `CodeSha256` with `runtime_deployment.inventory.sync_code_sha256`, derived from configured `source_code_hash`. Apply reviewed configuration to persist this expected fingerprint; provider observations cannot authorize unreviewed code.
 
-The controller reads the complete catalog from the code-checked inventory Lambda, then invokes only the owned CloudFront collector synchronously. It does not enqueue another all-type sweep or run a stale-terminal batch queue. Ledger rows do not control owned Lambda RPC retry admission. Only the bounded owned Lambda probe is retried; all other catalog types still require fresh successful evidence from the existing scheduled collector.
+Every current catalog type (43 in this version) must have succeeded after the release marker, with known counts and zero unknown attributes. Partial, failed, stale, missing or unknown evidence blocks the release. A recent success from before the marker cannot substitute. The controller obtains the complete catalog from the verified Lambda and synchronously invokes each type through at most four concurrent collectors. It never submits `type=all` or asynchronous Event batches; existing scheduled work can still contend with its calls.
 
-Catalog admission has a 450-second budget and retries only confirmed Lambda throttling. The CloudFront probe has a 900-second budget; each invocation needs at least 450 seconds remaining for the verified function timeout of at most 420 seconds plus transport overhead. Confirmed throttling, `busy`, and the producer's exact superseded result wait ten seconds before another bounded attempt. Denied, uncertain-delivery, partial, failed, and invalid-protocol outcomes fail distinctly. A successful RPC alone is not readiness proof.
+Record the marker after catalog discovery and before all collection calls, and retain it across retries. Catalog admission allows up to 450 seconds; each type has a bounded 900-second retry window. An invocation needs 450 seconds remaining for the verified function timeout of at most 420 seconds plus transport. Only confirmed throttling, busy and exact superseded outcomes retry, after ten seconds. Denied, uncertain-delivery, partial, failed, unknown and malformed outcomes cannot prove collection. All admitted workers settle before private files are cleaned.
 
-Record the release marker after catalog discovery and **before** the first CloudFront probe; retain it across retries. The owned synchronous response must report `succeeded`, a valid row count and zero unknown attributes. Its known record must be post-marker.
+The controller has a fifty-minute overall deadline. The authenticated proof uses the earlier of that deadline and marker plus thirty minutes, as defined in the [shared probe contract](#reusable-runtime-probe-contract). Collection admission reserves seventeen minutes inside this proof deadline for login, data, model and worker checks, leaving at most thirteen minutes after a fresh marker. Poll windows are caps rather than promises that every slow operation can finish. Missing capacity, time or permissions legitimately fail with type-specific diagnostics.
 
-Capture web/AgentCore proof before the longer catalog wait. AgentCore separately requires that exact record under its configured freshness policy. A successful RPC or old known record cannot substitute for this proof.
+`collection_attempts` records per-type attempts, last outcomes, nullable counts and aggregate outcomes. Its `collector_rpc` source is not ledger proof; zero attempts mean a type was not admitted. Failed batches keep inventory quality unverified and cannot reach runtime/worker acceptance. Successful batches must still pass strict authenticated ledger checks for every catalog type, the fresh known CloudFront record, the nonce-bound SSM/AgentCore/model response and both owned `noop` Lambda and `noop-heavy` Fargate jobs before reporting `full_verified`. Enqueue acknowledgement is insufficient.
 
-Release mode allows one additional readiness POST after a valid nonce/account-bound `inventory_incomplete` response and a fresh ledger read proving a later CloudFront attempt is running with durable post-marker success. Wait 60 seconds after the failed response and use a fresh nonce; all AgentCore proof checks still apply.
+A proven CloudFront running-sweep collision permits only the single cooldown/revalidation retry in the shared contract. Every type must be complete again before the next AgentCore probe. No degraded fallback or weaker inventory policy is available. Full-policy quality/gaps describe the supplied catalog and available evidence; they are not an independent guarantee that every AWS resource or attribute exists in that catalog.
 
-A second failure with freshly confirmed running contention reports `runtime_inventory_contention`; no third POST occurs. Auth, model, protocol, stale inventory and unverified/partial/failed ledger evidence cannot qualify. Standalone strict smoke makes no such retry.
+Deploy Web passes the pin step's digest as `EXPECTED_WEB_DIGEST`. The verifier queries ECR by this approved digest and accepts only that root or its verified Linux/ARM64 child, so later movement of the source tag cannot redefine the approved image. Manual observational collect and prepare retain explicit tag selection when no expected digest is supplied.
 
-The later catalog read requires durable CloudFront `last_success_at` at or after the marker. A newer scheduled running/partial/failed or unknown-attribute result is disclosed as degraded without revoking the owned proof. Failed/running attempts report attribute coverage as unassessed; pre-marker success never passes.
-
-Every other catalog type needs `last_success_at` within thirty minutes of observation, independently of the marker. Later running/partial/failed attempts preserve this timestamp; these and succeeded rows with unknown or unassessed attributes appear in `collection.degraded_types`.
-
-Missing/stale evidence polls until `collection_missing`/`collection_stale`; malformed evidence fails as `collection_protocol`. A failed/partial owned CloudFront probe blocks immediately.
-
-Output reports `catalog_types`, `collection.status` (`current` or `degraded`) and always `collection.completeness: "unknown"`: catalog observations cannot prove every resource or attribute. Private `expectedQueuedTypes` names the catalog, not a dispatched sweep. Without `collectionMode: "release"`, standalone smoke retains strict post-marker checks.
-
-Collection polling allows twenty minutes after account/login checks, or ten minutes for standalone smoke. The authenticated collection-only summary avoids inventory-wide aggregation. No poll starts after the deadline; a valid response from an admitted request still counts.
-
-Runtime proof and both five-minute worker checks remain mandatory. Owned `noop` Lambda and `noop-heavy` Fargate jobs must reach `succeeded` with matching identity/runtime and a successful result; enqueue acknowledgement cannot pass.
-
-CI does not start a full sweep on every push or omit types. Persistently failing types eventually breach the freshness bound. A timeout alone cannot identify dropped events: inspect execution and persisted data separately, then review any capacity or permission repair.
-
-Both verification steps have a 55-minute cap; manual verification uses a restricted 30-minute backend session followed by a restricted one-hour workload session of the same configured role. The manual job allows 75 minutes including setup. These are outer limits, not promises that every combination of slow calls will fit. Restored Terraform inputs and backend metadata are deleted immediately after capture, with final cleanup retained. The verifier changes no schedule, feature flag or infrastructure setting.
+Verification steps have a 55-minute cap; manual setup has a 75-minute job cap and separate restricted 30-minute backend/one-hour workload sessions. Restored Terraform inputs and backend metadata are removed after capture, with final cleanup retained. Process or runner loss can prevent cleanup. Verification changes no scheduler, concurrency setting, feature flag or IAM grant.
 
 <a id="deployer-verification-permissions--deployer-검증-권한"></a>
 
 ### Deployer verification permissions
 
 The [session contract](runtime-verifier-sessions.md#action-and-integration-contract) defines S3/KMS backend and ECS/ECR/owned-Lambda workload permissions with resource/region conditions. Manual verification requires both nonempty policies; Deploy Web requires the workload restriction after rollout. Both require STS caller verification and reject unrestricted fallback. The controller grants no IAM; denied reads require investigation.
+
+## Reusable runtime probe contract
+
+Every supplied type requires post-marker success, known counts and zero unknown attributes.
+Verify accepts optional `inventoryPolicy: "full"` for structured quality/gap return values;
+omission retains strict checks and other policies fail. These payloads are programmatic:
+the CLI keeps fixed status/error messages. The caller supplies the intended catalog; the
+helper does not discover it. Gap categories can overlap and must not be summed as disjoint counts.
+Quality may be absent before the first ledger read; `collection_unavailable` supplies
+`counts: null` and `types: null`. Other collection outcomes carry categorized arrays and
+timestamps. Categories describe the latest ledger row, including prior attempts; only
+the verified set establishes post-marker success.
+
+Optional `collectionMode: "release"` allows a 20-minute collection poll window instead of
+10 minutes. Both the initial poll and a contention recheck share that original window.
+Every runtime entry point has a finite deadline: verify expires 30 minutes after
+`collectionStartedAt`, while prepare gets at most 30 minutes from entry. A caller deadline
+can only shorten it. Authentication, HTTP, cooldowns and workers share the bound. Admitted
+poll responses still must arrive before the overall deadline to pass. Start promptly after
+the marker; an older marker shortens the available collection and worker budget.
+
+Collection windows are caps, not a promise that late collection can finish verification.
+Before billing readiness, the helper requires the full 80-second request allowance plus
+370 seconds for each remaining worker (35-second enqueue, 300-second poll and a final
+35-second status request). It checks worker allowances again before each enqueue.
+Every HTTP request needs its full configured timeout remaining; it is never shortened
+to start a request that cannot finish within the overall bound.
+With a new marker, billed readiness must start before about 16 minutes 20 seconds
+(30 minutes minus the 820-second probe/worker allowance). Earlier deadlines and preceding
+login, database and inventory reads reduce the available collection time further.
+
+A validated inventory-incomplete/stale response permits one retry only when the ledger
+shows a unique fresh running CloudFront attempt with a fresh prior success. After a
+65-second cooldown, every supplied type must be complete again before retrying. A second
+proven collision after successful revalidation, or insufficient shared-window time to
+admit revalidation, is `runtime_inventory_contention`. Admission also requires time for
+cooldown, a 35-second collection read, another full probe and both worker allowances.
+The latter fails before wasting the
+cooldown; delayed wakeups are checked again. Initial or continuous collection waiting
+exhausts as `collection_timeout`. Full-policy stale
+coverage can end as `collection_stale`; the overall bound is `release_timeout`.
+A post-marker running attempt stays a collection wait even when its previous success
+is old or null; exhausting that wait is `collection_timeout`, never verified coverage.
+Partial/failed/unknown evidence and unrelated protocol, authorization or model failures
+never pass. Workers start only after ready. One additional AgentCore probe may be billed.
+
+`/api/inventory/summary?view=collection` authenticates normally and reads only the sanitized
+aggregate ledger, avoiding dashboard aggregations. Account/region filters do not narrow
+this collector-wide ledger or establish per-account health. Normal authentication governs
+this GET view. The separate default-off capability governs the billed readiness POST; this
+utility does not enable a workflow.
+
+```bash
+node --test scripts/v2/deployment-smoke.test.mjs
+```
+
+Implementation: `scripts/v2/runtime-smoke.mjs`, `scripts/v2/authenticated-smoke.mjs`
+and `web/app/api/inventory/summary/route.ts`. Worker ownership follows ADR-009.
 
 <a id="related--관련"></a>
 

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 83ca9fdb6e44 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3703acbc1039 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -32,7 +32,7 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   needs an activated runtime and private proof credentials/state for both push and dispatch.
   Missing proof fails closed; each refresh needs a nonempty policy. State must share the selected private directory.
   Prepare has no Lambda grant; collect permits only the
-  owned collector. The consumer enforces explicit catalog/CloudFront RequestResponse payloads
+  owned collector. The consumer enforces explicit catalog/per-type RequestResponse payloads
   (missing type means all), distinct catalog/succeeded replies and post-marker authenticated
   freshness/runtime/worker proof. Application inventory writes are operator collection, not an
   ADR-005 exception. Tests: `test_ci_verifier_sessions.py`; guide: `docs/runbooks/runtime-verifier-sessions.md`.
@@ -157,7 +157,18 @@ The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and 
 
 ## Development release controller
 
-Dev releases require identity/image/code, owned CloudFront, SSM/model and Lambda/Fargate proofs.
-Preserve the freshness/degradation/retry contract in `docs/runbooks/runtime-foundation.md`.
+Dev releases require identity/image/code, complete post-marker collection for every catalog type with known counts/zero unknowns, fresh known CloudFront, SSM/model and both workers. Collect synchronously through at most four workers; no partial/degraded fallback.
+Preserve the strict proof-budget, digest and retry contract in `docs/runbooks/runtime-foundation.md`.
 Prepare is existing-web only; no password reset, admin promotion or full-gate bypass.
 Manual session scopes and cleanup follow `docs/runbooks/runtime-verifier-sessions.md`.
+
+Runtime smoke accepts verify-only inventoryPolicy=full and collectionMode=release; omission
+keeps strict supplied-type checks. Full quality is programmatic; the caller discovers types.
+Collection polls share 10 minutes, or 20 in release mode. Every runtime call is bounded by
+marker+30min (prepare: entry+30min), shortened by explicit deadlines. One proven collision
+permits a cooldown/revalidation retry. No workflow or billed capability is activated.
+Require full HTTP timeouts remaining, and probe/worker budgets before billing or enqueue:
+80s probe, 370s per worker; retry also needs 65s cooldown and a 35s collection read.
+Collection windows are caps; late completion can fail admission.
+Post-marker running attempts with old/null previous success time out as collection_timeout;
+full-policy stale terminal evidence is collection_stale. Login/DB also require full timeouts.

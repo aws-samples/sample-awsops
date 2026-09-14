@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 function workflow(name) {
@@ -16,6 +19,22 @@ const named = (job, name) => {
   return value;
 };
 
+test('actual pin step emits the digest of the manifest it selected', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pin-contract-'));
+  const manifest = '{"schemaVersion":2,"fixture":"approved"}';
+  try {
+    writeFileSync(join(dir, 'aws'), '#!/bin/sh\ncase "$1 $2" in\n"ecr batch-get-image") printf "%s\\n" "$TEST_MANIFEST";;\n"ecr put-image") exit 0;;\n*) exit 99;;\nesac\n', { mode: 0o700 });
+    const pin = named(workflow('deploy-web.yml').jobs.deploy, 'Pin web-latest to the approved image');
+    const script = pin.run.replaceAll('${{ steps.tf.outputs.ecr_repo }}', 'fixture-web');
+    const output = join(dir, 'outputs');
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], { encoding: 'utf8',
+      env: { PATH: `${dir}:${process.env.PATH}`, TEST_MANIFEST: manifest, PIN_SHA: 'a'.repeat(40),
+        DISPATCH_BUILD: 'false', DISPATCH_IMAGE_SHA: '', GITHUB_OUTPUT: output } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(output, 'utf8'), `digest=sha256:${createHash('sha256').update(manifest).digest('hex')}\n`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('all dev web releases require private preparation, contract capture and full runtime gate', () => {
   const w = workflow('deploy-web.yml');
   const job = w.jobs.deploy;
@@ -27,8 +46,11 @@ test('all dev web releases require private preparation, contract capture and ful
   }
   const gate = named(job, 'Authenticated development runtime readiness');
   assert.equal(job.env.RUNTIME_MODE, 'collect');
+  assert.equal(job.env.INVENTORY_POLICY, 'full');
   assert.equal(gate.env.RUNTIME_DEPLOYMENT_FILE, '${{ steps.runtime.outputs.deployment_file }}');
   assert.equal(gate.env.SMOKE_CREDENTIAL_FILE, '${{ steps.demo.outputs.credential_file }}');
+  assert.equal(gate.env.EXPECTED_WEB_DIGEST, '${{ steps.pin.outputs.digest }}');
+  assert.equal(named(job, 'Pin web-latest to the approved image').id, 'pin');
   assert.match(gate.run, /node scripts\/v2\/ci\/runtime-release.mjs run/);
   assert.doesNotMatch(gate.run, /authenticated-smoke.mjs|verify_database|CI_READONLY_RUNTIME_DEV/);
   assert.ok(job.steps.indexOf(gate) > job.steps.indexOf(named(job, 'Wait for services-stable')));
@@ -62,9 +84,11 @@ test('manual preparation/collection is dev-only and does not build, deploy or ch
   const w = workflow('collect-runtime.yml');
   assert.deepEqual(Object.keys(w.on), ['workflow_dispatch']);
   assert.deepEqual(w.on.workflow_dispatch.inputs.mode.options, ['prepare', 'collect']);
+  assert.equal(w.on.workflow_dispatch.inputs.inventory_policy, undefined);
   const job = w.jobs.verify;
   assert.equal(job.environment, 'development');
   assert.equal(job.env.RUNTIME_MODE, '${{ inputs.mode }}');
+  assert.equal(job.env.INVENTORY_POLICY, 'full');
   assert.equal(job.env.PIN_SHA, '${{ inputs.image_sha }}');
   assert.equal(job.env.AWS_ACCOUNT_ID_DEV, '${{ secrets.AWS_ACCOUNT_ID_DEV }}');
   const guard = named(w.jobs.guard, 'Validate manual development operation');

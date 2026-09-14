@@ -189,43 +189,17 @@ raw AWS errors. Each synchronous response must have `StatusCode=200`, no
 | Payload | Required result |
 | --- | --- |
 | `catalog` | Exactly `status: "catalog"` and a bounded, nonempty, unique `types` list containing `cloudfront`; no result `type` or counts are expected |
-| `cloudfront` | `status: "succeeded"`, `type: "cloudfront"`, nonnegative integer `row_count`, and `unknown_attribute_count: 0` |
+| Each returned catalog type | `status: "succeeded"`, matching `type`, nonnegative integer `row_count` and `unknown_attribute_count: 0` |
 
-`busy`, `failed` (including superseded), `partial`, unknown-type errors and
-malformed results never prove collection. A bounded retry of explicit contention
-— invocation-level throttling or a busy/superseded result — may succeed only
-through a later valid owned response; scheduled work cannot substitute for
-that owned CloudFront proof. Use a 450-second catalog budget and a 900-second
-CloudFront budget, including waits and retries. Disable automatic SDK/CLI invoke retries; for collection use
-a read timeout longer than the verified function timeout (currently at most
-420 seconds), inside an explicit controller deadline.
+The release controller invokes every returned type synchronously with at most four collectors. It never invokes `type=all`, unknown types or asynchronous Event batches. IAM restricts the function ARN, not the event body; reviewed controller code must enforce these payloads.
 
-Capture the release time marker before the owned collection invocation, then
-require the `cloudfront` job ledger row's durable `last_success_at` at or after
-that marker. This job-level ledger is keyed under the host `self` sentinel, not
-the host's numeric AWS account ID. Require fresh known-host CloudFront evidence
-as well; caller/runtime identity separately verifies the expected AWS account.
-This demonstrates advancement past the
-pre-invoke marker; an old ledger success, or a scheduled success accompanying a
-`busy` owned response, is insufficient. Full readiness additionally requires the
-authenticated BFF/AgentCore and owned worker HTTP proofs. A successful invoke
-alone never establishes it.
+Busy/superseded and confirmed invocation throttling may retry within bounded windows. Denied, uncertain-delivery, partial, failed, unknown and malformed responses never prove collection. Disable automatic SDK/CLI invoke retries. The catalog budget is 450 seconds; each type has up to 900 seconds including waits, with 450 seconds needed to admit the at-most-420-second function. Global proof budgets can shorten these windows. See the [collection contract](runtime-foundation.md#collection-contention--수집-경합).
 
-The catalog lists registered types, not acknowledged invocations. For the
-consumer's **release mode**, read every returned type's host job ledger
-over HTTP within a bounded 1,200-second wait. CloudFront needs durable success
-after the owned pre-invoke marker. Other types need durable success within the
-last 30 minutes; the existing scheduler may supply that evidence. A later running,
-failed, partial, or succeeded-with-unknowns attempt is reported as degraded when
-that durable success remains fresh. Missing or stale success fails with a fixed
-diagnostic; these budgets do not guarantee a full scheduled sweep will finish.
-The helper neither invokes the other types nor repairs their producer failures.
+The release marker precedes every collection call. Every catalog type needs an authenticated ledger row under host `self` with `succeeded`, post-marker start and last-success timestamps, known counts and zero unknown attributes. A scheduled success cannot substitute for a failed owned RPC; a recent pre-marker success cannot pass. Caller/runtime identity separately binds the expected AWS account. A fresh known-host CloudFront record, nonce-bound AgentCore/model response and both owned worker completions remain mandatory.
 
-Report aggregate collection as current/degraded with completeness unknown.
-Keep the owned CloudFront result, fresh known-host record, actual AgentCore/model
-proof and owned-worker proof mandatory. This release-mode contract is implemented by the controller; the existing standalone strict smoke's requirement
-for clean post-marker results is unchanged. Do not infer complete AWS inventory
-coverage or trigger attribution from either path.
+The full-policy quality result describes the complete supplied catalog, with categorized gaps and observation timestamps. RPC attempt outcomes are distinct from ledger proof. Failed, partial, stale, missing or unknown evidence blocks acceptance; no rolling-success or degraded mode is allowed. Release mode changes only the shared bounded collection wait, not these data criteria. The single proven-contention retry must revalidate every type before the next AgentCore probe. All work stays within the absolute proof deadline and remaining request/model/worker allowances.
+
+These checks establish the configured catalog's evidence contract, not universal AWS-resource coverage or trigger attribution. The policy generator itself invokes no workloads and changes no flags, scheduler or IAM grants.
 
 Verifier-triggered collection changes freshness timestamps. Do not label those
 observations as EventBridge execution or schedule attribution. The separate

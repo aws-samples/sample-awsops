@@ -33,7 +33,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
-- Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). Both workflows consume the helper policies. Dev verification requires activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
+- Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). Both workflows consume the helper policies. Dev verification requires activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/per-type RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
 - Private saved-plan inspection authenticates run/checkout/assets before 32 MiB-bounded rendering; it never authorizes apply.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.
 - Linux capture forwards the first interrupt, kills the child group on a second, and arms parent-death SIGKILL before exec; cancellation is not infrastructure rollback.
@@ -156,14 +156,13 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   lookup honor it. The separate alias and incident bridge paths remain literal. Status lookup
   does not validate the full ARN and can still perform other control-plane reads.
   The controller does not create the group/membership; use reviewed imports for existing resources.
-  Capped samples cannot prove absence. The owned CloudFront probe must succeed with zero unknowns.
-  Later scheduled attempts can disclose degradation without revoking the owned proof; other catalog
-  types require recent last-success evidence. Missing/stale or malformed evidence still blocks,
-  and completeness remains unknown.
+  Capped samples cannot prove absence. Every current catalog type requires clean post-marker
+  success with known counts and zero unknown attributes. Missing, partial, failed, stale or
+  unknown evidence blocks release; a prior rolling success is insufficient.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
   credentials. Prepare checks host registration (optional hostOnly); verify additionally
   requires applied CloudFront identity, the deployed catalog and pre-probe timestamp,
-  bounded collection evidence, web-role SSM/AgentCore proof and Lambda/Fargate completion. Every dev Deploy Web
+  complete post-marker collection evidence, web-role SSM/AgentCore proof and Lambda/Fargate completion. Every dev Deploy Web
   release requires the controller-generated verify file regardless of verify_database. The billed readiness
   route requires admin or deployment-verifiers, one in-flight call and a per-process 60-second cooldown; replicas have independent cooldowns.
 
@@ -172,8 +171,9 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   login and edge-authenticated `/api/db`. A positive table count is not a full ledger audit.
 - Terraform plan/private host preparation, Deploy Web and manual collect-runtime credential steps
   bind `TF_VAR_DEMO_PASSWORD` as step-scoped `TF_VAR_demo_password`; only private file paths cross steps.
-- Credentials and HTTP scratch share one 0700 run directory with 0600 files, covered by
-  always-cleanup. Public diagnostics contain only fixed phases and validated HTTP status.
+- Credentials and HTTP scratch share one 0700 run directory with 0600 files. Normal
+  finalizers clean them; process/runner loss can prevent cleanup. Public diagnostics
+  contain only fixed phases and validated HTTP status.
   Never relay Terraform diagnostics, response bodies or cookies, or reset a user's password.
 - Curl/OpenSSL, PyYAML and Terraform 1.15.7 are mandatory for the authenticated smoke fixtures;
   missing tools fail the shared runner. Only final fmt/validate diagnostics are informational.
@@ -181,7 +181,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 Collector verification binds the applied `sync_code_sha256` to the configured archive
 `source_code_hash` and checks live `CodeSha256`; stale provider observations cannot authorize code.
 
-Release mode reads the code-checked catalog and invokes only the owned CloudFront collector. The owned CloudFront response must succeed with zero unknowns; its known record and durable last success remain post-marker. Capture actual runtime proof before the catalog wait; later CloudFront attempts disclose degradation without revoking that proof; other catalog types require last success within thirty minutes of observation. Newer running/partial/failed attempts and unknown attributes are disclosed as degraded, with completeness always unknown. Missing/stale or malformed catalog evidence blocks; standalone smoke remains strict for all supplied types. SSM/model and both owned worker proofs are mandatory. Catalog/probe budgets remain 450/900 seconds; release polling is twenty minutes, standalone ten. Only confirmed throttling/busy/superseded probe outcomes retry. See docs/runbooks/runtime-foundation.md for timing, cleanup and existing-stack adoption; no scheduler or IAM repair is performed.
+The release controller synchronously collects every code-checked catalog type through at most four collectors. It requires successful owned responses and strict post-marker ledger evidence for all types, plus a fresh known CloudFront record, nonce-bound web SSM/AgentCore/model proof and both terminal worker proofs. Full policy reports collection attempts and categorized gaps; no degraded acceptance is available. The marker-plus-thirty-minute proof deadline includes required HTTP/model/worker allowances. Collection stops early enough to reserve them; the single confirmed-contention retry revalidates all types within the original poll window. See `runtime-foundation.md` for exact budgets, digest binding, cleanup and adoption. No scheduler or IAM repair is performed.
 
 ## Conventions
 - Filename: `kebab-case.md`, domain-then-topic order.
@@ -199,3 +199,14 @@ Release mode reads the code-checked catalog and invokes only the owned CloudFron
 2. Use an existing runbook's structure as a template (`start-services.md`, `deploy-new-version.md`).
 3. Follow the symptoms → diagnosis → action order strictly.
 4. Always include the related file paths.
+
+The reusable runtime probe supports verify-only inventoryPolicy=full and collectionMode=release
+(20-minute rather than 10-minute collection polling). Rechecks share the first window; all
+runtime callers have marker+30min/prepare-entry+30min deadlines, shortened by explicit bounds.
+Programmatic quality/gaps do not imply CLI JSON output or catalog discovery. Document
+collection_stale, release_timeout and repeated runtime_inventory_contention distinctly.
+Before billed readiness or worker enqueue, require the remaining probe/worker allowances;
+collection windows are caps and late completion can fail admission. Retry admission includes
+cooldown, recheck, probe and both workers. HTTP requests need their full timeout remaining.
+Keep the probe contract before Related/ADR references. From the repository root run
+`node --test scripts/v2/deployment-smoke.test.mjs`; it imports the runtime-smoke test suite.
