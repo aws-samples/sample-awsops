@@ -11,11 +11,11 @@ const cluster = { name: 'host-cluster', access: 'connected', region, vpcId };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
 function serve(pods: unknown[], endpoints: unknown[] = [endpoint], options: {
-  failure?: 'http' | 'transport' | 'envelope'; clusters?: typeof cluster[];
+  failure?: 'http' | 'transport' | 'envelope'; clusters?: typeof cluster[]; truncated?: boolean;
 } = {}) {
   vi.stubGlobal('fetch', vi.fn(async (input: string) => {
     const url = new URL(input, 'http://localhost');
-    if (url.pathname === '/api/eks') return json({ clusters: options.clusters ?? [cluster] });
+    if (url.pathname === '/api/eks') return json({ clusters: options.clusters ?? [cluster], region, truncated: options.truncated ?? false });
     if (url.searchParams.get('kind') === 'pods') {
       if (options.failure === 'http') return json({ error: 'Forbidden' }, 403);
       if (options.failure === 'transport') throw new Error('unavailable');
@@ -81,13 +81,27 @@ describe('EKS inventory producer → configured flow graph', () => {
     { name: 'duplicate cluster candidates', pods: [pod], clusters: [cluster, { ...cluster, name: 'other' }] },
   ])('keeps successful reads healthy while rejecting $name', async ({ pods, clusters }) => {
     serve(pods, [endpoint], { clusters });
-    expect(await fetchEksIpEvidence()).toEqual({ ipResolved: {}, status: 'ok' });
+    expect(await fetchEksIpEvidence()).toEqual({ ipResolved: {}, status: 'ok', region, notConnected: 0 });
   });
   it.each(['http', 'transport', 'envelope'] as const)('still discloses a real %s read failure', async failure => {
     serve([pod], [endpoint], { failure });
-    expect(await fetchEksIpEvidence()).toEqual({ ipResolved: {}, status: 'partial' });
+    expect(await fetchEksIpEvidence()).toEqual({ ipResolved: {}, status: 'partial', region, notConnected: 0 });
   });
 
+  it.each(['entry-only', 'no-entry'])('reports ordinary %s clusters as unqueried coverage, not failed reads', async access => {
+    serve([], [], { clusters: [{ ...cluster, access }] });
+    expect(await fetchEksIpEvidence()).toEqual({ ipResolved: {}, status: 'ok', region, notConnected: 1 });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    { name: 'unknown access', clusters: [{ ...cluster, access: 'unknown' }] },
+    { name: 'missing VPC', clusters: [{ ...cluster, vpcId: '' }] },
+    { name: 'missing region', clusters: [{ ...cluster, region: '' }] },
+    { name: 'truncated cluster list', truncated: true },
+  ])('retains partial status for $name', async ({ name: _name, ...options }) => {
+    serve([], [], options);
+    expect(await fetchEksIpEvidence()).toMatchObject({ status: 'partial', region, notConnected: 0 });
+  });
   it('preserves Service labeling only after the IP, pod name and namespace agree', async () => {
     serve([pod]);
     const { target } = await graphs();
