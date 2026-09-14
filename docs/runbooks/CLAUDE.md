@@ -192,3 +192,8 @@ The reusable runtime probe supports verify-only inventoryPolicy=full and collect
 runtime callers have marker+30min/prepare-entry+30min deadlines, shortened by explicit bounds.
 Programmatic quality/gaps do not imply CLI JSON output or catalog discovery. Document
 collection_stale, release_timeout and repeated runtime_inventory_contention distinctly.
+Before billed readiness or worker enqueue, require the remaining probe/worker allowances;
+collection windows are caps and late completion can fail admission. Retry admission includes
+cooldown, recheck, probe and both workers. HTTP requests need their full timeout remaining.
+Keep the probe contract before Related/ADR references. From the repository root run
+`node --test scripts/v2/deployment-smoke.test.mjs`; it imports the runtime-smoke test suite.

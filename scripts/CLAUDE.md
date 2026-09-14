@@ -236,3 +236,7 @@ CloudFront running collision permits a 65-second-cooldown retry after complete r
 A repeated collision is runtime_inventory_contention, initial waiting is collection_timeout,
 stale full-policy data is collection_stale and the outer limit is release_timeout. Workers
 start after ready. The helper and collection-only BFF view do not activate a workflow/flag.
+Requests require their full timeout remaining. Before billed readiness, require its 80s
+allowance plus 370s per worker (35s enqueue, 300s poll, final 35s request); recheck remaining
+workers before enqueue. Retry admission includes 65s cooldown, one 35s collection read,
+the probe and both workers. Collection windows are caps; late completion may fail admission.

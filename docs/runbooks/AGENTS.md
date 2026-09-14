@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 769110e2e5f9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 70c810ac34b9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -155,5 +155,9 @@ legacy runbook's steps as the current operational path).
 
 Runtime probes accept verify-only full policy and release mode (shared 20min poll vs 10min).
 Calls with runtime configuration expire at marker+30min/prepare-entry+30min, or an earlier bound.
-Quality/gaps are programmatic; the CLI stays fixed. Use the real runtime-smoke and
-deployment-smoke test files and keep the probe contract before Related/ADR references.
+Quality/gaps are programmatic; the CLI stays fixed. Distinguish collection_stale,
+release_timeout and runtime_inventory_contention. Require full HTTP timeouts and remaining
+probe/worker allowances before billing or enqueue; retry includes cooldown and recheck.
+Collection windows are caps, so late completion may fail admission. Keep the probe contract
+before Related/ADR references. Run `node --test scripts/v2/deployment-smoke.test.mjs`
+from the repository root; it imports the runtime-smoke suite.

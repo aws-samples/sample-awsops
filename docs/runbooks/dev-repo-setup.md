@@ -1067,11 +1067,17 @@ Release mode allows 20 minutes of collection polling rather than 10; a retry sha
 original window. All runtime entry points expire 30 minutes after the verification marker
 (or 30 minutes from prepare entry); earlier caller deadlines are honored. This includes
 login/DB, HTTP, cooldowns and worker proof, and no later deadline can extend it.
+The collection window is a cap: late completion may leave too little time for the
+remaining proof. Before billed readiness, require its full 80-second allowance plus
+370 seconds per worker (enqueue, polling and last status request); recheck before each
+worker enqueue. HTTP requests need their full timeout remaining. Insufficient initial
+proof time fails as `release_timeout` before spending.
 
 Full-policy stale coverage can fail as `collection_stale`; the overall limit reports
 `release_timeout`. A validated CloudFront running-sweep collision permits one 65-second
 cooldown and strict collection recheck before another AgentCore probe. A second confirmed
-collision, or too little shared collection time to admit revalidation, is
+collision, too little shared collection time, or insufficient overall time for cooldown,
+a collection read, the next probe and both workers, is
 `runtime_inventory_contention`; a continuous initial wait is `collection_timeout`.
 Start verification promptly: an older valid marker leaves less than the advertised poll window.
 Other failures do not retry. See [probe contracts](runtime-foundation.md#reusable-runtime-probe-contract).

@@ -117,11 +117,20 @@ can only shorten it. Authentication, HTTP, cooldowns and workers share the bound
 poll responses still must arrive before the overall deadline to pass. Start promptly after
 the marker; an older marker shortens the available collection and worker budget.
 
+Collection windows are caps, not a promise that late collection can finish verification.
+Before billing readiness, the helper requires the full 80-second request allowance plus
+370 seconds for each remaining worker (35-second enqueue, 300-second poll and a final
+35-second status request). It checks worker allowances again before each enqueue.
+Every HTTP request needs its full configured timeout remaining; it is never shortened
+to start a request that cannot finish within the overall bound.
+
 A validated inventory-incomplete/stale response permits one retry only when the ledger
 shows a unique fresh running CloudFront attempt with a fresh prior success. After a
 65-second cooldown, every supplied type must be complete again before retrying. A second
 proven collision after successful revalidation, or insufficient shared-window time to
-admit revalidation, is `runtime_inventory_contention`. The latter fails before wasting the
+admit revalidation, is `runtime_inventory_contention`. Admission also requires time for
+cooldown, a 35-second collection read, another full probe and both worker allowances.
+The latter fails before wasting the
 cooldown; delayed wakeups are checked again. Initial or continuous collection waiting
 exhausts as `collection_timeout`. Full-policy stale
 coverage can end as `collection_stale`; the overall bound is `release_timeout`.

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9663b642e123 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b68dbb095fb4 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -148,3 +148,6 @@ keeps strict supplied-type checks. Full quality is programmatic; the caller disc
 Collection polls share 10 minutes, or 20 in release mode. Every runtime call is bounded by
 marker+30min (prepare: entry+30min), shortened by explicit deadlines. One proven collision
 permits a cooldown/revalidation retry. No workflow or billed capability is activated.
+Require full HTTP timeouts remaining, and probe/worker budgets before billing or enqueue:
+80s probe, 370s per worker; retry also needs 65s cooldown and a 35s collection read.
+Collection windows are caps; late completion can fail admission.

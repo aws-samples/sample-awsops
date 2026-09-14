@@ -460,10 +460,24 @@ test('a readiness retry never bypasses new gaps in another catalog type', async 
   }
 });
 
-test('contention retry cannot overrun the shared release deadline', async () => {
+test('an insufficient overall budget blocks requests before billed readiness', async () => {
   const f = contentionFixture({ deadline: Date.parse(start) + 30_000 });
   await assert.rejects(f.run(), /Runtime smoke: release_timeout$/);
+  assert.equal(f.attempts(), 0);
+  assert.ok(!f.calls.some(c => c.path === '/api/jobs'));
+});
+
+test('readiness requires the remaining probe and both-worker budgets before spending', async () => {
+  const f = fixture({}, { deadline: Date.parse(start) + 2 * 60_000 });
+  await assert.rejects(f.run(), /Runtime smoke: release_timeout$/);
+  assert.ok(!f.calls.some(c => c.path === '/api/deployment/readiness' || c.path === '/api/jobs'));
+});
+
+test('retry admission includes cooldown, recheck, probe and worker allowances', async () => {
+  const f = contentionFixture({ deadline: Date.parse(start) + 15 * 60_000 });
+  await assert.rejects(f.run(), /Runtime smoke: runtime_inventory_contention$/);
   assert.equal(f.attempts(), 1);
+  assert.equal(f.now(), Date.parse(start) + 1000);
   assert.ok(!f.calls.some(c => c.path === '/api/jobs'));
 });
 

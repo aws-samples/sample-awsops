@@ -14,6 +14,12 @@ const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const exact = (v, keys) => object(v) && Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
 const baseKeys = ['schemaVersion', 'mode', 'expectedAccountId'];
 const VERIFICATION_WINDOW_MS = 30 * 60_000;
+const REQUEST_MS = 35_000;
+const READINESS_MS = 80_000;
+const WORKER_POLL_SECONDS = 300;
+// Enqueue plus the polling window and its last admitted HTTP request.
+const WORKER_MS = REQUEST_MS + WORKER_POLL_SECONDS * 1000 + REQUEST_MS;
+const COOLDOWN_MS = 65_000;
 export function validateRuntimeSmokeConfig(value, now = Date.now()) {
   const keys = value?.mode === 'prepare' ? [...baseKeys]
     : [...baseKeys, 'expectedCloudfrontId', 'expectedQueuedTypes', 'collectionStartedAt'];
@@ -116,10 +122,11 @@ export async function verifyRuntimeSmoke(configuration, send, {
   let quality;
   const request = async (path, options = {}) => {
     const remaining = deadline - now();
-    if (remaining <= 0) fail('release_timeout', quality);
+    const timeout = options.timeout ?? REQUEST_MS;
+    if (remaining <= timeout) fail('release_timeout', quality);
     let result;
     try {
-      result = await send(path, { ...options, timeout: Math.max(1, Math.ceil(Math.min(options.timeout ?? 35_000, remaining))) });
+      result = await send(path, { ...options, timeout });
     } catch (error) {
       if (now() >= deadline) fail('release_timeout', quality);
       throw error;
@@ -192,8 +199,11 @@ export async function verifyRuntimeSmoke(configuration, send, {
   const nonce = randomBytes(24).toString('hex');
   let response;
   for (let attempt = 0; attempt < 2; attempt++) {
+    // Do not bill a probe that cannot leave time to prove both worker paths.
+    if (deadline - now() <= READINESS_MS + 2 * WORKER_MS)
+      fail(attempt ? 'runtime_inventory_contention' : 'release_timeout', quality);
     response = await request('/api/deployment/readiness', {
-      method: 'POST', timeout: 80_000, status: ['200', '503'], withStatus: true, body: {
+      method: 'POST', timeout: READINESS_MS, status: ['200', '503'], withStatus: true, body: {
         nonce, expectedAccountId: config.expectedAccountId, expectedCloudfrontId: config.expectedCloudfrontId,
       },
     });
@@ -207,11 +217,12 @@ export async function verifyRuntimeSmoke(configuration, send, {
       && freshTime(rows[0].started_at, started, now()) && freshTime(rows[0].last_success_at, started, now());
     if (!competing) fail(reason, quality);
     if (attempt === 1) fail('runtime_inventory_contention', quality);
-    // Allow the per-process BFF cooldown only when the shared recheck window can still admit work.
-    const retryAt = now() + 65_000;
-    if (retryAt >= deadline) fail('release_timeout', quality);
+    // Admit cooldown only with one recheck, the next probe and both worker budgets.
+    const retryBudget = COOLDOWN_MS + REQUEST_MS + READINESS_MS + 2 * WORKER_MS;
+    if (deadline - now() <= retryBudget) fail('runtime_inventory_contention', quality);
+    const retryAt = now() + COOLDOWN_MS;
     if (retryAt >= collectionEnd) fail('runtime_inventory_contention', quality);
-    await wait(65_000);
+    await wait(COOLDOWN_MS);
     if (now() >= deadline) fail('release_timeout', quality);
     if (now() >= collectionEnd) fail('runtime_inventory_contention', quality);
     await verifyCollection();
@@ -231,7 +242,9 @@ export async function verifyRuntimeSmoke(configuration, send, {
       || !finiteCount(agent.inventory?.count) || agent.inventory.count < 1 || agent.inventory.count > 500
       || !finiteCount(agent.inventory?.ageMinutes) || agent.inventory.ageMinutes > 1440) fail('runtime_protocol');
 
-  for (const [type, runtimeName] of [['noop', 'lambda'], ['noop-heavy', 'fargate']]) {
+  const workers = [['noop', 'lambda'], ['noop-heavy', 'fargate']];
+  for (const [index, [type, runtimeName]] of workers.entries()) {
+    if (deadline - now() <= (workers.length - index) * WORKER_MS) fail('release_timeout', quality);
     const job = await request('/api/jobs', { method: 'POST', status: '202', body: {
       type, payload: {}, dry_run: false, idempotency_key: `readiness:${nonce}:${type}`,
     } });
@@ -244,7 +257,7 @@ export async function verifyRuntimeSmoke(configuration, send, {
       if (state.job_id !== job.job_id || state.type !== type || state.runtime !== runtimeName
           || state.dry_run !== false || state.result?.ok !== true) fail('worker_protocol');
       return true;
-    }, 'worker_timeout', 300);
+    }, 'worker_timeout', WORKER_POLL_SECONDS);
   }
   return config.inventoryPolicy
     ? { status: 'ok', mode: 'verify', inventory_policy: config.inventoryPolicy,
