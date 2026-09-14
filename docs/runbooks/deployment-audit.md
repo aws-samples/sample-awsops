@@ -32,9 +32,13 @@ Two 900-second restricted sessions of the existing role separate backend capture
 from workload reads; neither grants new role permissions. Before OIDC, the first
 policy is built from the existing backend secret's literal bucket/key/region. S3
 access is limited to that bucket/state object in the expected account. KMS decrypt
-requires the S3 service and that bucket/object encryption context, additionally
-using the exact key ARN when configured. The standard flat backend settings are
-accepted; interpolation, credential overrides and non-default workspaces fail
+requires the S3 service and that bucket/object encryption context. The exact declared
+key ARN is selected only when `encrypt=true` and `kms_key_id` is present; otherwise the existing account/S3/state-
+context-restricted wildcard is used because Terraform ignores that declared key.
+The optional `encrypt` boolean defaults to false, matching the private-plan and
+verifier parsers. These settings do not prove actual state encryption posture.
+The standard flat backend settings are accepted; interpolation, credential
+overrides and non-default workspaces fail
 closed. Policy publication must succeed before credentials can be assumed.
 
 After capture and backend cleanup, the second session uses validated output
@@ -141,7 +145,7 @@ application role covers the audit. In particular, the web status role's
 |---|---|---|
 | Identity | `sts:GetCallerIdentity` | Expected development account and configured role |
 | Backend | `s3:GetObject`, `s3:ListBucket`, `s3:GetBucketLocation` | Configured bucket/state key and resource-owner account |
-| Encrypted backend | `kms:Decrypt` when required by S3 | Configured key when supplied; S3 service, resource-owner account and bucket/object encryption context |
+| Encrypted backend | `kms:Decrypt` when required by S3 | Supplied key only with `encrypt=true` and `kms_key_id` present; otherwise the existing conditioned wildcard. S3 service, resource-owner account and bucket/object encryption context remain required |
 | ECS | `ecs:ListTasks`, `ecs:DescribeServices`, `ecs:DescribeTasks` | Project cluster condition and service/task ARN scope |
 | Collector | `lambda:GetFunctionConfiguration`, `lambda:GetPolicy` | Own inventory-sync function |
 | Schedule | `events:DescribeRule`, `events:ListTargetsByRule` | Own inventory-sync rule |
