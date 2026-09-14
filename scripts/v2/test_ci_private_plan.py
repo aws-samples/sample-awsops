@@ -1,6 +1,7 @@
 """Offline private-plan contracts: real crypto/archive/file checks, fake CLI network."""
 import base64
 import copy
+from datetime import datetime, timezone
 import hashlib
 import importlib
 import io
@@ -363,12 +364,19 @@ class PrivatePlanTests(unittest.TestCase):
         import fnmatch
         result = self.policy()
         policy = json.loads(Path(result['session_policy_file']).read_text())
-        def allowed(action, resource):
+        def allowed(action, resource, encryption=None):
+            request = {'aws:ResourceAccount': ACCOUNT, 's3:x-amz-server-side-encryption': encryption}
             return any(any(fnmatch.fnmatchcase(action, a) for a in s['Action'])
                        and any(fnmatch.fnmatchcase(resource, r) for r in
-                         (s['Resource'] if isinstance(s['Resource'], list) else [s['Resource']])) for s in policy['Statement'])
+                         (s['Resource'] if isinstance(s['Resource'], list) else [s['Resource']]))
+                       and set(s.get('Condition', {})) <= {'StringEquals'}
+                       and all(request.get(k) == v for k, v in s.get('Condition', {}).get('StringEquals', {}).items())
+                       for s in policy['Statement'])
         key = f'arn:aws:s3:::{BUCKET}/ci/tfplans/{REPO}/dev/{SHA}/23/1/file'
-        self.assertTrue(allowed('s3:PutObject', key))
+        self.assertTrue(allowed('s3:PutObject', key, 'aws:kms'))
+        self.assertFalse(allowed('s3:PutObject', key))
+        self.assertFalse(allowed('s3:PutObject', key, 'AES256'))
+        self.assertTrue(allowed('s3:GetObject', key))
         self.assertTrue(allowed('s3:GetObjectVersion', key))
         self.assertFalse(allowed('s3:GetObject', f'arn:aws:s3:::{BUCKET}/dev/terraform.tfstate'))
         self.assertFalse(allowed('s3:DeleteObject', key))
@@ -543,7 +551,11 @@ class PrivatePlanTests(unittest.TestCase):
         self.assertFalse(self.fake.objects)
 
     def test_lifecycle_rejects_overlapping_early_expiry_or_archive_but_preserves_unrelated_rules(self):
-        for action in [{'Expiration': {'Days': 4}}, {'Expiration': {'Date': '2000-01-01T00:00:00Z'}},
+        exact_boundary = datetime.fromtimestamp(NOW + 5 * 86400, timezone.utc).isoformat().replace('+00:00', 'Z')
+        for action in [{'Expiration': {'Days': 4}}, {'Expiration': {'Days': 5}},
+                {'Expiration': {'Date': exact_boundary}}, {'Expiration': {'Date': '2000-01-01T00:00:00Z'}},
+                {'NoncurrentVersionExpiration': {'NoncurrentDays': 5}},
+                {'Transitions': [{'Days': 5, 'StorageClass': 'GLACIER'}]},
                 {'NoncurrentVersionExpiration': {'NoncurrentDays': 1, 'NewerNoncurrentVersions': 2}},
                 {'Transitions': [{'Days': 1, 'StorageClass': 'GLACIER'}]},
                 {'NoncurrentVersionTransitions': [{'NoncurrentDays': 1, 'StorageClass': 'DEEP_ARCHIVE'}]}]:
@@ -558,7 +570,7 @@ class PrivatePlanTests(unittest.TestCase):
                 {'Status': 'Enabled', 'Filter': {'Prefix': 'state/'}, 'Expiration': {'Days': 1}},
                 {'Status': 'Disabled', 'Filter': {}, 'Expiration': {'Days': 1}},
                 {'Status': 'Enabled', 'Filter': {}, 'Expiration': {'ExpiredObjectDeleteMarker': True}},
-                {'Status': 'Enabled', 'Filter': {}, 'Expiration': {'Days': 5}},
+                {'Status': 'Enabled', 'Filter': {}, 'Expiration': {'Days': 6}},
                 {'Status': 'Enabled', 'Filter': {}, 'Transitions': [{'Days': 0, 'StorageClass': 'INTELLIGENT_TIERING'}]},
                 {'Status': 'Enabled', 'Filter': {}, 'NoncurrentVersionExpiration': {'NoncurrentDays': 8}}]:
             rules = [copy.deepcopy(LIFECYCLE_RULE), other]

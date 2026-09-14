@@ -45,7 +45,7 @@ defer DNS-changing applies. Follow [deployment runbook §5](dev-repo-setup.md#5-
 | `steampipe_aws_bucket_size` | 4 | integer 1–40 | global burst capacity |
 | `steampipe_aws_fill_rate` | 2 | 0.1–20 req/s | token-bucket refill rate |
 | `steampipe_sync_reserved_concurrency` | 4 | integer 1–20 | inventory sync Lambda fan-out backpressure |
-| `inventory_stale_after_minutes` | 30 | integer 1–1440 | `inventory-read` per-type healthy/stale threshold |
+| `inventory_stale_after_minutes` | 30 | integer 1–1440 | inventory-reader and web graph source-age threshold; graph publication cadence is separate |
 
 관련 고정 동작 / Related fixed behavior:
 

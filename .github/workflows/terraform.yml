@@ -9,15 +9,20 @@ name: Terraform
 # override only dev (including PR base dev); CERTIFICATE_MODE_DEV defaults to
 # preserve. See docs/runbooks/dev-domain-rollout.md for the staged DNS gate.
 # Repo-level, not environment-scoped: the automatic plan job must run ungated
-# on PRs/pushes. Environments gate ONLY the dispatch-time apply. Until a
-# stack's secrets are populated, its plan skips with a warning.
+# on PRs/pushes. Environments gate manual private publication AND apply.
+# A main plan dispatch therefore waits for production approval before publication.
+# Missing backend/tfvars blobs skip planning/publication; configured plans require
+# the deployer role and storage permissions, whose absence fails publication.
 # Fork-PR guard: plan runs only for same-repo PRs — GitHub already denies fork
 # runs secrets and id-token, and the fork's branch controls the workflow file
 # on pull_request events, so we don't even start the job for forks.
 #
-# Mutation gate: `plan` is automatic (PR/push) and read-only (ci-terraform-plan,
-# ReadOnlyAccess). `apply` is workflow_dispatch-only and applies the EXACT
-# plan artifact from an explicit plan dispatch given in `plan_run_id` —
+# Mutation gate: the `plan` JOB uses ci-terraform-plan/ReadOnlyAccess. A manual
+# plan DISPATCH also runs `publish`: it assumes the existing deployer role with
+# an S3/KMS-only inline session restriction, without workload mutation authority.
+# `apply` is workflow_dispatch-only and applies the EXACT
+# privately inspected S3 plan from the dispatch in `plan_run_id`, bound to
+# `reviewed_plan_sha256` and an authenticated GitHub reference —
 # automatic PR/push plans are advisory and cannot be applied —
 # matching terraform/CLAUDE.md's "no -auto-approve; saved-plan apply" rule.
 # apply is gated per branch: dispatch from main -> `production` environment
@@ -27,12 +32,12 @@ name: Terraform
 on:
   pull_request:
     branches: [main, dev]
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_private_plan.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
     # The workflow file itself is in the path filter so a workflow change
     # self-tests with a real plan on the branch it lands on.
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_private_plan.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   workflow_dispatch:
     inputs:
       mode:
@@ -70,6 +75,9 @@ on:
       plan_run_id:
         description: "Successful plan dispatch run ID from this exact branch and SHA (push plans are advisory)"
         required: false
+      reviewed_plan_sha256:
+        description: "Apply only: exact SHA-256 from the private S3 inspection receipt"
+        required: false
 
 permissions:
   contents: read
@@ -82,6 +90,8 @@ defaults:
 jobs:
   plan:
     name: Plan
+    outputs:
+      skip: ${{ steps.restore.outputs.skip }}
     if: >-
       (github.event_name != 'workflow_dispatch' || inputs.mode == 'plan') &&
       (github.event_name != 'pull_request' ||
@@ -385,10 +395,7 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
           exit "$readiness_rc"
 
-      # A plan file embeds every input variable value in plaintext (sensitive
-      # ones included), and artifacts on a public repo are downloadable by any
-      # GitHub account — encrypt before upload, fail-closed without the key.
-      - name: Encrypt plan artifact
+      - name: Validate saved-plan Lambda assets
         if: steps.restore.outputs.skip != '1'
         env:
           TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
@@ -396,21 +403,39 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::TF_PLAN_ENC_KEY secret is not set — refusing to upload a plaintext plan."; exit 1; }
+          if [ -z "${TF_PLAN_ENC_KEY:-}" ]; then
+            echo "::error::TF_PLAN_ENC_KEY is required for saved-plan asset authentication"
+            exit 1
+          fi
           python3 ../../scripts/v2/ci_tf_assets.py pack
+          if [ "${GITHUB_EVENT_NAME:-}" != workflow_dispatch ]; then
+            rm -f tfplan tfassets.tar.gz
+          fi
+
+      # The protected publisher replaces this short-lived encrypted handoff with
+      # a nonsecret reference after the actual plan/assets reach private S3.
+      - name: Encrypt plan artifact
+        if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1'
+        env:
+          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::Plan handoff key unavailable"; exit 1; }
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in tfplan -out tfplan.enc -pass env:TF_PLAN_ENC_KEY
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in tfassets.tar.gz -out tfassets.enc -pass env:TF_PLAN_ENC_KEY
           rm -f tfplan tfassets.tar.gz
 
       - name: Upload plan artifact (encrypted)
-        if: steps.restore.outputs.skip != '1'
+        if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1'
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan
+          name: tfplan-${{ github.run_attempt }}
           path: |
             terraform/foundation/tfplan.enc
             terraform/foundation/tfassets.enc
-          retention-days: 5
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Read safe development database diagnostics
         if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_DB_DIAGNOSTICS_DEV == 'true'
@@ -451,6 +476,155 @@ jobs:
           if [ -z "$tracked" ]; then rm -f ci-runtime.auto.tfvars.json; fi
           [ -n "$(git ls-files -- .build)" ] || rm -rf .build
 
+  publish:
+    name: Publish private plan
+    needs: [plan]
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'plan' && needs.plan.result == 'success' && needs.plan.outputs.skip != '1'
+    runs-on: sample-awsops
+    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: .
+    env:
+      TARGET: ${{ github.ref_name }}
+      PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
+      GH_TOKEN: ${{ github.token }}
+      AWS_ACCOUNT_ID_DEV: ${{ github.ref_name != 'main' && secrets.AWS_ACCOUNT_ID_DEV || '' }}
+      MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
+      DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+      MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
+      DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
+      ATOMOH_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_PREVIEW_ATOMOH }}
+      SSMINJI_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_PREVIEW_SSMINJI }}
+      WHCHOI_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_PREVIEW_WHCHOI }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Select private publication scope
+        id: scope
+        run: |
+          set -euo pipefail
+          umask 077
+          case "$TARGET" in
+            main) backend="$MAIN_BACKEND_B64"; role="$MAIN_ROLE";;
+            dev) backend="$DEV_BACKEND_B64"; role="$DEV_ROLE";;
+            atomoh) backend="$ATOMOH_BACKEND_B64"; role="$DEV_ROLE";;
+            ssminji) backend="$SSMINJI_BACKEND_B64"; role="$DEV_ROLE";;
+            whchoi) backend="$WHCHOI_BACKEND_B64"; role="$DEV_ROLE";;
+            *) echo "::error::Unsupported private plan target"; exit 1;;
+          esac
+          [ -n "$backend" ] && [ -n "$role" ] || { echo "::error::Private plan scope is not configured"; exit 1; }
+          directory=$(mktemp -d "$RUNNER_TEMP/private-plan-publication-XXXXXX")
+          printf 'PRIVATE_PLAN_DIR=%s\n' "$directory" >> "$GITHUB_ENV"
+          printf '%s' "$backend" | base64 --decode > "$directory/backend.hcl" 2>/dev/null || {
+            echo "::error::Private backend restore failed"; exit 1;
+          }
+          printf 'role=%s\n' "$role" >> "$GITHUB_OUTPUT"
+          python3 scripts/v2/ci_private_plan.py policy \
+            --repository "$GITHUB_REPOSITORY" --branch "$TARGET" --commit "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" --scope "$PLAN_SCOPE" \
+            --backend "$directory/backend.hcl" --role-arn "$role" \
+            --destination "$directory/policy" > "$directory/policy-result.json"
+
+      - name: Mask and publish the storage session restriction
+        id: policy
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const root = process.env.PRIVATE_PLAN_DIR;
+            try {
+              const result = JSON.parse(fs.readFileSync(`${root}/policy-result.json`, 'utf8'));
+              if (result.status !== 'policy_ready' ||
+                  result.store_file !== `${root}/policy/store.json` ||
+                  result.session_policy_file !== `${root}/policy/session-policy.json`) throw new Error();
+              const text = fs.readFileSync(result.session_policy_file, 'utf8');
+              const policy = JSON.parse(text);
+              core.setSecret(text);
+              const mask = value => {
+                if (typeof value === 'string') {
+                  if (value.startsWith('arn:')) core.setSecret(value);
+                  if (value.startsWith('arn:aws:s3:::')) core.setSecret(value.slice(13).split('/')[0]);
+                  if (/^\d{12}$/.test(value)) core.setSecret(value);
+                } else if (value && typeof value === 'object') Object.values(value).forEach(mask);
+              };
+              mask(policy);
+              core.setOutput('session_policy', text);
+              core.setOutput('store_file', result.store_file);
+            } catch {
+              core.setFailed('private_plan_policy_unavailable');
+            }
+
+      - name: Require the private storage session restriction
+        env:
+          SESSION_POLICY: ${{ steps.policy.outputs.session_policy }}
+        run: |
+          set -euo pipefail
+          [ -n "${SESSION_POLICY//[[:space:]]/}" ] || { echo "::error::Private storage policy missing"; exit 1; }
+
+      - name: Assume deployment role for private storage only
+        if: ${{ success() && steps.policy.outputs.session_policy != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.scope.outputs.role }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          role-duration-seconds: 1800
+          role-session-name: plan-${{ github.run_id }}-${{ github.run_attempt }}
+          inline-session-policy: ${{ steps.policy.outputs.session_policy }}
+
+      - name: Publish authenticated private plan
+        id: publish
+        timeout-minutes: 15
+        env:
+          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
+          STORE_FILE: ${{ steps.policy.outputs.store_file }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 scripts/v2/ci_private_plan.py publish \
+            --repository "$GITHUB_REPOSITORY" --branch "$TARGET" --commit "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" --scope "$PLAN_SCOPE" \
+            --store "$STORE_FILE" --foundation terraform/foundation \
+            --destination "$PRIVATE_PLAN_DIR/reference" > "$PRIVATE_PLAN_DIR/publish-result.json"
+          python3 - <<'PY'
+          import json, os
+          root = os.environ["PRIVATE_PLAN_DIR"]
+          value = json.load(open(root + "/publish-result.json"))
+          expected = root + "/reference/reference.json"
+          if value.get("status") != "published" or value.get("reference_file") != expected:
+              raise SystemExit("Private plan reference unavailable")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("reference_file=" + expected + "\n")
+          PY
+
+      - name: Replace encrypted handoff with safe reference
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ github.run_attempt }}
+          path: ${{ steps.publish.outputs.reference_file }}
+          overwrite: true
+          retention-days: 5
+          include-hidden-files: true
+          if-no-files-found: error
+
+      - name: Remove private publication scratch
+        if: always()
+        run: |
+          if [ -n "${PRIVATE_PLAN_DIR:-}" ]; then rm -rf -- "$PRIVATE_PLAN_DIR"; fi
+
   apply:
     name: Apply (saved plan)
     permissions:
@@ -474,13 +648,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate and mask the reviewed plan digest
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const value = context.payload.inputs?.reviewed_plan_sha256;
+            if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) {
+              core.setFailed('A valid reviewed plan digest is required');
+              return;
+            }
+            core.setSecret(value);
+
       - name: Verify the saved plan belongs to this deployed commit and branch
         env:
           GH_TOKEN: ${{ github.token }}
           PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+          REVIEWED_PLAN_SHA256: ${{ inputs.reviewed_plan_sha256 }}
         run: |
           set -euo pipefail
           [[ "$PLAN_RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::plan_run_id is required"; exit 1; }
+          [[ "$REVIEWED_PLAN_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "::error::Private review SHA-256 is required"; exit 1; }
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PLAN_RUN_ID" |
             python3 ../../scripts/v2/ci_plan_context.py \
               --repository "$GITHUB_REPOSITORY" --branch "$TARGET" --commit "$GITHUB_SHA"
@@ -548,25 +735,22 @@ jobs:
       - name: terraform init
         run: terraform init -backend-config=backend.hcl -input=false
 
-      - name: Download the approved plan
+      - name: Restore privately reviewed plan and assets
+        working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
           PLAN_RUN_ID: ${{ inputs.plan_run_id }}
-        run: |
-          gh run download "$PLAN_RUN_ID" --repo "$GITHUB_REPOSITORY" --name tfplan --dir .
-
-      - name: Decrypt the approved plan
-        env:
           TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
           PLAN_SCOPE: ${{ inputs.plan_scope }}
+          REVIEWED_PLAN_SHA256: ${{ inputs.reviewed_plan_sha256 }}
         run: |
           set -euo pipefail
           umask 077
-          [ -n "$TF_PLAN_ENC_KEY" ] || { echo "::error::TF_PLAN_ENC_KEY secret is not set."; exit 1; }
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in tfplan.enc -out tfplan -pass env:TF_PLAN_ENC_KEY
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in tfassets.enc -out tfassets.tar.gz -pass env:TF_PLAN_ENC_KEY
-          python3 ../../scripts/v2/ci_tf_assets.py restore
-          rm -f tfassets.tar.gz
+          python3 scripts/v2/ci_private_plan.py restore \
+            --repository "$GITHUB_REPOSITORY" --branch "$TARGET" --commit "$GITHUB_SHA" \
+            --run-id "$PLAN_RUN_ID" --scope "$PLAN_SCOPE" \
+            --backend terraform/foundation/backend.hcl --foundation terraform/foundation \
+            --reviewed-plan-sha256 "$REVIEWED_PLAN_SHA256"
 
       - name: Inspect approved host preflight requirement
         id: approved_host
@@ -664,3 +848,4 @@ jobs:
         run: |
           rm -f tfplan tfplan.enc tfassets.tar.gz tfassets.enc terraform.tfvars backend.hcl
           [ -n "$(git ls-files -- .build)" ] || rm -rf .build
+          rm -rf -- ../.private-plan-"$GITHUB_RUN_ID"-"$GITHUB_RUN_ATTEMPT"-*

@@ -110,7 +110,7 @@ run "host_core_permissions_and_digest_binding" {
       e.value if e.name == "INVENTORY_STALE_AFTER_MINUTES"]), null) == "7" &&
       aws_lambda_function.agent["inventory-read"].environment[0].variables["INVENTORY_STALE_AFTER_MINUTES"] == "7"
     )
-    error_message = "Web graph evidence and inventory-read Lambda must share the configured freshness policy."
+    error_message = "Web graph evidence and inventory-read Lambda must share the configured source-age threshold."
   }
   assert {
     condition = toset(jsondecode(aws_iam_role_policy.task_agentcore_ssm[0].policy).Statement[0].Resource) == toset([

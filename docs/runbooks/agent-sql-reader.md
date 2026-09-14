@@ -293,18 +293,26 @@ The projection is not an ownership validator:
   partition's `account_id` proves telemetry ownership.
 
 The node's exposed `captured_at` is graph materialization time, not its underlying
-inventory capture or observation time. For flow, infra and trace collection quality,
-consult `sql_reader.topology_graph_state`: status, attempt/publication times, retained
-evidence and projected source reasons; trace also records query windows. The writer
-records all three classes. Missing state remains unknown, including before rollout.
-Missing qualifiers or timestamps never establish confidence.
+inventory capture or observation time. For collection quality, consult
+`sql_reader.topology_graph_state`: status, attempt/publication times, observation
+window, retained flag and projected source reasons. Its current projection owner is
+`01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`, extending the prior inventory projection with
+explicit unattempted-source/count reasons. The projection also exposes bounded
+`publishedSources`, producer status, per-source capture/success/attempt/finish clocks,
+aggregate/account scope, failure reasons and numeric loss counters. It does not expose
+raw provider JSON or widen grants. The writer records flow, infra and trace. A missing
+state row is not evidence of complete or empty coverage, including before rollout. Missing qualifiers or timestamps never establish confidence.
 
 `agent/lambda/test_inventory_view_contract.py` still reads the original
 `01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql` for its topology assertions.
 Those baseline text assertions do **not** enforce the current topology projection.
 Inspect the current migration and the queue/view cases in
 `scripts/v2/workers/test_graph_collection.py`; this clarification does not retarget
-tests or claim a fresh PostgreSQL execution.
+tests or claim a fresh PostgreSQL execution. The current collection-view projection and
+API repeatable-read/timeout/cap behavior are independently covered by
+`web/lib/graph-read-postgres.test.ts`; see [local test prerequisites](graph-read-contract.md).
+Apply the new collection projection with the existing `make migrate` operator flow;
+the queue projection remains separately owned by the migration above.
 
 ### Trace queue projection / 트레이스 큐 투영
 
