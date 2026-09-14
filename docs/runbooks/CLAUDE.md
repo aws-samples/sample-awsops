@@ -34,6 +34,23 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
+
+- Private S3 plans require the configured backend file, verified bucket posture and existing
+  base-role/key-policy permissions; publication grants none. Operators use IAM/KMS, not the
+  CI key. Public references expose only source context and the unpredictable manifest hash;
+  no storage identifiers or bare bucket/account/backend hashes. CLI results omit plan hashes.
+- Manual publication and apply enter the branch environment, including main production
+  approval. Only missing backend/tfvars blobs soft-skip; missing publication roles otherwise
+  fail. One-day ciphertext becomes a five-day reference after successful publication.
+- The privately selected plan digest binds exact bytes, not human attestation. Mask the input
+  before workflow step environments can log it. CI still authenticates assets and all original
+  apply gates. Publication and private reads require owner-installed plan-prefix lifecycle:
+  7-day current/noncurrent expiry and 1-day multipart abort; conflicting expiry/archive
+  at or before five days is rejected. The optional owner-run bootstrap configures it;
+  the workflow does not apply bootstrap. S3 expiration is asynchronous. Review effective
+  S3/KMS readers: they need no CI envelope key. Publisher policy requires SSE-KMS on PUT,
+  separately from reads. Optional purge targets reviewed expired attempt versions.
+  Current-run scratch cleanup can be prevented by runner loss; summaries are advisory.
 - The web image provenance helper is not yet wired. Its future caller must add the documented
   receipt steps and current-dev migration outputs; use the composed `promote` entrypoint,
   never manually mint migration evidence or silently fall back to mutable-tag authority.
@@ -55,7 +72,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   are accepted only with matching identity and byte-identical manifest/media evidence.
   Provider PATH is pinned to standard CLI directories; caller HOME is omitted, never reassigned.
 - Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). The helper supplies policies and installs neither consumer path. Deploy Web integration must be dev-only with activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
-- Private saved-plan inspection authenticates run/checkout/assets before 32 MiB-bounded rendering; it never authorizes apply.
+- Private S3 inspection authenticates source/run/reference, manifest, pinned plan and hashes before bounded local rendering; it never authorizes apply. Asset HMAC is checked inside CI publication/apply, not by the keyless operator renderer.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.
 - Linux capture forwards the first interrupt, kills the child group on a second, and arms parent-death SIGKILL before exec; cancellation is not infrastructure rollback.
 - Plan/apply capture drains a 1 MiB tail in memory, preserving the command exit independently of scratch writes. Fixed audits include capture/retention classes and available numeric success action counts; no raw automatic-run diagnostics.
@@ -72,8 +89,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   `TF_PLAN_ENC_KEY` HMAC. Both pack/restore APIs allow only push/pull_request/workflow_dispatch
   in GitHub, or explicit local commits without an event; other events fail before work.
   Targeted plans omit untargeted Lambda resources from planned_values; preserve the ZIP check.
-  The 0600 tarball can contain signing keys. The integrating workflow must encrypt it before
-  upload and clean its own plaintext/staging; Terraform plan/apply now wire pack/restore.
+  The 0600 tarball can contain signing keys. Use encrypted GitHub handoff and private SSE-KMS
+  storage; clean owned plaintext/staging. CI publication/apply preserve pack/restore checks.
   `CI_ASSETS_READY=true` makes layer provisioners validate restored files without reinstalling.
   See `scripts/v2/ci/pg8000-requirements.txt`, `scripts/v2/test_ci_tf_assets.py` and
   `docs/reference/06-workers.md`. Old signed bundles require their matching prior key after rotation.
@@ -149,7 +166,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   checks and a known configured collector hash through `ci_readiness_plan_summary.py`.
   That advisory summary does not establish approval or resource presence; unknown changes
   require private inspection. Its two-minute, failure-tolerant step runs before encryption,
-  renders fenced JSON, and must not block encrypted artifacts.
+  renders fenced JSON, and must not block encrypted handoff/private publication.
   Never expose full ARNs, account IDs or
   raw configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
   CLI; health is liveness only. DB/auth checks precede service A publication.
