@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 803fc4c54431 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9066afe5a479 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -33,7 +33,7 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   needs an activated runtime and private proof credentials/state for both push and dispatch.
   Missing proof fails closed; each refresh needs a nonempty policy. State must share the selected private directory.
   Prepare has no Lambda grant; collect permits only the
-  owned collector. The consumer enforces explicit catalog/CloudFront RequestResponse payloads
+  owned collector. The consumer enforces explicit catalog and validated per-type RequestResponse payloads
   (missing type means all), distinct catalog/succeeded replies and post-marker authenticated
   freshness/runtime/worker proof. Application inventory writes are operator collection, not an
   ADR-005 exception. Tests: `test_ci_verifier_sessions.py`; guide: `docs/runbooks/runtime-verifier-sessions.md`.
@@ -174,14 +174,18 @@ collect-runtime workflow is absent. No flags/workflows are enabled. Future full
 release integration must require collect, never accept prepare or skip inactive prerequisites.
 It binds dev source/account/actual role, applied runtime identity and ARM64 web digest.
 All current catalog types (43) need post-marker succeeded evidence, known counts and
-zero unknowns, with at most four synchronous owned calls. Prepare obtains authenticated
+zero unknowns, with at most four concurrent in-flight synchronous owned calls. Prepare obtains authenticated
 DB time plus host proof; calibration anchors at request start and shifts the existing
-deadline equally. No freshness tolerance or rolling prior success is introduced.
+deadline equally. No lower-bound freshness tolerance or rolling prior success is introduced.
 Collector hash/RevisionId must remain stable before/after collection; then full
 SSM/AgentCore/model and both owned worker proofs remain mandatory. Preserve private
 credentials/cleanup, restrictive consumer sessions and reviewed activation prerequisites.
 Budgets and boundaries: `docs/runbooks/runtime-foundation.md#strict-release-controller-capability`
 and `runtime-verifier-sessions.md`. Test: `node --test scripts/v2/ci/runtime-release.test.mjs`.
+The dated owner requirement supersedes the earlier CloudFront-only proposal.
+Four lanes do not promise fourfold throughput or completion for every workload.
+Keep the schedule active and fail closed on budget/permission/contention failures;
+the runbook records one feasible measured workload, not a latency guarantee.
 
 ## Unwired private plan transport
 

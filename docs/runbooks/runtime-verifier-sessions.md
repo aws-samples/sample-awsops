@@ -157,7 +157,7 @@ remains mandatory; policy generation or database smoke alone does not establish 
 Use the bounded busy/superseded handling and release-mode proof contract below;
 they do not authorize skipping missing or failed proof. Push-triggered verification
 uses the same owned collector's application-data effects already automated by
-the existing 15-minute schedule, with the narrower explicit payloads below.
+the existing 15-minute schedule, through the explicit per-type payloads below.
 
 The CLI publishes `policy_file` and `session_policy`. It masks the complete policy,
 Resource ARNs, bare S3 bucket and bucket/key forms, and configured account first.
@@ -169,11 +169,22 @@ symlink/public/non-regular input files, or an existing output policy file.
 
 Collect consumers must use `RequestResponse` on the pinned function's
 unqualified ARN, without a version or alias qualifier.
-Each event must explicitly contain exactly `{"type":"catalog"}` or
-`{"type":"cloudfront"}`. **An absent `type` defaults to `all`**, which triggers
-asynchronous fan-out; empty events, `type=all`, other types and `Event` invocation
-are forbidden in this verifier. **IAM cannot constrain the Lambda event body**;
-the reviewed workflow/controller must enforce these exact payloads.
+The [owner acceptance condition dated 2026-09-14](https://github.com/aws-samples/sample-awsops/pull/67#issuecomment-5663692939)
+requires complete post-marker collection of all 43 current catalog types. The
+strict controller therefore sends exactly `{"type":"catalog"}`, followed by
+`{"type":"<catalog member>"}` for every validated returned type. This supersedes
+the earlier catalog/CloudFront-only consumer proposal; IAM scope is unchanged.
+**An absent `type` defaults to `all`**, which triggers asynchronous fan-out.
+Empty events, `type=all`, types outside the verified catalog and `Event` invocation
+are forbidden. **IAM cannot constrain the Lambda event body**; the reviewed
+controller must enforce the explicit payloads. The catalog is read from the
+hash-verified owned function, with hash/RevisionId rechecked after collection.
+
+There is at least one catalog request plus at least one request per type, not four calls in total.
+At most four owned invocations are **concurrent and in flight**. Catalog throttling
+can retry too; busy/superseded or throttled retries add calls within the same finite budget. The controller is
+unwired in this prerequisite; integrating it does not authorize changing schedule,
+reserved concurrency, feature flags or IAM without their separate reviewed procedures.
 
 The existing collector can upsert/prune application inventory and ledger rows in
 Aurora and replace that day's inventory snapshot rows. This is explicitly
@@ -191,20 +202,26 @@ raw AWS errors. Each synchronous response must have `StatusCode=200`, no
 | Payload | Required result |
 | --- | --- |
 | `catalog` | Exactly `status: "catalog"` and a bounded, nonempty, unique `types` list containing `cloudfront`; no result `type` or counts are expected |
-| `cloudfront` | `status: "succeeded"`, `type: "cloudfront"`, nonnegative integer `row_count`, and `unknown_attribute_count: 0` |
+| Each catalog member | `status: "succeeded"`, exact requested `type`, nonnegative safe-integer `row_count`, and `unknown_attribute_count: 0` |
 
 `busy`, `failed` (including superseded), `partial`, unknown-type errors and
 malformed results never prove collection. A bounded retry of explicit contention
 — invocation-level throttling or a busy/superseded result — may succeed only
 through a later valid owned response; scheduled work cannot substitute for
-that owned CloudFront proof. Use a 450-second catalog budget and a 900-second
-CloudFront budget, including waits and retries. Disable automatic SDK/CLI invoke retries; for collection use
+any required successful owned RPC. The catalog has a 450-second budget; per-type
+calls and retries share the remaining global collection window, with a full
+450-second allowance required before each admission. There is no separate
+900-second per-type budget. Disable automatic SDK/CLI invoke retries; for collection use
 a read timeout longer than the verified function timeout (currently at most
 420 seconds), inside an explicit controller deadline.
 
-Capture the release time marker before the owned collection invocation, then
-require the `cloudfront` job ledger row's durable `last_success_at` at or after
-that marker. This job-level ledger is keyed under the host `self` sentinel, not
+After catalog validation and before any type is invoked, authenticated prepare
+must verify login, DB and the host registry and obtain the DB-clock sample.
+Use that DB timestamp as the marker and calibrate subsequent time at request
+start, shifting the existing deadline by the same offset. Then require every
+catalog type's ledger `started_at` and durable `last_success_at` at or after
+the marker, succeeded status, known counts and zero unknown attributes.
+This job-level ledger is keyed under the host `self` sentinel, not
 the host's numeric AWS account ID. Require fresh known-host CloudFront evidence
 as well; caller/runtime identity separately verifies the expected AWS account.
 This demonstrates advancement past the
@@ -213,22 +230,24 @@ pre-invoke marker; an old ledger success, or a scheduled success accompanying a
 authenticated BFF/AgentCore and owned worker HTTP proofs. A successful invoke
 alone never establishes it.
 
-The catalog lists registered types, not acknowledged invocations. For the
-consumer's **release mode**, read every returned type's host job ledger
-over HTTP within a bounded 1,200-second wait. CloudFront needs durable success
-after the owned pre-invoke marker. Other types need durable success within the
-last 30 minutes; the existing scheduler may supply that evidence. A later running,
-failed, partial, or succeeded-with-unknowns attempt is reported as degraded when
-that durable success remains fresh. Missing or stale success fails with a fixed
-diagnostic; these budgets do not guarantee a full scheduled sweep will finish.
-The helper neither invokes the other types nor repairs their producer failures.
+The catalog lists registered types, not acknowledged invocations. The controller
+must complete each owned RPC and the authenticated verifier must independently
+observe strict post-marker evidence for every returned type. The shared helper's
+nominal 1,200-second release-mode poll cap is clipped by the existing deadline;
+it does not extend the marker's 30-minute lifetime or the controller's 50-minute cap.
+The controller reserves 17 minutes for its final code/revision read and full proof.
+See [the controller budget and operational acceptance contract](runtime-foundation.md#strict-release-controller-capability).
 
-Report aggregate collection as current/degraded with completeness unknown.
-Keep the owned CloudFront result, fresh known-host record, actual AgentCore/model
-proof and owned-worker proof mandatory. This release-mode contract is for the
-separate consumer integration; the existing standalone strict smoke's requirement
-for clean post-marker results is unchanged. Do not infer complete AWS inventory
-coverage or trigger attribution from either path.
+There is no rolling prior-success substitute or degraded-release acceptance.
+Operational collection can preserve partial/last-good data for diagnosis, but
+partial, failed, stale, missing or unknown evidence blocks release. A current
+running attempt waits within the shared window. The singleton ledger is not
+owned by this verifier's run token: a later scheduled failed/partial/unknown result
+can also block release, even after the owned RPC succeeded. The schedule remains
+enabled, and no scheduler attribution is inferred from verifier-produced freshness.
+Fresh known-host CloudFront, actual AgentCore/model proof and both owned workers
+remain mandatory. The policy generator neither invokes types nor repairs failures;
+the strict controller supplies the collection orchestration when wired.
 
 Verifier-triggered collection changes freshness timestamps. Do not label those
 observations as EventBridge execution or schedule attribution. The separate
