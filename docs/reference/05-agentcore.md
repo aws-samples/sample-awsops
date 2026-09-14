@@ -96,6 +96,74 @@ interpreter_id, memory_id}`. The web BFF reads these at **runtime** via the task
 **not** ECS `valueFrom` — to avoid a task-start race. Placeholders are written by
 Terraform; `provision.py` overwrites with real values.
 
+## Provisioner reconciliation
+
+Before upgrading, verify that the operator-owned deployer has
+`bedrock-agentcore:GetGateway` as described in the
+[deployment role prerequisites](../runbooks/dev-repo-setup.md#4-ecr-permissions-for-the-pin-step--ci-deployer-ecr-권한).
+Existing gateways are read in full before reconciling the applied role and catalog description. Updates preserve
+deployed inbound auth/protocol and optional security settings; absent optional
+protocol fields are omitted, never invented from create-time defaults. Known IDs
+remain available to Runtime routing, pruning and all ADR-017 teardown paths after
+read/update failures. Description-only request failures remain warnings.
+
+Role verification is functional, even when the listed description already matches:
+a matching label cannot prove that the gateway uses the applied role. If SDK retry
+handling still returns a `GetGateway` failure, including a throttle or timeout, it records `ERR` and
+makes the run exit nonzero while retaining the known ID and baseline teardown.
+This does not claim that role drift was observed; it reports that reconciliation
+could not be verified. Only after a successful read confirms the role may a
+description-only update failure be reported as `WARN`. The old description-only
+path's warning policy does not establish a role-verification success.
+
+**Verified deployment prerequisite, 2026-09-14:** the public repository's historical
+dev-branch [audit workflow at the audited commit](https://github.com/aws-samples/sample-awsops/blob/cdb8d4b13b9ab2dbc9b38ac0534f4d50ef58fbdd/.github/workflows/audit-deployment.yml)
+completed [run `34819307611`](https://github.com/aws-samples/sample-awsops/actions/runs/34819307611).
+These links identify the workflow and execution at dev commit
+`cdb8d4b13b9ab2dbc9b38ac0534f4d50ef58fbdd`, independently of which workflow files
+exist in a reader's checkout. That run
+successfully read the data gateway and RDS target using a restricted read session
+of `AWS_CI_DEPLOYER_DEV_ROLE_ARN` in the configured development account.
+The READY resources had a role and Lambda ARN that did not match applied state.
+This verifies the new read prerequisite for that deployment identity; other
+installations must verify their own grant before upgrading. The snapshot proves
+configuration drift, not the cause of the earlier failed target request.
+
+Lambda target drift covers the applied Lambda ARN, managed credential-provider
+type and tool definitions (`name`, `description`, `inputSchema`). Target metadata
+and private endpoints are preserved. No new gateway/target wait or automatic
+state-based recovery is added. `CREATED`/`UPDATED` mean request acceptance;
+`EXISTS` means configuration match. None proves readiness or tool invocation.
+Existing Runtime and curated MCP-target readiness/retirement behavior remains.
+
+Runtime construction and ADR-017 enforcement keep their baseline behavior.
+There is no new identity-completeness gate or retirement exemption. Explicit
+disabled/blocked endpoints, revoked acknowledgments, missing credentials and
+tombstones still retire on known gateways; an unconfirmed allowlist-carrying
+Runtime still invokes the existing fail-closed retirement policy.
+
+Validation/conflict/not-found/SDK-validation failures have fixed public codes;
+raw messages, configuration, credentials and ARNs are not emitted. An old
+`operation_failed` record cannot establish its original cause. A persistent
+`FAILED` state requires authorized read evidence and operator-approved repair;
+the provisioner never automatically deletes/recreates it. Normal configuration
+drift may submit an update, with service rejection reported safely.
+
+Offline tests need pytest and the SDK dependencies declared in
+`scripts/v2/requirements-test.txt` and `agent/requirements.txt`. Run each file in
+its own process, as required by [merge verification](../v2-merge-verification.md):
+
+```bash
+for test_file in scripts/v2/agentcore/test_*.py; do
+  python3 -m pytest -q "$test_file" || exit
+done
+python3 -m pytest -q scripts/v2/ci/test_setup_provision_python.py
+python3 scripts/v2/ci/runtime-build-provision.test.py
+```
+
+API contracts: [UpdateGateway](https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_UpdateGateway.html)
+and [UpdateGatewayTarget](https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_UpdateGatewayTarget.html).
+
 <a id="decisions-adrs--결정"></a>
 
 ## Decisions (ADRs)
@@ -156,8 +224,10 @@ runtime ARN + memory id in SSM (not `PENDING`) and an initial 2-slice `lambda_ar
 - **SSM reserved prefix** — SSM rejects any parameter path starting with `aws…`
   (reserved). Use `/ops/${project}/…` (hence `/ops/awsops-v2/agentcore/*`).
 - **Gateway not yet READY** — a just-created gateway can make the first
-  `create_gateway_target` throw `ValidationException`. Resolved by re-running: the
-  provisioner is idempotent and re-runnable.
+  `create_gateway_target` throw `ValidationException`. Confirm `READY` through an
+  authorized read, then re-run the idempotent provisioner. Persistent `FAILED`
+  states require diagnosis; request acceptance is not readiness and does not
+  authorize destructive recreation.
 - **Underscore-only names** — Code Interpreter and Memory names allow underscores only,
   no hyphens (`awsops_v2_code_interpreter`, `awsops_v2_memory`).
 - **Memory expiry** — `eventExpiryDuration` ≤ 365 days.
