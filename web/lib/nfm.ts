@@ -141,7 +141,13 @@ const UNIT_FALLBACK: Record<NfmMetric, string> = {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export interface NfmQueryResult { rows: NfmFlowRow[]; unit: string; tookMs: number }
+export interface NfmQueryResult {
+  rows: NfmFlowRow[]; unit: string; tookMs: number;
+  /** Actual query window, retained unchanged when the TTL cache serves this result. */
+  startTime: string; endTime: string; queriedAt: string;
+  /** Reaching the top-contributor limit means coverage may be incomplete. */
+  capped: boolean;
+}
 
 // NFM 모니터 쿼리의 하드 한도 (실측: "Time range can not exceed 1 hour" ValidationException).
 // 더 긴 기간이 필요하면 nfm-dashboard처럼 수집 파이프라인이 필요하다 — 라이브 조회는 1h가 상한.
@@ -181,7 +187,11 @@ export async function nfmTopContributors(
       for (const raw of res.topContributors ?? []) rows.push(toRow(raw as RawContributor, category, res.unit ?? UNIT_FALLBACK[metric]));
       nextToken = res.nextToken;
     } while (nextToken && rows.length < limit);
-    return { rows: rows.slice(0, limit), unit, tookMs: Date.now() - t0 };
+    return {
+      rows: rows.slice(0, limit), unit, tookMs: Date.now() - t0,
+      startTime: start.toISOString(), endTime: end.toISOString(), queriedAt: new Date().toISOString(),
+      capped: rows.length >= limit || !!nextToken,
+    };
   });
 }
 

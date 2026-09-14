@@ -52,6 +52,30 @@
 | `/api/nfm` | GET | NFM 상태(메뉴 게이트) — 모니터 목록 + Scope 수; 모니터 없으면 온보딩 안내로 degrade | verifyUser |
 | `/api/nfm/query` | GET | NFM 모니터 쿼리 — 최대 1시간 윈도우 (초과 시 API ValidationException) | verifyUser |
 
+### NFM observation metadata
+
+Successful `/api/nfm/query` responses retain `monitor`, `metric`, `category`, `range`,
+`rows`, `unit` and `tookMs`, and include:
+
+| Field | Meaning |
+|---|---|
+| `startTime`, `endTime` | ISO query bounds sent to NFM; preserved unchanged on a four-minute cache hit. |
+| `queriedAt` | Result assembly time, also preserved on cache hits; not the current HTTP request time. |
+| `capped` | The contributor limit was reached or a continuation token remained. More rows may exist. |
+
+These are query bounds and truncation signals, not proof of complete traffic coverage.
+The route owns `RANGE_ALLOWED` (900/1800/3600 seconds); an unsupported or omitted range
+uses its existing 3600-second default. Metric/category allowlists remain in `nfm.ts`.
+
+The standalone `topology-observations.ts` loader is **unwired until topology integration**.
+Its `NetworkBatch` is a client result, not additional HTTP response fields: it carries
+failed/capped categories, `complete`/`partial` status and per-category `verified`/`unknown`
+window quality. `verified` means parseable, ordered bounds only. Failures use closed codes
+(`query_failed`, `malformed_payload`, `malformed_rows`, `invalid_request`) without raw
+upstream error text. Missing/invalid windows remain unknown and make the batch partial.
+At most three workers bound category concurrency; cancellation stops further scheduling and result
+application, without guaranteeing cancellation of a server query already started.
+
 ## dns-logs (2)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
