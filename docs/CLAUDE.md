@@ -19,12 +19,17 @@ Project documentation organized by purpose. Each subdirectory has its own CLAUDE
   including references, operational runbooks and context files. Preserve facts when
   maintaining an existing bilingual document; do not add parallel translations.
   Existing bodies are a migration backlog, not a bilingual-authoring requirement.
+  Preserve explicit heading anchors or update inbound links when headings change.
 - Keep multilingual product guides under `docs-site/` and application translations.
   Generated archify artifacts under `docs/diagrams/` (spec JSON and delivered HTML)
   are English-only; regenerate them through the skill rather than hand-translating HTML.
 - ADR bodies and the BASELINE decision register are maintained in the **private upstream
   repository**, not in this public tree — docs here cite ADR numbers (e.g. ADR-005) for
-  traceability only; anything about mutation/autonomy is settled by ADR-005 FROZEN.
+  traceability only. AWS-resource mutation and autonomy remain **ADR-005 FROZEN
+  (do-not-enable)**; historical plans or status records cannot override current gates.
+- Keep application/runtime implementation outside this documentation tree. Generated
+  diagrams and illustrative code remain documentation artifacts. Verify commands and
+  route descriptions against current source; reference documents are navigation aids.
 - Runbooks follow the rules in `docs/runbooks/CLAUDE.md`.
 - Never commit credentials or tokens. Use placeholders for environment-specific
   account IDs, ARNs and domains in this public sample.
