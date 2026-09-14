@@ -46,3 +46,40 @@ resource "aws_s3_bucket_public_access_block" "state" {
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
+
+# S3 accepts one lifecycle configuration per bucket. Existing owners must reconcile
+# their other rules here before adopting this optional resource.
+resource "aws_s3_bucket_lifecycle_configuration" "private_plans" {
+  count  = var.private_plan_retention_enabled ? 1 : 0
+  bucket = aws_s3_bucket.state.id
+
+  rule {
+    id     = "private-plan-retention"
+    status = "Enabled"
+    filter {
+      prefix = "ci/tfplans/"
+    }
+    expiration {
+      days = 7
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+
+  rule {
+    id     = "private-plan-delete-markers"
+    status = "Enabled"
+    filter {
+      prefix = "ci/tfplans/"
+    }
+    expiration {
+      expired_object_delete_marker = true
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.state]
+}
