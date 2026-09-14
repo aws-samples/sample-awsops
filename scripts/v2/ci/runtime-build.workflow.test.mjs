@@ -55,7 +55,12 @@ test('reusable migration keeps original caller dispatch guard and separate concu
   assert.doesNotMatch(w.jobs.guard.steps[0].run, /workflow_call/);
   const agent = workflow('deploy-agentcore.yml');
   assert.equal(agent.jobs['migrate-dev'].uses, './.github/workflows/deploy-migrations.yml');
-  assert.equal(agent.jobs['migrate-dev'].secrets, 'inherit');
+  const names = ['TF_TFVARS_DEV', 'TF_BACKEND_HCL_DEV', 'AWS_ACCOUNT_ID_DEV',
+    'AWS_CI_BUILD_DEV_ROLE_ARN', 'AWS_CI_DEPLOYER_DEV_ROLE_ARN'];
+  assert.deepEqual(agent.jobs['migrate-dev'].secrets,
+    Object.fromEntries(names.map(name => [name, '${{ secrets.' + name + ' }}'])));
+  assert.deepEqual(w.on.workflow_call.secrets,
+    Object.fromEntries(names.map(name => [name, { required: true }])));
   assert.match(agent.jobs['migrate-dev'].if, /refs\/heads\/dev/);
   assert.deepEqual(agent.jobs.deploy.needs, ['migrate-dev']);
   assert.match(agent.jobs.deploy.if, /needs.migrate-dev.result == 'success'/);

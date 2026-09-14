@@ -4,6 +4,12 @@ on:
   workflow_dispatch:
   # Reuse keeps the caller's original event/ref/sha; the guard remains dispatch-only.
   workflow_call:
+    secrets:
+      TF_TFVARS_DEV: { required: true }
+      TF_BACKEND_HCL_DEV: { required: true }
+      AWS_ACCOUNT_ID_DEV: { required: true }
+      AWS_CI_BUILD_DEV_ROLE_ARN: { required: true }
+      AWS_CI_DEPLOYER_DEV_ROLE_ARN: { required: true }
 
 permissions:
   contents: read

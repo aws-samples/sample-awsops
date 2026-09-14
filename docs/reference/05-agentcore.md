@@ -122,12 +122,12 @@ Terraform; `provision.py` overwrites with real values.
 
 - **ADR-004** — AgentCore gateways & runtime, incl. runtime-customizable agents & skills
   (Aurora catalog + resolver + registry-agnostic `agent.py`; built-in vs custom tiers;
-  per-account Agent Spaces; BYO-MCP). ADR-004 (private upstream decision)
+  per-account Agent Spaces; BYO-MCP). [`../decisions/004-agentcore-gateways-runtime.md`](../decisions/004-agentcore-gateways-runtime.md)
 - **ADR-004** — gateway role split (note the **2026-06-03 correction: 7 → 8 gateways**).
-  ADR-004 (private upstream decision)
+  [`../decisions/004-agentcore-gateways-runtime.md`](../decisions/004-agentcore-gateways-runtime.md)
 - **ADR-003** — AI agent routing (hybrid routing & multi-route parallel synthesis; the
   classifier picks built-in routes + enabled custom agents).
-  ADR-003 (private upstream decision)
+  [`../decisions/003-ai-agent-routing.md`](../decisions/003-ai-agent-routing.md)
 - **ADR-021** — quota-isolated inventory reads; Phase 1 repository implementation complete,
   limited ops Aurora reader coexists with direct targets, Phase 2/3 cutover pending.
   ADR-021 (private upstream decision)

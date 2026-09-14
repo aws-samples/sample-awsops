@@ -26,7 +26,12 @@ jobs:
   migrate-dev:
     if: github.ref == 'refs/heads/dev'
     uses: ./.github/workflows/deploy-migrations.yml
-    secrets: inherit
+    secrets:
+      TF_TFVARS_DEV: ${{ secrets.TF_TFVARS_DEV }}
+      TF_BACKEND_HCL_DEV: ${{ secrets.TF_BACKEND_HCL_DEV }}
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      AWS_CI_BUILD_DEV_ROLE_ARN: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+      AWS_CI_DEPLOYER_DEV_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
 
   deploy:
     name: migrate + agentcore
