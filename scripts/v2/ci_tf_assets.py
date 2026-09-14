@@ -304,14 +304,16 @@ def build_layer(root, folder):
         shutil.rmtree(target)
     python = target / "python"
     python.mkdir(parents=True, mode=0o755)
+    pip_env = {"PATH": os.environ.get("PATH", ""), "LANG": "C", "LC_ALL": "C", "PIP_CONFIG_FILE": os.devnull}
+    # setup-python can need its shared-library path; keep credentials/index overrides excluded.
+    if os.environ.get("LD_LIBRARY_PATH"):
+        pip_env["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
     try:
         subprocess.run([
             sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
             "--no-cache-dir", "--no-compile", "--only-binary=:all:", "--require-hashes",
             "--index-url", "https://pypi.org/simple", "-r", str(LOCK), "--target", str(python),
-        ], check=True, capture_output=True, timeout=180, env={
-            "PATH": os.environ.get("PATH", ""), "LANG": "C", "LC_ALL": "C", "PIP_CONFIG_FILE": os.devnull,
-        })
+        ], check=True, capture_output=True, timeout=180, env=pip_env)
     except subprocess.TimeoutExpired:
         raise ValueError("pip_timeout") from None
     except (subprocess.SubprocessError, OSError):

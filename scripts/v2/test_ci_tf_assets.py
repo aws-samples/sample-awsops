@@ -75,8 +75,22 @@ class TerraformAssetTests(unittest.TestCase):
                 path = target / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("# synthetic installed module\n")
-        with mock.patch.object(self.module.subprocess, "run", side_effect=install):
+        with mock.patch.object(self.module.subprocess, "run", side_effect=install) as installer:
             self.module.prepare_layers(self.plan, {"steampipe_enabled": True, "workers_enabled": False}, "full")
+        return installer
+
+    def test_shared_python_library_path_survives_without_installer_credentials(self):
+        with mock.patch.dict(os.environ, {
+            "LD_LIBRARY_PATH": "/toolchain/python/lib",
+            "AWS_SECRET_ACCESS_KEY": "synthetic-secret",
+            "PIP_EXTRA_INDEX_URL": "https://user:secret@example.invalid",
+        }):
+            installer = self.prepare_fixture_layer()
+        env = installer.call_args.kwargs["env"]
+        self.assertEqual(env.get("LD_LIBRARY_PATH"), "/toolchain/python/lib")
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
+        self.assertNotIn("TF_PLAN_ENC_KEY", env)
+        self.assertNotIn("PIP_EXTRA_INDEX_URL", env)
 
     def test_restores_exact_plan_time_files_in_a_clean_apply_directory(self):
         (self.plan / ".build/function.zip").chmod(0o600)

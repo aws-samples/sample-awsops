@@ -112,15 +112,15 @@ the agent's `AURORA_SQL_READER_SECRET_ARN` is not an alias for `SQL_READER_SECRE
 Do not copy the agent's environment block. Role elevation is checked on every non-preview run when
 the role exists, **including disabled mode**. Disabled permits an absent role and skips only the
 reader secret fetch/password alteration; it does not repair a missing role or password mismatch.
-After a disabled-mode installation, run `make migrate` with reader sync enabled successfully
-before `make agentcore`; otherwise `execute_sql`/inventory-read can fail Data API authentication.
+After a disabled-mode installation, complete migrations with reader sync enabled before AgentCore. Dev Deploy AgentCore runs the reusable private `deploy-migrations.yml` first; main/preview and direct private-host CLI use `make migrate` before `make agentcore`.
+Otherwise Data API auth can fail. The dev workflow requires `CI_MIGRATIONS_ENABLED_DEV=true` and a reviewed apply of `ci_migrations_enabled=true` that persists a non-null `migration_job` output before dispatch.
 See `docs/runbooks/agent-sql-reader.md` for recovery and safe diagnostic codes.
 
 이 이름은 runtime/controller의 계약이다. 에이전트 환경변수를 복사하지 않는다.
 `disabled`에서도 존재하는 reader 롤의 elevated 속성을 검사한다. 부재한 롤은 허용하고
 reader 시크릿 조회/비밀번호 변경만 생략한다. 활성 에이전트의 장애 우회책으로 disabled를 쓰지 않는다.
-disabled로 설치했다면 `make agentcore` 전에 reader 동기화를 활성화한 `make migrate`를
-성공시켜야 한다. 생략하면 `execute_sql`/inventory-read의 Data API 인증이 실패할 수 있다.
+disabled 설치 후 AgentCore 전에 reader 동기화를 포함한 migration을 성공시켜야 한다. dev workflow 실행 전 `CI_MIGRATIONS_ENABLED_DEV=true`와 검토된 `ci_migrations_enabled=true` 계획을 적용해 `migration_job` 출력이 null이 아니어야 한다. dev는 사설 재사용 workflow를 먼저 실행하고
+main/preview·직접 CLI는 `make migrate`를 사용한다. 생략하면 `execute_sql`/inventory-read의 Data API 인증이 실패할 수 있다.
 
 ### ARM64 image and private execution / ARM64 이미지·사설 실행
 

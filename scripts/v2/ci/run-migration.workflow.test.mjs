@@ -59,7 +59,7 @@ if "output" in sys.argv: print("null")
 
 test('migration workflow is manual-only and rejects non-dev/non-samples runs before privileged jobs', async () => {
   const w = workflow('deploy-migrations.yml');
-  assert.deepEqual(Object.keys(w.on), ['workflow_dispatch']);
+  assert.deepEqual(Object.keys(w.on).sort(), ['workflow_call', 'workflow_dispatch']);
   for (const invalid of [{ GITHUB_REF: 'refs/heads/main' },
     { GITHUB_REF: 'refs/tags/dev' }, { GITHUB_EVENT_NAME: 'push' },
     { GITHUB_REPOSITORY: 'other/repository' }]) {

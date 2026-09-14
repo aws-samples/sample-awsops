@@ -161,6 +161,7 @@ aggregate-run false failures.
    (PyYAML and Terraform 1.15.7), then informational fmt/validate diagnostics.
 4. Install locked `scripts/v2` dependencies with `--ignore-scripts` and run
    `node --test scripts/v2/ci/*.test.mjs` (runtime/controller/workflow fixtures and mocked Terraform plans).
+   The provisioner fixture imports boto3/botocore; install `agent/requirements.txt` for local runs too.
 5. Run `node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs`
    against disposable PostgreSQL. Keep all migration cases:
    real initialization/ULIDs, rollback/retry/checksums, lock serialization, reader guards,
@@ -173,6 +174,7 @@ CI는 **main/dev** 대상 PR에서 Node 20·Python 3.12·Terraform 1.15.7을 설
 pytest·PyYAML과 기존 의존성 설치 후 공통 러너를 실행하고 `scripts/v2` 의존성을
 `--ignore-scripts`로 설치한다. migration offline 테스트·Docker PG migration/웹 연결 단계 테스트·별도 복사본의
 backend 비활성 Terraform validate/mock 테스트 모두 필수다.
+provisioner fixture가 boto3/botocore를 import하므로 로컬 CI glob 실행도 `agent/requirements.txt` 설치가 필요하다.
 
 These PR-authored tests run only under `pull_request` with `contents: read`, no deployment
 credentials, secrets or OIDC permissions. They must not move to `pull_request_target` or gain
