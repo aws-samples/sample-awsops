@@ -24,10 +24,10 @@ it('makes malformed/non-JSON and network failures unavailable, not empty collect
   expect((await fetchGraph('/api/graph', new AbortController().signal)).collection?.readStatus).toBe('unavailable');
 });
 it('propagates cancellation so an obsolete request cannot become a visible failure', async () => {
-  const controller = new AbortController(), error = new Error('aborted'); controller.abort();
+  const controller = new AbortController(), error = new Error('aborted'); controller.abort(error);
   const fetch = vi.fn(async () => { throw error; }); vi.stubGlobal('fetch', fetch);
   await expect(fetchGraph('/api/graph', controller.signal)).rejects.toBe(error);
-  expect(fetch).toHaveBeenCalledWith('/api/graph', { signal: controller.signal });
+  expect(fetch).not.toHaveBeenCalled();
 });
 
 it.each([[401,'unauthenticated'],[403,'forbidden'],[400,'rejected'],[404,'rejected']] as const)('keeps HTTP%s distinct from a read outage', async (status, reason) => {
@@ -39,4 +39,35 @@ it('recognizes a followed login redirect without parsing or exposing its HTML', 
   Object.defineProperties(response, { redirected: { value: true }, url: { value: 'https://fixture.invalid/login?returnTo=graph' } });
   vi.stubGlobal('fetch', async () => response);
   await expect(fetchGraph('/api/graph', new AbortController().signal)).rejects.toBeInstanceOf(GraphFetchError);
+});
+
+
+const busyResponse = () => Response.json({ collection: { readStatus: 'unavailable', readReason: 'busy' } }, { status: 503 });
+it('bounds persistent typed busy recovery to five requests without certifying empty data', async () => {
+  const fetch = vi.fn(async () => busyResponse()); vi.stubGlobal('fetch', fetch);
+  const result = await fetchGraph('/api/graph', new AbortController().signal);
+  expect(result.collection).toMatchObject({ status: 'unknown', readStatus: 'unavailable', readReason: 'busy' });
+  expect(fetch).toHaveBeenCalledTimes(5);
+}, 12000);
+it('cancels a pending busy retry when its scope is abandoned', async () => {
+  const controller = new AbortController(), fetch = vi.fn(async () => busyResponse()); vi.stubGlobal('fetch', fetch);
+  const result = fetchGraph('/api/graph', controller.signal);
+  const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' });
+  setTimeout(() => controller.abort(), 50);
+  await rejected;
+  await new Promise(resolve => setTimeout(resolve, 300));
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+it('bounds a stuck request by the ten-second recovery deadline', async () => {
+  vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+    init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+  })));
+  const result = await fetchGraph('/api/graph', new AbortController().signal);
+  expect(result.collection).toMatchObject({ status: 'unknown', readStatus: 'unavailable', readReason: 'timeout' });
+}, 12000);
+it('recovers from typed busy and returns the actual subsequent graph', async () => {
+  const graph = { nodes: [{ id: 'one', kind: 'vpc', label: 'One' }], edges: [], captured_at: null };
+  const fetch = vi.fn().mockResolvedValueOnce(busyResponse()).mockResolvedValueOnce(Response.json(graph)); vi.stubGlobal('fetch', fetch);
+  expect(await fetchGraph('/api/graph', new AbortController().signal)).toEqual(graph);
+  expect(fetch).toHaveBeenCalledTimes(2);
 });

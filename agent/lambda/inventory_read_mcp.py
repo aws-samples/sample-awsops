@@ -385,8 +385,13 @@ def _fetch_trace_collection(cls="trace"):
                 stale = True
                 continue
             clocks = [source.get("lastSuccessAtMs")]
-            if source["itemCount"] > 0:
+            if source["itemCount"] > 0 or source.get("capturedAtMs") is not None:
                 clocks.append(source.get("capturedAtMs"))
+            if ((source.get("status") == "empty" and source["itemCount"] != 0)
+                    or (source.get("status") == "ok" and source["itemCount"] == 0)
+                    or ("reasons" in source and
+                        (not isinstance(source["reasons"], list) or len(source["reasons"]) > 0))):
+                stale = True
             stale = stale or source.get("producerStatus") != "succeeded" or source.get("status") not in ("ok", "empty") or any(
                 type(clock) not in (int, float) or not math.isfinite(clock) or clock <= 0
                 or clock > time.time() * 1000

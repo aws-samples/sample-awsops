@@ -1372,6 +1372,15 @@ class TestTraceTopologyCollection(unittest.TestCase):
                                 cases.append((self._state("empty", {
                                     "sources": [source], "publishedSources": [source],
                                 }), producer != "succeeded", cls))
+                            for override in ({"status": "ok"}, {"itemCount": 1},
+                                             {"capturedAtMs": (self.NOW + 60) * 1000},
+                                             {"reasons": ["cap_reached"]}):
+                                source = {"sourceId": "inventory:alb", "status": "empty", "itemCount": 0,
+                                          "producerStatus": "succeeded", "reasons": [],
+                                          "lastSuccessAtMs": (self.NOW - 60) * 1000, **override}
+                                cases.append((self._state("empty", {
+                                    "sources": [source], "publishedSources": [source],
+                                }), True, cls))
                     # Execute graph-state.ts itself using the installed compiler, compatible with
                     # the CI's Node 20. Only SQL rows, environment and wall clock are controlled.
                     web = subprocess.run(["node", "-e", r"""
@@ -1579,6 +1588,21 @@ Promise.all(input.rows.map(({row, cls}) => context.exports.readGraphState({
         self.assertEqual(body["collection"]["status"], "empty")
         self.assertFalse(body["collection"]["stale"])
         self.assertNotIn("warning", body)
+
+    def test_inventory_contradictions_reasons_and_optional_capture_are_stale(self):
+        for override in ({"status": "ok"}, {"itemCount": 1}, {"capturedAtMs": "invalid"},
+                         {"capturedAtMs": -1}, {"capturedAtMs": (self.NOW + 60) * 1000},
+                         {"reasons": ["cap_reached"]}, {"reasons": ["unknown_attributes"]},
+                         {"reasons": ["future_reason"]}, {"reasons": None}):
+            with self.subTest(override=override):
+                source = {"sourceId": "inventory:alb", "status": "empty", "itemCount": 0,
+                          "producerStatus": "succeeded", "lastSuccessAtMs": (self.NOW - 60) * 1000,
+                          **override}
+                body, _ = self._read(self._state("empty", details={
+                    "sources": [source], "publishedSources": [source],
+                }), nodes=[], arguments={"class": "infra"})
+                self.assertTrue(body["collection"]["stale"])
+                self.assertIn("warning", body)
 
     def test_inventory_clock_aging_during_read_is_not_a_publication_change(self):
         before = {"status": "ok", "stale": False, "captured_at": self.CAPTURED}
