@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7ededf181594 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 83ca9fdb6e44 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -28,8 +28,9 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   backend/workload restrictions, no AWS calls or persistent IAM changes. Workload state must
   come from the consumer's private capture. Manual dev collect-runtime dispatches support
   backend/workload and prepare/collect; dev deploy-web push/dispatch supports workload collect
-  only, never backend/prepare. Workflow wiring and earlier Deploy Web deployment credentials
-  remain consumer responsibilities. State must share the selected private directory.
+  only, never backend/prepare. Both workflows consume these policies. Dev verification
+  needs an activated runtime and private proof credentials/state for both push and dispatch.
+  Missing proof fails closed; each refresh needs a nonempty policy. State must share the selected private directory.
   Prepare has no Lambda grant; collect permits only the
   owned collector. The consumer enforces explicit catalog/CloudFront RequestResponse payloads
   (missing type means all), distinct catalog/succeeded replies and post-marker authenticated

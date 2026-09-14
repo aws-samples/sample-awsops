@@ -19,8 +19,9 @@ secrets-manager) — installed by `make deps`.
   backend state-read and workload policies, never persistent IAM changes or AWS calls.
   Manual `collect-runtime.yml` dev dispatches support both phases and prepare/collect.
   `deploy-web.yml` dev push/dispatch supports workload collect only; backend/prepare are refused.
-  Consumers own workflow wiring; Deploy Web supplies state captured earlier under deployment credentials.
-  Require both nonempty session outputs; bind workload state to the selected private directory.
+  Both workflows consume the helper policies. Dev Deploy Web prepares proof credentials/state
+  for push and dispatch and requires the activated-runtime collect prerequisites; missing proof fails closed.
+  Require a nonempty policy for each refresh; bind workload state to the selected private directory.
   Prepare cannot invoke Lambda; collect allows only the owned collector. The consumer must
   enforce explicit catalog/CloudFront RequestResponse payloads (absent type defaults to all),
   distinct catalog/succeeded result shapes and post-marker authenticated freshness/runtime/worker proof.
