@@ -23,7 +23,7 @@ legacy runbook's steps as the current operational path).
   markers, removes stale regular ZIPs and rejects ZIP links. Pack requires known planned ZIPs;
   untargeted Lambdas are absent from targeted planned_values. TF_PLAN_ENC_KEY HMAC binds plan/SHA/scope and
   file paths/modes/hashes. Both APIs permit push/pull_request/workflow_dispatch, or explicit
-  local commits without an event. Key rotation invalidates signed bundles.
+  local commits without an event. Old signed bundles require their matching prior key after rotation.
   The 0600 archive may contain signing keys; integrating callers must encrypt before upload
   and clean their plaintext/staging. Terraform plan/apply now wire pack/restore.
   CI_ASSETS_READY=true validates restored layers without reinstalling. See
