@@ -22,8 +22,11 @@ C = dict(repository="aws-samples/sample-awsops", branch="dev", sha="a" * 40,
 PREFIX = f"arn:aws:ecs:ap-northeast-2:{ACCOUNT}:"
 REPO = f"{ACCOUNT}.dkr.ecr.ap-northeast-2.amazonaws.com/{PROJECT}-web"
 OLD, NEW = "ecs-svc/100", "ecs-svc/200"
+CONFIG = b'{"architecture":"arm64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}'
 RAW = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                  "config": {"digest": "sha256:" + "c" * 64}, "layers": []})
+                  "config": {"mediaType": "application/vnd.oci.image.config.v1+json",
+                             "digest": "sha256:" + hashlib.sha256(CONFIG).hexdigest(),
+                             "size": len(CONFIG)}, "layers": []})
 DIGEST = "sha256:" + hashlib.sha256(RAW.encode()).hexdigest()
 
 
@@ -56,8 +59,10 @@ class AWS:
                             "lastStatus": "RUNNING", "healthStatus": "HEALTHY"}],
         }
         self.candidate = copy.deepcopy(self.task)
+        self.config = CONFIG
         self.image = {"registryId": ACCOUNT, "repositoryName": PROJECT + "-web",
-                      "imageId": {"imageDigest": DIGEST}, "imageManifest": RAW}
+                      "imageId": {"imageDigest": DIGEST}, "imageManifest": RAW,
+                      "imageManifestMediaType": "application/vnd.oci.image.manifest.v1+json"}
 
     def __call__(self, service, operation, args):
         self.calls.append((service, operation, args))
@@ -66,9 +71,18 @@ class AWS:
         if self.responses.get(operation):
             return copy.deepcopy(self.responses[operation].pop(0))
         if operation == "batch-get-image":
-            return {"images": [copy.deepcopy(self.image)], "failures": []}
+            image = copy.deepcopy(self.image)
+            selection = args[args.index("--image-ids") + 1]
+            if selection.startswith("imageTag="):
+                image["imageId"]["imageTag"] = selection.removeprefix("imageTag=")
+            return {"images": [image], "failures": []}
+        if operation == "get-download-url-for-layer":
+            return {"layerDigest": "sha256:" + hashlib.sha256(self.config).hexdigest(),
+                    "downloadUrl": "https://fixture.s3.ap-northeast-2.amazonaws.com/config"}
         if operation == "put-image":
-            return {"image": copy.deepcopy(self.image)}
+            image = copy.deepcopy(self.image)
+            image["imageId"]["imageTag"] = "web-latest"
+            return {"image": image}
         if operation == "describe-services":
             return {"services": [copy.deepcopy(self.service)], "failures": []}
         if operation == "describe-task-definition":
@@ -94,6 +108,12 @@ class DeploymentTests(unittest.TestCase):
     def setUp(self):
         self.aws = AWS()
         self.tick = 0
+        def download(argv, **kwargs):
+            self.assertEqual(argv[0], "curl", "Unexpected provider boundary")
+            return self.aws.config
+        boundary = patch.object(image, "command", side_effect=download)
+        boundary.start()
+        self.addCleanup(boundary.stop)
 
     def sleep(self, seconds):
         self.tick += seconds
@@ -121,6 +141,8 @@ class DeploymentTests(unittest.TestCase):
     def run_main_with_providers(self, mode="deploy", changes=None, identity_accounts=None):
         identities = iter(identity_accounts or [ACCOUNT, ACCOUNT])
         def provider(argv, **kwargs):
+            if argv[0] == "curl":
+                return self.aws.config
             if argv[:3] == ["aws", "sts", "get-caller-identity"]:
                 account = next(identities)
                 return {"Account": account, "Arn": f"arn:aws:sts::{account}:assumed-role/CI/session"}
@@ -173,7 +195,43 @@ class DeploymentTests(unittest.TestCase):
         proof, _ = self.run_main_with_providers("preflight-image",
             {"MIGRATED_SHA": "", "MIGRATED_PROJECT": "", "PREFLIGHT_DIGEST": ""})
         self.assertEqual(proof, {"digest": DIGEST, "runtime_digest": DIGEST})
-        self.assertEqual([op for _, op, _ in self.aws.calls], ["batch-get-image"])
+        self.assertEqual([op for _, op, _ in self.aws.calls],
+                         ["batch-get-image", "get-download-url-for-layer", "batch-get-image"])
+
+    def test_preflight_rejects_wrong_actual_platform_before_ddl_or_publication(self):
+        self.aws.config = CONFIG.replace(b"arm64", b"amd64")
+        body = json.loads(RAW)
+        body["config"]["digest"] = "sha256:" + hashlib.sha256(self.aws.config).hexdigest()
+        raw = json.dumps(body)
+        digest = "sha256:" + hashlib.sha256(raw.encode()).hexdigest()
+        self.aws.image.update(imageManifest=raw, imageId={"imageDigest": digest})
+        with self.assertRaisesRegex(ImageError, "must run linux/arm64"):
+            self.run_main_with_providers("preflight-image",
+                {"FRESH_DIGEST": digest, "PREFLIGHT_DIGEST": "", "MIGRATED_SHA": "", "MIGRATED_PROJECT": ""})
+        self.assertFalse(any(op in {"put-image", "update-service"} for _, op, _ in self.aws.calls))
+
+    def test_preflight_requires_fresh_source_tag_identity_before_ddl(self):
+        wrong = copy.deepcopy(self.aws.image)
+        wrong["imageId"] = {"imageDigest": "sha256:" + "f" * 64, "imageTag": "web-" + C["sha"]}
+        self.aws.responses["batch-get-image"] = [{"images": [self.aws.image]}, {"images": [wrong]}]
+        with self.assertRaisesRegex(ImageError, "registry, repository or digest mismatch"):
+            self.run_main_with_providers("preflight-image")
+        self.assertFalse(any(op in {"put-image", "update-service"} for _, op, _ in self.aws.calls))
+
+    def test_index_preflight_retains_root_and_arm64_digest_for_exact_verification(self):
+        child = copy.deepcopy(self.aws.image)
+        raw = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [{"mediaType": child["imageManifestMediaType"], "digest": DIGEST,
+                          "size": len(RAW.encode()), "platform": {"os": "linux", "architecture": "arm64"}}]})
+        root = "sha256:" + hashlib.sha256(raw.encode()).hexdigest()
+        self.aws.image.update(imageManifest=raw, imageId={"imageDigest": root},
+                              imageManifestMediaType="application/vnd.oci.image.index.v1+json")
+        self.aws.responses["batch-get-image"] = [{"images": [self.aws.image]}, {"images": [child]}]
+        actual = deploy.runtime_digest(C, root, self.aws)
+        self.assertEqual(actual, DIGEST)
+        proof = deploy.start(C, root, actual, self.aws)
+        self.verify(proof)
+        self.assertEqual((proof["digest"], proof["runtime_digest"]), (root, DIGEST))
 
     def test_preflight_migration_and_project_mismatches_never_publish(self):
         for changes in ({"PREFLIGHT_DIGEST": "sha256:" + "f" * 64},
@@ -333,7 +391,7 @@ class DeploymentTests(unittest.TestCase):
             "IMAGE_PROJECT": PROJECT, "ECR_URI": REPO, "ECS_CLUSTER": PROJECT,
             "ECS_SERVICE": PROJECT + "-web", "PREFLIGHT_DIGEST": DIGEST,
         }
-        reads = {"batch-get-image", "describe-task-definition", "list-tasks", "describe-tasks"}
+        reads = {"batch-get-image", "get-download-url-for-layer", "describe-task-definition", "list-tasks", "describe-tasks"}
         for denied in [None, *sorted(reads), "output", "changed-proof"]:
             self.setUp()
             if denied:

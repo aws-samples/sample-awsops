@@ -54,7 +54,7 @@ require(identity.get("Account") == c["account"] and
 digest = os.environ["RECOVERY_DIGEST"]
 child = runtime_digest(c, digest)
 before = snapshot(c, aws_request)
-pin_image(c["project"] + "-web", digest)
+pin_image(c["project"] + "-web", digest, account=c["account"])
 proof = start(c, digest, child, aws_request, before=before)
 verify(c, proof)
 print("Approved legacy image and exact healthy deployment verified")

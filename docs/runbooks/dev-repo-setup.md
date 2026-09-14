@@ -656,11 +656,15 @@ stops promotion. SCPs and boundaries can still deny an otherwise correct policy.
 | `ecs:ListTasks` | `Resource: "*"` with `ecs:cluster` restricted to the configured cluster; a cluster ARN is not a valid Resource for this action |
 | `ecs:DescribeTasks` | The configured cluster's task ARN prefix, with the cluster condition |
 | `ecs:DescribeTaskDefinition` | `Resource: "*"` with `aws:RequestedRegion` restricted to the deployment region; this action does not support task-definition resource scoping |
-| `ecr:BatchGetImage`, `ecr:PutImage` | The configured web repository ARN |
+| `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:PutImage` | The configured web repository ARN |
 
 Verification uses bounded retries for stale PRIMARY and task/health reads. A
 persistent rollback, wrong running image, missing permission or timeout still
 fails. These grants belong to the deployment role, not the application's task role.
+
+Readonly image proof and promotion need repository-scoped `ecr:GetDownloadUrlForLayer`
+for digest-bound ARM64 config checks. Receipt jobs need `actions: read`; image proof uses
+the ci-build role, promotion uses the deployer role. The helpers grant no permissions.
 
 Backend image builds require additional **repository scopes**, which the web grants above do not establish. Verify the configured roles before using the runtime build workflows:
 

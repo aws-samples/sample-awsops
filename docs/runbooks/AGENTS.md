@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 057b2403e400 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 157368c7c51d · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -15,6 +15,11 @@ legacy runbook's steps as the current operational path).
 - Deploy Web wires the receipt steps/current-dev migration outputs in `web-image-provenance.md`.
   Composed `promote` must preserve the readonly preflight's project/digest and recovery limits;
   never fabricate migration evidence or fall back to mutable tags as provenance.
+  All paths require a preflight digest; fresh promotion also checks its source tag.
+  Preserve OCI indexes and verify an unambiguous ARM64 image/config. The producer uses
+  ci-build credentials, promotion uses the deployer, and both need `actions: read`.
+  Document upload-artifact v4+ and scoped config-download permission; ECR publication
+  supplies explicit media.
 - Verification policies accept manual collect-runtime dev dispatches for backend/workload and prepare/collect, plus deploy-web dev push/dispatch for workload collect only (backend/prepare refused). The helper installs neither consumer path. Dev integration needs activated runtime prerequisites and private proof credentials/state for both events; missing proof fails closed. Consumers enforce nonempty restrictions and owned-file cleanup. Collect permits only the owned collector; its application-data effects are operator CI, not an ADR-005 exception. IAM cannot restrict event payloads: the consumer enforces catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. Contract: `runtime-verifier-sessions.md`.
 - `ci_readiness_plan_summary.py` runs before encryption only for explicit full dev readiness
   plans, with a two-minute timeout and fenced JSON output. Its failure-tolerant report publishes

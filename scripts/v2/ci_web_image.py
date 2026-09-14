@@ -11,6 +11,7 @@ import re
 import stat
 import subprocess
 import sys
+from urllib.parse import urlsplit
 import zipfile
 
 REPOSITORY = "aws-samples/sample-awsops"
@@ -23,6 +24,17 @@ PROJECT = re.compile(r"[a-z][a-z0-9-]{1,39}")
 BUILD_JOB = "Build & push (arm64)"
 BUILD_STEPS = {"Build and push (arm64)", "Record the image producer",
                "Retain the build receipt for explicit reuse"}
+ACCOUNT = re.compile(r"[0-9]{12}")
+IMAGE_MEDIA = {
+    "application/vnd.docker.distribution.manifest.v2+json": "application/vnd.docker.container.image.v1+json",
+    "application/vnd.oci.image.manifest.v1+json": "application/vnd.oci.image.config.v1+json",
+}
+INDEX_MEDIA = {"application/vnd.oci.image.index.v1+json",
+               "application/vnd.docker.distribution.manifest.list.v2+json"}
+LAYER_MEDIA = {"application/vnd.docker.image.rootfs.diff.tar.gzip",
+               "application/vnd.oci.image.layer.v1.tar",
+               "application/vnd.oci.image.layer.v1.tar+gzip",
+               "application/vnd.oci.image.layer.v1.tar+zstd"}
 
 
 class ImageError(Exception):
@@ -76,7 +88,8 @@ def github(path, binary=False):
 
 
 def aws_request(operation, args):
-    require(operation in {"batch-get-image", "put-image"}, "Unsupported image operation")
+    require(operation in {"batch-get-image", "get-download-url-for-layer", "put-image"},
+            "Unsupported image operation")
     argv = ["aws", "ecr", operation, "--region", "ap-northeast-2", "--output", "json",
             "--no-cli-pager"]
     for key, value in args.items():
@@ -256,30 +269,145 @@ def verify_source_and_migration(c, pin_sha, env, api=github):
     return rollback
 
 
-def pin_image(repository, digest, aws=aws_request):
-    """Low-level publisher; CI callers must use promote() for the guard chain."""
-    require(matches(PROJECT, repository.removesuffix("-web")) and repository.endswith("-web")
-            and matches(DIGEST, digest), "Invalid image selection")
-    result = aws("batch-get-image", {"repository-name": repository, "image-ids": f"imageDigest={digest}"})
-    require(not result.get("failures") and len(result.get("images", [])) == 1,
+def json_object(data):
+    try:
+        value = json.loads(data)
+    except (ValueError, TypeError):
+        raise ImageError("Invalid image JSON") from None
+    require(isinstance(value, dict), "Invalid image JSON")
+    return value
+
+
+def image_identity(image, repository, digest, account, tag=None):
+    require(isinstance(image, dict) and image.get("registryId") == account
+            and image.get("repositoryName") == repository
+            and isinstance(image.get("imageId"), dict)
+            and image["imageId"].get("imageDigest") == digest
+            and (tag is None or image["imageId"].get("imageTag") == tag),
+            "Approved image registry, repository or digest mismatch")
+
+
+def get_image(repository, digest, account, aws, tag=None):
+    # No acceptedMediaTypes filter: AWS documents only image-manifest values, not
+    # indexes/lists. Digest reads preserve the stored representation without
+    # translation. Tag reads below establish identity, never select a replacement.
+    result = aws("batch-get-image", {"registry-id": account, "repository-name": repository,
+                 "image-ids": f"imageTag={tag}" if tag else f"imageDigest={digest}"})
+    require(isinstance(result, dict) and not result.get("failures")
+            and isinstance(result.get("images"), list) and len(result["images"]) == 1,
             "Approved image digest is unavailable")
     image = result["images"][0]
+    image_identity(image, repository, digest, account, tag)
+    return image
+
+
+def manifest_body(image):
     manifest = image.get("imageManifest")
-    require(isinstance(manifest, str) and image.get("imageId", {}).get("imageDigest") == digest
-            and "sha256:" + hashlib.sha256(manifest.encode()).hexdigest() == digest,
+    require(isinstance(manifest, str) and 0 < len(manifest.encode()) <= 1024 * 1024
+            and "sha256:" + hashlib.sha256(manifest.encode()).hexdigest() == image["imageId"]["imageDigest"],
             "Approved image manifest mismatch")
+    body = json_object(manifest)
+    media = image.get("imageManifestMediaType")
+    require(media in IMAGE_MEDIA or media in INDEX_MEDIA, "Unsupported image manifest media type")
+    require(body.get("mediaType", media) == media and type(body.get("schemaVersion")) is int
+            and body["schemaVersion"] == 2 and "artifactType" not in body and "subject" not in body,
+            "Approved image media type or schema mismatch")
+    # ECR can carry media outside the manifest; never reserialize the original bytes.
+    body["mediaType"] = media
+    return body
+
+
+def descriptor(value, media_types):
+    require(isinstance(value, dict) and value.get("mediaType") in media_types
+            and matches(DIGEST, value.get("digest"))
+            and type(value.get("size")) is int and value["size"] > 0,
+            "Invalid image descriptor")
+
+
+def verify_arm_image(repository, image, account, aws):
+    body = manifest_body(image)
+    if body["mediaType"] in INDEX_MEDIA:
+        entries = body.get("manifests")
+        require(isinstance(entries, list) and 0 < len(entries) <= 20
+                and "config" not in body and "layers" not in body, "Invalid image index")
+        arm = []
+        for entry in entries:
+            descriptor(entry, IMAGE_MEDIA)
+            platform = entry.get("platform")
+            require(isinstance(platform, dict) and isinstance(platform.get("os"), str)
+                    and isinstance(platform.get("architecture"), str)
+                    and platform["os"] and platform["architecture"], "Invalid image index platform")
+            if platform["os"] == "linux" and platform["architecture"] == "arm64":
+                arm.append(entry)
+            elif platform["os"] == "unknown" or platform["architecture"] == "unknown":
+                annotations = entry.get("annotations", {})
+                require(platform == {"os": "unknown", "architecture": "unknown"}
+                        and isinstance(annotations, dict)
+                        and annotations.get("vnd.docker.reference.type") == "attestation-manifest"
+                        and annotations.get("vnd.docker.reference.digest") in {
+                            e.get("digest") for e in entries if isinstance(e, dict)},
+                        "Unrecognized image index attestation")
+        require(len(arm) == 1, "Image index must contain exactly one linux/arm64 image")
+        child = get_image(repository, arm[0]["digest"], account, aws)
+        body = manifest_body(child)
+        require(body["mediaType"] == arm[0]["mediaType"]
+                and len(child["imageManifest"].encode()) == arm[0]["size"],
+                "Image index child mismatch")
+    require(body["mediaType"] in IMAGE_MEDIA and "manifests" not in body,
+            "Invalid executable image manifest")
+    config = body.get("config")
+    descriptor(config, {IMAGE_MEDIA[body["mediaType"]]})
+    require(config["size"] <= 1024 * 1024, "Oversized image configuration")
+    require(isinstance(body.get("layers"), list), "Invalid executable image layers")
+    for layer in body["layers"]:
+        descriptor(layer, LAYER_MEDIA)
+    response = aws("get-download-url-for-layer", {"registry-id": account,
+                   "repository-name": repository, "layer-digest": config["digest"]})
+    require(isinstance(response, dict) and response.get("layerDigest") == config["digest"]
+            and isinstance(response.get("downloadUrl"), str), "Image configuration is unavailable")
+    url = urlsplit(response["downloadUrl"])
+    require(url.scheme == "https" and not url.username and not url.password
+            and url.port in (None, 443) and re.fullmatch(
+                r"[a-z0-9.-]+\.s3[.-]ap-northeast-2\.amazonaws\.com", url.hostname or ""),
+            "Invalid image configuration download URL")
+    # No redirects; download only the config blob, never image layers. Provider
+    # URLs/config bytes stay private, and command() suppresses raw error output.
+    data = command(["curl", "--fail", "--silent", "--show-error", "--proto", "=https",
+                    "--max-time", "90", "--max-filesize", str(1024 * 1024),
+                    "--url", response["downloadUrl"]], binary=True)
+    require(isinstance(data, bytes) and len(data) == config["size"]
+            and "sha256:" + hashlib.sha256(data).hexdigest() == config["digest"],
+            "Image configuration digest mismatch")
+    actual = json_object(data)
+    require(actual.get("os") == "linux" and actual.get("architecture") == "arm64",
+            "Approved image must run linux/arm64")
+
+
+def pin_image(repository, digest, aws=aws_request, *, account, source_tag=None):
+    """Low-level publisher; CI callers must use promote() for the guard chain."""
+    require(matches(PROJECT, repository.removesuffix("-web")) and repository.endswith("-web")
+            and matches(DIGEST, digest) and matches(ACCOUNT, account), "Invalid image selection")
+    image = get_image(repository, digest, account, aws)
+    verify_arm_image(repository, image, account, aws)
+    if source_tag is not None:
+        require(re.fullmatch(r"web-[a-f0-9]{40}", source_tag), "Invalid source image tag")
+        get_image(repository, digest, account, aws, source_tag)
     try:
-        result = aws("put-image", {"repository-name": repository, "image-tag": "web-latest",
-                                   "image-manifest": manifest})
-        require(result.get("image", {}).get("imageId", {}).get("imageDigest") == digest,
-                "Promoted image digest mismatch")
+        result = aws("put-image", {"registry-id": account, "repository-name": repository,
+                     "image-tag": "web-latest", "image-digest": digest,
+                     "image-manifest": image["imageManifest"],
+                     "image-manifest-media-type": image["imageManifestMediaType"]})
     except ImageError:
         # ImageAlreadyExists is harmless only if an independent read confirms the
         # desired digest. Never trust a substring in a CLI error message.
-        current = aws("batch-get-image", {"repository-name": repository, "image-ids": "imageTag=web-latest"})
-        require(not current.get("failures") and len(current.get("images", [])) == 1
-                and current["images"][0].get("imageId", {}).get("imageDigest") == digest,
-                "Image promotion failed")
+        current = get_image(repository, digest, account, aws, "web-latest")
+    else:
+        require(isinstance(result, dict), "Invalid image promotion response")
+        current = result.get("image")
+        image_identity(current, repository, digest, account, "web-latest")
+    manifest_body(current)
+    require(current["imageManifestMediaType"] == image["imageManifestMediaType"],
+            "Promoted image media type mismatch")
 
 
 def promote(env=None, *, api=None, aws=None, caller=None, expected_digest=None):
@@ -290,17 +418,18 @@ def promote(env=None, *, api=None, aws=None, caller=None, expected_digest=None):
     verify_caller(env, caller)
     c = environment_context(env)
     validate_context(c)
+    expected = expected_digest if expected_digest is not None else env.get("PREFLIGHT_DIGEST", "")
+    require(matches(DIGEST, expected), "A validated preflight image digest is required")
     pin = env.get("PIN_SHA") or c["sha"]
     rollback = verify_source_and_migration(c, pin, env, api)
     digest = resolve_digest(c, pin_sha=pin, fresh_digest=env.get("FRESH_DIGEST", ""),
                             fresh_project=env.get("FRESH_PROJECT", ""),
                             producer_run=env.get("IMAGE_BUILD_RUN_ID", ""), api=api)
-    expected = expected_digest if expected_digest is not None else env.get("PREFLIGHT_DIGEST", "")
-    if expected:
-        require(matches(DIGEST, expected) and expected == digest, "Validated image digest changed")
+    require(expected == digest, "Validated image digest changed")
     # Producer lookup may take time; repeat source/migration checks immediately before publication.
     verify_source_and_migration(c, pin, env, api)
-    pin_image(c["project"] + "-web", digest, aws)
+    pin_image(c["project"] + "-web", digest, aws, account=c["account"],
+              source_tag=f"web-{pin}" if env.get("FRESH_DIGEST") else None)
     return {"digest": digest, "image_sha": pin, "rollback": rollback}
 
 
@@ -336,7 +465,11 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ImageError, ValueError, KeyError, TypeError, AttributeError, OSError):
-        print("::error::Web image provenance or promotion failed; verify the producer run and rebuild if its receipt expired.",
-              file=sys.stderr)
+    except ImageError as error:
+        # All ImageError messages are fixed local diagnostics; provider data is
+        # collapsed at its boundary and must never be interpolated into them.
+        print(f"::error::{error}", file=sys.stderr)
+        sys.exit(1)
+    except (ValueError, KeyError, TypeError, AttributeError, OSError):
+        print("::error::Web image provenance or promotion failed", file=sys.stderr)
         sys.exit(1)

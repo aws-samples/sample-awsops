@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
 """Samples web-only promotion and exact deployment verification; no runtime/collection gate."""
 import argparse
-import hashlib
 import json
 import os
 import re
 import stat
 import time
 
-from ci_web_image import (ImageError, command, environment_context, promote,
+from ci_web_image import (INDEX_MEDIA, ImageError, command, environment_context, get_image,
+                          manifest_body, promote, verify_arm_image,
                           require, resolve_digest, validate_context, verify_caller,
                           verify_source_and_migration)
 
 REGION = "ap-northeast-2"
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-IMAGES = {"application/vnd.oci.image.manifest.v1+json",
-          "application/vnd.docker.distribution.manifest.v2+json"}
-INDEXES = {"application/vnd.oci.image.index.v1+json",
-           "application/vnd.docker.distribution.manifest.list.v2+json"}
 
 
 class NotReady(ImageError):
@@ -65,39 +61,23 @@ def validate_target(c, env):
             "Terraform metadata does not match the selected branch account/project")
 
 
-def runtime_digest(c, expected, aws=aws_request):
-    """Bind the root manifest and its one ARM64 descriptor, never a mutable SHA tag."""
-    def read(digest):
-        require(isinstance(digest, str) and DIGEST.fullmatch(digest), "Invalid expected digest")
-        result = aws("ecr", "batch-get-image", ["--registry-id", c["account"],
-            "--repository-name", c["project"] + "-web", "--image-ids", "imageDigest=" + digest])
-        images = result.get("images")
-        require(not result.get("failures") and isinstance(images, list) and len(images) == 1,
-                "Expected image is unavailable")
-        image = images[0]
-        raw = image.get("imageManifest")
-        require(image.get("registryId") == c["account"]
-                and image.get("repositoryName") == c["project"] + "-web"
-                and image.get("imageId", {}).get("imageDigest") == digest
-                and isinstance(raw, str) and "sha256:" + hashlib.sha256(raw.encode()).hexdigest() == digest,
-                "Image account, repository or content mismatch")
-        value = json.loads(raw)
-        require(value.get("schemaVersion") == 2, "Invalid image manifest")
-        return value, value.get("mediaType") or image.get("imageManifestMediaType")
-
-    manifest, kind = read(expected)
-    actual = expected
-    if kind in INDEXES:
-        descriptors = manifest.get("manifests")
-        require(isinstance(descriptors, list) and len(descriptors) <= 32, "Invalid image index")
-        arm = [d for d in descriptors if d.get("platform", {}).get("os") == "linux"
-               and d["platform"].get("architecture") == "arm64"]
-        require(len(arm) == 1, "Expected exactly one ARM64 image")
-        actual = arm[0].get("digest")
-        manifest, kind = read(actual)
-    require(kind in IMAGES and DIGEST.fullmatch(manifest.get("config", {}).get("digest", ""))
-            and isinstance(manifest.get("layers"), list), "Invalid runnable image manifest")
-    return actual
+def runtime_digest(c, expected, aws=aws_request, *, source_sha=None):
+    """Apply promotion's read-only ECR/config proof before DDL; retain the ARM64 digest."""
+    require(isinstance(expected, str) and DIGEST.fullmatch(expected), "Invalid expected digest")
+    require(source_sha is None or isinstance(source_sha, str) and re.fullmatch(r"[a-f0-9]{40}", source_sha),
+            "Invalid source image SHA")
+    def ecr(operation, args):
+        return aws("ecr", operation, [value for key, arg in args.items() for value in ("--" + key, arg)])
+    name = c["project"] + "-web"
+    image = get_image(name, expected, c["account"], ecr)
+    verify_arm_image(name, image, c["account"], ecr)
+    if source_sha is not None:
+        get_image(name, expected, c["account"], ecr, "web-" + source_sha)
+    body = manifest_body(image)
+    if body["mediaType"] in INDEX_MEDIA:
+        return next(d["digest"] for d in body["manifests"]
+                    if d["platform"]["os"] == "linux" and d["platform"]["architecture"] == "arm64")
+    return expected
 
 
 def service(c, aws, supplied=None):
@@ -320,7 +300,7 @@ def main():
         rollback = verify_source_and_migration(c, pin, env) if args.mode == "deploy" else False
         digest = resolve_digest(c, pin_sha=pin, fresh_digest=env.get("FRESH_DIGEST", ""),
                                 fresh_project=env.get("FRESH_PROJECT", ""), producer_run=env.get("IMAGE_BUILD_RUN_ID", ""))
-        child = runtime_digest(c, digest, aws_request)
+        child = runtime_digest(c, digest, aws_request, source_sha=pin if env.get("FRESH_DIGEST") else None)
         if args.mode == "preflight-image":
             output.write(f"digest={digest}\nruntime_digest={child}\n")
             return
