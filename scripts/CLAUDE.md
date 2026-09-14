@@ -9,6 +9,22 @@ secrets-manager) — installed by `make deps`.
 - `v2/ci_plan_inspect.py` verifies authenticated successful plan-run identity, checkout SHA
   and the existing signed plan/assets before local private rendering. No backend init/apply;
   new 0700 destination with 0600 bounded outputs. It refuses execution inside Actions.
+- `v2/ci_private_plan.py` is an **unwired** four-mode CLI (`policy`, `publish`, `inspect`,
+  `restore`), not a workflow or IAM rollout. The base Terraform workflow does not publish
+  private S3 plans or `reference.json`; operator use requires the later consumer integration.
+  That integration must provide publisher job ID `publish` / display name `Publish private plan`,
+  successful `Plan`, attempt artifact `tfplan-N`, protected scoped sessions and the CI HMAC key.
+  Inspection requires a private backend file; no bucket discovery or legacy-artifact fallback.
+  Public reference fields are only schema/storage tags, CI context and manifest hash/size;
+  plan/backend/bucket hashes and storage identities stay private. Inspection is not approval,
+  restore never applies, and no orphan-recovery operation is supplied.
+  Contract: `docs/reference/private-plan-transport.md`; offline tests: `v2/test_ci_private_plan.py`
+  with the existing `test_ci_{tf_assets,plan_inspect,plan_context}.py` suites.
+  This is operator CI artifact transport, not an ADR-005 exception or a product mutation path.
+  S3 SSE-KMS replaces the GitHub handoff's application envelope for operator reads;
+  effective S3/KMS readers need no CI key. Future wiring must review that access scope,
+  verify prefix-only lifecycle (7-day current/noncurrent expiry, 1-day multipart abort)
+  and coordinate the legacy artifact/inspector migration. Policy mode is publisher-only.
 - `v2/ci_failure_diagnostics.py` drains bounded output in memory until Terraform exits; no scratch-write error may kill apply or replace its result. Linux supervision forwards one graceful interrupt, escalates a second, and kills Terraform if its capture parent dies. Retain the last 1 MiB and signed total/capture status. No success/advisory raw log is written.
 - Strip GitHub command-file/token variables, encryption keys, TF_LOG* and TF_CLI_ARGS* from captured Terraform and pre-apply scope-check children; keep AWS STS credentials including AWS_SESSION_TOKEN. Publish only a validated owned single ciphertext path, gated by dispatch plus failure/cancellation, with attempt-specific artifact names and five-day retention.
 - Fixed public audit fields distinguish command, capture, retention and cleanup status; numeric standard Terraform success counts never include resource/output text. Missing summaries stay unavailable. Schema-2 failure HMAC uses its own domain with the existing CBC cipher/key. Recovery verifies the exact failed attempt and emits fixed timeout/errors; private inspection remains authenticated and bounded to 32 MiB.
