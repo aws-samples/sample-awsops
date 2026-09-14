@@ -9,6 +9,22 @@ secrets-manager) — installed by `make deps`.
 - `v2/ci_plan_inspect.py` verifies authenticated successful plan-run identity, checkout SHA
   and the existing signed plan/assets before local private rendering. No backend init/apply;
   new 0700 destination with 0600 bounded outputs. It refuses execution inside Actions.
+- `v2/ci_private_plan.py` is an **unwired** four-mode CLI (`policy`, `publish`, `inspect`,
+  `restore`), not a workflow or IAM rollout. The base Terraform workflow does not publish
+  private S3 plans or `reference.json`; operator use requires the later consumer integration.
+  That integration must provide publisher job ID `publish` / display name `Publish private plan`,
+  successful `Plan`, attempt artifact `tfplan-N`, protected scoped sessions and the CI HMAC key.
+  Inspection requires a private backend file; no bucket discovery or legacy-artifact fallback.
+  Public reference fields are only schema/storage tags, CI context and manifest hash/size;
+  plan/backend/bucket hashes and storage identities stay private. Inspection is not approval,
+  restore never applies, and no orphan-recovery operation is supplied.
+  Contract: `docs/reference/private-plan-transport.md`; offline tests: `v2/test_ci_private_plan.py`
+  with the existing `test_ci_{tf_assets,plan_inspect,plan_context}.py` suites.
+  This is operator CI artifact transport, not an ADR-005 exception or a product mutation path.
+  S3 SSE-KMS replaces the GitHub handoff's application envelope for operator reads;
+  effective S3/KMS readers need no CI key. Future wiring must review that access scope,
+  verify prefix-only lifecycle (7-day current/noncurrent expiry, 1-day multipart abort)
+  and coordinate the legacy artifact/inspector migration. Policy mode is publisher-only.
 - `v2/ci_failure_diagnostics.py` drains bounded output in memory until Terraform exits; no scratch-write error may kill apply or replace its result. Linux supervision forwards one graceful interrupt, escalates a second, and kills Terraform if its capture parent dies. Retain the last 1 MiB and signed total/capture status. No success/advisory raw log is written.
 - Strip GitHub command-file/token variables, encryption keys, TF_LOG* and TF_CLI_ARGS* from captured Terraform and pre-apply scope-check children; keep AWS STS credentials including AWS_SESSION_TOKEN. Publish only a validated owned single ciphertext path, gated by dispatch plus failure/cancellation, with attempt-specific artifact names and five-day retention.
 - Fixed public audit fields distinguish command, capture, retention and cleanup status; numeric standard Terraform success counts never include resource/output text. Missing summaries stay unavailable. Schema-2 failure HMAC uses its own domain with the existing CBC cipher/key. Recovery verifies the exact failed attempt and emits fixed timeout/errors; private inspection remains authenticated and bounded to 32 MiB.
@@ -68,8 +84,8 @@ secrets-manager) — installed by `make deps`.
   Private init is bounded to 10 minutes; output/console each to 2 minutes.
 - `v2/authenticated-smoke.mjs` — login plus edge-authenticated `/api/db` verification. Preserve
   Host/SNI/TLS; report only the phase and validated HTTP status, never bodies/cookies/passwords.
-  The CLI keeps HTTP scratch files under the prepared credential directory so the workflow's
-  always-cleanup owns them; standalone calls prefer RUNNER_TEMP. Response files default to 64 KiB; only the bounded CloudFront inventory leg permits 2 MiB.
+  CLI HTTP scratch belongs to the prepared credential directory and normal finalizers;
+  process/runner loss can prevent cleanup. Standalone calls prefer RUNNER_TEMP. Response files default to 64 KiB; only the bounded CloudFront inventory leg permits 2 MiB.
 - `v2/ci_dns_policy.py` — reads Terraform state to preserve managed certificate ownership
   (JSON null) and existing service aliases; verifies operator-selected/attached certificates
   without account-wide selection. Redacts public summaries. Blocks all Route53/Cloud Map
@@ -238,3 +254,21 @@ checks the host registry; optional hostOnly rejects members. Verify requires com
 fresh collection, real web-role runtime evidence and owned worker completion. The file
 is at most 16 KiB, collectionStartedAt at most 30 minutes old, and queued types unique
 with cloudfront included. The utility alone does not wire a deployment workflow.
+
+Verify accepts optional `inventoryPolicy: "full"` and `collectionMode: "release"`;
+other values fail, and omission retains strict checks for every supplied type. Full mode
+returns programmatic quality/gaps; CLI output stays fixed and catalog discovery belongs
+to the caller. Release mode extends collection polling from 10 to 20 minutes, with one
+shared window across rechecks. All runtime callers have a finite deadline: marker+30min
+for verify, entry+30min for prepare; an explicit deadline only shortens it. One proven
+CloudFront running collision permits a 65-second-cooldown retry after complete revalidation.
+A repeated collision is runtime_inventory_contention, initial waiting is collection_timeout,
+stale full-policy data is collection_stale and the outer limit is release_timeout. Workers
+start after ready. The helper and collection-only BFF view do not activate a workflow/flag.
+Requests require their full timeout remaining. Before billed readiness, require its 80s
+allowance plus 370s per worker (35s enqueue, 300s poll, final 35s request); recheck remaining
+workers before enqueue. Retry admission includes 65s cooldown, one 35s collection read,
+the probe and both workers. Collection windows are caps; late completion may fail admission.
+Fresh running collection attempts with old/null previous success remain pending and time
+out as collection_timeout. Stale terminal evidence remains collection_stale in full mode.
+The outer authenticated login/DB wrapper also refuses shortened request timeouts.

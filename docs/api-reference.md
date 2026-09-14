@@ -29,8 +29,38 @@
 | `/api/inventory/cloudtrail/events` | GET | CloudTrail `LookupEvents` 조회 — 드릴다운(`raw`+`accessKeyId`)은 admin 전용 subset, 그 외 사용자는 flat 필드만 | verifyUser |
 | `/api/inventory/ebs_volume/related` | GET | 볼륨 드릴다운 — 스냅샷 20개 + 연결 EC2 enrichment (Aurora 교차조회, 계정 스코프) | verifyUser |
 | `/api/inventory/security_group/inbound` | GET | SG 인바운드 규칙 체이닝 — 첨부 SG(≤20)의 인바운드 규칙 파싱 (Aurora 교차조회, 계정 스코프) | verifyUser |
-| `/api/inventory/summary` | GET | 타입/카테고리별 카운트·보안 분할은 리전 스코프 반영. `collection.scope=aggregate`는 전체 수집 작업의 configured/readOk/runs이며 계정별 건강 판정이 아님. 누락·실패·unknown 보존 / aggregate job ledger | verifyUser |
+| `/api/inventory/summary` | GET | Default returns account/region-filtered resource counts and security splits plus `collection`. `?view=collection` returns only `{ collection }`, skipping fleet aggregation. `collection.scope=aggregate` is the job-level ledger and is not narrowed by those filters; missing, failed and unknown evidence remains explicit and does not establish per-account health. | verifyUser |
 | `/api/inventory/trend` | GET | 일별 리소스 카운트 추세 (`inventory_snapshots`, 기본 14일/최대 90일) — `accounts` 스코프(기본 self, `__all__`은 서버에서 self+스캔 스코프 내 활성 멤버[all_regions 또는 활성 리전 ≥1]로 해석, 검증된 CSV; 리전 차원 없음) + (일자, 타입)별 계정 커버리지·해석된 계정 목록(`accounts`)·계정 레지스트리 조회 실패 시 `degraded: true` 반환, 파생 보안 시리즈(public_s3_buckets 등)는 total에서 제외 | verifyUser |
+
+### Inventory pagination and sweep ledger
+
+In normal row mode, `GET /api/inventory/[type]` returns scoped `rows` plus nullable
+`run` metadata. `limit` defaults to 100 and is upper-capped at 500; `offset` defaults
+to 0. The route uses numeric coercion/defaults, without positive/integer validation
+or a lower-bound clamp. Callers should send a positive integer limit and nonnegative
+integer offset; negative/fractional values can reach PostgreSQL, with row-mode errors
+returned as HTTP 500 and an error message rather than a validation 400.
+
+`?view=agg` instead returns totals, state/distribution counts and facets, without
+`rows` or `run`. Both modes retain authentication, type-specific admin checks and
+the same account/region/global scope filters.
+
+The normal-mode `run` is global per-type job/sweep metadata under `account_id='self'`,
+including for member/all-account reads; its `row_count` is not the selected-scope
+or page count. The collector marks the job `running` before row writes. A successful
+finish advances `finished_at` and `last_success_at`; partial/failed finishes do not
+advance the last-success timestamp. The endpoint exposes `status`, `finished_at`,
+`row_count`, `error` and `last_success_at`, not a per-account completion certificate.
+
+Rows and run metadata are separate reads, not an atomic snapshot across one request
+or multiple pages. Missing run/timestamps, `running`/`partial`/`failed`, stale last
+success or changed metadata between pages must not be read as fresh complete coverage.
+Even stable successful metadata does not certify atomic page contents or AWS absence.
+Bounded paging, freshness and coverage decisions belong to the caller.
+
+Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
+[row/ledger reads](../web/lib/inventory.ts), and
+[collector lifecycle](../scripts/v2/steampipe/sync_lambda.py).
 
 ## eks (10)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -149,7 +179,7 @@ application, without guaranteeing cancellation of a server query already started
 | `/api/datasources/[id]/cards` | GET | 사전 생성 대시보드 카드 조회 (read-only, auth) | verifyUser |
 | `/api/datasources/[id]/default` | POST | kind별 기본 인스턴스 지정 — 트랜잭션으로 기존 기본 해제 (admin) | verifyUser |
 | `/api/datasources/[id]/diag-signals` | GET | 사전 정의 진단 시그널 — Explore 칩 (DB read only, egress 없음). kind 범위: prometheus/mimir/loki 는 결정론 카탈로그, clickhouse 는 결정론 엔트리가 없어 폴백 전용. tempo 는 `tags_or_services` matcher 가 introspect 된 어떤 스키마에도 매칭되어 항상 ready 이므로 폴백에 도달하지 않는다. **LLM 폴백(`diag_signal_querygen_enabled`)은 clickhouse 전용이 아니다** — ready 0행인 *모든* 배선 kind 에서 발동하므로 라벨 미탐지로 0행이 된 loki 인스턴스의 칩에도 `provenance='generated'` 가 섞일 수 있다(리뷰 MAJOR-9). 생성 행은 칩 전용 — 리포트 경로 제외, 플래그 OFF 면 read 에서도 제외. jaeger/dynatrace/datadog 는 아직 배선 없음(빈 응답) | verifyUser |
-| `/api/db` | GET | Aurora ping — public 테이블 카운트, `AURORA_ENDPOINT` 미설정 시 503 | CloudFront Edge 인증; BFF `verifyUser()` 생략(ADR-002 §2-4) |
+| `/api/db` | GET | Aurora ping — success returns `status: "ok"`, `public_tables` and UTC ISO `server_time` from the same table-count/`clock_timestamp()` SELECT; unset `AURORA_ENDPOINT` remains 503 and database errors remain generic 500 responses | CloudFront edge authentication; BFF `verifyUser()` omitted (ADR-002 §2-4) |
 | `/api/diagnosis` | GET, POST | AI 종합진단 리포트 목록/생성 — worker enqueue + 멱등키 | verifyUser |
 | `/api/diagnosis/intent` | GET, POST | Plan-2 Intent Engine — `architecture_intent` 조회(auth) + 쓰기(admin) | verifyUser |
 | `/api/diagnosis/schedule` | GET, PUT | 사용자별 자동 진단 스케줄 — row read/write만 (실행은 worker `schedule_dispatcher`) | verifyUser |
