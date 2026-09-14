@@ -74,7 +74,8 @@ uses `RUNTIME_MODE=prepare|collect`; it does not reinterpret the smoke protocol.
 only; the consumer binds the image to ECR and running tasks. It need not equal
 the workflow's `GITHUB_SHA`, and it must be empty in prepare mode.
 Only same-repository manual dev dispatches with
-`GITHUB_WORKFLOW_REF` ending in `.github/workflows/collect-runtime.yml@refs/heads/dev`
+`GITHUB_WORKFLOW_REF` exactly identifying this repository's
+`.github/workflows/collect-runtime.yml@refs/heads/dev`
 are accepted. `CI_ROLE_ARN` is the configured deployer role and
 `BACKEND_B64` is the private encoded backend input used only by the backend phase.
 
@@ -120,7 +121,9 @@ remediate AWS resources. The helper itself makes no AWS calls.
 
 Observability does not require new CI log, CloudWatch or DB permissions. First
 verify the function identity, configured code fingerprint and active ARM64
-configuration. Each synchronous response must have `StatusCode=200`, no
+configuration. Project only validated fixed fields from AWS responses;
+never echo Lambda/task-definition responses, environment maps, HTTP bodies or
+raw AWS errors. Each synchronous response must have `StatusCode=200`, no
 `FunctionError`, and `ExecutedVersion: "$LATEST"`. That envelope is insufficient:
 
 | Payload | Required result |
@@ -137,8 +140,11 @@ a read timeout longer than the verified function timeout (currently at most
 420 seconds), inside an explicit controller deadline.
 
 Capture the release time marker before the owned collection invocation, then
-require the expected account's `cloudfront` ledger row's durable `last_success_at`
-at or after that marker, plus fresh known-record evidence. This demonstrates advancement past the
+require the `cloudfront` job ledger row's durable `last_success_at` at or after
+that marker. This job-level ledger is keyed under the host `self` sentinel, not
+the host's numeric AWS account ID. Require fresh known-host CloudFront evidence
+as well; caller/runtime identity separately verifies the expected AWS account.
+This demonstrates advancement past the
 pre-invoke marker; an old ledger success, or a scheduled success accompanying a
 `busy` owned response, is insufficient. Full readiness additionally requires the
 authenticated BFF/AgentCore and owned worker HTTP proofs. A successful invoke

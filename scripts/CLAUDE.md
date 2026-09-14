@@ -137,8 +137,8 @@ secrets-manager) — installed by `make deps`.
   Presence booleans are separate, with a combined 256-row bound and no private values;
   new enrollment checks the existing or planned group's absence of an IAM role.
 - `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,readiness_plan_summary,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets,verifier_sessions}.py` —
-  workflow fixtures, real no-provider plans and a localhost state backend verify deployment
-  gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
+  the suites collectively use policy/workflow fixtures, real no-provider plans and a localhost
+  state backend to verify gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active
   rollout's public zone name/ID/NS. The readiness summary adds fixed scope/presence checks and
   a known configured collector hash. Diagnostics also publish bounded numeric metric values;
