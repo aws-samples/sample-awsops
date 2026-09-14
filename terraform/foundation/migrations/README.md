@@ -138,22 +138,22 @@ docker run --rm --network none --read-only awsops-migration:local \
   node scripts/v2/migrate.mjs --status
 ```
 
-The manual development workflow builds/pushes to the selected private ECR repository,
+The private development workflow (manual dispatch or the guarded current-source Deploy Web caller) builds/pushes to the selected private ECR repository,
 pins the image digest, and runs the default CMD in a private ARM64 Fargate task.
 Its task/IAM template is gated by `ci_migrations_enabled` (default false); see the [deployment runbook](../../../docs/runbooks/dev-repo-setup.md).
 Task completion must include the migration container's numeric exit code `0`; status output alone
 is not a successful migration. Supply the required identifiers/mode above (plus reader ARN
 only in secret mode) as nonsecret environment settings; never inject passwords or secret bodies.
 The dedicated **Migrate Development Database** template deliberately enables guarded initialization:
-each manual dev dispatch requests it if needed. Provisioning the template runs nothing, an existing
+each accepted dev migration invocation requests it if needed; explicit older-image rollback skips this workflow. Provisioning the template runs nothing, an existing
 ledger skips initialization, and an occupied database without a ledger is refused. This exception
 does not apply to ordinary services or scheduled deployment templates.
 
-수동 개발 workflow가 private ECR에 빌드/푸시하고 정확한 digest로 private ARM64 Fargate 태스크를 실행한다.
+수동 실행 또는 현재 소스 Deploy Web의 보호된 호출로 개발 workflow가 private ECR에 빌드/푸시하고 정확한 digest로 private ARM64 Fargate 태스크를 실행한다.
 태스크/IAM 템플릿은 기본 false인 `ci_migrations_enabled`로 제어한다.
 성공은 migration 컨테이너의 숫자 exit code `0`까지 확인해야 한다. 환경에는 위 식별자/모드만
 전달하고 비밀번호·시크릿 본문을 넣지 않는다. 전용 **Migrate Development Database** 템플릿은
-수동 dev 실행마다 필요한 경우의 안전한 초기화를 명시적으로 요청한다. 템플릿 생성만으로 실행되지
+허용된 dev migration 호출마다 필요한 경우의 안전한 초기화를 요청하며 이전 이미지 롤백은 이 workflow를 실행하지 않는다. 템플릿 생성만으로 실행되지
 않으며, 원장이 있으면 초기화를 생략하고 원장 없는 비어 있지 않은 DB는 거부한다. 일반 서비스나
 예약 배포 템플릿에는 이 예외를 적용하지 않는다.
 

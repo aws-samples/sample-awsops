@@ -2,8 +2,19 @@ name: Migrate Development Database
 
 on:
   workflow_dispatch:
-  # Reuse keeps the caller's original event/ref/sha; the guard remains dispatch-only.
+  # Reuse keeps the original event/ref/SHA; only Deploy Web can opt into dev pushes.
   workflow_call:
+    inputs:
+      from_deploy_web:
+        type: boolean
+        default: false
+    outputs:
+      source_sha:
+        description: Source SHA whose private migration completed successfully
+        value: ${{ jobs.migrate.outputs.source_sha }}
+      project:
+        description: Verified development project
+        value: ${{ jobs.migrate.outputs.project }}
     secrets:
       TF_TFVARS_DEV: { required: true }
       TF_BACKEND_HCL_DEV: { required: true }
@@ -14,6 +25,9 @@ on:
 permissions:
   contents: read
 
+env:
+  MIGRATION_FROM_DEPLOY_WEB: ${{ inputs.from_deploy_web }}
+
 # Do not interrupt an in-flight migration with another dispatch.
 concurrency:
   group: migration-development
@@ -23,13 +37,16 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
-      - name: Require a samples development dispatch
+      - name: Require a samples development migration context
         run: |
           set -euo pipefail
           [ "$GITHUB_REPOSITORY" = "aws-samples/sample-awsops" ] &&
-          [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
-          [ "$GITHUB_REF" = "refs/heads/dev" ] || {
-            echo "::error::Only a samples repository dev dispatch can run migrations"
+          [ "$GITHUB_REF" = "refs/heads/dev" ] &&
+          { [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] ||
+            { [ "$GITHUB_EVENT_NAME" = "push" ] &&
+              [ "${MIGRATION_FROM_DEPLOY_WEB:-}" = "true" ] &&
+              [ "${GITHUB_WORKFLOW_REF:-}" = "aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/dev" ]; }; } || {
+            echo "::error::Only a dev dispatch or the opted-in dev Deploy Web caller can run migrations"
             exit 1
           }
 
@@ -81,7 +98,7 @@ jobs:
           node scripts/v2/ci/run-migration.mjs check-build-role
 
       - name: Validate independent development account before OIDC
-        run: node scripts/v2/ci/runtime-build.mjs check-role
+        run: node scripts/v2/ci/runtime-build.mjs check-migration-role
 
       - name: Configure development build credentials
         # The independent target is checked before requesting OIDC credentials.
@@ -105,7 +122,7 @@ jobs:
         run: |
           set -euo pipefail
           aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
-            node scripts/v2/ci/runtime-build.mjs verify-role
+            node scripts/v2/ci/runtime-build.mjs verify-migration-role
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -137,6 +154,9 @@ jobs:
     runs-on: sample-awsops
     timeout-minutes: 35
     environment: development
+    outputs:
+      source_sha: ${{ steps.run.outputs.source_sha }}
+      project: ${{ steps.run.outputs.project }}
     permissions:
       contents: read
       id-token: write
@@ -167,7 +187,7 @@ jobs:
           node scripts/v2/ci/run-migration.mjs check-deploy-role
 
       - name: Validate independent development account before OIDC
-        run: node scripts/v2/ci/runtime-build.mjs check-role
+        run: node scripts/v2/ci/runtime-build.mjs check-migration-role
 
       - name: Configure development execution credentials
         id: credentials
@@ -183,9 +203,10 @@ jobs:
         run: |
           set -euo pipefail
           aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
-            node scripts/v2/ci/runtime-build.mjs verify-role
+            node scripts/v2/ci/runtime-build.mjs verify-migration-role
 
       - name: Read migration output and run
+        id: run
         timeout-minutes: 27
         env:
           TF_DATA_DIR: ${{ runner.temp }}/migration-tf-${{ github.run_id }}-${{ github.run_attempt }}
@@ -212,8 +233,11 @@ jobs:
           }
           # Only this named, nonsecret output crosses into the controller.
           # No show/state dump, refresh, plan or apply occurs in this workflow.
-          terraform -chdir="$FOUNDATION" output -json migration_job 2>/dev/null |
-            node scripts/v2/ci/run-migration.mjs run
+          MIGRATION_CONFIG=$(terraform -chdir="$FOUNDATION" output -json migration_job 2>/dev/null) || {
+            echo "::error::Migration capability unavailable: configure CI_MIGRATIONS_ENABLED_DEV=true and apply ci_migrations_enabled=true"; exit 1;
+          }
+          printf '%s' "$MIGRATION_CONFIG" | node scripts/v2/ci/run-migration.mjs run
+          printf 'source_sha=%s\nproject=%s\n' "$GITHUB_SHA" "$MIGRATION_PROJECT" >> "$GITHUB_OUTPUT"
 
       - name: Stop only this run task if necessary
         if: always() && steps.credentials.outcome == 'success' && steps.account.outcome == 'success'

@@ -321,7 +321,7 @@ logs), never variables; every credentials step sets `mask-aws-account-id`.
 Cognito users: dev/preview stacks get the shared regular **demo user**
 (`demo_email` defaults to `demo@awsops.local`; its password rides as the
 `TF_VAR_DEMO_PASSWORD` repo secret, bound as `TF_VAR_demo_password` only in
-Terraform's plan step and Deploy Web's opt-in private credential-preparation step).
+Terraform's plan step and Deploy Web's mandatory dev private credential-preparation step).
 `create_demo_user` defaults to
 **false** (fail-closed): a dev-tier stack opts in with `create_demo_user =
 true` in its tfvars blob, so the shared credential can never reach a stack —
@@ -895,9 +895,7 @@ Initialization and earlier policy failures are outside command-tail capture. Exi
 ## Private development database migration
 
 **Symptom:** a newly provisioned private Aurora has no application tables, or the
-external Actions runner cannot connect to its private endpoint. Deploy Web does not initialize
-the database. Use **Migrate Development Database** (`deploy-migrations.yml`), a manual-only
-workflow restricted to this samples repository's `dev` branch, also reusable by a manual dev AgentCore dispatch. It builds an ARM64 image and
+external Actions runner cannot connect to its private endpoint. **Migrate Development Database** (`deploy-migrations.yml`) is restricted to this samples repository's `dev` branch. Standalone and AgentCore use remain manual; current-source Deploy Web runs it automatically before image promotion, including on dev pushes. An explicitly acknowledged older-image rollback skips migrations. See [web release and rollback](web-release.md). It builds an ARM64 image and
 runs one Fargate task in the existing private subnets with the existing service security group.
 
 **Preparation:**
@@ -997,7 +995,7 @@ node --test scripts/v2/ci/run-migration*.test.mjs
 ```
 
 Merge Verify also runs the required runtime tests and disposable PostgreSQL integration suite.
-The manual controller adds no product autonomy or DNS exception.
+The operator deployment controller adds no product autonomy or DNS exception.
 
 <a id="verification--확인"></a>
 
@@ -1006,7 +1004,7 @@ The manual controller adds no product autonomy or DNS exception.
 For a provisioned dev stack, the web workflow should build, pin, roll and pass the
 Host/SNI-preserving smoke through `cloudfront_domain`, even before `public_url` resolves.
 For production, dispatch Deploy Web from the reviewed main commit through the normal
-environment approval. Health is process liveness, not proof that migrations/authenticated
+environment approval, using `build=true` or the required `image_build_run_id` for a retained producer receipt. See [exact commands and rollback limits](web-release.md). Health is process liveness, not proof that migrations/authenticated
 routes work. Inspect certificate preflight and plan-gate output; a DNS refusal or moved
 branch requires investigation and a fresh plan, never bypassing checks.
 
@@ -1026,7 +1024,7 @@ Degraded inventory never passes release readiness. A missing match is not proof 
 
 `SMOKE_RUNTIME_CONFIG_FILE` is an absolute 0600 JSON file beside credentials in the same 0700 directory;
 cleanup covers both. Its 16 KiB cap, 30-minute verify window and unique type list including cloudfront are required.
-The release controller must supply actual deployment/dispatch evidence; current Deploy Web remains DB-only.
+The release controller must supply actual deployment/dispatch evidence; current Deploy Web verifies the web image and login/DB; full runtime/collection verification remains a separate release-controller integration.
 
 `schemaVersion: 1`, `mode: "prepare"` and `expectedAccountId` check login/DB and the enabled host.
 Optional `hostOnly: true` also rejects enabled members. Verify adds `expectedCloudfrontId`,
@@ -1056,8 +1054,7 @@ revocation. See [revocation details](runtime-foundation.md#readiness-capability)
 
 ### Authenticated database verification
 
-After the required database migrations succeed, run **Deploy Web** on `dev` with
-`verify_database=true`. Before dispatch, ensure the reviewed Terraform saved-plan apply
+Every **Deploy Web** release on `dev` automatically verifies login and DB, including push releases and explicit rollbacks. `verify_database` remains only a compatibility input; false does not disable the dev check. Current-source releases first run the matching private migration. Before release, ensure the reviewed Terraform saved-plan apply
 has persisted the new **`demo_username` output** in dev state. A plan alone does not
 persist it. The restored `TF_TFVARS_DEV` must enable `create_demo_user=true`, and its
 effective `demo_email` must exactly match that applied username.
@@ -1081,10 +1078,10 @@ Standalone smoke calls prefer `RUNNER_TEMP` as well. Only validated numeric HTTP
 may accompany phase errors; response bodies, cookies and Terraform diagnostics stay private.
 
 ```bash
-# After successful migration; use the already-built image for this reviewed dev HEAD:
-gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f verify_database=true
-# If this HEAD's web image still needs building, use this instead:
-gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true -f verify_database=true
+# Reuse a successful build for the current dev SHA; private migration runs first:
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f image_build_run_id='<PRODUCER_RUN_ID>'
+# Build the current source, then migrate, deploy and verify:
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true
 ```
 
 Require ECS stability and the normal `/api/health` smoke, then **POST `/api/auth/login`**
@@ -1093,8 +1090,7 @@ with HTTP **200**, boolean **`ok: true`** and a usable secure host-specific
 **200**, **`status: "ok"`** and a **positive safe-integer `public_tables`**. Both requests
 retain service Host/SNI and TLS verification through CloudFront; neither follows
 redirects. These checks verify login and the BFF's database connection/table presence,
-not the entire migration ledger. `verify_database=false` retains the ordinary health-only
-deployment path.
+not full runtime/collection readiness. The current-source migration has its separate verified receipt. Every dev release requires these checks regardless of `verify_database`.
 
 A configured credential can still be stale: only the post-rollout login validates the
 actual password. If login fails, inspect the existing identity and protected credential

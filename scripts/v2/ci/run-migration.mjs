@@ -56,9 +56,14 @@ export function selectProject(text) {
   return match?.[1] ?? 'awsops-v2';
 }
 
+export function allowedMigrationEvent(c) {
+  return c?.event === 'workflow_dispatch' || (c?.event === 'push' && c.fromDeployWeb === 'true' &&
+    c.workflowRef === 'aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/dev');
+}
+
 export function validateContext(c) {
   requireThat(c?.repository === REPOSITORY && c.ref === 'refs/heads/dev' &&
-    c.event === 'workflow_dispatch', 'Only the samples repository dev dispatch is allowed');
+    allowedMigrationEvent(c), 'Only a samples dev dispatch or opted-in Deploy Web push is allowed');
   requireThat(SHA.test(c.sha) && PROJECT.test(c.project) && c.region === REGION &&
     numericId.test(c.runId) && numericId.test(c.attempt), 'Invalid migration run context');
   const role = configuredRole(c.deployRoleArn);
@@ -77,6 +82,7 @@ export function validateContext(c) {
 }
 
 function validateConfig(config, c, expected) {
+  requireThat(config, 'Migration capability unavailable: configure CI_MIGRATIONS_ENABLED_DEV=true and apply ci_migrations_enabled=true before a current-source web release');
   requireThat(config && allowedKeys(config, ['project', 'region', 'cluster', 'task_template_arn',
     'repository_url', 'subnets', 'security_groups', 'log_group']), 'Missing or invalid migration_job output');
   requireThat(config.project === c.project && config.region === REGION &&
@@ -446,6 +452,7 @@ function contextFromEnv(env) {
   const role = configuredRole(env.MIGRATION_DEPLOY_ROLE_ARN);
   return {
     repository: env.GITHUB_REPOSITORY, ref: env.GITHUB_REF, event: env.GITHUB_EVENT_NAME,
+    fromDeployWeb: env.MIGRATION_FROM_DEPLOY_WEB, workflowRef: env.GITHUB_WORKFLOW_REF,
     sha: env.GITHUB_SHA, runId: env.GITHUB_RUN_ID, attempt: env.GITHUB_RUN_ATTEMPT,
     project: env.MIGRATION_PROJECT, region: REGION, digest: env.MIGRATION_DIGEST,
     // Do not pass a masked registry/account in a GitHub job output. Derive the

@@ -27,6 +27,28 @@ const taskArn = `${prefix}task/${project}/${'b'.repeat(32)}`;
 const cluster = `${prefix}cluster/${project}`;
 const startedBy = 'migration-123-1';
 
+test('only an opted-in Deploy Web push may use the private migration controller', async () => {
+  const h = harness();
+  Object.assign(h.f.context, {
+    event: 'push', fromDeployWeb: 'true',
+    workflowRef: 'aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/dev',
+  });
+  await runMigration(h.f, h.deps);
+  for (const change of [{ fromDeployWeb: '' }, { workflowRef: 'other' }, { ref: 'refs/heads/main' }]) {
+    const denied = harness();
+    Object.assign(denied.f.context, h.f.context, change);
+    await assert.rejects(runMigration(denied.f, denied.deps));
+    assert.equal(denied.calls.length, 0);
+  }
+});
+
+test('an unapplied migration capability fails clearly before any AWS operation', async () => {
+  const h = harness();
+  h.f.config = null;
+  await assert.rejects(runMigration(h.f, h.deps), /Migration capability unavailable/);
+  assert.equal(h.calls.length, 0);
+});
+
 function fixture() {
   return {
     context: {

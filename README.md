@@ -149,7 +149,7 @@ and [deployment runbook §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-
 | `ci_readiness_enabled` | Default-off bounded billed deployment probe. Dedicated `CI_READINESS_ENABLED_DEV=true/false` overrides the dev value; unset preserves explicit tfvars/default false. The runtime profile alone does not enable it. Public CI permits enabled readiness only on dev. Apply requires AgentCore for the verifier group and `create_demo_user=true` for managed-demo membership. No admin/IAM grant. |
 | `integrations_enabled` | remaining 6 AgentCore Lambda slices |
 | `workers_enabled` | the async worker tier (SQS/SFN/Lambda/Fargate) |
-| `ci_migrations_enabled` | Default-off operator capability: private migration task template, exact-secret task role/policy and 14-day logs. Manual dev CI only; no service or scheduler. Disabling deletes the log group/history. |
+| `ci_migrations_enabled` | Default-off operator capability: private migration task template, exact-secret task role/policy and 14-day logs. Private dev CI migration: manual dispatch or the guarded current-source Deploy Web path; no service or scheduler. Disabling deletes the log group/history. |
 | `steampipe_enabled` | the Steampipe inventory-sync data layer |
 | `inventory_host_only` | Default-off collector scope: require exactly one enabled host and omit collector AssumeRole. Agent MCP grants stay unchanged; dev requires profile-bound host verification. See [runtime activation](docs/runbooks/runtime-foundation.md) and ADR-011 onboarding. |
 | `finops_baseline_enabled` | the FinOps baseline-recommendations engine (ADR-020): a daily Fargate rule batch (unattached EBS volumes; EC2/RDS rightsizing via Compute Optimizer) writing to `finops_findings`, read-only, rendered on `/cost`. Requires `workers_enabled` only at the Terraform level — but the EBS rule additionally needs a fresh `steampipe_enabled=true` inventory sync at runtime; without it, that rule honestly reports `partial` (EC2/RDS rightsizing still work) |
@@ -369,7 +369,7 @@ apply에서 바꿀 수 없습니다. 기본 false인 일반 full 계획도 DNS �
 | `ci_readiness_enabled` | 기본 비활성 유료 배포 검증. 전용 `CI_READINESS_ENABLED_DEV=true/false`가 dev 값을 덮어쓰며 미설정은 명시적 tfvars·기본 false를 유지한다. 런타임 프로필만으로 활성화하지 않고 공개 CI에서는 dev만 허용한다. 적용 시 verifier 그룹에는 AgentCore가, 관리 demo 멤버십에는 `create_demo_user=true`도 필요하다. 관리자·IAM 권한은 부여하지 않는다. |
 | `integrations_enabled` | 나머지 AgentCore Lambda 슬라이스 6개 |
 | `workers_enabled` | 비동기 워커 계층(SQS/SFN/Lambda/Fargate) |
-| `ci_migrations_enabled` | 기본 비활성 운영 기능: 사설 migration 태스크 템플릿·정확한 시크릿 읽기 역할/정책·14일 로그. dev CI 수동 실행 전용이며 서비스·스케줄러는 없다. 비활성화하면 로그 그룹/이력이 삭제된다. |
+| `ci_migrations_enabled` | 기본 비활성 운영 기능: 사설 migration 태스크 템플릿·정확한 시크릿 읽기 역할/정책·14일 로그. dev 수동 실행 또는 현재 소스 Deploy Web의 보호된 migration 경로에서 사용하며 서비스·스케줄러는 없다. 비활성화하면 로그 그룹/이력이 삭제된다. |
 | `steampipe_enabled` | Steampipe 인벤토리 sync 데이터 계층 |
 | `inventory_host_only` | 기본 비활성: 활성 호스트 하나만 허용하고 수집기 AssumeRole을 제외합니다. Agent MCP 권한은 유지하며 dev 활성화에는 프로필 기반 호스트 검증이 필요합니다. [런타임 절차](docs/runbooks/runtime-foundation.md)와 ADR-011 참고. |
 | `finops_baseline_enabled` | FinOps 기본 권장 엔진(ADR-020): 일별 Fargate 룰 배치(미사용 EBS 볼륨; Compute Optimizer 기반 EC2/RDS rightsizing)가 `finops_findings`에 적재, read-only, `/cost`에 렌더. terraform 레벨로는 `workers_enabled`만 선행 — 단 EBS 룰은 런타임에 `steampipe_enabled=true`의 최신 동기화가 있어야 동작하고, 없으면 그 룰만 정직하게 `partial`로 표면화(EC2/RDS는 무관하게 동작) |

@@ -92,7 +92,7 @@ Fork PR에는 정식 `AI Code Review` 검사를 발행하지 않으므로 테스
 | Tier | Branch | Stack / domain | Deploy trigger |
 |---|---|---|---|
 | User | `atomoh` / `ssminji` / `whchoi` | that user's stack, `<user>.awsops-dev.whchoi.net` | auto on push (`deploy-web.yml`) |
-| Dev | `dev` | dev stack; `DOMAIN_NAME_DEV` when set, otherwise stored tfvars | auto web roll on push (`deploy-web.yml`); DNS requires explicit dispatch |
+| Dev | `dev` | dev stack; `DOMAIN_NAME_DEV` when set, otherwise stored tfvars | guarded build → private migration → verified web roll on push (`deploy-web.yml`); [older-image rollback](web-release.md) is explicit and runs no migrations; DNS requires explicit dispatch |
 | Production | `main` | production stack — **domain not attached yet** | dispatch + `production` environment approval |
 
 Dev's repo-level name/zone overrides feed console and plan consistently; main/preview ignore
