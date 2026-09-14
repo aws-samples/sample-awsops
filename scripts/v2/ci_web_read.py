@@ -1,18 +1,8 @@
 """Bounded, single-attempt AWS reads for the release controller (stdlib only).
 
-Usage: ``with read_window(deadline, now=now): read_request(service, operation, options)``.
-Options map CLI names (without --) to strings/string lists. Only the seven listed
-reads are admitted, in ap-northeast-2; no writes, sleeps, SDK retries or auto-pages.
-The caller validates successful response bodies and owns bounded backoff.
+Usage: ``with read_window(deadline, now=now): read_request(service, operation, options)``. Options map CLI names (without --) to strings/string lists. Only the seven listed reads are admitted, in ap-northeast-2; no writes, sleeps, SDK retries or auto-pages. The caller validates successful response bodies and owns bounded backoff.
 
-TransientReadError covers recognized transport/service failures and exhausted
-budgets. Permission, identity, unknown, response-limit and cleanup failures are fatal.
-Fixed labels expose no provider output or arguments. Keep writes on ci_web_image.command.
-Each call has at most 30 seconds and needs 50ms to launch; nested windows only shorten
-it. A real watchdog also bounds injected-clock tests, reserving cleanup time inside
-the budget. Timeout kills the owned group and reaps the child boundedly. Parsed
-success is retained; the next read checks expiry. OS scheduling is not hard realtime.
-See docs/runbooks/release-safety-primitives.md for the complete caller contract.
+TransientReadError covers recognized transport/service failures and exhausted budgets. Permission, identity, unknown, response-limit and cleanup failures are fatal. Fixed labels expose no provider output or arguments. Keep writes on ci_web_image.command. Each call has at most 30 seconds and needs 50ms to launch; nested windows only shorten it. A real watchdog also bounds injected-clock tests, reserving cleanup time inside the budget. Timeout kills the owned group and reaps the child boundedly. Parsed success is retained; the next read checks expiry. OS scheduling is not hard realtime. See docs/runbooks/release-safety-primitives.md for the complete caller contract.
 """
 from contextlib import contextmanager
 from contextvars import ContextVar

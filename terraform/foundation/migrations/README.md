@@ -44,27 +44,11 @@ DO NOTHING`. Concurrent branches kept **preempting the same integer** (manual re
 
 ### Automatic migration admission
 
-`AUTOMATIC_MIGRATION=1` opts into the conservative policy in
-`scripts/v2/automatic-migration-policy.mjs`. Under the session lock, after checksum validation,
-it checks **all ledger-derived pending files**, including gaps below newer applied IDs.
-Only supported `CREATE TABLE` definitions and ordinary, non-unique, column-only B-tree
-`CREATE INDEX` statements are admitted. Allowlisted built-in column types, constant defaults,
-and new-table `NOT NULL`/`PRIMARY KEY`/`UNIQUE` constraints are supported; indexes may use
-ordering, `INCLUDE`, and `IF NOT EXISTS`. This is a limited syntax subset, not complete schema validation.
+`AUTOMATIC_MIGRATION=1` opts into the conservative policy in `scripts/v2/automatic-migration-policy.mjs`. Under the session lock, after checksum validation, it checks **all ledger-derived pending files**, including gaps below newer applied IDs. Only supported `CREATE TABLE` definitions and ordinary, non-unique, column-only B-tree `CREATE INDEX` statements are admitted. Allowlisted built-in column types, constant defaults, and new-table `NOT NULL`/`PRIMARY KEY`/`UNIQUE` constraints are supported; indexes may use ordering, `INCLUDE`, and `IF NOT EXISTS`. This is a limited syntax subset, not complete schema validation.
 
-Every `-- migrate:no-transaction` file is rejected, even if its SQL could run transactionally.
-`CREATE INDEX CONCURRENTLY` is rejected with or without that header or `IF NOT EXISTS`.
-All `ALTER TABLE` statements, including nullable `ADD COLUMN`, require standalone review:
-base-column changes and their `sql_reader` view/grant refresh must remain together.
-Do not remove a paired refresh to pass admission. Destructive SQL, procedural/dynamic SQL,
-data statements and other unsupported forms also require the manual path.
+Every `-- migrate:no-transaction` file is rejected, even if its SQL could run transactionally. `CREATE INDEX CONCURRENTLY` is rejected with or without that header or `IF NOT EXISTS`. All `ALTER TABLE` statements, including nullable `ADD COLUMN`, require standalone review: base-column changes and their `sql_reader` view/grant refresh must remain together. Do not remove a paired refresh to pass admission. Destructive SQL, procedural/dynamic SQL, data statements and other unsupported forms also require the manual path.
 
-A rejected file produces only safe file/id/reason metadata and fixed guidance, before any pending
-DDL, ledger upgrade or reader sync. Online `DRY_RUN=1` still rejects disallowed pending files
-instead of printing their SQL; supported files can be previewed. Unset `AUTOMATIC_MIGRATION`
-for a reviewed standalone migration or full SQL preview. Checksums and the lock still apply.
-`--status`/`STATUS=1` and offline preview inspect files without validating live pending admission.
-False positives intentionally require manual review; never edit immutable SQL/headers or ledger checksums to bypass them.
+A rejected file produces only safe file/id/reason metadata and fixed guidance, before any pending DDL, ledger upgrade or reader sync. Online `DRY_RUN=1` still rejects disallowed pending files instead of printing SQL; one rejected pending file stops the entire online preview. Unset `AUTOMATIC_MIGRATION` for a reviewed standalone migration or full SQL preview. Checksums and the lock still apply. `--status`/`STATUS=1` and offline preview inspect files without validating live pending admission. False positives intentionally require manual review; never edit immutable SQL/headers or ledger checksums to bypass them.
 
 ### Empty database / 빈 데이터베이스
 
@@ -103,7 +87,7 @@ ULID별 적용과 reader 동기화를 진행한다. 잠금이 사용 중이면 �
 After empty-only initialization, every online run, including preview, checks stored non-null
 baseline and ULID checksums before pending ledger changes or password sync. Legacy null baseline checksums remain supported; this is not
 permission to retag/edit existing SQL or to rewrite ledger checksums.
-온라인 preview도 저장된 non-null baseline/ULID checksum을 검증한다. 레거시 null checksum은
+빈 DB 전용 초기화 후 모든 온라인 실행은 preview를 포함해 pending ledger 변경이나 비밀번호 동기화 전에 저장된 non-null baseline/ULID checksum을 검증한다. 레거시 null checksum은
 허용하지만 기존 SQL의 `-- since:` 변경·수정이나 원장 checksum 덮어쓰기는 허용하지 않는다.
 
 ### Runtime configuration / 런타임 설정

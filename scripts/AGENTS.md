@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: cf7672db9d69 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: cfc054aceaee · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -55,7 +55,7 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 - Fixed public audit fields distinguish command, capture, retention and cleanup status; numeric standard Terraform success counts never include resource/output text. Missing summaries stay unavailable. Schema-2 failure HMAC uses its own domain with the existing CBC cipher/key. Recovery verifies the exact failed attempt and emits fixed timeout/errors; private inspection remains authenticated and bounded to 32 MiB.
 - The sealing payload reaches OpenSSL through stdin, with no plaintext staging file. Captured Terraform runs in a separate session; first-interrupt forwarding, second-interrupt group kill and parent-death protection govern cancellation. Sealing/storage/publication failures preserve the command exit.
 - Cleanup deletes only after the identified upload's literal success; failed/cancelled/skipped/unknown outcomes retain ciphertext privately. Audits distinguish pending_upload, retained_unpublished and final cleanup outcomes. No broad runner-temp sweep, shared-UID isolation or SIGKILL guarantee.
-- `v2/ci_deployment_audit.py` is manual dev-only, with a restrictive session and fixed reads/SELECTs. It shares only backend parsing with `ci_verifier_sessions.py`; grants and no-invoke behavior stay unchanged. Preserve identity/resource guards and safe output projection; current web status, event metrics and observed SQL-reader rows never establish full deployment readiness. Tests: `test_ci_deployment_audit.py`; guide: `docs/runbooks/deployment-audit.md`.
+- `v2/ci_deployment_audit.py` is manual dev-only, with a restrictive session and fixed reads/SELECTs. It shares backend parsing and state-KMS resource selection with `ci_verifier_sessions.py`; the decrypt resource follows the shared `encrypt` rule. State-object/account/S3-context restrictions and the no-invoke boundary remain. Preserve identity/resource guards and safe output projection; current web status, event metrics and observed SQL-reader rows never establish full deployment readiness. Tests: `test_ci_deployment_audit.py`; guide: `docs/runbooks/deployment-audit.md`.
 - `v2/ci_verifier_sessions.py` supplies policies for manual collection and Deploy Web verification:
   backend/workload restrictions, no AWS calls or persistent IAM changes. Workload state must
   come from the consumer's private capture. Manual dev collect-runtime dispatches support
