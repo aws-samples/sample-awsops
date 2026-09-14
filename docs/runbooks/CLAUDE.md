@@ -43,8 +43,13 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   fail. One-day ciphertext becomes a five-day reference after successful publication.
 - The privately selected plan digest binds exact bytes, not human attestation. Mask the input
   before workflow step environments can log it. CI still authenticates assets and all original
-  apply gates. No S3 expiry is installed: discover/purge expired attempt versions after seven
-  days. Current-run scratch cleanup can be prevented by runner loss; summaries are advisory.
+  apply gates. Publication and private reads require owner-installed plan-prefix lifecycle:
+  7-day current/noncurrent expiry and 1-day multipart abort; conflicting expiry/archive
+  at or before five days is rejected. The optional owner-run bootstrap configures it;
+  the workflow does not apply bootstrap. S3 expiration is asynchronous. Review effective
+  S3/KMS readers: they need no CI envelope key. Publisher policy requires SSE-KMS on PUT,
+  separately from reads. Optional purge targets reviewed expired attempt versions.
+  Current-run scratch cleanup can be prevented by runner loss; summaries are advisory.
 - Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). The helper supplies policies and installs neither consumer path. Deploy Web integration must be dev-only with activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
 - Private S3 inspection authenticates source/run/reference, manifest, pinned plan and hashes before bounded local rendering; it never authorizes apply. Asset HMAC is checked inside CI publication/apply, not by the keyless operator renderer.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.

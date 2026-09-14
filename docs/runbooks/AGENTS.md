@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5a36ee832e26 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3a451c429880 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -16,8 +16,12 @@ legacy runbook's steps as the current operational path).
   hard failures for missing publisher roles. No automatic permission/configuration changes.
 - Public references contain source context and manifest hash only; no storage bindings or
   plan digest. Mask the reviewed input before any step environment; hashes select bytes,
-  not human review. CI asset HMAC remains mandatory. Document local metadata discovery and
-  expired-version purge after seven days; no automatic S3 expiry or runner-loss cleanup guarantee.
+  not human review. CI asset HMAC remains mandatory. Require owner-installed plan-prefix
+  lifecycle (7-day current/noncurrent, 1-day multipart abort), rejecting conflicting
+  expiry/archive at or before five days. The workflow never applies the optional bootstrap.
+  Expiration is asynchronous; optional purge and runner-loss cleanup remain separate.
+  Review effective S3/KMS readers; they need no CI envelope key. Publisher policy requires
+  SSE-KMS on PUT independently of read permissions.
 - Verification policies accept manual collect-runtime dev dispatches for backend/workload and prepare/collect, plus deploy-web dev push/dispatch for workload collect only (backend/prepare refused). The helper installs neither consumer path. Dev integration needs activated runtime prerequisites and private proof credentials/state for both events; missing proof fails closed. Consumers enforce nonempty restrictions and owned-file cleanup. Collect permits only the owned collector; its application-data effects are operator CI, not an ADR-005 exception. IAM cannot restrict event payloads: the consumer enforces catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. Contract: `runtime-verifier-sessions.md`.
 - `ci_readiness_plan_summary.py` runs before encryption only for explicit full dev readiness
   plans, with a two-minute timeout and fenced JSON output. Its failure-tolerant report publishes

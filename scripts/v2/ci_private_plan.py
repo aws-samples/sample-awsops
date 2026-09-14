@@ -313,8 +313,11 @@ def session_policy(backend, account, ctx):
             's3:GetEncryptionConfiguration', 's3:GetBucketPublicAccessBlock',
             's3:GetBucketOwnershipControls', 's3:GetBucketPolicyStatus', 's3:GetLifecycleConfiguration'], 'Resource': bucket,
          'Condition': {'StringEquals': {'aws:ResourceAccount': account}}},
-        {'Effect': 'Allow', 'Action': ['s3:PutObject', 's3:GetObject', 's3:GetObjectVersion'], 'Resource': objects,
+        {'Effect': 'Allow', 'Action': ['s3:GetObject', 's3:GetObjectVersion'], 'Resource': objects,
          'Condition': {'StringEquals': {'aws:ResourceAccount': account}}},
+        {'Effect': 'Allow', 'Action': ['s3:PutObject'], 'Resource': objects,
+         'Condition': {'StringEquals': {'aws:ResourceAccount': account,
+                                        's3:x-amz-server-side-encryption': 'aws:kms'}}},
         {'Effect': 'Allow', 'Action': ['kms:GenerateDataKey', 'kms:Decrypt'],
          'Resource': f"arn:aws:kms:{backend['region']}:{account}:key/*",
          'Condition': {'StringEquals': {'kms:ViaService': f"s3.{backend['region']}.amazonaws.com",
@@ -580,12 +583,12 @@ class Operation:
             if 'Date' in action:
                 require(field == 'Days' and field not in action, 'bucket_lifecycle_invalid')
                 try:
-                    return timestamp(action['Date']) - self.now() >= 5 * 86400
+                    return timestamp(action['Date']) - self.now() > 5 * 86400
                 except (ValueError, TypeError):
                     raise PrivatePlanError('bucket_lifecycle_invalid') from None
             days = action.get(field)
             require(type(days) is int and days >= (0 if transition else 1), 'bucket_lifecycle_invalid')
-            return days >= 5
+            return days > 5
         for rule in rules:
             require(isinstance(rule, dict) and rule.get('Status') in ('Enabled', 'Disabled'), 'bucket_lifecycle_invalid')
             if rule['Status'] == 'Disabled':

@@ -58,7 +58,9 @@ DNS/runtime and exact reviewed-plan gates. Its required interfaces are:
    permission review.
 3. A fresh, protected deployer session using the generated nonempty policy. Its scope
    is the selected bucket's posture reads, this run's object prefix and constrained KMS
-   use, not backend state access or infrastructure/IAM mutation. Required bucket posture
+   use, not backend state access or infrastructure/IAM mutation. A separate PUT
+   statement requires explicit SSE-KMS;
+   object reads do not require a request encryption header. Bucket posture
    requires owner/region agreement, Enabled versioning, all four public-access blocks,
    BucketOwnerEnforced, a nonpublic bucket policy (or no bucket policy), valid
    default SSE-KMS settings and the plan-prefix lifecycle below. Existing role/key policies
@@ -91,8 +93,8 @@ DNS/runtime and exact reviewed-plan gates. Its required interfaces are:
    and abort incomplete multipart uploads after one day. Do not broaden this filter
    to backend state or replace unrelated bucket lifecycle rules. Add expired delete-marker
    cleanup separately if needed. The helper requires `s3:GetLifecycleConfiguration`,
-   checks the configured rule and rejects overlapping expiry/archive actions that
-   invalidate the five-day read window. It installs no lifecycle configuration.
+   checks the configured rule and rejects overlapping expiry/archive actions at or
+   before the five-day read-window boundary. It installs no lifecycle configuration.
    The workflow retains this fail-closed check and its fixed diagnostics. Owners may
    enable the optional `terraform/bootstrap` retention resource after reconciling
    lifecycle ownership; the workflow never applies that bootstrap configuration.
