@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 0d331a3100f6 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f7a8150404e9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -99,8 +99,8 @@ legacy runbook's steps as the current operational path).
 ## Conventions
 - Filename: `kebab-case.md`, domain-then-topic order.
 - Structure: symptoms → candidate causes → verification commands → action → related files/ADRs.
-- Runbook *bodies* must be bilingual Korean/English (this index file itself is English-only,
-  per the repo's CLAUDE.md-is-English-only rule).
+- New or rewritten developer/runbook prose is English-only; preserve existing multilingual
+  backlog/anchors and the separate product-guide and root README/CHANGELOG policies.
 - Commands should be copy-paste ready; cite the related ADR number(s) at the bottom.
 - Do not let a runbook embed secrets, AWS account IDs, ARNs, or live domains.
 
@@ -134,4 +134,4 @@ legacy runbook's steps as the current operational path).
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
 - Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
 
-The controller retries stale terminal types only after a 420-second queue grace and 60 seconds without progress/running/missing rows. Four synchronous calls maximum/eight total distinguish busy from success; each needs 450 seconds remaining in the single dispatch-anchored 20-minute deadline. Batches wait 60 seconds. Initial dispatch retries confirmed throttling only within 450 seconds. The workflow gate is 45 minutes (manual job 60 including setup). Fresh zero-unknown ledger evidence remains mandatory; no schedule mutation or degraded-data allowance exists. The runtime-foundation runbook lists exact deployer scopes and existing-stack prerequisites.
+The release reads the pinned inventory catalog and probes only CloudFront; it does not enqueue an all-type sweep or retry a stale-terminal batch queue. Catalog admission is bounded to 450 seconds; the CloudFront probe to 900 seconds, reserving 450 seconds per invocation. Confirmed throttling/busy/superseded outcomes retry after ten seconds; denied/uncertain/partial/failed outcomes do not pass. The marker precedes the probe and is retained across retries. Every catalog type and the known record need fresh post-marker evidence with zero unknowns. Release polling is twenty minutes, standalone ten, with successful admitted responses retained across deadline completion. Workflow cap: 55 minutes after fresh same-role credentials; manual job: 75 minutes. Ordinary collector capacity remains a prerequisite; no stale-data allowance or infrastructure/gate change is made. Prepare adopts an already-running web stack, not first-web bootstrap. Existing verifier groups require reviewed state adoption.

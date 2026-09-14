@@ -388,9 +388,19 @@ jobs:
           node scripts/v2/deployment-smoke.mjs "$PUBLIC_URL" "$CLOUDFRONT_DOMAIN"
           echo
 
+      - name: Refresh development credentials for runtime verification
+        if: github.ref == 'refs/heads/dev'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          role-duration-seconds: 3600
+
       - name: Authenticated development runtime readiness
         if: github.ref == 'refs/heads/dev'
-        timeout-minutes: 45
+        timeout-minutes: 55
         env:
           PUBLIC_URL: ${{ steps.tf.outputs.url }}
           CLOUDFRONT_DOMAIN: ${{ steps.tf.outputs.cloudfront_domain }}

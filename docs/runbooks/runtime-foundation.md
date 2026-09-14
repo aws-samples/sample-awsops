@@ -15,8 +15,7 @@ node --test scripts/v2/ci/prepare-runtime-host.test.mjs scripts/v2/ci/runtime-re
 ## Activation / 활성화
 1. Configure the **secret** `AWS_ACCOUNT_ID_DEV`, backend and existing CI roles. Checks establish account/role consistency, not dev/production isolation.
    계정은 시크릿에 두며 계정·역할 일치를 스택 격리 보장으로 해석하지 않는다.
-2. A new inactive stack needs foundation, migration and working login first. `CI_READONLY_RUNTIME_DEV=true` enables core runtime; manual full plan/apply require real login/DB and an enabled host registry with no enabled foreign rows.
-   신규 스택은 기반 인프라·migration·로그인을 먼저 준비한다. 수동 전체 계획/적용의 실제 호스트 검증에서 누락·활성 외부 계정은 차단된다.
+2. This controller adopts an already-running web stack with working foundation, migrations and login; first-web bootstrap is outside this workflow. `CI_READONLY_RUNTIME_DEV=true` enables core runtime; manual full plan/apply require real login/DB and an enabled host registry with no enabled foreign rows.
 3. `runtime-ecr-bootstrap` creates only three repositories. Build ARM64 images and set verified `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV` before a full plan.
    저장소 세 개를 bootstrap한 뒤 ARM64 이미지의 검증된 digest 두 개를 설정한다.
 4. Dev/preview private discovery requires full-plan `runtime_rollout=true` and DNS permission; dev also requires the profile. Keep `domain_rollout=false`. Profile/rollout require remediation, RCA write-back, integrations write and diagnosis notifications off; governed external writes are not reclassified as FROZEN.
@@ -51,16 +50,7 @@ owned Lambda/Fargate job completion. `verify_database` cannot disable this gate.
 The dev runtime profile also enables `ci_readiness_enabled`; Terraform creates only the
 verifier application group and managed demo membership only while AgentCore is enabled. Public CI rejects the readiness flag outside dev; no admin/IAM role is granted.
 
-모든 dev Deploy Web 배포는 실제 웹 역할·revision·digest, 수집 Lambda 코드, 최신 수집,
-SSM·AgentCore·모델 권한과 두 워커 완료를 검증합니다. 기존 입력으로 생략할 수 없습니다.
-프로필은 검증 플래그도 켭니다. 공개 CI는 이 플래그를 dev에서만 허용하고, Terraform은 AgentCore가 켜져 있을 때만 검증 그룹·관리 demo 멤버십을 생성합니다. 관리자·IAM 역할은 부여하지 않습니다.
-
-For a new inactive stack, first apply the reviewed base plan so runtime_deployment exists;
-never disable an already-active profile to repeat bootstrap. Prepare the existing host,
-bootstrap/build the three runtime repositories and verified images, then review/apply the
-full private-DNS runtime plan. Provision AgentCore after its private migration, then deploy:
-신규 비활성 스택만 기본 계획을 먼저 적용합니다. 기존 호스트 준비, 저장소·이미지 준비,
-전체 런타임 계획, 사설 migration·AgentCore provisioning 순서 후 배포합니다.
+For an **already-running web stack with inactive backends**, first apply the reviewed base plan so runtime_deployment exists; never disable an active profile to repeat bootstrap. Prepare verifies that existing web image/service/login and host registry. It does not create the first web deployment. Bootstrap/build the three runtime repositories and verified images, then review/apply the full private-DNS runtime plan. Provision AgentCore after its private migration, then deploy. A brand-new stack without a working web service needs a separate reviewed bootstrap procedure before using these commands; this controller supplies no first-web bootstrap or health-only bypass.
 
 ```bash
 gh workflow run collect-runtime.yml -R aws-samples/sample-awsops --ref dev -f mode=prepare
@@ -72,32 +62,46 @@ gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=t
 Prepare accepts disabled backends and reports prepared, not ready. Manual collect additionally
 requires the exact deployed image_sha. Keep credentials unchanged; never reset a password or
 promote the user to admin. Runtime retirement remains unsupported by this workflow.
-prepare는 배포 성공이 아니며 수동 collect에는 배포된 image_sha가 필요합니다. 암호·관리자
-권한을 변경해 검증을 통과시키지 않습니다. 이 워크플로는 런타임 삭제를 지원하지 않습니다.
 
 ### Existing stacks and rollback / 기존 스택과 롤백
 
 Before the first gated release, apply the reviewed runtime/readiness configuration, complete private migrations and provision the matching AgentCore image. This applies to existing stacks too. `Capture development runtime contract` validates feature flags **before** the image pin and ECS rollout; absent runtime features fail there. Actual access/data/worker proof still runs after rollout. Roll back to a reviewed prior image with these runtime prerequisites intact; there is no health-only escape or password reset.
-기존 스택도 첫 필수 검증 배포 전에 검토된 runtime/readiness 설정 적용·사설 migration·AgentCore provisioning을 완료한다. runtime contract 캡처는 이미지 pin·ECS rollout 전에 기능 플래그를 검사한다. 실제 접근·데이터·워커 검증은 rollout 후에도 필수다. 롤백은 런타임 전제조건을 유지한 채 검토된 이전 이미지를 사용하며 health-only 우회나 암호 재설정은 없다.
+
+### Adopting an existing verifier group / 기존 검증 그룹 채택
+
+Before the first readiness apply, check whether `deployment-verifiers` already exists in this stack's user pool and whether Terraform already manages it. Do not delete/recreate the group or change passwords to resolve an import conflict. If a separately created group exists, include a reviewed import block in the saved plan before the apply; likewise import an existing managed-demo membership only when that resource's conditions are true. Verify the plan imports the exact intended group/membership, grants no IAM role/admin membership, and does not replace the pool or user. Use the actual pool ID and configured username; examples below are placeholders. If the existing group has an IAM role or unexpected membership, stop for an owner-reviewed adoption decision instead of silently changing its privileges. Remove the temporary import blocks after successful adoption.
+
+```hcl
+import {
+  to = aws_cognito_user_group.deployment_verifiers[0]
+  id = "<pool-id>/deployment-verifiers"
+}
+# Only when the managed demo membership already exists and its count is enabled:
+import {
+  to = aws_cognito_user_in_group.demo_readiness[0]
+  id = "<pool-id>,deployment-verifiers,<configured-demo-username>"
+}
+```
+
+The group import ID uses a slash; membership uses comma-separated pool/group/username, per the pinned AWS provider's resource import contracts. Import is a reviewed state adoption, not authorization for additional privileges.
 
 ### Collection contention / 수집 경합
 
-The initial all-type dispatcher retries only confirmed Lambda throttling at ten-second intervals within 450 seconds; denial and uncertain delivery failures are distinct and are not re-dispatched. The freshness marker precedes the accepted dispatch attempt. Collection polling and retry admission share a single deadline 20 minutes after that marker, including login/DB time. The standalone smoke without a retry callback keeps its ten-minute window.
-최초 전체 타입 dispatch는 확인된 Lambda throttling만 10초 간격·450초 이내로 재시도하며 권한 거부나 전달 여부가 불명확한 실패는 반복하지 않는다. freshness marker는 접수된 dispatch 시도 직전이고, 수집 polling·재시도 모두 이 시각부터 20분이라는 같은 deadline을 사용한다. 로그인·DB 확인 시간도 포함하며 callback 없는 독립 smoke는 10분을 유지한다.
+The controller reads the complete catalog from the code-checked inventory Lambda, then invokes only the owned CloudFront collector synchronously. It does not enqueue another all-type sweep or run a stale-terminal batch queue. Ledger rows no longer control RPC retry admission. Only the bounded owned probe is retried; all other catalog types still require fresh successful evidence from the existing scheduled collector.
 
-Recovery waits at least 420 seconds for the initial queue. It then requires no running or missing required ledger rows and no ledger progress for 60 seconds. Only stale terminal acknowledged types can be retried: at most four synchronous `RequestResponse` calls concurrently, batches at least 60 seconds apart, eight calls total per release. Each call requires 450 seconds remaining, covering the verified Lambda timeout of at most 420 seconds and CLI/network overhead. `busy`/throttled calls remain eligible; successful RPCs are not submitted again. A fresh successful ledger row with zero unknowns is still required, even after a successful RPC. Partial/failed results and permission/protocol failures remain distinct. Exhausted call/time budgets skip new RPCs while polling continues; they never imply success. The scheduler is unchanged.
-복구는 최초 대기열에 최소 420초를 준 뒤, 필수 원장의 running·누락 행이 없고 60초간 진행 변화도 없을 때만 시작한다. 접수된 타입 중 오래된 종료 상태만 RequestResponse로 동시에 최대 4개, batch 간 최소 60초, 배포당 총 8회까지 호출한다. 각 호출에는 450초 이상 남아 있어야 하며 Lambda timeout 최대 420초와 CLI·네트워크 여유를 포함한다. busy·throttling은 재대상으로 남고 성공 RPC는 다시 보내지 않는다. RPC 성공 뒤에도 unknown 0인 최신 성공 원장이 필수이며 partial·failed·권한·protocol 실패는 구분한다. 예산 소진 시 새 RPC만 생략하고 polling을 계속하며 성공으로 처리하지 않는다. 스케줄은 변경하지 않는다.
+Catalog admission has a 450-second budget and retries only confirmed Lambda throttling. The CloudFront probe has a 900-second budget; each invocation needs at least 450 seconds remaining for the verified function timeout of at most 420 seconds plus transport overhead. Confirmed throttling, `busy`, and the producer's exact superseded result wait ten seconds before another bounded attempt. Denied, uncertain-delivery, partial, failed, and invalid-protocol outcomes fail distinctly. A successful RPC alone is not readiness proof.
 
-The workflow gate allows 45 minutes for bounded dispatcher admission, collection, AgentCore and both five-minute worker polls. The manual workflow job allows 60 minutes including setup. These are upper bounds, not sleeps; ready components advance immediately. A timeout means complete readiness was not established within the capacity/time budget.
-workflow gate는 제한된 최초 dispatch·수집·AgentCore·각 5분 워커 polling을 위해 최대 45분, 수동 job은 setup 포함 최대 60분이다. 고정 대기가 아니라 상한이므로 준비 완료 즉시 다음 단계로 진행한다. timeout은 처리 용량·시간 예산 안에 완전한 readiness를 입증하지 못했다는 뜻이다.
+The release freshness marker is recorded after catalog discovery and **before** the first CloudFront probe. It is not reset by retries or a delayed response. Every catalog type must have a succeeded ledger row whose start and last success are at or after that marker, with zero unknown attributes; the known CloudFront record must also be fresh after it. Older scheduled results do not pass, even if they are less than thirty minutes old. `expectedQueuedTypes` is the retained wire-field name for the catalog, not a claim that CI dispatched every type.
 
-CI deliberately requires zero unknown attributes; the product may still display degraded inventory. There is no baseline/allowlist exception for release. Timeout means complete readiness was not established within the bound; inspect contention, throughput and permissions rather than accepting stale or incomplete data.
-제품은 degraded 인벤토리를 표시할 수 있지만 CI 수락 기준은 unknown 0이다. 배포용 baseline·allowlist 예외는 없다. timeout은 제한 시간 내 완전한 준비 상태를 입증하지 못했다는 뜻이며 오래되거나 불완전한 데이터를 허용하지 말고 경합·처리량·권한을 조사한다.
+Release-mode collection polling allows twenty minutes after account/login checks; standalone verification retains ten minutes. The authenticated collection-only summary avoids inventory-wide aggregations. A deadline bounds the start of a poll, and a valid successful response from an admitted request is retained even if it arrives just after that deadline. No new poll begins after expiry. The runtime and both five-minute worker checks remain mandatory.
+
+Capacity is a prerequisite, not a guarantee supplied by a timeout. With N types, C collector slots and a per-type duration T, budget for scheduler wait plus roughly ceil(N/C) waves; using the 420-second maximum for every type gives a conservative capacity bound. Four slots cannot guarantee a 43-type sweep in twenty minutes at that maximum. If full fresh coverage cannot be produced, the gate must fail; inspect throughput, throttling and permissions, then use the existing reviewed Terraform process for any concurrency or query-budget adjustment. Do not accept old rows, omit types, or bypass unknown/partial failures to turn the gate green.
+
+Both verification steps have a 55-minute workflow cap with a fresh one-hour session for the same configured role; the manual job allows 75 minutes including setup. These are outer limits, not promises that every combination of slow calls will fit. Restored Terraform inputs are deleted immediately after capture, with final cleanup retained as a fallback. No schedule, feature flag or infrastructure setting is changed by the verifier.
 
 ### Deployer verification permissions / Deployer 검증 권한
 
 The configured dev deployer needs these scopes before the first gated release. They supplement the existing build/pin/roll permissions; this controller does not grant IAM. Replace placeholders with the independently configured account, deployment region and project. Never grant wildcard Lambda invocation to pass the gate.
-첫 필수 검증 배포 전 dev deployer에 아래 범위가 필요하다. 기존 build/pin/roll 권한과 구분하며 컨트롤러는 IAM을 부여하지 않는다. placeholder는 검증된 계정·리전·프로젝트로 바꾸고 gate 통과를 위해 Lambda 호출을 전체 리소스로 넓히지 않는다.
 
 | Action | Resource / condition |
 |---|---|
@@ -106,13 +110,12 @@ The configured dev deployer needs these scopes before the first gated release. T
 | `ecs:DescribeTasks` | `arn:aws:ecs:<region>:<account>:task/<project>/*` |
 | `ecs:ListTasks` | `Resource: "*"`; `ArnEquals` `ecs:cluster` = `arn:aws:ecs:<region>:<account>:cluster/<project>` and deployment `aws:RequestedRegion` |
 | `ecs:DescribeTaskDefinition` | `Resource: "*"` with deployment `aws:RequestedRegion`; AWS defines no task-definition resource scope for this action |
-| `lambda:GetFunctionConfiguration`, `lambda:InvokeFunction` | `arn:aws:lambda:<region>:<account>:function:<project>-inv-sync` only, for initial dispatch and bounded retries |
+| `lambda:GetFunctionConfiguration`, `lambda:InvokeFunction` | `arn:aws:lambda:<region>:<account>:function:<project>-inv-sync` only, for catalog discovery and the bounded CloudFront probe |
 
 ListTasks is constrained by its cluster condition for this Fargate/service query; do not substitute task-definition ARNs for unsupported resource scoping. STS caller verification remains mandatory. An API failure means access is unverified, not permission to broaden grants. Scope references: `https://docs.aws.amazon.com/service-authorization/latest/reference/list_ecs.html` and `https://docs.aws.amazon.com/service-authorization/latest/reference/list_lambda.html`.
-ListTasks는 이 Fargate/service 조회에서 cluster 조건으로 제한하며 지원되지 않는 resource scope를 task-definition ARN으로 꾸미지 않는다. STS 호출자 검증도 필수다. API 실패는 접근 미검증이지 권한 확대 승인이 아니다.
 
 ## Related / 관련
 
 [CI setup/assets](dev-repo-setup.md) · [SQL reader](agent-sql-reader.md) · [Multi-account](onboard-target-account.md) · [Inventory rollback](steampipe-quota-and-staleness.md).
 Sources: `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `scripts/v2/ci/runtime-release.mjs`, `terraform/foundation/runtime-read-scope.tf`, `terraform/foundation/controller-readiness.tf`, `.github/workflows/terraform.yml`, `.github/workflows/collect-runtime.yml`, `.github/workflows/deploy-web.yml`.
-ADRs: ADR-001, ADR-002, ADR-005, ADR-007, ADR-011, ADR-016, ADR-017, ADR-021. Infrastructure apply is not live readiness proof. 인프라 적용만으로 실제 권한·수집·워커 검증을 통과한 것으로 처리하지 않는다.
+ADRs: ADR-001, ADR-002, ADR-005, ADR-007, ADR-011, ADR-016, ADR-021. Infrastructure apply is not live readiness proof.

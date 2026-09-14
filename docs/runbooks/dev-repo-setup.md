@@ -281,7 +281,6 @@ The prefix plus SHA reaches GitHub's 50-character label limit. A new commit need
 matching label and environment approval. After merging the repair, update dependent PRs
 against `dev`; normal reviews run through `ci-review-auto` without manual approval.
 
-
 After merging or abandoning a recovery PR, remove its SHA label from that PR. For another
 incident, regenerate the access plan for the new PR and replace the recovery branch rule;
 do not accumulate allowed PR refs. Retain the environment/reviewer gate and exact IAM
@@ -1014,7 +1013,6 @@ DNS·출처 검사도 배포 ref의 코드이므로 코드 변경에 대한 보�
 기존 리뷰·보호 환경 절차를 계속 적용한다.
 
 Full controller verification also requires the narrowly scoped ECS/Lambda reads and owned sync invocation in [deployer verification permissions](runtime-foundation.md#deployer-verification-permissions--deployer-검증-권한). The pre-mutation feature check and existing-stack rollout order are documented there.
-전체 controller 검증의 ECS/Lambda 조회·자체 sync 호출 권한과 변경 전 기능 검사·기존 스택 배포 순서는 해당 런타임 절차를 따른다.
 
 #### Runtime images / 런타임 이미지
 
@@ -1218,7 +1216,6 @@ For verify, apply `agentcore_enabled=true` and `ci_readiness_enabled=true`, then
 Only applied output sets `DEPLOYMENT_READINESS_ENABLED`; false/missing yields `runtime_disabled`, ignoring shell overrides.
 Also enable `steampipe_enabled=true`, `workers_enabled=true` and dispatch, and deploy inventory/ARM64
 worker images as described in [worker deployment](../reference/06-workers.md).
-검증 전 두 플래그를 적용하고 프로비저닝합니다. 런타임 플래그는 적용된 출력만 사용하며, 전용 그룹 권한은 별도 Terraform 리소스로 부여합니다.
 수집·워커 플래그와 디스패치를 활성화하고 인벤토리·ARM64 워커 이미지를 먼저 배포해야 합니다.
 
 Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway schema first.
@@ -1238,19 +1235,6 @@ all acknowledged `expectedQueuedTypes` and the pre-dispatch `collectionStartedAt
 deployment and owned Lambda evidence. It requires fresh complete collection, web SSM/runtime calls
 and succeeded Lambda/Fargate jobs. Missing/partial/stale is never healthy zero; deploy the updated
 inventory-reader Lambda so legacy NULL attribute coverage is disclosed as incomplete.
-
-`POST /api/deployment/readiness` requires an administrator or separately provisioned `deployment-verifiers`.
-Public CI rejects ci_readiness_enabled outside dev. When both ci_readiness_enabled and agentcore_enabled are true, controller-readiness.tf creates the verifier group and, if the managed
-demo user is enabled, its membership. It grants no admin or IAM authority.
-Use a fresh login after membership changes; one in-flight call and a 60-second process cooldown apply.
-
-스모크 도구는 자격증명 파일과 같은 0700 디렉터리의 0600 JSON을
-`SMOKE_RUNTIME_CONFIG_FILE`로 받으며 함께 정리합니다. 모든 dev Deploy Web 배포는
-실제 배포·Lambda 응답으로 생성한 전체 검증 설정을 사용하며 verify_database로 생략할 수 없습니다.
-prepare는 로그인·DB·활성 호스트를 확인하고 `hostOnly: true`일 때 외부 활성 계정을
-거부합니다. verify는 위 추가 필드로 최신 수집·실제 SSM/runtime·두 워커 완료를 검증합니다.
-검증 API는 관리자 또는 전용 verifier 그룹만 허용합니다. 공개 CI는 ci_readiness_enabled를 dev에서만 허용하며 AgentCore도 켜져 있어야 Terraform이 그룹과 활성 관리 demo의 verifier 멤버십만
-만듭니다. 관리자·IAM 역할을 주지 않습니다. 그룹 변경 후 새 로그인과 호출 간격이 필요합니다.
 
 ### Authenticated database verification / 인증된 DB 검증
 
@@ -1299,12 +1283,6 @@ source without exposing response bodies, passwords or cookies. **Never reset an 
 user's password to make this smoke pass.** This workflow does not create users or set
 passwords.
 
-필수 DB 마이그레이션 성공을 확인한 후 `dev`의 **Deploy Web**을
-실행한다. 전체 검증은 기존 verify_database 입력과 무관하게 필수다. 먼저 검토한 Terraform 저장 plan을 실제 apply하여
-개발 state에 `demo_username` 출력을 저장해야 한다. plan만으로는 저장되지 않는다.
-복원되는 `TF_TFVARS_DEV`는 `create_demo_user=true`여야 하며 유효 `demo_email`이
-적용된 사용자명과 정확히 같아야 한다. 사용할 암호는 기존 사용자의 실제 암호와 일치해야 한다.
-
 Terraform **1.15.7**이 변수 우선순위를 직접 평가한다. 저장소 시크릿
 `TF_VAR_DEMO_PASSWORD`는 소문자 환경변수 `TF_VAR_demo_password`로 공유 기본값을
 전달하며, 보호된 스택별 tfvars의 `demo_password`가 우선한다. 공유 시크릿 없이 override만
@@ -1320,7 +1298,6 @@ ECS 안정화와 `/api/health` 성공에 이어 실제 `POST /api/auth/login`의
 `ok: true`, 유효한 secure·호스트 전용 `awsops_token` cookie를 요구한다. 그 cookie로
 `GET /api/db`가 HTTP 200, `status: "ok"`, 양의 안전 정수 `public_tables`를 반환해야
 완료된다. CloudFront 연결에서도 Host/SNI·TLS 검증을 유지하며 redirect를 따라가지 않는다.
-전체 migration ledger 검증은 아니며 dev 배포는 verify_database 값과 무관하게 전체 런타임 검증을
 수행한다. 실제 암호의 유효성은 rollout 후 로그인에서 확인한다. 실패하면 기존 사용자와 보호된
 암호 공급원을 비공개로 확인하고, **검사를 통과시키려고 기존 사용자 암호를 재설정하지 않는다.**
 이 워크플로는 사용자를 생성하거나 암호를 설정하지 않는다.
@@ -1335,7 +1312,6 @@ image pinning or rollout.
 로그인 401은 설정된 자격증명, 403은 Cognito 사용자/인증 상태, 502는 상위 연결을 확인한다.
 DB 503은 서비스 설정, 500은 DB 자격증명·IAM·연결을 확인한다. 전송/TLS 오류에는 HTTP
 응답이 없을 수 있다. 비공개 앱 로그로 조사하고 응답 본문을 출력하거나 암호를 재설정하지 않는다.
-필수 dev 준비 단계는 비공개 Terraform init을 10분 내 완료한 뒤 output/console을 각각 2분 내 읽으며,
 이미지 pin·rollout은 그 이후에만 진행한다.
 
 Offline checks for this path (Node 20, curl, OpenSSL, Python 3 with PyYAML, and Terraform 1.15.7):

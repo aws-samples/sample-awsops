@@ -108,7 +108,7 @@ test('runtime age validation permits the producer range without imposing a new f
 test('missing/partial/stale/unknown collection cannot pass or be treated as zero resources', async () => {
   for (const collection of [{ configured: false, readOk: true, runs: [] },
     { configured: true, readOk: false, runs: [] }, { configured: true, readOk: true, runs: [] }]) {
-    await assert.rejects(fixture({ '/api/inventory/summary?accounts=self': () => ({ collection }) }).run(), /collection/);
+    await assert.rejects(fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection }) }).run(), /collection/);
   }
   for (const change of [{ status: 'partial' }, { status: 'failed' }, { status: 'running' },
     { last_success_at: '2020-01-01T00:00:00Z' }, { unknown_attribute_count: null, unknown_attributes: null },
@@ -116,14 +116,14 @@ test('missing/partial/stale/unknown collection cannot pass or be treated as zero
     const runs = ['cloudfront', 'ec2'].map(type => ({ type, accountId: 'self', status: 'succeeded',
       row_count: 0, started_at: start, last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false, ...change }));
     await assert.rejects(fixture({
-      '/api/inventory/summary?accounts=self': () => ({ collection: { configured: true, readOk: true, runs } }),
+      '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: { configured: true, readOk: true, runs } }),
     }).run(), Object.hasOwn(change, 'unknown_attribute_count') ? /inventory_incomplete/
       : change.status === 'partial' ? /collection_partial/
         : change.status === 'failed' ? /collection_failed/ : /collection_timeout/);
   }
 });
 test('missing ledger is distinct and a later incomplete type cannot hide behind an earlier running type', async () => {
-  const path = '/api/inventory/summary?accounts=self';
+  const path = '/api/inventory/summary?accounts=self&view=collection';
   await assert.rejects(fixture({ [path]: () => ({
     collection: { configured: true, readOk: true, runs: [] },
   }) }).run(), /collection_missing/);
@@ -135,107 +135,6 @@ test('missing ledger is distinct and a later incomplete type cannot hide behind 
   await assert.rejects(fixture({ [path]: () => ({
     collection: { configured: true, readOk: true, runs },
   }) }).run(), /inventory_incomplete/);
-});
-test('a scheduled lock holder can finish before a bounded retry produces fresh complete collection', async () => {
-  let retryAt;
-  const retries = [];
-  const old = new Date(Date.parse(start) - 60_000).toISOString();
-  const row = (type, status, started_at, last_success_at) => ({
-    type, accountId: 'self', status, started_at, last_success_at,
-    row_count: 1, unknown_attribute_count: 0, unknown_attributes: false,
-  });
-  const f = fixture({ '/api/inventory/summary?accounts=self': () => {
-    const oldRunning = f.now() < Date.parse(start) + 420_000;
-    const freshDone = retryAt !== undefined && f.now() >= retryAt + 420_000;
-    return { collection: { configured: true, readOk: true, runs: [
-      row('cloudfront', 'succeeded', start, start),
-      retryAt === undefined
-        ? row('ec2', oldRunning ? 'running' : 'succeeded', old, old)
-        : row('ec2', freshDone ? 'succeeded' : 'running', new Date(retryAt).toISOString(),
-          freshDone ? new Date(f.now()).toISOString() : old),
-    ] } };
-  } }, { retryCollection: async types => {
-    retries.push(types);
-    retryAt = f.now();
-    return types.map(type => ({ type, status: 'succeeded' }));
-  } });
-  assert.equal((await f.run()).status, 'ok');
-  assert.deepEqual(retries, [['ec2']]);
-  assert.ok(retryAt >= Date.parse(start) + 420_000);
-  assert.ok(f.now() < Date.parse(start) + 1200_000);
-});
-test('queued stale rows do not cause retries while other types progress or run', async () => {
-  const old = new Date(Date.parse(start) - 60_000).toISOString();
-  const calls = [];
-  const f = fixture({ '/api/inventory/summary?accounts=self': () => ({ collection: {
-    configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
-      type, accountId: 'self', status: type === 'cloudfront' ? 'running' : 'succeeded',
-      started_at: type === 'cloudfront' ? new Date(f.now()).toISOString() : old,
-      last_success_at: old, row_count: 1, unknown_attribute_count: 0, unknown_attributes: false,
-    })),
-  } }) }, { retryCollection: async types => { calls.push(types); return []; } });
-  await assert.rejects(f.run(), /collection_timeout/);
-  assert.deepEqual(calls, []);
-});
-test('two busy RPCs do not exhaust a type before a later fresh collection succeeds', async () => {
-  const old = new Date(Date.parse(start) - 60_000).toISOString();
-  let attempts = 0;
-  const f = fixture({ '/api/inventory/summary?accounts=self': () => ({ collection: {
-    configured: true, readOk: true, runs: config.expectedQueuedTypes.map(type => ({
-      type, accountId: 'self', status: 'succeeded', row_count: 1,
-      started_at: type === 'ec2' && attempts < 3 ? old : start,
-      last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false,
-    })),
-  } }) }, { retryCollection: async types => {
-    attempts++;
-    return types.map(type => ({ type, status: attempts < 3 ? 'busy' : 'succeeded' }));
-  } });
-  assert.equal((await f.run()).status, 'ok');
-  assert.equal(attempts, 3);
-});
-test('quiet stale work uses batches of four and does not retry completed calls without ledger proof', async () => {
-  const old = new Date(Date.parse(start) - 60_000).toISOString();
-  const types = ['cloudfront', ...Array.from({ length: 40 }, (_, i) => `type_${i}`)];
-  const calls = [];
-  const f = fixture({ '/api/inventory/summary?accounts=self': () => ({ collection: {
-    configured: true, readOk: true, runs: types.map(type => ({ type, accountId: 'self',
-      status: 'succeeded', started_at: old, last_success_at: old, row_count: 1,
-      unknown_attribute_count: 0, unknown_attributes: false })),
-  } }) }, { retryCollection: async batch => {
-    calls.push({ types: batch, at: f.now() });
-    return batch.map(type => ({ type, status: 'succeeded' }));
-  } });
-  await assert.rejects(f.run({ ...config, expectedQueuedTypes: types }), /collection_timeout/);
-  assert.ok(calls.every(c => c.types.length <= 4));
-  assert.ok(calls[0].at >= Date.parse(start) + 420_000);
-  assert.ok(calls.every((c, i) => i === 0 || c.at - calls[i - 1].at >= 60_000));
-  assert.equal(new Set(calls.flatMap(c => c.types)).size, calls.flatMap(c => c.types).length);
-});
-test('collection window is anchored before account/login work rather than poll start', async () => {
-  let clock = Date.parse(start), calls = 0;
-  await assert.rejects(verifyRuntimeSmoke(config, async path => {
-    if (path === '/api/accounts') {
-      clock += 1195_000;
-      return { accounts: [{ accountId: account, isHost: true, enabled: true }] };
-    }
-    calls++;
-    return { collection: { configured: true, readOk: true, runs: [] } };
-  }, { now: () => clock, wait: async ms => { clock += ms; }, retryCollection: async () => [] }), /collection_missing/);
-  assert.equal(clock, Date.parse(start) + 1200_000);
-  assert.equal(calls, 1);
-});
-test('typed retry failures stay distinct while arbitrary remote text is suppressed', async () => {
-  const old = new Date(Date.parse(start) - 60_000).toISOString();
-  for (const [code, expected] of [['collection_retry_denied', /collection_retry_denied/],
-    ['PRIVATE_REMOTE_DETAIL', /collection_retry_failed/]]) {
-    const f = fixture({ '/api/inventory/summary?accounts=self': () => ({ collection: {
-      configured: true, readOk: true, runs: config.expectedQueuedTypes.map(type => ({
-        type, accountId: 'self', status: 'succeeded', started_at: old, last_success_at: old,
-        row_count: 1, unknown_attribute_count: 0, unknown_attributes: false,
-      })),
-    } }) }, { retryCollection: async () => { throw new Error(code); } });
-    await assert.rejects(f.run(), e => expected.test(e.message) && !e.message.includes('PRIVATE'));
-  }
 });
 test('a 500-row sample without the known ID is unverified, not proof of absence', async () => {
   const responses = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [
@@ -280,18 +179,15 @@ test('private runtime configuration refuses symlinks, public modes and oversized
   assert.throws(() => readRuntimeSmokeConfig(link, credentials), /configuration_file/);
   assert.throws(() => readRuntimeSmokeConfig(file, join(dir, 'nested', 'credentials.json')), /configuration_file/);
 });
-for (const [inventoryBytes, retry] of [[75 * 1024, false], [2 * 1024 * 1024 + 1, false], [75 * 1024, true]]) test(
-  `authenticated full flow bounds inventory (${inventoryBytes} bytes, retry=${retry})`, { timeout: 20_000 }, async t => {
+for (const [inventoryBytes, releaseMode] of [[75 * 1024, false], [2 * 1024 * 1024 + 1, false], [75 * 1024, true]]) test(
+  `authenticated full flow bounds inventory (${inventoryBytes} bytes, release=${releaseMode})`, { timeout: 20_000 }, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'runtime-smoke-curl-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const now = new Date().toISOString();
-  let clock = Date.now();
-  if (retry) t.mock.method(Date, 'now', () => clock);
-  const old = new Date(clock - 600_000).toISOString();
-  const runtimeConfig = { ...config, collectionStartedAt: retry ? new Date(clock - 480_000).toISOString() : now };
+  const runtimeConfig = { ...config, collectionStartedAt: now, ...(releaseMode ? { collectionMode: 'release' } : {}) };
   const responses = new Set(), requests = [];
   const password = 'fixture-private-password', token = 'fixture-private-token';
-  let jobIndex = 0, retryCount = 0;
+  let jobIndex = 0;
   const runCurl = async (file, args, options) => {
     const path = new URL(args.at(-1)).pathname;
     requests.push(path);
@@ -313,10 +209,9 @@ for (const [inventoryBytes, retry] of [[75 * 1024, false], [2 * 1024 * 1024 + 1,
     } else if (path === '/api/db') result = { status: 'ok', public_tables: 42 };
     else if (path === '/api/accounts') result = { accounts: [{ accountId: account, isHost: true, enabled: true }] };
     else if (path === '/api/inventory/summary') {
-      if (retry) clock += 60_000;
       result = { collection: { configured: true, readOk: true,
       runs: ['ec2', 'cloudfront'].map(type => ({ type, accountId: 'self', status: 'succeeded', row_count: 1,
-        started_at: retry && retryCount === 0 && type === 'ec2' ? old : now,
+        started_at: now,
         last_success_at: now, unknown_attribute_count: 0, unknown_attributes: false })) } };
     }
     else if (path === '/api/inventory/cloudfront') result = { rows: [{ resource_id: config.expectedCloudfrontId,
@@ -339,17 +234,68 @@ for (const [inventoryBytes, retry] of [[75 * 1024, false], [2 * 1024 * 1024 + 1,
   const action = authenticatedSmoke({
     publicUrl: 'https://dev.example.com', cloudfrontDomain: 'd123.cloudfront.net',
     email: 'demo@example.com', password, runtimeConfig,
-  }, { runCurl, tempRoot: dir, retryCollection: retry ? async types => {
-    assert.deepEqual(types, ['ec2']); retryCount++;
-    return types.map(type => ({ type, status: 'succeeded' }));
-  } : undefined });
+  }, { runCurl, tempRoot: dir });
   if (inventoryBytes > 2 * 1024 * 1024) {
     await assert.rejects(action, /inventory_http/);
     assert.equal(requests.length, 5);
   } else {
     assert.equal((await action).mode, 'verify');
-    assert.equal(requests.length, retry ? 12 : 10);
-    assert.equal(retryCount, retry ? 1 : 0);
+    assert.equal(requests.length, 10);
   }
   assert.deepEqual(readdirSync(dir), []);
+});
+
+test('a successful response from an attempt admitted before the deadline is accepted', async () => {
+  let clock = Date.parse(start) + 1000;
+  const f = fixture({ [ `/api/jobs/${jobIds[0]}` ]: () => {
+    clock += 301_000;
+    return { job_id: jobIds[0], type: 'noop', runtime: 'lambda', status: 'succeeded',
+      dry_run: false, result: { ok: true } };
+  } }, { now: () => clock, wait: async ms => { clock += ms; } });
+  assert.equal((await f.run()).status, 'ok');
+});
+
+test('a late incomplete response does not admit another poll after the deadline', async () => {
+  let clock = Date.parse(start) + 1000, reads = 0;
+  const f = fixture({ [`/api/jobs/${jobIds[0]}`]: () => {
+    reads++;
+    clock += 301_000;
+    return { job_id: jobIds[0], type: 'noop', runtime: 'lambda', status: 'running' };
+  } }, { now: () => clock, wait: async ms => { clock += ms; } });
+  await assert.rejects(f.run(), /worker_timeout/);
+  assert.equal(reads, 1);
+});
+
+test('fresh ledger metadata cannot substitute for an old known resource record', async () => {
+  const f = fixture({ '/api/inventory/cloudfront?accounts=self&limit=5&offset=0': () => ({
+    rows: [{ account_id: 'self', resource_id: config.expectedCloudfrontId,
+      data: { id: config.expectedCloudfrontId },
+      captured_at: new Date(Date.parse(start) - 15 * 60_000).toISOString() }],
+  }) });
+  await assert.rejects(f.run({ ...config, collectionMode: 'release' }), /inventory_known_resource_unverified/);
+});
+
+test('catalog verification cannot pass an older sweep as this release evidence', async () => {
+  const recent = new Date(Date.parse(start) - 15 * 60_000).toISOString();
+  const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
+    configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
+      type, accountId: 'self', status: 'succeeded', row_count: 1,
+      started_at: recent, last_success_at: recent, unknown_attribute_count: 0, unknown_attributes: false,
+    })),
+  } }) });
+  await assert.rejects(f.run({ ...config, collectionMode: 'recent' }), /configuration|collection_timeout/);
+  await assert.rejects(f.run({ ...config, collectionMode: 'release' }), /collection_timeout/);
+});
+test('release collection never accepts stale, missing, partial or unknown evidence', async () => {
+  const old = new Date(Date.parse(start) - 31 * 60_000).toISOString();
+  for (const change of [{ started_at: old, last_success_at: old }, { status: 'partial' },
+    { unknown_attribute_count: 1, unknown_attributes: true }]) {
+    const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
+      configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
+        type, accountId: 'self', status: 'succeeded', row_count: 1, started_at: start,
+        last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false, ...change,
+      })),
+    } }) });
+    await assert.rejects(f.run({ ...config, collectionMode: 'release' }), /collection_timeout|collection_partial|inventory_incomplete/);
+  }
 });

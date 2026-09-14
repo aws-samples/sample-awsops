@@ -203,25 +203,10 @@ Only the applied `agentcore.deployment_readiness_enabled` sets `DEPLOYMENT_READI
 At Terraform apply, `terraform/foundation/controller-readiness.tf` creates the `deployment-verifiers` group
 when both `ci_readiness_enabled` and `agentcore_enabled` are true. Managed-demo membership additionally
 requires `create_demo_user=true`. No administrator membership or IAM role is granted.
-Do not separately create this Terraform-managed group. The release controller verifies readiness; it does not provision the group or membership.
+Do not separately create this Terraform-managed group. The release controller verifies readiness; it does not provision the group or membership. For an existing hand-created group, follow the [reviewed adoption procedure](../runbooks/runtime-foundation.md#adopting-an-existing-verifier-group--기존-검증-그룹-채택).
 Log in again after membership changes; the billed endpoint requires an administrator or a member of `deployment-verifiers`,
 with one in-flight request and a 60-second cooldown per process.
 
 Fixed MCP tools read one CloudFront identity; producer freshness and bounded inference leave unknown attributes unassessed.
 Nonce/account-bound responses retain completed checks on timeout. Release acceptance still requires full verification and zero unknown attributes.
 Invocation discovery rejects PENDING/malformed ARNs before caching and stops on an explicitly empty runtime parameter.
-
-기본 비활성 모드입니다. 공개 CI는 `CI_READONLY_RUNTIME_DEV=true`인 dev 런타임 프로필에서
-`ci_readiness_enabled`와 AgentCore를 활성화하며, dev 외 대상의 검증 플래그는 거부합니다.
-공개 CI 밖의 private 배포는 `agentcore_enabled=true`와 함께 `ci_readiness_enabled=true`를 명시적으로 설정합니다.
-검토된 설정을 Terraform apply한 뒤 AgentCore를 프로비저닝하며, 적용된 output만 사용하고 환경변수 덮어쓰기는 무시합니다.
-
-Terraform apply 시 `controller-readiness.tf`가 두 플래그가 모두 true일 때 `deployment-verifiers` 그룹을 생성하며,
-관리 demo 멤버십은 `create_demo_user=true`도 필요합니다. 관리자 멤버십이나 IAM 역할은 부여하지 않습니다.
-Terraform이 관리하는 그룹을 별도로 생성하지 않습니다. Release controller는 검증만 수행하며 그룹·멤버십을 생성하지 않습니다.
-멤버십 변경 후 다시 로그인해야 하며, 유료 endpoint는 관리자 또는 `deployment-verifiers` 멤버에게만
-프로세스별 단일 실행·60초 호출 간격으로 허용됩니다.
-
-MCP 지정 ID·원본 신선도·제한된 모델 요청만 사용하며 누락 속성은 미평가로 남습니다.
-타임아웃에도 완료 증거를 보존하지만 배포 수락에는 전체 검증과 unknown 0이 필수입니다.
-PENDING·잘못된 ARN은 캐시하지 않으며 빈 런타임 경로는 호출 조회를 비활성화합니다.

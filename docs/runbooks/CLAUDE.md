@@ -24,7 +24,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC and protected review recovery; ECR preflight; state-preserving DNS deferral, certificate ownership, dispatch-only same-SHA saved plans and private authenticated assets, Host/SNI smoke, default-off manual private DB migration, mandatory full authenticated dev release verification and manual opt-in advisory read-only DB diagnostics (ADR-002/005/016) |
-| [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
+| [runtime-foundation.md](runtime-foundation.md) | Existing-web runtime adoption, capacity/freshness proof, verifier imports and private DNS scope |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; explicit saved-plan domain scope, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
 | [steampipe-quota-and-staleness.md](steampipe-quota-and-staleness.md) | Steampipe quota guard — rate limiter knobs, partial runs, freshness ledger/staleness response |
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
@@ -148,13 +148,14 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 - Curl/OpenSSL, PyYAML and Terraform 1.15.7 are mandatory for the authenticated smoke fixtures;
   missing tools fail the shared runner. Only final fmt/validate diagnostics are informational.
 
+The release reads the pinned inventory catalog and probes only CloudFront; it does not enqueue an all-type sweep or retry a stale-terminal batch queue. Catalog admission is bounded to 450 seconds; the CloudFront probe to 900 seconds, reserving 450 seconds per invocation. Confirmed throttling/busy/superseded outcomes retry after ten seconds; denied/uncertain/partial/failed outcomes do not pass. The marker precedes the probe and is retained across retries. Every catalog type and the known record need fresh post-marker evidence with zero unknowns. Release polling is twenty minutes, standalone ten, with successful admitted responses retained across deadline completion. Workflow cap: 55 minutes after fresh same-role credentials; manual job: 75 minutes. Ordinary collector capacity remains a prerequisite; no stale-data allowance or infrastructure/gate change is made. Prepare adopts an already-running web stack, not first-web bootstrap. Existing verifier groups require reviewed state adoption.
+
 ## Conventions
 - Filename: `kebab-case.md`, domain-then-topic order.
 - Structure: **symptoms → candidate causes → verification commands → action → related files/ADRs**.
-- Runbook *bodies* (the linked `*.md` files above) must be bilingual Korean/English (a small
-  number of existing runbooks are English-only and should be brought into line, not treated as
-  precedent) — this index file itself follows the repo's CLAUDE.md-is-English-only rule
-  (`docs/CLAUDE.md`).
+- New or rewritten developer/runbook prose is English-only. Preserve existing multilingual
+  backlog and anchors; product docs-site guides and root README/CHANGELOG retain their own
+  localization policies. Context files remain English-only.
 - Commands should be copy-paste ready.
 - Cite the related ADR number(s) at the bottom.
 - Do not let a runbook embed secrets, AWS account IDs, ARNs, or live domains.
@@ -164,5 +165,3 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 2. Use an existing runbook's structure as a template (`start-services.md`, `deploy-new-version.md`).
 3. Follow the symptoms → diagnosis → action order strictly.
 4. Always include the related file paths.
-
-The controller retries stale terminal types only after a 420-second queue grace and 60 seconds without progress/running/missing rows. Four synchronous calls maximum/eight total distinguish busy from success; each needs 450 seconds remaining in the single dispatch-anchored 20-minute deadline. Batches wait 60 seconds. Initial dispatch retries confirmed throttling only within 450 seconds. The workflow gate is 45 minutes (manual job 60 including setup). Fresh zero-unknown ledger evidence remains mandatory; no schedule mutation or degraded-data allowance exists. The runtime-foundation runbook lists exact deployer scopes and existing-stack prerequisites.

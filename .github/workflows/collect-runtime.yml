@@ -44,7 +44,7 @@ jobs:
     needs: [guard]
     runs-on: sample-awsops
     environment: development
-    timeout-minutes: 60
+    timeout-minutes: 75
     permissions:
       contents: read
       id-token: write
@@ -108,8 +108,18 @@ jobs:
             node scripts/v2/ci/runtime-release.mjs capture
           echo "url=$(terraform -chdir=terraform/foundation output -raw public_url)" >> "$GITHUB_OUTPUT"
           echo "cloudfront_domain=$(terraform -chdir=terraform/foundation output -raw cloudfront_domain)" >> "$GITHUB_OUTPUT"
+      - name: Remove captured Terraform inputs
+        run: rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars
+      - name: Refresh development credentials for runtime verification
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          role-duration-seconds: 3600
       - name: Run development collection operation
-        timeout-minutes: 45
+        timeout-minutes: 55
         env:
           PUBLIC_URL: ${{ steps.runtime.outputs.url }}
           CLOUDFRONT_DOMAIN: ${{ steps.runtime.outputs.cloudfront_domain }}

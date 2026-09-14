@@ -5,16 +5,18 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export class RuntimeSmokeError extends Error {}
-export const COLLECTION_WINDOW_MS = 20 * 60_000;
 const fail = phase => { throw new RuntimeSmokeError(`Runtime smoke: ${phase}`); };
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const exact = (v, keys) => object(v) && Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
 const baseKeys = ['schemaVersion', 'mode', 'expectedAccountId'];
 export function validateRuntimeSmokeConfig(value, now = Date.now()) {
-  const keys = value?.mode === 'prepare' ? baseKeys
+  const keys = value?.mode === 'prepare' ? [...baseKeys]
     : [...baseKeys, 'expectedCloudfrontId', 'expectedQueuedTypes', 'collectionStartedAt'];
   const hasHostOnly = object(value) && Object.hasOwn(value, 'hostOnly');
-  if (!exact(value, hasHostOnly ? [...keys, 'hostOnly'] : keys) || (hasHostOnly && typeof value.hostOnly !== 'boolean')
+  const hasCollectionMode = object(value) && Object.hasOwn(value, 'collectionMode');
+  if (hasCollectionMode) keys.push('collectionMode');
+  if ((hasCollectionMode && (value.mode !== 'verify' || value.collectionMode !== 'release'))
+      || !exact(value, hasHostOnly ? [...keys, 'hostOnly'] : keys) || (hasHostOnly && typeof value.hostOnly !== 'boolean')
       || value.schemaVersion !== 1 || !['prepare', 'verify'].includes(value.mode)
       || typeof value.expectedAccountId !== 'string' || !/^[0-9]{12}$/.test(value.expectedAccountId)) fail('configuration');
   if (value.mode === 'verify') {
@@ -30,7 +32,7 @@ export function validateRuntimeSmokeConfig(value, now = Date.now()) {
 }
 
 export function readRuntimeSmokeConfig(file, credentialFile) {
-  // Same private directory as credentials: the existing always() cleanup also covers SIGKILL.
+  // Same private directory as credentials; handled cleanup is not a SIGKILL guarantee.
   if (typeof file !== 'string' || !file || resolve(file) !== file
       || dirname(file) !== dirname(credentialFile) || file === credentialFile) fail('configuration_file');
   let fd;
@@ -70,10 +72,9 @@ function readinessFailure(value, nonce, account) {
 }
 
 export async function verifyRuntimeSmoke(configuration, request, {
-  now = Date.now, wait = ms => delay(ms), retryCollection,
+  now = Date.now, wait = ms => delay(ms),
 } = {}) {
   const config = validateRuntimeSmokeConfig(configuration, now());
-  if (retryCollection !== undefined && typeof retryCollection !== 'function') fail('configuration');
   const { accounts } = await request('/api/accounts');
   if (!Array.isArray(accounts) || accounts.length > 1000
       || accounts.some(a => !object(a) || typeof a.enabled !== 'boolean' || typeof a.isHost !== 'boolean')
@@ -84,70 +85,42 @@ export async function verifyRuntimeSmoke(configuration, request, {
 
   async function poll(check, phase, seconds, deadline = now() + seconds * 1000) {
     for (let attempt = 0; attempt <= seconds / 5 && now() < deadline; attempt++) {
-      if (await check() && now() <= deadline) return;
+      if (await check()) return;
       if (now() >= deadline) break;
       await wait(Math.min(5000, deadline - now()));
     }
     fail(typeof phase === 'function' ? phase() : phase);
   }
   const started = Date.parse(config.collectionStartedAt);
-  const completedRetries = new Set();
-  let fingerprint, quietSince = now(), lastRetry = -Infinity;
+  const releaseWindow = config.collectionMode === 'release';
   let collectionFailure = 'collection_timeout';
   await poll(async () => {
-    const summary = await request('/api/inventory/summary?accounts=self');
+    const summary = await request('/api/inventory/summary?accounts=self&view=collection');
     const c = summary?.collection;
     if (!object(c) || c.configured !== true || c.readOk !== true || !Array.isArray(c.runs)) fail('collection_unavailable');
-    let complete = true, missing = false, running = false;
-    const failures = new Set(), staleTerminal = [];
+    let complete = true, missing = false;
+    const failures = new Set();
+    const cutoff = started;
     for (const type of config.expectedQueuedTypes) {
       const rows = c.runs.filter(r => r?.type === type && r.accountId === 'self');
       if (rows.length === 0) { missing = true; complete = false; continue; }
       if (rows.length !== 1) fail('collection_protocol');
       const row = rows[0];
-      running ||= row.status === 'running';
-      if (['succeeded', 'partial', 'failed'].includes(row.status)
-          && Number.isFinite(Date.parse(row.started_at)) && Date.parse(row.started_at) < started)
-        staleTerminal.push(type);
-      if (freshTime(row.started_at, started, now()) && ['partial', 'failed'].includes(row.status))
+      if (freshTime(row.started_at, cutoff, now()) && ['partial', 'failed'].includes(row.status))
         failures.add(`collection_${row.status}`);
-      if (row.status === 'succeeded' && freshTime(row.started_at, started, now())
-          && freshTime(row.last_success_at, started, now())
+      if (row.status === 'succeeded' && freshTime(row.started_at, cutoff, now())
+          && freshTime(row.last_success_at, cutoff, now())
           && (row.unknown_attribute_count !== 0 || row.unknown_attributes !== false)) failures.add('inventory_incomplete');
       if (!(row.status === 'succeeded' && finiteCount(row.row_count)
         && row.unknown_attribute_count === 0 && row.unknown_attributes === false
-        && freshTime(row.started_at, started, now()) && freshTime(row.last_success_at, started, now()))) complete = false;
+        && freshTime(row.started_at, cutoff, now()) && freshTime(row.last_success_at, cutoff, now()))) complete = false;
     }
     // Inspect every acknowledged type before selecting a fixed diagnostic.
     for (const reason of ['inventory_incomplete', 'collection_partial', 'collection_failed'])
       if (failures.has(reason)) fail(reason);
-    const progress = JSON.stringify(c.runs);
-    if (progress !== fingerprint || running || missing) quietSince = now();
-    fingerprint = progress;
-    if (!complete && retryCollection && !running && !missing &&
-        now() >= started + 420_000 && now() >= quietSince + 60_000 && now() >= lastRetry + 60_000) {
-      const eligible = staleTerminal.filter(type => !completedRetries.has(type)).slice(0, 4);
-      if (eligible.length) {
-        lastRetry = now();
-        try {
-          const results = await retryCollection(eligible);
-          if (!Array.isArray(results) || results.length > eligible.length ||
-              new Set(results.map(r => r?.type)).size !== results.length ||
-              results.some(r => !eligible.includes(r?.type) || !['busy', 'succeeded'].includes(r.status)))
-            fail('collection_retry_protocol');
-          for (const result of results) if (result.status === 'succeeded') completedRetries.add(result.type);
-        } catch (error) {
-          const safe = ['collection_retry_denied', 'collection_retry_failed', 'collection_retry_protocol',
-            'collection_partial', 'collection_failed'];
-          if (error instanceof RuntimeSmokeError) throw error;
-          fail(safe.includes(error?.message) ? error.message : 'collection_retry_failed');
-        }
-      }
-    }
     collectionFailure = missing ? 'collection_missing' : 'collection_timeout';
     return complete;
-  }, () => collectionFailure, retryCollection ? COLLECTION_WINDOW_MS / 1000 : 600,
-  retryCollection ? started + COLLECTION_WINDOW_MS : now() + 600_000);
+  }, () => collectionFailure, releaseWindow ? 1200 : 600);
 
   let found = false;
   for (let offset = 0; offset < 500 && !found; offset += 5) {

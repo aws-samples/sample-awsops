@@ -81,3 +81,29 @@ test('manual preparation/collection is dev-only and does not build, deploy or ch
   assert.match(named(job, 'Run development collection operation').run, /runtime-release.mjs run/);
   assert.equal(named(job, 'Clean private development files').if, 'always()');
 });
+
+test('manual collection removes restored Terraform secrets immediately after capture', () => {
+  const job = workflow('collect-runtime.yml').jobs.verify;
+  const capture = job.steps.indexOf(named(job, 'Capture current development outputs'));
+  const cleanup = named(job, 'Remove captured Terraform inputs');
+  const gate = job.steps.indexOf(named(job, 'Run development collection operation'));
+  assert.equal(job.steps.indexOf(cleanup), capture + 1);
+  assert.ok(job.steps.indexOf(cleanup) < gate);
+  assert.match(cleanup.run, /rm -f terraform\/foundation\/backend.hcl terraform\/foundation\/terraform.tfvars/);
+  assert.equal(named(job, 'Clean private development files').if, 'always()');
+});
+
+test('verification refreshes the same dev role after setup and stays within the new session', () => {
+  for (const [file, jobName, gateName] of [['collect-runtime.yml', 'verify', 'Run development collection operation'],
+    ['deploy-web.yml', 'deploy', 'Authenticated development runtime readiness']]) {
+    const job = workflow(file).jobs[jobName];
+    const refresh = named(job, 'Refresh development credentials for runtime verification');
+    const gate = named(job, gateName);
+    assert.equal(refresh.with['role-to-assume'], '${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}');
+    assert.equal(refresh.with['unset-current-credentials'], true);
+    assert.equal(refresh.with['role-duration-seconds'], 3600);
+    assert.ok(gate['timeout-minutes'] < 60);
+    assert.equal(job.steps.indexOf(refresh) + 1, job.steps.indexOf(gate));
+    if (file === 'deploy-web.yml') assert.equal(refresh.if, "github.ref == 'refs/heads/dev'");
+  }
+});

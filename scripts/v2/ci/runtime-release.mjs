@@ -11,7 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { authenticatedSmoke, SmokeError } from '../authenticated-smoke.mjs';
 import { smokeConnectionArgs } from '../deployment-smoke.mjs';
 import { readSmokeCredentials, cleanupSmokeCredentials } from '../prepare-smoke-credentials.mjs';
-import { COLLECTION_WINDOW_MS, readRuntimeSmokeConfig, validateRuntimeSmokeConfig } from '../runtime-smoke.mjs';
+import { readRuntimeSmokeConfig, validateRuntimeSmokeConfig } from '../runtime-smoke.mjs';
 
 const execute = promisify(execFile);
 const REGION = 'ap-northeast-2', REPO = 'aws-samples/sample-awsops';
@@ -114,16 +114,12 @@ export function captureDeployment(value, env = process.env) {
   return file;
 }
 
-export function validateAcknowledgement(value) {
-  need(object(value) && Object.keys(value).sort().join(',') ===
-    'failed_count,failed_types,queued_count,queued_types,status', 'invalid_dispatch_response');
-  const types = value.queued_types;
-  need(value.status === 'dispatched' && value.failed_count === 0 &&
-    Array.isArray(value.failed_types) && value.failed_types.length === 0 &&
-    Array.isArray(types) && types.length >= 1 && types.length <= 128 &&
-    value.queued_count === types.length && new Set(types).size === types.length &&
-    types.includes('cloudfront') && types.every(t => typeof t === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(t)),
-  'incomplete_collection_dispatch');
+export function validateCatalog(value) {
+  need(object(value) && Object.keys(value).sort().join(',') === 'status,types', 'invalid_collection_catalog');
+  const types = value.types;
+  need(value.status === 'catalog' && Array.isArray(types) && types.length >= 1 && types.length <= 128 &&
+    new Set(types).size === types.length && types.includes('cloudfront') &&
+    types.every(t => typeof t === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(t)), 'invalid_collection_catalog');
   return types;
 }
 
@@ -258,80 +254,61 @@ export async function release(deployment, {
       'inventory_code_mismatch');
     }
     if (context.mode === 'collect') {
-      const responseFile = join(directory, 'collection-response.json');
-      writePrivate(responseFile, {});
-      const dispatchDeadline = now() + 450_000;
-      let start, response;
-      for (;;) {
-        const remaining = dispatchDeadline - now();
-        need(remaining >= 15_000, 'collection_dispatch_throttled');
-        start = new Date(now()).toISOString(); // Before the actually accepted dispatch.
-        try {
-          response = await aws(['lambda', 'invoke', '--function-name', deployment.inventory.sync_function_arn,
-            '--invocation-type', 'RequestResponse', '--cli-binary-format', 'raw-in-base64-out',
-            '--payload', '{"type":"all"}'], responseFile, Math.min(150_000, remaining));
-          break;
-        } catch (error) {
-          if (error instanceof ReleaseError && error.message === 'aws_throttled') {
-            need(now() + 10_000 < dispatchDeadline, 'collection_dispatch_throttled');
+      let files = 0;
+      const invoke = async (type, budget) => {
+        const deadline = now() + budget;
+        let last = 'throttled';
+        for (;;) {
+          const remaining = deadline - now();
+          need(remaining >= (type === 'catalog' ? 15_000 : 450_000), `collection_probe_${last}`);
+          const output = join(directory, `collection-probe-${++files}.json`);
+          writePrivate(output, {});
+          let response;
+          try {
+            response = await aws(['lambda', 'invoke', '--function-name', deployment.inventory.sync_function_arn,
+              '--invocation-type', 'RequestResponse', '--cli-binary-format', 'raw-in-base64-out',
+              '--payload', JSON.stringify({ type })], output, Math.min(type === 'catalog' ? 150_000 : 450_000, remaining));
+          } catch (error) {
+            if (!(error instanceof ReleaseError) || error.message !== 'aws_throttled')
+              throw new ReleaseError(error instanceof ReleaseError && error.message === 'aws_access_denied'
+                ? 'collection_probe_denied' : 'collection_probe_failed');
+            last = 'throttled';
             await wait(10_000);
-          } else throw new ReleaseError(error instanceof ReleaseError && error.message === 'aws_access_denied'
-            ? 'collection_dispatch_denied' : 'collection_dispatch_failed');
+            continue;
+          }
+          need(response.StatusCode === 200 && !Object.hasOwn(response, 'FunctionError') &&
+            response.ExecutedVersion === '$LATEST', 'collection_probe_failed');
+          const result = readPrivate(output, directory);
+          if (type === 'catalog') return result;
+          need(result.type === type, 'collection_probe_protocol');
+          if (result.status === 'busy' || (result.status === 'failed' && result.error === 'inventory sync superseded')) {
+            last = 'busy';
+            await wait(10_000);
+            continue;
+          }
+          if (['failed', 'partial'].includes(result.status)) throw new ReleaseError(`collection_${result.status}`);
+          need(result.status === 'succeeded', 'collection_probe_protocol');
+          return result;
         }
-      }
-      need(response.StatusCode === 200 && !Object.hasOwn(response, 'FunctionError') &&
-        response.ExecutedVersion === '$LATEST', 'collection_invocation_failed');
-      const types = validateAcknowledgement(readPrivate(responseFile, directory));
+      };
+      const types = validateCatalog(await invoke('catalog', 450_000));
+      const collectionStartedAt = new Date(now()).toISOString();
+      await invoke('cloudfront', 900_000);
       config = { schemaVersion: 1, mode: 'verify', hostOnly: true, expectedAccountId: context.account,
         expectedCloudfrontId: deployment.known.cloudfront_distribution_id,
-        expectedQueuedTypes: types, collectionStartedAt: start };
+        expectedQueuedTypes: types, collectionStartedAt, collectionMode: 'release' };
     }
     validateRuntimeSmokeConfig(config, now());
     const configFile = join(directory, 'runtime-smoke.json');
     writePrivate(configFile, config);
     const credentials = readSmokeCredentials(env.SMOKE_CREDENTIAL_FILE);
-    let retryFiles = 0;
-    const retryCollection = config.mode === 'verify' ? async types => {
-      need(Array.isArray(types) && types.length > 0 && types.length <= 4 &&
-        new Set(types).size === types.length && types.every(t => config.expectedQueuedTypes.includes(t)),
-      'invalid_collection_retry');
-      const started = Date.parse(config.collectionStartedAt);
-      // A retry must have room for the full verified Lambda timeout plus CLI
-      // overhead. Exhausted budgets leave ledger polling active, never pass it.
-      if (now() < started + 420_000 || started + COLLECTION_WINDOW_MS - now() < 450_000) return [];
-      const selected = types.slice(0, Math.max(0, 8 - retryFiles));
-      const results = await Promise.allSettled(selected.map(async type => {
-        const output = join(directory, `collection-retry-${++retryFiles}.json`);
-        writePrivate(output, {});
-        let response;
-        try {
-          response = await aws(['lambda', 'invoke', '--function-name', deployment.inventory.sync_function_arn,
-            '--invocation-type', 'RequestResponse', '--cli-binary-format', 'raw-in-base64-out',
-            '--payload', JSON.stringify({ type })], output, 450_000);
-        } catch (error) {
-          if (error instanceof ReleaseError && error.message === 'aws_throttled') return { type, status: 'busy' };
-          throw new ReleaseError(error instanceof ReleaseError && error.message === 'aws_access_denied'
-            ? 'collection_retry_denied' : 'collection_retry_failed');
-        }
-        need(response.StatusCode === 200 && !Object.hasOwn(response, 'FunctionError') &&
-          response.ExecutedVersion === '$LATEST', 'collection_retry_failed');
-        const result = readPrivate(output, directory);
-        need(result.type === type && ['busy', 'succeeded', 'partial', 'failed'].includes(result.status),
-          'collection_retry_protocol');
-        if (['partial', 'failed'].includes(result.status)) throw new ReleaseError(`collection_${result.status}`);
-        return { type, status: result.status };
-      }));
-      const failure = results.find(result => result.status === 'rejected');
-      if (failure) throw failure.reason;
-      return results.map(result => result.value);
-    } : undefined;
     let result;
     try {
       result = await authenticate({
         publicUrl: env.PUBLIC_URL, cloudfrontDomain: env.CLOUDFRONT_DOMAIN,
         email: credentials?.email, password: credentials?.password,
         runtimeConfig: readRuntimeSmokeConfig(configFile, env.SMOKE_CREDENTIAL_FILE),
-      }, { tempRoot: directory, retryCollection });
+      }, { tempRoot: directory });
     } catch (error) {
       throw new ReleaseError(error instanceof SmokeError ? error.message : 'authenticated_runtime_proof_failed');
     }

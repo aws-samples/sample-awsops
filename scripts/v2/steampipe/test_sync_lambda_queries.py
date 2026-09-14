@@ -1762,3 +1762,18 @@ def test_sdk_sync_writes_zero_count_self_row_when_only_member_rows_returned(caps
     }
     assert by_series[("self", "zero_self_test")] == 0  # genuine zero, not absence
     assert by_series[("222233334444", "zero_self_test")] == 1
+
+
+def test_catalog_lists_all_collectors_without_scheduling_or_collecting():
+    mod = load_sync_lambda()
+    mod.QUERIES = {"ec2": ("SELECT 1", "id", "region")}
+    mod.SDK_SYNCS = {"s3": lambda: (_ for _ in ()).throw(AssertionError("must not collect"))}
+
+    class NoInvoke:
+        def invoke(self, **kwargs):
+            raise AssertionError("catalog must not dispatch")
+
+    mod._lambda = NoInvoke()
+    assert mod.lambda_handler({"type": "catalog"}, object()) == {
+        "status": "catalog", "types": ["ec2", "s3"],
+    }

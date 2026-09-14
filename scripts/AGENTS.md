@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5c5e61a8e910 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8b738f37130e · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -130,4 +130,4 @@ hostOnly verification of fresh collection and real runtime/worker completion. Ma
 prepare accepts disabled backends and reports prepared, not ready. Typed smoke errors
 retain sanitized diagnostics; other errors remain generic. Cleanup covers private files.
 
-The controller uses one dispatch-anchored 20-minute deadline, a 420-second drain grace and 60 seconds without progress/running/missing rows. Synchronous stale-terminal retries are capped at four concurrently/eight total and require 450 seconds remaining; batches are 60 seconds apart. Busy is distinct from success and RPC success still needs fresh zero-unknown ledger evidence. Initial dispatch retries confirmed throttling only within 450 seconds. Workflow gate: 45 minutes; standalone smoke: ten minutes. Scheduler unchanged.
+The release reads the pinned inventory catalog and probes only CloudFront; it does not enqueue an all-type sweep or retry a stale-terminal batch queue. Catalog admission is bounded to 450 seconds; the CloudFront probe to 900 seconds, reserving 450 seconds per invocation. Confirmed throttling/busy/superseded outcomes retry after ten seconds; denied/uncertain/partial/failed outcomes do not pass. The marker precedes the probe and is retained across retries. Every catalog type and the known record need fresh post-marker evidence with zero unknowns. Release polling is twenty minutes, standalone ten, with successful admitted responses retained across deadline completion. Workflow cap: 55 minutes after fresh same-role credentials; manual job: 75 minutes. Ordinary collector capacity remains a prerequisite; no stale-data allowance or infrastructure/gate change is made. Prepare adopts an already-running web stack, not first-web bootstrap. Existing verifier groups require reviewed state adoption.

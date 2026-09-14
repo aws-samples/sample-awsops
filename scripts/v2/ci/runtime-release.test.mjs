@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  classifyAwsError, ReleaseError, validateContext, validateDeployment, validateAcknowledgement, captureDeployment, release,
+  classifyAwsError, ReleaseError, validateContext, validateDeployment, validateCatalog, captureDeployment, release,
 } from './runtime-release.mjs';
 
 const account = '123456789012', project = 'awsops-fixture', region = 'ap-northeast-2';
@@ -39,9 +39,8 @@ function deployment() {
     known: { cloudfront_distribution_id: 'E123EXAMPLE' },
   };
 }
-function ack() {
-  return { status: 'dispatched', queued_count: 2, failed_count: 0,
-    queued_types: ['cloudfront', 'rds'], failed_types: [] };
+function catalog() {
+  return { status: 'catalog', types: ['cloudfront', 'rds'] };
 }
 function fixture(overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'release-tests-'));
@@ -82,11 +81,11 @@ function fixture(overrides = {}) {
     const key = args.slice(0, 2).join(' ');
     if (key === 'lambda invoke') {
       const output = args.at(-1);
-      if (args[args.indexOf('--invocation-type') + 1] === 'Event') {
-        writeFileSync(output, '', { mode: 0o600 });
-        return JSON.stringify({ StatusCode: 202 });
-      }
-      writeFileSync(output, JSON.stringify(overrides.ack || ack()), { mode: 0o600 });
+      assert.equal(args[args.indexOf('--invocation-type') + 1], 'RequestResponse');
+      const { type } = JSON.parse(args[args.indexOf('--payload') + 1]);
+      assert.ok(['catalog', 'cloudfront'].includes(type));
+      writeFileSync(output, JSON.stringify(type === 'catalog' ? (overrides.catalog || catalog())
+        : (overrides.probe || { type, status: 'succeeded' })), { mode: 0o600 });
       return JSON.stringify(overrides.invoke || { StatusCode: 200, ExecutedVersion: '$LATEST' });
     }
     if (overrides.throwAt === key) throw new Error('PRIVATE_REMOTE_DETAIL');
@@ -127,50 +126,85 @@ test('wrong source, role/account or mode fails before AWS calls', async () => {
   assert.doesNotThrow(() => validateContext(env));
 });
 
-test('collection retry RPCs expose busy and enforce a per-run call budget without accepting them as proof', async () => {
+test('the own CloudFront probe waits through busy/superseded without another full fan-out', async () => {
   const f = fixture();
-  let clock = Date.now(), retryCalls = 0;
-  const run = async (command, args, options) => {
-    if (args[0] === 'lambda' && args[1] === 'invoke' && !args.includes('{"type":"all"}')) {
-      retryCalls++;
-      assert.equal(args[args.indexOf('--invocation-type') + 1], 'RequestResponse');
-      assert.ok(options.timeout >= 450_000);
-      assert.equal(args[args.indexOf('--cli-read-timeout') + 1], '440');
-      const { type } = JSON.parse(args[args.indexOf('--payload') + 1]);
-      writeFileSync(args.at(-1), JSON.stringify({ status: 'busy', type }));
-      return JSON.stringify({ StatusCode: 200, ExecutedVersion: '$LATEST' });
-    }
-    return f.run(command, args);
-  };
+  let clock = Date.now() - 30_000, probes = 0;
   try {
-    await release(deployment(), { env: f.env, run, now: () => clock, authenticate: async (input, options) => {
-      const result = await f.authenticate(input, options);
-      await assert.rejects(options.retryCollection(['unacknowledged']), /invalid_collection_retry/);
-      await assert.rejects(options.retryCollection(['rds', 'rds']), /invalid_collection_retry/);
-      assert.deepEqual(await options.retryCollection(['rds']), []); // still draining initial queue
-      clock += 420_000;
-      for (let i = 0; i < 8; i++) {
-        assert.deepEqual(await options.retryCollection(['rds']), [{ type: 'rds', status: 'busy' }]);
-      }
-      assert.deepEqual(await options.retryCollection(['rds']), []);
-      return result;
-    } });
-    assert.equal(retryCalls, 8);
+    await release(deployment(), { env: f.env, now: () => clock, wait: async ms => { clock += ms; },
+      run: async (command, args, options) => {
+        if (args[0] === 'lambda' && args[1] === 'invoke' && JSON.parse(args[args.indexOf('--payload') + 1]).type === 'cloudfront') {
+          probes++;
+          assert.equal(options.timeout, 450_000);
+          assert.equal(args[args.indexOf('--invocation-type') + 1], 'RequestResponse');
+          writeFileSync(args.at(-1), JSON.stringify({ type: 'cloudfront',
+            status: probes === 1 ? 'busy' : probes === 2 ? 'failed' : 'succeeded',
+            ...(probes === 2 ? { error: 'inventory sync superseded' } : {}) }));
+          return JSON.stringify({ StatusCode: 200, ExecutedVersion: '$LATEST' });
+        }
+        return f.run(command, args);
+      }, authenticate: f.authenticate,
+    });
+    assert.equal(probes, 3);
+    assert.deepEqual(f.authenticated[0].input.runtimeConfig.expectedQueuedTypes, ['cloudfront', 'rds']);
+    assert.equal(f.authenticated[0].input.runtimeConfig.collectionMode, 'release');
   } finally { f.cleanup(); }
 });
-test('initial dispatch retries only confirmed throttling and timestamps the accepted attempt', async () => {
+test('catalog admission retries only confirmed throttling', async () => {
   const f = fixture();
   let clock = Date.now() - 30_000, attempts = 0;
   const began = clock;
   try {
     await release(deployment(), { env: f.env, now: () => clock, wait: async ms => { clock += ms; },
       run: async (command, args) => {
-        if (args[0] === 'lambda' && args[1] === 'invoke' && attempts++ < 2)
+        if (args[0] === 'lambda' && args[1] === 'invoke' && JSON.parse(args[args.indexOf('--payload') + 1]).type === 'catalog' && attempts++ < 2)
           throw new ReleaseError('aws_throttled');
         return f.run(command, args);
       }, authenticate: f.authenticate });
     assert.equal(attempts, 3);
     assert.equal(f.authenticated[0].input.runtimeConfig.collectionStartedAt, new Date(began + 20_000).toISOString());
+  } finally { f.cleanup(); }
+});
+
+test('a long busy probe can finish and retry without an arbitrary call-count limit', async () => {
+  const f = fixture();
+  let clock = Date.now() - 900_000, probes = 0;
+  const began = clock;
+  try {
+    await release(deployment(), { env: f.env, now: () => clock, wait: async ms => { clock += ms; },
+      run: async (command, args, options) => {
+        if (args[0] === 'lambda' && args[1] === 'invoke'
+          && JSON.parse(args[args.indexOf('--payload') + 1]).type === 'cloudfront') {
+          probes++;
+          assert.equal(options.env.AWS_MAX_ATTEMPTS, '1');
+          assert.equal(options.timeout, 450_000);
+          clock += 420_000;
+          writeFileSync(args.at(-1), JSON.stringify({ type: 'cloudfront',
+            status: probes === 1 ? 'busy' : 'succeeded' }));
+          return JSON.stringify({ StatusCode: 200, ExecutedVersion: '$LATEST' });
+        }
+        return f.run(command, args);
+      }, authenticate: f.authenticate });
+    assert.equal(probes, 2);
+    assert.equal(clock - began, 850_000);
+    assert.equal(f.authenticated[0].input.runtimeConfig.collectionStartedAt, new Date(began).toISOString());
+  } finally { f.cleanup(); }
+});
+
+test('uncertain CloudFront delivery is never retried or accepted as readiness', async () => {
+  const f = fixture();
+  let probes = 0;
+  try {
+    await assert.rejects(release(deployment(), { env: f.env, authenticate: f.authenticate,
+      run: async (command, args) => {
+        if (args[0] === 'lambda' && args[1] === 'invoke'
+          && JSON.parse(args[args.indexOf('--payload') + 1]).type === 'cloudfront') {
+          probes++;
+          throw new ReleaseError('aws_request_failed');
+        }
+        return f.run(command, args);
+      } }), /collection_probe_failed/);
+    assert.equal(probes, 1);
+    assert.equal(f.authenticated.length, 0);
   } finally { f.cleanup(); }
 });
 test('Terraform schema is snake_case and collect cannot accept disabled/partial configuration', () => {
@@ -184,16 +218,13 @@ test('Terraform schema is snake_case and collect cannot accept disabled/partial 
   ]) assert.throws(() => validateDeployment({ ...deployment(), ...change }, validateContext(env)));
 });
 
-test('all-type acknowledgement rejects partial, duplicate, missing-cloudfront and inconsistent counts', () => {
-  assert.deepEqual(validateAcknowledgement(ack()), ['cloudfront', 'rds']);
-  for (const change of [
-    { status: 'partial' }, { failed_count: 1 }, { failed_types: ['rds'] }, { queued_count: 3 },
-    { queued_types: ['rds', 'rds'] }, { queued_types: ['cloudfront', 'cloudfront'] },
-    { queued_count: 0, queued_types: [] }, { message: 'PRIVATE' },
-  ]) assert.throws(() => validateAcknowledgement({ ...ack(), ...change }));
+test('catalog rejects a partial, duplicate, empty or incomplete canonical set', () => {
+  assert.deepEqual(validateCatalog(catalog()), ['cloudfront', 'rds']);
+  for (const value of [{ status: 'partial', types: ['cloudfront'] }, { status: 'catalog', types: [] },
+    { status: 'catalog', types: ['rds'] }, { status: 'catalog', types: ['cloudfront', 'cloudfront'] },
+    { ...catalog(), arbitrary: 'PRIVATE' }]) assert.throws(() => validateCatalog(value));
 });
-
-test('collect binds actual running web, code hash, pre-invoke time and full private verification config', async () => {
+test('collect binds running web, code hash, canonical coverage and the fresh own-workload probe', async () => {
   const f = fixture();
   const now = Date.now();
   try {
@@ -205,12 +236,12 @@ test('collect binds actual running web, code hash, pre-invoke time and full priv
     assert.deepEqual(f.authenticated[0].input.runtimeConfig, {
       schemaVersion: 1, mode: 'verify', hostOnly: true, expectedAccountId: account,
       expectedCloudfrontId: 'E123EXAMPLE', expectedQueuedTypes: ['cloudfront', 'rds'],
-      collectionStartedAt: new Date(now).toISOString(),
+      collectionStartedAt: new Date(now).toISOString(), collectionMode: 'release',
     });
     const invoke = f.calls.find(a => a[0] === 'lambda' && a[1] === 'invoke');
     assert.equal(invoke[invoke.indexOf('--function-name') + 1], deployment().inventory.sync_function_arn);
     assert.equal(invoke[invoke.indexOf('--invocation-type') + 1], 'RequestResponse');
-    assert.equal(invoke[invoke.indexOf('--payload') + 1], '{"type":"all"}');
+    assert.equal(invoke[invoke.indexOf('--payload') + 1], '{"type":"catalog"}');
     assert.ok(!invoke.includes('--log-type'));
     assert.ok(!existsSync(f.directory));
   } finally { f.cleanup(); }
@@ -245,7 +276,9 @@ test('identity, wrong task role/revision/image/architecture and Lambda code fail
 test('bad invocation acknowledgement never starts smoke, and database-only return cannot pass collect', async () => {
   for (const change of [
     { invoke: { StatusCode: 200, FunctionError: 'Unhandled' } },
-    { ack: { ...ack(), failed_count: 1 } },
+    { catalog: { ...catalog(), status: 'partial' } },
+    { probe: { type: 'cloudfront', status: 'partial' } },
+    { probe: { type: 'other', status: 'succeeded' } },
     { authResult: { status: 'ok', mode: 'database' } },
     { authResult: { status: 'ok', mode: 'verify' } },
   ]) {
@@ -340,7 +373,7 @@ test('capture refuses unsafe credential modes and existing symlink targets', () 
   }
 });
 
-test('the collection timestamp precedes invocation, even if the response arrives later', async () => {
+test('release freshness starts before the owned probe and is not reset by its response', async () => {
   const f = fixture();
   const start = Date.now() - 2000;
   let time = start;
@@ -350,7 +383,7 @@ test('the collection timestamp precedes invocation, even if the response arrives
   };
   try {
     await release(deployment(), { env: f.env, run, authenticate: f.authenticate, now: () => time });
-    assert.equal(f.authenticated[0].input.runtimeConfig.collectionStartedAt, new Date(start).toISOString());
+    assert.equal(f.authenticated[0].input.runtimeConfig.collectionStartedAt, new Date(start + 1000).toISOString());
   } finally { f.cleanup(); }
 });
 
@@ -391,26 +424,10 @@ test('dispatcher denial does not repeat and confirmed throttling has a hard admi
           if (args[0] === 'lambda' && args[1] === 'invoke') { calls++; throw new ReleaseError(code); }
           return f.run(command, args);
         },
-      }), new RegExp(code === 'aws_throttled' ? 'collection_dispatch_throttled' : 'collection_dispatch_denied'));
+      }), new RegExp(code === 'aws_throttled' ? 'collection_probe_throttled' : 'collection_probe_denied'));
       assert.ok(clock - started <= 450_000);
       assert.equal(f.authenticated.length, 0);
       assert.ok(code === 'aws_throttled' ? calls > 1 && calls <= 45 : calls === 1);
     } finally { f.cleanup(); }
   }
-});
-test('late collection does not launch an RPC with less than a full Lambda timeout remaining', async () => {
-  const f = fixture();
-  let clock = Date.now();
-  try {
-    await release(deployment(), { env: f.env, run: f.run, now: () => clock,
-      authenticate: async (input, options) => {
-        const result = await f.authenticate(input, options);
-        const before = f.calls.length;
-        clock += 751_000;
-        assert.deepEqual(await options.retryCollection(['rds']), []);
-        assert.equal(f.calls.length, before);
-        return result;
-      },
-    });
-  } finally { f.cleanup(); }
 });
