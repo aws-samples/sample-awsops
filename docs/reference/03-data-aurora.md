@@ -43,8 +43,9 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   requires `INITIALIZE_EMPTY_DB=1` for its initial migration; the baseline plus ledger conversion/checksum commit
   atomically before ULIDs. Any user object without a ledger prevents initialization.
   Ordinary host commands set this once. The default-off private development migration template
-  retains the flag for manual calls and guarded current-source dev web releases; an existing ledger skips initialization and an
-  occupied unversioned database still fails closed. See the [runtime guide](../../terraform/foundation/migrations/README.md).
+  retains the flag for standalone/manual calls; automatic web calls refuse a missing ledger before initialization.
+  Complete the historical corpus and reader sync manually first. Existing ledgers skip initialization;
+  automatic admission still checks every pending file. An occupied unversioned database fails closed. See the [runtime guide](../../terraform/foundation/migrations/README.md).
 - **App access**: **node-pg** (`web/lib/db.ts`). No *live* Steampipe in v2 — live AWS
   queries go through AgentCore MCP Lambda tools; the ops gateway already has a limited
   Aurora-backed `inventory-read-target`, while direct domain API targets remain registered.

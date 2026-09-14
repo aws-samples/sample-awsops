@@ -52,13 +52,16 @@ disables sync; an output-read failure is an error. See the
 [migration guide](../../terraform/foundation/migrations/README.md) for runtime settings, TLS and IAM.
 
 With `AUTOMATIC_MIGRATION=1`, every pending `ALTER TABLE` (including nullable `ADD COLUMN`),
-view refresh, procedural block, concurrent index and no-transaction file is refused before
-pending DDL or reader sync. Keep base-column changes and the corresponding `sql_reader`
+function default (`now()`/`gen_random_uuid()`), GRANT/view refresh, procedural block, concurrent index and no-transaction file is refused before
+pending DDL, ledger upgrades or reader sync. Keep base-column changes and the corresponding `sql_reader`
 view/grant refresh together in a reviewed standalone migration with this flag unset.
 Do not split off the refresh to pass automatic admission: the agent's explicit-column view
 would remain stale. Online automatic dry-run also rejects these files without printing SQL;
-unset the flag for full standalone preview. The trusted empty-only baseline may initialize
-before pending admission; existing ledgers skip that hook.
+leave the flag unset for full standalone preview. A missing `public.schema_migrations` ledger
+fails under the advisory lock before initialization, regardless of `INITIALIZE_EMPTY_DB`.
+Complete standalone empty-only bootstrap, historical migrations and reader sync first, then
+dispatch a fresh web build via [web release](web-release.md). Existing ledgers retain checksum
+validation and the full pending-file guard; there is no automatic-baseline or historical-SQL exemption.
 
 두 도구만 실패한다. 나머지 rds-mcp 도구(`describe_*`, `list_*`)는 reader 시크릿이 아니라 실행
 역할을 쓰므로 계속 동작한다 — 그 비대칭이 판별 단서다.

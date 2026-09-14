@@ -344,6 +344,7 @@ async function failureLogs(record, e, deps) {
         [/^checksum drift: applied (baseline|migration) /m.test(messages), 'migration checksum'],
         [/^Concurrent migration is already running;/m.test(messages), 'migration lock'],
         [/^Automatic migration blocked: /m.test(messages), 'automatic SQL policy'],
+        [/^Automatic migration requires manual bootstrap;/m.test(messages), 'manual database bootstrap required'],
         [/^Migration advisory lock returned an invalid result$/m.test(messages), 'invalid migration lock result'],
         [/^Refusing initialization of a non-empty database without schema_migrations$/m.test(messages), 'bootstrap refused nonempty database'],
       ].filter(([matched]) => matched).map(([, label]) => label);

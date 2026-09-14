@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: cfc054aceaee · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: fcac5751ce69 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -15,7 +15,10 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   retry within a shared deadline; writes/permissions/identity failures do not retry.
   Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.
 - `AUTOMATIC_MIGRATION=1` checks every ledger-derived pending SQL file against the
-  transactional subset before pending SQL/ledger/reader changes; unknown/contract SQL needs manual review.
+  transactional subset before pending SQL/ledger/reader changes; function defaults (`now()`/`gen_random_uuid()`),
+  `ALTER`, `GRANT`, views and unknown/contract SQL require reviewed standalone migration.
+  Automatic calls reject a missing `public.schema_migrations` under the lock and never call `initializeEmptyDatabase`, regardless of `INITIALIZE_EMPTY_DB`.
+  Complete standalone empty-only bootstrap/historical SQL/reader sync before a fresh web dispatch; no historical exemptions.
   Advisory lock acquisition is nonblocking and remains held through reader sync.
   See `docs/runbooks/release-safety-primitives.md` and the corresponding Python/Node/PostgreSQL tests.
 - `v2/ci_web_deploy.py` calls composed `ci_web_image.promote(env, expected_digest=...)`, verifying the
@@ -30,14 +33,18 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
   except curl's private `-q -K -` config; signed URLs never enter argv. Multi-tag digest rows
   must agree on identity, raw manifest and media.
   Check recognized producer conclusions before timestamps; skip non-success jobs without
-  suppressing another successful receipt. Three-field stdout adds no recovery history.
-  Project selection requires authenticated branch Terraform/verified job output, never inputs.
+  suppressing another successful receipt. Helper stdout is `{digest, image_sha, rollback}`;
+  controller deploy adds `migration`, with no recovery history.
+  Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual
+  Terraform ECR/cluster/service outputs. Never use dispatch inputs.
   Target one verified stack repo per operation; broad IAM is not branch/stack authority.
   Unconfirmed publication is a provider/retry diagnosis, not a rebuild signal; retain equal-effect
   confirmation. Use 0600 manifest files, bounded ZIP reads and ARM-child attestation references.
   Operation labels do not restrict the shared consumer's ECS/STS calls.
   Child PATH is `/usr/local/bin:/usr/bin:/bin`, ignoring caller additions; HOME is omitted, never reassigned.
-  No manually assembled publishing chain. `test_ci_web_image.py` requires jq; the
+  No manually assembled publishing chain. `test_ci_web_image.py` requires jq;
+  required `test_ci_web_workflow.py` needs PyYAML and Bash; actionlint is optional local lint.
+  Every AWS-facing Deploy Web job needs `AWS_ACCOUNT_ID_DEV`, including main; the guard job does not. The
   receipt steps, main account prerequisite and recovery limits are documented in
   `docs/runbooks/web-image-provenance.md`. Operator CI adds no ADR-005 exception or IAM grant.
 - `ci_readiness_plan_summary.py` runs before encryption only for explicit full dev readiness
@@ -125,7 +132,8 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 - Smoke scripts keep credentials/HTTP scratch in private 0700/0600 files with cleanup; publish
   only fixed phases and validated HTTP status. Never reset credentials to pass verification.
 - Migration credentials stay in memory; verify RDS TLS and immutable baseline/ULID checksums.
-  ULIDs have 26 Crockford-base32 characters (no I/L/O/U). One-shot initialization is atomic;
+  ULIDs have 26 Crockford-base32 characters (no I/L/O/U). Standalone empty-only initialization is atomic;
+  automatic web calls reject a missing ledger before that hook, even with the template's retained flag;
   elevated/missing reader roles and connection/cleanup errors block migration/deployment.
   Worker/migration images are ARM64, nonroot where applicable, and use CMD rather than ENTRYPOINT.
 - PR panel/chair Claude calls require `--strict-mcp-config`; allowed-tools is not a substitute.

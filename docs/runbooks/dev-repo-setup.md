@@ -443,7 +443,7 @@ real login/DB/host-registry preflight. Readiness is a separate capability contro
 `CI_READINESS_ENABLED_DEV`: true/false explicitly overrides the dev Terraform value; empty/unset
 preserves explicit tfvars and its default false. The runtime profile alone never enables it.
 See [readiness capability](runtime-foundation.md#readiness-capability) for billed access and revocation.
-`AWS_ACCOUNT_ID_DEV` is a required repository **secret** for both migration jobs, runtime image builds, dev AgentCore provisioning and every Deploy Web job (including main's exclusion check). No variable/default-account fallback exists. On dev/preview it must match the configured role accounts and actual STS
+`AWS_ACCOUNT_ID_DEV` is a required repository **secret** for both migration jobs, runtime image builds, dev AgentCore provisioning and every AWS-facing Deploy Web job (including main's exclusion check); the guard job does not need it. No variable/default-account fallback exists. On dev/preview it must match the configured role accounts and actual STS
 callers; this agreement is not proof of effective permissions or an independent classification of the account as development.
 
 The distinct NAMES are the isolation: a dev/preview job can never fall back to the
@@ -689,8 +689,8 @@ The samples dev deployer's current `AdministratorAccess` baseline and the build
 role's CI-account repository-wide ECR policy are broader than one stack; they do
 not establish branch-to-stack authority. Each operation must target exactly the
 independently verified stack repository. Scope any new ECR grants to that repository's ARN.
-`IMAGE_PROJECT` must come from branch-selected authenticated Terraform outputs or a verified
-job output derived from them, with ECR/cluster/service cross-checks, never dispatch input.
+Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars secrets. Before promotion,
+deploy cross-checks actual Terraform ECR/cluster/service outputs; never use dispatch input.
 
 Backend image builds require additional **repository scopes**, which the web grants above do not establish. Verify the configured roles before using the runtime build workflows:
 
@@ -1242,7 +1242,7 @@ Initialization and earlier policy failures are outside command-tail capture. Exi
 ## Private development database migration
 
 **Symptom:** a newly provisioned private Aurora has no application tables, or the
-external Actions runner cannot connect to its private endpoint. **Migrate Development Database** (`deploy-migrations.yml`) is restricted to this samples repository's `dev` branch. Standalone and AgentCore use remain manual; current-source Deploy Web runs it automatically before image promotion, including on dev pushes. An explicitly acknowledged older-image rollback skips migrations. See [web release and rollback](web-release.md). It builds an ARM64 image and
+external Actions runner cannot connect to its private endpoint. **Migrate Development Database** (`deploy-migrations.yml`) is restricted to this samples repository's `dev` branch. Standalone and AgentCore use remain manual; current-source Deploy Web runs it automatically before image promotion, including on dev pushes, but requires an initialized ledger and an admissible full pending set. Bootstrap or unsupported SQL needs standalone migration and reader sync first, then a fresh web dispatch. An explicitly acknowledged older-image rollback skips migrations. See [web release and rollback](web-release.md). It builds an ARM64 image and
 runs one Fargate task in the existing private subnets with the existing service security group.
 
 **Preparation:**
@@ -1329,8 +1329,9 @@ Failure-log reads are best effort and do not replace the primary error. Public o
 fixed diagnostic categories only. In the private migration log stream, inspect the retained
 operation/purpose, SDK code and HTTP status, SQLSTATE and role booleans described in the
 [safe diagnostic table](agent-sql-reader.md#안전한-오류-진단--safe-failure-diagnostics).
-Raw remote error text is discarded before logging. Empty-DB bootstrap and ULID migrations run under the migration advisory lock;
-an occupied database without a ledger is refused. Retry only after identifying the failure,
+Raw remote error text is discarded before logging. Standalone empty-DB bootstrap and ULID migrations run under the migration advisory lock;
+automatic web calls refuse a missing ledger before initialization regardless of the retained init flag, reporting `manual database bootstrap required`.
+An occupied database without a ledger is refused. Retry only after identifying the failure,
 and preserve all existing migration checksums and `-- since:` headers.
 
 After a successful migration, deploy the reviewed web image and verify authenticated database access before publishing service DNS.

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5de2f8d20e50 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 34983324798b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -12,9 +12,11 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
-- Web migrations force automatic transactional pending-SQL
-  checks; column/view and non-transactional changes require reviewed cutovers.
-  The empty-only frozen baseline precedes pending admission. Contention fails
+- Web migrations force automatic checks of every pending file on initialized DBs.
+  Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the init flag.
+  Standalone empty-only bootstrap applies historical SQL and reader sync first; function defaults
+  (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL need reviewed standalone migration,
+  then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Contention fails
   immediately under the shared lock. Read retries share a deadline and never retry writes;
   failed/replaced ECS deployment evidence is terminal. See `release-safety-primitives.md`.
 
@@ -38,18 +40,20 @@ legacy runbook's steps as the current operational path).
   need `actions: read`, dedicated fresh-only consumers do not.
   Document upload-artifact v4 with required Artifact API digest and scoped config-download permission; ECR publication
   supplies explicit media.
-  Preserve three-field stdout with no history API. Recovery requires independently retained
+  Helper stdout is `{digest, image_sha, rollback}`; controller deploy adds `migration`, with no history API. Recovery requires independently retained
   source/digest evidence. Automatic receipt cleanup removes the fixed GitHub run/attempt
   path; manual leftover cleanup verifies ownership. Migration/preflight assertions
   come from verified job outputs, never dispatch inputs.
-  IMAGE_PROJECT comes from authenticated branch Terraform/verified job output and independent
-  ECR/cluster/service checks. Existing broad IAM is not stack authority: one verified repo
+  Build/image-proof select IMAGE_PROJECT from protected branch tfvars; deploy cross-checks actual
+  Terraform ECR/cluster/service outputs. Existing broad IAM is not stack authority: one verified repo
   per operation, exact repo ARNs for new grants. Distinguish publication/provider failures
   from invalid candidates and document completed-producer/superseded-push handling.
   Provider subprocesses disable AWS config files, isolate GH config and filter endpoint/profile/model/provider/CA/proxy
   overrides, retain explicit exported auth, and keep signed curl URLs in private stdin.
   Multi-tag digest reads require consistent identities and identical manifest bytes/media.
   Child PATH uses only `/usr/local/bin:/usr/bin:/bin`; HOME is omitted, never reassigned.
+- Every AWS-facing Deploy Web job needs `AWS_ACCOUNT_ID_DEV`, including main; the guard job does not.
+  Required `test_ci_web_workflow.py` needs PyYAML and Bash; actionlint is optional local lint, not installed/run by CI.
 - Verification policies accept manual collect-runtime dev dispatches for backend/workload and prepare/collect, plus deploy-web dev push/dispatch for workload collect only (backend/prepare refused). The helper installs neither consumer path. Dev integration needs activated runtime prerequisites and private proof credentials/state for both events; missing proof fails closed. Consumers enforce nonempty restrictions and owned-file cleanup. Collect permits only the owned collector; its application-data effects are operator CI, not an ADR-005 exception. IAM cannot restrict event payloads: the consumer enforces catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. Contract: `runtime-verifier-sessions.md`.
 - `ci_readiness_plan_summary.py` runs before encryption only for explicit full dev readiness
   plans, with a two-minute timeout and fenced JSON output. Its failure-tolerant report publishes

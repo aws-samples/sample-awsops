@@ -39,8 +39,10 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 ## Deployment invariants
 - `release-safety-primitives.md` defines the active web read/controller contracts and
   transactional pending-SQL admission forced by every web-driven migration clone.
-  Standalone operator migrations retain explicit manual mode. The empty-only frozen baseline precedes
-  the pending guard. Column/view changes and non-transactional SQL require manual review.
+  Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the template's init flag.
+  Standalone empty-only bootstrap applies historical SQL and reader sync first; initialized DBs retain full pending checks.
+  Function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL require reviewed standalone migration,
+  then a fresh web dispatch. No historical exemptions or automatic-baseline exception.
   Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads
   retry within a shared budget; writes and identity/permission failures do not retry.
   Receipt verification gives the known old PRIMARY 15 seconds of visibility grace;
@@ -69,15 +71,15 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   Preserve OCI indexes with unambiguous ARM64 verification. Document the producer's
   ci-build role, producer/reuse-consumer `actions: read`, upload-artifact v4 plus required Artifact API digest, and repository-scoped
   config-download permission; publication uses the deployer role and explicit ECR media.
-  Success stdout remains `{digest, image_sha, rollback}` with no tag history. Recovery
+  Helper stdout is `{digest, image_sha, rollback}`; controller deploy adds `migration`, with no tag history. Recovery
   requires independently retained source/digest evidence. Legacy images without receipts
   use the separately approved private-host recovery runbook with source/digest evidence
   and schema approval, never fabricated receipts or a workflow bypass. Automatic receipt
   cleanup removes only the fixed GitHub run/attempt path; manual leftover cleanup checks
   ownership. Migration/preflight assertions use verified job outputs,
   never dispatch inputs. Fresh-only consumers do not need `actions: read`.
-  `IMAGE_PROJECT` likewise needs branch-selected authenticated Terraform/verified job output,
-  cross-checked against ECR/cluster/service metadata. Broad current CI-account IAM does not
+  Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual
+  Terraform ECR/cluster/service outputs. Broad current CI-account IAM does not
   supply stack authority; each operation selects one verified repo and any new grant uses
   its exact ARN. Publication confirmation failure calls for provider checks/revalidation,
   not rebuilding a validated candidate; document completed-producer and superseded-push cases.
@@ -85,6 +87,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   environments; signed curl URLs use private stdin, never argv. Multi-tag digest rows
   are accepted only with matching identity and byte-identical manifest/media evidence.
   Provider PATH is pinned to standard CLI directories; caller HOME is omitted, never reassigned.
+- Every AWS-facing Deploy Web job needs `AWS_ACCOUNT_ID_DEV`, including main; the guard job does not.
+  Required `test_ci_web_workflow.py` needs PyYAML and Bash; actionlint is optional local lint, not installed/run by CI.
 - Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). The helper supplies policies and installs neither consumer path. Deploy Web integration must be dev-only with activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
 - Private S3 inspection authenticates source/run/reference, manifest, pinned plan and hashes before bounded local rendering; it never authorizes apply. Asset HMAC is checked inside CI publication/apply, not by the keyless operator renderer.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.

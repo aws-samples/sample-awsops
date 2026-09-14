@@ -49,7 +49,8 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
 2. **`dev`** — integration branch; pushes touching web code, CHANGELOG or migrations auto-deploy the DEV stack
    via `deploy-web.yml` (build → matching private migration → digest promotion →
    exact ECS verification → login/DB smoke). The applied private migration
-   capability is required; a dev push fails closed when it is absent.
+   capability and initialized ledger are required; every pending file must pass the
+   automatic SQL subset. Bootstrap or unsupported SQL needs standalone migration first.
 3. **`main`** — promotion PR `dev → main` (ordinary same-repo PR). The production
    ECS roll stays workflow_dispatch + `production` environment reviewer approval;
    Terraform apply likewise (saved-plan, dispatch, per-branch environment). A manual
@@ -97,8 +98,8 @@ Fork PR에는 정식 `AI Code Review` 검사를 발행하지 않으므로 테스
 
 | Tier | Branch | Stack / domain | Deploy trigger |
 |---|---|---|---|
-| User | `atomoh` / `ssminji` / `whchoi` | that user's stack, `<user>.awsops-dev.whchoi.net` | auto on push (`deploy-web.yml`) |
-| Dev | `dev` | dev stack; `DOMAIN_NAME_DEV` when set, otherwise stored tfvars | guarded build → private migration → verified web roll on push (`deploy-web.yml`); [older-image rollback](web-release.md) is explicit and runs no migrations; DNS requires explicit dispatch |
+| User | `atomoh` / `ssminji` / `whchoi` | that user's stack, `<user>.awsops-dev.whchoi.net` | auto web roll on configured pushes, including migrations; DDL/authenticated verification are operator-managed, so schema drift can block the app |
+| Dev | `dev` | dev stack; `DOMAIN_NAME_DEV` when set, otherwise stored tfvars | guarded build → full pending-SQL admission on initialized DB → private migration → verified web roll; bootstrap/unsupported SQL needs standalone migration first; [older-image rollback](web-release.md) runs no migrations; DNS requires explicit dispatch |
 | Production | `main` | production stack — **domain not attached yet** | dispatch + `production` environment approval |
 
 Dev's repo-level name/zone overrides feed console and plan consistently; main/preview ignore
@@ -185,9 +186,17 @@ branches); production stays behind the `production` environment approval. See
 - User PR → `dev`: merge-verify + AI review green; a fork PR shows no plan job.
 - PR to `main` from anything but `dev`: `guard-main-prs` fails the PR.
 - Push to `dev` changing web code, CHANGELOG or `terraform/foundation/migrations/**`:
-  `deploy-web.yml` builds ARM64, applies the matching-source private
-  migration, verifies the new ECS deployment and actual image digest, then requires
+  `deploy-web.yml` builds ARM64, checks all pending SQL and applies the matching-source private
+  migration only on an initialized DB with an admitted pending set, verifies the new ECS deployment and actual image digest, then requires
   login/DB smoke. Configure `CI_MIGRATIONS_ENABLED_DEV=true` and apply
   `ci_migrations_enabled=true` before this path; the workflow cannot provision it.
 - `dev → main` merge, then production dispatch: waits for the `production`
   environment approval, smokes against the `public_url` output.
+
+For a missing ledger or unsupported pending SQL (`DEFAULT now()`/`gen_random_uuid()`,
+`ALTER`, `GRANT`, views), run `gh workflow run deploy-migrations.yml -R aws-samples/sample-awsops --ref dev`.
+Inspect that exact run for **SUCCESS**, source SHA, migration-container exit `0` and reader sync
+as described in [web release](web-release.md), then run
+`gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true`.
+Automatic runs never initialize a missing ledger or exempt historical pending files;
+standalone migrations retain locks/checksums, and contract cutovers need the documented coordination.

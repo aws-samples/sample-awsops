@@ -202,6 +202,7 @@ only its final fmt/validate diagnostics are informational.
 The required `test_ci_web_read.py` and `test_ci_web_deploy.py` suites use Python 3.12 on Linux with `/proc`, POSIX process groups and `os.geteuid`; provider boundaries are simulated and those two suites do not invoke AWS CLI, gh, curl or jq. The required `test_ci_web_workflow.py` suite additionally needs PyYAML and Bash. Deploy Web uses the controller and forces automatic SQL admission for web-driven migrations; see `docs/runbooks/release-safety-primitives.md`.
 The offline [web image provenance helper](docs/runbooks/web-image-provenance.md) tests also require **jq**, Linux `/proc`, and curl on `/usr/local/bin:/usr/bin:/bin`.
 Deploy Web calls its guarded promotion entrypoint after image/migration proof; the guide defines receipts and recovery. The [release safety primitives](docs/runbooks/release-safety-primitives.md) describe the controller and migration policy.
+See [web release](docs/runbooks/web-release.md) for standalone bootstrap or unsupported SQL → successful migration/reader sync → fresh web dispatch, and [legacy image recovery](docs/runbooks/legacy-web-image-recovery.md) for images without receipts.
 
 ```bash
 bash scripts/v2/merge-verify.sh   # required Python, web and deployment tests
@@ -425,6 +426,7 @@ AWS 자격증명을 사용하지 않습니다.
 필수 `test_ci_web_read.py`·`test_ci_web_deploy.py` 테스트는 Python 3.12와 Linux `/proc`, POSIX 프로세스 그룹, `os.geteuid`가 필요하며 외부 provider를 모의하므로 AWS CLI·gh·curl·jq를 실행하지 않습니다. 필수 `test_ci_web_workflow.py` 테스트에는 PyYAML과 Bash도 필요합니다. Deploy Web은 컨트롤러를 사용하고 웹 배포가 호출하는 마이그레이션에 자동 SQL 검사를 강제합니다. 자세한 내용은 `docs/runbooks/release-safety-primitives.md`를 참고하세요.
 오프라인 [웹 이미지 출처 검증 도우미](docs/runbooks/web-image-provenance.md) 테스트에는 **jq**, Linux `/proc`, `/usr/local/bin:/usr/bin:/bin`의 curl도 필요합니다.
 Deploy Web은 이미지·마이그레이션 증명 후 검증된 승격 진입점을 호출하며, 가이드에서 영수증·복구 계약을 정의합니다. [배포 안전 도구](docs/runbooks/release-safety-primitives.md)에서 컨트롤러와 마이그레이션 정책을 설명합니다.
+[웹 배포](docs/runbooks/web-release.md)에서 초기화·자동 검사 미지원 SQL의 수동 migration/reader 동기화 성공 후 새 웹 배포를 실행하는 절차를, [레거시 이미지 복구](docs/runbooks/legacy-web-image-recovery.md)에서 영수증 없는 이미지 복구를 확인하세요.
 
 ```bash
 bash scripts/v2/merge-verify.sh   # 필수 Python·웹·배포 테스트

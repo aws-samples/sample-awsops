@@ -785,7 +785,8 @@ for (const [codes, category] of [
 
 for (const [message, category] of [
   ['Concurrent migration is already running; retry after it finishes', 'migration lock'],
-  ['Automatic migration blocked: file=fixture, reason=non-transactional-sql', 'automatic SQL policy'],
+  ['Automatic migration blocked: file=fixture, reason=non-transactional-file', 'automatic SQL policy'],
+  ['Automatic migration requires manual bootstrap; run reviewed standalone migrations first', 'manual database bootstrap required'],
   ['Migration advisory lock returned an invalid result', 'invalid migration lock result'],
 ]) test(`failure logs classify ${category}`, async () => checkFailureLogs(message, category));
 

@@ -40,6 +40,8 @@ test('automatic objects cannot target temporary or PostgreSQL internal schemas, 
 });
 
 const unsafe = [
+  'CREATE TABLE "" (id int)', 'CREATE TABLE "".example (id int)',
+  'CREATE TABLE example ("" int)', 'CREATE INDEX "" ON example(id)',
   'ALTER TABLE public.example ADD COLUMN label text;',
   'ALTER TABLE IF EXISTS ONLY example ADD label text NULL;',
   'ALTER TABLE example ADD COLUMN IF NOT EXISTS label text;',

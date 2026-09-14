@@ -70,6 +70,7 @@ class AdditiveStatement {
   }
   identifier() {
     const token = this.tokens[this.position];
+    if (token === '#identifier:') return false;
     if (!token?.startsWith('#identifier:') && !/^[A-Z_][A-Z0-9_$]*$/.test(token ?? '')) return false;
     this.position++;
     return true;
@@ -79,7 +80,8 @@ class AdditiveStatement {
     if (!this.identifier()) return false;
     if (!this.take('.')) return true;
     // A pg_temp table disappears with the session but would leave a ledger row.
-    // Preserve quoted identifier text so quoting cannot bypass this restriction.
+    // Preserve quoted text; case-folding intentionally rejects even distinct
+    // quoted pg_* names, rather than allowing quoting to evade the restriction.
     return !schema.startsWith('PG_') && schema !== 'INFORMATION_SCHEMA' && this.identifier();
   }
   list(item) {

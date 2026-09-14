@@ -14,7 +14,9 @@ secrets-manager) — installed by `make deps`.
   `v2/test_ci_web_read.py` and `v2/test_ci_web_deploy.py`.
 - `v2/automatic-migration-policy.mjs` admits a conservative additive SQL subset only
   when `AUTOMATIC_MIGRATION=1`, forced by every web migration caller. Check all actual pending files before pending SQL, ledger upgrades or reader
-  synchronization; unknown syntax requires reviewed standalone migration. `migrate.mjs` uses
+  synchronization; function defaults (`now()`/`gen_random_uuid()`), `ALTER`, `GRANT`, views and unknown syntax require reviewed standalone migration.
+  Automatic calls reject a missing `public.schema_migrations` under the lock and never call `initializeEmptyDatabase`, regardless of `INITIALIZE_EMPTY_DB`.
+  Complete standalone empty-only bootstrap/historical SQL/reader sync, then dispatch a fresh web build; no historical exemptions. `migrate.mjs` uses
   `pg_try_advisory_lock` and holds acquired locks through SQL-reader synchronization;
   contention fails immediately. Tests: `v2/ci/automatic-migration-policy.test.mjs`,
   `migration-runtime.test.mjs` and real PostgreSQL `migration.itest.mjs`.
@@ -33,14 +35,16 @@ secrets-manager) — installed by `make deps`.
   Only curl receives explicit private stdin (`-q -K -`); no signed URL enters argv.
   Digest reads may return identical rows for multiple tags; reject conflicting row evidence.
   Recognized non-success producer jobs skip timestamp checks; successful jobs still require
-  the artifact window. Stdout stays `{digest, image_sha, rollback}`; recovery evidence is caller-owned.
-  `IMAGE_PROJECT` requires branch-selected authenticated Terraform/verified job output, never
-  dispatch input. Each operation targets one verified stack repo; broad CI-account IAM is
+  the artifact window. Helper stdout stays `{digest, image_sha, rollback}`; controller deploy adds `migration`; recovery evidence is caller-owned.
+  Build/image-proof select `IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual
+  Terraform ECR/cluster/service outputs. Never use dispatch input. Each operation targets one verified stack repo; broad CI-account IAM is
   not stack authority. Publication failure is distinct from candidate validation and may
   succeed only after an independent equal-effect tag check. Manifests use owned 0600 files;
   ZIP payload reads are bounded and attestations must reference the verified ARM64 child.
   Provider operation labels are diagnostic only; shared command support for ECS/STS remains.
   `v2/test_ci_web_image.py` tests the contract; jq is required for compare projection.
+  Required `v2/test_ci_web_workflow.py` needs PyYAML and Bash; actionlint is optional local lint.
+  Every AWS-facing Deploy Web job needs `AWS_ACCOUNT_ID_DEV`, including main; the guard job does not.
   See `docs/runbooks/web-image-provenance.md` for receipt-step names, inputs and
   expiry/rollback limits. Operator CI publication adds no ADR-005 exception or IAM grant.
 - `v2/ci_private_plan.py` provides policy/publish/restore/inspect for private saved plans.
@@ -223,7 +227,8 @@ secrets-manager) — installed by `make deps`.
   requires SQL_READER_SECRET_ARN. AURORA_SECRET_ARN means master here. TLS verifies the
   bundled RDS CA and hostname. `initialize-db.mjs` atomically initializes only a verified-empty
   DB with INITIALIZE_EMPTY_DB=1 (one-shot host command; private CI template retains the
-  guarded flag). Existing integer ledgers still require BOOTSTRAP=1.
+  guarded flag for standalone/manual initialization). Automatic calls refuse a missing ledger before this hook.
+  Existing integer ledgers still require BOOTSTRAP=1.
   Non-null baseline/ULID checksums are immutable. Reader elevation is checked even in disabled
   mode; enabled sync with a missing role fails. `migration-errors.mjs` preserves bounded,
   encoded NOTICE/P0001 text and validated identifiers only during reviewed baseline/ULID SQL.

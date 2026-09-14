@@ -61,7 +61,7 @@ GitHub receives only its explicit `GH_TOKEN` (or `GITHUB_TOKEN` alias), with an 
 
 ## Required workflow wiring
 
-`IMAGE_PROJECT` must come from **branch-selected authenticated Terraform outputs**, or a verified job output derived from that authenticated stack context, **never `inputs.*` or an unverified environment override**. Before calling `promote`, independently cross-check the selected project against the branch's Terraform `ecr_web_uri` and corresponding ECS cluster/service outputs. Do not manufacture all of these values from the same caller-supplied project string. A verified job must perform these checks before publishing its project output. The helper validates the value's shape and derives `<IMAGE_PROJECT>-web`; it does not query Terraform or establish branch-to-stack authority itself.
+Build and image-proof select `IMAGE_PROJECT` from **protected branch tfvars secrets**, without reading Terraform state. Before calling `promote`, deploy independently cross-checks that project against the actual branch Terraform `ecr_web_uri` and corresponding ECS cluster/service outputs. Never use `inputs.*` or an unverified environment override, or manufacture all those values from the same project string. The helper validates the value's shape and derives `<IMAGE_PROJECT>-web`; it does not query Terraform or establish branch-to-stack authority itself.
 
 Deploy Web uses job `Build & push (arm64)` and step `Build and push (arm64)`, followed by these required producer steps:
 
@@ -97,13 +97,13 @@ Use `python3 scripts/v2/ci_web_image.py promote` from the protected integration,
 
 The repository is always derived as `<validated IMAGE_PROJECT>-web`; callers cannot pass a different repository to `promote`. `pin_image` is a low-level publishing primitive, **not** the supported CI integration API. Do not assemble a weaker guard chain around it in Actions. The separately approved [legacy private-host recovery](legacy-web-image-recovery.md) is an operator procedure with independent evidence, not a workflow integration.
 
-On success, the library returns and the CLI prints one JSON object with exactly **`{digest, image_sha, rollback}`**: the selected manifest/index digest, source commit SHA, and rollback boolean. It does not capture or return prior tag history or a previous digest. Recovery evidence is the controller/operator's responsibility below.
+On success, the image-helper library returns and its CLI prints exactly **`{digest, image_sha, rollback}`**: the selected manifest/index digest, source commit SHA, and rollback boolean. The wired `ci_web_deploy.py deploy` controller adds **`migration`** (`source_verified`, `not_run_for_rollback` or `operator_managed`). Neither result contains prior tag history or a previous digest. Recovery evidence is the controller/operator's responsibility below.
 
 | Input | Trusted source / meaning |
 | --- | --- |
 | `GITHUB_*` run/ref/repository/workflow identity | GitHub-provided context for this repository's Deploy Web push/dispatch |
 | `CI_ROLE_ARN` | Protected branch role configuration; a same-account role match is not stack authority |
-| `IMAGE_PROJECT` | Branch-selected authenticated Terraform output or a verified job output derived from that stack context, independently checked against ECR/cluster/service outputs; never dispatch inputs or unverified environment values |
+| `IMAGE_PROJECT` | Protected branch tfvars in build/image-proof; deploy cross-checks actual Terraform ECR/cluster/service outputs before promotion; never dispatch inputs or unverified environment values |
 | `AWS_ACCOUNT_ID_DEV` | Protected 12-digit dev account; mandatory even on main |
 | `FRESH_DIGEST`, `FRESH_PROJECT` | Outputs of this run's trusted build job, never free-form dispatch values |
 | `IMAGE_BUILD_RUN_ID` | Explicit completed producer run for reuse; cannot be the current run |

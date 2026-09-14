@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 85d8b8d6d59d · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 188a45c206dc · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -60,12 +60,17 @@ No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scr
 
 Deploy Web wires producer receipts and successful migration outputs. Its controller calls
 composed `promote(env, expected_digest=...)` after readonly proof and service/read preflight.
-Preserve the validated project/digest. `AWS_ACCOUNT_ID_DEV` is required even on main for
-dev-account exclusion; see `docs/runbooks/web-image-provenance.md` and `docs/runbooks/web-release.md`.
+Preserve the validated project/digest. `AWS_ACCOUNT_ID_DEV` is required in every AWS-facing Deploy Web job,
+including main's dev-account exclusion check; the guard job does not need it. Build/image-proof select
+`IMAGE_PROJECT` from protected branch tfvars; deploy cross-checks actual Terraform ECR/cluster/service outputs.
+Image-helper stdout is `{digest, image_sha, rollback}`; controller deploy adds `migration`.
+See `docs/runbooks/web-image-provenance.md` and `docs/runbooks/web-release.md`.
 Its required tests need Linux `/proc`, jq and curl on `/usr/local/bin:/usr/bin:/bin`:
 `python3 -m pytest -q scripts/v2/test_ci_web_image.py`. AWS/GitHub are mocked; curl uses localhost.
 
-The required `test_ci_web_read.py` and `test_ci_web_deploy.py` suites use Python 3.12 on Linux with `/proc`, POSIX process groups and `os.geteuid`; provider boundaries are simulated and those two suites do not invoke AWS CLI, gh, curl or jq. The controller and automatic SQL policy are documented in `docs/runbooks/release-safety-primitives.md`.
+Automatic web migration requires `public.schema_migrations` and rejects its absence under the advisory lock; it never calls `initializeEmptyDatabase`, regardless of `INITIALIZE_EMPTY_DB`. Standalone `deploy-migrations.yml --ref dev` or approved private-host `INITIALIZE_EMPTY_DB=1 make migrate` completes empty-only bootstrap, historical SQL and reader sync first. On initialized databases preserve checksums and the full pending-file guard, including older gaps. `DEFAULT now()`/`gen_random_uuid()`, `ALTER`, `GRANT`, views and other unsupported SQL require reviewed standalone migration, then fresh `deploy-web.yml --ref dev -f build=true`; no flag or historical exemptions.
+
+The required `test_ci_web_read.py` and `test_ci_web_deploy.py` suites use Python 3.12 on Linux with `/proc`, POSIX process groups and `os.geteuid`; provider boundaries are simulated and those two suites do not invoke AWS CLI, gh, curl or jq. The required `test_ci_web_workflow.py` suite additionally needs PyYAML and Bash. Run all three with `python3 -m pytest -q scripts/v2/test_ci_web_read.py scripts/v2/test_ci_web_deploy.py scripts/v2/test_ci_web_workflow.py`. See `docs/runbooks/release-safety-primitives.md`; actionlint is optional local lint, not a CI prerequisite.
 
 ## BANNED PATTERNS (enforce in review)
 - **AWS security:** no `0.0.0.0/0` ingress; no IAM `Principal:"*"`/wildcard-action without scoped condition; **no secrets in env/code/IaC** (Secrets Manager / SSM).
