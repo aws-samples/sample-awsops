@@ -255,7 +255,10 @@ export default function TopologyPage() {
       const mk = (rows: { resource_id?: unknown; data?: Record<string, unknown> }[]) =>
         new Map((rows ?? []).map((r) => [String(r.resource_id), invName(r)]));
       setNetMaps({ vpc: mk(net[0]?.rows), subnet: mk(net[1]?.rows), sg: mk(net[2]?.rows) });
-      const out: FlowInput = { ipResolved };
+      const out: FlowInput = { ipResolved, subnet: (net[1]?.rows ?? []).map(
+        (row: { resource_id?: unknown; region?: unknown; data?: Record<string, unknown> }) =>
+          ({ ...(row.data ?? {}), resource_id: row.resource_id, region: row.region }),
+      ) };
       let newest: string | null = null;
       const capped: string[] = [];
       TYPES.forEach((t, i) => {
