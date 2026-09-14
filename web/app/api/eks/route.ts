@@ -1,5 +1,5 @@
 import { verifyUser } from '@/lib/auth';
-import { listClusters } from '@/lib/aws';
+import { listClusterInventory } from '@/lib/aws';
 import { getAllowedClusters, isEnvCluster, getAuthModes } from '@/lib/eks-registry';
 import { hasAccessEntry, onboardingGuide } from '@/lib/eks-access';
 import { isAdmin } from '@/lib/admin';
@@ -16,8 +16,8 @@ export async function GET(request: Request) {
   try {
     const accountParam = new URL(request.url).searchParams.get('account') || undefined;
     const account = accountParam === '__all__' ? undefined : accountParam;
-    const [clusters, allowed, authModes] = await Promise.all([listClusters(account), getAllowedClusters(), getAuthModes()]);
-    const rows = await Promise.all(clusters.map(async (c) => {
+    const [inventory, allowed, authModes] = await Promise.all([listClusterInventory(account), getAllowedClusters(), getAuthModes()]);
+    const rows = await Promise.all(inventory.clusters.map(async (c) => {
       let access: AccessState;
       const isEnv = isEnvCluster(c.name);
       const authMode = authModes.get(c.name);
@@ -41,7 +41,7 @@ export async function GET(request: Request) {
       return { ...c, access, runtime: allowed.has(c.name) && !isEnv, authMode, guide };
     }));
     const admin = await isAdmin(user);
-    return Response.json({ clusters: rows, admin });
+    return Response.json({ clusters: rows, admin, region: inventory.region, truncated: inventory.truncated });
   } catch (e) {
     return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }

@@ -91,9 +91,7 @@ make deploy
 make agentcore
 ```
 
-`make deploy`는 웹을 배포한다. 이번 변경에는 `scripts/v2/agentcore/catalog.py`의 Tempo 도구 설명 변경도 있으므로 **`make agentcore`가 필요하다**. 프로비저너는 도구의 이름·설명·입력 스키마 지문을 비교하고 기존 게이트웨이 타깃의 설명을 동기화한다. 둘 다 위 Terraform의 커넥터 Lambda 코드 배포를 대체하지 않는다. 기존 권한이나 기능 플래그를 변경할 필요는 없다.
-
-`make deploy` ships the web app. **`make agentcore` is required for this change** because it also updates Tempo tool descriptions in `scripts/v2/agentcore/catalog.py`. The provisioner fingerprints tool names, descriptions, and input schemas and reconciles the descriptions on existing gateway targets. Neither command replaces Terraform's connector Lambda code deployment. Existing permissions and feature flags do not need changing.
+`make deploy` ships the web app. **`make agentcore` is required for this change** because it also updates Tempo tool descriptions in `scripts/v2/agentcore/catalog.py`. The provisioner fingerprints tool names, descriptions, and input schemas and reconciles the descriptions on existing gateway targets. Neither command replaces Terraform's connector Lambda code deployment. Before running the provisioner, verify the deployment identity's `bedrock-agentcore:GetGateway` grant as described in [Provisioner reconciliation](../reference/05-agentcore.md#provisioner-reconciliation). This tool-description change adds no feature flag.
 
 배포 후 AWSops에 **관리자로 로그인한 탭**에서 개발자 도구의 Console을 열고 아래 블록 전체를 실행한다. 같은 출처의 세션 쿠키로만 요청하며 토큰·도메인을 붙여 넣지 않는다. 명령은 구성된 Tempo 인스턴스와 기존 캐시 요약을 먼저 출력한다. 프롬프트에 대상 인스턴스의 양의 정수 ID를 입력하면 `POST /api/integrations/schema`에 **`{ id }`**를 보내고, GET으로 다시 읽어 요약·`fetched_at`을 비교한다. 취소하면 POST하지 않는다.
 
