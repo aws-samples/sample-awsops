@@ -2,9 +2,9 @@
 
 ## Symptoms
 
-Use this contract when reviewing temporary AWS permissions for the manual
-development collection verifier. Application-level command allowlists do not
-restrict the underlying deployer credentials.
+A manual development verifier cannot create its session policy, or its deployer
+credentials permit operations beyond the controller's command allowlist.
+Application-level allowlists do not restrict the underlying AWS session.
 
 This is a **prerequisite**, not a deployed collection workflow. The proposed
 `collect-runtime.yml` and `ci/runtime-release.mjs` consumer land separately;
@@ -19,9 +19,10 @@ from the presence of this helper.
 - Combining backend and workload access retains state-read privileges throughout
   a long verification run.
 - Trusting arbitrary resource names from captured JSON can broaden a generated
-  policy beyond the configured account, region and project.
-- Collect requires inventory, AgentCore and workers enabled in the captured
-  state, plus the owned collector fingerprint and known CloudFront ID.
+  policy beyond the configured account/region and the captured state's project.
+  Project identity comes from that state, not an independent configured value.
+- Missing inventory, AgentCore or workers enablement, the owned collector
+  fingerprint, or the known CloudFront ID prevents collect-policy creation.
 
 ## Verification commands
 
@@ -35,8 +36,10 @@ python3 -m pytest scripts/v2/test_ci_runtime_policy.py -q
 ```
 
 Tests cover allowed operations, denied sibling resources/regions/actions,
-backend parsing, KMS conditions, private files, masking, publication failures and
-STS's 2,048-character inline-policy limit. These are offline policy-boundary
+backend parsing, KMS conditions, private files, masking and publication failures.
+The size test confirms policies with maximum-length project names fit STS's
+2,048-character limit; it does not exercise oversized-policy rejection.
+These are offline policy-boundary
 checks, not an assertion of effective live access under every IAM/SCP policy.
 
 ## Action and integration contract
@@ -51,7 +54,7 @@ sessions. No role, trust policy or persistent IAM attachment is added here.
 | Backend listing | S3 bucket listing | Exact state-key/listing prefixes; Terraform 1.15.7 lists the configured workspace prefix even for default workspace |
 | Backend decryption | KMS decrypt | Configured key if present; otherwise account/region constrained, only via S3 and the bound bucket/object encryption context |
 | Workload, both modes | ECR manifest read | Only the project's web repository |
-| Workload, both modes | ECS service/task reads and task listing | Only the web service and project-cluster task resources; ListTasks additionally requires the cluster condition |
+| Workload, both modes | ECS service/task reads and task listing | Only the web service and project-cluster task resources; DescribeTasks and ListTasks both require the cluster condition |
 | Workload, both modes | ECS task-definition read | AWS does not support resource-level scope for this action; region restricted, with consumer-side family validation |
 | Workload, collect only | Lambda configuration read and invocation | Exactly the owned inventory-sync function |
 
@@ -65,11 +68,14 @@ console/output capture, not Terraform plan/apply.
 The workload input is the private Terraform `runtime_deployment` document
 (`schema_version`, account/region/project, web identity and feature/resource
 fields). This is distinct from the later smoke configuration
-(`schemaVersion`, `prepare`/`verify`, nonce/collection evidence). The policy helper
+(`schemaVersion`, `prepare`/`verify`, host/freshness options). The policy helper
 uses `RUNTIME_MODE=prepare|collect`; it does not reinterpret the smoke protocol.
 `PIN_SHA` is the reviewed deployed web-image commit: the helper checks its format
 only; the consumer binds the image to ECR and running tasks. It need not equal
-the workflow's `GITHUB_SHA`. `CI_ROLE_ARN` is the configured deployer role and
+the workflow's `GITHUB_SHA`, and it must be empty in prepare mode.
+Only same-repository manual dev dispatches with
+`GITHUB_WORKFLOW_REF` ending in `.github/workflows/collect-runtime.yml@refs/heads/dev`
+are accepted. `CI_ROLE_ARN` is the configured deployer role and
 `BACKEND_B64` is the private encoded backend input used only by the backend phase.
 
 The follow-up workflow must:
@@ -98,7 +104,8 @@ symlink/public input files, or an existing output policy file.
 
 ### Collection effects and proof
 
-The intended `collect` consumer uses `RequestResponse` on the pinned function.
+The intended `collect` consumer uses `RequestResponse` on the pinned function's
+unqualified ARN, without a version or alias qualifier.
 Each event must explicitly contain exactly `{"type":"catalog"}` or
 `{"type":"cloudfront"}`. **An absent `type` defaults to `all`**, which triggers
 asynchronous fan-out; empty events, `type=all`, other types and `Event` invocation
@@ -114,7 +121,7 @@ remediate AWS resources. The helper itself makes no AWS calls.
 Observability does not require new CI log, CloudWatch or DB permissions. First
 verify the function identity, configured code fingerprint and active ARM64
 configuration. Each synchronous response must have `StatusCode=200`, no
-`FunctionError`, and the expected executed version. That envelope is insufficient:
+`FunctionError`, and `ExecutedVersion: "$LATEST"`. That envelope is insufficient:
 
 | Payload | Required result |
 | --- | --- |
@@ -123,18 +130,25 @@ configuration. Each synchronous response must have `StatusCode=200`, no
 
 `busy`, `failed` (including superseded), `partial`, unknown-type errors and
 malformed results never prove collection. A bounded retry of explicit contention
-may succeed only through a later valid owned response; scheduled work cannot
+— invocation-level throttling or a busy/superseded result — may succeed only
+through a later valid owned response; scheduled work cannot
 substitute for it. Disable automatic SDK/CLI invoke retries; for collection use
 a read timeout longer than the verified function timeout (currently at most
 420 seconds), inside an explicit controller deadline.
 
 Capture the release time marker before the owned collection invocation, then
-require the authenticated ledger's durable `last_success_at` at or after that
-marker, plus fresh known-record evidence. This demonstrates advancement past the
+require the expected account's `cloudfront` ledger row's durable `last_success_at`
+at or after that marker, plus fresh known-record evidence. This demonstrates advancement past the
 pre-invoke marker; an old ledger success, or a scheduled success accompanying a
 `busy` owned response, is insufficient. Full readiness additionally requires the
 authenticated BFF/AgentCore and owned worker HTTP proofs. A successful invoke
 alone never establishes it.
+
+The permitted catalog reply also supplies the complete registered-type enumeration
+for the consumer's per-type HTTP ledger checks. Every returned type must satisfy
+the runtime-smoke freshness contract; the owned CloudFront proof alone is
+insufficient. This does not claim complete AWS inventory coverage or identify
+which trigger produced the other types' observations.
 
 Verifier-triggered collection changes freshness timestamps. Do not label those
 observations as EventBridge execution or schedule attribution. The separate
@@ -156,5 +170,5 @@ IAM-owner work, not part of this prerequisite.
 - Terraform v1.15.7: `internal/backend/remote-state/s3/backend_state.go`, workspace listing.
 
 ADRs: 002 (authenticated application access), 005 (no product mutation/autonomy
-relaxation), 007 (governed application data effects), 021 (quota-limited inventory collection).
+relaxation), 021 (quota-limited inventory collection).
 This change is not an ADR-005 exception.
