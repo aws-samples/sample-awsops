@@ -42,13 +42,30 @@ def test_asset_validation_reports_missing_key_before_running_pack(tmp_path, key)
     binary.chmod(0o700)
     step = named(workflow()["jobs"]["plan"], "Validate saved-plan Lambda assets")
     marker = tmp_path / "called"
-    result = subprocess.run(["bash", "-c", step["run"]], text=True, capture_output=True,
+    result = subprocess.run(["bash", "-c", step["run"]], cwd=tmp_path, text=True, capture_output=True,
                             env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
                                  "PACK_CALLED": str(marker), "TF_PLAN_ENC_KEY": key})
     assert (result.returncode == 0) is bool(key)
     assert marker.exists() is bool(key)
     if not key:
         assert "TF_PLAN_ENC_KEY is required" in result.stdout
+
+
+@pytest.mark.parametrize("event", ["pull_request", "push", "workflow_dispatch"])
+def test_validation_discards_plaintext_unless_manual_encryption_still_needs_it(tmp_path, event):
+    binary = tmp_path / "python3"
+    binary.write_text(f"#!{sys.executable}\nimport pathlib\npathlib.Path('tfassets.tar.gz').write_bytes(b'private fixture')\n")
+    binary.chmod(0o700)
+    (tmp_path / "tfplan").write_bytes(b"private plan fixture")
+    (tmp_path / "unrelated").write_text("keep")
+    step = named(workflow()["jobs"]["plan"], "Validate saved-plan Lambda assets")
+    result = subprocess.run(["bash", "-c", step["run"]], cwd=tmp_path, text=True, capture_output=True,
+                            env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+                                 "GITHUB_EVENT_NAME": event, "TF_PLAN_ENC_KEY": "fixture-ci-key"})
+    assert result.returncode == 0, result.stderr
+    for name in ("tfplan", "tfassets.tar.gz"):
+        assert (tmp_path / name).exists() is (event == "workflow_dispatch")
+    assert (tmp_path / "unrelated").read_text() == "keep"
 
 
 def test_private_publication_is_required_and_uses_a_scoped_protected_session():

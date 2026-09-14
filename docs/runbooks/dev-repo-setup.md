@@ -942,6 +942,9 @@ Missing backend/tfvars blobs retain the plan's soft skip. A configured plan with
 missing deployer role or insufficient storage permissions fails publication explicitly.
 The helper's generated policy applies only to publication; the consumer must attach it
 to the fresh session. Restore runs under the separately protected Apply role.
+Keep `TF_PLAN_ENC_KEY` as one repository-level secret. Do not define an environment
+secret with the same name: it can shadow the plan job's key in publication/apply,
+breaking the encrypted handoff or asset HMAC after a rotation.
 
 ### Inspect and select exact bytes
 
@@ -1131,7 +1134,6 @@ python3 scripts/v2/ci_plan_inspect.py \
   --repository aws-samples/sample-awsops --branch dev \
   --commit "$PLAN_SHA" --run-id "$PLAN_RUN_ID" --scope full \
   --foundation /private/checkout/terraform/foundation \
-  --backend /private/backend.hcl \
   --destination /private/review/new-legacy-plan-directory
 ```
 

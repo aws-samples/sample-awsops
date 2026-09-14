@@ -408,6 +408,9 @@ jobs:
             exit 1
           fi
           python3 ../../scripts/v2/ci_tf_assets.py pack
+          if [ "${GITHUB_EVENT_NAME:-}" != workflow_dispatch ]; then
+            rm -f tfplan tfassets.tar.gz
+          fi
 
       # The protected publisher replaces this short-lived encrypted handoff with
       # a nonsecret reference after the actual plan/assets reach private S3.
