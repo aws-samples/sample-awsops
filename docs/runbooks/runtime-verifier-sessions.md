@@ -129,7 +129,10 @@ workload policy:
   `features.inventory`, `features.agentcore` and `features.workers` must all be
   true in applied state, with the owned collector code hash and known CloudFront
   identity. Complete reviewed runtime/readiness activation before deployment
-  mutations and mandatory verification. Feature-off bootstrap uses the
+  mutations and mandatory verification. The consumer must validate those captured
+  fields and abort before image re-pinning or service rollout if any is missing;
+  the later workload-policy build is not a substitute for this pre-mutation check.
+  Feature-off bootstrap uses the
   [first-web procedure](first-web-bootstrap.md) and manual prepare path; collect
   is not its fallback. Missing activation or proof must fail closed, not silently
   skip verification or restore an unrestricted session.
