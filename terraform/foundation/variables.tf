@@ -24,6 +24,49 @@ variable "extra_domain_aliases" {
   description = "Additional FQDNs to accept as CloudFront aliases (ADR-016 v1 domain cutover). Each must resolve in hosted_zone_name."
 }
 
+variable "publish_service_dns" {
+  type        = bool
+  default     = true
+  nullable    = false
+  description = "Publish Route53 service A aliases to CloudFront. false defers only service DNS; CloudFront aliases, HTTPS, and managed-certificate validation CNAMEs remain. For a new stack with no DNS writes, also supply both existing certificate ARNs."
+}
+
+variable "ci_domain_rollout" {
+  type        = bool
+  default     = false
+  nullable    = false
+  description = "CI metadata only: pin dev/full domain DNS scoping in the saved plan. Set by explicit plan dispatch; does not alter infrastructure."
+}
+
+variable "existing_cf_certificate_arn" {
+  type        = string
+  default     = null
+  description = "Externally managed, already-issued ACM certificate ARN in us-east-1, in this AWS account, covering domain_name and all extra_domain_aliases. null preserves managed certificate + DNS validation. The certificate must be trusted by CloudFront."
+
+  validation {
+    condition = var.existing_cf_certificate_arn == null ? true : (
+      can(regex("^arn:aws:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.existing_cf_certificate_arn)) &&
+      try(split(":", var.existing_cf_certificate_arn)[4] == data.aws_caller_identity.current.account_id, false)
+    )
+    error_message = "existing_cf_certificate_arn must be null or an ACM certificate ARN in us-east-1 belonging to the current AWS account."
+  }
+}
+
+variable "existing_alb_certificate_arn" {
+  type        = string
+  default     = null
+  description = "Externally managed, already-issued ACM certificate ARN in var.region and this AWS account, covering domain_name for CloudFront origin TLS. null preserves managed certificate + DNS validation. The certificate chain must be trusted by CloudFront."
+
+  validation {
+    condition = var.existing_alb_certificate_arn == null ? true : (
+      can(regex("^arn:aws:acm:[a-z]{2}(-[a-z]+)+-[0-9]+:[0-9]{12}:certificate/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.existing_alb_certificate_arn)) &&
+      try(split(":", var.existing_alb_certificate_arn)[3] == var.region, false) &&
+      try(split(":", var.existing_alb_certificate_arn)[4] == data.aws_caller_identity.current.account_id, false)
+    )
+    error_message = "existing_alb_certificate_arn must be null or an ACM certificate ARN in var.region belonging to the current AWS account."
+  }
+}
+
 variable "vpc_cidr" {
   type    = string
   default = "10.20.0.0/16"

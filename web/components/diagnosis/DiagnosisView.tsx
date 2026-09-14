@@ -33,7 +33,7 @@ interface ReportRow {
   progress?: DiagnosisProgress; // A3/A6: live per-section progress
 }
 
-// Plan-2: intended-vs-actual verdict surfaced in summary.drift; regression diff in summary.diff.
+// Deterministic verdict coverage is separate from failures and the parent-report diff.
 interface DriftVerdict {
   id?: number | string;
   kind?: string;
@@ -43,8 +43,43 @@ interface DriftVerdict {
 }
 interface ReportSummary {
   drift?: DriftVerdict[];
+  unassessed?: DriftVerdict[];
+  invariant_coverage?: unknown;
   diff?: { regressions?: DriftVerdict[]; improvements?: (number | string)[] };
   [k: string]: unknown;
+}
+
+interface InvariantCoverage {
+  total: number;
+  assessed: number;
+  passed: number;
+  failed: number;
+  unassessed: number;
+}
+const COVERAGE_FIELDS = ['total', 'assessed', 'passed', 'failed', 'unassessed'] as const;
+
+function verdictRows(value: unknown): DriftVerdict[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(v => v && typeof v === 'object' && !Array.isArray(v)).map(v => ({
+    id: typeof v.id === 'string' || typeof v.id === 'number' ? v.id : undefined,
+    kind: typeof v.kind === 'string' ? v.kind : undefined,
+    target: typeof v.target === 'string' ? v.target : undefined,
+    severity: typeof v.severity === 'string' ? v.severity : undefined,
+    observed: typeof v.observed === 'string' ? v.observed : undefined,
+  }));
+}
+
+function invariantCoverage(summary: ReportSummary, drift: DriftVerdict[], unassessed: DriftVerdict[]): InvariantCoverage | null {
+  const raw = summary.invariant_coverage;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+      || !Array.isArray(summary.drift) || !Array.isArray(summary.unassessed)
+      || summary.drift.length !== drift.length || summary.unassessed.length !== unassessed.length) return null;
+  const values = raw as Record<string, unknown>;
+  if (!COVERAGE_FIELDS.every(k => typeof values[k] === 'number'
+      && Number.isSafeInteger(values[k]) && (values[k] as number) >= 0)) return null;
+  const c = raw as InvariantCoverage;
+  return c.total === c.assessed + c.unassessed && c.assessed === c.passed + c.failed
+    && c.failed === drift.length && c.unassessed === unassessed.length ? c : null;
 }
 
 const SEV_CLASS: Record<string, string> = {
@@ -215,8 +250,8 @@ export default function DiagnosisView() {
   const createdAt = reports.find((r) => r.id === view?.id)?.created_at;
 
   return (
-    <div className="flex gap-6">
-      <aside className="w-64 shrink-0 space-y-3">
+    <div className="flex flex-col gap-6 lg:flex-row">
+      <aside className="w-full shrink-0 space-y-3 lg:w-64">
         <div className="flex flex-wrap items-center gap-2">
           <select
             aria-label={tt('진단 티어')}
@@ -387,17 +422,17 @@ export default function DiagnosisView() {
                 />
               ) : null}
             </div>
-            <div className="mb-3 flex items-center justify-between gap-2">
+            <div className="mb-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
               {createdAt ? (
                 <span className="text-[12px] text-ink-400">{tt('생성 일시:')} {fmtDate(createdAt, locale)}</span>
               ) : <span />}
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 {/* Gap L179: browser print-preview view (new tab) — the PDF stays the primary export. */}
                 <a
                   href={`/ai-diagnosis/report?id=${view!.id}`}
                   target="_blank"
                   rel="noopener"
-                  className="rounded-md border border-ink-200 px-3 py-1.5 text-sm hover:bg-ink-100"
+                  className="whitespace-nowrap rounded-md border border-ink-200 px-3 py-1.5 text-sm hover:bg-ink-100"
                 >
                   {tt('인쇄용 보기')}
                 </a>
@@ -433,7 +468,7 @@ export default function DiagnosisView() {
                 </div>
               );
             })()}
-            {view.summary && <ReportInsights summary={view.summary} />}
+            <ReportInsights summary={view.summary ?? {}} />
             <ReportSections markdown={view.markdown} />
           </>
         ) : view?.status === 'running' ? (
@@ -568,12 +603,44 @@ function FailedPanel({ error, onRetry, disabled }: { error?: string | null; onRe
 // Plan-2: intended-vs-actual drift + regression-vs-previous diff, surfaced as small badge sections.
 function ReportInsights({ summary }: { summary: ReportSummary }) {
   const { tt } = useI18n();
-  const drift = summary.drift ?? [];
-  const regressions = summary.diff?.regressions ?? [];
-  const improvements = summary.diff?.improvements ?? [];
-  if (drift.length === 0 && regressions.length === 0 && improvements.length === 0) return null;
+  const drift = verdictRows(summary.drift);
+  const unassessed = verdictRows(summary.unassessed);
+  const coverage = invariantCoverage(summary, drift, unassessed);
+  const regressions = verdictRows(summary.diff?.regressions);
+  const improvements = Array.isArray(summary.diff?.improvements) ? summary.diff.improvements : [];
   return (
     <div className="mb-4 space-y-3">
+      <section aria-label={tt('불변식 평가 범위')} className="rounded-md border border-ink-200 bg-paper p-3 text-[12px]">
+        <h3 className="mb-2 font-semibold text-ink-700">{tt('불변식 평가 범위')}</h3>
+        {!coverage ? (
+          <div className="text-amber-800">
+            <p className="font-medium">{tt('불변식 평가 정보 없음')}</p>
+            <p>{tt('이 보고서에는 유효한 불변식 평가 범위가 기록되지 않았습니다.')}</p>
+          </div>
+        ) : coverage.total === 0 ? (
+          <p className="text-ink-600">{tt('활성 불변식 없음')}</p>
+        ) : (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-ink-700">
+            <span>{tt('평가 완료')} {coverage.assessed} / {coverage.total}</span>
+            <span>{tt('불변식 통과')} {coverage.passed}</span>
+            <span>{tt('위반')} {coverage.failed}</span>
+            <span>{tt('미평가')} {coverage.unassessed}</span>
+          </div>
+        )}
+        {unassessed.length > 0 ? (
+          <div className="mt-2 text-amber-800">
+            <p>{tt('미평가 결과는 정상 또는 개선을 뜻하지 않습니다.')}</p>
+            <ul className="mt-2 space-y-2">
+              {unassessed.map((v, idx) => (
+                <li key={`unassessed-${v.id}-${idx}`} className="break-words rounded border border-amber-200 bg-amber-50 p-2">
+                  <span className="font-medium">{v.kind ?? tt('불변식')}{v.target ? ` → ${v.target}` : ''}</span>
+                  <p className="whitespace-pre-wrap break-words">{v.observed ?? tt('근거 정보 없음')}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </section>
       {drift.length > 0 && (
         <div className="rounded-md border border-ink-200 bg-paper p-3">
           <div className="mb-2 text-[12px] font-semibold text-ink-700">{tt(`의도 대비 실제 (intended vs actual) — 위반 ${drift.length}건`)}</div>
@@ -584,7 +651,7 @@ function ReportInsights({ summary }: { summary: ReportSummary }) {
                 title={v.observed}
                 className={`rounded border px-1.5 py-0.5 text-[11px] ${SEV_CLASS[v.severity ?? 'info'] ?? SEV_CLASS.info}`}
               >
-                {v.kind}{v.target ? ` → ${v.target}` : ''}
+                {v.kind ?? tt('불변식')}{v.target ? ` → ${v.target}` : ''}
               </span>
             ))}
           </div>

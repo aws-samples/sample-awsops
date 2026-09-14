@@ -55,6 +55,10 @@ def insert_job(conn, job_id, type_, payload, dry_run=False, idempotency_key=None
 def claim_running(conn, job_id, runtime):
     """Claim queued|running and count accepted claims (0 = absent or not runnable).
 
+    ADR-005 FROZEN: awaiting_approval is DELIBERATELY unclaimable, even after an
+    approval callback. The retained remediation state machine is dark substrate, not
+    a supported post-approval execution path. Do not widen this predicate to enable it.
+
     Optional lifecycle timestamps are owned by the migration-installed database trigger.
     These statements also work before that migration is applied.
     """

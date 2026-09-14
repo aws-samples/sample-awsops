@@ -201,7 +201,7 @@ def test_deep_sections_catalog():
 
 
 def test_generate_resolves_tier_catalog_and_model(monkeypatch):
-    # Task 3: tier picks the catalog (mid=9, deep=16) + model (deep may select Opus) + max_tokens.
+    # The 9/16-section catalogs include one deterministic section; only 8/15 use the LLM.
     monkeypatch.setattr(report.src, "collect_all",
                         lambda conn, scope="self": [{"key": "inventory", "ok": True, "degraded": False, "notes": "", "data": {}}])
     monkeypatch.setattr(report.ddb, "list_active_invariants", lambda conn: [])
@@ -210,16 +210,16 @@ def test_generate_resolves_tier_catalog_and_model(monkeypatch):
                         lambda prompt, ctx, model_id, max_tokens: (calls.append((model_id, max_tokens)) or "본문"))
 
     calls.clear(); report.generate(object(), account="1", tier="mid")
-    assert len(calls) == 9 and all(m == report._MODEL_SONNET and t == 1500 for m, t in calls)
+    assert len(calls) == 8 and all(m == report._MODEL_SONNET and t == 1500 for m, t in calls)
 
     calls.clear(); report.generate(object(), account="1", tier="deep", model="opus")
-    assert len(calls) == 16 and all(m == report._MODEL_OPUS and t == 2200 for m, t in calls)
+    assert len(calls) == 15 and all(m == report._MODEL_OPUS and t == 2200 for m, t in calls)
 
     calls.clear(); report.generate(object(), account="1", tier="deep")  # default model = sonnet
-    assert len(calls) == 16 and all(m == report._MODEL_SONNET for m, t in calls)
+    assert len(calls) == 15 and all(m == report._MODEL_SONNET for m, t in calls)
 
     calls.clear(); report.generate(object(), account="1", tier="mid", model="opus")  # pinned
-    assert len(calls) == 9 and all(m == report._MODEL_SONNET for m, t in calls)
+    assert len(calls) == 8 and all(m == report._MODEL_SONNET for m, t in calls)
 
 
 def test_generate_parallel_preserves_order_and_isolates_section_failure(monkeypatch):
@@ -591,14 +591,14 @@ def test_generate_current_source_shapes_do_not_claim_active_invariants_healthy(m
 
     def render(prompt, ctx, *a):
         data = json.loads(ctx)
-        if "intended_vs_actual" in data:
-            captured.extend(data["intended_vs_actual"]["verdicts"])
+        captured.append(data)
         return "body"
 
     monkeypatch.setattr(report, "_bedrock_render", render)
-    report.generate(object(), account="1")
-    assert len(captured) == 3
-    assert all(v["passed"] is None for v in captured)
+    _, summary, _ = report.generate(object(), account="1")
+    assert len(summary["unassessed"]) == 3
+    assert all(v["passed"] is None for v in summary["unassessed"])
+    assert all("intended_vs_actual" not in ctx for ctx in captured)
 
 
 @pytest.mark.parametrize("degraded,expected_improvements", [(True, []), (False, [1])])

@@ -5,7 +5,9 @@
 // The two classes are key-distinct (class in the node PK + edge UNIQUE), so each mark-sweeps only
 // its own rows.
 //
-//   Run from a VPC-with-Aurora context (the ECS task or a bastion), with the Aurora env set:
+//   Run from a VPC-with-Aurora context (the ECS task or a bastion), with the Aurora env set
+//   and HOST_ACCOUNT_ID set to the configured host account for explicit-account DB host matching.
+//   This setting does not verify telemetry claims or grant queue-to-inventory attribution:
 //     cd web && npx tsx ../scripts/v2/graph-rebuild.mjs
 //
 // The post-inventory-sync AUTO trigger (a 'graph-rebuild' worker job) invokes this same logic.

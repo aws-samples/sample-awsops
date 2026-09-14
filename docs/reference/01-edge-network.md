@@ -28,8 +28,9 @@ viewer ──TLS──> CloudFront ──TLS (https-only:443)──> VPC Origin
   `origin_ssl_protocols = ["TLSv1.2"]`). The distribution origin `domain_name` is set to the
   **public FQDN** (not the ALB DNS name) so the TLS SNI matches the ALB's regional ACM cert.
 - **Internal ALB only — no public ALB.** `aws_lb.internal` is `internal = true` with an
-  **HTTPS:443 listener** backed by a **regional ACM certificate** (validated via the
-  ALB certificate's own `domain_validation_options`). The ALB forwards to a `target_type = "ip"`
+  **HTTPS:443 listener** backed by a **regional ACM certificate** (managed with shared
+  validation CNAMEs, or an already-issued external certificate as described below).
+  The ALB forwards to a `target_type = "ip"`
   target group on the Fargate container port (`3000`), health check path `/api/health`.
 - **ALB security group** allows **443 only from the CloudFront managed SG
   `CloudFront-VPCOrigins-Service-SG`**, looked up via a plural `data "aws_security_groups"` with
@@ -54,6 +55,71 @@ viewer ──TLS──> CloudFront ──TLS (https-only:443)──> VPC Origin
 - **Caching:** default behavior uses `Managed-CachingDisabled` + `Managed-AllViewer`
   (SSE/dynamic); `/_next/static/*` uses `Managed-CachingOptimized`.
 
+### Certificate ownership and deferred DNS / 인증서 소유권·DNS 보류
+
+| Input | Default | Effect |
+|---|---|---|
+| `publish_service_dns` | `true` | Own service A aliases; false omits them and would delete existing aliases |
+| `existing_cf_certificate_arn` | `null` | null retains Terraform ACM ownership; an external ARN reuses an issued `us-east-1` certificate covering every CloudFront alias |
+| `existing_alb_certificate_arn` | `null` | null retains Terraform ACM ownership; an external ARN reuses an issued stack-Region certificate covering the origin hostname |
+| `ci_domain_rollout` | `false` | CI metadata only; saved-plan true pins dev/full DNS scope to configured service A/ACM CNAME owners in the selected zone |
+
+`local.certificate_validation_options` takes tokens from the managed CloudFront certificate,
+or from the managed ALB certificate if only CloudFront is external. Both external means no
+managed validation records or waiters. Both null retains the existing shared CNAME owner.
+`publish_service_dns=false` alone does **not** prohibit certificate-validation writes.
+
+When DNS changes are prohibited, the dispatch preflight reads Terraform state without
+refreshing or locking it. It validates each existing managed certificate but keeps the
+corresponding input as JSON **null**, never externalizes its ARN, and preserves existing
+service alias publication. Otherwise it prefers the attached external certificate, excludes
+all certificates managed in this state (including child modules) from external selection, and verifies
+account, Region, SAN coverage, trusted CA chain and more than 24 hours of remaining validity.
+A new/deferred stack keeps service aliases absent. Planned DNS creates, updates, replacements
+and deletes are blocked, including validation CNAMEs and **all `aws_service_discovery*`**
+resources. First-time Steampipe/Cloud Map DNS is therefore unavailable under this prohibition.
+
+CloudFront supports RSA 2048/3072/4096 and ECDSA P-256/P-384 for this preflight; its deliberate
+RSA minimum is 2048 even though AWS also supports 1024. See the
+[official certificate requirements](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cnames-and-https-requirements.html)
+and [ACM key algorithm enum](https://docs.aws.amazon.com/acm/latest/APIReference/API_CertificateDetail.html).
+External certificate owners must monitor expiry and arrange renewal/reimport before expiry.
+Existing ACM validation records must remain intact; CI never creates validation records as a
+workaround for an unavailable certificate in no-DNS mode.
+
+The serving topology and Lambda@Edge authentication remain intact (ADR-002). Before service
+DNS publication, CI and `make deploy` smoke tests connect to the CloudFront domain while
+requesting the service URL with curl `--connect-to`, preserving Host, SNI and TLS verification.
+Public users still need the service DNS record to resolve normally. Use explicit
+same-branch/SHA dispatch plans throughout this lifecycle; PR/push plans are advisory.
+Any later cutover follows ADR-016 and requires separate DNS authorization; see
+[the deployment runbook §5](../runbooks/dev-repo-setup.md).
+
+Dev PR/push plans preserve ownership/publication from state without live ACM/SAN/trust
+validation. Advisory DNS allowance only reports changes; those plans can never be applied.
+Repo-level `DOMAIN_NAME_DEV` / `HOSTED_ZONE_NAME_DEV` override dev console and plan together
+through gitignored `ci-domain.auto.tfvars.json` (tracked copies are rejected).
+`CERTIFICATE_MODE_DEV=managed` selects null external inputs and rejects conflicting ARNs.
+Every authorized [domain-stage plan](../runbooks/dev-domain-rollout.md) sets
+`domain_rollout=true`; apply reads its saved `ci_domain_rollout` marker, never an apply-time
+toggle. Ordinary full plans retain broad DNS behavior only with explicit DNS permission.
+Published old-domain retirement needs a separate expressly authorized old-configuration plan.
+Public summaries include certificate suffixes/publication, change counts/addresses and,
+for active rollout, public zone name/ID/NS; never raw state/plan or full ARNs/account IDs.
+
+DNS 금지 dispatch는 상태를 읽어 Terraform 관리 인증서를 JSON null로 유지하고 기존 서비스
+별칭을 보존합니다. 외부 인증서는 기존 연결을 우선하며 이 상태의 관리 인증서는 검색에서
+제외합니다. 검증 CNAME과 사설 Cloud Map을 포함한 모든 DNS 변경은 차단됩니다.
+인증서가 없으면 배포를 중단하며, 외부 인증서 소유자가 만료 감시·갱신을 담당합니다.
+서비스 DNS 게시 전 스모크는 CloudFront 연결만 우회하고 Host·SNI·TLS 인증은 유지합니다.
+일반 사용자의 접근에는 DNS가 필요하며, 이후 전환은 별도 승인을 전제로 ADR-016을 따릅니다.
+dev PR/push는 상태의 소유권·게시를 보존하고 실시간 인증서 검증 없이 DNS 변경을 보고하는
+참고 계획이며 적용할 수 없습니다. 저장소 이름 변수는 console/plan에 함께 반영되며
+`managed` 모드는 외부 ARN 충돌을 거부합니다. 활성 dev/full 전환은 plan에서
+`domain_rollout=true`를 저장하고 apply는 그 메타데이터만 사용합니다. 일반 full DNS 변경도
+명시적 승인이 필요하며 이전 도메인 폐기는 이전 설정의 별도 승인 계획으로만 진행합니다.
+공개 요약에 제한된 존 이름·ID·NS를 포함하되 전체 ARN·계정·원본 상태/계획은 제외합니다.
+
 ## Decisions (ADRs) / 결정
 
 - [ADR-001 — v2 foundation (ECS Fargate + Aurora split)](../decisions/001-v2-foundation.md):
@@ -62,6 +128,9 @@ viewer ──TLS──> CloudFront ──TLS (https-only:443)──> VPC Origin
 - [ADR-014 — cross-cutting (CloudFront CachingDisabled)](../decisions/014-cross-cutting-cache-i18n-cdn.md):
   the default cache behavior runs with `CACHING_DISABLED` so dynamic dashboard responses and
   SSE streams are never cached/buffered at the edge.
+- ADR-002 preserves edge authentication and private HTTPS origin boundaries; ADR-016 governs
+  alias/certificate cutover. These deployment controls grant no new DNS or runtime-mutation
+  exception. ADR bodies remain in the private upstream repository.
 
 ## Key files / 핵심 파일
 
@@ -72,6 +141,12 @@ viewer ──TLS──> CloudFront ──TLS (https-only:443)──> VPC Origin
 | `terraform/foundation/providers.tf` | Dual-region providers — `ap-northeast-2` + `aws.use1` (us-east-1) for the CloudFront cert |
 | `terraform/foundation/backend.tf` | Partial S3 backend (`backend "s3" {}`), TF `>= 1.15`, provider `~> 6.0` |
 | `backend.hcl` | Generated by `make configure`; supplies bucket/key/region/`use_lockfile` at init (gitignored) |
+| `scripts/v2/ci_dns_policy.py` | State-aware certificate selection, typed tfvars overrides and all-DNS plan gate |
+| `scripts/v2/ci_dev_domain.py` | Dev overrides, immutable plan rollout marker and scoped public-zone/record checks |
+| `scripts/v2/ci_plan_context.py` | Successful explicit dispatch, repository/branch/SHA provenance for saved-plan apply |
+| `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/pg8000-requirements.txt` | Locked layer preparation and private plan-bound assets; caller owns encryption/cleanup / 레이어 준비·계획 결합 asset, 호출 측 암호화·정리 |
+| `scripts/v2/test_ci_tf_assets.py` | Saved-plan artifact and local targeted-plan regressions / 저장 artifact·로컬 타깃 계획 회귀 검사 |
+| `terraform/foundation/tests/dns_deferred.tftest.hcl` | Offline mocked plans; Python CI tests cover managed/external state roundtrips |
 
 Also relevant: `terraform/foundation/workload.tf` (internal ALB, HTTPS:443 listener, ALB SG +
 `CloudFront-VPCOrigins-Service-SG` lookup, ECS service/task) — the ALB-side counterpart to `edge.tf`.
@@ -89,8 +164,7 @@ The 504 → 200 root cause (reuse-critical — re-read before changing the edge)
 1. **CF → ALB must be TLS end-to-end.** Set the VPC Origin `origin_protocol_policy = https-only`
    **and** the distribution origin `domain_name` to the **public FQDN** (this drives the TLS SNI
    to match the ALB cert). The ALB needs an **HTTPS:443 listener + a regional ACM cert**,
-   validated through its own ACM validation records; the CloudFront certificate
-   separately uses its own validation options.
+   managed through shared validation CNAMEs or supplied as an issued external certificate.
 2. **ALB SG must allow 443 from `CloudFront-VPCOrigins-Service-SG`.** A broad VPC-CIDR-only :443
    ingress rule produces a **persistent 504** — CloudFront's VPC Origin ENIs are reached via that
    managed SG, not by CIDR. Reference it with a plural `data "aws_security_groups"` lookup filtered
@@ -105,14 +179,6 @@ The 504 → 200 root cause (reuse-critical — re-read before changing the edge)
 Also: SSE must not buffer at the edge — keep `CACHING_DISABLED` on the dynamic behavior (ADR-028)
 and ensure origin read timeout exceeds the event interval. The real app (P1d) must emit an SSE
 heartbeat at least every ~20s.
-
-Staged dev uses default-off `defer_edge_until_dns` and DNS-record deferrals only
-for fresh bootstrap/manual DNS. Once certificates are issued, it adds the HTTPS
-listener, VPC origin and ECS load-balancer attachment, then converges managed-SG
-ingress. The manual path has an explicit `reviewed_origin_bootstrap` exception
-for that named bootstrap check only; replacement checks remain strict.
-dev 단계별 배포는 신규 bootstrap에서만 edge/DNS를 유예하고 발급 후 HTTPS 경로와
-managed-SG ingress를 완성합니다. 수동 예외도 해당 SG check에만 한정됩니다.
 
 ## Source / 출처
 

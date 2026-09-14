@@ -11,6 +11,7 @@ import asyncio
 import sys
 import types
 import unittest
+from unittest.mock import AsyncMock, patch
 
 
 def _install_stubs():
@@ -44,7 +45,23 @@ def _install_stubs():
 
 
 _install_stubs()
-import agent  # noqa: E402  (import after stubs are installed)
+# Gateway discovery shells out at import time; an offline unit suite must never
+# discover resources using the developer/runner's ambient AWS credentials.
+with patch("subprocess.run", return_value=types.SimpleNamespace(stdout='{"items":[]}')):
+    import agent  # noqa: E402  (import after stubs are installed)
+
+
+class ReadinessEntrypointTest(unittest.TestCase):
+    def test_failure_is_one_structured_event_and_never_chat_fallback(self):
+        import readiness
+        payload = {"mode": "deployment_readiness"}
+        failure = {"status": "not_ready", "reason": "inventory_unavailable"}
+        async def consume():
+            return [event async for event in agent.handler(payload)]
+        with patch.object(readiness, "handle_readiness", new=AsyncMock(return_value=failure)) as probe, \
+                patch.object(agent, "build_conversation", side_effect=AssertionError("chat fallback")):
+            self.assertEqual(asyncio.run(consume()), [failure])
+            probe.assert_awaited_once()
 
 
 class FakeTool:

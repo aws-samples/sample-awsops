@@ -29,19 +29,26 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   (`storage_encrypted`) and the master-user secret.
 - **Credentials**: RDS-managed master secret (`manage_master_user_password = true`,
   master username `awsops_admin`) in Secrets Manager — exposed as output
-  `aurora_secret_arn`. The private migration task reads it at runtime; the web app
-  uses its dedicated `awsops_web` IAM database identity, not the master password.
+  `aurora_secret_arn` for operator migrations. The web pool uses the separate `awsops_web`
+  IAM-authenticated database role, not this master secret.
+  마스터 시크릿은 운영자 마이그레이션용이며 웹 풀은 별도 `awsops_web` IAM DB 역할을 사용한다.
 - **Network**: lives in the reused `mgmt-vpc` private subnets (DB subnet group
   `awsops-v2-aurora`). SG `awsops-v2-aurora-sg` allows **:5432 from the app/Fargate
   service SG**, plus an optional VPC-CIDR ingress (gated by `var.allow_vpc_db_access`)
   for in-VPC schema migration from the deploy host.
 - **Backups**: 7-day retention. `deletion_protection = false` + `skip_final_snapshot = true`
   (dev-only — flip both for prod).
-- **Schema**: frozen ADR-001 `schema.sql` plus cumulative ULID migrations,
-  tracked by `schema_migrations`. Private CI sets `INITIALIZE_EMPTY_DB=1`:
-  only an empty database without a ledger receives the transactional baseline,
-  TEXT ledger/checksum upgrade and then pending ULIDs. Occupied untracked DBs
-  fail closed; an existing ledger never causes baseline replay.
+- **Schema**: the **ADR-001 baseline schema** (Phase-1 7-table baseline, **frozen**; expanded since via ULID `migrations/*` — current table count per `schema.sql`, incl. incident/k8s/integrations/topology/ai_usage/accounts) + a P2 `worker_jobs` table, applied via
+  `make migrate` from an approved in-VPC host or the private migration runtime. A new empty DB
+  requires `INITIALIZE_EMPTY_DB=1` for its initial migration; the baseline plus ledger conversion/checksum commit
+  atomically before ULIDs. Any user object without a ledger prevents initialization.
+  Ordinary host commands set this once. The default-off manual development migration template
+  retains the flag for deliberate dispatches; an existing ledger skips initialization and an
+  occupied unversioned database still fails closed. See the [runtime guide](../../terraform/foundation/migrations/README.md).
+  새 빈 DB는 최초 초기화가 필요하며 baseline·원장 변환·checksum은 원자적으로 적용한다.
+  일반 호스트 명령은 플래그를 한 번만 설정한다. 기본 비활성 수동 개발 템플릿은 명시적 dispatch용으로
+  플래그를 유지하지만 기존 원장이 있으면 초기화를 건너뛰며, 원장 없는 비어 있지 않은 DB는 거부한다.
+  원장 없이 사용자 객체가 있으면 초기화를 거부한다.
 - **App access**: **node-pg** (`web/lib/db.ts`). No *live* Steampipe in v2 — live AWS
   queries go through AgentCore MCP Lambda tools; the ops gateway already has a limited
   Aurora-backed `inventory-read-target`, while direct domain API targets remain registered.
@@ -73,18 +80,12 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   `steampipe_enabled=false`, migrate, create/push the image, and enable the feature only in the
   final saved-plan apply. `make deploy` rolls the web service, not this Lambda; if this order cannot
   be met, do not deploy the new Lambda.
-  Staged dev follows this gate: existing `core` only verifies the migration
-  template, outputs and ECR; `release` migrates before its full saved-plan apply.
-  Only empty-state bootstrap creates core infrastructure with web count zero.
-  An existing stack missing migration prerequisites stops explicitly.
-  (기존 dev core는 선행 리소스를 조회만 하며 migration 후 전체 저장 plan을 적용한다.
-  빈 신규 state만 web count 0으로 bootstrap하고 선행 조건이 없는 기존 stack은 중단한다.)
 
 ### ADR-001 schema tables / 스키마 테이블
 
 | Table | Replaces (v1) | Notes |
 |-------|---------------|-------|
-| `schema_migrations` | — | TEXT version ledger with baseline marker/checksum and cumulative ULIDs; legacy integer rows are retained during explicit bootstrap |
+| `schema_migrations` | — | applied-version tracker; seeded with version 1 |
 | `inventory_snapshots` | `data/inventory/<account>/*.json` | `(account_id, captured_at)` indexes; JSONB `payload`. Since 2026-09-04 the sync writes one daily row per (trusted account, resource_type) — plus derived security series (`public_s3_buckets`/`open_security_groups`/`unencrypted_ebs`, lockstep with `web/lib/security-findings.ts`); host-only SDK types stay `self`-scoped. No prune — the trend route filters by resolved account scope + a snake_case type charset (legacy v1 backfill label rows excluded) |
 | `cost_snapshots` | `data/cost/<account>/*.json` | UPSERT on `(account, period, granularity)` |
 | `agentcore_memory` | `data/memory/<user>/*.json` | per-user, 365-day TTL via `expires_at` (ADR-004) |
@@ -107,10 +108,40 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
 
 ## Key files / 핵심 파일
 
+- `scripts/v2/ci_db_diagnostics.py`, `.github/workflows/terraform.yml`,
+  `scripts/v2/test_ci_db_diagnostics.py` — default-off manual dev-plan diagnostics
+  (`CI_DB_DIAGNOSTICS_DEV=true`, `workflow_dispatch`, `ap-northeast-2`), after encrypted plan upload.
+  Publishes a fixed safe JSON projection to the public Actions log/summary: bounded web errors
+  and connection timings, service-target configuration comparisons, and severity-filtered tails
+  from at most two recent PostgreSQL files. Partial/unavailable reads are advisory and retain
+  independent evidence; no DB connection, new IAM grants, AWS writes or readiness bypass
+  (ADR-005 read-only boundary). See [activation, fields and limits](../runbooks/dev-repo-setup.md#dev-db-diagnostics).
+  The same optional read projection batches seven IAM-auth outcome metrics and three pressure
+  metrics for the configured first instance in one bounded request; metadata exposes configured
+  min/max ACUs. Clean empty metric reads are available with missing data, not healthy outcomes.
+  Server lifecycle text is explicitly unverified and forgeable; auth-success logs require
+  log_connections, whose effective value is unknown. No timeout/auth/capacity setting changes.
+  기본 비활성 수동 dev plan 진단이며 같은 플래그·이벤트·리전 조건으로 암호화 plan 업로드 후 실행한다.
+  제한된 웹 오류/timing, 서비스 대상 구성 비교, 최근 PostgreSQL 파일 최대 2개의 severity-filtered
+  tail을 고정된 안전한 JSON으로 공개 Actions 로그/요약에 게시한다. 부분/실패 조회는 참고용이며
+  독립 결과를 유지한다. ADR-005 읽기 전용 범위로 DB 연결·새 IAM 권한·AWS 변경·준비 검사 우회가 없다.
+  같은 선택적 읽기 투영에서 설정된 첫 인스턴스의 IAM 인증 지표 7개·부하 지표 3개를 제한된 단일
+  요청으로 읽고 설정된 최소/최대 ACU를 표시한다. 정상 빈 지표 조회는 available/missing이며
+  정상 판정이 아니다. 서버 lifecycle 텍스트는 미검증·위조 가능하며 인증 성공 로그는 실제 설정이
+  미확인인 log_connections가 필요하다. timeout·인증·용량 설정은 바꾸지 않는다.
+- `terraform/foundation/ci-migrations.tf`, `.github/workflows/deploy-migrations.yml`,
+  `scripts/v2/ci/run-migration.mjs` — default-off manual development migration task,
+  scoped secret-read IAM and verified private execution (ADR-005 operator boundary).
+  기본 비활성 수동 개발 migration·시크릿 한정 IAM·검증된 사설 실행을 담당한다.
 - `terraform/foundation/data.tf` — KMS key + alias, DB subnet group, SG,
   Aurora cluster + writer instance, RDS-managed master secret.
 - `terraform/foundation/data/schema.sql` — ADR-001 7-table schema + `schema_migrations`
   + P2 `worker_jobs` (idempotent).
+- `scripts/v2/migrate.mjs`, `initialize-db.mjs` — atomic empty-DB baseline and checksum-verified
+  ULIDs; `scripts/v2/eks/rds-ca-bundle.pem` is the shared migration TLS trust bundle despite
+  the historical `eks/` path. See [migration operations](../../terraform/foundation/migrations/README.md)
+  for build/run/env/IAM/network requirements.
+  초기화·ULID 적용·TLS는 migration runtime이 담당하며 `eks/`의 CA bundle을 공용 사용한다.
 - `terraform/foundation/migrations/01M1B3NB288P56BDR1GMEN9GH9_inventory_sync_freshness.sql`
   — additive durable inventory success fields, `partial` status, and the safe explicit-column
   `sql_reader.inventory_sync_runs` view.
@@ -145,10 +176,11 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   flip both (and set `final_snapshot_identifier`) for prod.
 - A **pre-upgrade manual snapshot is the rollback anchor** — a major in-place
   *downgrade* is impossible.
-- The CI migration task uses private subnets, the service SG, scoped runtime
-  secret access and verified RDS CA TLS. Manual in-VPC migrations still use
-  `make migrate`; use `INITIALIZE_EMPTY_DB=1` only for a proven fresh database.
-  CI migration은 private subnet/서비스 SG와 runtime secret, 검증된 RDS CA를 사용한다.
+- Use the migration runner with private connectivity and verified RDS CA/hostname. Check the
+  approved host/task SG and private endpoint when connectivity fails; do not broaden ingress
+  or bypass TLS. Existing INTEGER ledgers use the separate controller-confirmed BOOTSTRAP gate.
+  승인된 사설 SG/endpoint를 확인하고 TLS/ingress 보호를 완화하지 않는다.
+  기존 INTEGER 원장은 controller가 확인한 별도 BOOTSTRAP 절차로 전환한다.
 
 ## Source / 출처
 

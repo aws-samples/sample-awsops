@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 // FakeTraceSource lives in trace-source.ts, which transitively imports datasources →
 // integration-credentials (aws-sdk). Stub those so this DB-aggregation test needs no AWS SDK.
 vi.mock('@/lib/datasources', () => ({
@@ -41,6 +41,34 @@ function mockPool(infraNodeRows: unknown[] = []) {
 
 const span = (over: Partial<TraceSpan>): TraceSpan => ({
   traceId: 't', spanId: 's', service: 'svc', kind: 'SERVER', startMs: 0, durationMs: 1, ...over,
+});
+
+afterEach(() => vi.unstubAllEnvs());
+
+describe('trusted host account DB bridge', () => {
+  it.each([
+    ['111122223333', 'rds:orders'],
+    ['444455556666', undefined],
+    ['self', 'rds:orders'],
+    [undefined, 'rds:orders'],
+  ])('bridges account %s only when it belongs to the configured host', async (accountId, expected) => {
+    vi.stubEnv('HOST_ACCOUNT_ID', '111122223333');
+    const { pool, params } = mockPool([{ id: 'rds:orders', kind: 'rds', meta: { host: 'orders.example.test' } }]);
+    await rebuildTraceGraph(pool as never, [new FakeTraceSource([
+      span({ dbSystem: 'postgresql', dbHost: 'orders.example.test', accountId }),
+    ])]);
+    const db = params.find(p => p[1] === 'db')!;
+    expect(JSON.parse(String(db[3])).infra_ref).toBe(expected);
+  });
+
+  it('does not infer the host account from telemetry when trusted configuration is absent', async () => {
+    vi.stubEnv('HOST_ACCOUNT_ID', '');
+    const { pool, params } = mockPool([{ id: 'rds:orders', meta: { host: 'orders.example.test' } }]);
+    await rebuildTraceGraph(pool as never, [new FakeTraceSource([
+      span({ dbSystem: 'postgresql', dbHost: 'orders.example.test', accountId: '111122223333' }),
+    ])]);
+    expect(JSON.parse(String(params.find(p => p[1] === 'db')![3])).infra_ref).toBeUndefined();
+  });
 });
 
 describe('rebuildTraceGraph aggregation', () => {

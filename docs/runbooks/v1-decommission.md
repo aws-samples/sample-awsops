@@ -153,9 +153,31 @@ aws cloudwatch describe-alarms --query "MetricAlarms[?contains(AlarmActions,\`$V
 
 ## Phase 2 — 도메인 컷오버 (Terraform) / Domain cutover
 
+**Current-code note / 현행 코드 주의:** The sequence below records the original ADR-016
+cutover. Current `aws_route53_record.alias` already uses
+`for_each = var.publish_service_dns ? toset(concat([var.domain_name], var.extra_domain_aliases)) : toset([])`;
+do not replace it with the historical unconditional examples below. Managed certificate
+addresses are now `aws_acm_certificate.cf[0]` / `.alb[0]` (moved blocks preserve old ownership),
+and nullable external ARN inputs can select already-issued certificates.
+
+DNS deferral prohibits **all** steps that change DNS, including certificate CNAME validation.
+Do not execute this cutover while that prohibition is active. After separate DNS authorization,
+use a fresh explicit full Terraform plan dispatch with the authorized `allow_dns_changes`
+setting (`allow_dns_changes=true` on **both** plan and apply dispatches for a DNS-changing
+cutover), then apply only its successful same-branch/SHA plan. Apply does not inherit the
+plan's DNS permission. Routine CI rejects managed-certificate externalization and owned
+validation-CNAME deletion/replacement; each needs a separately reviewed ownership/retirement procedure.
+Push plans are advisory. See [dev-repo-setup §5](dev-repo-setup.md) for ownership preservation.
+
+아래는 최초 전환 기록이다. 현재 코드는 이미 조건부 for_each와 인증서 moved 블록을 포함하므로
+과거 예제로 되돌리지 않는다. DNS 금지 중에는 검증 CNAME을 포함한 전환 작업을 실행하지 않는다.
+별도 승인 후에만 계획·적용 dispatch 양쪽에 `allow_dns_changes=true`를 명시하고 새 전체
+계획을 검토해 같은 브랜치·SHA로 적용한다. 일반 CI에서 관리 인증서 외부화 및 소유한 검증
+CNAME 삭제·교체는 금지하며 별도 소유권 이전/폐기 검토 절차가 필요하다.
+
 **CloudFront는 동일 별칭(CNAME)을 두 distribution에 동시 등록할 수 없다** — v2에 별칭을 추가하는 일반 `UpdateDistribution`을, v1이 아직 그 별칭을 갖고 있는 동안 실행하면 `CNAMEAlreadyExists`로 즉시 실패한다. 같은 계정 내 이동에는 전용 원자적 명령 `aws cloudfront associate-alias`를 쓴다.
 
-`edge.tf`의 `aws_route53_record.alias`(현재 **singleton**, `for_each` 아님 — line ~124)를 그대로 두고 v1 도메인 키를 바로 import하면 "resource address does not exist in configuration"으로 실패한다. **순서가 중요하다**: ① cert SAN만 먼저 → ② 기존 v2 레코드를 `moved` 블록으로 singleton→for_each(v2 도메인만) 전환·apply(순수 state 정리, 실제 변경 없음) → ③ **v1 CFN에서 레코드 소유권을 먼저 해제**(DNS·별칭 어느 쪽도 안 건드리는 순수 CFN 작업이라 v1은 계속 정상 서빙) → ④ associate-alias 원자 이동 → ⑤ for_each에 v1 도메인 추가 + import + 새 plan/apply. **CFN 소유권 해제를 alias 이동보다 먼저 끝내야 한다** — 반대 순서(먼저 손댔던 초안)로 하면 alias가 v2로 넘어간 뒤 CFN 배포(2회, 수 분 소요)가 끝나기까지 Route53이 여전히 v1을 가리켜 v1 CloudFront가 그 Host를 거부하는 outage 창이 CDK 배포 시간만큼 벌어진다. 이 순서로도 ④~⑤ 사이엔 짧은 순단이 가능하니(associate-alias 직후 ~ Route53 apply 완료 전) 그 구간만 가능한 한 연속으로 수행한다 — "무중단"이 아니라 "outage 창을 CFN 배포 시간에서 apply 한 번으로 최소화"하는 절차다.
+최초 전환 당시 `edge.tf`의 `aws_route53_record.alias`는 **singleton**이었다. 그 상태로 v1 도메인 키를 바로 import하면 "resource address does not exist in configuration"으로 실패한다. **순서가 중요하다**: ① cert SAN만 먼저 → ② 기존 v2 레코드를 `moved` 블록으로 singleton→for_each(v2 도메인만) 전환·apply(순수 state 정리, 실제 변경 없음) → ③ **v1 CFN에서 레코드 소유권을 먼저 해제**(DNS·별칭 어느 쪽도 안 건드리는 순수 CFN 작업이라 v1은 계속 정상 서빙) → ④ associate-alias 원자 이동 → ⑤ for_each에 v1 도메인 추가 + import + 새 plan/apply. **CFN 소유권 해제를 alias 이동보다 먼저 끝내야 한다** — 반대 순서(먼저 손댔던 초안)로 하면 alias가 v2로 넘어간 뒤 CFN 배포(2회, 수 분 소요)가 끝나기까지 Route53이 여전히 v1을 가리켜 v1 CloudFront가 그 Host를 거부하는 outage 창이 CDK 배포 시간만큼 벌어진다. 이 순서로도 ④~⑤ 사이엔 짧은 순단이 가능하니(associate-alias 직후 ~ Route53 apply 완료 전) 그 구간만 가능한 한 연속으로 수행한다 — "무중단"이 아니라 "outage 창을 CFN 배포 시간에서 apply 한 번으로 최소화"하는 절차다.
 
 ### 2.1 ACM SAN만 먼저 적용 (별칭·레코드는 아직 안 건드림)
 

@@ -24,43 +24,77 @@ name: Deploy Web
 # Fork PRs never reach this workflow (push/dispatch only) and GitHub denies
 # fork runs secrets and id-token anyway.
 #
-# Dev provisions core first, builds immutable web/migration images using branch
-# OIDC, then migrates and pins an ECS revision by digest using environment OIDC.
-# Main/user branches retain their existing web-latest promotion procedure.
+# Tag discipline: build pushes ONLY web-<sha>; the deploy job's
+# pin step is the ONLY writer of that stack's :web-latest — approval/rollout
+# is bound to a build digest and producer receipt, and ECS task churn re-resolves to the
+# last pinned image.
 
 on:
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
-    paths: ["web/**", "CHANGELOG.md", "terraform/foundation/**", "scripts/v2/ci/**", "scripts/v2/migrate*.mjs", "scripts/v2/initialize-db.mjs", "scripts/v2/package*.json", "scripts/v2/eks/rds-ca-bundle.pem", ".github/workflows/deploy-web.yml"]
+    paths: ["web/**", "CHANGELOG.md"]
   workflow_dispatch:
     inputs:
       image_sha:
-        description: "SHA to promote (main/user branches). Dev accepts only the dispatched dev SHA; use a revert commit for rollback."
+        description: "Full commit SHA whose web-<sha> image to promote and roll (default: the dispatched ref's HEAD)"
+        required: false
+      image_build_run_id:
+        description: "Successful Deploy Web build run for image reuse/rollback; required unless build=true."
         required: false
       build:
-        description: "Build before rollout (main/user branches). Dev always builds or reuses this commit's immutable images."
+        description: "Build & push web-<HEAD sha> first, then roll it (for a stack whose image was never built / was lost). Mutually exclusive with image_sha."
+        type: boolean
+        required: false
+        default: false
+      verify_database:
+        description: "After deployment, sign in as the configured dev demo user and verify /api/db (dev branch only)."
         type: boolean
         required: false
         default: false
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
-# Hold the dev lock across all three jobs and share it with manual Terraform
-# apply. Other branches retain separate build/rollout locks below.
-concurrency:
-  group: ${{ github.ref_name == 'dev' && 'deployment-dev' || format('deploy-web-run-{0}', github.run_id) }}
-  cancel-in-progress: false
+# Per-job concurrency with separate build/rollout groups (a pending production
+# rollout must never be displaced by a push's build-only run). main queues;
+# every other branch is newest-wins.
 
 jobs:
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Validate image selection before builds or migrations
+        env:
+          BUILD: ${{ inputs.build }}
+          IMAGE_SHA: ${{ inputs.image_sha }}
+          PRODUCER_RUN: ${{ inputs.image_build_run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then exit 0; fi
+          [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || exit 1
+          if [ "$BUILD" = "true" ]; then
+            [ -z "$IMAGE_SHA" ] && [ -z "$PRODUCER_RUN" ] || {
+              echo "::error::A fresh build cannot select another image or producer run"; exit 1;
+            }
+          else
+            [[ "${IMAGE_SHA:-$GITHUB_SHA}" =~ ^[a-f0-9]{40}$ ]] &&
+            [[ "$PRODUCER_RUN" =~ ^[1-9][0-9]{0,14}$ ]] || {
+              echo "::error::Image reuse requires a full source SHA and successful producer run ID"; exit 1;
+            }
+          fi
+
   build:
     name: Build & push (arm64)
-    if: github.ref_name != 'dev' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build))
+    needs: [guard]
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build)
     runs-on: sample-awsops
     concurrency:
       group: deploy-web-build-${{ github.ref_name }}
-      cancel-in-progress: false
+      cancel-in-progress: ${{ github.ref_name != 'main' }}
     env:
       BRANCH: ${{ github.ref_name }}
       MAIN_ROLE: ${{ secrets.AWS_CI_BUILD_ROLE_ARN }}
@@ -68,7 +102,19 @@ jobs:
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
       DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
       USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+      project: ${{ steps.stack.outputs.project }}
     steps:
+      - name: Validate database verification ref
+        env:
+          VERIFY_DATABASE: ${{ inputs.verify_database }}
+        run: |
+          if [ "$VERIFY_DATABASE" = "true" ] && [ "$GITHUB_REF" != "refs/heads/dev" ]; then
+            echo "::error::Database verification is only supported on the dev branch."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - name: Select the branch's stack (fail-closed — no cross-branch fallback)
@@ -111,6 +157,22 @@ jobs:
           PROJECT="${PROJECT:-awsops-v2}"   # variables.tf default
           echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
 
+      - name: Verify the web ECR repository exists before building
+        env:
+          PROJECT: ${{ steps.stack.outputs.project }}
+        run: |
+          set -euo pipefail
+          # Use an existing push permission, not DescribeRepositories. A valid,
+          # intentionally absent digest returns LayerNotFound for an existing repo.
+          # A missing repo or denied access makes the CLI fail before the build.
+          if ! aws ecr batch-check-layer-availability --region ap-northeast-2 \
+            --repository-name "${PROJECT}-web" \
+            --layer-digests "sha256:$(printf '%064d' 0)" \
+            --no-cli-pager >/dev/null; then
+            echo "::error::Cannot access the web ECR repository. Review/apply an ecr-bootstrap plan for this stack before building; retain all permission checks."
+            exit 1
+          fi
+
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
@@ -124,29 +186,71 @@ jobs:
         run: cp CHANGELOG.md web/CHANGELOG.md
 
       - name: Build and push (arm64)
+        id: image
         uses: docker/build-push-action@v6
         with:
           context: web
           platforms: linux/arm64
           push: true
-          # ONLY the immutable per-commit tag — :web-latest is written solely
+          # ONLY the per-commit tag — promotion uses the returned digest.
           # by the deploy job's pin step.
           tags: ${{ steps.ecr.outputs.registry }}/${{ steps.stack.outputs.project }}-web:web-${{ github.sha }}
+
+      - name: Record the image producer
+        env:
+          IMAGE_PROJECT: ${{ steps.stack.outputs.project }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          PROOF_DIR="$RUNNER_TEMP/web-proof-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir "$PROOF_DIR"
+          python3 scripts/v2/ci_web_image.py receipt --output "$PROOF_DIR/web-build.json"
+
+      - name: Retain the build receipt for explicit reuse
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/web-proof-${{ github.run_id }}-${{ github.run_attempt }}/web-build.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean the local build receipt
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/web-proof-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+  migrate-dev:
+    needs: [guard, build]
+    if: >-
+      !cancelled() && needs.guard.result == 'success' && github.ref == 'refs/heads/dev' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    uses: ./.github/workflows/deploy-migrations.yml
+    with:
+      from_deploy_web: true
+    secrets:
+      TF_TFVARS_DEV: ${{ secrets.TF_TFVARS_DEV }}
+      TF_BACKEND_HCL_DEV: ${{ secrets.TF_BACKEND_HCL_DEV }}
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      AWS_CI_BUILD_DEV_ROLE_ARN: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+      AWS_CI_DEPLOYER_DEV_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
 
   deploy:
     name: Roll ECS service
     # main: workflow_dispatch only (production environment gates it).
     # dev + user branches: continuous deploy right after their own build.
-    needs: [build]
+    needs: [guard, build, migrate-dev]
     if: >-
-      !cancelled() && github.ref_name != 'dev' &&
+      !cancelled() &&
+      needs.guard.result == 'success' &&
       (needs.build.result == 'success' || needs.build.result == 'skipped') &&
+      ((github.ref == 'refs/heads/dev' && needs.migrate-dev.result == 'success') ||
+       (github.ref != 'refs/heads/dev' && needs.migrate-dev.result == 'skipped')) &&
       (github.event_name == 'workflow_dispatch' || github.ref_name != 'main')
     runs-on: sample-awsops
     environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     concurrency:
-      group: deployment-${{ github.ref_name }}
-      cancel-in-progress: false
+      group: deploy-web-rollout-${{ github.ref_name }}
+      cancel-in-progress: ${{ github.ref_name != 'main' }}
     env:
       BRANCH: ${{ github.ref_name }}
       MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
@@ -158,10 +262,24 @@ jobs:
       USER_BACKEND_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', github.ref_name)] }}
       USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
     steps:
+      - name: Validate database verification ref
+        env:
+          VERIFY_DATABASE: ${{ inputs.verify_database }}
+        run: |
+          if [ "$VERIFY_DATABASE" = "true" ] && [ "$GITHUB_REF" != "refs/heads/dev" ]; then
+            echo "::error::Database verification is only supported on the dev branch."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - uses: hashicorp/setup-terraform@v3
         with:
+          terraform_version: 1.15.7
           terraform_wrapper: false
 
       - name: Select the branch's stack (fail-closed — no cross-branch fallback)
@@ -184,6 +302,8 @@ jobs:
 
       - name: Restore terraform.foundation backend
         working-directory: terraform/foundation
+        env:
+          VERIFY_DATABASE: ${{ inputs.verify_database }}
         run: |
           case "$BRANCH" in
             main) B="$MAIN_BACKEND_B64"; V="$MAIN_TFVARS_B64";;
@@ -195,9 +315,25 @@ jobs:
             echo "::error::TF backend secrets for '$BRANCH' are not set — provision its stack first (docs/runbooks/branch-strategy.md). No cross-branch fallback, by design."
             exit 1
           fi
+          umask 077
+          # Recreate only this checkout's restored files; truncation preserves old modes.
+          rm -f -- backend.hcl terraform.tfvars
+          set -o noclobber
           echo "$B" | base64 -d > backend.hcl
           echo "$V" | base64 -d > terraform.tfvars
-          terraform init -backend-config=backend.hcl -input=false
+          if [ "$VERIFY_DATABASE" != "true" ]; then
+            terraform init -backend-config=backend.hcl -input=false
+          fi
+
+      - name: Prepare configured demo credentials
+        if: github.event_name == 'workflow_dispatch' && inputs.verify_database
+        id: demo
+        working-directory: terraform/foundation
+        env:
+          TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
+        # Includes init: even parse errors can contain password-bearing HCL.
+        # The shared secret is only a default; restored tfvars take precedence.
+        run: node ../../scripts/v2/prepare-smoke-credentials.mjs
 
       - name: Resolve ECS cluster/service/URL + ECR repo
         id: tf
@@ -206,6 +342,7 @@ jobs:
           echo "cluster=$(terraform output -raw ecs_cluster_name)" >> "$GITHUB_OUTPUT"
           echo "service=$(terraform output -raw ecs_service_name)" >> "$GITHUB_OUTPUT"
           echo "url=$(terraform output -raw public_url)" >> "$GITHUB_OUTPUT"
+          echo "cloudfront_domain=$(terraform output -raw cloudfront_domain)" >> "$GITHUB_OUTPUT"
           echo "ecr_repo=$(terraform output -raw ecr_web_uri | sed 's|^[^/]*/||')" >> "$GITHUB_OUTPUT"
 
       # The runner is persistent and shared — never leave the restored stack
@@ -216,10 +353,11 @@ jobs:
         run: rm -f terraform.tfvars backend.hcl
 
       - name: Pin web-latest to the approved image
+        id: pin
         # The task definition references :web-latest, and this step is that
         # tag's ONLY writer (build never touches it). Point it at the EXACT
-        # web-<sha> this run was approved for (dispatch input, defaulting to
-        # the dispatched ref's HEAD; the run's own commit on branch pushes).
+        # digest returned by this build, or a receipt from a successful same-stack
+        # Deploy Web producer. The mutable web-<sha> tag is never the authority.
         # Caveat: the pin necessarily precedes the roll, so a roll that then
         # fails or is cancelled leaves :web-latest at the pinned-but-not-
         # stabilized image until the next run. Recovery: dispatch this
@@ -231,29 +369,19 @@ jobs:
           PIN_SHA: ${{ inputs.image_sha || github.sha }}
           DISPATCH_BUILD: ${{ inputs.build }}
           DISPATCH_IMAGE_SHA: ${{ inputs.image_sha }}
+          IMAGE_BUILD_RUN_ID: ${{ inputs.image_build_run_id }}
+          FRESH_DIGEST: ${{ needs.build.outputs.digest }}
+          FRESH_PROJECT: ${{ needs.build.outputs.project }}
+          ECR_REPOSITORY: ${{ steps.tf.outputs.ecr_repo }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           if [ "$DISPATCH_BUILD" = "true" ] && [ -n "$DISPATCH_IMAGE_SHA" ]; then
             echo "::error::'build' and 'image_sha' are mutually exclusive — a fresh build is always HEAD's sha."; exit 1
           fi
-          MANIFEST=$(aws ecr batch-get-image \
-            --repository-name "${{ steps.tf.outputs.ecr_repo }}" \
-            --image-ids imageTag="web-${PIN_SHA}" \
-            --region ap-northeast-2 \
-            --query 'images[0].imageManifest' --output text)
-          if [ -z "$MANIFEST" ] || [ "$MANIFEST" = "None" ]; then
-            echo "::error::No image tagged web-${PIN_SHA} in ${{ steps.tf.outputs.ecr_repo }} — build it first (push, or dispatch with a built SHA)."
-            exit 1
-          fi
-          # put-image errors with ImageAlreadyExistsException when web-latest
-          # already points at this manifest — that's success for our purposes.
-          OUT=$(aws ecr put-image \
-            --repository-name "${{ steps.tf.outputs.ecr_repo }}" \
-            --image-tag web-latest \
-            --image-manifest "$MANIFEST" \
-            --region ap-northeast-2 2>&1) || {
-              echo "$OUT" | grep -q ImageAlreadyExistsException || { echo "$OUT" >&2; exit 1; }
-            }
-          echo "web-latest -> web-${PIN_SHA}"
+          export IMAGE_PROJECT="${ECR_REPOSITORY%-web}"
+          [ "$ECR_REPOSITORY" = "${IMAGE_PROJECT}-web" ] || exit 1
+          python3 scripts/v2/ci_web_image.py pin
 
       - name: ECS force-new-deployment
         run: |
@@ -271,202 +399,28 @@ jobs:
             --region ap-northeast-2
 
       - name: Smoke test
-        run: curl -fsS --max-time 15 "${{ steps.tf.outputs.url }}/api/health" && echo
-
-  dev-core:
-    name: Dev core before DNS
-    if: github.ref == 'refs/heads/dev'
-    runs-on: sample-awsops
-    timeout-minutes: 60
-    environment: development
-    env:
-      TF_IN_AUTOMATION: 'true'
-      AWS_DEV_ACCOUNT_ID: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
-      IMAGE_SHA: ${{ inputs.image_sha }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.15.7
-          terraform_wrapper: false
-      - name: Deployment guard tests
-        run: node --test scripts/v2/ci/*.test.mjs
-      - name: Restore dev config (no fallback)
+        # Connect to CloudFront directly while preserving the configured Host,
+        # SNI and certificate verification. Service DNS can be published later.
         env:
-          BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
-          TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
+          PUBLIC_URL: ${{ steps.tf.outputs.url }}
+          CLOUDFRONT_DOMAIN: ${{ steps.tf.outputs.cloudfront_domain }}
         run: |
           set -euo pipefail
-          umask 077
-          test -n "$BACKEND_B64" && test -n "$TFVARS_B64"
-          printf '%s' "$BACKEND_B64" | base64 -d > terraform/foundation/backend.hcl
-          printf '%s' "$TFVARS_B64" | base64 -d > terraform/foundation/terraform.tfvars
-          if grep -Eq '^[[:space:]]*admin_password[[:space:]]*=' terraform/foundation/terraform.tfvars; then
-            echo '::error::Remove admin_password from tfvars'; exit 1
-          fi
-          mkdir -p terraform/foundation/.build/ci
-          chmod 700 terraform/foundation/.build/ci
-      - name: Deployer credentials (development environment OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          mask-aws-account-id: true
-          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
-          role-duration-seconds: 3600
-          aws-region: ap-northeast-2
-      - name: Initialize and provision core (saved plan)
-        env:
-          TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
-        run: |
-          terraform -chdir=terraform/foundation init -backend-config=backend.hcl -input=false -lockfile=readonly
-          node scripts/v2/ci/deploy-dev.mjs core
-      - name: Preserve encrypted failure diagnostics
-        if: failure()
-        id: diagnostics
-        env:
-          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
-        run: node scripts/v2/ci/failure-logs.mjs
-      - name: Upload encrypted failure diagnostics
-        if: failure() && steps.diagnostics.outputs.encrypted == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-failure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-          path: ${{ steps.diagnostics.outputs.path }}
-          retention-days: 5
-      - name: Remove private files
-        if: always()
-        run: |
-          rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars terraform/foundation/tfplan.log
-          rm -rf terraform/foundation/.build terraform/foundation/.terraform
+          node scripts/v2/deployment-smoke.mjs "$PUBLIC_URL" "$CLOUDFRONT_DOMAIN"
+          echo
 
-  dev-images:
-    name: Dev immutable arm64 images
-    needs: [dev-core]
-    if: github.ref == 'refs/heads/dev'
-    runs-on: sample-awsops
-    timeout-minutes: 60
-    env:
-      AWS_DEV_ACCOUNT_ID: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
-      DOCKER_CONFIG: /tmp/awsops-docker-${{ github.run_id }}-${{ github.run_attempt }}
-    # No environment: preserve the existing refs/heads/dev build-role OIDC sub.
-    outputs:
-      web_digest: ${{ steps.images.outputs.web_digest }}
-      migration_digest: ${{ steps.images.outputs.migration_digest }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Build credentials (ECR only)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          mask-aws-account-id: true
-          role-to-assume: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
-          aws-region: ap-northeast-2
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - name: Build immutable arm64 web and migration images
-        id: images
-        run: node scripts/v2/ci/deploy-dev.mjs images
-      - name: Preserve encrypted failure diagnostics
-        if: failure()
-        id: diagnostics
+      - name: Authenticated database smoke
+        if: github.event_name == 'workflow_dispatch' && inputs.verify_database
         env:
-          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
-        run: node scripts/v2/ci/failure-logs.mjs
-      - name: Upload encrypted failure diagnostics
-        if: failure() && steps.diagnostics.outputs.encrypted == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-failure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-          path: ${{ steps.diagnostics.outputs.path }}
-          retention-days: 5
-      - name: Remove build credentials and coordination files
-        if: always()
-        run: |
-          rm -rf terraform/foundation/.build "$DOCKER_CONFIG"
-          rm -f terraform/foundation/tfplan.log
-
-  dev-release:
-    name: Dev migrate → private service → edge
-    needs: [dev-images]
-    if: github.ref == 'refs/heads/dev'
-    runs-on: sample-awsops
-    timeout-minutes: 120
-    environment: development
-    outputs:
-      deployment_status: ${{ steps.edge.outputs.deployment_status }}
-    env:
-      TF_IN_AUTOMATION: 'true'
-      AWS_DEV_ACCOUNT_ID: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
-      WEB_DIGEST: ${{ needs.dev-images.outputs.web_digest }}
-      MIGRATION_DIGEST: ${{ needs.dev-images.outputs.migration_digest }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.15.7
-          terraform_wrapper: false
-      - name: Restore dev config (no fallback)
-        env:
-          BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
-          TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
+          PUBLIC_URL: ${{ steps.tf.outputs.url }}
+          CLOUDFRONT_DOMAIN: ${{ steps.tf.outputs.cloudfront_domain }}
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
         run: |
           set -euo pipefail
-          umask 077
-          test -n "$BACKEND_B64" && test -n "$TFVARS_B64"
-          printf '%s' "$BACKEND_B64" | base64 -d > terraform/foundation/backend.hcl
-          printf '%s' "$TFVARS_B64" | base64 -d > terraform/foundation/terraform.tfvars
-          if grep -Eq '^[[:space:]]*admin_password[[:space:]]*=' terraform/foundation/terraform.tfvars; then
-            echo '::error::Remove admin_password from tfvars'; exit 1
-          fi
-      - name: Deployer credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          mask-aws-account-id: true
-          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
-          role-duration-seconds: 3600
-          aws-region: ap-northeast-2
-      - name: Migrate in VPC then roll and verify ECS
+          node scripts/v2/authenticated-smoke.mjs
+
+      - name: Clean prepared demo credentials off the runner
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.verify_database
         env:
-          TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
-          SMOKE_SECRET_ARN: ${{ secrets.DEV_SMOKE_SECRET_ARN }}
-        run: |
-          terraform -chdir=terraform/foundation init -backend-config=backend.hcl -input=false -lockfile=readonly
-          node scripts/v2/ci/deploy-dev.mjs release
-      - name: Refresh deployer credentials before edge
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          mask-aws-account-id: true
-          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
-          role-duration-seconds: 3600
-          aws-region: ap-northeast-2
-      - name: Attach issued certificates and verify edge, or report awaiting_dns
-        id: edge
-        env:
-          TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
-          SMOKE_SECRET_ARN: ${{ secrets.DEV_SMOKE_SECRET_ARN }}
-        run: node scripts/v2/ci/deploy-dev.mjs edge
-      - name: Preserve encrypted failure diagnostics
-        if: failure()
-        id: diagnostics
-        env:
-          TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
-        run: node scripts/v2/ci/failure-logs.mjs
-      - name: Upload encrypted failure diagnostics
-        if: failure() && steps.diagnostics.outputs.encrypted == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-failure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-          path: ${{ steps.diagnostics.outputs.path }}
-          retention-days: 5
-      - name: Remove private config, plans, generated archives and registry credentials
-        if: always()
-        run: |
-          rm -f terraform/foundation/backend.hcl terraform/foundation/terraform.tfvars terraform/foundation/tfplan.log
-          rm -rf terraform/foundation/.build terraform/foundation/.terraform
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+        run: node scripts/v2/prepare-smoke-credentials.mjs --cleanup
