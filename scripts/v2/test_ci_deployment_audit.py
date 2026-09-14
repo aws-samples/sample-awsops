@@ -750,3 +750,19 @@ def test_missing_rds_target_is_not_ready():
     aws.overrides["bedrock-agentcore-control", "list_gateway_targets"] = {"items": []}
     result = audit.collect(outputs(), ENV, aws, NOW)["deployment"]["data_gateway"]
     assert result["status"] == "NOT_READY" and result["target_status"] == "MISSING"
+
+
+def test_audit_directory_is_selected_with_runtime_environment(tmp_path):
+    job = workflow()["jobs"]["audit"]
+    assert "runner." not in json.dumps(job.get("env", {}))
+    step = next(s for s in job["steps"] if s.get("name") == "Select private audit directory")
+    env_file = tmp_path / "github-env"
+    runner_temp = tmp_path / "runner temp"
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", step["run"]],
+                            env={**os.environ, "RUNNER_TEMP": str(runner_temp),
+                                 "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2",
+                                 "GITHUB_ENV": str(env_file)}, capture_output=True, text=True)
+    assert result.returncode == 0
+    assert env_file.read_text() == f"AUDIT_DIR={runner_temp}/deployment-audit-123-2\n"
+    assert job["steps"].index(step) < next(i for i, s in enumerate(job["steps"])
+                                           if s.get("id") == "scope")
