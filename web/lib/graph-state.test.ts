@@ -49,3 +49,19 @@ describe('graph producer and scope honesty', () => {
     expect(query).not.toHaveBeenCalled();
   });
 });
+
+
+it('projects bounded HTTP collection metadata and removes injected read fields', async () => {
+  const query = vi.fn().mockResolvedValue({ rows: [{ status: 'ok', captured_at: new Date(), attempted_at: new Date(),
+    details: { secret: 'PRIVATE', readReason: 'PRIVATE', readStatus: 'ok', coverage: 'PRIVATE',
+      sources: Array.from({ length: 129 }, (_, i) => ({ sourceId: `tempo:${i}`, status: 'ok', secret: 'PRIVATE',
+        reasons: ['query_failed', 'PRIVATE'] })),
+      publishedSources: [{ sourceId: 'inventory:vpc', status: 'partial', producerStatus: 'running', secret: 'PRIVATE' }] } }] });
+  const result = await readGraphState({ query } as never, 'self', 'infra');
+  expect(JSON.stringify(result)).not.toContain('PRIVATE');
+  expect(result).not.toHaveProperty('readStatus');
+  expect(result).not.toHaveProperty('coverage');
+  expect(result).toMatchObject({ metadataTruncated: true, stale: true });
+  expect(result.sources).toHaveLength(128);
+  expect(result.publishedSources[0]).toEqual({ sourceId: 'inventory:vpc', status: 'partial', producerStatus: 'running' });
+});

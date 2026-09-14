@@ -96,21 +96,25 @@ describe('graph collection evidence API', () => {
     await GET(new Request('http://localhost/api/graph'));
     expect(query).toHaveBeenCalledWith("SET LOCAL transaction_timeout = '2s'");
   });
-  it('sheds an overlapping graph request before pool checkout without inventing collector failure', async () => {
-    let release!: () => void, started!: () => void;
+  it('allows two overlapping graph reads and sheds excess before checkout', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let release!: () => void, started!: () => void, readers = 0;
     const ready = new Promise<void>(resolve => { started = resolve; });
     const pending = new Promise<void>(resolve => { release = resolve; });
     query.mockImplementation(async (sql: string) => {
-      if (sql.includes('FROM topology_graph_state')) { started(); await pending; }
+      if (sql.includes('FROM topology_graph_state')) { if (++readers === 2) started(); await pending; }
       return { rows: [] };
     });
     const first = GET(new Request('http://localhost/api/graph'));
+    const second = GET(new Request('http://localhost/api/graph'));
     await ready;
     try {
-      const second = await GET(new Request('http://localhost/api/graph'));
-      expect(second.status).toBe(503);
-      expect((await second.json()).collection).toMatchObject({ status: 'unknown', readStatus: 'unavailable', readReason: 'busy' });
-    } finally { release(); await first; }
+      const third = await GET(new Request('http://localhost/api/graph'));
+      expect(third.status).toBe(503);
+      expect(third.headers.get('Retry-After')).toBe('1');
+      expect((await third.json()).collection).toMatchObject({ status: 'unknown', readStatus: 'unavailable', readReason: 'busy' });
+      expect(console.warn).toHaveBeenCalledWith('[graph-read] shed {"reason":"busy"}');
+    } finally { release(); expect((await Promise.all([first, second])).map(r => r.status)).toEqual([200,200]); }
     expect((await GET(new Request('http://localhost/api/graph'))).status).toBe(200);
   });
 

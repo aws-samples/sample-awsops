@@ -30,7 +30,8 @@ export interface GraphCollection {
   failureReason?: 'publication_failed' | 'source_read_failed' | 'state_read_failed';
   coverage?: 'unknown';
   readStatus?: 'ok' | 'partial' | 'unavailable';
-  readReason?: 'row_limit' | 'busy' | 'query_failed';
+  readReason?: 'row_limit' | 'busy' | 'timeout' | 'query_failed';
+  metadataTruncated?: boolean;
   readTruncated?: boolean;
   windowStartMs?: number;
   windowEndMs?: number;
@@ -49,6 +50,7 @@ export interface GraphCollection {
 // not evidence of a collector failure.
 const COPY = {
   ko: {
+    readTimeout: '그래프 조회 시간이 초과되었습니다. 다시 조회하세요.', metadataLimited: '일부 수집 메타데이터가 생략되어 범위가 불완전합니다.',
     readLimited: '그래프 조회 한도 — 반환된 범위가 불완전합니다.', readUnavailable: '그래프 조회 불가 — 수집 상태를 확인할 수 없습니다.', stateReadFailed: '수집 메타데이터를 조회할 수 없습니다.', producerStatus: '원본 작업 상태', sourceAttempt: '원본 작업 시작', sourceFinished: '원본 작업 종료', unknownCoverage: '선택한 계정 집합의 수집 범위 미확인',
     ok: '최근 수집 성공', empty: '조회한 시간 범위에 관측값 없음', partial: '부분 수집 — 전체 상태를 확정할 수 없음',
     unavailable: '데이터소스 미연결 또는 미가용', error: '수집 실패', unknown: '수집 상태 미확인',
@@ -64,6 +66,7 @@ const COPY = {
     counts: { ok: '성공', empty: '빈 결과', partial: '부분', unavailable: '미가용', error: '실패', unknown: '미확인' },
   },
   en: {
+    readTimeout: 'Graph read timed out. Refresh to try again.', metadataLimited: 'Collection metadata is incomplete; some entries were omitted.',
     readLimited: 'Graph read limit reached — returned coverage is incomplete.', readUnavailable: 'Graph read unavailable — collection outcome is not established.', stateReadFailed: 'Collection metadata could not be read.', producerStatus: 'Producer status', sourceAttempt: 'Source job start', sourceFinished: 'Source job finish', unknownCoverage: 'Collection coverage of the selected account union is unknown.',
     ok: 'Latest collection succeeded', empty: 'No observations in this window', partial: 'Partial collection — coverage is incomplete',
     unavailable: 'Datasource unavailable or not configured', error: 'Collection failed', unknown: 'Collection state unknown',
@@ -79,6 +82,7 @@ const COPY = {
     counts: { ok: 'ok', empty: 'empty', partial: 'partial', unavailable: 'unavailable', error: 'failed', unknown: 'unknown' },
   },
   ja: {
+    readTimeout: 'グラフ取得がタイムアウトしました。更新して再試行してください。', metadataLimited: '一部の収集メタデータが省略され、範囲は不完全です。',
     readLimited: 'グラフ取得上限 — 返された範囲は不完全です。', readUnavailable: 'グラフ取得不可 — 収集結果を確認できません。', stateReadFailed: '収集メタデータを取得できませんでした。', producerStatus: 'ソースジョブの状態', sourceAttempt: 'ソースジョブ開始', sourceFinished: 'ソースジョブ終了', unknownCoverage: '選択したアカウント集合の収集範囲は不明です。',
     ok: '最新の収集に成功', empty: '対象期間に観測値なし', partial: '部分収集 — 全体の状態は未確認',
     unavailable: 'データソース未設定または利用不可', error: '収集失敗', unknown: '収集状態不明',
@@ -94,6 +98,7 @@ const COPY = {
     counts: { ok: '成功', empty: '空', partial: '部分', unavailable: '利用不可', error: '失敗', unknown: '不明' },
   },
   zh: {
+    readTimeout: '图读取超时。请刷新重试。', metadataLimited: '部分采集元数据已省略，覆盖范围不完整。',
     readLimited: '图读取达到上限 — 返回范围不完整。', readUnavailable: '图读取不可用 — 无法确认采集结果。', stateReadFailed: '无法读取采集元数据。', producerStatus: '源任务状态', sourceAttempt: '源任务开始', sourceFinished: '源任务完成', unknownCoverage: '所选账号集合的采集覆盖范围未知。',
     ok: '最近一次采集成功', empty: '查询时间范围内无观测值', partial: '部分采集 — 覆盖范围不完整',
     unavailable: '数据源不可用或未配置', error: '采集失败', unknown: '采集状态未知',
@@ -124,7 +129,7 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
     typeof data[key] === 'number' && Number.isSafeInteger(data[key]) && (data[key] as number) > 0);
   const limited = data.inputTruncated === true || data.graphTruncated === true
     || losses.some(key => key === 'nodeDrops' || key === 'edgeDrops');
-  const warning = data.readStatus === 'partial' || data.readStatus === 'unavailable' || data.failureReason === 'state_read_failed' || data.stale === true || retained || limited || losses.length > 0 || data.infraUnavailable === true
+  const warning = data.metadataTruncated === true || data.readStatus === 'partial' || data.readStatus === 'unavailable' || data.failureReason === 'state_read_failed' || data.stale === true || retained || limited || losses.length > 0 || data.infraUnavailable === true
     || ['partial', 'unavailable', 'error'].includes(status);
   const sources = Array.isArray(data.sources) ? data.sources.map(record) : [];
   const published = Array.isArray(data.publishedSources) ? data.publishedSources.map(record) : [];
@@ -153,6 +158,8 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
       className={`my-2 max-h-[36vh] shrink-0 overflow-y-auto rounded-md border px-3 py-2 text-xs ${warning
         ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-ink-200 bg-card text-ink-600'}`}>
       <p className="font-medium">{status === 'empty' && data.evidenceKind === 'inventory' ? copy.inventoryEmpty : copy[status]}{data.stale === true ? ` · ${copy.stale}` : ''}</p>
+      {data.metadataTruncated === true && <p>{copy.metadataLimited}</p>}
+      {data.readReason === 'timeout' && <p>{copy.readTimeout}</p>}
       {data.readTruncated === true && <p>{copy.readLimited}</p>}
       {data.readStatus === 'unavailable' && <p>{copy.readUnavailable}</p>}
       {data.failureReason === 'state_read_failed' && <p>{copy.stateReadFailed}</p>}

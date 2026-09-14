@@ -32,9 +32,12 @@ const unknownCollection = (cls: GraphClass) => ({ status: 'unknown', stale: true
 // evidence, constrain edges to visible nodes, and disclose any omitted raw rows.
 async function graphRows(client: Parameters<Parameters<typeof graphReadTransaction>[1]>[0],
   cls: GraphClass, account: string, ids?: string[]) {
-  const nodes = await client.query(`SELECT DISTINCT ON (id) id, kind, label, meta, captured_at FROM topology_nodes
+  const selection = `SELECT DISTINCT ON (id) id, kind, label, meta, captured_at FROM topology_nodes
     WHERE ($2 = '__all__' OR account_id = $2) AND class = $1 ${ids ? 'AND id = ANY($3)' : ''}
-    ORDER BY id, captured_at DESC LIMIT ${NODE_LIMIT + 1}`, ids ? [cls, account, ids] : [cls, account]);
+    ORDER BY id, captured_at DESC`;
+  const nodes = await client.query(ids
+    ? `SELECT * FROM (${selection}) selected ORDER BY (id=$4) DESC,id LIMIT ${NODE_LIMIT + 1}`
+    : `${selection} LIMIT ${NODE_LIMIT + 1}`, ids ? [cls, account, ids, ids[0]] : [cls, account]);
   const visible = nodes.rows.slice(0, NODE_LIMIT);
   const edges = await client.query(`SELECT source, target, rel, confidence, to_jsonb(e)->'meta' AS meta FROM topology_edges e
     WHERE ($2 = '__all__' OR account_id = $2) AND class = $1 AND source = ANY($3) AND target = ANY($3)
@@ -47,7 +50,7 @@ async function graphRows(client: Parameters<Parameters<typeof graphReadTransacti
 // Read-only graph access (ADR-043). GET returns the materialized topology graph for a class
 // (flow|infra), or — when ?from=<nodeId> is passed — the per-resource SUBGRAPH: the node + its
 // up/down neighborhood within `depth` hops (capped per hop by graph-query). No rebuild here —
-// rebuilds run separately from this request in the gated timer or manual runner.
+// rebuilds run separately in the gated timer or scripts/v2/graph-rebuild.mjs manual runner.
 export async function GET(request: Request) {
   if (!(await verifyUser(request.headers.get('cookie')))) {
     return Response.json({ status: 'error', message: 'unauthenticated' }, { status: 401 });
@@ -95,7 +98,7 @@ export async function GET(request: Request) {
         capped = cap.rows[0]?.capped ?? false;
       }
       const rows = await graphRows(client, cls, account, ids);
-      return { class: cls, account, ...(from ? { from, depth, capped: capped || rows.truncated } : {}),
+      return { class: cls, account, ...(from ? { from, depth, capped } : {}),
         nodes: evidenceNodes(rows.nodes, cls), edges: evidenceEdges(rows.edges, cls),
         // Legacy display clock only. Never substitute this for collection publication/source proof.
         captured_at: collection.captured_at ?? (cls !== 'trace' && account !== '__all__' ? rows.nodes[0]?.captured_at ?? null : null),
@@ -105,9 +108,12 @@ export async function GET(request: Request) {
     return Response.json(result);
   } catch (error) {
     const busy = error instanceof GraphReadBusy;
-    if (!busy) console.error(`[graph-read] failed ${graphDiagnostic('graph_read', error)}`);
+    const code = (error as { code?: string } | null)?.code;
+    const reason = busy ? 'busy' : ['57014','25P03','25P04'].includes(code ?? '') ? 'timeout' : 'query_failed';
+    if (busy) console.warn('[graph-read] shed {"reason":"busy"}');
+    else console.error(`[graph-read] failed ${graphDiagnostic('graph_read', error)}`);
     return Response.json({ status: 'error', message: 'Graph read failed',
       class: cls, account, collection: { ...unknownCollection(cls), readStatus: 'unavailable',
-        readReason: busy ? 'busy' : 'query_failed' } }, { status: busy ? 503 : 500 });
+        readReason: reason } }, { status: busy ? 503 : 500, ...(busy ? { headers: { 'Retry-After': '1' } } : {}) });
   }
 }
