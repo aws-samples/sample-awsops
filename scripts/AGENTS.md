@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 318669d0a2f7 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b1ad1d4c6357 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,6 +8,8 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
+- `ci_web_read.py` / `ci_web_deploy.py` are unwired. Only typed transient reads retry within a shared deadline; writes/permissions/identity failures do not retry. Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.
+- `AUTOMATIC_MIGRATION=1` checks every ledger-derived pending SQL file against the transactional subset before pending SQL/ledger/reader changes; unknown/contract SQL needs manual review. Advisory lock acquisition is nonblocking and remains held through reader sync. See `docs/runbooks/release-safety-primitives.md` and the corresponding Python/Node/PostgreSQL tests.
 - `v2/ci_web_image.py` is unwired. CI must use composed `promote`, which verifies the
   caller/context/source/migration/producer before publishing the validated project's digest.
   A nonempty preflight digest is mandatory; fresh builds must match the registry's source
@@ -45,7 +47,7 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 - Fixed public audit fields distinguish command, capture, retention and cleanup status; numeric standard Terraform success counts never include resource/output text. Missing summaries stay unavailable. Schema-2 failure HMAC uses its own domain with the existing CBC cipher/key. Recovery verifies the exact failed attempt and emits fixed timeout/errors; private inspection remains authenticated and bounded to 32 MiB.
 - The sealing payload reaches OpenSSL through stdin, with no plaintext staging file. Captured Terraform runs in a separate session; first-interrupt forwarding, second-interrupt group kill and parent-death protection govern cancellation. Sealing/storage/publication failures preserve the command exit.
 - Cleanup deletes only after the identified upload's literal success; failed/cancelled/skipped/unknown outcomes retain ciphertext privately. Audits distinguish pending_upload, retained_unpublished and final cleanup outcomes. No broad runner-temp sweep, shared-UID isolation or SIGKILL guarantee.
-- `v2/ci_deployment_audit.py` is manual dev-only, with a restrictive session and fixed reads/SELECTs. It shares only backend parsing with `ci_verifier_sessions.py`; grants and no-invoke behavior stay unchanged. Preserve identity/resource guards and safe output projection; current web status, event metrics and observed SQL-reader rows never establish full deployment readiness. Tests: `test_ci_deployment_audit.py`; guide: `docs/runbooks/deployment-audit.md`.
+- `v2/ci_deployment_audit.py` is manual dev-only, with a restrictive session and fixed reads/SELECTs. It shares backend parsing and state-KMS resource selection with `ci_verifier_sessions.py`; the decrypt resource follows the shared `encrypt` rule. State-object/account/S3-context restrictions and the no-invoke boundary remain. Preserve identity/resource guards and safe output projection; current web status, event metrics and observed SQL-reader rows never establish full deployment readiness. Tests: `test_ci_deployment_audit.py`; guide: `docs/runbooks/deployment-audit.md`.
 - `v2/ci_verifier_sessions.py` supplies policies for manual collection and Deploy Web verification:
   backend/workload restrictions, no AWS calls or persistent IAM changes. Workload state must
   come from the consumer's private capture. Manual dev collect-runtime dispatches support
