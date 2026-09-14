@@ -34,7 +34,8 @@ python3 -m pytest scripts/v2/test_ci_runtime_policy.py -q
 ```
 
 Tests cover allowed operations, denied sibling resources/regions/actions,
-backend parsing, KMS conditions, private files, masking and publication failures.
+backend parsing, KMS conditions, private files, immediate FIFO rejection,
+masking and publication failures.
 The size test confirms policies with maximum-length project names fit STS's
 2,048-character limit; it does not exercise oversized-policy rejection.
 These are offline policy-boundary
@@ -72,7 +73,8 @@ uses `RUNTIME_MODE=prepare|collect`; it does not reinterpret the smoke protocol.
 only; the consumer binds the image to ECR and running tasks. It need not equal
 the workflow's `GITHUB_SHA`, and it must be empty in prepare mode.
 Only same-repository manual dev dispatches with
-`GITHUB_WORKFLOW_REF` ending in `.github/workflows/collect-runtime.yml@refs/heads/dev`
+`GITHUB_WORKFLOW_REF` exactly identifying this repository's
+`.github/workflows/collect-runtime.yml@refs/heads/dev`
 are accepted. `CI_ROLE_ARN` is the configured deployer role and
 `BACKEND_B64` is the private encoded backend input used only by the backend phase.
 
@@ -98,7 +100,7 @@ The CLI publishes `policy_file` and `session_policy`. It masks the complete poli
 Resource ARNs, bare S3 bucket and bucket/key forms, and configured account first.
 It fails outside
 Actions, on invalid context/state, oversized policies, missing publication,
-symlink/public input files, or an existing output policy file.
+symlink/public/non-regular input files, or an existing output policy file.
 
 ### Collection effects and proof
 
@@ -118,7 +120,9 @@ remediate AWS resources. The helper itself makes no AWS calls.
 
 Observability does not require new CI log, CloudWatch or DB permissions. First
 verify the function identity, configured code fingerprint and active ARM64
-configuration. Each synchronous response must have `StatusCode=200`, no
+configuration. Project only validated fixed fields from AWS responses;
+never echo Lambda/task-definition responses, environment maps, HTTP bodies or
+raw AWS errors. Each synchronous response must have `StatusCode=200`, no
 `FunctionError`, and `ExecutedVersion: "$LATEST"`. That envelope is insufficient:
 
 | Payload | Required result |
@@ -129,24 +133,39 @@ configuration. Each synchronous response must have `StatusCode=200`, no
 `busy`, `failed` (including superseded), `partial`, unknown-type errors and
 malformed results never prove collection. A bounded retry of explicit contention
 — invocation-level throttling or a busy/superseded result — may succeed only
-through a later valid owned response; scheduled work cannot
-substitute for it. Disable automatic SDK/CLI invoke retries; for collection use
+through a later valid owned response; scheduled work cannot substitute for
+that owned CloudFront proof. Use a 450-second catalog budget and a 900-second
+CloudFront budget, including waits and retries. Disable automatic SDK/CLI invoke retries; for collection use
 a read timeout longer than the verified function timeout (currently at most
 420 seconds), inside an explicit controller deadline.
 
 Capture the release time marker before the owned collection invocation, then
-require the expected account's `cloudfront` ledger row's durable `last_success_at`
-at or after that marker, plus fresh known-record evidence. This demonstrates advancement past the
+require the `cloudfront` job ledger row's durable `last_success_at` at or after
+that marker. This job-level ledger is keyed under the host `self` sentinel, not
+the host's numeric AWS account ID. Require fresh known-host CloudFront evidence
+as well; caller/runtime identity separately verifies the expected AWS account.
+This demonstrates advancement past the
 pre-invoke marker; an old ledger success, or a scheduled success accompanying a
 `busy` owned response, is insufficient. Full readiness additionally requires the
 authenticated BFF/AgentCore and owned worker HTTP proofs. A successful invoke
 alone never establishes it.
 
-The permitted catalog reply also supplies the complete registered-type enumeration
-for the consumer's per-type HTTP ledger checks. Every returned type must satisfy
-the runtime-smoke freshness contract; the owned CloudFront proof alone is
-insufficient. This does not claim complete AWS inventory coverage or identify
-which trigger produced the other types' observations.
+The catalog lists registered types, not acknowledged invocations. For the
+follow-up consumer's **release mode**, read every returned type's host job ledger
+over HTTP within a bounded 1,200-second wait. CloudFront needs durable success
+after the owned pre-invoke marker. Other types need durable success within the
+last 30 minutes; the existing scheduler may supply that evidence. A later running,
+failed, partial, or succeeded-with-unknowns attempt is reported as degraded when
+that durable success remains fresh. Missing or stale success fails with a fixed
+diagnostic; these budgets do not guarantee a full scheduled sweep will finish.
+The helper neither invokes the other types nor repairs their producer failures.
+
+Report aggregate collection as current/degraded with completeness unknown.
+Keep the owned CloudFront result, fresh known-host record, actual AgentCore/model
+proof and owned-worker proof mandatory. This release-mode contract is for the
+separate consumer integration; the existing standalone strict smoke's requirement
+for clean post-marker results is unchanged. Do not infer complete AWS inventory
+coverage or trigger attribution from either path.
 
 Verifier-triggered collection changes freshness timestamps. Do not label those
 observations as EventBridge execution or schedule attribution. The separate

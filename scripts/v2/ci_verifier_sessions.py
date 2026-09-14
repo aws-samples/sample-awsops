@@ -147,7 +147,7 @@ def private_directory(value):
 def read_deployment(file, directory):
     path = Path(file)
     require(path.is_absolute() and path.parent == directory)
-    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
         info = os.fstat(stream.fileno())
         require(stat.S_ISREG(info.st_mode) and info.st_mode & 0o777 == 0o600 and info.st_size <= 16384)
         text = stream.read(16385)

@@ -294,6 +294,23 @@ def test_workload_cli_binds_runtime_state_to_the_selected_private_directory(tmp_
     assert json.loads(published["session_policy"]) == helpers().workload_policy(ENV, deployment())
 
 
+def test_workload_cli_rejects_a_fifo_without_waiting_for_a_writer(tmp_path):
+    tmp_path.chmod(0o700)
+    state = tmp_path / "runtime.json"
+    os.mkfifo(state, 0o600)
+    source = Path(__file__).with_name("ci_verifier_sessions.py")
+    env = {**ENV, "PATH": os.environ["PATH"], "GITHUB_ACTIONS": "true",
+           "GITHUB_OUTPUT": str(tmp_path / "output"), "PYTHONDONTWRITEBYTECODE": "1",
+           "AWS_EC2_METADATA_DISABLED": "true", "AWS_CONFIG_FILE": "/dev/null",
+           "AWS_SHARED_CREDENTIALS_FILE": "/dev/null"}
+    result = subprocess.run(["python3", str(source), "workload", "--directory", str(tmp_path),
+                             "--deployment-file", str(state)], env=env, text=True,
+                            capture_output=True, timeout=2)
+    assert result.returncode != 0
+    assert result.stdout == "" and result.stderr.strip() == "verifier_session_policy_unavailable"
+    assert not (tmp_path / "output").exists() and not (tmp_path / "workload-policy.json").exists()
+
+
 def test_cli_does_not_emit_a_policy_outside_actions_or_without_output_publication(tmp_path):
     tmp_path.chmod(0o700)
     source = Path(__file__).with_name("ci_verifier_sessions.py")
