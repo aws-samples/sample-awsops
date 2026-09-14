@@ -35,7 +35,8 @@ function deferred<T>() {
 function serve(options: {
   pods?: unknown[]; rowCapture?: string | null; clusterVpc?: string; ecs?: boolean;
   hostPods?: Promise<Response>; hostInventory?: Promise<Response>; memberInventory?: Promise<Response>;
-  subnetStatus?: number; subnetRows?: unknown[];
+  subnetStatus?: number; subnetRows?: unknown[]; subnetReject?: boolean;
+  runStatus?: string; eksStatus?: number; podStatus?: number;
 } = {}) {
   vi.stubGlobal('fetch', vi.fn(async (input: string, _init?: RequestInit) => {
     const url = new URL(input, 'http://localhost');
@@ -44,14 +45,17 @@ function serve(options: {
         { accountId: member, alias: 'Member', isHost: false }],
     });
     if (url.pathname === '/api/accounts/regions') return Response.json({ regions: [] });
+    if (url.pathname === '/api/eks' && options.eksStatus) return Response.json({ error: 'EKS read failed' }, { status: options.eksStatus });
     if (url.pathname === '/api/eks') return Response.json({
       clusters: options.ecs ? [] : [{ name: 'production', access: 'connected', region, vpcId: options.clusterVpc ?? vpcId }],
     });
+    if (url.searchParams.get('kind') === 'pods' && options.podStatus) return Response.json({ error: 'pod read failed' }, { status: options.podStatus });
     if (url.searchParams.get('kind') === 'pods') return options.hostPods ?? Response.json({ rows: options.pods ?? [pod] });
     if (url.searchParams.get('kind') === 'endpoints') return Response.json({
       rows: [{ name: 'orders-service', namespace: 'shop', ips: [ip], targets: [{ ip, pod: pod.name }] }],
     });
     if (url.pathname.startsWith('/api/inventory/')) {
+      if (url.pathname.endsWith('/subnet') && options.subnetReject) throw new Error('subnet transport unavailable');
       if (url.pathname.endsWith('/subnet') && options.subnetStatus) {
         return Response.json({ error: 'subnet read failed' }, { status: options.subnetStatus });
       }
@@ -76,7 +80,7 @@ function serve(options: {
           attachments: [{ Details: [{ Name: 'subnetId', Value: 'subnet-a' }, { Name: 'privateIPv4Address', Value: ip }] }],
         },
       }] : [],
-      run: { status: 'failed', last_success_at: captured, finished_at: failed, error: 'collection failed' },
+      run: { status: options.runStatus ?? 'failed', last_success_at: captured, finished_at: failed, error: 'collection failed' },
     });
     }
     throw new Error(`Unexpected request: ${url}`);
@@ -109,7 +113,55 @@ describe('sample topology evidence', () => {
       resource_id: `subnet-other-${index}`, region, captured_at: captured, data: { vpc_id: vpcId },
     })) });
     expect((await ready()).textContent).toBe(ip);
-    expect(screen.getByText(/subnet 500개 초과/)).toBeTruthy();
+    expect(screen.getByText(/Response limit reached.*subnet.*500/)).toBeTruthy();
+  });
+  it('retains the graph and discloses a rejected subnet transport', async () => {
+    serve({ ecs: true, subnetReject: true, runStatus: 'succeeded' });
+    expect((await ready()).textContent).toBe(ip);
+    expect(screen.getByLabelText('Inventory collection evidence').textContent).toContain('subnet: failed');
+    expect(document.body.textContent).not.toContain('subnet transport unavailable');
+  });
+  it.each([
+    { eksStatus: 503, expected: 'EKS ownership read failed' },
+    { podStatus: 503, expected: 'EKS ownership evidence is partial' },
+    { clusterVpc: '', expected: 'EKS ownership evidence is partial' },
+  ])('discloses EKS evidence degradation: $expected', async ({ expected, ...options }) => {
+    serve({ ...options, runStatus: 'succeeded' });
+    expect((await ready()).textContent).toBe(ip);
+    expect(screen.getByLabelText('Inventory collection evidence').textContent).toContain(expected);
+  });
+  it.each([{ accounts: [member] }, { accounts: ALL_ACCOUNTS }, { accounts: ['self', member] }])('collapses unavailable run health and explains EKS opt-out for $accounts', async ({ accounts }) => {
+    setActiveScope({ ...DEFAULT_SCOPE, accounts });
+    serve({ runStatus: 'succeeded' });
+    await ready();
+    const text = screen.getByLabelText('Inventory collection evidence').textContent ?? '';
+    expect(text.match(/Run health unknown for this account scope/g)).toHaveLength(1);
+    expect(text).not.toContain('route53: unknown');
+    expect(text).not.toContain('Some capture times unknown');
+    expect(text).toContain('EKS ownership was not attempted for this account scope');
+    expect(eksRequests()).toHaveLength(0);
+  });
+  it('does not report a running sync as a failure', async () => {
+    serve({ runStatus: 'running' });
+    await ready();
+    const text = screen.getByLabelText('Inventory collection evidence').textContent;
+    expect(text).not.toContain(': running');
+    expect(text).not.toContain('Run health unknown');
+  });
+  it('keeps a real member-scope subnet failure separate from unavailable run health', async () => {
+    setActiveScope({ ...DEFAULT_SCOPE, accounts: [member] });
+    serve({ runStatus: 'succeeded', subnetStatus: 503 });
+    await ready();
+    const evidence = screen.getByLabelText('Inventory collection evidence');
+    expect(evidence.querySelector('[role="status"]')?.textContent).toBe('subnet: failed');
+    expect(evidence.textContent).toContain('Run health unknown for this account scope');
+  });
+  it('does not reload unchanged account queries on a region-only selection change', async () => {
+    serve({ runStatus: 'succeeded' });
+    await ready();
+    const count = vi.mocked(fetch).mock.calls.length;
+    await act(async () => setActiveScope({ ...DEFAULT_SCOPE, regions: ['ap-northeast-2'] }));
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(count);
   });
   it('resolves a corroborated pod using its independently listed region and VPC', async () => {
     serve();

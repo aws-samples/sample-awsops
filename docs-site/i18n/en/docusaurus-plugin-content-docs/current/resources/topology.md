@@ -16,7 +16,7 @@ A page for exploring the request flow (**Route53 → CloudFront → Load Balance
 ### Request-flow graph
 - Visualizes the traffic path **Route53 → CloudFront → Load Balancer → Target Group → target** as nodes and edges.
 - Nodes are distinguished by per-kind color and icon; target nodes change color by their health state (**healthy / unhealthy / draining**, etc.). The info line above the graph shows color legend chips for the kinds/health states present in the current graph.
-- The header above the graph shows the current **node count** and **edge count**, plus the inventory sync time.
+- The graph shows the current **node count** and **edge count**; a separate collection-evidence area shows source capture/last-success times and read status.
 - Use the **MiniMap** at the bottom-right and the **Controls** at the bottom-left to pan and zoom freely.
 
 ### Entry-point filter
@@ -52,7 +52,7 @@ To see a service's full path, pick an entry point with the **CloudFront** or **L
 :::
 
 :::info Displayed times
-The inventory sync time in the graph header and the times in the detail panel are all in Korea Standard Time (KST, Asia/Seoul).
+Source capture/last-success times and query windows in collection evidence use the browser timezone. They are not the current fetch time or proof of live traffic state.
 :::
 
 ## AI analysis tips

@@ -212,12 +212,12 @@ runtime payloads for compatibility with older or malformed responses.
 | `attempted_at`, `captured_at` | Latest graph attempt and saved publication clocks, serialized as timestamps; neither substitutes for the source query window. |
 | `sources[].sourceId/status/reasons/itemCount` | Per-source collection result and bounded reason vocabulary. |
 | `sources[].windowStartMs/windowEndMs` | Actual trace query window, in epoch milliseconds; displayed independently of publication time. |
-| `nodeDrops`, `edgeDrops`, `infraUnavailable` | Existing trace producer loss counters and unavailable inventory context. Positive losses are visible even for older rows without newer truncation flags. Loss alone does not imply that a previous graph was retained. |
+| `nodeDrops`, `edgeDrops`, `orphanSpans`, `invalidSpans`, `unresolvedMessaging`, `infraUnavailable` | Existing trace loss counters and unavailable inventory context; span/messaging problems are distinct from processing limits. Positive losses are visible even for older rows without newer truncation flags. Loss alone does not imply that a previous graph was retained. |
 | `evidenceKind`, `inputTruncated`, `graphTruncated` | Optional additive producer metadata; `inventory` changes the empty-result wording, and truncation is disclosed conservatively. |
 | `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Optional source scope/capture/sweep clocks and saved-source provenance used by the graph-publication companion. Absent fields are not fabricated. |
 
-The prerequisite UI supports both the existing trace envelope and the companion's
-optional inventory/saved-source fields. It does not itself install that producer or
+The UI supports the existing trace envelope and reserves optional inventory/saved-source
+fields for the bounded publication implementation in `web/lib/graph-store.ts`. It does not itself install that producer or
 activate collection. Source details are collapsed and height-bounded; their count
 includes saved-source entries. Runtime, Lambda and migration rollout remain separate
 from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).

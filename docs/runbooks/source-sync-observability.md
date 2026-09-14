@@ -193,16 +193,18 @@ window, or source details do not explain a partial graph.
 region/VPC/subnet evidence for ECS and pod inventory for EKS. A repeated IP in another
 VPC or an Endpoints row without a corroborating pod cannot establish ownership. The
 page uses the hydrated account scope, cancels earlier loads and rejects late results.
+EKS failures, partial reads and scope-based opt-outs are explicit. Host EKS ownership
+is not applied to all/mixed-account targets because their IP key does not establish
+account identity. Unknown per-account run health is one scope notice; normal running
+syncs are not failures.
 A failed subnet read or the 500-row response cap is disclosed alongside retained
 unresolved targets; raw IP labels are not proof that a workload is absent.
 
-The existing trace producer emits `windowStartMs/windowEndMs` on sources and
-`nodeDrops/edgeDrops/infraUnavailable` on collection details. The panel renders these
-fields, including persisted older envelopes. A limit warning does not claim retention
-unless `retainedPrevious` is true. Attempt/publication and source query windows remain
-separate clocks, rendered in the viewer's timezone.
+For current trace windows and partial-result causes, see [Trace collection rendering](#trace-collection-rendering).
+The configuration graph also needs synced subnet inventory; its persisted ECS labels
+change only after the next flow rebuild. Source integration does not trigger that rebuild.
 
-The graph-publication companion additionally supplies optional inventory capture/sweep
+The planned bounded publication implementation in `web/lib/graph-store.ts` additionally supplies optional inventory capture/sweep
 clocks, aggregate/account source scope, saved-source provenance and explicit truncation
 flags. The prerequisite accepts those fields without claiming that their producer or
 migration is already live. Missing metadata is unknown, not a failed-collector verdict.

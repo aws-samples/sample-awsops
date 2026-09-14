@@ -16,7 +16,7 @@ import Screenshot from '@site/src/components/Screenshot';
 ### 请求流图
 - 将 **Route53 → CloudFront → Load Balancer → Target Group → 目标**相连的流量路径以节点和边可视化。
 - 节点按类型以颜色和图标区分，目标节点会根据 **healthy / unhealthy / draining** 等 health 状态变换颜色。图上方的信息行会显示当前图中存在的类型/health 颜色图例。
-- 图形顶部显示当前的**节点数**、**边数**以及清单同步时刻。
+- 图形显示当前**节点数**和**边数**；单独的采集证据区域显示源数据采集、最近成功时间及读取状态。
 - 通过屏幕右下角的 **MiniMap** 和左下角的 **Controls** 可以自由移动（pan）/缩放（zoom）。
 
 ### 入口点过滤器
@@ -52,7 +52,7 @@ import Screenshot from '@site/src/components/Screenshot';
 :::
 
 :::info 显示时刻
-图形顶部的清单同步时刻和详情信息中的时刻均以韩国标准时间（KST, Asia/Seoul）为准。
+采集证据中的源数据采集、最近成功时间和查询窗口使用浏览器时区。这些值不是当前获取时间，也不能证明实时流量状态。
 :::
 
 ## AI 分析技巧

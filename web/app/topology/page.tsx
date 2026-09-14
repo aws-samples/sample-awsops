@@ -10,10 +10,10 @@ import RefreshButton from '@/components/ui/RefreshButton';
 import DetailPanel from '@/components/ui/DetailPanel';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { buildFlowGraph, filterFromEntry, type FlowInput, type FlowKind, type FlowNode } from '@/lib/flow-topology';
-import { fetchEksIpMap, inventoryEvidence, type InventoryEvidence } from '@/lib/topology-config';
+import { fetchEksIpEvidence, inventoryEvidence, type EksIpEvidence, type InventoryEvidence } from '@/lib/topology-config';
 import { layoutFlow } from '@/lib/flow-layout';
 import { useTheme } from '@/lib/use-theme';
-import { scopeParams, useActiveScope } from '@/lib/account-context';
+import { useActiveScope } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
 // ReactFlow touches the DOM on mount — load it client-only to avoid SSR mismatch.
@@ -130,20 +130,60 @@ function nodeLabel(n: FlowNode): ReactNode {
 }
 
 const ROW_CAP = 500; // /api/inventory caps limit at 500
+const ISSUE_STATUSES = ['failed', 'partial', 'unavailable', 'error'] as const;
+type InventoryIssue = { type: string; status: typeof ISSUE_STATUSES[number] };
+const EVIDENCE_COPY = {
+  en: {
+    capture: 'Inventory capture / last success:', unknown: 'unknown', missingCapture: 'Some capture times unknown',
+    healthUnknown: 'Run health unknown for this account scope',
+    limit: 'Response limit reached; coverage may be incomplete',
+    failures: { failed: 'failed', partial: 'partial', unavailable: 'unavailable', error: 'failed' },
+    eks: { failed: 'EKS ownership read failed', partial: 'EKS ownership evidence is partial',
+      not_attempted: 'EKS ownership was not attempted for this account scope' },
+  },
+  ko: {
+    capture: '인벤토리 수집 / 최근 성공:', unknown: '미확인', missingCapture: '일부 수집 시각 미확인',
+    healthUnknown: '이 계정 범위의 수집 실행 상태는 미확인',
+    limit: '응답 상한 도달 — 일부 정보가 누락될 수 있음',
+    failures: { failed: '실패', partial: '부분 수집', unavailable: '미가용', error: '실패' },
+    eks: { failed: 'EKS 소유 근거 조회 실패', partial: 'EKS 소유 근거가 일부만 확인됨',
+      not_attempted: '이 계정 범위에서는 EKS 소유 근거를 조회하지 않음' },
+  },
+  ja: {
+    capture: 'インベントリ取得 / 最終成功:', unknown: '不明', missingCapture: '一部の取得時刻が不明',
+    healthUnknown: 'このアカウント範囲の収集実行状態は不明',
+    limit: '応答上限に到達 — 情報が不足している可能性があります',
+    failures: { failed: '失敗', partial: '部分収集', unavailable: '利用不可', error: '失敗' },
+    eks: { failed: 'EKS所有情報の取得に失敗', partial: 'EKS所有情報は一部のみ確認済み',
+      not_attempted: 'このアカウント範囲ではEKS所有情報を取得していません' },
+  },
+  zh: {
+    capture: '资产清单采集 / 最近成功:', unknown: '未知', missingCapture: '部分采集时间未知',
+    healthUnknown: '此账户范围的采集运行状态未知',
+    limit: '已达到响应上限 — 覆盖范围可能不完整',
+    failures: { failed: '失败', partial: '部分采集', unavailable: '不可用', error: '失败' },
+    eks: { failed: 'EKS归属信息读取失败', partial: 'EKS归属证据不完整',
+      not_attempted: '此账户范围未尝试读取EKS归属信息' },
+  },
+};
 
 async function fetchType(t: InvType | 'vpc' | 'subnet' | 'security_group', account: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; capped: boolean }> {
-  const r = await fetch(`/api/inventory/${t}?limit=${ROW_CAP}&accounts=${encodeURIComponent(account)}`, { signal });
-  if (!r.ok) return { rows: [], capped: false, ...inventoryEvidence([], null, false), status: 'failed' };
-  const d = await r.json();
-  if (d.error || d.status === 'error' || !Array.isArray(d.rows)) {
+  try {
+    const r = await fetch(`/api/inventory/${t}?limit=${ROW_CAP}&accounts=${encodeURIComponent(account)}`, { signal });
+    if (!r.ok) return { rows: [], capped: false, ...inventoryEvidence([], null, false), status: 'failed' };
+    const d = await r.json();
+    if (d.error || d.status === 'error' || !Array.isArray(d.rows)) {
+      return { rows: [], capped: false, ...inventoryEvidence([], null, false), status: 'failed' };
+    }
+    const rows = d.rows as { resource_id: unknown; region: unknown; captured_at?: unknown; data?: object }[];
+    return {
+      rows: rows.map((x) => ({ ...(x.data ?? {}), resource_id: x.resource_id, region: x.region })),
+      ...inventoryEvidence(rows, d.run, account === 'self'),
+      capped: rows.length >= ROW_CAP,
+    };
+  } catch {
     return { rows: [], capped: false, ...inventoryEvidence([], null, false), status: 'failed' };
   }
-  const rows = d.rows as { resource_id: unknown; region: unknown; captured_at?: unknown; data?: object }[];
-  return {
-    rows: rows.map((x) => ({ ...(x.data ?? {}), resource_id: x.resource_id, region: x.region })),
-    ...inventoryEvidence(rows, d.run, account === 'self'),
-    capped: rows.length >= ROW_CAP,
-  };
 }
 
 // ---- VPC / subnet / security-group id → name resolution (for the detail panel) ----
@@ -188,18 +228,21 @@ export default function TopologyPage() {
   // must be known before the first load; the hook's hydration default is not a host selection.
   if (!ready) return null;
   const account = Array.isArray(scope.accounts) ? scope.accounts.join(',') : scope.accounts;
-  return <ScopedTopologyPage key={scopeParams(scope)} activeAccount={account} />;
+  return <ScopedTopologyPage key={account} activeAccount={account} />;
 }
 
 function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
-  const { tt } = useI18n();
+  const { tt, lang } = useI18n();
+  const copy = EVIDENCE_COPY[lang];
   const [data, setData] = useState<FlowInput | null>(null);
   const [syncedAt, setSyncedAt] = useState<string | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [captureThrough, setCaptureThrough] = useState<string | null>(null);
   const [unknownCapture, setUnknownCapture] = useState(false);
-  const [collectionIssues, setCollectionIssues] = useState<string[]>([]);
+  const [collectionIssues, setCollectionIssues] = useState<InventoryIssue[]>([]);
+  const [runHealthUnknown, setRunHealthUnknown] = useState(false);
+  const [eksStatus, setEksStatus] = useState<EksIpEvidence['status'] | 'not_attempted'>('not_attempted');
   const [cappedTypes, setCappedTypes] = useState<string[]>([]);
   const [entryId, setEntryId] = useState<string>('');
   const [clusterFilter, setClusterFilter] = useState<string>('');
@@ -217,9 +260,12 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
     try {
       const account = activeAccount || 'self';
       const NET = ['vpc', 'subnet', 'security_group'] as const;
-      const [res, ipResolved, net] = await Promise.all([
+      const [res, eks, net] = await Promise.all([
         Promise.all(TYPES.map((t) => fetchType(t, account, signal))),
-        account === 'self' ? fetchEksIpMap(signal) : Promise.resolve({}),
+        // Mixed-account inventory does not carry account proof in the IP key. Do not
+        // attach host pod ownership to those targets; disclose the opt-out explicitly.
+        account === 'self' ? fetchEksIpEvidence(signal)
+          : Promise.resolve({ ipResolved: {}, status: 'not_attempted' as const }),
         // Subnets also establish each ECS attachment's VPC; never infer it from a target group.
         Promise.all(NET.map((t) => fetchType(t, account, signal))),
       ]);
@@ -228,7 +274,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
       if (signal.aborted) return;
       const mk = (rows: Row[]) => new Map(rows.map((r) => [String(r.resource_id), invName(r)]));
       setNetMaps({ vpc: mk(net[0].rows), subnet: mk(net[1].rows), sg: mk(net[2].rows) });
-      const out: FlowInput = { ipResolved, subnet: net[1].rows };
+      const out: FlowInput = { ipResolved: eks.ipResolved, subnet: net[1].rows };
       let oldest: string | null = null, newest: string | null = null;
       const capped: string[] = [];
       TYPES.forEach((t, i) => { out[FLOW_KEY[t]] = res[i].rows; });
@@ -242,8 +288,13 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
       setData(out);
       setSyncedAt(oldest);
       setCaptureThrough(newest);
-      setUnknownCapture(results.some(r => r.unknownCapture));
-      setCollectionIssues(results.flatMap((r, i) => r.status !== 'succeeded' ? [`${types[i]}: ${r.status}`] : []));
+      setUnknownCapture(results.some(r => r.rows.length > 0 && r.unknownCapture));
+      setRunHealthUnknown(account !== 'self' || results.some(r => r.status === 'unknown'));
+      setEksStatus(eks.status);
+      setCollectionIssues(results.flatMap((r, i) => {
+        const status = ISSUE_STATUSES.find(value => value === r.status);
+        return status ? [{ type: types[i], status }] : [];
+      }));
       setCappedTypes(capped);
       setErr('');
     } catch (e) {
@@ -566,10 +617,12 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
         {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
         {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
         {data && !err && <div aria-label="Inventory collection evidence" className="text-[12px] text-ink-400">
-          <span>{tt('Inventory capture / last success:')} {syncedAt ? new Date(syncedAt).toLocaleString() : 'unknown'}</span>
+          <span>{copy.capture} {syncedAt ? new Date(syncedAt).toLocaleString() : copy.unknown}</span>
           {captureThrough && captureThrough !== syncedAt && <span> – {new Date(captureThrough).toLocaleString()}</span>}
-          {unknownCapture && <span> · {tt('Some capture times unknown')}</span>}
-          {collectionIssues.length > 0 && <div role="status">{collectionIssues.join(', ')}</div>}
+          {unknownCapture && <span> · {copy.missingCapture}</span>}
+          {collectionIssues.length > 0 && <div role="status">{collectionIssues.map(issue => `${issue.type}: ${copy.failures[issue.status]}`).join(', ')}</div>}
+          {runHealthUnknown && <div>{copy.healthUnknown}</div>}
+          {eksStatus !== 'ok' && <div>{copy.eks[eksStatus]}</div>}
         </div>}
         {data && !err && (
           full.nodes.length === 0 ? (
@@ -581,7 +634,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-ink-400">
                 <span>{tt(`노드 ${nodes.length} · 엣지 ${edges.length}`)}</span>
                 {cappedTypes.length > 0 && (
-                  <span className="text-warning">{tt(`⚠ ${cappedTypes.join(', ')} ${ROW_CAP}개 초과 — 일부만 표시`)}</span>
+                  <span className="text-warning">{copy.limit}: {cappedTypes.join(', ')} ({ROW_CAP})</span>
                 )}
                 {/* kind/health color legend (gap L248) — the same fills the nodes render. */}
                 {legend.kinds.map((k) => {
