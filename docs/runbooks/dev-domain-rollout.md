@@ -228,8 +228,8 @@ requires the [full authenticated runtime gate](runtime-foundation.md#required-de
 Before A publication, complete that guide's runtime adoption, explicit readiness opt-in, migrations
 and full verification; `CI_READONLY_RUNTIME_DEV` alone never enables the billed probe.
 Its `collect-runtime.yml` prepare mode validates existing web/login/host registration;
-it neither bootstraps first web nor proves readiness. New stacks need a separate
-reviewed bootstrap procedure; there is no health-only bypass, password reset or admin promotion.
+it neither bootstraps first web nor proves readiness. New stacks must first follow the
+[reviewed first-web bootstrap procedure](first-web-bootstrap.md); there is no health-only bypass, password reset or admin promotion.
 [Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml) runs the reusable
 private migration on dev; main/preview retain `make migrate`. Optional
 post-provision `smoke=true` requires deployed readiness/inventory dependencies on

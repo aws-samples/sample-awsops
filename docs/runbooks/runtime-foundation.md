@@ -23,7 +23,7 @@ node --test scripts/v2/ci/prepare-runtime-host.test.mjs
 ## Activation
 
 1. Configure the **secret** `AWS_ACCOUNT_ID_DEV`, backend and existing CI roles. Checks establish account/role consistency, not dev/production isolation.
-2. This controller adopts an already-running web stack with working foundation, migrations and login. A brand-new stack needs a separate reviewed first-web bootstrap procedure before using it. `CI_READONLY_RUNTIME_DEV=true` enables core runtime, without enabling the separate readiness capability; manual full plan/apply require real login/DB and an enabled host registry with no enabled foreign rows.
+2. This controller adopts an already-running web stack with working foundation, migrations and login. A brand-new stack must first follow the [reviewed first-web bootstrap procedure](first-web-bootstrap.md). `CI_READONLY_RUNTIME_DEV=true` enables core runtime, without enabling the separate readiness capability; manual full plan/apply require real login/DB and an enabled host registry with no enabled foreign rows.
 3. `runtime-ecr-bootstrap` creates only three repositories. Build ARM64 images and set verified `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV` before a full plan.
 4. Dev/preview private discovery requires full-plan `runtime_rollout=true` and DNS permission; dev also requires the profile. Keep `domain_rollout=false`. Profile/rollout require remediation, RCA write-back, integrations write and diagnosis notifications off; governed external writes are not reclassified as FROZEN.
 5. Review/apply the same branch/SHA plan and encrypted assets. Preserve public DNS, certificates and network topology; unchanged owned ECS registration still requires DNS permission. Missing/mismatched bundles require a new plan. `CI_ASSETS_READY=true` selects layer verification, not rebuilding.
@@ -94,7 +94,7 @@ verifier application group when readiness and AgentCore are enabled; managed-dem
 also requires `create_demo_user=true`. Public CI rejects enabled readiness outside dev;
 no admin/IAM role is granted. See [capability and token lifetime](#readiness-capability).
 
-For an **already-running web stack with inactive backends**, first apply the reviewed base plan so runtime_deployment exists; never disable an active profile to repeat bootstrap. Prepare verifies that existing web image/service/login and host registry. It does not create the first web deployment. Bootstrap/build the three runtime repositories and verified images, then review/apply the full private-DNS runtime plan. Provision AgentCore after its private migration, then deploy. A brand-new stack without a working web service needs a separate reviewed bootstrap procedure before using these commands; this controller supplies no first-web bootstrap or health-only bypass.
+For an **already-running web stack with inactive backends**, first apply the reviewed base plan so runtime_deployment exists; never disable an active profile to repeat bootstrap. Prepare verifies that existing web image/service/login and host registry. It does not create the first web deployment. Bootstrap/build the three runtime repositories and verified images, then review/apply the full private-DNS runtime plan. Provision AgentCore after its private migration, then deploy. A brand-new stack without a working web service follows [first-web bootstrap](first-web-bootstrap.md) before these commands; this controller supplies no first-web bootstrap or health-only bypass.
 
 ```bash
 gh workflow run collect-runtime.yml -R aws-samples/sample-awsops --ref dev -f mode=prepare
