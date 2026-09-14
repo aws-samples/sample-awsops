@@ -161,7 +161,10 @@ IAM isolation from the audit's read-only behavior.
 
 Offline prerequisites: Python 3.12, Node.js 20 and bash. Install
 `python3 -m pip install -r scripts/v2/requirements-test.txt`, then run
-`python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`. Test SDK versions
+`python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py` and
+`python3 -m pytest -q scripts/v2/test_ci_verifier_sessions.py`. The audit shares
+only backend parsing with the [development verification policy helper](runtime-verifier-sessions.md);
+its own policy grants and no-invocation behavior are unchanged. Test SDK versions
 match the existing `agentcore/requirements-provision.txt` pin; the workflow
 installs that existing hash-locked SDK source.
 
@@ -172,6 +175,7 @@ installs that existing hash-locked SDK source.
 
 Sources: `.github/workflows/audit-deployment.yml`, `scripts/v2/ci_deployment_audit.py`,
 `scripts/v2/test_ci_deployment_audit.py`, `scripts/v2/ci_runtime_policy.py`,
+`scripts/v2/ci_verifier_sessions.py`, `scripts/v2/test_ci_verifier_sessions.py`,
 `terraform/foundation/runtime-read-scope.tf`.
 ADRs: 001, 005, 010, 021. This is not an ADR-005 carve-out; read-only observations
 are not live readiness proof.

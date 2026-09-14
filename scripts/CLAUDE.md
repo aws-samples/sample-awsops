@@ -14,7 +14,20 @@ secrets-manager) — installed by `make deps`.
 - Fixed public audit fields distinguish command, capture, retention and cleanup status; numeric standard Terraform success counts never include resource/output text. Missing summaries stay unavailable. Schema-2 failure HMAC uses its own domain with the existing CBC cipher/key. Recovery verifies the exact failed attempt and emits fixed timeout/errors; private inspection remains authenticated and bounded to 32 MiB.
 - The sealing payload reaches OpenSSL through stdin, with no plaintext staging file. Captured Terraform runs in a separate session; first-interrupt forwarding, second-interrupt group kill and parent-death protection govern cancellation. Sealing/storage/publication failures preserve the command exit.
 - Cleanup deletes only after the identified upload's literal success; failed/cancelled/skipped/unknown outcomes retain ciphertext privately. Audits distinguish pending_upload, retained_unpublished and final cleanup outcomes. No broad runner-temp sweep, shared-UID isolation or SIGKILL guarantee.
-- `v2/ci_deployment_audit.py` — manual dev audit with existing identity guards, a restrictive session policy, fixed reads/SELECTs and safe projections. Web observations do not claim an applied revision; timestamps do not classify product freshness, and observed types do not establish completeness. Offline fixtures: `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`; operator guide: `docs/runbooks/deployment-audit.md`.
+- `v2/ci_deployment_audit.py` — manual dev audit with existing identity guards, a restrictive session policy, fixed reads/SELECTs and safe projections. It shares only backend parsing with `ci_verifier_sessions.py`; its grants and no-invoke behavior are unchanged. Web observations do not claim an applied revision; timestamps do not classify product freshness, and observed types do not establish completeness. Offline fixtures: `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`; operator guide: `docs/runbooks/deployment-audit.md`.
+- `v2/ci_verifier_sessions.py` — pure policy generator for manual collection and Deploy Web verification:
+  backend state-read and workload policies, never persistent IAM changes or AWS calls.
+  Manual `collect-runtime.yml` dev dispatches support both phases and prepare/collect.
+  `deploy-web.yml` dev push/dispatch supports workload collect only; backend/prepare are refused.
+  Consumers own workflow wiring; helper availability does not install either consumer path.
+  Deploy Web integration must be dev-only, prepare proof credentials/state for push and dispatch,
+  and satisfy the activated-runtime collect prerequisites; missing proof fails closed.
+  Require a nonempty policy for each refresh; bind workload state to the selected private directory.
+  Prepare cannot invoke Lambda; collect allows only the owned collector. The consumer must
+  enforce explicit catalog/CloudFront RequestResponse payloads (absent type defaults to all),
+  distinct catalog/succeeded result shapes and post-marker authenticated freshness/runtime/worker proof.
+  Operator collection writes application inventory, not AWS resources; this is not an ADR-005 exception.
+  Tests: `v2/test_ci_verifier_sessions.py`; contract: `docs/runbooks/runtime-verifier-sessions.md`.
 - `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
 - Readiness is separate from the runtime profile: `CI_READINESS_ENABLED_DEV=true/false`
   explicitly overrides `ci_readiness_enabled` on dev; empty/unset preserves operator tfvars
@@ -55,8 +68,8 @@ secrets-manager) — installed by `make deps`.
   Private init is bounded to 10 minutes; output/console each to 2 minutes.
 - `v2/authenticated-smoke.mjs` — login plus edge-authenticated `/api/db` verification. Preserve
   Host/SNI/TLS; report only the phase and validated HTTP status, never bodies/cookies/passwords.
-  The CLI keeps HTTP scratch files under the prepared credential directory so the workflow's
-  always-cleanup owns them; standalone calls prefer RUNNER_TEMP. Response files default to 64 KiB; only the bounded CloudFront inventory leg permits 2 MiB.
+  CLI HTTP scratch belongs to the prepared credential directory and normal finalizers;
+  process/runner loss can prevent cleanup. Standalone calls prefer RUNNER_TEMP. Response files default to 64 KiB; only the bounded CloudFront inventory leg permits 2 MiB.
 - `v2/ci_dns_policy.py` — reads Terraform state to preserve managed certificate ownership
   (JSON null) and existing service aliases; verifies operator-selected/attached certificates
   without account-wide selection. Redacts public summaries. Blocks all Route53/Cloud Map
@@ -128,9 +141,9 @@ secrets-manager) — installed by `make deps`.
   It runs before encryption with a two-minute timeout and fenced JSON output.
   Presence booleans are separate, with a combined 256-row bound and no private values;
   new enrollment checks the existing or planned group's absence of an IAM role.
-- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,readiness_plan_summary,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets}.py` —
-  workflow fixtures, real no-provider plans and a localhost state backend verify deployment
-  gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,readiness_plan_summary,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets,verifier_sessions}.py` —
+  the suites collectively use policy/workflow fixtures, real no-provider plans and a localhost
+  state backend to verify gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active
   rollout's public zone name/ID/NS. The readiness summary adds fixed scope/presence checks and
   a known configured collector hash. Diagnostics also publish bounded numeric metric values;
@@ -225,3 +238,21 @@ checks the host registry; optional hostOnly rejects members. Verify requires com
 fresh collection, real web-role runtime evidence and owned worker completion. The file
 is at most 16 KiB, collectionStartedAt at most 30 minutes old, and queued types unique
 with cloudfront included. The utility alone does not wire a deployment workflow.
+
+Verify accepts optional `inventoryPolicy: "full"` and `collectionMode: "release"`;
+other values fail, and omission retains strict checks for every supplied type. Full mode
+returns programmatic quality/gaps; CLI output stays fixed and catalog discovery belongs
+to the caller. Release mode extends collection polling from 10 to 20 minutes, with one
+shared window across rechecks. All runtime callers have a finite deadline: marker+30min
+for verify, entry+30min for prepare; an explicit deadline only shortens it. One proven
+CloudFront running collision permits a 65-second-cooldown retry after complete revalidation.
+A repeated collision is runtime_inventory_contention, initial waiting is collection_timeout,
+stale full-policy data is collection_stale and the outer limit is release_timeout. Workers
+start after ready. The helper and collection-only BFF view do not activate a workflow/flag.
+Requests require their full timeout remaining. Before billed readiness, require its 80s
+allowance plus 370s per worker (35s enqueue, 300s poll, final 35s request); recheck remaining
+workers before enqueue. Retry admission includes 65s cooldown, one 35s collection read,
+the probe and both workers. Collection windows are caps; late completion may fail admission.
+Fresh running collection attempts with old/null previous success remain pending and time
+out as collection_timeout. Stale terminal evidence remains collection_stale in full mode.
+The outer authenticated login/DB wrapper also refuses shortened request timeouts.
