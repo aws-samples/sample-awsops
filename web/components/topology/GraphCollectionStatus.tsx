@@ -5,6 +5,9 @@ import { useI18n } from '@/components/shell/LanguageProvider';
 export interface GraphCollectionSource {
   sourceId: string;
   status: string;
+  producerStatus?: 'succeeded' | 'failed' | 'partial' | 'running' | 'unknown';
+  attemptedAtMs?: number | null;
+  finishedAtMs?: number | null;
   reasons?: string[];
   itemCount?: number;
   scope?: 'aggregate' | 'account';
@@ -24,6 +27,14 @@ export interface GraphCollection {
   attempted_at?: string | null;
   captured_at?: string | null;
   evidenceKind?: 'inventory' | 'trace';
+  failureReason?: 'publication_failed' | 'source_read_failed' | 'state_read_failed' | 'not_attempted';
+  sourceAttempted?: boolean;
+  coverage?: 'unknown';
+  readStatus?: 'ok' | 'partial' | 'unavailable';
+  readReason?: 'row_limit' | 'busy' | 'query_failed';
+  readTruncated?: boolean;
+  windowStartMs?: number;
+  windowEndMs?: number;
   inputTruncated?: boolean;
   graphTruncated?: boolean;
   nodeDrops?: number;
@@ -39,6 +50,8 @@ export interface GraphCollection {
 // not evidence of a collector failure.
 const COPY = {
   ko: {
+    notAttempted: '실행 예산으로 원본 조회를 시도하지 않음',
+    readLimited: '그래프 조회 한도 — 반환된 범위가 불완전합니다.', readUnavailable: '그래프 조회 불가 — 수집 상태를 확인할 수 없습니다.', stateReadFailed: '수집 메타데이터를 조회할 수 없습니다.', producerStatus: '원본 작업 상태', sourceAttempt: '원본 작업 시작', sourceFinished: '원본 작업 종료', unknownCoverage: '선택한 계정 집합의 수집 범위 미확인',
     ok: '최근 수집 성공', empty: '조회한 시간 범위에 관측값 없음', partial: '부분 수집 — 전체 상태를 확정할 수 없음',
     unavailable: '데이터소스 미연결 또는 미가용', error: '수집 실패', unknown: '수집 상태 미확인',
     stale: '오래된 데이터', retained: '이전 그래프를 표시합니다. 현재 트래픽 상태를 의미하지 않습니다.',
@@ -53,6 +66,8 @@ const COPY = {
     counts: { ok: '성공', empty: '빈 결과', partial: '부분', unavailable: '미가용', error: '실패', unknown: '미확인' },
   },
   en: {
+    notAttempted: 'Source read not attempted because the run budget was exhausted.',
+    readLimited: 'Graph read limit reached — returned coverage is incomplete.', readUnavailable: 'Graph read unavailable — collection outcome is not established.', stateReadFailed: 'Collection metadata could not be read.', producerStatus: 'Producer status', sourceAttempt: 'Source job start', sourceFinished: 'Source job finish', unknownCoverage: 'Collection coverage of the selected account union is unknown.',
     ok: 'Latest collection succeeded', empty: 'No observations in this window', partial: 'Partial collection — coverage is incomplete',
     unavailable: 'Datasource unavailable or not configured', error: 'Collection failed', unknown: 'Collection state unknown',
     stale: 'Stale data', retained: 'Showing the previous graph; it does not establish current traffic state.',
@@ -67,6 +82,8 @@ const COPY = {
     counts: { ok: 'ok', empty: 'empty', partial: 'partial', unavailable: 'unavailable', error: 'failed', unknown: 'unknown' },
   },
   ja: {
+    notAttempted: '実行予算の上限によりソース取得を試行していません。',
+    readLimited: 'グラフ取得上限 — 返された範囲は不完全です。', readUnavailable: 'グラフ取得不可 — 収集結果を確認できません。', stateReadFailed: '収集メタデータを取得できませんでした。', producerStatus: 'ソースジョブの状態', sourceAttempt: 'ソースジョブ開始', sourceFinished: 'ソースジョブ終了', unknownCoverage: '選択したアカウント集合の収集範囲は不明です。',
     ok: '最新の収集に成功', empty: '対象期間に観測値なし', partial: '部分収集 — 全体の状態は未確認',
     unavailable: 'データソース未設定または利用不可', error: '収集失敗', unknown: '収集状態不明',
     stale: '古いデータ', retained: '以前のグラフを表示しています。現在の通信状態を示すものではありません。',
@@ -81,6 +98,8 @@ const COPY = {
     counts: { ok: '成功', empty: '空', partial: '部分', unavailable: '利用不可', error: '失敗', unknown: '不明' },
   },
   zh: {
+    notAttempted: '运行预算已耗尽，未尝试读取数据源。',
+    readLimited: '图读取达到上限 — 返回范围不完整。', readUnavailable: '图读取不可用 — 无法确认采集结果。', stateReadFailed: '无法读取采集元数据。', producerStatus: '源任务状态', sourceAttempt: '源任务开始', sourceFinished: '源任务完成', unknownCoverage: '所选账号集合的采集覆盖范围未知。',
     ok: '最近一次采集成功', empty: '查询时间范围内无观测值', partial: '部分采集 — 覆盖范围不完整',
     unavailable: '数据源不可用或未配置', error: '采集失败', unknown: '采集状态未知',
     stale: '数据已过期', retained: '正在显示上一次的图，不能据此判断当前流量状态。',
@@ -110,10 +129,10 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
     typeof data[key] === 'number' && Number.isSafeInteger(data[key]) && (data[key] as number) > 0);
   const limited = data.inputTruncated === true || data.graphTruncated === true
     || losses.some(key => key === 'nodeDrops' || key === 'edgeDrops');
-  const warning = data.stale === true || retained || limited || losses.length > 0 || data.infraUnavailable === true
+  const warning = data.readStatus === 'partial' || data.readStatus === 'unavailable' || data.failureReason === 'state_read_failed' || data.stale === true || retained || limited || losses.length > 0 || data.infraUnavailable === true
     || ['partial', 'unavailable', 'error'].includes(status);
   const sources = Array.isArray(data.sources) ? data.sources.map(record) : [];
-  const published = retained && Array.isArray(data.publishedSources) ? data.publishedSources.map(record) : [];
+  const published = Array.isArray(data.publishedSources) ? data.publishedSources.map(record) : [];
   const counts = sources.reduce<Record<string, number>>((result, source) => {
     const key = statusOf(source.status);
     result[key] = (result[key] ?? 0) + 1;
@@ -121,6 +140,7 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
   }, {});
   const clockLabels = {
     capturedAtMs: copy.sourceCapture, lastSuccessAtMs: copy.lastSuccess,
+    attemptedAtMs: copy.sourceAttempt, finishedAtMs: copy.sourceFinished,
     windowStartMs: copy.windowStart, windowEndMs: copy.windowEnd,
   };
   const sourceTimes = (source: Record<string, unknown>) => (Object.keys(clockLabels) as (keyof typeof clockLabels)[]).map(key => {
@@ -130,11 +150,20 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
     return <span key={key} className="block">{clockLabels[key]}
       {' · '}<time dateTime={iso}>{new Date(value).toLocaleString()}</time></span>;
   });
+  const producer = (source: Record<string, unknown>) => typeof source.producerStatus === 'string'
+    && ['succeeded','failed','partial','running','unknown'].includes(source.producerStatus)
+    ? <span className="block">{copy.producerStatus}: {source.producerStatus}</span> : null;
   return (
     <div role={warning ? 'alert' : 'status'}
       className={`my-2 max-h-[36vh] shrink-0 overflow-y-auto rounded-md border px-3 py-2 text-xs ${warning
         ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-ink-200 bg-card text-ink-600'}`}>
       <p className="font-medium">{status === 'empty' && data.evidenceKind === 'inventory' ? copy.inventoryEmpty : copy[status]}{data.stale === true ? ` · ${copy.stale}` : ''}</p>
+      {data.sourceAttempted === false && <p>{copy.notAttempted}</p>}
+      {data.readTruncated === true && <p>{copy.readLimited}</p>}
+      {data.readStatus === 'unavailable' && <p>{copy.readUnavailable}</p>}
+      {data.failureReason === 'state_read_failed' && <p>{copy.stateReadFailed}</p>}
+      {data.coverage === 'unknown' && <p>{copy.unknownCoverage}</p>}
+      {sourceTimes({ windowStartMs: data.windowStartMs, windowEndMs: data.windowEndMs })}
       {retained && <p className="mt-1">{copy.retained}</p>}
       {limited && <p>{retained ? copy.limited : copy.limitedPartial}</p>}
       {losses.map(key => <p key={key}>{copy[key]}: {String(data[key])}</p>)}
@@ -161,14 +190,14 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
             <span className="font-mono">{typeof source.sourceId === 'string' ? source.sourceId : '—'}</span>: {copy[statusOf(source.status)]}
             {source.scope === 'aggregate' || source.scope === 'account' ? <span> · {source.scope}</span> : null}
             {reasons.length > 0 && <span> · {reasons.join(', ')}</span>}
-            {sourceTimes(source)}
+            {producer(source)}{sourceTimes(source)}
           </li>;
         })}
       </ul>}
       {published.length > 0 ? <div className="mt-2">
         <p>{copy.savedSources}</p>
         <ul>{published.map((source, i) => <li key={i}>
-          {typeof source.sourceId === 'string' ? source.sourceId : '—'}{sourceTimes(source)}
+          {typeof source.sourceId === 'string' ? source.sourceId : '—'}{producer(source)}{sourceTimes(source)}
         </li>)}</ul>
       </div> : null}
         </div>

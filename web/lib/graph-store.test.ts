@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { rebuildGraph, rebuildInfraGraph } from './graph-store';
+import { INFRA_TYPES } from './graph-inventory';
 
 // ADR-043 Step 1 — Task 1: the topology_graph migration exists and declares the expected shape.
 const MIG_DIR = join(process.cwd(), '..', 'terraform', 'foundation', 'migrations');
@@ -47,7 +48,7 @@ function mockPool(invRows: unknown[]) {
   }));
   const types = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2', 'lambda',
     'ecs_task', 's3', 'subnet', 'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin',
-    ...resourceRows.map(row => (row as Record<string, unknown>).resource_type)];
+    ...INFRA_TYPES, ...resourceRows.map(row => (row as Record<string, unknown>).resource_type)];
   const snapshot = { inventory: resourceRows, runs: invRows.length ? [...new Set(types)].map(type => ({
     account_id: 'self', resource_type: type, status: 'succeeded', unknown_attribute_count: 0,
     row_count: resourceRows.filter(row => (row as Record<string, unknown>).resource_type === type).length,

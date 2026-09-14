@@ -27,6 +27,10 @@ samples의 CI·OIDC·브랜치/배포 정책과 Terraform 경로를 유지한다
 
 ## Additive migrations / 추가 마이그레이션
 
+- `01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`: bounded `sourceAttempted`, `not_attempted` and `count_not_confirmed` disclosure in the existing collection view; no grant changes.
+- `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql`: collection-state projection for flow/infra, bounded source clocks/status/scope, saved sources, loss counters and failure reasons; existing grants remain unchanged.
+- `01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql`: class-ordered indexes for bounded graph reads; no writer or schedule activation.
+
 - `01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql`: collection attempts,
   explicit graph evidence counts, and projected SQL-reader views.
 - `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`: queue claimed account/region
@@ -81,7 +85,7 @@ metadata and metric scope labels. Before reindexing, older cached queries can pr
 
 
 The web task and inventory-reader Lambda both receive `graph_rebuild_interval_mins` through
-`GRAPH_REBUILD_INTERVAL_MINS`. Their freshness threshold is twice that cadence with a 15-minute
+`GRAPH_REBUILD_INTERVAL_MINS`. Their graph-publication freshness threshold is twice that cadence with a 15-minute
 minimum; zero retains that minimum. For example, a successful 20-minute-old snapshot is current
 at a 30-minute cadence in both readers. Failed/partial/retained evidence keeps its existing gates.
 Apply the Lambda environment binding through Terraform along with the reader code deployment;
@@ -91,6 +95,20 @@ updating the code alone does not configure the cadence.
 수집 주기의 두 배이며 최소 15분이고, 0에서도 이 최소값을 유지한다. 30분 주기에서 정상적으로
 수집된 20분 전 스냅샷은 양쪽에서 최신으로 판정한다. 실패·부분·보존 데이터의 기존 판정은
 유지하며, 코드 배포와 함께 Terraform의 Lambda 환경설정도 반영해야 한다.
+
+## Inventory freshness and retained evidence
+
+`inventory_stale_after_minutes` binds `INVENTORY_STALE_AFTER_MINUTES` in both the web
+workload and inventory-reader Lambda (default 30, integer 1–1440). It independently gates
+flow/infra source clocks and completeness; the graph-cadence threshold above still gates
+saved publication age. A recent graph publication cannot make old or incomplete source
+evidence fresh. Environment/source integration does not establish an applied rollout.
+
+Hard input/graph budgets and failed collection preserve last-good evidence. Repeated
+retentions never authorize an empty publication or unproven sweep. A job-level aggregate
+zero does not prove an unobserved member participated. Unsupported/missing evidence must
+remain explicit; no retry count converts it into success. The request and publication
+transaction helper requires PostgreSQL 17 for `transaction_timeout` (the stack default is 17.9).
 
 ## Trace identity boundaries / 트레이스 식별 경계
 
@@ -231,3 +249,24 @@ These fixtures exercise real page/builder and graph-state-reader boundaries with
 transport/database doubles. They do not establish deployed AWS, Runtime or migration
 state. Keep the existing separately authorized rollout procedure above (ADR-005,
 ADR-007) and distinguish source integration from activation.
+
+
+### Bounded rebuild scheduling
+
+Inventory accounts are ordered by their oldest actual attempt, with unattempted reads
+prioritized. One account failure does not prevent later accounts from progressing; the
+original exception is still returned after that bounded pass. Duplicate admission is per
+pool and graph class. Before the run budget is exhausted, a final bounded transaction
+records skipped source reads as unavailable with `sourceAttempted=false`; publication
+clocks and graph rows remain unchanged. Concurrent newer attempts win. If the database
+or class lock prevents that best-effort metadata write, the CLI reports the recording gap.
+This is scheduling within the existing invocation, not a new retry loop or publication
+permission. Failed collection and hard budget breaches still retain last-good data.
+
+### Graph read rollout and source age
+
+Apply the named collection projection and read-index migrations through the existing authorized `make migrate` operator flow before relying on the widened SQL-reader view and indexed read plan. The reader remains compatible with missing state as unknown; the flow/infra publisher still requires its separately authorized schedule/manual invocation. Source integration and automatic web CD do not prove these migrations ran.
+
+Separately, `inventory_stale_after_minutes` supplies `INVENTORY_STALE_AFTER_MINUTES` to the web task and inventory-reader Lambda (default 30, 1–1440). Applying the reviewed Terraform environment change and deploying the web image are separate operator steps. The shared number is an age threshold, not identical status algorithms: the graph also requires a succeeded producer and ok/empty published-source evidence, valid source clocks and a fresh graph publication. Unknown attributes produce partial source evidence, not fresh completeness. Future clocks remain unknown/stale conservatively.
+
+See [graph read contract](graph-read-contract.md) for request budgets, read-vs-collection disclosure, legacy display clocks and the disposable PostgreSQL tests. No repeated retention count permits an unproven empty publication or sweep.

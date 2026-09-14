@@ -11,9 +11,10 @@
 `.github/workflows/{deploy-web,terraform,deploy-agentcore,deploy-migrations}.yml`,
 `docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
 `scripts/v2/ci_review_access.py`, `scripts/v2/ci_dns_policy.py`, `scripts/v2/ci_plan_context.py`,
-`scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_readiness_plan_summary.py`,
 `scripts/v2/ci_private_plan.py`, `scripts/v2/test_ci_private_plan.py`,
-`docs/reference/private-plan-transport.md` (unwired S3 transport prerequisite),
+`scripts/v2/test_ci_private_plan_workflow.py`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_readiness_plan_summary.py`,
+`docs/reference/private-plan-transport.md`,
+`terraform/bootstrap/{main,variables}.tf`,
 `scripts/v2/test_ci_readiness_plan_summary.py`,
 `scripts/v2/ci_failure_diagnostics.py`,
 `scripts/v2/ci_db_diagnostics.py`, `scripts/v2/test_ci_db_diagnostics.py`,
@@ -27,11 +28,10 @@
 `terraform/foundation/tests/dns_deferred.tftest.hcl`, `docs/reference/01-edge-network.md`,
 `docs/reference/03-data-aurora.md`
 
-`ci_plan_inspect.py` is the current encrypted-artifact inspector. The separate
-`ci_private_plan.py` cannot inspect this base workflow's runs: its future consumer
-must migrate the `tfplan` artifact to `tfplan-<attempt>` and publish S3 references
-before operators use the new inspection path. See the transport contract for the
-required access-policy, lifecycle and coordinated Apply migration.
+`ci_private_plan.py` inspects current S3 plan references. `ci_plan_inspect.py` remains
+for historical encrypted `tfplan` artifacts only. Plan and Apply migrate together
+to `tfplan-<attempt>` references; see the transport contract for storage, access and
+lifecycle prerequisites before the first publication.
 
 > Historical note: this file previously described the two-repo split
 > (`Atom-oh/sample-awsops-dev`). The project consolidated into the single public
@@ -79,17 +79,20 @@ been running the main-branch pipelines). Nothing to do unless runs queue forever
 
 ### 2. CI roles + GitHub OIDC trust matrix
 
-All roles live in the samples deployment account and trust the GitHub OIDC
-provider with a `sub` condition — never the repo-wide `:*` wildcard, which would
+The matrix describes intended role purposes and trust boundaries; configured
+role ARNs and accounts come from the protected role secrets and must be verified.
+Production callers must use the production account, distinct from the declared
+development/preview account. Roles trust the GitHub OIDC provider with a `sub`
+condition — never the repo-wide `:*` wildcard, which would
 let ANY branch (including an experiment branch with an edited workflow) assume the
 mutation roles. Role-to-sub matrix:
 
 | Role | Used by | Trust `sub` | Permissions scope |
 |---|---|---|---|
 | `sample-awsops-ci-build` | main build (no environment) | StringEquals `repo:aws-samples/sample-awsops:ref:refs/heads/main` | prod ECR push |
-| `sample-awsops-ci-deployer` | main roll / apply / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway` |
-| `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | dev + user stacks' ECR push |
-| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | dev + user stacks' ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway` — **never production** |
+| `sample-awsops-ci-deployer` | main roll / apply / private-plan publication / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway`; private-plan publication additionally requires the scoped S3/KMS permissions below |
+| `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | Development/preview ECR build and push; the configured build-role policy covers repositories across the CI account, not one stack, so each target requires authenticated branch/stack checks |
+| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls/apply/private-plan publication, dev agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | Development/preview ECS/ECR-pin/apply and AgentCore control plane, including `GetGateway`; current `AdministratorAccess` includes wider account access, so authenticated branch/stack checks and production-account separation are required; private-plan publication additionally requires the scoped S3/KMS permissions below |
 | `sample-awsops-ci-terraform-plan` | plan (PR/push incl. user-branch own-stack plans, read-only) | StringLike: `...:pull_request` + refs `main`, `dev`, `atomoh`, `ssminji`, `whchoi` | ReadOnlyAccess |
 | `sample-awsops-ci-review` | AI pr-review | StringEquals: verified subject prefix + environments `ci-review-auto` / `ci-review-recovery`, or legacy refs `main` / `dev`; no bare `pull_request` subject | Bedrock / Mantle policies — inspect actual permissions before approval |
 
@@ -99,7 +102,10 @@ roles must therefore trust the environment sub (pinning them to a branch ref
 makes every deploy fail AssumeRoleWithWebIdentity). Which branches can reach an
 environment is enforced by the environment's own deployment branch policy
 (`production` → main only; `development` → dev, atomoh, ssminji, whchoi).
-Build/plan jobs carry no environment and present branch-ref subs. Fork PRs can
+Build and read-only plan jobs carry no environment and present branch-ref subs.
+Manual plan dispatches also enter the branch environment for private publication:
+the existing deployer role is restricted by an S3/KMS-only session policy.
+Main publication waits for production approval, as does its separate apply dispatch. Fork PRs can
 never mint tokens (GitHub withholds id-token from forks) and `terraform.yml`
 skips non-same-repo PRs outright.
 
@@ -380,11 +386,14 @@ situations:
   prefer `admin-disable-user` over delete/recreate — deletion is identity
   loss.
 
-Artifact channels are covered too: public-repository artifacts are publicly accessible and must not protect secrets by access controls alone. The binary plan and rendered assets may contain secrets, so the `tfplan` artifact carries encrypted `tfplan.enc` and `tfassets.enc` only. `TF_PLAN_ENC_KEY` supplies CBC/PBKDF2 encryption, authenticated asset binding, and the separate schema-2 failure-capsule HMAC domain. Rotation invalidates verification without the matching prior key; never put this key in argv or public logs.
+Saved plans and rendered assets can contain credentials. Manual plans use the configured private, versioned SSE-KMS backend bucket under a separate `ci/tfplans/` prefix. The read-only plan job validates/HMAC-packs assets and stages an attempt-specific encrypted handoff for a protected publisher. The publisher uses the existing deployment role with an S3/KMS-only session, verifies/decrypts the handoff and stores pinned plan/assets plus a private manifest. It then replaces the GitHub handoff with a nonsecret reference. No new bucket, key or IAM allow is created by this flow. Automatic PR/push plans retain required asset validation but upload no saved-plan handoff.
+
+`TF_PLAN_ENC_KEY` stays inside CI for the temporary handoff, asset HMAC and existing failure capsules. Operators inspect the S3 plan through IAM/KMS without that client key. Rotation still requires the matching key for historical signed bundles; never put it in argv or logs.
 
 | Channel | Contents and conditions |
 |---|---|
-| `tfplan` | Existing encrypted saved plan/assets; same repository/branch/SHA/run checks and apply gates remain mandatory. |
+| `tfplan-<attempt>` | Initially an encrypted one-day handoff; successful publication overwrites it with only `reference.json` for five days. The reference has source/digest metadata, no bucket/account/ARN/version/private values. |
+| Private S3 | Exact plan and HMAC-authenticated assets protected by SSE-KMS, pinned versions/checksums and a private manifest. Publication requires plan-prefix lifecycle. Seven-day current expiration is followed by seven-day noncurrent expiration; S3 deletion is asynchronous. Reference expiry does not delete objects or authorize stale apply. |
 | `terraform-failure-<phase>-<attempt>` | One validated ciphertext file for an explicit failed/cancelled dispatch, five-day artifact retention. Local ciphertext is deleted only after confirmed upload success; failed/cancelled/skipped uploads retain it privately. |
 | Job log and step summary | Fixed command/capture/retention classifications, subsequent upload/cleanup status and numeric Terraform success action counts; no raw command output or arbitrary `Error:` text. Advisory PR/push failures are classified but retain no raw log. |
 
@@ -394,9 +403,9 @@ Then register the generated files (base64) as repo secrets:
 
 | Stack | Secrets |
 |---|---|
-| all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (saved-plan/failure-capsule encryption, private asset HMAC and a separate failure HMAC domain; rotation requires the matching key for old bundles) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
-| production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` |
-| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` / `AWS_ACCOUNT_ID_DEV` (required configured account for migrations, runtime image builds and provisioning; secret, not variable) |
+| all stacks (repo-wide) | `AWS_ACCOUNT_ID_DEV` (12-digit development/preview account; also required by the web helper on main for account exclusion) / `TF_PLAN_ENC_KEY` (saved-plan/failure-capsule encryption, private asset HMAC and a separate failure HMAC domain; rotation requires the matching key for old bundles) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
+| production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS`; future `ci_web_image.py` integration also requires repository secret `AWS_ACCOUNT_ID_DEV` for its dev-account exclusion check |
+| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV`; uses the repository-wide account secret above for migrations, runtime builds and provisioning |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
 
 ```bash
@@ -406,9 +415,14 @@ gh secret set TF_TFVARS_DEV -R aws-samples/sample-awsops \
   --body "$(base64 -w0 terraform/foundation/terraform.tfvars)"
 ```
 
-The secret `AWS_ACCOUNT_ID_DEV` is required for configured development and preview stacks.
-The configured role and STS caller must match it before AWS reads/writes. A missing backend
+Store `AWS_ACCOUNT_ID_DEV` as a repository-wide secret identifying the shared development
+and preview account. Those stacks' configured role and STS caller must match it before AWS reads/writes. A missing backend
 may skip an advisory plan; missing account verification on a configured stack fails.
+
+The preparatory [web image provenance helper](web-image-provenance.md) additionally requires
+this repository secret on **main**, as 12 ASCII digits, before excluding the dev account.
+Keep it available to the production environment and do not shadow it with an invalid value.
+This is the new helper's contract; the current legacy web workflow is not yet wired to it.
 
 The manual development [deployment audit](deployment-audit.md)
 (`audit-deployment.yml`) reuses the dev account/deployer/backend secrets with a
@@ -435,8 +449,10 @@ callers; this agreement is not proof of effective permissions or an independent 
 The distinct NAMES are the isolation: a dev/preview job can never fall back to the
 production pair. From then on, terraform changes flow through `terraform.yml`.
 Automatic PR/push plans are advisory. Apply requires a successful explicit `mode=plan`
-dispatch at the same repository, branch and SHA, followed by `mode=apply` with its run ID,
-gated by the branch's environment (`production` carries the reviewer approval). See §5
+dispatch at the same repository, branch and SHA, followed by `mode=apply` with its run ID
+and privately obtained `reviewed_plan_sha256`. Both publication and apply enter the branch's
+environment; main requires production approval for each dispatch. Publication assumes
+the deployer role under its required S3/KMS-only session restriction. See §5
 for DNS restrictions; the manual Terraform commands above alone do not enforce them.
 
 <a id="dev-db-diagnostics"></a>
@@ -643,8 +659,19 @@ owner. The application workflow does not grant IAM. See the
 [AgentCore reconciliation contract](../reference/05-agentcore.md#provisioner-reconciliation).
 
 The deploy jobs re-point `:web-latest` at the approved `web-<sha>` before rolling,
-so each deployer role needs `ecr:BatchGetImage` + `ecr:PutImage` scoped to its own
-stack's web ECR repository (plus the auth-token action it already has).
+so the selected role needs `ecr:BatchGetImage` + `ecr:PutImage` on the verified
+branch stack's web ECR repository (plus the auth-token action it already has).
+The samples dev deployer's current `AdministratorAccess` baseline and the build
+role's CI-account repository-wide ECR policy are broader than one stack; they do
+not establish branch-to-stack authority. Each operation must target exactly the
+independently verified stack repository. Scope any new ECR grants to that repository's ARN.
+Future wiring of the [web provenance helper](web-image-provenance.md) additionally
+requires repository-scoped `ecr:GetDownloadUrlForLayer` for digest-bound ARM64 config
+verification. Its producer and receipt-consuming jobs need `actions: read`; the
+producer uses its ci-build role, while promotion uses the deployer role. The
+currently unwired helper grants none of these permissions. Its `IMAGE_PROJECT`
+must come from branch-selected authenticated Terraform outputs or a verified
+job output derived from them, with ECR/cluster/service cross-checks, never dispatch input.
 
 Backend image builds require additional **repository scopes**, which the web grants above do not establish. Verify the configured roles before using the runtime build workflows:
 
@@ -740,22 +767,24 @@ For a fresh stack, also supply the operator's `existing_cf_certificate_arn` and
 `existing_alb_certificate_arn` inputs (or their reviewed stack tfvars); otherwise it stops.
 
 Inspect the completed run, its resource changes and commit. Set `PLAN_RUN_ID` to
-that successful run's numeric ID, then apply its encrypted saved plan:
+that successful run's numeric ID and `REVIEWED_PLAN_SHA256` from the private inspection receipt, then apply:
 
 ```bash
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
-  -f mode=apply -f plan_run_id="$PLAN_RUN_ID" -f allow_dns_changes=false
+  -f mode=apply -f plan_run_id="$PLAN_RUN_ID" -f allow_dns_changes=false \
+  -f reviewed_plan_sha256="$REVIEWED_PLAN_SHA256"
 ```
 
 Apply accepts only a successful explicit Terraform plan dispatch from the same
 repository, stack branch and commit. It checks the live branch again and
-rechecks DNS changes after decrypting the plan. A moved branch requires a fresh
+rechecks DNS changes after restoring the privately reviewed plan. A moved branch requires a fresh
 plan. `plan_scope=ecr-bootstrap`, with `domain_rollout=false`, is available for an initial plan limited to the
 web ECR repository; the JSON gate also rejects unrelated mutations in that scope.
 Dev `plan_scope=runtime-ecr-bootstrap` targets only three runtime repositories; it needs no
-images yet. Repeat the same scope on apply. Saved plans now require both encrypted `tfplan.enc`
-and `tfassets.enc`, with asset hashes bound to that plan/SHA/scope. Old or missing bundles require
-a fresh reviewed plan; never rebuild assets during apply.
+images yet. Repeat the same scope on apply. Private publication authenticates both encrypted
+handoff files; apply downloads the pinned S3 plan/assets and verifies the reviewed hash plus
+HMAC plan/SHA/scope binding. Old or missing bundles require a fresh reviewed plan; never
+rebuild assets during apply.
 It needs no certificates unless external ARNs are explicitly configured.
 Apply a full reviewed plan before rolling the service.
 
@@ -790,9 +819,10 @@ the new-domain rollout does not authorize it. Follow ADR-016 for alias transfer/
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
   -f mode=plan -f plan_scope=full -f domain_rollout=true \
   -f publish_service_dns=true -f allow_dns_changes=true
-# After review, set PLAN_RUN_ID to that successful same-SHA plan dispatch.
+# After private inspection, set PLAN_RUN_ID and REVIEWED_PLAN_SHA256 from its receipt.
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
-  -f mode=apply -f plan_scope=full -f plan_run_id="$PLAN_RUN_ID" -f allow_dns_changes=true
+  -f mode=apply -f plan_scope=full -f plan_run_id="$PLAN_RUN_ID" -f allow_dns_changes=true \
+  -f reviewed_plan_sha256="$REVIEWED_PLAN_SHA256"
 ```
 
 External certificate owners must monitor expiry and renew/reimport ahead of time.
@@ -852,36 +882,291 @@ preserved; ARNs, credentials, endpoints and raw SDK errors are not relayed.
 
 ## Private exact-plan inspection
 
-These inspection and recovery procedures support main, dev and supported user branches.
-They do not authorize dev-only domain-rollout stages on another branch.
+### Storage and role prerequisites
 
-Use a trusted checkout at the plan's full commit SHA and its already installed Terraform
-provider schemas (`terraform/foundation/.terraform`). Authenticate `gh` normally and make
-the existing `TF_PLAN_ENC_KEY` available through the approved private secret mechanism.
-Never put the key in command arguments, source, shell history or public logs.
+Use the configured backend bucket and its private `backend.hcl` for publication,
+inspection and apply. The backend's `encrypt=true` alone does not establish the
+bucket's default encryption or access controls. This transport requires versioning
+Enabled, all four public-access blocks, BucketOwnerEnforced ownership and default
+SSE-KMS in the same account/region. `terraform/bootstrap/main.tf` provisions the
+versioning, public-access blocks and SSE-KMS settings for new state buckets;
+inspect existing bucket ownership and writer compatibility before changing them.
+The bucket policy must be nonpublic, or absent with the other controls intact.
+Plan-prefix lifecycle is mandatory for the transport. The optional bootstrap
+`private_plan_retention_enabled` flag defaults false to preserve existing ownership:
+the owner must explicitly configure retention before publishing any plan.
+The artifact key is resolved from the bucket default into an enabled same-account/region
+symmetric key; the backend state-object key is independently configured and exactly bound
+as metadata, not compared with that bucket-default key.
+The GitHub handoff remains application-encrypted. S3 publication removes that envelope
+and relies on SSE-KMS plus effective S3/KMS access policies. Authorized reads return
+decrypted plan/assets without the CI key, so existing state-bucket administrators or
+other principals with effective object-read and key-decrypt permissions may read them.
+Review this population and restrict the plan prefix before rollout. Block Public Access
+does not restrict authorized principals. This workflow checks storage prerequisites
+but creates no bucket/key or IAM grant and does not apply bootstrap.
+
+Run these metadata checks locally with the intended profile. Set `PLAN_BUCKET`,
+`PLAN_OWNER` and `PLAN_REGION` from the private backend and verified deployment account:
+
+```bash
+set -euo pipefail
+umask 077
+SETUP_DIR=$(mktemp -d "$HOME/awsops-plan-storage.XXXXXX")
+storage_args=(--profile samples --region "$PLAN_REGION" --bucket "$PLAN_BUCKET" --expected-bucket-owner "$PLAN_OWNER")
+for operation in get-bucket-versioning get-public-access-block get-bucket-ownership-controls get-bucket-encryption get-bucket-lifecycle-configuration; do
+  aws s3api "$operation" "${storage_args[@]}" > "$SETUP_DIR/$operation.json"
+done
+```
+
+If a setting is missing or incompatible, prepare its correction through the bucket
+owner's reviewed bootstrap configuration before publishing. For legacy state buckets,
+BucketOwnerEnforced also requires compatible writers; do not silently change an
+existing key/ACL contract merely to make the check pass.
+
+The owner-run bootstrap can supply retention with `private_plan_retention_enabled=true`.
+Use its existing private Terraform state and inspect a saved bootstrap plan before
+applying the exact reviewed bytes. **S3 has one lifecycle configuration per bucket**:
+if other rules already exist, merge them into the owning configuration before adopting
+the resource. Do not initialize an empty bootstrap state for an existing bucket or
+replace other rules with the sample's two plan rules. The deployment workflow neither
+imports that ownership nor changes lifecycle on failure.
+
+The required enabled rule uses exactly `ci/tfplans/`, expires current objects after
+seven days and noncurrent versions after seven days, retains no minimum version count,
+and aborts incomplete multipart uploads after one day. A separate plan-prefix rule
+cleans expired delete markers. State keys and unrelated prefixes must remain outside
+these rules. Verify the applied configuration again before dispatching the plan.
+Missing, unreadable or incompatible lifecycle causes a fixed publication failure.
+
+The named deployer-role secret must be configured for manual publication. An inline
+session policy can only restrict existing permissions; it grants none. Existing base
+roles and any KMS key policy must authorize these operations in the selected account:
+
+| Actor | Required existing permission scope |
+|---|---|
+| Publisher | Bucket metadata reads below; `s3:PutObject` plus `s3:GetObject` / `s3:GetObjectVersion` only under the run's `ci/tfplans/` prefix (reads verify conditional-PUT recovery); KMS GenerateDataKey/Decrypt for the supported S3 encryption context, plus direct DescribeKey for key normalization. |
+| Inspector / apply | Bucket metadata reads; `s3:GetObject` / `s3:GetObjectVersion` under that private prefix, direct KMS DescribeKey and KMS Decrypt. Existing apply/state permissions remain separate. |
+| Purge operator | `s3:ListBucketVersions` for the repository/branch prefix and `s3:DeleteObjectVersion` for the reviewed expired attempt, excluding state keys. Publisher sessions cannot delete. |
+
+Bucket reads are GetBucketLocation, GetBucketVersioning, GetEncryptionConfiguration,
+GetBucketPublicAccessBlock, GetBucketOwnershipControls and GetBucketPolicyStatus.
+They also include GetLifecycleConfiguration for the mandatory retention check.
+Scope S3 encryption use by key, ViaService, CallerAccount and encryption context. Scope
+direct DescribeKey separately: the generated session policy uses the selected
+account/region's `key/*` ARN pattern, while existing identity/key policies determine
+effective access. S3-only context conditions do not apply to a direct metadata lookup.
+All dev-family CI branches require AWS_ACCOUNT_ID_DEV.
+Update operator-managed policies if required; no policy widening occurs in this PR.
+Missing backend/tfvars blobs retain the plan's soft skip. A configured plan with a
+missing deployer role or insufficient storage permissions fails publication explicitly.
+The helper's generated policy applies only to publication; the consumer must attach it
+to the fresh session. Restore runs under the separately protected Apply role.
+Keep `TF_PLAN_ENC_KEY` as one repository-level secret. Do not define an environment
+secret with the same name: it can shadow the plan job's key in publication/apply,
+breaking the encrypted handoff or asset HMAC after a rotation.
+Keep repository-owned backend, target-account and deployer secret names unshadowed
+as well so Plan, Publish and Apply resolve the same deployment configuration.
+
+### Inspect and select exact bytes
+
+These procedures support main, dev and the supported user branches without changing
+which domain-rollout stages are authorized. Wait for the entire manual plan run,
+including **Publish private plan**, to succeed. Its safe reference binds repository,
+branch, full SHA, run/attempt, scope and private object hashes. A failed/skipped publisher,
+missing/expired reference, changed bytes or moved branch never authorizes apply.
+The encrypted handoff lasts one day. If a protected publication is delayed beyond that
+window, or a publisher-only rerun has no handoff for its new attempt, dispatch a fresh
+complete plan and inspect its new reference. Do not relax attempts, expiry or source checks.
+Plan and Apply migrate together from `tfplan` to `tfplan-<attempt>`; historical runs
+retain the old format and inspector. The reference overwrite uses the upload action's
+same-run runtime token, so `GITHUB_TOKEN` remains `actions: read`, not `actions: write`.
+
+Use a trusted checkout at the plan's full SHA with Terraform 1.15.7 provider schemas
+already installed. Authenticate `gh` and the intended AWS profile. No client encryption
+key is required for this S3 inspection:
+
+```bash
+python3 scripts/v2/ci_private_plan.py inspect \
+  --repository aws-samples/sample-awsops --branch dev \
+  --commit "$PLAN_SHA" --run-id "$PLAN_RUN_ID" --scope full --profile samples \
+  --foundation /private/checkout/terraform/foundation \
+  --backend /private/backend.hcl \
+  --destination /private/review/new-plan-directory
+```
+
+The inspector validates the completed source run, publisher and exact attempt's reference
+before fetching private S3 data. `--backend /private/backend.hcl` is required; the
+public reference contains no storage identifier or digest of bucket/account/backend
+values. The private manifest is checked against that backend and the actual caller.
+This reads no Terraform state. No public or presigned access link is used.
+
+The helper writes `plan.txt`, `plan.json` and `receipt.json` in a **new 0700 directory**, with
+0600 files. Plan contents may include passwords or signing material: inspect them privately.
+Rendering is bounded to 32 MiB per file and receives no deployment credentials, backend
+initialization or Terraform debug/argument overrides. Inspection downloads only the plan;
+asset HMAC verification remains mandatory inside publication and apply. The helper never
+refreshes, re-plans, approves or applies, and rejects execution inside GitHub Actions.
+
+After reviewing the complete plan, take `plan_sha256` from its private receipt and pass it
+as `REVIEWED_PLAN_SHA256`. The public reference contains no plan hash. This is explicit
+byte selection, not proof that a human read the plan; review is still an operator duty.
+The apply input is required even when all summary checks passed:
+
+```bash
+REVIEWED_PLAN_SHA256=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plan_sha256"])' /private/review/new-plan-directory/receipt.json)
+gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev \
+  -f mode=apply -f plan_scope=full -f plan_run_id="$PLAN_RUN_ID" \
+  -f reviewed_plan_sha256="$REVIEWED_PLAN_SHA256"
+```
+
+Repeat the plan's DNS permission/scope when applicable; the command above grants neither
+new DNS changes nor a different plan. Apply authenticates the reference, pinned versions,
+reviewed hash and existing HMAC/plan/asset binding before the original host, DNS/runtime and
+branch checks and `terraform apply -input=false tfplan`. It never re-plans. A newer attempt
+or changed plan requires a fresh private inspection. Reference lifetime is five days.
+In a versioned bucket, current expiration creates a delete marker; the seven-day
+noncurrent clock starts then. Version deletion can therefore become eligible around
+fourteen days after publication, plus asynchronous deletion delay. Reference expiry
+does not prove deletion. The optional purge procedure below can remove reviewed expired
+attempts sooner and investigate lifecycle cleanup failures.
+
+Wrong context, unsafe paths, missing schemas, oversized/tampered data or failed cleanup
+produce fixed errors without printing private contents. Only owned scratch is cleaned;
+runner/process loss can prevent finalizers. No public summary is full-plan approval.
+
+| Diagnostic | Operator check |
+|---|---|
+| `bucket_ownership_missing` | Confirm explicit BucketOwnerEnforced ownership controls with the bucket owner; this workflow does not configure them. |
+| `bucket_public_access_block_missing` | Confirm the bucket's four public-access blocks; missing settings cannot establish private storage. |
+| `s3_access_denied` | Check the selected profile/session, expected bucket owner and scoped S3/KMS permissions privately. No missing-object or empty-state inference is valid. |
+| `bucket_region_mismatch` | Confirm the private backend region matches GetBucketLocation. A failed regional endpoint request is not proof of a match. |
+| `bucket_not_private` / `bucket_not_versioned` | Establish the four public-access blocks and Enabled versioning through the reviewed bucket configuration. |
+| `bucket_ownership_invalid` | Confirm BucketOwnerEnforced ownership; other ownership modes are not supported by this transport. |
+| `bucket_not_sse_kms` / `bucket_encryption_missing` / `bucket_encryption_invalid` | Confirm one supported default SSE-KMS rule; backend `encrypt=true` is not evidence of that setting. |
+| `backend_key_mismatch` / `bucket_key_invalid` / `bucket_key_unusable` | Check identifier format and the resolved artifact key's account, region, Enabled state and symmetric ENCRYPT_DECRYPT use. Backend state-key metadata is independent. |
+| `kms_access_denied` / `kms_key_missing` | Verify direct DescribeKey authorization and the configured key/alias; no key material is requested. |
+| `bucket_lifecycle_missing` / `bucket_lifecycle_denied` | Confirm an existing lifecycle and GetLifecycleConfiguration permission with the bucket owner; publication and private reads require both. |
+| `bucket_lifecycle_invalid` / `bucket_lifecycle_required` / `bucket_lifecycle_conflict` | Establish the exact plan-only 7/7/1 rule through the owning bootstrap and remove conflicting early expiry/archive rules. Do not bypass the check or broaden expiry to state. |
+| `object_already_exists` / `object_upload_retry_exhausted` | Conditional PUT recovery requires a pinned GET proving exact bytes, hash, length and key; at most three identical PUTs are attempted. Wrong objects are never overwritten. |
+
+These codes come only from the matching AWS S3 operation's exception envelope.
+Other command failures remain generic; provider text is not published. Apply finalizers
+remove only `.private-plan-<current-run>-<current-attempt>-*` under its Terraform directory.
+
+### Purge expired plan versions
+
+The workflow requires the owner-installed lifecycle but cannot prove deletion completed.
+Monitor it and investigate retained expired versions, including failed-publication orphans.
+For early cleanup, the deployment owner may purge a reviewed attempt after seven days.
+The five-day GitHub reference is an apply limit, not storage expiry. Use the operator
+profile; publisher sessions deliberately cannot delete objects or configure lifecycle.
+
+Set `PLAN_BUCKET`, `PLAN_OWNER` and `PLAN_REGION` from the privately reviewed backend/account.
+Discover candidates locally, including failed-publication orphans and noncurrent-only
+objects. This metadata listing does not delete anything or authorize a purge. An incomplete
+listing must be paged privately or narrowed to a branch; never treat it as complete:
+
+```bash
+set -euo pipefail
+umask 077
+DISCOVERY_DIR=$(mktemp -d "$HOME/awsops-plan-discovery.XXXXXX")
+aws s3api list-object-versions --profile samples --region "$PLAN_REGION" \
+  --bucket "$PLAN_BUCKET" --expected-bucket-owner "$PLAN_OWNER" \
+  --prefix ci/tfplans/aws-samples/sample-awsops/ --max-items 1000 > "$DISCOVERY_DIR/versions.json"
+python3 - "$DISCOVERY_DIR/versions.json" > "$DISCOVERY_DIR/candidate-prefixes.txt" <<'PY'
+import json, re, sys
+data = json.load(open(sys.argv[1]))
+if data.get("NextToken") or data.get("IsTruncated"):
+    raise SystemExit("Incomplete discovery; narrow or finish paging privately")
+prefixes = set()
+for row in data.get("Versions", []) + data.get("DeleteMarkers", []):
+    match = re.fullmatch(r"(ci/tfplans/aws-samples/sample-awsops/(?:main|dev|atomoh|ssminji|whchoi)/[0-9a-f]{40}/[1-9][0-9]*/[1-9][0-9]*/).+", row["Key"])
+    if match:
+        prefixes.add(match[1])
+print("\n".join(sorted(prefixes)))
+PY
+```
+
+Set `PLAN_PREFIX` to one expired attempt's exact
+`ci/tfplans/aws-samples/sample-awsops/<branch>/<commit>/<run>/<attempt>/` prefix.
+The following preparation rejects broader prefixes, truncated listings, unexpected names,
+unversioned entries and any data version less than seven days old. Delete markers do
+not contain plan bytes and receive no age cutoff: lifecycle can create them around
+day seven even while their underlying versions are old enough for early cleanup.
+A complete listing must contain no young data version before any marker is removed.
+Marker-only leftovers can be removed once the complete listing confirms no data versions.
+
+<!-- Executable purge example: test_ci_private_plan_workflow.py exercises normal and optimized Python. -->
+```bash
+set -euo pipefail
+umask 077
+PURGE_DIR=$(mktemp -d "$HOME/awsops-plan-purge.XXXXXX")
+aws s3api list-object-versions --profile samples --region "$PLAN_REGION" \
+  --bucket "$PLAN_BUCKET" --expected-bucket-owner "$PLAN_OWNER" \
+  --prefix "$PLAN_PREFIX" --max-items 1000 > "$PURGE_DIR/versions.json"
+python3 - "$PLAN_PREFIX" "$PURGE_DIR" <<'PY'
+import datetime as dt, json, pathlib, re, sys
+def require(condition):
+    if not condition:
+        raise SystemExit("Unsafe or incomplete purge selection")
+prefix, root = sys.argv[1], pathlib.Path(sys.argv[2])
+require(re.fullmatch(r"ci/tfplans/aws-samples/sample-awsops/(main|dev|atomoh|ssminji|whchoi)/[0-9a-f]{40}/[1-9][0-9]*/[1-9][0-9]*/", prefix))
+data = json.loads((root / "versions.json").read_text())
+require(not data.get("NextToken") and not data.get("IsTruncated"))
+versions = data.get("Versions", [])
+markers = data.get("DeleteMarkers", [])
+require(isinstance(versions, list) and isinstance(markers, list))
+rows = versions + markers
+require(0 < len(rows) <= 1000)
+cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
+objects = []
+for row in rows:
+    require(re.fullmatch(re.escape(prefix) + r"(plan-[0-9a-f]{64}\.bin|assets-[0-9a-f]{64}\.tar\.gz|manifest-[0-9a-f]{64}\.json)", row["Key"]))
+    require(isinstance(row.get("VersionId"), str) and row["VersionId"] not in ("", "null"))
+    objects.append({"Key": row["Key"], "VersionId": row["VersionId"]})
+for row in versions:
+    require(dt.datetime.fromisoformat(row["LastModified"].replace("Z", "+00:00")) < cutoff)
+(root / "delete.json").write_text(json.dumps({"Objects": objects, "Quiet": True}))
+print("Expired versions prepared:", len(objects))
+PY
+```
+
+Review the private candidate file against that expired attempt, then delete its versions:
+
+```bash
+aws s3api delete-objects --profile samples --region "$PLAN_REGION" \
+  --bucket "$PLAN_BUCKET" --expected-bucket-owner "$PLAN_OWNER" \
+  --delete "file://$PURGE_DIR/delete.json" > "$PURGE_DIR/delete-result.json"
+python3 - "$PURGE_DIR/delete-result.json" <<'PY'
+import json, sys
+if json.load(open(sys.argv[1])).get("Errors"):
+    raise SystemExit("Version purge incomplete")
+PY
+```
+
+Separately list the same prefix again and confirm no versions or delete markers remain;
+do not rerun purge preparation to validate an empty listing. Only preparation refuses an
+empty deletion request. Finish this verification before
+removing the owned local directory. Retain failed cleanup evidence privately and resolve
+it; do not claim expiry from reference deletion or use a bucket-wide recursive delete.
+No state key is covered by this prefix.
+
+### Legacy encrypted-artifact inspection
+
+`ci_plan_inspect.py` remains available only for historical runs that published the old
+`tfplan` encrypted artifact. It requires that source checkout and matching client key,
+authenticates the run plus HMAC-bound plan/assets before protected rendering, and retains
+its existing 32 MiB and path/cleanup guards. The current S3 apply path does not fall back
+to legacy artifacts. This historical helper never makes an old plan apply-eligible:
 
 ```bash
 python3 scripts/v2/ci_plan_inspect.py \
   --repository aws-samples/sample-awsops --branch dev \
   --commit "$PLAN_SHA" --run-id "$PLAN_RUN_ID" --scope full \
   --foundation /private/checkout/terraform/foundation \
-  --destination /private/review/new-plan-directory
+  --destination /private/review/new-legacy-plan-directory
 ```
-
-The helper reads authenticated GitHub metadata and downloads `tfplan` from that run.
-It requires a successful explicit plan dispatch from the same repository, branch and
-SHA, verifies the checkout, decrypts both existing artifacts, and calls the existing
-HMAC/plan/asset verifier **before** `terraform show`. It writes only `plan.txt` and
-`plan.json` into a new 0700 directory, with 0600 files. Read these privately; they can
-contain passwords or rendered signing material. It never initializes a backend,
-refreshes, plans, approves or applies. Its GitHub Actions environment refusal is an accident guard for trusted operators, not an authorization boundary.
-Historical inspection does not make a plan apply-eligible; all current apply gates still run.
-
-Wrong context/key, missing or altered artifacts, unsafe/existing output paths, unavailable
-provider schemas and oversized output fail closed without printing plan/error contents.
-Inputs are bounded; each rendered file is capped at 32 MiB. Only the new review directory
-is retained after success; cleanup removes owned decrypted scratch on handled failures.
-Cleanup errors are reported without raw paths; inspect any owned residue privately.
 
 ## Encrypted failure recovery
 
@@ -1215,9 +1500,12 @@ Other events fail before work. Existing explicit plan/apply dispatches retain th
 Real targeted plans omit untargeted Lambda resources from planned_values even when prior_state
 retains them; their old ZIPs are not required. Keep the known-planned-ZIP completeness check.
 The 0600 `tfassets.tar.gz` is private scratch, like the plaintext plan. It can contain rendered
-Cognito signing keys and **must never be uploaded**. The utility has no upload path; the integrating
-Terraform workflow encrypts it and cleans plaintext scratch; plan/apply now wire pack/restore,
-and Terraform layer provisioners use the locked installer.
+Cognito signing keys and must never be uploaded as plaintext to GitHub. Pack validation
+runs for all plans. Manual plans encrypt a one-day handoff; the protected publisher
+decrypts and verifies HMAC before uploading to private SSE-KMS S3. Apply downloads pinned
+private versions and re-verifies HMAC through `ci_private_plan.py restore`, without
+decrypting a public artifact. Normal finalizers clean owned plaintext scratch; process
+or runner loss can prevent cleanup. Terraform layer provisioners use the locked installer.
 
 From the repository root, test with `python3 -m pytest scripts/v2/test_ci_tf_assets.py -q`.
 The Terraform workflow supplies the secret without CLI arguments. Run from the foundation root,
@@ -1229,7 +1517,8 @@ cd terraform/foundation
 printf '%s' '{"steampipe_enabled":true,"workers_enabled":true}' | python3 ../../scripts/v2/ci_tf_assets.py prepare --scope full
 # After a reviewed tfplan exists; GITHUB_SHA and TF_PLAN_ENC_KEY must already be set:
 python3 ../../scripts/v2/ci_tf_assets.py pack --scope full
-# After the Terraform workflow encrypts/transports/decrypts both private files:
+# Local utility only: after obtaining the matching plan/archive and CI key privately.
+# CI apply uses ci_private_plan.py restore to authenticate S3 source, versions and HMAC:
 python3 ../../scripts/v2/ci_tf_assets.py restore --scope full
 python3 ../../scripts/v2/ci_tf_assets.py check-layer --layer inv_layer # only if inventory is enabled
 python3 ../../scripts/v2/ci_tf_assets.py check-layer --layer pg8000_layer # only if workers are enabled

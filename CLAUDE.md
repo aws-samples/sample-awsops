@@ -16,6 +16,10 @@ npx tsc --noEmit -p .                    # typecheck — no npm script wraps thi
 No lint script/config exists (no ESLint) — don't go looking for one. Integration tests for the migration/backfill scripts live outside `web/` as `scripts/v2/*.itest.mjs`, run directly with `node scripts/v2/<name>.itest.mjs` — each spins up a disposable `postgres:17` container via `sudo docker` (skips cleanly if Docker is unreachable), not the live Aurora instance.
 **Required database CI exception:** from the repo root, install locked dependencies with `npm ci --prefix web` and `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`. Run `node --test scripts/v2/ci/*.test.mjs` (migration runtime/controller/workflow fixtures and mocked Terraform plans), then `node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs` (real PostgreSQL 17 initializer/runner and web connection-phase regressions). The offline fixtures require Node, Python PyYAML and boto3/botocore (`pip install -r agent/requirements.txt`), and Terraform 1.15.7. Both PostgreSQL suites require bare `docker` on PATH, a reachable daemon and OpenSSL; the web connection suite uses the locked web driver and TypeScript dependencies. Missing prerequisites fail hard, never skip, with no automatic `sudo`/`DOCKER` override. No AWS credentials/OIDC or live AWS calls.
 
+The required web-image helper tests need Linux with `/proc`, jq, and curl installed
+on `/usr/local/bin:/usr/bin:/bin`. Run `python3 -m pytest -q scripts/v2/test_ci_web_image.py`;
+AWS/GitHub responses are mocked and the real curl fixture uses localhost only.
+
 ## Architecture (v2)
 - **IaC**: **Terraform** (CDK retired). Single root at `terraform/foundation/`, **partial S3 backend** (`backend.hcl`, `awsops-v2-tfstate`, `use_lockfile` — no DynamoDB). TF ≥1.15, provider `~>6.0`.
 - **Edge**: CloudFront (TLS) → **VPC Origin `https-only:443`** → **internal ALB HTTPS:443** (regional ACM) → HTTP → Fargate `awsops-v2-web:3000`. **No public ALB.** The ALB SG allows 443 only from the CloudFront-managed SG `CloudFront-VPCOrigins-Service-SG` (VPC-CIDR-only causes a 504).
@@ -77,6 +81,8 @@ Live environment: account `<ACCOUNT_ID>`, domain `awsops-v2.atomai.click`, reusi
 ## Deployment
 Migrations and `awsops_sql_reader` password sync must succeed before AgentCore provisioning. Dev Deploy AgentCore runs the reusable private `deploy-migrations.yml` workflow first, then the split image-build/provision phases. Before dispatch, set `CI_MIGRATIONS_ENABLED_DEV=true` and
 apply the reviewed plan with `ci_migrations_enabled=true` so `migration_job` is non-null. Main/preview and direct private-host CLI use `make migrate` before `make agentcore`; that target does not run migrations itself. See `docs/runbooks/agent-sql-reader.md`.
+
+The preparatory `ci_web_image.py` helper has no workflow caller yet. Its future dev web integration must add successful private-migration outputs and the named producer-receipt steps before using the composed `promote` entrypoint; current Deploy Web does not supply these inputs. `AWS_ACCOUNT_ID_DEV` is mandatory for the helper even on main, for its dev-account exclusion check. See `docs/runbooks/web-image-provenance.md`. Landing the helper alone changes no live release behavior.
 
 ## Known Issues / Lessons (key reusable knowledge)
 - **Edge 504→200**: CF→ALB is TLS end-to-end (VPC Origin `https-only` + origin domain = public FQDN so SNI matches), the ALB is HTTPS:443 + regional ACM, and the ALB SG allows 443 from `CloudFront-VPCOrigins-Service-SG`. The VPC Origin protocol can't be changed in-place → use `create_before_destroy` + `-replace`.

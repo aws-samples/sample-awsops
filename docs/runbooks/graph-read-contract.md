@@ -1,0 +1,79 @@
+# Graph read and collection contract
+
+## Symptoms and candidate causes
+
+Missing graph clocks can mean legacy rows without collection state; missing metadata is unknown, not collection failure. A stale publication can have a newer attempt or failed producer. A busy/failed read describes the API, not a collection outcome.
+
+## Request contract
+
+`GET /api/graph` reads nodes, edges and collection state in one repeatable-read
+transaction. The shared helper bounds statements, lock waits and transaction
+duration, handles checked-out client errors, and discards failed connections. One graph
+request per pool is admitted; others receive 503 without queueing a checkout. Request
+statements/idle time are bounded to 1.5s, total transaction to 2s; writer helper budgets
+stay unchanged. Serialization happens after release. Reads cap nodes/raw edges at
+4000/8000 plus a sentinel; returned edges reference visible nodes. Read limits and
+500/503 failures are disclosed separately from collector status.
+PostgreSQL 17 is required for the total transaction timeout.
+
+The reader supports flow, infra and trace metadata. Missing state remains unknown;
+an account union does not borrow the host's publication clock. Inventory publication is implemented in `web/lib/graph-store.ts`; it requires the separately
+authorized schedule/manual invocation. The reader does not activate that schedule. Source integration does not execute migration,
+Lambda or Runtime deployment.
+
+`01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql` widens only the existing
+SQL-reader collection projection with bounded scalar metadata. It adds no base-table
+or public grants. `INVENTORY_STALE_AFTER_MINUTES` governs inventory source age
+independently of the graph publication cadence. A producer must be succeeded with
+ok/empty source evidence and valid clocks; published-source clocks remain visible.
+Future timestamps are conservatively stale, not assumed provider clock skew.
+
+## Operator action
+
+Apply `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql` and
+`01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql` through the existing authorized
+`make migrate` flow from the operator/VPC context. Apply the reviewed Terraform web
+`INVENTORY_STALE_AFTER_MINUTES` environment binding and deploy the matching web image
+separately. This document supplies no deployment authorization. Check the canonical
+[source rollout list](source-sync-observability.md) and [SQL reader contract](agent-sql-reader.md).
+A source merge or automatic web CD result is not proof that these steps completed.
+
+## Local PostgreSQL verification
+
+Use a dedicated disposable PostgreSQL 17 instance, never an application database.
+The test checks both the Unix socket and database markers before resetting its
+dedicated schema. One local Docker example:
+
+```bash
+export GRAPH_TEST_POSTGRES_SOCKET="$(mktemp -d)"
+chmod 777 "$GRAPH_TEST_POSTGRES_SOCKET"
+graph_test_container="awsops-graph-read-test-$$"
+docker run -d --rm --name "$graph_test_container" --network none \
+  --tmpfs /var/lib/postgresql/data \
+  -v "$GRAPH_TEST_POSTGRES_SOCKET:/var/run/postgresql" \
+  -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=awsops \
+  postgres:17 -c listen_addresses=''
+for attempt in $(seq 1 30); do
+  docker exec "$graph_test_container" pg_isready -U postgres -d awsops && break
+  sleep 1
+done
+docker exec "$graph_test_container" pg_isready -U postgres -d awsops
+docker exec "$graph_test_container" psql -U postgres -d awsops \
+  -c "COMMENT ON DATABASE awsops IS 'awsops-disposable-graph-test'"
+cd web
+npx vitest run lib/graph-read-postgres.test.ts app/api/graph/route.test.ts lib/graph-state.test.ts
+docker rm -f "$graph_test_container"
+```
+
+The fixture creates and independently marks `awsops_graph_read_test`. Without the
+socket environment variable, the disposable PostgreSQL suite is skipped explicitly;
+the ordinary API and state unit tests still run. These are local contract tests,
+not live AWS or deployment acceptance.
+
+
+## Related files and decisions
+
+`web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
+`web/lib/graph-read-postgres.test.ts`, `web/components/topology/GraphCollectionStatus.tsx`.
+ADR-005 (read-only product), ADR-004 (SQL-reader projection), ADR-043 (graph reads;
+decision bodies are maintained upstream).

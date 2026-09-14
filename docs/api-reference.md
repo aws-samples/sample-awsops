@@ -188,7 +188,7 @@ application, without guaranteeing cancellation of a server query already started
 | `/api/diagnosis/subscribers/test` | POST | 진단 알림 테스트 발송 — 토픽 한정 SNS Publish 1건 (admin 전용) | verifyUser |
 | `/api/diagnosis/[id]` | GET, PATCH, DELETE | 리포트 단건 조회/수정/삭제 | verifyUser |
 | `/api/diagnosis/[id]/download` | GET | 산출물(md/docx/pdf) S3 프록시 다운로드 (presign 아님) | verifyUser |
-| `/api/graph` | GET | 읽기 전용 토폴로지 그래프 — class `flow\|infra\|trace`, `?from=`으로 서브그래프. `trace`는 `collection` 수집·보존 상태 및 관측 edge count를 노출. 큐 `meta.claimedAccountId/claimedRegion`은 보존된 행도 destination ARN에서만 재계산하고 비-ARN/누락 한정자는 null; `identityProvenance=telemetry_claim` 고정, 호출자 폴백·AWS 인벤토리 bridge 없음. 동일 ARN은 데이터소스·환경 안에서만 호출자 간 연결. / Queue claims derive only from destination ARNs; unverified, scoped by datasource/environment, never inventory authority. [계약·배포 / Contract and rollout](runbooks/source-sync-observability.md) | verifyUser |
+| `/api/graph` | GET | 읽기 전용 토폴로지 그래프 — class `flow\|infra\|trace`, `?from=`으로 서브그래프. 모든 class는 `collection` 수집·보존 상태를 노출하며, `trace`는 관측 edge count를 함께 제공. 큐 `meta.claimedAccountId/claimedRegion`은 보존된 행도 destination ARN에서만 재계산하고 비-ARN/누락 한정자는 null; `identityProvenance=telemetry_claim` 고정, 호출자 폴백·AWS 인벤토리 bridge 없음. 동일 ARN은 데이터소스·환경 안에서만 호출자 간 연결. / Queue claims derive only from destination ARNs; unverified, scoped by datasource/environment, never inventory authority. [계약·배포 / Contract and rollout](runbooks/source-sync-observability.md) | verifyUser |
 | `/api/health` | GET | 헬스체크 — 컨테이너/타깃그룹 health 경로와 일치 필수 | 없음 (공개) |
 | `/api/incidents` | GET, POST | 인시던트 목록 + 수동 트리거 (ADR-006[legacy 032], admin) | verifyUser |
 | `/api/incidents/prevention` | GET | 교차 인시던트 예방 인사이트 (admin, read-only) — Aurora 미설정/실패도 200 + 빈 목록 | verifyUser |
@@ -244,7 +244,7 @@ Missing collection metadata stays unknown rather than implying collector failure
 
 ## Graph collection metadata
 
-`GET /api/graph` returns an optional `collection` envelope. The shared TypeScript
+`GET /api/graph` returns `collection` for flow, infra and trace. Older responses without it remain compatible as unknown evidence. The shared TypeScript
 contract is `GraphCollection` / `GraphCollectionSource` in
 `web/components/topology/GraphCollectionStatus.tsx`; the renderer also validates unknown
 runtime payloads for compatibility with older or malformed responses.
@@ -254,9 +254,15 @@ runtime payloads for compatibility with older or malformed responses.
 | `status`, `stale`, `retainedPrevious` | Collection result and snapshot age/retention; a retained graph does not establish current traffic. Missing metadata stays unknown. |
 | `attempted_at`, `captured_at` | Latest graph attempt and saved publication clocks, serialized as timestamps; neither substitutes for the source query window. |
 | `sources[].sourceId/status/reasons/itemCount` | Per-source collection result and bounded reason vocabulary. |
+| `sources[].producerStatus/attemptedAtMs/finishedAtMs` | Underlying inventory job outcome and start/finish clocks; not graph publication time or per-account success proof. |
+| `failureReason` | Bounded failure category: `publication_failed`, `source_read_failed`, `not_attempted`, or API-only `state_read_failed`. |
+| `sourceAttempted` | Explicit `false` means this bounded rebuild did not start a source read; it does not change the saved graph clock. |
+| `coverage` | `unknown` for a flow/infra `__all__` union; host state cannot prove union coverage and top-level `captured_at` is null. Trace `__all__` reads the existing host storage scope. |
+| `windowStartMs/windowEndMs` | Optional graph-attempt window, distinct from per-source query windows and saved publication time. |
 | `sources[].windowStartMs/windowEndMs` | Actual trace query window, in epoch milliseconds; displayed independently of publication time. |
 | `nodeDrops`, `edgeDrops`, `orphanSpans`, `invalidSpans`, `unresolvedMessaging`, `infraUnavailable` | Existing trace loss counters and unavailable inventory context; span/messaging problems are distinct from processing limits. Positive losses are visible even for older rows without newer truncation flags. Loss alone does not imply that a previous graph was retained. |
-| `evidenceKind`, `inputTruncated`, `graphTruncated` | Optional additive producer metadata; `inventory` changes the empty-result wording, and truncation is disclosed conservatively. |
+| `evidenceKind`, `inputTruncated`, `graphTruncated` | Evidence kind is derived from graph class; `inventory` changes empty-result wording. Producer truncation remains separate from API read truncation. |
+| `readStatus`, `readReason`, `readTruncated` | API read availability/coverage, independent of collector status: `ok`, `partial` (`row_limit`), or `unavailable` (`busy`/`query_failed`). |
 | `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Optional source scope/capture/sweep clocks and saved-source provenance used by the graph-publication companion. Absent fields are not fabricated. |
 
 The UI supports the existing trace envelope and optional inventory/saved-source
@@ -264,3 +270,10 @@ fields emitted by the bounded publication implementation in `web/lib/graph-store
 Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded; their count
 includes saved-source entries. Runtime, Lambda and migration rollout remain separate
 from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
+
+
+Graph requests admit one transaction per shared pool, with 1.5s statement/idle and 2s total transaction limits (below the auth revocation budget). JSON serialization runs after commit and release. Class reads return at most 4000 nodes and 8000 raw edges, then deduplicate bounded edge evidence; edges reference returned nodes. A sentinel row discloses read truncation without claiming collection failure. Existing per-hop traversal caps remain.
+
+A missing or failed state read remains unknown; `failureReason=state_read_failed` is shown separately. Saved-source provenance is visible whenever present, including stale successful publications. Producer start/finish/status and source/attempt windows are separate clocks. For legacy single-account flow/infra rows, top-level `captured_at` may retain the old row display clock; `collection.captured_at` remains null and no source freshness is inferred.
+
+Excess graph requests return HTTP 503, other read failures HTTP 500, with fixed `message="Graph read failed"`, class/account and unknown collection/read-unavailable metadata. Raw database messages are never returned. See [request/rollout details](runbooks/graph-read-contract.md).

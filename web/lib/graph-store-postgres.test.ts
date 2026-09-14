@@ -4,7 +4,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } from './graph-store';
-import { inventorySnapshot } from './graph-inventory';
+import { inventorySnapshot, inventoryAccounts, recordUnattempted, INFRA_TYPES } from './graph-inventory';
+import { HOST_ONLY_TREND_TYPES } from './trend-utils';
 import { readGraphState, writeGraphState } from './graph-state';
 import type { ServiceGraphCall, SourceRead } from './trace-source';
 const api = vi.hoisted(() => ({ pool: null as unknown }));
@@ -20,6 +21,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   const migrations = resolve('../terraform/foundation/migrations');
   const flowTypes = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2',
     'lambda', 'ecs_task', 's3', 'subnet', 'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin'];
+  const requiredTypes = [...new Set([...flowTypes, ...INFRA_TYPES])];
   const now = Date.now();
   const recent = new Date(now - 60_000).toISOString();
   const old = new Date(now - 3_600_000).toISOString();
@@ -42,8 +44,10 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       DO $$ BEGIN CREATE ROLE awsops_worker; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
       DO $$ BEGIN CREATE ROLE awsops_sql_reader LOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
     const schema = readFileSync(resolve('../terraform/foundation/data/schema.sql'), 'utf8');
-    for (const table of ['inventory_resources', 'inventory_sync_runs'])
+    for (const table of ['inventory_resources', 'inventory_sync_runs', 'inventory_snapshots', 'account_regions'])
       await pool.query(schema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`))![0]);
+    for (const suffix of ['_accounts.sql', '_accounts_all_regions.sql'])
+      await pool.query(readFileSync(resolve(migrations, readdirSync(migrations).find(f => f.endsWith(suffix))!), 'utf8'));
     for (const suffix of ['_topology_graph.sql', '_topology_class.sql', '_inventory_sync_freshness.sql',
       '_inventory_sync_unknown_attrs.sql', '_topology_graph_collection_state.sql'])
       await pool.query(readFileSync(resolve(migrations, readdirSync(migrations).find(f => f.endsWith(suffix))!), 'utf8'));
@@ -51,13 +55,13 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
     api.pool = pool;
-    await pool.query(`TRUNCATE inventory_resources, inventory_sync_runs, topology_nodes, topology_edges, topology_graph_state;
+    await pool.query(`TRUNCATE inventory_resources, inventory_sync_runs, topology_nodes, topology_edges, topology_graph_state, inventory_snapshots, accounts, account_regions;
       DROP TRIGGER IF EXISTS reject_publication ON topology_nodes;
       DROP TRIGGER IF EXISTS reject_publication ON topology_edges;
       DROP TRIGGER IF EXISTS reject_publication ON topology_graph_state;`);
     await pool.query(`INSERT INTO inventory_sync_runs
       (resource_type, status, started_at, finished_at, last_success_at, row_count, unknown_attribute_count)
-      SELECT t, 'succeeded', $2, $2, $2, 0, 0 FROM unnest($1::text[]) t`, [flowTypes, recent]);
+      SELECT t, 'succeeded', $2, $2, $2, 0, 0 FROM unnest($1::text[]) t`, [requiredTypes, recent]);
   });
   afterAll(async () => { vi.restoreAllMocks(); await pool?.end(); });
   async function seed(cls: string, captured = recent, account = 'self') {
@@ -67,6 +71,14 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await pool.query(`INSERT INTO inventory_sync_runs(resource_type,status,started_at,finished_at,last_success_at,row_count,unknown_attribute_count)
       VALUES ($1,'succeeded',$2,$2,$2,1,0) ON CONFLICT(resource_type,account_id)
       DO UPDATE SET row_count=1`, [type, recent]);
+    if (account !== 'self') {
+      await pool.query(`INSERT INTO accounts(account_id,alias,external_id,all_regions)
+        VALUES ($1,'fixture','fixture-only',true) ON CONFLICT(account_id) DO NOTHING`, [account]);
+      // This is the real sync producer's per-account snapshot contract, not a member job ledger.
+      await pool.query(`INSERT INTO inventory_snapshots(account_id,captured_at,resource_type,resource_count)
+        SELECT $1,$2,t,CASE WHEN t=$3 THEN 1 ELSE 0 END FROM unnest($4::text[]) t`,
+      [account, recent, type, requiredTypes.filter(t => !HOST_ONLY_TREND_TYPES.has(t))]);
+    }
   }
   const build = (cls: string) => cls === 'flow' ? rebuildGraph(pool) : rebuildInfraGraph(pool);
   const state = (cls: string, account = 'self') => readGraphState(pool, account, cls as never);
@@ -103,6 +115,29 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await state('infra')).toMatchObject({ status: 'partial', retainedPrevious: false });
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='infra'")).rows).toEqual([]);
   });
+  it.each([2, null])('retains a prior graph when nonempty input cannot reconcile producer count %s', async count => {
+    await seed('infra');
+    await build('infra');
+    const previous = await state('infra');
+    await pool.query("UPDATE inventory_resources SET resource_id='replacement'");
+    await pool.query("UPDATE inventory_sync_runs SET row_count=$1 WHERE resource_type='vpc'", [count]);
+    expect(await build('infra')).toMatchObject({ published: 0, retained: 1 });
+    expect(await state('infra')).toMatchObject({ status: 'partial', retainedPrevious: true, captured_at: previous.captured_at });
+    expect((await state('infra')).sources).toContainEqual(expect.objectContaining({
+      sourceId: 'inventory:vpc', reasons: expect.arrayContaining(['count_not_confirmed']),
+    }));
+    expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
+  });
+  it('reconciles the aggregate count across accounts rather than treating it as a host count', async () => {
+    await seed('infra');
+    await pool.query(`INSERT INTO inventory_resources(resource_type,account_id,resource_id,data,captured_at)
+      VALUES ('vpc','111122223333','member','{}',$1)`, [recent]);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=2 WHERE resource_type='vpc'");
+    await build('infra');
+    expect(await state('infra')).toMatchObject({ status: 'ok', retainedPrevious: false });
+    expect((await pool.query("SELECT id FROM topology_nodes WHERE account_id='self' AND class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
+  });
+
   it('ignores unrelated failed inventory sources without dropping contributing failure guards', async () => {
     await seed('infra');
     await pool.query(`INSERT INTO inventory_sync_runs(resource_type,status) VALUES ('iam_role','failed')`);
@@ -315,6 +350,19 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(snapshot.rows[0].data).toEqual({ name: 'fixture' });
     expect((await build('infra')).published).toBe(1);
   });
+  it('projects unused flow fields before byte limits while preserving its real graph inputs', async () => {
+    await seed('flow');
+    await pool.query(`UPDATE inventory_resources SET data=data || jsonb_build_object(
+      'raw_unused',repeat('x',1000000),'resource_id','spoofed','region','spoofed')`);
+    const snapshot = await inventorySnapshot(pool, 'flow', 'self', ['alb']);
+    expect(snapshot.truncated).toBe(false);
+    expect(snapshot.rows[0].data).toEqual({ arn: 'arn:alb', dns_name: 'web.example.test' });
+    expect((await build('flow')).published).toBe(1);
+    const nodes = (await pool.query("SELECT id,meta FROM topology_nodes WHERE class='flow'")).rows;
+    expect(nodes[0].id).toBe('alb:arn:alb');
+    expect(nodes[0].meta.row.resource_id).toBe('one');
+    expect(JSON.stringify(nodes)).not.toContain('raw_unused');
+  });
   it('retains every row when aggregate projected input exceeds the byte budget', async () => {
     await seed('infra');
     await build('infra');
@@ -331,9 +379,67 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await pool.query(`INSERT INTO inventory_resources(resource_type,account_id,resource_id,data,captured_at)
       SELECT 'vpc','self','vpc-'||n,'{}',$1 FROM generate_series(1,2001) n`, [recent]);
     await seed('infra', recent, '111122223333');
+    await pool.query("UPDATE inventory_sync_runs SET row_count=2002 WHERE resource_type='vpc'");
     expect(await build('infra')).toMatchObject({ published: 1, retained: 1, reasons: ['snapshot_limit'] });
     expect(await state('infra', '111122223333')).toMatchObject({ retainedPrevious: false, status: 'ok' });
   });
+  it('projects skip/count reasons without widening reader metadata', async () => {
+    const projection = readFileSync(resolve(migrations, readdirSync(migrations).find(f => f.endsWith('_graph_attempt_disclosure.sql'))!), 'utf8');
+    await pool.query(projection); await pool.query(projection);
+    await pool.query(`INSERT INTO topology_graph_state(account_id,class,status,attempted_at,details)
+      VALUES ('self','infra','unavailable',now(),$1)`, [{ sourceAttempted: false,
+      failureReason: 'not_attempted', secret: 'PRIVATE', sources: [{ sourceId: 'inventory:vpc',
+        status: 'partial', producerStatus: 'succeeded', itemCount: 1, reasons: ['count_not_confirmed','PRIVATE'] }] }]);
+    const row = (await pool.query('SELECT details FROM sql_reader.topology_graph_state')).rows[0];
+    expect(row.details).toMatchObject({ sourceAttempted: false, failureReason: 'not_attempted' });
+    expect(row.details.sources[0].reasons).toEqual(['count_not_confirmed']);
+    expect(JSON.stringify(row)).not.toContain('PRIVATE');
+  });
+
+  it('does not overwrite a newer collection attempt with older skip evidence', async () => {
+    await seed('infra'); await build('infra');
+    const previous = await state('infra');
+    await recordUnattempted(pool, 'infra', 0x696e6672, ['self'], old);
+    expect(await state('infra')).toEqual(previous);
+  });
+
+  it('prioritizes accounts whose source reads were not attempted', async () => {
+    const member = '111122223333';
+    await seed('infra'); await seed('infra', recent, member);
+    await pool.query(`INSERT INTO topology_graph_state(account_id,class,status,attempted_at,details)
+      VALUES ('self','infra','ok',$1,'{}'),($2,'infra','unavailable',$1,'{"sourceAttempted":false}')`, [recent, member]);
+    expect((await inventoryAccounts(pool, 'infra', INFRA_TYPES))?.[0]).toBe(member);
+  });
+  it('continues later accounts after a source read fails and preserves the original failure', async () => {
+    const member = '111122223333';
+    await seed('infra'); await seed('infra', recent, member);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=2 WHERE resource_type='vpc'");
+    const failure = Object.assign(new Error('fixture source failure'), { code: '42501' });
+    const wrapped = { connect: async () => {
+      const client = await pool.connect(), query = client.query.bind(client);
+      return { on: client.on.bind(client), removeListener: client.removeListener.bind(client),
+        release: client.release.bind(client), query: (sql: string, args?: unknown[]) => {
+          if (sql.includes('WITH bounded') && args?.[0] === 'self') return Promise.reject(failure);
+          return query(sql, args);
+        } };
+    } };
+    await expect(rebuildInfraGraph(wrapped as never)).rejects.toBe(failure);
+    expect(await state('infra', member)).toMatchObject({ status: 'ok', retainedPrevious: false });
+    expect((await pool.query("SELECT id FROM topology_nodes WHERE account_id=$1", [member])).rows).toEqual([{ id: 'vpc:one' }]);
+  });
+  it('records budget-skipped source reads without changing the saved graph', async () => {
+    await seed('infra'); await build('infra');
+    const previous = await state('infra');
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + 1000);
+    const timer = vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValue(31_000);
+    try {
+      expect(await build('infra')).toMatchObject({ skipped: 1, reasons: ['time_limit'] });
+      expect(await state('infra')).toMatchObject({ status: 'unavailable', sourceAttempted: false,
+        failureReason: 'not_attempted', retainedPrevious: true, captured_at: previous.captured_at });
+      expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
+    } finally { timer.mockRestore(); clock.mockRestore(); }
+  });
+
   it('uses one per-pool rebuild admission slot and leaves request reads available', async () => {
     await seed('infra');
     let unblock!: () => void;
@@ -357,12 +463,20 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await ready;
     try {
       expect(await rebuildInfraGraph(wrapped as never)).toMatchObject({ skipped: 1, reasons: ['rebuild_busy'] });
+      expect((await rebuildGraph(wrapped as never)).reasons).not.toContain('rebuild_busy');
       expect((await pool.query('SELECT 42 AS value')).rows[0].value).toBe(42);
     } finally { unblock(); await first; }
   });
   it('discloses undiscovered accounts when the bounded account budget is exceeded', async () => {
-    await pool.query(`INSERT INTO inventory_sync_runs(resource_type,account_id,status,last_success_at,row_count,unknown_attribute_count)
-      SELECT 'vpc', lpad(n::text,12,'0'), 'succeeded', now(), 0, 0 FROM generate_series(1,102) n`);
+    await pool.query(`INSERT INTO accounts(account_id,alias,external_id,all_regions)
+      SELECT lpad(n::text,12,'0'),'fixture','fixture-only',true FROM generate_series(1,102) n;
+      INSERT INTO inventory_resources(resource_type,account_id,resource_id,data,captured_at)
+      SELECT 'vpc',lpad(n::text,12,'0'),'one','{}',now() FROM generate_series(1,102) n;
+      UPDATE inventory_sync_runs SET row_count=102 WHERE resource_type='vpc'`);
+    await pool.query(`INSERT INTO inventory_snapshots(account_id,captured_at,resource_type,resource_count)
+      SELECT a.account_id,$1,t,CASE WHEN t='vpc' THEN 1 ELSE 0 END
+      FROM accounts a CROSS JOIN unnest($2::text[]) t`,
+    [recent, requiredTypes.filter(t => !HOST_ONLY_TREND_TYPES.has(t))]);
     const result = await build('infra');
     expect(result).toMatchObject({ published: 100, skipped: 1, accountsTruncated: true, reasons: ['account_limit'] });
     expect((await pool.query('SELECT count(*)::int AS n FROM topology_graph_state')).rows[0].n).toBe(100);
@@ -374,6 +488,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       SELECT 'ec2','instance-'||n,jsonb_build_object('security_group_ids',
         (SELECT jsonb_agg('sg-'||n||'-'||m) FROM generate_series(1,500) m)), $1
       FROM generate_series(1,9) n`, [recent]);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=9 WHERE resource_type='ec2'");
     expect(await build('infra')).toMatchObject({ retained: 1, reasons: ['graph_limit'] });
     expect(await state('infra')).toMatchObject({ status: 'partial', retainedPrevious: true, graphTruncated: true });
     expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
@@ -419,18 +534,18 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   });
   it('retains a vanished host infra source until explicit successful-empty evidence arrives', async () => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
-    await pool.query('DELETE FROM inventory_sync_runs');
     await pool.query(`INSERT INTO inventory_resources(resource_type, resource_id, data, captured_at) VALUES
       ('vpc','vpc-kept','{}',$1), ('subnet','subnet-lost','{"vpc_id":"vpc-kept"}',$1)`, [recent]);
     await pool.query(`INSERT INTO inventory_sync_runs
       (resource_type, status, started_at, finished_at, last_success_at, row_count, unknown_attribute_count)
-      SELECT t, 'succeeded', $1, $1, $1, 1, 0 FROM unnest(ARRAY['vpc','subnet']) t`, [recent]);
+      SELECT t, 'succeeded', $1, $1, $1, 1, 0 FROM unnest(ARRAY['vpc','subnet']) t
+      ON CONFLICT(resource_type,account_id) DO UPDATE SET row_count=1`, [recent]);
     await build('infra');
     const previous = await state('infra');
     const nodes = (await pool.query("SELECT * FROM topology_nodes WHERE account_id='self' AND class='infra' ORDER BY id")).rows;
     expect(nodes.map(node => node.id)).toEqual(['subnet:subnet-lost', 'vpc:vpc-kept']);
     expect(previous).toMatchObject({ status: 'ok', stale: false, retainedPrevious: false });
-    expect(previous.publishedSources).toHaveLength(2);
+    expect(previous.publishedSources).toHaveLength(INFRA_TYPES.length);
 
     await pool.query(`DELETE FROM inventory_resources WHERE resource_type='subnet';
       DELETE FROM inventory_sync_runs WHERE resource_type='subnet';`);
@@ -542,17 +657,38 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await build('infra');
     expect(await state('infra', '111122223333')).toMatchObject({ status: 'error', retainedPrevious: true });
   });
-  it('processes a ledger-only member success and sweeps its previous graph', async () => {
-    await pool.query(`INSERT INTO topology_nodes(account_id,id,kind,label,run_id,class)
-      VALUES ('111122223333','vpc:gone','vpc','gone','old','infra');
-      INSERT INTO inventory_sync_runs(resource_type,account_id,status,started_at,finished_at,last_success_at,row_count,unknown_attribute_count)
-      VALUES ('vpc','111122223333','succeeded',now(),now(),now(),0,0),
-             ('vpc','444455556666','succeeded',now(),now(),now(),0,0);`);
+  it('confirms member emptiness from current participation snapshots, with only the real aggregate ledger', async () => {
+    const account = '111122223333';
+    await seed('infra', recent, account); await build('infra');
+    await pool.query("DELETE FROM inventory_resources WHERE account_id=$1", [account]);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=0 WHERE resource_type='vpc'");
+    await pool.query("UPDATE inventory_snapshots SET resource_count=0 WHERE account_id=$1 AND resource_type='vpc'", [account]);
     await build('infra');
-    for (const account of ['111122223333', '444455556666']) {
-      expect(await state('infra', account)).toMatchObject({ status: 'empty', stale: false });
-      expect((await pool.query('SELECT * FROM topology_nodes WHERE account_id=$1', [account])).rows).toEqual([]);
-    }
+    expect(await state('infra', account)).toMatchObject({ status: 'empty', retainedPrevious: false });
+    expect((await pool.query("SELECT * FROM topology_nodes WHERE account_id=$1", [account])).rows).toEqual([]);
+    expect((await pool.query("SELECT * FROM inventory_sync_runs WHERE account_id<>'self'")).rows).toEqual([]);
+  });
+  it.each(['disabled', 'excluded', 'older_run'])('does not treat %s member snapshots as current participation', async reason => {
+    const account = '111122223333';
+    await seed('infra', recent, account); await build('infra');
+    await pool.query("DELETE FROM inventory_resources WHERE account_id=$1", [account]);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=0 WHERE resource_type='vpc'");
+    await pool.query("UPDATE inventory_snapshots SET resource_count=0 WHERE account_id=$1 AND resource_type='vpc'", [account]);
+    if (reason === 'disabled') await pool.query('UPDATE accounts SET enabled=false WHERE account_id=$1', [account]);
+    if (reason === 'excluded') await pool.query('UPDATE accounts SET all_regions=false WHERE account_id=$1', [account]);
+    if (reason === 'older_run') await pool.query("UPDATE inventory_sync_runs SET started_at=started_at+interval '1 second', finished_at=finished_at+interval '2 seconds', last_success_at=last_success_at+interval '2 seconds' WHERE resource_type='vpc'");
+    await build('infra');
+    expect(await state('infra', account)).toMatchObject({ status: 'unavailable', retainedPrevious: true });
+    expect((await pool.query("SELECT id FROM topology_nodes WHERE account_id=$1", [account])).rows).toEqual([{ id: 'vpc:one' }]);
+  });
+  it('discloses a missing infra source even with no rows or prior publication for that type', async () => {
+    await seed('infra');
+    await pool.query("DELETE FROM inventory_sync_runs WHERE resource_type='neptune_cluster'");
+    await build('infra');
+    expect((await state('infra')).sources).toContainEqual(expect.objectContaining({
+      sourceId: 'inventory:neptune_cluster', status: 'unavailable', reasons: expect.arrayContaining(['missing_ledger']),
+    }));
+    expect(await state('infra')).toMatchObject({ retainedPrevious: true });
   });
   it('does not infer member successful absence from the host aggregate ledger', async () => {
     await seed('infra', recent, '111122223333');
@@ -581,7 +717,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     api.pool = { connect: async () => {
       const client = await pool.connect();
       const query = client.query.bind(client);
-      return { release: () => client.release(), query: async (sql: string, args?: unknown[]) => {
+      return { on: client.on.bind(client), removeListener: client.removeListener.bind(client),
+        release: client.release.bind(client), query: async (sql: string, args?: unknown[]) => {
         const result = await query(sql, args);
         if (sql.includes('FROM topology_graph_state')) {
           await pool.query('DELETE FROM inventory_resources; UPDATE inventory_sync_runs SET row_count=0');
