@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: efd0d970b5bf · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9ed1c648cb7b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -165,7 +165,7 @@ Collection windows are caps, so late completion may fail admission. Keep the pro
 before Related/ADR references. Run `node --test scripts/v2/deployment-smoke.test.mjs`
 from the repository root; it imports the runtime-smoke suite.
 
-The strict controller remains unwired here. Preserve the active scheduler and the
+Both dev workflows call the strict controller. Preserve the active scheduler and the
 distinction between operational degraded data and ineligible release evidence.
 Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
 admission bounds, not guaranteed completion. Runtime foundation records a 43-type,

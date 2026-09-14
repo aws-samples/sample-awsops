@@ -212,7 +212,7 @@ cooldown, recheck, probe and both workers. HTTP requests need their full timeout
 Keep the probe contract before Related/ADR references. From the repository root run
 `node --test scripts/v2/deployment-smoke.test.mjs`; it imports the runtime-smoke test suite.
 
-The strict controller remains unwired here. Preserve the active scheduler and the
+Both dev workflows call the strict controller. Preserve the active scheduler and the
 distinction between operational degraded data and ineligible release evidence.
 Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
 admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
