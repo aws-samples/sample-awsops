@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { inventorySourcesStale, readGraphState } from './graph-state';
+import { inventorySourcesStale, projectGraphDetails, readGraphState } from './graph-state';
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -22,6 +22,23 @@ describe('graph state during rollout', () => {
 });
 
 describe('inventory capture quality', () => {
+  it.each([
+    { status: 'ok', itemCount: 0 },
+    { capturedAtMs: 'invalid' },
+    { capturedAtMs: -1 },
+    { capturedAtMs: Date.now() + 60_000 },
+    { reasons: ['cap_reached'] },
+    { reasons: ['unknown_attributes'] },
+    { reasons: ['future_reason'] },
+    { reasons: null },
+  ])('rejects contradictory or incomplete successful-empty evidence: %j', override => {
+    expect(inventorySourcesStale([{ status: 'empty', producerStatus: 'succeeded', itemCount: 0,
+      lastSuccessAtMs: Date.now() - 1000, ...override }])).toBe(true);
+  });
+  it('accepts an explicit successful zero with a nullable capture and no coverage reasons', () => {
+    expect(inventorySourcesStale([{ status: 'empty', producerStatus: 'succeeded', itemCount: 0,
+      capturedAtMs: null, lastSuccessAtMs: Date.now() - 1000, reasons: [] }])).toBe(false);
+  });
   it.each([undefined, null, -1, false, '0', 0.5])('missing or invalid row count %s cannot certify capture', itemCount => {
     expect(inventorySourcesStale([{ status: 'ok', itemCount, lastSuccessAtMs: Date.now() - 1000 }])).toBe(true);
   });
@@ -34,6 +51,18 @@ describe('inventory capture quality', () => {
     vi.stubEnv('INVENTORY_STALE_AFTER_MINUTES', threshold);
     expect(inventorySourcesStale([{ status: 'empty', producerStatus: 'succeeded', itemCount: 0, lastSuccessAtMs: Date.now() - 31 * 60_000 }])).toBe(true);
   });
+});
+
+const malformedMetadata = [
+  ...['status', 'producerStatus', 'scope'].flatMap(key => [null, false, {}, 'future_value']
+    .map(value => ({ sources: [{ sourceId: 'inventory:vpc', [key]: value }] }))),
+  ...['itemCount', 'windowStartMs', 'windowEndMs', 'capturedAtMs', 'lastSuccessAtMs', 'attemptedAtMs', 'finishedAtMs']
+    .flatMap(key => [-1, '123', 8640000000000001].map(value => ({ publishedSources: [{ sourceId: 'inventory:vpc', [key]: value }] }))),
+  { windowStartMs: -1 }, { nodeDrops: '3' }, { infraUnavailable: 'true' },
+  { failureReason: 'future_value' }, { metadataTruncated: null },
+];
+it.each(malformedMetadata)('discloses rejected recognized metadata: %j', details => {
+  expect(projectGraphDetails(details).metadataTruncated).toBe(true);
 });
 
 describe('graph producer and scope honesty', () => {

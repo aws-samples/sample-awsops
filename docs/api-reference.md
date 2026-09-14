@@ -257,7 +257,7 @@ runtime payloads for compatibility with older or malformed responses.
 | `sources[].producerStatus/attemptedAtMs/finishedAtMs` | Underlying inventory job outcome and start/finish clocks; not graph publication time or per-account success proof. |
 | `failureReason` | Bounded failure category: `publication_failed`, `source_read_failed`, `not_attempted`, or API-only `state_read_failed`. |
 | `sourceAttempted` | Explicit false records a source read not attempted within the rebuild budget; it never changes the saved publication clock. |
-| `metadataTruncated` | Stored or computed metadata omission/malformed-array marker, shared by HTTP and SQL projections and included in freshness decisions. |
+| `metadataTruncated` | Stored or computed recognized-field omission/malformation marker, shared by HTTP and SQL projections and included in freshness decisions. |
 | `coverage` | `unknown` for a flow/infra `__all__` union; host state cannot prove union coverage and top-level `captured_at` is null. Trace `__all__` reads the existing host storage scope. |
 | `windowStartMs/windowEndMs` | Optional graph-attempt window, distinct from per-source query windows and saved publication time. |
 | `sources[].windowStartMs/windowEndMs` | Actual trace query window, in epoch milliseconds; displayed independently of publication time. |
@@ -280,7 +280,7 @@ A missing or failed state read remains unknown; `failureReason=state_read_failed
 Excess graph requests return HTTP 503, other read failures HTTP 500, with fixed `message="Graph read failed"`, class/account and unknown collection/read-unavailable metadata. Raw database messages are never returned. See [request/rollout details](runbooks/graph-read-contract.md).
 
 
-All three graph pages render collection/read errors, parse safe non-2xx envelopes, abort superseded fetches and provide refresh. A shed request includes Retry-After: 1 and a fixed server-side shed diagnostic. Timeout SQLSTATEs (57014/25P03/25P04) produce readReason=timeout; they never imply empty collection or successful partial publication. Requested subgraph roots are prioritized before the node cap; fan-out capped and readTruncated remain distinct.
+All three graph pages render collection/read errors, parse safe non-2xx envelopes, abort superseded fetches and provide refresh. A shed request includes Retry-After: 1 and a fixed server-side shed diagnostic. Timeout SQLSTATEs (57014/25P03/25P04/55P03) produce readReason=timeout; they never imply empty collection or successful partial publication. Requested subgraph roots are prioritized before the node cap; fan-out capped and readTruncated remain distinct.
 
 HTTP collection details use the same bounded key/status/reason vocabulary as the SQL-reader view: raw/private keys and injected read/coverage fields are excluded. Source arrays are capped at 128 and reason lists at 16; metadataTruncated discloses omitted/malformed metadata separately from graph row truncation. Safe null source clocks remain unknown for compatibility.
 
@@ -291,3 +291,5 @@ Capped resource neighborhoods keep the requested root and nearest hops first, us
 A reader-synthesized unknown result with no collection clocks or source records is neutral “No collection state recorded” information; it does not assert stale age or a collector failure. Unknown aggregate coverage has its own neutral wording. This presentation does not change the backend unknown/stale envelope or establish completeness. Read failures, retention, truncation, metadata loss and other actionable evidence still render alerts.
 
 Shipped graph consumers retry only typed HTTP503 admission responses (readStatus=unavailable, readReason=busy), at most five requests within ten seconds. Auth/rejection, query, and untyped service errors are not retried. Scope changes/unmounts cancel waits and reads; exhausted recovery remains explicit unknown/unavailable, never confirmed empty.
+
+Class-wide infra truncation prioritizes the actual `vpc`, `subnet`, and `sg` container kinds before resource nodes; within each rank, IDs provide deterministic order. The cap still bounds the response and does not certify complete connectivity. Recognized metadata fields with invalid types/ranges or unknown enum vocabulary set `metadataTruncated` in both projections; unknown private fields remain excluded without that signal. This deliberately treats vocabulary not understood by the reader as unknown coverage. Published inventory evidence is stale for contradictory status/count pairs, any nonempty or malformed reason list, or an invalid/future optional capture clock. A confirmed zero may omit its capture clock or use null, but requires `empty`, zero count, a succeeded producer and a valid last-success clock.

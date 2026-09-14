@@ -39,7 +39,10 @@ async function graphRows(client: Parameters<Parameters<typeof graphReadTransacti
     ? `SELECT selected.* FROM (${selection}) selected
        JOIN unnest($3::text[]) WITH ORDINALITY nearest(id,priority) USING(id)
        ORDER BY nearest.priority LIMIT ${NODE_LIMIT + 1}`
-    : `${selection} LIMIT ${NODE_LIMIT + 1}`, ids ? [cls, account, ids] : [cls, account]);
+    : `SELECT selected.* FROM (${selection}) selected
+       ORDER BY CASE WHEN $1 = 'infra' THEN CASE kind WHEN 'vpc' THEN 0 WHEN 'subnet' THEN 1
+         WHEN 'sg' THEN 2 ELSE 3 END ELSE 0 END, id LIMIT ${NODE_LIMIT + 1}`,
+    ids ? [cls, account, ids] : [cls, account]);
   const visible = nodes.rows.slice(0, NODE_LIMIT);
   const edges = await client.query(`SELECT source, target, rel, confidence, to_jsonb(e)->'meta' AS meta FROM topology_edges e
     WHERE ($2 = '__all__' OR account_id = $2) AND class = $1 AND source = ANY($3) AND target = ANY($3)
