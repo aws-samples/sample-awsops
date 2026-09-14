@@ -143,6 +143,7 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   Aurora cluster + writer instance, RDS-managed master secret.
 - `terraform/foundation/data/schema.sql` — ADR-001 7-table schema + `schema_migrations`
   + P2 `worker_jobs` (idempotent).
+- `scripts/v2/automatic-migration-policy.mjs` — opt-in transactional pending-SQL admission; column/view and non-transactional changes require reviewed standalone execution.
 - `scripts/v2/migrate.mjs`, `initialize-db.mjs` — atomic empty-DB baseline and checksum-verified
   ULIDs; `scripts/v2/eks/rds-ca-bundle.pem` is the shared migration TLS trust bundle despite
   the historical `eks/` path. See [migration operations](../../terraform/foundation/migrations/README.md)

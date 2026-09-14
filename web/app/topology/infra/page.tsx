@@ -49,6 +49,8 @@ function GraphView({ q }: { q: string }) {
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
 
+  const unavailable = (graph?.collection as { readStatus?: string } | undefined)?.readStatus === 'unavailable';
+
   useEffect(() => {
     let live = true;
     const controller = new AbortController();
@@ -117,7 +119,7 @@ function GraphView({ q }: { q: string }) {
         <button type="button" disabled={busy} onClick={() => setRevision(n => n + 1)} className="rounded border border-ink-200 px-2 py-1 disabled:opacity-50">{tt('새로고침')}</button>
         {busy && <span>{tt('불러오는 중…')}</span>}
         {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
-        {graph && <span>{tt(`노드 ${graph.nodes.length.toLocaleString()} · 엣지 ${graph.edges.length.toLocaleString()}`)}</span>}
+        {graph && !unavailable && <span>{tt(`노드 ${graph.nodes.length.toLocaleString()} · 엣지 ${graph.edges.length.toLocaleString()}`)}</span>}
         {q.trim() && <span className="font-semibold text-brand-700">{tt(`매치 ${matches.size}개`)}</span>}
         {LEGEND.map((l) => {
           const [bg, border] = COLORS[l.kind] ?? RESOURCE;
@@ -129,7 +131,7 @@ function GraphView({ q }: { q: string }) {
           );
         })}
         {graph?.captured_at && <span>{tt('그래프 시점:')} {new Date(graph.captured_at).toLocaleString()}</span>}
-        {graph && graph.nodes.length === 0 && !busy && <span>{tt('표시할 그래프 노드가 없습니다. 수집 상태를 확인하세요.')}</span>}
+        {graph && !unavailable && graph.nodes.length === 0 && !busy && <span>{tt('표시할 그래프 노드가 없습니다. 수집 상태를 확인하세요.')}</span>}
       </div>
       {!busy && !err && graph ? <div className="shrink-0 px-4"><GraphCollectionStatus collection={graph.collection} /></div> : null}
       <div className="min-h-[240px] flex-1">

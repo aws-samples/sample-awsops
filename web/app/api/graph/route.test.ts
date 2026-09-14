@@ -12,6 +12,7 @@ vi.mock('@/lib/auth', () => ({ verifyUser: auth }));
 const sharedPool = vi.hoisted(() => ({ query, connect: async () => connection.current }));
 vi.mock('@/lib/db', () => ({ getPool: () => sharedPool }));
 import { GET } from './route';
+import { graphReadTransaction, GraphReadBusy, GraphReadDeadline } from '@/lib/graph-transaction';
 import claimCases from '../../../lib/fixtures/trace-queue-claims.json';
 afterEach(() => vi.restoreAllMocks());
 
@@ -96,6 +97,14 @@ describe('graph collection evidence API', () => {
     await GET(new Request('http://localhost/api/graph'));
     expect(query).toHaveBeenCalledWith("SET LOCAL transaction_timeout = '2s'");
   });
+  it('normalizes node and edge evidence only after releasing the transaction', async () => {
+    query.mockImplementation(async (sql: string) => ({ rows: sql.includes('FROM topology_nodes') ? [{
+      id: 'one', label: 'one', get kind() { expect(connection.release).toHaveBeenCalled(); return 'queue'; }, meta: {},
+    }] : sql.includes('FROM topology_edges') ? [{ source: 'one', target: 'one', rel: 'calls',
+      meta: { get spanCount() { expect(connection.release).toHaveBeenCalled(); return 1; }, metricCount: 0 } }] : [] }));
+    expect((await GET(new Request('http://localhost/api/graph?class=trace'))).status).toBe(200);
+  });
+
   it('allows two overlapping graph reads and sheds excess before checkout', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     let release!: () => void, started!: () => void, readers = 0;
@@ -200,5 +209,35 @@ describe('queue attribution on retained snapshots', () => {
         destination, claimedAccountId: account, claimedRegion: region, identityProvenance: 'telemetry_claim',
       });
     }
+  });
+});
+
+
+describe('request acquisition deadline', () => {
+  it('bounds a pending checkout without releasing admission or starting abandoned work', async () => {
+    const waits: ((value: unknown) => void)[] = [];
+    const pool = { connect: () => new Promise(resolve => { waits.push(resolve); }) };
+    const fn = vi.fn();
+    const outcomes = await Promise.allSettled([graphReadTransaction(pool as never, fn), graphReadTransaction(pool as never, fn)]);
+    expect(outcomes.every(result => result.status === 'rejected' && result.reason instanceof GraphReadDeadline)).toBe(true);
+    await expect(graphReadTransaction(pool as never, fn)).rejects.toBeInstanceOf(GraphReadBusy);
+    const clients = waits.map(() => Object.assign(new EventEmitter(), { query: vi.fn(), release: vi.fn() }));
+    waits.forEach((resolve, i) => resolve(clients[i]));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(fn).not.toHaveBeenCalled();
+    for (const client of clients) { expect(client.query).not.toHaveBeenCalled(); expect(client.release).toHaveBeenCalledTimes(1); expect(client.release).toHaveBeenCalledWith(); }
+  });
+  it('destroys a stalled checked-out client once and clears the admission slot', async () => {
+    let rejectQuery!: (error: Error) => void;
+    const client = Object.assign(new EventEmitter(), {
+      query: vi.fn((sql: string) => sql === 'stall' ? new Promise((_, reject) => { rejectQuery = reject; }) : Promise.resolve({ rows: [] })),
+      release: vi.fn(() => { rejectQuery?.(new Error('fixture connection closed')); }),
+    });
+    const pool = { connect: async () => client };
+    await expect(graphReadTransaction(pool as never, c => c.query('stall'))).rejects.toBeInstanceOf(GraphReadDeadline);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(client.release).toHaveBeenCalledTimes(1);
+    expect(client.release).toHaveBeenCalledWith(true);
+    expect(client.listenerCount('error')).toBe(0);
   });
 });

@@ -529,6 +529,19 @@ def test_list_tasks_uses_resource_star_and_cluster_condition():
     assert grant["Condition"]["StringEquals"]["aws:RequestedRegion"] == REGION
 
 
+@pytest.mark.parametrize("encrypt", [None, False, True])
+def test_audit_accepts_the_same_optional_state_encryption_contract(encrypt):
+    key = f"arn:aws:kms:{REGION}:{ACCOUNT}:key/11111111-1111-1111-1111-111111111111"
+    line = "" if encrypt is None else f"encrypt = {str(encrypt).lower()}\n"
+    backend = BACKEND.replace("encrypt = true\n", line) + f'kms_key_id = "{key}"\n'
+    policy = audit.backend_policy({**ENV, "BACKEND_B64": base64.b64encode(backend.encode()).decode()})
+    decrypt = next(s for s in policy["Statement"] if "kms:Decrypt" in s["Action"])
+    assert decrypt["Resource"] == (key if encrypt is True else "*")
+    assert decrypt["Condition"]["StringEquals"]["kms:ViaService"] == f"s3.{REGION}.amazonaws.com"
+    assert decrypt["Condition"]["StringEquals"]["kms:EncryptionContext:aws:s3:arn"] == [
+        "arn:aws:s3:::fixture-state", "arn:aws:s3:::fixture-state/dev/terraform.tfstate"]
+
+
 def test_backend_policy_scopes_state_and_kms_encryption_context():
     policy = audit.backend_policy({**ENV, "BACKEND_B64": base64.b64encode(BACKEND.encode()).decode()})
     s3 = next(s for s in policy["Statement"] if "s3:GetObject" in s["Action"])

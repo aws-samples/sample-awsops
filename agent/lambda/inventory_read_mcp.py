@@ -368,8 +368,9 @@ def _fetch_trace_collection(cls="trace"):
     except (AttributeError, TypeError, ValueError, OverflowError):
         pass  # missing/invalid snapshot time is stale, never replaced with the current clock
     stale = (
-        captured is None or time.time() - captured > max_age_minutes * 60
+        captured is None or captured > time.time() or time.time() - captured > max_age_minutes * 60
         or status in ("unknown", "error", "unavailable") or details.get("retainedPrevious") is True
+        or details.get("metadataTruncated") is True
     )
     if cls != "trace":
         details = {**details, "evidenceKind": "inventory"}

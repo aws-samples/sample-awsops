@@ -266,7 +266,8 @@ runtime payloads for compatibility with older or malformed responses.
 | `sources[].sourceId/status/reasons/itemCount` | Per-source collection result and bounded reason vocabulary. |
 | `sources[].producerStatus/attemptedAtMs/finishedAtMs` | Underlying inventory job outcome and start/finish clocks; not graph publication time or per-account success proof. |
 | `failureReason` | Bounded failure category: `publication_failed`, `source_read_failed`, `not_attempted`, or API-only `state_read_failed`. |
-| `sourceAttempted` | Explicit `false` means this bounded rebuild did not start a source read; it does not change the saved graph clock. |
+| `sourceAttempted` | Explicit false records a source read not attempted within the rebuild budget; it never changes the saved publication clock. |
+| `metadataTruncated` | Stored or computed metadata omission/malformed-array marker, shared by HTTP and SQL projections and included in freshness decisions. |
 | `coverage` | `unknown` for a flow/infra `__all__` union; host state cannot prove union coverage and top-level `captured_at` is null. Trace `__all__` reads the existing host storage scope. |
 | `windowStartMs/windowEndMs` | Optional graph-attempt window, distinct from per-source query windows and saved publication time. |
 | `sources[].windowStartMs/windowEndMs` | Actual trace query window, in epoch milliseconds; displayed independently of publication time. |
@@ -291,4 +292,6 @@ Excess graph requests return HTTP 503, other read failures HTTP 500, with fixed 
 
 All three graph pages render collection/read errors, parse safe non-2xx envelopes, abort superseded fetches and provide refresh. A shed request includes Retry-After: 1 and a fixed server-side shed diagnostic. Timeout SQLSTATEs (57014/25P03/25P04) produce readReason=timeout; they never imply empty collection or successful partial publication. Requested subgraph roots are prioritized before the node cap; fan-out capped and readTruncated remain distinct.
 
-HTTP collection details use the same bounded key/status/reason vocabulary as the SQL-reader view: raw/private keys and injected read/coverage fields are excluded. Source arrays are capped at128 and reason lists at16; metadataTruncated discloses omitted/malformed metadata separately from graph row truncation. Safe null source clocks remain unknown for compatibility.
+HTTP collection details use the same bounded key/status/reason vocabulary as the SQL-reader view: raw/private keys and injected read/coverage fields are excluded. Source arrays are capped at 128 and reason lists at 16; metadataTruncated discloses omitted/malformed metadata separately from graph row truncation. Safe null source clocks remain unknown for compatibility.
+
+The two-second request deadline includes pool acquisition. Expired late checkouts return immediately without starting SQL; admission stays reserved until they settle, preventing an abandoned queue. Both annotation normalization and JSON serialization occur after release. Top-level windows use Graph attempt window start/end labels; individual source windows keep Source window start/end labels. SQL and HTTP projections share null-clock compatibility, the count/not-attempted vocabulary, and metadataTruncated. Reason deduplication alone is not omission.

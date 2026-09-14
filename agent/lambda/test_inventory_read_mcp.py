@@ -1354,6 +1354,7 @@ class TestTraceTopologyCollection(unittest.TestCase):
                             (self._state(captured_at="2026-09-11T10:59:59Z"), True),
                             (self._state("error"), True), (self._state("unavailable"), True),
                             (self._state(details={"sources": [], "retainedPrevious": True}), True),
+                            (self._state(details={"sources": [], "metadataTruncated": True}), True),
                             (self._state(captured_at=None), True), (None, True),
                         ]
                     # Execute graph-state.ts itself using the installed compiler, compatible with

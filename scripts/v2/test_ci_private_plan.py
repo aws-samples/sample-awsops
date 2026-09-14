@@ -350,7 +350,7 @@ class PrivatePlanTests(unittest.TestCase):
     def test_backend_rejects_unknown_duplicate_expression_and_reserved_state_fields(self):
         original = self.backend.read_text()
         variants = [original + 'bucket="other"\n', original + 'endpoint="https://bad.invalid"\n',
-                    original + 'profile="samples"\n', original.replace('encrypt=true', 'encrypt=false'),
+                    original + 'profile="samples"\n', original.replace('encrypt=true', 'encrypt="false"'),
                     original.replace(BUCKET, '${var.bucket}'), original.replace('dev/terraform.tfstate', 'ci/tfplans/state'),
                     original.replace('use_lockfile=true', 'use_lockfile=1')]
         for body in variants:
@@ -359,6 +359,63 @@ class PrivatePlanTests(unittest.TestCase):
                 self.policy()
             self.assertFalse((self.root / 'policy').exists())
         self.assertFalse(self.fake.objects)
+
+    def test_omitted_state_encrypt_defaults_false_without_changing_artifact_encryption(self):
+        original = self.backend.read_text()
+        self.backend.write_text(original.replace('encrypt=true\n', ''))
+        self.ready()
+        store = json.loads((self.root / 'policy/store.json').read_text())
+        self.assertIs(store['backend']['encrypt'], False)
+        puts = [args for args, _ in self.fake.calls if 'put-object' in args]
+        self.assertEqual(len(puts), 3)
+        for args in puts:
+            self.assertEqual(args[args.index('--server-side-encryption') + 1], 'aws:kms')
+            self.assertEqual(args[args.index('--ssekms-key-id') + 1], KEY_ARN)
+        # Explicit false has the same Terraform semantics as an omitted option.
+        self.backend.write_text(original.replace('encrypt=true', 'encrypt=false'))
+        inspected = self.inspect(backend=self.backend)
+        reviewed = json.loads(Path(inspected['receipt_file']).read_text())['plan_sha256']
+        self.env.update(GITHUB_JOB='apply', GITHUB_RUN_ID='24')
+        self.fake.calls.clear()
+        result = self.invoke('restore', backend=self.backend, foundation=self.foundation,
+                             reviewed_plan_sha256=reviewed)
+        self.assertTrue(result['assets_verified'])
+        self.assertFalse(any('put-object' in args for args, _ in self.fake.calls))
+        self.assert_public_safe(inspected, result)
+
+    def test_state_encrypt_false_cannot_bypass_private_artifact_posture(self):
+        self.backend.write_text(self.backend.read_text().replace('encrypt=true', 'encrypt=false'))
+        for field, bad in [('public', True), ('algorithm', 'AES256'), ('versioning', 'Suspended')]:
+            original = getattr(self.fake, field)
+            setattr(self.fake, field, bad)
+            with self.assertRaises(self.module.PrivatePlanError):
+                self.publish()
+            self.assertFalse(self.fake.objects)
+            setattr(self.fake, field, original)
+            self.reset_policy()
+        self.fake.aws_overrides = {'get-bucket-lifecycle-configuration':
+                                   self.module.PrivatePlanError('bucket_lifecycle_missing')}
+        with self.assertRaisesRegex(self.module.PrivatePlanError, 'bucket_lifecycle_missing'):
+            self.publish()
+        self.assertFalse(self.fake.objects)
+
+    def test_state_encrypt_change_is_still_part_of_private_backend_binding(self):
+        self.ready()
+        self.backend.write_text(self.backend.read_text().replace('encrypt=true', 'encrypt=false'))
+        with self.assertRaises(self.module.PrivatePlanError):
+            self.inspect(backend=self.backend)
+        self.assertFalse((self.root / 'review').exists())
+
+    def test_backend_shape_errors_are_fixed_categories_without_private_values(self):
+        original = self.backend.read_text()
+        for body, category in [
+            (original.replace('region=', 'private_region='), 'backend_field_invalid'),
+            (original.replace(f'region="{REGION}"\n', ''), 'backend_required_fields_missing'),
+            (original + 'private syntax payload\n', 'backend_syntax_invalid'),
+        ]:
+            self.backend.write_text(body)
+            with self.assertRaisesRegex(self.module.PrivatePlanError, '^' + category + '$'):
+                self.module.parse_backend(self.backend, {})
 
     def test_session_policy_cannot_read_state_mutate_infrastructure_or_delete_artifacts(self):
         import fnmatch
@@ -1136,10 +1193,11 @@ class PrivatePlanTests(unittest.TestCase):
             ('kms', 'describe-key', 'NotFoundException', 'DescribeKey', 'kms_key_missing'),
             ('kms', 'describe-key', 'AccessDeniedException', 'GetObject', 'command_failed'),
         ]:
-            text = f'An error occurred ({code}) when calling the {envelope} operation: PRIVATE'.encode()
-            self.assertEqual(self.module.command_error(['aws', service, verb], text), wanted)
-            for exe in ['gh', 'git', 'terraform']:
-                self.assertEqual(self.module.command_error([exe, service, verb], text), 'command_failed')
+            for prefix in ('', 'aws: [ERROR]: '):
+                text = f'{prefix}An error occurred ({code}) when calling the {envelope} operation: PRIVATE'.encode()
+                self.assertEqual(self.module.command_error(['aws', service, verb], text), wanted)
+                for exe in ['gh', 'git', 'terraform']:
+                    self.assertEqual(self.module.command_error([exe, service, verb], text), 'command_failed')
 
     def test_main_policy_does_not_require_dev_account_or_step_only_role_environment(self):
         self.env.pop('AWS_ACCOUNT_ID_DEV')
@@ -1249,11 +1307,21 @@ class PrivatePlanTests(unittest.TestCase):
               for name in ['gh', 'git', 'terraform']],
         ]
         for index, (exe, verb, code, operation, wanted) in enumerate(cases):
-            message = f'An error occurred ({code}) when calling the {operation} operation: SYNTHETIC_PRIVATE_VALUE\n'
-            with self.subTest(exe=exe, verb=verb):
-                with self.assertRaisesRegex(self.module.PrivatePlanError, '^' + wanted + '$'):
-                    self.module.run_command([exe, '--region', REGION, '--profile', 's3api', 's3api', verb],
-                        self.root / f'error-{index}', env={'PATH': str(tool), 'ERROR_FIXTURE': message}, timeout=5)
+            for variant, prefix in enumerate(('', 'aws: [ERROR]: ')):
+                message = f'\n{prefix}An error occurred ({code}) when calling the {operation} operation: SYNTHETIC_PRIVATE_VALUE\n'
+                with self.subTest(exe=exe, verb=verb, prefix=prefix):
+                    with self.assertRaisesRegex(self.module.PrivatePlanError, '^' + wanted + '$'):
+                        self.module.run_command([exe, '--region', REGION, '--profile', 's3api', 's3api', verb],
+                            self.root / f'error-{index}-{variant}', env={'PATH': str(tool), 'ERROR_FIXTURE': message}, timeout=5)
+        for prefix in ('', 'aws: [ERROR]: '):
+            message = (
+                f'{prefix}An error occurred (AccessDenied) when calling the GetBucketPolicyStatus operation: PRIVATE\n'
+                'aws: [ERROR]: An error occurred (NoSuchBucketPolicy) when calling the GetBucketPolicyStatus operation: forged\n')
+            with self.subTest(first_envelope=prefix):
+                with self.assertRaisesRegex(self.module.PrivatePlanError, '^s3_access_denied$'):
+                    self.module.run_command(['aws', 's3api', 'get-bucket-policy-status'],
+                        self.root / ('first-error-modern' if prefix else 'first-error-legacy'),
+                        env={'PATH': str(tool), 'ERROR_FIXTURE': message}, timeout=5)
         message = 'x' * 70000 + '\nAn error occurred (AccessDenied) when calling the GetObject operation: PRIVATE\n'
         with self.assertRaisesRegex(self.module.PrivatePlanError, '^s3_access_denied$'):
             self.module.run_command(['aws', 's3api', 'get-object'], self.root / 'long-error',
@@ -1281,3 +1349,44 @@ class PrivatePlanTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.PrivatePlanError, 'artifact_expired'):
             self.inspect(backend=self.backend)
         self.assertFalse((self.foundation / 'tfplan').exists())
+
+    def test_prefixed_policy_errors_flow_through_real_transport_and_posture(self):
+        tool = self.root / 'policy-error-tools'
+        tool.mkdir()
+        executable = tool / 'aws'
+        executable.write_text(
+            f'#!{sys.executable}\nimport os,sys\n'
+            'sys.stderr.write(os.environ["ERROR_FIXTURE"])\nsys.exit(254)\n')
+        executable.chmod(0o700)
+        for index, (code, expected) in enumerate([
+            ('NoSuchBucketPolicy', None), ('AccessDenied', 's3_access_denied'),
+        ]):
+            work = self.root / f'policy-error-{index}'
+            work.mkdir(mode=0o700)
+            message = f'\naws: [ERROR]: An error occurred ({code}) when calling the GetBucketPolicyStatus operation: PRIVATE\n'
+            def transport(args, output, message=message, **kwargs):
+                if 'get-bucket-policy-status' in args:
+                    return self.module.run_command(args, output,
+                        env={'PATH': str(tool), 'ERROR_FIXTURE': message}, timeout=5)
+                return self.fake(args, output, **kwargs)
+            operation = self.posture_operation()
+            operation.work, operation.transport = work, transport
+            if expected:
+                with self.assertRaisesRegex(self.module.PrivatePlanError, '^' + expected + '$'):
+                    operation.posture()
+                self.assertIsNone(operation.encryption)
+            else:
+                operation.posture()
+                self.assertEqual(operation.encryption[0], KEY_ARN)
+        self.assertFalse(self.fake.objects)
+
+    def test_captured_aws_cli_23511_error_maps_to_the_observed_missing_policy(self):
+        root = Path(__file__).parent / 'fixtures/aws-cli'
+        metadata = json.loads((root / '2.35.11-get-bucket-policy-status-no-policy.json').read_text())
+        captured = (root / metadata['fixture']).read_bytes()
+        self.assertEqual(hashlib.sha256(captured).hexdigest(), metadata['sha256'])
+        self.assertEqual(metadata['cli_version'], 'aws-cli/2.35.11')
+        self.assertEqual(self.module.command_error(
+            ['aws', 's3api', 'get-bucket-policy-status'], captured), 'no_bucket_policy')
+        self.assertEqual(self.module.command_error(
+            ['aws', 's3api', 'get-bucket-encryption'], captured), 'command_failed')
