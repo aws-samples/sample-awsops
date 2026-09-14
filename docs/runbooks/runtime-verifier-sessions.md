@@ -155,7 +155,7 @@ remains mandatory; policy generation or database smoke alone does not establish 
 Use the bounded busy/superseded handling and release-mode proof contract below;
 they do not authorize skipping missing or failed proof. Push-triggered verification
 uses the same owned collector's application-data effects already automated by
-the existing 15-minute schedule, with the narrower explicit payloads below.
+the existing 15-minute schedule, through the explicit per-type payloads below.
 
 The CLI publishes `policy_file` and `session_policy`. It masks the complete policy,
 Resource ARNs, bare S3 bucket and bucket/key forms, and configured account first.
@@ -167,12 +167,21 @@ symlink/public/non-regular input files, or an existing output policy file.
 
 Collect consumers must use `RequestResponse` on the pinned function's
 unqualified ARN, without a version or alias qualifier.
-Each event must contain exactly one explicit `type`: `catalog` for discovery or
-a member of the code-verified catalog for collection. **An absent `type` defaults
-to `all`**, which triggers asynchronous fan-out; empty payloads, `type=all`,
-unregistered types and `Event` invocation are forbidden. **IAM cannot constrain
-the Lambda event body**; the reviewed controller enforces these payloads and the
-at-most-four concurrent collector limit.
+The [owner acceptance condition dated 2026-09-14](https://github.com/aws-samples/sample-awsops/pull/67#issuecomment-5663692939)
+requires complete post-marker collection of all 43 current catalog types. The
+strict controller therefore sends exactly `{"type":"catalog"}`, followed by
+`{"type":"<catalog member>"}` for every validated returned type. This supersedes
+the earlier catalog/CloudFront-only consumer proposal; IAM scope is unchanged.
+**An absent `type` defaults to `all`**, which triggers asynchronous fan-out.
+Empty events, `type=all`, types outside the verified catalog and `Event` invocation
+are forbidden. **IAM cannot constrain the Lambda event body**; the reviewed
+controller must enforce the explicit payloads. The catalog is read from the
+hash-verified owned function, with hash/RevisionId rechecked after collection.
+
+There is at least one catalog request plus at least one request per type, not four calls in total.
+At most four owned invocations are **concurrent and in flight**. Catalog throttling
+can retry too; busy/superseded or throttled retries add calls within the same finite budget. The wired controller does not authorize changing schedule, reserved concurrency,
+feature flags or IAM without their separate reviewed procedures.
 
 The existing collector can upsert/prune application inventory and ledger rows in
 Aurora and replace that day's inventory snapshot rows. This is explicitly
@@ -190,17 +199,52 @@ raw AWS errors. Each synchronous response must have `StatusCode=200`, no
 | Payload | Required result |
 | --- | --- |
 | `catalog` | Exactly `status: "catalog"` and a bounded, nonempty, unique `types` list containing `cloudfront`; no result `type` or counts are expected |
-| Each returned catalog type | `status: "succeeded"`, matching `type`, nonnegative integer `row_count` and `unknown_attribute_count: 0` |
+| Each catalog member | `status: "succeeded"`, exact requested `type`, nonnegative safe-integer `row_count`, and `unknown_attribute_count: 0` |
 
-The release controller invokes every returned type synchronously with at most four collectors. It never invokes `type=all`, unknown types or asynchronous Event batches. IAM restricts the function ARN, not the event body; reviewed controller code must enforce these payloads.
+`busy`, `failed` (including superseded), `partial`, unknown-type errors and
+malformed results never prove collection. A bounded retry of explicit contention
+— invocation-level throttling or a busy/superseded result — may succeed only
+through a later valid owned response; scheduled work cannot substitute for
+any required successful owned RPC. The catalog has a 450-second budget; per-type
+calls and retries share the remaining global collection window, with a full
+450-second allowance required before each admission. There is no separate
+900-second per-type budget. Disable automatic SDK/CLI invoke retries; for collection use
+a read timeout longer than the verified function timeout (currently at most
+420 seconds), inside an explicit controller deadline.
 
-Busy/superseded and confirmed invocation throttling may retry within bounded windows. Denied, uncertain-delivery, partial, failed, unknown and malformed responses never prove collection. Disable automatic SDK/CLI invoke retries. Catalog discovery is capped at 450 seconds. All type attempts share the remaining global collection budget, with 450 seconds needed to admit the at-most-420-second function; no per-type fifteen-minute window is reserved. See the [collection contract](runtime-foundation.md#collection-contention--수집-경합).
+After catalog validation and before any type is invoked, authenticated prepare
+must verify login, DB and the host registry and obtain the DB-clock sample.
+Use that DB timestamp as the marker and calibrate subsequent time at request
+start, shifting the existing deadline by the same offset. Then require every
+catalog type's ledger `started_at` and durable `last_success_at` at or after
+the marker, succeeded status, known counts and zero unknown attributes.
+This job-level ledger is keyed under the host `self` sentinel, not
+the host's numeric AWS account ID. Require fresh known-host CloudFront evidence
+as well; caller/runtime identity separately verifies the expected AWS account.
+This demonstrates advancement past the
+pre-invoke marker; an old ledger success, or a scheduled success accompanying a
+`busy` owned response, is insufficient. Full readiness additionally requires the
+authenticated BFF/AgentCore and owned worker HTTP proofs. A successful invoke
+alone never establishes it.
 
-The release marker precedes every collection call. Every catalog type needs an authenticated ledger row under host `self` with `succeeded`, post-marker start and last-success timestamps, known counts and zero unknown attributes. A scheduled success cannot substitute for a failed owned RPC; a recent pre-marker success cannot pass. Caller/runtime identity separately binds the expected AWS account. A fresh known-host CloudFront record, nonce-bound AgentCore/model response and both owned worker completions remain mandatory.
+The catalog lists registered types, not acknowledged invocations. The controller
+must complete each owned RPC and the authenticated verifier must independently
+observe strict post-marker evidence for every returned type. The shared helper's
+nominal 1,200-second release-mode poll cap is clipped by the existing deadline;
+it does not extend the marker's 30-minute lifetime or the controller's 50-minute cap.
+The controller reserves 17 minutes for its final code/revision read and full proof.
+See [the controller budget and operational acceptance contract](runtime-foundation.md#strict-release-controller-capability).
 
-The full-policy quality result describes the complete supplied catalog, with categorized gaps and observation timestamps. RPC attempt outcomes are distinct from ledger proof. Failed, partial, stale, missing or unknown evidence blocks acceptance; no rolling-success or degraded mode is allowed. Release mode changes only the shared bounded collection wait, not these data criteria. The single proven-contention retry must revalidate every type before the next AgentCore probe. All work stays within the absolute proof deadline and remaining request/model/worker allowances.
-
-These checks establish the configured catalog's evidence contract, not universal AWS-resource coverage or trigger attribution. The policy generator itself invokes no workloads and changes no flags, scheduler or IAM grants.
+There is no rolling prior-success substitute or degraded-release acceptance.
+Operational collection can preserve partial/last-good data for diagnosis, but
+partial, failed, stale, missing or unknown evidence blocks release. A current
+running attempt waits within the shared window. The singleton ledger is not
+owned by this verifier's run token: a later scheduled failed/partial/unknown result
+can also block release, even after the owned RPC succeeded. The schedule remains
+enabled, and no scheduler attribution is inferred from verifier-produced freshness.
+Fresh known-host CloudFront, actual AgentCore/model proof and both owned workers
+remain mandatory. The policy generator neither invokes types nor repairs failures;
+the strict controller supplies collection orchestration for both workflows.
 
 Verifier-triggered collection changes freshness timestamps. Do not label those
 observations as EventBridge execution or schedule attribution. The separate

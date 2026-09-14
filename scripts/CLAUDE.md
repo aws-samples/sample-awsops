@@ -39,7 +39,7 @@ secrets-manager) — installed by `make deps`.
   for push and dispatch and requires the activated-runtime collect prerequisites; missing proof fails closed.
   Require a nonempty policy for each refresh; bind workload state to the selected private directory.
   Prepare cannot invoke Lambda; collect allows only the owned collector. The consumer must
-  enforce explicit catalog/per-type RequestResponse payloads (absent type defaults to all),
+  enforce explicit catalog and each validated catalog member's RequestResponse payloads (absent type defaults to all),
   distinct catalog/succeeded result shapes and post-marker authenticated freshness/runtime/worker proof.
   Operator collection writes application inventory, not AWS resources; this is not an ADR-005 exception.
   Tests: `v2/test_ci_verifier_sessions.py`; contract: `docs/runbooks/runtime-verifier-sessions.md`.
@@ -295,7 +295,7 @@ authenticated login/DB/host registration. Explicit runtime/readiness activation 
 separate, and inactive prerequisites cannot be skipped.
 The controller verifies dev source/account/role, applied runtime metadata and ARM64
 web digest, then drives every owned catalog type (currently 43) with at most four
-synchronous invocations. It requires succeeded results, known counts and zero unknowns.
+concurrent in-flight synchronous invocations. It requires succeeded results, known counts and zero unknowns.
 It samples the authenticated DB clock before collecting, anchors calibration at request
 start, shifts the existing deadline by the same offset, and retains strict post-marker
 ledger checks. Collector code hash and RevisionId must remain stable through collection.
@@ -305,3 +305,8 @@ explicit capability activation remain mandatory integration prerequisites.
 See [runtime-foundation.md](../docs/runbooks/runtime-foundation.md#strict-release-controller-capability)
 for budgets and [runtime-verifier-sessions.md](../docs/runbooks/runtime-verifier-sessions.md)
 for session boundaries. Offline tests: `node --test scripts/v2/ci/runtime-release.test.mjs`.
+The owner requires all current types, superseding the earlier CloudFront-only proposal.
+Four lanes are a concurrency ceiling, not a throughput guarantee; the active schedule
+and shared limiter can cause throttling or incomplete data. Budgets fail closed rather
+than promise every workload fits. Preserve the recorded feasibility sample and its
+limitations in the runbook; do not suppress the schedule or weaken proof to pass.

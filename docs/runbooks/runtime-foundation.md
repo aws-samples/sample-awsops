@@ -292,7 +292,7 @@ DB request elapsed time from zero through 35 seconds. The DB timestamp becomes
 The existing controller deadline shifts by that same offset, preserving time remaining.
 Every current catalog type (43 at this revision) must succeed after that marker with
 known counts and zero unknown attributes. Prior rolling success is insufficient.
-At most four synchronous owned invocations run; all admitted calls settle before
+At most four synchronous owned invocations are concurrent and in flight; all admitted calls settle before
 cleanup or failure. Code hash and a nonempty RevisionId are captured before collection
 and rechecked within 15 seconds afterward, before final authenticated runtime proof.
 Changed/incomplete code metadata or read failure blocks that proof.
@@ -315,6 +315,59 @@ Collection invokes may upsert/prune application inventory in Aurora, and full pr
 bill a bounded model call and submit internal worker jobs. These are operator verification
 effects, not an ADR-005 AWS-resource mutation exception. No direct CI model/SQS/DB grants
 are added. Fixed diagnostics and private cleanup remain required on success and failure.
+
+### Strict acceptance, load and measured feasibility
+
+The [owner's 2026-09-14 acceptance condition](https://github.com/aws-samples/sample-awsops/pull/67#issuecomment-5663692939)
+requires all current catalog types, superseding the earlier CloudFront-only verifier
+proposal. At this revision that means at least one catalog request plus at least one request
+for each of the 43 types; catalog and per-type retries add calls. Four is the concurrency ceiling, not the total call count or
+a claim of fourfold throughput. The [session contract](runtime-verifier-sessions.md#collection-effects-and-proof)
+authorizes exactly catalog or a verified catalog member, never empty/all/unregistered
+payloads or asynchronous `Event` invocation. No IAM scope is widened.
+
+Operational collection may preserve last-good rows or report degraded data after
+partial, failed or unknown work. Those are supported diagnosis states, but they are
+not eligible release evidence. The controller requires both successful owned RPCs
+and strict post-marker ledger observations for every type. The singleton ledger is
+not bound to this verifier's run token: a later scheduled partial/failed/unknown result
+can block acceptance, while a current running attempt waits within the bounded window.
+There is no rolling-success substitute or permission/tolerance override.
+
+The controller does not change scheduler state; the existing fifteen-minute schedule
+is retained enabled for this integration. With the default reserved
+concurrency of four, four controller calls can occupy all Lambda slots and compete
+with scheduled work. The shared Steampipe limiter also limits throughput; more lanes
+do not bypass it. Throttling, supersession, hydrate exhaustion and asynchronous event
+expiry can therefore affect collection or schedule delivery; the existing maximum
+asynchronous event age is 900 seconds. This operator-verification
+load is an explicit tradeoff of the required full-catalog proof, not permission to
+disable the schedule, change concurrency or relax acceptance. A run that cannot fit
+must fail for capacity/permission investigation. The separate deployment audit remains
+observation-only and makes no collection invokes.
+
+The budget is a fail-closed admission policy, not a worst-case completion guarantee.
+With the full 780-second collection allocation, a new type needs admission by
+330 seconds to retain its 450-second call allowance; clock-prepare time and an earlier
+outer deadline shorten that opportunity. A 420-second Lambda timeout is an upper
+bound, not an assumed duration for every type. Slow or contended workloads can
+intentionally leave later types unstarted and block release.
+
+A sanitized operator measurement on 2026-09-14 used a hash-verified deployed collector,
+all 43 catalog types, four synchronous lanes, reserved concurrency four, a 450-second
+admission floor and a 780-second global collection budget. All 43 per-type results succeeded
+with known counts and zero unknown attributes in **57.461 seconds**; the last admitted
+call was at **39.802 seconds**. A following SQL-reader check verified post-marker ledger
+evidence for all 43 types with no gaps. The EC2 result records three attempts, but the
+record does not establish their exact retry causes. The schedule was enabled before
+and after; that does not establish a concurrent scheduled invocation.
+
+The operator separately verified the running Steampipe task configuration as
+`max_concurrency = 4`, `bucket_size = 4`, `fill_rate = 2.0`. The measured collection
+phase is therefore a concrete feasibility counterexample to a claim that the catalog
+can never fit, not a throughput guarantee. It does not include the complete
+authentication/model/worker proof, establish future or larger-workload latency, or
+authorize another deployment.
 
 Offline controller, real authentication composition, and clock-helper checks:
 
