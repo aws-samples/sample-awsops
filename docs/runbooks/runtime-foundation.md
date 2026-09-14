@@ -23,7 +23,7 @@ node --test scripts/v2/ci/prepare-runtime-host.test.mjs
 ## Activation
 
 1. Configure the **secret** `AWS_ACCOUNT_ID_DEV`, backend and existing CI roles. Checks establish account/role consistency, not dev/production isolation.
-2. A new inactive stack needs foundation, migration and working login first. `CI_READONLY_RUNTIME_DEV=true` enables core runtime, without enabling the separate readiness capability; manual full plan/apply require real login/DB and an enabled host registry with no enabled foreign rows.
+2. This controller adopts an already-running web stack with working foundation, migrations and login. A brand-new stack must first follow the [reviewed first-web bootstrap procedure](first-web-bootstrap.md). `CI_READONLY_RUNTIME_DEV=true` enables core runtime, without enabling the separate readiness capability; manual full plan/apply require real login/DB and an enabled host registry with no enabled foreign rows.
 3. `runtime-ecr-bootstrap` creates only three repositories. Build ARM64 images and set verified `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV` before a full plan.
 4. Dev/preview private discovery requires full-plan `runtime_rollout=true` and DNS permission; dev also requires the profile. Keep `domain_rollout=false`. Profile/rollout require remediation, RCA write-back, integrations write and diagnosis notifications off; governed external writes are not reclassified as FROZEN.
 5. Inspect the same branch/SHA plan privately in S3 and supply its `reviewed_plan_sha256` to apply; CI verifies pinned assets and HMAC. Preserve public DNS, certificates and network topology; unchanged owned ECS registration still requires DNS permission. Missing/mismatched bundles require a new plan. `CI_ASSETS_READY=true` selects layer verification, not rebuilding.
@@ -33,7 +33,7 @@ node --test scripts/v2/ci/prepare-runtime-host.test.mjs
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev -f mode=plan -f plan_scope=full -f runtime_rollout=true -f allow_dns_changes=true
 ```
 Host-only removes only collector AssumeRole; Agent MCP grants remain. IAM includes known regions regardless of current opt-in; newly launched AWS regions require a fresh apply. IAM narrowing also applies to already-enabled main/preview stacks independently of the dev profile.
-S3 steady denials remain unknown: rows carry `attributes_unknown`, the ledger increments `unknown_attribute_count`, and freshness is `degraded`; full readiness rejects that incomplete evidence.
+S3 steady denials remain unknown: rows carry `attributes_unknown`, the ledger increments `unknown_attribute_count`, and freshness is `degraded`. This incomplete evidence blocks release readiness for the affected catalog type, as defined in the [collection contract](#collection-contention--수집-경합).
 The digest/host-preflight profile is dev-only. Preview retains operator-configured mutable tags or digests and multi-account scope, without dev host verification; account/role and private-DNS ownership checks still apply.
 
 ## Collector catalog prerequisite
@@ -41,7 +41,8 @@ The digest/host-preflight profile is dev-only. Preview retains operator-configur
 Deploy the collector's read-only `type=catalog` mode before enabling the full-release
 controller. It returns the registered type names without collecting resources or
 scheduling work. Catalog acknowledgement alone never proves collection completeness;
-the controller must still check fresh complete results for every returned type.
+the release controller requires fresh, complete post-marker evidence for every returned
+type as specified in the [collection contract](#collection-contention--수집-경합).
 
 ## Readiness capability
 
@@ -103,6 +104,93 @@ Retain runtime resources and restore reviewed prior digests/settings. Manual dev
 
 Sequence: merge reviewed code to dev → reviewed dev apply and full live readiness → main promotion → reviewed production apply. Do not promote this IAM narrowing until live dev exercises verify gateway-backed chat, worker diagnosis, and an SFN/Fargate run with managed tags. Record actual identities, outcomes and denied operations privately; a mock plan or IAM document alone cannot satisfy this promotion gate. This dev PR is the prerequisite for that evidence, not production deployment authorization.
 
+<a id="required-development-release-check--개발-배포-필수-검증"></a>
+
+## Required development release check
+
+Every dev Deploy Web release verifies web role/revision/digest, collector code, complete post-marker collection for every current catalog type, a fresh known CloudFront record, SSM/AgentCore/model access and owned Lambda/Fargate completion. `verify_database` cannot disable this gate.
+
+Before release, explicitly set `CI_READINESS_ENABLED_DEV=true` (or `ci_readiness_enabled=true` in operator inputs with the override unset), review/apply runtime and readiness, then provision AgentCore from applied output. `CI_READONLY_RUNTIME_DEV` alone does not enable readiness. The [capability contract](#readiness-capability) defines dev-only enablement, verifier group and managed-demo conditions, token lifetime and the absence of admin/IAM grants.
+
+For an **already-running web stack with inactive backends**, first apply the reviewed base plan so runtime_deployment exists; never disable an active profile to repeat bootstrap. Prepare verifies that existing web image/service/login and host registry. It does not create the first web deployment. Bootstrap/build the three runtime repositories and verified images, then review/apply the full private-DNS runtime plan. Provision AgentCore after its private migration, then deploy. A brand-new stack without a working web service follows [first-web bootstrap](first-web-bootstrap.md) before these commands; this controller supplies no first-web bootstrap or health-only bypass.
+
+```bash
+gh workflow run collect-runtime.yml -R aws-samples/sample-awsops --ref dev -f mode=prepare
+# After verified images, explicit readiness opt-in and the reviewed full runtime apply:
+gh workflow run deploy-agentcore.yml -R aws-samples/sample-awsops --ref dev -f smoke=false
+gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true
+# To verify an already-deployed reviewed image without rolling web, substitute its full 40-character SHA:
+gh workflow run collect-runtime.yml -R aws-samples/sample-awsops --ref dev -f mode=collect -f image_sha="<deployed-web-commit-sha>"
+```
+
+Prepare accepts disabled backends and reports `prepared`; keep its `image_sha` empty. Collect requires the exact deployed 40-character image SHA. Neither mode retires runtime, resets passwords or promotes users to admin.
+
+Terraform plan/private host preparation, Deploy Web and manual collection bind `TF_VAR_DEMO_PASSWORD` as step-scoped `TF_VAR_demo_password`. Protected tfvars retain Terraform precedence; only private credential-file paths cross steps.
+
+<a id="existing-stacks-and-rollback--기존-스택과-롤백"></a>
+
+### Existing stacks and rollback
+
+Before the first gated release, apply the reviewed runtime/readiness configuration, complete private migrations and provision the matching AgentCore image. This applies to existing stacks too. `Capture development runtime contract` validates feature flags **before** the image pin and ECS rollout; absent runtime features fail there. Actual access/data/worker proof still runs after rollout. Roll back to a reviewed prior image with these runtime prerequisites intact; there is no health-only escape or password reset.
+
+<a id="adopting-an-existing-verifier-group--기존-검증-그룹-채택"></a>
+
+### Adopting an existing verifier group
+
+Before the first readiness apply, check whether `deployment-verifiers` already exists in this stack's user pool and whether Terraform already manages it. Do not delete/recreate the group or change passwords to resolve an import conflict. If a separately created group exists, include a reviewed import block in the saved plan before the apply; likewise import an existing managed-demo membership only when that resource's conditions are true. Verify the plan imports the exact intended group/membership, grants no IAM role/admin membership, and does not replace the pool or user. Use the actual pool ID and configured username; examples below are placeholders. If the existing group has an IAM role or unexpected membership, stop for an owner-reviewed adoption decision instead of silently changing its privileges. Remove the temporary import blocks after successful adoption.
+
+```hcl
+import {
+  to = aws_cognito_user_group.deployment_verifiers[0]
+  id = "<pool-id>/deployment-verifiers"
+}
+# Only when the managed demo membership already exists and its count is enabled:
+import {
+  to = aws_cognito_user_in_group.demo_readiness[0]
+  id = "<pool-id>,deployment-verifiers,<configured-demo-username>"
+}
+```
+
+Group import uses a slash; membership uses comma-separated pool/group/username. These imports adopt state without authorizing additional privileges. The controller does not provision either resource. Later removal does not rewrite issued ID-token group claims; follow the [revocation guidance](#readiness-capability) for their remaining 12-hour lifetime.
+
+<a id="collection-contention--수집-경합"></a>
+
+### Mandatory full collection
+
+Before invocation, the controller compares live `CodeSha256` with `runtime_deployment.inventory.sync_code_sha256`, derived from configured `source_code_hash`. Apply reviewed configuration to persist this expected fingerprint; provider observations cannot authorize unreviewed code. The controller also captures the Lambda revision and rechecks the hash and revision after all owned collection calls settle, before authenticated acceptance. A concurrent code/configuration change rejects that evidence, including a change restored to the same hash with a different revision.
+
+Every current catalog type (43 in this version) must have succeeded after the release marker, with known counts and zero unknown attributes. Partial, failed, stale, missing or unknown evidence blocks the release. A recent success from before the marker cannot substitute. The controller obtains the complete catalog from the verified Lambda and synchronously invokes each type through at most four concurrent collectors. It never submits `type=all` or asynchronous Event batches; existing scheduled work can still contend with its calls.
+
+After catalog discovery, authenticated preparation verifies login, DB and host registration and samples Aurora's UTC clock. That `server_time` becomes the marker before all collection calls and remains fixed across retries. The controller calibrates later clock reads from the DB sample and local request-start timestamp, conservatively, and shifts the existing overall deadline by the same offset. It never anchors at response end or allows pre-marker data. DB-request and host-check elapsed time consume the marker window; malformed or missing clock evidence stops collection. Catalog admission allows up to 450 seconds. All type attempts and their retries share the remaining collection admission window; there is no separate fifteen-minute allowance per type. An invocation needs 450 seconds remaining for the verified function timeout of at most 420 seconds plus transport. Only confirmed throttling, busy and exact superseded outcomes retry, after ten seconds. Denied, uncertain-delivery, partial, failed, unknown and malformed outcomes cannot prove collection. All admitted workers settle before private files are cleaned.
+
+The controller has a fifty-minute overall deadline. The original proof deadline is the earlier of that deadline and marker plus thirty minutes, as defined in the [shared probe contract](#reusable-runtime-probe-contract). Authentication/model/worker proof receives a deadline fifty seconds earlier, reserving the closing web check inside the original deadline. Collection admission reserves eighteen minutes for the complete proof path, leaving at most twelve minutes after a fresh marker, reduced by clock-sampling and host-check elapsed time. Poll windows are caps rather than promises that every slow operation can finish. Missing capacity, time or permissions legitimately fail with type-specific diagnostics.
+
+The eighteen-minute reserve covers the single-pass allowances: five 35-second HTTP calls, one 80-second readiness probe, two 370-second worker paths, a 15-second collector revision read and a 50-second closing web check total 1,060 seconds, leaving twenty seconds. The closing check allows three sequential ECS reads of at most fifteen seconds each, plus five seconds overhead. One full contention retry adds at least 215 seconds: a 35-second confirmation read, 65-second cooldown, 35-second ledger recheck and another 80-second probe. The helper's remaining 180-second admission allowance is checked after the confirmation read; worker allowances are reused rather than counted twice. After maximum-window collection, that full retry needs at least 195 seconds saved by earlier work, and an extra 35-second read needs fifteen seconds saved. Insufficient time fails before cooldown; no second proof window is created.
+
+`collection_attempts` records per-type attempts, last outcomes, nullable counts and six status counts that partition the expected catalog. Its `collector_rpc` source is not ledger proof. A selected type refused by the 450-second floor has `deadline` status with zero attempts; a never-selected type has `not_started` status with zero attempts. The first terminal failure stops new type admission while admitted work settles. Failed batches keep inventory quality unverified and cannot reach runtime/worker acceptance. Successful batches must still pass strict authenticated ledger checks for every catalog type, the fresh known CloudFront record, the nonce-bound SSM/AgentCore/model response and both owned `noop` Lambda and `noop-heavy` Fargate jobs. Before reporting `full_verified`, the closing ECS reads must reconfirm the original deployment ID, task-definition ARN, task count and image digest set in a stable, healthy state. These are bounded start/end observations; they do not prove continuous identity or exclude unobserved intermediate changes. Enqueue acknowledgement is insufficient.
+
+A proven CloudFront running-sweep collision can permit one cooldown/revalidation retry only when its remaining-budget checks pass; it is not guaranteed after the maximum collection window. Every type must be complete again before the next AgentCore probe. No degraded fallback or weaker inventory policy is available. Full-policy quality/gaps describe the supplied catalog and available evidence; they are not an independent guarantee that every AWS resource or attribute exists in that catalog.
+
+Deploy Web passes the pin step's digest as `EXPECTED_WEB_DIGEST`. The verifier queries ECR by this approved digest and accepts only that root or its verified Linux/ARM64 child, so later movement of the source tag cannot redefine the approved image. Manual observational collect and prepare retain explicit tag selection when no expected digest is supplied.
+
+Verification steps have a 55-minute cap; manual setup has a 75-minute job cap and separate restricted 30-minute backend/one-hour workload sessions. Restored Terraform inputs and backend metadata are removed after capture, with final cleanup retained. Process or runner loss can prevent cleanup. Verification changes no scheduler, concurrency setting, feature flag or IAM grant.
+
+### Operational data and release acceptance
+
+The collector can finish while disclosing unknown attributes, or retain last-good rows after partial/failed work. Those are supported operational data states for diagnosis; they do not satisfy the owner's stricter release condition. Every current catalog type must have succeeded after the marker with known counts and zero unknown attributes. An IAM/SCP denial or hydrate fallback therefore blocks release until its cause is addressed. There is no tolerance override, automatic permission widening or scheduler-disable path.
+
+The existing fifteen-minute schedule remains active. The controller requires both its successful RPC results and strict ledger evidence at the verification observation. It does not attribute the singleton ledger to its own run token. A later scheduled partial/failed/unknown result can intentionally block acceptance, because current incomplete data is not eligible; a current running attempt waits within the shared window. The bounded retry policy never substitutes older success or suppresses the schedule to produce a green result.
+
+The time budget is a fail-closed admission policy, not a guarantee for every workload size. With a fresh marker, the twelve-minute collection window and 450-second full-invocation allowance mean a new type must start within the first 270 seconds; clock preparation and earlier outer bounds shorten that opportunity. The verified 420-second Lambda timeout sets that conservative allowance; the same function serves all types. Deployments whose volume, throttling or contention cannot fit must stop for capacity/permission investigation instead of shortening proof checks or accepting incomplete inventory.
+
+A 2026-09-14 operator measurement used the reviewed deployed collector, all 43 catalog types, four synchronous lanes and the same admission floor: all RPCs succeeded with known counts/zero unknown attributes in **57.461 seconds**, with the last admitted call at **39.802 seconds**. A following SQL-reader check verified post-marker ledger evidence for all 43 types. The schedule was enabled before and after the measurement; that alone does not establish an overlapping scheduled invocation or a latency guarantee. This demonstrates feasibility for that measured development workload, not web-role/model/worker readiness or approval of other deployments.
+
+<a id="deployer-verification-permissions--deployer-검증-권한"></a>
+
+### Deployer verification permissions
+
+The [session contract](runtime-verifier-sessions.md#action-and-integration-contract) defines S3/KMS backend and ECS/ECR/owned-Lambda workload permissions with resource/region conditions. Manual verification requires both nonempty policies; Deploy Web requires the workload restriction after rollout. Both require STS caller verification and reject unrestricted fallback. The controller grants no IAM; denied reads require investigation.
+
 ## Reusable runtime probe contract
 
 Every supplied type requires post-marker success, known counts and zero unknown attributes.
@@ -115,8 +203,7 @@ Quality may be absent before the first ledger read; `collection_unavailable` sup
 timestamps. Categories describe the latest ledger row, including prior attempts; only
 the verified set establishes post-marker success.
 
-Optional `collectionMode: "release"` allows a 20-minute collection poll window instead of
-10 minutes. Both the initial poll and a contention recheck share that original window.
+The reusable helper's optional `collectionMode: "release"` selects a nominal collection-wait cap of twenty minutes rather than ten. The controller does not reserve or promise that whole wait after its synchronous collection phase. Both the initial poll and a contention recheck share the original cap, further constrained by the remaining absolute deadline and proof-admission checks.
 Every runtime entry point has a finite deadline: verify expires 30 minutes after
 `collectionStartedAt`, while prepare gets at most 30 minutes from entry. A caller deadline
 can only shorten it. Authentication, HTTP, cooldowns and workers share the bound. Admitted
@@ -180,22 +267,21 @@ elapsed time must be between zero and 35,000 ms. Missing/malformed clocks fail o
 opted-in callers; default/opt-out return shapes are unchanged, with no raw response
 or credential fields added.
 
-Opt-in requires the updated API to be deployed first. No workflow opts in here.
-The controller below consumes this sample; workflow integration remains separate.
+Opt-in requires the updated API to be deployed first. Collect-mode release verification
+uses this sample before invoking any type; ordinary prepare retains its default result.
 Calibration anchors at **request start**, conservatively, rather than response
 observation. Neither helper introduces clock tolerance, relaxes the post-marker
 lower bound, or extends an existing expiry/deadline.
 
 ## Strict release controller capability
 
-`scripts/v2/ci/runtime-release.mjs` is available for future CI integration. Current
-Deploy Web still performs DB-only verification, and the manual `collect-runtime.yml`
-workflow is absent. Adding this controller enables no workflow, feature flag or IAM
-grant. Integrating the mandatory release gate is separate work; it must not silently
-skip disabled prerequisites or accept health-only/DB-only proof as a full release.
+`scripts/v2/ci/runtime-release.mjs` is wired into every dev Deploy Web release and the
+manual `collect-runtime.yml` workflow. Explicit runtime/readiness activation and existing
+IAM grants remain prerequisites. Disabled dependencies cannot be skipped, and health or
+DB-only proof cannot establish a full release.
 
 The accepted context is dev-only: same repository/ref, configured account and CI role,
-actual STS caller, and a valid source SHA. A future manual collect-runtime dispatch may
+actual STS caller, and a valid source SHA. Manual collect-runtime dispatches may
 prepare or collect; Deploy Web push/dispatch may collect only. Collect requires a full
 lowercase `PIN_SHA`, applied inventory/AgentCore/worker metadata, the exact owned
 collector identity/hash and known CloudFront ID. Web verification binds the running
@@ -355,8 +441,8 @@ authorize another deployment.
 
 ### Controller CLI contract
 
-These are integration interfaces, not installed workflow steps. Use the actual dev
-workflow/account/role context from the [session contract](runtime-verifier-sessions.md#action-and-integration-contract);
+Both dev workflows use these CLI interfaces. Use their actual dev workflow/account/role
+context from the [session contract](runtime-verifier-sessions.md#action-and-integration-contract);
 do not fabricate Actions metadata to run this as an unrestricted local command.
 
 | Command | Input and result |
@@ -375,8 +461,8 @@ do not fabricate Actions metadata to run this as an unrestricted local command.
 | `PUBLIC_URL`, `CLOUDFRONT_DOMAIN` | Required application/edge targets for `run`, retaining service Host/SNI/TLS verification. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | All three exported temporary credential values are required for AWS reads; ambient profiles and credential files are not substitutes. |
 
-Process or runner loss can prevent cleanup; future consumers still need always-run
-owned-file cleanup. Neither command adds IAM grants or activates a workflow.
+Both workflows retain always-run owned-file cleanup, which process or runner loss can
+still prevent. Neither controller command changes IAM grants or feature flags.
 
 The AWS CLI child receives an explicit environment allowlist, not the full CI
 environment. It uses a pinned CLI search path, explicitly exported credentials and
@@ -485,8 +571,8 @@ can instead produce the controller fallbacks above.
 Even a controller `full_verified` result retains
 `remaining_prerequisites: "not_assessed"`. It reports this controller's evidence,
 not workflow installation, plan/apply approval or completion of every promotion
-prerequisite. Future consumers must enforce those separate gates; `prepared` is
-never full runtime readiness. The consumers remain unwired in this prerequisite.
+prerequisite. The consuming workflows retain their separate gates; `prepared` is
+never full runtime readiness. Deploy Web and collect-runtime consume this controller.
 
 <a id="related--관련"></a>
 
@@ -494,5 +580,5 @@ never full runtime readiness. The consumers remain unwired in this prerequisite.
 
 [Manual deployment observations](deployment-audit.md) separate deployed resources, schedule execution and observed inventory after provisioning.
 [CI setup/assets](dev-repo-setup.md) · [SQL reader](agent-sql-reader.md) · [Multi-account](onboard-target-account.md) · [Inventory rollback](steampipe-quota-and-staleness.md).
-Sources: `scripts/v2/ci_readiness_plan_summary.py`, `scripts/v2/test_ci_readiness_plan_summary.py`, `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `scripts/v2/ci/runtime-release.mjs`, `scripts/v2/ci/runtime-release.test.mjs`, `scripts/v2/runtime-smoke.mjs`, `scripts/v2/authenticated-smoke.mjs`, `web/app/api/db/route.ts`, `terraform/foundation/runtime-read-scope.tf`, `.github/workflows/terraform.yml`.
+Sources: `scripts/v2/ci_readiness_plan_summary.py`, `scripts/v2/test_ci_readiness_plan_summary.py`, `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `scripts/v2/ci/runtime-release.mjs`, `scripts/v2/ci/runtime-release.test.mjs`, `scripts/v2/runtime-smoke.mjs`, `scripts/v2/authenticated-smoke.mjs`, `web/app/api/db/route.ts`, `terraform/foundation/runtime-read-scope.tf`, `terraform/foundation/controller-readiness.tf`, `.github/workflows/terraform.yml`, `.github/workflows/collect-runtime.yml`, `.github/workflows/deploy-web.yml`.
 ADRs: 001, 002, 005, 007, 009, 011, 016, 021. Infrastructure apply is not live readiness proof.

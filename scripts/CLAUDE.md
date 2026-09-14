@@ -63,9 +63,8 @@ secrets-manager) — installed by `make deps`.
   backend state-read and workload policies, never persistent IAM changes or AWS calls.
   Manual `collect-runtime.yml` dev dispatches support both phases and prepare/collect.
   `deploy-web.yml` dev push/dispatch supports workload collect only; backend/prepare are refused.
-  Consumers own workflow wiring; helper availability does not install either consumer path.
-  Deploy Web integration must be dev-only, prepare proof credentials/state for push and dispatch,
-  and satisfy the activated-runtime collect prerequisites; missing proof fails closed.
+  Both workflows consume the helper policies. Dev Deploy Web prepares proof credentials/state
+  for push and dispatch and requires the activated-runtime collect prerequisites; missing proof fails closed.
   Require a nonempty policy for each refresh; bind workload state to the selected private directory.
   Prepare cannot invoke Lambda; collect allows only the owned collector. The consumer must
   enforce explicit catalog and each validated catalog member's RequestResponse payloads (absent type defaults to all),
@@ -77,6 +76,10 @@ secrets-manager) — installed by `make deps`.
   explicitly overrides `ci_readiness_enabled` on dev; empty/unset preserves operator tfvars
   and default false. Enabled readiness is rejected outside dev. Applied readiness plus
   AgentCore creates only the verifier group; demo membership needs create_demo_user. No admin/IAM grant.
+  Explicitly apply readiness and provision before the mandatory dev release gate. The controller
+  verifies authenticated readiness access, not live group/membership state; use reviewed imports.
+  Group removal does not rewrite issued ID-token claims (up to 12 hours); session revocation
+  and runtime disablement are independent. Never reset passwords or promote a verifier to admin.
 - Dev/preview private discovery requires explicit full-plan rollout and preserves public DNS/certificates. `runtime-ecr-bootstrap` permits exactly three repositories. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy.
 - `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-registry proof before manual full dev activation plans; apply rechecks the approved profile. Automatic PR/push plans never receive the host-probe credential. Database-only proof is rejected; credentials stay private and failures use a fixed code. Flags/policy checks do not prove live access.
 - `v2/agentcore/provision.py` maps the applied `agentcore.deployment_readiness_enabled` boolean
@@ -106,15 +109,17 @@ secrets-manager) — installed by `make deps`.
   ECS force-new-deployment → wait stable → smoke `/api/health`. `deployment-smoke.mjs`
   preserves service Host/SNI/TLS via CloudFront `--connect-to` before service DNS publication.
   The `DOCKER` env defaults to `sudo docker`.
-- `v2/prepare-smoke-credentials.mjs` — Deploy Web's dev-only opt-in preparation: privately
-  evaluate effective Terraform demo credentials, require unwrapped Terraform, strip TF logging/
-  argument overrides, and publish only a 0600 credential-file path inside a 0700 directory.
+- `v2/prepare-smoke-credentials.mjs` — credential preparation for every dev Deploy Web release,
+  manual `collect-runtime.yml`, and Terraform's private host verification before plan/apply. These
+  steps bind the shared `TF_VAR_DEMO_PASSWORD` secret as `TF_VAR_demo_password`; the helper privately
+  evaluates effective Terraform demo credentials, requires unwrapped Terraform, strips TF logging/
+  argument overrides, and publishes only a 0600 credential-file path inside a 0700 directory.
   Private init is bounded to 10 minutes; output/console each to 2 minutes.
 - `v2/authenticated-smoke.mjs` — login plus edge-authenticated `/api/db` verification. Preserve
   Host/SNI/TLS; report only the phase and validated HTTP status, never bodies/cookies/passwords.
   CLI HTTP scratch belongs to the prepared credential directory and normal finalizers;
   process/runner loss can prevent cleanup. Standalone calls prefer RUNNER_TEMP. Response files default to 64 KiB; only the bounded CloudFront inventory leg permits 2 MiB.
-- `v2/ci/runtime-release.mjs` — unwired strict controller; `capture` writes private state
+- `v2/ci/runtime-release.mjs` — strict controller used by both dev workflows; `capture` writes private state
   and its `GITHUB_OUTPUT` path, `run` consumes it. See the controller contract below.
 - `v2/ci_dns_policy.py` — reads Terraform state to preserve managed certificate ownership
   (JSON null) and existing service aliases; verifies operator-selected/attached certificates
@@ -290,19 +295,28 @@ secrets-manager) — installed by `make deps`.
 - For the emergency IAM `put-role-policy` convention, see `terraform/CLAUDE.md`.
 
 `v2/runtime-smoke.mjs` accepts explicit private prepare/verify configuration. Prepare
-checks the host registry; optional hostOnly rejects members. Verify requires complete
-fresh collection, real web-role runtime evidence and owned worker completion. The file
-is at most 16 KiB, collectionStartedAt at most 30 minutes old, and queued types unique
+checks the host registry; optional hostOnly rejects members. Verify requires complete post-marker
+collection for every supplied type, real web-role runtime evidence and owned worker completion.
+Release mode changes the bounded polling window, not the strict data criteria.
+The file is at most 16 KiB, collectionStartedAt at most 30 minutes old at validation, and types unique
 with cloudfront included. The utility alone does not wire a deployment workflow.
 `readRuntimeSmokeConfig(file, credentialFile, now = Date.now())` takes a finite
 numeric validation time. Pass calibrated `now()` from the controller; default callers
 retain their existing behavior without changing the marker or extending expiry.
 
-Verify accepts optional `inventoryPolicy: "full"` and `collectionMode: "release"`;
+## Development release controller
+
+Every dev release requires `v2/ci/runtime-release.mjs` identity/image/code, complete post-marker collection for every catalog type, fresh known CloudFront, SSM/model and both worker proofs. At most four synchronous collectors run; partial/failed/stale/missing/unknown evidence blocks release. The marker comes from authenticated Aurora time; request-start calibration preserves exact post-marker comparisons and existing deadlines. Missing clock evidence stops type invocation.
+The [runtime contract](../docs/runbooks/runtime-foundation.md) owns strict data policy, proof budgets, digest binding, retry and adoption rules.
+Manual prepare is neither first-web bootstrap nor readiness; never reset passwords or promote a verifier to admin.
+Manual verification requires separate [backend/workload policies](../docs/runbooks/runtime-verifier-sessions.md) and private-file cleanup.
+
+The reusable helper's verify mode accepts optional `inventoryPolicy: "full"` and `collectionMode: "release"`;
 other values fail, and omission retains strict checks for every supplied type. Full mode
 returns programmatic quality/gaps; CLI output stays fixed and catalog discovery belongs
-to the caller. Release mode extends collection polling from 10 to 20 minutes, with one
-shared window across rechecks. All runtime callers have a finite deadline: marker+30min
+to the caller. The helper selects a nominal 10-minute wait cap, or 20 in release mode, shared across rechecks.
+Remaining absolute time and proof admission can shorten it; the controller does not promise
+a twenty-minute wait after collecting the catalog. All runtime callers have a finite deadline: marker+30min
 for verify, entry+30min for prepare; an explicit deadline only shortens it. One proven
 CloudFront running collision permits a 65-second-cooldown retry after complete revalidation.
 A repeated collision is runtime_inventory_contention, initial waiting is collection_timeout,
@@ -318,10 +332,10 @@ The outer authenticated login/DB wrapper also refuses shortened request timeouts
 
 ## Strict release controller capability
 
-`v2/ci/runtime-release.mjs` is an unwired CI prerequisite. Current Deploy Web still
-performs DB-only verification; `collect-runtime.yml` is absent. This change enables
-no workflow or flag. Future integration must use collect mode for mandatory full
-readiness; prepare is only authenticated login/DB/host registration, never release proof.
+`v2/ci/runtime-release.mjs` drives mandatory dev Deploy Web verification and manual
+collect-runtime operations. Collect mode requires full readiness; prepare only verifies
+authenticated login/DB/host registration. Explicit runtime/readiness activation remains
+separate, and inactive prerequisites cannot be skipped.
 The controller verifies dev source/account/role, applied runtime metadata and ARM64
 web digest, requires every pinned baseline member (currently 43, source-AST checked)
 and permits valid growth up to 128 types, then drives every returned

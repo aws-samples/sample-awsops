@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 262d34140827 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 05f1345f2c93 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -43,7 +43,7 @@ legacy runbook's steps as the current operational path).
   overrides, retain explicit exported auth, and keep signed curl URLs in private stdin.
   Multi-tag digest reads require consistent identities and identical manifest bytes/media.
   Child PATH uses only `/usr/local/bin:/usr/bin:/bin`; HOME is omitted, never reassigned.
-- Verification policies accept manual collect-runtime dev dispatches for backend/workload and prepare/collect, plus deploy-web dev push/dispatch for workload collect only (backend/prepare refused). The helper installs neither consumer path. Dev integration needs activated runtime prerequisites and private proof credentials/state for both events; missing proof fails closed. Consumers enforce nonempty restrictions and owned-file cleanup. Collect permits only the owned collector; its application-data effects are operator CI, not an ADR-005 exception. IAM cannot restrict payloads: the controller enforces catalog or each verified catalog member's RequestResponse event and rejects empty/all/unregistered/Event calls. Every current type needs post-marker succeeded evidence, known counts and zero unknowns; no rolling prior success. Four is the concurrent in-flight ceiling, not total volume: at least one catalog request and at least one per type, plus retries, require calls. The separate deployment audit remains no-invoke. Contract: `runtime-verifier-sessions.md`.
+- Verification policies accept manual collect-runtime dev dispatches for backend/workload and prepare/collect, plus deploy-web dev push/dispatch for workload collect only (backend/prepare refused). Both workflows consume these policies. Dev verification needs activated runtime prerequisites and private proof credentials/state for both events; missing proof fails closed. Consumers enforce nonempty restrictions and owned-file cleanup. Collect permits only the owned collector; its application-data effects are operator CI, not an ADR-005 exception. IAM cannot restrict payloads: the controller enforces catalog or each verified catalog member's RequestResponse event and rejects empty/all/unregistered/Event calls. Every current type needs post-marker succeeded evidence, known counts and zero unknowns; no rolling prior success. Four is the concurrent in-flight ceiling, not total volume: at least one catalog request and at least one per type, plus retries, require calls. The separate deployment audit remains no-invoke. Contract: `runtime-verifier-sessions.md`.
 - `ci_readiness_plan_summary.py` runs before encryption only for explicit full dev readiness
   plans, with a two-minute timeout and fenced JSON output. Its failure-tolerant report publishes
   fixed scope/presence checks, fixed addresses and a known collector hash, never private values.
@@ -57,7 +57,7 @@ legacy runbook's steps as the current operational path).
 - Sealing uses OpenSSL stdin without plaintext staging. Captured Terraform uses Linux parent-death protection and escalates a second interrupt after graceful first-interrupt forwarding.
 - Key/storage/seal/publication/cleanup outcomes are distinct. Delete owned ciphertext only after the identified upload succeeds; failed/cancelled/skipped/unknown uploads retain it privately. Audits report pending_upload and final upload/cleanup outcomes; no broad temp sweep, host-loss guarantee or shared-UID isolation.
 - `deployment-audit.md` separates manual dev observations under backend-bound and workload-read sessions. Preserve identity/resource guards and private cleanup. Web and AgentCore observations do not prove applied versions or invocation readiness; observed SQL-reader types never establish complete inventory.
-- `runtime-foundation.md` covers activation and the unwired strict host-only controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
+- `runtime-foundation.md` covers activation and the strict host-only release controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
 - The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
 - Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
 - `scripts/v2/ci_tf_assets.py` shares Terraform's locked layer installer. Prepare invalidates
@@ -138,7 +138,9 @@ legacy runbook's steps as the current operational path).
   active-rollout public zone name/ID/NS; readiness reports add fixed posture/presence checks
   and a known collector hash; diagnostics permit bounded metric values. Never expose full ARNs, account IDs or raw
   configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
-  CLI; health proves liveness only. Verify DB/auth separately before service A publication.
+  CLI; standalone health proves liveness only. Every dev Deploy Web release requires the
+  authenticated runtime gate before service A publication. Existing-web prepare neither creates
+  first web nor bypasses readiness; follow runtime adoption before the first gated release.
 - From the repo root, `bash scripts/v2/terraform-test.sh` runs Terraform 1.15.7 in an isolated
   tracked-file copy with fresh `TF_DATA_DIR`, `init -backend=false` and mocked providers.
   Never initialize a real backend for tests. Dependencies: `scripts/v2/requirements-test.txt`;
@@ -160,7 +162,7 @@ legacy runbook's steps as the current operational path).
   (ADR-016), not stale content to delete outright.
 
 ## Authenticated development verification
-- Apply both `agentcore_enabled` and `ci_readiness_enabled`, then provision AgentCore.
+- Every dev release requires the full gate: apply `agentcore_enabled` and `ci_readiness_enabled`, then provision AgentCore.
   Verify also requires active inventory/dispatch, `workers_enabled=true` and deployed ARM64 worker images.
   Only that output boolean enables `DEPLOYMENT_READINESS_ENABLED`; no shell override.
   A reviewed apply with readiness and AgentCore enabled creates only deployment-verifiers;
@@ -170,16 +172,15 @@ legacy runbook's steps as the current operational path).
   Disabled AgentCore blanks only the web task's `SSM_RUNTIME_ARN_PARAM`; invocation/status
   lookup honor it. The separate alias and incident bridge paths remain literal. Status lookup
   does not validate the full ARN and can still perform other control-plane reads.
-  Public CI permits readiness only on dev. Dedicated CI_READINESS_ENABLED_DEV=true/false overrides the flag; empty/unset preserves explicit tfvars/default false. The runtime profile alone does not enable it. False/missing reports `runtime_disabled`. Capped samples cannot
-  prove absence; missing ledger, partial/failed runs and unknown attributes remain failed readiness.
+  Public CI permits readiness only on dev. Dedicated CI_READINESS_ENABLED_DEV=true/false overrides the flag; empty/unset preserves explicit tfvars/default false. The runtime profile alone does not enable it. False/missing reports `runtime_disabled`. Follow `runtime-foundation.md` for strict full-catalog evidence; no capped sample proves absence.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
   credentials. Prepare checks host registration (optional hostOnly); verify additionally
-  requires applied CloudFront identity, complete queued types and pre-dispatch timestamp,
-  fresh collection, web-role SSM/AgentCore proof and Lambda/Fargate completion. Current Deploy
-  Web remains DB-only until the release controller supplies this file. The billed readiness
+  requires complete post-marker success for every current catalog type, known counts and zero
+  unknown attributes, fresh known CloudFront proof, web-role SSM/AgentCore and both workers.
+  Every dev Deploy Web release requires this strict proof. The billed readiness
   route requires admin or deployment-verifiers, one in-flight call and a 60-second cooldown.
 
-- Dev-only `verify_database=true` prepares effective demo credentials privately before rollout,
+- Every dev release prepares effective demo credentials privately before rollout,
   then verifies login and edge-authenticated `/api/db`; positive table count is not a ledger audit.
 - Unwrapped Terraform and private 0600/0700 files are required. CLI scratch shares the
   credential directory; normal finalizers own cleanup, which process/runner loss can prevent.
@@ -187,7 +188,8 @@ legacy runbook's steps as the current operational path).
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
 - Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
 
-Runtime probes accept verify-only full policy and release mode (shared 20min poll vs 10min).
+Runtime probes accept verify-only full policy and release mode (nominal shared 20min cap vs 10min,
+clipped by absolute/proof budgets; no guaranteed twenty-minute controller wait).
 Calls with runtime configuration expire at marker+30min/prepare-entry+30min, or an earlier bound.
 Quality/gaps are programmatic; the CLI stays fixed. Distinguish collection_stale,
 release_timeout and runtime_inventory_contention. Require full HTTP timeouts and remaining
@@ -196,7 +198,7 @@ Collection windows are caps, so late completion may fail admission. Keep the pro
 before Related/ADR references. Run `node --test scripts/v2/deployment-smoke.test.mjs`
 from the repository root; it imports the runtime-smoke suite.
 
-The strict controller remains unwired here. Preserve the active scheduler and the
+Both dev workflows call the strict controller. Preserve the active scheduler and the
 distinction between operational degraded data and ineligible release evidence.
 Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
 admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
