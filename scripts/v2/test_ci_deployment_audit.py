@@ -373,6 +373,19 @@ def test_missing_task_health_is_unknown():
     assert audit.collect(outputs(), ENV, read, NOW)["deployment"]["web"]["status"] == "UNKNOWN"
 
 
+def test_desired_running_task_is_not_reported_as_actually_running_while_pending():
+    aws = FakeAWS()
+    def read(service, operation, **params):
+        response = aws(service, operation, **params)
+        if operation == "describe_tasks":
+            response["tasks"][0]["lastStatus"] = "PENDING"
+        return response
+    item = audit.collect(outputs(), ENV, read, NOW)["deployment"]["web"]
+    assert item["status"] != "READY"
+    assert item["running_revisions"] == []
+    assert item["healthy_tasks"] == 0
+
+
 def test_disabled_inventory_and_agentcore_do_not_discover_resources():
     data, aws = outputs(), FakeAWS()
     data["runtime_deployment"]["features"].update(inventory=False, agentcore=False)

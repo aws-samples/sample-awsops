@@ -165,13 +165,15 @@ def ecs_snapshot(read, runtime, component):
     for task in tasks:
         require(task["taskArn"] in task_arns and task["clusterArn"] == cluster
                 and task["group"] == f"service:{service}")
-    revisions = sorted({revision(t["taskDefinitionArn"], project, account, component) for t in tasks})
-    healthy = sum(t.get("healthStatus") == "HEALTHY" for t in tasks)
-    unknown_health = sum(t.get("healthStatus") not in ("HEALTHY", "UNHEALTHY") for t in tasks)
+    task_revisions = {t["taskArn"]: revision(t["taskDefinitionArn"], project, account, component) for t in tasks}
+    running_tasks = [t for t in tasks if t.get("lastStatus") == "RUNNING"]
+    revisions = sorted({task_revisions[t["taskArn"]] for t in running_tasks})
+    healthy = sum(t.get("healthStatus") == "HEALTHY" for t in running_tasks)
+    unknown_health = sum(t.get("healthStatus") not in ("HEALTHY", "UNHEALTHY") for t in running_tasks)
     desired, running, pending = (number(item[k]) for k in ("desiredCount", "runningCount", "pendingCount"))
     require(None not in (desired, running, pending))
     incomplete = bool(listed.get("nextToken") or response.get("failures")
-                      or len({t["taskArn"] for t in tasks}) != len(task_arns) or len(tasks) != running)
+                      or len({t["taskArn"] for t in tasks}) != len(task_arns) or len(running_tasks) != running)
     ready = (item.get("status") == "ACTIVE" and desired > 0 and running == desired and pending == 0
              and healthy == desired and revisions == [target_revision]
              and state_matches is not False
