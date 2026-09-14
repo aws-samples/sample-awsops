@@ -30,12 +30,16 @@ def ready(condition, message):
 def wait_for(check, timeout, now, sleep):
     require(type(timeout) in (int, float) and 0 < timeout <= 600, "Invalid verification timeout")
     deadline = now() + timeout
+    last_error = None
     with read_window(deadline, now=now):
         while True:
-            require(now() < deadline, "Deployment verification timeout")
+            if now() >= deadline:
+                raise ImageError((str(last_error) + "; " if last_error else "")
+                                 + "deployment verification timeout")
             try:
                 return check()
             except (NotReady, TransientReadError) as error:
+                last_error = error
                 remaining = deadline - now()
                 if remaining <= 0:
                     raise ImageError(str(error) + "; deployment verification timeout") from None
@@ -281,6 +285,7 @@ def start(c, digest, child, aws=aws_request, before=None,
         require(value["taskDefinition"].endswith(":" + before["task_revision"])
                 and value["desiredCount"] == int(before["desired_count"]), "Deployment configuration changed")
         ready(primary["id"] != before["old_deployment_id"], "New deployment not confirmed")
+        ready(primary.get("rolloutState") is not None, "Deployment state is not yet available")
         require(primary.get("rolloutState") in {"IN_PROGRESS", "COMPLETED"}, "Deployment failed")
         return {**before, "deployment_id": primary["id"], "digest": digest, "runtime_digest": child}
     return wait_for(confirmed, timeout, now, sleep)

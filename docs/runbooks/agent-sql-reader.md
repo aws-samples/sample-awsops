@@ -220,6 +220,7 @@ to recover suppressed text.
 | `Aurora connection error` / `Aurora connection cleanup failed` | Run failed, including idle secret-fetch or cleanup errors; inspect connectivity before retrying / 시크릿 조회 대기·정리 중 오류도 실패이며 연결 상태 확인 후 재시도 |
 | `ENOENT` / `EACCES` | Check runtime SQL/CA assets and file permissions for the named operation / 표시된 작업의 SQL·CA 파일 및 읽기 권한 확인 |
 | `Concurrent migration is already running; retry after it finishes …` | Another session owns advisory key `4729411`, including during reader sync. Admission fails immediately. For a persistent holder, use the read-only inspection below; do not bypass its lock. |
+| `Migration advisory lock returned an invalid result` | No ownership was established. Stop and inspect the connection/driver response; do not execute SQL or bypass the lock. |
 | `SQLSTATE=55P03` + `database lock unavailable` | General PostgreSQL lock conflict, not proof of another migration. Inspect blocking transactions before retrying. |
 | `SQLSTATE=57014` + `query canceled` | Inspect statement timeout or operator cancellation; this does not identify a lock holder. |
 | `SQLSTATE=25001` + `active SQL transaction` | Review the standalone migration's transaction mode. Automatic mode rejects concurrent indexes and every no-transaction file. |
