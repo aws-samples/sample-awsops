@@ -68,11 +68,16 @@ IAM attachment is added here.
 | Both | STS caller identity | Configured account/role is checked; region is fixed |
 | Backend capture | S3 object read and bucket location | One configured default-workspace state object and its bucket, bound to the owner account |
 | Backend listing | S3 bucket listing | Exact state-key/listing prefixes; Terraform 1.15.7 lists the configured workspace prefix even for default workspace |
-| Backend decryption | KMS decrypt | Configured key if present; otherwise account/region constrained, only via S3 and the bound bucket/object encryption context |
+| Backend decryption | KMS decrypt | Supplied key only when `encrypt=true` and `kms_key_id` is present; otherwise the existing account/region-constrained wildcard, only via S3 and the bound bucket/object encryption context |
 | Workload, both modes | ECR manifest read | Only the project's web repository |
 | Workload, both modes | ECS service/task reads and task listing | Only the web service and project-cluster task resources; DescribeTasks and ListTasks both require the cluster condition |
 | Workload, both modes | ECS task-definition read | AWS does not support resource-level scope for this action; region restricted, with consumer-side family validation |
 | Workload, collect only | Lambda configuration read and invocation | Exactly the owned inventory-sync function |
+
+The backend `encrypt` option is a strict boolean and defaults to false when absent,
+matching Terraform and the private-plan/audit parsers. A declared `kms_key_id` is
+inactive with false/omitted `encrypt`; it is not proof of the actual state key or
+bucket encryption posture. State-read and KMS service/context restrictions remain.
 
 `prepare` receives no Lambda invocation permission. Neither workload session has
 S3/KMS backend access, direct SSM/Secrets Manager/Bedrock/SQS/Step Functions/DB/log
