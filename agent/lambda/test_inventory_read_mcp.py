@@ -644,7 +644,10 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
         def fake(sql, params=None):
             calls.append(sql)
             if "topology_nodes" in sql:
-                return [{"id": "cf:E1", "kind": "cloudfront", "label": "my-cf", "meta": {"id": "E1"}}]
+                return [
+                    {"id": "cf:E1", "kind": "cloudfront", "label": "my-cf", "meta": {"id": "E1"}},
+                    {"id": "alb:arn-1", "kind": "alb", "label": "backend", "meta": {}},
+                ]
             if "topology_edges" in sql:
                 return [{"source": "cf:E1", "target": "alb:arn-1", "rel": "ORIGIN", "confidence": "observed"}]
             return []
@@ -658,42 +661,55 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
         self.assertIn("edges", body)
         self.assertNotIn("chains", body)
         self.assertEqual(body["class"], "flow")
-        self.assertEqual(body["node_count"], 1)
+        self.assertEqual(body["node_count"], 2)
         self.assertEqual(body["edge_count"], 1)
         self.assertTrue(any("topology_nodes" in c for c in calls), "must query topology_nodes")
         self.assertTrue(any("topology_edges" in c for c in calls), "must query topology_edges")
         # must NOT query inventory_resources for get_topology
         self.assertFalse(any("inventory_resources" in c for c in calls), "must not fall back to raw inventory")
 
-    def test_get_topology_with_resource_id_scopes_to_neighbourhood(self):
-        """resource_id must filter to the requested node + its 1-hop neighbours only."""
-        def fake(sql, params=None):
-            if "topology_nodes" in sql:
-                return [
-                    {"id": "cf:E1", "kind": "cloudfront", "label": "my-cf", "meta": {}},
-                    {"id": "alb:arn-1", "kind": "alb", "label": "my-alb", "meta": {}},
-                    {"id": "tg:arn-2", "kind": "tg", "label": "my-tg", "meta": {}},
-                    {"id": "tg:arn-99", "kind": "tg", "label": "unrelated", "meta": {}},
-                ]
-            if "topology_edges" in sql:
-                return [
-                    {"source": "cf:E1", "target": "alb:arn-1", "rel": "ORIGIN", "confidence": "observed"},
-                    {"source": "alb:arn-1", "target": "tg:arn-2", "rel": "TARGETS", "confidence": "observed"},
-                ]
-            return []
-        inv._execute_override = fake
-        import json as _j
-        out = inv.lambda_handler({"tool_name": "get_topology", "arguments": {"resource_id": "alb:arn-1"}}, None)
-        body = _j.loads(out["body"])
-        ids = {n["id"] for n in body["nodes"]}
-        self.assertIn("alb:arn-1", ids)
-        self.assertIn("cf:E1", ids)     # 1-hop upstream
-        self.assertIn("tg:arn-2", ids)  # 1-hop downstream
-        self.assertNotIn("tg:arn-99", ids)  # unconnected → excluded
-        self.assertEqual(body["from"], "alb:arn-1")
+    def test_topology_binds_identifiers_limits_and_selected_endpoints(self):
+        """The Data API receives scalar binds even for quotes and ARN separators.
+
+        Actual neighbourhood selection is exercised by TestTopologySelectionSQL.
+        """
+        root = "alb:arn:example:quoted'value"
+        with mock.patch.object(inv, "_inventory_graph_collection", return_value={
+            "status": "unknown", "stale": True, "captured_at": None,
+        }), mock.patch.object(inv, "_execute", side_effect=[
+            [{"id": root}],
+            [{"id": root, "kind": "alb", "label": "selected", "meta": {}}],
+            [],
+        ]) as execute:
+            body = json.loads(inv.lambda_handler({
+                "tool_name": "get_topology", "arguments": {"resource_id": root},
+            }, None)["body"])
+        self.assertEqual(body["selection"]["resolved_id"], root)
+        self.assertEqual(body["from"], root)
+        values = []
+        for call in execute.call_args_list:
+            sql, params = call.args[0], call.kwargs["params"]
+            self.assertNotIn(root, sql)
+            self.assertIn("LIMIT :", sql)
+            self.assertNotIn("public.", sql)
+            self.assertTrue(all("arrayValue" not in p["value"] for p in params))
+            values.extend(p["value"] for p in params)
+        self.assertIn({"stringValue": root}, values)
+        self.assertIn({"stringValue": json.dumps([root])}, values)
+        self.assertIn({"longValue": 501}, values)
+        self.assertIn({"longValue": 1001}, values)
+
+    def test_invalid_topology_identifier_is_rejected_before_sql(self):
+        for identifier in (None, "", "   ", 123, [], {}, "a" * 4097):
+            with self.subTest(identifier=identifier), mock.patch.object(inv, "_execute") as execute:
+                response = inv.lambda_handler({
+                    "tool_name": "get_topology", "arguments": {"resource_id": identifier},
+                }, None)
+                self.assertEqual(response["statusCode"], 400)
+                execute.assert_not_called()
 
     def test_get_topology_empty_graph_returns_warning(self):
-        """Empty topology_nodes → warning with actionable hint (graph not materialized)."""
+        """Absent state and nodes do not establish a successful empty collection."""
         inv._execute_override = lambda sql, params=None: []
         import json as _j
         out = inv.lambda_handler({"tool_name": "get_topology"}, None)
@@ -702,7 +718,8 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
         self.assertEqual(body["nodes"], [])
         self.assertEqual(body["edges"], [])
         self.assertIn("warning", body)
-        self.assertIn("graph-rebuild", body["warning"])
+        self.assertEqual(body["collection"]["status"], "unknown")
+        self.assertIn("stale", body["warning"])
 
     def test_get_topology_class_infra_forwarded(self):
         """class='infra' must be passed as the :cls parameter to both topology queries."""
@@ -776,6 +793,371 @@ def _graph_cadence_expressions():
     return {"reader": binding[1].strip(), "web": web[1].strip()}
 
 
+@unittest.skipUnless(os.environ.get("INVENTORY_TEST_POSTGRES_CONTAINER") or os.environ.get("GRAPH_TEST_POSTGRES_SOCKET"),
+                     "Set INVENTORY_TEST_POSTGRES_CONTAINER to an isolated PostgreSQL 17 container")
+class TestTopologySelectionSQL(unittest.TestCase):
+    """Execute the reader's actual SQL under view-only grants, not a fake SQL interpreter.
+
+    The named container must be disposable: this fixture recreates its awsops graph tables.
+    A cached psql client shares the isolated server's network namespace; no AWS access,
+    host port, image pull, or extra Python dependency is needed.
+    """
+
+    @classmethod
+    def _psql(cls, sql, reader=False):
+        if os.environ.get("GRAPH_TEST_POSTGRES_SOCKET"):
+            import pg8000.native
+            connection = pg8000.native.Connection(
+                user="awsops_sql_reader" if reader else "postgres", database="awsops",
+                unix_sock=os.path.join(os.environ["GRAPH_TEST_POSTGRES_SOCKET"], ".s.PGSQL.5432"),
+                timeout=20,
+            )
+            try:
+                rows = connection.run(sql)
+                return "\n".join(json.dumps(row[0]) if isinstance(row[0], (dict, list))
+                                 else str(row[0]) for row in (rows or []))
+            except pg8000.native.DatabaseError as error:
+                raise AssertionError(str(error)) from error
+            finally:
+                connection.close()
+        result = subprocess.run([
+            "docker", "run", "--pull", "never", "--rm", "-i", "--network",
+            "container:" + os.environ["INVENTORY_TEST_POSTGRES_CONTAINER"],
+            "--entrypoint", "psql", "postgres:17-alpine",
+            "-h", "127.0.0.1", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-U",
+            "awsops_sql_reader" if reader else "postgres", "-d", "awsops",
+        ], input=sql, text=True, capture_output=True, timeout=20)
+        if result.returncode:
+            raise AssertionError(result.stderr or result.stdout)
+        return result.stdout.strip()
+
+    @classmethod
+    def setUpClass(cls):
+        # Destructive opt-in fixtures require an explicit disposable-database sentinel.
+        sentinel = cls._psql("SELECT shobj_description(oid,'pg_database') FROM pg_database WHERE datname=current_database()")
+        if sentinel != "awsops-disposable-graph-test":
+            raise RuntimeError("Refusing graph fixture writes without disposable database sentinel")
+        if not cls._psql("SHOW server_version").startswith("17."):
+            raise RuntimeError("Graph SQL fixtures require PostgreSQL 17")
+        migrations = Path(__file__).resolve().parents[2] / "terraform/foundation/migrations"
+        cls._psql("""
+            DO $$ BEGIN
+              CREATE ROLE awsops_sql_reader LOGIN;
+              EXCEPTION WHEN duplicate_object THEN NULL;
+            END $$;
+            DO $$ BEGIN CREATE ROLE awsops_web;
+              EXCEPTION WHEN duplicate_object THEN NULL;
+            END $$;
+            DO $$ BEGIN CREATE ROLE awsops_worker;
+              EXCEPTION WHEN duplicate_object THEN NULL;
+            END $$;
+            CREATE SCHEMA IF NOT EXISTS sql_reader;
+            GRANT USAGE ON SCHEMA sql_reader TO awsops_sql_reader;
+            ALTER ROLE awsops_sql_reader SET search_path = sql_reader, pg_catalog;
+            ALTER ROLE awsops_sql_reader SET default_transaction_read_only = on;
+            ALTER ROLE awsops_sql_reader SET statement_timeout = '5s';
+            DROP TABLE IF EXISTS public.topology_edges, public.topology_nodes,
+              public.topology_graph_state CASCADE;
+        """)
+        for name in ("01KV7WYRPC57KGXSGDSEX5CAMT_topology_graph.sql",
+                     "01KVAQ9MQNR5R97T5AXX4JVN6Q_topology_class.sql",
+                     "01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql"):
+            cls._psql((migrations / name).read_text())
+        for path in sorted(migrations.glob("*_topology_inventory_evidence.sql")):
+            cls._psql(path.read_text())
+
+    def test_source_projection_preserves_clocks_but_excludes_unsafe_payloads(self):
+        source = {"sourceId": "inventory:alb", "status": "ok", "scope": "aggregate",
+                  "producerStatus": "succeeded", "capturedAtMs": 1789376400000,
+                  "lastSuccessAtMs": 1789380000000, "attemptedAtMs": 1789380000000,
+                  "finishedAtMs": 1789380000000, "itemCount": 1,
+                  "reasons": ["unknown_capture", "credential=secret"],
+                  "error": "password=secret", "data": {"token": "secret"}}
+        details = {"sources": [source, 123, None], "publishedSources": [source],
+                   "inputTruncated": True, "graphTruncated": False,
+                   "failureReason": "publication_failed", "raw": {"credential": "secret"}}
+        payload = json.dumps(details).replace("'", "''")
+        self._psql("INSERT INTO public.topology_graph_state VALUES "
+                   "('self','infra','error',now(),now(),'" + payload + "'::jsonb);")
+        rows = self._execute("SELECT details FROM topology_graph_state WHERE class='infra'")
+        safe = rows[0]["details"]
+        self.assertEqual(safe["sources"][0]["capturedAtMs"], 1789376400000)
+        self.assertEqual(safe["publishedSources"][0]["lastSuccessAtMs"], 1789380000000)
+        self.assertEqual(safe["sources"][0]["scope"], "aggregate")
+        self.assertEqual(safe["sources"][0]["reasons"], ["unknown_capture"])
+        self.assertEqual(len(safe["sources"]), 1)
+        self.assertNotIn("secret", json.dumps(safe))
+        self.assertEqual(safe["failureReason"], "publication_failed")
+        self.assertTrue(safe["inputTruncated"])
+        self.assertFalse(safe["graphTruncated"])
+        permissions = self._execute("SELECT has_table_privilege(current_user, 'public.topology_graph_state', 'SELECT') AS base_read")
+        self.assertFalse(permissions[0]["base_read"])
+
+    def test_source_projection_bounds_arrays_and_handles_malformed_details(self):
+        details = {"sources": [{"sourceId": "inventory:alb", "status": "password=secret",
+                               "scope": {"secret": 1}, "capturedAtMs": {"secret": 1},
+                               "lastSuccessAtMs": "secret", "producerStatus": "secret"}] * 150,
+                   "publishedSources": "secret", "failureReason": "secret"}
+        payload = json.dumps(details).replace("'", "''")
+        self._psql("INSERT INTO public.topology_graph_state VALUES "
+                   "('self','flow','partial',now(),now(),'" + payload + "'::jsonb),"
+                   "('member','flow','partial',now(),now(),'null'::jsonb);")
+        rows = self._execute("SELECT details FROM topology_graph_state ORDER BY account_id")
+        self.assertLessEqual(len(rows[1]["details"]["sources"]), 128)
+        self.assertNotIn("secret", json.dumps(rows))
+
+    def setUp(self):
+        self._psql("TRUNCATE public.topology_nodes, public.topology_edges, public.topology_graph_state;")
+        self.calls = []
+        inv._execute_override = self._execute
+
+    def tearDown(self):
+        inv._execute_override = None
+
+    def _execute(self, sql, params=None):
+        # Translate the Data API's named scalar binds into PostgreSQL PREPARE binds.
+        # JSON arrays remain one string bind, as in the Data API (no arrayValue support needed).
+        self.calls.append((sql, params))
+        params = params or []
+        positions = {p["name"]: f"${i}" for i, p in enumerate(params, 1)}
+        prepared = re.sub(r"(?<!:):([a-zA-Z_]\w*)", lambda m: positions[m[1]], sql)
+        types, values = [], []
+        for p in params:
+            v = p["value"]
+            if "longValue" in v:
+                types.append("bigint")
+                values.append(str(v["longValue"]))
+            else:
+                types.append("text")
+                values.append("'" + v["stringValue"].replace("'", "''") + "'")
+        signature = "(" + ",".join(types) + ")" if types else ""
+        args = "(" + ",".join(values) + ")" if values else ""
+        result = self._psql(
+            f"PREPARE graph_read{signature} AS "
+            f"SELECT coalesce(jsonb_agg(to_jsonb(r)), '[]'::jsonb) FROM ({prepared}) r;"
+            f"EXECUTE graph_read{args};", reader=True)
+        return json.loads(result)
+
+    def _seed(self, ids, edges=(), cls="infra", account="self"):
+        nodes = [{"id": key, "kind": key.split(":")[0], "label": key,
+                  "meta": {"resourceId": "hidden", "row": {"secret": "not-readable"}}} for key in ids]
+        payload = json.dumps({"nodes": nodes, "edges": [
+            {"source": a, "target": b, "rel": rel} for a, b, rel in edges
+        ]}).replace("'", "''")
+        self._psql(f"""
+            INSERT INTO public.topology_nodes(account_id, id, kind, label, meta, run_id, class)
+            SELECT '{account}', n->>'id', n->>'kind', n->>'label', n->'meta', 'test', '{cls}'
+            FROM jsonb_array_elements('{payload}'::jsonb->'nodes') n;
+            INSERT INTO public.topology_edges(account_id, source, target, rel, run_id, class)
+            SELECT '{account}', e->>'source', e->>'target', e->>'rel', 'test', '{cls}'
+            FROM jsonb_array_elements('{payload}'::jsonb->'edges') e;
+        """)
+
+    def _read(self, resource_id=None, cls="infra", **arguments):
+        if resource_id is not None:
+            arguments["resource_id"] = resource_id
+        response = inv.lambda_handler({
+            "tool_name": "get_topology", "arguments": {"class": cls, **arguments},
+        }, None)
+        self.assertEqual(response["statusCode"], 200, response)
+        return json.loads(response["body"])
+
+    def test_canonical_and_raw_arn_resolve_before_the_first_500_nodes(self):
+        arn = "arn:aws:lambda:ap-northeast-2:111111111111:function:orders"
+        root = "lambda:" + arn
+        self._seed([f"ec2:i-{i:04}" for i in range(600)] + [root, "sg:sg-1"],
+                   [(root, "sg:sg-1", "infra:uses_sg")])
+        for requested, matched_by in ((root, "canonical"), (arn, "raw")):
+            with self.subTest(requested=requested):
+                body = self._read(requested)
+                self.assertEqual({n["id"] for n in body["nodes"]}, {root, "sg:sg-1"})
+                self.assertEqual(body["edge_count"], 1)
+                self.assertEqual(body["from"], requested)
+                self.assertEqual(body.get("selection"), {
+                    "status": "resolved", "requested_id": requested,
+                    "resolved_id": root, "matched_by": matched_by,
+                })
+                self.assertFalse(body["truncation"]["nodes"])
+
+    def test_raw_collision_is_explicit_and_does_not_choose_a_neighbourhood(self):
+        self._seed(["ec2:shared", "lambda:shared", "rds:shared"])
+        body = self._read("shared")
+        self.assertEqual(body["nodes"], [])
+        self.assertEqual(body["edges"], [])
+        self.assertEqual(body.get("selection", {}).get("status"), "ambiguous")
+        self.assertEqual(body["selection"]["candidate_ids"], ["ec2:shared", "lambda:shared"])
+        self.assertTrue(body["selection"]["candidates_truncated"])
+        self.assertNotIn("graph-rebuild", body.get("warning", ""))
+
+    def test_canonical_match_wins_over_a_raw_id_collision(self):
+        self._seed(["lambda:shared", "rds:lambda:shared"])
+        body = self._read("lambda:shared")
+        self.assertEqual([n["id"] for n in body["nodes"]], ["lambda:shared"])
+        self.assertEqual(body.get("selection", {}).get("matched_by"), "canonical")
+
+    def test_two_raw_matches_are_ambiguous_without_truncated_candidates(self):
+        self._seed(["lambda:shared", "rds:shared"])
+        body = self._read("shared")
+        self.assertEqual(body["nodes"], [])
+        self.assertEqual(body["edges"], [])
+        self.assertEqual(body["selection"]["status"], "ambiguous")
+        self.assertEqual(body["selection"]["candidate_ids"], ["lambda:shared", "rds:shared"])
+        self.assertFalse(body["selection"]["candidates_truncated"])
+
+    def test_unknown_and_sql_like_ids_never_return_unrelated_nodes(self):
+        self._seed(["lambda:orders"])
+        for requested in ("missing", "orders%", "orders' OR true --", "orders:extra"):
+            with self.subTest(requested=requested):
+                body = self._read(requested)
+                self.assertEqual(body["nodes"], [])
+                self.assertEqual(body["edges"], [])
+                self.assertEqual(body.get("selection", {}).get("status"), "not_found")
+                self.assertIn("warning", body)
+                self.assertNotIn("graph-rebuild", body["warning"])
+                self.assertTrue(all(requested not in sql for sql, _ in self.calls))
+
+    def test_one_hop_includes_incoming_and_outgoing_but_not_second_hop(self):
+        self._seed(["alb:root", "cf:upstream", "tg:downstream", "ec2:second-hop"],
+                   [("cf:upstream", "alb:root", "origin"),
+                    ("alb:root", "tg:downstream", "targets"),
+                    ("tg:downstream", "ec2:second-hop", "targets"),
+                    ("cf:upstream", "tg:downstream", "related")])
+        body = self._read("alb:root")
+        self.assertEqual({n["id"] for n in body["nodes"]}, {"alb:root", "cf:upstream", "tg:downstream"})
+        self.assertEqual(body["edge_count"], 3)
+
+    def test_neighbour_cap_keeps_root_and_reports_truncation_without_dangling_edges(self):
+        root = "z:root"
+        neighbours = [f"ec2:i-{i:04}" for i in range(601)]
+        self._seed(neighbours + [root], [(root, n, "related") for n in neighbours])
+        body = self._read(root, limit=999999)
+        ids = {n["id"] for n in body["nodes"]}
+        self.assertIn(root, ids)
+        self.assertEqual(len(ids), 500)
+        self.assertEqual(body["edge_count"], 499)
+        self.assertTrue(body.get("truncation", {}).get("nodes"))
+        self.assertFalse(body["truncation"]["edges"])
+        self.assertTrue(all(e["source"] in ids and e["target"] in ids for e in body["edges"]))
+
+    def test_dense_selected_graph_has_a_bounded_edge_response(self):
+        self._seed(["lambda:root", "sg:one"],
+                   [("lambda:root", "sg:one", f"relation-{i:04}") for i in range(1100)])
+        body = self._read("lambda:root")
+        self.assertEqual(body["node_count"], 2)
+        self.assertEqual(body["edge_count"], 1000)
+        self.assertTrue(body.get("truncation", {}).get("edges"))
+        self.assertFalse(body["truncation"]["nodes"])
+        # Every Data API result query is bounded, including the selected edge fetch.
+        self.assertTrue(all("LIMIT :" in sql for sql, _ in self.calls
+                            if "topology_nodes" in sql or "topology_edges" in sql))
+
+    def test_whole_graph_is_bounded_and_excludes_missing_or_capped_endpoints(self):
+        ids = [f"ec2:i-{i:04}" for i in range(510)]
+        self._seed(ids, [(ids[0], ids[1], "valid"), (ids[0], ids[-1], "capped"),
+                         (ids[0], "ec2:absent", "dangling")])
+        body = self._read()
+        self.assertEqual(body["node_count"], 500)
+        self.assertEqual([e["rel"] for e in body["edges"]], ["valid"])
+        self.assertTrue(body.get("truncation", {}).get("nodes"))
+        self.assertEqual(body["selection"]["status"], "all")
+
+    def test_exact_caps_are_complete_not_truncated(self):
+        ids = [f"ec2:i-{i:04}" for i in range(500)]
+        self._seed(ids, [(ids[0], ids[1], f"relation-{i:04}") for i in range(1000)])
+        body = self._read()
+        self.assertEqual(body["node_count"], 500)
+        self.assertEqual(body["edge_count"], 1000)
+        self.assertEqual(body.get("truncation"), {
+            "nodes": False, "edges": False, "node_limit": 500, "edge_limit": 1000,
+        })
+
+    def test_empty_unknown_and_isolated_selections_are_distinct(self):
+        empty = self._read()
+        self.assertEqual(empty.get("selection", {}).get("status"), "all")
+        self.assertEqual(empty["nodes"], [])
+        self._seed(["lambda:isolated"])
+        isolated = self._read("isolated")
+        self.assertEqual([n["id"] for n in isolated["nodes"]], ["lambda:isolated"])
+        self.assertEqual(isolated["edges"], [])
+        self.assertEqual(isolated["selection"]["status"], "resolved")
+        self.assertEqual(isolated["collection"]["status"], "unknown")
+        self.assertIn("collection", isolated["warning"])
+        self.assertEqual(self._read("absent")["selection"]["status"], "not_found")
+
+    def test_scoped_inventory_availability_distinguishes_unknown_from_confirmed_empty(self):
+        miss_warning = "Requested resource_id was not found in this host's selected graph class."
+        collection_warning = (
+            "Graph collection evidence is incomplete or stale; inspect collection before "
+            "treating nodes or edges as current."
+        )
+        for cls in ("flow", "infra"):
+            for mode, status, stale in (
+                ("missing_relation", "unknown", True),
+                ("missing_row", "unknown", True),
+                ("successful_empty", "empty", False),
+            ):
+                with self.subTest(cls=cls, mode=mode):
+                    self._psql("TRUNCATE public.topology_graph_state;")
+                    if mode == "missing_relation":
+                        self._psql("ALTER VIEW sql_reader.topology_graph_state "
+                                   "RENAME TO topology_graph_state_unavailable;")
+                    elif mode == "successful_empty":
+                        source_id = "inventory:alb" if cls == "flow" else "inventory:vpc"
+                        self._psql(f"""
+                            WITH evidence AS (
+                                SELECT jsonb_build_array(jsonb_build_object(
+                                    'sourceId', '{source_id}', 'status', 'empty', 'scope', 'aggregate',
+                                    'producerStatus', 'succeeded', 'itemCount', 0, 'capturedAtMs', NULL,
+                                    'lastSuccessAtMs', (extract(epoch FROM now() - interval '1 minute') * 1000)::bigint,
+                                    'reasons', '[]'::jsonb
+                                )) AS sources
+                            )
+                            INSERT INTO public.topology_graph_state
+                                (account_id, class, status, attempted_at, captured_at, details)
+                            SELECT 'self', '{cls}', 'empty', now(), now(),
+                                jsonb_build_object('sources', sources, 'publishedSources', sources,
+                                                   'retainedPrevious', false)
+                            FROM evidence;
+                        """)
+                    try:
+                        body = self._read("absent", cls=cls)
+                        self.assertEqual(body["class"], cls)
+                        self.assertEqual(body["from"], "absent")
+                        self.assertEqual(body["nodes"], [])
+                        self.assertEqual(body["edges"], [])
+                        self.assertEqual((body["node_count"], body["edge_count"]), (0, 0))
+                        self.assertEqual(body["selection"], {
+                            "status": "not_found", "requested_id": "absent", "resolved_id": None,
+                        })
+                        self.assertEqual(body["truncation"], {
+                            "nodes": False, "edges": False, "node_limit": 500, "edge_limit": 1000,
+                        })
+                        self.assertEqual(body["collection"]["status"], status)
+                        self.assertEqual(body["collection"]["stale"], stale)
+                        self.assertEqual(body["captured_at"] is None, mode != "successful_empty")
+                        self.assertEqual(body["warning"],
+                                         f"{collection_warning} {miss_warning}" if stale else miss_warning)
+                    finally:
+                        if mode == "missing_relation":
+                            self._psql("ALTER VIEW sql_reader.topology_graph_state_unavailable "
+                                       "RENAME TO topology_graph_state;")
+
+    def test_reader_boundary_hides_metadata_and_other_accounts_and_classes(self):
+        self._seed(["lambda:host", "sg:foreign-endpoint"],
+                   [("lambda:host", "sg:foreign-endpoint", "wrong-account")], account="222222222222")
+        self._seed(["lambda:host", "sg:other-class"],
+                   [("lambda:host", "sg:other-class", "wrong-class")], cls="flow")
+        self._seed(["lambda:host"])
+        body = self._read("host", target_account_id="222222222222")
+        self.assertEqual([n["id"] for n in body["nodes"]], ["lambda:host"])
+        self.assertEqual(body["nodes"][0]["meta"], {})
+        self.assertEqual(body["edges"], [])
+        self.assertEqual(body.get("selection", {}).get("status"), "resolved")
+        self.assertEqual(self._psql("SHOW search_path;", reader=True), "sql_reader, pg_catalog")
+        with self.assertRaisesRegex(AssertionError, "permission denied"):
+            self._psql("SELECT meta FROM public.topology_nodes;", reader=True)
+
+
 class TestTraceTopologyCollection(unittest.TestCase):
     NOW = 1_789_128_000  # 2026-09-11T12:00:00Z
     CAPTURED = "2026-09-11T11:55:00+00:00"
@@ -787,6 +1169,12 @@ class TestTraceTopologyCollection(unittest.TestCase):
     def _read(self, state, nodes=None, edges=None, arguments=None,
               schema_present=True, edge_meta_present=True):
         calls = []
+        if nodes is None:
+            # Edge-evidence fixtures need their real endpoints; otherwise they test dangling
+            # edge handling instead of confidence/legacy metadata compatibility.
+            ids = sorted({e[key] for e in (edges or []) for key in ("source", "target")})
+            nodes = [{"id": key, "kind": "service", "label": key, "meta": {}}
+                     for key in (ids or ["svc:checkout"])]
 
         def fake(sql, params=None):
             calls.append((sql, params))
@@ -796,10 +1184,11 @@ class TestTraceTopologyCollection(unittest.TestCase):
                 if not schema_present:
                     raise RuntimeError("relation topology_graph_state does not exist")
                 return [state] if state is not None else []
+            if sql.startswith("SELECT id FROM topology_nodes"):
+                requested = next(p["value"]["stringValue"] for p in params if p["name"] == "rid")
+                return [{"id": n["id"]} for n in nodes if n["id"] == requested]
             if "topology_nodes" in sql:
-                return nodes if nodes is not None else [
-                    {"id": "svc:checkout", "kind": "service", "label": "checkout", "meta": {}},
-                ]
+                return nodes
             if "topology_edges" in sql:
                 if not edge_meta_present and "to_jsonb(e)->'meta' AS meta" not in sql:
                     raise RuntimeError("column meta does not exist")
@@ -1080,7 +1469,7 @@ Promise.all(input.rows.map(row => context.exports.readGraphState({
         body, calls = self._read(None, schema_present=False, edge_meta_present=False, edges=[{
             "source": "svc:a", "target": "svc:b", "rel": "calls", "confidence": "0.7", "meta": None,
         }])
-        self.assertEqual(body["node_count"], 1)
+        self.assertEqual(body["node_count"], 2)
         self.assertEqual(body["collection"], {
             "status": "unknown", "stale": True, "attempted_at": None, "captured_at": None, "sources": [],
         })
@@ -1129,10 +1518,10 @@ Promise.all(input.rows.map(row => context.exports.readGraphState({
         with self.assertRaises(PermissionError):
             inv.lambda_handler({"tool_name": "get_topology", "arguments": {"class": "trace"}}, None)
 
-    def test_collection_read_and_neighbourhood_remain_host_scoped_and_bounded(self):
+    def test_collection_is_preserved_with_selected_graph_and_bound_reader_queries(self):
         body, calls = self._read(self._state(), nodes=[
             {"id": key, "kind": "service", "label": key, "meta": {}}
-            for key in ("svc:checkout", "svc:orders", "svc:unrelated")
+            for key in ("svc:checkout", "svc:orders")
         ], edges=[{
             "source": "svc:checkout", "target": "svc:orders", "rel": "calls",
             "confidence": "observed", "meta": {"spanCount": 2, "metricCount": 0},
@@ -1140,7 +1529,7 @@ Promise.all(input.rows.map(row => context.exports.readGraphState({
         self.assertEqual({n["id"] for n in body["nodes"]}, {"svc:checkout", "svc:orders"})
         self.assertEqual(body["from"], "svc:checkout")
         self.assertIn("collection", body)
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(body["selection"]["resolved_id"], "svc:checkout")
         for sql, _ in calls:
             if "to_regclass" not in sql:
                 self.assertIn("account_id = 'self'", sql)
@@ -1148,20 +1537,75 @@ Promise.all(input.rows.map(row => context.exports.readGraphState({
             self.assertNotIn("public.", sql)
             self.assertTrue(sql.lstrip().startswith("SELECT"))
         self.assertIn("LIMIT 1", next(sql for sql, _ in calls if "FROM topology_graph_state" in sql))
-        self.assertIn("LIMIT 500", next(sql for sql, _ in calls if "topology_nodes" in sql))
+        self.assertEqual(body["truncation"]["node_limit"], 500)
 
-    def test_other_graph_classes_do_not_read_collection_or_change_edge_contract(self):
+    def test_inventory_fresh_publication_uses_oldest_original_source_clock(self):
+        source = {"sourceId": "inventory:alb", "status": "ok", "scope": "aggregate", "itemCount": 1,
+                  "capturedAtMs": 1789120800000, "lastSuccessAtMs": 1789127400000}
+        for cls in ("flow", "infra"):
+            body, _ = self._read(self._state(details={"sources": [source], "publishedSources": [source]}),
+                                 arguments={"class": cls})
+            self.assertTrue(body["collection"]["stale"])
+            self.assertEqual(body["collection"]["publishedSources"][0]["capturedAtMs"], 1789120800000)
+            self.assertEqual(body["collection"]["evidenceKind"], "inventory")
+
+    def test_inventory_old_projection_cannot_certify_fresh_sources(self):
+        body, _ = self._read(self._state(details={"sources": []}), arguments={"class": "infra"})
+        self.assertTrue(body["collection"]["stale"])
+
+    def test_inventory_successful_zero_is_fresh_without_a_row_capture(self):
+        source = {"sourceId": "inventory:alb", "status": "empty", "scope": "aggregate",
+                  "itemCount": 0, "lastSuccessAtMs": 1789127700000}
+        body, _ = self._read(self._state("empty", details={
+            "sources": [source], "publishedSources": [source],
+        }), nodes=[], arguments={"class": "infra"})
+        self.assertEqual(body["collection"]["status"], "empty")
+        self.assertFalse(body["collection"]["stale"])
+        self.assertNotIn("warning", body)
+
+    def test_inventory_clock_aging_during_read_is_not_a_publication_change(self):
+        before = {"status": "ok", "stale": False, "captured_at": self.CAPTURED}
+        with mock.patch.object(inv, "_inventory_graph_collection", side_effect=[
+            before, {**before, "stale": True},
+        ]):
+            body, _ = self._read(None, arguments={"class": "infra"})
+        self.assertTrue(body["collection"]["stale"])
+        self.assertNotIn("snapshotConsistent", body["collection"])
+
+    def test_inventory_failed_verification_keeps_safe_failure_and_readable_graph(self):
+        with mock.patch.object(inv, "_inventory_graph_collection", side_effect=[
+            {"status": "ok", "stale": False, "captured_at": self.CAPTURED},
+            {"status": "error", "stale": True, "captured_at": None,
+             "failureReason": "state_read_failed"},
+        ]):
+            body, _ = self._read(None, arguments={"class": "infra"})
+        self.assertEqual(body["collection"]["failureReason"], "state_read_failed")
+        self.assertFalse(body["collection"]["snapshotConsistent"])
+        self.assertEqual(body["node_count"], 1)
+
+    def test_inventory_publication_change_cannot_certify_selected_nodes(self):
+        with mock.patch.object(inv, "_inventory_graph_collection", side_effect=[
+            {"status": "ok", "stale": False, "captured_at": self.CAPTURED},
+            {"status": "empty", "stale": False, "captured_at": self.ATTEMPTED},
+        ]):
+            body, _ = self._read(None, arguments={"class": "infra"})
+        self.assertTrue(body["collection"]["stale"])
+        self.assertFalse(body["collection"]["snapshotConsistent"])
+        self.assertEqual(body["collection"]["failureReason"], "publication_changed")
+        self.assertEqual(body["selection"]["status"], "all")
+
+    def test_inventory_classes_add_collection_without_changing_edge_contract(self):
         for cls in ("flow", "infra"):
             with self.subTest(cls=cls):
                 body, calls = self._read(None, edges=[{
                     "source": "a", "target": "b", "rel": "routes", "confidence": "inferred",
                 }], arguments={"class": cls})
-                self.assertNotIn("collection", body)
-                self.assertNotIn("captured_at", body)
+                self.assertEqual(body["collection"]["status"], "unknown")
+                self.assertIsNone(body["captured_at"])
                 self.assertEqual(body["edges"][0], {
                     "source": "a", "target": "b", "rel": "routes", "confidence": "inferred",
                 })
-                self.assertFalse(any("topology_graph_state" in sql for sql, _ in calls))
+                self.assertTrue(any("topology_graph_state" in sql for sql, _ in calls))
 
 
 if __name__ == "__main__":
