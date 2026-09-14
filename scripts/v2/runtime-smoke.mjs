@@ -21,6 +21,7 @@ const WORKER_POLL_SECONDS = 300;
 const WORKER_MS = REQUEST_MS + WORKER_POLL_SECONDS * 1000 + REQUEST_MS;
 const COOLDOWN_MS = 65_000;
 export function validateRuntimeSmokeConfig(value, now = Date.now()) {
+  if (!Number.isFinite(now)) fail('configuration');
   const keys = value?.mode === 'prepare' ? [...baseKeys]
     : [...baseKeys, 'expectedCloudfrontId', 'expectedQueuedTypes', 'collectionStartedAt'];
   const hasHostOnly = object(value) && Object.hasOwn(value, 'hostOnly');
@@ -53,7 +54,7 @@ export function runtimeSmokeDeadline(config, now, requested = Infinity) {
   return deadline;
 }
 
-export function readRuntimeSmokeConfig(file, credentialFile) {
+export function readRuntimeSmokeConfig(file, credentialFile, now = Date.now()) {
   // Same private directory as credentials; handled cleanup is not a SIGKILL guarantee.
   if (typeof file !== 'string' || !file || resolve(file) !== file
       || dirname(file) !== dirname(credentialFile) || file === credentialFile) fail('configuration_file');
@@ -68,7 +69,7 @@ export function readRuntimeSmokeConfig(file, credentialFile) {
     let size = 0, count;
     while (size < bytes.length && (count = readSync(fd, bytes, size, bytes.length - size, null)) > 0) size += count;
     if (size > 16_384) fail('configuration_file');
-    return validateRuntimeSmokeConfig(JSON.parse(bytes.subarray(0, size).toString('utf8')));
+    return validateRuntimeSmokeConfig(JSON.parse(bytes.subarray(0, size).toString('utf8')), now);
   } catch {
     fail('configuration_file');
   } finally { if (fd !== undefined) closeSync(fd); }

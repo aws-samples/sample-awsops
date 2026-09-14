@@ -28,7 +28,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [release-safety-primitives.md](release-safety-primitives.md) | Unwired bounded web reads/controller, opt-in pending-SQL admission, immediate migration contention and operator recovery (ADR-001/005) |
 | [web-image-provenance.md](web-image-provenance.md) | Unwired helper contract: required receipt steps/inputs, enforced promotion chain, main account prerequisite, migration/rollback/expiry limits (ADR-005) |
 | [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |
-| [runtime-foundation.md](runtime-foundation.md) | Account-bound runtime activation, private DNS scope and saved-plan Lambda assets |
+| [runtime-foundation.md](runtime-foundation.md) | Runtime activation and unwired strict host-only controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage |
 | [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
 | [runtime-verifier-sessions.md](runtime-verifier-sessions.md) | Development verification policies: manual backend/workload phases, Deploy Web workload-only collect, owned collector invocation, synchronous/HTTP proof, and cleanup gates (ADR-002/005/021) |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; saved-plan scope, links to branch-independent artifact inspection/recovery, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
@@ -74,7 +74,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   environments; signed curl URLs use private stdin, never argv. Multi-tag digest rows
   are accepted only with matching identity and byte-identical manifest/media evidence.
   Provider PATH is pinned to standard CLI directories; caller HOME is omitted, never reassigned.
-- Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). The helper supplies policies and installs neither consumer path. Deploy Web integration must be dev-only with activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the consumer must enforce catalog/CloudFront RequestResponse calls and synchronous plus authenticated HTTP proof. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
+- Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). The helper supplies policies and installs neither consumer path. Deploy Web integration must be dev-only with activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the controller must enforce catalog or each verified catalog member's RequestResponse payload, banning empty/all/unregistered/Event calls. The dated owner requirement is all current types with post-marker succeeded evidence, known counts and zero unknowns, not rolling prior success. At most four calls are concurrent and in flight; at least one catalog request plus at least one per type, including any retries, determines total volume. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
 - Private S3 inspection authenticates source/run/reference, manifest, pinned plan and hashes before bounded local rendering; it never authorizes apply. Asset HMAC is checked inside CI publication/apply, not by the keyless operator renderer.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.
 - Linux capture forwards the first interrupt, kills the child group on a second, and arms parent-death SIGKILL before exec; cancellation is not infrastructure rollback.
@@ -83,7 +83,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 - Sealing uses OpenSSL stdin without plaintext staging. Captured Terraform uses Linux parent-death protection and escalates a second interrupt after graceful first-interrupt forwarding.
 - Key/storage/seal/publication/cleanup outcomes are distinct. Delete owned ciphertext only after the identified upload succeeds; failed/cancelled/skipped/unknown uploads retain it privately. Audits report pending_upload and final upload/cleanup outcomes; no broad temp sweep, host-loss guarantee or shared-UID isolation.
 - `deployment-audit.md` separates manual dev observations under backend-bound and workload-read sessions. Preserve identity/resource guards and private cleanup. Web and AgentCore observations do not prove applied versions or invocation readiness; observed SQL-reader types never establish complete inventory.
-- `runtime-foundation.md` covers account-bound default-off activation and saved-plan assets. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
+- `runtime-foundation.md` covers activation and the unwired strict host-only controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
 - The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
 - Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
 - `scripts/v2/ci_tf_assets.py` shares one locked pg8000 installer with Terraform.
@@ -240,3 +240,45 @@ collection windows are caps and late completion can fail admission. Retry admiss
 cooldown, recheck, probe and both workers. HTTP requests need their full timeout remaining.
 Keep the probe contract before Related/ADR references. From the repository root run
 `node --test scripts/v2/deployment-smoke.test.mjs`; it imports the runtime-smoke test suite.
+
+The strict controller remains unwired here. Preserve the active scheduler and the
+distinction between operational degraded data and ineligible release evidence.
+Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
+admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
+57.461-second collection sample and its limits; it is not full live readiness.
+The catalog must include the pinned baseline (currently 43 names, source-AST checked);
+valid growth is allowed up to 128 types and every returned type needs strict proof.
+Both modes require the enabled host only. Collect's authenticated DB/host preflight
+rejects incompatible registries before type calls with `host_only_registry_required`.
+Preserve the AWS CLI environment allowlist, configuration isolation and endpoint restrictions.
+The first chronological terminal failure stops new type admission; admitted work settles
+and untouched types remain `not_started`.
+`collection_attempts.counts` uses six status buckets that partition `expected`.
+A selected type whose first call is refused by the 450-second floor is `deadline` with zero attempts;
+never-selected types are `not_started` with zero attempts. Do not classify by attempts alone
+or apply this partition rule to overlapping `inventory_quality` gaps.
+Preserve exact diagnostics: outer `Runtime release: <reason>`; passed-through `SmokeError`
+messages retain `Runtime smoke:` / `Authenticated smoke:` prefixes. Direct `RuntimeSmokeError`
+config failures can become controller fallbacks. RPC and ledger suffixes are not
+interchangeable; the operator table enumerates controller reasons and describes helper families.
+Partial/unknown outcomes are expected hard stops even under limiter/hydrate pressure.
+Use bounded capacity/reachability/permission diagnosis before an authorized fresh rerun,
+never automatic permission widening, degraded acceptance or scheduler suppression.
+`remaining_prerequisites: "not_assessed"` leaves separate workflow/plan/promotion gates;
+keep the fixed-code table and calibrated `readRuntimeSmokeConfig` parameter documented.
+Collect's closing service/list-tasks/describe-tasks reads must match the initial opaque
+deployment ID, immutable task-definition ARN, count and ECR digest set before success;
+never resolve the tag again. A changed ID fails even with the same task definition.
+Equal snapshots are not continuous identity/history proof or an atomic lock; prepare is unchanged.
+The 18-minute reserve covers the single-pass 1,060-second path plus 20 seconds.
+Auth proof ends 50 seconds before the original proof deadline for three closing reads
+at 15 seconds each plus five seconds overhead, all inside that original deadline.
+Collection has at most 720 seconds; the 450-second floor requires admission by 270
+seconds minus clock preparation/earlier bounds. An extra 35-second read needs 15 seconds
+saved. Full retry overhead is at least 215 seconds, needing 195 saved: a 35-second
+confirmation precedes the helper's remaining 180-second admission allowance, with the
+original worker allowances reused rather than counted twice.
+Additional reads/waits/overhead require more time; no extras are guaranteed.
+CLI inputs and fixture prerequisites: `runtime-foundation.md#controller-cli-contract`.
+Catalog/per-type timeouts: `runtime-verifier-sessions.md#collection-effects-and-proof`.
+Combined checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
