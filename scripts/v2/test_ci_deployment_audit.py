@@ -3,7 +3,6 @@ import base64
 from copy import deepcopy
 from datetime import datetime, timezone
 import fnmatch
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -315,7 +314,7 @@ def test_actual_workflow_guard_accepts_development():
                           capture_output=True).returncode == 0
 
 
-@pytest.mark.parametrize("failure", ["", "init", "output"])
+@pytest.mark.parametrize("failure", ["", "init", "output", "agentcore_disabled", "agentcore_enabled"])
 def test_actual_capture_keeps_outputs_private_and_removes_backend(tmp_path, failure):
     directory, binaries = tmp_path / "audit", tmp_path / "bin"
     directory.mkdir(mode=0o700)
@@ -330,10 +329,11 @@ if 'init' in args:
     data = pathlib.Path(os.environ['TF_DATA_DIR'])
     data.mkdir()
     (data / 'terraform.tfstate').write_text('PRIVATE_BACKEND')
-if os.environ['FAILURE'] in args:
+if os.environ['FAILURE'] in args or ('agentcore' in args and os.environ['FAILURE'].startswith('agentcore_')):
     print('SECRET_TEST_DETAIL', file=sys.stderr)
     sys.exit(1)
-print('{}')
+print(json.dumps({'features': {'agentcore': os.environ['FAILURE'] != 'agentcore_disabled'}})
+      if args[-1] == 'runtime_deployment' else '{}')
 """)
     fake.chmod(0o755)
     steps = workflow()["jobs"]["audit"]["steps"]
@@ -344,17 +344,21 @@ print('{}')
            "BACKEND_B64": base64.b64encode(b'bucket="private-test-state"').decode(),
            "TF_LOG": "TRACE", "TF_CLI_ARGS": "-not-an-audit-argument"}
     result = subprocess.run(["bash", "-c", capture], env=env, capture_output=True, text=True)
-    assert (result.returncode == 0) == (failure == "")
+    succeeded = failure in ("", "agentcore_disabled")
+    assert (result.returncode == 0) == succeeded
     assert not (directory / "backend.hcl").exists() and not (directory / "tfdata").exists()
     assert "PRIVATE_BACKEND" not in result.stdout + result.stderr
     assert "SECRET_TEST_DETAIL" not in result.stdout + result.stderr
     assert directory.stat().st_mode & 0o777 == 0o700
-    if not failure:
+    if succeeded:
         assert {p.stem for p in directory.iterdir()} == set(audit.OUTPUTS)
         assert all(p.stat().st_mode & 0o777 == 0o600 for p in directory.iterdir())
         calls = [json.loads(line) for line in (tmp_path / "calls").read_text().splitlines()]
-        assert len(calls) == 5
+        assert len(calls) == (4 if failure == "agentcore_disabled" else 5)
         assert all(args[1] == "output" and args[2] == "-json" for args in calls[1:])
+        if failure == "agentcore_disabled":
+            assert json.loads((directory / "agentcore.json").read_text()) is None
+            assert not any(args[-1] == "agentcore" for args in calls)
     assert cleanup["if"] == "always()"
     subprocess.run(["bash", "-c", cleanup["run"]], env=env, check=True)
     assert not directory.exists()
@@ -655,7 +659,7 @@ def test_inventory_disabled_remains_explicit_when_reader_is_available():
     assert result["events"]["schedule"]["status"] == "DISABLED"
 
 
-def test_gateway_role_and_lambda_drift_are_hashed_without_following_foreign_arns():
+def test_gateway_drift_reports_only_match_flags_without_following_foreign_arns():
     aws = FakeAWS()
     foreign_role = RUNTIME_ROLE.replace(PROJECT, "old-project")
     foreign_lambda = RDS_LAMBDA.replace(ACCOUNT, "999999999999")
@@ -670,9 +674,8 @@ def test_gateway_role_and_lambda_drift_are_hashed_without_following_foreign_arns
     result = audit.collect(outputs(), ENV, aws, NOW)["deployment"]["data_gateway"]
     assert result["gateway_role_matches_state"] is False
     assert result["target_lambda_matches_state"] is False
-    assert result["gateway_role_sha256"] == hashlib.sha256(foreign_role.encode()).hexdigest()
-    assert result["target_lambda_sha256"] == hashlib.sha256(foreign_lambda.encode()).hexdigest()
-    assert result["target_status_reasons"]["items"][0]["sha256"] == hashlib.sha256(reason.encode()).hexdigest()
+    assert result["status"] == "NOT_READY"
+    assert not any(word in json.dumps(result) for word in ("fingerprint", "sha256", "hmac"))
     assert "mentions_permission" in result["target_status_reasons"]["items"][0]["categories"]
     assert "arn:aws" not in json.dumps(result) and "SECRET_FIXTURE" not in json.dumps(result)
     assert not any(foreign_lambda in json.dumps(params, default=str) for _, _, params in aws.calls)
@@ -698,3 +701,29 @@ def test_gateway_role_evidence_survives_target_read_denial():
     assert gateway["target_status"] == "UNKNOWN"
     assert gateway["target_reason"] == "access_denied"
     assert result["read_errors"] == 1
+
+
+def test_control_plane_reads_use_region_bound_wildcard_authorization():
+    policy = audit.session_policy(ENV, outputs())
+    for action in ("GetAgentRuntime", "GetGateway", "ListGatewayTargets", "GetGatewayTarget"):
+        grant = next(s for s in policy["Statement"] if f"bedrock-agentcore:{action}" in s["Action"])
+        assert grant["Resource"] == "*"
+        assert grant["Condition"]["StringEquals"]["aws:RequestedRegion"] == REGION
+
+
+@pytest.mark.parametrize("state", ["FAILED", "UPDATE_UNSUCCESSFUL", "DELETING"])
+def test_failed_gateway_is_not_ready_even_when_identifiers_match(state):
+    aws = FakeAWS()
+    aws.overrides["bedrock-agentcore-control", "get_gateway"] = {
+        "gatewayId": GATEWAY_ID, "gatewayArn": GATEWAY_ARN, "name": "awsops-v2-data-gateway",
+        "roleArn": RUNTIME_ROLE, "status": state, "statusReasons": []}
+    result = audit.collect(outputs(), ENV, aws, NOW)["deployment"]["data_gateway"]
+    assert result["gateway_role_matches_state"] is True
+    assert result["status"] == "NOT_READY"
+
+
+def test_missing_rds_target_is_not_ready():
+    aws = FakeAWS()
+    aws.overrides["bedrock-agentcore-control", "list_gateway_targets"] = {"items": []}
+    result = audit.collect(outputs(), ENV, aws, NOW)["deployment"]["data_gateway"]
+    assert result["status"] == "NOT_READY" and result["target_status"] == "MISSING"

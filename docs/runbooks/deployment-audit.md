@@ -39,7 +39,10 @@ closed. Policy publication must succeed before credentials can be assumed.
 
 After capture and backend cleanup, the second session uses validated output
 identities and has no backend access. `ecs:ListTasks` requires a wildcard resource
-with an exact `ecs:cluster` condition; other workload reads use scoped ARNs.
+with an exact `ecs:cluster` condition. AgentCore control reads and CloudWatch
+metrics use region-bound wildcard authorization, matching the existing control
+read policy; SDK requests still select the validated identities. Other reads use
+scoped ARNs.
 Data API requires `rds-data:ExecuteStatement` on the cluster and IAM
 `secretsmanager:GetSecretValue` on the exact captured reader-secret ARN. The helper
 never calls the secret API; the password is nevertheless within the session's
@@ -50,7 +53,9 @@ backend identifiers are masked before being passed between workflow steps.
 
 Only the backend is restored into private scratch. Terraform reads four existing
 outputs: `runtime_deployment`, `agentcore`, `agent_sql_reader_secret_arn`, and
-`aurora_database`. Backend/data-directory cleanup runs immediately after capture,
+`aurora_database`. When the captured runtime flag explicitly confirms AgentCore
+is disabled, its nullable output is represented as null without a lookup; all
+other output failures stop capture. Backend/data-directory cleanup runs immediately after capture,
 on capture failure, and again at job end. No tfvars, plans, state dumps, output
 files, secret values or raw exceptions are published.
 
@@ -90,10 +95,11 @@ files, secret values or raw exceptions are published.
 
 The data-gateway diagnostic reads only `awsops-v2-data-gateway` and its
 `rds-mcp-target`. It compares the live role and target Lambda URI with applied
-Terraform, publishing match flags and SHA-256 fingerprints, not raw ARNs. Provider
-`statusReasons` are represented by fixed text-match categories and hashes (up to
-eight reasons); these are observations, not inferred causes. Gateway-role evidence
-survives a denied target read. No gateway/target update is performed.
+Terraform, publishing only match flags, never ARNs or fingerprints. Provider
+`statusReasons` use fixed text-match categories (up to eight reasons); these are
+observations, not inferred causes. Drift, failed provider states and missing
+targets report `NOT_READY`. Gateway-role evidence survives a denied target read.
+The report is public Actions output; no gateway/target update is performed.
 
 ## Action
 
@@ -111,8 +117,11 @@ Session policies cannot supply a permission missing from the underlying role.
 No identity-policy grant is part of this change; access changes belong to the IAM
 owner's reviewed least-privilege configuration, not an automatic deployer expansion.
 
-Offline prerequisites: Python 3.12, pytest, PyYAML and boto3/botocore (the workflow
-uses the pinned SDK). Run `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`.
+Offline prerequisites: Python 3.12, Node.js 20 and bash. Install
+`python3 -m pip install -r scripts/v2/requirements-test.txt`, then run
+`python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`. Test SDK versions
+match the existing `agentcore/requirements-provision.txt` pin; the workflow
+installs that existing hash-locked SDK source.
 
 ## Related
 

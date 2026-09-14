@@ -1,7 +1,6 @@
 """Manual development audit. Fixed reads only; public output is an explicit projection."""
 import argparse
 import base64
-import hashlib
 from datetime import datetime, timedelta, timezone
 import json
 import math
@@ -131,19 +130,19 @@ def session_policy(env, outputs):
     arn = lambda service, resource: f"arn:aws:{service}:{REGION}:{account}:{resource}"
     actions = ["ecs:DescribeServices", "ecs:DescribeTasks", "lambda:GetFunctionConfiguration",
                "lambda:GetPolicy", "events:DescribeRule", "events:ListTargetsByRule",
-               "ssm:GetParameter", "bedrock-agentcore:GetAgentRuntime", "rds:DescribeDBClusters",
-               "bedrock-agentcore:GetGateway", "bedrock-agentcore:ListGatewayTargets", "bedrock-agentcore:GetGatewayTarget"]
+               "ssm:GetParameter", "rds:DescribeDBClusters"]
     resources = [arn("ecs", f"service/{project}/{project}-*"), arn("ecs", f"task/{project}/*"),
                  arn("lambda", f"function:{project}-inv-sync"), arn("events", f"rule/{project}-inv-sync-ec2"),
                  arn("ssm", f"parameter/ops/{project}/agentcore/runtime_arn"),
-                 arn("bedrock-agentcore", "runtime/awsops_v2_agent-*"), arn("rds", f"cluster:{project}-aurora"),
-                 arn("bedrock-agentcore", "gateway/awsops-v2-data-gateway-*")]
+                 arn("rds", f"cluster:{project}-aurora")]
     if runtime["features"]["agentcore"]:
         actions += ["rds-data:ExecuteStatement", "secretsmanager:GetSecretValue"]
         resources.append(outputs["agent_sql_reader_secret_arn"])
     policy = {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": ["sts:GetCallerIdentity", "cloudwatch:GetMetricData",
-                                      "bedrock-agentcore:ListGateways"],
+                                      "bedrock-agentcore:ListGateways", "bedrock-agentcore:GetAgentRuntime",
+                                      "bedrock-agentcore:GetGateway", "bedrock-agentcore:ListGatewayTargets",
+                                      "bedrock-agentcore:GetGatewayTarget"],
          "Resource": "*", "Condition": {"StringEquals": {"aws:RequestedRegion": REGION}}},
         # ListTasks without containerInstance needs Resource:*; cluster ARN resources do not authorize it.
         {"Effect": "Allow", "Action": ["ecs:ListTasks"], "Resource": "*", "Condition": {
@@ -414,9 +413,6 @@ def gateway_snapshot(read, runtime, outputs):
     role = gateway["roleArn"]
     require(re.fullmatch(r"arn:aws:iam::\d{12}:role/[A-Za-z0-9_+=,.@/-]+", role))
 
-    def fingerprint(value):
-        return hashlib.sha256(value.encode()).hexdigest()
-
     def reasons(values):
         require(isinstance(values, list))
         projected = []
@@ -430,16 +426,15 @@ def gateway_snapshot(read, runtime, outputs):
                 ("mentions_timeout", ("timeout", "timed out")),
             ) if any(token in sample for token in tokens)]
             projected.append({"categories": categories or ["unclassified"],
-                              "sha256": fingerprint(text), "classification_truncated": len(text) > 4096})
+                              "classification_truncated": len(text) > 4096})
         return {"count": len(values), "truncated": len(values) > 8, "items": projected}
 
     states = {"CREATING", "UPDATING", "UPDATE_UNSUCCESSFUL", "DELETING", "READY", "FAILED",
               "SYNCHRONIZING", "SYNCHRONIZE_UNSUCCESSFUL", "CREATE_PENDING_AUTH",
               "UPDATE_PENDING_AUTH", "SYNCHRONIZE_PENDING_AUTH"}
-    result = {"status": "OBSERVED",
+    result = {"status": "OBSERVED" if gateway.get("status") == "READY" and role == expected_role else "NOT_READY",
               "gateway_status": gateway.get("status") if gateway.get("status") in states else "UNKNOWN",
               "gateway_role_matches_state": role == expected_role,
-              "gateway_role_sha256": fingerprint(role), "expected_role_sha256": fingerprint(expected_role),
               "gateway_status_reasons": reasons(gateway.get("statusReasons", [])),
               "gateway_updated_at": stamp(gateway.get("updatedAt"))}
     try:
@@ -447,7 +442,7 @@ def gateway_snapshot(read, runtime, outputs):
         require(not targets.get("nextToken"))
         matches = [t for t in targets["items"] if t.get("name") == "rds-mcp-target"]
         if not matches:
-            return {**result, "target_status": "MISSING", "target_lambda_matches_state": False}
+            return {**result, "status": "NOT_READY", "target_status": "MISSING", "target_lambda_matches_state": False}
         require(len(matches) == 1 and re.fullmatch(r"[A-Za-z0-9]{10}", matches[0]["targetId"]))
         target = read(control, "get_gateway_target", gatewayIdentifier=gid, targetId=matches[0]["targetId"])
         require(target["gatewayArn"] == gateway_arn and target["targetId"] == matches[0]["targetId"]
@@ -457,15 +452,16 @@ def gateway_snapshot(read, runtime, outputs):
             r"arn:aws:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?", actual_lambda))
         result.update(target_status=target.get("status") if target.get("status") in states else "UNKNOWN",
                       target_lambda_matches_state=actual_lambda == expected_lambda,
-                      target_lambda_sha256=fingerprint(actual_lambda) if actual_lambda else None,
-                      expected_lambda_sha256=fingerprint(expected_lambda),
                       target_status_reasons=reasons(target.get("statusReasons", [])),
                       target_updated_at=stamp(target.get("updatedAt")))
+        if target.get("status") != "READY" or actual_lambda != expected_lambda:
+            result["status"] = "NOT_READY"
         return result
     except ClientError as error:
         code = error.response.get("Error", {}).get("Code")
         reason = "access_denied" if code in ("AccessDenied", "AccessDeniedException") else "read_unavailable"
-        return {**result, "status": "PARTIAL", "target_status": "UNKNOWN", "target_reason": reason, "read_errors": 1}
+        return {**result, "status": "NOT_READY" if result["status"] == "NOT_READY" else "PARTIAL",
+                "target_status": "UNKNOWN", "target_reason": reason, "read_errors": 1}
 
 
 def data_snapshot(read, runtime, outputs):

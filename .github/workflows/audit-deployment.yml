@@ -52,7 +52,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install read API SDK
-        run: python3 -m pip install boto3==1.42.97
+        run: |
+          python3 -m pip install --require-hashes --only-binary=:all: -r scripts/v2/agentcore/requirements-provision.txt
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.15.7
@@ -124,9 +125,20 @@ jobs:
               echo "::error::Backend initialization failed (details withheld)"; exit 1;
             }
           for output in runtime_deployment agentcore agent_sql_reader_secret_arn aurora_database; do
+            if [ "$output" = agentcore ]; then
+              state=$(python3 -c \
+                'import json,sys; enabled=json.load(open(sys.argv[1]))["features"]["agentcore"]; assert type(enabled) is bool; print("enabled" if enabled else "disabled")' \
+                "$AUDIT_DIR/runtime_deployment.json" 2>/dev/null) || {
+                  echo "::error::Invalid captured runtime configuration"; exit 1;
+                }
+              if [ "$state" = disabled ]; then
+                printf 'null\n' > "$AUDIT_DIR/agentcore.json"
+                continue
+              fi
+            fi
             terraform -chdir=terraform/foundation output -json "$output" \
               > "$AUDIT_DIR/$output.json" 2>/dev/null || {
-                echo "::error::Required deployment output unavailable (details withheld)"; exit 1;
+                echo "::error::Required deployment output unavailable (details withheld)"; exit 1
               }
           done
           rm -rf -- "$TF_DATA_DIR"
