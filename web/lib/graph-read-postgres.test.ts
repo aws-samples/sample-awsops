@@ -70,6 +70,7 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     const body = await response.json();
     expect(response.status).toBe(200);
     expect(body.nodes[0].id).toBe('old');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE');
     expect(body.collection.captured_at).toBe('2026-09-14T10:00:00.000Z');
     expect((await pool.query('SELECT id FROM topology_nodes')).rows[0].id).toBe('new');
   });
@@ -82,8 +83,27 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     expect(body.collection).toMatchObject({ status: 'partial', readStatus: 'partial', readReason: 'row_limit', readTruncated: true });
   });
 
+  it('retains the requested root when a reachable subgraph exceeds the node cap', async () => {
+    await pool.query(`INSERT INTO topology_nodes(account_id,id,kind,label,class,run_id)
+      SELECT 'self',CASE WHEN i=1 THEN 'zz:root' ELSE 'n:'||i END,'vpc','node','infra','read-fixture'
+      FROM generate_series(1,5220) i;
+      INSERT INTO topology_edges(account_id,source,target,class,run_id)
+      SELECT 'self',CASE WHEN ((i-2)/17)+1=1 THEN 'zz:root' ELSE 'n:'||(((i-2)/17)+1) END,
+        'n:'||i,'infra','read-fixture' FROM generate_series(2,5220) i`);
+    const response = await GET(new Request('http://localhost/api/graph?class=infra&from=zz%3Aroot&depth=3'));
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.nodes).toHaveLength(4000);
+    expect(body.nodes[0].id).toBe('zz:root');
+    expect(body.collection.readTruncated).toBe(true);
+    expect(body.capped).toBe(false); // 17 neighbors do not exceed the per-hop fan-out cap.
+    const ids = new Set(body.nodes.map((node: { id: string }) => node.id));
+    expect(body.edges.every((edge: { source: string; target: string }) => ids.has(edge.source) && ids.has(edge.target))).toBe(true);
+  });
+
   it('keeps a shared-pool slot available and terminates a stalled read below the auth budget', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     let started!: () => void;
     const ready = new Promise<void>(resolve => { started = resolve; });
     api.pool = { connect: async () => {
@@ -97,10 +117,13 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     const first = GET(new Request('http://localhost/api/graph?class=infra'));
     await ready;
     try {
-      const excess = await Promise.all([GET(new Request('http://localhost/api/graph')), GET(new Request('http://localhost/api/graph'))]);
-      expect(excess.map(response => response.status)).toEqual([503, 503]);
+      const second = GET(new Request('http://localhost/api/graph'));
+      expect((await GET(new Request('http://localhost/api/graph'))).status).toBe(503);
       expect((await pool.query('SELECT 42 AS value')).rows[0].value).toBe(42);
-      expect((await first).status).toBe(500);
+      for (const response of await Promise.all([first, second])) {
+        expect(response.status).toBe(500);
+        expect((await response.json()).collection.readReason).toBe('timeout');
+      }
       expect((await pool.query('SELECT count(*) FROM topology_nodes')).rows[0].count).toBe('1');
     } finally { vi.restoreAllMocks(); }
   });
@@ -114,8 +137,7 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     expect((await pool.query('SELECT 42 AS value')).rows[0].value).toBe(42);
   });
 
-  it('preserves the original query SQLSTATE ahead of a later client error', async () => {
-    const original = Object.assign(new Error('fixture original query'), { code: '42501' });
+  it.each([Object.assign(new Error('fixture original query'), { code: '42501' }), new TypeError('fixture application error')])('preserves the original query/application error ahead of a later client error: %s', async original => {
     await expect(graphTransaction(pool, true, async client => {
       client.emit('error', new Error('fixture later socket event'));
       throw original;

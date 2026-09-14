@@ -8,6 +8,7 @@ import { Background, Controls, Position, type Node, type Edge } from '@xyflow/re
 import '@xyflow/react/dist/style.css';
 import PageHeader from '@/components/ui/PageHeader';
 import GraphCollectionStatus from '@/components/topology/GraphCollectionStatus';
+import { fetchGraph } from '@/lib/graph-fetch';
 import { layoutFlow } from '@/lib/flow-layout';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
@@ -38,18 +39,19 @@ export default function ResourceTopologyPage({ params }: { params: { id: string 
   const [graph, setGraph] = useState<Graph | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [revision, setRevision] = useState(0);
 
   useEffect(() => {
     let live = true;
+    const controller = new AbortController();
     setBusy(true);
     setGraph(null);
-    fetch(`/api/graph?class=infra&from=${encodeURIComponent(fromId)}&depth=${depth}&${accountParam(activeAccount) || 'account=self'}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+    fetchGraph(`/api/graph?class=infra&from=${encodeURIComponent(fromId)}&depth=${depth}&${accountParam(activeAccount) || 'account=self'}`, controller.signal)
       .then((d) => { if (live) { setGraph(d); setErr(''); } })
       .catch((e) => { if (live) setErr(String(e instanceof Error ? e.message : e)); })
       .finally(() => { if (live) setBusy(false); });
-    return () => { live = false; };
-  }, [fromId, depth, activeAccount]);
+    return () => { live = false; controller.abort(); };
+  }, [fromId, depth, activeAccount, revision]);
 
   const { nodes, edges } = useMemo(() => {
     if (!graph) return { nodes: [] as Node[], edges: [] as Edge[] };
@@ -104,6 +106,7 @@ export default function ResourceTopologyPage({ params }: { params: { id: string 
         }
       />
       <div className="flex items-center gap-3 px-4 py-1 text-[11px] text-ink-500">
+        <button type="button" disabled={busy} onClick={() => setRevision(n => n + 1)} className="rounded border border-ink-200 px-2 py-1 disabled:opacity-50">{tt('새로고침')}</button>
         {busy && <span>{tt('불러오는 중…')}</span>}
         {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
         {graph?.captured_at && <span>{tt('그래프 시점:')} {new Date(graph.captured_at).toLocaleString()}</span>}

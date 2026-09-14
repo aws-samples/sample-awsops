@@ -27,7 +27,7 @@ export async function writeGraphState(client: PoolClient, account: string, attem
      VALUES ($1, $6, $2, $3::timestamptz,
              CASE WHEN $4 THEN CASE WHEN $6 = 'trace' THEN $3::timestamptz ELSE clock_timestamp() END ELSE NULL END,
              $5::jsonb || CASE WHEN $6 <> 'trace' THEN
-               jsonb_build_object('publishedSources', CASE WHEN $4 THEN $5::jsonb->'sources' ELSE '[]'::jsonb END)
+               jsonb_build_object('publishedSources', CASE WHEN $4 THEN coalesce($5::jsonb->'sources','[]'::jsonb) ELSE '[]'::jsonb END)
                ELSE '{}'::jsonb END)
      ON CONFLICT (account_id, class) DO UPDATE
        SET status = EXCLUDED.status, attempted_at = EXCLUDED.attempted_at,
@@ -41,9 +41,55 @@ export async function writeGraphState(client: PoolClient, account: string, attem
   return result.rowCount !== 0;
 }
 
+/** HTTP counterpart of the collection view allow-list; never spread raw stored metadata. */
+export function projectGraphDetails(value: unknown): Record<string, any> {
+  const object = (v: unknown): Record<string, any> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  const raw = object(value), result: Record<string, any> = {};
+  const statuses = ['ok', 'empty', 'partial', 'error', 'unavailable', 'unknown'];
+  const reasons = new Set(['missing_configuration','configuration_failed','query_failed','malformed_payload',
+    'malformed_rows','payload_truncated','trace_fetch_failed','cap_reached','invalid_request','source_failed',
+    'registry_read_failed','missing_ledger','incomplete_collection','unknown_attributes','unknown_capture',
+    'unknown_account_coverage','empty_not_confirmed','count_not_confirmed']);
+  const number = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 8640000000000000;
+  for (const key of ['windowStartMs','windowEndMs','nodeDrops','edgeDrops','orphanSpans','invalidSpans','unresolvedMessaging']) {
+    if (number(raw[key])) result[key] = raw[key];
+  }
+  for (const key of ['retainedPrevious','infraUnavailable','inputTruncated','graphTruncated','sourceAttempted']) {
+    if (typeof raw[key] === 'boolean') result[key] = raw[key];
+  }
+  if (['publication_failed','source_read_failed','not_attempted'].includes(raw.failureReason)) result.failureReason = raw.failureReason;
+  let limited = false;
+  for (const key of ['sources','publishedSources']) {
+    if (key === 'publishedSources' && !Array.isArray(raw[key])) continue;
+    const sources = Array.isArray(raw[key]) ? raw[key] : [];
+    if (sources.length > 128) limited = true;
+    result[key] = sources.slice(0, 128).flatMap((value: unknown) => {
+      const source = object(value);
+      if (typeof source.sourceId !== 'string' || !/^[A-Za-z0-9:_./-]{1,128}$/.test(source.sourceId)) {
+        limited = true; return [];
+      }
+      const projected: Record<string, any> = { sourceId: source.sourceId };
+      if (statuses.includes(source.status)) projected.status = source.status;
+      if (['succeeded','failed','partial','running','unknown'].includes(source.producerStatus)) projected.producerStatus = source.producerStatus;
+      if (['aggregate','account'].includes(source.scope)) projected.scope = source.scope;
+      for (const clock of ['itemCount','windowStartMs','windowEndMs','capturedAtMs','lastSuccessAtMs','attemptedAtMs','finishedAtMs']) {
+        if (number(source[clock]) || source[clock] === null) projected[clock] = source[clock];
+      }
+      if (Array.isArray(source.reasons)) {
+        const allowed = [...new Set(source.reasons.filter((v: unknown): v is string => typeof v === 'string' && reasons.has(v)))].sort();
+        if (allowed.length > 16 || allowed.length < source.reasons.length) limited = true;
+        projected.reasons = allowed.slice(0, 16);
+      }
+      return [projected];
+    });
+  }
+  if (limited) result.metadataTruncated = true;
+  return result;
+}
+
 export async function readGraphState(pool: Pick<Pool, 'query'>, account: string, cls: GraphClass = 'trace') {
   const unknown = { status: 'unknown', stale: true, attempted_at: null, captured_at: null, sources: [],
-    evidenceKind: cls === 'trace' ? 'trace' : 'inventory' };
+    ...(cls !== 'trace' ? { evidenceKind: 'inventory' } : {}) };
   // A host state is not evidence for an account union. No unbounded per-account payload.
   if (account === '__all__' && cls !== 'trace') return { ...unknown, coverage: 'unknown' };
   const storageAccount = cls === 'trace' && account === '__all__' ? 'self' : account;
@@ -61,14 +107,15 @@ export async function readGraphState(pool: Pick<Pool, 'query'>, account: string,
     throw error;
   }
   if (!row) return unknown;
+  const details = projectGraphDetails(row.details);
   const captured = row.captured_at ? new Date(row.captured_at).getTime() : NaN;
   const configured = Number(process.env.GRAPH_REBUILD_INTERVAL_MINS ?? 0);
   const maxAgeMins = Number.isFinite(configured) ? Math.max(15, configured * 2) : 15;
   const stale = !Number.isFinite(captured) || Date.now() - captured > maxAgeMins * 60_000
     || row.status === 'error' || row.status === 'unavailable'
-    || row.details?.retainedPrevious === true
-    || (cls !== 'trace' && inventorySourcesStale(row.details?.publishedSources));
-  return { ...row.details, ...(cls !== 'trace' ? { evidenceKind: 'inventory' } : {}), status: row.status, stale,
+    || details.retainedPrevious === true || details.metadataTruncated === true
+    || (cls !== 'trace' && inventorySourcesStale(details.publishedSources));
+  return { ...details, ...(cls !== 'trace' ? { evidenceKind: 'inventory' } : {}), status: row.status, stale,
     attempted_at: row.attempted_at, captured_at: row.captured_at };
 }
 

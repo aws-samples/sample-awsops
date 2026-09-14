@@ -91,7 +91,7 @@ at a 30-minute cadence in both readers. Failed/partial/retained evidence keeps i
 Apply the Lambda environment binding through Terraform along with the reader code deployment;
 updating the code alone does not configure the cadence.
 
-웹과 inventory-reader Lambda에 같은 `graph_rebuild_interval_mins`를 전달한다. 신선도 기준은
+웹과 inventory-reader Lambda에 같은 `graph_rebuild_interval_mins`를 전달한다. 그래프 게시 시점의 신선도 기준은
 수집 주기의 두 배이며 최소 15분이고, 0에서도 이 최소값을 유지한다. 30분 주기에서 정상적으로
 수집된 20분 전 스냅샷은 양쪽에서 최신으로 판정한다. 실패·부분·보존 데이터의 기존 판정은
 유지하며, 코드 배포와 함께 Terraform의 Lambda 환경설정도 반영해야 한다.
@@ -270,3 +270,5 @@ Apply the named collection projection and read-index migrations through the exis
 Separately, `inventory_stale_after_minutes` supplies `INVENTORY_STALE_AFTER_MINUTES` to the web task and inventory-reader Lambda (default 30, 1–1440). Applying the reviewed Terraform environment change and deploying the web image are separate operator steps. The shared number is an age threshold, not identical status algorithms: the graph also requires a succeeded producer and ok/empty published-source evidence, valid source clocks and a fresh graph publication. Unknown attributes produce partial source evidence, not fresh completeness. Future clocks remain unknown/stale conservatively.
 
 See [graph read contract](graph-read-contract.md) for request budgets, read-vs-collection disclosure, legacy display clocks and the disposable PostgreSQL tests. No repeated retention count permits an unproven empty publication or sweep.
+
+Topology source adapters honor typed producer collection markers before accepting empty results. Unknown or incomplete empty responses cannot authorize an empty graph publication; a genuinely observed empty response can. The shared `agent/fixtures/tempo-topology-contract.json` fixture binds actual producer bodies to adapter and PostgreSQL publication regressions; the producer-side fixture check ships with the producer contract stage.

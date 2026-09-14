@@ -238,7 +238,7 @@ EKS evidence is limited to connected clusters returned in `/api/eks`'s configure
 counted as not queried, independently of read failure/truncation. Inventory reads apply
 account selection only. Failed HTTP reads do not synthesize unknown aggregate status.
 
-## Trace collection disclosure
+## Collection disclosure (including trace)
 
 The `GraphCollection` / `GraphCollectionSource` TypeScript contract is defined in
 `web/components/topology/GraphCollectionStatus.tsx`; runtime input is still normalized.
@@ -272,7 +272,7 @@ runtime payloads for compatibility with older or malformed responses.
 | `sources[].windowStartMs/windowEndMs` | Actual trace query window, in epoch milliseconds; displayed independently of publication time. |
 | `nodeDrops`, `edgeDrops`, `orphanSpans`, `invalidSpans`, `unresolvedMessaging`, `infraUnavailable` | Existing trace loss counters and unavailable inventory context; span/messaging problems are distinct from processing limits. Positive losses are visible even for older rows without newer truncation flags. Loss alone does not imply that a previous graph was retained. |
 | `evidenceKind`, `inputTruncated`, `graphTruncated` | Evidence kind is derived from graph class; `inventory` changes empty-result wording. Producer truncation remains separate from API read truncation. |
-| `readStatus`, `readReason`, `readTruncated` | API read availability/coverage, independent of collector status: `ok`, `partial` (`row_limit`), or `unavailable` (`busy`/`query_failed`). |
+| `readStatus`, `readReason`, `readTruncated` | API read availability/coverage, independent of collector status: `ok`, `partial` (`row_limit`), or `unavailable` (`busy`/`timeout`/`query_failed`). |
 | `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Optional source scope/capture/sweep clocks and saved-source provenance used by the graph-publication companion. Absent fields are not fabricated. |
 
 The UI supports the existing trace envelope and optional inventory/saved-source
@@ -282,8 +282,13 @@ includes saved-source entries. Runtime, Lambda and migration rollout remain sepa
 from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
 
 
-Graph requests admit one transaction per shared pool, with 1.5s statement/idle and 2s total transaction limits (below the auth revocation budget). JSON serialization runs after commit and release. Class reads return at most 4000 nodes and 8000 raw edges, then deduplicate bounded edge evidence; edges reference returned nodes. A sentinel row discloses read truncation without claiming collection failure. Existing per-hop traversal caps remain.
+Graph requests admit two transactions per shared pool, with 1.5s statement/idle and 2s total transaction limits (below the auth revocation budget). JSON serialization runs after commit and release. Class reads return at most 4000 nodes and 8000 raw edges, then deduplicate bounded edge evidence; edges reference returned nodes. A sentinel row discloses read truncation without claiming collection failure. Existing per-hop traversal caps remain.
 
 A missing or failed state read remains unknown; `failureReason=state_read_failed` is shown separately. Saved-source provenance is visible whenever present, including stale successful publications. Producer start/finish/status and source/attempt windows are separate clocks. For legacy single-account flow/infra rows, top-level `captured_at` may retain the old row display clock; `collection.captured_at` remains null and no source freshness is inferred.
 
 Excess graph requests return HTTP 503, other read failures HTTP 500, with fixed `message="Graph read failed"`, class/account and unknown collection/read-unavailable metadata. Raw database messages are never returned. See [request/rollout details](runbooks/graph-read-contract.md).
+
+
+All three graph pages render collection/read errors, parse safe non-2xx envelopes, abort superseded fetches and provide refresh. A shed request includes Retry-After: 1 and a fixed server-side shed diagnostic. Timeout SQLSTATEs (57014/25P03/25P04) produce readReason=timeout; they never imply empty collection or successful partial publication. Requested subgraph roots are prioritized before the node cap; fan-out capped and readTruncated remain distinct.
+
+HTTP collection details use the same bounded key/status/reason vocabulary as the SQL-reader view: raw/private keys and injected read/coverage fields are excluded. Source arrays are capped at128 and reason lists at16; metadataTruncated discloses omitted/malformed metadata separately from graph row truncation. Safe null source clocks remain unknown for compatibility.
