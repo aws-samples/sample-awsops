@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a2196b28b87e · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3d0e64ca7646 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -24,9 +24,15 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 - The sealing payload reaches OpenSSL through stdin, with no plaintext staging file. Captured Terraform runs in a separate session; first-interrupt forwarding, second-interrupt group kill and parent-death protection govern cancellation. Sealing/storage/publication failures preserve the command exit.
 - Cleanup deletes only after the identified upload's literal success; failed/cancelled/skipped/unknown outcomes retain ciphertext privately. Audits distinguish pending_upload, retained_unpublished and final cleanup outcomes. No broad runner-temp sweep, shared-UID isolation or SIGKILL guarantee.
 - `v2/ci_deployment_audit.py` is manual dev-only, with a restrictive session and fixed reads/SELECTs. It shares only backend parsing with `ci_verifier_sessions.py`; grants and no-invoke behavior stay unchanged. Preserve identity/resource guards and safe output projection; current web status, event metrics and observed SQL-reader rows never establish full deployment readiness. Tests: `test_ci_deployment_audit.py`; guide: `docs/runbooks/deployment-audit.md`.
-- `v2/ci_verifier_sessions.py` is a pure prerequisite for separate manual collection wiring:
-  two nonempty restricted sessions, no AWS calls or persistent IAM changes. Workload state must
-  share the selected private directory. Prepare has no Lambda grant; collect permits only the
+- `v2/ci_verifier_sessions.py` supplies policies for manual collection and Deploy Web verification:
+  backend/workload restrictions, no AWS calls or persistent IAM changes. Workload state must
+  come from the consumer's private capture. Manual dev collect-runtime dispatches support
+  backend/workload and prepare/collect; dev deploy-web push/dispatch supports workload collect
+  only, never backend/prepare. Workflow wiring and earlier Deploy Web deployment credentials
+  remain consumer responsibilities; the helper installs neither consumer path. Dev verification
+  needs an activated runtime and private proof credentials/state for both push and dispatch.
+  Missing proof fails closed; each refresh needs a nonempty policy. State must share the selected private directory.
+  Prepare has no Lambda grant; collect permits only the
   owned collector. The consumer enforces explicit catalog/CloudFront RequestResponse payloads
   (missing type means all), distinct catalog/succeeded replies and post-marker authenticated
   freshness/runtime/worker proof. Application inventory writes are operator collection, not an

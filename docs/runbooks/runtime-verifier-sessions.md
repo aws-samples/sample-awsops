@@ -2,15 +2,21 @@
 
 ## Symptoms
 
-A manual development verifier cannot create its session policy, or its deployer
+A development verifier cannot create its session policy, or its deployer
 credentials permit operations beyond the controller's command allowlist.
 Application-level allowlists do not restrict the underlying AWS session.
 
-This is a **prerequisite**, not a deployed collection workflow. The proposed
-`collect-runtime.yml` and `ci/runtime-release.mjs` consumer land separately;
-they are not added by the policy-helper change. Their final workflow wiring must
-be reviewed after integration. Do not infer that a manual dispatch is available
-from the presence of this helper.
+The helper supplies session policies for manual collection and Deploy Web's
+development verification phase. It does not assume a role or wire workflows.
+Review each consumer's credential-assumption steps separately; helper availability
+alone does not establish that a workflow uses a restricted session.
+
+**Current wiring:** this checkout does not contain `collect-runtime.yml`.
+Deploy Web's existing smoke is dispatch-only database verification. It never
+captures `runtime_deployment`; its `verify_database` credential path exists only
+for dispatch runs.
+The integration requirements below do not describe already-wired verification
+steps. The helper change does not install either consumer path.
 
 ## Candidate causes
 
@@ -38,6 +44,8 @@ python3 -m pytest scripts/v2/test_ci_runtime_policy.py -q
 Tests cover allowed operations, denied sibling resources/regions/actions,
 backend parsing, KMS conditions, private files, immediate FIFO rejection,
 masking and publication failures.
+The caller matrix covers both Deploy Web events, collect-only workload access,
+backend denial for Deploy Web, and preservation of manual prepare/collect behavior.
 The size test confirms policies with maximum-length project names fit STS's
 2,048-character limit; it does not exercise oversized-policy rejection.
 These are offline policy-boundary
@@ -45,8 +53,12 @@ checks, not an assertion of effective live access under every IAM/SCP policy.
 
 ## Action and integration contract
 
-Retain the existing operator-owned deployer role and obtain two separate OIDC
-sessions. No role, trust policy or persistent IAM attachment is added here.
+Retain the existing operator-owned deployer role. For manual collection, apply
+the backend and workload policies in separate OIDC sessions. When adding Deploy Web
+verification, use only the workload policy; the earlier deployment phase
+retains the existing credential contract. Consumers must pass the generated
+policy to the credential-assumption step. No role, trust policy or persistent
+IAM attachment is added here.
 
 | Phase | Allowed AWS operations | Boundary |
 | --- | --- | --- |
@@ -74,13 +86,22 @@ uses `RUNTIME_MODE=prepare|collect`; it does not reinterpret the smoke protocol.
 `PIN_SHA` is the reviewed deployed web-image commit: the helper checks its format
 only; the consumer binds the image to ECR and running tasks. It need not equal
 the workflow's `GITHUB_SHA`, and it must be empty in prepare mode.
-Only same-repository manual dev dispatches with
-`GITHUB_WORKFLOW_REF` exactly identifying this repository's
-`.github/workflows/collect-runtime.yml@refs/heads/dev`
-are accepted. `CI_ROLE_ARN` is the configured deployer role and
+Accepted callers are limited to this repository and `refs/heads/dev`. The full
+`GITHUB_WORKFLOW_REF` must use this repository's prefix and the exact path/ref
+below. `TARGET=dev`, account/role, source SHA, image-pin, region and default-workspace checks
+apply to every row.
+
+| Policy phase | Workflow path/ref | Event | `RUNTIME_MODE` |
+| --- | --- | --- | --- |
+| Backend | `.github/workflows/collect-runtime.yml@refs/heads/dev` | `workflow_dispatch` | `prepare` or `collect` |
+| Workload | `.github/workflows/collect-runtime.yml@refs/heads/dev` | `workflow_dispatch` | `prepare` or `collect` |
+| Workload | `.github/workflows/deploy-web.yml@refs/heads/dev` | `push` or `workflow_dispatch` | `collect` only |
+
+Deploy Web cannot request a backend policy or use prepare mode.
+`CI_ROLE_ARN` is the configured deployer role and
 `BACKEND_B64` is the private encoded backend input used only by the backend phase.
 
-The follow-up workflow must:
+Manual collection integration must:
 
 1. Validate the manual dev source, configured role/account and mode before AWS
    access. Use fresh per-run private directories and files with 0700/0600 permissions.
@@ -98,6 +119,46 @@ The follow-up workflow must:
 5. Clean the owned policy and credential files in always-run cleanup, including
    failure/cancellation paths. Do not sweep unrelated runner temporary files.
 
+Deploy Web integration must establish these prerequisites before using the
+workload policy:
+
+- Scope all added preparation/capture/verification steps to
+  `github.ref == 'refs/heads/dev'`; the workflow also serves other branches.
+  Set `TARGET=dev`, `AWS_REGION=ap-northeast-2`, `RUNTIME_MODE=collect`, and the
+  configured `AWS_ACCOUNT_ID_DEV`/`CI_ROLE_ARN`. Use the actual Actions
+  `GITHUB_*` context and output file, not fabricated caller metadata.
+- Collect requires an activated runtime profile: captured
+  `features.inventory`, `features.agentcore` and `features.workers` must all be
+  true in applied state, with the owned collector code hash and known CloudFront
+  identity. Complete reviewed runtime/readiness activation before deployment
+  mutations and mandatory verification. The consumer must validate those captured
+  fields and abort before image re-pinning or service rollout if any is missing;
+  the later workload-policy build is not a substitute for this pre-mutation check.
+  Feature-off bootstrap uses the
+  [first-web procedure](first-web-bootstrap.md) and manual prepare path; collect
+  is not its fallback. Missing activation or proof must fail closed, not silently
+  skip verification or restore an unrestricted session.
+- Prepare the existing configured HTTP proof credentials and capture validated
+  `runtime_deployment` privately in the same run, before deployment mutations,
+  under the existing deployment credentials and backend/account guards. These
+  steps and cleanup must cover push as well as manual dev runs; the current
+  dispatch-only `verify_database` credential path is insufficient for push.
+- Resolve `PIN_SHA` exactly as the image-promotion step:
+  `${{ inputs.image_sha || github.sha }}`. Require a full lower-case 40-character
+  commit SHA; reject invalid values rather than substituting a different image.
+
+After deployment, immediately before verification's credential refresh, build
+the workload policy from that captured file. Deploy Web must not request a
+backend policy from this helper. The same 0700 directory/0600 file binding,
+nonempty-policy requirement, fresh-caller check and always-run owned-file cleanup
+apply. Missing policy output must fail the job, never retain or recreate an
+unrestricted verification session. Full authenticated runtime/model/worker proof
+remains mandatory; policy generation or database smoke alone does not establish it.
+Use the bounded busy/superseded handling and release-mode proof contract below;
+they do not authorize skipping missing or failed proof. Push-triggered verification
+uses the same owned collector's application-data effects already automated by
+the existing 15-minute schedule, with the narrower explicit payloads below.
+
 The CLI publishes `policy_file` and `session_policy`. It masks the complete policy,
 Resource ARNs, bare S3 bucket and bucket/key forms, and configured account first.
 It fails outside
@@ -106,7 +167,7 @@ symlink/public/non-regular input files, or an existing output policy file.
 
 ### Collection effects and proof
 
-The intended `collect` consumer uses `RequestResponse` on the pinned function's
+Collect consumers must use `RequestResponse` on the pinned function's
 unqualified ARN, without a version or alias qualifier.
 Each event must explicitly contain exactly `{"type":"catalog"}` or
 `{"type":"cloudfront"}`. **An absent `type` defaults to `all`**, which triggers
@@ -153,7 +214,7 @@ authenticated BFF/AgentCore and owned worker HTTP proofs. A successful invoke
 alone never establishes it.
 
 The catalog lists registered types, not acknowledged invocations. For the
-follow-up consumer's **release mode**, read every returned type's host job ledger
+consumer's **release mode**, read every returned type's host job ledger
 over HTTP within a bounded 1,200-second wait. CloudFront needs durable success
 after the owned pre-invoke marker. Other types need durable success within the
 last 30 minutes; the existing scheduler may supply that evidence. A later running,
@@ -177,7 +238,7 @@ workloads; sharing its backend parser does not alter its policy grants or calls.
 The trust boundary remains reviewed workflow code on a trusted runner. Session
 restrictions do not prevent malicious future workflow code from requesting a
 different OIDC session under the existing role. A dedicated role is separate
-IAM-owner work, not part of this prerequisite.
+IAM-owner work, outside this policy helper.
 
 ## Related files and decisions
 

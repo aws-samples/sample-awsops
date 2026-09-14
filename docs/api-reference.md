@@ -34,15 +34,33 @@
 
 ### Inventory pagination and sweep ledger
 
-`GET /api/inventory/[type]` returns scoped `rows`, using `limit` (at most 500) and
-`offset`, plus nullable `run` metadata. The run is the global per-type sweep row
-with `account_id='self'`, including for member/all-account reads. Its row count
-covers the sweep, not the selected account, region or page.
+In normal row mode, `GET /api/inventory/[type]` returns scoped `rows` plus nullable
+`run` metadata. `limit` defaults to 100 and is upper-capped at 500; `offset` defaults
+to 0. The route uses numeric coercion/defaults, without positive/integer validation
+or a lower-bound clamp. Callers should send a positive integer limit and nonnegative
+integer offset; negative/fractional values can reach PostgreSQL, with row-mode errors
+returned as HTTP 500 and an error message rather than a validation 400.
 
-Rows and run metadata are separate reads, not an atomic snapshot. Authentication
-and type-specific admin checks still apply. Consumers must not interpret an empty
-or partial page, or a global run count, as proof of absence or complete coverage
-for the selected scope; bounded paging and confidence guards belong to the caller.
+`?view=agg` instead returns totals, state/distribution counts and facets, without
+`rows` or `run`. Both modes retain authentication, type-specific admin checks and
+the same account/region/global scope filters.
+
+The normal-mode `run` is global per-type job/sweep metadata under `account_id='self'`,
+including for member/all-account reads; its `row_count` is not the selected-scope
+or page count. The collector marks the job `running` before row writes. A successful
+finish advances `finished_at` and `last_success_at`; partial/failed finishes do not
+advance the last-success timestamp. The endpoint exposes `status`, `finished_at`,
+`row_count`, `error` and `last_success_at`, not a per-account completion certificate.
+
+Rows and run metadata are separate reads, not an atomic snapshot across one request
+or multiple pages. Missing run/timestamps, `running`/`partial`/`failed`, stale last
+success or changed metadata between pages must not be read as fresh complete coverage.
+Even stable successful metadata does not certify atomic page contents or AWS absence.
+Bounded paging, freshness and coverage decisions belong to the caller.
+
+Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
+[row/ledger reads](../web/lib/inventory.ts), and
+[collector lifecycle](../scripts/v2/steampipe/sync_lambda.py).
 
 ## eks (10)
 | 경로 | 메서드 | 역할 | 인증 |

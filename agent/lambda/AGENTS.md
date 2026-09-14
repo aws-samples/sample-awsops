@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 0b51789d5736 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f4c42651914a · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -42,10 +42,20 @@ that's the source of truth for tool counts, not this doc.
   explicit-column, read-only views in a dedicated `sql_reader` schema (never `SELECT *`).
   Adding a column or view here is a security-relevant change requiring review; never grant
   anything to `public`.
-- SQL-reader topology metadata excludes `ownership_evidence`, `ambiguity`, `candidate` and
-  per-target `capturedAt`. Treat every `class='flow'` label as cached configuration context,
-  never exclusive/live ownership. Missing qualifiers do not establish confidence; the
-  exposed `captured_at` is graph materialization time, not target inventory capture time.
+- SQL-reader `topology_nodes.meta` is a named-key allowlist, currently owned by
+  `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Unlisted keys, including
+  ownership/ambiguity/target-time fields a future writer might add, stay absent until a
+  reviewed additive migration exposes them. This does not assert current writers emit them.
+- Flow/infra labels are cached configuration, not live ownership. Trace account/region or
+  Kubernetes metadata, when present, is telemetry attribution; database `infra_ref` is a
+  host-name/prefix inference. Trace queues explicitly use `identityProvenance='telemetry_claim'`
+  and nullable destination-ARN claims, never verified AWS ownership. Missing fields prove nothing.
+- Node `captured_at` is materialization time, not inventory/event time. Use
+  `sql_reader.topology_graph_state` for trace status/window/retained evidence; its current
+  writer supplies trace only, not flow/infra coverage.
+- `test_inventory_view_contract.py` reads the original reader-role migration for topology
+  assertions, not the current projection owner. Do not claim it enforces that owner; inspect
+  the current migration and `scripts/v2/workers/test_graph_collection.py` separately.
 - `execute_sql` is host-account AND single-cluster only — any other target fails closed (400).
 - The agent Lambda's IAM role has no `GetSecretValue` on the master secret, so bypassing the
   lexical guard (`sql_readonly_guard.py`) only reaches an unprivileged session — the guard is
@@ -65,3 +75,15 @@ that's the source of truth for tool counts, not this doc.
   live again.
 - The lexical guard missing some SQL construct is not itself a finding as long as the DB role's
   view-only grant boundary holds.
+
+## ENI configuration evidence
+
+`get_eni_details` reports configuration, not connectivity. Missing or malformed `Groups`,
+`IpPermissions`, `IpPermissionsEgress`, `Entries` or `Routes` is partial evidence, with the
+affected resource and field in `unknown`. Actual empty lists remain distinct. Per-group
+completeness includes both rule lists and their peers; preserve other returned evidence.
+
+Require established route-association state and sanitized codes for every component read.
+SG output is bounded to 200 peer rows per group with explicit metadata and 100-character
+descriptions; truncation is partial evidence. Validate the ENI test suite, then deploy
+Lambda, AgentCore prompt and live Gateway catalog through the existing operator flow.
