@@ -1,6 +1,6 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 95bb6cb8d860 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 6424c74d4cc9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
-> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
+> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
 # Runbooks — Reviewer Context
 
@@ -10,6 +10,12 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
+- Private saved-plan inspection authenticates run/checkout/assets before 32 MiB-bounded rendering; it never authorizes apply.
+- Branch-independent artifact inspection/recovery lives in `dev-repo-setup.md`; domain rollout remains dev-only. Linux capture forwards the first interrupt, kills the child group on a second and arms parent-death SIGKILL; cancellation is not rollback.
+- Plan/apply capture drains a 1 MiB tail in memory, preserving the command exit independently of scratch writes. Fixed audits include capture/retention classes and available numeric success action counts; no raw automatic-run diagnostics.
+- Only an owned single ciphertext file can be uploaded for dispatch failure/cancellation, under an attempt-specific name. Schema-2 failure HMAC uses a separate domain; recovery authenticates the original attempt. Keep AWS_SESSION_TOKEN while removing GitHub channels/tokens, encryption keys, TF_LOG* and TF_CLI_ARGS* from Terraform child environments.
+- Sealing uses OpenSSL stdin without plaintext staging. Captured Terraform uses Linux parent-death protection and escalates a second interrupt after graceful first-interrupt forwarding.
+- Key/storage/seal/publication/cleanup outcomes are distinct. Delete owned ciphertext only after the identified upload succeeds; failed/cancelled/skipped/unknown uploads retain it privately. Audits report pending_upload and final upload/cleanup outcomes; no broad temp sweep, host-loss guarantee or shared-UID isolation.
 - `deployment-audit.md` separates manual dev observations under backend-bound and workload-read sessions. Preserve identity/resource guards and private cleanup. Web and AgentCore observations do not prove applied versions or invocation readiness; observed SQL-reader types never establish complete inventory.
 - `runtime-foundation.md` covers account-bound default-off activation and saved-plan assets. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
 - The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
@@ -18,7 +24,7 @@ legacy runbook's steps as the current operational path).
   markers, removes stale regular ZIPs and rejects ZIP links. Pack requires known planned ZIPs;
   untargeted Lambdas are absent from targeted planned_values. TF_PLAN_ENC_KEY HMAC binds plan/SHA/scope and
   file paths/modes/hashes. Both APIs permit push/pull_request/workflow_dispatch, or explicit
-  local commits without an event. Key rotation invalidates signed bundles.
+  local commits without an event. Old signed bundles require their matching prior key after rotation.
   The 0600 archive may contain signing keys; integrating callers must encrypt before upload
   and clean their plaintext/staging. Terraform plan/apply now wire pack/restore.
   CI_ASSETS_READY=true validates restored layers without reinstalling. See
@@ -114,29 +120,40 @@ legacy runbook's steps as the current operational path).
   (ADR-016), not stale content to delete outright.
 
 ## Authenticated development verification
-- Apply both `agentcore_enabled` and `ci_readiness_enabled`, then provision AgentCore.
-  Verify also requires active inventory/dispatch, `workers_enabled=true` and deployed ARM64 worker images.
-  Only that output boolean enables `DEPLOYMENT_READINESS_ENABLED`; no shell override.
-  Terraform apply creates the verifier group when both flags are true; managed-demo membership
-  also requires `create_demo_user=true`. No admin/IAM role is granted. The release controller
-  does not provision these resources; do not separately create the Terraform-managed group.
-  `CI_READONLY_RUNTIME_DEV=true` enables readiness in the public dev profile; public CI rejects
-  the flag outside dev. Private deployments outside public CI set it explicitly before apply/provisioning.
-  False/missing reports `runtime_disabled`. Capped samples cannot prove absence. The owned CloudFront probe fails
-  on partial/failed results or unknown attributes; newer attempts disclose degradation. Other catalog types may report
-  degradation only with recent last-success evidence; complete inventory is never inferred.
-- The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
-  credentials. Prepare checks host registration (optional hostOnly); verify additionally
-  requires applied CloudFront identity, the deployed catalog and pre-probe timestamp,
-  bounded collection evidence, web-role SSM/AgentCore proof and Lambda/Fargate completion. Every dev Deploy Web
-  release requires the controller-generated verify file regardless of verify_database. The billed readiness
-  route requires admin or deployment-verifiers, one in-flight call and a per-process 60-second cooldown; replicas have independent cooldowns.
 
-- Every dev release prepares effective demo credentials privately before rollout, regardless of the legacy input,
-  then verifies login and edge-authenticated `/api/db`; positive table count is not a ledger audit.
-- Unwrapped Terraform and private 0600/0700 files are required. The CLI's HTTP scratch shares
-  the prepared credential directory and always-cleanup; expose only phases/validated HTTP status,
-  never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
+- Every dev Deploy Web release requires the full gate regardless of `verify_database`.
+  Explicitly apply readiness, AgentCore, inventory/dispatch and workers, deploy the ARM64
+  images and provision AgentCore before verification. Applied output alone enables
+  `DEPLOYMENT_READINESS_ENABLED`; missing/false is `runtime_disabled`, with no shell override.
+- `CI_READINESS_ENABLED_DEV=true/false` explicitly overrides readiness only on dev;
+  empty/unset preserves tfvars/default false. The runtime profile never enables it.
+  Reviewed apply creates only the verifier group with AgentCore enabled; automatic membership
+  also requires `create_demo_user=true`. The controller verifies, not provisions, these resources.
+  Adopt existing groups/memberships with reviewed imports and inspect unexpected privileges.
+- Fresh login obtains new group claims. Removing membership does not rewrite issued ID-token
+  claims (up to 12 hours); session revocation and runtime disablement are independent.
+  Disabled AgentCore blanks only the web runtime SSM path; invocation/status honor it,
+  while the separate alias/incident bridge and other control-plane reads remain unchanged.
+  Status lookup does not validate a full runtime ARN or prove invocation readiness.
+- Preparation checks an existing web deployment, login/DB and host registry, accepting disabled
+  backends and reporting prepared only. A new stack needs separate reviewed bootstrap.
+  Collect requires the exact deployed image SHA. No health-only bypass, password reset or
+  admin promotion. The billed route requires admin/verifier membership and a 60-second
+  process cooldown with one in-flight request; replicas have independent cooldowns.
+- Credential steps in Terraform plan/host verification, Deploy Web and collect-runtime bind
+  `TF_VAR_DEMO_PASSWORD` as step-scoped `TF_VAR_demo_password`. Keep effective credentials,
+  runtime configuration and HTTP scratch in one cleaned 0700 directory with 0600 files;
+  only paths cross steps. Public errors expose fixed phases/validated statuses, not bodies,
+  cookies or Terraform diagnostics. A positive `/api/db` table count is not a ledger audit.
+- Verify the collector's configured archive hash against live code. Invoke only the owned
+  CloudFront probe: require synchronous succeeded/zero unknowns, a post-marker known record
+  and fresh nonce/account-bound web SSM/AgentCore/model proof before the catalog wait.
+  Durable CloudFront last success must remain post-marker even after a later scheduled run.
+  Every other catalog type needs last success within thirty minutes of observation; disclose
+  newer running/partial/failed attempts and unknown coverage as degraded, completeness unknown.
+  Missing/stale/malformed evidence blocks. Both owned Lambda and Fargate jobs must succeed.
+- Release collection waits twenty minutes; standalone verification keeps ten minutes and
+  strict post-marker checks for every supplied type. Catalog/probe budgets are 450/900 seconds;
+  retry only confirmed throttling/busy/superseded probe outcomes. No scheduler/IAM repair.
 - Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
-
-Release mode reads the code-checked catalog and invokes only the owned CloudFront collector. The owned CloudFront response must succeed with zero unknowns; its known record and durable last success remain post-marker. Capture actual runtime proof before the catalog wait; later CloudFront attempts disclose degradation without revoking that proof; other catalog types require last success within thirty minutes of observation. Newer running/partial/failed attempts and unknown attributes are disclosed as degraded, with completeness always unknown. Missing/stale or malformed catalog evidence blocks; standalone smoke remains strict for all supplied types. SSM/model and both owned worker proofs are mandatory. Catalog/probe budgets remain 450/900 seconds; release polling is twenty minutes, standalone ten. Only confirmed throttling/busy/superseded probe outcomes retry. See docs/runbooks/runtime-foundation.md for timing, cleanup and existing-stack adoption; no scheduler or IAM repair is performed.
+  See `runtime-foundation.md` for the detailed proof, timing and reviewed-adoption contracts.

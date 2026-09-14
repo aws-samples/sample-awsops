@@ -1,75 +1,112 @@
-# Runtime foundation / 런타임 기반 구성
+<a id="runtime-foundation--런타임-기반-구성"></a>
 
-## Symptoms and verification / 증상과 검증
+# Runtime foundation
+
+<!-- Legacy fragment anchors preserve incoming links; visible guidance is English. -->
+
+<a id="symptoms-and-verification--증상과-검증"></a>
+
+## Symptoms and verification
+
 A healthy web endpoint does not prove inventory, SSM, AgentCore or worker readiness; inspect disabled backends, pending parameters and failed collection separately.
-웹 health 성공은 수집·SSM·AgentCore·워커 정상 증거가 아니다. 기능 비활성·파라미터 미완료·수집 실패를 구분한다.
 Use Terraform 1.15.7 and both `scripts/v2/requirements-test.txt` and `scripts/v2/steampipe/requirements.txt`. From the repository root, run these mocked-provider checks:
-위 도구·의존성을 설치하고 루트에서 mock 검사를 실행한다.
+
 ```bash
 python3 -m pytest -q scripts/v2/test_ci_*.py
 bash scripts/v2/terraform-test.sh
 python3 -m pytest -q scripts/v2/steampipe/test_host_scope.py
-node --test scripts/v2/ci/prepare-runtime-host.test.mjs scripts/v2/ci/runtime-release.test.mjs scripts/v2/ci/runtime-release.workflow.test.mjs
+node --test scripts/v2/ci/prepare-runtime-host.test.mjs
 ```
 
-## Activation / 활성화
+<a id="activation--활성화"></a>
+
+## Activation
+
 1. Configure the **secret** `AWS_ACCOUNT_ID_DEV`, backend and existing CI roles. Checks establish account/role consistency, not dev/production isolation.
-   계정은 시크릿에 두며 계정·역할 일치를 스택 격리 보장으로 해석하지 않는다.
-2. This controller adopts an already-running web stack with working foundation, migrations and login; first-web bootstrap is outside this workflow. `CI_READONLY_RUNTIME_DEV=true` enables core runtime; manual full plan/apply require real login/DB and an enabled host registry with no enabled foreign rows.
+2. This controller adopts an already-running web stack with working foundation, migrations and login. A brand-new stack needs a separate reviewed first-web bootstrap procedure before using it. `CI_READONLY_RUNTIME_DEV=true` enables core runtime, without enabling the separate readiness capability; manual full plan/apply require real login/DB and an enabled host registry with no enabled foreign rows.
 3. `runtime-ecr-bootstrap` creates only three repositories. Build ARM64 images and set verified `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV` before a full plan.
-   저장소 세 개를 bootstrap한 뒤 ARM64 이미지의 검증된 digest 두 개를 설정한다.
 4. Dev/preview private discovery requires full-plan `runtime_rollout=true` and DNS permission; dev also requires the profile. Keep `domain_rollout=false`. Profile/rollout require remediation, RCA write-back, integrations write and diagnosis notifications off; governed external writes are not reclassified as FROZEN.
-   사설 DNS 전환에는 full 계획·runtime marker·DNS 허용이 필요하다. 해당 쓰기·알림 플래그는 끄되 외부 쓰기 정책 자체를 FROZEN으로 바꾸지 않는다.
 5. Review/apply the same branch/SHA plan and encrypted assets. Preserve public DNS, certificates and network topology; unchanged owned ECS registration still requires DNS permission. Missing/mismatched bundles require a new plan. `CI_ASSETS_READY=true` selects layer verification, not rebuilding.
-   같은 브랜치·SHA 계획/asset을 적용하고 공용 DNS·인증서·네트워크를 보존한다. ECS 등록의 DNS 허용을 유지하며 위 플래그로 레이어를 검증한다. 불일치 시 새 계획이 필요하다.
 
 ```bash
 # After the profile, base application and verified digests are configured:
 gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev -f mode=plan -f plan_scope=full -f runtime_rollout=true -f allow_dns_changes=true
 ```
 Host-only removes only collector AssumeRole; Agent MCP grants remain. IAM includes known regions regardless of current opt-in; newly launched AWS regions require a fresh apply. IAM narrowing also applies to already-enabled main/preview stacks independently of the dev profile.
-호스트 모드는 수집기 AssumeRole만 제외한다. 알려진 리전은 opt-in 전에도 IAM에 포함되며 AWS 신규 출시 리전은 재적용이 필요하다. IAM 축소는 dev 프로필과 무관하게 기존 main/preview에도 적용된다.
-S3 steady denials remain unknown: rows carry `attributes_unknown`, the ledger increments
-`unknown_attribute_count`, and freshness is `degraded`. The release reports this degradation;
-it does not certify complete inventory. Its CloudFront runtime proof still requires zero unknowns.
+S3 steady denials remain unknown: rows carry `attributes_unknown`, the ledger increments `unknown_attribute_count`, and freshness is `degraded`. The release discloses this degradation and keeps completeness `unknown`; its owned CloudFront proof still requires zero unknown attributes. Other catalog types must retain recent successful collection as defined in the [collection contract](#collection-contention--수집-경합).
 The digest/host-preflight profile is dev-only. Preview retains operator-configured mutable tags or digests and multi-account scope, without dev host verification; account/role and private-DNS ownership checks still apply.
-digest·호스트 사전 검증은 dev 프로필 전용이다. preview는 운영자 설정 태그/digest·다중 계정 범위를 유지하며 계정·역할·사설 DNS 소유권만 공통으로 검증한다.
 
-## Rollback / 롤백
+## Readiness capability
+
+`CI_READONLY_RUNTIME_DEV` does not grant billed-probe access. The dedicated dev repository variable `CI_READINESS_ENABLED_DEV` is independent of that profile:
+
+| Value | Terraform behavior on dev |
+|---|---|
+| `true` | Explicitly sets `ci_readiness_enabled=true`. |
+| `false` | Explicitly sets it false, overriding a true value in restored tfvars. |
+| Empty/unset | Emits no readiness override; preserves explicit tfvars and the default false. Unsetting is not revocation. |
+
+Other values are rejected. The workflow forwards this variable only on dev; helper opt-in and public-CI plan checks reject enabled readiness elsewhere. Direct Terraform remains explicit operator configuration. With readiness and AgentCore both enabled, a reviewed apply creates `deployment-verifiers`; automatic membership additionally requires the Terraform-managed demo (`create_demo_user=true`). No admin or IAM role is granted. Every holder of that shared demo login can then access the existing bounded billed model probe, so this must be a separate operator decision. The endpoint retains authentication, one in-flight request and a per-process cooldown; group creation is not deployment-readiness proof.
+
+Use a fresh normal login to obtain new group claims. `terraform/foundation/auth.tf` configures **12-hour ID/access tokens**; `web/lib/auth.ts` reads groups from the ID token and checks the existing session-revocation store. Removing membership does not rewrite issued tokens: they can retain verifier authorization for their remaining lifetime, up to 12 hours, unless session revocation rejects them. Disabling the runtime is a separate control and can block the probe even while an old group claim remains. For urgent removal, use the existing [offboarding/session-revocation procedure](user-offboarding.md); do not reset a password to make verification pass.
+
+An explicit false decision still needs the reviewed apply to remove managed membership/group state. When AgentCore is disabled, the web task's `SSM_RUNTIME_ARN_PARAM` is empty; invocation and status lookup respect that blank. The separate `AGENTCORE_RUNTIME_ARN_PARAM` alias and the incident bridge's literal project paths remain unchanged. Status discovery does not validate the full runtime ARN or prove invocation readiness, and other control-plane status reads can still run.
+
+<a id="rollback--롤백"></a>
+
+## Rollback
+
 Retain runtime resources and restore reviewed prior digests/settings. Manual dev/preview plans and apply block listed core deletion/replacement/forget; this development policy does not cover main. No retirement mode is provided. A destructive teardown needs a separate reviewed procedure covering Aurora ingress, migration dependencies and optional gates.
-런타임 리소스를 유지하고 검토된 이전 digest·설정을 복원한다. 수동 dev/preview 계획·적용은 지정 핵심 리소스 삭제·교체·forget을 차단한다. 이 개발 정책은 main에 적용되지 않으며 종료 모드는 제공하지 않는다. 파괴적 종료는 Aurora ingress·migration 의존성·선택 기능을 포함한 별도 검토 절차가 필요하다.
 
-## Promotion to main / main 승격
+<a id="promotion-to-main--main-승격"></a>
+
+## Promotion to main
+
 Sequence: merge reviewed code to dev → reviewed dev apply and full live readiness → main promotion → reviewed production apply. Do not promote this IAM narrowing until live dev exercises verify gateway-backed chat, worker diagnosis, and an SFN/Fargate run with managed tags. Record actual identities, outcomes and denied operations privately; a mock plan or IAM document alone cannot satisfy this promotion gate. This dev PR is the prerequisite for that evidence, not production deployment authorization.
-순서: 검토된 dev 코드 머지 → 검토된 dev apply와 전체 실제 준비 상태 검증 → main 승격 → 검토된 운영 apply. 실제 dev gateway 경유 채팅·워커 진단·관리 태그를 포함한 SFN/Fargate 실행을 검증하기 전에는 이 IAM 축소를 main으로 승격하지 않는다. 실제 신원·결과·거부 작업의 증거를 비공개로 기록한다. Mock 계획이나 IAM 문서만으로 승격 조건을 충족할 수 없으며 이 dev PR은 증거 수집의 선행 조건이지 운영 배포 승인이 아니다.
 
-## Required development release check / 개발 배포 필수 검증
+<a id="required-development-release-check--개발-배포-필수-검증"></a>
+
+## Required development release check
 
 Every dev Deploy Web release now verifies the running web role/revision/digest, the owned
 inventory Lambda code, a fresh owned CloudFront probe and recent catalog collection,
 actual SSM/AgentCore/model access and
 owned Lambda/Fargate job completion. `verify_database` cannot disable this gate.
-The dev runtime profile also enables `ci_readiness_enabled`; Terraform creates only the
-verifier application group and managed demo membership only while AgentCore is enabled. Public CI rejects the readiness flag outside dev; no admin/IAM role is granted.
+Before this gate, explicitly set `CI_READINESS_ENABLED_DEV=true` (or explicitly set
+`ci_readiness_enabled=true` in operator Terraform inputs with the override unset), review/apply
+the readiness and runtime configuration, and provision AgentCore from the applied output.
+`CI_READONLY_RUNTIME_DEV` alone does not enable readiness. Terraform creates only the
+verifier application group when readiness and AgentCore are enabled; managed-demo membership
+also requires `create_demo_user=true`. Public CI rejects enabled readiness outside dev;
+no admin/IAM role is granted. See [capability and token lifetime](#readiness-capability).
 
 For an **already-running web stack with inactive backends**, first apply the reviewed base plan so runtime_deployment exists; never disable an active profile to repeat bootstrap. Prepare verifies that existing web image/service/login and host registry. It does not create the first web deployment. Bootstrap/build the three runtime repositories and verified images, then review/apply the full private-DNS runtime plan. Provision AgentCore after its private migration, then deploy. A brand-new stack without a working web service needs a separate reviewed bootstrap procedure before using these commands; this controller supplies no first-web bootstrap or health-only bypass.
 
 ```bash
 gh workflow run collect-runtime.yml -R aws-samples/sample-awsops --ref dev -f mode=prepare
-# After verified images and the reviewed full runtime apply:
+# After verified images, explicit readiness opt-in and the reviewed full runtime apply:
 gh workflow run deploy-agentcore.yml -R aws-samples/sample-awsops --ref dev -f smoke=false
 gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true
+# To verify an already-deployed reviewed image without rolling web, substitute its full 40-character SHA:
+gh workflow run collect-runtime.yml -R aws-samples/sample-awsops --ref dev -f mode=collect -f image_sha="<deployed-web-commit-sha>"
 ```
 
-Prepare accepts disabled backends and reports prepared, not ready. Manual collect additionally
-requires the exact deployed image_sha. Keep credentials unchanged; never reset a password or
-promote the user to admin. Runtime retirement remains unsupported by this workflow.
+Prepare accepts disabled backends and reports `prepared`, not `ready`. Its `image_sha` must
+remain empty; collect requires the exact deployed 40-character image SHA. Keep credentials unchanged; never reset a password or
+promote the user to admin. Runtime retirement remains unsupported by this workflow. Terraform plan/private host preparation,
+Deploy Web preparation and manual collect-runtime preparation each bind the shared
+`TF_VAR_DEMO_PASSWORD` secret as step-scoped `TF_VAR_demo_password`. Protected stack tfvars
+retain Terraform precedence; only private credential-file paths cross steps.
 
-### Existing stacks and rollback / 기존 스택과 롤백
+<a id="existing-stacks-and-rollback--기존-스택과-롤백"></a>
+
+### Existing stacks and rollback
 
 Before the first gated release, apply the reviewed runtime/readiness configuration, complete private migrations and provision the matching AgentCore image. This applies to existing stacks too. `Capture development runtime contract` validates feature flags **before** the image pin and ECS rollout; absent runtime features fail there. Actual access/data/worker proof still runs after rollout. Roll back to a reviewed prior image with these runtime prerequisites intact; there is no health-only escape or password reset.
 
-### Adopting an existing verifier group / 기존 검증 그룹 채택
+<a id="adopting-an-existing-verifier-group--기존-검증-그룹-채택"></a>
+
+### Adopting an existing verifier group
 
 Before the first readiness apply, check whether `deployment-verifiers` already exists in this stack's user pool and whether Terraform already manages it. Do not delete/recreate the group or change passwords to resolve an import conflict. If a separately created group exists, include a reviewed import block in the saved plan before the apply; likewise import an existing managed-demo membership only when that resource's conditions are true. Verify the plan imports the exact intended group/membership, grants no IAM role/admin membership, and does not replace the pool or user. Use the actual pool ID and configured username; examples below are placeholders. If the existing group has an IAM role or unexpected membership, stop for an owner-reviewed adoption decision instead of silently changing its privileges. Remove the temporary import blocks after successful adoption.
 
@@ -85,9 +122,21 @@ import {
 }
 ```
 
-The group import ID uses a slash; membership uses comma-separated pool/group/username, per the pinned AWS provider's resource import contracts. Import is a reviewed state adoption, not authorization for additional privileges.
+The group import ID uses a slash; membership uses comma-separated pool/group/username, per the pinned AWS provider's resource import contracts. Import is a reviewed state adoption, not authorization for additional privileges. The release
+controller does not provision the group or membership. Removing either on a later reviewed apply
+does not rewrite already-issued ID-token group claims; follow the
+[readiness capability and revocation guidance](#readiness-capability) for their remaining 12-hour lifetime.
 
-### Collection contention / 수집 경합
+<a id="collection-contention--수집-경합"></a>
+
+### Collection contention
+
+Collector code verification uses the configured archive fingerprint:
+`runtime_deployment.inventory.sync_code_sha256` comes from the Lambda
+`source_code_hash`, and the controller compares it with the live `CodeSha256` before
+invocation. A lagging provider observation must not reject a matching rollout or bless
+code changed outside the reviewed configuration. Apply the reviewed configuration to
+persist the output; changing a repository variable or producing a plan is insufficient.
 
 The controller reads the complete catalog from the code-checked inventory Lambda, then invokes only the owned CloudFront collector synchronously. It does not enqueue another all-type sweep or run a stale-terminal batch queue. Ledger rows no longer control RPC retry admission. Only the bounded owned probe is retried; all other catalog types still require fresh successful evidence from the existing scheduled collector.
 
@@ -120,7 +169,9 @@ type catalog, not proof of every resource or attribute. `expectedQueuedTypes` re
 wire-field name for that catalog, not an acknowledgement that CI dispatched every type.
 Standalone smoke without `collectionMode: "release"` retains strict post-marker collection checks.
 
-Release-mode collection polling allows twenty minutes after account/login checks; standalone verification retains ten minutes. The authenticated collection-only summary avoids inventory-wide aggregations. A deadline bounds the start of a poll, and a valid successful response from an admitted request is retained even if it arrives just after that deadline. No new poll begins after expiry. The runtime and both five-minute worker checks remain mandatory.
+Release-mode collection polling allows twenty minutes after account/login checks; standalone verification retains ten minutes. The authenticated collection-only summary avoids inventory-wide aggregations. A deadline bounds the start of a poll, and a valid successful response from an admitted request is retained even if it arrives just after that deadline. No new poll begins after expiry. The runtime and both five-minute worker checks remain mandatory: one owned `noop` Lambda job
+and one owned `noop-heavy` Fargate job must reach `succeeded` with the expected job identity,
+runtime and successful result. Enqueue acknowledgement alone cannot pass.
 
 The release does not wait for a whole new scheduled sweep after every push. It still requires
 recent success for every deployed catalog type, so dropped or persistently failing types
@@ -130,7 +181,9 @@ separate reviewed operations. No type is omitted to make the gate pass.
 
 Both verification steps have a 55-minute workflow cap with a fresh one-hour session for the same configured role; the manual job allows 75 minutes including setup. These are outer limits, not promises that every combination of slow calls will fit. Restored Terraform inputs are deleted immediately after capture, with final cleanup retained as a fallback. No schedule, feature flag or infrastructure setting is changed by the verifier.
 
-### Deployer verification permissions / Deployer 검증 권한
+<a id="deployer-verification-permissions--deployer-검증-권한"></a>
+
+### Deployer verification permissions
 
 The configured dev deployer needs these scopes before the first gated release. They supplement the existing build/pin/roll permissions; this controller does not grant IAM. Replace placeholders with the independently configured account, deployment region and project. Never grant wildcard Lambda invocation to pass the gate.
 
@@ -145,8 +198,11 @@ The configured dev deployer needs these scopes before the first gated release. T
 
 ListTasks is constrained by its cluster condition for this Fargate/service query; do not substitute task-definition ARNs for unsupported resource scoping. STS caller verification remains mandatory. An API failure means access is unverified, not permission to broaden grants. Scope references: `https://docs.aws.amazon.com/service-authorization/latest/reference/list_ecs.html` and `https://docs.aws.amazon.com/service-authorization/latest/reference/list_lambda.html`.
 
-## Related / 관련
+<a id="related--관련"></a>
+
+## Related
+
 [Manual deployment observations](deployment-audit.md) separate deployed resources, schedule execution and observed inventory after provisioning.
 [CI setup/assets](dev-repo-setup.md) · [SQL reader](agent-sql-reader.md) · [Multi-account](onboard-target-account.md) · [Inventory rollback](steampipe-quota-and-staleness.md).
 Sources: `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `scripts/v2/ci/runtime-release.mjs`, `terraform/foundation/runtime-read-scope.tf`, `terraform/foundation/controller-readiness.tf`, `.github/workflows/terraform.yml`, `.github/workflows/collect-runtime.yml`, `.github/workflows/deploy-web.yml`.
-ADRs: ADR-001, ADR-002, ADR-005, ADR-007, ADR-011, ADR-016, ADR-021. Infrastructure apply is not live readiness proof.
+ADRs: 001, 002, 005, 007, 011, 016, 021. Infrastructure apply is not live readiness proof.

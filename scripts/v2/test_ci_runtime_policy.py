@@ -36,9 +36,98 @@ class RuntimePolicyTests(unittest.TestCase):
         value = self.module.runtime_overrides("dev", "true", ACCOUNT, "runtime-ecr-bootstrap", "", "", False)
         self.assertEqual(value, {
             "agentcore_enabled": True, "workers_enabled": True, "steampipe_enabled": True,
-            "inventory_host_only": True, "ci_readiness_enabled": True, "ci_runtime_profile_enabled": True,
+            "inventory_host_only": True, "ci_runtime_profile_enabled": True,
             "ci_runtime_rollout": False,
         })
+
+    def test_dedicated_readiness_override_is_independent_and_tristate(self):
+        for profile in ("", "false", "true"):
+            for setting, expected in (("", None), ("true", True), ("false", False)):
+                with self.subTest(profile=profile, setting=setting):
+                    values = self.module.runtime_overrides("dev", profile, ACCOUNT, "full",
+                        DIGEST, DIGEST, False, readiness=setting)
+                    if expected is None:
+                        self.assertNotIn("ci_readiness_enabled", values)
+                    else:
+                        self.assertIs(values["ci_readiness_enabled"], expected)
+        for setting in ("yes", "TRUE", " false ", "0"):
+            with self.assertRaisesRegex(ValueError, "CI_READINESS_ENABLED_DEV"):
+                self.module.runtime_overrides("dev", "", ACCOUNT, "full", "", "", False,
+                                              readiness=setting)
+        for target in ("main", "atomoh", "ssminji", "whchoi"):
+            with self.assertRaisesRegex(ValueError, "readiness|READINESS"):
+                self.module.runtime_overrides(target, "", ACCOUNT, "full", "", "", False,
+                                              readiness="true")
+
+    def test_actual_workflow_wires_only_the_dedicated_dev_readiness_setting(self):
+        from test_ci_deployment_workflows import DeploymentWorkflowTests, workflow_step
+        step = workflow_step("terraform.yml", "plan", "Configure development runtime profile")
+        harness = DeploymentWorkflowTests()
+        for target, flag, profile, expected in [
+            ("dev", "", "true", None), ("dev", "true", "", True),
+            ("dev", "false", "true", False), ("main", "true", "true", None),
+            ("atomoh", "true", "true", None),
+        ]:
+            with self.subTest(target=target, flag=flag, profile=profile):
+                result, _ = harness.run_step([step], TARGET=target, context={
+                    "github": {"event_name": "pull_request"},
+                    "vars": {"CI_READINESS_ENABLED_DEV": flag, "CI_READONLY_RUNTIME_DEV": profile},
+                    "inputs": {},
+                })
+                self.assertEqual(result.returncode, 0, result.stderr)
+                values = json.loads(result.files["ci-runtime.auto.tfvars.json"])
+                if expected is None:
+                    self.assertNotIn("ci_readiness_enabled", values)
+                else:
+                    self.assertIs(values["ci_readiness_enabled"], expected)
+        result, _ = harness.run_step([step], TARGET="dev", context={
+            "github": {"event_name": "pull_request"},
+            "vars": {"CI_READINESS_ENABLED_DEV": "invalid"}, "inputs": {},
+        })
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CI_READINESS_ENABLED_DEV", result.stderr)
+        self.assertNotIn("ci-runtime.auto.tfvars.json", result.files)
+
+    def test_unset_preserves_tfvars_and_explicit_false_revokes_its_true_value(self):
+        # Terraform's real input resolution, without providers/backend/AWS, catches precedence regressions.
+        for setting, saved, expected in [("", None, False), ("", True, True), ("", False, False),
+                                         ("false", True, False), ("true", False, True)]:
+            with self.subTest(setting=setting, saved=saved), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                root.joinpath("main.tf").write_text(
+                    'variable "ci_readiness_enabled" { default = false }\n'
+                    'variable "ci_runtime_profile_enabled" { default = false }\n'
+                    'variable "ci_runtime_rollout" { default = false }\n')
+                if saved is not None:
+                    root.joinpath("terraform.tfvars.json").write_text(json.dumps({"ci_readiness_enabled": saved}))
+                values = self.module.runtime_overrides("dev", "", ACCOUNT, "full", "", "", False,
+                                                      readiness=setting)
+                root.joinpath("ci-runtime.auto.tfvars.json").write_text(json.dumps(values))
+                env = {k: v for k, v in os.environ.items() if not k.startswith(("AWS_", "TF_"))}
+                env.update(CHECKPOINT_DISABLE="1", AWS_EC2_METADATA_DISABLED="true",
+                           AWS_CONFIG_FILE="/dev/null", AWS_SHARED_CREDENTIALS_FILE="/dev/null",
+                           TF_CLI_CONFIG_FILE="/dev/null")
+                result = subprocess.run(["terraform", "console"], cwd=root, env=env,
+                    input="var.ci_readiness_enabled\n", capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), str(expected).lower())
+
+    def test_explicit_plan_override_follows_varfiles_but_unset_adds_no_override(self):
+        from test_ci_deployment_workflows import DeploymentWorkflowTests, workflow_step
+        step = workflow_step("terraform.yml", "plan", "terraform plan")
+        harness = DeploymentWorkflowTests()
+        for flag in ("", "true", "false"):
+            result, commands = harness.run_step([step], TARGET="dev",
+                TF_VAR_ci_migrations_enabled="false",
+                files={"ci-deployment.tfvars.json": '{"ci_readiness_enabled":true}'},
+                context={"github": {"event_name": "workflow_dispatch"},
+                         "inputs": {"plan_scope": "full"}, "vars": {"CI_READINESS_ENABLED_DEV": flag}})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            argv = next(c for c in commands if c[:2] == ["terraform", "plan"])
+            overrides = [a for a in argv if a.startswith("-var=ci_readiness_enabled=")]
+            self.assertEqual(overrides, [f"-var=ci_readiness_enabled={flag}"] if flag else [])
+            if flag:
+                self.assertGreater(argv.index(overrides[0]), argv.index("-var-file=ci-deployment.tfvars.json"))
 
     def test_full_activation_requires_both_immutable_digests(self):
         for first, second in (("", DIGEST), (DIGEST, ""), ("latest", DIGEST)):

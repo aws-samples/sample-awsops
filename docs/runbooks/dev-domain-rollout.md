@@ -92,6 +92,11 @@ current repo variables or the apply dispatch's `domain_rollout` input.
 
 ## Verify first / 먼저 확인
 
+For an existing domain with issued certificates, DNS registration and a successful
+TLS/health check do not establish database, AgentCore, collection or worker readiness.
+Complete those separate release checks before claiming deployment completion. The tools
+below inspect existing deployment artifacts; they do not add a certless bootstrap mode.
+
 1. Confirm the assumed dev identity, Region, backend, and current branch/commit.
    A delegated child NS set does **not** establish that the zone exists in that
    AWS account. Run the account check with the intended dev credentials and
@@ -220,15 +225,23 @@ A standalone [deployment-smoke.mjs](../../scripts/v2/deployment-smoke.mjs) reque
 checks `/api/health` through CloudFront with service Host/SNI/TLS preserved; that
 request alone proves liveness only. Dev [Deploy Web](../../.github/workflows/deploy-web.yml)
 requires the [full authenticated runtime gate](runtime-foundation.md#required-development-release-check--개발-배포-필수-검증), not health alone.
-Before A publication, complete that guide's runtime adoption, migrations and verification.
+Before A publication, complete that guide's runtime adoption, explicit readiness opt-in, migrations
+and full verification; `CI_READONLY_RUNTIME_DEV` alone never enables the billed probe.
 Its `collect-runtime.yml` prepare mode validates existing web/login/host registration;
 it neither bootstraps first web nor proves readiness. New stacks need a separate
-reviewed bootstrap procedure; there is no health-only bypass or password reset.
+reviewed bootstrap procedure; there is no health-only bypass, password reset or admin promotion.
 [Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml) runs the reusable
 private migration on dev; main/preview retain `make migrate`. Optional
 post-provision `smoke=true` requires deployed readiness/inventory dependencies on
 dev and remains advisory elsewhere; it is not a web-login test. Follow existing
 operator authorization for these actions.
+
+## Inspecting saved artifacts
+
+The branch-independent [exact-plan inspector](dev-repo-setup.md#private-exact-plan-inspection)
+and [encrypted failure recovery](dev-repo-setup.md#encrypted-failure-recovery) apply to
+main, dev and supported user branches. Use those procedures to review this rollout's
+saved artifacts; they do not extend the dev-only domain stages or grant apply authority.
 
 ## Boundaries and recovery / 제한과 복구
 
@@ -276,7 +289,7 @@ token retirement or old-domain restoration needs a separate expressly authorized
 procedure under the appropriate configuration. Never remove resources from state
 or accept unknown DNS identities to make rollback pass.
 
-Related / 관련: `.github/workflows/terraform.yml`, `scripts/v2/ci_dns_policy.py`,
+Related: `.github/workflows/terraform.yml`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_failure_diagnostics.py`, `scripts/v2/ci_dns_policy.py`,
 `scripts/v2/ci_dev_domain.py`, `terraform/foundation/edge.tf`;
 ADR-005 (AWS-resource mutation + autonomy freeze / AWS 리소스 변경·자율 실행 동결),
 ADR-016 (v1 decommission / domain-certificate cutover / v1 폐기·도메인/인증서 전환).

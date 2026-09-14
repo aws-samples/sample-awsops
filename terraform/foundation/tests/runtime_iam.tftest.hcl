@@ -65,7 +65,7 @@ variables {
 run "defaults_remain_dark" {
   command = plan
   assert {
-    condition     = { for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.name => e.value }["SSM_RUNTIME_ARN_PARAM"] == ""
+    condition     = [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.value if e.name == "SSM_RUNTIME_ARN_PARAM"] == [""]
     error_message = "Disabled AgentCore must not advertise an unavailable runtime parameter."
   }
   assert {

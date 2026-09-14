@@ -146,7 +146,7 @@ and [deployment runbook §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-
 | Flag | Gates |
 |------|-------|
 | `agentcore_enabled` | 21 of the AgentCore Lambda slices |
-| `ci_readiness_enabled` | Default-off bounded deployment probe, including model inference. `CI_READONLY_RUNTIME_DEV=true` enables it through the public dev profile; public CI rejects it outside dev. Private deployments outside public CI set it explicitly. Applied output controls provisioning, with no shell override. At Terraform apply, this flag plus `agentcore_enabled=true` creates `deployment-verifiers`; managed-demo membership additionally requires `create_demo_user=true`. No admin/IAM role is granted. |
+| `ci_readiness_enabled` | Default-off bounded billed deployment probe. Dedicated `CI_READINESS_ENABLED_DEV=true/false` overrides the dev value; unset preserves explicit tfvars/default false. The runtime profile alone does not enable it. Explicitly apply readiness and provision AgentCore before the mandatory full dev Deploy Web gate; health-only verification cannot bypass it. Public CI permits enabled readiness only on dev. Apply requires AgentCore for the verifier group and `create_demo_user=true` for managed-demo membership. No admin/IAM grant. |
 | `integrations_enabled` | remaining 6 AgentCore Lambda slices |
 | `workers_enabled` | the async worker tier (SQS/SFN/Lambda/Fargate) |
 | `ci_migrations_enabled` | Default-off operator capability: private migration task template, exact-secret task role/policy and 14-day logs. Manual dev CI only; no service or scheduler. Disabling deletes the log group/history. |
@@ -366,7 +366,7 @@ apply에서 바꿀 수 없습니다. 기본 false인 일반 full 계획도 DNS �
 | Flag | 게이트 대상 |
 |------|-------------|
 | `agentcore_enabled` | AgentCore Lambda 슬라이스 21개 |
-| `ci_readiness_enabled` | 기본 비활성 배포 검증(제한된 모델 추론 포함). `CI_READONLY_RUNTIME_DEV=true`인 공개 dev 프로필이 활성화하며 공개 CI는 dev 외 대상을 거부한다. 공개 CI 밖의 private 배포는 명시적으로 설정한다. 적용된 output으로 프로비저닝하며 환경변수 덮어쓰기는 없다. Terraform apply 시 이 플래그와 `agentcore_enabled=true`가 `deployment-verifiers`를 생성하고, 관리 demo 멤버십에는 `create_demo_user=true`도 필요하다. 관리자·IAM 역할은 부여하지 않는다. |
+| `ci_readiness_enabled` | 기본 비활성 유료 배포 검증. 전용 `CI_READINESS_ENABLED_DEV=true/false`가 dev 값을 덮어쓰며 미설정은 명시적 tfvars·기본 false를 유지한다. 런타임 프로필만으로 활성화하지 않는다. 필수 전체 dev Deploy Web 검증 전에 readiness를 명시적으로 적용하고 AgentCore를 프로비저닝해야 하며 health 검사만으로 우회하지 않는다. 공개 CI에서는 dev만 허용한다. 적용 시 verifier 그룹에는 AgentCore가, 관리 demo 멤버십에는 `create_demo_user=true`도 필요하다. 관리자·IAM 권한은 부여하지 않는다. |
 | `integrations_enabled` | 나머지 AgentCore Lambda 슬라이스 6개 |
 | `workers_enabled` | 비동기 워커 계층(SQS/SFN/Lambda/Fargate) |
 | `ci_migrations_enabled` | 기본 비활성 운영 기능: 사설 migration 태스크 템플릿·정확한 시크릿 읽기 역할/정책·14일 로그. dev CI 수동 실행 전용이며 서비스·스케줄러는 없다. 비활성화하면 로그 그룹/이력이 삭제된다. |

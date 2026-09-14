@@ -6,8 +6,24 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
+- `v2/ci_plan_inspect.py` verifies authenticated successful plan-run identity, checkout SHA
+  and the existing signed plan/assets before local private rendering. No backend init/apply;
+  new 0700 destination with 0600 bounded outputs. It refuses execution inside Actions.
+- `v2/ci_failure_diagnostics.py` drains bounded output in memory until Terraform exits; no scratch-write error may kill apply or replace its result. Linux supervision forwards one graceful interrupt, escalates a second, and kills Terraform if its capture parent dies. Retain the last 1 MiB and signed total/capture status. No success/advisory raw log is written.
+- Strip GitHub command-file/token variables, encryption keys, TF_LOG* and TF_CLI_ARGS* from captured Terraform and pre-apply scope-check children; keep AWS STS credentials including AWS_SESSION_TOKEN. Publish only a validated owned single ciphertext path, gated by dispatch plus failure/cancellation, with attempt-specific artifact names and five-day retention.
+- Fixed public audit fields distinguish command, capture, retention and cleanup status; numeric standard Terraform success counts never include resource/output text. Missing summaries stay unavailable. Schema-2 failure HMAC uses its own domain with the existing CBC cipher/key. Recovery verifies the exact failed attempt and emits fixed timeout/errors; private inspection remains authenticated and bounded to 32 MiB.
+- The sealing payload reaches OpenSSL through stdin, with no plaintext staging file. Captured Terraform runs in a separate session; first-interrupt forwarding, second-interrupt group kill and parent-death protection govern cancellation. Sealing/storage/publication failures preserve the command exit.
+- Cleanup deletes only after the identified upload's literal success; failed/cancelled/skipped/unknown outcomes retain ciphertext privately. Audits distinguish pending_upload, retained_unpublished and final cleanup outcomes. No broad runner-temp sweep, shared-UID isolation or SIGKILL guarantee.
 - `v2/ci_deployment_audit.py` — manual dev audit with existing identity guards, a restrictive session policy, fixed reads/SELECTs and safe projections. Web observations do not claim an applied revision; timestamps do not classify product freshness, and observed types do not establish completeness. Offline fixtures: `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`; operator guide: `docs/runbooks/deployment-audit.md`.
 - `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
+- Readiness is separate from the runtime profile: `CI_READINESS_ENABLED_DEV=true/false`
+  explicitly overrides `ci_readiness_enabled` on dev; empty/unset preserves operator tfvars
+  and default false. Enabled readiness is rejected outside dev. Applied readiness plus
+  AgentCore creates only the verifier group; demo membership needs create_demo_user. No admin/IAM grant.
+  Explicitly apply readiness and provision before the mandatory dev release gate. The controller
+  verifies existing group/membership state; adopt hand-created resources with reviewed imports.
+  Group removal does not rewrite issued ID-token claims (up to 12 hours); session revocation
+  and runtime disablement are independent. Never reset passwords or promote a verifier to admin.
 - Dev/preview private discovery requires explicit full-plan rollout and preserves public DNS/certificates. `runtime-ecr-bootstrap` permits exactly three repositories. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy.
 - `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-registry proof before manual full dev activation plans; apply rechecks the approved profile. Automatic PR/push plans never receive the host-probe credential. Database-only proof is rejected; credentials stay private and failures use a fixed code. Flags/policy checks do not prove live access.
 - `v2/agentcore/provision.py` maps the applied `agentcore.deployment_readiness_enabled` boolean
@@ -111,7 +127,7 @@ secrets-manager) — installed by `make deps`.
   gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
-- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads,tf_assets}.py` —
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets}.py` —
   workflow fixtures, real no-provider plans and a localhost state backend verify deployment
   gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active
@@ -214,8 +230,12 @@ with cloudfront included. The utility alone does not wire a deployment workflow.
 `v2/ci/runtime-release.mjs` validates account/role, running web revision/digest/ARM64 and
 owned inventory Lambda code before dispatch. Every dev Deploy Web release requires its
 private hostOnly verify configuration, fresh collection and actual web-role/runtime/worker
-proof. Manual collect-runtime prepare accepts disabled backends and reports prepared,
-never ready. Typed authenticated-smoke failures retain sanitized diagnostics; other errors
+proof, regardless of `verify_database`. Manual collect-runtime prepare accepts disabled backends
+and reports prepared, never ready; it requires an existing working web stack. Collect requires
+the deployed web image SHA. New stacks need a separate reviewed bootstrap procedure. Typed authenticated-smoke failures retain sanitized diagnostics; other errors
 remain generic. All private credentials/configuration/scratch are covered by cleanup.
+
+The collector identity uses the configured archive `source_code_hash` from the applied output,
+compared with live `CodeSha256`; a stale provider observation is not the expected-code authority.
 
 Release mode reads the code-checked catalog and invokes only the owned CloudFront collector. The owned CloudFront response must succeed with zero unknowns; its known record and durable last success remain post-marker. Capture actual runtime proof before the catalog wait; later CloudFront attempts disclose degradation without revoking that proof; other catalog types require last success within thirty minutes of observation. Newer running/partial/failed attempts and unknown attributes are disclosed as degraded, with completeness always unknown. Missing/stale or malformed catalog evidence blocks; standalone smoke remains strict for all supplied types. SSM/model and both owned worker proofs are mandatory. Catalog/probe budgets remain 450/900 seconds; release polling is twenty minutes, standalone ten. Only confirmed throttling/busy/superseded probe outcomes retry. See docs/runbooks/runtime-foundation.md for timing, cleanup and existing-stack adoption; no scheduler or IAM repair is performed.

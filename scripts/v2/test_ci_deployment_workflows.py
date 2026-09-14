@@ -56,6 +56,9 @@ class DeploymentWorkflowTests(unittest.TestCase):
             shutil.copyfile(ROOT / "scripts/v2/ci_dev_domain.py", scripts / "ci_dev_domain.py")
             shutil.copyfile(ROOT / "scripts/v2/ci_runtime_policy.py", scripts / "ci_runtime_policy.py")
             shutil.copyfile(ROOT / "scripts/v2/deployment-smoke.mjs", scripts / "deployment-smoke.mjs")
+            for name in ("ci_failure_diagnostics.py", "ci_plan_inspect.py",
+                         "ci_tf_assets.py", "ci_plan_context.py"):
+                shutil.copyfile(ROOT / "scripts/v2" / name, scripts / name)
             subprocess.run(["git", "init", "-q", str(root)], check=True)
             for name, content in (files or {}).items():
                 (working / name).write_text(content)
@@ -67,6 +70,10 @@ class DeploymentWorkflowTests(unittest.TestCase):
                     "#!/usr/bin/env python3\n"
                     "import json,os,pathlib,sys\n"
                     "name=pathlib.Path(sys.argv[0]).name\n"
+                    "if name=='terraform' and os.environ.get('ASSERT_NO_GITHUB_CHANNELS')=='true':\n"
+                    " assert not any(k in os.environ for k in ('GITHUB_OUTPUT','GITHUB_ENV','GITHUB_PATH','GITHUB_STATE','GITHUB_STEP_SUMMARY','TF_PLAN_ENC_KEY'))\n"
+                    " assert not any(k.startswith(('TF_LOG','TF_CLI_ARGS')) for k in os.environ)\n"
+                    " assert os.environ.get('AWS_SESSION_TOKEN')=='KEEP_STS'\n"
                     "with open(os.environ['COMMAND_LOG'],'a') as f:\n"
                     " f.write(json.dumps([name,*sys.argv[1:]])+'\\n')\n"
                     "if name=='gh': print(os.environ['CURRENT_SHA'])\n"
