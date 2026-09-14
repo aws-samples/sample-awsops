@@ -199,7 +199,7 @@ their offline variable fixture needs no providers. Terraform mock tests require 
 providers; the helper copies only tracked working-tree files, runs `init -backend=false`, validates
 and tests without a real backend. Missing deployment-suite prerequisites fail the shared runner;
 only its final fmt/validate diagnostics are informational.
-The offline [web image provenance helper](docs/runbooks/web-image-provenance.md) tests also require **jq**.
+The offline [web image provenance helper](docs/runbooks/web-image-provenance.md) tests also require **jq**, Linux `/proc`, and curl on `/usr/local/bin:/usr/bin:/bin`.
 Deploy Web calls its guarded promotion entrypoint after image/migration proof; the guide defines receipts and recovery.
 
 ```bash
@@ -421,7 +421,7 @@ AWS 자격증명을 사용하지 않습니다.
 마지막 fmt/validate 진단만 참고용입니다. Terraform mock 테스트에는 **1.15.7**과
 설치/캐시된 provider가 필요합니다. 도우미는 추적된
 작업 파일만 복사해 `init -backend=false`, validate, test를 실행하며 실제 backend를 사용하지 않습니다.
-오프라인 [웹 이미지 출처 검증 도우미](docs/runbooks/web-image-provenance.md) 테스트에는 **jq**도 필요합니다.
+오프라인 [웹 이미지 출처 검증 도우미](docs/runbooks/web-image-provenance.md) 테스트에는 **jq**, Linux `/proc`, `/usr/local/bin:/usr/bin:/bin`의 curl도 필요합니다.
 Deploy Web은 이미지·마이그레이션 증명 후 검증된 승격 진입점을 호출하며, 가이드에서 영수증·복구 계약을 정의합니다.
 
 ```bash
