@@ -14,6 +14,10 @@ secrets-manager) — installed by `make deps`.
   ECR reads omit image-only accepted-media filters; writes specify media/digest/registry.
   Config reads require scoped `ecr:GetDownloadUrlForLayer` and curl. CLI errors expose only
   fixed `ImageError` diagnostics, never provider data. Do not call the low-level publisher from CI.
+  Child processes require exported temporary AWS credentials / an explicit GitHub token,
+  disable AWS config/credential files, isolate GH config and drop endpoint/profile/model/provider/CA/proxy overrides.
+  Only curl receives explicit private stdin (`-q -K -`); no signed URL enters argv.
+  Digest reads may return identical rows for multiple tags; reject conflicting row evidence.
   `v2/test_ci_web_image.py` tests the contract; jq is required for compare projection.
   See `docs/runbooks/web-image-provenance.md` for receipt-step names, inputs and
   expiry/rollback limits. Operator CI publication adds no ADR-005 exception or IAM grant.

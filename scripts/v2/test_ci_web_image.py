@@ -1,5 +1,6 @@
 """Offline provenance tests; no GitHub or AWS calls."""
 import hashlib
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import io
 import json
 import os
@@ -8,6 +9,7 @@ import runpy
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -25,6 +27,19 @@ IMAGE_MEDIA = "application/vnd.oci.image.manifest.v1+json"
 DOCKER_MEDIA = "application/vnd.docker.distribution.manifest.v2+json"
 INDEX_MEDIA = "application/vnd.oci.image.index.v1+json"
 CONFIG = b'{"architecture":"arm64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}'
+AUTH = {"AWS_ACCESS_KEY_ID": "test-oidc-key", "AWS_SECRET_ACCESS_KEY": "test-oidc-secret",
+        "AWS_SESSION_TOKEN": "test-oidc-session", "GH_TOKEN": "test-github-token"}
+
+
+def promotion_environment(digest):
+    return {**{k: os.environ[k] for k in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL") if k in os.environ},
+            **AUTH, "GITHUB_REPOSITORY": REPO, "GITHUB_REF_NAME": "dev",
+            "GITHUB_REF": "refs/heads/dev", "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_WORKFLOW_REF": REPO + "/.github/workflows/deploy-web.yml@refs/heads/dev",
+            "GITHUB_SHA": SHA, "GITHUB_RUN_ID": "900", "GITHUB_RUN_ATTEMPT": "1",
+            "CI_ROLE_ARN": "arn:aws:iam::123456789012:role/CI", "AWS_ACCOUNT_ID_DEV": ACCOUNT,
+            "IMAGE_PROJECT": "sample-dev", "MIGRATED_SHA": SHA, "MIGRATED_PROJECT": "sample-dev",
+            "FRESH_DIGEST": digest, "FRESH_PROJECT": "sample-dev", "PREFLIGHT_DIGEST": digest}
 
 
 def image_fixture(*, media=IMAGE_MEDIA, config=CONFIG, body_changes=None):
@@ -65,13 +80,7 @@ class ProvenanceTest(unittest.TestCase):
     def promotion_fixture(self, *, config=CONFIG, media=IMAGE_MEDIA):
         image = image_fixture(config=config, media=media)
         digest = image["imageId"]["imageDigest"]
-        env = {"GITHUB_REPOSITORY": REPO, "GITHUB_REF_NAME": "dev",
-               "GITHUB_REF": "refs/heads/dev", "GITHUB_EVENT_NAME": "workflow_dispatch",
-               "GITHUB_WORKFLOW_REF": REPO + "/.github/workflows/deploy-web.yml@refs/heads/dev",
-               "GITHUB_SHA": SHA, "GITHUB_RUN_ID": "900", "GITHUB_RUN_ATTEMPT": "1",
-               "CI_ROLE_ARN": "arn:aws:iam::123456789012:role/CI", "AWS_ACCOUNT_ID_DEV": "123456789012",
-               "IMAGE_PROJECT": "sample-dev", "MIGRATED_SHA": SHA, "MIGRATED_PROJECT": "sample-dev",
-               "FRESH_DIGEST": digest, "FRESH_PROJECT": "sample-dev", "PREFLIGHT_DIGEST": digest}
+        env = promotion_environment(digest)
         trace = []
         download = patch.object(subject, "command", return_value=config)
         download.start()
@@ -255,7 +264,8 @@ class ProvenanceTest(unittest.TestCase):
         original = subprocess.run
         def boundary(argv, **kwargs):
             return gh_call(argv, **kwargs) if argv[0] == "gh" else original(argv, **kwargs)
-        with patch("ci_web_image.subprocess.run", side_effect=boundary):
+        with patch.dict(os.environ, {"GH_TOKEN": AUTH["GH_TOKEN"]}), \
+                patch("ci_web_image.subprocess.run", side_effect=boundary):
             result = github(f"repos/{REPO}/compare/{SHA}...{'b' * 40}")
         self.assertEqual(result, {"status": "ahead", "merge_base_commit": {"sha": SHA}})
 
@@ -665,6 +675,31 @@ class ProvenanceTest(unittest.TestCase):
         self.assertEqual(subject.promote(env, caller=caller, api=api, aws=aws)["digest"], digest)
         self.assertEqual(trace[-1], "batch-get-image")
 
+    def test_multi_tag_digest_rows_preserve_one_identical_image(self):
+        env, digest, _, caller, api, original = self.promotion_fixture()
+        def aws(operation, args):
+            result = original(operation, args)
+            if args.get("image-ids") == f"imageDigest={digest}":
+                image = result["images"][0]
+                result["images"] = [image | {"imageId": {"imageDigest": digest, "imageTag": tag}}
+                                    for tag in ("web-" + SHA, "web-latest")]
+            return result
+        self.assertEqual(subject.promote(env, caller=caller, api=api, aws=aws)["digest"], digest)
+
+    def test_conflicting_multi_tag_rows_cannot_reach_publication(self):
+        for field, value in (("registryId", "999999999999"), ("repositoryName", "foreign-web"),
+                             ("imageManifest", "{}"), ("imageManifestMediaType", DOCKER_MEDIA),
+                             ("imageId", {"imageDigest": DIGEST})):
+            env, digest, trace, caller, api, original = self.promotion_fixture()
+            def aws(operation, args):
+                result = original(operation, args)
+                if args.get("image-ids") == f"imageDigest={digest}":
+                    result["images"].append(result["images"][0] | {field: value})
+                return result
+            with self.subTest(field=field), self.assertRaises(ImageError):
+                subject.promote(env, caller=caller, api=api, aws=aws)
+            self.assertNotIn("put-image", trace)
+
     def test_completed_producer_rerun_cannot_change_the_preflight_selection(self):
         env, old, trace, caller, source, aws = self.promotion_fixture()
         env.update(FRESH_DIGEST="", IMAGE_BUILD_RUN_ID="123")
@@ -755,6 +790,196 @@ class ProvenanceTest(unittest.TestCase):
             with self.subTest(names=names), self.assertRaises(ImageError):
                 resolve_digest(context(run_id="900"), pin_sha=SHA,
                                producer_run="123", api=substitute)
+
+
+class SubprocessBoundaryTest(unittest.TestCase):
+    def provider(self, *, poisoned_identity=False):
+        image = image_fixture()
+        digest = image["imageId"]["imageDigest"]
+        trace = []
+        def run(argv, **kwargs):
+            env = kwargs.get("env", os.environ)
+            trace.append((argv, kwargs))
+            if argv[:3] == ["aws", "sts", "get-caller-identity"]:
+                # An injected endpoint impersonates the expected role; the real
+                # endpoint exposes the mismatched caller and must stop promotion.
+                foreign = poisoned_identity and not env.get("AWS_ENDPOINT_URL_STS")
+                body = {"Account": "999999999999" if foreign else ACCOUNT,
+                        "Arn": f"arn:aws:sts::{ACCOUNT}:assumed-role/CI/session"}
+            elif argv[0] == "gh":
+                body = {"object": {"sha": SHA}}
+            elif argv[:3] == ["aws", "ecr", "batch-get-image"]:
+                selector = argv[argv.index("--image-ids") + 1]
+                body = {"images": [image | {"imageId": image["imageId"] | {
+                    "imageTag": selector.removeprefix("imageTag=")}}]}
+            elif argv[:3] == ["aws", "ecr", "get-download-url-for-layer"]:
+                body = {"layerDigest": json.loads(image["imageManifest"])["config"]["digest"],
+                        "downloadUrl": "https://fixture.s3.ap-northeast-2.amazonaws.com/config?X-Amz-Signature=private-test"}
+            elif argv[:3] == ["aws", "ecr", "put-image"]:
+                body = {"image": image | {"imageId": image["imageId"] | {"imageTag": "web-latest"}}}
+            else:
+                self.assertEqual(argv[0], "curl")
+                return subprocess.CompletedProcess(argv, 0, stdout=CONFIG, stderr=b"")
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(body).encode(), stderr=b"")
+        return promotion_environment(digest), digest, trace, run
+
+    def test_poisoned_sts_endpoint_cannot_forge_caller_and_reach_write(self):
+        env, digest, trace, run = self.provider(poisoned_identity=True)
+        env.update(AWS_ENDPOINT_URL="https://untrusted.invalid",
+                   AWS_ENDPOINT_URL_STS="https://untrusted.invalid",
+                   AWS_ENDPOINT_URL_ECR="https://untrusted.invalid")
+        with patch.dict(os.environ, env, clear=True), patch("subprocess.run", side_effect=run), \
+                self.assertRaisesRegex(ImageError, "Actual branch account/role mismatch"):
+            subject.promote(expected_digest=digest)
+        self.assertFalse(any(argv[:3] == ["aws", "ecr", "put-image"] for argv, _ in trace))
+        self.assertNotIn("AWS_ENDPOINT_URL_STS", trace[0][1]["env"])
+
+    def test_full_promotion_preserves_only_required_auth_and_tool_paths(self):
+        env, digest, trace, run = self.provider()
+        poison = {key: "untrusted-override" for key in (
+            "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_STS", "AWS_ENDPOINT_URL_ECR",
+            "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
+            "AWS_CA_BUNDLE", "AWS_DATA_PATH", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_EC2_METADATA_SERVICE_ENDPOINT", "BOTO_CONFIG",
+            "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", "AWS_EC2_METADATA_DISABLED", "AWS_MAX_ATTEMPTS",
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy",
+            "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE",
+            "REQUESTS_CA_BUNDLE", "GH_HOST", "GH_CONFIG_DIR", "GH_HTTP_UNIX_SOCKET", "GH_DEBUG",
+            "CURL_HOME", "XDG_CONFIG_HOME", "PYTHONPATH", "LD_PRELOAD", "BASH_ENV", "GITHUB_ENV")}
+        env.update(poison)
+        def checked_run(argv, **kwargs):
+            if argv[0] == "gh":
+                self.assertEqual(list(Path(kwargs["env"]["GH_CONFIG_DIR"]).iterdir()), [])
+            return run(argv, **kwargs)
+        with patch.dict(os.environ, env, clear=True), patch("subprocess.run", side_effect=checked_run):
+            self.assertEqual(subject.promote(expected_digest=digest)["digest"], digest)
+        self.assertTrue(any(argv[:3] == ["aws", "ecr", "put-image"] for argv, _ in trace))
+        for argv, options in trace:
+            child = options["env"]
+            for key, value in poison.items():
+                self.assertNotEqual(child.get(key), value, (argv[0], key))
+            self.assertEqual(child["PATH"], env["PATH"])
+            self.assertEqual(child.get("HOME"), env.get("HOME"))
+            if argv[0] == "aws":
+                self.assertEqual({k: child[k] for k in AUTH if k.startswith("AWS_")},
+                                 {k: v for k, v in AUTH.items() if k.startswith("AWS_")})
+                self.assertEqual(child["AWS_CONFIG_FILE"], os.devnull)
+                self.assertEqual(child["AWS_SHARED_CREDENTIALS_FILE"], os.devnull)
+                self.assertEqual(child["BOTO_CONFIG"], os.devnull)
+                self.assertEqual(child["AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"], "true")
+                self.assertEqual(child["AWS_EC2_METADATA_DISABLED"], "true")
+                self.assertEqual(child["AWS_MAX_ATTEMPTS"], "1")
+                self.assertNotIn("GH_TOKEN", child)
+            else:
+                self.assertTrue(all(k not in child for k in AUTH if k.startswith("AWS_")))
+            if argv[0] == "gh":
+                self.assertEqual(child["GH_TOKEN"], AUTH["GH_TOKEN"])
+                self.assertFalse(Path(child["GH_CONFIG_DIR"]).exists())
+            if argv[0] == "curl":
+                self.assertNotIn("GH_TOKEN", child)
+                self.assertEqual(argv[:4], ["curl", "-q", "-K", "-"])
+                self.assertNotIn("private-test", " ".join(argv))
+                self.assertIn(b"X-Amz-Signature=private-test", options["input"])
+            else:
+                self.assertEqual(options["stdin"], subprocess.DEVNULL)
+                self.assertNotIn("input", options)
+
+    def test_missing_temporary_aws_credentials_never_fall_back_to_files_or_metadata(self):
+        for missing in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+            env = dict(AUTH)
+            env.pop(missing)
+            env.update(AWS_PROFILE="default", AWS_CONTAINER_CREDENTIALS_FULL_URI="http://untrusted.invalid",
+                       AWS_CONFIG_FILE="/untrusted/config", AWS_SHARED_CREDENTIALS_FILE="/untrusted/credentials")
+            with patch.dict(os.environ, env, clear=True), patch("subprocess.run") as run, \
+                    self.subTest(missing=missing), self.assertRaises(ImageError):
+                subject.command(["aws", "sts", "get-caller-identity"])
+            run.assert_not_called()
+
+    def test_github_token_alias_works_without_stored_auth_and_missing_token_stops(self):
+        for token in ("GH_TOKEN", "GITHUB_TOKEN", None):
+            env = {token: "explicit-test-token"} if token else {}
+            with patch.dict(os.environ, env, clear=True), patch("subprocess.run") as run:
+                run.return_value = subprocess.CompletedProcess(["gh"], 0, stdout=b"{}", stderr=b"")
+                if token:
+                    self.assertEqual(subject.github(f"repos/{REPO}"), {})
+                    self.assertEqual(run.call_args.kwargs["env"]["GH_TOKEN"], "explicit-test-token")
+                else:
+                    with self.assertRaises(ImageError):
+                        subject.github(f"repos/{REPO}")
+                    run.assert_not_called()
+
+    def test_only_explicit_curl_config_may_receive_stdin(self):
+        with patch.dict(os.environ, AUTH), patch("subprocess.run") as run:
+            for argv in (["aws", "sts", "get-caller-identity"], ["gh", "api", "user"], ["curl", "--url", "https://example.invalid"]):
+                with self.subTest(argv=argv), self.assertRaises(ImageError):
+                    subject.command(argv, stdin_payload=b"private")
+            run.assert_not_called()
+
+    def test_provider_url_cannot_inject_additional_curl_config_lines(self):
+        for control in ("\n", "\r", "\t", "\x00"):
+            env, digest, trace, original = self.provider()
+            def run(argv, **kwargs):
+                result = original(argv, **kwargs)
+                if argv[:3] == ["aws", "ecr", "get-download-url-for-layer"]:
+                    body = json.loads(result.stdout)
+                    body["downloadUrl"] += control + 'output = "/untrusted/output"'
+                    result.stdout = json.dumps(body).encode()
+                return result
+            with patch.dict(os.environ, env, clear=True), patch("subprocess.run", side_effect=run), \
+                    self.subTest(control=control), self.assertRaises(ImageError):
+                subject.promote(expected_digest=digest)
+            self.assertFalse(any(argv[0] == "curl" or argv[:3] == ["aws", "ecr", "put-image"]
+                                 for argv, _ in trace))
+
+    def test_real_curl_reads_private_stdin_without_url_in_process_arguments_or_curlrc(self):
+        arrived, release = threading.Event(), threading.Event()
+        request_paths, processes, result, errors = [], [], [], []
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+            def do_GET(self):
+                request_paths.append(self.path)
+                arrived.set()
+                release.wait(5)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        server.timeout = 3
+        server_thread = threading.Thread(target=server.handle_request, daemon=True)
+        server_thread.start()
+        token = "synthetic-private-query"
+        url = f"http://127.0.0.1:{server.server_port}/config?X-Amz-Signature={token}"
+        original = subprocess.Popen
+        def capture(*args, **kwargs):
+            process = original(*args, **kwargs)
+            processes.append(process)
+            return process
+        def download():
+            try:
+                result.append(subject.command(["curl", "-q", "-K", "-", "--fail", "--silent",
+                    "--show-error", "--max-time", "5"], stdin_payload=f'url = "{url}"\n'.encode()))
+            except Exception as error:
+                errors.append(error)
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}), \
+                patch("subprocess.Popen", side_effect=capture):
+            Path(home, ".curlrc").write_text('proxy = "http://127.0.0.1:9"\n')
+            worker = threading.Thread(target=download, daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(arrived.wait(3), errors)
+                argv = Path(f"/proc/{processes[0].pid}/cmdline").read_bytes()
+                self.assertNotIn(token.encode(), argv)
+                self.assertNotIn(url.encode(), argv)
+            finally:
+                release.set()
+                worker.join(6)
+                server.server_close()
+        server_thread.join(1)
+        self.assertEqual(errors, [])
+        self.assertEqual(result, [{}])
+        self.assertEqual(request_paths, [f"/config?X-Amz-Signature={token}"])
 
 
 class ContextTest(unittest.TestCase):
