@@ -37,16 +37,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [agent-sql-reader.md](agent-sql-reader.md) | Data API role/password sync: dev applies private-migration infrastructure before its reusable migration/AgentCore workflow; main/preview/private-host CLI use `make migrate → make agentcore` |
 
 ## Deployment invariants
-- `release-safety-primitives.md` defines the active web read/controller contracts and
-  transactional pending-SQL admission forced by every web-driven migration clone.
-  Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the template's init flag.
-  Standalone empty-only bootstrap applies historical SQL and reader sync first; initialized DBs retain full pending checks.
-  Function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL require reviewed standalone migration,
-  then a fresh web dispatch. No historical exemptions or automatic-baseline exception.
-  Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads
-  retry within a shared budget; writes and identity/permission failures do not retry.
-  Receipt verification gives the known old PRIMARY 15 seconds of visibility grace;
-  start confirmation retains its separate 120-second bound.
+- `release-safety-primitives.md` defines the active web read/controller contracts and transactional pending-SQL admission forced by every web-driven migration clone. Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the template's init flag. Standalone empty-only bootstrap applies historical SQL and reader sync first; initialized DBs retain full pending checks. Function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL require reviewed standalone migration, then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads retry within a shared budget; writes and identity/permission failures do not retry. Receipt verification gives the known old PRIMARY 15 seconds of visibility grace; start confirmation retains its separate 120-second bound.
 
 - Private S3 plans require the configured backend file, verified bucket posture and existing
   base-role/key-policy permissions; publication grants none. Operators use IAM/KMS, not the
@@ -87,8 +78,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   environments; signed curl URLs use private stdin, never argv. Multi-tag digest rows
   are accepted only with matching identity and byte-identical manifest/media evidence.
   Provider PATH is pinned to standard CLI directories; caller HOME is omitted, never reassigned.
-- Every AWS-facing Deploy Web job needs `AWS_ACCOUNT_ID_DEV`, including main; the guard job does not.
-  Required `test_ci_web_workflow.py` needs PyYAML and Bash; actionlint is optional local lint, not installed/run by CI.
+- Every AWS-facing Deploy Web job needs `AWS_ACCOUNT_ID_DEV`, including main; the guard job does not. Required `test_ci_web_workflow.py` needs PyYAML and Bash; actionlint is optional local lint, not installed/run by CI.
 - Verification policies support manual collect-runtime dev dispatches (backend/workload, prepare/collect) and deploy-web dev push/dispatch (workload collect only; backend/prepare refused). Both workflows consume these policies. Dev verification requires activated runtime prerequisites and private proof credentials/state for push and dispatch; missing proof fails closed. Sessions require nonempty restrictions and owned-file cleanup. Collect may invoke only the owned collector; application-data effects are operator CI, not an ADR-005 exception. IAM cannot constrain its event body; the controller must enforce catalog or each verified catalog member's RequestResponse payload, banning empty/all/unregistered/Event calls. The dated owner requirement is all current types with post-marker succeeded evidence, known counts and zero unknowns, not rolling prior success. At most four calls are concurrent and in flight; at least one catalog request plus at least one per type, including any retries, determines total volume. The separate deployment audit remains no-invoke. See `runtime-verifier-sessions.md`.
 - Private S3 inspection authenticates source/run/reference, manifest, pinned plan and hashes before bounded local rendering; it never authorizes apply. Asset HMAC is checked inside CI publication/apply, not by the keyless operator renderer.
 - Branch-independent plan inspection and failure recovery live in `dev-repo-setup.md`; domain stages in `dev-domain-rollout.md` remain dev-only.

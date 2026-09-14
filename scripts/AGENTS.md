@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7761c3ffadcf · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: df7a7faf230f · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -11,16 +11,8 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
-- `ci_web_read.py` / `ci_web_deploy.py` serve Deploy Web. Only typed transient reads
-  retry within a shared deadline; writes/permissions/identity failures do not retry.
-  Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.
-- Every web migration caller forces `AUTOMATIC_MIGRATION=1`, checking every ledger-derived pending SQL file against the
-  transactional subset before pending SQL/ledger/reader changes; function defaults (`now()`/`gen_random_uuid()`),
-  `ALTER`, `GRANT`, views and unknown/contract SQL require reviewed standalone migration.
-  Automatic calls reject a missing `public.schema_migrations` under the lock and never call `initializeEmptyDatabase`, regardless of `INITIALIZE_EMPTY_DB`.
-  Complete standalone empty-only bootstrap/historical SQL/reader sync before a fresh web dispatch; no historical exemptions.
-  Advisory lock acquisition is nonblocking and remains held through reader sync.
-  See `docs/runbooks/release-safety-primitives.md` and the corresponding Python/Node/PostgreSQL tests.
+- `ci_web_read.py` / `ci_web_deploy.py` serve Deploy Web. Only typed transient reads retry within a shared deadline; writes/permissions/identity failures do not retry. Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.
+- Every web migration caller forces `AUTOMATIC_MIGRATION=1`, checking every ledger-derived pending SQL file against the transactional subset before pending SQL/ledger/reader changes; function defaults (`now()`/`gen_random_uuid()`), `ALTER`, `GRANT`, views and unknown/contract SQL require reviewed standalone migration. Automatic calls reject a missing `public.schema_migrations` under the lock and never call `initializeEmptyDatabase`, regardless of `INITIALIZE_EMPTY_DB`. Complete standalone empty-only bootstrap/historical SQL/reader sync before a fresh web dispatch; no historical exemptions. Advisory lock acquisition is nonblocking and remains held through reader sync. See `docs/runbooks/release-safety-primitives.md` and the corresponding Python/Node/PostgreSQL tests.
 - `v2/ci_web_deploy.py` calls composed `ci_web_image.promote(env, expected_digest=...)`, verifying the
   caller/context/source/migration/producer; readonly proof shares ECR/config/source-tag checks before DDL.
   A nonempty preflight digest is mandatory; fresh builds must match the registry's source

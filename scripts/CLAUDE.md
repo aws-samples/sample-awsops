@@ -6,21 +6,8 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
-- `v2/ci_web_read.py` and `v2/ci_web_deploy.py` serve the Deploy Web controller.
-  Only allowlisted idempotent reads raise typed transient errors; one shared deadline
-  bounds retries and subprocess cleanup. Identity/permission/unknown failures are fatal;
-  writes remain single-attempt. Exact failed/replaced ECS deployments fail promptly,
-  with at most 15 seconds for the known old PRIMARY in receipt verification. Tests are
-  `v2/test_ci_web_read.py` and `v2/test_ci_web_deploy.py`.
-- `v2/automatic-migration-policy.mjs` admits a conservative additive SQL subset only
-  when `AUTOMATIC_MIGRATION=1`, forced by every web migration caller. Check all actual pending files before pending SQL, ledger upgrades or reader
-  synchronization; function defaults (`now()`/`gen_random_uuid()`), `ALTER`, `GRANT`, views and unknown syntax require reviewed standalone migration.
-  Automatic calls reject a missing `public.schema_migrations` under the lock and never call `initializeEmptyDatabase`, regardless of `INITIALIZE_EMPTY_DB`.
-  Complete standalone empty-only bootstrap/historical SQL/reader sync, then dispatch a fresh web build; no historical exemptions. `migrate.mjs` uses
-  `pg_try_advisory_lock` and holds acquired locks through SQL-reader synchronization;
-  contention fails immediately. Tests: `v2/ci/automatic-migration-policy.test.mjs`,
-  `migration-runtime.test.mjs` and real PostgreSQL `migration.itest.mjs`.
-  Contract and operator scope: `docs/runbooks/release-safety-primitives.md` (ADR-001/005).
+- `v2/ci_web_read.py` and `v2/ci_web_deploy.py` serve the Deploy Web controller. Only allowlisted idempotent reads raise typed transient errors; one shared deadline bounds retries and subprocess cleanup. Identity/permission/unknown failures are fatal; writes remain single-attempt. Exact failed/replaced ECS deployments fail promptly, with at most 15 seconds for the known old PRIMARY in receipt verification. Tests are `v2/test_ci_web_read.py` and `v2/test_ci_web_deploy.py`.
+- `v2/automatic-migration-policy.mjs` admits a conservative additive SQL subset only when `AUTOMATIC_MIGRATION=1`, forced by every web migration caller. Check all actual pending files before pending SQL, ledger upgrades or reader synchronization; function defaults (`now()`/`gen_random_uuid()`), `ALTER`, `GRANT`, views and unknown syntax require reviewed standalone migration. Automatic calls reject a missing `public.schema_migrations` under the lock and never call `initializeEmptyDatabase`, regardless of `INITIALIZE_EMPTY_DB`. Complete standalone empty-only bootstrap/historical SQL/reader sync, then dispatch a fresh web build; no historical exemptions. `migrate.mjs` uses `pg_try_advisory_lock` and holds acquired locks through SQL-reader synchronization; contention fails immediately. Tests: `v2/ci/automatic-migration-policy.test.mjs`, `migration-runtime.test.mjs` and real PostgreSQL `migration.itest.mjs`. Contract and operator scope: `docs/runbooks/release-safety-primitives.md` (ADR-001/005).
 - `v2/ci_web_image.py` — web provenance helper called by `ci_web_deploy.py`.
   `promote` composes caller/context/source/migration/producer checks before publishing only
   the validated project's digest. Every promotion requires a nonempty preflight digest;

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 22ec96fef9e2 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8d534ce0ce68 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -12,13 +12,7 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
-- Web migrations force automatic checks of every pending file on initialized DBs.
-  Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the init flag.
-  Standalone empty-only bootstrap applies historical SQL and reader sync first; function defaults
-  (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL need reviewed standalone migration,
-  then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Contention fails
-  immediately under the shared lock. Read retries share a deadline and never retry writes;
-  failed/replaced ECS deployment evidence is terminal. See `release-safety-primitives.md`.
+- Web migrations force automatic checks of every pending file on initialized DBs. Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the init flag. Standalone empty-only bootstrap applies historical SQL and reader sync first; function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL need reviewed standalone migration, then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Contention fails immediately under the shared lock. Read retries share a deadline and never retry writes; failed/replaced ECS deployment evidence is terminal. See `release-safety-primitives.md`.
 
 - S3 runbooks must state backend-file, bucket-posture and existing role/key-policy prerequisites,
   branch-environment approval for publication/apply, missing-backend/tfvars soft skips and
@@ -52,8 +46,7 @@ legacy runbook's steps as the current operational path).
   overrides, retain explicit exported auth, and keep signed curl URLs in private stdin.
   Multi-tag digest reads require consistent identities and identical manifest bytes/media.
   Child PATH uses only `/usr/local/bin:/usr/bin:/bin`; HOME is omitted, never reassigned.
-- Every AWS-facing Deploy Web job needs `AWS_ACCOUNT_ID_DEV`, including main; the guard job does not.
-  Required `test_ci_web_workflow.py` needs PyYAML and Bash; actionlint is optional local lint, not installed/run by CI.
+- Every AWS-facing Deploy Web job needs `AWS_ACCOUNT_ID_DEV`, including main; the guard job does not. Required `test_ci_web_workflow.py` needs PyYAML and Bash; actionlint is optional local lint, not installed/run by CI.
 - Verification policies accept manual collect-runtime dev dispatches for backend/workload and prepare/collect, plus deploy-web dev push/dispatch for workload collect only (backend/prepare refused). Both workflows consume these policies. Dev verification needs activated runtime prerequisites and private proof credentials/state for both events; missing proof fails closed. Consumers enforce nonempty restrictions and owned-file cleanup. Collect permits only the owned collector; its application-data effects are operator CI, not an ADR-005 exception. IAM cannot restrict payloads: the controller enforces catalog or each verified catalog member's RequestResponse event and rejects empty/all/unregistered/Event calls. Every current type needs post-marker succeeded evidence, known counts and zero unknowns; no rolling prior success. Four is the concurrent in-flight ceiling, not total volume: at least one catalog request and at least one per type, plus retries, require calls. The separate deployment audit remains no-invoke. Contract: `runtime-verifier-sessions.md`.
 - `ci_readiness_plan_summary.py` runs before encryption only for explicit full dev readiness
   plans, with a two-minute timeout and fenced JSON output. Its failure-tolerant report publishes
