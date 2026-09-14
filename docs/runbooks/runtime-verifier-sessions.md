@@ -11,6 +11,12 @@ development verification phase. It does not assume a role or wire workflows.
 Review each consumer's credential-assumption steps separately; helper availability
 alone does not establish that a workflow uses a restricted session.
 
+**Current wiring:** this checkout does not contain `collect-runtime.yml`.
+Deploy Web's existing smoke is dispatch-only database verification; it does not
+capture `runtime_deployment` or prepare authenticated runtime proof for push runs.
+The integration requirements below do not describe already-wired verification
+steps. The helper change does not install either consumer path.
+
 ## Candidate causes
 
 - Omitting or publishing an empty `inline-session-policy` leaves the existing
@@ -47,8 +53,8 @@ checks, not an assertion of effective live access under every IAM/SCP policy.
 ## Action and integration contract
 
 Retain the existing operator-owned deployer role. For manual collection, apply
-the backend and workload policies in separate OIDC sessions. Deploy Web uses only
-the workload policy for its verification phase; its earlier deployment phase
+the backend and workload policies in separate OIDC sessions. When adding Deploy Web
+verification, use only the workload policy; the earlier deployment phase
 retains the existing credential contract. Consumers must pass the generated
 policy to the credential-assumption step. No role, trust policy or persistent
 IAM attachment is added here.
@@ -81,7 +87,7 @@ only; the consumer binds the image to ECR and running tasks. It need not equal
 the workflow's `GITHUB_SHA`, and it must be empty in prepare mode.
 Accepted callers are limited to this repository and `refs/heads/dev`. The full
 `GITHUB_WORKFLOW_REF` must use this repository's prefix and the exact path/ref
-below. Account/role, source SHA, image-pin, region and default-workspace checks
+below. `TARGET=dev`, account/role, source SHA, image-pin, region and default-workspace checks
 apply to every row.
 
 | Policy phase | Workflow path/ref | Event | `RUNTIME_MODE` |
@@ -112,14 +118,42 @@ Manual collection integration must:
 5. Clean the owned policy and credential files in always-run cleanup, including
    failure/cancellation paths. Do not sweep unrelated runner temporary files.
 
-For Deploy Web verification, use the private `runtime_deployment` file captured
-earlier in the same run under the existing deployment credentials and backend/
-account guards. Do not request a backend policy from this helper. After the
-deployment phase and immediately before verification's credential refresh, build
-the workload policy from that file with `RUNTIME_MODE=collect`. The same
-0700 directory/0600 file binding, nonempty-policy requirement, fresh-caller check
-and always-run owned-file cleanup apply. Missing policy output must fail the job,
-never retain or recreate an unrestricted verification session.
+Deploy Web integration must establish these prerequisites before using the
+workload policy:
+
+- Scope all added preparation/capture/verification steps to
+  `github.ref == 'refs/heads/dev'`; the workflow also serves other branches.
+  Set `TARGET=dev`, `AWS_REGION=ap-northeast-2`, `RUNTIME_MODE=collect`, and the
+  configured `AWS_ACCOUNT_ID_DEV`/`CI_ROLE_ARN`. Use the actual Actions
+  `GITHUB_*` context and output file, not fabricated caller metadata.
+- Collect requires an activated runtime profile: captured
+  `features.inventory`, `features.agentcore` and `features.workers` must all be
+  true in applied state, with the owned collector code hash and known CloudFront
+  identity. Complete reviewed runtime/readiness activation before deployment
+  mutations and mandatory verification. Feature-off bootstrap uses the
+  [first-web procedure](first-web-bootstrap.md) and manual prepare path; collect
+  is not its fallback. Missing activation or proof must fail closed, not silently
+  skip verification or restore an unrestricted session.
+- Prepare the existing configured HTTP proof credentials and capture validated
+  `runtime_deployment` privately in the same run, before deployment mutations,
+  under the existing deployment credentials and backend/account guards. These
+  steps and cleanup must cover push as well as manual dev runs; the current
+  dispatch-only `verify_database` credential path is insufficient for push.
+- Resolve `PIN_SHA` exactly as the image-promotion step:
+  `${{ inputs.image_sha || github.sha }}`. Require a full lower-case 40-character
+  commit SHA; reject invalid values rather than substituting a different image.
+
+After deployment, immediately before verification's credential refresh, build
+the workload policy from that captured file. Deploy Web must not request a
+backend policy from this helper. The same 0700 directory/0600 file binding,
+nonempty-policy requirement, fresh-caller check and always-run owned-file cleanup
+apply. Missing policy output must fail the job, never retain or recreate an
+unrestricted verification session. Full authenticated runtime/model/worker proof
+remains mandatory; policy generation or database smoke alone does not establish it.
+Use the bounded busy/superseded handling and release-mode proof contract below;
+they do not authorize skipping missing or failed proof. Push-triggered verification
+uses the same owned collector's application-data effects already automated by
+the existing 15-minute schedule, with the narrower explicit payloads below.
 
 The CLI publishes `policy_file` and `session_policy`. It masks the complete policy,
 Resource ARNs, bare S3 bucket and bucket/key forms, and configured account first.
