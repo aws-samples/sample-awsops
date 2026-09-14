@@ -13,6 +13,7 @@ const fail = (phase, quality) => {
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const exact = (v, keys) => object(v) && Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
 const baseKeys = ['schemaVersion', 'mode', 'expectedAccountId'];
+const VERIFICATION_WINDOW_MS = 30 * 60_000;
 export function validateRuntimeSmokeConfig(value, now = Date.now()) {
   const keys = value?.mode === 'prepare' ? [...baseKeys]
     : [...baseKeys, 'expectedCloudfrontId', 'expectedQueuedTypes', 'collectionStartedAt'];
@@ -33,9 +34,17 @@ export function validateRuntimeSmokeConfig(value, now = Date.now()) {
         || !Array.isArray(types) || types.length < 1 || types.length > 128 || new Set(types).size !== types.length
         || !types.includes('cloudfront') || types.some(t => typeof t !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(t))
         || typeof value.collectionStartedAt !== 'string' || !Number.isFinite(start)
-        || start > now || start < now - 30 * 60_000) fail('configuration');
+        || start > now || start < now - VERIFICATION_WINDOW_MS) fail('configuration');
   }
   return value;
+}
+
+// Call after config validation. A caller may shorten, never extend, the evidence window.
+export function runtimeSmokeDeadline(config, now, requested = Infinity) {
+  const start = config.mode === 'verify' ? Date.parse(config.collectionStartedAt) : now;
+  const deadline = Math.min(requested, start + VERIFICATION_WINDOW_MS);
+  if (!Number.isFinite(deadline)) fail('configuration');
+  return deadline;
 }
 
 export function readRuntimeSmokeConfig(file, credentialFile) {
@@ -103,10 +112,19 @@ export async function verifyRuntimeSmoke(configuration, send, {
   now = Date.now, wait = ms => delay(ms), deadline = Infinity,
 } = {}) {
   const config = validateRuntimeSmokeConfig(configuration, now());
+  deadline = runtimeSmokeDeadline(config, now(), deadline);
+  let quality;
   const request = async (path, options = {}) => {
-    if (now() >= deadline) fail('release_timeout');
-    const result = await send(path, { ...options, timeout: Math.min(options.timeout ?? 35_000, deadline - now()) });
-    if (now() >= deadline) fail('release_timeout');
+    const remaining = deadline - now();
+    if (remaining <= 0) fail('release_timeout', quality);
+    let result;
+    try {
+      result = await send(path, { ...options, timeout: Math.max(1, Math.ceil(Math.min(options.timeout ?? 35_000, remaining))) });
+    } catch (error) {
+      if (now() >= deadline) fail('release_timeout', quality);
+      throw error;
+    }
+    if (now() >= deadline) fail('release_timeout', quality);
     return result;
   };
   const { accounts } = await request('/api/accounts');
@@ -117,20 +135,20 @@ export async function verifyRuntimeSmoke(configuration, send, {
       || (config.hostOnly === true && accounts.some(a => a.enabled && a.accountId !== config.expectedAccountId))) fail('host_registry');
   if (config.mode === 'prepare') return { status: 'ok', mode: 'prepare' };
 
-  async function poll(check, phase, seconds) {
-    const end = Math.min(deadline, now() + seconds * 1000);
+  async function poll(check, phase, seconds, collectionEnd = Infinity) {
+    const end = Math.min(deadline, collectionEnd, now() + seconds * 1000);
     for (let attempt = 0; attempt <= seconds / 5 && now() < end; attempt++) {
       if (await check()) return;
       if (now() >= end) break;
       await wait(Math.min(5000, end - now()));
     }
-    if (now() >= deadline) fail('release_timeout');
-    fail(typeof phase === 'function' ? phase() : phase, quality);
+    if (now() >= deadline) fail('release_timeout', quality);
+    fail(typeof phase === 'function' ? phase() : phase, Number.isFinite(collectionEnd) ? quality : undefined);
   }
   const started = Date.parse(config.collectionStartedAt);
   const releaseWindow = config.collectionMode === 'release';
   const required = config.expectedQueuedTypes;
-  let quality;
+  const collectionEnd = Math.min(deadline, now() + (releaseWindow ? 1200 : 600) * 1000);
   let collectionFailure = 'collection_timeout';
   const readCollection = async () => {
     const summary = await request('/api/inventory/summary?accounts=self&view=collection');
@@ -153,7 +171,7 @@ export async function verifyRuntimeSmoke(configuration, send, {
     collectionFailure = has('missing') ? 'collection_missing'
       : config.inventoryPolicy && has('stale') ? 'collection_stale' : 'collection_timeout';
     return required.every(type => quality.types.verified.includes(type));
-  }, () => collectionFailure, releaseWindow ? 1200 : 600);
+  }, () => collectionFailure, releaseWindow ? 1200 : 600, collectionEnd);
   await verifyCollection();
 
   let found = false;

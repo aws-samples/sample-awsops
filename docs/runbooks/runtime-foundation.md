@@ -76,6 +76,39 @@ Retain runtime resources and restore reviewed prior digests/settings. Manual dev
 
 Sequence: merge reviewed code to dev → reviewed dev apply and full live readiness → main promotion → reviewed production apply. Do not promote this IAM narrowing until live dev exercises verify gateway-backed chat, worker diagnosis, and an SFN/Fargate run with managed tags. Record actual identities, outcomes and denied operations privately; a mock plan or IAM document alone cannot satisfy this promotion gate. This dev PR is the prerequisite for that evidence, not production deployment authorization.
 
+## Reusable runtime probe contract
+
+Every supplied type requires post-marker success, known counts and zero unknown attributes.
+Verify accepts optional `inventoryPolicy: "full"` for structured quality/gap return values;
+omission retains strict checks and other policies fail. These payloads are programmatic:
+the CLI keeps fixed status/error messages. The caller supplies the intended catalog; the
+helper does not discover it. Gap categories can overlap and must not be summed as disjoint counts.
+
+Optional `collectionMode: "release"` allows a 20-minute collection poll window instead of
+10 minutes. Both the initial poll and a contention recheck share that original window.
+Every runtime entry point has a finite deadline: verify expires 30 minutes after
+`collectionStartedAt`, while prepare gets at most 30 minutes from entry. A caller deadline
+can only shorten it. Authentication, HTTP, cooldowns and workers share the bound. Admitted
+poll responses still must arrive before the overall deadline to pass.
+
+A validated inventory-incomplete/stale response permits one retry only when the ledger
+shows a unique fresh running CloudFront attempt with a fresh prior success. After a
+65-second cooldown, every supplied type must be complete again before retrying. A second
+proven collision after successful revalidation is `runtime_inventory_contention`; an
+initial or continuous collection wait exhausts as `collection_timeout`. Full-policy stale
+coverage can end as `collection_stale`; the overall bound is `release_timeout`.
+Partial/failed/unknown evidence and unrelated protocol, authorization or model failures
+never pass. Workers start only after ready. One additional AgentCore probe may be billed.
+
+`/api/inventory/summary?view=collection` authenticates normally and reads only the sanitized
+aggregate ledger, avoiding dashboard aggregations. Account/region filters do not narrow
+this collector-wide ledger or establish per-account health. The existing default-off
+readiness capability still governs access; this utility does not enable a workflow.
+
+```bash
+node --test scripts/v2/runtime-smoke.test.mjs scripts/v2/deployment-smoke.test.mjs
+```
+
 <a id="related--관련"></a>
 
 ## Related
@@ -84,24 +117,3 @@ Sequence: merge reviewed code to dev → reviewed dev apply and full live readin
 [CI setup/assets](dev-repo-setup.md) · [SQL reader](agent-sql-reader.md) · [Multi-account](onboard-target-account.md) · [Inventory rollback](steampipe-quota-and-staleness.md).
 Sources: `scripts/v2/ci_runtime_policy.py`, `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/prepare-runtime-host.mjs`, `terraform/foundation/runtime-read-scope.tf`, `.github/workflows/terraform.yml`.
 ADRs: 001, 005, 007, 011, 016. Infrastructure apply is not live readiness proof.
-
-## Reusable runtime probe contract
-
-The standalone smoke helper still requires a successful post-marker ledger row with known
-counts and zero unknown attributes for every supplied type. Optional `inventoryPolicy: "full"`
-adds structured quality/gap diagnostics; other policies are rejected, and omission preserves
-strict checks. The caller must obtain the intended type set; this helper does not discover
-it or establish that it is the complete deployed catalog.
-
-Callers may supply an overall deadline, propagated through authentication, HTTP, polling and
-cooldown waits. A validated inventory-incomplete/stale response can be retried once only when
-the ledger shows one fresh running CloudFront attempt with a fresh previous success. After
-65 seconds, every supplied type must be complete again before retrying. Persistent contention
-reports `runtime_inventory_contention`; partial/failed/unknown data, protocol errors and
-unrelated authorization/model failures never become success. Workers start only after ready.
-This may incur one additional bounded AgentCore probe. No workflow is enabled, IAM is changed
-or readiness flag is turned on by this library update; the existing capability opt-in remains.
-
-```bash
-node --test scripts/v2/runtime-smoke.test.mjs scripts/v2/authenticated-smoke.test.mjs
-```

@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { smokeConnectionArgs } from './deployment-smoke.mjs';
 import { cleanupSmokeCredentials, readSmokeCredentials } from './prepare-smoke-credentials.mjs';
-import { readRuntimeSmokeConfig, verifyRuntimeSmoke, RuntimeSmokeError } from './runtime-smoke.mjs';
+import { readRuntimeSmokeConfig, validateRuntimeSmokeConfig, runtimeSmokeDeadline, verifyRuntimeSmoke, RuntimeSmokeError } from './runtime-smoke.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const execute = promisify(execFile);
@@ -60,6 +60,10 @@ export async function authenticatedSmoke(
   const cancel = () => controller.abort();
   const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
   try {
+    if (runtimeConfig !== undefined) {
+      validateRuntimeSmokeConfig(runtimeConfig, now());
+      deadline = runtimeSmokeDeadline(runtimeConfig, now(), deadline);
+    }
     const connectionArgs = smokeConnectionArgs(publicUrl, cloudfrontDomain);
     const url = new URL(publicUrl);
     failure = 'requires a configured demo username';
@@ -100,8 +104,9 @@ export async function authenticatedSmoke(
     let requestCounter = 0;
     const request = async (args, path, status = '200', timeout = 35_000,
       maxResponseBytes = MAX_RESPONSE_BYTES, withStatus = false) => {
-      if (now() >= deadline) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
-      timeout = Math.min(timeout, deadline - now());
+      const remaining = deadline - now();
+      if (remaining <= 0) throw new RuntimeSmokeError('Runtime smoke: release_timeout');
+      timeout = Math.max(1, Math.ceil(Math.min(timeout, remaining)));
       if (maxResponseBytes !== MAX_RESPONSE_BYTES
           && !(path.startsWith('/api/inventory/cloudfront?') && maxResponseBytes === MAX_INVENTORY_RESPONSE_BYTES)) {
         throw new Error();
@@ -200,7 +205,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       runtimeConfig: process.env.SMOKE_RUNTIME_CONFIG_FILE === undefined ? undefined
         : readRuntimeSmokeConfig(process.env.SMOKE_RUNTIME_CONFIG_FILE, file),
     }, {
-      // The existing always() credential cleanup also owns scratch after SIGKILL.
+      // Workflow cleanup can recover CLI scratch while the runner remains available.
       tempRoot: dirname(file),
     });
     completedMode = completed.mode;

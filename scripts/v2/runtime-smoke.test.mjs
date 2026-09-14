@@ -47,7 +47,7 @@ function fixture(overrides = {}, runtimeOptions = {}) {
     }
     throw new Error('unexpected request');
   };
-  return { calls, now: () => now, run: (c = config) => verifyRuntimeSmoke(c, request, {
+  return { calls, now: () => now, advance: ms => { now += ms; }, run: (c = config) => verifyRuntimeSmoke(c, request, {
     now: () => now, wait: async ms => { now += ms; },
     ...runtimeOptions,
   }) };
@@ -248,7 +248,7 @@ for (const [inventoryBytes, releaseMode] of [[75 * 1024, false], [2 * 1024 * 102
   assert.deepEqual(readdirSync(dir), []);
 });
 
-test('a successful response from an attempt admitted before the deadline is accepted', async () => {
+test('a successful poll admitted within its collection window can finish before the overall deadline', async () => {
   let clock = Date.parse(start) + 1000;
   const f = fixture({ [ `/api/jobs/${jobIds[0]}` ]: () => {
     clock += 301_000;
@@ -383,13 +383,14 @@ test('release collection never accepts stale, missing, partial or unknown eviden
   }
 });
 
-function contentionFixture({ repeat = false, evidence = {}, afterRetry = {}, deadline = Infinity } = {}) {
+function contentionFixture({ repeat = false, evidence = {}, afterRetry = {}, deadline = Infinity, initialDelay = 0 } = {}) {
   const types = ['cloudfront', 'ec2', ...Array.from({ length: 41 }, (_, i) => `catalog_type_${i}`)];
   let attempts = 0, reads = 0;
   const times = [];
   const f = fixture({
     '/api/inventory/summary?accounts=self&view=collection': () => {
       reads++;
+      if (reads === 1) f.advance(initialDelay);
       const competing = reads === 2 || (repeat && attempts === 2);
       return { collection: { configured: true, readOk: true, runs: types.map(type => ({
         type, accountId: 'self', status: 'succeeded', row_count: 1,
@@ -462,4 +463,45 @@ test('contention retry cannot overrun the shared release deadline', async () => 
   await assert.rejects(f.run(), /Runtime smoke: release_timeout$/);
   assert.equal(f.attempts(), 1);
   assert.ok(!f.calls.some(c => c.path === '/api/jobs'));
+});
+
+test('default and later caller deadlines cannot outlive the verification marker window', async () => {
+  for (const deadline of [Infinity, Date.parse(start) + 60 * 60_000]) {
+    const f = fixture({ '/api/inventory/cloudfront?accounts=self&limit=5&offset=0': () => {
+      f.advance(31 * 60_000);
+      return { rows: [{ account_id: 'self', resource_id: config.expectedCloudfrontId,
+        captured_at: start, data: { id: config.expectedCloudfrontId } }] };
+    } }, { deadline });
+    await assert.rejects(f.run({ ...config, collectionMode: 'release' }), /Runtime smoke: release_timeout$/);
+    assert.ok(!f.calls.some(c => c.path === '/api/deployment/readiness' || c.path === '/api/jobs'));
+  }
+});
+
+test('a contention retry shares the original collection window', async () => {
+  const f = contentionFixture({ initialDelay: 9 * 60_000 + 30_000 });
+  await assert.rejects(f.run(), /Runtime smoke: collection_timeout$/);
+  assert.equal(f.attempts(), 1);
+  assert.equal(f.reads(), 2);
+  assert.ok(!f.calls.some(c => c.path === '/api/jobs'));
+});
+
+test('the existing authenticated entry point bounds runtime preparation without caller options', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'runtime-default-deadline-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  let clock = Date.now(), calls = 0;
+  await assert.rejects(authenticatedSmoke({
+    publicUrl: 'https://dev.example.com', cloudfrontDomain: 'd123example.cloudfront.net',
+    email: 'demo@example.com', password: 'fixture-password',
+    runtimeConfig: { schemaVersion: 1, mode: 'prepare', expectedAccountId: account },
+  }, { tempRoot: dir, now: () => clock, runCurl: async (command, args) => {
+    calls++; clock += 31 * 60_000;
+    const path = new URL(args.at(-1)).pathname;
+    const body = path === '/api/auth/login' ? { ok: true } : path === '/api/db'
+      ? { status: 'ok', public_tables: 1 } : { accounts: [{ accountId: account, isHost: true, enabled: true }] };
+    writeFileSync(args[args.indexOf('--output') + 1], JSON.stringify(body));
+    if (args.includes('--cookie-jar')) writeFileSync(args[args.indexOf('--cookie-jar') + 1],
+      '#HttpOnly_dev.example.com\tFALSE\t/\tTRUE\t0\tawsops_token\tfixture-token\n');
+    return { stdout: '200' };
+  } }), /Runtime smoke: release_timeout$/);
+  assert.equal(calls, 1);
 });

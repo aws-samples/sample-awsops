@@ -1047,10 +1047,25 @@ The release controller must supply actual deployment/dispatch evidence; current 
 
 `schemaVersion: 1`, `mode: "prepare"` and `expectedAccountId` check login/DB and the enabled host.
 Optional `hostOnly: true` also rejects enabled members. Verify adds `expectedCloudfrontId`,
-all acknowledged `expectedQueuedTypes` and the pre-dispatch `collectionStartedAt`, from applied
+caller-supplied `expectedQueuedTypes` and the pre-dispatch `collectionStartedAt`, from applied
 deployment and owned Lambda evidence. It requires fresh complete collection, web SSM/runtime calls
 and succeeded Lambda/Fargate jobs. Missing/partial/stale is never healthy zero; deploy the updated
 inventory-reader Lambda so legacy NULL attribute coverage is disclosed as incomplete.
+
+Verify also accepts `inventoryPolicy: "full"` and `collectionMode: "release"`; prepare rejects
+both. Only those values are supported. The policy adds structured quality/gaps for
+programmatic callers; the CLI retains fixed diagnostics. Missing policy still enforces
+complete evidence for every supplied type. The caller must obtain the intended type set.
+Release mode allows 20 minutes of collection polling rather than 10; a retry shares the
+original window. All runtime entry points expire 30 minutes after the verification marker
+(or 30 minutes from prepare entry); earlier caller deadlines are honored. This includes
+login/DB, HTTP, cooldowns and worker proof, and no later deadline can extend it.
+
+Full-policy stale coverage can fail as `collection_stale`; the overall limit reports
+`release_timeout`. A validated CloudFront running-sweep collision permits one 65-second
+cooldown and strict collection recheck before another AgentCore probe. A second confirmed
+collision is `runtime_inventory_contention`; a continuous initial wait is `collection_timeout`.
+Other failures do not retry. See [probe contracts](runtime-foundation.md#reusable-runtime-probe-contract).
 
 `POST /api/deployment/readiness` requires an administrator or `deployment-verifiers` membership.
 `controller-readiness.tf` creates that application group only when readiness and AgentCore are enabled.
@@ -1093,7 +1108,8 @@ credentials. Terraform stdout/stderr stay private; inherited `TF_LOG*` and `TF_C
 are removed from preparation subprocesses. Only a path crosses steps: the credential
 file is `0600` inside a `0700` directory under `RUNNER_TEMP` and is removed after use or by
 always-run cleanup if rollout fails or is cancelled. The CLI creates its login-body, cookie and
-response scratch files inside that same directory, so the cleanup also covers a killed smoke.
+response scratch files inside that same directory. Workflow cleanup can recover a killed CLI
+while its runner remains available; runner loss can prevent both workflow and local cleanup.
 Standalone smoke calls prefer `RUNNER_TEMP` as well. Only validated numeric HTTP statuses
 may accompany phase errors; response bodies, cookies and Terraform diagnostics stay private.
 

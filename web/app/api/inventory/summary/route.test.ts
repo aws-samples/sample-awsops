@@ -201,3 +201,26 @@ describe('GET /api/inventory/summary — region scope (gap L110)', () => {
     expect(sql).not.toContain('bad');
   });
 });
+
+describe('collection-only verification view', () => {
+  it('reads the sanitized ledger without scanning fleet aggregates', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    query.mockResolvedValue({ rows: [{ resource_type: 'cloudfront', account_id: 'self',
+      status: 'succeeded', row_count: 1, unknown_attribute_count: 0, error: 'PRIVATE' }] });
+    const { GET } = await import('./route');
+    const response = await GET(req('?view=collection&accounts=self'));
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(Object.keys(body)).toEqual(['collection']);
+    expect(body.collection.readOk).toBe(true);
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0]).toContain('FROM inventory_sync_runs');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE');
+  });
+  it('authenticates before reading even the collection-only view', async () => {
+    verifyUser.mockResolvedValue(null);
+    const { GET } = await import('./route');
+    expect((await GET(req('?view=collection'))).status).toBe(401);
+    expect(query).not.toHaveBeenCalled();
+  });
+});

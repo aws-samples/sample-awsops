@@ -218,11 +218,13 @@ fresh collection, real web-role runtime evidence and owned worker completion. Th
 is at most 16 KiB, collectionStartedAt at most 30 minutes old, and queued types unique
 with cloudfront included. The utility alone does not wire a deployment workflow.
 
-The reusable smoke helper accepts only the optional `inventoryPolicy: "full"`; omission
-retains complete checks for every supplied type. Explicit full mode returns structured
-quality/gaps, never healthy zeros for unknown counts. It does not discover the catalog.
-A caller-supplied deadline bounds HTTP, polling and cooldown waits. One validated inventory
-failure plus a fresh running CloudFront ledger permits one 65-second-cooldown retry, only
-after every supplied type is complete again. Persistent contention fails distinctly; unrelated
-failures are not retried, and workers start only after a valid runtime response. This helper
-change does not activate a workflow or change the default-off billed readiness capability.
+Verify accepts optional `inventoryPolicy: "full"` and `collectionMode: "release"`;
+other values fail, and omission retains strict checks for every supplied type. Full mode
+returns programmatic quality/gaps; CLI output stays fixed and catalog discovery belongs
+to the caller. Release mode extends collection polling from 10 to 20 minutes, with one
+shared window across rechecks. All runtime callers have a finite deadline: marker+30min
+for verify, entry+30min for prepare; an explicit deadline only shortens it. One proven
+CloudFront running collision permits a 65-second-cooldown retry after complete revalidation.
+A repeated collision is runtime_inventory_contention, initial waiting is collection_timeout,
+stale full-policy data is collection_stale and the outer limit is release_timeout. Workers
+start after ready. The helper and collection-only BFF view do not activate a workflow/flag.

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 72944c21e4e9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: bf3ebd753de5 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -137,8 +137,8 @@ under workers, steampipe, incident and remediation; update all with verified whe
 The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and validator.
 `v2/test_ci_tf_assets.py` covers these contracts and recovery.
 
-Reusable runtime smoke retains strict post-marker checks for all supplied types; optional
-inventoryPolicy=full adds explicit quality/gaps, while other policies fail. Catalog discovery
-is the caller's responsibility. Caller deadlines bound work; proven CloudFront running
-contention permits one cooldown-respecting retry only after all supplied types are complete.
-No workflow or billed capability is activated by this helper change.
+Runtime smoke accepts verify-only inventoryPolicy=full and collectionMode=release; omission
+keeps strict supplied-type checks. Full quality is programmatic; the caller discovers types.
+Collection polls share 10 minutes, or 20 in release mode. Every runtime call is bounded by
+marker+30min (prepare: entry+30min), shortened by explicit deadlines. One proven collision
+permits a cooldown/revalidation retry. No workflow or billed capability is activated.

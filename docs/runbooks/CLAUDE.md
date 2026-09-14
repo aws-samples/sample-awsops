@@ -178,3 +178,9 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 2. Use an existing runbook's structure as a template (`start-services.md`, `deploy-new-version.md`).
 3. Follow the symptoms → diagnosis → action order strictly.
 4. Always include the related file paths.
+
+The reusable runtime probe supports verify-only inventoryPolicy=full and collectionMode=release
+(20-minute rather than 10-minute collection polling). Rechecks share the first window; all
+runtime callers have marker+30min/prepare-entry+30min deadlines, shortened by explicit bounds.
+Programmatic quality/gaps do not imply CLI JSON output or catalog discovery. Document
+collection_stale, release_timeout and repeated runtime_inventory_contention distinctly.
