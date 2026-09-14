@@ -256,6 +256,13 @@ roles RDS provides (`rds_iam`, `awsops_admin`); create them first on a vanilla s
 | CloudFront `data` 투영 / projection | `{"id","aliases","enabled","origins":[{"DomainName":...}]}` — `CustomHeaders` 값 부재, `cache_behaviors` 부재 / value absent, absent |
 | `topology_nodes.meta` 투영 / projection | `{"invType":...}` — `row` 아래 전체 행 복사본 부재 / the whole-row copy under `row` absent |
 
+The current SQL-reader view deliberately excludes `ownership_evidence`, `ambiguity`,
+`candidate` and per-target `capturedAt`, even when raw topology metadata carries them.
+Agent consumers must treat `class='flow'` labels as cached configuration context; absent
+qualifiers never prove exclusive/live ownership. The exposed `captured_at` is graph
+materialization time, not the underlying inventory capture time. This change does not
+extend the projection; exposure needs a separately reviewed additive migration.
+
 origins 케이스는 그 투영을 수정할 때마다 다시 돌려볼 값어치가 있다: `DomainName` 은 유지해야 하고
 ("CloudFront (empty origin)" finding 이 그것을 읽는다) `CustomHeaders[].HeaderValue`(origin secret)는
 빠져야 한다. 리뷰 중 **양쪽 다** 틀린 적이 있다.

@@ -88,6 +88,10 @@ guard — see the section below.
     `query_inventory`/`get_topology`). So it's allowlist projection, and the `data` allowlist
     must be a superset of `inventory_read_mcp.PROJECTIONS` —
     `agent/lambda/test_inventory_view_contract.py` fails the build on drift.
+  - `sql_reader.topology_nodes.meta` excludes `ownership_evidence`, `ambiguity`, `candidate`
+    and per-target `capturedAt`. Treat all `class='flow'` labels as cached configuration
+    context, never exclusive/live ownership; missing qualifiers do not establish confidence.
+    The exposed `captured_at` column is graph materialization time, not target inventory time.
   - Effect: a new base-table column is **invisible** until someone adds it to a view (silently
     absent instead of silently exposed — the right direction for a model-invocable tool).
   - `search_path = sql_reader, pg_catalog` → an unqualified `FROM worker_jobs` written by the
