@@ -87,3 +87,30 @@ for (const path of ['/topology/infra', '/topology/resource/vpc%3Aone', '/topolog
     });
   }
 }
+
+
+for (const path of ['/topology/infra', '/topology/resource/vpc%3Aone', '/topology/services']) {
+  for (const width of [1440,390]) {
+    test(`${path} clears stale graph and offers sign-in after expiry at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.addInitScript(() => localStorage.setItem('awsops-lang', 'en'));
+      let reads = 0;
+      await page.route('**/api/**', route => {
+        if (new URL(route.request().url()).pathname !== '/api/graph') return route.fulfill({ json: { accounts: [], rows: [] } });
+        if (++reads > 1) return route.fulfill({ status: 401, json: { message: 'PRIVATE' } });
+        return route.fulfill({ json: { nodes: [{ id: 'vpc:one', kind: 'vpc', label: 'Visible fixture' }], edges: [],
+          captured_at: null, collection: { status: 'ok', stale: false, sources: [] } } });
+      });
+      await page.goto(path);
+      await expect(page.locator('.react-flow')).toContainText('Visible fixture');
+      const refresh = page.getByRole('button', { name: 'Refresh', exact: true });
+      await refresh.click();
+      const error = page.getByRole('alert').filter({ hasText: 'Session expired' });
+      await expect(error).toBeVisible();
+      await expect(error.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login');
+      await expect(refresh).toBeDisabled();
+      await expect(page.locator('body')).not.toContainText('Visible fixture');
+      await expect(page.locator('body')).not.toContainText('PRIVATE');
+    });
+  }
+}

@@ -182,6 +182,25 @@ test('private runtime configuration refuses symlinks, public modes and oversized
   assert.throws(() => readRuntimeSmokeConfig(link, credentials), /configuration_file/);
   assert.throws(() => readRuntimeSmokeConfig(file, join(dir, 'nested', 'credentials.json')), /configuration_file/);
 });
+test('private config uses an explicit finite calibrated clock without extending freshness', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'runtime-smoke-clock-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  chmodSync(dir, 0o700);
+  const file = join(dir, 'runtime.json'), credentials = join(dir, 'credentials.json');
+  const marker = Date.now() + 5000;
+  const value = { ...config, collectionStartedAt: new Date(marker).toISOString() };
+  writeFileSync(file, JSON.stringify(value), { mode: 0o600 });
+  assert.deepEqual(readRuntimeSmokeConfig(file, credentials, marker), value);
+  assert.deepEqual(readRuntimeSmokeConfig(file, credentials, marker + 30 * 60_000), value);
+  for (const now of [marker - 1, marker + 30 * 60_000 + 1, NaN, Infinity, -Infinity, '123'])
+    assert.throws(() => readRuntimeSmokeConfig(file, credentials, now), /configuration_file/);
+  for (const now of [NaN, Infinity, -Infinity, '123']) {
+    assert.throws(() => validateRuntimeSmokeConfig(value, now), /configuration/);
+    assert.throws(() => validateRuntimeSmokeConfig({
+      schemaVersion: 1, mode: 'prepare', expectedAccountId: account,
+    }, now), /configuration/);
+  }
+});
 for (const [inventoryBytes, releaseMode] of [[75 * 1024, false], [2 * 1024 * 1024 + 1, false], [75 * 1024, true]]) test(
   `authenticated full flow bounds inventory (${inventoryBytes} bytes, release=${releaseMode})`, { timeout: 20_000 }, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'runtime-smoke-curl-'));

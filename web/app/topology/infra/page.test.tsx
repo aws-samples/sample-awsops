@@ -52,3 +52,12 @@ it('aborts the obsolete resource-depth fetch before displaying the latest read r
   expect(signals[0].aborted).toBe(true);
   expect((await screen.findByRole('alert')).textContent).toContain('Graph read timed out');
 });
+
+it.each(['infra', 'resource', 'services'])('shows a sign-in action for %s auth expiry', async page => {
+  vi.stubGlobal('fetch', async () => Response.json({ message: 'PRIVATE' }, { status: 401 }));
+  render(page === 'infra' ? <InfraPage /> : page === 'resource' ? <ResourcePage params={{ id: 'alb:one' }} /> : <ServicesPage />);
+  expect((await screen.findByRole('alert')).textContent).toContain('Session expired');
+  expect(screen.getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('/login');
+  expect(document.body.textContent).not.toContain('Graph read unavailable');
+  expect(document.body.textContent).not.toContain('PRIVATE');
+});

@@ -36,8 +36,10 @@ async function graphRows(client: Parameters<Parameters<typeof graphReadTransacti
     WHERE ($2 = '__all__' OR account_id = $2) AND class = $1 ${ids ? 'AND id = ANY($3)' : ''}
     ORDER BY id, captured_at DESC`;
   const nodes = await client.query(ids
-    ? `SELECT * FROM (${selection}) selected ORDER BY (id=$4) DESC,id LIMIT ${NODE_LIMIT + 1}`
-    : `${selection} LIMIT ${NODE_LIMIT + 1}`, ids ? [cls, account, ids, ids[0]] : [cls, account]);
+    ? `SELECT selected.* FROM (${selection}) selected
+       JOIN unnest($3::text[]) WITH ORDINALITY nearest(id,priority) USING(id)
+       ORDER BY nearest.priority LIMIT ${NODE_LIMIT + 1}`
+    : `${selection} LIMIT ${NODE_LIMIT + 1}`, ids ? [cls, account, ids] : [cls, account]);
   const visible = nodes.rows.slice(0, NODE_LIMIT);
   const edges = await client.query(`SELECT source, target, rel, confidence, to_jsonb(e)->'meta' AS meta FROM topology_edges e
     WHERE ($2 = '__all__' OR account_id = $2) AND class = $1 AND source = ANY($3) AND target = ANY($3)
@@ -91,7 +93,11 @@ export async function GET(request: Request) {
       if (from) {
         const down = await downstream(client, from, { cls, depth, account });
         const up = await upstream(client, from, { cls, depth, account });
-        ids = [...new Set([from, ...down.map(r => r.id), ...up.map(r => r.id)])];
+        const distances = new Map<string, number>([[from, 0]]);
+        for (const node of [...down, ...up]) {
+          if (Number.isFinite(node.depth)) distances.set(node.id, Math.min(node.depth, distances.get(node.id) ?? Infinity));
+        }
+        ids = [...distances].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0])).map(([id]) => id);
         const cap = await client.query(`SELECT EXISTS (SELECT 1 FROM (
           SELECT source FROM topology_edges WHERE ($4 = '__all__' OR account_id = $4) AND class = $1 AND source = ANY($2)
           GROUP BY source HAVING count(*) > $3) t) AS capped`, [cls, ids, FANOUT_CAP, account]);

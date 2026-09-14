@@ -84,6 +84,9 @@ Live environment: account `<ACCOUNT_ID>`, domain `awsops-v2.atomai.click`, reusi
 Migrations and `awsops_sql_reader` password sync must succeed before AgentCore provisioning. Dev Deploy AgentCore runs the reusable private `deploy-migrations.yml` workflow first, then the split image-build/provision phases. Before dispatch, set `CI_MIGRATIONS_ENABLED_DEV=true` and
 apply the reviewed plan with `ci_migrations_enabled=true` so `migration_job` is non-null. Main/preview and direct private-host CLI use `make migrate` before `make agentcore`; that target does not run migrations itself. See `docs/runbooks/agent-sql-reader.md`.
 
+
+Dev Deploy Web additionally requires applied `steampipe_enabled`, `agentcore_enabled`, `workers_enabled` and `ci_readiness_enabled`, deployed inventory/worker images, enabled worker dispatch and provisioned AgentCore. Every activated dev release performs full-catalog collection, a billed model probe and two real worker jobs. All current catalog types must have post-marker succeeded evidence with known counts and zero unknown attributes; partial/degraded data retained by the operational collector is not release-eligible. Web-role/image, fresh known-resource, SSM/AgentCore/model and both owned worker proofs remain mandatory. See `docs/runbooks/runtime-foundation.md` for activation, budgets and explicit failure criteria.
+
 The preparatory `ci_web_image.py` helper has no workflow caller yet. Its future dev web integration must add successful private-migration outputs and the named producer-receipt steps before using the composed `promote` entrypoint; current Deploy Web does not supply these inputs. `AWS_ACCOUNT_ID_DEV` is mandatory for the helper even on main, for its dev-account exclusion check. See `docs/runbooks/web-image-provenance.md`. Landing the helper alone changes no live release behavior.
 
 ## Known Issues / Lessons (key reusable knowledge)
