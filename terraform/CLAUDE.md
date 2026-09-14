@@ -3,6 +3,11 @@
 ## Role
 Single Terraform root for all v2 infra — one `foundation/` manages edge/auth/Aurora/ECS/
 AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
+The separate owner-run `bootstrap/` creates the state bucket. Its default-off
+`private_plan_retention_enabled` manages only `ci/tfplans/` expiry (7-day current,
+7-day noncurrent, 1-day incomplete upload, expired delete-marker cleanup). S3 has one
+lifecycle configuration per bucket: reconcile and preserve unrelated rules before
+adopting it. Deployment workflows verify this prerequisite but never apply bootstrap.
 
 ## Key Files (`foundation/`)
 - `runtime-read-scope.tf` — default-off runtime rollout/host-only inventory controls, optional inventory/worker digests and the `runtime_deployment` identity output. IAM includes all known regions (including future opt-ins) and global-service reads;

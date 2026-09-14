@@ -383,7 +383,7 @@ Saved plans and rendered assets can contain credentials. Manual plans use the co
 | Channel | Contents and conditions |
 |---|---|
 | `tfplan-<attempt>` | Initially an encrypted one-day handoff; successful publication overwrites it with only `reference.json` for five days. The reference has source/digest metadata, no bucket/account/ARN/version/private values. |
-| Private S3 | Exact plan and HMAC-authenticated assets, pinned versions/checksums and a private manifest. No S3 expiry is configured by this change; purge expired attempts using the procedure below. Reference expiry does not delete objects or authorize stale apply. |
+| Private S3 | Exact plan and HMAC-authenticated assets protected by SSE-KMS, pinned versions/checksums and a private manifest. Publication requires plan-prefix lifecycle. Seven-day current expiration is followed by seven-day noncurrent expiration; S3 deletion is asynchronous. Reference expiry does not delete objects or authorize stale apply. |
 | `terraform-failure-<phase>-<attempt>` | One validated ciphertext file for an explicit failed/cancelled dispatch, five-day artifact retention. Local ciphertext is deleted only after confirmed upload success; failed/cancelled/skipped uploads retain it privately. |
 | Job log and step summary | Fixed command/capture/retention classifications, subsequent upload/cleanup status and numeric Terraform success action counts; no raw command output or arbitrary `Error:` text. Advisory PR/push failures are classified but retain no raw log. |
 
@@ -865,10 +865,20 @@ Enabled, all four public-access blocks, BucketOwnerEnforced ownership and defaul
 SSE-KMS in the same account/region. `terraform/bootstrap/main.tf` provisions the
 versioning, public-access blocks and SSE-KMS settings for new state buckets;
 inspect existing bucket ownership and writer compatibility before changing them.
+The bucket policy must be nonpublic, or absent with the other controls intact.
+Plan-prefix lifecycle is mandatory for the transport. The optional bootstrap
+`private_plan_retention_enabled` flag defaults false to preserve existing ownership:
+the owner must explicitly configure retention before publishing any plan.
 The artifact key is resolved from the bucket default into an enabled same-account/region
 symmetric key; the backend state-object key is independently configured and exactly bound
 as metadata, not compared with that bucket-default key.
-This workflow checks these prerequisites but creates no bucket/key or IAM grant.
+The GitHub handoff remains application-encrypted. S3 publication removes that envelope
+and relies on SSE-KMS plus effective S3/KMS access policies. Authorized reads return
+decrypted plan/assets without the CI key, so existing state-bucket administrators or
+other principals with effective object-read and key-decrypt permissions may read them.
+Review this population and restrict the plan prefix before rollout. Block Public Access
+does not restrict authorized principals. This workflow checks storage prerequisites
+but creates no bucket/key or IAM grant and does not apply bootstrap.
 
 Run these metadata checks locally with the intended profile. Set `PLAN_BUCKET`,
 `PLAN_OWNER` and `PLAN_REGION` from the private backend and verified deployment account:
@@ -878,7 +888,7 @@ set -euo pipefail
 umask 077
 SETUP_DIR=$(mktemp -d "$HOME/awsops-plan-storage.XXXXXX")
 storage_args=(--profile samples --region "$PLAN_REGION" --bucket "$PLAN_BUCKET" --expected-bucket-owner "$PLAN_OWNER")
-for operation in get-bucket-versioning get-public-access-block get-bucket-ownership-controls get-bucket-encryption; do
+for operation in get-bucket-versioning get-public-access-block get-bucket-ownership-controls get-bucket-encryption get-bucket-lifecycle-configuration; do
   aws s3api "$operation" "${storage_args[@]}" > "$SETUP_DIR/$operation.json"
 done
 ```
@@ -887,6 +897,21 @@ If a setting is missing or incompatible, prepare its correction through the buck
 owner's reviewed bootstrap configuration before publishing. For legacy state buckets,
 BucketOwnerEnforced also requires compatible writers; do not silently change an
 existing key/ACL contract merely to make the check pass.
+
+The owner-run bootstrap can supply retention with `private_plan_retention_enabled=true`.
+Use its existing private Terraform state and inspect a saved bootstrap plan before
+applying the exact reviewed bytes. **S3 has one lifecycle configuration per bucket**:
+if other rules already exist, merge them into the owning configuration before adopting
+the resource. Do not initialize an empty bootstrap state for an existing bucket or
+replace other rules with the sample's two plan rules. The deployment workflow neither
+imports that ownership nor changes lifecycle on failure.
+
+The required enabled rule uses exactly `ci/tfplans/`, expires current objects after
+seven days and noncurrent versions after seven days, retains no minimum version count,
+and aborts incomplete multipart uploads after one day. A separate plan-prefix rule
+cleans expired delete markers. State keys and unrelated prefixes must remain outside
+these rules. Verify the applied configuration again before dispatching the plan.
+Missing, unreadable or incompatible lifecycle causes a fixed publication failure.
 
 The named deployer-role secret must be configured for manual publication. An inline
 session policy can only restrict existing permissions; it grants none. Existing base
@@ -900,12 +925,17 @@ roles and any KMS key policy must authorize these operations in the selected acc
 
 Bucket reads are GetBucketLocation, GetBucketVersioning, GetEncryptionConfiguration,
 GetBucketPublicAccessBlock, GetBucketOwnershipControls and GetBucketPolicyStatus.
+They also include GetLifecycleConfiguration for the mandatory retention check.
 Scope S3 encryption use by key, ViaService, CallerAccount and encryption context. Scope
-direct DescribeKey separately by account/region/key ARN; S3-only context conditions do not
-apply to a direct metadata lookup. All dev-family CI branches require AWS_ACCOUNT_ID_DEV.
+direct DescribeKey separately: the generated session policy uses the selected
+account/region's `key/*` ARN pattern, while existing identity/key policies determine
+effective access. S3-only context conditions do not apply to a direct metadata lookup.
+All dev-family CI branches require AWS_ACCOUNT_ID_DEV.
 Update operator-managed policies if required; no policy widening occurs in this PR.
 Missing backend/tfvars blobs retain the plan's soft skip. A configured plan with a
 missing deployer role or insufficient storage permissions fails publication explicitly.
+The helper's generated policy applies only to publication; the consumer must attach it
+to the fresh session. Restore runs under the separately protected Apply role.
 
 ### Inspect and select exact bytes
 
@@ -917,6 +947,9 @@ missing/expired reference, changed bytes or moved branch never authorizes apply.
 The encrypted handoff lasts one day. If a protected publication is delayed beyond that
 window, or a publisher-only rerun has no handoff for its new attempt, dispatch a fresh
 complete plan and inspect its new reference. Do not relax attempts, expiry or source checks.
+Plan and Apply migrate together from `tfplan` to `tfplan-<attempt>`; historical runs
+retain the old format and inspector. The reference overwrite uses the upload action's
+same-run runtime token, so `GITHUB_TOKEN` remains `actions: read`, not `actions: write`.
 
 Use a trusted checkout at the plan's full SHA with Terraform 1.15.7 provider schemas
 already installed. Authenticate `gh` and the intended AWS profile. No client encryption
@@ -960,9 +993,12 @@ Repeat the plan's DNS permission/scope when applicable; the command above grants
 new DNS changes nor a different plan. Apply authenticates the reference, pinned versions,
 reviewed hash and existing HMAC/plan/asset binding before the original host, DNS/runtime and
 branch checks and `terraform apply -input=false tfplan`. It never re-plans. A newer attempt
-or changed plan requires a fresh private inspection. Reference lifetime is five days;
-S3 copies have no automatic expiry configured here. Follow the purge procedure below;
-reference expiry does not remove current or noncurrent S3 versions.
+or changed plan requires a fresh private inspection. Reference lifetime is five days.
+In a versioned bucket, current expiration creates a delete marker; the seven-day
+noncurrent clock starts then. Version deletion can therefore become eligible around
+fourteen days after publication, plus asynchronous deletion delay. Reference expiry
+does not prove deletion. The optional purge procedure below can remove reviewed expired
+attempts sooner and investigate lifecycle cleanup failures.
 
 Wrong context, unsafe paths, missing schemas, oversized/tampered data or failed cleanup
 produce fixed errors without printing private contents. Only owned scratch is cleaned;
@@ -978,6 +1014,7 @@ runner/process loss can prevent finalizers. No public summary is full-plan appro
 | `bucket_not_sse_kms` / `bucket_encryption_missing` / `bucket_encryption_invalid` | Confirm one supported default SSE-KMS rule; backend `encrypt=true` is not evidence of that setting. |
 | `backend_key_mismatch` / `bucket_key_invalid` / `bucket_key_unusable` | Check identifier format and the resolved artifact key's account, region, Enabled state and symmetric ENCRYPT_DECRYPT use. Backend state-key metadata is independent. |
 | `kms_access_denied` / `kms_key_missing` | Verify direct DescribeKey authorization and the configured key/alias; no key material is requested. |
+| Lifecycle validation failure | Inspect GetLifecycleConfiguration privately; establish the required plan-only current/noncurrent/MPU rule through the owning bootstrap. Do not bypass the check or broaden expiry to state. |
 | `object_already_exists` / `object_upload_retry_exhausted` | Conditional PUT recovery requires a pinned GET proving exact bytes, hash, length and key; at most three identical PUTs are attempted. Wrong objects are never overwritten. |
 
 These codes come only from the matching AWS S3 operation's exception envelope.
@@ -986,10 +1023,11 @@ remove only `.private-plan-<current-run>-<current-attempt>-*` under its Terrafor
 
 ### Purge expired plan versions
 
-This change installs **no S3 lifecycle rule**. The deployment owner must remove expired
-attempts after seven days, including failed-publication orphans and noncurrent versions.
+The workflow requires the owner-installed lifecycle but cannot prove deletion completed.
+Monitor it and investigate retained expired versions, including failed-publication orphans.
+For early cleanup, the deployment owner may purge a reviewed attempt after seven days.
 The five-day GitHub reference is an apply limit, not storage expiry. Use the operator
-profile; publisher sessions deliberately cannot delete objects.
+profile; publisher sessions deliberately cannot delete objects or configure lifecycle.
 
 Set `PLAN_BUCKET`, `PLAN_OWNER` and `PLAN_REGION` from the privately reviewed backend/account.
 Discover candidates locally, including failed-publication orphans and noncurrent-only
