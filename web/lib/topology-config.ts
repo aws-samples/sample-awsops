@@ -5,7 +5,7 @@ import type { PodRow } from './eks-resources';
 type Resolution = NonNullable<FlowInput['ipResolved']>[string];
 export interface EksIpResolution {
   map: NonNullable<FlowInput['ipResolved']>;
-  status: 'ok' | 'empty' | 'unavailable';
+  status: 'ok' | 'empty' | 'partial' | 'unavailable';
   reasons: ('cluster_unreadable' | 'cluster_limit_possible')[];
 }
 const unavailable = (reason: EksIpResolution['reasons'][number] = 'cluster_unreadable'): EksIpResolution =>
@@ -21,6 +21,7 @@ const optionalStrings = (row: Record<string, unknown>, keys: string[]) =>
 // unique pod can establish ownership; conflicting references also disqualify the pod fallback.
 export async function fetchEksIpMap(): Promise<EksIpResolution> {
   const candidates = new Map<string, Resolution | null>();
+  const blockedScopes = new Set<string>();
   try {
     const response = await fetch('/api/eks');
     const list = response.ok ? await response.json() : null;
@@ -29,9 +30,10 @@ export async function fetchEksIpMap(): Promise<EksIpResolution> {
     // The current API returns at most 25 descriptors without a continuation token.
     if (list.clusters.length >= 25) return unavailable('cluster_limit_possible');
     const clusters = list.clusters as Cluster[];
-    if (clusters.some(c => c.access !== 'connected')) return unavailable();
     if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return unavailable();
     await Promise.all(clusters.map(async cluster => {
+      const scope = scopedTargetIp(cluster.region!, cluster.vpcId!, '');
+      if (cluster.access !== 'connected') { blockedScopes.add(scope); return; }
       const get = async (kind: string) => {
         try {
           const r = await fetch(`/api/eks/${encodeURIComponent(cluster.name)}/incluster?kind=${kind}`);
@@ -48,7 +50,7 @@ export async function fetchEksIpMap(): Promise<EksIpResolution> {
           && Array.isArray(row.ips) && row.ips.every(nonempty)
           && Array.isArray(row.targets) && row.targets.every(target =>
             isRecord(target) && nonempty(target.ip) && optionalStrings(target, ['pod'])))) {
-        throw new Error('Unavailable or malformed EKS identity inventory');
+        blockedScopes.add(scope); return;
       }
       const podsByIp = new Map<string, PodRow[]>();
       for (const pod of pods ?? []) {
@@ -87,9 +89,11 @@ export async function fetchEksIpMap(): Promise<EksIpResolution> {
       }
     }));
   } catch {
-    // A failed cluster may hide a competing owner; never publish a partial candidate map.
+    // Unknown scope or enumeration failure can hide an owner anywhere in the account.
     return unavailable();
   }
-  const map = Object.fromEntries([...candidates].filter((entry): entry is [string, Resolution] => entry[1] !== null));
-  return { map, status: candidates.size ? 'ok' : 'empty', reasons: [] };
+  const map = Object.fromEntries([...candidates].map(([key, value]) =>
+    [key, blockedScopes.has(key.slice(0, key.lastIndexOf('|') + 1)) ? null : value]));
+  return { map, status: blockedScopes.size ? Object.values(map).some(Boolean) ? 'partial' : 'unavailable'
+    : candidates.size ? 'ok' : 'empty', reasons: blockedScopes.size ? ['cluster_unreadable'] : [] };
 }

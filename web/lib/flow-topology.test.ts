@@ -19,6 +19,14 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
   };
   const target = (input: FlowInput) => buildFlowGraph(input).nodes.find(n => n.kind === 'target')!;
 
+  it.each(['eks', 'ecs'])('preserves duplicate %s claims when the other source has one owner', source => {
+    const pod = { label: 'shop/pod', resolved: 'eks' as const, meta: { region, vpcId: 'vpc-b' } };
+    const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], subnet: [subnet],
+      ecsTask: source === 'ecs' ? [task, { ...task, resource_id: 'other-task' }] : [task],
+      ipResolved: { [`${region}|vpc-b|${ip}`]: source === 'eks' ? null : pod } });
+    expect(node.meta?.resolved).toBe('ambiguous');
+  });
+
   it.each(['vpc-b', 'vpc-other'])('does not choose EKS over a contradictory scoped ECS claim: %s', podVpc => {
     const configured = buildFlowGraph({
       tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task], subnet: [subnet],
@@ -77,12 +85,12 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
     ['conflicting subnets in one attachment', { attachments: [{
       ...attachment('subnet-b'), Details: [...attachment('subnet-b').Details, { Name: 'subnetId', Value: 'subnet-c' }],
     }] }, [subnet, { resource_id: 'subnet-c', region, vpc_id: 'vpc-b' }]],
-  ])('leaves scope unresolved for %s', (_, override, subnets) => {
+  ])('leaves scope unresolved for %s', (name, override, subnets) => {
     const node = target({
       tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [{ ...task, ...override }], subnet: subnets,
     });
     expect(node.label).toBe(ip);
-    expect(node.meta?.resolved).toBeUndefined();
+    expect(node.meta?.resolved).toBe(name === 'different task region' ? undefined : 'ambiguous');
   });
 
   it.each([{ region: '' }, { vpc_id: '' }])('requires the target group scope too: %j', missing => {
@@ -116,14 +124,14 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
   it('rejects competing tasks within the same proven scope', () => {
     expect(target({
       tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task, { ...task, resource_id: 'task-other' }], subnet: [subnet],
-    }).meta?.resolved).toBeUndefined();
+    }).meta?.resolved).toBe('ambiguous');
   });
 
   it('does not hide an unknown-scope same-IP competitor behind a known task', () => {
     expect(target({
       tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task, { ...task, resource_id: 'unknown-task', attachments: [attachment('unknown')] }],
       subnet: [subnet],
-    }).meta?.resolved).toBeUndefined();
+    }).meta?.resolved).toBe('ambiguous');
   });
 
   it('accepts JSON-string attachments from inventory without losing scope proof', () => {
@@ -172,7 +180,7 @@ describe('scoped endpoint resolution for network correlation', () => {
           attachments: [{ Details: [{ Name: 'privateIPv4Address', Value: '10.0.1.10' }] }] },
       ],
     });
-    expect(graph.nodes.find((n) => n.kind === 'target')?.meta?.resolved).toBeUndefined();
+    expect(graph.nodes.find((n) => n.kind === 'target')?.meta?.resolved).toBe('ambiguous');
   });
 });
 

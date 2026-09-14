@@ -73,8 +73,15 @@ describe('EKS inventory producer → configuration → service/network graph', (
     serve([], [], { clusters: [] });
     expect(await fetchEksIpMap()).toEqual({ map: {}, status: 'empty', reasons: [] });
     serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'unreadable', access: 'unknown' }] });
-    expect(await fetchEksIpMap()).toEqual({ map: {}, status: 'unavailable', reasons: ['cluster_unreadable'] });
+    expect(await fetchEksIpMap()).toEqual({ map: { [scopedTargetIp(region, vpcId, ip)]: null },
+      status: 'unavailable', reasons: ['cluster_unreadable'] });
   });
+  it.each(['unknown', 'no-entry'])('keeps a healthy different VPC when access is %s', access => {
+    serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'unreadable', vpcId: 'vpc-other', access }] });
+    return expect(fetchEksIpMap()).resolves.toMatchObject({ status: 'partial', reasons: ['cluster_unreadable'],
+      map: { [scopedTargetIp(region, vpcId, ip)]: { resolved: 'eks' } } });
+  });
+
   it.each([24, 25])('reports only a possible listing cap at %i clusters', async count => {
     serve([pod], [endpoint], { clusters: Array.from({ length: count }, (_, i) => ({ ...cluster, name: `cluster-${i}`, vpcId: `vpc-${i}` })) });
     const result = await fetchEksIpMap();
@@ -118,19 +125,21 @@ describe('EKS inventory producer → configuration → service/network graph', (
       return json({ rows: url.searchParams.get('kind') === 'pods' ? [pod] : [endpoint] });
     }));
     const { ipResolved, target, integrated } = await graphs();
-    expect(ipResolved).toEqual({});
-    expect(target.meta?.resolved).toBeUndefined();
+    expect(ipResolved).toEqual({ [scopedTargetIp(region, vpcId, ip)]: null });
+    expect([undefined, 'ambiguous']).toContain(target.meta?.resolved);
     expect(integrated.edges.filter(edge => edge.meta?.match === 'configured-cluster')).toEqual([]);
   });
 
-  it('keeps healthy ownership when another cluster successfully returns empty inventory', async () => {
+  it.each([false, true])('keeps healthy ownership beside an empty or failed other scope: %s', async failed => {
     vi.stubGlobal('fetch', vi.fn(async (input: string) => {
       const url = new URL(input, 'http://localhost');
-      if (url.pathname === '/api/eks') return json({ clusters: [cluster, { ...cluster, name: 'empty-cluster' }] });
+      if (url.pathname === '/api/eks') return json({ clusters: [cluster, { ...cluster, name: 'empty-cluster', vpcId: failed ? 'vpc-other' : vpcId }] });
+      if (failed && url.pathname.includes('/empty-cluster/')) return json({}, 503);
       return json({ rows: url.pathname.includes('/empty-cluster/') ? []
         : url.searchParams.get('kind') === 'pods' ? [pod] : [endpoint] });
     }));
-    const { target } = await graphs();
+    const { target, resolution } = await graphs();
+    expect(resolution.status).toBe(failed ? 'partial' : 'ok');
     expect(target).toMatchObject({ label: 'shop/external-service', meta: { resolved: 'eks', cluster: 'host-cluster' } });
   });
 
@@ -167,11 +176,12 @@ describe('EKS inventory producer → configuration → service/network graph', (
     serve(pods, endpoints, options);
     const { target, integrated } = await graphs();
     expect(target.label).toBe(ip);
-    expect(target.meta?.resolved).toBeUndefined();
+    expect([undefined, 'ambiguous']).toContain(target.meta?.resolved);
     expect(target.meta?.cluster).toBeUndefined();
     expect(integrated.edges.filter(e => e.meta?.match === 'configured-cluster')).toEqual([]);
-    // Raw target registration is still a valid IP-in-VPC observation, without workload ownership.
-    expect(integrated.edges.filter(e => e.meta?.match === 'ip-region-vpc')).toHaveLength(1);
+    // Registration can link by IP only when no collected ownership claim contests it.
+    expect(integrated.edges.filter(e => e.meta?.match === 'ip-region-vpc'))
+      .toHaveLength(target.meta?.resolved === 'ambiguous' ? 0 : 1);
   });
 
   it('preserves Service labeling only after the IP, pod name and namespace agree', async () => {
@@ -197,7 +207,7 @@ describe('EKS inventory producer → configuration → service/network graph', (
   it('rejects duplicate cluster candidates even with identical workload names', async () => {
     serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'other-cluster' }] });
     const { ipResolved, integrated } = await graphs();
-    expect(ipResolved[scopedTargetIp(region, vpcId, ip)]).toBeUndefined();
+    expect(ipResolved[scopedTargetIp(region, vpcId, ip)]).toBeNull();
     expect(integrated.edges.filter(e => e.meta?.match === 'configured-cluster')).toEqual([]);
   });
 

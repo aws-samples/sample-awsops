@@ -4,8 +4,10 @@
 are implemented as a data foundation. The combined E2E operator view and API wiring remain
 pending; this is not completion of the acceptance criteria below. Network batches use closed
 reason codes, per-category window quality and failure/cap metadata. Missing/invalid windows
-are partial evidence, never a complete query. The live configuration view reports unavailable
-EKS ownership, including the existing API's possible 25-cluster listing limit.
+are partial evidence, never a complete query. The host configuration view reports partial/unavailable
+EKS ownership: failed known region/VPC scopes preserve unrelated identities, while unknown
+scopes or the existing API's possible 25-cluster limit invalidate the whole map. Member/all-account
+views do not run the host EKS producer. The four localized user guides ship with the operator view.
 
 
 **Goal / 목표:** Connect workload evidence, execution state, changes and cost without treating

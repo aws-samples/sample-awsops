@@ -63,6 +63,13 @@ describe('live topology inventory adapter', () => {
     search('ecs-api'); expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
     expect(document.body.textContent).not.toContain('not-a-real-credential');
   });
+  it('keeps healthy EKS nodes visible when another VPC is unreadable', async () => {
+    serve({ eks: { clusters: [{ name: 'good', region, vpcId, access: 'connected' },
+      { name: 'blocked', region, vpcId: 'vpc-other', access: 'no-entry' }] } });
+    render(<TopologyPage />);
+    await screen.findByRole('alert', { name: 'EKS 식별 상태' });
+    search('service-good'); expect(screen.getByRole('button', { name: /service-good/ })).toBeTruthy();
+  });
   it('does not label successful empty EKS enumeration as a failure', async () => {
     serve({ eks: { clusters: [] } }); render(<TopologyPage />);
     await screen.findByRole('option', { name: 'ECS · ecs-app' });

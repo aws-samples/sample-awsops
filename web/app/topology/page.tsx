@@ -575,7 +575,7 @@ export default function TopologyPage() {
       />
       <div className="flex-1 min-h-0 flex flex-col gap-4 px-8 py-6">
         {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
-        {eksResolution?.status === 'unavailable' && <div role="alert" aria-label={tt('EKS 식별 상태')} className="text-[13px] text-warning">
+        {(eksResolution?.status === 'unavailable' || eksResolution?.status === 'partial') && <div role="alert" aria-label={tt('EKS 식별 상태')} className="text-[13px] text-warning">
           {tt('EKS 조회 실패 또는 수집 범위 제한으로 IP 소유자를 확인할 수 없습니다.')} ({eksResolution.reasons.join(', ')})
         </div>}
         {retained && <div role="status" className="text-[13px] text-warning">{tt('조회 실패로 이전 결과를 표시합니다.')}</div>}
