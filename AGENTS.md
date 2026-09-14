@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 52c42795a4d6 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 90b9fd95cf58 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -74,6 +74,10 @@ No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scr
 - Components `export default`. Resources `awsops-v2-*`; gateways `awsops-v2-{key}-gateway`; SSM under `/ops/awsops-v2/...` (`aws...` prefix is SSM-reserved).
 - Admin authority = Cognito admin group OR SSM email allowlist (`web/lib/admin.ts`, fail-closed) — NOT v1 `data/config.json` `adminEmails`.
 - Edge auth = Cognito + Lambda@Edge **RS256 JWKS** + iss/aud/token_use + OAuth `state` + PKCE public client. Primary login = self-hosted `/login` + `POST /api/auth/login` (unsigned public `InitiateAuth USER_PASSWORD_AUTH`; ADR-002[legacy 042]); Hosted-UI `/_callback` is a dark fallback. Server-side logout = Aurora `session_revocations` (LIVE control, PR #199 — BFF-side check; edge is JWT-only). Ownership converges on the immutable Cognito `sub` (#203); `legacy_email_owner_match` (**default true — currently ON live**, ECS taskdef env) is a migration-window switch, not a feature gate — it lets legacy email-keyed ownership rows still resolve (read + report PATCH/DELETE, via `matchesIdentity()`) while the sub-migration is in flight. Do not flag legacy email-keyed matching code as violating the sub-only invariant, and never approve flipping this to `false` without a completed `--apply` (not just a clean plan) confirming zero remaining legacy rows.
+
+## Documentation language
+
+Apply [docs/CLAUDE.md](docs/CLAUDE.md) and [docs/runbooks/CLAUDE.md](docs/runbooks/CLAUDE.md): new or rewritten developer/reviewer content under `docs/`, including runbooks, is English-only. Preserve facts in old bilingual bodies without adding parallel translations; their layout is migration backlog, not a parity requirement. Multilingual `docs-site/` product guides retain locale parity; root `README.md` and `CHANGELOG.md` retain English/Korean requirements. These scopes are separate.
 
 ## Review checklist
 1. **Posture:** no mutation/autonomy enabled (ADR-005); external write must satisfy ADR-007 governance; current truth = BASELINE.md.
