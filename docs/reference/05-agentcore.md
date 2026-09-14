@@ -95,59 +95,6 @@ provisioning. Before dev workflow dispatch, set `CI_MIGRATIONS_ENABLED_DEV=true`
 needs push/BatchGetImage access to the selected `${project}-steampipe` or `${project}-worker` repository; the dev deployer needs those actions on `${project}-agentcore`. Web-only ECR grants do not establish this access. See [CI ECR
 scopes](../runbooks/dev-repo-setup.md#4-ecr-permissions-for-the-pin-step--ci-deployer-ecr-권한); the workflows check access but do not grant it.
 
-### Managed gateway and target reconciliation
-
-The deployment role needs `bedrock-agentcore:GetGateway` in addition to the existing
-control-plane list/create/update permissions. The provisioner reads full gateway
-snapshots and reconciles the applied role plus catalog description by exact catalog
-name. Existing inbound authorizer, protocol, KMS, interceptor and policy settings
-are preserved; an absent required authorizer never becomes an implicit `NONE`.
-Optional protocol fields absent from the snapshot are omitted from the update,
-as permitted by the pinned SDK, rather than invented from create-time defaults.
-Create-time defaults and gateway names are unchanged.
-
-**Known identity is separate from readiness.** Every known gateway ID survives
-read, update and readiness failures and remains available to Runtime
-`GATEWAYS_JSON`, pruning and ADR-017 teardown. Runtime creation/update is blocked
-when any catalog gateway ID is unknown; an incomplete map must never erase a
-domain and silently route its traffic to `ops`. A separate ready-key set gates
-only positive Lambda/MCP target provisioning, credential-provider upserts and sync.
-Tombstones, disabled/blocked presets, revoked acknowledgments, missing credentials
-and runtime-unconfirmed retirement still operate on all known IDs.
-
-Lambda targets reconcile the applied ARN, gateway-IAM credentials, target
-description and managed tool definitions. Existing metadata/private-endpoint
-settings are retained. Description-only failures are warnings, including rejected
-requests and asynchronous readback failures. Functional configuration and
-readiness failures remain errors. Matching targets can be inspected without a
-ready gateway; writes require its ready key.
-
-Gateway waits are bounded to 60 seconds, target waits to 30 seconds, at two-second
-intervals. Post-write success requires `READY` plus the requested role/Lambda ARN,
-not an exact echo of cosmetic fields. Existing unsuccessful updates may retry
-once per run; the first stale failed snapshot is tolerated only until a transition
-or the existing deadline. New failures after a transition remain terminal.
-These control-plane checks do not establish successful tool invocation.
-
-Typed failures retain fixed public codes (`aws_validation_failed`, `aws_conflict`,
-`aws_resource_not_found`, `sdk_validation_failed`); missing gateway identity is
-reported as `gateway_inventory_incomplete`, and an unavailable required auth snapshot
-as `gateway_configuration_unavailable`. Configuration, credentials, ARNs and
-raw service messages are not emitted. An older `operation_failed` event cannot
-establish its original AWS cause without separate authorized read evidence.
-
-Offline tests (repository root; install pytest via `scripts/v2/requirements-test.txt`
-and boto3/botocore via `agent/requirements.txt`):
-
-```bash
-python3 -m pytest -q scripts/v2/agentcore scripts/v2/ci/test_setup_provision_python.py
-python3 scripts/v2/ci/runtime-build-provision.test.py
-node --test scripts/v2/ci/runtime-build.workflow.test.mjs
-```
-
-API contracts: [UpdateGateway](https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_UpdateGateway.html)
-and [UpdateGatewayTarget](https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_UpdateGatewayTarget.html).
-
 Dev smoke requires the matching readiness producer and `runtime_deployment` output with inventory enabled; these producer dependencies must land before selecting smoke. The applied `agentcore.deployment_readiness_enabled` output must also be boolean true. The provisioner
 maps it to `DEPLOYMENT_READINESS_ENABLED`; missing/false keeps the probe disabled, even if an ambient environment variable says true. Other stacks retain advisory compatibility invocation when readiness is unavailable, and advisory structured
 checks when available. Invocation transport failures still fail. **AgentCore foundation resources require `agentcore_enabled`** (default `false` → `count`/`for_each` = 0, a no-op). The dev CI migration task has its own default-off `ci_migrations_enabled` gate.
@@ -172,6 +119,51 @@ resources are **not** Terraform-native, so they live in `provision.py`.
 interpreter_id, memory_id}`. The web BFF reads these at **runtime** via the task role —
 **not** ECS `valueFrom` — to avoid a task-start race. Placeholders are written by
 Terraform; `provision.py` overwrites with real values.
+
+## Provisioner reconciliation
+
+The deployer needs `bedrock-agentcore:GetGateway`. Existing gateways are read in
+full before reconciling the applied role and catalog description. Updates preserve
+deployed inbound auth/protocol and optional security settings; absent optional
+protocol fields are omitted, never invented from create-time defaults. Known IDs
+remain available to Runtime routing, pruning and all ADR-017 teardown paths after
+read/update failures. Description-only request failures remain warnings.
+
+Lambda target drift covers the applied Lambda ARN, managed credential-provider
+type and tool definitions (`name`, `description`, `inputSchema`). Target metadata
+and private endpoints are preserved. No new gateway/target wait or automatic
+state-based recovery is added. `CREATED`/`UPDATED` mean request acceptance;
+`EXISTS` means configuration match. None proves readiness or tool invocation.
+Existing Runtime and curated MCP-target readiness/retirement behavior remains.
+
+If any catalog gateway ID is unknown, Runtime is deliberately not changed and its
+SSM pointer is preserved. New vendor provisioning is deferred. This is distinct
+from an attempted but unconfirmed Runtime rollout: incomplete identity alone does
+not retire otherwise-eligible existing vendors. Explicit disabled/blocked
+endpoints, revoked acknowledgments, missing credentials and tombstones still
+retire on every known gateway.
+
+Validation/conflict/not-found/SDK-validation failures have fixed public codes;
+raw messages, configuration, credentials and ARNs are not emitted. An old
+`operation_failed` record cannot establish its original cause. A persistent
+`FAILED` state requires authorized read evidence and operator-approved repair;
+the provisioner never automatically deletes/recreates it. Normal configuration
+drift may submit an update, with service rejection reported safely.
+
+Offline tests need pytest and the SDK dependencies declared in
+`scripts/v2/requirements-test.txt` and `agent/requirements.txt`. Run each file in
+its own process, as required by [merge verification](../v2-merge-verification.md):
+
+```bash
+for test_file in scripts/v2/agentcore/test_*.py; do
+  python3 -m pytest -q "$test_file" || exit
+done
+python3 -m pytest -q scripts/v2/ci/test_setup_provision_python.py
+python3 scripts/v2/ci/runtime-build-provision.test.py
+```
+
+API contracts: [UpdateGateway](https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_UpdateGateway.html)
+and [UpdateGatewayTarget](https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_UpdateGatewayTarget.html).
 
 ## Decisions (ADRs) / 결정
 
@@ -221,10 +213,11 @@ runtime ARN + memory id in SSM (not `PENDING`) and an initial 2-slice `lambda_ar
 
 - **SSM reserved prefix** — SSM rejects any parameter path starting with `aws…`
   (reserved). Use `/ops/${project}/…` (hence `/ops/awsops-v2/agentcore/*`).
-- **Gateway not yet READY** — bounded waits and the ready-key set gate target
-  writes. Keep known IDs for Runtime routing and all teardown paths; never
-  replace the runtime's gateway map with a readiness-filtered subset. See
-  [managed reconciliation](#managed-gateway-and-target-reconciliation).
+- **Gateway not yet READY** — a just-created gateway can make the first
+  `create_gateway_target` throw `ValidationException`. Confirm `READY` through an
+  authorized read, then re-run the idempotent provisioner. Persistent `FAILED`
+  states require diagnosis; request acceptance is not readiness and does not
+  authorize destructive recreation.
 - **Underscore-only names** — Code Interpreter and Memory names allow underscores only,
   no hyphens (`awsops_v2_code_interpreter`, `awsops_v2_memory`).
 - **Memory expiry** — `eventExpiryDuration` ≤ 365 days.

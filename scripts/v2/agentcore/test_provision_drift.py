@@ -35,27 +35,20 @@ _TARGETS = {
 }
 
 
-def _target(deployed_tools, **changes):
+def _target(deployed_tools):
     return {
-        "targetId": "t-1", "status": "READY", "description": "RDS",
-        "credentialProviderConfigurations": [{"credentialProviderType": "GATEWAY_IAM_ROLE"}],
         "targetConfiguration": {"mcp": {"lambda": {
             "lambdaArn": "arn:aws:lambda:x:1:function:f",
             "toolSchema": {"inlinePayload": deployed_tools}}}},
-        **changes,
+        "credentialProviderConfigurations": [{"credentialProviderType": "GATEWAY_IAM_ROLE"}],
     }
 
 
-def _run(deployed_tools, snapshot=None):
+def _run(deployed_tools, current=None):
     ctrl = mock.Mock()
     ctrl.list_gateway_targets.return_value = {
         "items": [{"name": "rds-mcp-target", "targetId": "t-1"}]}
-    ctrl.get_gateway_target.return_value = snapshot or _target(deployed_tools)
-    def updated_target(**request):
-        ctrl.get_gateway_target.return_value = {**ctrl.get_gateway_target.return_value,
-                                                **request, "status": "READY"}
-        return {"targetId": "t-1"}
-    ctrl.update_gateway_target.side_effect = updated_target
+    ctrl.get_gateway_target.return_value = current or _target(deployed_tools)
     provision.report.clear()
     with mock.patch.object(provision.catalog, "TARGETS", _TARGETS):
         provision.ensure_targets(
@@ -103,147 +96,55 @@ class TestProvisionDrift(unittest.TestCase):
              {"inputSchema": {"x": 1, "type": "object"}, "name": "b", "description": "B"}]
         self.assertEqual(provision.tool_fingerprint(a), provision.tool_fingerprint(b))
 
-    def test_lambda_arn_drift_with_unchanged_schema_is_updated(self):
+    def test_lambda_arn_drift_updates_with_unchanged_schema(self):
         current = _target(_deployed(_SCHEMA_NEW))
-        current["targetConfiguration"]["mcp"]["lambda"]["lambdaArn"] = "arn:aws:lambda:x:1:function:old"
+        current["targetConfiguration"]["mcp"]["lambda"]["lambdaArn"] = "arn:old"
         ctrl, statuses = _run(_deployed(_SCHEMA_NEW), current)
         self.assertIn("UPDATED", statuses)
         self.assertEqual(ctrl.update_gateway_target.call_args.kwargs["targetConfiguration"]["mcp"]["lambda"]["lambdaArn"],
                          "arn:aws:lambda:x:1:function:f")
 
-    def test_credential_and_target_description_drift_are_updated(self):
-        for changes in (
-            {"credentialProviderConfigurations": [{"credentialProviderType": "API_KEY"}]},
-            {"credentialProviderConfigurations": None},
-            {"description": "old target description"},
-        ):
-            with self.subTest(changes=changes):
-                ctrl, statuses = _run(_deployed(_SCHEMA_NEW), _target(_deployed(_SCHEMA_NEW), **changes))
-                self.assertIn("UPDATED", statuses)
-                self.assertEqual(ctrl.update_gateway_target.call_args.kwargs["credentialProviderConfigurations"],
-                                 [{"credentialProviderType": "GATEWAY_IAM_ROLE"}])
+    def test_credential_type_drift_updates_but_echoed_defaults_do_not(self):
+        for kind in ("API_KEY", "GATEWAY_IAM_ROLE"):
+            current = _target(_deployed(_SCHEMA_NEW))
+            current["credentialProviderConfigurations"] = [
+                {"credentialProviderType": kind, "credentialProvider": {}, "serviceEcho": None}]
+            ctrl, statuses = _run(_deployed(_SCHEMA_NEW), current)
+            self.assertEqual(statuses, {"UPDATED" if kind == "API_KEY" else "EXISTS"})
 
-    def test_update_preserves_target_metadata_and_waits_until_ready(self):
-        current = _target(_deployed(_SCHEMA_OLD),
-                          metadataConfiguration={"allowedRequestHeaders": ["x-correlation-id"]})
-        ctrl, statuses = _run(_deployed(_SCHEMA_NEW), current)
-        self.assertIn("UPDATED", statuses)
+    def test_optional_target_metadata_is_preserved_on_update(self):
+        current = _target(_deployed(_SCHEMA_OLD))
+        current["metadataConfiguration"] = {"allowedRequestHeaders": ["x-correlation-id"]}
+        ctrl, _ = _run(_deployed(_SCHEMA_NEW), current)
         self.assertEqual(ctrl.update_gateway_target.call_args.kwargs["metadataConfiguration"],
                          current["metadataConfiguration"])
-        self.assertGreaterEqual(ctrl.get_gateway_target.call_count, 2)
 
-    def test_update_readiness_failure_is_not_reported_as_updated(self):
-        ctrl = mock.Mock()
-        ctrl.list_gateway_targets.return_value = {"items": [{"name": "rds-mcp-target", "targetId": "t-1"}]}
-        ctrl.get_gateway_target.side_effect = [_target(_deployed(_SCHEMA_OLD)), {"status": "FAILED"}]
-        provision.report.clear()
-        with mock.patch.object(provision.catalog, "TARGETS", _TARGETS):
-            provision.ensure_targets(ctrl, {"lambda_arns": {"rds-mcp": "arn:aws:lambda:x:1:function:f"}},
-                                     {"data": "gw-1"})
-        self.assertNotIn("UPDATED", {row[1] for row in provision.report})
-        self.assertIn("ERR", {row[1] for row in provision.report})
-
-    def test_target_waits_for_updated_values_not_an_old_ready_snapshot(self):
-        old = _target(_deployed(_SCHEMA_NEW))
-        old["targetConfiguration"]["mcp"]["lambda"]["lambdaArn"] = "arn:old"
-        ctrl = mock.Mock()
-        ctrl.list_gateway_targets.return_value = {"items": [{"name": "rds-mcp-target", "targetId": "t-1"}]}
-        ctrl.get_gateway_target.side_effect = [old, old, _target(_deployed(_SCHEMA_NEW))]
-        provision.report.clear()
-        with mock.patch.object(provision.catalog, "TARGETS", _TARGETS), \
-             mock.patch.object(provision.time, "sleep") as sleep:
-            provision.ensure_targets(ctrl, {"lambda_arns": {"rds-mcp": "arn:aws:lambda:x:1:function:f"}},
-                                     {"data": "gw-1"})
-        self.assertEqual(ctrl.get_gateway_target.call_count, 3)
-        sleep.assert_called_once()
-        self.assertIn("UPDATED", {row[1] for row in provision.report})
-
-    def test_unsuccessful_target_updates_can_retry_without_metadata_drift(self):
-        for status in ("UPDATE_UNSUCCESSFUL", "SYNCHRONIZE_UNSUCCESSFUL"):
-            with self.subTest(status=status):
-                ctrl, statuses = _run(_deployed(_SCHEMA_NEW),
-                                      _target(_deployed(_SCHEMA_NEW), status=status))
-                ctrl.update_gateway_target.assert_called_once()
-                self.assertIn("UPDATED", statuses)
-
-    def test_recovery_wait_ignores_old_target_failure_before_transition(self):
-        old = _target(_deployed(_SCHEMA_NEW), status="UPDATE_UNSUCCESSFUL")
-        ctrl = mock.Mock()
-        ctrl.list_gateway_targets.return_value = {"items": [{"name": "rds-mcp-target", "targetId": "t-1"}]}
-        ctrl.get_gateway_target.side_effect = [old, old, {"status": "UPDATING"}, _target(_deployed(_SCHEMA_NEW))]
-        provision.report.clear()
-        with mock.patch.object(provision.catalog, "TARGETS", _TARGETS), mock.patch.object(provision.time, "sleep"):
-            provision.ensure_targets(ctrl, {"lambda_arns": {"rds-mcp": "arn:aws:lambda:x:1:function:f"}},
-                                     {"data": "gw-1"})
-        self.assertEqual(ctrl.get_gateway_target.call_count, 4)
-        self.assertEqual({row[1] for row in provision.report}, {"UPDATED"})
-
-    def test_unready_gateway_gates_lambda_writes_but_not_matching_reads(self):
-        for current in (None, _target(_deployed(_SCHEMA_OLD)), _target(_deployed(_SCHEMA_NEW))):
-            with self.subTest(current=current):
-                ctrl = mock.Mock()
-                ctrl.list_gateway_targets.return_value = {
-                    "items": [] if current is None else [{"name": "rds-mcp-target", "targetId": "t-1"}]}
-                ctrl.get_gateway_target.return_value = current
-                provision.report.clear()
-                with mock.patch.object(provision.catalog, "TARGETS", _TARGETS):
-                    provision.ensure_targets(
-                        ctrl, {"lambda_arns": {"rds-mcp": "arn:aws:lambda:x:1:function:f"}},
-                        {"data": "gw-1"}, ready_gateways=set())
-                ctrl.create_gateway_target.assert_not_called()
-                ctrl.update_gateway_target.assert_not_called()
-                expected = "EXISTS" if current == _target(_deployed(_SCHEMA_NEW)) else "ERR"
-                self.assertEqual({row[1] for row in provision.report}, {expected})
-
-    def test_target_readback_requires_arn_not_cosmetic_echo(self):
-        ctrl = mock.Mock()
-        ctrl.list_gateway_targets.return_value = {"items": [{"name": "rds-mcp-target", "targetId": "t-1"}]}
-        ctrl.get_gateway_target.side_effect = [
-            _target(_deployed(_SCHEMA_OLD)),
-            _target(_deployed(_SCHEMA_NEW), description="normalized description"),
-        ]
-        provision.report.clear()
-        with mock.patch.object(provision.catalog, "TARGETS", _TARGETS):
-            provision.ensure_targets(ctrl, {"lambda_arns": {"rds-mcp": "arn:aws:lambda:x:1:function:f"}},
-                                     {"data": "gw-1"})
-        self.assertEqual({row[1] for row in provision.report}, {"UPDATED"})
-        self.assertEqual(ctrl.get_gateway_target.call_count, 2)
-
-    def test_cosmetic_target_update_rejection_is_only_warning(self):
-        ctrl = mock.Mock()
-        ctrl.list_gateway_targets.return_value = {"items": [{"name": "rds-mcp-target", "targetId": "t-1"}]}
-        ctrl.get_gateway_target.return_value = _target(_deployed(_SCHEMA_NEW), description="old description")
-        ctrl.update_gateway_target.side_effect = provision.ClientError(
-            {"Error": {"Code": "ValidationException", "Message": "not printed"}}, "UpdateGatewayTarget")
-        provision.report.clear()
-        with mock.patch.object(provision.catalog, "TARGETS", _TARGETS):
-            provision.ensure_targets(ctrl, {"lambda_arns": {"rds-mcp": "arn:aws:lambda:x:1:function:f"}},
-                                     {"data": "gw-1"})
-        self.assertEqual({row[1] for row in provision.report}, {"WARN"})
+    def test_failed_target_with_drift_keeps_baseline_update_path_without_recreation(self):
+        current = _target(_deployed(_SCHEMA_OLD))
+        current["status"] = "FAILED"
+        ctrl, statuses = _run(_deployed(_SCHEMA_NEW), current)
+        self.assertEqual(statuses, {"UPDATED"})  # request accepted, not a READY assertion
+        ctrl.update_gateway_target.assert_called_once()
+        ctrl.delete_gateway_target.assert_not_called()
+        ctrl.create_gateway_target.assert_not_called()
 
 
-def _gateway(description="new text", **changes):
-    return {"name": "awsops-v2-ops-gateway", "gatewayId": "gw-ops", "status": "READY",
-            "description": description, "roleArn": "arn:aws:iam::1:role/r",
-            "protocolType": "MCP", "authorizerType": "NONE", **changes}
+def _gateway(description, **fields):
+    return {"name": "awsops-v2-ops-gateway", "gatewayId": "gw-ops", "description": description,
+            "roleArn": "arn:aws:iam::1:role/r", "authorizerType": "NONE", "protocolType": "MCP", **fields}
 
 
-def _run_gateways(deployed_description, ready_gateways=None, **changes):
+def _run_gateways(deployed_description, **fields):
     """ensure_gateways with one existing gateway whose live description is as given."""
     ctrl = mock.Mock()
     ctrl.list_gateways.return_value = {"items": [{
         "name": "awsops-v2-ops-gateway", "gatewayId": "gw-ops",
         "description": deployed_description}]}
-    ctrl.get_gateway.return_value = _gateway(deployed_description, **changes)
-    def updated_gateway(**request):
-        ctrl.get_gateway.return_value = {**ctrl.get_gateway.return_value, **request, "status": "READY"}
-        return {"gatewayId": "gw-ops"}
-    ctrl.update_gateway.side_effect = updated_gateway
+    ctrl.get_gateway.return_value = _gateway(deployed_description, **fields)
     provision.report.clear()
     with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]), \
          mock.patch.object(provision.catalog, "GATEWAY_DESCRIPTIONS", {"ops": "new text"}):
-        ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"},
-                                       ready_gateways=ready_gateways)
+        ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"})
     return ctrl, ids, {r[1] for r in provision.report}
 
 
@@ -271,7 +172,7 @@ class TestGatewayDescriptionDrift(unittest.TestCase):
         ctrl.update_gateway.assert_not_called()
         self.assertEqual({"ops": "gw-ops"}, ids)
 
-    def test_rejected_cosmetic_update_does_not_fail_ready_gateway(self):
+    def test_update_failure_never_fails_the_run(self):
         ctrl = mock.Mock()
         ctrl.list_gateways.return_value = {"items": [{
             "name": "awsops-v2-ops-gateway", "gatewayId": "gw-ops", "description": "stale"}]}
@@ -290,215 +191,60 @@ class TestGatewayDescriptionDrift(unittest.TestCase):
         self.assertIn("WARN", statuses)
         self.assertNotIn("ERR", statuses)
 
-    def test_role_drift_reconciles_even_when_description_matches(self):
-        ctrl, ids, statuses = _run_gateways("new text", roleArn="arn:aws:iam::1:role/old")
+    def test_matching_description_does_not_hide_role_drift(self):
+        ctrl, ids, statuses = _run_gateways("new text", roleArn="arn:old")
+        self.assertEqual(ids, {"ops": "gw-ops"})
         self.assertIn("UPDATED", statuses)
         self.assertEqual(ctrl.update_gateway.call_args.kwargs["roleArn"], "arn:aws:iam::1:role/r")
-        self.assertEqual(ids, {"ops": "gw-ops"})
-        self.assertGreaterEqual(ctrl.get_gateway.call_count, 2)
 
     def test_existing_auth_protocol_and_security_settings_are_preserved(self):
-        settings = {
+        fields = {
             "authorizerType": "CUSTOM_JWT",
             "authorizerConfiguration": {"customJWTAuthorizer": {
                 "discoveryUrl": "https://issuer.example.test/.well-known/openid-configuration",
-                "allowedAudience": ["fixture-audience"]}},
+                "allowedAudience": ["fixture"]}},
             "protocolConfiguration": {"mcp": {"supportedVersions": ["2025-03-26"]}},
-            "kmsKeyArn": "arn:aws:kms:x:1:key/fixture",
-            "exceptionLevel": "DEBUG",
+            "kmsKeyArn": "arn:fixture:key", "exceptionLevel": "DEBUG",
             "policyEngineConfiguration": {"arn": "arn:fixture:policy", "mode": "ENFORCE"},
             "interceptorConfigurations": [{"interceptionPoints": ["REQUEST"],
-                                          "interceptor": {"lambda": {"arn": "arn:fixture:interceptor"}}}],
+                                          "interceptor": {"lambda": {"arn": "arn:fixture:lambda"}}}],
         }
-        original = copy.deepcopy(settings)
-        ctrl, _, statuses = _run_gateways("stale", **settings)
-        self.assertIn("UPDATED", statuses)
+        original = copy.deepcopy(fields)
+        ctrl, _, _ = _run_gateways("stale", **fields)
         for key, value in original.items():
-            self.assertEqual(ctrl.update_gateway.call_args.kwargs[key], value, key)
-        self.assertEqual(settings, original)
-        ctrl, _, _ = _run_gateways("stale", authorizerType="AWS_IAM")
+            self.assertEqual(ctrl.update_gateway.call_args.kwargs[key], value)
+        self.assertEqual(fields, original)
+        ctrl, _, _ = _run_gateways("stale", authorizerType="AWS_IAM", protocolType=None)
         self.assertEqual(ctrl.update_gateway.call_args.kwargs["authorizerType"], "AWS_IAM")
+        self.assertNotIn("protocolType", ctrl.update_gateway.call_args.kwargs)
 
-    def test_missing_existing_auth_never_defaults_to_none(self):
-        ctrl, ids, statuses = _run_gateways("stale", authorizerType=None)
-        ctrl.update_gateway.assert_not_called()
-        self.assertIn("WARN", statuses)
-        self.assertNotIn("ERR", statuses)
-        self.assertEqual(ids, {"ops": "gw-ops"})
-
-    def test_optional_protocol_type_is_omitted_not_defaulted(self):
-        config = {"mcp": {"supportedVersions": ["2025-03-26"]}}
-        ctrl, ids, statuses = _run_gateways(
-            "new text", roleArn="arn:old", protocolType=None, protocolConfiguration=config,
-            authorizerType="AWS_IAM")
-        self.assertEqual(ids, {"ops": "gw-ops"})
-        self.assertIn("UPDATED", statuses)
-        request = ctrl.update_gateway.call_args.kwargs
-        self.assertNotIn("protocolType", request)
-        self.assertEqual(request["protocolConfiguration"], config)
-        self.assertEqual(request["authorizerType"], "AWS_IAM")
-
-    def test_role_update_failure_blocks_dependent_gateway_id(self):
-        ctrl = mock.Mock()
-        ctrl.list_gateways.return_value = {"items": [_gateway(roleArn="arn:aws:iam::1:role/old")]}
-        ctrl.get_gateway.return_value = _gateway(roleArn="arn:aws:iam::1:role/old")
-        ctrl.update_gateway.side_effect = provision.ClientError(
-            {"Error": {"Code": "ConflictException", "Message": "SECRET_SENTINEL"}}, "UpdateGateway")
-        provision.report.clear()
-        with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]):
-            ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"})
-        self.assertEqual(ids, {"ops": "gw-ops"})
-        self.assertIn("ERR", {row[1] for row in provision.report})
-
-    def test_failed_gateway_does_not_receive_target_work(self):
-        ctrl, ids, statuses = _run_gateways("new text", status="FAILED")
+    def test_unreadable_authorizer_never_defaults_to_none_or_loses_known_id(self):
+        ctrl, ids, statuses = _run_gateways("stale", roleArn="arn:old", authorizerType=None)
         ctrl.update_gateway.assert_not_called()
         self.assertEqual(ids, {"ops": "gw-ops"})
         self.assertIn("ERR", statuses)
 
-    def test_gateway_waits_for_updated_role_not_an_old_ready_snapshot(self):
-        old = _gateway(roleArn="arn:old")
-        ctrl = mock.Mock()
-        ctrl.list_gateways.return_value = {"items": [old]}
-        ctrl.get_gateway.side_effect = [old, old, _gateway()]
-        provision.report.clear()
-        with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]), \
-             mock.patch.object(provision.catalog, "GATEWAY_DESCRIPTIONS", {"ops": "new text"}), \
-             mock.patch.object(provision.time, "sleep") as sleep:
-            ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"})
-        self.assertEqual(ids, {"ops": "gw-ops"})
-        self.assertEqual(ctrl.get_gateway.call_count, 3)
-        sleep.assert_called_once()
 
-    def test_unsuccessful_gateway_update_can_retry_without_metadata_drift(self):
-        ctrl, ids, statuses = _run_gateways("new text", status="UPDATE_UNSUCCESSFUL",
-                                          authorizerType="AWS_IAM")
-        ctrl.update_gateway.assert_called_once()
-        self.assertEqual(ctrl.update_gateway.call_args.kwargs["authorizerType"], "AWS_IAM")
-        self.assertEqual(ids, {"ops": "gw-ops"})
-        self.assertIn("UPDATED", statuses)
-
-    def test_rejected_recovery_is_an_error_even_when_role_matches(self):
-        ctrl = mock.Mock()
-        ctrl.list_gateways.return_value = {"items": [_gateway(status="UPDATE_UNSUCCESSFUL")]}
-        ctrl.get_gateway.return_value = _gateway(status="UPDATE_UNSUCCESSFUL")
-        ctrl.update_gateway.side_effect = provision.ClientError(
-            {"Error": {"Code": "ValidationException", "Message": "SECRET_SENTINEL"}}, "UpdateGateway")
-        provision.report.clear()
-        with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]), \
-             mock.patch.object(provision.catalog, "GATEWAY_DESCRIPTIONS", {"ops": "new text"}):
-            ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"})
-        ctrl.update_gateway.assert_called_once()
-        self.assertEqual(ids, {"ops": "gw-ops"})
-        self.assertIn("ERR", {row[1] for row in provision.report})
-
-    def test_recovery_wait_ignores_old_gateway_failure_before_transition(self):
-        old = _gateway(status="UPDATE_UNSUCCESSFUL")
-        ctrl = mock.Mock()
-        ctrl.list_gateways.return_value = {"items": [old]}
-        ctrl.get_gateway.side_effect = [old, old, {"status": "UPDATING"}, _gateway()]
-        provision.report.clear()
-        with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]), \
-             mock.patch.object(provision.catalog, "GATEWAY_DESCRIPTIONS", {"ops": "new text"}), \
-             mock.patch.object(provision.time, "sleep"):
-            ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"})
-        self.assertEqual(ids, {"ops": "gw-ops"})
-        self.assertEqual(ctrl.get_gateway.call_count, 4)
-        self.assertEqual({row[1] for row in provision.report}, {"UPDATED"})
-
-    def test_role_failure_keeps_identity_but_not_ready_membership(self):
-        ready = set()
-        _, ids, statuses = _run_gateways("new text", ready_gateways=ready, status="FAILED")
-        self.assertEqual(ids, {"ops": "gw-ops"})
-        self.assertEqual(ready, set())
-        self.assertIn("ERR", statuses)
-
-    def test_cosmetic_async_failure_warns_and_keeps_identity(self):
-        ctrl = mock.Mock()
-        ctrl.list_gateways.return_value = {"items": [_gateway("stale")]}
-        ctrl.get_gateway.side_effect = [_gateway("stale"), _gateway(status="UPDATE_UNSUCCESSFUL")]
-        provision.report.clear()
-        ready = set()
-        with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]), \
-             mock.patch.object(provision.catalog, "GATEWAY_DESCRIPTIONS", {"ops": "new text"}):
-            ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"},
-                                           ready_gateways=ready)
-        self.assertEqual(ids, {"ops": "gw-ops"})
-        self.assertEqual(ready, set())
-        self.assertEqual({row[1] for row in provision.report}, {"WARN"})
-
-    def test_ready_gateway_does_not_require_exact_description_echo(self):
-        ctrl = mock.Mock()
-        ctrl.list_gateways.return_value = {"items": [_gateway("stale")]}
-        ctrl.get_gateway.side_effect = [_gateway("stale"), _gateway("service-normalized description")]
-        provision.report.clear()
-        ready = set()
-        with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]), \
-             mock.patch.object(provision.catalog, "GATEWAY_DESCRIPTIONS", {"ops": "new text"}), \
-             mock.patch.object(provision.time, "monotonic", side_effect=[0, 100]):
-            ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"},
-                                           ready_gateways=ready)
-        self.assertEqual(ids, {"ops": "gw-ops"})
-        self.assertEqual(ready, {"ops"})
-        self.assertNotIn("ERR", {row[1] for row in provision.report})
-
-
-class TestTypedProvisionErrors(unittest.TestCase):
-    def test_target_errors_preserve_safe_codes_without_messages(self):
-        for error_code, expected in (
-            ("ValidationException", "aws_validation_failed"),
-            ("ConflictException", "aws_conflict"),
-            ("ResourceNotFoundException", "aws_resource_not_found"),
-        ):
-            with self.subTest(error_code=error_code):
-                ctrl = mock.Mock()
-                ctrl.list_gateway_targets.return_value = {"items": []}
-                ctrl.create_gateway_target.side_effect = provision.ClientError(
-                    {"Error": {"Code": error_code, "Message": "SECRET_SENTINEL"}}, "CreateGatewayTarget")
-                output = io.StringIO()
-                with mock.patch.object(provision.catalog, "TARGETS", _TARGETS), redirect_stdout(output):
-                    provision.diagnostics.reset()
-                    provision.ensure_targets(ctrl, {"lambda_arns": {"rds-mcp": "arn:fixture:lambda"}},
-                                             {"data": "gw-1"})
-                records = [json.loads(line) for line in output.getvalue().splitlines()]
-                self.assertEqual(records[-1]["code"], expected)
-                self.assertNotIn("SECRET_SENTINEL", output.getvalue())
-
-    def test_sdk_validation_error_does_not_print_request_parameters(self):
+class TestTypedErrors(unittest.TestCase):
+    def test_target_errors_expose_only_fixed_typed_codes(self):
         from botocore.exceptions import ParamValidationError
-        ctrl = mock.Mock()
-        ctrl.list_gateway_targets.return_value = {"items": []}
-        ctrl.create_gateway_target.side_effect = ParamValidationError(report="SECRET_SENTINEL")
-        output = io.StringIO()
-        with mock.patch.object(provision.catalog, "TARGETS", _TARGETS), redirect_stdout(output):
-            provision.diagnostics.reset()
-            provision.ensure_targets(ctrl, {"lambda_arns": {"rds-mcp": "arn:fixture:lambda"}},
-                                     {"data": "gw-1"})
-        self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["code"], "sdk_validation_failed")
-        self.assertNotIn("SECRET_SENTINEL", output.getvalue())
-
-
-class TestRecoveryReadinessBounds(unittest.TestCase):
-    def test_new_failure_after_transition_stays_terminal(self):
-        ctrl = mock.Mock()
-        ctrl.get_gateway.side_effect = [{"status": "UPDATING"}, {"status": "UPDATE_UNSUCCESSFUL"}]
-        ctrl.get_gateway_target.side_effect = [{"status": "UPDATING"}, {"status": "UPDATE_UNSUCCESSFUL"}]
-        with mock.patch.object(provision.time, "sleep"):
-            self.assertIsNone(provision._wait_gateway_ready(
-                ctrl, "gw-ops", "ops", previous_failure="UPDATE_UNSUCCESSFUL"))
-            self.assertFalse(provision._wait_target_ready(
-                ctrl, "gw-ops", "t-1", "rds-mcp-target", previous_failure="UPDATE_UNSUCCESSFUL"))
-        self.assertEqual(ctrl.get_gateway.call_count, 2)
-        self.assertEqual(ctrl.get_gateway_target.call_count, 2)
-
-    def test_unchanged_prior_failure_still_times_out(self):
-        ctrl = mock.Mock()
-        ctrl.get_gateway.return_value = {"status": "UPDATE_UNSUCCESSFUL"}
-        ctrl.get_gateway_target.return_value = {"status": "UPDATE_UNSUCCESSFUL"}
-        self.assertIsNone(provision._wait_gateway_ready(
-            ctrl, "gw-ops", "ops", timeout_s=0, previous_failure="UPDATE_UNSUCCESSFUL"))
-        self.assertFalse(provision._wait_target_ready(
-            ctrl, "gw-ops", "t-1", "rds-mcp-target", timeout_s=0, previous_failure="UPDATE_UNSUCCESSFUL"))
+        cases = [(provision.ClientError({"Error": {"Code": code, "Message": "SECRET_SENTINEL"}},
+                                       "CreateGatewayTarget"), expected)
+                 for code, expected in (("ValidationException", "aws_validation_failed"),
+                                        ("ConflictException", "aws_conflict"),
+                                        ("ResourceNotFoundException", "aws_resource_not_found"))]
+        cases.append((ParamValidationError(report="SECRET_SENTINEL"), "sdk_validation_failed"))
+        for error, expected in cases:
+            ctrl = mock.Mock()
+            ctrl.list_gateway_targets.return_value = {"items": []}
+            ctrl.create_gateway_target.side_effect = error
+            output = io.StringIO()
+            with mock.patch.object(provision.catalog, "TARGETS", _TARGETS), redirect_stdout(output):
+                provision.diagnostics.reset()
+                provision.ensure_targets(ctrl, {"lambda_arns": {"rds-mcp": "arn:fixture:lambda"}},
+                                         {"data": "gw-1"})
+            self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["code"], expected)
+            self.assertNotIn("SECRET_SENTINEL", output.getvalue())
 
 
 class TestReadinessFlag(unittest.TestCase):

@@ -115,7 +115,7 @@ flowchart LR
 | **Cost** | Pay only on invocation, no idle cost |
 
 :::caution Gateway Target creation
-The CLI `--inline-payload` option has JSON parsing issues — use **Python/boto3** instead. Also, if a just-created gateway is not yet `READY`, the first Target creation may throw `ValidationException`; since the provisioner is idempotent, re-running resolves it.
+The CLI `--inline-payload` option has JSON parsing issues — use **Python/boto3** instead. A just-created gateway may reject the first Target creation with `ValidationException` before it is `READY`. Confirm `READY` through an authorized read before re-running. Persistent `FAILED` requires separate diagnosis; the provisioner does not automatically delete/recreate it.
 :::
 
 ## Why do I get a "cross-account blocked" error in a single-account setup?

@@ -115,7 +115,7 @@ flowchart LR
 | **コスト** | 呼び出し時のみ課金、アイドルコストなし |
 
 :::caution Gateway Target 作成時の注意
-CLI の `--inline-payload` オプションには JSON パースの問題があります。**Python/boto3** で作成する必要があります。また、作成したばかりのゲートウェイが `READY` になる前だと、最初の Target 作成が `ValidationException` を投げることがありますが、provisioner は冪等なので再実行で解消されます。
+CLI の `--inline-payload` オプションには JSON パースの問題があるため、**Python/boto3** を使用します。作成直後のゲートウェイが `READY` になる前は、最初の Target 作成が `ValidationException` で拒否されることがあります。許可された読み取りで `READY` を確認してから再実行してください。継続する `FAILED` は別途調査が必要で、自動削除・再作成は行いません。
 :::
 
 ## 単一アカウントなのに「cross-account 遮断」エラーが出る理由は？

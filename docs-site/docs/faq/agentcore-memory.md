@@ -115,7 +115,7 @@ flowchart LR
 | **비용** | 호출 시에만 과금, 유휴 비용 없음 |
 
 :::caution Gateway Target 생성 시 주의
-CLI의 `--inline-payload` 옵션은 JSON 파싱 이슈가 있습니다. **Python/boto3**로 생성해야 합니다. 또한 갓 만든 게이트웨이가 `READY` 전이면 첫 Target 생성이 `ValidationException`을 던질 수 있는데, provisioner가 멱등하므로 재실행으로 해소됩니다.
+CLI의 `--inline-payload` 옵션은 JSON 파싱 이슈가 있습니다. **Python/boto3**로 생성해야 합니다. 갓 만든 게이트웨이가 `READY` 전이면 첫 Target 생성이 `ValidationException`을 반환할 수 있습니다. 승인된 읽기로 `READY`를 확인한 뒤 provisioner를 재실행하세요. 지속적인 `FAILED`는 별도 진단이 필요하며 자동 삭제·재생성하지 않습니다.
 :::
 
 ## 단일 계정인데 "cross-account 차단" 오류가 나는 이유는?
