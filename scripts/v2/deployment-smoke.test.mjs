@@ -45,6 +45,8 @@ async function scenario(t, {
   config = {}, loginStatus = '200', loginBody = '{"ok":true,"redirect":"/"}',
   dbStatus = '200', dbBody = '{"status":"ok","public_tables":42}',
   jar = cookie, failureAt, interruptAt, emptyDbOutput = false,
+  runtimeOptions = {}, onRequest,
+  accountsBody = '{"accounts":[{"accountId":"123456789012","isHost":true,"enabled":true}]}',
 } = {}) {
   const moduleUrl = new URL('./authenticated-smoke.mjs', import.meta.url);
   assert.ok(existsSync(moduleUrl), 'authenticated smoke implementation is missing');
@@ -63,8 +65,11 @@ async function scenario(t, {
       body: calls.length === 0 ? JSON.parse(readFileSync(bodyArg.slice(1), 'utf8')) : undefined,
       jar: readFileSync(jarPath, 'utf8'),
     });
+    const path = new URL(args.at(-1)).pathname;
+    onRequest?.(path);
     if (calls.length === 1 && jar !== undefined) writeFileSync(jarPath, jar);
-    if (calls.length === 1 || !emptyDbOutput) writeFileSync(output, calls.length === 1 ? loginBody : dbBody);
+    if (calls.length === 1 || !emptyDbOutput) writeFileSync(output,
+      calls.length === 1 ? loginBody : path === '/api/accounts' ? accountsBody : dbBody);
     if (calls.length === interruptAt) {
       const aborted = new Promise((_, reject) => {
         options.signal.addEventListener('abort', () => reject(new Error(password + token)), { once: true });
@@ -78,12 +83,12 @@ async function scenario(t, {
       error.stderr = token;
       throw error;
     }
-    return { stdout: calls.length === 1 ? loginStatus : dbStatus };
+    return { stdout: calls.length === 1 ? loginStatus : path === '/api/accounts' ? '200' : dbStatus };
   };
   let result;
   let error;
   try {
-    result = await authenticatedSmoke({ ...configuration, ...config }, { runCurl, tempRoot });
+    result = await authenticatedSmoke({ ...configuration, ...config }, { runCurl, tempRoot, ...runtimeOptions });
   } catch (caught) {
     error = caught;
   }
@@ -132,6 +137,99 @@ test('authenticated smoke logs in and queries DB with a private cookie jar and v
   for (const call of calls) {
     assert.equal(call.args[call.args.indexOf('--max-filesize') + 1], '65536');
     assert.ok(!call.args.some(arg => ['-f', '-fsS', '--fail', '--fail-with-body'].includes(arg)));
+  }
+});
+
+const prepareRuntime = { schemaVersion: 1, mode: 'prepare', expectedAccountId: '123456789012' };
+const databaseTime = '2026-09-14T12:34:56.789Z';
+for (const offset of [-3_600_000, 3_600_000]) {
+  test(`prepare clock sample preserves the database time with runner offset ${offset}`, async t => {
+    const start = Date.parse(databaseTime) + offset;
+    let clock = start;
+    const { result, error, calls } = await scenario(t, {
+      config: { runtimeConfig: prepareRuntime },
+      dbBody: JSON.stringify({ status: 'ok', public_tables: 42, server_time: databaseTime, secret: token }),
+      runtimeOptions: { includeDatabaseClock: true, now: () => clock },
+      onRequest: path => { clock += path === '/api/auth/login' ? 7 : path === '/api/db' ? 23 : 41; },
+    });
+    assert.ifError(error);
+    assert.deepEqual(result, { status: 'ok', mode: 'prepare', public_tables: 42,
+      database_clock: { server_time: databaseTime, request_started_at_ms: start + 7,
+        response_observed_at_ms: start + 30 } });
+    assert.equal(clock, start + 71);
+    assert.equal(calls.length, 3);
+    assert.equal(calls[1].options.timeout, 35_000);
+    assert.ok(!JSON.stringify(result).includes(token));
+  });
+}
+
+test('database clock opt-in is prepare-only and rejects invalid options before HTTP', async t => {
+  const verify = { schemaVersion: 1, mode: 'verify', expectedAccountId: '123456789012',
+    expectedCloudfrontId: 'E123EXAMPLE', expectedQueuedTypes: ['cloudfront'], collectionStartedAt: databaseTime };
+  for (const [runtimeConfig, includeDatabaseClock] of [[undefined, true], [verify, true], [prepareRuntime, 'true']]) {
+    const { error, calls } = await scenario(t, {
+      config: { runtimeConfig },
+      runtimeOptions: { includeDatabaseClock, now: () => Date.parse(databaseTime) + 1000 },
+    });
+    assert.ok(error);
+    assert.equal(calls.length, 0);
+  }
+});
+
+test('only clock opt-in rejects missing, malformed or non-UTC database clocks', async t => {
+  for (const server_time of [undefined, null, 42, {}, token, '2026-02-30T12:00:00.000Z',
+    '2026-09-14T25:00:00.000Z', '2026-09-14T12:34:56.789+00:00', '2026-09-14T12:34:56Z']) {
+    const options = { config: { runtimeConfig: prepareRuntime },
+      dbBody: JSON.stringify({ status: 'ok', public_tables: 42, server_time }) };
+    const failed = await scenario(t, { ...options, runtimeOptions: { includeDatabaseClock: true } });
+    assert.match(failed.error?.message || '', /database_clock_invalid/);
+    assert.equal(failed.calls.length, 2);
+    const unchanged = await scenario(t, options);
+    assert.ifError(unchanged.error);
+    assert.deepEqual(unchanged.result, { status: 'ok', mode: 'prepare', public_tables: 42 });
+  }
+});
+
+test('clock samples reject elapsed time above 35 seconds or a backwards runner clock', async t => {
+  for (const elapsed of [0, 35_000, 35_001, -1]) {
+    const start = Date.parse(databaseTime);
+    let clock = start;
+    const { result, error } = await scenario(t, {
+      config: { runtimeConfig: prepareRuntime },
+      dbBody: JSON.stringify({ status: 'ok', public_tables: 42, server_time: databaseTime }),
+      runtimeOptions: { includeDatabaseClock: true, now: () => clock },
+      onRequest: path => { if (path === '/api/db') clock += elapsed; },
+    });
+    if (elapsed >= 0 && elapsed <= 35_000) {
+      assert.ifError(error);
+      assert.equal(result.database_clock.response_observed_at_ms - result.database_clock.request_started_at_ms, elapsed);
+    } else {
+      assert.match(error?.message || '', /database_clock_invalid/);
+    }
+  }
+});
+
+test('a database clock cannot extend an earlier caller deadline', async t => {
+  let clock = Date.parse(databaseTime) - 3_600_000;
+  const deadline = clock + 40_000;
+  const { error, calls } = await scenario(t, {
+    config: { runtimeConfig: prepareRuntime },
+    dbBody: JSON.stringify({ status: 'ok', public_tables: 42, server_time: databaseTime }),
+    runtimeOptions: { includeDatabaseClock: true, now: () => clock, deadline },
+    onRequest: path => { if (path === '/api/db') clock += 10_000; },
+  });
+  assert.match(error?.message || '', /release_timeout/);
+  assert.equal(calls.length, 2);
+});
+
+test('an ignored database clock does not change DB-only returns or explicit opt-out', async t => {
+  for (const runtimeOptions of [{}, { includeDatabaseClock: false }]) {
+    const { result, error } = await scenario(t, {
+      dbBody: JSON.stringify({ status: 'ok', public_tables: 42, server_time: token, secret: password }),
+      runtimeOptions,
+    });
+    assert.ifError(error);
+    assert.deepEqual(result, { status: 'ok', public_tables: 42 });
   }
 });
 

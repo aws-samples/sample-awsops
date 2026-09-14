@@ -159,6 +159,26 @@ node --test scripts/v2/deployment-smoke.test.mjs
 Implementation: `scripts/v2/runtime-smoke.mjs`, `scripts/v2/authenticated-smoke.mjs`
 and `web/app/api/inventory/summary/route.ts`. Worker ownership follows ADR-009.
 
+### Optional database-clock sample
+
+The existing edge-authenticated `/api/db` response includes `server_time`, sampled
+by Aurora's `clock_timestamp()` in the same table-count SELECT and formatted as UTC
+ISO with milliseconds. This adds no endpoint or authentication exception.
+Programmatic `authenticatedSmoke` callers may pass `includeDatabaseClock: true`
+only with a valid prepare-mode `runtimeConfig`. After login, DB and host-registry
+checks succeed, the usual result additionally contains
+`database_clock: { server_time, request_started_at_ms, response_observed_at_ms }`.
+The local timestamps use the supplied `now`, bracketing the DB HTTP request; their
+elapsed time must be between zero and 35,000 ms. Missing/malformed clocks fail only
+opted-in callers; default/opt-out return shapes are unchanged, with no raw response
+or credential fields added.
+
+Opt-in requires the updated API to be deployed first. No workflow opts in here.
+Controller calibration and marker selection remain separate integration work:
+elapsed-time calibration must anchor at **request start**, conservatively, rather
+than response observation. This helper does not introduce clock tolerance, relax
+the post-marker lower bound, or extend any existing expiry/deadline.
+
 <a id="related--관련"></a>
 
 ## Related
