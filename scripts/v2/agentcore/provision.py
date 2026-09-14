@@ -155,7 +155,7 @@ def ensure_gateways(ctrl, ac, ready_gateways=None):
                 recovery = gw.get("status") == "UPDATE_UNSUCCESSFUL"
                 if role_drift or recovery or gw.get("description") != want:
                     failure_status = "ERR" if role_drift or recovery else "WARN"
-                    if not gw.get("authorizerType") or not gw.get("protocolType"):
+                    if not gw.get("authorizerType"):
                         log(f"gateway:{key}", failure_status, "gateway_configuration_unavailable")
                         if failure_status == "WARN":
                             ready_gateways.add(key)

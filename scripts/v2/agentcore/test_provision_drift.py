@@ -326,6 +326,18 @@ class TestGatewayDescriptionDrift(unittest.TestCase):
         self.assertNotIn("ERR", statuses)
         self.assertEqual(ids, {"ops": "gw-ops"})
 
+    def test_optional_protocol_type_is_omitted_not_defaulted(self):
+        config = {"mcp": {"supportedVersions": ["2025-03-26"]}}
+        ctrl, ids, statuses = _run_gateways(
+            "new text", roleArn="arn:old", protocolType=None, protocolConfiguration=config,
+            authorizerType="AWS_IAM")
+        self.assertEqual(ids, {"ops": "gw-ops"})
+        self.assertIn("UPDATED", statuses)
+        request = ctrl.update_gateway.call_args.kwargs
+        self.assertNotIn("protocolType", request)
+        self.assertEqual(request["protocolConfiguration"], config)
+        self.assertEqual(request["authorizerType"], "AWS_IAM")
+
     def test_role_update_failure_blocks_dependent_gateway_id(self):
         ctrl = mock.Mock()
         ctrl.list_gateways.return_value = {"items": [_gateway(roleArn="arn:aws:iam::1:role/old")]}

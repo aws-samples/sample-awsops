@@ -101,7 +101,9 @@ The deployment role needs `bedrock-agentcore:GetGateway` in addition to the exis
 control-plane list/create/update permissions. The provisioner reads full gateway
 snapshots and reconciles the applied role plus catalog description by exact catalog
 name. Existing inbound authorizer, protocol, KMS, interceptor and policy settings
-are preserved; an absent auth/protocol field never becomes an implicit `NONE`.
+are preserved; an absent required authorizer never becomes an implicit `NONE`.
+Optional protocol fields absent from the snapshot are omitted from the update,
+as permitted by the pinned SDK, rather than invented from create-time defaults.
 Create-time defaults and gateway names are unchanged.
 
 **Known identity is separate from readiness.** Every known gateway ID survives
@@ -129,7 +131,7 @@ These control-plane checks do not establish successful tool invocation.
 
 Typed failures retain fixed public codes (`aws_validation_failed`, `aws_conflict`,
 `aws_resource_not_found`, `sdk_validation_failed`); missing gateway identity is
-reported as `gateway_inventory_incomplete`, and an unusable auth/protocol snapshot
+reported as `gateway_inventory_incomplete`, and an unavailable required auth snapshot
 as `gateway_configuration_unavailable`. Configuration, credentials, ARNs and
 raw service messages are not emitted. An older `operation_failed` event cannot
 establish its original AWS cause without separate authorized read evidence.
