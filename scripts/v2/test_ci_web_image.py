@@ -55,6 +55,10 @@ def image_fixture(*, media=IMAGE_MEDIA, config=CONFIG, body_changes=None):
             "imageManifest": raw, "imageManifestMediaType": media}
 
 
+def manifest_argument(value):
+    return Path(value.removeprefix("file://")).read_text() if value.startswith("file://") else value
+
+
 def index_fixture(child, *, entries=None, media=INDEX_MEDIA):
     arm = {"mediaType": child["imageManifestMediaType"],
            "digest": child["imageId"]["imageDigest"], "size": len(child["imageManifest"].encode()),
@@ -77,8 +81,8 @@ def context(**overrides):
 
 
 class ProvenanceTest(unittest.TestCase):
-    def promotion_fixture(self, *, config=CONFIG, media=IMAGE_MEDIA):
-        image = image_fixture(config=config, media=media)
+    def promotion_fixture(self, *, config=CONFIG, media=IMAGE_MEDIA, body_changes=None):
+        image = image_fixture(config=config, media=media, body_changes=body_changes)
         digest = image["imageId"]["imageDigest"]
         env = promotion_environment(digest)
         trace = []
@@ -251,6 +255,51 @@ class ProvenanceTest(unittest.TestCase):
                 subject.aws_request("delete-repository", {"repository-name": "sample-dev-web"})
         command.assert_not_called()
 
+    def test_receipt_validates_context_before_building_provider_url(self):
+        for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_SHA", "IMAGE_PROJECT"):
+            env, digest, _, caller, _, _ = self.promotion_fixture()
+            env.update(GITHUB_JOB="build", IMAGE_DIGEST=digest)
+            env[key] = ""
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, env, clear=True), \
+                    patch.object(sys, "argv", ["ci_web_image.py", "receipt", "--output", directory + "/web-build.json"]), \
+                    patch.object(subject, "command", side_effect=lambda _: caller()), \
+                    patch.object(subject, "github", return_value={"total_count": 0, "jobs": []}) as api, \
+                    self.subTest(key=key), self.assertRaisesRegex(ImageError, "Invalid deployment identity"):
+                subject.main()
+            api.assert_not_called()
+
+    def test_receipt_rejects_missing_or_malformed_jobs_arrays(self):
+        for response in ([], {"total_count": 0}, {"total_count": 0, "jobs": {}},
+                         {"total_count": 1, "jobs": [None]}):
+            env, digest, _, caller, _, _ = self.promotion_fixture()
+            env.update(GITHUB_JOB="build", IMAGE_DIGEST=digest)
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, env, clear=True), \
+                    patch.object(sys, "argv", ["ci_web_image.py", "receipt", "--output", directory + "/web-build.json"]), \
+                    patch.object(subject, "command", side_effect=lambda _: caller()), \
+                    patch.object(subject, "github", return_value=response), \
+                    self.subTest(response=response), self.assertRaisesRegex(ImageError, "Incomplete build job listing"):
+                subject.main()
+
+    def test_archive_payload_read_is_bounded_independently_of_declared_size(self):
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("web-build.json", "{}")
+        data = archive.getvalue()
+        artifact = {"digest": "sha256:" + hashlib.sha256(data).hexdigest()}
+        reads = []
+        class Stream(io.BytesIO):
+            def read(self, limit=-1):
+                reads.append(limit)
+                if limit < 0:
+                    raise AssertionError("Unbounded archive read")
+                return b"x" * limit
+        with patch.object(zipfile.ZipFile, "open", return_value=Stream()), \
+                self.assertRaisesRegex(ImageError, "Invalid build artifact contents"):
+            subject.receipt_from_archive(data, artifact)
+        self.assertEqual(reads, [4097])
+
     def test_compare_projects_metadata_before_the_python_output_cap(self):
         payload = {"status": "ahead", "merge_base_commit": {"sha": SHA},
                    "files": [{"patch": "x" * (2 * 1024 * 1024)}]}
@@ -383,7 +432,7 @@ class ProvenanceTest(unittest.TestCase):
         cases = [{}]
         cases += [{"conclusion": conclusion, "started_at": None, "completed_at": None}
                   for conclusion in ("failure", "cancelled", "timed_out", "skipped",
-                                     "neutral", "action_required")]
+                                     "neutral", "action_required", "stale", "startup_failure")]
         cases += [{"completed_at": "2026-09-14T00:00:30Z"},
                   {"started_at": "invalid", "completed_at": "invalid"}]
         for job_changes in cases:
@@ -460,7 +509,10 @@ class ProvenanceTest(unittest.TestCase):
         _, digest, _, _, _, original = self.promotion_fixture()
         calls = []
         def aws(operation, args):
-            calls.append((operation, args))
+            recorded = dict(args)
+            if operation == "put-image":
+                recorded["image-manifest"] = manifest_argument(args["image-manifest"])
+            calls.append((operation, recorded))
             return original(operation, args)
         pin_image("sample-dev-web", digest, aws, account=ACCOUNT)
         self.assertEqual(calls[0][1]["image-ids"], f"imageDigest={digest}")
@@ -580,7 +632,10 @@ class ProvenanceTest(unittest.TestCase):
             env, digest, _, caller, api, original = self.promotion_fixture(media=media)
             calls = []
             def aws(operation, args):
-                calls.append((operation, args))
+                recorded = dict(args)
+                if operation == "put-image":
+                    recorded["image-manifest"] = manifest_argument(args["image-manifest"])
+                calls.append((operation, recorded))
                 self.assertEqual(args.get("registry-id"), ACCOUNT)
                 self.assertNotIn("accepted-media-types", args)
                 return original(operation, args)
@@ -610,7 +665,7 @@ class ProvenanceTest(unittest.TestCase):
                     tag = args["image-ids"].removeprefix("imageTag=")
                     return {"images": [image | {"imageId": image["imageId"] | {"imageTag": tag}}]}
                 if operation == "put-image":
-                    self.assertEqual(args["image-manifest"], raw)
+                    self.assertEqual(manifest_argument(args["image-manifest"]), raw)
                     self.assertEqual(args["image-manifest-media-type"], media)
                     return {"image": image | {"imageId": image["imageId"] | {"imageTag": "web-latest"}}}
                 return original(operation, args)
@@ -636,7 +691,7 @@ class ProvenanceTest(unittest.TestCase):
                     tag = args["image-ids"].removeprefix("imageTag=")
                     return {"images": [image | {"imageId": image["imageId"] | {"imageTag": tag}}]}
                 if operation == "put-image":
-                    self.assertEqual(args["image-manifest"], raw)
+                    self.assertEqual(manifest_argument(args["image-manifest"]), raw)
                     self.assertEqual(args["image-manifest-media-type"], media)
                     self.assertEqual(args["image-digest"], digest)
                     return {"image": image | {"imageId": image["imageId"] | {"imageTag": "web-latest"}}}
@@ -650,6 +705,7 @@ class ProvenanceTest(unittest.TestCase):
     def test_ambiguous_indexes_or_mismatched_children_never_publish(self):
         for failure in ("no-arm", "duplicate-arm", "attestation-only", "nested-index",
                         "missing-platform", "attestation-target", "attestation-shape",
+                        "attestation-self", "attestation-other", "attestation-amd64",
                         "size", "account", "repository", "digest", "media", "schema"):
             env, _, trace, caller, api, original = self.promotion_fixture()
             child = image_fixture(body_changes={"schemaVersion": 1} if failure == "schema" else None)
@@ -669,6 +725,15 @@ class ProvenanceTest(unittest.TestCase):
                 entries[1]["annotations"]["vnd.docker.reference.digest"] = "sha256:" + "f" * 64
             elif failure == "attestation-shape":
                 entries[1]["annotations"]["vnd.docker.reference.type"] = "unrecognized"
+            elif failure == "attestation-self":
+                entries[1]["annotations"]["vnd.docker.reference.digest"] = entries[1]["digest"]
+            elif failure in ("attestation-other", "attestation-amd64"):
+                other = json.loads(json.dumps(entries[1] if failure == "attestation-other" else arm))
+                other["digest"] = "sha256:" + "e" * 64
+                if failure == "attestation-amd64":
+                    other["platform"]["architecture"] = "amd64"
+                entries.append(other)
+                entries[1]["annotations"]["vnd.docker.reference.digest"] = other["digest"]
             elif failure == "size":
                 arm["size"] += 1
             image = index_fixture(child, entries=entries)
@@ -717,6 +782,65 @@ class ProvenanceTest(unittest.TestCase):
             return original(operation, args)
         self.assertEqual(subject.promote(env, caller=caller, api=api, aws=aws)["digest"], digest)
         self.assertEqual(trace[-1], "batch-get-image")
+
+    def test_unconfirmed_publication_has_distinct_fixed_diagnostic(self):
+        for outcome in ("previous-image", "missing-image", "read-failure"):
+            env, _, trace, caller, api, original = self.promotion_fixture()
+            def aws(operation, args):
+                result = original(operation, args)
+                if operation == "put-image":
+                    raise ImageError("Image provenance provider request failed")
+                if args.get("image-ids") == "imageTag=web-latest":
+                    if outcome == "read-failure":
+                        raise ImageError("Image provenance provider request failed")
+                    if outcome == "missing-image":
+                        return {"images": [], "failures": [{"failureCode": "ImageNotFound"}]}
+                    old = image_fixture(body_changes={"annotations": {"release": "previous"}})
+                    old["imageId"]["imageTag"] = "web-latest"
+                    return {"images": [old]}
+                return result
+            with self.subTest(outcome=outcome), self.assertRaisesRegex(
+                    ImageError, "^Image publication could not be confirmed$"):
+                subject.promote(env, caller=caller, api=api, aws=aws)
+            self.assertEqual(trace.count("put-image"), 1)
+
+    def test_pin_image_late_binds_transport(self):
+        _, digest, trace, _, _, aws = self.promotion_fixture()
+        with patch.object(subject, "aws_request", side_effect=aws):
+            pin_image("sample-dev-web", digest, account=ACCOUNT)
+        self.assertIn("put-image", trace)
+
+    def test_large_manifest_uses_private_file_and_cleans_after_success_or_failure(self):
+        for fail in (False, True):
+            changes = {"annotations": {"test": "x" * 200_000}}
+            env, digest, _, caller, api, original = self.promotion_fixture(body_changes=changes)
+            paths = []
+            def aws(operation, args):
+                if operation == "put-image":
+                    value = args["image-manifest"]
+                    self.assertTrue(value.startswith("file://"))
+                    path = Path(value.removeprefix("file://"))
+                    paths.append(path)
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                    self.assertEqual(path.read_text(), image_fixture(body_changes=changes)["imageManifest"])
+                    self.assertLess(len(value), 4096)
+                    if fail:
+                        raise ImageError("Image provenance provider request failed")
+                if fail and args.get("image-ids") == "imageTag=web-latest":
+                    return {"images": []}
+                return original(operation, args)
+            old_umask = os.umask(0)
+            try:
+                with self.subTest(fail=fail):
+                    if fail:
+                        with self.assertRaisesRegex(ImageError, "Image publication could not be confirmed"):
+                            subject.promote(env, caller=caller, api=api, aws=aws)
+                    else:
+                        self.assertEqual(subject.promote(env, caller=caller, api=api, aws=aws)["digest"], digest)
+            finally:
+                os.umask(old_umask)
+            self.assertTrue(paths)
+            self.assertTrue(all(not path.exists() for path in paths))
 
     def test_multi_tag_digest_rows_preserve_one_identical_image(self):
         env, digest, _, caller, api, original = self.promotion_fixture()
@@ -836,6 +960,31 @@ class ProvenanceTest(unittest.TestCase):
 
 
 class SubprocessBoundaryTest(unittest.TestCase):
+    def test_provider_errors_have_fixed_operation_labels_without_banning_consumer_calls(self):
+        cases = [
+            (["aws", "sts", "get-caller-identity"], "sts:GetCallerIdentity"),
+            (["aws", "ecr", "batch-get-image"], "ecr:BatchGetImage"),
+            (["aws", "ecr", "get-download-url-for-layer"], "ecr:GetDownloadUrlForLayer"),
+            (["aws", "ecr", "put-image"], "ecr:PutImage"),
+            (["aws", "ecs", "update-service"], "ecs:UpdateService"),
+            (["aws", "ecs", "describe-services"], "ecs:DescribeServices"),
+            (["aws", "ecs", "list-tasks"], "ecs:ListTasks"),
+            (["aws", "ecs", "describe-tasks"], "ecs:DescribeTasks"),
+            (["aws", "ecs", "describe-task-definition"], "ecs:DescribeTaskDefinition"),
+            (["aws", "s3", "PRIVATE-provider-argument"], "aws"),
+            (["gh", "api", "user"], "github:api"),
+            (["curl", "-q", "--version"], "curl:config-download"),
+        ]
+        with patch.dict(os.environ, AUTH):
+            for argv, label in cases:
+                failure = subprocess.CalledProcessError(1, argv, output=b"PRIVATE-output", stderr=b"PRIVATE-stderr")
+                with self.subTest(argv=argv), patch("subprocess.run", side_effect=failure) as run, \
+                        self.assertRaises(ImageError) as error:
+                    subject.command(argv)
+                self.assertEqual(str(error.exception), f"Image provenance provider request failed [{label}]")
+                self.assertNotIn("PRIVATE", str(error.exception))
+                run.assert_called_once()  # The shared command boundary still accepts other AWS operations.
+
     def provider(self, *, poisoned_identity=False):
         image = image_fixture()
         digest = image["imageId"]["imageDigest"]

@@ -80,6 +80,8 @@ class AWS:
             return {"layerDigest": "sha256:" + hashlib.sha256(self.config).hexdigest(),
                     "downloadUrl": "https://fixture.s3.ap-northeast-2.amazonaws.com/config"}
         if operation == "put-image":
+            manifest = args[args.index("--image-manifest") + 1]
+            self.published_manifest = Path(manifest.removeprefix("file://")).read_text()
             image = copy.deepcopy(self.image)
             image["imageId"]["imageTag"] = "web-latest"
             return {"image": image}
@@ -189,7 +191,8 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual([op for op, _ in writes], ["put-image", "update-service"])
         args = writes[0][1]
         self.assertEqual(args[args.index("--repository-name") + 1], PROJECT + "-web")
-        self.assertEqual(args[args.index("--image-manifest") + 1], RAW)
+        self.assertTrue(args[args.index("--image-manifest") + 1].startswith("file://"))
+        self.assertEqual(self.aws.published_manifest, RAW)
 
     def test_preflight_still_validates_image_without_migration_or_publication(self):
         proof, _ = self.run_main_with_providers("preflight-image",

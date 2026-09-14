@@ -112,13 +112,16 @@ export function useActiveAccount(): [string, (id: string) => void] {
   return [id, (v: string) => { setActiveAccount(v); setId(v); }];
 }
 
-export function useActiveScope(): [ScopeSelection, (scope: ScopeSelection) => void] {
+/** The third tuple item gates loads until the persisted scope is known after hydration. */
+export function useActiveScope(): [ScopeSelection, (scope: ScopeSelection) => void, boolean] {
   const [scope, setScope] = useState<ScopeSelection>(DEFAULT_SCOPE);
+  const [ready, setReady] = useState(false);
   useEffect(() => {
     setScope(getActiveScope());
+    setReady(true);
     const handler = () => setScope(getActiveScope());
     window.addEventListener('awsops:scopechange', handler);
     return () => window.removeEventListener('awsops:scopechange', handler);
   }, []);
-  return [scope, (v: ScopeSelection) => { setActiveScope(v); setScope(normalizeScope(v)); }];
+  return [scope, (v: ScopeSelection) => { setActiveScope(v); setScope(normalizeScope(v)); }, ready];
 }

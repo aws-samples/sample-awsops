@@ -47,6 +47,11 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   requires independently retained source/digest evidence; receipt cleanup targets only an
   owned run/attempt directory. Migration/preflight assertions use verified job outputs,
   never dispatch inputs. Fresh-only consumers do not need `actions: read`.
+  `IMAGE_PROJECT` likewise needs branch-selected authenticated Terraform/verified job output,
+  cross-checked against ECR/cluster/service metadata. Broad current CI-account IAM does not
+  supply stack authority; each operation selects one verified repo and any new grant uses
+  its exact ARN. Publication confirmation failure calls for provider checks/revalidation,
+  not rebuilding a validated candidate; document completed-producer and superseded-push cases.
   Provider children require explicit exported auth, disabled AWS config files, private GH config and filtered
   environments; signed curl URLs use private stdin, never argv. Multi-tag digest rows
   are accepted only with matching identity and byte-identical manifest/media evidence.
