@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 658048bec65f · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8ed3be52b45a · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -183,3 +183,25 @@ Require full HTTP timeouts remaining, and probe/worker budgets before billing or
 Collection windows are caps; late completion can fail admission.
 Post-marker running attempts with old/null previous success time out as collection_timeout;
 full-policy stale terminal evidence is collection_stale. Login/DB also require full timeouts.
+
+## Unwired private plan transport
+
+`v2/ci_private_plan.py` exposes only policy/publish/inspect/restore. The base Terraform
+workflow does not call it or publish private S3 references; operator use requires the
+later consumer integration. No workflow/IAM/bucket provisioning ships with the module.
+Require successful Plan plus publisher ID `publish` / name `Publish private plan`,
+attempt artifact `tfplan-N`, private backend/store, protected scoped credentials and
+publish/restore CI HMAC verification. Inspection requires an explicit private backend
+and profile, never bucket discovery or the CI key. Public reference fields are only
+schema/storage tags, CI context and manifest hash/size; no public plan/backend/bucket
+hashes or storage identities. A cap/failure does not create a usable reference.
+Private inspection is not approval; restore never applies and supplies no orphan recovery.
+Consumers own safe artifact overwrite, masking before logging, existing gates and cleanup.
+Contract: `docs/reference/private-plan-transport.md`. Run `v2/test_ci_private_plan.py`
+with the existing crypto/inspection/context suites; no additional dependency or live access.
+Classify this as operator CI artifact transport, not an ADR-005 exception; no frozen
+product capability is enabled.
+S3 SSE-KMS replaces the GitHub envelope for operator reads; effective S3/KMS readers
+need no CI key. Consumer wiring must review access, verify plan-prefix lifecycle
+(7-day current/noncurrent expiry, 1-day multipart abort), and migrate the legacy
+artifact/inspector contract together. Generated session policy is publisher-only.
