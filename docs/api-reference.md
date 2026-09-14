@@ -58,19 +58,28 @@ success or changed metadata between pages must not be read as fresh complete cov
 Even stable successful metadata does not certify atomic page contents or AWS absence.
 Bounded paging, freshness and coverage decisions belong to the caller.
 
-Topology reads ECS tasks/subnets in at most 20 pages of 500 under the shared
+Topology reads target groups/ECS tasks/subnets in at most 20 pages of 500 under the shared
 30-second load budget. It compares status, finish, last-success and row-count
 metadata across pages; rows and ledger are separate reads, not an atomic snapshot.
-Only a stable succeeded sweep permits exclusive ownership. Incomplete or changed
+The succeeded sweep must also finish strictly before the shared browser load start,
+rejecting a finalizer that races the first row/ledger read. This is not atomic snapshot
+proof; clock skew can conservatively withhold attribution. All ECS snapshot labels,
+including host labels, remain cached configuration rather than current ownership.
+Incomplete or changed
 sweeps retain bounded cached rows with confidence withheld; missing ledger, failed,
 malformed or capped reads never prove absence. Other display reads keep their
 existing row cap. Authentication and type-specific admin checks still apply.
 Inventory and EKS reads share the abort signal; superseded loads are aborted
-and late completions cannot overwrite newer results.
+and late completions cannot overwrite newer results. If a failed/incomplete load builds
+an empty graph, the previous nonempty same-account graph and its provenance are retained;
+a complete empty load replaces it. Target-node `targetCapturedAt` dates only the
+target-group row, not the independent task/subnet/pod evidence.
 
 Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
 [row/ledger reads](../web/lib/inventory.ts), and
-[collector lifecycle](../scripts/v2/steampipe/sync_lambda.py).
+[collector lifecycle](../scripts/v2/steampipe/sync_lambda.py);
+[topology loader](../web/app/topology/page.tsx) and
+[IP-target builder](../web/lib/flow-topology.ts).
 
 ## eks (10)
 | 경로 | 메서드 | 역할 | 인증 |

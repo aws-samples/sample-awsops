@@ -124,6 +124,38 @@ describe('live topology inventory adapter', () => {
     expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
   });
 
+  it.each(['target_group', 'alb', 'nlb', 'cloudfront'])('retains a nonempty graph after partial %s failure empties the new graph', async type => {
+    const failures = new Set<string>();
+    const active = type === 'target_group' ? [targets] : [row(type, {
+      arn: `arn:fixture:${type}`, dns_name: `${type}.example.test`, name: type,
+    })];
+    serve({ failures, inventory: { target_group: [], [type]: active } });
+    render(<TopologyPage />);
+    await screen.findByText(/인벤토리 동기화:/);
+    await waitFor(() => expect(document.querySelectorAll('.react-flow__node').length).toBeGreaterThan(0));
+    failures.add(type);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await screen.findByText('조회 실패로 이전 결과를 표시합니다.');
+    expect(document.querySelectorAll('.react-flow__node').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/그래프로 그릴 리소스가 없습니다/)).toBeNull();
+    failures.clear(); active.length = 0;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await screen.findByText(/그래프로 그릴 리소스가 없습니다/);
+    expect(screen.queryByText('조회 실패로 이전 결과를 표시합니다.')).toBeNull();
+  });
+  it('retains the prior graph when an incomplete target-group sweep returns no rows', async () => {
+    let incomplete = false;
+    serve({ inventoryReply: (url, body) => Response.json(incomplete && url.pathname.endsWith('/target_group')
+      ? { rows: [], run: { ...body.run, status: 'partial' } } : body) });
+    render(<TopologyPage />);
+    await screen.findByRole('option', { name: 'ECS · ecs-app' });
+    incomplete = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await screen.findByText('조회 실패로 이전 결과를 표시합니다.');
+    search('ecs-api'); expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
+    expect(screen.queryByText(/그래프로 그릴 리소스가 없습니다/)).toBeNull();
+  });
+
   it.each([false, true])('retains same-account graph provenance after total refresh failure (partial: %s)', async partial => {
     const failures = new Set<string>();
     const options = { failures, eks: { clusters: [
@@ -173,10 +205,10 @@ describe('live topology inventory adapter', () => {
 
 function largeInventory(type: string) {
   return [...Array.from({ length: 500 }, (_, i) => row(`filler-${i}`, {})),
-    type === 'ecs_task' ? task('ecs-api') : row('subnet-app', { vpc_id: vpcId })];
+    type === 'ecs_task' ? task('ecs-api') : type === 'target_group' ? targets : row('subnet-app', { vpc_id: vpcId })];
 }
 describe('bounded ownership inventory paging', () => {
-  it.each([['self', 'ecs_task'], ['self', 'subnet'], ['123456789012', 'ecs_task'], ['123456789012', 'subnet']])('pages %s / %s without paging display types', async (account, type) => {
+  it.each([['self', 'ecs_task'], ['self', 'subnet'], ['self', 'target_group'], ['123456789012', 'ecs_task'], ['123456789012', 'subnet'], ['123456789012', 'target_group']])('pages %s / %s without paging display types', async (account, type) => {
     const requests = serve({ inventory: { [type]: largeInventory(type) } });
     render(<TopologyPage />);
     await screen.findByRole('option', { name: 'ECS · ecs-app' });
@@ -187,7 +219,8 @@ describe('bounded ownership inventory paging', () => {
       await screen.findByRole('option', { name: 'ECS · ecs-app' });
     }
     expect(requests.filter(u => u.pathname.endsWith(`/${type}`)).map(u => u.searchParams.get('offset'))).toEqual(['0', '500']);
-    expect(requests.filter(u => u.pathname.endsWith('/target_group'))).toHaveLength(1);
+    expect(requests.filter(u => u.pathname.endsWith('/target_group'))).toHaveLength(type === 'target_group' ? 2 : 1);
+    expect(requests.filter(u => u.pathname.endsWith('/cloudfront'))).toHaveLength(1);
     expect(requests.filter(u => u.pathname.startsWith('/api/inventory/')).every(u => u.searchParams.get('accounts') === account)).toBe(true);
     expect(screen.queryByText('인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.')).toBeNull();
     if (account !== 'self') {
@@ -231,6 +264,7 @@ describe('bounded ownership inventory paging', () => {
       if (['finished_at', 'last_success_at', 'row_count'].includes(defect)) {
         await screen.findByText('인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.');
         expect(graph.mock.calls.at(-1)?.[0].ecsTask).toHaveLength(500);
+        expect(screen.queryByText(/500개 초과/)).toBeNull();
       } else await screen.findByText(/ecs_task: invalid inventory response/);
       expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
       expect(document.body.textContent).not.toContain('secret=canary');
@@ -253,6 +287,49 @@ describe('bounded ownership inventory paging', () => {
     expect(graph.mock.calls.at(-1)?.[0].ecsTask).toHaveLength(1);
     expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
     expect(screen.queryByText(/invalid inventory response/)).toBeNull();
+  });
+
+  it.each(['running', 'partial', 'failed'])('blocks both target labels during a %s target-group sweep', async status => {
+    const graph = vi.spyOn(topology, 'buildFlowGraph');
+    serve({ inventoryReply: (url, body) => Response.json(url.pathname.endsWith('/target_group')
+      ? { ...body, run: { ...body.run, status, finished_at: status === 'running' ? null : RUN.finished_at } } : body) });
+    render(<TopologyPage />);
+    await screen.findByText('인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.');
+    expect(graph.mock.calls.at(-1)?.[0].ownershipRead?.targetGroup).toBe('failed');
+    expect(graph.mock.calls.at(-1)?.[0].tg).toHaveLength(1);
+    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
+    expect(screen.queryByRole('option', { name: 'EKS · good' })).toBeNull();
+  });
+
+  it.each(['target_group', 'ecs_task', 'subnet'])('rejects a torn first %s page even when later ledger versions would match', async type => {
+    const start = Date.parse('2026-09-14T12:00:00Z');
+    vi.spyOn(Date, 'now').mockReturnValue(start);
+    const graph = vi.spyOn(topology, 'buildFlowGraph');
+    const requests = serve({ inventory: { [type]: largeInventory(type) }, inventoryReply: (url, body) =>
+      Response.json(url.pathname.endsWith(`/${type}`) ? { ...body, run: {
+        ...body.run, finished_at: '2026-09-14T12:00:00Z', last_success_at: '2026-09-14T12:00:00Z',
+      } } : body) });
+    render(<TopologyPage />);
+    await screen.findByText('인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.');
+    expect(requests.filter(u => u.pathname.endsWith(`/${type}`))).toHaveLength(1);
+    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
+    expect(screen.queryByRole('option', { name: 'EKS · good' })).toBeNull();
+    const key = type === 'target_group' ? 'targetGroup' : type === 'ecs_task' ? 'ecsTask' : 'subnet';
+    expect(graph.mock.calls.at(-1)?.[0].ownershipRead?.[key]).toBe('failed');
+  });
+
+  it.each([-1, 1])('requires the completed sweep to predate load start (offset %sms)', async delta => {
+    const start = Date.parse('2026-09-14T12:00:00Z');
+    vi.spyOn(Date, 'now').mockReturnValue(start);
+    serve({ inventoryReply: (url, body) => Response.json(url.pathname.endsWith('/target_group')
+      ? { ...body, run: { ...body.run, finished_at: new Date(start + delta).toISOString(),
+        last_success_at: new Date(start + delta).toISOString() } } : body) });
+    render(<TopologyPage />);
+    if (delta < 0) await screen.findByRole('option', { name: 'EKS · good' });
+    else {
+      await screen.findByText('인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.');
+      expect(screen.queryByRole('option', { name: 'EKS · good' })).toBeNull();
+    }
   });
 
   it.each([false, true])('clears the load deadline after settling (invalid JSON: %s)', async invalid => {

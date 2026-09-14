@@ -273,8 +273,12 @@ The current owner of `sql_reader.topology_nodes.meta` is
 [`01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`](../../terraform/foundation/migrations/01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql).
 It selects named JSON keys with type checks for telemetry fields and a trace-queue
 exception. The current materialized flow writer persists `ownership_evidence` and
-`capturedAt`, with VPC/subnet or ambiguity metadata where applicable. The view excludes
-`ownership_evidence`, `capturedAt`, `vpcId`, `subnetId`, `ambiguity` and `candidate`.
+`targetCapturedAt` on **target nodes**, with VPC/subnet or ambiguity metadata where
+applicable. `targetCapturedAt` dates only the target-group inventory row; it does not
+date the independent task/subnet/pod evidence or establish current ownership. Host ECS
+snapshot target labels are cached configuration as well. `candidate` is page-only
+out-of-region context, not materializer output. The view excludes these fields along
+with `vpcId`, `subnetId` and `ambiguity`; older retained `capturedAt` fields are also unlisted.
 It can expose bare `region`, `cluster`, `ecsService` and `task` fields: these do not
 establish complete network scope or current ownership when the provenance fields are absent.
 Any other unlisted key remains excluded. Exposing another key requires a reviewed

@@ -13,6 +13,9 @@
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => (v == null ? '' : String(v));
+const targetCaptureTime = (value: unknown): string | null => value instanceof Date
+  ? Number.isFinite(value.getTime()) ? value.toISOString() : null
+  : typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null;
 
 /** Coerce a jsonb value that may arrive as an array or a JSON string into an array. */
 function arr(v: unknown): Row[] {
@@ -55,7 +58,7 @@ export interface FlowInput {
   // ECS also requires attachment/subnet scope. Missing TG scope never proves ownership.
   ipResolved?: Record<string, { label: string; resolved: 'eks' | 'ecs'; meta?: Record<string, unknown> } | null>;
   ownershipRead?: {
-    ecsTask?: 'failed' | 'capped'; subnet?: 'failed' | 'capped';
+    targetGroup?: 'failed' | 'capped'; ecsTask?: 'failed' | 'capped'; subnet?: 'failed' | 'capped';
     eksScopes?: string[]; eksUnknown?: boolean; eksRegions?: string[]; configurationOnly?: boolean;
   };
 }
@@ -518,7 +521,8 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
           && !(candidate.meta?.vpcId && t.vpc_id && candidate.meta.vpcId !== t.vpc_id);
         const task = ecsByIp.get(scopedTargetIp(str(t.region), str(t.vpc_id), targetId));
         const reads = input.ownershipRead;
-        const issue = reads?.ecsTask ? 'ecs_task_inventory_incomplete'
+        const issue = reads?.targetGroup ? 'target_group_inventory_incomplete'
+          : reads?.ecsTask ? 'ecs_task_inventory_incomplete'
           : reads?.subnet ? 'subnet_inventory_incomplete'
           : !reads?.configurationOnly && reads?.eksUnknown ? 'eks_inventory_incomplete'
           : !reads?.configurationOnly && reads?.eksRegions && !reads.eksRegions.includes(str(t.region))
@@ -565,8 +569,9 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
                        ...(total > TARGET_CAP ? { membersTruncated: total - TARGET_CAP } : {}) }),
         ...(g.resolved ? { resolved: g.resolved } : {}),
         ...g.meta,
-        capturedAt: t.captured_at ?? null,
-        ...(input.ownershipRead?.configurationOnly ? { ownership_evidence: 'cached_configuration' } : {}),
+        // This dates the target-group row, not independently captured task/subnet/pod evidence.
+        targetCapturedAt: targetCaptureTime(t.captured_at),
+        ...(input.ownershipRead?.configurationOnly || g.resolved === 'ecs' ? { ownership_evidence: 'cached_configuration' } : {}),
       });
       addEdge(tgId, nodeId);
     }

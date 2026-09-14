@@ -36,6 +36,30 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
       ownershipRead: { configurationOnly: true } });
     expect(node.meta).toMatchObject({ resolved: 'ecs', ownership_evidence: 'cached_configuration' });
   });
+  it('labels host ECS snapshot evidence as cached despite a fresh target-group capture', () => {
+    const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b', captured_at: '2026-09-11T12:00:00Z' }],
+      ecsTask: [{ ...task, captured_at: '2020-01-01T00:00:00Z' }],
+      subnet: [{ ...subnet, captured_at: '2020-01-01T00:00:00Z' }] });
+    expect(node.meta).toMatchObject({ resolved: 'ecs', ownership_evidence: 'cached_configuration',
+      targetCapturedAt: '2026-09-11T12:00:00Z' });
+    expect(node.meta).not.toHaveProperty('capturedAt');
+  });
+  it.each(['ecs', 'eks'])('withholds %s attribution when target-group evidence is incomplete', source => {
+    const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ownershipRead: { targetGroup: 'failed' },
+      ecsTask: source === 'ecs' ? [task] : [], subnet: [subnet],
+      ipResolved: source === 'eks' ? { [`${region}|vpc-b|${ip}`]: { label: 'pod', resolved: 'eks' } } : undefined });
+    expect(node.meta).toMatchObject({ resolved: 'ambiguous', ambiguity: 'target_group_inventory_incomplete' });
+    expect(node.meta?.cluster).toBeUndefined();
+  });
+  it.each([
+    [undefined, null], ['invalid', null], [123, null], [new Date('invalid'), null],
+    ['2026-09-11T12:00:00Z', '2026-09-11T12:00:00Z'],
+    [new Date('2026-09-11T12:00:00Z'), '2026-09-11T12:00:00.000Z'],
+  ])('keeps only a valid target-group capture timestamp: %s', (captured_at, expected) => {
+    const node = target({ tg: [{ ...tg, captured_at }] });
+    expect(node.meta?.targetCapturedAt).toBe(expected);
+    expect(node.meta).not.toHaveProperty('capturedAt');
+  });
   it.each(['failed', 'capped'] as const)('distinguishes inventory %s from ownership conflict', state => {
     for (const type of ['ecsTask', 'subnet'] as const) {
       const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], subnet: [subnet],

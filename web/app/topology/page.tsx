@@ -133,8 +133,8 @@ const ROW_CAP = 500; // /api/inventory caps limit at 500
 const record = (v: unknown): v is Row => v !== null && typeof v === 'object' && !Array.isArray(v);
 const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
-async function fetchType(t: InvType, account: string, signal: AbortSignal): Promise<{ rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean }> {
-  const critical = t === 'ecs_task' || t === 'subnet';
+async function fetchType(t: InvType, account: string, signal: AbortSignal, loadStartedAt: number): Promise<{ rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean }> {
+  const critical = t === 'target_group' || t === 'ecs_task' || t === 'subnet';
   const rows: Row[] = [], seen = new Set<string>();
   let version: string | undefined, finishedAt: string | null = null;
   try {
@@ -147,15 +147,17 @@ async function fetchType(t: InvType, account: string, signal: AbortSignal): Prom
       if (signal.aborted || !record(d) || d.error || d.status === 'error'
         || !Array.isArray(d.rows) || d.rows.length > ROW_CAP) throw new Error();
       const run = record(d.run) ? d.run : null;
-      const incomplete = critical && ['running', 'partial', 'failed'].includes(String(run?.status));
+      let incomplete = critical && ['running', 'partial', 'failed'].includes(String(run?.status));
       if (critical) {
         // The global type sweep covers every account. Only a stable success permits ownership.
         if (!run || (!incomplete && (run.status !== 'succeeded' || !nonempty(run.finished_at) || !Number.isFinite(Date.parse(run.finished_at))
           || !nonempty(run.last_success_at) || !Number.isFinite(Date.parse(run.last_success_at))
           || !Number.isSafeInteger(run.row_count) || (run.row_count as number) < 0))) throw new Error();
         const current = JSON.stringify([run.status, run.finished_at, run.last_success_at, run.row_count]);
-        if (version !== undefined && version !== current) return { rows, finishedAt, capped: true, incomplete: true };
+        if (version !== undefined && version !== current) return { rows, finishedAt, capped: false, incomplete: true };
         version = current;
+        // Rows precede the ledger read. A sweep ending during this load can hide a torn first page.
+        if (!incomplete && Date.parse(run.finished_at as string) >= loadStartedAt) incomplete = true;
       }
       for (const row of d.rows) {
         if (!record(row) || !record(row.data)) throw new Error();
@@ -234,10 +236,12 @@ export default function TopologyPage() {
   const loadGeneration = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
   const displayedAccount = useRef<string | null>(null);
+  const displayedHasNodes = useRef(false);
   const [retained, setRetained] = useState(false);
   const [eksResolution, setEksResolution] = useState<EksIpResolution | null>(null);
 
   const load = useCallback(async () => {
+    const loadStartedAt = Date.now();
     const generation = ++loadGeneration.current;
     const current = () => loadGeneration.current === generation;
     const account = activeAccount || 'self';
@@ -248,6 +252,7 @@ export default function TopologyPage() {
     setBusy(true);
     if (displayedAccount.current !== account) {
       displayedAccount.current = null;
+      displayedHasNodes.current = false;
       setData(null);
       setSelected(null);
       setNetMaps(emptyNetMaps());
@@ -262,7 +267,7 @@ export default function TopologyPage() {
     try {
       const NET = ['vpc', 'security_group'] as const;
       const [results, eks, net] = await Promise.all([
-        Promise.allSettled(TYPES.map((t) => fetchType(t, account, controller.signal))),
+        Promise.allSettled(TYPES.map((t) => fetchType(t, account, controller.signal, loadStartedAt))),
         account === 'self' ? fetchEksIpMap(controller.signal) : Promise.resolve(null),
         // Subnets are fetched once with flow inventory and reused for detail names.
         Promise.all(NET.map((t) => fetch(`/api/inventory/${t}?limit=500&accounts=${encodeURIComponent(account)}`, { signal: controller.signal }).then((r) => (r.ok ? r.json() : { rows: [] })).catch(() => ({ rows: [] })))),
@@ -272,21 +277,17 @@ export default function TopologyPage() {
         ? [result.reason instanceof Error ? result.reason.message : `${TYPES[i]}: unavailable`] : []);
       setErr(failed.join('; '));
       if (failed.length === TYPES.length) {
-        setRetained(displayedAccount.current === account);
+        setRetained(displayedAccount.current === account && displayedHasNodes.current);
         return;
       }
       const res = results.map(result => result.status === 'fulfilled'
         ? result.value : { rows: [] as Row[], finishedAt: null, capped: false, incomplete: false });
-      const mk = (rows: { resource_id?: unknown; data?: Record<string, unknown> }[]) =>
-        new Map((rows ?? []).map((r) => [String(r.resource_id), invName(r)]));
-      setNetMaps({ vpc: mk(net[0]?.rows), sg: mk(net[1]?.rows),
-        subnet: mk(res[TYPES.indexOf('subnet')].rows.map(row => ({ resource_id: row.resource_id, data: row }))) });
       const readIssue = (type: InvType): 'failed' | 'capped' | undefined => {
         const i = TYPES.indexOf(type);
         return results[i].status === 'rejected' || res[i].incomplete ? 'failed' : res[i].capped ? 'capped' : undefined;
       };
       const out: FlowInput = { ipResolved: eks?.map, ownershipRead: {
-        ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
+        targetGroup: readIssue('target_group'), ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
         eksScopes: eks?.blockedScopes, eksUnknown: eks?.globalUnknown,
         ...(account === 'self' ? { eksRegions: eks?.coveredRegions } : { configurationOnly: true }),
       } };
@@ -298,19 +299,31 @@ export default function TopologyPage() {
         if (f && (!newest || f > newest)) newest = f;
         if (res[i].capped) capped.push(t);
       });
+      const nextHasNodes = buildFlowGraph(out).nodes.length > 0;
+      const incomplete = res.some(result => result.incomplete);
+      if (!nextHasNodes && (failed.length > 0 || incomplete)
+        && displayedAccount.current === account && displayedHasNodes.current) {
+        setRetained(true);
+        return;
+      }
+      const mk = (rows: { resource_id?: unknown; data?: Record<string, unknown> }[]) =>
+        new Map((rows ?? []).map((r) => [String(r.resource_id), invName(r)]));
+      setNetMaps({ vpc: mk(net[0]?.rows), sg: mk(net[1]?.rows),
+        subnet: mk(res[TYPES.indexOf('subnet')].rows.map(row => ({ resource_id: row.resource_id, data: row }))) });
       setData(out);
-      setSyncIncomplete(results.some(r => r.status === 'fulfilled' && r.value.incomplete));
+      setSyncIncomplete(incomplete);
       setEksResolution(eks);
       displayedAccount.current = account;
+      displayedHasNodes.current = nextHasNodes;
       setSelected(null);
       setRetained(false);
       setSyncedAt(newest);
       setCappedTypes(capped);
       setCapturedAt(new Date().toISOString());
-    } catch (e) {
+    } catch {
       if (current()) {
-        setErr(String(e));
-        setRetained(displayedAccount.current === account);
+        setErr('topology: invalid inventory response');
+        setRetained(displayedAccount.current === account && displayedHasNodes.current);
       }
     } finally {
       clearTimeout(deadline);
@@ -480,7 +493,7 @@ export default function TopologyPage() {
       syn.target_type = m.targetType; syn.health = m.health; syn.port = m.port;
       if (m.resolved) syn.resolved_as = m.resolved;
       // EKS/ECS resolution detail (cluster / namespace / service / workload), when present
-      for (const k of ['cluster', 'namespace', 'service', 'workload', 'ecsService', 'task', 'pod', 'ambiguity', 'ownership_evidence', 'candidate', 'capturedAt'] as const) {
+      for (const k of ['cluster', 'namespace', 'service', 'workload', 'ecsService', 'task', 'pod', 'ambiguity', 'ownership_evidence', 'candidate', 'targetCapturedAt'] as const) {
         if (m[k] != null && m[k] !== '') syn[k] = m[k];
       }
       // grouped node (ASG/replicas/tasks): show the member count + health summary + the IP list
@@ -632,7 +645,7 @@ export default function TopologyPage() {
         {(eksResolution?.status === 'unavailable' || eksResolution?.status === 'partial') && <div role="alert" aria-label={tt('EKS 식별 상태')} className="text-[13px] text-warning">
           {tt('EKS 조회 실패 또는 수집 범위 제한으로 IP 소유자를 확인할 수 없습니다.')} ({eksResolution.reasons.join(', ')})
         </div>}
-        {(data?.ownershipRead?.ecsTask || data?.ownershipRead?.subnet) && <div role="status" className="text-[13px] text-warning">
+        {(data?.ownershipRead?.targetGroup || data?.ownershipRead?.ecsTask || data?.ownershipRead?.subnet) && <div role="status" className="text-[13px] text-warning">
           {tt(syncIncomplete ? '인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.' : '인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.')}
         </div>}
         {retained && <div role="status" className="text-[13px] text-warning">{tt('조회 실패로 이전 결과를 표시합니다.')}</div>}

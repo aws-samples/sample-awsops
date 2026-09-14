@@ -62,7 +62,7 @@ describe('EKS inventory producer → configuration', () => {
     }] };
     const target = buildFlowGraph(input).nodes.find(n => n.kind === 'target')!;
     expect(target.meta?.resolved).toBe(alone);
-    expect(target.meta?.capturedAt).toBe('2026-09-11T09:00:00Z');
+    expect(target.meta?.targetCapturedAt).toBe('2026-09-11T09:00:00Z');
     const reused = buildFlowGraph({ ...input,
       ecsTask: [{ resource_id: 'task', region, last_status: 'RUNNING', attachments: [{ Details: [
         { Name: 'subnetId', Value: 'subnet' }, { Name: 'privateIPv4Address', Value: ip },

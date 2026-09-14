@@ -75,7 +75,7 @@ describe('rebuildGraph', () => {
       { resource_type: 'target_group', resource_id: 'tg-b', region: 'us-east-1', captured_at: new Date('2026-09-11T10:00:00Z'), data: {
         target_type: 'ip', vpc_id: 'vpc-b', target_health_descriptions: [{ Target: { Id: '10.0.1.10' } }],
       } },
-      { resource_type: 'ecs_task', resource_id: 'task-b', region: 'us-east-1', data: {
+      { resource_type: 'ecs_task', resource_id: 'task-b', region: 'us-east-1', captured_at: '2020-01-01T00:00:00Z', data: {
         cluster_arn: 'cluster/b', task_group: 'service:orders', last_status: 'RUNNING', attachments: [{ Details: [
           { Name: 'subnetId', Value: 'subnet-b' }, { Name: 'privateIPv4Address', Value: '10.0.1.10' },
         ] }],
@@ -97,8 +97,9 @@ describe('rebuildGraph', () => {
     expect(write[1]?.[2]).toBe('orders');
     expect(JSON.parse(String(write[1]?.[3]))).toMatchObject({
       resolved: 'ecs', region: 'us-east-1', vpcId: 'vpc-b', subnetId: 'subnet-b', ownership_evidence: 'cached_configuration',
-      capturedAt: '2026-09-11T10:00:00.000Z',
+      targetCapturedAt: '2026-09-11T10:00:00.000Z',
     });
+    expect(JSON.parse(String(write[1]?.[3]))).not.toHaveProperty('capturedAt');
   });
 
   const inv = [
