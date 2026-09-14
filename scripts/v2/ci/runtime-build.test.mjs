@@ -16,7 +16,8 @@ const env = {
   AWS_ACCOUNT_ID_DEV: account, AWS_REGION: 'ap-northeast-2', RUNTIME_ROLE_ARN: role,
 };
 const caller = { Account: account, Arn: `arn:aws:sts::${account}:assumed-role/BuildRole/GitHubActions` };
-const configDigest = `sha256:${'b'.repeat(64)}`;
+const configText = '{"architecture":"arm64","os":"linux"}';
+const configDigest = 'sha256:d6f56bc20064075ce319ac2e6fcef5de9ea21773b0a8a4398c4405222971f9c0';
 const manifest = JSON.stringify({
   schemaVersion: 2, mediaType: 'application/vnd.oci.image.manifest.v1+json',
   config: { digest: configDigest }, layers: [],
@@ -98,6 +99,14 @@ function fixture(overrides = {}) {
   const p = imagePlan(env, 'awsops-dev', 'worker');
   const run = (command, args, options = {}) => {
     calls.push({ command, args, options });
+    if (command === 'tar') {
+      if (args.at(-1) === 'manifest.json') return JSON.stringify([{
+        Config: overrides.configPath || `blobs/sha256/${configDigest.slice(7)}`,
+        RepoTags: [overrides.archiveTag || `${p.uri}:${p.tag}`], Layers: [],
+      }]);
+      return overrides.configText || configText;
+    }
+    if (args[0] === 'image' && args[1] === 'save') writeFileSync(args[args.indexOf('--output') + 1], 'fixture');
     if (args[0] === 'sts') return JSON.stringify(overrides.caller || caller);
     if (args[1] === 'batch-get-image' && !args.includes('--accepted-media-types')) {
       return JSON.stringify({ images: [], failures: [{
@@ -106,10 +115,13 @@ function fixture(overrides = {}) {
     }
     if (args[1] === 'get-login-password') return 'SECRET_PASSWORD';
     if (args[0] === 'image' && args[1] === 'inspect') {
-      return JSON.stringify([{ Id: configDigest, Architecture: overrides.arch || 'arm64', Os: 'linux' }]);
+      return JSON.stringify([{ Id: overrides.inspectId || configDigest, Architecture: overrides.arch || 'arm64', Os: 'linux' }]);
     }
     if (args[1] === 'batch-get-image') return JSON.stringify(remote(p));
     if (args[0] === 'buildx') {
+      const metadata = args.indexOf('--metadata-file');
+      // Reproduced Docker29 containerd output has no config digest key.
+      if (metadata !== -1) writeFileSync(args[metadata + 1], JSON.stringify({ 'containerimage.digest': digest }));
       if (overrides.requireUserPlugin) {
         assert.ok(existsSync(join(options.env.DOCKER_CONFIG, 'cli-plugins/docker-buildx')),
           'buildx is installed only in the original Docker configuration');
@@ -141,7 +153,8 @@ test('worker build stages required modules and verifies image before returning d
     assert.ok(build.options.timeout > 20 * 60_000);
     assert.ok(build.args.at(-1).startsWith(f.dir));
     assert.ok(!f.calls.some(c => c.args.some(a => /describe-repositories|create-repository|put-role|:latest$/.test(a))));
-    assert.deepEqual(f.calls.find(c => c.args[0] === 'push').args, ['push', `${f.p.uri}:${f.p.tag}`]);
+    assert.deepEqual(f.calls.find(c => c.args[0] === 'push').args,
+      ['push', '--platform', 'linux/arm64', `${f.p.uri}:${f.p.tag}`]);
     assert.equal(f.calls.find(c => c.args[0] === 'login').options.input, 'SECRET_PASSWORD');
     assert.ok(!existsSync(build.args.at(-1)));
     const auth = f.calls.filter(c => c.command === 'docker' && ['login', 'push'].includes(c.args[0]));
@@ -156,6 +169,29 @@ test('worker build stages required modules and verifies image before returning d
   } finally { f.cleanup(); }
 });
 
+test('containerd image IDs do not substitute for the build configuration digest', () => {
+  const f = fixture({ inspectId: digest });
+  try {
+    const result = buildImage({ env: { ...env, RUNNER_TEMP: f.dir }, project: 'awsops-dev',
+      component: 'worker', root: f.dir, run: f.run });
+    assert.equal(result.digest, digest);
+    assert.ok(f.calls.some(c => c.args[0] === 'image' && c.args[1] === 'save'));
+    assert.ok(f.calls.filter(c => c.command === 'tar').every(c => c.options.env.AWS_SECRET_ACCESS_KEY === undefined));
+  } finally { f.cleanup(); }
+});
+
+test('invalid exported image configuration prevents a push', () => {
+  for (const overrides of [{ configText: '{}' }, { configPath: '../../private.json' },
+    { archiveTag: 'unrelated/image:latest' }, { configText: '{"architecture":"arm64","os":"linux","tampered":true}' }]) {
+    const f = fixture(overrides);
+    try {
+      assert.throws(() => buildImage({ env: { ...env, RUNNER_TEMP: f.dir }, project: 'awsops-dev',
+        component: 'worker', root: f.dir, run: f.run }), /image_archive_invalid|built_image_not_arm64|image_config_digest_mismatch/);
+      assert.ok(!f.calls.some(c => c.args[0] === 'push'));
+      if (overrides.configPath) assert.equal(f.calls.filter(c => c.command === 'tar').length, 1);
+    } finally { f.cleanup(); }
+  }
+});
 test('wrong STS identity or architecture prevents pushes and public errors omit tool output', () => {
   for (const overrides of [
     { caller: { ...caller, Account: '999999999999' } }, { arch: 'amd64' }, { failBuild: true },

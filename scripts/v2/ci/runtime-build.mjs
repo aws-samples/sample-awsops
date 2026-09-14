@@ -2,7 +2,7 @@
 // Dev-only image transport. Infrastructure and repository creation belong to Terraform.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, cpSync, lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -121,6 +121,31 @@ export function command(commandName, args, { spawn = spawnSync, ...options } = {
   return result.stdout;
 }
 
+export function savedImageConfigDigest(archive, reference, { run = command, env = process.env } = {}) {
+  requireValue(lstatSync(archive).isFile(), 'image_archive_invalid');
+  const read = (path, limit) => {
+    const text = run('tar', ['-xOf', archive, path], {
+      env: { PATH: env.PATH || process.env.PATH }, timeout: TIMEOUTS.read, maxBuffer: limit,
+    });
+    requireValue(typeof text === 'string' && Buffer.byteLength(text) <= limit, 'image_archive_invalid');
+    let value;
+    try { value = JSON.parse(text); } catch { throw new RuntimeBuildError('image_archive_invalid'); }
+    return { text, value };
+  };
+  const { value: manifests } = read('manifest.json', 65_536);
+  requireValue(Array.isArray(manifests) && manifests.length === 1 &&
+    Array.isArray(manifests[0].RepoTags) && manifests[0].RepoTags.length === 1 &&
+    manifests[0].RepoTags[0] === reference, 'image_archive_invalid');
+  const path = manifests[0].Config;
+  requireValue(typeof path === 'string' &&
+    /^(?:blobs\/sha256\/[0-9a-f]{64}|[0-9a-f]{64}\.json)$/.test(path), 'image_archive_invalid');
+  const { text, value: config } = read(path, 1024 * 1024);
+  requireValue(config?.architecture === 'arm64' && config.os === 'linux', 'built_image_not_arm64');
+  const hash = createHash('sha256').update(text).digest('hex');
+  requireValue(path === `blobs/sha256/${hash}` || path === `${hash}.json`, 'image_config_digest_mismatch');
+  return `sha256:${hash}`;
+}
+
 export function buildImage({ env = process.env, project, component, root = ROOT, run = command,
   emit = value => console.log(JSON.stringify(value)), now = () => performance.now() }) {
   const plan = imagePlan(env, project, component); // No tools before these guards.
@@ -172,14 +197,20 @@ export function buildImage({ env = process.env, project, component, root = ROOT,
     const images = json(docker(['image', 'inspect', reference]));
     requireValue(Array.isArray(images) && images.length === 1 && images[0].Architecture === 'arm64' &&
       images[0].Os === 'linux' && DIGEST.test(images[0].Id || ''), 'built_image_not_arm64');
+    // Containerd omits the config digest from BuildKit metadata and exposes a
+    // manifest ID. Hash the actual exported config, with its tag and architecture.
+    const archive = join(scratch, 'image.tar');
+    docker(['image', 'save', '--output', archive, reference], { timeout: TIMEOUTS.transfer });
+    const configDigest = savedImageConfigDigest(archive, reference, { run: bounded, env });
     enter('push');
-    docker(['push', reference], { env: dockerEnv, timeout: TIMEOUTS.transfer });
+    // Push one platform and bind ECR to the exact exported ARM64 configuration.
+    docker(['push', '--platform', 'linux/arm64', reference], { env: dockerEnv, timeout: TIMEOUTS.transfer });
     enter('verify');
     const response = json(aws(['ecr', 'batch-get-image', '--registry-id', plan.account,
       '--repository-name', plan.repository, '--image-ids', `imageTag=${plan.tag}`,
       '--accepted-media-types', 'application/vnd.docker.distribution.manifest.v2+json',
       'application/vnd.oci.image.manifest.v1+json']));
-    const digest = verifyManifest(plan, response, images[0].Id);
+    const digest = verifyManifest(plan, response, configDigest);
     return { project: plan.project, digest, architecture: 'arm64' };
   } catch (error) {
     const failure = error instanceof RuntimeBuildError ? error : new RuntimeBuildError('image_build_failed');

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 805d4d830f8d · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: cbefc69f6d87 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -74,6 +74,11 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 Runtime image/provisioning: verify the independent account, configured role, actual STS caller
 and ARM64 digest. Build-role scopes cover `-steampipe`/`-worker`; deployer scopes cover `-agentcore`.
 Web-only ECR grants are insufficient; IAM is separate. No repository creation or latest-tag writes.
+Verify the exported image archive tag/Linux/ARM64 config and bind its byte hash to ECR. Tar reads
+validated hash paths with bounded output and no AWS credentials; BuildKit metadata is not required.
+The host provisioner uses a private Python 3.12 environment with hash-pinned SDK wheels,
+credential-free install/preflight, source-derived operation checks, exact SDK versions and imports.
+Base-Python cleanup warns on package-removal failures without overwriting deployment results.
 Dev requires applied migration infrastructure and non-null `migration_job`, private migration,
 then bounded digest-bound phases with fresh same-role sessions. Guard selection uses TARGET/dev ref.
 Provision-only never rebuilds. Fixed diagnostics preserve failure codes without raw secrets/ARNs.
