@@ -15,12 +15,15 @@ export interface NetworkFilters {
   category: NfmCategory | 'ALL';
   rangeSec: number;
 }
+export type NetworkReason = 'query_failed' | 'malformed_payload' | 'malformed_rows' | 'invalid_request';
 export interface NetworkBatch {
+  status: 'complete' | 'partial';
+  windowQuality: Partial<Record<NfmCategory, 'verified' | 'unknown'>>;
   filters: NetworkFilters;
   observations: NetworkObservation[];
   failedCategories: NfmCategory[];
   cappedCategories: NfmCategory[];
-  errors: Partial<Record<NfmCategory, string>>;
+  errors: Partial<Record<NfmCategory, NetworkReason>>;
 }
 interface LoadOptions {
   fetch?: typeof fetch;
@@ -57,7 +60,8 @@ export async function loadNetworkObservations(
   const categories = applied.category === 'ALL' ? [...TOPOLOGY_CATEGORIES] : [applied.category];
   const request = options.fetch ?? fetch;
   const observations = new Map<NfmCategory, NetworkObservation>();
-  const errors: Partial<Record<NfmCategory, string>> = {};
+  const errors: Partial<Record<NfmCategory, NetworkReason>> = {};
+  const windowQuality: NetworkBatch['windowQuality'] = {};
   let next = 0;
   let completed = 0;
   const checkAbort = () => {
@@ -70,22 +74,23 @@ export async function loadNetworkObservations(
       const qs = new URLSearchParams({
         monitor: applied.monitor, metric: applied.metric, category, range: String(applied.rangeSec),
       });
+      let failure: NetworkReason = 'query_failed';
       try {
         const response = await request(`/api/nfm/query?${qs}`, { signal: options.signal });
+        if (!response.ok) throw new Error('query_failed');
+        failure = 'malformed_payload';
         const body: unknown = await response.json();
         checkAbort();
-        if (!response.ok) {
-          const message = record(body) ? body.message ?? body.error : undefined;
-          throw new Error(typeof message === 'string' ? message : `HTTP ${response.status}`);
-        }
         if (!record(body) || body.monitor !== applied.monitor || body.metric !== applied.metric
           || body.category !== category || body.range !== applied.rangeSec) {
-          throw new Error('NFM response scope mismatch');
+          failure = 'invalid_request'; throw new Error(failure);
         }
         if (!Array.isArray(body.rows) || !body.rows.every((row) => validRow(row, category))
           || typeof body.unit !== 'string' || !body.unit) {
-          throw new Error('Invalid NFM observation response');
+          failure = 'malformed_rows'; throw new Error(failure);
         }
+        const start = timestamp(body.startTime), end = timestamp(body.endTime);
+        windowQuality[category] = start && end && Date.parse(start) < Date.parse(end) ? 'verified' : 'unknown';
         observations.set(category, {
           monitor: applied.monitor, cluster: monitor.cluster,
           category, metric: applied.metric, rangeSec: applied.rangeSec,
@@ -96,7 +101,7 @@ export async function loadNetworkObservations(
         });
       } catch (error) {
         checkAbort();
-        errors[category] = error instanceof Error ? error.message : 'NFM query failed';
+        errors[category] = failure;
       }
       checkAbort();
       completed += 1;
@@ -106,6 +111,9 @@ export async function loadNetworkObservations(
   await Promise.all(Array.from({ length: Math.min(3, categories.length) }, () => worker()));
   checkAbort();
   return {
+    status: Object.keys(errors).length || [...observations.values()].some(o => o.capped)
+      || Object.values(windowQuality).includes('unknown') ? 'partial' : 'complete',
+    windowQuality,
     filters: applied,
     observations: categories.flatMap((category) => {
       const observation = observations.get(category);

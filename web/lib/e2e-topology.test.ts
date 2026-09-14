@@ -80,16 +80,22 @@ describe('buildE2eGraph — evidence and provenance', () => {
     }, { name: 'nfm-eks-app', cluster: 'app', status: 'ACTIVE' }, {
       fetch: (async () => Response.json(failed ? { message: 'Unavailable' } : {
         monitor: 'nfm-eks-app', metric: 'DATA_TRANSFERRED', category: 'INTRA_AZ', range: 900,
-        rows: [], unit: 'Bytes', capped: false,
+        rows: [], unit: 'Bytes', capped: false, startTime: '2026-09-11T11:45:00Z', endTime: '2026-09-11T12:00:00Z',
       }, { status: failed ? 503 : 200 })) as typeof fetch,
     });
     const graph = buildE2eGraph(input({ network: batch.observations, networkCoverage: batch }));
     expect(graph.summary.networkFlows).toBe(0);
     expect(graph.coverage.network).toMatchObject({
       status: failed ? 'partial' : 'complete', failedCategories: failed ? ['INTRA_AZ'] : [],
-      errors: failed ? { INTRA_AZ: 'Unavailable' } : {},
+      errors: failed ? { INTRA_AZ: 'query_failed' } : {},
     });
     expect(buildE2eGraph(input()).coverage.network.status).toBe('unknown');
+  });
+
+  it('cannot label a supplied observation with an unknown window as a complete batch', () => {
+    const graph = buildE2eGraph(input({ network: [observation([], { startTime: undefined })],
+      networkCoverage: { status: 'complete', failedCategories: [], cappedCategories: [], errors: {} } }));
+    expect(graph.coverage.network.status).toBe('partial');
   });
 
   it('retains service quality and capped observations without claiming unknown failed categories were successful', () => {
@@ -366,6 +372,16 @@ describe('buildE2eGraph — scoped target identity', () => {
 });
 
 describe('buildE2eGraph — workload identity', () => {
+  it.each(['local', 'remote'] as const)('rejects explicit Kubernetes metadata against ECS without a snapshot: %s', side => {
+    for (const podMetadata of [{ podName: 'web-1' }, { podNamespace: 'shop' }, { podName: 'web-1', podNamespace: 'shop' }]) {
+      const graph = buildE2eGraph(input({
+        configured: configured([target({ resolved: 'ecs', cluster: 'ecs-app' })]), services: null,
+        network: [observation([flow({ local: {}, remote: {}, [side]: endpoint(podMetadata) })])],
+      }));
+      expect(identityEdges(graph)).toEqual([]);
+      expect(graph.summary.ambiguousEndpoints).toBe(1);
+    }
+  });
   it.each(['local', 'remote'] as const)('marks contradictory target pod/namespace evidence ambiguous on the %s side', side => {
     for (const conflict of [{ pod: 'previous-pod' }, { namespace: 'other-namespace' }]) {
       const graph = buildE2eGraph(input({
@@ -503,8 +519,8 @@ describe('buildE2eGraph — workload identity', () => {
       configured: configured([target({ resolved, cluster: 'app' })]), services: services(),
       network: [observation([flow({ local: {}, remote: endpoint({ podName: 'web-1', podNamespace: 'shop' }) })])],
     }));
-    expect(identityEdges(graph)).toHaveLength(1);
-    expect(identityEdges(graph)[0].meta?.match).toBe('ip-region-vpc');
+    expect(identityEdges(graph)).toHaveLength(resolved === 'ecs' ? 0 : 1);
+    if (!resolved) expect(identityEdges(graph)[0].meta?.match).toBe('ip-region-vpc');
   });
 
   it('does not borrow remote cluster proof from an IP match in a different VPC', () => {
@@ -548,6 +564,14 @@ describe('buildE2eGraph — workload identity', () => {
 });
 
 describe('selectE2eGraph — filtering before bounds', () => {
+  it.each([0, 2, 3])('prunes constructs using the final visible edge budget %i', maxEdges => {
+    const graph = buildE2eGraph(input({ network: [observation([flow({ traversedIds: ['NAT:nat-1'] })])] }));
+    const view = selectE2eGraph(graph, { maxEdges });
+    expect(view.nodes.filter(node => node.kind === 'construct')).toHaveLength(maxEdges === 3 ? 1 : 0);
+    expect(view.nodes.filter(node => node.kind === 'endpoint')).toHaveLength(maxEdges >= 2 ? 2 : 0);
+    expect(view.edges).toHaveLength(maxEdges);
+    expectNoDanglingEdges(view);
+  });
   it.each(['focus', 'query'])('includes each connection endpoint when a shared construct is the %s target', mode => {
     const graph = buildE2eGraph(input({ network: [observation([
       flow({ traversedIds: ['NAT:nat-shared'] }),

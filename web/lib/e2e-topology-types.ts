@@ -1,7 +1,7 @@
 import type { FlowGraph } from './flow-topology';
 import type { NfmCategory, NfmFlowRow, NfmMetric } from './nfm';
 import type { GraphCollection } from '../components/topology/GraphCollectionStatus';
-import type { NetworkBatch } from './topology-observations';
+import type { NetworkBatch, NetworkReason } from './topology-observations';
 
 export type E2eEvidence = 'configuration' | 'service' | 'network' | 'identity' | 'context';
 export type E2eLayer = 'configuration' | 'service' | 'network';
@@ -48,7 +48,7 @@ export interface E2eInput {
   services: ServiceSnapshot | null;
   network: NetworkObservation[];
   /** Pass the batch even when every category failed and network is empty. */
-  networkCoverage?: Pick<NetworkBatch, 'failedCategories' | 'cappedCategories' | 'errors'>;
+  networkCoverage?: Pick<NetworkBatch, 'failedCategories' | 'cappedCategories' | 'errors'> & Partial<Pick<NetworkBatch, 'status' | 'windowQuality'>>;
 }
 export interface E2eGraph {
   nodes: E2eNode[];
@@ -61,7 +61,8 @@ export interface E2eGraph {
       successfulCategories: NfmCategory[];
       failedCategories: NfmCategory[] | null;
       cappedCategories: NfmCategory[];
-      errors: Partial<Record<NfmCategory, string>> | null;
+      errors: Partial<Record<NfmCategory, NetworkReason>> | null;
+      windowQuality: NetworkBatch['windowQuality'];
     };
   };
   summary: {

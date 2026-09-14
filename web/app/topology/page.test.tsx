@@ -18,10 +18,12 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; failures?: Set<string> } = {}) {
+function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; failures?: Set<string>; eks?: object; eksFailed?: boolean } = {}) {
   const requests: URL[] = [];
   vi.stubGlobal('fetch', vi.fn(async (input: string) => {
     const url = new URL(input, 'http://localhost'); requests.push(url);
+    if (url.pathname === '/api/eks' && options.eksFailed) return Response.json({ message: 'secret=not-a-real-credential-1234567890' }, { status: 503 });
+    if (url.pathname === '/api/eks' && options.eks) return Response.json(options.eks);
     if (url.pathname === '/api/eks') return Response.json({ clusters: [
       { name: 'good', region, vpcId, access: 'connected' },
       { name: 'wrong', region, vpcId: 'vpc-other', access: 'connected' },
@@ -51,6 +53,22 @@ function search(value: string) {
 }
 
 describe('live topology inventory adapter', () => {
+  it.each([
+    { eksFailed: true },
+    { eks: { clusters: [{ name: 'blocked', region, vpcId, access: 'unknown' }] } },
+    { eks: { clusters: Array.from({ length: 25 }, (_, i) => ({ name: `cluster-${i}`, region, vpcId, access: 'connected' })) } },
+  ])('discloses unavailable EKS resolution without hiding other inventory: %j', async options => {
+    serve(options); render(<TopologyPage />);
+    await screen.findByRole('alert', { name: 'EKS 식별 상태' });
+    search('ecs-api'); expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
+    expect(document.body.textContent).not.toContain('not-a-real-credential');
+  });
+  it('does not label successful empty EKS enumeration as a failure', async () => {
+    serve({ eks: { clusters: [] } }); render(<TopologyPage />);
+    await screen.findByRole('option', { name: 'ECS · ecs-app' });
+    expect(screen.queryByRole('alert', { name: 'EKS 식별 상태' })).toBeNull();
+  });
+
   it('resolves ECS through real subnet inventory and EKS through the scoped producer', async () => {
     const requests = serve(); render(<TopologyPage />);
     await screen.findByRole('option', { name: 'ECS · ecs-app' });

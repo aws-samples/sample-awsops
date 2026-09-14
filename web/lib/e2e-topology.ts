@@ -103,11 +103,13 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
           ...(source.reasons ? { reasons: [...source.reasons] } : {}) })) } : {}),
       } : { status: 'unknown', stale: true },
       network: {
-        status: !host ? 'unsupported' : cappedCategories.length || coverage?.failedCategories.length
+        status: !host ? 'unsupported' : coverage?.status === 'partial' || observations.some(o => !o.startTime || !o.endTime
+          || !(Date.parse(text(o.startTime)) < Date.parse(text(o.endTime)) )) || cappedCategories.length || coverage?.failedCategories.length
           || Object.keys(coverage?.errors ?? {}).length ? 'partial' : coverage ? 'complete' : 'unknown',
         successfulCategories: [...new Set(categories(observations))],
         failedCategories: coverage ? [...coverage.failedCategories] : null,
         cappedCategories, errors: coverage ? { ...coverage.errors } : null,
+        windowQuality: { ...coverage?.windowQuality },
       },
     },
     summary: {
@@ -202,8 +204,9 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       ? text(target.node.meta.pod) : '';
     const conflictingOwner = (targetNamespace && namespace && targetNamespace !== namespace)
       || (targetPod && pod && targetPod !== pod);
-    const conflictingWorkloadType = target?.node.meta.resolved === 'ecs' && matches.length > 0;
-    if (candidates.size > 1 || matches.length > 1 || conflictingClusters || conflictingOwner || conflictingWorkloadType) {
+    const conflictingWorkloadType = target?.node.meta.resolved === 'ecs' && (!!pod || !!namespace || matches.length > 0);
+    if (candidates.size > 1 || matches.length > 1 || conflictingClusters || conflictingOwner || conflictingWorkloadType
+      || target?.node.meta.resolved === 'ambiguous') {
       endpoint.meta.correlation = 'ambiguous';
       summary.ambiguousEndpoints++;
       return;
@@ -463,19 +466,19 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
     unique.forEach(node => visibleIds.add(node));
     addedEdges.forEach(edge => requiredEdges.add(edge));
   }
-  // Context whose connection was omitted must not appear as a disconnected observed construct.
-  for (const id of visibleIds) {
-    if (byId.get(id)?.kind === 'construct' && !selectedEdges.some(edge => edge.evidence === 'context'
-      && (edge.source === id && visibleIds.has(edge.target) || edge.target === id && visibleIds.has(edge.source)))) {
-      visibleIds.delete(id);
-    }
-  }
-  const nodes = [...visibleIds].map(id => byId.get(id)!);
   const edgePriority: Record<E2eEvidence, number> = { network: 0, identity: 1, service: 2, context: 3, configuration: 4 };
   const visibleEdges = selectedEdges
     .filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target))
     .sort((a, b) => edgePriority[a.evidence] - edgePriority[b.evidence])
     .slice(0, maxEdges);
+  // Only context edges that survived the final edge budget can support a construct.
+  for (const id of visibleIds) {
+    if (byId.get(id)?.kind === 'construct' && !visibleEdges.some(edge => edge.evidence === 'context'
+      && (edge.source === id && visibleIds.has(edge.target) || edge.target === id && visibleIds.has(edge.source)))) {
+      visibleIds.delete(id);
+    }
+  }
+  const nodes = [...visibleIds].map(id => byId.get(id)!);
   return {
     nodes, edges: visibleEdges, matchedNodes, coverage: graph.coverage,
     omittedNodes: selected.size - nodes.length,

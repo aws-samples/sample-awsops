@@ -510,7 +510,12 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
           && !(candidate.meta?.region && t.region && candidate.meta.region !== t.region)
           && !(candidate.meta?.vpcId && t.vpc_id && candidate.meta.vpcId !== t.vpc_id);
         const task = ecsByIp.get(scopedTargetIp(str(t.region), str(t.vpc_id), targetId));
-        const r = inScope(pod) ? pod : inScope(task) ? task : undefined;
+        const contradiction = inScope(pod) && pod?.resolved === 'eks' && inScope(task);
+        const r = contradiction ? undefined : inScope(pod) ? pod : inScope(task) ? task : undefined;
+        if (contradiction) {
+          resolved = 'ambiguous'; key = 'ambiguous:eks-ecs';
+          meta = { ambiguity: 'eks_ecs_conflict' };
+        }
         // group key includes cluster so same-named workloads in different clusters don't merge
         if (r) { resolved = r.resolved; key = `${r.resolved}:${str(r.meta?.cluster ?? '')}/${r.label}`; mlabel = r.label; groupLabel = r.label; meta = r.meta ?? {}; }
       }

@@ -1,5 +1,13 @@
 # E2E observability implementation plan / E2E 관측성 구현 계획
 
+**Pending operator integration:** scoped configuration resolution and service/network correlation
+are implemented as a data foundation. The combined E2E operator view and API wiring remain
+pending; this is not completion of the acceptance criteria below. Network batches use closed
+reason codes, per-category window quality and failure/cap metadata. Missing/invalid windows
+are partial evidence, never a complete query. The live configuration view reports unavailable
+EKS ownership, including the existing API's possible 25-cluster listing limit.
+
+
 **Goal / 목표:** Connect workload evidence, execution state, changes and cost without treating
 missing observations as healthy. 관측 부재를 정상으로 판정하지 않고 워크로드의 실행 상태,
 근거, 변경과 비용을 연결한다.

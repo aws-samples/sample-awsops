@@ -45,7 +45,8 @@ function serve(pods: unknown[], endpoints: unknown[] = [endpoint], options: {
 }
 
 async function graphs() {
-  const ipResolved = await fetchEksIpMap();
+  const resolution = await fetchEksIpMap();
+  const ipResolved = resolution.map;
   const configured = buildFlowGraph({
     ipResolved, tg: [{
       resource_id: 'tg-shared', region, vpc_id: vpcId, target_type: 'ip',
@@ -62,19 +63,33 @@ async function graphs() {
       })),
     },
   });
-  return { ipResolved, target: configured.nodes.find(n => n.kind === 'target')!, integrated };
+  return { resolution, ipResolved, target: configured.nodes.find(n => n.kind === 'target')!, integrated };
 }
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('EKS inventory producer → configuration → service/network graph', () => {
+  it('distinguishes valid empty enumeration from unreadable clusters', async () => {
+    serve([], [], { clusters: [] });
+    expect(await fetchEksIpMap()).toEqual({ map: {}, status: 'empty', reasons: [] });
+    serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'unreadable', access: 'unknown' }] });
+    expect(await fetchEksIpMap()).toEqual({ map: {}, status: 'unavailable', reasons: ['cluster_unreadable'] });
+  });
+  it.each([24, 25])('reports only a possible listing cap at %i clusters', async count => {
+    serve([pod], [endpoint], { clusters: Array.from({ length: count }, (_, i) => ({ ...cluster, name: `cluster-${i}`, vpcId: `vpc-${i}` })) });
+    const result = await fetchEksIpMap();
+    expect(result.status).toBe(count === 25 ? 'unavailable' : 'ok');
+    expect(result.reasons).toEqual(count === 25 ? ['cluster_limit_possible'] : []);
+    expect(Object.keys(result.map)).toHaveLength(count === 25 ? 0 : count);
+  });
+
   it.each(['malformed-cluster', {}])('does not silently skip an unreadable cluster descriptor: %j', invalid => {
     vi.stubGlobal('fetch', vi.fn(async (input: string) => {
       const url = new URL(input, 'http://localhost');
       return url.pathname === '/api/eks' ? json({ clusters: [cluster, invalid] })
         : json({ rows: url.searchParams.get('kind') === 'pods' ? [pod] : [endpoint] });
     }));
-    return expect(fetchEksIpMap()).resolves.toEqual({});
+    return expect(fetchEksIpMap()).resolves.toMatchObject({ map: {}, status: 'unavailable' });
   });
 
   it.each([
@@ -128,7 +143,7 @@ describe('EKS inventory producer → configuration → service/network graph', (
 
   it('cannot rule out a connected cluster with unknown network scope', async () => {
     serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'unknown-scope', vpcId: '' }] });
-    expect(await fetchEksIpMap()).toEqual({});
+    expect(await fetchEksIpMap()).toMatchObject({ map: {}, status: 'unavailable' });
   });
 
   it.each([

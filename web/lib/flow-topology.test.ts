@@ -19,6 +19,27 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
   };
   const target = (input: FlowInput) => buildFlowGraph(input).nodes.find(n => n.kind === 'target')!;
 
+  it.each(['vpc-b', 'vpc-other'])('does not choose EKS over a contradictory scoped ECS claim: %s', podVpc => {
+    const configured = buildFlowGraph({
+      tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task], subnet: [subnet],
+      ipResolved: { [`${region}|${podVpc}|${ip}`]: {
+        label: 'shop/pod', resolved: 'eks', meta: { cluster: 'eks-app', region, vpcId: podVpc },
+      } },
+    });
+    const node = configured.nodes.find(n => n.kind === 'target')!;
+    expect(node.meta?.resolved).toBe(podVpc === 'vpc-b' ? 'ambiguous' : 'ecs');
+    if (podVpc === 'vpc-b') {
+      expect(node.label).toBe(ip);
+      const graph = buildE2eGraph({ account: 'self', configured, services: null, network: [{
+        monitor: 'monitor', cluster: null, metric: 'DATA_TRANSFERRED', category: 'INTER_VPC', rangeSec: 900,
+        rows: [{ local: { ip, region, vpcId: 'vpc-b' }, remote: {}, value: 1, unit: 'Bytes', category: 'INTER_VPC', traversed: [], traversedIds: [] }],
+        unit: 'Bytes', capped: false,
+      }] });
+      expect(graph.edges.filter(edge => edge.evidence === 'identity')).toEqual([]);
+      expect(graph.summary.ambiguousEndpoints).toBe(1);
+    }
+  });
+
   it('does not attribute a VPC A network endpoint to the only same-IP task in VPC B', () => {
     const configured = buildFlowGraph({ tg: [tg], ecsTask: [task], subnet: [subnet] });
     expect(configured.nodes.find(n => n.kind === 'target')).toMatchObject({ label: ip });

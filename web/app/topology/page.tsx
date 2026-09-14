@@ -11,7 +11,7 @@ import DetailPanel from '@/components/ui/DetailPanel';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { buildFlowGraph, filterFromEntry, type FlowInput, type FlowKind, type FlowNode } from '@/lib/flow-topology';
 import { layoutFlow } from '@/lib/flow-layout';
-import { fetchEksIpMap } from '@/lib/topology-config';
+import { fetchEksIpMap, type EksIpResolution } from '@/lib/topology-config';
 import { useTheme } from '@/lib/use-theme';
 import { useActiveAccount } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
@@ -199,6 +199,7 @@ export default function TopologyPage() {
   const loadGeneration = useRef(0);
   const displayedAccount = useRef<string | null>(null);
   const [retained, setRetained] = useState(false);
+  const [eksResolution, setEksResolution] = useState<EksIpResolution | null>(null);
 
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
@@ -215,12 +216,13 @@ export default function TopologyPage() {
       setCappedTypes([]);
       setRetained(false);
       setErr('');
+      setEksResolution(null);
     }
     try {
       const NET = ['vpc', 'security_group'] as const;
-      const [results, ipResolved, net] = await Promise.all([
+      const [results, eks, net] = await Promise.all([
         Promise.allSettled(TYPES.map((t) => fetchType(t, account))),
-        account === 'self' ? fetchEksIpMap() : Promise.resolve({}),
+        account === 'self' ? fetchEksIpMap() : Promise.resolve(null),
         // Subnets are fetched once with flow inventory and reused for detail names.
         Promise.all(NET.map((t) => fetch(`/api/inventory/${t}?limit=500&accounts=${encodeURIComponent(account)}`).then((r) => (r.ok ? r.json() : { rows: [] })).catch(() => ({ rows: [] })))),
       ]);
@@ -228,6 +230,7 @@ export default function TopologyPage() {
       const failed = results.flatMap((result, i) => result.status === 'rejected'
         ? [`${TYPES[i]}: ${result.reason instanceof Error ? result.reason.message : 'unavailable'}`] : []);
       setErr(failed.join('; '));
+      setEksResolution(eks);
       if (failed.length === TYPES.length) {
         setRetained(displayedAccount.current === account);
         return;
@@ -238,7 +241,7 @@ export default function TopologyPage() {
         new Map((rows ?? []).map((r) => [String(r.resource_id), invName(r)]));
       setNetMaps({ vpc: mk(net[0]?.rows), sg: mk(net[1]?.rows),
         subnet: mk(res[TYPES.indexOf('subnet')].rows.map(row => ({ resource_id: row.resource_id, data: row }))) });
-      const out: FlowInput = { ipResolved };
+      const out: FlowInput = { ipResolved: eks?.map };
       let newest: string | null = null;
       const capped: string[] = [];
       TYPES.forEach((t, i) => {
@@ -572,6 +575,9 @@ export default function TopologyPage() {
       />
       <div className="flex-1 min-h-0 flex flex-col gap-4 px-8 py-6">
         {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
+        {eksResolution?.status === 'unavailable' && <div role="alert" aria-label={tt('EKS 식별 상태')} className="text-[13px] text-warning">
+          {tt('EKS 조회 실패 또는 수집 범위 제한으로 IP 소유자를 확인할 수 없습니다.')} ({eksResolution.reasons.join(', ')})
+        </div>}
         {retained && <div role="status" className="text-[13px] text-warning">{tt('조회 실패로 이전 결과를 표시합니다.')}</div>}
         {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
         {data && (

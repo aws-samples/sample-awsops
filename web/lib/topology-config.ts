@@ -3,6 +3,13 @@ import type { EndpointRow } from './eks-incluster';
 import type { PodRow } from './eks-resources';
 
 type Resolution = NonNullable<FlowInput['ipResolved']>[string];
+export interface EksIpResolution {
+  map: NonNullable<FlowInput['ipResolved']>;
+  status: 'ok' | 'empty' | 'unavailable';
+  reasons: ('cluster_unreadable' | 'cluster_limit_possible')[];
+}
+const unavailable = (reason: EksIpResolution['reasons'][number] = 'cluster_unreadable'): EksIpResolution =>
+  ({ map: {}, status: 'unavailable', reasons: [reason] });
 type Cluster = { name: string; access?: string; region?: string; vpcId?: string };
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -12,15 +19,18 @@ const optionalStrings = (row: Record<string, unknown>, keys: string[]) =>
 
 // Endpoints describes Service membership, not cluster ownership. Only an independently listed,
 // unique pod can establish ownership; conflicting references also disqualify the pod fallback.
-export async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved']>> {
+export async function fetchEksIpMap(): Promise<EksIpResolution> {
   const candidates = new Map<string, Resolution | null>();
   try {
     const response = await fetch('/api/eks');
     const list = response.ok ? await response.json() : null;
-    if (list?.error || list?.status === 'error' || !Array.isArray(list?.clusters)) return {};
-    if (!list.clusters.every((c: unknown) => isRecord(c) && nonempty(c.name) && nonempty(c.access))) return {};
-    const clusters = (list.clusters as Cluster[]).filter(c => c.access === 'connected');
-    if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return {};
+    if (list?.error || list?.status === 'error' || !Array.isArray(list?.clusters)) return unavailable();
+    if (!list.clusters.every((c: unknown) => isRecord(c) && nonempty(c.name) && nonempty(c.access))) return unavailable();
+    // The current API returns at most 25 descriptors without a continuation token.
+    if (list.clusters.length >= 25) return unavailable('cluster_limit_possible');
+    const clusters = list.clusters as Cluster[];
+    if (clusters.some(c => c.access !== 'connected')) return unavailable();
+    if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return unavailable();
     await Promise.all(clusters.map(async cluster => {
       const get = async (kind: string) => {
         try {
@@ -78,7 +88,8 @@ export async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved
     }));
   } catch {
     // A failed cluster may hide a competing owner; never publish a partial candidate map.
-    return {};
+    return unavailable();
   }
-  return Object.fromEntries([...candidates].filter((entry): entry is [string, Resolution] => entry[1] !== null));
+  const map = Object.fromEntries([...candidates].filter((entry): entry is [string, Resolution] => entry[1] !== null));
+  return { map, status: candidates.size ? 'ok' : 'empty', reasons: [] };
 }
