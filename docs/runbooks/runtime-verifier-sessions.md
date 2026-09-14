@@ -2,13 +2,14 @@
 
 ## Symptoms
 
-A manual development verifier cannot create its session policy, or its deployer
+A development verifier cannot create its session policy, or its deployer
 credentials permit operations beyond the controller's command allowlist.
 Application-level allowlists do not restrict the underlying AWS session.
 
-The manual [collection workflow](../../.github/workflows/collect-runtime.yml) uses
-these policies for existing-web preparation and runtime verification. Policy creation
-is not a deployment, an IAM grant or proof of readiness.
+The helper supplies session policies for manual collection and Deploy Web's
+development verification phase. It does not assume a role or wire workflows.
+Review each consumer's credential-assumption steps separately; helper availability
+alone does not establish that a workflow uses a restricted session.
 
 ## Candidate causes
 
@@ -36,6 +37,8 @@ python3 -m pytest scripts/v2/test_ci_runtime_policy.py -q
 Tests cover allowed operations, denied sibling resources/regions/actions,
 backend parsing, KMS conditions, private files, immediate FIFO rejection,
 masking and publication failures.
+The caller matrix covers both Deploy Web events, collect-only workload access,
+backend denial for Deploy Web, and preservation of manual prepare/collect behavior.
 The size test confirms policies with maximum-length project names fit STS's
 2,048-character limit; it does not exercise oversized-policy rejection.
 These are offline policy-boundary
@@ -43,8 +46,12 @@ checks, not an assertion of effective live access under every IAM/SCP policy.
 
 ## Action and integration contract
 
-Retain the existing operator-owned deployer role and obtain two separate OIDC
-sessions. No role, trust policy or persistent IAM attachment is added here.
+Retain the existing operator-owned deployer role. For manual collection, apply
+the backend and workload policies in separate OIDC sessions. Deploy Web uses only
+the workload policy for its verification phase; its earlier deployment phase
+retains the existing credential contract. Consumers must pass the generated
+policy to the credential-assumption step. No role, trust policy or persistent
+IAM attachment is added here.
 
 | Phase | Allowed AWS operations | Boundary |
 | --- | --- | --- |
@@ -72,13 +79,22 @@ uses `RUNTIME_MODE=prepare|collect`; it does not reinterpret the smoke protocol.
 `PIN_SHA` is the reviewed deployed web-image commit: the helper checks its format
 only; the consumer binds the image to ECR and running tasks. It need not equal
 the workflow's `GITHUB_SHA`, and it must be empty in prepare mode.
-Backend policies accept only same-repository manual dev dispatches from
-`collect-runtime.yml@refs/heads/dev`. Workload policies also accept
-`deploy-web.yml@refs/heads/dev` on push/dispatch, only in collect mode.
+Accepted callers are limited to this repository and `refs/heads/dev`. The full
+`GITHUB_WORKFLOW_REF` must use this repository's prefix and the exact path/ref
+below. Account/role, source SHA, image-pin, region and default-workspace checks
+apply to every row.
+
+| Policy phase | Workflow path/ref | Event | `RUNTIME_MODE` |
+| --- | --- | --- | --- |
+| Backend | `.github/workflows/collect-runtime.yml@refs/heads/dev` | `workflow_dispatch` | `prepare` or `collect` |
+| Workload | `.github/workflows/collect-runtime.yml@refs/heads/dev` | `workflow_dispatch` | `prepare` or `collect` |
+| Workload | `.github/workflows/deploy-web.yml@refs/heads/dev` | `push` or `workflow_dispatch` | `collect` only |
+
+Deploy Web cannot request a backend policy or use prepare mode.
 `CI_ROLE_ARN` is the configured deployer role and
 `BACKEND_B64` is the private encoded backend input used only by the backend phase.
 
-The manual workflow must:
+Manual collection integration must:
 
 1. Validate the manual dev source, configured role/account and mode before AWS
    access. Use fresh per-run private directories and files with 0700/0600 permissions.
@@ -96,11 +112,14 @@ The manual workflow must:
 5. Clean the owned policy and credential files in always-run cleanup, including
    failure/cancellation paths. Do not sweep unrelated runner temporary files.
 
-Deploy Web retains deployment privileges for image pinning and ECS rollout.
-After stability, it derives the workload policy from the private captured state
-and refreshes credentials with that nonempty restriction before verification.
-Missing policies fail before the verifier executes; cleanup remains always-run.
-Deploy Web cannot request a backend policy through this helper.
+For Deploy Web verification, use the private `runtime_deployment` file captured
+earlier in the same run under the existing deployment credentials and backend/
+account guards. Do not request a backend policy from this helper. After the
+deployment phase and immediately before verification's credential refresh, build
+the workload policy from that file with `RUNTIME_MODE=collect`. The same
+0700 directory/0600 file binding, nonempty-policy requirement, fresh-caller check
+and always-run owned-file cleanup apply. Missing policy output must fail the job,
+never retain or recreate an unrestricted verification session.
 
 The CLI publishes `policy_file` and `session_policy`. It masks the complete policy,
 Resource ARNs, bare S3 bucket and bucket/key forms, and configured account first.
@@ -110,7 +129,7 @@ symlink/public/non-regular input files, or an existing output policy file.
 
 ### Collection effects and proof
 
-The `collect` consumer uses `RequestResponse` on the pinned function's
+Collect consumers must use `RequestResponse` on the pinned function's
 unqualified ARN, without a version or alias qualifier.
 Each event must explicitly contain exactly `{"type":"catalog"}` or
 `{"type":"cloudfront"}`. **An absent `type` defaults to `all`**, which triggers
@@ -157,7 +176,7 @@ authenticated BFF/AgentCore and owned worker HTTP proofs. A successful invoke
 alone never establishes it.
 
 The catalog lists registered types, not acknowledged invocations. For the
-controller's **release mode**, read every returned type's host job ledger
+consumer's **release mode**, read every returned type's host job ledger
 over HTTP within a bounded 1,200-second wait. CloudFront needs durable success
 after the owned pre-invoke marker. Other types need durable success within the
 last 30 minutes; the existing scheduler may supply that evidence. A later running,
@@ -180,7 +199,7 @@ workloads; sharing its backend parser does not alter its policy grants or calls.
 The trust boundary remains reviewed workflow code on a trusted runner. Session
 restrictions do not prevent malicious future workflow code from requesting a
 different OIDC session under the existing role. A dedicated role is separate
-IAM-owner work, outside these session restrictions.
+IAM-owner work, outside this policy helper.
 
 ## Related files and decisions
 

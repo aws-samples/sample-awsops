@@ -15,8 +15,11 @@ secrets-manager) — installed by `make deps`.
 - The sealing payload reaches OpenSSL through stdin, with no plaintext staging file. Captured Terraform runs in a separate session; first-interrupt forwarding, second-interrupt group kill and parent-death protection govern cancellation. Sealing/storage/publication failures preserve the command exit.
 - Cleanup deletes only after the identified upload's literal success; failed/cancelled/skipped/unknown outcomes retain ciphertext privately. Audits distinguish pending_upload, retained_unpublished and final cleanup outcomes. No broad runner-temp sweep, shared-UID isolation or SIGKILL guarantee.
 - `v2/ci_deployment_audit.py` — manual dev audit with existing identity guards, a restrictive session policy, fixed reads/SELECTs and safe projections. It shares only backend parsing with `ci_verifier_sessions.py`; its grants and no-invoke behavior are unchanged. Web observations do not claim an applied revision; timestamps do not classify product freshness, and observed types do not establish completeness. Offline fixtures: `python3 -m pytest -q scripts/v2/test_ci_deployment_audit.py`; operator guide: `docs/runbooks/deployment-audit.md`.
-- `v2/ci_verifier_sessions.py` — session policy source for manual collection and post-deployment dev verification:
+- `v2/ci_verifier_sessions.py` — pure policy generator for manual collection and Deploy Web verification:
   backend state-read and workload policies, never persistent IAM changes or AWS calls.
+  Manual `collect-runtime.yml` dev dispatches support both phases and prepare/collect.
+  `deploy-web.yml` dev push/dispatch supports workload collect only; backend/prepare are refused.
+  Consumers own workflow wiring; Deploy Web supplies state captured earlier under deployment credentials.
   Require both nonempty session outputs; bind workload state to the selected private directory.
   Prepare cannot invoke Lambda; collect allows only the owned collector. The consumer must
   enforce explicit catalog/CloudFront RequestResponse payloads (absent type defaults to all),

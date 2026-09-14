@@ -31,6 +31,8 @@ ENV = {
     "RUNTIME_MODE": "collect", "PIN_SHA": "b" * 40,
     "BACKEND_B64": base64.b64encode(BACKEND.encode()).decode(),
 }
+WEB_ENV = {**ENV, "GITHUB_EVENT_NAME": "push",
+           "GITHUB_WORKFLOW_REF": "aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/dev"}
 
 
 def helpers():
@@ -142,15 +144,62 @@ def test_invalid_backend_cannot_create_a_session_policy(backend):
     ("GITHUB_REF", "refs/heads/main"), ("TARGET", "main"), ("AWS_REGION", "us-east-1"),
     ("AWS_ACCOUNT_ID_DEV", ""), ("AWS_ACCOUNT_ID_DEV", "１" * 12),
     ("CI_ROLE_ARN", f"arn:aws:iam::999999999999:role/fixture-ci"),
-    ("GITHUB_WORKFLOW_REF", "aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/dev"),
+    ("GITHUB_WORKFLOW_REF", "aws-samples/sample-awsops/.github/workflows/deploy-agentcore.yml@refs/heads/dev"),
+    ("GITHUB_WORKFLOW_REF", "aws-samples/sample-awsops/.github/workflows/deploy-web.yml@refs/heads/main"),
     ("RUNTIME_MODE", "deploy"), ("GITHUB_SHA", ""), ("PIN_SHA", "latest"), ("TF_WORKSPACE", "other"),
 ])
 def test_wrong_dispatch_context_cannot_create_any_policy(key, value):
-    env = {**ENV, key: value}
-    for build in (lambda: helpers().backend_policy(env),
-                  lambda: helpers().workload_policy(env, deployment())):
+    for source in (ENV, WEB_ENV):
+        env = {**source, key: value}
+        for build in (lambda: helpers().backend_policy(env),
+                      lambda: helpers().workload_policy(env, deployment())):
+            with pytest.raises(ValueError):
+                build()
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_deploy_web_collect_gets_identical_workload_policy_and_no_backend_policy(event):
+    env = {**WEB_ENV, "GITHUB_EVENT_NAME": event}
+    assert helpers().workload_policy(env, deployment()) == helpers().workload_policy(ENV, deployment())
+    with pytest.raises(ValueError):
+        helpers().backend_policy(env)
+    for build in (lambda e: helpers().backend_policy(e),
+                  lambda e: helpers().workload_policy(e, deployment())):
         with pytest.raises(ValueError):
-            build()
+            build({**env, "RUNTIME_MODE": "prepare", "PIN_SHA": ""})
+
+
+@pytest.mark.parametrize("event", ["push", "pull_request_target", "workflow_run", "schedule"])
+def test_manual_workflow_remains_dispatch_only_and_other_web_events_are_rejected(event):
+    for source in (ENV, WEB_ENV) if event != "push" else (ENV,):
+        env = {**source, "GITHUB_EVENT_NAME": event}
+        with pytest.raises(ValueError):
+            helpers().backend_policy(env)
+        with pytest.raises(ValueError):
+            helpers().workload_policy(env, deployment())
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_deploy_web_cli_publishes_only_the_workload_policy(event, tmp_path):
+    tmp_path.chmod(0o700)
+    state, output = tmp_path / "runtime.json", tmp_path / "output"
+    state.write_text(json.dumps(deployment()))
+    state.chmod(0o600)
+    env = {**WEB_ENV, "GITHUB_EVENT_NAME": event, "PATH": os.environ["PATH"],
+           "GITHUB_ACTIONS": "true", "GITHUB_OUTPUT": str(output), "PYTHONDONTWRITEBYTECODE": "1",
+           "AWS_EC2_METADATA_DISABLED": "true", "AWS_CONFIG_FILE": "/dev/null",
+           "AWS_SHARED_CREDENTIALS_FILE": "/dev/null"}
+    command = ["python3", str(Path(__file__).with_name("ci_verifier_sessions.py"))]
+    denied = subprocess.run([*command, "backend", "--directory", str(tmp_path)],
+                            env=env, capture_output=True, text=True)
+    assert denied.returncode != 0 and denied.stdout == ""
+    assert denied.stderr.strip() == "verifier_session_policy_unavailable"
+    assert not output.exists() and not (tmp_path / "backend-policy.json").exists()
+    accepted = subprocess.run([*command, "workload", "--directory", str(tmp_path),
+                               "--deployment-file", str(state)], env=env, capture_output=True, text=True)
+    assert accepted.returncode == 0 and accepted.stderr == ""
+    published = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert json.loads(published["session_policy"]) == helpers().workload_policy(ENV, deployment())
 
 
 def test_workload_permissions_are_limited_to_web_inspection_and_own_collector():
@@ -188,6 +237,7 @@ def test_prepare_does_not_grant_collector_access_or_require_activated_features()
     assert permitted(policy, "ecr:BatchGetImage", ECR, region)
     for action in ("lambda:GetFunctionConfiguration", "lambda:InvokeFunction"):
         assert not permitted(policy, action, FUNCTION, region)
+    assert helpers().backend_policy({**ENV, "RUNTIME_MODE": "prepare", "PIN_SHA": ""}) == helpers().backend_policy(ENV)
 
 
 @pytest.mark.parametrize("path,value", [
