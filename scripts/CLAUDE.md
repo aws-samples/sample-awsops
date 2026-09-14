@@ -16,6 +16,7 @@ secrets-manager) — installed by `make deps`.
   fixed `ImageError` diagnostics, never provider data. Do not call the low-level publisher from CI.
   Child processes require exported temporary AWS credentials / an explicit GitHub token,
   disable AWS config/credential files, isolate GH config and drop endpoint/profile/model/provider/CA/proxy overrides.
+  Pin child PATH to `/usr/local/bin:/usr/bin:/bin`; keep the caller's HOME unchanged.
   Only curl receives explicit private stdin (`-q -K -`); no signed URL enters argv.
   Digest reads may return identical rows for multiple tags; reject conflicting row evidence.
   `v2/test_ci_web_image.py` tests the contract; jq is required for compare projection.
