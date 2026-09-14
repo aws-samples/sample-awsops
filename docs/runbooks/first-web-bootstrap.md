@@ -331,12 +331,12 @@ false and follow [runtime activation](runtime-foundation.md):
    gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true
    ```
 
-   Require current-source private migration, exact ECS/image verification and
-   mandatory login/DB smoke; `verify_database` cannot disable these dev checks.
-   Web release alone does not establish full runtime evidence for web identity,
-   SSM/AgentCore/model access, collection and Lambda/Fargate jobs. Complete the
-   separate mandatory runtime verifier before publication. This runbook adds no
-   skip input or health-only alternative; see [web release](web-release.md).
+   Require readonly image proof before current-source private migration, guarded digest promotion,
+   exact ECS/image verification and the integrated `runtime-release.mjs` gate, including login/DB,
+   web identity/image, every catalog type's clean post-marker collection, SSM/AgentCore/model access
+   and both owned Lambda/Fargate jobs. Complete mandatory AI/CI checks; `verify_database` cannot
+   disable full dev verification. Legacy health/optional DB smoke cannot establish this proof.
+   Publication requires the integrated gate with no skip input; see [web release](web-release.md).
 5. Only after the full gate passes, use the separately authorized service A
    publication stage in [domain rollout](dev-domain-rollout.md), with a fresh
    reviewed saved plan. Bootstrap completion is never a full-ready report.
@@ -365,6 +365,10 @@ Command path checked against source on 2026-09-14; this is not a live execution 
 - [Authenticated smoke](../../scripts/v2/authenticated-smoke.mjs),
   [runtime smoke](../../scripts/v2/runtime-smoke.mjs),
   [account route](../../web/app/api/accounts/route.ts): login/DB/host preparation.
+- [Release controller](../../scripts/v2/ci/runtime-release.mjs),
+  [Deploy Web](../../.github/workflows/deploy-web.yml),
+  [manual collect-runtime](../../.github/workflows/collect-runtime.yml):
+  full-catalog collection, bounded authenticated proof and both owned workers.
 
 Related ADRs: 001 (data), 002/009 (auth/ownership), 005 (mutation freeze),
 011 (account scope), 016 (deployment/domain boundaries).

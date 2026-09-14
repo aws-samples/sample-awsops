@@ -49,7 +49,7 @@ on:
         required: false
         default: false
       verify_database:
-        description: "Compatibility input: dev always verifies authentication and DB; true is unsupported elsewhere."
+        description: "Compatibility input: dev always requires full authenticated runtime readiness; true is unsupported elsewhere."
         type: boolean
         required: false
         default: false
@@ -129,7 +129,10 @@ jobs:
       cancel-in-progress: ${{ github.ref_name != 'main' }}
     env:
       BRANCH: ${{ github.ref_name }}
+      TARGET: ${{ github.ref_name }}
+      AWS_REGION: ap-northeast-2
       AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      CI_ROLE_ARN: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
       MAIN_ROLE: ${{ secrets.AWS_CI_BUILD_ROLE_ARN }}
       DEV_ROLE: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
@@ -172,6 +175,10 @@ jobs:
           CI_ROLE_ARN: ${{ steps.sel.outputs.role }}
         run: python3 scripts/v2/ci_web_image.py check-role
 
+      - name: Validate configured development build account
+        if: github.ref == 'refs/heads/dev'
+        run: python3 scripts/v2/ci_runtime_policy.py verify-role
+
       - name: Configure AWS credentials (OIDC -> ci-build)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -184,6 +191,13 @@ jobs:
         env:
           CI_ROLE_ARN: ${{ steps.sel.outputs.role }}
         run: python3 scripts/v2/ci_web_image.py verify-role
+
+      - name: Verify actual development build caller
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            python3 scripts/v2/ci_runtime_policy.py verify-caller
 
       # The build job needs exactly one stack fact — the web ECR repository —
       # and derives it WITHOUT reading Terraform state (the ci-build role is
@@ -379,7 +393,13 @@ jobs:
       cancel-in-progress: false
     env:
       BRANCH: ${{ github.ref_name }}
+      TARGET: ${{ github.ref_name }}
+      AWS_REGION: ap-northeast-2
       AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      CI_ROLE_ARN: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+      RUNTIME_MODE: collect
+      INVENTORY_POLICY: full
+      PIN_SHA: ${{ inputs.image_sha || github.sha }}
       MAIN_ROLE: ${{ secrets.AWS_CI_DEPLOYER_ROLE_ARN }}
       DEV_ROLE: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
       MAIN_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL }}
@@ -432,6 +452,10 @@ jobs:
           CI_ROLE_ARN: ${{ steps.sel.outputs.role }}
         run: python3 scripts/v2/ci_web_image.py check-role
 
+      - name: Validate configured development deploy account
+        if: github.ref == 'refs/heads/dev'
+        run: python3 scripts/v2/ci_runtime_policy.py verify-role
+
       - name: Configure AWS credentials (OIDC -> ci-deployer)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -444,6 +468,13 @@ jobs:
         env:
           CI_ROLE_ARN: ${{ steps.sel.outputs.role }}
         run: python3 scripts/v2/ci_web_image.py verify-role
+
+      - name: Verify actual development deploy caller
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
+            python3 scripts/v2/ci_runtime_policy.py verify-caller
 
       - name: Restore terraform.foundation backend
         id: restore
@@ -496,12 +527,25 @@ jobs:
           echo "ecr_repo=$(terraform output -raw ecr_web_uri | sed 's|^[^/]*/||')" >> "$GITHUB_OUTPUT"
           echo "ecr_uri=$(terraform output -raw ecr_web_uri)" >> "$GITHUB_OUTPUT"
 
+      - name: Capture development runtime contract
+        if: github.ref == 'refs/heads/dev'
+        id: runtime
+        timeout-minutes: 3
+        env:
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/foundation output -json runtime_deployment 2>/dev/null |
+            node scripts/v2/ci/runtime-release.mjs capture
+
       # The runner is persistent and shared — never leave the restored stack
       # config behind, whatever the outcome.
       - name: Clean restored terraform config off the runner
         if: always()
         working-directory: terraform/foundation
-        run: rm -f terraform.tfvars backend.hcl
+        run: |
+          rm -f terraform.tfvars backend.hcl
+          rm -rf -- .terraform
 
       - name: Promote the verified image and start its deployment
         id: pin
@@ -549,15 +593,43 @@ jobs:
           node scripts/v2/deployment-smoke.mjs "$PUBLIC_URL" "$CLOUDFRONT_DOMAIN"
           echo
 
-      - name: Authenticated database smoke
+      - name: Build restricted workload verification session
         if: github.ref == 'refs/heads/dev'
+        id: workload_session
+        env:
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+          RUNTIME_DEPLOYMENT_FILE: ${{ steps.runtime.outputs.deployment_file }}
+        run: |
+          set -euo pipefail
+          [ -n "$SMOKE_CREDENTIAL_FILE" ] && [ -n "$RUNTIME_DEPLOYMENT_FILE" ] || exit 1
+          directory="$(dirname -- "$SMOKE_CREDENTIAL_FILE")"
+          python3 scripts/v2/ci_verifier_sessions.py workload --directory "$directory" --deployment-file "$RUNTIME_DEPLOYMENT_FILE"
+          rm -f -- "$directory/workload-policy.json"
+      - name: Refresh development credentials for runtime verification
+        if: ${{ success() && github.ref == 'refs/heads/dev' && steps.workload_session.outputs.session_policy != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          role-duration-seconds: 3600
+          inline-session-policy: ${{ steps.workload_session.outputs.session_policy }}
+
+      - name: Authenticated development runtime readiness
+        if: github.ref == 'refs/heads/dev'
+        timeout-minutes: 55
         env:
           PUBLIC_URL: ${{ steps.tf.outputs.url }}
           CLOUDFRONT_DOMAIN: ${{ steps.tf.outputs.cloudfront_domain }}
           SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+          RUNTIME_DEPLOYMENT_FILE: ${{ steps.runtime.outputs.deployment_file }}
+          WORKLOAD_SESSION_POLICY: ${{ steps.workload_session.outputs.session_policy }}
+          EXPECTED_WEB_DIGEST: ${{ steps.pin.outputs.digest }}
         run: |
           set -euo pipefail
-          node scripts/v2/authenticated-smoke.mjs
+          [ -n "${WORKLOAD_SESSION_POLICY//[[:space:]]/}" ] || { echo "::error::workload_session_policy_missing"; exit 1; }
+          node scripts/v2/ci/runtime-release.mjs run
 
       - name: Clean prepared demo credentials off the runner
         if: always() && github.ref == 'refs/heads/dev'

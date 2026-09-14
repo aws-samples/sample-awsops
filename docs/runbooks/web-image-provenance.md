@@ -2,7 +2,7 @@
 
 ## Status and symptoms
 
-Deploy Web uses `scripts/v2/ci_web_image.py` through `ci_web_deploy.py`. This document defines the helper contract; [web release](web-release.md) defines migration and exact ECS verification ordering. Repository wiring does not establish a successful live deployment.
+Deploy Web uses `scripts/v2/ci_web_image.py` through `ci_web_deploy.py`. This document defines the helper contract; [web release](web-release.md) defines image proof, migration, exact ECS verification and mandatory full dev runtime gate ordering. Repository wiring does not establish a successful live deployment.
 
 | Failure | Required action |
 | --- | --- |
@@ -147,4 +147,4 @@ For new receipt-enabled releases, rebuild the current reviewed source or choose 
 
 See `scripts/v2/ci_web_image.py`, `scripts/v2/test_ci_web_image.py`, `.github/workflows/deploy-web.yml`, [CI setup](dev-repo-setup.md), and the AWS [PutImage](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_PutImage.html) / [GetDownloadUrlForLayer](https://docs.aws.amazon.com/AmazonECR/latest/APIReference/API_GetDownloadUrlForLayer.html) contracts. This operator CI publication is not product remediation/autonomy and adds no ADR-005 exception or IAM grant.
 
-Deploy Web uses the web controller and bounded read transport described in [release safety primitives](release-safety-primitives.md). Current-source dev releases run private migrations with forced automatic SQL admission before promotion, followed by exact ECS/image and mandatory login/DB verification.
+Deploy Web uses the web controller and bounded read transport described in [release safety primitives](release-safety-primitives.md). Current-source dev releases run private migrations with forced automatic SQL admission before promotion, followed by exact ECS/image verification and the mandatory full runtime gate, including login/DB, using `EXPECTED_WEB_DIGEST` from `steps.pin.outputs.digest`.

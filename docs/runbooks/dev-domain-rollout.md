@@ -213,17 +213,22 @@ from state without live ACM, SAN or trust validation; those ownership/retirement
 remain required. Manual dispatch performs live certificate validation.
 
 The issuance stage changes validation CNAMEs/TLS consumers while A remains absent.
-Then the parent runs [Deploy Web's `deploy` / `Smoke test`](../../.github/workflows/deploy-web.yml)
-using [deployment-smoke.mjs](../../scripts/v2/deployment-smoke.mjs): `/api/health`
-through CloudFront with the service Host/SNI/TLS preserved. That individual step proves liveness.
-The current-source dev release also requires matching private migrations before promotion,
-exact ECS/image verification, and automatic login/DB smoke before completion.
-Explicit older-image rollback skips DDL but retains login/DB checks. Complete the
-applicable release verification before A publication; main/preview migrations and
-authentication checks remain separately managed. If AgentCore deployment is in scope,
-[Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml) runs the reusable private migration on dev; main/preview retain `make migrate`. Optional post-provision
-`smoke=true` requires deployed readiness/inventory dependencies on dev and remains advisory on other stacks. It is not a
-web-login test. These live actions need their own existing authorization.
+A standalone [deployment-smoke.mjs](../../scripts/v2/deployment-smoke.mjs) request
+checks `/api/health` through CloudFront with service Host/SNI/TLS preserved; that
+request alone proves liveness only. Dev [Deploy Web](../../.github/workflows/deploy-web.yml)
+proves the selected image before matching current-source private migrations, then requires
+guarded promotion, exact ECS/image verification and the [full authenticated runtime gate](runtime-foundation.md#required-development-release-check--개발-배포-필수-검증), not health alone.
+Explicit older-image rollback skips DDL but retains the full runtime gate, including login/DB.
+Before A publication, complete that guide's runtime adoption, explicit readiness opt-in, migrations
+and full verification; `CI_READONLY_RUNTIME_DEV` alone never enables the billed probe.
+Its `collect-runtime.yml` prepare mode validates existing web/login/host registration;
+it neither bootstraps first web nor proves readiness. New stacks must first follow the
+[reviewed first-web bootstrap procedure](first-web-bootstrap.md); there is no health-only bypass, password reset or admin promotion.
+[Deploy AgentCore](../../.github/workflows/deploy-agentcore.yml) runs the reusable
+private migration on dev; main/preview retain `make migrate`. Optional
+post-provision `smoke=true` requires deployed readiness/inventory dependencies on
+dev and remains advisory elsewhere; it is not a web-login test. Follow existing
+operator authorization for these actions.
 
 ## Inspecting saved artifacts
 
@@ -268,7 +273,7 @@ saved artifacts; they do not extend the dev-only domain stages or grant apply au
 
 ## Rollback / 롤백
 
-Before A publication, leave A absent and stop the rollout if TLS or DB/auth checks
+Before A publication, leave A absent and stop the rollout if TLS or required runtime checks
 fail. Prepare a fresh same-SHA reviewed plan to restore a supported same-domain
 configuration. After publication, unpublishing the **new** service A needs explicit
 DNS permission and a scoped reviewed plan. Preserve all Terraform-owned validation
@@ -278,13 +283,7 @@ token retirement or old-domain restoration needs a separate expressly authorized
 procedure under the appropriate configuration. Never remove resources from state
 or accept unknown DNS identities to make rollback pass.
 
-A 게시 전 TLS·DB·인증 실패 시 미게시 상태로 중단하고 지원되는 동일 도메인 설정의 새 계획을
-검토한다. 게시 후 **새 도메인** A를 내리는 경우도 DNS 명시 승인과 범위 제한 계획이 필요하다.
-관리 검증 CNAME·인증서 소유권은 유지한다. managed 발급 후 이전 외부 ARN을 다시 넣는 것은
-안전한 롤백이 아니다. 소유권 이전·토큰 폐기·이전 도메인 복구는 적절한 설정의 별도 승인
-절차로 진행하며, 상태 삭제나 미확정 DNS 허용으로 우회하지 않는다.
-
-Related / 관련: `.github/workflows/terraform.yml`, `scripts/v2/ci_private_plan.py`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_failure_diagnostics.py`, `scripts/v2/ci_dns_policy.py`,
+Related: `.github/workflows/terraform.yml`, `scripts/v2/ci_private_plan.py`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_failure_diagnostics.py`, `scripts/v2/ci_dns_policy.py`,
 `scripts/v2/ci_dev_domain.py`, `terraform/foundation/edge.tf`;
 ADR-005 (AWS-resource mutation + autonomy freeze / AWS 리소스 변경·자율 실행 동결),
 ADR-016 (v1 decommission / domain-certificate cutover / v1 폐기·도메인/인증서 전환).

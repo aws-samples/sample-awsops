@@ -63,6 +63,11 @@ adopting it. Deployment workflows verify this prerequisite but never apply boots
   A reviewed apply creates the application verifier group only with AgentCore enabled;
   managed-demo membership additionally requires `create_demo_user=true`. No admin/IAM
   authority is granted. Standalone private Terraform inputs remain explicit owner choices.
+  Explicitly apply readiness and runtime prerequisites before the mandatory dev Deploy Web gate;
+  `verify_database` cannot bypass it. Adopt existing groups/memberships with reviewed imports,
+  preserving passwords and inspecting unexpected privileges. Removing managed membership on apply
+  does not immediately revoke issued ID-token group claims (up to 12 hours); session revocation
+  and runtime disablement are separate controls.
 - `existing_cf_certificate_arn` / `existing_alb_certificate_arn` are nullable string inputs:
   JSON null retains Terraform-managed certificates; the string `"null"` does not. External
   ARNs must be operator-selected or already attached. Routine CI refuses managed-to-external

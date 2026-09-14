@@ -47,10 +47,10 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
    merge-verify + AI pr-review + terraform plan (when `terraform/foundation/**`
    changed; same-repo PRs only).
 2. **`dev`** — integration branch; pushes touching web code, CHANGELOG or migrations auto-deploy the DEV stack
-   via `deploy-web.yml` (build → matching private migration → digest promotion →
-   exact ECS verification → login/DB smoke). The applied private migration
-   capability and initialized ledger are required; every pending file must pass the
-   automatic SQL subset. Bootstrap or unsupported SQL needs standalone migration first.
+   via `deploy-web.yml` (build → readonly receipt/ECR proof → matching private migration →
+   guarded digest promotion → exact ECS/image verification → mandatory full runtime gate, including login/DB).
+   The applied private migration capability and initialized ledger are required; every pending file must pass the
+   forced automatic SQL subset. Bootstrap or unsupported SQL needs standalone migration first.
 3. **`main`** — promotion PR `dev → main` (ordinary same-repo PR). The production
    ECS roll stays workflow_dispatch + `production` environment reviewer approval;
    Terraform apply likewise (saved-plan, dispatch, per-branch environment). A manual
@@ -122,7 +122,7 @@ Provisioning **without publishing service DNS** still needs a configured hostnam
 trusted certificates for both TLS hops. `public_url` is the service URL, while
 `cloudfront_domain` is the connection destination used by
 [Deploy Web's smoke step](../../.github/workflows/deploy-web.yml) to preserve Host/SNI/TLS
-before A publication. `/api/health` proves liveness; DB/auth checks are separate.
+before A publication. `/api/health` proves liveness only. Dev releases additionally require login/DB, a fresh known CloudFront record, complete post-marker success with known counts and zero unknown attributes for every current catalog type, web-role SSM/AgentCore/model access and both worker completions. Missing, partial, failed, stale or unknown evidence blocks release.
 After reviewing the deployed distribution, decide whether to attach `awsops.whchoi.net`:
 
 - `awsops.whchoi.net` is **currently in use by an existing deployment** — attaching
@@ -186,10 +186,11 @@ branches); production stays behind the `production` environment approval. See
 - User PR → `dev`: merge-verify + AI review green; a fork PR shows no plan job.
 - PR to `main` from anything but `dev`: `guard-main-prs` fails the PR.
 - Push to `dev` changing web code, CHANGELOG or `terraform/foundation/migrations/**`:
-  `deploy-web.yml` builds ARM64, checks all pending SQL and applies the matching-source private
-  migration only on an initialized DB with an admitted pending set, verifies the new ECS deployment and actual image digest, then requires
-  login/DB smoke. Configure `CI_MIGRATIONS_ENABLED_DEV=true` and apply
-  `ci_migrations_enabled=true` before this path; the workflow cannot provision it.
+  `deploy-web.yml` builds ARM64, proves the selected receipt/ECR digest before matching-source private
+  migration on an initialized DB with an admitted pending set, then promotes that digest and verifies exact ECS/image
+  deployment followed by mandatory full runtime readiness. Apply `ci_migrations_enabled=true` with
+  `CI_MIGRATIONS_ENABLED_DEV=true` and the runtime prerequisites first; the workflow cannot provision them.
+  Manual `collect-runtime.yml` supports existing-web preparation or full collection verification.
 - `dev → main` merge, then production dispatch: waits for the `production`
   environment approval, smokes against the `public_url` output.
 
