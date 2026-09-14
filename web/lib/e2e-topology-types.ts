@@ -1,7 +1,8 @@
 import type { FlowGraph } from './flow-topology';
-import type { NfmCategory, NfmFlowRow, NfmMetric } from './nfm';
+import type { NfmCategory } from './nfm';
 import type { GraphCollection } from '../components/topology/GraphCollectionStatus';
-import type { NetworkBatch, NetworkReason } from './topology-observations';
+import type { NetworkBatch, NetworkReason, NetworkObservation } from './topology-observations';
+export type { NetworkObservation } from './topology-observations';
 
 export type E2eEvidence = 'configuration' | 'service' | 'network' | 'identity' | 'context';
 export type E2eLayer = 'configuration' | 'service' | 'network';
@@ -28,19 +29,6 @@ export interface ServiceSnapshot {
   captured_at: string | null;
   /** Loaders must validate public collection metadata; absence remains unknown. */
   collection?: GraphCollection;
-}
-export interface NetworkObservation {
-  monitor: string;
-  cluster: string | null;
-  metric: NfmMetric;
-  category: NfmCategory;
-  rangeSec: number;
-  rows: NfmFlowRow[];
-  unit: string;
-  startTime?: string;
-  endTime?: string;
-  queriedAt?: string;
-  capped: boolean;
 }
 export interface E2eInput {
   account: string;
