@@ -120,3 +120,17 @@ guard — see the section below.
   noted as a follow-up, out of scope here).
 
 Detail: ADR-004 §7 amendment (2026-07-31).
+
+## ENI configuration evidence
+
+`get_eni_details` reports configuration, not connectivity. Missing or malformed `Groups`,
+`IpPermissions`, `IpPermissionsEgress`, `Entries` or `Routes` is partial evidence, with the
+affected resource and field in `unknown`. Actual empty lists remain distinct. Per-group
+completeness includes both rule lists and their peers; preserve other returned evidence.
+
+Route selection requires an explicit associated state; missing state is unknown and
+never permits a fallback. All ENI/component SDK failures expose only allowlisted codes.
+Each SG has a shared 200-row inbound/outbound budget, explicit peer fields and 100-character
+descriptions; omissions are marked partial/truncated. Returned data is configuration only.
+Test with `python3 -m pytest -q agent/lambda/test_network_mcp_eni.py`. Roll out Lambda through
+Terraform, then deploy the AgentCore prompt and reconcile the live Gateway catalog.
