@@ -63,7 +63,8 @@ truncation make the scope comparison false. Description/precedence of a role-les
 group are not checked. Imports, state address moves, disabling features and retiring
 resources fall outside this view. The combined resource/output report is capped at 256 rows.
 
-Summary failure is advisory and cannot prevent encrypted artifact publication.
+The summary step has a two-minute timeout and renders fenced JSON. Reporting failure
+or timeout is advisory and does not fail the later encrypted-artifact steps.
 An unavailable, incomplete or unsupported summary requires
 [private exact-plan inspection](dev-repo-setup.md#private-exact-plan-inspection).
 The original encrypted artifacts, provenance and exact-saved-plan apply gates

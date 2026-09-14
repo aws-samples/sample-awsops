@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9c44d0e01fe3 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f8b72349a6b4 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -8,6 +8,12 @@ Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-re
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
 ## Diagnostic and deployment boundaries
+- `ci_readiness_plan_summary.py` runs before encryption only for explicit full dev readiness
+  plans, with a two-minute timeout and fenced JSON output. Its failure-tolerant report publishes
+  fixed scope/presence checks, fixed addresses and a known collector hash, never private values.
+  The combined 256-row view is not approval or resource-presence proof; unknown changes require
+  private inspection. Membership checks include the existing/planned group's lack of an IAM role.
+  Reporting cannot weaken DNS/runtime/exact-plan gates or block later encrypted artifacts.
 - `CI_READINESS_ENABLED_DEV` is separate from the runtime profile: true/false explicitly overrides readiness on dev, while empty/unset preserves operator tfvars/default false. Public CI rejects enabled readiness elsewhere. The applied group requires AgentCore, and automatic membership requires the managed demo; no admin/IAM grant.
 - `v2/ci_plan_inspect.py` is local-only: authenticate successful plan-run context, checkout
   SHA and existing signed plan/assets before private rendering. No backend init/apply.
@@ -136,9 +142,3 @@ The pin gate covers `v2/ci/pg8000-requirements.txt` and the four requirements
 under workers, steampipe, incident and remediation; update all with verified wheel hashes.
 The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and validator.
 `v2/test_ci_tf_assets.py` covers these contracts and recovery.
-
-- `ci_readiness_plan_summary.py` runs only for explicit full dev readiness plans. It publishes
-  fixed scope/presence checks, fixed resource addresses and a known collector code hash,
-  never private values. Its combined 256-row advisory view is not approval or resource
-  presence proof; unknown changes require private inspection. Report failure cannot block
-  encrypted artifacts or weaken existing DNS/runtime/exact-plan gates.

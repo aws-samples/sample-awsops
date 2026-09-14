@@ -32,6 +32,26 @@ def has_unknown(value):
     return value is not False and value is not None
 
 
+def group_without_role(plan, prior, pool):
+    candidate = prior.get(GROUP)
+    known = True
+    for item in plan.get("resource_changes", []):
+        if item.get("address") != GROUP:
+            continue
+        change = item["change"]
+        if (change.get("actions") not in (["create"], ["no-op"], ["read"])
+                or change.get("importing") is not None or item.get("previous_address") is not None):
+            return False
+        candidate = change.get("after")
+        unknown = change.get("after_unknown") or {}
+        known = isinstance(unknown, dict) and not any(
+            unknown.get(key) for key in ("name", "user_pool_id", "role_arn"))
+        break
+    return (known and isinstance(candidate, dict) and bool(pool)
+            and candidate.get("name") == "deployment-verifiers"
+            and candidate.get("user_pool_id") == pool and candidate.get("role_arn") is None)
+
+
 def project(plan):
     if not isinstance(plan, dict) or not plan.get("format_version"):
         raise ValueError()
@@ -86,6 +106,7 @@ def project(plan):
                 "existing_pool": bool(pool) and after.get("user_pool_id") == pool,
                 "existing_managed_demo": bool(user) and after.get("username") == user,
                 "known_identity": not any(unknown.get(key) for key in ("group_name", "user_pool_id", "username")),
+                "group_without_iam_role": group_without_role(plan, prior, pool),
             }
         elif address == COLLECTOR:
             changed = {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)}

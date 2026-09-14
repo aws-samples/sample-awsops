@@ -156,6 +156,22 @@ def test_membership_role_and_collector_scope_mismatches_are_not_reviewed_as_expe
         assert "PRIVATE" not in json.dumps(result)
 
 
+def test_membership_only_checks_the_existing_groups_iam_role():
+    for role in (None, "PRIVATE_ADMIN_ROLE"):
+        value = plan()
+        value["resource_changes"] = [value["resource_changes"][1]]
+        value["prior_state"]["values"]["root_module"]["resources"].append({
+            "address": summary.GROUP,
+            "values": {"name": "deployment-verifiers", "user_pool_id": "PRIVATE_POOL", "role_arn": role},
+        })
+        result = summary.project(value)
+        assert result["no_changes_outside_expected_scope"] is (role is None)
+        assert result["planned_changes"]["managed_demo_enrolled"] is (role is None)
+        assert "PRIVATE" not in json.dumps(result)
+    value["prior_state"]["values"]["root_module"]["resources"].pop()
+    assert not summary.project(value)["no_changes_outside_expected_scope"]
+
+
 def test_deletes_unknown_roles_and_unrecognized_outputs_remain_unreviewed():
     value = plan()
     value["resource_changes"][0]["change"]["after_unknown"]["role_arn"] = True
@@ -218,10 +234,42 @@ def test_workflow_projects_only_manual_dev_plans_before_encryption():
     step = steps[index]
     assert step["if"] == "github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READINESS_ENABLED_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'"
     assert step["continue-on-error"] is True
+    assert step["timeout-minutes"] == 2
     assert next(i for i, s in enumerate(steps) if s.get("name") == "Check planned DNS operations") < index
     assert index < next(i for i, s in enumerate(steps) if s.get("name") == "Encrypt plan artifact")
     assert step["run"].strip() == (
         'set -euo pipefail\n'
-        'terraform show -json tfplan 2>/dev/null |\n'
-        '  python3 ../../scripts/v2/ci_readiness_plan_summary.py | tee -a "$GITHUB_STEP_SUMMARY"'
+        'readiness_rc=0\n'
+        'readiness_summary="$(terraform show -json tfplan 2>/dev/null |\n'
+        '  python3 ../../scripts/v2/ci_readiness_plan_summary.py)" || readiness_rc=$?\n'
+        '{\n'
+        "  printf '### Bounded readiness plan changes\\n\\n```json\\n'\n"
+        "  printf '%s\\n' \"$readiness_summary\"\n"
+        "  printf '```\\n'\n"
+        '} | tee -a "$GITHUB_STEP_SUMMARY"\n'
+        'exit "$readiness_rc"'
     )
+
+
+def test_workflow_fences_success_and_sanitized_failure_without_hiding_status():
+    import yaml
+    root = Path(__file__).resolve().parents[2]
+    steps = yaml.safe_load((root / ".github/workflows/terraform.yml").read_text())["jobs"]["plan"]["steps"]
+    step = next(s for s in steps if s.get("name") == "Project bounded readiness changes without private plan values")
+    for payload, expected_code in [(json.dumps(plan()), 0), ('{"PRIVATE_BROKEN":', 1)]:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            command = temporary / "terraform"
+            command.write_text("#!/usr/bin/env python3\nprint(" + repr(payload) + ")\n")
+            command.chmod(0o700)
+            output = temporary / "summary.md"
+            env = {**os.environ, "PATH": str(temporary) + os.pathsep + os.environ["PATH"],
+                   "GITHUB_STEP_SUMMARY": str(output)}
+            result = subprocess.run(["bash", "-e", "-c", step["run"]],
+                                    cwd=root / "terraform/foundation", env=env,
+                                    capture_output=True, text=True, timeout=10)
+            assert result.returncode == expected_code
+            rendered = output.read_text()
+            assert rendered.startswith("### Bounded readiness plan changes\n\n```json\n")
+            assert rendered.endswith("```\n")
+            assert "PRIVATE" not in rendered + result.stdout + result.stderr

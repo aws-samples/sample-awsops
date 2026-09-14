@@ -372,10 +372,18 @@ jobs:
       - name: Project bounded readiness changes without private plan values
         if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READINESS_ENABLED_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
         continue-on-error: true
+        timeout-minutes: 2
         run: |
           set -euo pipefail
-          terraform show -json tfplan 2>/dev/null |
-            python3 ../../scripts/v2/ci_readiness_plan_summary.py | tee -a "$GITHUB_STEP_SUMMARY"
+          readiness_rc=0
+          readiness_summary="$(terraform show -json tfplan 2>/dev/null |
+            python3 ../../scripts/v2/ci_readiness_plan_summary.py)" || readiness_rc=$?
+          {
+            printf '### Bounded readiness plan changes\n\n```json\n'
+            printf '%s\n' "$readiness_summary"
+            printf '```\n'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$readiness_rc"
 
       # A plan file embeds every input variable value in plaintext (sensitive
       # ones included), and artifacts on a public repo are downloadable by any

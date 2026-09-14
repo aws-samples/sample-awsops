@@ -124,7 +124,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   metric values. Explicit full dev readiness plans may also publish fixed scope/presence
   checks and a known configured collector hash through `ci_readiness_plan_summary.py`.
   That advisory summary does not establish approval or resource presence; unknown changes
-  require private inspection, and summary failure must not block encrypted artifacts.
+  require private inspection. Its two-minute, failure-tolerant step runs before encryption,
+  renders fenced JSON, and must not block encrypted artifacts.
   Never expose full ARNs, account IDs or
   raw configuration/state/plan JSON. Deploy Web/manual smoke share the argv-safe Host/SNI/TLS
   CLI; health is liveness only. DB/auth checks precede service A publication.
