@@ -216,4 +216,22 @@ describe('GraphCollectionStatus', () => {
     expect(screen.getAllByText('Source window end', { exact: false })).toHaveLength(1);
   });
 
+  it('renders absent collection metadata as neutral information without a stale assertion', () => {
+    language.current = 'en';
+    render(<GraphCollectionStatus collection={{ status: 'unknown', stale: true,
+      attempted_at: null, captured_at: null, sources: [], evidenceKind: 'inventory', readStatus: 'ok' }} />);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status').textContent).toContain('No collection state recorded');
+    expect(screen.getByRole('status').textContent).not.toContain('Stale data');
+  });
+  it.each([
+    { failureReason: 'state_read_failed' }, { readStatus: 'unavailable' },
+    { readStatus: 'partial', readTruncated: true }, { metadataTruncated: true },
+  ])('keeps real read/disclosure failures actionable despite unknown collection: %s', extra => {
+    language.current = 'en';
+    render(<GraphCollectionStatus collection={{ status: 'unknown', stale: true,
+      attempted_at: null, captured_at: null, sources: [], ...extra }} />);
+    expect(screen.getByRole('alert')).toBeTruthy();
+  });
+
 });
