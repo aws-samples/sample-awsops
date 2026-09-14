@@ -292,9 +292,11 @@ false and follow [runtime activation](runtime-foundation.md):
    repositories with `runtime-ecr-bootstrap`. Build the ARM64 Steampipe/worker
    images and configure their verified digests before the full runtime plan.
 2. Make the separate readiness decision and apply it with the authorized full
-   runtime rollout. Apply `ci_migrations_enabled=true` before dev Deploy AgentCore;
-   its reusable migration workflow must run before AgentCore provisioning and
-   SQL-reader use. Preserve the real host preflight at both plan and apply.
+   runtime rollout. Before dev Deploy Web or Deploy AgentCore, apply
+   `ci_migrations_enabled=true`, set `CI_MIGRATIONS_ENABLED_DEV=true` and confirm a
+   non-null `migration_job` output. The shared private migration must succeed before
+   current-source web promotion or AgentCore provisioning/SQL-reader use.
+   Preserve the real host preflight at both plan and apply.
 3. After inventory infrastructure/image activation, allow the configured
    EventBridge `rate(15 minutes)` / `type=all` sweep to run before the first gated
    release. Wait for its per-type durable success evidence; elapsed time or
@@ -307,12 +309,12 @@ false and follow [runtime activation](runtime-foundation.md):
    gh workflow run deploy-web.yml -R aws-samples/sample-awsops --ref dev -f build=true
    ```
 
-   Require the deployed revision's complete mandatory AI/CI and authenticated
-   runtime release checks, including web identity, SSM/AgentCore/model access,
-   collection evidence and Lambda/Fargate jobs. A revision whose Deploy Web only
-   checks health or optional DB smoke cannot establish that full evidence; the
-   mandatory verifier must be integrated before publication. This runbook adds
-   no skip input or health-only alternative.
+   Require current-source private migration, exact ECS/image verification and
+   mandatory login/DB smoke; `verify_database` cannot disable these dev checks.
+   Web release alone does not establish full runtime evidence for web identity,
+   SSM/AgentCore/model access, collection and Lambda/Fargate jobs. Complete the
+   separate mandatory runtime verifier before publication. This runbook adds no
+   skip input or health-only alternative; see [web release](web-release.md).
 5. Only after the full gate passes, use the separately authorized service A
    publication stage in [domain rollout](dev-domain-rollout.md), with a fresh
    reviewed saved plan. Bootstrap completion is never a full-ready report.
