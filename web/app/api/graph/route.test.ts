@@ -1,9 +1,15 @@
+import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const auth = vi.hoisted(() => vi.fn());
 const query = vi.hoisted(() => vi.fn());
+const connection = vi.hoisted(() => ({ current: null as unknown as EventEmitter, release: vi.fn() }));
+beforeEach(() => {
+  connection.release.mockReset();
+  connection.current = Object.assign(new EventEmitter(), { query, release: connection.release });
+});
 vi.mock('@/lib/auth', () => ({ verifyUser: auth }));
-vi.mock('@/lib/db', () => ({ getPool: () => ({ query, connect: async () => ({ query, release() {} }) }) }));
+vi.mock('@/lib/db', () => ({ getPool: () => ({ query, connect: async () => connection.current }) }));
 import { GET } from './route';
 import claimCases from '../../../lib/fixtures/trace-queue-claims.json';
 afterEach(() => vi.restoreAllMocks());
@@ -30,6 +36,46 @@ describe('graph collection evidence API', () => {
       sources: [{ sourceId: 'tempo:1', status: 'error' }],
     });
     expect(body.captured_at).toBe('2026-09-11T01:00:00Z');
+  });
+
+  it('bounds reads before any graph query starts', async () => {
+    await GET(new Request('http://localhost/api/graph'));
+    const calls = query.mock.calls.map(([sql]) => sql as string);
+    const read = calls.findIndex(sql => sql.includes('FROM topology_graph_state'));
+    for (const setting of ['statement_timeout', 'lock_timeout', 'idle_in_transaction_session_timeout', 'transaction_timeout']) {
+      const at = calls.findIndex(sql => sql.startsWith(`SET LOCAL ${setting}`));
+      expect(at).toBeGreaterThan(0);
+      expect(at).toBeLessThan(read);
+    }
+  });
+  it('discards a connection when rollback fails without exposing either failure', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM topology_nodes')) throw Object.assign(new Error('private query failure'), { code: '42501' });
+      if (sql === 'ROLLBACK') throw new Error('private rollback failure');
+      return { rows: [] };
+    });
+    const response = await GET(new Request('http://localhost/api/graph'));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ status: 'error', message: 'Graph read failed' });
+    expect(connection.release).toHaveBeenCalledWith(true);
+  });
+  it('handles a checked-out client error event and discards the fatal connection', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    let unhandled = false;
+    const fatal = Object.assign(new Error('private disconnect'), { code: '57P01' });
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM topology_nodes')) {
+        try { connection.current.emit('error', fatal); } catch { unhandled = true; }
+        throw fatal;
+      }
+      return { rows: [] };
+    });
+    const response = await GET(new Request('http://localhost/api/graph'));
+    expect(response.status).toBe(500);
+    expect(unhandled).toBe(false);
+    expect(connection.release).toHaveBeenCalledWith(true);
+    expect(connection.current.listenerCount('error')).toBe(0);
   });
 
   it('does not expose collection state to an unauthenticated request', async () => {

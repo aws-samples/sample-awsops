@@ -581,7 +581,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     api.pool = { connect: async () => {
       const client = await pool.connect();
       const query = client.query.bind(client);
-      return { release: () => client.release(), query: async (sql: string, args?: unknown[]) => {
+      return { on: client.on.bind(client), removeListener: client.removeListener.bind(client),
+        release: client.release.bind(client), query: async (sql: string, args?: unknown[]) => {
         const result = await query(sql, args);
         if (sql.includes('FROM topology_graph_state')) {
           await pool.query('DELETE FROM inventory_resources; UPDATE inventory_sync_runs SET row_count=0');

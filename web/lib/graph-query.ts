@@ -48,11 +48,11 @@ const clampDepth = (d?: number): number => {
   return Number.isFinite(n) ? Math.min(MAX_DEPTH, Math.max(1, n)) : MAX_DEPTH; // NaN/Infinity → MAX_DEPTH
 };
 
-export async function downstream(pool: Pool, id: string, opts?: { cls?: string; depth?: number; account?: string }): Promise<GraphReach[]> {
+export async function downstream(pool: Pick<Pool, 'query'>, id: string, opts?: { cls?: string; depth?: number; account?: string }): Promise<GraphReach[]> {
   const r = await pool.query(traversalSql('down'), [id, opts?.cls ?? 'flow', clampDepth(opts?.depth), opts?.account ?? 'self']);
   return r.rows as GraphReach[];
 }
-export async function upstream(pool: Pool, id: string, opts?: { cls?: string; depth?: number; account?: string }): Promise<GraphReach[]> {
+export async function upstream(pool: Pick<Pool, 'query'>, id: string, opts?: { cls?: string; depth?: number; account?: string }): Promise<GraphReach[]> {
   const r = await pool.query(traversalSql('up'), [id, opts?.cls ?? 'flow', clampDepth(opts?.depth), opts?.account ?? 'self']);
   return r.rows as GraphReach[];
 }
