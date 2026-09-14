@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export class RuntimeSmokeError extends Error {}
+export const COLLECTION_WINDOW_MS = 20 * 60_000;
 const fail = phase => { throw new RuntimeSmokeError(`Runtime smoke: ${phase}`); };
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const exact = (v, keys) => object(v) && Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
@@ -81,29 +82,30 @@ export async function verifyRuntimeSmoke(configuration, request, {
       || (config.hostOnly === true && accounts.some(a => a.enabled && a.accountId !== config.expectedAccountId))) fail('host_registry');
   if (config.mode === 'prepare') return { status: 'ok', mode: 'prepare' };
 
-  async function poll(check, phase, seconds) {
-    const deadline = now() + seconds * 1000;
-    for (let attempt = 0; attempt <= seconds / 5 && now() <= deadline; attempt++) {
-      if (await check()) return;
+  async function poll(check, phase, seconds, deadline = now() + seconds * 1000) {
+    for (let attempt = 0; attempt <= seconds / 5 && now() < deadline; attempt++) {
+      if (await check() && now() <= deadline) return;
       if (now() >= deadline) break;
-      await wait(5000);
+      await wait(Math.min(5000, deadline - now()));
     }
     fail(typeof phase === 'function' ? phase() : phase);
   }
   const started = Date.parse(config.collectionStartedAt);
-  const retries = new Map();
+  const completedRetries = new Set();
+  let fingerprint, quietSince = now(), lastRetry = -Infinity;
   let collectionFailure = 'collection_timeout';
   await poll(async () => {
     const summary = await request('/api/inventory/summary?accounts=self');
     const c = summary?.collection;
     if (!object(c) || c.configured !== true || c.readOk !== true || !Array.isArray(c.runs)) fail('collection_unavailable');
-    let complete = true, missing = false;
+    let complete = true, missing = false, running = false;
     const failures = new Set(), staleTerminal = [];
     for (const type of config.expectedQueuedTypes) {
       const rows = c.runs.filter(r => r?.type === type && r.accountId === 'self');
       if (rows.length === 0) { missing = true; complete = false; continue; }
       if (rows.length !== 1) fail('collection_protocol');
       const row = rows[0];
+      running ||= row.status === 'running';
       if (['succeeded', 'partial', 'failed'].includes(row.status)
           && Number.isFinite(Date.parse(row.started_at)) && Date.parse(row.started_at) < started)
         staleTerminal.push(type);
@@ -119,19 +121,33 @@ export async function verifyRuntimeSmoke(configuration, request, {
     // Inspect every acknowledged type before selecting a fixed diagnostic.
     for (const reason of ['inventory_incomplete', 'collection_partial', 'collection_failed'])
       if (failures.has(reason)) fail(reason);
-    if (!complete && retryCollection) {
-      const eligible = staleTerminal.filter(type => {
-        const previous = retries.get(type);
-        return (previous?.count || 0) < 2 && now() >= (previous?.at ?? started) + 60_000;
-      }).slice(0, 8);
+    const progress = JSON.stringify(c.runs);
+    if (progress !== fingerprint || running || missing) quietSince = now();
+    fingerprint = progress;
+    if (!complete && retryCollection && !running && !missing &&
+        now() >= started + 420_000 && now() >= quietSince + 60_000 && now() >= lastRetry + 60_000) {
+      const eligible = staleTerminal.filter(type => !completedRetries.has(type)).slice(0, 4);
       if (eligible.length) {
-        for (const type of eligible) retries.set(type, { count: (retries.get(type)?.count || 0) + 1, at: now() });
-        try { await retryCollection(eligible); } catch { fail('collection_retry_failed'); }
+        lastRetry = now();
+        try {
+          const results = await retryCollection(eligible);
+          if (!Array.isArray(results) || results.length > eligible.length ||
+              new Set(results.map(r => r?.type)).size !== results.length ||
+              results.some(r => !eligible.includes(r?.type) || !['busy', 'succeeded'].includes(r.status)))
+            fail('collection_retry_protocol');
+          for (const result of results) if (result.status === 'succeeded') completedRetries.add(result.type);
+        } catch (error) {
+          const safe = ['collection_retry_denied', 'collection_retry_failed', 'collection_retry_protocol',
+            'collection_partial', 'collection_failed'];
+          if (error instanceof RuntimeSmokeError) throw error;
+          fail(safe.includes(error?.message) ? error.message : 'collection_retry_failed');
+        }
       }
     }
     collectionFailure = missing ? 'collection_missing' : 'collection_timeout';
     return complete;
-  }, () => collectionFailure, retryCollection ? 900 : 600);
+  }, () => collectionFailure, retryCollection ? COLLECTION_WINDOW_MS / 1000 : 600,
+  retryCollection ? started + COLLECTION_WINDOW_MS : now() + 600_000);
 
   let found = false;
   for (let offset = 0; offset < 500 && !found; offset += 5) {

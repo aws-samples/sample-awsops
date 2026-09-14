@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3d38c61913b2 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 0d331a3100f6 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -134,4 +134,4 @@ legacy runbook's steps as the current operational path).
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
 - Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
 
-The controller retries only stale terminal collection types: 60-second grace/backoff, at most two per type, batches of eight, within a 15-minute collection window. Fresh partial/failed runs and unknown attributes fail the full gate; no schedule mutation or degraded-data allowance exists. The runtime-foundation runbook lists exact deployer read/invoke scopes and the existing-stack apply/provision prerequisites.
+The controller retries stale terminal types only after a 420-second queue grace and 60 seconds without progress/running/missing rows. Four synchronous calls maximum/eight total distinguish busy from success; each needs 450 seconds remaining in the single dispatch-anchored 20-minute deadline. Batches wait 60 seconds. Initial dispatch retries confirmed throttling only within 450 seconds. The workflow gate is 45 minutes (manual job 60 including setup). Fresh zero-unknown ledger evidence remains mandatory; no schedule mutation or degraded-data allowance exists. The runtime-foundation runbook lists exact deployer scopes and existing-stack prerequisites.

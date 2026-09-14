@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 0925863cd109 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5c5e61a8e910 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -130,4 +130,4 @@ hostOnly verification of fresh collection and real runtime/worker completion. Ma
 prepare accepts disabled backends and reports prepared, not ready. Typed smoke errors
 retain sanitized diagnostics; other errors remain generic. Cleanup covers private files.
 
-The controller uses a 15-minute collection window with 60-second grace/backoff and at most two retries per stale terminal type, batches capped at eight. Only acknowledged types on the owned sync Lambda can be retried; the schedule is unchanged. Running/missing rows are not re-dispatched; fresh partial/failed/unknown results still fail. Standalone smoke without this callback retains 10 minutes. Zero unknowns is required for CI even when the product can display degraded data.
+The controller uses one dispatch-anchored 20-minute deadline, a 420-second drain grace and 60 seconds without progress/running/missing rows. Synchronous stale-terminal retries are capped at four concurrently/eight total and require 450 seconds remaining; batches are 60 seconds apart. Busy is distinct from success and RPC success still needs fresh zero-unknown ledger evidence. Initial dispatch retries confirmed throttling only within 450 seconds. Workflow gate: 45 minutes; standalone smoke: ten minutes. Scheduler unchanged.

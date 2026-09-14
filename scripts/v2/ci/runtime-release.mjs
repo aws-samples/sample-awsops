@@ -7,10 +7,11 @@ import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, writeFi
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
 import { authenticatedSmoke, SmokeError } from '../authenticated-smoke.mjs';
 import { smokeConnectionArgs } from '../deployment-smoke.mjs';
 import { readSmokeCredentials, cleanupSmokeCredentials } from '../prepare-smoke-credentials.mjs';
-import { readRuntimeSmokeConfig, validateRuntimeSmokeConfig } from '../runtime-smoke.mjs';
+import { COLLECTION_WINDOW_MS, readRuntimeSmokeConfig, validateRuntimeSmokeConfig } from '../runtime-smoke.mjs';
 
 const execute = promisify(execFile);
 const REGION = 'ap-northeast-2', REPO = 'aws-samples/sample-awsops';
@@ -20,6 +21,11 @@ const VERBS = new Set(['sts get-caller-identity', 'ecr batch-get-image',
   'ecs describe-services', 'ecs describe-task-definition', 'ecs list-tasks', 'ecs describe-tasks',
   'lambda get-function-configuration', 'lambda invoke']);
 export class ReleaseError extends Error {}
+export function classifyAwsError(error) {
+  const code = /An error occurred \((TooManyRequestsException|AccessDeniedException|AccessDenied)\)/.exec(error?.stderr || '')?.[1];
+  return new ReleaseError(code === 'TooManyRequestsException' ? 'aws_throttled'
+    : code ? 'aws_access_denied' : 'aws_request_failed');
+}
 const need = (condition, code) => { if (!condition) throw new ReleaseError(code); };
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const empty = value => value === undefined || (Array.isArray(value) && value.length === 0);
@@ -127,7 +133,10 @@ async function command(name, args, options) {
       encoding: 'utf8', timeout: 150_000, maxBuffer: 8 * 1024 * 1024, ...options,
     });
     return stdout;
-  } catch { throw new ReleaseError('aws_request_failed'); }
+  } catch (error) {
+    // Classify only AWS CLI's fixed exception field; never expose remote text.
+    throw classifyAwsError(error);
+  }
 }
 
 function verifyCaller(caller, context) {
@@ -216,7 +225,7 @@ async function verifyWeb(aws, deployment, context) {
 }
 
 export async function release(deployment, {
-  env = process.env, run = command, authenticate = authenticatedSmoke, now = Date.now,
+  env = process.env, run = command, authenticate = authenticatedSmoke, now = Date.now, wait = delay,
 } = {}) {
   let failed = false;
   try {
@@ -228,9 +237,12 @@ export async function release(deployment, {
     const aws = async (args, outputFile, timeout = 150_000) => {
       need(VERBS.has(args.slice(0, 2).join(' ')), 'forbidden_aws_operation');
       const commandArgs = [...args, '--region', REGION, '--output', 'json', '--no-cli-pager',
-        '--cli-connect-timeout', '5', '--cli-read-timeout', '120'];
+        '--cli-connect-timeout', '5', '--cli-read-timeout',
+        String(Math.min(timeout >= 450_000 ? 440 : 120, Math.floor((timeout - 10_000) / 1000)))];
       if (outputFile) commandArgs.push(outputFile);
-      return json(await run('aws', commandArgs, { env, timeout }));
+      return json(await run('aws', commandArgs, {
+        env: args[0] === 'lambda' && args[1] === 'invoke' ? { ...env, AWS_MAX_ATTEMPTS: '1' } : env, timeout,
+      }));
     };
     verifyCaller(await aws(['sts', 'get-caller-identity']), context);
     const webTasks = await verifyWeb(aws, deployment, context);
@@ -241,15 +253,32 @@ export async function release(deployment, {
       need(lambdaConfig.FunctionName === expected.sync_function_name && lambdaConfig.FunctionArn === expected.sync_function_arn &&
         lambdaConfig.CodeSha256 === expected.sync_code_sha256 && lambdaConfig.State === 'Active' &&
         lambdaConfig.LastUpdateStatus === 'Successful' && Array.isArray(lambdaConfig.Architectures) &&
-        lambdaConfig.Architectures.length === 1 && lambdaConfig.Architectures[0] === 'arm64', 'inventory_code_mismatch');
+        lambdaConfig.Architectures.length === 1 && lambdaConfig.Architectures[0] === 'arm64' &&
+        Number.isInteger(lambdaConfig.Timeout) && lambdaConfig.Timeout > 0 && lambdaConfig.Timeout <= 420,
+      'inventory_code_mismatch');
     }
     if (context.mode === 'collect') {
       const responseFile = join(directory, 'collection-response.json');
       writePrivate(responseFile, {});
-      const start = new Date(now()).toISOString(); // BEFORE RequestResponse dispatch.
-      const response = await aws(['lambda', 'invoke', '--function-name', deployment.inventory.sync_function_arn,
-        '--invocation-type', 'RequestResponse', '--cli-binary-format', 'raw-in-base64-out',
-        '--payload', '{"type":"all"}'], responseFile);
+      const dispatchDeadline = now() + 450_000;
+      let start, response;
+      for (;;) {
+        const remaining = dispatchDeadline - now();
+        need(remaining >= 15_000, 'collection_dispatch_throttled');
+        start = new Date(now()).toISOString(); // Before the actually accepted dispatch.
+        try {
+          response = await aws(['lambda', 'invoke', '--function-name', deployment.inventory.sync_function_arn,
+            '--invocation-type', 'RequestResponse', '--cli-binary-format', 'raw-in-base64-out',
+            '--payload', '{"type":"all"}'], responseFile, Math.min(150_000, remaining));
+          break;
+        } catch (error) {
+          if (error instanceof ReleaseError && error.message === 'aws_throttled') {
+            need(now() + 10_000 < dispatchDeadline, 'collection_dispatch_throttled');
+            await wait(10_000);
+          } else throw new ReleaseError(error instanceof ReleaseError && error.message === 'aws_access_denied'
+            ? 'collection_dispatch_denied' : 'collection_dispatch_failed');
+        }
+      }
       need(response.StatusCode === 200 && !Object.hasOwn(response, 'FunctionError') &&
         response.ExecutedVersion === '$LATEST', 'collection_invocation_failed');
       const types = validateAcknowledgement(readPrivate(responseFile, directory));
@@ -261,24 +290,40 @@ export async function release(deployment, {
     const configFile = join(directory, 'runtime-smoke.json');
     writePrivate(configFile, config);
     const credentials = readSmokeCredentials(env.SMOKE_CREDENTIAL_FILE);
-    const retried = new Map();
     let retryFiles = 0;
     const retryCollection = config.mode === 'verify' ? async types => {
-      need(Array.isArray(types) && types.length > 0 && types.length <= 8 &&
+      need(Array.isArray(types) && types.length > 0 && types.length <= 4 &&
         new Set(types).size === types.length && types.every(t => config.expectedQueuedTypes.includes(t)),
       'invalid_collection_retry');
-      for (const type of types) {
-        need((retried.get(type) || 0) < 2, 'collection_retry_limit');
-        const remaining = Date.parse(config.collectionStartedAt) + 900_000 - now();
-        need(remaining > 0, 'collection_retry_timeout');
-        retried.set(type, (retried.get(type) || 0) + 1);
+      const started = Date.parse(config.collectionStartedAt);
+      // A retry must have room for the full verified Lambda timeout plus CLI
+      // overhead. Exhausted budgets leave ledger polling active, never pass it.
+      if (now() < started + 420_000 || started + COLLECTION_WINDOW_MS - now() < 450_000) return [];
+      const selected = types.slice(0, Math.max(0, 8 - retryFiles));
+      const results = await Promise.allSettled(selected.map(async type => {
         const output = join(directory, `collection-retry-${++retryFiles}.json`);
         writePrivate(output, {});
-        const accepted = await aws(['lambda', 'invoke', '--function-name', deployment.inventory.sync_function_arn,
-          '--invocation-type', 'Event', '--cli-binary-format', 'raw-in-base64-out',
-          '--payload', JSON.stringify({ type })], output, Math.min(30_000, remaining));
-        need(accepted.StatusCode === 202 && !Object.hasOwn(accepted, 'FunctionError'), 'collection_retry_not_accepted');
-      }
+        let response;
+        try {
+          response = await aws(['lambda', 'invoke', '--function-name', deployment.inventory.sync_function_arn,
+            '--invocation-type', 'RequestResponse', '--cli-binary-format', 'raw-in-base64-out',
+            '--payload', JSON.stringify({ type })], output, 450_000);
+        } catch (error) {
+          if (error instanceof ReleaseError && error.message === 'aws_throttled') return { type, status: 'busy' };
+          throw new ReleaseError(error instanceof ReleaseError && error.message === 'aws_access_denied'
+            ? 'collection_retry_denied' : 'collection_retry_failed');
+        }
+        need(response.StatusCode === 200 && !Object.hasOwn(response, 'FunctionError') &&
+          response.ExecutedVersion === '$LATEST', 'collection_retry_failed');
+        const result = readPrivate(output, directory);
+        need(result.type === type && ['busy', 'succeeded', 'partial', 'failed'].includes(result.status),
+          'collection_retry_protocol');
+        if (['partial', 'failed'].includes(result.status)) throw new ReleaseError(`collection_${result.status}`);
+        return { type, status: result.status };
+      }));
+      const failure = results.find(result => result.status === 'rejected');
+      if (failure) throw failure.reason;
+      return results.map(result => result.value);
     } : undefined;
     let result;
     try {

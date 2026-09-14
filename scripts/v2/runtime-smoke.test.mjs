@@ -157,32 +157,84 @@ test('a scheduled lock holder can finish before a bounded retry produces fresh c
   } }, { retryCollection: async types => {
     retries.push(types);
     retryAt = f.now();
+    return types.map(type => ({ type, status: 'succeeded' }));
   } });
   assert.equal((await f.run()).status, 'ok');
   assert.deepEqual(retries, [['ec2']]);
   assert.ok(retryAt >= Date.parse(start) + 420_000);
-  assert.ok(f.now() < Date.parse(start) + 900_000);
+  assert.ok(f.now() < Date.parse(start) + 1200_000);
 });
-test('stale terminal retries are capped and never replace fresh partial or unknown failures', async () => {
+test('queued stale rows do not cause retries while other types progress or run', async () => {
   const old = new Date(Date.parse(start) - 60_000).toISOString();
-  const rows = at => ['cloudfront', 'ec2'].map(type => ({
-    type, accountId: 'self', status: 'succeeded', row_count: 1,
-    started_at: at, last_success_at: at, unknown_attribute_count: 0, unknown_attributes: false,
-  }));
-  const retried = [];
-  const f = fixture({ '/api/inventory/summary?accounts=self': () => ({
-    collection: { configured: true, readOk: true, runs: rows(old) },
-  }) }, { retryCollection: async types => { retried.push({ types, at: f.now() }); } });
+  const calls = [];
+  const f = fixture({ '/api/inventory/summary?accounts=self': () => ({ collection: {
+    configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
+      type, accountId: 'self', status: type === 'cloudfront' ? 'running' : 'succeeded',
+      started_at: type === 'cloudfront' ? new Date(f.now()).toISOString() : old,
+      last_success_at: old, row_count: 1, unknown_attribute_count: 0, unknown_attributes: false,
+    })),
+  } }) }, { retryCollection: async types => { calls.push(types); return []; } });
   await assert.rejects(f.run(), /collection_timeout/);
-  assert.deepEqual(retried.map(r => r.types), [['cloudfront', 'ec2'], ['cloudfront', 'ec2']]);
-  assert.ok(retried[0].at >= Date.parse(start) + 60_000);
-  assert.ok(retried[1].at - retried[0].at >= 60_000);
-  for (const change of [{ status: 'partial' }, { unknown_attribute_count: 1, unknown_attributes: true }]) {
-    let calls = 0;
-    await assert.rejects(fixture({ '/api/inventory/summary?accounts=self': () => ({
-      collection: { configured: true, readOk: true, runs: rows(start).map(r => ({ ...r, ...change })) },
-    }) }, { retryCollection: async () => { calls++; } }).run(), /collection_partial|inventory_incomplete/);
-    assert.equal(calls, 0);
+  assert.deepEqual(calls, []);
+});
+test('two busy RPCs do not exhaust a type before a later fresh collection succeeds', async () => {
+  const old = new Date(Date.parse(start) - 60_000).toISOString();
+  let attempts = 0;
+  const f = fixture({ '/api/inventory/summary?accounts=self': () => ({ collection: {
+    configured: true, readOk: true, runs: config.expectedQueuedTypes.map(type => ({
+      type, accountId: 'self', status: 'succeeded', row_count: 1,
+      started_at: type === 'ec2' && attempts < 3 ? old : start,
+      last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false,
+    })),
+  } }) }, { retryCollection: async types => {
+    attempts++;
+    return types.map(type => ({ type, status: attempts < 3 ? 'busy' : 'succeeded' }));
+  } });
+  assert.equal((await f.run()).status, 'ok');
+  assert.equal(attempts, 3);
+});
+test('quiet stale work uses batches of four and does not retry completed calls without ledger proof', async () => {
+  const old = new Date(Date.parse(start) - 60_000).toISOString();
+  const types = ['cloudfront', ...Array.from({ length: 40 }, (_, i) => `type_${i}`)];
+  const calls = [];
+  const f = fixture({ '/api/inventory/summary?accounts=self': () => ({ collection: {
+    configured: true, readOk: true, runs: types.map(type => ({ type, accountId: 'self',
+      status: 'succeeded', started_at: old, last_success_at: old, row_count: 1,
+      unknown_attribute_count: 0, unknown_attributes: false })),
+  } }) }, { retryCollection: async batch => {
+    calls.push({ types: batch, at: f.now() });
+    return batch.map(type => ({ type, status: 'succeeded' }));
+  } });
+  await assert.rejects(f.run({ ...config, expectedQueuedTypes: types }), /collection_timeout/);
+  assert.ok(calls.every(c => c.types.length <= 4));
+  assert.ok(calls[0].at >= Date.parse(start) + 420_000);
+  assert.ok(calls.every((c, i) => i === 0 || c.at - calls[i - 1].at >= 60_000));
+  assert.equal(new Set(calls.flatMap(c => c.types)).size, calls.flatMap(c => c.types).length);
+});
+test('collection window is anchored before account/login work rather than poll start', async () => {
+  let clock = Date.parse(start), calls = 0;
+  await assert.rejects(verifyRuntimeSmoke(config, async path => {
+    if (path === '/api/accounts') {
+      clock += 1195_000;
+      return { accounts: [{ accountId: account, isHost: true, enabled: true }] };
+    }
+    calls++;
+    return { collection: { configured: true, readOk: true, runs: [] } };
+  }, { now: () => clock, wait: async ms => { clock += ms; }, retryCollection: async () => [] }), /collection_missing/);
+  assert.equal(clock, Date.parse(start) + 1200_000);
+  assert.equal(calls, 1);
+});
+test('typed retry failures stay distinct while arbitrary remote text is suppressed', async () => {
+  const old = new Date(Date.parse(start) - 60_000).toISOString();
+  for (const [code, expected] of [['collection_retry_denied', /collection_retry_denied/],
+    ['PRIVATE_REMOTE_DETAIL', /collection_retry_failed/]]) {
+    const f = fixture({ '/api/inventory/summary?accounts=self': () => ({ collection: {
+      configured: true, readOk: true, runs: config.expectedQueuedTypes.map(type => ({
+        type, accountId: 'self', status: 'succeeded', started_at: old, last_success_at: old,
+        row_count: 1, unknown_attribute_count: 0, unknown_attributes: false,
+      })),
+    } }) }, { retryCollection: async () => { throw new Error(code); } });
+    await assert.rejects(f.run(), e => expected.test(e.message) && !e.message.includes('PRIVATE'));
   }
 });
 test('a 500-row sample without the known ID is unverified, not proof of absence', async () => {
@@ -229,11 +281,14 @@ test('private runtime configuration refuses symlinks, public modes and oversized
   assert.throws(() => readRuntimeSmokeConfig(file, join(dir, 'nested', 'credentials.json')), /configuration_file/);
 });
 for (const [inventoryBytes, retry] of [[75 * 1024, false], [2 * 1024 * 1024 + 1, false], [75 * 1024, true]]) test(
-  `authenticated full flow bounds inventory (${inventoryBytes} bytes, retry=${retry})`, { timeout: 10_000 }, async t => {
+  `authenticated full flow bounds inventory (${inventoryBytes} bytes, retry=${retry})`, { timeout: 20_000 }, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'runtime-smoke-curl-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const now = new Date().toISOString();
-  const runtimeConfig = { ...config, collectionStartedAt: retry ? new Date(Date.now() - 120_000).toISOString() : now };
+  let clock = Date.now();
+  if (retry) t.mock.method(Date, 'now', () => clock);
+  const old = new Date(clock - 600_000).toISOString();
+  const runtimeConfig = { ...config, collectionStartedAt: retry ? new Date(clock - 480_000).toISOString() : now };
   const responses = new Set(), requests = [];
   const password = 'fixture-private-password', token = 'fixture-private-token';
   let jobIndex = 0, retryCount = 0;
@@ -257,10 +312,13 @@ for (const [inventoryBytes, retry] of [[75 * 1024, false], [2 * 1024 * 1024 + 1,
       result = { ok: true };
     } else if (path === '/api/db') result = { status: 'ok', public_tables: 42 };
     else if (path === '/api/accounts') result = { accounts: [{ accountId: account, isHost: true, enabled: true }] };
-    else if (path === '/api/inventory/summary') result = { collection: { configured: true, readOk: true,
+    else if (path === '/api/inventory/summary') {
+      if (retry) clock += 60_000;
+      result = { collection: { configured: true, readOk: true,
       runs: ['ec2', 'cloudfront'].map(type => ({ type, accountId: 'self', status: 'succeeded', row_count: 1,
-        started_at: retry && retryCount === 0 && type === 'ec2' ? new Date(Date.now() - 180_000).toISOString() : now,
+        started_at: retry && retryCount === 0 && type === 'ec2' ? old : now,
         last_success_at: now, unknown_attribute_count: 0, unknown_attributes: false })) } };
+    }
     else if (path === '/api/inventory/cloudfront') result = { rows: [{ resource_id: config.expectedCloudfrontId,
       account_id: 'self', captured_at: now, data: { id: config.expectedCloudfrontId, cache_behaviors: 'x'.repeat(inventoryBytes) } }] };
     else if (path === '/api/deployment/readiness') result = { schemaVersion: 1, nonce: body.nonce, accountId: account,
@@ -283,13 +341,14 @@ for (const [inventoryBytes, retry] of [[75 * 1024, false], [2 * 1024 * 1024 + 1,
     email: 'demo@example.com', password, runtimeConfig,
   }, { runCurl, tempRoot: dir, retryCollection: retry ? async types => {
     assert.deepEqual(types, ['ec2']); retryCount++;
+    return types.map(type => ({ type, status: 'succeeded' }));
   } : undefined });
   if (inventoryBytes > 2 * 1024 * 1024) {
     await assert.rejects(action, /inventory_http/);
     assert.equal(requests.length, 5);
   } else {
     assert.equal((await action).mode, 'verify');
-    assert.equal(requests.length, retry ? 11 : 10);
+    assert.equal(requests.length, retry ? 12 : 10);
     assert.equal(retryCount, retry ? 1 : 0);
   }
   assert.deepEqual(readdirSync(dir), []);

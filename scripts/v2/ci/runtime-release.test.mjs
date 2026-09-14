@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  validateContext, validateDeployment, validateAcknowledgement, captureDeployment, release,
+  classifyAwsError, ReleaseError, validateContext, validateDeployment, validateAcknowledgement, captureDeployment, release,
 } from './runtime-release.mjs';
 
 const account = '123456789012', project = 'awsops-fixture', region = 'ap-northeast-2';
@@ -73,7 +73,7 @@ function fixture(overrides = {}) {
     }], failures: [] },
     'lambda get-function-configuration': { FunctionName: `${project}-inv-sync`,
       FunctionArn: deployment().inventory.sync_function_arn, CodeSha256: deployment().inventory.sync_code_sha256,
-      State: 'Active', LastUpdateStatus: 'Successful', Architectures: ['arm64'] },
+      State: 'Active', LastUpdateStatus: 'Successful', Architectures: ['arm64'], Timeout: 420 },
   };
   const calls = [], authenticated = [];
   const run = async (command, args) => {
@@ -127,31 +127,52 @@ test('wrong source, role/account or mode fails before AWS calls', async () => {
   assert.doesNotThrow(() => validateContext(env));
 });
 
-test('collection retries invoke only acknowledged types on the owned function, at most twice', async () => {
+test('collection retry RPCs expose busy and enforce a per-run call budget without accepting them as proof', async () => {
   const f = fixture();
+  let clock = Date.now(), retryCalls = 0;
+  const run = async (command, args, options) => {
+    if (args[0] === 'lambda' && args[1] === 'invoke' && !args.includes('{"type":"all"}')) {
+      retryCalls++;
+      assert.equal(args[args.indexOf('--invocation-type') + 1], 'RequestResponse');
+      assert.ok(options.timeout >= 450_000);
+      assert.equal(args[args.indexOf('--cli-read-timeout') + 1], '440');
+      const { type } = JSON.parse(args[args.indexOf('--payload') + 1]);
+      writeFileSync(args.at(-1), JSON.stringify({ status: 'busy', type }));
+      return JSON.stringify({ StatusCode: 200, ExecutedVersion: '$LATEST' });
+    }
+    return f.run(command, args);
+  };
   try {
-    await release(deployment(), { env: f.env, run: f.run, authenticate: async (input, options) => {
+    await release(deployment(), { env: f.env, run, now: () => clock, authenticate: async (input, options) => {
       const result = await f.authenticate(input, options);
-      assert.equal(typeof options.retryCollection, 'function');
-      const before = f.calls.length;
       await assert.rejects(options.retryCollection(['unacknowledged']), /invalid_collection_retry/);
       await assert.rejects(options.retryCollection(['rds', 'rds']), /invalid_collection_retry/);
-      assert.equal(f.calls.length, before);
-      await options.retryCollection(['rds']);
-      await options.retryCollection(['rds']);
-      await assert.rejects(options.retryCollection(['rds']), /collection_retry_limit/);
+      assert.deepEqual(await options.retryCollection(['rds']), []); // still draining initial queue
+      clock += 420_000;
+      for (let i = 0; i < 8; i++) {
+        assert.deepEqual(await options.retryCollection(['rds']), [{ type: 'rds', status: 'busy' }]);
+      }
+      assert.deepEqual(await options.retryCollection(['rds']), []);
       return result;
     } });
-    const retries = f.calls.filter(args => args.slice(0, 2).join(' ') === 'lambda invoke' &&
-      args[args.indexOf('--invocation-type') + 1] === 'Event');
-    assert.equal(retries.length, 2);
-    for (const args of retries) {
-      assert.equal(args[args.indexOf('--function-name') + 1], deployment().inventory.sync_function_arn);
-      assert.deepEqual(JSON.parse(args[args.indexOf('--payload') + 1]), { type: 'rds' });
-    }
+    assert.equal(retryCalls, 8);
   } finally { f.cleanup(); }
 });
-
+test('initial dispatch retries only confirmed throttling and timestamps the accepted attempt', async () => {
+  const f = fixture();
+  let clock = Date.now() - 30_000, attempts = 0;
+  const began = clock;
+  try {
+    await release(deployment(), { env: f.env, now: () => clock, wait: async ms => { clock += ms; },
+      run: async (command, args) => {
+        if (args[0] === 'lambda' && args[1] === 'invoke' && attempts++ < 2)
+          throw new ReleaseError('aws_throttled');
+        return f.run(command, args);
+      }, authenticate: f.authenticate });
+    assert.equal(attempts, 3);
+    assert.equal(f.authenticated[0].input.runtimeConfig.collectionStartedAt, new Date(began + 20_000).toISOString());
+  } finally { f.cleanup(); }
+});
 test('Terraform schema is snake_case and collect cannot accept disabled/partial configuration', () => {
   assert.equal(validateDeployment(deployment(), validateContext(env)).project, project);
   for (const change of [
@@ -345,4 +366,51 @@ test('retains trusted smoke diagnostics while suppressing arbitrary thrown text'
         authenticate: async () => { throw error; } }), e => e.message === expected);
     } finally { f.cleanup(); }
   }
+});
+
+test('AWS CLI diagnostics classify only known codes without relaying private details', () => {
+  for (const [stderr, expected] of [
+    ['An error occurred (TooManyRequestsException) when calling the Invoke operation: PRIVATE', 'aws_throttled'],
+    ['An error occurred (AccessDeniedException) when calling the Invoke operation: PRIVATE', 'aws_access_denied'],
+    ['An error occurred (AccessDenied) when calling the Invoke operation: PRIVATE', 'aws_access_denied'],
+    ['PRIVATE TooManyRequestsException in unrelated diagnostic', 'aws_request_failed'],
+    ['An error occurred (ResourceNotFoundException) when calling the Invoke operation: PRIVATE', 'aws_request_failed'],
+  ]) assert.equal(classifyAwsError({ stderr }).message, expected);
+  assert.equal(classifyAwsError(undefined).message, 'aws_request_failed');
+});
+
+test('dispatcher denial does not repeat and confirmed throttling has a hard admission deadline', async () => {
+  for (const code of ['aws_access_denied', 'aws_throttled']) {
+    const f = fixture();
+    let clock = Date.now(), calls = 0;
+    const started = clock;
+    try {
+      await assert.rejects(release(deployment(), { env: f.env, now: () => clock,
+        wait: async ms => { clock += ms; }, authenticate: f.authenticate,
+        run: async (command, args) => {
+          if (args[0] === 'lambda' && args[1] === 'invoke') { calls++; throw new ReleaseError(code); }
+          return f.run(command, args);
+        },
+      }), new RegExp(code === 'aws_throttled' ? 'collection_dispatch_throttled' : 'collection_dispatch_denied'));
+      assert.ok(clock - started <= 450_000);
+      assert.equal(f.authenticated.length, 0);
+      assert.ok(code === 'aws_throttled' ? calls > 1 && calls <= 45 : calls === 1);
+    } finally { f.cleanup(); }
+  }
+});
+test('late collection does not launch an RPC with less than a full Lambda timeout remaining', async () => {
+  const f = fixture();
+  let clock = Date.now();
+  try {
+    await release(deployment(), { env: f.env, run: f.run, now: () => clock,
+      authenticate: async (input, options) => {
+        const result = await f.authenticate(input, options);
+        const before = f.calls.length;
+        clock += 751_000;
+        assert.deepEqual(await options.retryCollection(['rds']), []);
+        assert.equal(f.calls.length, before);
+        return result;
+      },
+    });
+  } finally { f.cleanup(); }
 });

@@ -390,7 +390,7 @@ jobs:
 
       - name: Authenticated development runtime readiness
         if: github.ref == 'refs/heads/dev'
-        timeout-minutes: 30
+        timeout-minutes: 45
         env:
           PUBLIC_URL: ${{ steps.tf.outputs.url }}
           CLOUDFRONT_DOMAIN: ${{ steps.tf.outputs.cloudfront_domain }}
