@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3cbfea50ed82 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 9cddd82fb6a4 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -207,7 +207,13 @@ is allowed up to 128 and every returned type needs strict proof. Both modes requ
 the enabled host only; collect's authenticated DB/host preflight fails incompatible
 registries before type calls as `host_only_registry_required`. Preserve isolated
 AWS CLI environments, first chronological terminal failure and stopped admission;
-admitted work settles and untouched types remain `not_started`. Partial/unknown
+admitted work settles and untouched types remain `not_started`. The six status-based
+`collection_attempts.counts` buckets partition `expected`: a selected type whose first call
+is blocked by the 450-second floor is `deadline`/zero attempts; a never-selected type is
+`not_started`/zero attempts. Attempt counts alone do not classify status, and
+`inventory_quality` gaps may still overlap. Preserve the outer `Runtime release:`
+and inner helper prefixes; identical RPC/ledger suffixes are different reasons.
+Partial/unknown
 outcomes intentionally stop even under limiter/hydrate pressure; use bounded
 capacity/reachability/permission diagnosis before an authorized fresh rerun.
 Never widen permissions automatically, weaken acceptance or suppress the schedule.

@@ -262,7 +262,11 @@ connectivity or actual denials before an authorized fresh bounded rerun; do not
 automatically retry those outcomes, widen permissions or disable the schedule.
 The first chronological terminal failure stops new type admission; all already-admitted
 operations settle before cleanup. Unassigned types remain `not_started` with zero
-attempts in the structured report. Partial, failed, stale, missing or unknown
+attempts in the structured report. The six status-based counts (`succeeded`, `partial`,
+`failed`, `unknown`, `deadline`, `not_started`) partition `expected`. A selected type
+whose first call is blocked by the 450-second floor is `deadline` with zero attempts, not `not_started`;
+attempt counts alone do not classify status. This does not make the separate inventory
+quality gap categories disjoint. Partial, failed, stale, missing or unknown
 evidence blocks release. A current
 running attempt waits within the shared window. The singleton ledger is not
 owned by this verifier's run token: a later scheduled failed/partial/unknown result
@@ -273,6 +277,9 @@ remain mandatory. The policy generator neither invokes types nor repairs failure
 the strict controller supplies collection orchestration for both workflows.
 Its `remaining_prerequisites: "not_assessed"` result does not approve the separate
 workflow/plan/promotion gates; see the [fixed diagnostics](runtime-foundation.md#fixed-diagnostics-and-remaining-prerequisites).
+That table preserves `Runtime release: <reason>` and helper prefixes. For example,
+`collection_partial` is an RPC reason, while `Runtime smoke: collection_partial`
+is a ledger reason; do not normalize them by stripping the prefix.
 
 Verifier-triggered collection changes freshness timestamps. Do not label those
 observations as EventBridge execution or schedule attribution. The separate

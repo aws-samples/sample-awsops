@@ -348,7 +348,12 @@ AWS CLI children use an explicit credential/settings allowlist, pinned path, dis
 config/credential files and metadata, and endpoint isolation; never forward ambient CI
 secrets, profiles, providers, CA/proxy overrides or hooks.
 The first chronological terminal failure stops new type admission; admitted work settles,
-and untouched types remain structured `not_started`. Partial/unknown outcomes intentionally
+and untouched types remain structured `not_started`. Six status counts partition
+`expected`; a selected type whose first call is blocked by the 450-second floor is `deadline`/zero attempts,
+while never-selected types are `not_started`/zero attempts. Inventory quality gaps can
+still overlap. Preserve the full `Runtime release: <reason>` envelope and nested
+`Runtime smoke:` / `Authenticated smoke:` prefixes; identical RPC/ledger suffixes
+are not interchangeable. Partial/unknown outcomes intentionally
 stop even under limiter/hydrate pressure. Diagnose capacity, reachability or denials before
 an authorized fresh bounded rerun; do not weaken acceptance or suppress the schedule.
 Full SSM/AgentCore/model and both owned worker proofs remain required afterward.

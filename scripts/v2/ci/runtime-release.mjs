@@ -427,7 +427,7 @@ export async function release(deployment, {
         expected: types.length,
         ...Object.fromEntries(['succeeded', 'partial', 'failed', 'unknown', 'deadline']
           .map(status => [status, types.filter(type => states[type].status === status).length])),
-        not_started: types.filter(type => states[type].attempts === 0).length,
+        not_started: types.filter(type => states[type].status === 'not_started').length,
       } };
       if (firstFailure) {
         firstFailure.collection_attempts = collectionAttempts;
