@@ -133,7 +133,9 @@ TARGETS = {
                 "evidence is unassessed; never infer no rules/no routes or healthy/failed connectivity "
                 "from these gaps. Attribute SG gaps by unknown[].resourceId: empty inbound/outbound with "
                 "SG partial=true is unassessed; both empty with SG partial=false confirms only that "
-                "group is ruleless. Preserve other returned evidence."
+                "group is ruleless. Preserve other returned evidence. Each SG has a shared 200-peer-row "
+                "inbound/outbound budget and 100-character descriptions; truncation is unknown/partial. "
+                "Route selection requires explicit associated state."
             ), "inputSchema": {"type": "object", "properties": {"eni_id": _p("string", "ENI ID")}, "required": ["eni_id"]}},
             {"name": "list_vpcs", "description": "List VPCs", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "get_vpc_network_details", "description": "Full VPC config", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
