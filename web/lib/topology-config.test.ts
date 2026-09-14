@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchEksIpMap, inventoryEvidence } from './topology-config';
+import { fetchEksIpMap, fetchEksIpEvidence, inventoryEvidence } from './topology-config';
 import { buildFlowGraph, scopedTargetIp } from './flow-topology';
 
 const region = 'us-east-1', vpcId = 'vpc-shared', ip = '10.0.2.10';
@@ -75,6 +75,19 @@ describe('EKS inventory producer → configured flow graph', () => {
     expect(target.meta?.cluster).toBeUndefined();
   });
 
+  it.each([
+    { name: 'hostNetwork pods', pods: [{ ...pod, name: 'aws-node' }, { ...pod, name: 'kube-proxy' }] },
+    { name: 'uncorroborated endpoint IP', pods: [] },
+    { name: 'duplicate cluster candidates', pods: [pod], clusters: [cluster, { ...cluster, name: 'other' }] },
+  ])('keeps successful reads healthy while rejecting $name', async ({ pods, clusters }) => {
+    serve(pods, [endpoint], { clusters });
+    expect(await fetchEksIpEvidence()).toEqual({ ipResolved: {}, status: 'ok' });
+  });
+  it.each(['http', 'transport', 'envelope'] as const)('still discloses a real %s read failure', async failure => {
+    serve([pod], [endpoint], { failure });
+    expect(await fetchEksIpEvidence()).toEqual({ ipResolved: {}, status: 'partial' });
+  });
+
   it('preserves Service labeling only after the IP, pod name and namespace agree', async () => {
     serve([pod]);
     const { target } = await graphs();
@@ -111,22 +124,27 @@ describe('inventory capture evidence', () => {
   const run = { status: 'failed', last_success_at: newer, finished_at: '2026-09-14T12:00:00Z' };
   it('retains oldest/newest row captures despite a newer failed attempt', () => {
     expect(inventoryEvidence([{ captured_at: newer }, { captured_at: old }], run, true))
-      .toEqual({ capturedAt: old, capturedThrough: newer, unknownCapture: false, status: 'failed' });
+      .toEqual({ capturedAt: old, capturedThrough: newer, unknownCapture: false, aggregateStatus: 'failed' });
   });
   it('uses last-success only as fallback while disclosing unknown row captures', () => {
     expect(inventoryEvidence([{}], run, true))
-      .toEqual({ capturedAt: newer, capturedThrough: newer, unknownCapture: true, status: 'failed' });
+      .toEqual({ capturedAt: newer, capturedThrough: newer, unknownCapture: true, aggregateStatus: 'failed' });
   });
-  it('keeps a member capture without borrowing host run health', () => {
+  it('keeps member row clocks and separately reports aggregate run health', () => {
     expect(inventoryEvidence([{ captured_at: old }], run, false))
-      .toEqual({ capturedAt: old, capturedThrough: old, unknownCapture: false, status: 'unknown' });
+      .toEqual({ capturedAt: old, capturedThrough: old, unknownCapture: false, aggregateStatus: 'failed' });
+  });
+  it.each(['succeeded', 'partial', 'failed', 'running'])('retains aggregate %s without borrowing a member clock', status => {
+    expect(inventoryEvidence([], { ...run, status }, false)).toEqual({
+      capturedAt: null, capturedThrough: null, unknownCapture: true, aggregateStatus: status,
+    });
   });
   it('rejects invalid times and never falls back to failed-attempt finish', () => {
     expect(inventoryEvidence([{ captured_at: 'bad' }], { ...run, last_success_at: 'bad' }, true))
-      .toEqual({ capturedAt: null, capturedThrough: null, unknownCapture: true, status: 'failed' });
+      .toEqual({ capturedAt: null, capturedThrough: null, unknownCapture: true, aggregateStatus: 'failed' });
   });
   it('preserves successful empty host collection evidence', () => {
     expect(inventoryEvidence([], { status: 'succeeded', last_success_at: old }, true))
-      .toEqual({ capturedAt: old, capturedThrough: old, unknownCapture: false, status: 'succeeded' });
+      .toEqual({ capturedAt: old, capturedThrough: old, unknownCapture: false, aggregateStatus: 'succeeded' });
   });
 });

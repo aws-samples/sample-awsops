@@ -71,6 +71,8 @@ function ecsIpMap(tasks: Row[], subnets: Row[]): Map<string, { label: string; re
     subnetVpcs.set(key, vpcs);
   }
   for (const t of tasks) {
+    // Released or not-yet-running ENIs cannot establish current workload ownership.
+    if (t.last_status !== 'RUNNING') continue;
     const region = str(t.region);
     const group = str(t.task_group);
     const svc = group.startsWith('service:') ? group.slice(8) : group;
