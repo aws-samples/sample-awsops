@@ -24,6 +24,13 @@ describe('listClusters', () => {
     const out = await listClusters();
     expect(out).toEqual([{ name: 'fsi-demo-cluster', status: 'ACTIVE', version: '1.30', endpoint: 'https://x', createdAt: '2026-01-01T00:00:00.000Z', region: 'ap-northeast-2', vpcId: '', platformVersion: '' }]);
   });
+  it.each([undefined, 'more'])('retains bounded enumeration metadata even for an empty page: %s', nextToken => {
+    eksSend.mockResolvedValueOnce({ clusters: [], nextToken });
+    return import('./aws').then(async ({ listClusterInventory }) => {
+      expect(await listClusterInventory()).toEqual({ clusters: [], region: 'ap-northeast-2', truncated: !!nextToken });
+      expect(eksSend.mock.calls[0][0].input).toEqual({ maxResults: 25 });
+    });
+  });
   it('returns [] when no clusters', async () => {
     eksSend.mockResolvedValueOnce({ clusters: [] });
     const { listClusters } = await import('./aws');

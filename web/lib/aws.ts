@@ -17,9 +17,9 @@ export interface ClusterInfo {
   region: string; vpcId: string; platformVersion: string;
 }
 
-export async function listClusters(accountId?: string): Promise<ClusterInfo[]> {
+export async function listClusterInventory(accountId?: string): Promise<{ clusters: ClusterInfo[]; region: string; truncated: boolean }> {
   const c = accountId && accountId !== 'self' ? await assumedClient(accountId, EKSClient, { region: REGION }) : eksClient();
-  const { clusters = [] } = await c.send(new ListClustersCommand({}));
+  const { clusters = [], nextToken } = await c.send(new ListClustersCommand({ maxResults: 25 }));
   const out: ClusterInfo[] = [];
   for (const name of clusters.slice(0, 25)) {
     const { cluster } = await c.send(new DescribeClusterCommand({ name }));
@@ -34,7 +34,11 @@ export async function listClusters(accountId?: string): Promise<ClusterInfo[]> {
       platformVersion: cluster?.platformVersion ?? '',
     });
   }
-  return out;
+  return { clusters: out, region: REGION, truncated: !!nextToken || clusters.length > 25 };
+}
+
+export async function listClusters(accountId?: string): Promise<ClusterInfo[]> {
+  return (await listClusterInventory(accountId)).clusters;
 }
 
 export interface CostBreakdown { total: number; currency: string; byService: { service: string; amount: number }[] }
