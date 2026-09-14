@@ -7,7 +7,6 @@ vi.mock('@/components/shell/LanguageProvider', () => ({
   useI18n: () => ({ lang: 'en', tt: (s: string) => s, t: (s: string) => s }),
 }));
 vi.mock('@/lib/use-theme', () => ({ useTheme: () => 'light' }));
-vi.mock('@/lib/account-context', () => ({ useActiveAccount: () => ['self'] }));
 vi.mock('next/dynamic', () => ({
   default: () => ({ nodes }: { nodes: { id: string; data: { fnode: FlowNode } }[] }) =>
     <div>{nodes.map(n => <span key={n.id} data-testid={n.data.fnode.kind}>{n.data.fnode.label}</span>)}</div>,
@@ -31,7 +30,7 @@ it('passes independently collected subnet rows to the real ECS target resolver',
       resource_id: 'subnet-a', region: 'us-east-1', data: { vpc_id: 'vpc-a' },
     }] : type === 'ecs_task' ? [{
       resource_id: 'task-orders', region: 'us-east-1', data: {
-        task_group: 'service:ecs-orders', cluster_arn: 'cluster/production',
+        last_status: 'RUNNING', task_group: 'service:ecs-orders', cluster_arn: 'cluster/production',
         attachments: [{ Details: [
           { Name: 'subnetId', Value: 'subnet-a' }, { Name: 'privateIPv4Address', Value: '10.0.1.10' },
         ] }],
