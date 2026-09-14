@@ -13,6 +13,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from ci_runtime_policy import verify_caller, verify_role
+from ci_verifier_sessions import parse_backend_fields
 
 
 REGION = "ap-northeast-2"
@@ -89,28 +90,11 @@ def validate_context(env):
 def backend_policy(env):
     """Bind the bootstrap session to the configured default-workspace state object."""
     validate_context(env)
-    require(env.get("TF_WORKSPACE", "default") in ("", "default"))
-    encoded = env.get("BACKEND_B64", "")
-    require(isinstance(encoded, str) and 0 < len(encoded) <= 22000)
-    text = base64.b64decode("".join(encoded.split()), validate=True).decode()
-    require(len(text) <= 16384)
-    fields = {}
-    allowed = {"bucket", "key", "region", "encrypt", "use_lockfile", "workspace_key_prefix", "kms_key_id"}
-    for line in text.splitlines():
-        if not line.strip() or line.lstrip().startswith(("#", "//")):
-            continue
-        match = re.fullmatch(r'\s*(\w+)\s*=\s*("(?:[^"\\]|\\.)*"|true|false)\s*(?:(?:#|//).*)?', line)
-        require(match and match[1] in allowed and match[1] not in fields)
-        fields[match[1]] = json.loads(match[2])
-    bucket, key = fields.get("bucket", ""), fields.get("key", "")
-    require(isinstance(bucket, str) and re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", bucket))
-    require(isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9._/-]{1,512}", key))
-    require(fields.get("region") == REGION and fields.get("encrypt", True) is True)
-    require(all(isinstance(v, (str, bool)) and "${" not in str(v) and "%{" not in str(v) for v in fields.values()))
     account = env["AWS_ACCOUNT_ID_DEV"]
+    fields = parse_backend_fields(env.get("BACKEND_B64", ""), account, env.get("TF_WORKSPACE", "default"))
+    bucket, key = fields["bucket"], fields["key"]
     resources = [f"arn:aws:s3:::{bucket}", f"arn:aws:s3:::{bucket}/{key}"]
     kms = fields.get("kms_key_id", "*")
-    require(kms == "*" or re.fullmatch(re.escape(f"arn:aws:kms:{REGION}:{account}:key/") + r"[a-f0-9-]{36}", kms))
     return {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": ["sts:GetCallerIdentity"], "Resource": "*",
          "Condition": {"StringEquals": {"aws:RequestedRegion": REGION}}},
