@@ -79,8 +79,11 @@ been running the main-branch pipelines). Nothing to do unless runs queue forever
 
 ### 2. CI roles + GitHub OIDC trust matrix
 
-All roles live in the samples deployment account and trust the GitHub OIDC
-provider with a `sub` condition — never the repo-wide `:*` wildcard, which would
+The matrix describes intended role purposes and trust boundaries; configured
+role ARNs and accounts come from the protected role secrets and must be verified.
+Production callers must use the production account, distinct from the declared
+development/preview account. Roles trust the GitHub OIDC provider with a `sub`
+condition — never the repo-wide `:*` wildcard, which would
 let ANY branch (including an experiment branch with an edited workflow) assume the
 mutation roles. Role-to-sub matrix:
 
@@ -88,8 +91,8 @@ mutation roles. Role-to-sub matrix:
 |---|---|---|---|
 | `sample-awsops-ci-build` | main build (no environment) | StringEquals `repo:aws-samples/sample-awsops:ref:refs/heads/main` | prod ECR push |
 | `sample-awsops-ci-deployer` | main roll / apply / agentcore (jobs carry `environment: production`) | StringEquals `repo:aws-samples/sample-awsops:environment:production` | prod ECS/ECR-pin/apply + AgentCore control plane, including `GetGateway` |
-| `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | dev + user stacks' ECR push |
-| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | Development/preview workflow targets; current `AdministratorAccess` baseline includes wider account access, so authenticated branch/stack checks are required |
+| `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | Development/preview ECR build and push; the configured build-role policy covers repositories across the CI account, not one stack, so each target requires authenticated branch/stack checks |
+| `sample-awsops-dev-ci-deployer` | dev + user-branch rolls, dev apply/agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | Development/preview ECS/ECR-pin/apply and AgentCore control plane, including `GetGateway`; current `AdministratorAccess` includes wider account access, so authenticated branch/stack checks and production-account separation are required |
 | `sample-awsops-ci-terraform-plan` | plan (PR/push incl. user-branch own-stack plans, read-only) | StringLike: `...:pull_request` + refs `main`, `dev`, `atomoh`, `ssminji`, `whchoi` | ReadOnlyAccess |
 | `sample-awsops-ci-review` | AI pr-review | StringEquals: verified subject prefix + environments `ci-review-auto` / `ci-review-recovery`, or legacy refs `main` / `dev`; no bare `pull_request` subject | Bedrock / Mantle policies — inspect actual permissions before approval |
 
@@ -394,9 +397,9 @@ Then register the generated files (base64) as repo secrets:
 
 | Stack | Secrets |
 |---|---|
-| all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (saved-plan/failure-capsule encryption, private asset HMAC and a separate failure HMAC domain; rotation requires the matching key for old bundles) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
+| all stacks (repo-wide) | `AWS_ACCOUNT_ID_DEV` (12-digit development/preview account; also required by the web helper on main for account exclusion) / `TF_PLAN_ENC_KEY` (saved-plan/failure-capsule encryption, private asset HMAC and a separate failure HMAC domain; rotation requires the matching key for old bundles) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
 | production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS`; future `ci_web_image.py` integration also requires repository secret `AWS_ACCOUNT_ID_DEV` for its dev-account exclusion check |
-| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` / `AWS_ACCOUNT_ID_DEV` (required configured account for migrations, runtime image builds and provisioning; secret, not variable) |
+| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV`; uses the repository-wide account secret above for migrations, runtime builds and provisioning |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
 
 ```bash
