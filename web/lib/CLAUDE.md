@@ -33,6 +33,13 @@ Domain-logic modules shared by API routes and components, mostly React-free (inc
 - `changelog.ts` — data layer for the sidebar version chip + changelog modal (server-only, fs). **Single source of truth = repo-root `CHANGELOG.md`** — `deploy.mjs` copies it into the image just before build (`/app/CHANGELOG.md`); local dev falls back to `../CHANGELOG.md`. Bilingual (# English / # 한국어).
 - `ssrf-guard.ts` — SSRF guard for external datasource calls.
 
+## Topology evidence contracts
+- `topology-config.ts` is the canonical host EKS IP producer used by the live topology page. Require a connected cluster with region/VPC, a unique independently listed pod, and a successful endpoint read; valid empty endpoints permit pod fallback, failed reads do not. The page does not apply host pod evidence to member/all-account inventory.
+- Every `buildFlowGraph` consumer must supply synced `subnet` rows for ECS attachment scope. EKS uses region/VPC-qualified keys or legacy IP keys carrying matching scope metadata; missing target-group scope is never ownership evidence. Both the page and materializer supply subnets.
+- `e2e-topology.ts` remains an unwired UI foundation. Pass the loader batch as optional `networkCoverage` even when its observations are empty. Graphs and selected views retain service collection quality and network failed/capped categories; absent batch coverage is unknown. A complete batch does not establish complete traffic coverage. Connection groups respect node and edge budgets on overview, focus and search.
+- `topology-observations.ts` keeps client-safe `TOPOLOGY_*` mirrors aligned with `nfm.ts` allowlists/range bounds. Its three category workers preserve cached response windows. `nfm.ts` caches rows with `startTime`, `endTime`, `queriedAt` and `capped`, never a freshly relabeled window on cache hits.
+- E2E traversed constructs are unordered context; they do not prove packet order or one causal request. The existing hop-path renderer is unchanged by this foundation.
+
 ## Rules
 - New live-AWS-query layers should clone `nfm.ts`'s TTL-cache + in-flight-dedupe pattern.
 - Adding/changing a language starts at `SUPPORTED_LANGS` — TS consumers break at compile time, but the 5 lockstep sites above require manual updates.

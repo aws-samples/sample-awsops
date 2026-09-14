@@ -20,16 +20,16 @@ export async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved
         try {
           const r = await fetch(`/api/eks/${encodeURIComponent(cluster.name)}/incluster?kind=${kind}`);
           const d = r.ok ? await r.json() : null;
-          return !d?.error && Array.isArray(d?.rows) ? d.rows : [];
-        } catch { return []; }
+          return !d?.error && d?.status !== 'error' && Array.isArray(d?.rows) ? d.rows : null;
+        } catch { return null; }
       };
-      const [endpoints, pods]: [EndpointRow[], PodRow[]] = await Promise.all([get('endpoints'), get('pods')]);
+      const [endpoints, pods]: [EndpointRow[] | null, PodRow[] | null] = await Promise.all([get('endpoints'), get('pods')]);
       const podsByIp = new Map<string, PodRow[]>();
-      for (const pod of pods) {
+      for (const pod of pods ?? []) {
         if (pod.podIP) podsByIp.set(pod.podIP, [...(podsByIp.get(pod.podIP) ?? []), pod]);
       }
       const servicesByIp = new Map<string, EndpointRow[]>();
-      for (const endpoint of endpoints) {
+      for (const endpoint of endpoints ?? []) {
         for (const ip of new Set(endpoint.ips ?? [])) {
           servicesByIp.set(ip, [...(servicesByIp.get(ip) ?? []), endpoint]);
         }
@@ -38,7 +38,7 @@ export async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved
         const matches = podsByIp.get(ip) ?? [];
         const pod = matches.length === 1 ? matches[0] : undefined;
         const services = servicesByIp.get(ip) ?? [];
-        const corroborated = pod?.name && pod.namespace && services.every(service =>
+        const corroborated = endpoints !== null && pod?.name && pod.namespace && services.every(service =>
           service.namespace === pod.namespace && (service.targets ?? []).filter(t => t.ip === ip)
             .every(t => !t.pod || t.pod === pod.name),
         );

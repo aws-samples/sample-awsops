@@ -87,8 +87,29 @@ function workloadIndex(nodes: E2eNode[]): Map<string, Set<E2eNode>> {
 
 /** Keep source records separate; identity edges express correlation, never a traced request. */
 export function buildE2eGraph(input: E2eInput): E2eGraph {
+  const host = input.account === 'self';
+  const coverage = host ? input.networkCoverage : undefined;
+  const observations = host ? list(input.network).map(record) : [];
+  const categories = (rows: Meta[]) => rows.map(row => text(row.category)).filter(Boolean) as E2eGraph['coverage']['network']['cappedCategories'];
+  const cappedCategories = [...new Set([
+    ...(coverage?.cappedCategories ?? []), ...categories(observations.filter(row => row.capped === true)),
+  ])];
+  const collection = host ? input.services?.collection : undefined;
   const graph: E2eGraph = {
     nodes: [], edges: [],
+    coverage: {
+      service: collection ? { ...collection,
+        ...(collection.sources ? { sources: collection.sources.map(source => ({ ...source,
+          ...(source.reasons ? { reasons: [...source.reasons] } : {}) })) } : {}),
+      } : { status: 'unknown', stale: true },
+      network: {
+        status: !host ? 'unsupported' : cappedCategories.length || coverage?.failedCategories.length
+          || Object.keys(coverage?.errors ?? {}).length ? 'partial' : coverage ? 'complete' : 'unknown',
+        successfulCategories: [...new Set(categories(observations))],
+        failedCategories: coverage ? [...coverage.failedCategories] : null,
+        cappedCategories, errors: coverage ? { ...coverage.errors } : null,
+      },
+    },
     summary: {
       configuredNodes: 0, serviceNodes: 0, networkFlows: 0,
       correlatedEndpoints: 0, unmatchedEndpoints: 0, ambiguousEndpoints: 0,
@@ -401,15 +422,45 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
     // Do not reintroduce a partial flow while filling remaining space with inventory.
     append([...selected].filter(id => !groupedNetwork.has(id)));
   }
-  const nodes = [...ordered].slice(0, maxNodes).map(id => byId.get(id)!);
-  const visibleIds = new Set(nodes.map(node => node.id));
+  // Apply the same indivisible flow unit to overview, focus and search, including edge limits.
+  const maxEdges = bound(selection.maxEdges, 700);
+  const groups = new Map<string, { nodes: Set<string>; edges: Set<string> }>();
+  for (const edge of selectedEdges) {
+    if (edge.evidence !== 'network') continue;
+    const connection = [edge.source, edge.target].find(id => byId.get(id)?.kind === 'connection');
+    if (!connection) continue;
+    const group = groups.get(connection) ?? { nodes: new Set<string>(), edges: new Set<string>() };
+    group.nodes.add(edge.source).add(edge.target);
+    group.edges.add(edge.id);
+    groups.set(connection, group);
+  }
+  const membership = new Map<string, { nodes: Set<string>; edges: Set<string> }>();
+  for (const group of groups.values()) for (const id of group.nodes) membership.set(id, group);
+  const visibleIds = new Set<string>(), requiredEdges = new Set<string>();
+  for (const id of ordered) {
+    const group = membership.get(id);
+    const additions = [id, ...(group?.nodes ?? [])].filter(node => !visibleIds.has(node));
+    const unique = [...new Set(additions)];
+    const addedEdges = [...(group?.edges ?? [])].filter(edge => !requiredEdges.has(edge));
+    if (visibleIds.size + unique.length > maxNodes || requiredEdges.size + addedEdges.length > maxEdges) continue;
+    unique.forEach(node => visibleIds.add(node));
+    addedEdges.forEach(edge => requiredEdges.add(edge));
+  }
+  // Context whose connection was omitted must not appear as a disconnected observed construct.
+  for (const id of visibleIds) {
+    if (byId.get(id)?.kind === 'construct' && !selectedEdges.some(edge => edge.evidence === 'context'
+      && (edge.source === id && visibleIds.has(edge.target) || edge.target === id && visibleIds.has(edge.source)))) {
+      visibleIds.delete(id);
+    }
+  }
+  const nodes = [...visibleIds].map(id => byId.get(id)!);
   const edgePriority: Record<E2eEvidence, number> = { network: 0, identity: 1, service: 2, context: 3, configuration: 4 };
   const visibleEdges = selectedEdges
     .filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target))
     .sort((a, b) => edgePriority[a.evidence] - edgePriority[b.evidence])
-    .slice(0, bound(selection.maxEdges, 700));
+    .slice(0, maxEdges);
   return {
-    nodes, edges: visibleEdges, matchedNodes,
+    nodes, edges: visibleEdges, matchedNodes, coverage: graph.coverage,
     omittedNodes: selected.size - nodes.length,
     omittedEdges: selectedEdges.length - visibleEdges.length,
   };

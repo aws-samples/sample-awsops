@@ -51,8 +51,8 @@ export interface FlowInput {
   // 'integrations/<id>') label the apigw→backend edge.
   alb_listener_rule?: Row[];
   apigatewayv2_route?: Row[];
-  // ip-target resolution (Spec 2): region|VPC|IP → friendly label + meta (legacy raw IP also accepted). EKS comes live from the
-  // page (ipResolved); ECS is derived here from synced ecsTask rows. Builder stays pure.
+  // EKS: canonical region|VPC|IP keys, or legacy IP keys with matching region/VPC metadata.
+  // ECS also requires attachment/subnet scope. Missing TG scope never proves ownership.
   ipResolved?: Record<string, { label: string; resolved: 'eks' | 'ecs'; meta?: Record<string, unknown> }>;
 }
 
@@ -502,10 +502,11 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
       if (ttype === 'instance') { resolved = ec2ById.has(targetId) ? 'ec2' : ''; key = 'ec2'; mlabel = ec2ById.get(targetId) || targetId; groupLabel = 'EC2 instances'; }
       else if (ttype === 'lambda') { resolved = lambdaByArn.has(targetId) ? 'lambda' : ''; key = `lambda:${targetId}`; mlabel = lambdaByArn.get(targetId) || targetId; groupLabel = mlabel; }
       else if (ttype === 'ip') {
-        const pod = input.ipResolved?.[scopedTargetIp(str(t.region), str(t.vpc_id), targetId)] ?? input.ipResolved?.[targetId];
-        const inScope = (candidate: typeof pod) => candidate
-          && (candidate.resolved !== 'ecs' || (t.region && t.vpc_id
-            && candidate.meta?.region === t.region && candidate.meta?.vpcId === t.vpc_id))
+        const scopedPod = input.ipResolved?.[scopedTargetIp(str(t.region), str(t.vpc_id), targetId)];
+        const pod = scopedPod ?? input.ipResolved?.[targetId];
+        const inScope = (candidate: typeof pod) => candidate && t.region && t.vpc_id
+          && ((candidate === scopedPod && candidate.resolved === 'eks')
+            || (candidate.meta?.region === t.region && candidate.meta?.vpcId === t.vpc_id))
           && !(candidate.meta?.region && t.region && candidate.meta.region !== t.region)
           && !(candidate.meta?.vpcId && t.vpc_id && candidate.meta.vpcId !== t.vpc_id);
         const task = ecsByIp.get(scopedTargetIp(str(t.region), str(t.vpc_id), targetId));

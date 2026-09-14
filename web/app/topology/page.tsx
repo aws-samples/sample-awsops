@@ -11,6 +11,7 @@ import DetailPanel from '@/components/ui/DetailPanel';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { buildFlowGraph, filterFromEntry, type FlowInput, type FlowKind, type FlowNode } from '@/lib/flow-topology';
 import { layoutFlow } from '@/lib/flow-layout';
+import { fetchEksIpMap } from '@/lib/topology-config';
 import { useTheme } from '@/lib/use-theme';
 import { useActiveAccount } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
@@ -18,7 +19,7 @@ import { useI18n } from '@/components/shell/LanguageProvider';
 // ReactFlow touches the DOM on mount — load it client-only to avoid SSR mismatch.
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
 
-const TYPES = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2', 'lambda', 'ecs_task', 's3',
+const TYPES = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2', 'lambda', 'ecs_task', 's3', 'subnet',
   'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin', 'apigatewayv2_route', 'alb_listener_rule'] as const;
 type InvType = (typeof TYPES)[number];
 type Row = Record<string, unknown>;
@@ -26,11 +27,11 @@ type Row = Record<string, unknown>;
 // InvType → FlowInput key (target_group→tg, ecs_task→ecsTask). ec2/lambda/ecs enrich target labels.
 // s3 resolves CloudFront S3 origins; apigatewayv2_* resolve execute-api origins → API GW → Lambda/LB;
 // cloudfront_vpc_origin resolves CloudFront VPC origins → internal ALB/NLB.
-type RowKey = 'route53' | 'cloudfront' | 'alb' | 'nlb' | 'tg' | 'waf' | 'ec2' | 'lambda' | 'ecsTask' | 's3'
+type RowKey = 'route53' | 'cloudfront' | 'alb' | 'nlb' | 'tg' | 'waf' | 'ec2' | 'lambda' | 'ecsTask' | 's3' | 'subnet'
   | 'apigatewayv2_api' | 'apigatewayv2_integration' | 'cloudfront_vpc_origin' | 'apigatewayv2_route' | 'alb_listener_rule';
 const FLOW_KEY: Record<InvType, RowKey> = {
   route53: 'route53', cloudfront: 'cloudfront', alb: 'alb', nlb: 'nlb', target_group: 'tg', waf: 'waf',
-  ec2: 'ec2', lambda: 'lambda', ecs_task: 'ecsTask', s3: 's3',
+  ec2: 'ec2', lambda: 'lambda', ecs_task: 'ecsTask', s3: 's3', subnet: 'subnet',
   apigatewayv2_api: 'apigatewayv2_api', apigatewayv2_integration: 'apigatewayv2_integration',
   cloudfront_vpc_origin: 'cloudfront_vpc_origin',
   apigatewayv2_route: 'apigatewayv2_route', alb_listener_rule: 'alb_listener_rule',
@@ -133,60 +134,15 @@ const ROW_CAP = 500; // /api/inventory caps limit at 500
 async function fetchType(t: InvType, account: string): Promise<{ rows: Row[]; finishedAt: string | null; capped: boolean }> {
   // account scope: 'self' | 12-digit | '__all__' — the inventory read route's `accounts` param.
   const r = await fetch(`/api/inventory/${t}?limit=${ROW_CAP}&accounts=${encodeURIComponent(account)}`);
-  if (!r.ok) return { rows: [], finishedAt: null, capped: false };
+  if (!r.ok) throw new Error(`${t}: HTTP ${r.status}`);
   const d = await r.json();
+  if (!d || d.error || d.status === 'error' || !Array.isArray(d.rows)) throw new Error(`${t}: invalid inventory response`);
   const rows = (d.rows ?? []) as { resource_id: unknown; region: unknown; data?: object }[];
   return {
     rows: rows.map((x) => ({ resource_id: x.resource_id, region: x.region, ...(x.data ?? {}) })),
     finishedAt: d.run?.finished_at ?? null,
     capped: rows.length >= ROW_CAP, // hit the cap → more rows exist, surfaced below (no silent truncation)
   };
-}
-
-// Resolve ALB/NLB ip targets to EKS workloads: for each connected cluster, map pod IP →
-// "namespace/workload" (Deployment). Best-effort — failures per cluster are skipped.
-async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved']>> {
-  const map: NonNullable<FlowInput['ipResolved']> = {};
-  try {
-    const list = await fetch('/api/eks').then((r) => (r.ok ? r.json() : null));
-    // NOTE: /api/eks returns { clusters: [...] } (matches the EKS page + fleet). Reading `rows` here
-    // silently yielded [] → EKS pod resolution never ran (every EKS ip-target showed as a raw IP).
-    const clusters: string[] = (list?.clusters ?? [])
-      .filter((c: { access?: string }) => c.access === 'connected')
-      .map((c: { name?: string }) => c.name)
-      .filter(Boolean);
-    await Promise.all(clusters.map(async (name) => {
-      try {
-        const get = (kind: string) => fetch(`/api/eks/${name}/incluster?kind=${kind}`).then((x) => (x.ok ? x.json() : null));
-        const [eps, pods] = await Promise.all([get('endpoints'), get('pods')]);
-        // pod IP → owning workload (fallback when an IP isn't fronted by a Service)
-        const podByIp = new Map<string, { podIP?: string; namespace?: string; name?: string; workload?: string }>();
-        for (const p of (pods?.rows ?? []) as { podIP?: string; namespace?: string; name?: string; workload?: string }[]) {
-          if (p.podIP) podByIp.set(p.podIP, p);
-        }
-        // Service mapping (preferred): an Endpoints object's name == the Service name; its addresses
-        // are the backing pod IPs. More stable than the pod/workload — a TG ip-target fronts a Service.
-        for (const e of (eps?.rows ?? []) as { name?: string; namespace?: string; ips?: string[] }[]) {
-          for (const ip of e.ips ?? []) {
-            const pod = podByIp.get(ip);
-            map[ip] = {
-              label: `${e.namespace ?? ''}/${e.name ?? ''}`,
-              resolved: 'eks',
-              meta: { cluster: name, namespace: e.namespace, service: e.name, pod: pod?.name, workload: pod?.workload },
-            };
-          }
-        }
-        for (const [ip, p] of podByIp) {
-          if (!map[ip]) map[ip] = {
-            label: `${p.namespace ?? ''}/${p.workload || p.name || ''}`,
-            resolved: 'eks',
-            meta: { cluster: name, namespace: p.namespace, workload: p.workload, pod: p.name },
-          };
-        }
-      } catch { /* skip this cluster */ }
-    }));
-  } catch { /* no EKS resolution */ }
-  return map;
 }
 
 // ---- VPC / subnet / security-group id → name resolution (for the detail panel) ----
@@ -240,21 +196,29 @@ export default function TopologyPage() {
   const [selected, setSelected] = useState<FlowNode | null>(null);
   const [query, setQuery] = useState('');
   const [netMaps, setNetMaps] = useState<NetMaps>(emptyNetMaps);
+  const loadGeneration = useRef(0);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
+    const current = () => loadGeneration.current === generation;
     setBusy(true);
+    setData(null);
+    setSelected(null);
+    setErr('');
     try {
       const account = activeAccount || 'self';
-      const NET = ['vpc', 'subnet', 'security_group'] as const;
+      const NET = ['vpc', 'security_group'] as const;
       const [res, ipResolved, net] = await Promise.all([
         Promise.all(TYPES.map((t) => fetchType(t, account))),
-        fetchEksIpMap(),
-        // VPC/subnet/SG inventory → id→name maps for the detail panel (lookup only, not graph nodes)
+        account === 'self' ? fetchEksIpMap() : Promise.resolve({}),
+        // Subnets are fetched once with flow inventory and reused for detail names.
         Promise.all(NET.map((t) => fetch(`/api/inventory/${t}?limit=500&accounts=${encodeURIComponent(account)}`).then((r) => (r.ok ? r.json() : { rows: [] })).catch(() => ({ rows: [] })))),
       ]);
+      if (!current()) return;
       const mk = (rows: { resource_id?: unknown; data?: Record<string, unknown> }[]) =>
         new Map((rows ?? []).map((r) => [String(r.resource_id), invName(r)]));
-      setNetMaps({ vpc: mk(net[0]?.rows), subnet: mk(net[1]?.rows), sg: mk(net[2]?.rows) });
+      setNetMaps({ vpc: mk(net[0]?.rows), sg: mk(net[1]?.rows),
+        subnet: mk(res[TYPES.indexOf('subnet')].rows.map(row => ({ resource_id: row.resource_id, data: row }))) });
       const out: FlowInput = { ipResolved };
       let newest: string | null = null;
       const capped: string[] = [];
@@ -270,13 +234,13 @@ export default function TopologyPage() {
       setErr('');
       setCapturedAt(new Date().toISOString());
     } catch (e) {
-      setErr(String(e));
+      if (current()) setErr(String(e));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }, [activeAccount]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { void load(); return () => { loadGeneration.current += 1; }; }, [load]);
 
   // Deep-link from the service map (/topology/services): ?cluster=<resolved:name> seeds the cluster
   // filter so a trace workload click lands on this cluster's request path. Reads directly from

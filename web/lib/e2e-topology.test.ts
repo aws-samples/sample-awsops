@@ -4,6 +4,7 @@ import type { FlowGraph, FlowNode } from './flow-topology';
 import type { E2eGraph, E2eInput, NetworkObservation, ServiceSnapshot } from './e2e-topology-types';
 import type { NfmEndpoint, NfmFlowRow } from './nfm';
 import { buildE2eGraph, selectE2eGraph } from './e2e-topology';
+import { loadNetworkObservations } from './topology-observations';
 
 const REGION = 'ap-northeast-2';
 const VPC = 'vpc-app';
@@ -73,6 +74,38 @@ function expectNoDanglingEdges(graph: { nodes: { id: string }[]; edges: { source
 }
 
 describe('buildE2eGraph — evidence and provenance', () => {
+  it.each([false, true])('distinguishes actual failed and successful empty batches at the graph boundary: failure=%s', async failed => {
+    const batch = await loadNetworkObservations({
+      monitor: 'nfm-eks-app', metric: 'DATA_TRANSFERRED', category: 'INTRA_AZ', rangeSec: 900,
+    }, { name: 'nfm-eks-app', cluster: 'app', status: 'ACTIVE' }, {
+      fetch: (async () => Response.json(failed ? { message: 'Unavailable' } : {
+        monitor: 'nfm-eks-app', metric: 'DATA_TRANSFERRED', category: 'INTRA_AZ', range: 900,
+        rows: [], unit: 'Bytes', capped: false,
+      }, { status: failed ? 503 : 200 })) as typeof fetch,
+    });
+    const graph = buildE2eGraph(input({ network: batch.observations, networkCoverage: batch }));
+    expect(graph.summary.networkFlows).toBe(0);
+    expect(graph.coverage.network).toMatchObject({
+      status: failed ? 'partial' : 'complete', failedCategories: failed ? ['INTRA_AZ'] : [],
+      errors: failed ? { INTRA_AZ: 'Unavailable' } : {},
+    });
+    expect(buildE2eGraph(input()).coverage.network.status).toBe('unknown');
+  });
+
+  it('retains service quality and capped observations without claiming unknown failed categories were successful', () => {
+    const collection = { status: 'partial', stale: true, retainedPrevious: true,
+      sources: [{ sourceId: 'clickhouse:7', status: 'partial', reasons: ['cap_reached'], itemCount: 1000 }] };
+    const graph = buildE2eGraph(input({
+      services: { ...services(), collection }, network: [observation([], { capped: true })],
+    }));
+    expect(graph.coverage.service).toEqual(collection);
+    expect(graph.coverage.network).toMatchObject({ status: 'partial', cappedCategories: ['INTER_AZ'], failedCategories: null });
+    expect(buildE2eGraph(input()).coverage.service).toEqual({ status: 'unknown', stale: true });
+    const foreign = buildE2eGraph(input({ account: '__all__', services: { ...services(), collection } }));
+    expect(foreign.coverage.network.status).toBe('unsupported');
+    expect(foreign.coverage.service).toEqual({ status: 'unknown', stale: true });
+  });
+
   it('bridges a real CF/LB/TG/target graph, trace workloads and one NFM connection without collapsing records', () => {
     const lbArn = 'arn:aws:elasticloadbalancing:ap-northeast-2:123456789012:loadbalancer/app/web/1';
     const config = buildFlowGraph({
@@ -83,7 +116,7 @@ describe('buildE2eGraph — evidence and provenance', () => {
         load_balancer_arns: [lbArn],
         target_health_descriptions: [{ Target: { Id: '10.0.1.10', Port: 443 } }],
       }],
-      ipResolved: { '10.0.1.10': { label: 'shop/web', resolved: 'eks', meta: { cluster: 'app' } } },
+      ipResolved: { '10.0.1.10': { label: 'shop/web', resolved: 'eks', meta: { cluster: 'app', region: REGION, vpcId: VPC } } },
     });
     const trace = services();
     trace.nodes.push(
@@ -443,6 +476,22 @@ describe('buildE2eGraph — workload identity', () => {
 });
 
 describe('selectE2eGraph — filtering before bounds', () => {
+  it.each(['focus-connection', 'focus-endpoint', 'query', 'focus-query'])('keeps whole connection groups under tight node and edge budgets for %s', mode => {
+    const graph = buildE2eGraph(input({ network: [observation([flow()])] }));
+    const connection = graph.nodes.find(n => n.kind === 'connection')!;
+    const local = graph.nodes.find(n => n.kind === 'endpoint' && n.meta.side === 'local')!;
+    const selection = mode === 'focus-connection' ? { focusId: connection.id }
+      : mode === 'focus-endpoint' ? { focusId: local.id }
+        : { query: '10.0.1.10', ...(mode === 'focus-query' ? { focusId: connection.id } : {}) };
+    for (const [maxNodes, maxEdges, count] of [[2, 700, 0], [3, 1, 0], [3, 2, 3]]) {
+      const view = selectE2eGraph(graph, { ...selection, maxNodes, maxEdges });
+      expect(view.nodes).toHaveLength(count);
+      expect(view.edges).toHaveLength(count ? 2 : 0);
+      expect(view.omittedNodes).toBe(3 - count);
+      expectNoDanglingEdges(view);
+    }
+  });
+
   it('reserves nodes and edges for observed neighborhoods before dense unrelated configuration', () => {
     const config = configured();
     config.nodes.unshift(...Array.from({ length: 500 }, (_, i): FlowNode => ({

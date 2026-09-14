@@ -117,6 +117,12 @@ describe('scoped endpoint resolution for network correlation', () => {
     resource_id: 'tg-scope', target_type: 'ip', region: 'us-east-1', vpc_id: 'vpc-a',
     target_health_descriptions: [{ Target: { Id: '10.0.1.10', Port: 80 }, TargetHealth: { State: 'healthy' } }],
   };
+  it.each([{}, { region: 'us-east-1' }, { vpcId: 'vpc-a' }])('rejects legacy EKS ownership without complete scope: %j', meta => {
+    const graph = buildFlowGraph({ tg: [tg], ipResolved: {
+      '10.0.1.10': { label: 'unproven', resolved: 'eks', meta: { cluster: 'alpha', ...meta } },
+    } });
+    expect(graph.nodes.find(n => n.kind === 'target')?.meta?.resolved).toBeUndefined();
+  });
   it('uses region/VPC-qualified pod IPs so identical private addresses do not cross clusters', () => {
     const graph = buildFlowGraph({
       tg: [tg], ipResolved: {
@@ -562,7 +568,7 @@ describe('buildFlowGraph — ALB→TG→target', () => {
 
   it('resolved replicas (same EKS workload) collapse into one node with the member IPs', () => {
     const tgEks = {
-      resource_id: 'arn:tg:eks', target_group_name: 'eks-tg', target_type: 'ip',
+      resource_id: 'arn:tg:eks', target_group_name: 'eks-tg', target_type: 'ip', region: 'us-east-1', vpc_id: 'vpc-a',
       target_health_descriptions: [
         { Target: { Id: '10.2.1.1', Port: 8080 }, TargetHealth: { State: 'healthy' } },
         { Target: { Id: '10.2.1.2', Port: 8080 }, TargetHealth: { State: 'healthy' } },
@@ -570,9 +576,9 @@ describe('buildFlowGraph — ALB→TG→target', () => {
       ],
     };
     const ipResolved = {
-      '10.2.1.1': { label: 'app/api', resolved: 'eks' as const, meta: { service: 'api', namespace: 'app' } },
-      '10.2.1.2': { label: 'app/api', resolved: 'eks' as const, meta: { service: 'api', namespace: 'app' } },
-      '10.2.1.3': { label: 'app/api', resolved: 'eks' as const, meta: { service: 'api', namespace: 'app' } },
+      '10.2.1.1': { label: 'app/api', resolved: 'eks' as const, meta: { service: 'api', namespace: 'app', region: 'us-east-1', vpcId: 'vpc-a' } },
+      '10.2.1.2': { label: 'app/api', resolved: 'eks' as const, meta: { service: 'api', namespace: 'app', region: 'us-east-1', vpcId: 'vpc-a' } },
+      '10.2.1.3': { label: 'app/api', resolved: 'eks' as const, meta: { service: 'api', namespace: 'app', region: 'us-east-1', vpcId: 'vpc-a' } },
     };
     const g = buildFlowGraph({ tg: [tgEks], ipResolved });
     const targets = g.nodes.filter((x) => x.kind === 'target' && x.id.startsWith('target:arn:tg:eks'));
@@ -624,9 +630,9 @@ describe('buildFlowGraph — backend resolution (instance/lambda)', () => {
   });
 
   it('resolves an ip target to an EKS workload via ipResolved', () => {
-    const tgIp = { resource_id: 'arn:tg:ip', target_group_name: 'ip', target_type: 'ip',
+    const tgIp = { resource_id: 'arn:tg:ip', target_group_name: 'ip', target_type: 'ip', region: 'us-east-1', vpc_id: 'vpc-a',
       target_health_descriptions: [{ Target: { Id: '10.0.1.9' }, TargetHealth: { State: 'healthy' } }] };
-    const g = buildFlowGraph({ tg: [tgIp], ipResolved: { '10.0.1.9': { label: 'prod/checkout', resolved: 'eks', meta: { pod: 'checkout-abc', cluster: 'fsi' } } } });
+    const g = buildFlowGraph({ tg: [tgIp], ipResolved: { '10.0.1.9': { label: 'prod/checkout', resolved: 'eks', meta: { pod: 'checkout-abc', cluster: 'fsi', region: 'us-east-1', vpcId: 'vpc-a' } } } });
     const t = g.nodes.find((n) => n.kind === 'target');
     expect(t?.label).toBe('prod/checkout');
     expect(t?.meta?.resolved).toBe('eks');

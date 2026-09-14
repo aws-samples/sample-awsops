@@ -22,7 +22,7 @@ const network: NetworkObservation[] = [{
 }];
 
 function serve(pods: unknown[], endpoints: unknown[] = [endpoint], options: {
-  failure?: 'http' | 'transport' | 'envelope'; clusters?: typeof cluster[];
+  failure?: 'http' | 'transport' | 'envelope'; endpointFailure?: 'http' | 'transport' | 'envelope' | 'malformed'; clusters?: typeof cluster[];
 } = {}) {
   vi.stubGlobal('fetch', vi.fn(async (input: string) => {
     const url = new URL(input, 'http://localhost');
@@ -33,7 +33,13 @@ function serve(pods: unknown[], endpoints: unknown[] = [endpoint], options: {
       if (options.failure === 'envelope') return json({ error: 'Unavailable', rows: pods });
       return json({ kind: 'pods', rows: pods });
     }
-    if (url.searchParams.get('kind') === 'endpoints') return json({ kind: 'endpoints', rows: endpoints });
+    if (url.searchParams.get('kind') === 'endpoints') {
+      if (options.endpointFailure === 'http') return json({ error: 'Forbidden' }, 403);
+      if (options.endpointFailure === 'transport') throw new Error('unavailable');
+      if (options.endpointFailure === 'envelope') return json({ error: 'Unavailable', rows: [] });
+      if (options.endpointFailure === 'malformed') return json({ rows: null });
+      return json({ kind: 'endpoints', rows: endpoints });
+    }
     throw new Error(`Unexpected request: ${url}`);
   }));
 }
@@ -67,6 +73,9 @@ describe('EKS inventory producer → configuration → service/network graph', (
     { name: 'failed pod HTTP request', pods: [pod], failure: 'http' as const },
     { name: 'failed pod transport', pods: [pod], failure: 'transport' as const },
     { name: 'pod error envelope carrying stale rows', pods: [pod], failure: 'envelope' as const },
+    ...(['http', 'transport', 'envelope', 'malformed'] as const).map(endpointFailure => ({
+      name: `endpoint ${endpointFailure} failure with a valid pod`, pods: [pod], endpointFailure,
+    })),
     { name: 'conflicting targetRef', pods: [pod], endpoints: [{ ...endpoint, targets: [{ ip, pod: 'different-pod' }] }] },
     { name: 'conflicting namespace', pods: [{ ...pod, namespace: 'other' }] },
     { name: 'missing pod namespace', pods: [{ ...pod, namespace: '' }] },

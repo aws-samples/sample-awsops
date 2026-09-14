@@ -1,6 +1,7 @@
 import type { FlowGraph } from './flow-topology';
 import type { NfmCategory, NfmFlowRow, NfmMetric } from './nfm';
 import type { GraphCollection } from '../components/topology/GraphCollectionStatus';
+import type { NetworkBatch } from './topology-observations';
 
 export type E2eEvidence = 'configuration' | 'service' | 'network' | 'identity' | 'context';
 export type E2eLayer = 'configuration' | 'service' | 'network';
@@ -25,7 +26,7 @@ export interface ServiceSnapshot {
   nodes: { id: string; kind: string; label: string; meta?: Record<string, unknown> }[];
   edges: { source: string; target: string; rel: string; confidence?: string }[];
   captured_at: string | null;
-  /** Public graph collection metadata, validated by the loader; absence remains unknown. */
+  /** Loaders must validate public collection metadata; absence remains unknown. */
   collection?: GraphCollection;
 }
 export interface NetworkObservation {
@@ -46,10 +47,23 @@ export interface E2eInput {
   configured: FlowGraph;
   services: ServiceSnapshot | null;
   network: NetworkObservation[];
+  /** Pass the batch even when every category failed and network is empty. */
+  networkCoverage?: Pick<NetworkBatch, 'failedCategories' | 'cappedCategories' | 'errors'>;
 }
 export interface E2eGraph {
   nodes: E2eNode[];
   edges: E2eEdge[];
+  coverage: {
+    service: GraphCollection;
+    network: {
+      /** Complete describes only the supplied query batch, never all traffic. */
+      status: 'unknown' | 'complete' | 'partial' | 'unsupported';
+      successfulCategories: NfmCategory[];
+      failedCategories: NfmCategory[] | null;
+      cappedCategories: NfmCategory[];
+      errors: Partial<Record<NfmCategory, string>> | null;
+    };
+  };
   summary: {
     configuredNodes: number;
     serviceNodes: number;
@@ -73,4 +87,5 @@ export interface E2eView {
   omittedNodes: number;
   omittedEdges: number;
   matchedNodes: number;
+  coverage: E2eGraph['coverage'];
 }
