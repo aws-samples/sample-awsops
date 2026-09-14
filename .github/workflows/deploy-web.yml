@@ -388,8 +388,20 @@ jobs:
           node scripts/v2/deployment-smoke.mjs "$PUBLIC_URL" "$CLOUDFRONT_DOMAIN"
           echo
 
-      - name: Refresh development credentials for runtime verification
+      - name: Build restricted workload verification session
         if: github.ref == 'refs/heads/dev'
+        id: workload_session
+        env:
+          SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
+          RUNTIME_DEPLOYMENT_FILE: ${{ steps.runtime.outputs.deployment_file }}
+        run: |
+          set -euo pipefail
+          [ -n "$SMOKE_CREDENTIAL_FILE" ] && [ -n "$RUNTIME_DEPLOYMENT_FILE" ] || exit 1
+          directory="$(dirname -- "$SMOKE_CREDENTIAL_FILE")"
+          python3 scripts/v2/ci_verifier_sessions.py workload --directory "$directory" --deployment-file "$RUNTIME_DEPLOYMENT_FILE"
+          rm -f -- "$directory/workload-policy.json"
+      - name: Refresh development credentials for runtime verification
+        if: ${{ success() && github.ref == 'refs/heads/dev' && steps.workload_session.outputs.session_policy != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}
@@ -397,6 +409,7 @@ jobs:
           mask-aws-account-id: true
           unset-current-credentials: true
           role-duration-seconds: 3600
+          inline-session-policy: ${{ steps.workload_session.outputs.session_policy }}
 
       - name: Authenticated development runtime readiness
         if: github.ref == 'refs/heads/dev'
@@ -406,8 +419,10 @@ jobs:
           CLOUDFRONT_DOMAIN: ${{ steps.tf.outputs.cloudfront_domain }}
           SMOKE_CREDENTIAL_FILE: ${{ steps.demo.outputs.credential_file }}
           RUNTIME_DEPLOYMENT_FILE: ${{ steps.runtime.outputs.deployment_file }}
+          WORKLOAD_SESSION_POLICY: ${{ steps.workload_session.outputs.session_policy }}
         run: |
           set -euo pipefail
+          [ -n "${WORKLOAD_SESSION_POLICY//[[:space:]]/}" ] || { echo "::error::workload_session_policy_missing"; exit 1; }
           node scripts/v2/ci/runtime-release.mjs run
 
       - name: Clean prepared demo credentials off the runner

@@ -72,13 +72,13 @@ uses `RUNTIME_MODE=prepare|collect`; it does not reinterpret the smoke protocol.
 `PIN_SHA` is the reviewed deployed web-image commit: the helper checks its format
 only; the consumer binds the image to ECR and running tasks. It need not equal
 the workflow's `GITHUB_SHA`, and it must be empty in prepare mode.
-Only same-repository manual dev dispatches with
-`GITHUB_WORKFLOW_REF` exactly identifying this repository's
-`.github/workflows/collect-runtime.yml@refs/heads/dev`
-are accepted. `CI_ROLE_ARN` is the configured deployer role and
+Backend policies accept only same-repository manual dev dispatches from
+`collect-runtime.yml@refs/heads/dev`. Workload policies also accept
+`deploy-web.yml@refs/heads/dev` on push/dispatch, only in collect mode.
+`CI_ROLE_ARN` is the configured deployer role and
 `BACKEND_B64` is the private encoded backend input used only by the backend phase.
 
-The workflow must:
+The manual workflow must:
 
 1. Validate the manual dev source, configured role/account and mode before AWS
    access. Use fresh per-run private directories and files with 0700/0600 permissions.
@@ -96,6 +96,12 @@ The workflow must:
 5. Clean the owned policy and credential files in always-run cleanup, including
    failure/cancellation paths. Do not sweep unrelated runner temporary files.
 
+Deploy Web retains deployment privileges for image pinning and ECS rollout.
+After stability, it derives the workload policy from the private captured state
+and refreshes credentials with that nonempty restriction before verification.
+Missing policies fail before the verifier executes; cleanup remains always-run.
+Deploy Web cannot request a backend policy through this helper.
+
 The CLI publishes `policy_file` and `session_policy`. It masks the complete policy,
 Resource ARNs, bare S3 bucket and bucket/key forms, and configured account first.
 It fails outside
@@ -104,7 +110,7 @@ symlink/public/non-regular input files, or an existing output policy file.
 
 ### Collection effects and proof
 
-The intended `collect` consumer uses `RequestResponse` on the pinned function's
+The `collect` consumer uses `RequestResponse` on the pinned function's
 unqualified ARN, without a version or alias qualifier.
 Each event must explicitly contain exactly `{"type":"catalog"}` or
 `{"type":"cloudfront"}`. **An absent `type` defaults to `all`**, which triggers
@@ -151,7 +157,7 @@ authenticated BFF/AgentCore and owned worker HTTP proofs. A successful invoke
 alone never establishes it.
 
 The catalog lists registered types, not acknowledged invocations. For the
-follow-up consumer's **release mode**, read every returned type's host job ledger
+controller's **release mode**, read every returned type's host job ledger
 over HTTP within a bounded 1,200-second wait. CloudFront needs durable success
 after the owned pre-invoke marker. Other types need durable success within the
 last 30 minutes; the existing scheduler may supply that evidence. A later running,
@@ -162,8 +168,7 @@ The helper neither invokes the other types nor repairs their producer failures.
 
 Report aggregate collection as current/degraded with completeness unknown.
 Keep the owned CloudFront result, fresh known-host record, actual AgentCore/model
-proof and owned-worker proof mandatory. This release-mode contract is for the
-separate consumer integration; the existing standalone strict smoke's requirement
+proof and owned-worker proof mandatory. This release-mode contract is implemented by the controller; the existing standalone strict smoke's requirement
 for clean post-marker results is unchanged. Do not infer complete AWS inventory
 coverage or trigger attribution from either path.
 
@@ -175,9 +180,11 @@ workloads; sharing its backend parser does not alter its policy grants or calls.
 The trust boundary remains reviewed workflow code on a trusted runner. Session
 restrictions do not prevent malicious future workflow code from requesting a
 different OIDC session under the existing role. A dedicated role is separate
-IAM-owner work, not part of this prerequisite.
+IAM-owner work, outside these session restrictions.
 
 ## Related files and decisions
+
+- `.github/workflows/collect-runtime.yml`, `.github/workflows/deploy-web.yml`, and `scripts/v2/ci/runtime-release.mjs`
 
 - `scripts/v2/ci_verifier_sessions.py` and `scripts/v2/test_ci_verifier_sessions.py`
 - `scripts/v2/ci_deployment_audit.py` and `scripts/v2/test_ci_deployment_audit.py`

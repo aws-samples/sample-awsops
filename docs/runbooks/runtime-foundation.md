@@ -234,8 +234,9 @@ Both verification steps have a 55-minute cap; manual verification uses a restric
 
 The [session contract](runtime-verifier-sessions.md#action-and-integration-contract)
 defines backend S3/KMS and workload ECS/ECR/owned-Lambda permissions and action-specific
-resource/region conditions. The manual workflow requires each exact nonempty policy;
-it cannot fall back to the deployer's unrestricted session. STS caller verification
+resource/region conditions. Manual verification requires both exact nonempty policies;
+Deploy Web requires the workload restriction after rollout. Neither verification
+path falls back to an unrestricted session. STS caller verification
 remains mandatory. The controller grants no IAM; a denied read is not permission to widen scope.
 
 <a id="related--관련"></a>

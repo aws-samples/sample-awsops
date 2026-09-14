@@ -113,12 +113,13 @@ test('manual verification requires separate backend and workload session policie
 
 test('missing session policy fails before caller or runtime commands can run', () => {
   const job = workflow('collect-runtime.yml').jobs.verify;
-  for (const [name, variable] of [
-    ['Verify actual development caller', 'BACKEND_SESSION_POLICY'],
-    ['Run development collection operation', 'WORKLOAD_SESSION_POLICY'],
+  for (const [current, name, variable] of [
+    [job, 'Verify actual development caller', 'BACKEND_SESSION_POLICY'],
+    [job, 'Run development collection operation', 'WORKLOAD_SESSION_POLICY'],
+    [workflow('deploy-web.yml').jobs.deploy, 'Authenticated development runtime readiness', 'WORKLOAD_SESSION_POLICY'],
   ]) {
     const guarded = 'aws(){ echo UNGUARDED_COMMAND >&2; exit 9; }\n'
-      + 'node(){ echo UNGUARDED_COMMAND >&2; exit 9; }\n' + named(job, name).run;
+      + 'node(){ echo UNGUARDED_COMMAND >&2; exit 9; }\n' + named(current, name).run;
     const r = spawnSync('bash', ['-euo', 'pipefail', '-c', guarded], {
       cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH, [variable]: '',
         AWS_EC2_METADATA_DISABLED: 'true', AWS_CONFIG_FILE: '/dev/null',
@@ -135,11 +136,15 @@ test('verification refreshes the same dev role after setup and stays within the 
     const job = workflow(file).jobs[jobName];
     const refresh = named(job, 'Refresh development credentials for runtime verification');
     const gate = named(job, gateName);
+    assert.equal(refresh.with['inline-session-policy'], '${{ steps.workload_session.outputs.session_policy }}');
+    assert.match(refresh.if, /steps.workload_session.outputs.session_policy != ''/);
+    assert.ok(job.steps.findIndex(s => s.id === 'workload_session') < job.steps.indexOf(refresh));
     assert.equal(refresh.with['role-to-assume'], '${{ secrets.AWS_CI_DEPLOYER_DEV_ROLE_ARN }}');
     assert.equal(refresh.with['unset-current-credentials'], true);
     assert.equal(refresh.with['role-duration-seconds'], 3600);
     assert.ok(gate['timeout-minutes'] < 60);
     assert.equal(job.steps.indexOf(refresh) + 1, job.steps.indexOf(gate));
-    if (file === 'deploy-web.yml') assert.equal(refresh.if, "github.ref == 'refs/heads/dev'");
+    if (file === 'deploy-web.yml') assert.equal(refresh.if,
+      "${{ success() && github.ref == 'refs/heads/dev' && steps.workload_session.outputs.session_policy != '' }}");
   }
 });
