@@ -68,6 +68,15 @@ jobs:
         with:
           node-version: 20
 
+      - uses: actions/setup-python@v5
+        id: provision_python
+        with:
+          python-version: "3.12"
+
+      - name: Prepare isolated AgentCore provisioner SDK
+        id: provision_sdk
+        run: python3 scripts/v2/ci/setup-provision-python.py prepare
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
@@ -201,3 +210,10 @@ jobs:
         if: always()
         working-directory: terraform/foundation
         run: rm -f terraform.tfvars backend.hcl
+
+      - name: Clean AgentCore provisioner SDK
+        if: always() && steps.provision_sdk.outputs.directory != ''
+        env:
+          PROVISION_SDK_DIRECTORY: ${{ steps.provision_sdk.outputs.directory }}
+          PROVISION_BASE_PYTHON: ${{ steps.provision_python.outputs.python-path }}
+        run: '"$PROVISION_BASE_PYTHON" scripts/v2/ci/setup-provision-python.py cleanup'
