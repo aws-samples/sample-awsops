@@ -13,8 +13,14 @@ secrets-manager) — installed by `make deps`.
   with a nonsecret reference. Operators use IAM/KMS, not the CI key; apply still verifies
   asset HMAC plus reviewed_plan_sha256, exact source/attempt/scope and existing gates.
   Local-only inspection requires the private backend file and writes a new 0700 directory
-  with 0600 files; it reads no state. Public references contain no backend identifiers/digests. References last five days; no S3 expiry is configured. The operator purge procedure
-  removes expired attempt versions after seven days. Contract: `docs/reference/private-plan-transport.md`;
+  with 0600 files; it reads no state. Public references contain no backend identifiers/digests.
+  References last five days. Mandatory read-only lifecycle validation requires plan-prefix
+  7-day current/noncurrent expiry and 1-day multipart abort; operators configure it through
+  the separately reviewed bootstrap. Expiration is asynchronous, not an erasure guarantee.
+  SSE-KMS readers need no CI envelope key, so review effective S3/KMS access before rollout.
+  Policy mode is publisher-only; Apply retains its own authorization. Legacy `tfplan` runs
+  keep the historical inspector. Optional purge targets reviewed expired attempt versions.
+  Contract: `docs/reference/private-plan-transport.md`;
   tests: `v2/test_ci_private_plan.py`, `v2/test_ci_private_plan_workflow.py` and the existing crypto/context suites.
   This is operator CI artifact transport, not an ADR-005 exception or product mutation path.
 - `v2/ci_plan_inspect.py` is the legacy encrypted-artifact inspector: it verifies plan-run identity, checkout SHA

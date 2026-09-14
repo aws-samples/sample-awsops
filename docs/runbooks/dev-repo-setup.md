@@ -13,6 +13,7 @@
 `scripts/v2/ci_review_access.py`, `scripts/v2/ci_dns_policy.py`, `scripts/v2/ci_plan_context.py`,
 `scripts/v2/ci_private_plan.py`, `scripts/v2/test_ci_private_plan.py`,
 `scripts/v2/test_ci_private_plan_workflow.py`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_readiness_plan_summary.py`,
+`docs/reference/private-plan-transport.md`,
 `scripts/v2/test_ci_readiness_plan_summary.py`,
 `scripts/v2/ci_failure_diagnostics.py`,
 `scripts/v2/ci_db_diagnostics.py`, `scripts/v2/test_ci_db_diagnostics.py`,
@@ -25,6 +26,11 @@
 `terraform/foundation/controller-readiness.tf`, `terraform/foundation/tests/controller_readiness.tftest.hcl`,
 `terraform/foundation/tests/dns_deferred.tftest.hcl`, `docs/reference/01-edge-network.md`,
 `docs/reference/03-data-aurora.md`
+
+`ci_private_plan.py` inspects current S3 plan references. `ci_plan_inspect.py` remains
+for historical encrypted `tfplan` artifacts only. Plan and Apply migrate together
+to `tfplan-<attempt>` references; see the transport contract for storage, access and
+lifecycle prerequisites before the first publication.
 
 > Historical note: this file previously described the two-repo split
 > (`Atom-oh/sample-awsops-dev`). The project consolidated into the single public
@@ -1014,7 +1020,8 @@ runner/process loss can prevent finalizers. No public summary is full-plan appro
 | `bucket_not_sse_kms` / `bucket_encryption_missing` / `bucket_encryption_invalid` | Confirm one supported default SSE-KMS rule; backend `encrypt=true` is not evidence of that setting. |
 | `backend_key_mismatch` / `bucket_key_invalid` / `bucket_key_unusable` | Check identifier format and the resolved artifact key's account, region, Enabled state and symmetric ENCRYPT_DECRYPT use. Backend state-key metadata is independent. |
 | `kms_access_denied` / `kms_key_missing` | Verify direct DescribeKey authorization and the configured key/alias; no key material is requested. |
-| Lifecycle validation failure | Inspect GetLifecycleConfiguration privately; establish the required plan-only current/noncurrent/MPU rule through the owning bootstrap. Do not bypass the check or broaden expiry to state. |
+| `bucket_lifecycle_missing` / `bucket_lifecycle_denied` | Confirm an existing lifecycle and GetLifecycleConfiguration permission with the bucket owner; publication and private reads require both. |
+| `bucket_lifecycle_invalid` / `bucket_lifecycle_required` / `bucket_lifecycle_conflict` | Establish the exact plan-only 7/7/1 rule through the owning bootstrap and remove conflicting early expiry/archive rules. Do not bypass the check or broaden expiry to state. |
 | `object_already_exists` / `object_upload_retry_exhausted` | Conditional PUT recovery requires a pinned GET proving exact bytes, hash, length and key; at most three identical PUTs are attempted. Wrong objects are never overwritten. |
 
 These codes come only from the matching AWS S3 operation's exception envelope.
