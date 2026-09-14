@@ -60,8 +60,8 @@ approval. Separate `planned_changes` booleans indicate which group, enrollment,
 collector update and readiness-output activation are present. Unrecognized changes,
 wrong identities/IAM roles, non-code collector changes, unsupported operations and
 truncation make the scope comparison false. Description/precedence of a role-less
-group are not checked. Disable/retirement/import plans are outside this enable-only
-view. The combined resource/output report is capped at 256 rows.
+group are not checked. Imports, state address moves, disabling features and retiring
+resources fall outside this view. The combined resource/output report is capped at 256 rows.
 
 Summary failure is advisory and cannot prevent encrypted artifact publication.
 An unavailable, incomplete or unsupported summary requires

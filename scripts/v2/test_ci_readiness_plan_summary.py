@@ -48,6 +48,20 @@ def test_no_changes_is_not_resource_presence_or_readiness_confirmation():
     assert result["resource_changes"] == result["output_changes"] == []
 
 
+def test_address_moves_are_outside_scope_even_with_noop_or_known_updates():
+    for index, actions in ((0, ["no-op"]), (2, ["no-op"]), (2, ["update"])):
+        value = plan()
+        row = value["resource_changes"][index]
+        row["previous_address"] = 'module.PRIVATE_STACK.aws_lambda_function.PRIVATE_NAME'
+        row["change"]["actions"] = actions
+        if actions == ["no-op"]:
+            row["change"]["before"] = copy.deepcopy(row["change"]["after"])
+        result = summary.project(value)
+        assert not result["no_changes_outside_expected_scope"]
+        assert not result["resource_changes"][index]["matches_expected_scope"]
+        assert "PRIVATE" not in json.dumps(result)
+
+
 def test_imports_unknown_shapes_and_action_invocations_remain_unreviewed():
     for change in ("import", "unknown", "action", "deferred"):
         value = plan()

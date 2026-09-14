@@ -49,16 +49,17 @@ def project(plan):
         if not isinstance(actions, list) or not actions or any(a not in ACTIONS for a in actions):
             raise ValueError()
         importing = change.get("importing") is not None
-        if actions in (["no-op"], ["read"]) and not importing:
+        moving = item.get("previous_address") is not None
+        if actions in (["no-op"], ["read"]) and not (importing or moving):
             continue
         if len(changes) == 256:
             complete, truncated = False, True
             break
         address = item.get("address")
-        if importing:
+        if importing or moving:
             changes.append({"resource": address if address in {GROUP, MEMBER, COLLECTOR} else "other_resource",
                             "actions": actions, "matches_expected_scope": False,
-                            "checks": {"no_import": False}})
+                            "checks": {"no_import": not importing, "no_address_move": not moving}})
             complete = False
             continue
         before, after = change.get("before") or {}, change.get("after") or {}
