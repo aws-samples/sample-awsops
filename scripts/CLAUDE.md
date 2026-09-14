@@ -144,6 +144,9 @@ secrets-manager) — installed by `make deps`.
   Linux/ARM64 manifest digests. Build-role ECR scopes cover `-steampipe`/`-worker`; deployer scopes
   cover `-agentcore`. IAM is provisioned separately; web-only grants are insufficient.
   Preflight rejects missing repositories/denied access. No repository creation or latest-tag writes.
+  Image verification exports a private Docker archive, validates its tag and Linux/ARM64 config,
+  hashes exact config bytes and binds ECR to that digest. Tar reads validated hash paths with bounded
+  output and no AWS credentials; optional BuildKit metadata/image IDs are not config identity.
 - `v2/agentcore.mjs` + `agentcore/` — dev uses applied `ci_migrations_enabled=true`
   (`CI_MIGRATIONS_ENABLED_DEV=true`) and non-null `migration_job`, then private migration and
   digest-bound build-only/provision-only phases. Fresh sessions of the same role follow setup
