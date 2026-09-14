@@ -846,7 +846,7 @@ class SubprocessBoundaryTest(unittest.TestCase):
             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy",
             "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE",
             "REQUESTS_CA_BUNDLE", "GH_HOST", "GH_CONFIG_DIR", "GH_HTTP_UNIX_SOCKET", "GH_DEBUG",
-            "CURL_HOME", "XDG_CONFIG_HOME", "PYTHONPATH", "LD_PRELOAD", "BASH_ENV", "GITHUB_ENV")}
+            "HOME", "PATH", "CURL_HOME", "XDG_CONFIG_HOME", "PYTHONPATH", "LD_PRELOAD", "BASH_ENV", "GITHUB_ENV")}
         env.update(poison)
         def checked_run(argv, **kwargs):
             if argv[0] == "gh":
@@ -859,8 +859,8 @@ class SubprocessBoundaryTest(unittest.TestCase):
             child = options["env"]
             for key, value in poison.items():
                 self.assertNotEqual(child.get(key), value, (argv[0], key))
-            self.assertEqual(child["PATH"], env["PATH"])
-            self.assertEqual(child.get("HOME"), env.get("HOME"))
+            self.assertEqual(child["PATH"], "/usr/local/bin:/usr/bin:/bin")
+            self.assertNotIn("HOME", child)
             if argv[0] == "aws":
                 self.assertEqual({k: child[k] for k in AUTH if k.startswith("AWS_")},
                                  {k: v for k, v in AUTH.items() if k.startswith("AWS_")})
@@ -962,20 +962,25 @@ class SubprocessBoundaryTest(unittest.TestCase):
                     "--show-error", "--max-time", "5"], stdin_payload=f'url = "{url}"\n'.encode()))
             except Exception as error:
                 errors.append(error)
-        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}), \
-                patch("subprocess.Popen", side_effect=capture):
+        with tempfile.TemporaryDirectory() as home, patch("subprocess.Popen", side_effect=capture):
             Path(home, ".curlrc").write_text('proxy = "http://127.0.0.1:9"\n')
+            fake_bin = Path(home, "bin")
+            fake_bin.mkdir()
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text("#!/bin/sh\nexit 99\n")
+            fake_curl.chmod(0o700)
             worker = threading.Thread(target=download, daemon=True)
-            worker.start()
-            try:
-                self.assertTrue(arrived.wait(3), errors)
-                argv = Path(f"/proc/{processes[0].pid}/cmdline").read_bytes()
-                self.assertNotIn(token.encode(), argv)
-                self.assertNotIn(url.encode(), argv)
-            finally:
-                release.set()
-                worker.join(6)
-                server.server_close()
+            with patch.dict(os.environ, {"HOME": home, "PATH": str(fake_bin) + ":" + os.environ["PATH"]}):
+                worker.start()
+                try:
+                    self.assertTrue(arrived.wait(3), errors)
+                    argv = Path(f"/proc/{processes[0].pid}/cmdline").read_bytes()
+                    self.assertNotIn(token.encode(), argv)
+                    self.assertNotIn(url.encode(), argv)
+                finally:
+                    release.set()
+                    worker.join(6)
+                    server.server_close()
         server_thread.join(1)
         self.assertEqual(errors, [])
         self.assertEqual(result, [{}])
