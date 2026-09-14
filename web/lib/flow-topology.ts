@@ -54,6 +54,10 @@ export interface FlowInput {
   // EKS: canonical region|VPC|IP keys, or legacy IP keys with matching region/VPC metadata.
   // ECS also requires attachment/subnet scope. Missing TG scope never proves ownership.
   ipResolved?: Record<string, { label: string; resolved: 'eks' | 'ecs'; meta?: Record<string, unknown> } | null>;
+  ownershipRead?: {
+    ecsTask?: 'failed' | 'capped'; subnet?: 'failed' | 'capped';
+    eksScopes?: string[]; eksUnknown?: boolean;
+  };
 }
 
 /** ECS IP identity must be scoped by its own attachment, never by the TG it happens to match. */
@@ -511,14 +515,19 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
           && !(candidate.meta?.region && t.region && candidate.meta.region !== t.region)
           && !(candidate.meta?.vpcId && t.vpc_id && candidate.meta.vpcId !== t.vpc_id);
         const task = ecsByIp.get(scopedTargetIp(str(t.region), str(t.vpc_id), targetId));
-        const contradiction = pod === null || task === null
+        const reads = input.ownershipRead;
+        const issue = reads?.ecsTask ? 'ecs_task_inventory_incomplete'
+          : reads?.subnet ? 'subnet_inventory_incomplete'
+          : reads?.eksUnknown || reads?.eksScopes?.includes(scopedTargetIp(str(t.region), str(t.vpc_id), ''))
+            ? 'eks_inventory_incomplete' : undefined;
+        const contradiction = !!issue || pod === null || task === null
           || ecsByIp.get(scopedTargetIp(str(t.region), '', targetId)) === null
           || ecsByIp.get(scopedTargetIp('', '', targetId)) === null
           || inScope(pod) && pod?.resolved === 'eks' && inScope(task);
         const r = contradiction ? undefined : inScope(pod) ? pod : inScope(task) ? task : undefined;
         if (contradiction) {
           resolved = 'ambiguous'; key = 'ambiguous:owner';
-          meta = { ambiguity: 'ownership_unverified' };
+          meta = { ambiguity: issue ?? 'ownership_unverified' };
         }
         // group key includes cluster so same-named workloads in different clusters don't merge
         if (r) { resolved = r.resolved; key = `${r.resolved}:${str(r.meta?.cluster ?? '')}/${r.label}`; mlabel = r.label; groupLabel = r.label; meta = r.meta ?? {}; }

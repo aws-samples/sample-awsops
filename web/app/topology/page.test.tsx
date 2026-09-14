@@ -18,7 +18,7 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; failures?: Set<string>; eks?: object; eksFailed?: boolean } = {}) {
+function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; failures?: Set<string>; eks?: object; eksFailed?: boolean; subnetCapped?: boolean } = {}) {
   const requests: URL[] = [];
   vi.stubGlobal('fetch', vi.fn(async (input: string) => {
     const url = new URL(input, 'http://localhost'); requests.push(url);
@@ -42,6 +42,7 @@ function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; 
       if (type === 'subnet' && options.subnetFailed) return Response.json({ error: 'Unavailable' }, { status: 503 });
       const rows = type === 'target_group' ? [targets] : type === 'ecs_task' ? [task(host ? 'ecs-api' : 'member-api')]
         : type === 'subnet' ? [row('subnet-app', { vpc_id: vpcId, tags: { Name: 'App subnet' } })] : [];
+      if (type === 'subnet' && options.subnetCapped) rows.push(...Array.from({ length: 499 }, (_, i) => row(`extra-${i}`, { vpc_id: vpcId })));
       return Response.json({ rows, run: { finished_at: '2026-09-11T12:00:00Z' } });
     }
     throw new Error(`Unexpected request: ${url}`);
@@ -60,8 +61,16 @@ describe('live topology inventory adapter', () => {
   ])('discloses unavailable EKS resolution without hiding other inventory: %j', async options => {
     serve(options); render(<TopologyPage />);
     await screen.findByRole('alert', { name: 'EKS 식별 상태' });
-    search('ecs-api'); expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
+    await waitFor(() => expect(document.querySelector('.react-flow__node')).not.toBeNull());
+    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
     expect(document.body.textContent).not.toContain('not-a-real-credential');
+  });
+  it.each(['ecs_task', 'subnet-cap'])('does not treat %s read gaps as absent ownership competitors', async gap => {
+    serve({ failures: new Set(gap === 'ecs_task' ? ['ecs_task'] : []), subnetCapped: gap === 'subnet-cap' });
+    render(<TopologyPage />);
+    await screen.findByText('인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.');
+    expect(screen.queryByRole('option', { name: 'EKS · good' })).toBeNull();
+    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
   });
   it('keeps healthy EKS nodes visible when another VPC is unreadable', async () => {
     serve({ eks: { clusters: [{ name: 'good', region, vpcId, access: 'connected' },

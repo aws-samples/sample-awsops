@@ -71,10 +71,15 @@ afterEach(() => vi.unstubAllGlobals());
 describe('EKS inventory producer → configuration → service/network graph', () => {
   it('distinguishes valid empty enumeration from unreadable clusters', async () => {
     serve([], [], { clusters: [] });
-    expect(await fetchEksIpMap()).toEqual({ map: {}, status: 'empty', reasons: [] });
+    expect(await fetchEksIpMap()).toEqual({ map: {}, blockedScopes: [], globalUnknown: false, status: 'empty', reasons: [] });
     serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'unreadable', access: 'unknown' }] });
     expect(await fetchEksIpMap()).toEqual({ map: { [scopedTargetIp(region, vpcId, ip)]: null },
-      status: 'unavailable', reasons: ['cluster_unreadable'] });
+      blockedScopes: [`${region}|${vpcId}|`], globalUnknown: false, status: 'unavailable', reasons: ['cluster_unreadable'] });
+  });
+  it('keeps unreadable scope evidence when no IP could be enumerated', async () => {
+    serve([], [], { clusters: [{ ...cluster, access: 'no-entry' }] });
+    expect(await fetchEksIpMap()).toEqual({ map: {}, status: 'unavailable', reasons: ['cluster_unreadable'],
+      blockedScopes: [`${region}|${vpcId}|`], globalUnknown: false });
   });
   it.each(['unknown', 'no-entry'])('keeps a healthy different VPC when access is %s', access => {
     serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'unreadable', vpcId: 'vpc-other', access }] });

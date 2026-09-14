@@ -8,6 +8,8 @@ are partial evidence, never a complete query. The host configuration view report
 EKS ownership: failed known region/VPC scopes preserve unrelated identities, while unknown
 scopes or the existing API's possible 25-cluster limit invalidate the whole map. Member/all-account
 views do not run the host EKS producer. The four localized user guides ship with the operator view.
+Scope blocks apply even to IPs that could not be enumerated. Failed/capped ECS or subnet reads
+withhold ownership confidence; target details distinguish these read gaps from ownership conflicts.
 
 
 **Goal / 목표:** Connect workload evidence, execution state, changes and cost without treating

@@ -83,7 +83,7 @@ const KIND_ICON: Record<FlowKind, IconC> = {
   apigw: Webhook, lambda: Zap,
 };
 // target sub-icon by resolved backend: EKS pod / EC2 / Lambda, else a generic dot.
-const RESOLVED_ICON: Record<string, IconC> = { eks: Hexagon, ecs: Boxes, ec2: Server, lambda: Zap };
+const RESOLVED_ICON: Record<string, IconC> = { eks: Hexagon, ecs: Boxes, ec2: Server, lambda: Zap, ambiguous: CircleHelp };
 
 function iconFor(n: FlowNode): IconC {
   if (n.kind === 'target') return RESOLVED_ICON[String(n.meta?.resolved ?? '')] ?? Circle;
@@ -228,7 +228,7 @@ export default function TopologyPage() {
       ]);
       if (!current()) return;
       const failed = results.flatMap((result, i) => result.status === 'rejected'
-        ? [`${TYPES[i]}: ${result.reason instanceof Error ? result.reason.message : 'unavailable'}`] : []);
+        ? [result.reason instanceof Error ? result.reason.message : `${TYPES[i]}: unavailable`] : []);
       setErr(failed.join('; '));
       setEksResolution(eks);
       if (failed.length === TYPES.length) {
@@ -241,7 +241,14 @@ export default function TopologyPage() {
         new Map((rows ?? []).map((r) => [String(r.resource_id), invName(r)]));
       setNetMaps({ vpc: mk(net[0]?.rows), sg: mk(net[1]?.rows),
         subnet: mk(res[TYPES.indexOf('subnet')].rows.map(row => ({ resource_id: row.resource_id, data: row }))) });
-      const out: FlowInput = { ipResolved: eks?.map };
+      const readIssue = (type: InvType): 'failed' | 'capped' | undefined => {
+        const i = TYPES.indexOf(type);
+        return results[i].status === 'rejected' ? 'failed' : res[i].capped ? 'capped' : undefined;
+      };
+      const out: FlowInput = { ipResolved: eks?.map, ownershipRead: {
+        ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
+        eksScopes: eks?.blockedScopes, eksUnknown: eks?.globalUnknown,
+      } };
       let newest: string | null = null;
       const capped: string[] = [];
       TYPES.forEach((t, i) => {
@@ -429,7 +436,7 @@ export default function TopologyPage() {
       syn.target_type = m.targetType; syn.health = m.health; syn.port = m.port;
       if (m.resolved) syn.resolved_as = m.resolved;
       // EKS/ECS resolution detail (cluster / namespace / service / workload), when present
-      for (const k of ['cluster', 'namespace', 'service', 'workload', 'ecsService', 'task', 'pod'] as const) {
+      for (const k of ['cluster', 'namespace', 'service', 'workload', 'ecsService', 'task', 'pod', 'ambiguity'] as const) {
         if (m[k] != null && m[k] !== '') syn[k] = m[k];
       }
       // grouped node (ASG/replicas/tasks): show the member count + health summary + the IP list
@@ -577,6 +584,9 @@ export default function TopologyPage() {
         {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
         {(eksResolution?.status === 'unavailable' || eksResolution?.status === 'partial') && <div role="alert" aria-label={tt('EKS 식별 상태')} className="text-[13px] text-warning">
           {tt('EKS 조회 실패 또는 수집 범위 제한으로 IP 소유자를 확인할 수 없습니다.')} ({eksResolution.reasons.join(', ')})
+        </div>}
+        {(data?.ownershipRead?.ecsTask || data?.ownershipRead?.subnet) && <div role="status" className="text-[13px] text-warning">
+          {tt('인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.')}
         </div>}
         {retained && <div role="status" className="text-[13px] text-warning">{tt('조회 실패로 이전 결과를 표시합니다.')}</div>}
         {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}

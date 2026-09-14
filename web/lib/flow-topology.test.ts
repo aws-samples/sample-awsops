@@ -19,6 +19,22 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
   };
   const target = (input: FlowInput) => buildFlowGraph(input).nodes.find(n => n.kind === 'target')!;
 
+  it.each(['failed', 'capped'] as const)('distinguishes inventory %s from ownership conflict', state => {
+    for (const type of ['ecsTask', 'subnet'] as const) {
+      const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], subnet: [subnet],
+        ecsTask: type === 'ecsTask' ? [] : [task], ownershipRead: { [type]: state },
+        ipResolved: type === 'ecsTask' ? { [`${region}|vpc-b|${ip}`]: { label: 'pod', resolved: 'eks' } } : undefined });
+      expect(node.meta).toMatchObject({ resolved: 'ambiguous', ambiguity: type === 'ecsTask'
+        ? 'ecs_task_inventory_incomplete' : 'subnet_inventory_incomplete' });
+    }
+  });
+  it.each(['vpc-b', 'vpc-other', 'unknown'])('honors unreadable EKS scopes with no enumerated IP: %s', scope => {
+    const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task], subnet: [subnet],
+      ownershipRead: { eksUnknown: scope === 'unknown', eksScopes: [`${region}|${scope}|`] } });
+    expect(node.meta?.resolved).toBe(scope === 'vpc-other' ? 'ecs' : 'ambiguous');
+    if (scope !== 'vpc-other') expect(node.meta?.ambiguity).toBe('eks_inventory_incomplete');
+  });
+
   it.each(['eks', 'ecs'])('preserves duplicate %s claims when the other source has one owner', source => {
     const pod = { label: 'shop/pod', resolved: 'eks' as const, meta: { region, vpcId: 'vpc-b' } };
     const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], subnet: [subnet],

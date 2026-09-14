@@ -5,11 +5,13 @@ import type { PodRow } from './eks-resources';
 type Resolution = NonNullable<FlowInput['ipResolved']>[string];
 export interface EksIpResolution {
   map: NonNullable<FlowInput['ipResolved']>;
+  blockedScopes: string[];
+  globalUnknown: boolean;
   status: 'ok' | 'empty' | 'partial' | 'unavailable';
   reasons: ('cluster_unreadable' | 'cluster_limit_possible')[];
 }
 const unavailable = (reason: EksIpResolution['reasons'][number] = 'cluster_unreadable'): EksIpResolution =>
-  ({ map: {}, status: 'unavailable', reasons: [reason] });
+  ({ map: {}, blockedScopes: [], globalUnknown: true, status: 'unavailable', reasons: [reason] });
 type Cluster = { name: string; access?: string; region?: string; vpcId?: string };
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -94,6 +96,6 @@ export async function fetchEksIpMap(): Promise<EksIpResolution> {
   }
   const map = Object.fromEntries([...candidates].map(([key, value]) =>
     [key, blockedScopes.has(key.slice(0, key.lastIndexOf('|') + 1)) ? null : value]));
-  return { map, status: blockedScopes.size ? Object.values(map).some(Boolean) ? 'partial' : 'unavailable'
+  return { map, blockedScopes: [...blockedScopes].sort(), globalUnknown: false, status: blockedScopes.size ? Object.values(map).some(Boolean) ? 'partial' : 'unavailable'
     : candidates.size ? 'ok' : 'empty', reasons: blockedScopes.size ? ['cluster_unreadable'] : [] };
 }
