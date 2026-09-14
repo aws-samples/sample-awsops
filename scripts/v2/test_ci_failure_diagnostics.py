@@ -40,6 +40,8 @@ class FailureDiagnosticsTests(unittest.TestCase):
             "GITHUB_REPOSITORY": "example/awsops", "GITHUB_REF_NAME": "dev",
             "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_SHA": SHA,
             "GITHUB_RUN_ID": "23", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_JOB": "plan",
+            "GITHUB_OUTPUT": str(self.root / "outputs"),
+            "GITHUB_STEP_SUMMARY": str(self.root / "summary"),
         }
         self.failed_run = {**copy.deepcopy(RUN), "conclusion": "failure"}
 
@@ -50,7 +52,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
 
     def recover(self, file, **expected):
         with mock.patch.object(self.module, "fetch_run", return_value=self.failed_run), \
-                mock.patch.dict(os.environ, {"TF_PLAN_ENC_KEY": KEY}):
+                mock.patch.dict(os.environ, {"TF_PLAN_ENC_KEY": KEY, "GITHUB_ACTIONS": "false"}):
             return self.module.recover(
                 file, self.root / "recovered", repository="example/awsops", branch="dev",
                 commit=expected.get("commit", SHA), run_id="23", attempt="1", phase="plan")
@@ -99,13 +101,18 @@ class FailureDiagnosticsTests(unittest.TestCase):
                 if mode == "run":
                     self.failed_run["head_branch"] = "main"
                 with mock.patch.object(self.module, "fetch_run", return_value=self.failed_run), \
+                        mock.patch.object(self.module, "crypt", wraps=self.module.crypt) as decrypt, \
                         mock.patch.dict(os.environ, {
-                            "TF_PLAN_ENC_KEY": "wrong-key" if mode == "key" else KEY}):
-                    with self.assertRaises(self.module.ArtifactError):
+                            "TF_PLAN_ENC_KEY": "wrong-key" if mode == "key" else KEY,
+                            "GITHUB_ACTIONS": "false"}):
+                    with self.assertRaises(self.module.ArtifactError) as rejected:
                         self.module.recover(file, self.root / "recovered",
                             repository="example/awsops", branch="dev",
                             commit="b" * 40 if mode == "commit" else SHA,
                             run_id="23", attempt="1", phase="plan")
+                    self.assertNotEqual(str(rejected.exception), "local_recovery_only")
+                    if mode in ("tamper", "key"):
+                        decrypt.assert_called_once()
                 self.assertFalse((self.root / "recovered").exists())
 
     def test_failed_attempt_remains_recoverable_after_a_later_successful_rerun(self):
@@ -122,13 +129,42 @@ class FailureDiagnosticsTests(unittest.TestCase):
             return command(args, output, **kwargs)
 
         with mock.patch.object(ci_plan_inspect, "private_command", side_effect=api), \
-                mock.patch.dict(os.environ, {"TF_PLAN_ENC_KEY": KEY}):
+                mock.patch.dict(os.environ, {"TF_PLAN_ENC_KEY": KEY, "GITHUB_ACTIONS": "false"}):
             result = self.module.recover(file, self.root / "recovered",
                 repository="example/awsops", branch="dev", commit=SHA,
                 run_id="23", attempt="1", phase="plan")
         self.assertEqual(result["context"]["attempt"], "1")
         self.assertIn(b"PRIVATE_FAILURE_MARKER",
                       (self.root / "recovered/diagnostics.log").read_bytes())
+
+    def test_actions_recovery_is_refused_before_authentication_or_decryption(self):
+        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+                mock.patch.object(self.module, "fetch_run") as fetch, \
+                mock.patch.object(self.module, "crypt") as decrypt:
+            with self.assertRaisesRegex(self.module.ArtifactError, "^local_recovery_only$"):
+                self.module.recover(self.root / "unused", self.root / "recovered",
+                    repository="example/awsops", branch="dev", commit=SHA,
+                    run_id="23", attempt="1", phase="plan")
+        fetch.assert_not_called()
+        decrypt.assert_not_called()
+        self.assertFalse((self.root / "recovered").exists())
+
+    def test_local_recovery_rejects_valid_ciphertext_with_a_forged_hmac(self):
+        _, file = self.capture()
+        with mock.patch.dict(os.environ, {"TF_PLAN_ENC_KEY": KEY, "GITHUB_ACTIONS": "false"}):
+            plain = self.root / "local-fixture.json"
+            self.module.crypt(file, plain, decrypt=True)
+            payload = json.loads(plain.read_bytes())
+            payload["hmac_sha256"] = "0" * 64
+            plain.write_text(json.dumps(payload))
+            forged = self.root / "forged.enc"
+            self.module.crypt(plain, forged)
+            with mock.patch.object(self.module, "fetch_run", return_value=self.failed_run):
+                with self.assertRaisesRegex(self.module.ArtifactError, "^capsule_authentication_failed$"):
+                    self.module.recover(forged, self.root / "recovered",
+                        repository="example/awsops", branch="dev", commit=SHA,
+                        run_id="23", attempt="1", phase="plan")
+        self.assertFalse((self.root / "recovered").exists())
 
     def test_seal_failure_preserves_original_exit_and_removes_plaintext(self):
         with mock.patch.object(self.module, "crypt", side_effect=OSError("PRIVATE_ERROR")):
@@ -158,13 +194,13 @@ class FailureDiagnosticsTests(unittest.TestCase):
 
     def test_cleanup_accepts_only_this_run_owned_encrypted_directory(self):
         _, file = self.capture()
-        self.module.cleanup(file, self.env)
+        self.module.cleanup(file, self.env, upload_outcome="success")
         self.assertFalse(Path(file).parent.exists())
         unrelated = self.root / "unrelated"
         unrelated.mkdir()
         (unrelated / "diagnostics.enc").write_bytes(b"keep")
         with self.assertRaises(self.module.ArtifactError):
-            self.module.cleanup(unrelated / "diagnostics.enc", self.env)
+            self.module.cleanup(unrelated / "diagnostics.enc", self.env, upload_outcome="success")
         self.assertEqual((unrelated / "diagnostics.enc").read_bytes(), b"keep")
 
     def test_apply_capture_cannot_change_the_saved_plan_command(self):

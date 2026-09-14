@@ -5,6 +5,7 @@
 `.github/workflows/{deploy-web,terraform,deploy-agentcore,deploy-migrations}.yml`,
 `docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
 `scripts/v2/ci_review_access.py`, `scripts/v2/ci_dns_policy.py`, `scripts/v2/ci_plan_context.py`,
+`scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_failure_diagnostics.py`,
 `scripts/v2/ci_db_diagnostics.py`, `scripts/v2/test_ci_db_diagnostics.py`,
 `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/pg8000-requirements.txt`,
 `scripts/v2/test_ci_tf_assets.py`, `docs/reference/06-workers.md`,
@@ -395,15 +396,15 @@ situations:
 `terraform -chdir=terraform/foundation state rm 'aws_cognito_user.admin'`으로
 상태에서만 떼어냅니다.
 disable은 삭제를 막지 못하며, 수동 생성 사용자에 대한 접근 차단 수단입니다.)
-Artifact channels are covered too: the binary plan and rendered assets may contain secrets, so the `tfplan` artifact carries encrypted `tfplan.enc` and `tfassets.enc` only. `TF_PLAN_ENC_KEY` supplies CBC/PBKDF2 encryption, authenticated asset binding, and the separate schema-2 failure-capsule HMAC domain. Rotation invalidates verification without the matching prior key; never put this key in argv or public logs.
+Artifact channels are covered too: public-repository artifacts are publicly accessible and must not protect secrets by access controls alone. The binary plan and rendered assets may contain secrets, so the `tfplan` artifact carries encrypted `tfplan.enc` and `tfassets.enc` only. `TF_PLAN_ENC_KEY` supplies CBC/PBKDF2 encryption, authenticated asset binding, and the separate schema-2 failure-capsule HMAC domain. Rotation invalidates verification without the matching prior key; never put this key in argv or public logs.
 
 | Channel | Contents and conditions |
 |---|---|
 | `tfplan` | Existing encrypted saved plan/assets; same repository/branch/SHA/run checks and apply gates remain mandatory. |
-| `terraform-failure-<phase>-<attempt>` | One validated ciphertext file for an explicit failed/cancelled dispatch, five-day retention. Recovery is best effort if the runner stops abruptly. |
-| Job log and step summary | Fixed command/capture/retention classifications and numeric Terraform success action counts; no raw command output or arbitrary `Error:` text. Advisory PR/push failures are classified but retain no raw log. |
+| `terraform-failure-<phase>-<attempt>` | One validated ciphertext file for an explicit failed/cancelled dispatch, five-day artifact retention. Local ciphertext is deleted only after confirmed upload success; failed/cancelled/skipped uploads retain it privately. |
+| Job log and step summary | Fixed command/capture/retention classifications, subsequent upload/cleanup status and numeric Terraform success action counts; no raw command output or arbitrary `Error:` text. Advisory PR/push failures are classified but retain no raw log. |
 
-This applies to main, dev and supported user branches. Use [private exact-plan inspection](dev-domain-rollout.md#private-exact-plan-inspection) before approval and [encrypted failure recovery](dev-domain-rollout.md#encrypted-failure-recovery) for a specific failed attempt. The inspector authenticates before rendering and never applies. Captured Terraform and pre-apply scope-check children do not receive GitHub command-file/token variables or encryption keys; their AWS STS credentials, including `AWS_SESSION_TOKEN`, remain. Storage/sealing/publication failures are distinct and do not replace the command exit or authorize a retry. A valid pointer identifies only the parent's owned ciphertext, never an arbitrary runner file.
+This applies to main, dev and supported user branches. Use [private exact-plan inspection](dev-domain-rollout.md#private-exact-plan-inspection) before approval and [encrypted failure recovery](dev-domain-rollout.md#encrypted-failure-recovery) for a specific failed attempt. The inspector authenticates before rendering and never applies. Captured Terraform and pre-apply scope-check children do not receive GitHub command-file/token variables, encryption keys, `TF_LOG*` or `TF_CLI_ARGS*`; their AWS STS credentials, including `AWS_SESSION_TOKEN`, remain. Captured output and its sealing payload stay in memory and reach OpenSSL through stdin. The child has a separate session and receives only the first forwarded parent interrupt. Storage/sealing/publication failures are distinct and do not replace the command exit or authorize a retry. A valid pointer identifies only the parent's owned ciphertext, never an arbitrary runner file. Abrupt runner termination can prevent retention or its final audit.
 (공개 리포는 Actions 로그도 공개 — 역할 ARN 등 계정 ID 포함 값은 변수 금지·시크릿
 전용. demo 사용자 비밀번호는 `TF_VAR_DEMO_PASSWORD` 시크릿으로 공급하되 production은
 `create_demo_user=false` 또는 자체 tfvars 블롭의 `demo_password` override로 공유
@@ -1435,7 +1436,7 @@ CI_ASSETS_READY=true terraform apply -input=false tfplan
 Missing/mismatched authentication, plan or content requires a fresh reviewed plan/bundle,
 not rebuilding under an old approval. See `scripts/v2/ci_tf_assets.py`,
 `scripts/v2/ci/pg8000-requirements.txt` and `scripts/v2/test_ci_tf_assets.py`.
-Key rotation also invalidates existing signed bundles. Dependency updates must change the lock,
+Verification of older signed bundles after key rotation requires their matching prior key. Dependency updates must change the lock,
 its verified wheel hashes and the four shared-layer pins in
 `scripts/v2/{workers,steampipe,incident,remediation}/requirements.txt`; the validator checks all five.
 The separate `scripts/v2/steampipe/Dockerfile` image pin/installer is outside the Lambda lock.

@@ -72,6 +72,7 @@ class DeploymentWorkflowTests(unittest.TestCase):
                     "name=pathlib.Path(sys.argv[0]).name\n"
                     "if name=='terraform' and os.environ.get('ASSERT_NO_GITHUB_CHANNELS')=='true':\n"
                     " assert not any(k in os.environ for k in ('GITHUB_OUTPUT','GITHUB_ENV','GITHUB_PATH','GITHUB_STATE','GITHUB_STEP_SUMMARY','TF_PLAN_ENC_KEY'))\n"
+                    " assert not any(k.startswith(('TF_LOG','TF_CLI_ARGS')) for k in os.environ)\n"
                     " assert os.environ.get('AWS_SESSION_TOKEN')=='KEEP_STS'\n"
                     "with open(os.environ['COMMAND_LOG'],'a') as f:\n"
                     " f.write(json.dumps([name,*sys.argv[1:]])+'\\n')\n"

@@ -39,7 +39,8 @@ CATEGORIES = {
 def child_environment(env):
     # Terraform still needs temporary AWS credentials and explicitly supplied TF_VAR inputs.
     return {key: value for key, value in env.items()
-            if key not in COMMAND_FILES and not key.startswith(("ACTIONS_", "TF_TOKEN_"))
+            if key not in COMMAND_FILES
+            and not key.startswith(("ACTIONS_", "TF_TOKEN_", "TF_LOG", "TF_CLI_ARGS"))
             and not key.endswith("_ENC_KEY")
             and not (key.endswith("_TOKEN") and not key.startswith(("AWS_", "TF_VAR_")))}
 
@@ -98,14 +99,26 @@ def collect_command(args, env, output):
     """Drain into bounded memory; no scratch I/O and no capture-induced SIGKILL."""
     try:
         process = subprocess.Popen(args, env=child_environment(env), stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   start_new_session=True)
     except (OSError, ValueError):
         return 127, False
     handlers = {}
+    forwarded = False
+
+    def forward_once(number, frame):
+        nonlocal forwarded
+        if not forwarded:
+            forwarded = True
+            try:
+                process.send_signal(number)
+            except ProcessLookupError:
+                pass
+
     try:
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                handlers[sig] = signal.signal(sig, lambda number, frame: process.send_signal(number))
+                handlers[sig] = signal.signal(sig, forward_once)
             except ValueError:  # Library use outside the main thread has no signal ownership.
                 pass
         while True:
@@ -185,12 +198,7 @@ def seal(value, output, metadata, audit, env):
         raise ArtifactError("key_required")
     payload = {"manifest": manifest, "hmac_sha256": diagnostic_mac(manifest, key.encode()),
                "log_base64": base64.b64encode(value).decode()}
-    plain = output.parent / "capsule.json"
-    try:
-        private_write(plain, json.dumps(payload, separators=(",", ":")).encode())
-        crypt(plain, output, env=env)
-    finally:
-        plain.unlink(missing_ok=True)
+    crypt(json.dumps(payload, separators=(",", ":")).encode(), output, env=env)
 
 
 def capture(args, phase, *, env=None, audit=None):
@@ -224,6 +232,7 @@ def capture(args, phase, *, env=None, audit=None):
             result["cipher_sha256"] = validate_cipher_file(output, env)
             file = str(output)
             result["retention_status"] = "sealed"
+            result["cleanup_status"] = "pending_upload"
             return code, file
         except OSError as error:
             result["retention_status"] = "storage_failed" if error.errno in (errno.ENOSPC, errno.EDQUOT) else "seal_failed"
@@ -328,10 +337,18 @@ def recover(file, destination, *, repository, branch, commit, run_id, attempt, p
         raise ArtifactError("recovery_failed") from None
 
 
-def cleanup(file, env=None):
+def cleanup(file, env=None, *, upload_outcome=""):
     env = os.environ if env is None else env
+    audit = {
+        "upload_status": upload_outcome if upload_outcome in {
+            "success", "failure", "cancelled", "skipped"} else "unavailable",
+        "cleanup_status": "not_available",
+    }
     if not file:
-        return
+        return audit
+    if upload_outcome != "success":
+        audit["cleanup_status"] = "retained_unpublished"
+        return audit
     file = real_path(file)
     parent = real_path(env.get("RUNNER_TEMP") or tempfile.gettempdir())
     if (file.name != "diagnostics.enc" or file.parent.parent != parent
@@ -341,6 +358,8 @@ def cleanup(file, env=None):
         validate_cipher_file(file, env)
         file.unlink()
         file.parent.rmdir()
+    audit["cleanup_status"] = "complete"
+    return audit
 
 
 def publish_audit(audit, file, env):
@@ -354,7 +373,12 @@ def publish_audit(audit, file, env):
     except (KeyError, OSError, ArtifactError):
         if file:
             audit["retention_status"] = "publication_failed"
+            audit["cleanup_status"] = "retained_unpublished"
         # Keep already sealed ciphertext for private owner recovery, never raw plaintext.
+    publish_status(audit, env)
+
+
+def publish_status(audit, env):
     public = {key: value for key, value in audit.items() if key != "cipher_sha256"}
     if env.get("GITHUB_STEP_SUMMARY"):
         try:
@@ -387,6 +411,7 @@ def main():
         recovery.add_argument("--destination", type=Path, required=True)
         clean = sub.add_parser("cleanup")
         clean.add_argument("--file", default="")
+        clean.add_argument("--upload-outcome", default="")
         args = vars(parser.parse_args())
         command = args.pop("command")
         if command == "capture":
@@ -399,7 +424,12 @@ def main():
             recover(**args)
             print("Private failure recovery complete; no deployment action performed.")
         else:
-            cleanup(**args)
+            try:
+                audit = cleanup(**args)
+            except (ArtifactError, ValueError, OSError):
+                publish_status({"cleanup_status": "failed"}, os.environ)
+                return 1
+            publish_status(audit, os.environ)
         return 0
     except (ArtifactError, ValueError, OSError, subprocess.SubprocessError):
         print("Terraform diagnostics refused (verification_failed).", file=sys.stderr)

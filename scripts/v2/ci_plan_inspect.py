@@ -124,20 +124,32 @@ def checked_command(args, output, **kwargs):
 
 
 def crypt(source, destination, *, decrypt=False, env=None):
-    """Use the existing workflow transport; authenticity is checked separately."""
+    """Use the existing cipher; in-memory payloads are encrypted through stdin."""
     env = os.environ if env is None else env
     if not env.get("TF_PLAN_ENC_KEY", "").strip():
         raise ArtifactError("key_required")
-    regular_bytes(source, MAX_ARTIFACT)
+    in_memory = isinstance(source, bytes)
+    if in_memory:
+        if decrypt or len(source) > MAX_ARTIFACT:
+            raise ArtifactError("invalid_file")
+    else:
+        regular_bytes(source, MAX_ARTIFACT)
     private_write(destination, b"")
     args = ["openssl", "enc"]
     args += ["-d"] if decrypt else []
     args += ["-aes-256-cbc", "-pbkdf2", "-iter", "200000"]
     args += [] if decrypt else ["-salt"]
-    args += ["-in", str(source), "-out", str(destination), "-pass", "env:TF_PLAN_ENC_KEY"]
+    args += [] if in_memory else ["-in", str(source)]
+    args += ["-out", str(destination), "-pass", "env:TF_PLAN_ENC_KEY"]
     command_env = {**tool_env(env), "TF_PLAN_ENC_KEY": env["TF_PLAN_ENC_KEY"]}
-    with tempfile.TemporaryDirectory(prefix=".crypto-", dir=Path(destination).parent) as temporary:
-        checked_command(args, Path(temporary) / "result", env=command_env, limit=1024)
+    if in_memory:
+        result = subprocess.run(args, input=source, env=command_env, timeout=120,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if result.returncode:
+            raise ArtifactError("command_failed")
+    else:
+        with tempfile.TemporaryDirectory(prefix=".crypto-", dir=Path(destination).parent) as temporary:
+            checked_command(args, Path(temporary) / "result", env=command_env, limit=1024)
     regular_bytes(destination, MAX_ARTIFACT)
 
 
