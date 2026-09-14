@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f2ea01a36521 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4f32bf48c055 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -17,9 +17,13 @@ legacy runbook's steps as the current operational path).
   never fabricate migration evidence or fall back to mutable tags as provenance.
   All paths require a preflight digest; fresh promotion also checks its source tag.
   Preserve OCI indexes and verify an unambiguous ARM64 image/config. The producer uses
-  ci-build credentials, promotion uses the deployer, and both need `actions: read`.
-  Document upload-artifact v4+ and scoped config-download permission; ECR publication
+  ci-build credentials, promotion uses the deployer; producer and reuse-capable consumers
+  need `actions: read`, dedicated fresh-only consumers do not.
+  Document upload-artifact v4 with required Artifact API digest and scoped config-download permission; ECR publication
   supplies explicit media.
+  Preserve three-field stdout with no history API. Recovery requires independently retained
+  source/digest evidence and owned run/attempt cleanup; migration/preflight assertions
+  come from verified job outputs, never dispatch inputs.
   Provider subprocesses disable AWS config files, isolate GH config and filter endpoint/profile/model/provider/CA/proxy
   overrides, retain explicit exported auth, and keep signed curl URLs in private stdin.
   Multi-tag digest reads require consistent identities and identical manifest bytes/media.

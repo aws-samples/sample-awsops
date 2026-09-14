@@ -378,16 +378,47 @@ class ProvenanceTest(unittest.TestCase):
             if path.endswith("/jobs/790"):
                 return original(f"repos/{REPO}/actions/jobs/789") | {
                     "id": 790, "run_attempt": 2, "conclusion": "failure",
-                }
+                } | job_changes
             return original(path, binary)
+        cases = [{}]
+        cases += [{"conclusion": conclusion, "started_at": None, "completed_at": None}
+                  for conclusion in ("failure", "cancelled", "timed_out", "skipped",
+                                     "neutral", "action_required")]
+        cases += [{"completed_at": "2026-09-14T00:00:30Z"},
+                  {"started_at": "invalid", "completed_at": "invalid"}]
+        for job_changes in cases:
+            with self.subTest(job_changes=job_changes):
+                self.assertEqual(resolve_digest(context(run_id="900"), pin_sha=SHA,
+                                               producer_run="123", api=api), DIGEST)
+
+    def test_unknown_producer_conclusion_is_rejected_before_timestamps(self):
+        api, _ = self.producer(job_changes={"conclusion": "unknown", "started_at": None,
+                                           "completed_at": None})
+        with self.assertRaisesRegex(ImageError, "Producing job has an unknown conclusion"):
+            resolve_digest(context(run_id="900"), pin_sha=SHA, producer_run="123", api=api)
+
+    def test_reuse_normalizes_validated_run_attempt_metadata(self):
+        original, _ = self.producer(run_changes={"run_attempt": "2", "conclusion": "failure"})
+        reads = 0
+        def api(path, binary=False):
+            nonlocal reads
+            result = original(path, binary)
+            if path.endswith("/attempts/1"):
+                return result | {"run_attempt": "1"}
+            if path.endswith("/runs/123"):
+                reads += 1
+                return result | {"run_attempt": "2" if reads == 1 else 2}
+            return result
         self.assertEqual(resolve_digest(context(run_id="900"), pin_sha=SHA,
                                        producer_run="123", api=api), DIGEST)
+        self.assertEqual(reads, 2)
 
     def test_actual_build_job_not_artifact_name_establishes_provenance(self):
         for changes in [{"run_attempt": 2}, {"run_id": 999}, {"head_sha": "c" * 40},
                         {"name": "Roll ECS service"}, {"status": "in_progress"},
                         {"conclusion": "failure"}, {"steps": []},
-                        {"completed_at": "2026-09-14T00:00:30Z"}]:
+                        {"completed_at": "2026-09-14T00:00:30Z"},
+                        {"started_at": None}, {"completed_at": None}]:
             with self.subTest(changes=changes), self.assertRaises(ImageError):
                 api, _ = self.producer(job_changes=changes)
                 resolve_digest(context(run_id="900"), pin_sha=SHA, producer_run="123", api=api)
@@ -529,6 +560,18 @@ class ProvenanceTest(unittest.TestCase):
             data = CONFIG.replace(b"arm64", b"amd64") if failure == "hash" else CONFIG + b" "
             with patch.object(subject, "command", return_value=data), \
                     self.subTest(failure=failure), self.assertRaises(ImageError):
+                subject.promote(env, caller=caller, api=api, aws=aws)
+            self.assertNotIn("put-image", trace)
+
+    def test_invalid_config_url_ports_raise_only_curated_image_errors(self):
+        for port in ("invalid", "65536", "-1"):
+            env, _, trace, caller, api, original = self.promotion_fixture()
+            def aws(operation, args):
+                result = original(operation, args)
+                if operation == "get-download-url-for-layer":
+                    result["downloadUrl"] = f"https://fixture.s3.ap-northeast-2.amazonaws.com:{port}/config"
+                return result
+            with self.subTest(port=port), self.assertRaisesRegex(ImageError, "Invalid image configuration download URL"):
                 subject.promote(env, caller=caller, api=api, aws=aws)
             self.assertNotIn("put-image", trace)
 

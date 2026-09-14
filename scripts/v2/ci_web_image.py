@@ -136,6 +136,7 @@ def validate_run(run, c, pin_sha, producer_run):
             and run.get("head_repository", {}).get("full_name") == REPOSITORY
             and matches(NUMBER, str(run.get("run_attempt"))),
             "Producer must be a completed same-repository, branch and source Deploy Web run")
+    return int(run["run_attempt"])
 
 
 def timestamp(value):
@@ -154,12 +155,12 @@ def validate_producing_job(job, receipt, artifact):
             and job.get("head_sha") == receipt["sha"] and job.get("name") == BUILD_JOB
             and job.get("status") == "completed",
             "Receipt must belong to a completed matching build job")
-    require(timestamp(job.get("started_at")) <= timestamp(artifact.get("created_at"))
-            <= timestamp(job.get("completed_at")), "Receipt was not created during its build job")
     require(job.get("conclusion") in {"success", "failure", "cancelled", "timed_out", "skipped", "neutral", "action_required"},
             "Producing job has an unknown conclusion")
     if job["conclusion"] != "success":
         return False
+    require(timestamp(job.get("started_at")) <= timestamp(artifact.get("created_at"))
+            <= timestamp(job.get("completed_at")), "Receipt was not created during its build job")
     steps = job.get("steps")
     require(isinstance(steps, list) and BUILD_STEPS.issubset({
         step.get("name") for step in steps
@@ -196,7 +197,7 @@ def resolve_digest(c, *, pin_sha, fresh_digest="", fresh_project="", producer_ru
             and producer_run != c["run_id"], "Reused images require a completed producer run")
     run_path = f"repos/{REPOSITORY}/actions/runs/{producer_run}"
     run = api(run_path)
-    validate_run(run, c, pin_sha, producer_run)
+    run_attempt = validate_run(run, c, pin_sha, producer_run)
     result = api(run_path + "/artifacts?per_page=100")
     require(isinstance(result, dict) and isinstance(result.get("artifacts"), list)
             and result.get("total_count") == len(result["artifacts"])
@@ -221,15 +222,15 @@ def resolve_digest(c, *, pin_sha, fresh_digest="", fresh_project="", producer_ru
         receipt = receipt_from_archive(data, artifact)
         require(isinstance(receipt, dict), "Invalid build receipt")
         attempt = receipt.get("attempt")
-        require(matches(NUMBER, attempt) and int(attempt) <= run["run_attempt"],
+        require(matches(NUMBER, attempt) and int(attempt) <= run_attempt,
                 "Invalid producing attempt")
         expected = build_receipt(c | {"sha": pin_sha, "run_id": producer_run,
             "attempt": attempt, "job_id": receipt.get("job_id")}, receipt.get("digest"))
         require(receipt == expected and artifact["name"] == f"web-build-{producer_run}-{attempt}",
                 "Build receipt source, job or stack mismatch")
         produced = api(run_path + f"/attempts/{attempt}")
-        validate_run(produced, c, pin_sha, producer_run)
-        require(str(produced["run_attempt"]) == attempt, "Producing attempt mismatch")
+        produced_attempt = validate_run(produced, c, pin_sha, producer_run)
+        require(produced_attempt == int(attempt), "Producing attempt mismatch")
         job = api(f"repos/{REPOSITORY}/actions/jobs/{receipt['job_id']}")
         if not validate_producing_job(job, receipt, artifact):
             continue
@@ -237,8 +238,8 @@ def resolve_digest(c, *, pin_sha, fresh_digest="", fresh_project="", producer_ru
         valid[attempt] = receipt["digest"]
     require(valid, "No retained successful build receipt; rebuild current source with receipt-enabled wiring")
     latest = api(run_path)
-    validate_run(latest, c, pin_sha, producer_run)
-    require(latest["run_attempt"] == run["run_attempt"], "Producer attempt changed")
+    latest_attempt = validate_run(latest, c, pin_sha, producer_run)
+    require(latest_attempt == run_attempt, "Producer attempt changed")
     return valid[max(valid, key=int)]
 
 
@@ -404,9 +405,13 @@ def verify_arm_image(repository, image, account, aws):
     download_url = response["downloadUrl"]
     require(all(33 <= ord(char) < 127 for char in download_url),
             "Invalid image configuration download URL")
-    url = urlsplit(download_url)
+    try:
+        url = urlsplit(download_url)
+        port = url.port
+    except ValueError:
+        raise ImageError("Invalid image configuration download URL") from None
     require(url.scheme == "https" and not url.username and not url.password
-            and url.port in (None, 443) and re.fullmatch(
+            and port in (None, 443) and re.fullmatch(
                 r"[a-z0-9.-]+\.s3[.-]ap-northeast-2\.amazonaws\.com", url.hostname or ""),
             "Invalid image configuration download URL")
     # No redirects; download only the config blob, never image layers. Provider
