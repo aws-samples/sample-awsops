@@ -33,9 +33,9 @@ AgentCore/workers. Partial S3 backend (`backend.hcl`) + count/flag gating.
 - `controller-readiness.tf` — application-only `deployment-verifiers` group when readiness
   and AgentCore are enabled; membership additionally requires the Terraform-managed demo.
   No administrator membership or IAM role.
-- `workload.tf` emits an empty runtime SSM path for the web task when AgentCore is disabled;
-  the status/invocation BFF respects it. The incident bridge retains its intentional literal
-  project path in `incidents.tf`; its configuration is unchanged.
+- `workload.tf` sets the web task's `SSM_RUNTIME_ARN_PARAM` to empty when AgentCore is disabled;
+  status/invocation lookup respects it. The separate `AGENTCORE_RUNTIME_ARN_PARAM` alias and
+  incident bridge paths remain literal. Status lookup does not validate the full runtime ARN.
 - `migrations/*.sql` — DB migrations, applied by `make migrate` (scripts/v2), not Terraform.
   Baseline is `data/schema.sql` (v9, frozen) — schema changes always go into a new migration
   file.

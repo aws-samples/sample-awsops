@@ -83,7 +83,9 @@ output "runtime_deployment" {
       task_role_arn       = one(aws_iam_role.steampipe_task[*].arn)
       sync_function_name  = one(aws_lambda_function.inv_sync[*].function_name)
       sync_function_arn   = one(aws_lambda_function.inv_sync[*].arn)
-      sync_code_sha256    = one(aws_lambda_function.inv_sync[*].code_sha256)
+      # Bind verification to the configured archive, not a provider read-back
+      # that can lag an update or later reflect an out-of-band code change.
+      sync_code_sha256 = one(aws_lambda_function.inv_sync[*].source_code_hash)
     }
     agentcore = {
       ecr_uri              = one(aws_ecr_repository.agentcore[*].repository_url)

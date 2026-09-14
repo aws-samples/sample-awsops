@@ -144,6 +144,7 @@ dev PR/push는 상태의 소유권·게시를 보존하고 실시간 인증서 �
 | `scripts/v2/ci_dns_policy.py` | State-aware certificate selection, typed tfvars overrides and all-DNS plan gate |
 | `scripts/v2/ci_dev_domain.py` | Dev overrides, immutable plan rollout marker and scoped public-zone/record checks |
 | `scripts/v2/ci_plan_context.py` | Successful explicit dispatch, repository/branch/SHA provenance for saved-plan apply |
+| `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_failure_diagnostics.py` | Authenticated private inspection and bounded encrypted failure recovery; no plaintext staging during capture/sealing, and owned ciphertext cleanup only after confirmed upload success |
 | `scripts/v2/ci_tf_assets.py`, `scripts/v2/ci/pg8000-requirements.txt` | Locked layer preparation and private plan-bound assets; caller owns encryption/cleanup / 레이어 준비·계획 결합 asset, 호출 측 암호화·정리 |
 | `scripts/v2/test_ci_tf_assets.py` | Saved-plan artifact and local targeted-plan regressions / 저장 artifact·로컬 타깃 계획 회귀 검사 |
 | `terraform/foundation/tests/dns_deferred.tftest.hcl` | Offline mocked plans; Python CI tests cover managed/external state roundtrips |
