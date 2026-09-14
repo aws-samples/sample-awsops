@@ -10,9 +10,10 @@ Missing graph clocks can mean legacy rows without collection state; missing meta
 transaction. The shared helper bounds statements, lock waits and transaction
 duration, handles checked-out client errors, and discards failed connections. At most two graph
 requests per pool are admitted, leaving one of the three pool slots for auth; others receive 503 without queueing a checkout. Request
-statements/idle time are bounded to 1.5s, total transaction to 2s; the companion publication helper retains its existing limits; the legacy writer in this
+statements/idle time are bounded to 1.5s, total transaction to 2s; the new companion publication helper has separate bounds; the legacy writer in this
 reader prerequisite does not use that helper yet. Serialization happens after release. Reads cap nodes/raw edges at
-4000/8000 plus a sentinel; returned edges reference visible nodes. Read limits and
+4000/8000 plus a sentinel; returned edges reference visible nodes. Infra class reads rank
+VPC/subnet/SG container kinds first so resource IDs cannot alphabetically exclude all placement targets. Read limits and
 500/503 failures are disclosed separately from collector status.
 PostgreSQL 17 is required for the total transaction timeout.
 
@@ -27,13 +28,18 @@ SQL-reader collection projection with bounded scalar metadata. It adds no base-t
 or public grants. `INVENTORY_STALE_AFTER_MINUTES` governs inventory source age
 independently of the graph publication cadence. A producer must be succeeded with
 ok/empty source evidence and valid clocks; published-source clocks remain visible.
-Future timestamps are conservatively stale, not assumed provider clock skew.
+Future timestamps are conservatively stale, not assumed provider clock skew. A zero
+requires empty status, zero count, a succeeded producer and a valid last-success clock;
+optional non-null capture clocks must also be valid. Nonempty/malformed reason lists
+are incomplete evidence. Recognized malformed or unknown-vocabulary metadata is
+disclosed by metadataTruncated in both HTTP and SQL projections.
 
 ## Verification commands
 
 Use browser developer tools on an already-authorized page to distinguish HTTP503/busy,
 500/timeout, and successful partial reads.401/login redirects require sign-in;403 is access denial; other4xx responses require correcting the request. These are distinct from a read outage. The page preserves the safe envelope and offers
 refresh; it does not display a bare status code or treat a failed read as empty collection.
+Timeout SQLSTATEs 57014/25P03/25P04/55P03 remain read failures.
 Application logs contain fixed `[graph-read] shed` or SQLSTATE diagnostics. In the local
 fixture below, run `npx vitest run lib/graph-read-postgres.test.ts lib/graph-fetch.test.ts`
 to exercise the 5220-node root-cap case, HTTP metadata projection and stalled reads with

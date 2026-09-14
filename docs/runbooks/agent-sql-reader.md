@@ -379,3 +379,5 @@ Lambda도 배포해야 한다. [적용 절차 / Rollout](source-sync-observabili
 - [Trace collection-state and edge projections](../../terraform/foundation/migrations/01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql)
 - `scripts/v2/migrate.mjs` (`syncSqlReaderPassword`) — 동기화 / the sync
 - ADR-004 §7 — SQL reader security model; the ADR body is maintained in the private upstream repository.
+
+The bounded collection projection sets `metadataTruncated` when recognized fields have malformed types/ranges or unrecognized status/producer/scope vocabulary. Both HTTP and SQL readers conservatively disclose these omissions; unrelated private fields remain excluded. Nullable source clocks stay compatible with confirmed-zero evidence, and reason ordering uses the C collation for cross-runtime parity.
