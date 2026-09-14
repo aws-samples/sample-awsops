@@ -241,6 +241,13 @@ In Aurora, `inventory_sync_runs` is the per-type current-run ledger; `last_succe
 - `healthy`: current status is `succeeded`, `unknown_attribute_count` is exactly 0, and effective data is within the threshold.
 
 NULL means unmeasured coverage, including older runs; only a new measured sync can establish zero.
+For zero-row Steampipe scans, the pinned AWS plugin v0.142.0 identity table is
+`aws_<12-digit-account-id>.aws_sts_caller_identity`, not `aws_caller_identity`.
+Exactly one row matching the requested account permits empty-account pruning and a successful
+zero-row run. Missing, malformed, duplicate or mismatched identity rows and connection errors
+keep the account unverified: the run remains partial and its last-good inventory, snapshot and
+last-success fields remain intact. This verifies the same Steampipe connection's identity, not
+every service/region read; it does not replace the complete 43-type deployment verification.
 The deployment probe requires complete evidence for every acknowledged type. Hydrate fallback remains
 valid degraded inventory for ordinary readers, but fails that stricter probe as `inventory_incomplete`.
 NULL은 과거 실행을 포함한 미측정 상태이며 새 수집으로 확인해야 0으로 판단합니다.

@@ -434,6 +434,11 @@ may skip an advisory plan; missing account verification on a configured stack fa
 개발·preview 스택이 구성되어 있으면 `AWS_ACCOUNT_ID_DEV` 시크릿이 필수입니다.
 backend 미설정 계획은 생략할 수 있지만 구성된 스택의 계정 검증 누락은 실패합니다.
 
+The manual development [deployment audit](deployment-audit.md)
+(`audit-deployment.yml`) reuses the dev account/deployer/backend secrets with a
+restrictive session policy. It reads status, schedule metrics and SQL-reader
+metadata without provisioning resources or claiming complete collection.
+
 #### Development variable catalog / 개발 변수 목록
 
 Nonsecret dev repository variables are `DOMAIN_NAME_DEV` / `HOSTED_ZONE_NAME_DEV` (paired names),
