@@ -132,13 +132,22 @@ remain available to Runtime routing, pruning and all ADR-017 teardown paths afte
 read/update failures. Description-only request failures remain warnings.
 
 Role verification is functional, even when the listed description already matches:
-a matching label cannot prove that the gateway uses the applied role. Any failed
-`GetGateway` request, including a throttle or timeout, therefore records `ERR` and
+a matching label cannot prove that the gateway uses the applied role. If SDK retry
+handling still returns a `GetGateway` failure, including a throttle or timeout, it records `ERR` and
 makes the run exit nonzero while retaining the known ID and baseline teardown.
 This does not claim that role drift was observed; it reports that reconciliation
 could not be verified. Only after a successful read confirms the role may a
 description-only update failure be reported as `WARN`. The old description-only
 path's warning policy does not establish a role-verification success.
+
+**Verified deployment prerequisite, 2026-09-14:** `audit-deployment.yml` run
+`34819307611` on dev commit `cdb8d4b13b9ab2dbc9b38ac0534f4d50ef58fbdd`
+successfully read the data gateway and RDS target using a restricted read session
+of the configured `AWS_CI_DEPLOYER_DEV_ROLE_ARN` in account `061525506239`.
+The READY resources had a role and Lambda ARN that did not match applied state.
+This verifies the new read prerequisite for that deployment identity; other
+installations must verify their own grant before upgrading. The snapshot proves
+configuration drift, not the cause of the earlier failed target request.
 
 Lambda target drift covers the applied Lambda ARN, managed credential-provider
 type and tool definitions (`name`, `description`, `inputSchema`). Target metadata

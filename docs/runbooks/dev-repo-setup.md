@@ -773,8 +773,8 @@ Task definition 조회가 성공했다면 web container 부재/형식 오류여�
 must permit `bedrock-agentcore:GetGateway` on its managed gateway resources,
 in addition to its existing AgentCore list/create/update/target/runtime permissions.
 The provisioner reads the current role and authorizer/protocol before updating a
-gateway. Any failed read, including a throttle or timeout, records `ERR` and makes
-the run exit nonzero: a matching listed description does not verify the role.
+gateway. A read failure returned after SDK retry handling, including a throttle or
+timeout, records `ERR` and makes the run exit nonzero: a matching listed description does not verify the role.
 Known IDs and baseline teardown are retained. A confirmed description-only update
 failure remains `WARN`. This is a deployer permission, not the web task role's
 status-page permission.
