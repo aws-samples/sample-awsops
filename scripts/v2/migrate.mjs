@@ -4,6 +4,7 @@
 // --status and DRY_RUN=1 OFFLINE=1 never need credentials or a database.
 // Fargate uses explicit AURORA_* settings, Secrets Manager in memory, verified
 // RDS TLS, and INITIALIZE_EMPTY_DB=1 for safe first installation.
+// AUTOMATIC_MIGRATION=1 admits only the conservative additive pending SQL subset.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, realpathSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,7 @@ import pg from 'pg';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { hasRuntimeDatabaseConfig, sqlReaderConfiguration } from './sql-reader-config.mjs';
 import { initializeEmptyDatabase } from './initialize-db.mjs';
+import { assertAutomaticMigrations } from './automatic-migration-policy.mjs';
 import {
   MigrationError, databaseFailure, migrationNotice, secretFailure,
   readSecretForPurpose, terraformFailure,
@@ -188,7 +190,12 @@ export async function migrateDatabase(client, {
     operation = 'Connect to Aurora';
     await checked(() => client.connect());
     operation = 'Acquire migration advisory lock';
-    await db.query('SELECT pg_advisory_lock($1)', [LOCK_KEY]);
+    const { rows: [lock] } = await db.query('SELECT pg_try_advisory_lock($1) AS acquired', [LOCK_KEY]);
+    if (lock?.acquired === false) {
+      throw new MigrationError('Concurrent migration is already running; retry after it finishes '
+        + '(including standalone migration and SQL-reader password synchronization)');
+    }
+    if (lock?.acquired !== true) throw new MigrationError('Migration advisory lock returned an invalid result');
     locked = true;
     if (initialize) {
       operation = 'Read frozen baseline schema.sql';
@@ -224,6 +231,13 @@ export async function migrateDatabase(client, {
       if (recorded !== undefined && recorded !== null && recorded !== sha256(migration.sql)) {
         throw new MigrationError(`checksum drift: applied migration ${migration.id} (${migration.file}) was edited after apply — migrations are immutable`);
       }
+    }
+    // INITIALIZE_EMPTY_DB is often set on every CI run. Its empty-only frozen
+    // baseline is trusted; guard actual pending ULIDs after that existing hook,
+    // before legacy ledger upgrades, any pending DDL, or reader password sync.
+    if (env.AUTOMATIC_MIGRATION === '1') {
+      const pendingIds = new Set(pending);
+      assertAutomaticMigrations(migrations.filter(migration => pendingIds.has(migration.id)));
     }
 
     if (versionType === 'integer' && pending.length > 0) {

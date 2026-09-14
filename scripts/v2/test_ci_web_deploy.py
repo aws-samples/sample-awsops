@@ -153,13 +153,18 @@ class DeploymentTests(unittest.TestCase):
                 return {"object": {"sha": C["sha"]}}
             self.assertEqual(argv[0], "aws")
             return self.aws(argv[1], argv[2], argv[3:])
+        def reader(service, operation, options):
+            args = [part for key, value in options.items()
+                    for part in ["--" + key, *(value if isinstance(value, list) else [value])]]
+            return provider(["aws", service, operation, *args])
         with tempfile.TemporaryDirectory() as folder, \
                 patch.dict(os.environ, self.release_env() | (changes or {}) |
                            {"GITHUB_OUTPUT": str(Path(folder) / "output")}, clear=True), \
                 patch.object(sys, "argv", ["ci_web_deploy.py", mode]), \
                 patch.object(sys, "stdout", new_callable=io.StringIO) as stdout, \
                 patch.object(image, "command", side_effect=provider), \
-                patch.object(deploy, "command", side_effect=provider):
+                patch.object(deploy, "command", side_effect=provider), \
+                patch.object(deploy, "read_request", side_effect=reader):
             deploy.main()
             proof = dict(line.split("=", 1) for line in (Path(folder) / "output").read_text().splitlines())
             return proof, stdout.getvalue()
@@ -282,7 +287,61 @@ class DeploymentTests(unittest.TestCase):
             targets[target][field] = value
             with self.subTest(target=target, field=field), self.assertRaises(ImageError):
                 self.verify(proof)
-            self.assertEqual(self.tick, 30)
+            self.assertEqual(self.tick, 15 if target == "primary" and field == "id" else 30)
+
+    def test_terminal_deployment_failure_or_replacement_fails_without_polling(self):
+        for reason in ("failed", "replacement", "rollback"):
+            self.setUp()
+            proof = self.proof()
+            primary = self.aws.service["deployments"][0]
+            if reason == "failed":
+                primary["rolloutState"] = "FAILED"
+            elif reason == "replacement":
+                primary["id"] = "ecs-svc/999"
+            else:
+                failed = copy.deepcopy(primary)
+                failed.update(status="ACTIVE", rolloutState="FAILED")
+                primary["id"] = OLD
+                self.aws.service["deployments"].append(failed)
+            with self.subTest(reason=reason), self.assertRaisesRegex(ImageError, "(?i)failed|replaced|rolled back"):
+                self.verify(proof)
+            self.assertEqual(self.tick, 0)
+
+    def test_transient_post_update_and_final_tag_reads_retry_without_another_write(self):
+        proof = self.proof()
+        failures = {"describe-services": 1, "batch-get-image": 1}
+        def aws(service, operation, args):
+            if failures.get(operation):
+                failures[operation] -= 1
+                raise deploy.TransientReadError("Transient AWS read failure")
+            return self.aws(service, operation, args)
+        deploy.verify(C, proof, aws, timeout=30, now=lambda: self.tick, sleep=self.sleep)
+        self.assertEqual(self.tick, 10)
+        self.assertEqual(sum(op == "update-service" for _, op, _ in self.aws.calls), 1)
+
+    def test_permission_failure_in_poll_is_not_retried(self):
+        proof = self.proof()
+        def aws(service, operation, args):
+            raise ImageError("AWS read permission denied")
+        with self.assertRaisesRegex(ImageError, "permission denied"):
+            deploy.verify(C, proof, aws, timeout=30, now=lambda: self.tick, sleep=self.sleep)
+        self.assertEqual(self.tick, 0)
+
+    def test_read_adapter_and_write_route_are_separate(self):
+        request = {"cluster": PROJECT, "serviceName": PROJECT + "-web",
+                   "desiredStatus": "RUNNING", "maxResults": 100}
+        with patch.object(deploy, "read_request", return_value={}) as read, \
+                patch.object(deploy, "command", return_value={}) as write:
+            deploy.aws_request("ecs", "list-tasks",
+                               ["--cli-input-json", json.dumps(request), "--no-paginate"])
+            read.assert_called_once_with("ecs", "list-tasks", {
+                "cluster": PROJECT, "service-name": PROJECT + "-web",
+                "desired-status": "RUNNING", "max-results": "100"})
+            write.assert_not_called()
+            read.reset_mock()
+            deploy.aws_request("ecs", "update-service", ["--cluster", PROJECT])
+            read.assert_not_called()
+            write.assert_called_once()
 
     def test_changed_latest_tag_cannot_bless_future_task_churn(self):
         proof = self.proof()
@@ -321,6 +380,15 @@ class DeploymentTests(unittest.TestCase):
         def aws(service, operation, args):
             result = self.aws(service, operation, args)
             return {"service": old} if operation == "update-service" else result
+        proof = deploy.start(C, DIGEST, DIGEST, aws, timeout=30,
+                             now=lambda: self.tick, sleep=self.sleep)
+        self.assertEqual(proof["deployment_id"], NEW)
+        self.assertEqual(sum(op == "update-service" for _, op, _ in self.aws.calls), 1)
+
+    def test_missing_update_projection_is_confirmed_by_reads(self):
+        def aws(service, operation, args):
+            result = self.aws(service, operation, args)
+            return {} if operation == "update-service" else result
         proof = deploy.start(C, DIGEST, DIGEST, aws, timeout=30,
                              now=lambda: self.tick, sleep=self.sleep)
         self.assertEqual(proof["deployment_id"], NEW)

@@ -11,6 +11,7 @@ from ci_web_image import (INDEX_MEDIA, ImageError, command, environment_context,
                           manifest_body, promote, verify_arm_image,
                           require, resolve_digest, validate_context, verify_caller,
                           verify_source_and_migration)
+from ci_web_read import TransientReadError, read_request, read_window
 
 REGION = "ap-northeast-2"
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
@@ -28,20 +29,49 @@ def ready(condition, message):
 def wait_for(check, timeout, now, sleep):
     require(type(timeout) in (int, float) and 0 < timeout <= 600, "Invalid verification timeout")
     deadline = now() + timeout
-    while True:
-        require(now() < deadline, "Deployment verification timeout")
-        try:
-            # A read started in budget still supplies valid evidence when its
-            # bounded provider call finishes later; never discard a rollout ID.
-            return check()
-        except NotReady as error:
-            remaining = deadline - now()
-            if remaining <= 0:
-                raise ImageError(str(error) + "; deployment verification timeout") from None
-            sleep(min(5, remaining))
+    with read_window(deadline, now=now):
+        while True:
+            require(now() < deadline, "Deployment verification timeout")
+            try:
+                return check()
+            except (NotReady, TransientReadError) as error:
+                remaining = deadline - now()
+                if remaining <= 0:
+                    raise ImageError(str(error) + "; deployment verification timeout") from None
+                sleep(min(5, remaining))
+
+
+def read_options(service, operation, args):
+    """Translate the controller's fixed CLI calls to the read-only transport."""
+    if "--cli-input-json" in args:
+        require((service, operation) == ("ecs", "list-tasks")
+                and len(args) == 3 and args[0] == "--cli-input-json"
+                and args[2] == "--no-paginate", "Invalid web read request")
+        value = json.loads(args[1])
+        names = {"cluster": "cluster", "serviceName": "service-name",
+                 "desiredStatus": "desired-status", "maxResults": "max-results",
+                 "nextToken": "next-token"}
+        require(isinstance(value, dict) and set(value) <= names.keys(), "Invalid web read request")
+        return {names[key]: str(item) for key, item in value.items()}
+    result, index = {}, 0
+    while index < len(args):
+        key = args[index]
+        require(isinstance(key, str) and key.startswith("--")
+                and key[2:] not in result, "Invalid web read request")
+        index += 1
+        values = []
+        while index < len(args) and not args[index].startswith("--"):
+            values.append(args[index])
+            index += 1
+        require(values, "Invalid web read request")
+        result[key[2:]] = values[0] if len(values) == 1 else values
+    return result
 
 
 def aws_request(service, operation, args):
+    if (service, operation) != ("ecs", "update-service"):
+        return read_request(service, operation, read_options(service, operation, args))
+    # The only controller write remains single-attempt and is outside read polls.
     return command(["aws", service, operation, *args, "--region", REGION,
                     "--output", "json", "--no-cli-pager", "--cli-connect-timeout", "5",
                     "--cli-read-timeout", "20"])
@@ -237,7 +267,9 @@ def start(c, digest, child, aws=aws_request, before=None,
     # Mutate exactly once. Eventual-consistency retries below perform reads only.
     result = aws("ecs", "update-service", ["--cluster", c["project"], "--service", c["project"] + "-web",
                                          "--force-new-deployment"])
-    initial = [result.get("service", {})]
+    # An acknowledged update may omit the service projection; confirm it with
+    # reads, never repeat the mutation to obtain a better response.
+    initial = [result["service"]] if isinstance(result.get("service"), dict) else []
     def confirmed():
         value, primary = service(c, aws, initial.pop() if initial else None)
         require(value["taskDefinition"].endswith(":" + before["task_revision"])
@@ -253,9 +285,17 @@ def verify(c, proof, aws=aws_request, timeout=600, now=time.monotonic, sleep=tim
             and re.fullmatch(r"ecs-svc/[0-9]+", proof.get("deployment_id", ""))
             and re.fullmatch(r"[1-9][0-9]*", proof.get("task_revision", ""))
             and re.fullmatch(r"[1-9][0-9]*", proof.get("desired_count", "")), "Invalid rollout receipt")
+    visibility_deadline = now() + min(timeout, 15)
     def current():
         value, primary = service(c, aws)
-        ready(primary["id"] == proof["deployment_id"], "Deployment was replaced or rolled back")
+        started = [d for d in value["deployments"] if d.get("id") == proof["deployment_id"]]
+        require(not any(d.get("rolloutState") == "FAILED" for d in started), "Deployment failed")
+        if primary["id"] != proof["deployment_id"]:
+            # Only the known pre-update projection may be briefly stale. A new
+            # replacement ID or explicit failure is terminal on the first read.
+            if primary["id"] == proof.get("old_deployment_id") and now() < visibility_deadline:
+                raise NotReady("Waiting for the confirmed deployment to become visible")
+            raise ImageError("Deployment was replaced or rolled back")
         require(value["taskDefinition"].endswith(":" + proof["task_revision"])
                 and value["desiredCount"] == int(proof["desired_count"]), "Deployment configuration changed")
         require(primary.get("rolloutState") in {"IN_PROGRESS", "COMPLETED"}, "Deployment failed")
@@ -265,16 +305,16 @@ def verify(c, proof, aws=aws_request, timeout=600, now=time.monotonic, sleep=tim
         value, primary = current()
         task_set(c, value, primary, aws, {proof["digest"], proof["runtime_digest"]})
         current()
+        latest = aws("ecr", "batch-get-image", ["--registry-id", c["account"],
+                     "--repository-name", c["project"] + "-web", "--image-ids", "imageTag=web-latest"])
+        images = latest.get("images", [])
+        require(not latest.get("failures") and len(images) == 1
+                and images[0].get("registryId") == c["account"]
+                and images[0].get("repositoryName") == c["project"] + "-web"
+                and images[0].get("imageId", {}).get("imageDigest") == proof["digest"],
+                "The promoted image changed during deployment verification")
     # Completion, the task set and health must converge in the same bounded poll.
     wait_for(check, timeout, now, sleep)
-    latest = aws("ecr", "batch-get-image", ["--registry-id", c["account"],
-                 "--repository-name", c["project"] + "-web", "--image-ids", "imageTag=web-latest"])
-    images = latest.get("images", [])
-    require(not latest.get("failures") and len(images) == 1
-            and images[0].get("registryId") == c["account"]
-            and images[0].get("repositoryName") == c["project"] + "-web"
-            and images[0].get("imageId", {}).get("imageDigest") == proof["digest"],
-            "The promoted image changed during deployment verification")
 
 
 def main():
@@ -289,7 +329,7 @@ def main():
         validate_target(c, env)
     if args.mode == "verify":
         proof = {key: env.get("WEB_" + key.upper(), "") for key in
-                 ("digest", "runtime_digest", "deployment_id", "task_revision", "desired_count")}
+                 ("digest", "runtime_digest", "deployment_id", "old_deployment_id", "task_revision", "desired_count")}
         verify(c, proof)
         print("Exact web deployment and healthy image verified.")
         return
@@ -318,6 +358,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ImageError, ValueError, KeyError, TypeError, OSError) as error:
+    except (ImageError, ValueError, KeyError, TypeError, AttributeError, IndexError, OSError) as error:
         print("::error::" + (str(error) if isinstance(error, ImageError) else "Web deployment verification failed"))
         raise SystemExit(1)

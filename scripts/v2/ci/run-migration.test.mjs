@@ -712,6 +712,7 @@ async function runtimeDiagnostic({ phase = 'connect', error,
   class Client extends EventEmitter {
     async connect() { if (phase === 'connect') throw error; }
     async query(sql) {
+      if (sql.includes('pg_try_advisory_lock')) return { rows: [{ acquired: true }] };
       if (sql.includes('information_schema.columns')) {
         if (phase === 'connection-event') this.emit('error', error);
         return { rows: ['version', 'checksum'].map(column_name => ({ column_name, data_type: 'text' })) };

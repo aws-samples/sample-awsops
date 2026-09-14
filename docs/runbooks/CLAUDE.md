@@ -24,6 +24,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration and opt-in diagnostics (ADR-002/005/016) |
+| [release-safety-primitives.md](release-safety-primitives.md) | Bounded web reads/controller, opt-in pending-SQL admission, immediate migration contention and operator recovery (ADR-001/005/021) |
 | [web-release.md](web-release.md) | Digest-bound web release, private migration ordering, mandatory dev login/DB checks and explicit image rollback (ADR-001/005) |
 | [legacy-web-image-recovery.md](legacy-web-image-recovery.md) | Explicitly approved private-host recovery for images without receipts: trusted source/digest evidence, schema approval, exact image verification, no migrations (ADR-001/005) |
 | [web-image-provenance.md](web-image-provenance.md) | Helper contract: receipt steps/inputs, composed promotion, main account prerequisite, migration/rollback/expiry limits (ADR-005) |

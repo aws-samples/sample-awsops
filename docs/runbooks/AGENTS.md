@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3f1672c3de38 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4458d6e9daf4 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -12,6 +12,10 @@ Operational playbooks organized by scenario, each following symptoms → diagnos
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
+- Web migrations force automatic pending-SQL
+  checks; standalone overrides require reviewed cutovers. Contention fails
+  immediately under the shared lock. Read retries share a deadline and never retry writes;
+  failed/replaced ECS deployment evidence is terminal. See `release-safety-primitives.md`.
 - Deploy Web wires the receipt steps/current-dev migration outputs in `web-image-provenance.md`.
   Composed `promote` must preserve the readonly preflight's project/digest and recovery limits;
   never fabricate migration evidence or fall back to mutable tags as provenance.
