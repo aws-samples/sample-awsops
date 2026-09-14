@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f4c42651914a · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8e3ffff03d38 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -43,9 +43,10 @@ that's the source of truth for tool counts, not this doc.
   Adding a column or view here is a security-relevant change requiring review; never grant
   anything to `public`.
 - SQL-reader `topology_nodes.meta` is a named-key allowlist, currently owned by
-  `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Unlisted keys, including
-  ownership/ambiguity/target-time fields a future writer might add, stay absent until a
-  reviewed additive migration exposes them. This does not assert current writers emit them.
+  `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Current raw flow nodes
+  carry ownership_evidence/capturedAt and applicable VPC/subnet/ambiguity data, which the view
+  excludes along with candidate. Exposed region/cluster/ecsService/task fields are not complete
+  scope or live-ownership proof. Unlisted keys need a reviewed additive migration to be exposed.
 - Flow/infra labels are cached configuration, not live ownership. Trace account/region or
   Kubernetes metadata, when present, is telemetry attribution; database `infra_ref` is a
   host-name/prefix inference. Trace queues explicitly use `identityProvenance='telemetry_claim'`

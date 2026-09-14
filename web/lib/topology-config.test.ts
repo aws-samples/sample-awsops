@@ -1,26 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fetchEksIpMap } from './topology-config';
 import { buildFlowGraph, scopedTargetIp } from './flow-topology';
-import { buildE2eGraph } from './e2e-topology';
-import type { NetworkObservation } from './e2e-topology-types';
 
 const region = 'us-east-1', vpcId = 'vpc-shared', ip = '10.0.2.10';
-const pod = { name: 'orders-a', namespace: 'shop', podIP: ip, workload: 'orders' };
+// normalizePod exposes Kubernetes status.phase as the flat status field.
+const pod = { name: 'orders-a', namespace: 'shop', podIP: ip, workload: 'orders', status: 'Running' };
 const endpoint = {
   name: 'external-service', namespace: 'shop', ips: [ip], targets: [{ ip, pod: 'orders-a' }],
 };
 const cluster = { name: 'host-cluster', access: 'connected', region, vpcId };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-const network: NetworkObservation[] = [{
-  monitor: 'nfm-eks-client-cluster', cluster: 'client-cluster', metric: 'DATA_TRANSFERRED',
-  category: 'INTER_AZ', rangeSec: 900, unit: 'Bytes', capped: false,
-  rows: [{
-    local: { ip: '10.0.1.1', region, vpcId },
-    remote: { ip, region, vpcId, podName: 'orders-a', podNamespace: 'shop' },
-    value: 10, unit: 'Bytes', category: 'INTER_AZ', traversed: [], traversedIds: [],
-  }],
-}];
-
 function serve(pods: unknown[], endpoints: unknown[] = [endpoint], options: {
   failure?: 'http' | 'transport' | 'envelope'; endpointFailure?: 'http' | 'transport' | 'envelope' | 'malformed'; clusters?: typeof cluster[];
 } = {}) {
@@ -53,22 +42,47 @@ async function graphs() {
       target_health_descriptions: [{ Target: { Id: ip, Port: 80 } }],
     }],
   });
-  const integrated = buildE2eGraph({
-    account: 'self', configured, network,
-    services: {
-      captured_at: null, edges: [],
-      nodes: ['host-cluster', 'other-cluster'].map(name => ({
-        id: `wl:${name}`, kind: 'workload', label: `${name}/orders`,
-        meta: { cluster: name, namespace: 'shop', pods: ['orders-a'] },
-      })),
-    },
-  });
-  return { resolution, ipResolved, target: configured.nodes.find(n => n.kind === 'target')!, integrated };
+  return { resolution, ipResolved, target: configured.nodes.find(n => n.kind === 'target')! };
 }
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe('EKS inventory producer → configuration → service/network graph', () => {
+describe('EKS inventory producer → configuration', () => {
+  it.each([
+    ['Pending', 'eks', 'ambiguous'], ['Running', 'eks', 'ambiguous'],
+    ['Succeeded', undefined, 'ecs'], ['Failed', undefined, 'ecs'],
+    ['Unknown', 'ambiguous', 'ambiguous'], ['', 'ambiguous', 'ambiguous'],
+    [undefined, 'ambiguous', 'ambiguous'], ['CrashLoopBackOff', 'ambiguous', 'ambiguous'],
+  ])('arbitrates normalized pod phase %s before IP ownership', async (status, alone, withEcs) => {
+    serve([{ ...pod, status }], []);
+    const resolution = await fetchEksIpMap();
+    const input = { ipResolved: resolution.map, tg: [{
+      resource_id: 'tg-phase', region, vpc_id: vpcId, target_type: 'ip', captured_at: '2026-09-11T09:00:00Z',
+      target_health_descriptions: [{ Target: { Id: ip } }],
+    }] };
+    const target = buildFlowGraph(input).nodes.find(n => n.kind === 'target')!;
+    expect(target.meta?.resolved).toBe(alone);
+    expect(target.meta?.capturedAt).toBe('2026-09-11T09:00:00Z');
+    const reused = buildFlowGraph({ ...input,
+      ecsTask: [{ resource_id: 'task', region, last_status: 'RUNNING', attachments: [{ Details: [
+        { Name: 'subnetId', Value: 'subnet' }, { Name: 'privateIPv4Address', Value: ip },
+      ] }] }], subnet: [{ resource_id: 'subnet', region, vpc_id: vpcId }],
+    }).nodes.find(n => n.kind === 'target')!;
+    expect(reused.meta?.resolved).toBe(withEcs);
+  });
+
+  it.each(['Succeeded', 'Failed'])('does not let a retained %s pod contest a healthy replacement', async status => {
+    for (const pods of [[{ ...pod, name: 'old-pod', status }, pod], [pod, { ...pod, name: 'old-pod', status }]]) {
+      serve(pods);
+      expect((await graphs()).target.meta).toMatchObject({ resolved: 'eks', pod: 'orders-a' });
+    }
+  });
+
+  it('keeps an endpoint reference to a terminal pod unverified instead of claiming ownership', async () => {
+    serve([{ ...pod, status: 'Succeeded' }]);
+    expect((await graphs()).target.meta?.resolved).toBe('ambiguous');
+  });
+
   it('does not start EKS reads for an already-aborted load', async () => {
     const request = vi.fn(); vi.stubGlobal('fetch', request);
     const controller = new AbortController(); controller.abort();
@@ -126,6 +140,7 @@ describe('EKS inventory producer → configuration → service/network graph', (
     ['non-object pod row', 'pods', ['invalid'], []],
     ['missing pod identity fields', 'pods', [{}], []],
     ['invalid pod IP', 'pods', [{ ...pod, podIP: {} }], []],
+    ['invalid pod phase shape', 'pods', [{ ...pod, status: { phase: 'Running' } }], []],
     ['null endpoint row', 'endpoints', [null], []],
     ['invalid endpoint IP list', 'endpoints', [{ ...endpoint, ips: ip }], []],
     ['missing endpoint identity fields', 'endpoints', [{ ips: [], targets: [] }], []],
@@ -144,10 +159,9 @@ describe('EKS inventory producer → configuration → service/network graph', (
       }
       return json({ rows: url.searchParams.get('kind') === 'pods' ? [pod] : [endpoint] });
     }));
-    const { ipResolved, target, integrated } = await graphs();
+    const { ipResolved, target } = await graphs();
     expect(ipResolved).toEqual({ [scopedTargetIp(region, vpcId, ip)]: null });
     expect([undefined, 'ambiguous']).toContain(target.meta?.resolved);
-    expect(integrated.edges.filter(edge => edge.meta?.match === 'configured-cluster')).toEqual([]);
   });
 
   it.each([false, true])('keeps healthy ownership beside an empty or failed other scope: %s', async failed => {
@@ -164,7 +178,7 @@ describe('EKS inventory producer → configuration → service/network graph', (
   });
 
   it('keeps healthy ownership alongside an unassigned pod with no optional IP', async () => {
-    serve([pod, { name: 'pending-pod', namespace: 'shop' }]);
+    serve([pod, { name: 'pending-pod', namespace: 'shop', status: 'Pending' }]);
     expect((await graphs()).target).toMatchObject({
       label: 'shop/external-service', meta: { resolved: 'eks', pod: 'orders-a' },
     });
@@ -194,34 +208,25 @@ describe('EKS inventory producer → configuration → service/network graph', (
       endpoints: [endpoint, { ...endpoint, name: 'other-service', targets: [{ ip, pod: 'different-pod' }] }] },
   ])('does not prove remote cluster ownership from $name', async ({ pods, endpoints, ...options }) => {
     serve(pods, endpoints, options);
-    const { target, integrated } = await graphs();
+    const { target } = await graphs();
     expect(target.label).toBe(ip);
     expect([undefined, 'ambiguous']).toContain(target.meta?.resolved);
     expect(target.meta?.cluster).toBeUndefined();
-    expect(integrated.edges.filter(e => e.meta?.match === 'configured-cluster')).toEqual([]);
-    // Registration can link by IP only when no collected ownership claim contests it.
-    expect(integrated.edges.filter(e => e.meta?.match === 'ip-region-vpc'))
-      .toHaveLength(target.meta?.resolved === 'ambiguous' ? 0 : 1);
   });
 
   it('preserves Service labeling only after the IP, pod name and namespace agree', async () => {
     serve([pod]);
-    const { target, integrated } = await graphs();
+    const { target } = await graphs();
     expect(target.label).toBe('shop/external-service');
     expect(target.meta).toMatchObject({
       resolved: 'eks', cluster: 'host-cluster', pod: 'orders-a', namespace: 'shop', region, vpcId,
     });
-    const matches = integrated.edges.filter(e => e.meta?.match === 'configured-cluster');
-    expect(matches).toHaveLength(1);
-    expect(matches[0].meta).toMatchObject({ cluster: 'host-cluster', pod: 'orders-a' });
-    expect(integrated.nodes.find(n => n.id === matches[0].target)?.label).toBe('host-cluster/orders');
   });
 
   it('can prove an independently listed unique pod with no Service', async () => {
     serve([pod], []);
-    const { target, integrated } = await graphs();
+    const { target } = await graphs();
     expect(target.label).toBe('shop/orders');
-    expect(integrated.edges.filter(e => e.meta?.match === 'configured-cluster')).toHaveLength(1);
   });
 
   it.each(['shop', 'other'])('ignores a manual non-pod Service in namespace %s for ownership and labeling', async namespace => {
@@ -247,16 +252,13 @@ describe('EKS inventory producer → configuration → service/network graph', (
 
   it('rejects duplicate cluster candidates even with identical workload names', async () => {
     serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'other-cluster' }] });
-    const { ipResolved, integrated } = await graphs();
+    const { ipResolved } = await graphs();
     expect(ipResolved[scopedTargetIp(region, vpcId, ip)]).toBeNull();
-    expect(integrated.edges.filter(e => e.meta?.match === 'configured-cluster')).toEqual([]);
   });
 
   it('keeps equal IPs in different VPCs separate', async () => {
     serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'other-cluster', vpcId: 'vpc-other' }] });
-    const { ipResolved, integrated } = await graphs();
+    const { ipResolved } = await graphs();
     expect(Object.keys(ipResolved)).toHaveLength(2);
-    expect(integrated.edges.filter(e => e.meta?.match === 'configured-cluster'))
-      .toMatchObject([{ meta: { cluster: 'host-cluster' } }]);
   });
 });

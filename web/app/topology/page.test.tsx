@@ -42,7 +42,7 @@ function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; 
     if (url.pathname.endsWith('/incluster')) {
       const cluster = url.pathname.split('/')[3];
       return Response.json({ rows: url.searchParams.get('kind') === 'pods'
-        ? [{ name: `${cluster}-pod`, namespace: 'shop', podIP: '10.0.1.3', workload: cluster }]
+        ? [{ name: `${cluster}-pod`, namespace: 'shop', podIP: '10.0.1.3', workload: cluster, status: 'Running' }]
         : [{ name: `service-${cluster}`, namespace: 'shop', ips: ['10.0.1.3'],
           targets: [{ ip: '10.0.1.3', pod: `${cluster}-pod` }] }] });
     }

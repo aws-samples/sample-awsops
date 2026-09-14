@@ -1,6 +1,6 @@
 import { scopedTargetIp, type FlowInput } from './flow-topology';
 import type { EndpointRow } from './eks-incluster';
-import type { PodRow } from './eks-resources';
+import { isTerminalPodPhase, type PodRow } from './eks-resources';
 
 type Resolution = NonNullable<FlowInput['ipResolved']>[string];
 export interface EksIpResolution {
@@ -21,7 +21,8 @@ const optionalStrings = (row: Record<string, unknown>, keys: string[]) =>
   keys.every(key => row[key] == null || typeof row[key] === 'string');
 
 // Endpoints describes Service membership, not cluster ownership. Only an independently listed,
-// unique pod can establish ownership; conflicting references also disqualify the pod fallback.
+// unique pod in a known active phase can establish ownership; conflicting references also
+// disqualify the pod fallback. PodRow.status is the normalized Kubernetes status.phase.
 export async function fetchEksIpMap(signal?: AbortSignal): Promise<EksIpResolution> {
   const candidates = new Map<string, Resolution | null>();
   const blockedScopes = new Set<string>();
@@ -53,7 +54,7 @@ export async function fetchEksIpMap(signal?: AbortSignal): Promise<EksIpResoluti
       // Missing reads cannot enumerate addresses to veto another cluster. Empty arrays can.
       if (!endpoints || !pods
         || !pods.every(row => isRecord(row) && typeof row.name === 'string' && typeof row.namespace === 'string'
-          && optionalStrings(row, ['podIP', 'workload']))
+          && optionalStrings(row, ['podIP', 'workload', 'status']))
         || !endpoints.every(row => isRecord(row) && typeof row.name === 'string' && typeof row.namespace === 'string'
           && Array.isArray(row.ips) && row.ips.every(nonempty)
           && Array.isArray(row.targets) && row.targets.every(target =>
@@ -62,7 +63,7 @@ export async function fetchEksIpMap(signal?: AbortSignal): Promise<EksIpResoluti
       }
       const podsByIp = new Map<string, PodRow[]>();
       for (const pod of pods ?? []) {
-        if (pod.podIP) podsByIp.set(pod.podIP, [...(podsByIp.get(pod.podIP) ?? []), pod]);
+        if (pod.podIP && !isTerminalPodPhase(pod.status)) podsByIp.set(pod.podIP, [...(podsByIp.get(pod.podIP) ?? []), pod]);
       }
       const servicesByIp = new Map<string, EndpointRow[]>();
       for (const endpoint of endpoints ?? []) {
@@ -77,7 +78,7 @@ export async function fetchEksIpMap(signal?: AbortSignal): Promise<EksIpResoluti
           .filter(service => service.targets.some(t => t.ip === ip && t.pod));
         // A manual non-pod backend is service context, not a competing Kubernetes owner.
         if (!matches.length && !services.length) continue;
-        const corroborated = endpoints !== null && pod?.name && pod.namespace && services.every(service =>
+        const corroborated = pod?.name && pod.namespace && ['Pending', 'Running'].includes(pod.status) && services.every(service =>
           service.namespace === pod.namespace && (service.targets ?? []).filter(t => t.ip === ip)
             .every(t => !t.pod || t.pod === pod.name),
         );

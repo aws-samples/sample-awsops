@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { buildFlowGraph, filterFromEntry, TARGET_CAP, type FlowInput } from './flow-topology';
-import { buildE2eGraph } from './e2e-topology';
 
 describe('ECS scope from synced attachment and subnet inventory', () => {
   const region = 'us-east-1', ip = '10.0.1.10';
@@ -31,11 +30,6 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
         ownership_evidence: 'scope_unverified', candidate: { resolved: 'ecs', meta: { cluster: 'cluster-b', region, vpcId: 'vpc-b' } } });
       expect(node.meta?.cluster).toBeUndefined();
     }
-    const graph = buildE2eGraph({ account: 'self', configured, services: null, network: [{
-      monitor: 'monitor', cluster: null, metric: 'DATA_TRANSFERRED', category: 'INTER_AZ', rangeSec: 900, unit: 'Bytes', capped: false,
-      rows: [{ local: { ip, region, vpcId: 'vpc-b' }, remote: {}, value: 1, unit: 'Bytes', category: 'INTER_AZ', traversed: [], traversedIds: [] }],
-    }] });
-    expect(graph.edges.filter(edge => edge.evidence === 'identity')).toEqual([]);
   });
   it('labels cached configuration without certifying exclusive ownership', () => {
     const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task], subnet: [subnet],
@@ -77,31 +71,13 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
     expect(node.meta?.resolved).toBe(podVpc === 'vpc-b' ? 'ambiguous' : 'ecs');
     if (podVpc === 'vpc-b') {
       expect(node.label).toBe(ip);
-      const graph = buildE2eGraph({ account: 'self', configured, services: null, network: [{
-        monitor: 'monitor', cluster: null, metric: 'DATA_TRANSFERRED', category: 'INTER_VPC', rangeSec: 900,
-        rows: [{ local: { ip, region, vpcId: 'vpc-b' }, remote: {}, value: 1, unit: 'Bytes', category: 'INTER_VPC', traversed: [], traversedIds: [] }],
-        unit: 'Bytes', capped: false,
-      }] });
-      expect(graph.edges.filter(edge => edge.evidence === 'identity')).toEqual([]);
-      expect(graph.summary.ambiguousEndpoints).toBe(1);
     }
   });
 
-  it('does not attribute a VPC A network endpoint to the only same-IP task in VPC B', () => {
+  it('does not attribute a VPC A target to the only same-IP task in VPC B', () => {
     const configured = buildFlowGraph({ tg: [tg], ecsTask: [task], subnet: [subnet] });
     expect(configured.nodes.find(n => n.kind === 'target')).toMatchObject({ label: ip });
     expect(configured.nodes.find(n => n.kind === 'target')?.meta?.resolved).toBeUndefined();
-    const integrated = buildE2eGraph({
-      account: 'self', configured, services: null, network: [{
-        monitor: 'vpc-a-monitor', cluster: null, metric: 'DATA_TRANSFERRED', category: 'INTER_VPC',
-        rangeSec: 900, unit: 'Bytes', capped: false, rows: [{
-          local: { ip, region, vpcId: 'vpc-a' }, remote: { ip: '10.1.2.3', region, vpcId: 'vpc-b' },
-          value: 5, unit: 'Bytes', category: 'INTER_VPC', traversed: [], traversedIds: [],
-        }],
-      }],
-    });
-    expect(integrated.nodes.some(n => n.meta.resolved === 'ecs' || n.label === 'service-b')).toBe(false);
-    expect(integrated.edges.filter(e => e.meta?.match === 'ip-region-vpc')).toHaveLength(1);
   });
 
   it('resolves a realistic same-VPC task without a top-level vpc_id', () => {

@@ -89,10 +89,11 @@ guard — see the section below.
     must be a superset of `inventory_read_mcp.PROJECTIONS` —
     `agent/lambda/test_inventory_view_contract.py` fails the build on drift.
   - `sql_reader.topology_nodes.meta` is a named-key allowlist, currently owned by
-    `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Any unlisted key,
-    including ownership, ambiguity or target-time fields a future writer might add, remains
-    absent until a reviewed additive migration exposes it. This is a projection rule, not a
-    claim that current raw writers emit those fields.
+    `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Current raw flow nodes
+    carry `ownership_evidence` and `capturedAt`, with VPC/subnet/ambiguity data where applicable;
+    those fields and nested `candidate` are excluded. Bare `region`, `cluster`, `ecsService`
+    and `task` may be exposed and do not prove complete scope or live ownership. Any unlisted
+    key remains absent until a reviewed additive migration exposes it.
   - Interpret evidence per class: flow/infra labels are cached configuration, not live
     ownership. Trace service/database account or region metadata, when present, is telemetry
     attribution; database `infra_ref` is a host-name/prefix inference, not identity proof.
