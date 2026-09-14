@@ -130,19 +130,51 @@ function nodeLabel(n: FlowNode): ReactNode {
 }
 
 const ROW_CAP = 500; // /api/inventory caps limit at 500
+const record = (v: unknown): v is Row => v !== null && typeof v === 'object' && !Array.isArray(v);
+const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
-async function fetchType(t: InvType, account: string): Promise<{ rows: Row[]; finishedAt: string | null; capped: boolean }> {
-  // account scope: 'self' | 12-digit | '__all__' — the inventory read route's `accounts` param.
-  const r = await fetch(`/api/inventory/${t}?limit=${ROW_CAP}&accounts=${encodeURIComponent(account)}`);
-  if (!r.ok) throw new Error(`${t}: HTTP ${r.status}`);
-  const d = await r.json();
-  if (!d || d.error || d.status === 'error' || !Array.isArray(d.rows)) throw new Error(`${t}: invalid inventory response`);
-  const rows = (d.rows ?? []) as { resource_id: unknown; region: unknown; data?: object }[];
-  return {
-    rows: rows.map((x) => ({ resource_id: x.resource_id, region: x.region, ...(x.data ?? {}) })),
-    finishedAt: d.run?.finished_at ?? null,
-    capped: rows.length >= ROW_CAP, // hit the cap → more rows exist, surfaced below (no silent truncation)
-  };
+async function fetchType(t: InvType, account: string, signal: AbortSignal): Promise<{ rows: Row[]; finishedAt: string | null; capped: boolean }> {
+  const critical = t === 'ecs_task' || t === 'subnet';
+  const rows: Row[] = [], seen = new Set<string>();
+  let version: string | undefined, finishedAt: string | null = null;
+  try {
+    for (let page = 0; page < (critical ? 20 : 1); page++) {
+      if (signal.aborted) throw new Error();
+      const qs = new URLSearchParams({ limit: String(ROW_CAP), offset: String(page * ROW_CAP), accounts: account });
+      const r = await fetch(`/api/inventory/${t}?${qs}`, { signal });
+      if (!r.ok) throw new Error();
+      const d: unknown = await r.json();
+      if (signal.aborted || !record(d) || d.error || d.status === 'error'
+        || !Array.isArray(d.rows) || d.rows.length > ROW_CAP) throw new Error();
+      const run = record(d.run) ? d.run : null;
+      if (critical) {
+        // The public run tuple is a consistency guard, not an atomic database snapshot.
+        if (!run || run.status !== 'succeeded' || !nonempty(run.finished_at) || !Number.isFinite(Date.parse(run.finished_at))
+          || !nonempty(run.last_success_at) || !Number.isFinite(Date.parse(run.last_success_at))
+          || !Number.isSafeInteger(run.row_count) || (run.row_count as number) < 0) throw new Error();
+        const current = JSON.stringify([run.status, run.finished_at, run.last_success_at, run.row_count]);
+        if (version !== undefined && version !== current) throw new Error();
+        version = current;
+      }
+      for (const row of d.rows) {
+        if (!record(row) || !record(row.data)) throw new Error();
+        if (critical) {
+          if (!nonempty(row.account_id) || !nonempty(row.region) || !nonempty(row.resource_id)
+            || (account !== '__all__' && !account.split(',').includes(row.account_id))) throw new Error();
+          const key = JSON.stringify([row.account_id, row.region, row.resource_id]);
+          if (seen.has(key)) throw new Error();
+          seen.add(key);
+        }
+        rows.push({ ...row.data, account_id: row.account_id, resource_id: row.resource_id, region: row.region });
+      }
+      finishedAt = run && typeof run.finished_at === 'string' ? run.finished_at : null;
+      if (d.rows.length < ROW_CAP) return { rows, finishedAt, capped: false };
+    }
+    return { rows, finishedAt, capped: true }; // 10,000 critical rows still need an end-of-data proof.
+  } catch {
+    // Fetch/JSON errors can contain response fragments; expose only the fixed type-scoped reason.
+    throw new Error(`${t}: invalid inventory response`);
+  }
 }
 
 // ---- VPC / subnet / security-group id → name resolution (for the detail panel) ----
@@ -197,6 +229,7 @@ export default function TopologyPage() {
   const [query, setQuery] = useState('');
   const [netMaps, setNetMaps] = useState<NetMaps>(emptyNetMaps);
   const loadGeneration = useRef(0);
+  const loadAbort = useRef<AbortController | null>(null);
   const displayedAccount = useRef<string | null>(null);
   const [retained, setRetained] = useState(false);
   const [eksResolution, setEksResolution] = useState<EksIpResolution | null>(null);
@@ -205,6 +238,10 @@ export default function TopologyPage() {
     const generation = ++loadGeneration.current;
     const current = () => loadGeneration.current === generation;
     const account = activeAccount || 'self';
+    loadAbort.current?.abort();
+    const controller = new AbortController();
+    loadAbort.current = controller;
+    const deadline = setTimeout(() => controller.abort(), 30000);
     setBusy(true);
     if (displayedAccount.current !== account) {
       displayedAccount.current = null;
@@ -221,10 +258,10 @@ export default function TopologyPage() {
     try {
       const NET = ['vpc', 'security_group'] as const;
       const [results, eks, net] = await Promise.all([
-        Promise.allSettled(TYPES.map((t) => fetchType(t, account))),
+        Promise.allSettled(TYPES.map((t) => fetchType(t, account, controller.signal))),
         account === 'self' ? fetchEksIpMap() : Promise.resolve(null),
         // Subnets are fetched once with flow inventory and reused for detail names.
-        Promise.all(NET.map((t) => fetch(`/api/inventory/${t}?limit=500&accounts=${encodeURIComponent(account)}`).then((r) => (r.ok ? r.json() : { rows: [] })).catch(() => ({ rows: [] })))),
+        Promise.all(NET.map((t) => fetch(`/api/inventory/${t}?limit=500&accounts=${encodeURIComponent(account)}`, { signal: controller.signal }).then((r) => (r.ok ? r.json() : { rows: [] })).catch(() => ({ rows: [] })))),
       ]);
       if (!current()) return;
       const failed = results.flatMap((result, i) => result.status === 'rejected'
@@ -248,6 +285,7 @@ export default function TopologyPage() {
       const out: FlowInput = { ipResolved: eks?.map, ownershipRead: {
         ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
         eksScopes: eks?.blockedScopes, eksUnknown: eks?.globalUnknown,
+        ...(account === 'self' ? { eksRegions: eks?.coveredRegions } : { configurationOnly: true }),
       } };
       let newest: string | null = null;
       const capped: string[] = [];
@@ -270,11 +308,12 @@ export default function TopologyPage() {
         setRetained(displayedAccount.current === account);
       }
     } finally {
+      clearTimeout(deadline);
       if (current()) setBusy(false);
     }
   }, [activeAccount]);
 
-  useEffect(() => { void load(); return () => { loadGeneration.current += 1; }; }, [load]);
+  useEffect(() => { void load(); return () => { loadGeneration.current += 1; loadAbort.current?.abort(); }; }, [load]);
 
   // Deep-link from the service map (/topology/services): ?cluster=<resolved:name> seeds the cluster
   // filter so a trace workload click lands on this cluster's request path. Reads directly from
@@ -436,7 +475,7 @@ export default function TopologyPage() {
       syn.target_type = m.targetType; syn.health = m.health; syn.port = m.port;
       if (m.resolved) syn.resolved_as = m.resolved;
       // EKS/ECS resolution detail (cluster / namespace / service / workload), when present
-      for (const k of ['cluster', 'namespace', 'service', 'workload', 'ecsService', 'task', 'pod', 'ambiguity'] as const) {
+      for (const k of ['cluster', 'namespace', 'service', 'workload', 'ecsService', 'task', 'pod', 'ambiguity', 'ownership_evidence'] as const) {
         if (m[k] != null && m[k] !== '') syn[k] = m[k];
       }
       // grouped node (ASG/replicas/tasks): show the member count + health summary + the IP list

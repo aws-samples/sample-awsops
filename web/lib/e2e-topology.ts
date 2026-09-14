@@ -206,7 +206,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       || (targetPod && pod && targetPod !== pod);
     const conflictingWorkloadType = target?.node.meta.resolved === 'ecs' && (!!pod || !!namespace || matches.length > 0);
     if (candidates.size > 1 || matches.length > 1 || conflictingClusters || conflictingOwner || conflictingWorkloadType
-      || target?.node.meta.resolved === 'ambiguous') {
+      || target?.node.meta.resolved === 'ambiguous' || target?.node.meta.ownership_evidence === 'cached_configuration') {
       endpoint.meta.correlation = 'ambiguous';
       summary.ambiguousEndpoints++;
       return;

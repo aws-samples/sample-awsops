@@ -25,8 +25,8 @@ interface MetricsCallsSourceLike {
 // (class is in the node PK + edge UNIQUE), so each rebuild mark-sweeps ONLY its own class.
 // EKS pods are live in-cluster, not synced → not materialized here (the UI resolves them live).
 
-// Exclude 'ipResolved' (a Record, not a Row[]) so input[key] narrows to Row[] for the push below.
-const TYPE_TO_KEY: Record<string, Exclude<keyof FlowInput, 'ipResolved'>> = {
+// Metadata inputs are not inventory arrays. Cached flow labels are configuration facts, not live ownership proof.
+const TYPE_TO_KEY: Record<string, Exclude<keyof FlowInput, 'ipResolved' | 'ownershipRead'>> = {
   route53: 'route53', cloudfront: 'cloudfront', alb: 'alb', nlb: 'nlb', target_group: 'tg',
   waf: 'waf', ec2: 'ec2', lambda: 'lambda', ecs_task: 'ecsTask', s3: 's3', subnet: 'subnet',
   // L7 origin resolution: API Gateway (→Lambda/VPC-Link→LB) + CloudFront VPC origins (→ALB/NLB).
@@ -133,7 +133,7 @@ export async function rebuildGraph(pool: Pool, runId: string = randomUUID()): Pr
        WHERE account_id = $2 AND resource_type = ANY($1)`,
       [TYPES, account],
     );
-    const input: FlowInput = {};
+    const input: FlowInput = { ownershipRead: { configurationOnly: true } };
     for (const r of inv.rows as { resource_type: string; resource_id: unknown; region: unknown; data?: object }[]) {
       const key = TYPE_TO_KEY[r.resource_type];
       if (!key) continue;

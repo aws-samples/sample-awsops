@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const verifyUser = vi.fn();
 const listClusters = vi.fn();
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
-vi.mock('@/lib/aws', () => ({ listClusters: (...a: unknown[]) => listClusters(...a) }));
+vi.mock('@/lib/aws', () => ({ listClusterInventory: async (...a: unknown[]) =>
+  ({ clusters: await listClusters(...a), region: 'ap-northeast-2', truncated: false }) }));
 const getAllowedClusters = vi.fn();
 const isEnvCluster = vi.fn();
 const hasAccessEntry = vi.fn();
@@ -43,6 +44,11 @@ describe('GET /api/eks', () => {
     const res = await GET(req());
     expect(res.status).toBe(200);
     expect((await res.json()).clusters[0].name).toBe('c1');
+  });
+  it('reports the enumerated region even when no cluster exists', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' }); listClusters.mockResolvedValue([]);
+    const { GET } = await import('./route');
+    expect(await (await GET(req())).json()).toMatchObject({ clusters: [], region: 'ap-northeast-2', truncated: false });
   });
   it('500 on SDK error', async () => {
     verifyUser.mockResolvedValue({ sub: 'u' });

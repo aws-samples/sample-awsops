@@ -6,12 +6,13 @@ type Resolution = NonNullable<FlowInput['ipResolved']>[string];
 export interface EksIpResolution {
   map: NonNullable<FlowInput['ipResolved']>;
   blockedScopes: string[];
+  coveredRegions: string[];
   globalUnknown: boolean;
   status: 'ok' | 'empty' | 'partial' | 'unavailable';
   reasons: ('cluster_unreadable' | 'cluster_limit_possible')[];
 }
 const unavailable = (reason: EksIpResolution['reasons'][number] = 'cluster_unreadable'): EksIpResolution =>
-  ({ map: {}, blockedScopes: [], globalUnknown: true, status: 'unavailable', reasons: [reason] });
+  ({ map: {}, blockedScopes: [], coveredRegions: [], globalUnknown: true, status: 'unavailable', reasons: [reason] });
 type Cluster = { name: string; access?: string; region?: string; vpcId?: string };
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -24,15 +25,18 @@ const optionalStrings = (row: Record<string, unknown>, keys: string[]) =>
 export async function fetchEksIpMap(): Promise<EksIpResolution> {
   const candidates = new Map<string, Resolution | null>();
   const blockedScopes = new Set<string>();
+  let coveredRegions: string[] = [];
   try {
     const response = await fetch('/api/eks');
     const list = response.ok ? await response.json() : null;
     if (list?.error || list?.status === 'error' || !Array.isArray(list?.clusters)) return unavailable();
     if (!list.clusters.every((c: unknown) => isRecord(c) && nonempty(c.name) && nonempty(c.access))) return unavailable();
     // The current API returns at most 25 descriptors without a continuation token.
-    if (list.clusters.length >= 25) return unavailable('cluster_limit_possible');
+    if (list.truncated === true || (list.truncated !== false && list.clusters.length >= 25)) return unavailable('cluster_limit_possible');
     const clusters = list.clusters as Cluster[];
     if (clusters.some(c => ![c.name, c.region, c.vpcId].every(nonempty))) return unavailable();
+    coveredRegions = nonempty(list.region) ? [list.region] : [...new Set(clusters.map(c => c.region!))];
+    if (!coveredRegions.length || clusters.some(c => !coveredRegions.includes(c.region!))) return unavailable();
     await Promise.all(clusters.map(async cluster => {
       const scope = scopedTargetIp(cluster.region!, cluster.vpcId!, '');
       if (cluster.access !== 'connected') { blockedScopes.add(scope); return; }
@@ -96,6 +100,6 @@ export async function fetchEksIpMap(): Promise<EksIpResolution> {
   }
   const map = Object.fromEntries([...candidates].map(([key, value]) =>
     [key, blockedScopes.has(key.slice(0, key.lastIndexOf('|') + 1)) ? null : value]));
-  return { map, blockedScopes: [...blockedScopes].sort(), globalUnknown: false, status: blockedScopes.size ? Object.values(map).some(Boolean) ? 'partial' : 'unavailable'
+  return { map, blockedScopes: [...blockedScopes].sort(), coveredRegions, globalUnknown: false, status: blockedScopes.size ? Object.values(map).some(Boolean) ? 'partial' : 'unavailable'
     : candidates.size ? 'ok' : 'empty', reasons: blockedScopes.size ? ['cluster_unreadable'] : [] };
 }

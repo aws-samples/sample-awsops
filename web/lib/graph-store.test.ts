@@ -78,7 +78,7 @@ describe('rebuildGraph', () => {
     )!;
     expect(write[1]?.[2]).toBe('orders');
     expect(JSON.parse(String(write[1]?.[3]))).toMatchObject({
-      resolved: 'ecs', region: 'us-east-1', vpcId: 'vpc-b', subnetId: 'subnet-b',
+      resolved: 'ecs', region: 'us-east-1', vpcId: 'vpc-b', subnetId: 'subnet-b', ownership_evidence: 'cached_configuration',
     });
   });
 

@@ -5,7 +5,9 @@ import TopologyPage from './page';
 import { setActiveAccount } from '@/lib/account-context';
 
 const region = 'us-east-1', vpcId = 'vpc-app';
-const row = (resource_id: string, data: object) => ({ resource_id, region, data });
+const row = (resource_id: string, data: object) => ({ account_id: 'self', resource_id, region, data });
+const RUN = { status: 'succeeded', finished_at: '2026-09-11T12:00:00Z', last_success_at: '2026-09-11T12:00:00Z', row_count: 1 };
+type Body = { rows: ReturnType<typeof row>[]; run: typeof RUN };
 const targets = row('tg-app', { vpc_id: vpcId, target_type: 'ip', target_health_descriptions:
   ['10.0.1.2', '10.0.1.3'].map(Id => ({ Target: { Id, Port: 80 } })) });
 const task = (name: string) => row(`task-${name}`, {
@@ -15,16 +17,22 @@ const task = (name: string) => row(`task-${name}`, {
 beforeEach(() => {
   localStorage.clear();
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal('DOMMatrixReadOnly', class { m22 = 1; });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
-function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; failures?: Set<string>; eks?: object; eksFailed?: boolean; subnetCapped?: boolean } = {}) {
+function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; failures?: Set<string>; eks?: object; eksFailed?: boolean; subnetCapped?: boolean;
+  inventory?: Record<string, ReturnType<typeof row>[]>;
+  inventoryReply?: (url: URL, body: Body, signal?: AbortSignal | null) => Response | Promise<Response>;
+} = {}) {
   const requests: URL[] = [];
-  vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+  const inventories = { ...options.inventory };
+  if (options.subnetCapped) inventories.subnet = Array.from({ length: 10000 }, (_, i) => row(i ? `extra-${i}` : 'subnet-app', { vpc_id: vpcId }));
+  vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
     const url = new URL(input, 'http://localhost'); requests.push(url);
     if (url.pathname === '/api/eks' && options.eksFailed) return Response.json({ message: 'secret=not-a-real-credential-1234567890' }, { status: 503 });
-    if (url.pathname === '/api/eks' && options.eks) return Response.json(options.eks);
-    if (url.pathname === '/api/eks') return Response.json({ clusters: [
+    if (url.pathname === '/api/eks' && options.eks) return Response.json({ region, truncated: false, ...options.eks });
+    if (url.pathname === '/api/eks') return Response.json({ region, truncated: false, clusters: [
       { name: 'good', region, vpcId, access: 'connected' },
       { name: 'wrong', region, vpcId: 'vpc-other', access: 'connected' },
     ] });
@@ -40,10 +48,12 @@ function serve(options: { lateTask?: Promise<Response>; subnetFailed?: boolean; 
       if (options.failures?.has(type!) || options.failures?.has('*')) return Response.json({ error: 'Unavailable' }, { status: 503 });
       if (type === 'ecs_task' && host && options.lateTask) return options.lateTask;
       if (type === 'subnet' && options.subnetFailed) return Response.json({ error: 'Unavailable' }, { status: 503 });
-      const rows = type === 'target_group' ? [targets] : type === 'ecs_task' ? [task(host ? 'ecs-api' : 'member-api')]
-        : type === 'subnet' ? [row('subnet-app', { vpc_id: vpcId, tags: { Name: 'App subnet' } })] : [];
-      if (type === 'subnet' && options.subnetCapped) rows.push(...Array.from({ length: 499 }, (_, i) => row(`extra-${i}`, { vpc_id: vpcId })));
-      return Response.json({ rows, run: { finished_at: '2026-09-11T12:00:00Z' } });
+      const all = inventories[type!] ?? (type === 'target_group' ? [targets] : type === 'ecs_task' ? [task(host ? 'ecs-api' : 'member-api')]
+        : type === 'subnet' ? [row('subnet-app', { vpc_id: vpcId, tags: { Name: 'App subnet' } })] : []);
+      const offset = Number(url.searchParams.get('offset') ?? 0), limit = Number(url.searchParams.get('limit'));
+      const rows = all.slice(offset, offset + limit).map(r => ({ ...r, account_id: url.searchParams.get('accounts') === '__all__' ? r.account_id : host ? 'self' : url.searchParams.get('accounts')! }));
+      const body = { rows, run: { ...RUN, row_count: all.length } };
+      return options.inventoryReply?.(url, body, init?.signal) ?? Response.json(body);
     }
     throw new Error(`Unexpected request: ${url}`);
   }));
@@ -57,7 +67,8 @@ describe('live topology inventory adapter', () => {
   it.each([
     { eksFailed: true },
     { eks: { clusters: [{ name: 'blocked', region, vpcId, access: 'unknown' }] } },
-    { eks: { clusters: Array.from({ length: 25 }, (_, i) => ({ name: `cluster-${i}`, region, vpcId, access: 'connected' })) } },
+    { eks: { truncated: true, clusters: Array.from({ length: 25 }, (_, i) => ({ name: `cluster-${i}`, region, vpcId, access: 'connected' })) } },
+    { eks: { region: undefined, clusters: [] } },
   ])('discloses unavailable EKS resolution without hiding other inventory: %j', async options => {
     serve(options); render(<TopologyPage />);
     await screen.findByRole('alert', { name: 'EKS 식별 상태' });
@@ -97,13 +108,13 @@ describe('live topology inventory adapter', () => {
 
   it('does not present a failed subnet read as an empty successful inventory', async () => {
     serve({ subnetFailed: true }); render(<TopologyPage />);
-    expect(await screen.findByText(/503.*subnet|subnet.*503/)).toBeTruthy();
+    expect(await screen.findByText(/subnet: invalid inventory response/)).toBeTruthy();
     expect(screen.queryByText(/그래프로 그릴 리소스가 없습니다/)).toBeNull();
   });
 
   it('renders successful inventory types when an unrelated type fails', async () => {
     serve({ failures: new Set(['alb_listener_rule']) }); render(<TopologyPage />);
-    await screen.findByText(/alb_listener_rule.*503/);
+    await screen.findByText(/alb_listener_rule: invalid inventory response/);
     search('ecs-api');
     expect(screen.getByRole('button', { name: /ecs-api/ })).toBeTruthy();
   });
@@ -129,10 +140,105 @@ describe('live topology inventory adapter', () => {
     const requests = serve({ lateTask: pending }); render(<TopologyPage />);
     await waitFor(() => expect(requests.some(url => url.pathname.endsWith('/ecs_task'))).toBe(true));
     act(() => setActiveAccount('123456789012'));
+    const oldRequest = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes('/ecs_task') && String(url).includes('accounts=self'));
+    expect(oldRequest?.[1]?.signal?.aborted).toBe(true);
     await screen.findByRole('option', { name: 'ECS · ecs-app' });
-    await act(async () => { resolve(Response.json({ rows: [task('ecs-api')] })); });
+    await act(async () => { resolve(Response.json({ rows: [task('ecs-api')], run: RUN })); });
     search('ecs-api'); expect(screen.queryByRole('button', { name: /ecs-api/ })).toBeNull();
     search('member-api'); expect(screen.getByRole('button', { name: /member-api/ })).toBeTruthy();
     expect(screen.queryByRole('option', { name: 'EKS · good' })).toBeNull();
+  });
+});
+
+function largeInventory(type: string) {
+  return [...Array.from({ length: 500 }, (_, i) => row(`filler-${i}`, {})),
+    type === 'ecs_task' ? task('ecs-api') : row('subnet-app', { vpc_id: vpcId })];
+}
+describe('bounded ownership inventory paging', () => {
+  it.each([['self', 'ecs_task'], ['self', 'subnet'], ['123456789012', 'ecs_task'], ['123456789012', 'subnet']])('pages %s / %s without paging display types', async (account, type) => {
+    const requests = serve({ inventory: { [type]: largeInventory(type) } });
+    render(<TopologyPage />);
+    await screen.findByRole('option', { name: 'ECS · ecs-app' });
+    if (account !== 'self') {
+      requests.length = 0;
+      act(() => setActiveAccount(account));
+      await waitFor(() => expect(requests.some(u => u.pathname.endsWith(`/${type}`) && u.searchParams.get('offset') === '500')).toBe(true));
+      await screen.findByRole('option', { name: 'ECS · ecs-app' });
+    }
+    expect(requests.filter(u => u.pathname.endsWith(`/${type}`)).map(u => u.searchParams.get('offset'))).toEqual(['0', '500']);
+    expect(requests.filter(u => u.pathname.endsWith('/target_group'))).toHaveLength(1);
+    expect(requests.filter(u => u.pathname.startsWith('/api/inventory/')).every(u => u.searchParams.get('accounts') === account)).toBe(true);
+    expect(screen.queryByText('인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.')).toBeNull();
+    if (account !== 'self') {
+      search('ecs:'); fireEvent.click(screen.getByRole('button', { name: /ecs-api|member-api/ }));
+      expect(await screen.findByText('cached_configuration')).toBeTruthy();
+      expect(requests.some(u => u.pathname === '/api/eks')).toBe(false);
+    }
+  });
+
+  it('withholds host ECS ownership outside the enumerated EKS region', async () => {
+    const west = <T extends { region: string }>(value: T) => ({ ...value, region: 'us-west-2' });
+    serve({ inventory: { target_group: [west(targets)], ecs_task: [west(task('ecs-api'))],
+      subnet: [west(row('subnet-app', { vpc_id: vpcId }))] } });
+    render(<TopologyPage />);
+    await screen.findByText(/인벤토리 동기화:/);
+    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
+    search('ambiguous:'); fireEvent.click(screen.getByRole('button', { name: /×2/ }));
+    expect(await screen.findByText('eks_not_enumerated')).toBeTruthy();
+  });
+
+  it.each(['status', 'finished_at', 'last_success_at', 'row_count', 'missing-run', 'missing-version', 'duplicate', 'malformed', 'http', 'json'])(
+    'withholds ownership for a %s paging inconsistency', async defect => {
+      const inventory = largeInventory('ecs_task');
+      const requests = serve({ inventory: { ecs_task: inventory }, inventoryReply: (url, body) => {
+        if (!url.pathname.endsWith('/ecs_task')) return Response.json(body);
+        if (defect === 'status') return Response.json({ ...body, run: { ...body.run, status: 'running' } });
+        if (url.searchParams.get('offset') !== '500') return Response.json(body);
+        if (defect === 'http') return Response.json({ message: 'secret=canary' }, { status: 503 });
+        if (defect === 'json') return new Response('secret=canary is not JSON');
+        if (defect === 'missing-run') return Response.json({ rows: body.rows });
+        if (defect === 'missing-version') return Response.json({ ...body, run: { ...body.run, last_success_at: undefined } });
+        if (defect === 'duplicate') return Response.json({ ...body, rows: [inventory[0]] });
+        if (defect === 'malformed') return Response.json({ ...body, rows: [{ ...inventory[500], account_id: undefined }] });
+        return Response.json({ ...body, run: { ...body.run, [defect]: defect === 'row_count' ? 502 : '2026-09-11T12:01:00Z' } });
+      } });
+      render(<TopologyPage />);
+      await screen.findByText(/ecs_task: invalid inventory response/);
+      expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
+      expect(document.body.textContent).not.toContain('secret=canary');
+      expect(requests.filter(u => u.pathname.endsWith('/ecs_task')).length).toBeLessThanOrEqual(2);
+    });
+
+  it('stops at twenty pages and discloses the remaining cap', async () => {
+    const requests = serve({ subnetCapped: true }); render(<TopologyPage />);
+    await screen.findByText('인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.');
+    expect(requests.filter(u => u.pathname.endsWith('/subnet'))).toHaveLength(20);
+    expect(screen.queryByRole('option', { name: 'ECS · ecs-app' })).toBeNull();
+  });
+
+  it.each([false, true])('clears the load deadline after settling (invalid JSON: %s)', async invalid => {
+    const scheduled = vi.spyOn(globalThis, 'setTimeout'), cleared = vi.spyOn(globalThis, 'clearTimeout');
+    serve({ inventoryReply: (url, body) => invalid && url.pathname.endsWith('/ecs_task') ? new Response('secret=canary') : Response.json(body) });
+    render(<TopologyPage />);
+    if (invalid) await screen.findByText(/ecs_task: invalid inventory response/);
+    else await screen.findByRole('option', { name: 'ECS · ecs-app' });
+    const deadlines = scheduled.mock.calls.flatMap((args, i) => args[1] === 30000 ? [scheduled.mock.results[i].value] : []);
+    expect(deadlines).toHaveLength(1);
+    expect(cleared).toHaveBeenCalledWith(deadlines[0]);
+  });
+
+  it('aborts a stalled later page at the shared thirty-second budget', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | null | undefined;
+    serve({ inventory: { ecs_task: largeInventory('ecs_task') }, inventoryReply: (url, body, abort) => {
+      if (!url.pathname.endsWith('/ecs_task') || url.searchParams.get('offset') !== '500') return Response.json(body);
+      signal = abort;
+      return new Promise((_, reject) => abort?.addEventListener('abort', () => reject(new Error('secret=canary')), { once: true }));
+    } });
+    render(<TopologyPage />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    expect(signal?.aborted).toBe(true);
+    expect(screen.getByText(/ecs_task: invalid inventory response/)).toBeTruthy();
+    expect(document.body.textContent).not.toContain('secret=canary');
   });
 });

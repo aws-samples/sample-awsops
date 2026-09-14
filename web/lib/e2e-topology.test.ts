@@ -74,6 +74,12 @@ function expectNoDanglingEdges(graph: { nodes: { id: string }[]; edges: { source
 }
 
 describe('buildE2eGraph — evidence and provenance', () => {
+  it('does not promote materialized configuration into exclusive identity evidence', () => {
+    const graph = buildE2eGraph(input({ configured: configured([target({ ownership_evidence: 'cached_configuration' })]),
+      network: [observation()] }));
+    expect(identityEdges(graph)).toHaveLength(0);
+    expect(graph.summary.ambiguousEndpoints).toBeGreaterThan(0);
+  });
   it.each([false, true])('distinguishes actual failed and successful empty batches at the graph boundary: failure=%s', async failed => {
     const batch = await loadNetworkObservations({
       monitor: 'nfm-eks-app', metric: 'DATA_TRANSFERRED', category: 'INTRA_AZ', rangeSec: 900,

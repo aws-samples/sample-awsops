@@ -26,7 +26,7 @@ function serve(pods: unknown[], endpoints: unknown[] = [endpoint], options: {
 } = {}) {
   vi.stubGlobal('fetch', vi.fn(async (input: string) => {
     const url = new URL(input, 'http://localhost');
-    if (url.pathname === '/api/eks') return json({ clusters: options.clusters ?? [cluster] });
+    if (url.pathname === '/api/eks') return json({ region, clusters: options.clusters ?? [cluster] });
     if (url.searchParams.get('kind') === 'pods') {
       if (options.failure === 'http') return json({ error: 'Forbidden' }, 403);
       if (options.failure === 'transport') throw new Error('unavailable');
@@ -71,15 +71,27 @@ afterEach(() => vi.unstubAllGlobals());
 describe('EKS inventory producer → configuration → service/network graph', () => {
   it('distinguishes valid empty enumeration from unreadable clusters', async () => {
     serve([], [], { clusters: [] });
-    expect(await fetchEksIpMap()).toEqual({ map: {}, blockedScopes: [], globalUnknown: false, status: 'empty', reasons: [] });
+    expect(await fetchEksIpMap()).toEqual({ map: {}, blockedScopes: [], coveredRegions: [region], globalUnknown: false, status: 'empty', reasons: [] });
     serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'unreadable', access: 'unknown' }] });
     expect(await fetchEksIpMap()).toEqual({ map: { [scopedTargetIp(region, vpcId, ip)]: null },
-      blockedScopes: [`${region}|${vpcId}|`], globalUnknown: false, status: 'unavailable', reasons: ['cluster_unreadable'] });
+      blockedScopes: [`${region}|${vpcId}|`], coveredRegions: [region], globalUnknown: false, status: 'unavailable', reasons: ['cluster_unreadable'] });
+  });
+  it('retains explicit region coverage for an empty response', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ clusters: [], region })));
+    expect(await fetchEksIpMap()).toMatchObject({ coveredRegions: [region], globalUnknown: false, status: 'empty' });
+  });
+  it('cannot infer a region from a legacy empty response', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ clusters: [] })));
+    expect(await fetchEksIpMap()).toMatchObject({ coveredRegions: [], globalUnknown: true });
+  });
+  it('does not certify an empty first page when the API reports more clusters', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ clusters: [], region, truncated: true })));
+    expect(await fetchEksIpMap()).toMatchObject({ globalUnknown: true, reasons: ['cluster_limit_possible'] });
   });
   it('keeps unreadable scope evidence when no IP could be enumerated', async () => {
     serve([], [], { clusters: [{ ...cluster, access: 'no-entry' }] });
     expect(await fetchEksIpMap()).toEqual({ map: {}, status: 'unavailable', reasons: ['cluster_unreadable'],
-      blockedScopes: [`${region}|${vpcId}|`], globalUnknown: false });
+      blockedScopes: [`${region}|${vpcId}|`], coveredRegions: [region], globalUnknown: false });
   });
   it.each(['unknown', 'no-entry'])('keeps a healthy different VPC when access is %s', access => {
     serve([pod], [endpoint], { clusters: [cluster, { ...cluster, name: 'unreadable', vpcId: 'vpc-other', access }] });

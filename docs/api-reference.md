@@ -46,6 +46,11 @@
 | `/api/eks/[cluster]/pod-transfer` | GET | NFM 파드 전송 쿼리 (최대 1h 윈도우) | verifyUser |
 | `/api/eks/[cluster]/register` | POST, DELETE | 클러스터 등록/해제 (admin, EKS 공식 이름 패턴 검증) | verifyUser |
 
+The `/api/eks` envelope includes `region` and `truncated` for the bounded web enumeration.
+`region` remains present for an empty result. At most 25 clusters are described; continuation
+means enumeration is incomplete. This does not enumerate other regions or prove pod ownership.
+Topology treats failed/unknown coverage separately from a successful empty response.
+
 ## nfm (2)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|

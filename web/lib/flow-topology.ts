@@ -56,7 +56,7 @@ export interface FlowInput {
   ipResolved?: Record<string, { label: string; resolved: 'eks' | 'ecs'; meta?: Record<string, unknown> } | null>;
   ownershipRead?: {
     ecsTask?: 'failed' | 'capped'; subnet?: 'failed' | 'capped';
-    eksScopes?: string[]; eksUnknown?: boolean;
+    eksScopes?: string[]; eksUnknown?: boolean; eksRegions?: string[]; configurationOnly?: boolean;
   };
 }
 
@@ -518,7 +518,10 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
         const reads = input.ownershipRead;
         const issue = reads?.ecsTask ? 'ecs_task_inventory_incomplete'
           : reads?.subnet ? 'subnet_inventory_incomplete'
-          : reads?.eksUnknown || reads?.eksScopes?.includes(scopedTargetIp(str(t.region), str(t.vpc_id), ''))
+          : !reads?.configurationOnly && reads?.eksUnknown ? 'eks_inventory_incomplete'
+          : !reads?.configurationOnly && reads?.eksRegions && !reads.eksRegions.includes(str(t.region))
+            ? 'eks_not_enumerated'
+          : !reads?.configurationOnly && reads?.eksScopes?.includes(scopedTargetIp(str(t.region), str(t.vpc_id), ''))
             ? 'eks_inventory_incomplete' : undefined;
         const contradiction = !!issue || pod === null || task === null
           || ecsByIp.get(scopedTargetIp(str(t.region), '', targetId)) === null
@@ -526,11 +529,11 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
           || inScope(pod) && pod?.resolved === 'eks' && inScope(task);
         const r = contradiction ? undefined : inScope(pod) ? pod : inScope(task) ? task : undefined;
         if (contradiction) {
-          resolved = 'ambiguous'; key = 'ambiguous:owner';
+          resolved = 'ambiguous'; key = `ambiguous:${issue ?? 'ownership_unverified'}`;
           meta = { ambiguity: issue ?? 'ownership_unverified' };
         }
         // group key includes cluster so same-named workloads in different clusters don't merge
-        if (r) { resolved = r.resolved; key = `${r.resolved}:${str(r.meta?.cluster ?? '')}/${r.label}`; mlabel = r.label; groupLabel = r.label; meta = r.meta ?? {}; }
+        if (r) { resolved = r.resolved; key = `${r.resolved}:${str(r.meta?.cluster ?? '')}/${r.label}`; mlabel = r.label; groupLabel = r.label; meta = { ...r.meta, ...(reads?.configurationOnly ? { ownership_evidence: 'cached_configuration' } : {}) }; }
       }
       let g = groups.get(key);
       if (!g) { g = { key, groupLabel, resolved, meta, members: [] }; groups.set(key, g); }

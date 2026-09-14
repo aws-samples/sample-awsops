@@ -19,6 +19,16 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
   };
   const target = (input: FlowInput) => buildFlowGraph(input).nodes.find(n => n.kind === 'target')!;
 
+  it('withholds exclusive ownership outside the enumerated EKS region', () => {
+    const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task], subnet: [subnet],
+      ownershipRead: { eksRegions: ['ap-northeast-2'] } });
+    expect(node.meta).toMatchObject({ resolved: 'ambiguous', ambiguity: 'eks_not_enumerated' });
+  });
+  it('labels cached configuration without certifying exclusive ownership', () => {
+    const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task], subnet: [subnet],
+      ownershipRead: { configurationOnly: true } });
+    expect(node.meta).toMatchObject({ resolved: 'ecs', ownership_evidence: 'cached_configuration' });
+  });
   it.each(['failed', 'capped'] as const)('distinguishes inventory %s from ownership conflict', state => {
     for (const type of ['ecsTask', 'subnet'] as const) {
       const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], subnet: [subnet],
