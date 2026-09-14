@@ -54,7 +54,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     for (const suffix of ['_accounts.sql', '_accounts_all_regions.sql'])
       await pool.query(readFileSync(resolve(migrations, readdirSync(migrations).find(f => f.endsWith(suffix))!), 'utf8'));
     for (const suffix of ['_topology_graph.sql', '_topology_class.sql', '_inventory_sync_freshness.sql',
-      '_inventory_sync_unknown_attrs.sql', '_topology_graph_collection_state.sql'])
+      '_inventory_sync_unknown_attrs.sql', '_topology_graph_collection_state.sql',
+      '_topology_inventory_evidence.sql', '_graph_attempt_disclosure.sql', '_graph_read_indexes.sql', '_graph_projection_parity.sql'])
       await pool.query(readFileSync(resolve(migrations, readdirSync(migrations).find(f => f.endsWith(suffix))!), 'utf8'));
   });
   beforeEach(async () => {
@@ -291,8 +292,9 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   it.each([0, -1000])('trace discloses superseded attempts (%s ms) without changing graph or state', async offset => {
     await trace();
     const previous = await state('trace');
-    vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + offset);
+    const attemptClock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + offset);
     expect(await trace([])).toMatchObject({ published: 0, skipped: 1, reasons: ['superseded'] });
+    attemptClock.mockRestore(); // Compare freshness with the real read clock, not an older attempt clock.
     expect(await state('trace')).toEqual(previous);
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
   });
@@ -410,7 +412,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await state('infra', '111122223333')).toMatchObject({ retainedPrevious: false, status: 'ok' });
   });
   it('projects skip/count reasons without widening reader metadata', async () => {
-    const projection = readFileSync(resolve(migrations, readdirSync(migrations).find(f => f.endsWith('_graph_attempt_disclosure.sql'))!), 'utf8');
+    const projection = readFileSync(resolve(migrations, readdirSync(migrations).find(f => f.endsWith('_graph_projection_parity.sql'))!), 'utf8');
     await pool.query(projection); await pool.query(projection);
     await pool.query(`INSERT INTO topology_graph_state(account_id,class,status,attempted_at,details)
       VALUES ('self','infra','unavailable',now(),$1)`, [{ sourceAttempted: false,
@@ -567,6 +569,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       SELECT t, 'succeeded', $1, $1, $1, 1, 0 FROM unnest(ARRAY['vpc','subnet']) t
       ON CONFLICT(resource_type,account_id) DO UPDATE SET row_count=1`, [recent]);
     await build('infra');
+    clock.mockImplementation(() => new Date().getTime()); // PostgreSQL publication uses its real clock.
     const previous = await state('infra');
     const nodes = (await pool.query("SELECT * FROM topology_nodes WHERE account_id='self' AND class='infra' ORDER BY id")).rows;
     expect(nodes.map(node => node.id)).toEqual(['subnet:subnet-lost', 'vpc:vpc-kept']);
@@ -593,6 +596,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       VALUES ('subnet', 'succeeded', $1, $1, $1, 0, 0)`, [recent]);
     clock.mockReturnValue(now + 3_000);
     await build('infra');
+    clock.mockImplementation(() => new Date().getTime());
     const confirmed = await state('infra');
     expect(confirmed).toMatchObject({ status: 'ok', stale: false, retainedPrevious: false });
     expect(new Date(confirmed.captured_at).getTime()).toBeGreaterThan(new Date(previous.captured_at).getTime());

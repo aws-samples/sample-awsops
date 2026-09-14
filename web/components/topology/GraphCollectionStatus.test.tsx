@@ -211,4 +211,15 @@ describe('GraphCollectionStatus', () => {
     expect(screen.getByRole('alert').querySelectorAll('time')).toHaveLength(4);
   });
 
+  it('labels graph-attempt and per-source windows separately', () => {
+    language.current = 'en';
+    render(<GraphCollectionStatus collection={{ status: 'ok', stale: false,
+      windowStartMs: 1789360000000, windowEndMs: 1789360200000,
+      sources: [{ sourceId: 'tempo:1', status: 'ok', windowStartMs: 1789360050000, windowEndMs: 1789360150000 }] }} />);
+    expect(screen.getByText('Graph attempt window start', { exact: false })).toBeTruthy();
+    expect(screen.getByText('Graph attempt window end', { exact: false })).toBeTruthy();
+    expect(screen.getAllByText('Source window start', { exact: false })).toHaveLength(1);
+    expect(screen.getAllByText('Source window end', { exact: false })).toHaveLength(1);
+  });
+
 });

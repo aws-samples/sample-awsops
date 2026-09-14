@@ -51,6 +51,15 @@ a broken agent reader. In Terraform mode only a **defined empty** `agent_sql_rea
 disables sync; an output-read failure is an error. See the
 [migration guide](../../terraform/foundation/migrations/README.md) for runtime settings, TLS and IAM.
 
+With `AUTOMATIC_MIGRATION=1`, every pending `ALTER TABLE` (including nullable `ADD COLUMN`),
+view refresh, procedural block, concurrent index and no-transaction file is refused before
+pending DDL or reader sync. Keep base-column changes and the corresponding `sql_reader`
+view/grant refresh together in a reviewed standalone migration with this flag unset.
+Do not split off the refresh to pass automatic admission: the agent's explicit-column view
+would remain stale. Online automatic dry-run also rejects these files without printing SQL;
+unset the flag for full standalone preview. The trusted empty-only baseline may initialize
+before pending admission; existing ledgers skip that hook.
+
 두 도구만 실패한다. 나머지 rds-mcp 도구(`describe_*`, `list_*`)는 reader 시크릿이 아니라 실행
 역할을 쓰므로 계속 동작한다 — 그 비대칭이 판별 단서다.
 
@@ -210,9 +219,39 @@ to recover suppressed text.
 | `Connect to Aurora failed` + TLS code | Check private endpoint, CA and hostname; retain verification / 사설 endpoint·CA·호스트 검증 유지 |
 | `Aurora connection error` / `Aurora connection cleanup failed` | Run failed, including idle secret-fetch or cleanup errors; inspect connectivity before retrying / 시크릿 조회 대기·정리 중 오류도 실패이며 연결 상태 확인 후 재시도 |
 | `ENOENT` / `EACCES` | Check runtime SQL/CA assets and file permissions for the named operation / 표시된 작업의 SQL·CA 파일 및 읽기 권한 확인 |
-| `Acquire migration advisory lock failed: SQLSTATE=55P03` | Inspect the existing migration session before retrying; do not bypass its lock / 실행 중 세션 확인 후 재시도 |
+| `Concurrent migration is already running; retry after it finishes …` | Another session owns advisory key `4729411`, including during reader sync. Admission fails immediately. For a persistent holder, use the read-only inspection below; do not bypass its lock. |
+| `Migration advisory lock returned an invalid result` | No ownership was established. Stop and inspect the connection/driver response; do not execute SQL or bypass the lock. |
+| `SQLSTATE=55P03` + `database lock unavailable` | General PostgreSQL lock conflict, not proof of another migration. Inspect blocking transactions before retrying. |
+| `SQLSTATE=57014` + `query canceled` | Inspect statement timeout or operator cancellation; this does not identify a lock holder. |
+| `SQLSTATE=25001` + `active SQL transaction` | Review the standalone migration's transaction mode. Automatic mode rejects concurrent indexes and every no-transaction file. |
+| `SQLSTATE=40P01` + `database deadlock detected` | Inspect blocking transactions and lock order before retrying; do not assume another migration caused the cycle. |
+| `Automatic migration blocked: file=…, id=…, reason=…` | Review the whole pending file for standalone execution, keeping column/view changes together. Online automatic preview enforces the same policy. |
 | `Terraform output … unavailable (category=backend-initialization, exit=…)` | Initialize the intended backend under the normal operator procedure / 승인된 backend 초기화 절차 |
 | `category=missing-output` / `executable-unavailable` / `command-failed` / `command-terminated` | Check state/output version, installed Terraform, approved backend access or termination; exit is numeric when available / 상태·output 버전·Terraform 설치·backend 접근·중단 확인 |
+
+For a persistent busy message, use an approved private operator connection to the intended
+database to inspect the exact single-bigint advisory key. This query returns session/lock
+metadata, not SQL text or credentials:
+
+```sql
+SELECT a.pid, a.application_name, a.backend_start, a.xact_start,
+       a.state, a.wait_event_type, a.wait_event, l.granted
+FROM pg_locks AS l
+JOIN pg_stat_activity AS a ON a.pid = l.pid
+WHERE l.locktype = 'advisory'
+  AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+  AND l.classid = 0 AND l.objid = 4729411 AND l.objsubid = 1
+ORDER BY a.backend_start;
+```
+
+Correlate PID/backend start with the owning migration task and its private logs. An idle
+session can legitimately hold this lock while fetching the reader secret; age or idle state
+alone does not prove an orphan. Monitoring permissions can limit visible activity. General
+`55P03`/`40P01` investigations must also inspect other locks and their blocking transactions
+in `pg_locks`/`pg_stat_activity`, not just this advisory key.
+The runner neither kills backends nor releases another session's lock. If an orphan is
+confirmed, use a separately reviewed operator recovery procedure; there is no automatic kill
+or lock-bypass action.
 
 `unclassified error` means no recognized safe code was available; the operation/purpose remains.
 Migration failure output includes rollback vs non-transactional status and SQLSTATE. Reviewed SQL
@@ -296,12 +335,10 @@ The node's exposed `captured_at` is graph materialization time, not its underlyi
 inventory capture or observation time. For collection quality, consult
 `sql_reader.topology_graph_state`: status, attempt/publication times, observation
 window, retained flag and projected source reasons. Its current projection owner is
-`01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`, extending the prior inventory projection with
-explicit unattempted-source/count reasons. The projection also exposes bounded
+`01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql`, extending the prior inventory/attempt projections and exposing bounded
 `publishedSources`, producer status, per-source capture/success/attempt/finish clocks,
 aggregate/account scope, failure reasons and numeric loss counters. It does not expose
-raw provider JSON or widen grants. The writer records flow, infra and trace. A missing
-state row is not evidence of complete or empty coverage, including before rollout. Missing qualifiers or timestamps never establish confidence.
+raw provider JSON or widen grants. Computed `metadataTruncated` discloses omitted/malformed source metadata; the Python reader and HTTP reader both treat it as stale. The shared vocabulary includes sourceAttempted, not_attempted and count_not_confirmed. The writer records flow, infra and trace; a missing state row is not evidence of complete or empty coverage, including before rollout. Missing qualifiers or timestamps never establish confidence.
 
 `agent/lambda/test_inventory_view_contract.py` still reads the original
 `01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql` for its topology assertions.

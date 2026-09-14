@@ -670,6 +670,7 @@ async function runtimeDiagnostic({ phase = 'connect', error,
   class Client extends EventEmitter {
     async connect() { if (phase === 'connect') throw error; }
     async query(sql) {
+      if (sql.includes('pg_try_advisory_lock')) return { rows: [{ acquired: true }] };
       if (sql.includes('information_schema.columns')) {
         if (phase === 'connection-event') this.emit('error', error);
         return { rows: ['version', 'checksum'].map(column_name => ({ column_name, data_type: 'text' })) };
@@ -721,7 +722,7 @@ test('failure logs associate transport codes with their own runtime purpose acro
 for (const [codes, category] of [
   ['28P01 28000', 'database authentication'],
   ['42501', 'database permission'],
-  ['55P03 40P01', 'migration lock'],
+  ['55P03 40P01', 'database lock contention'],
   ['57014', 'database timeout'],
   ['08001 08006 57P01 57P03 ECONNREFUSED ECONNRESET ENOTFOUND EAI_AGAIN ETIMEDOUT EPIPE NetworkingError TimeoutError RequestTimeout AbortError', 'database connectivity'],
   ['CERT_HAS_EXPIRED DEPTH_ZERO_SELF_SIGNED_CERT SELF_SIGNED_CERT_IN_CHAIN UNABLE_TO_VERIFY_LEAF_SIGNATURE UNABLE_TO_GET_ISSUER_CERT_LOCALLY ERR_TLS_CERT_ALTNAME_INVALID', 'database TLS'],
@@ -739,6 +740,12 @@ for (const [codes, category] of [
     await checkFailureLogs(diagnostic, category);
   });
 }
+
+for (const [message, category] of [
+  ['Concurrent migration is already running; retry after it finishes', 'migration lock'],
+  ['Automatic migration blocked: file=fixture, reason=non-transactional-sql', 'automatic SQL policy'],
+  ['Migration advisory lock returned an invalid result', 'invalid migration lock result'],
+]) test(`failure logs classify ${category}`, async () => checkFailureLogs(message, category));
 
 for (const [phase, purpose] of [
   ['connect', 'Connect to Aurora failed'],

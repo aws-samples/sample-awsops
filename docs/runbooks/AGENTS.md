@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 63735339ca0d · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 1c29ab4bea78 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -11,6 +11,7 @@ Graph collection/projection, freshness and retained-evidence rollout contracts l
 legacy runbook's steps as the current operational path).
 
 ## Deployment review checks
+- Release safety primitives remain unwired to web workflows. Automatic transactional pending-SQL checks are opt-in; column/view and non-transactional changes require reviewed cutovers. The empty-only frozen baseline precedes pending admission. Contention fails immediately under the shared lock. Read retries share a deadline and never retry writes; failed/replaced ECS deployment evidence is terminal. See `release-safety-primitives.md`.
 
 - S3 runbooks must state backend-file, bucket-posture and existing role/key-policy prerequisites,
   branch-environment approval for publication/apply, missing-backend/tfvars soft skips and
@@ -196,4 +197,4 @@ Collection windows are caps, so late completion may fail admission. Keep the pro
 before Related/ADR references. Run `node --test scripts/v2/deployment-smoke.test.mjs`
 from the repository root; it imports the runtime-smoke suite.
 
-Graph reads use one admitted request per pool, bounded snapshot transactions and explicit read-limit/failure disclosure. Collection state remains distinct from read availability. The indexed runbook `graph-read-contract.md` covers the additive collection projection/index migrations, separate source/publication freshness clocks and disposable PostgreSQL tests; source integration does not establish deployment.
+Graph reads admit at most two requests per shared max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. Source-attempt metadata is supported before the separately gated inventory publisher is activated. See `graph-read-contract.md` for operator rollout and disposable tests; source integration does not establish deployment.

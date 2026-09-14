@@ -1,4 +1,10 @@
 import type { Pool, PoolClient } from 'pg';
+import type { GraphCollection } from '@/components/topology/GraphCollectionStatus';
+
+export interface GraphReadState extends Omit<GraphCollection, 'attempted_at' | 'captured_at'> {
+  attempted_at: string | Date | null;
+  captured_at: string | Date | null;
+}
 
 export type GraphStatus = 'ok' | 'empty' | 'partial' | 'unavailable' | 'error';
 export type GraphClass = 'flow' | 'infra' | 'trace';
@@ -54,12 +60,13 @@ export function projectGraphDetails(value: unknown): Record<string, any> {
   for (const key of ['windowStartMs','windowEndMs','nodeDrops','edgeDrops','orphanSpans','invalidSpans','unresolvedMessaging']) {
     if (number(raw[key])) result[key] = raw[key];
   }
-  for (const key of ['retainedPrevious','infraUnavailable','inputTruncated','graphTruncated','sourceAttempted']) {
+  for (const key of ['retainedPrevious','infraUnavailable','inputTruncated','graphTruncated','sourceAttempted','metadataTruncated']) {
     if (typeof raw[key] === 'boolean') result[key] = raw[key];
   }
   if (['publication_failed','source_read_failed','not_attempted'].includes(raw.failureReason)) result.failureReason = raw.failureReason;
-  let limited = false;
+  let limited = raw.metadataTruncated === true;
   for (const key of ['sources','publishedSources']) {
+    if (Object.prototype.hasOwnProperty.call(raw, key) && !Array.isArray(raw[key])) limited = true;
     if (key === 'publishedSources' && !Array.isArray(raw[key])) continue;
     const sources = Array.isArray(raw[key]) ? raw[key] : [];
     if (sources.length > 128) limited = true;
@@ -75,11 +82,11 @@ export function projectGraphDetails(value: unknown): Record<string, any> {
       for (const clock of ['itemCount','windowStartMs','windowEndMs','capturedAtMs','lastSuccessAtMs','attemptedAtMs','finishedAtMs']) {
         if (number(source[clock]) || source[clock] === null) projected[clock] = source[clock];
       }
-      if (Array.isArray(source.reasons)) {
-        const allowed = [...new Set(source.reasons.filter((v: unknown): v is string => typeof v === 'string' && reasons.has(v)))].sort();
-        if (allowed.length > 16 || allowed.length < source.reasons.length) limited = true;
-        projected.reasons = allowed.slice(0, 16);
-      }
+      const unique = Array.isArray(source.reasons) ? [...new Set(source.reasons)] : [];
+      const allowed = unique.filter((v): v is string => typeof v === 'string' && reasons.has(v)).sort();
+      if (allowed.length > 16 || allowed.length < unique.length
+        || (Object.prototype.hasOwnProperty.call(source, 'reasons') && !Array.isArray(source.reasons))) limited = true;
+      projected.reasons = allowed.slice(0, 16);
       return [projected];
     });
   }
@@ -87,9 +94,9 @@ export function projectGraphDetails(value: unknown): Record<string, any> {
   return result;
 }
 
-export async function readGraphState(pool: Pick<Pool, 'query'>, account: string, cls: GraphClass = 'trace') {
+export async function readGraphState(pool: Pick<Pool, 'query'>, account: string, cls: GraphClass = 'trace'): Promise<GraphReadState> {
   const unknown = { status: 'unknown', stale: true, attempted_at: null, captured_at: null, sources: [],
-    ...(cls !== 'trace' ? { evidenceKind: 'inventory' } : {}) };
+    ...(cls !== 'trace' ? { evidenceKind: 'inventory' as const } : {}) };
   // A host state is not evidence for an account union. No unbounded per-account payload.
   if (account === '__all__' && cls !== 'trace') return { ...unknown, coverage: 'unknown' };
   const storageAccount = cls === 'trace' && account === '__all__' ? 'self' : account;
@@ -111,7 +118,7 @@ export async function readGraphState(pool: Pick<Pool, 'query'>, account: string,
   const captured = row.captured_at ? new Date(row.captured_at).getTime() : NaN;
   const configured = Number(process.env.GRAPH_REBUILD_INTERVAL_MINS ?? 0);
   const maxAgeMins = Number.isFinite(configured) ? Math.max(15, configured * 2) : 15;
-  const stale = !Number.isFinite(captured) || Date.now() - captured > maxAgeMins * 60_000
+  const stale = !Number.isFinite(captured) || captured > Date.now() || Date.now() - captured > maxAgeMins * 60_000
     || row.status === 'error' || row.status === 'unavailable'
     || details.retainedPrevious === true || details.metadataTruncated === true
     || (cls !== 'trace' && inventorySourcesStale(details.publishedSources));
@@ -128,7 +135,7 @@ export function inventorySourcesStale(value: unknown): boolean {
     if (!source || typeof source !== 'object') return true;
     if (!Number.isSafeInteger(source.itemCount) || source.itemCount < 0) return true;
     const clocks = [source.lastSuccessAtMs, ...(source.itemCount > 0 ? [source.capturedAtMs] : [])];
-    return source.producerStatus !== 'succeeded' || !['ok', 'empty'].includes(source.status) || clocks.some(clock =>
+    return (source.status === 'empty' && source.itemCount !== 0) || source.producerStatus !== 'succeeded' || !['ok', 'empty'].includes(source.status) || clocks.some(clock =>
       typeof clock !== 'number' || !Number.isFinite(clock) || clock <= 0
       || clock > Date.now() || Date.now() - clock > minutes * 60_000);
   });
