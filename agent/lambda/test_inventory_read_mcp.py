@@ -863,8 +863,9 @@ class TestTopologySelectionSQL(unittest.TestCase):
                      "01KVAQ9MQNR5R97T5AXX4JVN6Q_topology_class.sql",
                      "01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql"):
             cls._psql((migrations / name).read_text())
-        for path in sorted(migrations.glob("*_topology_inventory_evidence.sql")):
-            cls._psql(path.read_text())
+        for suffix in ("_topology_inventory_evidence.sql", "_graph_attempt_disclosure.sql", "_graph_projection_parity.sql"):
+            for path in sorted(migrations.glob("*" + suffix)):
+                cls._psql(path.read_text())
 
     def test_source_projection_preserves_clocks_but_excludes_unsafe_payloads(self):
         source = {"sourceId": "inventory:alb", "status": "ok", "scope": "aggregate",
@@ -888,6 +889,7 @@ class TestTopologySelectionSQL(unittest.TestCase):
         self.assertEqual(len(safe["sources"]), 1)
         self.assertNotIn("secret", json.dumps(safe))
         self.assertEqual(safe["failureReason"], "publication_failed")
+        self.assertTrue(safe["metadataTruncated"])
         self.assertTrue(safe["inputTruncated"])
         self.assertFalse(safe["graphTruncated"])
         permissions = self._execute("SELECT has_table_privilege(current_user, 'public.topology_graph_state', 'SELECT') AS base_read")
@@ -904,6 +906,7 @@ class TestTopologySelectionSQL(unittest.TestCase):
                    "('member','flow','partial',now(),now(),'null'::jsonb);")
         rows = self._execute("SELECT details FROM topology_graph_state ORDER BY account_id")
         self.assertLessEqual(len(rows[1]["details"]["sources"]), 128)
+        self.assertTrue(rows[1]["details"]["metadataTruncated"])
         self.assertNotIn("secret", json.dumps(rows))
 
     def setUp(self):
