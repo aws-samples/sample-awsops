@@ -413,6 +413,19 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(proof["deployment_id"], NEW)
         self.assertEqual(sum(op == "update-service" for _, op, _ in self.aws.calls), 1)
 
+    def test_start_waits_for_missing_rollout_state_without_repeating_update(self):
+        def aws(service, operation, args):
+            result = self.aws(service, operation, args)
+            if operation == "update-service":
+                result = copy.deepcopy(result)
+                result["service"]["deployments"][0].pop("rolloutState")
+            return result
+        proof = deploy.start(C, DIGEST, DIGEST, aws, timeout=30,
+                             now=lambda: self.tick, sleep=self.sleep)
+        self.assertEqual(proof["deployment_id"], NEW)
+        self.assertEqual(self.tick, 5)
+        self.assertEqual(sum(op == "update-service" for _, op, _ in self.aws.calls), 1)
+
     def test_persistent_old_primary_after_update_never_produces_receipt(self):
         old = copy.deepcopy(self.aws.service)
         def aws(service, operation, args):

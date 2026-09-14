@@ -1,33 +1,18 @@
 """Bounded, single-attempt AWS reads for the release controller (stdlib only).
 
-Integration contract::
+Usage: ``with read_window(deadline, now=now): read_request(service, operation, options)``.
+Options map CLI names (without --) to strings/string lists. Only the seven listed
+reads are admitted, in ap-northeast-2; no writes, sleeps, SDK retries or auto-pages.
+The caller validates successful response bodies and owns bounded backoff.
 
-    with read_window(deadline, now=now):  # absolute deadline, same clock as wait_for
-        try:
-            ready = check()  # nested read_request calls inherit the remaining budget
-        except TransientReadError:
-            ready = False   # wait_for owns backoff/retry, within its existing deadline
-
-read_request(service, operation, args) takes CLI names and a mapping of option
-names (without "--") to strings or lists of strings, and returns a JSON object.
-Only the seven explicit operations below are admitted. Region is ap-northeast-2.
-Each call makes ONE attempt; there are no sleeps, SDK retries, automatic pages,
-or mutating requests. A ListTasks nextToken is returned for the caller to handle.
-Successful AWS response bodies still need the controller's domain validation.
-
-TransientReadError is an ImageError subtype for recognized transport failures
-and exhausted read budgets. All other ImageError failures remain fatal, including
-authorization, identity, unknown errors, response limits and cleanup failures.
-Diagnostics contain fixed operation labels, never provider output or arguments.
-Keep writes on ci_web_image.command; do not catch ImageError as retryable.
-
-Outside a window, each call has a 30-second cap. Nested windows can only shorten
-it; launch requires at least 50ms remaining for useful work and cleanup.
-A real monotonic subprocess watchdog enforces the computed remaining budget
-even with an injected test clock. Cleanup time is reserved INSIDE that budget;
-timeout kills the owned process group and waits boundedly for the direct child.
-An admitted read's parsed success is retained; the next read checks the budget.
-Normal OS scheduling/process creation latency is not a hard realtime guarantee.
+TransientReadError covers recognized transport/service failures and exhausted
+budgets. Permission, identity, unknown, response-limit and cleanup failures are fatal.
+Fixed labels expose no provider output or arguments. Keep writes on ci_web_image.command.
+Each call has at most 30 seconds and needs 50ms to launch; nested windows only shorten
+it. A real watchdog also bounds injected-clock tests, reserving cleanup time inside
+the budget. Timeout kills the owned group and reaps the child boundedly. Parsed
+success is retained; the next read checks expiry. OS scheduling is not hard realtime.
+See docs/runbooks/release-safety-primitives.md for the complete caller contract.
 """
 from contextlib import contextmanager
 from contextvars import ContextVar
