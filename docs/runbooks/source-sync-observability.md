@@ -193,15 +193,19 @@ window, or source details do not explain a partial graph.
 region/VPC/subnet evidence from RUNNING ECS tasks and pod inventory for EKS. A repeated IP in another
 VPC or an Endpoints row without a corroborating pod cannot establish ownership. The
 page uses the hydrated account scope, cancels earlier loads and rejects late results.
-EKS failures, partial reads and scope-based opt-outs are explicit. Host EKS ownership
+EKS failures, partial reads and scope-based opt-outs are explicit. Ordinary `entry-only`
+/ `no-entry` clusters are counted as not queried, not failed reads. The existing EKS API
+enumerates its configured region only; the panel names that region and declares other
+regions unassessed. Inventory reads apply account selection only. Host EKS ownership
 is not applied to all/mixed-account targets because their IP key does not establish
 account identity. Unknown per-account run health is one scope notice; normal running
 syncs are not failures. The self-keyed run ledger is an aggregate sweep across accounts:
 its failures/partial results remain visible under every scope, separately from HTTP read
-failures. Aggregate success does not prove member-account health, and member capture
+failures; a failed read does not itself add an unknown aggregate-health notice.
+Aggregate success does not prove member-account health, and member capture
 clocks never borrow its last-success time. Uncorroborated or shared hostNetwork pod IPs
 remain unresolved without making a successful EKS read partial.
-A failed subnet read or the 500-row response cap is disclosed alongside retained
+A failed subnet read or the 500-row response cap is disclosed even for an empty graph, alongside retained
 unresolved targets; raw IP labels are not proof that a workload is absent.
 
 For current trace windows and partial-result causes, see [Trace collection rendering](#trace-collection-rendering).
