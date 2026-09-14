@@ -191,9 +191,11 @@ The `GraphCollection` / `GraphCollectionSource` TypeScript contract is defined i
 `web/components/topology/GraphCollectionStatus.tsx`; runtime input is still normalized.
 Trace `sources[].windowStartMs/windowEndMs` identify the source query window, separately
 from top-level `attempted_at/captured_at` and optional source capture/last-success clocks.
-Positive `nodeDrops/edgeDrops` and `infraUnavailable` remain visible for older persisted
-envelopes as well as newer producer flags. Losses alone do not prove retention:
-`retainedPrevious` is required for that claim. Source-detail totals include saved sources.
+Positive `nodeDrops/edgeDrops/orphanSpans/invalidSpans/unresolvedMessaging` and
+`infraUnavailable` remain visible for older persisted envelopes as well as newer producer flags.
+Only node/edge drops or explicit truncation flags imply a processing limit; malformed spans
+and unresolved parent/link/messaging evidence are distinct partial-result causes. Losses alone do not prove retention:
+`retainedPrevious` is required for that claim. Source-detail totals include saved sources, with latest-attempt status counts labeled separately.
 Missing collection metadata stays unknown rather than implying collector failure.
 
 

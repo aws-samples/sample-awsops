@@ -11,6 +11,27 @@ afterEach(cleanup);
 
 describe('graph collection status', () => {
   beforeEach(() => { language.current = 'en'; });
+  it.each([
+    ['orphanSpans', 'Unresolved span parents/links'],
+    ['invalidSpans', 'Invalid spans'],
+    ['unresolvedMessaging', 'Unresolved messaging spans'],
+  ])('explains %s without mislabeling it as a processing limit', async (key, label) => {
+    const pool = { query: vi.fn().mockResolvedValue({ rows: [{
+      status: 'partial', attempted_at: new Date(), captured_at: new Date(),
+      details: { [key]: 2, retainedPrevious: false, sources: [] },
+    }] }) } as unknown as Pool;
+    const collection = JSON.parse(JSON.stringify(await readGraphState(pool, 'self')));
+    render(<GraphCollectionStatus collection={collection} />);
+    const text = screen.getByRole('alert').textContent;
+    expect(text).toContain(`${label}: 2`);
+    expect(text).not.toContain('Processing limit');
+    expect(text).not.toContain('previous graph retained');
+  });
+  it('does not interpret ordinary numeric metadata as loss evidence', () => {
+    render(<GraphCollectionStatus collection={{ status: 'ok', stale: false, itemCount: 12, spanCount: 99 }} />);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status').textContent).not.toContain('Processing limit');
+  });
   it('renders trace windows and legacy loss/context evidence from the state reader', async () => {
     const start = Date.parse('2026-09-14T09:00:00Z');
     const end = Date.parse('2026-09-14T10:00:00Z');
@@ -54,7 +75,9 @@ describe('graph collection status', () => {
     const summary = container.querySelector('summary')!;
     expect(summary.textContent).toContain('49');
     expect(summary.textContent).toContain('47');
-    expect(summary.textContent).toContain('Partial');
+    expect(summary.textContent).toContain('1 partial');
+    expect(summary.textContent).toContain('Latest attempt sources: 48');
+    expect(summary.textContent).toContain('Saved sources: 1');
     // Hidden source content remains mounted; native toggling is covered by the browser suite.
     expect(details?.querySelectorAll('li')).toHaveLength(49);
     expect(details?.textContent).toContain('Sources used by saved graph');
