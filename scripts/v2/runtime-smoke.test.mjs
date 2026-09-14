@@ -275,27 +275,121 @@ test('fresh ledger metadata cannot substitute for an old known resource record',
   await assert.rejects(f.run({ ...config, collectionMode: 'release' }), /inventory_known_resource_unverified/);
 });
 
-test('catalog verification cannot pass an older sweep as this release evidence', async () => {
+test('release accepts a recent catalog success while retaining the post-marker CloudFront proof', async () => {
   const recent = new Date(Date.parse(start) - 15 * 60_000).toISOString();
   const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
     configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
       type, accountId: 'self', status: 'succeeded', row_count: 1,
-      started_at: recent, last_success_at: recent, unknown_attribute_count: 0, unknown_attributes: false,
+      started_at: type === 'cloudfront' ? start : recent,
+      last_success_at: type === 'cloudfront' ? start : recent,
+      unknown_attribute_count: 0, unknown_attributes: false,
     })),
   } }) });
-  await assert.rejects(f.run({ ...config, collectionMode: 'recent' }), /configuration|collection_timeout/);
-  await assert.rejects(f.run({ ...config, collectionMode: 'release' }), /collection_timeout/);
+  assert.deepEqual(await f.run({ ...config, collectionMode: 'release' }), {
+    status: 'ok', mode: 'verify', catalog_types: 2, workers: 2,
+    collection: { status: 'current', completeness: 'unknown', freshness_minutes: 30, degraded_types: [] },
+  });
+  assert.equal(f.calls.filter(c => c.path === '/api/deployment/readiness').length, 1);
+  assert.deepEqual(f.calls.filter(c => c.path === '/api/jobs').map(c => c.options.body.type), ['noop', 'noop-heavy']);
 });
-test('release collection never accepts stale, missing, partial or unknown evidence', async () => {
-  const old = new Date(Date.parse(start) - 31 * 60_000).toISOString();
-  for (const change of [{ started_at: old, last_success_at: old }, { status: 'partial' },
-    { unknown_attribute_count: 1, unknown_attributes: true }]) {
+test('unsupported collection modes fail validation before any requests', async () => {
+  const f = fixture();
+  await assert.rejects(f.run({ ...config, collectionMode: 'recent' }), /Runtime smoke: configuration$/);
+  assert.equal(f.calls.length, 0);
+});
+test('release discloses catalog degradation with a recent last success, never complete collection', async () => {
+  const recent = new Date(Date.parse(start) - 15 * 60_000).toISOString();
+  for (const change of [{ status: 'partial' }, { status: 'failed', row_count: null },
+    { status: 'running', row_count: null }, { unknown_attribute_count: 1, unknown_attributes: true },
+    { unknown_attribute_count: null, unknown_attributes: null }]) {
     const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
       configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
         type, accountId: 'self', status: 'succeeded', row_count: 1, started_at: start,
-        last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false, ...change,
+        last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false,
+        ...(type === 'ec2' ? { last_success_at: recent, ...change } : {}),
       })),
     } }) });
-    await assert.rejects(f.run({ ...config, collectionMode: 'release' }), /collection_timeout|collection_partial|inventory_incomplete/);
+    const result = await f.run({ ...config, collectionMode: 'release' });
+    assert.deepEqual(result.collection, { status: 'degraded', completeness: 'unknown', freshness_minutes: 30,
+      degraded_types: [{ type: 'ec2', status: change.status || 'succeeded',
+        unknown_attributes: Object.hasOwn(change, 'unknown_attributes') ? change.unknown_attributes : false }] });
+    assert.equal(result.catalog_types, 2);
+    assert.equal(result.collected_types, undefined);
+    assert.equal(result.workers, 2);
+  }
+});
+test('release refuses missing, stale and malformed catalog evidence without running runtime or worker probes', async () => {
+  const old = new Date(Date.parse(start) - 31 * 60_000).toISOString();
+  for (const [change, reason] of [
+    [null, 'collection_missing'],
+    [{ last_success_at: null }, 'collection_stale'],
+    [{ last_success_at: old }, 'collection_stale'],
+    [{ status: 'failed', last_success_at: old }, 'collection_stale'],
+    [{ status: 'unknown' }, 'collection_protocol'],
+    [{ unknown_attribute_count: -1, unknown_attributes: true }, 'collection_protocol'],
+  ]) {
+    const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
+      configured: true, readOk: true, runs: ['cloudfront', ...(change ? ['ec2'] : [])].map(type => ({
+        type, accountId: 'self', status: 'succeeded', row_count: 1, started_at: start,
+        last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false,
+        ...(type === 'ec2' ? change : {}),
+      })),
+    } }) });
+    await assert.rejects(f.run({ ...config, collectionMode: 'release' }), new RegExp(`Runtime smoke: ${reason}$`));
+    assert.ok(f.calls.every(c => c.path !== '/api/deployment/readiness' && c.path !== '/api/jobs'));
+  }
+});
+test('release freshness uses observation time even when the marker was recorded earlier', async () => {
+  const observed = Date.parse(start) + 10 * 60_000;
+  for (const [ageMinutes, accepted] of [[30, true], [30.01, false]]) {
+    const lastSuccess = new Date(observed - ageMinutes * 60_000).toISOString();
+    const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
+      configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
+        type, accountId: 'self', status: 'succeeded', row_count: 1,
+        started_at: type === 'cloudfront' ? start : lastSuccess,
+        last_success_at: type === 'cloudfront' ? start : lastSuccess,
+        unknown_attribute_count: 0, unknown_attributes: false,
+      })),
+    } }) }, { now: () => observed, wait: async () => {} });
+    if (accepted) assert.equal((await f.run({ ...config, collectionMode: 'release' })).status, 'ok');
+    else await assert.rejects(f.run({ ...config, collectionMode: 'release' }), /collection_stale$/);
+  }
+});
+test('release still rejects partial or unknown CloudFront even when other catalog types are current', async () => {
+  for (const [change, reason] of [[{ status: 'partial' }, 'collection_partial'],
+    [{ unknown_attribute_count: 1, unknown_attributes: true }, 'inventory_incomplete']]) {
+    const f = fixture({ '/api/inventory/summary?accounts=self&view=collection': () => ({ collection: {
+      configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
+        type, accountId: 'self', status: 'succeeded', row_count: 1, started_at: start,
+        last_success_at: start, unknown_attribute_count: 0, unknown_attributes: false,
+        ...(type === 'cloudfront' ? change : {}),
+      })),
+    } }) });
+    await assert.rejects(f.run({ ...config, collectionMode: 'release' }), new RegExp(`${reason}$`));
+  }
+});
+test('degraded catalog acceptance never substitutes for own SSM/model and terminal worker proof', async () => {
+  const summary = () => ({ collection: {
+    configured: true, readOk: true, runs: ['cloudfront', 'ec2'].map(type => ({
+      type, accountId: 'self', status: type === 'cloudfront' ? 'succeeded' : 'partial',
+      row_count: 1, started_at: start, last_success_at: start,
+      unknown_attribute_count: 0, unknown_attributes: false,
+    })),
+  } });
+  for (const [path, reply, reason] of [
+    ['/api/deployment/readiness', options => ({ httpStatus: 503, body: {
+      schemaVersion: 1, nonce: options.body.nonce, accountId: account, status: 'not_ready',
+      reason: 'parameters_not_ready', parameters: {
+        runtime_arn: 'denied', interpreter_id: 'ready', memory_id: 'ready',
+      },
+    } }), /runtime_parameters_not_ready/],
+    ['/api/deployment/readiness', options => ({ httpStatus: 503, body: {
+      schemaVersion: 1, nonce: options.body.nonce, accountId: account, status: 'not_ready', reason: 'model_failed',
+    } }), /runtime_model_failed/],
+    ...jobIds.map(id => [`/api/jobs/${id}`, () => ({ status: 'failed' }), /worker_failed/]),
+  ]) {
+    await assert.rejects(fixture({
+      '/api/inventory/summary?accounts=self&view=collection': summary, [path]: reply,
+    }).run({ ...config, collectionMode: 'release' }), reason);
   }
 });

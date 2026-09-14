@@ -94,31 +94,52 @@ export async function verifyRuntimeSmoke(configuration, request, {
   const started = Date.parse(config.collectionStartedAt);
   const releaseWindow = config.collectionMode === 'release';
   let collectionFailure = 'collection_timeout';
+  let collectionEvidence;
   await poll(async () => {
     const summary = await request('/api/inventory/summary?accounts=self&view=collection');
     const c = summary?.collection;
     if (!object(c) || c.configured !== true || c.readOk !== true || !Array.isArray(c.runs)) fail('collection_unavailable');
-    let complete = true, missing = false;
+    let complete = true, missing = false, stale = false;
+    const degraded = [];
     const failures = new Set();
-    const cutoff = started;
+    const observed = now();
     for (const type of config.expectedQueuedTypes) {
       const rows = c.runs.filter(r => r?.type === type && r.accountId === 'self');
       if (rows.length === 0) { missing = true; complete = false; continue; }
       if (rows.length !== 1) fail('collection_protocol');
       const row = rows[0];
-      if (freshTime(row.started_at, cutoff, now()) && ['partial', 'failed'].includes(row.status))
+      if (releaseWindow && type !== 'cloudfront') {
+        if (!['running', 'succeeded', 'partial', 'failed'].includes(row.status)
+            || !(row.unknown_attribute_count === null ? row.unknown_attributes === null
+              : finiteCount(row.unknown_attribute_count)
+                && row.unknown_attributes === (row.unknown_attribute_count > 0))
+            || (row.status === 'succeeded' && !finiteCount(row.row_count))) fail('collection_protocol');
+        // A later failed/running attempt preserves the producer's last success.
+        // This proves recent collection activity, never complete attributes.
+        if (!freshTime(row.last_success_at, observed - 30 * 60_000, observed)) {
+          complete = false;
+          stale = true;
+        }
+        if (row.status !== 'succeeded' || row.unknown_attributes !== false) {
+          degraded.push({ type, status: row.status, unknown_attributes: row.unknown_attributes });
+        }
+        continue;
+      }
+      if (freshTime(row.started_at, started, observed) && ['partial', 'failed'].includes(row.status))
         failures.add(`collection_${row.status}`);
-      if (row.status === 'succeeded' && freshTime(row.started_at, cutoff, now())
-          && freshTime(row.last_success_at, cutoff, now())
+      if (row.status === 'succeeded' && freshTime(row.started_at, started, observed)
+          && freshTime(row.last_success_at, started, observed)
           && (row.unknown_attribute_count !== 0 || row.unknown_attributes !== false)) failures.add('inventory_incomplete');
       if (!(row.status === 'succeeded' && finiteCount(row.row_count)
         && row.unknown_attribute_count === 0 && row.unknown_attributes === false
-        && freshTime(row.started_at, cutoff, now()) && freshTime(row.last_success_at, cutoff, now()))) complete = false;
+        && freshTime(row.started_at, started, observed) && freshTime(row.last_success_at, started, observed))) complete = false;
     }
     // Inspect every acknowledged type before selecting a fixed diagnostic.
     for (const reason of ['inventory_incomplete', 'collection_partial', 'collection_failed'])
       if (failures.has(reason)) fail(reason);
-    collectionFailure = missing ? 'collection_missing' : 'collection_timeout';
+    collectionFailure = missing ? 'collection_missing' : stale ? 'collection_stale' : 'collection_timeout';
+    collectionEvidence = { status: degraded.length ? 'degraded' : 'current', completeness: 'unknown',
+      freshness_minutes: 30, degraded_types: degraded };
     return complete;
   }, () => collectionFailure, releaseWindow ? 1200 : 600);
 
@@ -172,5 +193,8 @@ export async function verifyRuntimeSmoke(configuration, request, {
       return true;
     }, 'worker_timeout', 300);
   }
-  return { status: 'ok', mode: 'verify', collected_types: config.expectedQueuedTypes.length, workers: 2 };
+  return releaseWindow
+    ? { status: 'ok', mode: 'verify', catalog_types: config.expectedQueuedTypes.length,
+      workers: 2, collection: collectionEvidence }
+    : { status: 'ok', mode: 'verify', collected_types: config.expectedQueuedTypes.length, workers: 2 };
 }

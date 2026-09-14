@@ -208,5 +208,8 @@ Log in again after membership changes; the billed endpoint requires an administr
 with one in-flight request and a 60-second cooldown per process.
 
 Fixed MCP tools read one CloudFront identity; producer freshness and bounded inference leave unknown attributes unassessed.
-Nonce/account-bound responses retain completed checks on timeout. Release acceptance still requires full verification and zero unknown attributes.
+Nonce/account-bound responses retain completed checks on timeout. The owned CloudFront proof
+still requires zero unknown attributes. The release controller separately checks recent success
+for the rest of the catalog and discloses degraded/unknown coverage; it does not certify complete
+inventory. See the [collection contract](../runbooks/runtime-foundation.md#collection-contention--수집-경합).
 Invocation discovery rejects PENDING/malformed ARNs before caching and stops on an explicitly empty runtime parameter.

@@ -36,9 +36,11 @@ secrets-manager) — installed by `make deps`.
   ECS force-new-deployment → wait stable → smoke `/api/health`. `deployment-smoke.mjs`
   preserves service Host/SNI/TLS via CloudFront `--connect-to` before service DNS publication.
   The `DOCKER` env defaults to `sudo docker`.
-- `v2/prepare-smoke-credentials.mjs` — Deploy Web's required preparation for every dev release: privately
-  evaluate effective Terraform demo credentials, require unwrapped Terraform, strip TF logging/
-  argument overrides, and publish only a 0600 credential-file path inside a 0700 directory.
+- `v2/prepare-smoke-credentials.mjs` — credential preparation for every dev Deploy Web release,
+  manual `collect-runtime.yml`, and Terraform's private host verification before plan/apply. These
+  steps bind the shared `TF_VAR_DEMO_PASSWORD` secret as `TF_VAR_demo_password`; the helper privately
+  evaluates effective Terraform demo credentials, requires unwrapped Terraform, strips TF logging/
+  argument overrides, and publishes only a 0600 credential-file path inside a 0700 directory.
   Private init is bounded to 10 minutes; output/console each to 2 minutes.
 - `v2/authenticated-smoke.mjs` — login plus edge-authenticated `/api/db` verification. Preserve
   Host/SNI/TLS; report only the phase and validated HTTP status, never bodies/cookies/passwords.
@@ -195,9 +197,10 @@ secrets-manager) — installed by `make deps`.
 - For the emergency IAM `put-role-policy` convention, see `terraform/CLAUDE.md`.
 
 `v2/runtime-smoke.mjs` accepts explicit private prepare/verify configuration. Prepare
-checks the host registry; optional hostOnly rejects members. Verify requires complete
-fresh collection, real web-role runtime evidence and owned worker completion. The file
-is at most 16 KiB, collectionStartedAt at most 30 minutes old, and queued types unique
+checks the host registry; optional hostOnly rejects members. Verify requires collection
+evidence, real web-role runtime evidence and owned worker completion. Without release mode,
+all types need strict post-marker success; release mode uses the bounded catalog contract below.
+The file is at most 16 KiB, collectionStartedAt at most 30 minutes old at validation, and types unique
 with cloudfront included. The utility alone does not wire a deployment workflow.
 
 ## Development release controller
@@ -209,4 +212,4 @@ proof. Manual collect-runtime prepare accepts disabled backends and reports prep
 never ready. Typed authenticated-smoke failures retain sanitized diagnostics; other errors
 remain generic. All private credentials/configuration/scratch are covered by cleanup.
 
-The release reads the pinned inventory catalog and probes only CloudFront; it does not enqueue an all-type sweep or retry a stale-terminal batch queue. Catalog admission is bounded to 450 seconds; the CloudFront probe to 900 seconds, reserving 450 seconds per invocation. Confirmed throttling/busy/superseded outcomes retry after ten seconds; denied/uncertain/partial/failed outcomes do not pass. The marker precedes the probe and is retained across retries. Every catalog type and the known record need fresh post-marker evidence with zero unknowns. Release polling is twenty minutes, standalone ten, with successful admitted responses retained across deadline completion. Workflow cap: 55 minutes after fresh same-role credentials; manual job: 75 minutes. Ordinary collector capacity remains a prerequisite; no stale-data allowance or infrastructure/gate change is made. Prepare adopts an already-running web stack, not first-web bootstrap. Existing verifier groups require reviewed state adoption.
+Release mode reads the code-checked catalog and invokes only the owned CloudFront collector. CloudFront ledger/known-record proof remains post-marker with zero unknowns; other catalog types require last success within thirty minutes of observation. Newer running/partial/failed attempts and unknown attributes are disclosed as degraded, with completeness always unknown. Missing/stale or malformed catalog evidence blocks; standalone smoke remains strict for all supplied types. SSM/model and both owned worker proofs are mandatory. Catalog/probe budgets remain 450/900 seconds; release polling is twenty minutes, standalone ten. Only confirmed throttling/busy/superseded probe outcomes retry. See docs/runbooks/runtime-foundation.md for timing, cleanup and existing-stack adoption; no scheduler or IAM repair is performed.

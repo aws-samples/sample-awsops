@@ -340,8 +340,10 @@ anything carrying the account id live in repo **secrets** (auto-masked in
 logs), never variables; every credentials step sets `mask-aws-account-id`.
 Cognito users: dev/preview stacks get the shared regular **demo user**
 (`demo_email` defaults to `demo@awsops.local`; its password rides as the
-`TF_VAR_DEMO_PASSWORD` repo secret, bound as `TF_VAR_demo_password` only in
-Terraform's plan step and Deploy Web's required dev credential-preparation step).
+`TF_VAR_DEMO_PASSWORD` repo secret, bound as `TF_VAR_demo_password` in Terraform's
+plan and private host-credential preparation steps, and in the credential-preparation
+steps of Deploy Web and manual `collect-runtime.yml`). Each binding is step-scoped;
+the credential helper publishes only a private file path, never the password.
 `create_demo_user` defaults to
 **false** (fail-closed): a dev-tier stack opts in with `create_demo_user =
 true` in its tfvars blob, so the shared credential can never reach a stack —
@@ -1214,23 +1216,30 @@ Also enable `steampipe_enabled=true`, `workers_enabled=true` and dispatch, and d
 worker images as described in [worker deployment](../reference/06-workers.md).
 수집·워커 플래그와 디스패치를 활성화하고 인벤토리·ARM64 워커 이미지를 먼저 배포해야 합니다.
 
-Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway schema first.
-The web API scan remains capped at 500 rows. Failures distinguish `known_resource_unverified`,
-`collection_partial`, `collection_failed`, `collection_missing` after waiting, and `inventory_incomplete`.
-Degraded inventory never passes release readiness. 미발견은 부재 증명이 아니며 런타임은 지정 ID만 조회합니다.
-웹 표본은 500행 제한이고 모든 수집 타입의 부분 실패·원장 누락·속성 미확인을 통과시키지 않습니다.
+Runtime requests the exact CloudFront ID and an identity-only row; deploy Lambda and gateway
+schema first. The web scan is capped at 500 rows; not finding the ID does not prove absence.
+The owned CloudFront probe, its ledger and known record must pass after the release marker,
+with zero unknown attributes. Other catalog types require last-success evidence within thirty
+minutes of observation. Newer running/partial/failed attempts or unknown attributes are disclosed
+as degraded, never as complete collection. Missing/stale evidence still blocks. See the
+[collection contract](runtime-foundation.md#collection-contention--수집-경합) and
+[runtime endpoint authorization](../reference/05-agentcore.md).
 
 `SMOKE_RUNTIME_CONFIG_FILE` is an absolute 0600 JSON file beside credentials in the same 0700 directory;
-cleanup covers both. Its 16 KiB cap, 30-minute verify window and unique type list including cloudfront are required.
-Every dev Deploy Web release invokes the controller with applied deployment and actual dispatch evidence.
+cleanup covers both. Its 16 KiB cap, marker no older than thirty minutes at validation, and
+unique type list including cloudfront are required. This input-age limit is not the total run budget.
+Every dev Deploy Web release invokes the controller with applied deployment, the code-checked
+catalog and its owned CloudFront probe evidence.
 The legacy verify_database input cannot skip this gate.
 
 `schemaVersion: 1`, `mode: "prepare"` and `expectedAccountId` check login/DB and the enabled host.
 Optional `hostOnly: true` also rejects enabled members. Verify adds `expectedCloudfrontId`,
-all acknowledged `expectedQueuedTypes` and the pre-dispatch `collectionStartedAt`, from applied
-deployment and owned Lambda evidence. It requires fresh complete collection, web SSM/runtime calls
-and succeeded Lambda/Fargate jobs. Missing/partial/stale is never healthy zero; deploy the updated
-inventory-reader Lambda so legacy NULL attribute coverage is disclosed as incomplete.
+the catalog in `expectedQueuedTypes` and the pre-probe `collectionStartedAt`. The controller
+sets `collectionMode: "release"` for bounded catalog freshness; standalone verification without
+that mode keeps strict post-marker checks for all supplied types. Web-role SSM/runtime/model
+calls and succeeded Lambda/Fargate jobs remain mandatory. Release output reports `catalog_types`
+and explicit collection degradation with completeness `unknown`. Legacy NULL attribute coverage
+is unassessed, never healthy zero.
 
 ### Authenticated database verification / 인증된 DB 검증
 

@@ -42,6 +42,32 @@ function deployment() {
 function catalog() {
   return { status: 'catalog', types: ['cloudfront', 'rds'] };
 }
+const currentCollection = { status: 'current', completeness: 'unknown', freshness_minutes: 30, degraded_types: [] };
+test('release preserves degraded catalog evidence without claiming complete collection', async () => {
+  const collection = { ...currentCollection, status: 'degraded',
+    degraded_types: [{ type: 'rds', status: 'partial', unknown_attributes: null }] };
+  const f = fixture({ authResult: { status: 'ok', mode: 'verify', catalog_types: 2, workers: 2, collection } });
+  try {
+    const result = await release(deployment(), { env: f.env, run: f.run, authenticate: f.authenticate });
+    assert.deepEqual(result.collection, collection);
+    assert.equal(result.catalog_types, 2);
+    assert.equal(result.collected_types, undefined);
+  } finally { f.cleanup(); }
+});
+test('release refuses missing, fabricated or foreign collection proof', async () => {
+  for (const collection of [undefined, { ...currentCollection, completeness: 'complete' },
+    { ...currentCollection, status: 'degraded', degraded_types: [] },
+    { ...currentCollection, status: 'degraded',
+      degraded_types: [{ type: 'foreign', status: 'partial', unknown_attributes: true }] },
+    { ...currentCollection, status: 'degraded',
+      degraded_types: [{ type: 'cloudfront', status: 'partial', unknown_attributes: true }] }]) {
+    const f = fixture({ authResult: { status: 'ok', mode: 'verify', catalog_types: 2, workers: 2, collection } });
+    try {
+      await assert.rejects(release(deployment(), { env: f.env, run: f.run, authenticate: f.authenticate }),
+        /collection_proof_required/);
+    } finally { f.cleanup(); }
+  }
+});
 function fixture(overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'release-tests-'));
   const previousTemp = process.env.RUNNER_TEMP;
@@ -99,7 +125,7 @@ function fixture(overrides = {}) {
     assert.deepEqual(config, input.runtimeConfig);
     assert.equal(config.hostOnly, true);
     return overrides.authResult || { status: 'ok', mode: input.runtimeConfig.mode,
-      collected_types: input.runtimeConfig.expectedQueuedTypes?.length, workers: 2 };
+      catalog_types: input.runtimeConfig.expectedQueuedTypes?.length, workers: 2, collection: currentCollection };
   };
   return { root, directory, credentials, env: localEnv, responses, calls, authenticated, run, authenticate,
     cleanup: () => {
@@ -231,7 +257,8 @@ test('collect binds running web, code hash, canonical coverage and the fresh own
     const result = await release(deployment(), {
       env: f.env, run: f.run, authenticate: f.authenticate, now: () => now,
     });
-    assert.deepEqual(result, { status: 'ready', mode: 'verify', collected_types: 2, web_tasks: 1 });
+    assert.deepEqual(result, { status: 'ready', mode: 'verify', catalog_types: 2,
+      collection: currentCollection, web_tasks: 1 });
     assert.equal(f.authenticated.length, 1);
     assert.deepEqual(f.authenticated[0].input.runtimeConfig, {
       schemaVersion: 1, mode: 'verify', hostOnly: true, expectedAccountId: account,

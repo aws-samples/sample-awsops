@@ -29,7 +29,9 @@ gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev -f mode=pla
 ```
 Host-only removes only collector AssumeRole; Agent MCP grants remain. IAM includes known regions regardless of current opt-in; newly launched AWS regions require a fresh apply. IAM narrowing also applies to already-enabled main/preview stacks independently of the dev profile.
 호스트 모드는 수집기 AssumeRole만 제외한다. 알려진 리전은 opt-in 전에도 IAM에 포함되며 AWS 신규 출시 리전은 재적용이 필요하다. IAM 축소는 dev 프로필과 무관하게 기존 main/preview에도 적용된다.
-S3 steady denials remain unknown: rows carry `attributes_unknown`, the ledger increments `unknown_attribute_count`, and freshness is `degraded`; full readiness rejects that incomplete evidence.
+S3 steady denials remain unknown: rows carry `attributes_unknown`, the ledger increments
+`unknown_attribute_count`, and freshness is `degraded`. The release reports this degradation;
+it does not certify complete inventory. Its CloudFront runtime proof still requires zero unknowns.
 S3 지속 거부는 행별 미확인 속성·원장 unknown 수·degraded 신선도로 드러나며 완전한 배포 검증을 통과하지 않는다.
 The digest/host-preflight profile is dev-only. Preview retains operator-configured mutable tags or digests and multi-account scope, without dev host verification; account/role and private-DNS ownership checks still apply.
 digest·호스트 사전 검증은 dev 프로필 전용이다. preview는 운영자 설정 태그/digest·다중 계정 범위를 유지하며 계정·역할·사설 DNS 소유권만 공통으로 검증한다.
@@ -45,7 +47,8 @@ Sequence: merge reviewed code to dev → reviewed dev apply and full live readin
 ## Required development release check / 개발 배포 필수 검증
 
 Every dev Deploy Web release now verifies the running web role/revision/digest, the owned
-inventory Lambda code, fresh completed collection, actual SSM/AgentCore/model access and
+inventory Lambda code, a fresh owned CloudFront probe and recent catalog collection,
+actual SSM/AgentCore/model access and
 owned Lambda/Fargate job completion. `verify_database` cannot disable this gate.
 The dev runtime profile also enables `ci_readiness_enabled`; Terraform creates only the
 verifier application group and managed demo membership only while AgentCore is enabled. Public CI rejects the readiness flag outside dev; no admin/IAM role is granted.
@@ -91,11 +94,33 @@ The controller reads the complete catalog from the code-checked inventory Lambda
 
 Catalog admission has a 450-second budget and retries only confirmed Lambda throttling. The CloudFront probe has a 900-second budget; each invocation needs at least 450 seconds remaining for the verified function timeout of at most 420 seconds plus transport overhead. Confirmed throttling, `busy`, and the producer's exact superseded result wait ten seconds before another bounded attempt. Denied, uncertain-delivery, partial, failed, and invalid-protocol outcomes fail distinctly. A successful RPC alone is not readiness proof.
 
-The release freshness marker is recorded after catalog discovery and **before** the first CloudFront probe. It is not reset by retries or a delayed response. Every catalog type must have a succeeded ledger row whose start and last success are at or after that marker, with zero unknown attributes; the known CloudFront record must also be fresh after it. Older scheduled results do not pass, even if they are less than thirty minutes old. `expectedQueuedTypes` is the retained wire-field name for the catalog, not a claim that CI dispatched every type.
+The release marker is recorded after catalog discovery and **before** the first CloudFront
+probe, and survives retries. CloudFront requires a succeeded ledger row whose start and last
+success are at or after that marker, zero unknown attributes, and the known record captured
+after the marker. The AgentCore probe separately requires that exact record and the producer's
+configured freshness policy. Neither an old known record nor a successful RPC alone passes.
+
+Every other catalog type requires `last_success_at` within thirty minutes of the collection
+observation, independently of the release marker. The producer preserves this timestamp when a
+later attempt is running, partial or failed. Such attempts, and succeeded rows with unknown or
+unassessed attributes, are reported in `collection.degraded_types`; they do not erase recent
+success evidence or establish complete data. Missing or stale last-success evidence continues
+polling and ultimately fails as `collection_missing` or `collection_stale`. Malformed evidence
+fails as `collection_protocol`. A failed/partial CloudFront probe still blocks immediately.
+
+Release output uses `catalog_types` and `collection.status` (`current` or `degraded`);
+`collection.completeness` is always `unknown`. These are observations of the complete deployed
+type catalog, not proof of every resource or attribute. `expectedQueuedTypes` remains the private
+wire-field name for that catalog, not an acknowledgement that CI dispatched every type.
+Standalone smoke without `collectionMode: "release"` retains strict post-marker collection checks.
 
 Release-mode collection polling allows twenty minutes after account/login checks; standalone verification retains ten minutes. The authenticated collection-only summary avoids inventory-wide aggregations. A deadline bounds the start of a poll, and a valid successful response from an admitted request is retained even if it arrives just after that deadline. No new poll begins after expiry. The runtime and both five-minute worker checks remain mandatory.
 
-Capacity is a prerequisite, not a guarantee supplied by a timeout. With N types, C collector slots and a per-type duration T, budget for scheduler wait plus roughly ceil(N/C) waves; using the 420-second maximum for every type gives a conservative capacity bound. Four slots cannot guarantee a 43-type sweep in twenty minutes at that maximum. If full fresh coverage cannot be produced, the gate must fail; inspect throughput, throttling and permissions, then use the existing reviewed Terraform process for any concurrency or query-budget adjustment. Do not accept old rows, omit types, or bypass unknown/partial failures to turn the gate green.
+The release does not wait for a whole new scheduled sweep after every push. It still requires
+recent success for every deployed catalog type, so dropped or persistently failing types
+eventually fail the rolling freshness bound. Inspect collector execution and persisted data
+separately; a timeout does not identify dropped events. Capacity or permission repairs remain
+separate reviewed operations. No type is omitted to make the gate pass.
 
 Both verification steps have a 55-minute workflow cap with a fresh one-hour session for the same configured role; the manual job allows 75 minutes including setup. These are outer limits, not promises that every combination of slow calls will fit. Restored Terraform inputs are deleted immediately after capture, with final cleanup retained as a fallback. No schedule, feature flag or infrastructure setting is changed by the verifier.
 

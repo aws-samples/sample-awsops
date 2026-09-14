@@ -134,8 +134,8 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   remain distinct failures; accepted degraded inventory is not a deployment-readiness exception.
 - The runtime smoke capability uses a private 0600 `SMOKE_RUNTIME_CONFIG_FILE` beside the
   credentials. Prepare checks host registration (optional hostOnly); verify additionally
-  requires applied CloudFront identity, complete queued types and pre-dispatch timestamp,
-  fresh collection, web-role SSM/AgentCore proof and Lambda/Fargate completion. Every dev Deploy Web
+  requires applied CloudFront identity, the deployed catalog and pre-probe timestamp,
+  bounded collection evidence, web-role SSM/AgentCore proof and Lambda/Fargate completion. Every dev Deploy Web
   release requires the controller-generated verify file regardless of verify_database. The billed readiness
   route requires admin or deployment-verifiers, one in-flight call and a per-process 60-second cooldown; replicas have independent cooldowns.
 
@@ -148,7 +148,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 - Curl/OpenSSL, PyYAML and Terraform 1.15.7 are mandatory for the authenticated smoke fixtures;
   missing tools fail the shared runner. Only final fmt/validate diagnostics are informational.
 
-The release reads the pinned inventory catalog and probes only CloudFront; it does not enqueue an all-type sweep or retry a stale-terminal batch queue. Catalog admission is bounded to 450 seconds; the CloudFront probe to 900 seconds, reserving 450 seconds per invocation. Confirmed throttling/busy/superseded outcomes retry after ten seconds; denied/uncertain/partial/failed outcomes do not pass. The marker precedes the probe and is retained across retries. Every catalog type and the known record need fresh post-marker evidence with zero unknowns. Release polling is twenty minutes, standalone ten, with successful admitted responses retained across deadline completion. Workflow cap: 55 minutes after fresh same-role credentials; manual job: 75 minutes. Ordinary collector capacity remains a prerequisite; no stale-data allowance or infrastructure/gate change is made. Prepare adopts an already-running web stack, not first-web bootstrap. Existing verifier groups require reviewed state adoption.
+Release mode reads the code-checked catalog and invokes only the owned CloudFront collector. CloudFront ledger/known-record proof remains post-marker with zero unknowns; other catalog types require last success within thirty minutes of observation. Newer running/partial/failed attempts and unknown attributes are disclosed as degraded, with completeness always unknown. Missing/stale or malformed catalog evidence blocks; standalone smoke remains strict for all supplied types. SSM/model and both owned worker proofs are mandatory. Catalog/probe budgets remain 450/900 seconds; release polling is twenty minutes, standalone ten. Only confirmed throttling/busy/superseded probe outcomes retry. See docs/runbooks/runtime-foundation.md for timing, cleanup and existing-stack adoption; no scheduler or IAM repair is performed.
 
 ## Conventions
 - Filename: `kebab-case.md`, domain-then-topic order.

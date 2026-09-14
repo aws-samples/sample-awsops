@@ -313,10 +313,27 @@ export async function release(deployment, {
       throw new ReleaseError(error instanceof SmokeError ? error.message : 'authenticated_runtime_proof_failed');
     }
     need(result?.status === 'ok' && result.mode === config.mode, 'full_runtime_proof_required');
-    if (config.mode === 'verify') need(result.collected_types === config.expectedQueuedTypes.length &&
-      result.workers === 2, 'complete_runtime_proof_required');
+    if (config.mode === 'verify') {
+      need(result.catalog_types === config.expectedQueuedTypes.length && result.workers === 2,
+        'complete_runtime_proof_required');
+      const collection = result.collection;
+      need(object(collection) && Object.keys(collection).sort().join(',') ===
+        'completeness,degraded_types,freshness_minutes,status' &&
+        collection.completeness === 'unknown' && collection.freshness_minutes === 30 &&
+        Array.isArray(collection.degraded_types) &&
+        collection.degraded_types.length < config.expectedQueuedTypes.length &&
+        collection.status === (collection.degraded_types.length ? 'degraded' : 'current') &&
+        new Set(collection.degraded_types.map(row => row?.type)).size === collection.degraded_types.length &&
+        collection.degraded_types.every(row => object(row) &&
+          Object.keys(row).sort().join(',') === 'status,type,unknown_attributes' &&
+          row.type !== 'cloudfront' && config.expectedQueuedTypes.includes(row.type) &&
+          ['running', 'succeeded', 'partial', 'failed'].includes(row.status) &&
+          (row.unknown_attributes === null || typeof row.unknown_attributes === 'boolean') &&
+          (row.status !== 'succeeded' || row.unknown_attributes !== false)), 'collection_proof_required');
+    }
     return config.mode === 'verify'
-      ? { status: 'ready', mode: 'verify', collected_types: config.expectedQueuedTypes.length, web_tasks: webTasks }
+      ? { status: 'ready', mode: 'verify', catalog_types: result.catalog_types,
+        collection: result.collection, web_tasks: webTasks }
       : { status: 'prepared', mode: 'prepare', web_tasks: webTasks };
   } catch (error) {
     failed = true;

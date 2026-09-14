@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: c9855ff8e58f · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4880a917833f · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -103,7 +103,7 @@ checks use 1.15.7 with isolated data and mocked providers; dependencies are decl
 
 Runtime smoke configuration is explicit and private: prepare checks registration, verify
 checks fresh collection, real runtime access and workers. Optional hostOnly rejects members.
-Cap the file at 16 KiB; require a recent start (30 minutes) and unique types including cloudfront.
+Cap the file at 16 KiB; require a start no older than 30 minutes at validation and unique types including cloudfront.
 HTTP files default to 64 KiB; only the CloudFront inventory leg allows 2 MiB. The utility
 alone does not change workflow wiring.
 
@@ -124,6 +124,9 @@ under workers, steampipe, incident and remediation; update all with verified whe
 The separate Steampipe Dockerfile pin/installer is outside that Lambda lock and validator.
 `v2/test_ci_tf_assets.py` covers these contracts and recovery.
 
+Credential preparation binds the shared demo-password secret only in Terraform plan/host preparation,
+Deploy Web preparation and manual collect-runtime preparation; only private file paths cross steps.
+
 ## Development release controller
 
 `v2/ci/runtime-release.mjs` checks account/role, running web revision/digest/ARM64 and
@@ -132,4 +135,4 @@ hostOnly verification of fresh collection and real runtime/worker completion. Ma
 prepare accepts disabled backends and reports prepared, not ready. Typed smoke errors
 retain sanitized diagnostics; other errors remain generic. Cleanup covers private files.
 
-The release reads the pinned inventory catalog and probes only CloudFront; it does not enqueue an all-type sweep or retry a stale-terminal batch queue. Catalog admission is bounded to 450 seconds; the CloudFront probe to 900 seconds, reserving 450 seconds per invocation. Confirmed throttling/busy/superseded outcomes retry after ten seconds; denied/uncertain/partial/failed outcomes do not pass. The marker precedes the probe and is retained across retries. Every catalog type and the known record need fresh post-marker evidence with zero unknowns. Release polling is twenty minutes, standalone ten, with successful admitted responses retained across deadline completion. Workflow cap: 55 minutes after fresh same-role credentials; manual job: 75 minutes. Ordinary collector capacity remains a prerequisite; no stale-data allowance or infrastructure/gate change is made. Prepare adopts an already-running web stack, not first-web bootstrap. Existing verifier groups require reviewed state adoption.
+Release mode reads the code-checked catalog and invokes only the owned CloudFront collector. CloudFront ledger/known-record proof remains post-marker with zero unknowns; other catalog types require last success within thirty minutes of observation. Newer running/partial/failed attempts and unknown attributes are disclosed as degraded, with completeness always unknown. Missing/stale or malformed catalog evidence blocks; standalone smoke remains strict for all supplied types. SSM/model and both owned worker proofs are mandatory. Catalog/probe budgets remain 450/900 seconds; release polling is twenty minutes, standalone ten. Only confirmed throttling/busy/superseded probe outcomes retry. See docs/runbooks/runtime-foundation.md for timing, cleanup and existing-stack adoption; no scheduler or IAM repair is performed.
