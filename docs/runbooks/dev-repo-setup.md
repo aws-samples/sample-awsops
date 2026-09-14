@@ -1074,7 +1074,8 @@ Membership is added only for the Terraform-managed demo when `create_demo_user=t
 unmanaged identity is enrolled, and no admin membership or IAM role is granted. Public CI rejects
 readiness outside dev. Use the separate CI_READINESS_ENABLED_DEV decision or explicit operator
 Terraform configuration; the runtime profile is not authorization for this billed capability.
-The release controller verifies these resources; it does not create them. Do not separately
+The release controller verifies authenticated readiness access; it does not inspect or create
+the live group/membership resources. Do not separately
 create a Terraform-managed verifier group. Use a fresh login after membership changes; one
 in-flight call and a 60-second process cooldown apply.
 

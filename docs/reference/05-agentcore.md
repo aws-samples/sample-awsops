@@ -274,7 +274,8 @@ An opt-in apply creates the verifier group only with readiness and AgentCore ena
 additionally requires the managed demo flag. No admin/IAM role is granted. Public CI permits
 readiness only on dev. CI_READINESS_ENABLED_DEV is a dedicated true/false override; empty/unset
 preserves explicit Terraform configuration and default false. The runtime profile alone does not enable it.
-The release controller verifies the group/membership; it does not provision them. Do not separately
+The release controller verifies authenticated readiness access, not live group/membership state.
+It does not provision those resources. Do not separately
 create the Terraform-managed group. Adopt an existing group or managed-demo membership using the
 [reviewed import procedure](../runbooks/runtime-foundation.md#adopting-an-existing-verifier-group--기존-검증-그룹-채택).
 Use a fresh login after membership changes. Removing membership does not rewrite issued ID-token

@@ -21,7 +21,7 @@ secrets-manager) — installed by `make deps`.
   and default false. Enabled readiness is rejected outside dev. Applied readiness plus
   AgentCore creates only the verifier group; demo membership needs create_demo_user. No admin/IAM grant.
   Explicitly apply readiness and provision before the mandatory dev release gate. The controller
-  verifies existing group/membership state; adopt hand-created resources with reviewed imports.
+  verifies authenticated readiness access, not live group/membership state; use reviewed imports.
   Group removal does not rewrite issued ID-token claims (up to 12 hours); session revocation
   and runtime disablement are independent. Never reset passwords or promote a verifier to admin.
 - Dev/preview private discovery requires explicit full-plan rollout and preserves public DNS/certificates. `runtime-ecr-bootstrap` permits exactly three repositories. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy.

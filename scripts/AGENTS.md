@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 18a5ff70c36b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a9db582cf9c8 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
@@ -146,7 +146,8 @@ Deploy Web preparation and manual collect-runtime preparation; only private file
 live inventory Lambda code against the configured archive hash. Every dev Deploy Web release
 requires full hostOnly runtime proof regardless of `verify_database`; explicitly apply readiness
 and provision AgentCore first. The runtime profile alone never enables the billed probe.
-The controller does not provision verifier privileges: use reviewed imports for existing groups
+The controller proves authenticated readiness access, not live membership, and does not provision
+verifier privileges: use reviewed imports for existing groups
 or memberships. Issued ID-token claims can outlive group removal for up to 12 hours;
 session revocation and runtime disablement remain separate controls.
 
