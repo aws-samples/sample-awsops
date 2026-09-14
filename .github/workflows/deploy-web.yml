@@ -303,7 +303,10 @@ jobs:
       DEV_ROLE: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
       DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
-      USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
+      USER_TFVARS_B64: >-
+        ${{ github.ref_name == 'atomoh' && secrets.TF_TFVARS_PREVIEW_atomoh ||
+            github.ref_name == 'ssminji' && secrets.TF_TFVARS_PREVIEW_ssminji ||
+            github.ref_name == 'whchoi' && secrets.TF_TFVARS_PREVIEW_whchoi || '' }}
     steps:
       - uses: actions/checkout@v4
         with:

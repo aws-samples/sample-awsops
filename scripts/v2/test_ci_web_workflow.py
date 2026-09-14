@@ -15,6 +15,16 @@ class WorkflowTest(unittest.TestCase):
     def workflow(self, name):
         return yaml.safe_load((self.root / ".github/workflows" / name).read_text())
 
+    def test_image_proof_uses_only_explicit_preview_secret_references(self):
+        proof = self.workflow("deploy-web.yml")["jobs"]["image-proof"]
+        self.assertNotRegex(yaml.safe_dump(proof), r"\bsecrets\s*\[")
+        selected = proof["env"]["USER_TFVARS_B64"]
+        for branch in ("atomoh", "ssminji", "whchoi"):
+            self.assertIn(
+                f"github.ref_name == '{branch}' && secrets.TF_TFVARS_PREVIEW_{branch}",
+                selected)
+        self.assertTrue(selected.rstrip().endswith("|| '' }}"))
+
     def test_dev_roll_requires_migration_and_build_proof_with_explicit_secrets(self):
         web = self.workflow("deploy-web.yml")
         migrate = web["jobs"]["migrate-dev"]
