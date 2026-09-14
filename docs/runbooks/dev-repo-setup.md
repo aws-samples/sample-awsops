@@ -1013,6 +1013,14 @@ protections remain required.
 DNS·출처 검사도 배포 ref의 코드이므로 코드 변경에 대한 보안 경계를 대신하지 않는다.
 기존 리뷰·보호 환경 절차를 계속 적용한다.
 
+#### AgentCore provisioner Python
+
+In the deploy job (after the separate private migration job), Deploy AgentCore prepares a private Python 3.12 virtual environment before that job's AWS credential setup and agent image build. `requirements-provision.txt` pins the host SDK closure by version and hash. `setup-provision-python.py` derives control-plane operations from the provisioner's `ctrl` references and runtime operations from `smoke`, verifies model availability and exact SDK versions, and imports the provisioner through `--help` without AWS credentials. This checks local SDK compatibility, not live IAM, quotas, input-shape compatibility or runtime health.
+
+The verified interpreter path is published only after success. Final cleanup uses the base interpreter; SDK-folder removal failures produce a fixed warning instead of changing the deployment result. The SDK folder contains packages, not deployment credentials. Container dependencies remain separate.
+
+For a pin update, resolve the complete Python 3.12 wheel closure from PyPI, generate hashes from the downloaded wheels (`python -m pip hash <wheel>`), then run the actual setup/preflight and `python3 -m pytest scripts/v2/ci/test_setup_provision_python.py -q`. The existing merge-verification Python stage discovers that test file; it is not repeated by a Node wrapper. The runner needs setup-python access and PyPI egress.
+
 #### Runtime images / 런타임 이미지
 
 The helper exports the built image to a private `docker image save` archive. It checks the exact tag, validates Linux/ARM64 in the real config, and hashes its bytes before binding the ECR manifest to that digest. This works when containerd omits BuildKit's config digest and exposes a manifest ID instead. `tar` reads only the bounded manifest/config entries through validated hash paths, without AWS credentials. Push remains `--platform linux/arm64` (Docker API 1.46+); the runner needs `tar`. The archive is removed with the private build scratch. Steampipe retains its engine/plugin and checksum-pinned standalone Python runtime.

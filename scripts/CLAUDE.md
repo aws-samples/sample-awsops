@@ -147,6 +147,11 @@ secrets-manager) — installed by `make deps`.
   Image verification exports a private Docker archive, validates its tag and Linux/ARM64 config,
   hashes exact config bytes and binds ECR to that digest. Tar reads validated hash paths with bounded
   output and no AWS credentials; optional BuildKit metadata/image IDs are not config identity.
+- `v2/ci/setup-provision-python.py` — private Python 3.12 virtualenv for the host provisioner;
+  installs hash-pinned wheels without inherited AWS/PIP credentials, verifies service models and
+  imports and exact pinned SDK versions, derives required operations from the provisioner,
+  and publishes PATH only after success. Base-Python cleanup warns on SDK-folder removal errors
+  without changing deployment results; the folder contains packages, not credentials.
 - `v2/agentcore.mjs` + `agentcore/` — dev uses applied `ci_migrations_enabled=true`
   (`CI_MIGRATIONS_ENABLED_DEV=true`) and non-null `migration_job`, then private migration and
   digest-bound build-only/provision-only phases. Fresh sessions of the same role follow setup
