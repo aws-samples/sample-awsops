@@ -256,8 +256,8 @@ SHA, verifies the checkout, decrypts both existing artifacts, and calls the exis
 HMAC/plan/asset verifier **before** `terraform show`. It writes only `plan.txt` and
 `plan.json` into a new 0700 directory, with 0600 files. Read these privately; they can
 contain passwords or rendered signing material. It never initializes a backend,
-refreshes, plans, approves or applies. It refuses execution inside GitHub Actions and
-does not make a historical inspection apply-eligible; all current apply gates still run.
+refreshes, plans, approves or applies. Its GitHub Actions environment refusal is an accident guard for trusted operators, not an authorization boundary.
+Historical inspection does not make a plan apply-eligible; all current apply gates still run.
 
 Wrong context/key, missing or altered artifacts, unsafe/existing output paths, unavailable
 provider schemas and oversized output fail closed without printing plan/error contents.
@@ -267,26 +267,25 @@ Cleanup errors are reported without raw paths; inspect any owned residue private
 
 ## Encrypted failure recovery
 
-The Terraform workflow captures plan/apply command output privately instead of echoing
-raw command output. Existing scope/DNS/runtime checks and exact saved-plan apply remain.
-For an explicit dispatch failure, at most the first 1 MiB of combined command output is
-retained with a truncation indicator, source/run/attempt/phase and exit code. Capture drains
-excess output without interrupting the command. It preserves the command's failure code
-even if encryption or artifact-output publication fails.
+The wrapper drains Terraform plan/apply output into bounded memory while the command runs. It retains the last 1 MiB, including terminal errors, and counts all observed output bytes. It creates no scratch file until the child has finished. Capture processing or later storage failure never SIGKILLs Terraform or replaces its actual exit status. Success and non-retained failures leave no plaintext log on disk.
 
-The typed failure record reuses CBC/PBKDF2 transport and the existing manifest-HMAC
-function; it is a diagnostic envelope, **not** an apply artifact. Only ciphertext is uploaded
-as `terraform-failure-plan` or `terraform-failure-apply`, with five-day retention.
-The key never reaches the captured Terraform child. Success, missing key, and advisory
-PR/push execution retain no log. Initialization and earlier policy failures are outside this
-capture scope; fixed policy diagnostics remain available. No new cipher, key or apply policy
-is introduced.
+Every captured command reports fixed JSON audit fields to the job log and step summary. Successful standard Terraform summaries supply numeric add/change/destroy counts; absent or unreadable summaries remain unavailable, not zero. Failure classifications are bounded hints such as state-lock, access-denied, authentication, provider-install, invalid-plan or generic command failure. Arbitrary `Error:` lines and resource/output values are never echoed. A failed launch is distinct from Terraform itself exiting 127.
 
-Download the selected encrypted artifact with normal GitHub access into private storage.
-Use its recorded SHA, failed attempt number and phase; recovery checks that exact
-authenticated attempt even after a later rerun. The destination must not exist.
+The capture parent removes GitHub command-file paths, action/token variables and encryption keys from the Terraform child environment. AWS temporary credentials, including `AWS_SESSION_TOKEN`, remain available. The pre-apply show/policy subprocesses receive the same isolation in a subshell. Original argv, branch/provenance/asset/DNS/runtime checks and exact saved-plan apply remain unchanged; this does not sandbox hostile processes sharing the same OS user.
+
+Raw retention is only for explicit dispatch failures. `policy_not_retained`, `key_missing`, `context_invalid`, `storage_failed`, `seal_failed` and `publication_failed` are distinct from `sealed`. Capture and cleanup status are reported separately. A partially applied command with unavailable diagnostics still requires private state reconciliation; no automatic retry or success inference is made.
+
+Schema-2 failure capsules use the existing CBC/PBKDF2 cipher and key with a separate diagnostic HMAC domain. The signed manifest binds source/run/attempt/phase, observed exit/launch status, timestamp, total and retained bytes, capture/truncation status and content hash. It is not an apply artifact. Older schema-1 diagnostic capsules need their matching trusted recovery implementation; never relabel metadata or skip authentication to force recovery. Saved-plan artifact compatibility is unchanged.
+
+Only the parent's validated single ciphertext file can be published. Ownership, private modes, regular-file/link checks, a literal non-glob path and the recorded ciphertext hash are checked before the output pointer is written. The generated directory is non-hidden; the upload explicitly permits hidden ancestors for this one file, not a directory or wildcard. Artifacts are named `terraform-failure-plan-<attempt>` or `terraform-failure-apply-<attempt>` and retained for five days, so later attempts do not collide with earlier ones.
+
+Uploads require the real workflow dispatch event plus failure or cancellation and a validated nonempty pointer. Cancellation recovery is best effort: SIGKILL, host loss or an exhausted runner timeout may prevent capture/upload entirely. Normal post-upload cleanup removes only this run's ciphertext. If pointer publication fails, already sealed ciphertext remains in its owned `RUNNER_TEMP/tf-diagnostics-<run>-<attempt>-<phase>-*` directory for private owner recovery. Do not publish an arbitrary replacement file or delete another run's directory.
+
+On a trusted private operator machine, authenticate `gh` normally and provide the corresponding `TF_PLAN_ENC_KEY` using the approved private mechanism. Select the original failed SHA, attempt and phase. The helper verifies that exact authenticated attempt even after a later rerun. A new destination is required. The `GITHUB_ACTIONS` refusal is an accident guard, not an authorization boundary; do not recover raw logs in shared CI.
 
 ```bash
+gh run download "$FAILED_RUN_ID" --repo aws-samples/sample-awsops \
+  --name "terraform-failure-plan-$FAILED_ATTEMPT" --dir /private/download
 python3 scripts/v2/ci_failure_diagnostics.py recover \
   --repository aws-samples/sample-awsops --branch dev \
   --commit "$FAILED_SHA" --run-id "$FAILED_RUN_ID" --attempt "$FAILED_ATTEMPT" \
@@ -294,14 +293,9 @@ python3 scripts/v2/ci_failure_diagnostics.py recover \
   --destination /private/review/new-failure-directory
 ```
 
-Recovery verifies the failed dispatch, attempt, HMAC, context and content hash before
-writing 0600 `diagnostics.log` and `metadata.json`. It performs no deployment and never
-prints raw logs. The workflow removes only its own ciphertext directory after upload.
-Handled cleanup is not a guarantee after SIGKILL/host loss, and 0700/0600 does not isolate
-hostile jobs sharing the same OS user. Inspect orphaned owned scratch privately; do not
-delete another job's files. Key rotation prevents recovery of old ciphertext without the
-corresponding old key. These files are evidence, not approval or proof of successful deployment.
+Recovery authenticates the failed dispatch, attempt, HMAC, context and content before writing 0600 `diagnostics.log` and `metadata.json` inside a new 0700 directory. Timeouts and verification errors expose fixed categories only. It does not deploy or approve anything. Key rotation requires the corresponding old key for old ciphertext; file modes and handled cleanup are not guarantees against hostile shared-UID processes or abrupt host loss. Inspect owned residue privately.
 
+Initialization and earlier policy failures are outside command-tail capture. Existing policy diagnostics remain, and advisory PR/push command failures still receive fixed classifications without raw retention. The saved-plan inspector keeps its strict 32 MiB render bound and fail-closed verification.
 
 ## Boundaries and recovery / 제한과 복구
 
@@ -355,7 +349,7 @@ A 게시 전 TLS·DB·인증 실패 시 미게시 상태로 중단하고 지원�
 안전한 롤백이 아니다. 소유권 이전·토큰 폐기·이전 도메인 복구는 적절한 설정의 별도 승인
 절차로 진행하며, 상태 삭제나 미확정 DNS 허용으로 우회하지 않는다.
 
-Related / 관련: `.github/workflows/terraform.yml`, `scripts/v2/ci_dns_policy.py`,
+Related / 관련: `.github/workflows/terraform.yml`, `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_failure_diagnostics.py`, `scripts/v2/ci_dns_policy.py`,
 `scripts/v2/ci_dev_domain.py`, `terraform/foundation/edge.tf`;
 ADR-005 (AWS-resource mutation + autonomy freeze / AWS 리소스 변경·자율 실행 동결),
 ADR-016 (v1 decommission / domain-certificate cutover / v1 폐기·도메인/인증서 전환).

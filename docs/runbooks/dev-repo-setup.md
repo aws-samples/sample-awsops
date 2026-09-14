@@ -395,10 +395,15 @@ situations:
 `terraform -chdir=terraform/foundation state rm 'aws_cognito_user.admin'`으로
 상태에서만 떼어냅니다.
 disable은 삭제를 막지 못하며, 수동 생성 사용자에 대한 접근 차단 수단입니다.)
-The plan artifact is a covered channel too: a tfplan embeds every variable
-value in plaintext and public-repo artifacts are downloadable by anyone, so
-the plan job encrypts it with the `TF_PLAN_ENC_KEY` secret (fail-closed) and
-the apply job decrypts before applying.
+Artifact channels are covered too: the binary plan and rendered assets may contain secrets, so the `tfplan` artifact carries encrypted `tfplan.enc` and `tfassets.enc` only. `TF_PLAN_ENC_KEY` supplies CBC/PBKDF2 encryption, authenticated asset binding, and the separate schema-2 failure-capsule HMAC domain. Rotation invalidates verification without the matching prior key; never put this key in argv or public logs.
+
+| Channel | Contents and conditions |
+|---|---|
+| `tfplan` | Existing encrypted saved plan/assets; same repository/branch/SHA/run checks and apply gates remain mandatory. |
+| `terraform-failure-<phase>-<attempt>` | One validated ciphertext file for an explicit failed/cancelled dispatch, five-day retention. Recovery is best effort if the runner stops abruptly. |
+| Job log and step summary | Fixed command/capture/retention classifications and numeric Terraform success action counts; no raw command output or arbitrary `Error:` text. Advisory PR/push failures are classified but retain no raw log. |
+
+This applies to main, dev and supported user branches. Use [private exact-plan inspection](dev-domain-rollout.md#private-exact-plan-inspection) before approval and [encrypted failure recovery](dev-domain-rollout.md#encrypted-failure-recovery) for a specific failed attempt. The inspector authenticates before rendering and never applies. Captured Terraform and pre-apply scope-check children do not receive GitHub command-file/token variables or encryption keys; their AWS STS credentials, including `AWS_SESSION_TOKEN`, remain. Storage/sealing/publication failures are distinct and do not replace the command exit or authorize a retry. A valid pointer identifies only the parent's owned ciphertext, never an arbitrary runner file.
 (공개 리포는 Actions 로그도 공개 — 역할 ARN 등 계정 ID 포함 값은 변수 금지·시크릿
 전용. demo 사용자 비밀번호는 `TF_VAR_DEMO_PASSWORD` 시크릿으로 공급하되 production은
 `create_demo_user=false` 또는 자체 tfvars 블롭의 `demo_password` override로 공유
@@ -410,7 +415,7 @@ Then register the generated files (base64) as repo secrets:
 
 | Stack | Secrets |
 |---|---|
-| all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (plan-artifact encryption and private asset HMAC; rotation invalidates signed bundles) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
+| all stacks (repo-wide) | `TF_PLAN_ENC_KEY` (saved-plan/failure-capsule encryption, private asset HMAC and a separate failure HMAC domain; rotation requires the matching key for old bundles) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
 | production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` |
 | dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` / `AWS_ACCOUNT_ID_DEV` (required configured account for migrations, runtime image builds and provisioning; secret, not variable) |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
@@ -464,7 +469,7 @@ main은 production environment 승인 게이트가 추가됩니다. DNS 제한�
 
 For a failed authenticated DB check, temporarily set `CI_DB_DIAGNOSTICS_DEV=true` and manually
 dispatch the Terraform workflow (`workflow_dispatch`, `mode=plan`, branch `dev`).
-Automatic PR/push plans never run diagnostics. The step and helper require the manual event,
+Automatic PR/push plans never run this optional database-diagnostics collector; fixed Terraform command audits still run. The collector step and helper require the manual event,
 the literal flag value `true`, and `--target dev`; the supported region is `ap-northeast-2`.
 Comparing the persisted-state account with STS is a consistency check: it does not detect
 a wrong stack in the same account or provide authorization. The helper uses

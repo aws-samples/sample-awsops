@@ -1,5 +1,7 @@
-"""Bounded private Terraform failure capture; existing CBC transport and manifest HMAC."""
+"""Bounded private Terraform diagnostics; capture never writes while Terraform runs."""
 import base64
+from datetime import datetime, timezone
+import errno
 import hashlib
 import hmac
 import json
@@ -7,17 +9,144 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
+import stat
+import subprocess
 import sys
 import tempfile
 
 import ci_tf_assets as assets
 from ci_plan_inspect import (
     ArtifactError, Parser, crypt, fetch_run, identity_arguments, new_destination,
-    private_command, private_write, real_path, regular_bytes, require_run, validate_identity,
+    private_write, real_path, regular_bytes, require_run, validate_identity,
 )
 
 LOG_LIMIT = 1024 * 1024
 CAPSULE_LIMIT = 2 * LOG_LIMIT
+DOMAIN = b"awsops:terraform-failure:manifest:v2\0"
+COMMAND_FILES = {"GITHUB_OUTPUT", "GITHUB_ENV", "GITHUB_PATH", "GITHUB_STATE", "GITHUB_STEP_SUMMARY"}
+ANSI = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
+CATEGORIES = {
+    "state_lock": ("Error acquiring the state lock",),
+    "access_denied": ("AccessDenied", "UnauthorizedOperation",),
+    "authentication": ("No valid credential sources", "ExpiredToken", "InvalidClientTokenId"),
+    "provider_install": ("Failed to install provider", "Failed to query available provider packages"),
+    "invalid_plan": ("Saved plan is stale", "Saved plan does not match", "Inconsistent dependency lock file"),
+    "configuration": ("Error: Unsupported argument", "Error: Missing required argument", "Error: Invalid value"),
+}
+
+
+def child_environment(env):
+    # Terraform still needs temporary AWS credentials and explicitly supplied TF_VAR inputs.
+    return {key: value for key, value in env.items()
+            if key not in COMMAND_FILES and not key.startswith(("ACTIONS_", "TF_TOKEN_"))
+            and not key.endswith("_ENC_KEY")
+            and not (key.endswith("_TOKEN") and not key.startswith(("AWS_", "TF_VAR_")))}
+
+
+class OutputCapture:
+    def __init__(self, phase):
+        self.phase, self.tail, self.pending = phase, b"", b""
+        self.total, self.damaged, self.overflow = 0, False, False
+        self.counts, self.categories = None, set()
+
+    def line(self, value):
+        text = ANSI.sub(b"", value).decode("utf-8", errors="replace").strip()
+        pattern = (r"Plan: ([0-9]{1,9}) to add, ([0-9]{1,9}) to change, ([0-9]{1,9}) to destroy\."
+                   if self.phase == "plan" else
+                   r"Apply complete! Resources: ([0-9]{1,9}) added, ([0-9]{1,9}) changed, ([0-9]{1,9}) destroyed\.")
+        match = re.fullmatch(pattern, text)
+        if match:
+            self.counts = dict(zip(("add", "change", "destroy"), map(int, match.groups())))
+        elif text == "No changes. Your infrastructure matches the configuration.":
+            self.counts = {"add": 0, "change": 0, "destroy": 0}
+        for category, markers in CATEGORIES.items():
+            if any(marker in text for marker in markers):
+                self.categories.add(category)
+
+    def feed(self, chunk):
+        self.tail = (self.tail + chunk)[-LOG_LIMIT:]
+        for segment in chunk.splitlines(keepends=True):
+            complete = segment.endswith((b"\n", b"\r"))
+            if not self.overflow:
+                self.pending += segment
+                if len(self.pending) > 4096:
+                    self.pending, self.overflow = b"", True
+            if complete:
+                if not self.overflow:
+                    self.line(self.pending)
+                self.pending, self.overflow = b"", False
+
+    def finish(self, code, launched):
+        if self.pending and not self.overflow and not self.damaged:
+            self.line(self.pending)
+        category = (None if code == 0 else "launch_failed" if not launched else
+                    "interrupted" if code in (130, 143) else
+                    next((name for name in CATEGORIES if name in self.categories), "command_failed"))
+        return {
+            "phase": self.phase, "launched": launched, "exit_code": code if launched else None,
+            "capture_status": "launch_failed" if not launched else "capture_failed" if self.damaged
+                              else "truncated" if self.total > len(self.tail) else "complete",
+            "truncated": self.total > len(self.tail), "total_output_bytes": self.total,
+            "retained_bytes": len(self.tail), "failure_category": category,
+            "action_counts": self.counts if code == 0 and not self.damaged else None,
+            "retention_status": "not_needed", "cleanup_status": "not_needed",
+        }
+
+
+def collect_command(args, env, output):
+    """Drain into bounded memory; no scratch I/O and no capture-induced SIGKILL."""
+    try:
+        process = subprocess.Popen(args, env=child_environment(env), stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except (OSError, ValueError):
+        return 127, False
+    handlers = {}
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                handlers[sig] = signal.signal(sig, lambda number, frame: process.send_signal(number))
+            except ValueError:  # Library use outside the main thread has no signal ownership.
+                pass
+        while True:
+            try:
+                chunk = process.stdout.read1(65536)
+            except OSError as error:
+                if error.errno in (errno.EINTR, errno.EAGAIN):
+                    continue
+                output.damaged = True
+                # No disk is involved. A failed buffered reader gets one raw drain path.
+                while True:
+                    try:
+                        chunk = os.read(process.stdout.fileno(), 65536)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    output.total += len(chunk)
+                break
+            if not chunk:
+                break
+            output.total += len(chunk)
+            if not output.damaged:
+                try:
+                    output.feed(chunk)
+                except (MemoryError, OSError, ValueError):
+                    output.damaged = True
+                    output.tail, output.pending, output.counts = b"", b"", None
+        code = process.wait()
+        return (code if code >= 0 else 128 - code), True
+    finally:
+        # A capture/storage failure never kills Terraform or invents its exit status.
+        process.wait()
+        process.stdout.close()
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+
+
+def diagnostic_mac(manifest, key):
+    value = json.dumps(manifest, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    return hmac.new(key, DOMAIN + value, hashlib.sha256).hexdigest()
 
 
 def context(env, phase):
@@ -39,20 +168,22 @@ def prefix(env):
     if (not all(re.fullmatch(r"[1-9][0-9]{0,19}", value) for value in values[:2])
             or values[2] not in {"plan", "apply"}):
         raise ArtifactError("invalid_failure_context")
-    return ".tf-diagnostics-" + "-".join(values) + "-"
+    return "tf-diagnostics-" + "-".join(values) + "-"
 
 
-def seal(log, output, metadata, code, clipped, env):
-    value = regular_bytes(log, LOG_LIMIT)
+def seal(value, output, metadata, audit, env):
     manifest = {
-        "schema_version": 1, "kind": "terraform-failure",
-        "context": metadata, "exit_code": code, "truncated": clipped,
+        "schema_version": 2, "kind": "terraform-failure",
+        "context": metadata, "exit_code": audit["exit_code"], "launched": audit["launched"],
+        "truncated": audit["truncated"], "capture_status": audit["capture_status"],
+        "total_output_bytes": audit["total_output_bytes"],
+        "captured_at": datetime.now(timezone.utc).isoformat(),
         "bytes": len(value), "sha256": hashlib.sha256(value).hexdigest(),
     }
     key = env.get("TF_PLAN_ENC_KEY", "")
     if not key.strip():
         raise ArtifactError("key_required")
-    payload = {"manifest": manifest, "hmac_sha256": assets.manifest_mac(manifest, key.encode()),
+    payload = {"manifest": manifest, "hmac_sha256": diagnostic_mac(manifest, key.encode()),
                "log_base64": base64.b64encode(value).decode()}
     plain = output.parent / "capsule.json"
     try:
@@ -62,51 +193,75 @@ def seal(log, output, metadata, code, clipped, env):
         plain.unlink(missing_ok=True)
 
 
-def capture(args, phase, *, env=None):
+def capture(args, phase, *, env=None, audit=None):
     env = dict(os.environ if env is None else env)
     if (phase not in {"plan", "apply"} or args[:2] != ["terraform", phase]
             or phase == "apply" and args != ["terraform", "apply", "-input=false", "tfplan"]):
         raise ArtifactError("invalid_capture_command")
-    parent = real_path(env.get("RUNNER_TEMP") or tempfile.gettempdir())
-    # Ordinary/advisory invocations still suppress raw failures, but retain nothing without dispatch context.
+    observed = OutputCapture(phase)
+    code, launched = collect_command(args, env, observed)
+    result = observed.finish(code, launched)
+    directory, file = None, None
     try:
-        name = prefix(env)
-    except ArtifactError:
-        name = ".tf-diagnostics-unretained-"
-    directory = Path(tempfile.mkdtemp(prefix=name, dir=parent))
-    retained = False
-    code = 127
-    try:
-        child_env = {key: value for key, value in env.items()
-                     if key not in {"TF_PLAN_ENC_KEY", "GH_TOKEN", "GITHUB_TOKEN"}}
-        try:
-            code, clipped = private_command(args, directory / "command.log", env=child_env,
-                limit=LOG_LIMIT, timeout=None, truncate=True, include_stderr=True)
-            code = code if code >= 0 else 128 - code
-        except OSError:
-            clipped = False
         if code == 0:
             return 0, None
+        if env.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
+            result["retention_status"] = "policy_not_retained"
+            return code, None
+        if not env.get("TF_PLAN_ENC_KEY", "").strip():
+            result["retention_status"] = "key_missing"
+            return code, None
         try:
             metadata = context(env, phase)
+        except ArtifactError:
+            result["retention_status"] = "context_invalid"
+            return code, None
+        try:
+            parent = real_path(env.get("RUNNER_TEMP") or tempfile.gettempdir())
+            directory = Path(tempfile.mkdtemp(prefix=prefix(env), dir=parent))
             output = directory / "diagnostics.enc"
-            seal(directory / "command.log", output, metadata, code, clipped, env)
-            (directory / "command.log").unlink()
-            retained = True
-            return code, str(output)
-        except (ArtifactError, ValueError, OSError):
+            seal(observed.tail, output, metadata, result, env)
+            result["cipher_sha256"] = validate_cipher_file(output, env)
+            file = str(output)
+            result["retention_status"] = "sealed"
+            return code, file
+        except OSError as error:
+            result["retention_status"] = "storage_failed" if error.errno in (errno.ENOSPC, errno.EDQUOT) else "seal_failed"
+            return code, None
+        except (ArtifactError, ValueError, subprocess.SubprocessError):
+            result["retention_status"] = "seal_failed"
             return code, None
     finally:
-        if not retained:
+        if directory is not None and file is None:
             try:
                 shutil.rmtree(directory)
+                result["cleanup_status"] = "complete"
             except OSError:
-                # Cleanup is observable without replacing an existing Terraform
-                # failure or publishing a secret-bearing path/error.
-                print("Terraform diagnostic cleanup incomplete; inspect owned runner scratch privately.",
-                      file=sys.stderr)
-                if code == 0:
-                    raise ArtifactError("cleanup_failed") from None
+                result["cleanup_status"] = "failed"
+        if audit is not None:
+            audit.update(result)
+
+
+def validate_cipher_file(file, env, expected_hash=None):
+    file = real_path(file)
+    parent = real_path(env.get("RUNNER_TEMP") or tempfile.gettempdir())
+    if (file.name != "diagnostics.enc" or file.parent.parent != parent
+            or not file.parent.name.startswith(prefix(env))
+            or any(c in str(file) for c in "*?[]{}!")
+            or set(p.name for p in file.parent.iterdir()) != {"diagnostics.enc"}):
+        raise ArtifactError("cipher_not_owned")
+    directory, info = file.parent.stat(), file.lstat()
+    if (directory.st_uid != os.getuid() or directory.st_mode & 0o777 != 0o700
+            or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_nlink != 1 or info.st_mode & 0o777 != 0o600):
+        raise ArtifactError("cipher_not_owned")
+    value = regular_bytes(file, CAPSULE_LIMIT)
+    if len(value) < 32 or not value.startswith(b"Salted__"):
+        raise ArtifactError("invalid_cipher")
+    digest = hashlib.sha256(value).hexdigest()
+    if expected_hash is not None and not hmac.compare_digest(digest, expected_hash):
+        raise ArtifactError("cipher_changed")
+    return digest
 
 
 def recover(file, destination, *, repository, branch, commit, run_id, attempt, phase):
@@ -134,14 +289,25 @@ def recover(file, destination, *, repository, branch, commit, run_id, attempt, p
                 raise ArtifactError("invalid_capsule")
             manifest, signature = payload["manifest"], payload["hmac_sha256"]
             if (not isinstance(manifest, dict) or not isinstance(signature, str)
-                    or not hmac.compare_digest(signature, assets.manifest_mac(manifest, assets.authentication_key()))
+                    or not hmac.compare_digest(signature, diagnostic_mac(manifest, assets.authentication_key()))
                     or set(manifest) != {"schema_version", "kind", "context", "exit_code",
-                                         "truncated", "bytes", "sha256"}
-                    or type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1
+                                         "launched", "truncated", "bytes", "sha256",
+                                         "total_output_bytes", "capture_status", "captured_at"}
+                    or type(manifest["schema_version"]) is not int or manifest["schema_version"] != 2
                     or manifest["kind"] != "terraform-failure" or manifest["context"] != expected
                     or type(manifest["truncated"]) is not bool
-                    or type(manifest["exit_code"]) is not int or not 1 <= manifest["exit_code"] <= 255
-                    or type(manifest["bytes"]) is not int or not 0 <= manifest["bytes"] <= LOG_LIMIT):
+                    or type(manifest["launched"]) is not bool
+                    or (manifest["launched"] and
+                        (type(manifest["exit_code"]) is not int or not 1 <= manifest["exit_code"] <= 255))
+                    or (not manifest["launched"] and manifest["exit_code"] is not None)
+                    or type(manifest["bytes"]) is not int or not 0 <= manifest["bytes"] <= LOG_LIMIT
+                    or type(manifest["total_output_bytes"]) is not int
+                    or not manifest["bytes"] <= manifest["total_output_bytes"] <= 2**63 - 1
+                    or manifest["truncated"] != (manifest["total_output_bytes"] > manifest["bytes"])
+                    or manifest["capture_status"] not in {"complete", "truncated", "capture_failed", "launch_failed"}
+                    or (manifest["capture_status"] == "launch_failed") == manifest["launched"]
+                    or not isinstance(manifest["captured_at"], str) or len(manifest["captured_at"]) > 40
+                    or datetime.fromisoformat(manifest["captured_at"]).tzinfo is None):
                 raise ArtifactError("capsule_authentication_failed")
             value = base64.b64decode(payload["log_base64"], validate=True)
             if len(value) != manifest["bytes"] or hashlib.sha256(value).hexdigest() != manifest["sha256"]:
@@ -156,7 +322,9 @@ def recover(file, destination, *, repository, branch, commit, run_id, attempt, p
         return manifest
     except ArtifactError:
         raise
-    except (ValueError, TypeError, KeyError, OSError):
+    except subprocess.TimeoutExpired:
+        raise ArtifactError("recovery_timeout") from None
+    except (ValueError, TypeError, KeyError, OSError, subprocess.SubprocessError):
         raise ArtifactError("recovery_failed") from None
 
 
@@ -170,11 +338,38 @@ def cleanup(file, env=None):
             or not file.parent.name.startswith(prefix(env))):
         raise ArtifactError("cleanup_not_owned")
     if file.parent.exists():
-        if set(p.name for p in file.parent.iterdir()) != {"diagnostics.enc"}:
-            raise ArtifactError("cleanup_not_owned")
-        regular_bytes(file, CAPSULE_LIMIT)
+        validate_cipher_file(file, env)
         file.unlink()
         file.parent.rmdir()
+
+
+def publish_audit(audit, file, env):
+    # The parent is the sole writer of this pointer; the child has no command-file environment.
+    try:
+        with open(env["GITHUB_OUTPUT"], "a") as output:
+            output.write("diagnostics_file=\n")
+            if file:
+                validate_cipher_file(file, env, audit["cipher_sha256"])
+                output.write(f"diagnostics_file={file}\n")
+    except (KeyError, OSError, ArtifactError):
+        if file:
+            audit["retention_status"] = "publication_failed"
+        # Keep already sealed ciphertext for private owner recovery, never raw plaintext.
+    public = {key: value for key, value in audit.items() if key != "cipher_sha256"}
+    if env.get("GITHUB_STEP_SUMMARY"):
+        try:
+            with open(env["GITHUB_STEP_SUMMARY"], "a") as summary:
+                summary.write("### Terraform diagnostic audit\n\n```json\n" +
+                              json.dumps(public, sort_keys=True) + "\n```\n")
+        except OSError:
+            public["audit_publication"] = "unavailable"
+    try:
+        print(json.dumps(public, sort_keys=True))
+    except OSError:
+        try:
+            print("Terraform audit output unavailable.", file=sys.stderr)
+        except OSError:
+            pass  # Publication failure cannot replace the already observed command result.
 
 
 def main():
@@ -196,20 +391,9 @@ def main():
         command = args.pop("command")
         if command == "capture":
             values = args.pop("args")
-            code, file = capture(values[1:] if values[:1] == ["--"] else values, **args)
-            if file:
-                try:
-                    with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-                        output.write(f"diagnostics_file={file}\n")
-                except (KeyError, OSError):
-                    try:
-                        cleanup(file)
-                    except (ArtifactError, OSError):
-                        print("Encrypted diagnostic cleanup incomplete.", file=sys.stderr)
-                    file = None
-            print("Terraform command completed." if code == 0 else
-                  "Terraform command failed (encrypted_diagnostics_retained)." if file else
-                  "Terraform command failed (diagnostics_unavailable).", file=sys.stderr)
+            audit = {}
+            code, file = capture(values[1:] if values[:1] == ["--"] else values, audit=audit, **args)
+            publish_audit(audit, file, os.environ)
             return code
         if command == "recover":
             recover(**args)
@@ -217,7 +401,7 @@ def main():
         else:
             cleanup(**args)
         return 0
-    except (ArtifactError, ValueError, OSError):
+    except (ArtifactError, ValueError, OSError, subprocess.SubprocessError):
         print("Terraform diagnostics refused (verification_failed).", file=sys.stderr)
         return 1
 

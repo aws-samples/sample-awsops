@@ -27,12 +27,12 @@ name: Terraform
 on:
   pull_request:
     branches: [main, dev]
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
     # The workflow file itself is in the path filter so a workflow change
     # self-tests with a real plan on the branch it lands on.
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   workflow_dispatch:
     inputs:
       mode:
@@ -316,11 +316,13 @@ jobs:
           python3 ../../scripts/v2/ci_failure_diagnostics.py capture --phase plan -- terraform plan "${args[@]}"
 
       - name: Upload encrypted plan failure diagnostics
-        if: failure() && steps.private_plan.outputs.diagnostics_file != ''
+        if: github.event_name == 'workflow_dispatch' && (failure() || cancelled()) && steps.private_plan.outputs.diagnostics_file != ''
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-failure-plan
+          name: terraform-failure-plan-${{ github.run_attempt }}
           path: ${{ steps.private_plan.outputs.diagnostics_file }}
+          # Only the parent's validated single ciphertext file, never a directory/glob.
+          include-hidden-files: true
           retention-days: 5
           if-no-files-found: error
 
@@ -591,19 +593,31 @@ jobs:
           TF_PLAN_ENC_KEY: ${{ secrets.TF_PLAN_ENC_KEY }}
         run: |
           set -euo pipefail
-          env -u TF_PLAN_ENC_KEY terraform show -json tfplan |
-            env -u TF_PLAN_ENC_KEY python3 ../../scripts/v2/ci_dns_policy.py check-plan \
-              --allow-dns "$ALLOW_DNS_CHANGES" --scope "$PLAN_SCOPE" --target "$TARGET"
-          env -u TF_PLAN_ENC_KEY terraform show -json tfplan |
-            env -u TF_PLAN_ENC_KEY python3 ../../scripts/v2/ci_runtime_policy.py check-plan
+          (
+            # Preserve AWS STS/TF_VAR inputs, but no child may write GitHub command files.
+            for capture_env_name in $(compgen -e); do
+              case "$capture_env_name" in
+                *_ENC_KEY) unset "$capture_env_name";;
+                AWS_*|TF_VAR_*) ;;
+                GITHUB_OUTPUT|GITHUB_ENV|GITHUB_PATH|GITHUB_STATE|GITHUB_STEP_SUMMARY|ACTIONS_*|TF_TOKEN_*|*_TOKEN)
+                  unset "$capture_env_name";;
+              esac
+            done
+            terraform show -json tfplan |
+              python3 ../../scripts/v2/ci_dns_policy.py check-plan \
+                --allow-dns "$ALLOW_DNS_CHANGES" --scope "$PLAN_SCOPE" --target "$TARGET"
+            terraform show -json tfplan |
+              python3 ../../scripts/v2/ci_runtime_policy.py check-plan
+          )
           python3 ../../scripts/v2/ci_failure_diagnostics.py capture --phase apply -- terraform apply -input=false tfplan
 
       - name: Upload encrypted apply failure diagnostics
-        if: failure() && steps.private_apply.outputs.diagnostics_file != ''
+        if: github.event_name == 'workflow_dispatch' && (failure() || cancelled()) && steps.private_apply.outputs.diagnostics_file != ''
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-failure-apply
+          name: terraform-failure-apply-${{ github.run_attempt }}
           path: ${{ steps.private_apply.outputs.diagnostics_file }}
+          include-hidden-files: true
           retention-days: 5
           if-no-files-found: error
 

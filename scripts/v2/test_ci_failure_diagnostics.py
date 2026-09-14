@@ -75,7 +75,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
         self.assertEqual(self.capture(TEST_EXIT="0"), (0, None))
         for values in [{"TF_PLAN_ENC_KEY": ""}, {"GITHUB_EVENT_NAME": "pull_request"}]:
             self.assertEqual(self.capture(**values), (17, None))
-        self.assertFalse(list(self.root.glob(".tf-diagnostics-*")))
+        self.assertFalse(list(self.root.glob("tf-diagnostics-*")))
 
     def test_output_is_truncated_without_interrupting_the_original_command(self):
         code, file = self.capture(TEST_SIZE="100000")
@@ -133,20 +133,28 @@ class FailureDiagnosticsTests(unittest.TestCase):
     def test_seal_failure_preserves_original_exit_and_removes_plaintext(self):
         with mock.patch.object(self.module, "crypt", side_effect=OSError("PRIVATE_ERROR")):
             self.assertEqual(self.capture(), (17, None))
-        self.assertFalse(list(self.root.glob(".tf-diagnostics-*")))
+        self.assertFalse(list(self.root.glob("tf-diagnostics-*")))
 
-    def test_unretained_cleanup_failure_preserves_primary_error_and_withholds_details(self):
-        error = io.StringIO()
-        with mock.patch.object(self.module.shutil, "rmtree", side_effect=OSError("PRIVATE_PATH")), \
-                mock.patch("sys.stderr", error):
+    def test_unretained_failures_do_not_depend_on_runner_storage(self):
+        with mock.patch.object(self.module.tempfile, "mkdtemp", side_effect=OSError("PRIVATE_PATH")):
             self.assertEqual(self.capture(TF_PLAN_ENC_KEY=""), (17, None))
-        self.assertIn("cleanup incomplete", error.getvalue())
-        self.assertNotIn("PRIVATE_", error.getvalue())
+        self.assertFalse(list(self.root.glob("tf-diagnostics-*")))
 
-    def test_success_is_not_reported_when_owned_plaintext_cleanup_fails(self):
-        with mock.patch.object(self.module.shutil, "rmtree", side_effect=OSError("PRIVATE_PATH")):
-            with self.assertRaises(self.module.ArtifactError):
-                self.capture(TEST_EXIT="0")
+    def test_success_creates_no_plaintext_scratch_that_could_fail_cleanup(self):
+        with mock.patch.object(self.module.tempfile, "mkdtemp", side_effect=OSError("PRIVATE_PATH")), \
+                mock.patch.object(self.module.shutil, "rmtree", side_effect=OSError("PRIVATE_PATH")):
+            self.assertEqual(self.capture(TEST_EXIT="0"), (0, None))
+        self.assertFalse(list(self.root.glob("tf-diagnostics-*")))
+
+    def test_failed_seal_and_failed_cleanup_still_preserve_the_command_exit(self):
+        audit = {}
+        with mock.patch.object(self.module, "crypt", side_effect=self.module.ArtifactError("command_failed")), \
+                mock.patch.object(self.module.shutil, "rmtree", side_effect=OSError("PRIVATE_PATH")):
+            self.assertEqual(self.module.capture(["terraform", "plan"], "plan",
+                                                env=self.env, audit=audit), (17, None))
+        self.assertEqual(audit["retention_status"], "seal_failed")
+        self.assertEqual(audit["cleanup_status"], "failed")
+        self.assertNotIn("PRIVATE", json.dumps(audit))
 
     def test_cleanup_accepts_only_this_run_owned_encrypted_directory(self):
         _, file = self.capture()
@@ -164,7 +172,7 @@ class FailureDiagnosticsTests(unittest.TestCase):
             self.module.capture(["terraform", "apply", "-auto-approve"], "apply", env=self.env)
         with self.assertRaises(self.module.ArtifactError):
             self.module.capture(["sh", "-c", "echo private"], "plan", env=self.env)
-        self.assertFalse(list(self.root.glob(".tf-diagnostics-*")))
+        self.assertFalse(list(self.root.glob("tf-diagnostics-*")))
 
     def test_output_publication_failure_does_not_replace_command_failure(self):
         output, error = io.StringIO(), io.StringIO()
@@ -174,15 +182,10 @@ class FailureDiagnosticsTests(unittest.TestCase):
                 mock.patch("sys.stdout", output), mock.patch("sys.stderr", error):
             self.assertEqual(self.module.main(), 17)
         self.assertNotIn("PRIVATE_", output.getvalue() + error.getvalue())
-        self.assertFalse(list(self.root.glob(".tf-diagnostics-*")))
-        with mock.patch.dict(os.environ, {**self.env, "GITHUB_OUTPUT": str(self.root)}), \
-                mock.patch.object(sys, "argv", ["diagnostics", "capture", "--phase", "plan",
-                                               "--", "terraform", "plan"]), \
-                mock.patch.object(self.module, "cleanup", side_effect=OSError("PRIVATE_ERROR")), \
-                mock.patch("sys.stdout", output), mock.patch("sys.stderr", error):
-            self.assertEqual(self.module.main(), 17)
-        self.assertNotIn("PRIVATE_ERROR", error.getvalue())
-
+        retained = list(self.root.glob("tf-diagnostics-*/diagnostics.enc"))
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(json.loads(output.getvalue())["retention_status"], "publication_failed")
+        self.assertEqual({p.name for p in retained[0].parent.iterdir()}, {"diagnostics.enc"})
     def test_actual_plan_step_retains_failed_output_without_exposing_it(self):
         import yaml
         repository = Path(__file__).resolve().parents[2]

@@ -9,13 +9,10 @@ secrets-manager) — installed by `make deps`.
 - `v2/ci_plan_inspect.py` verifies authenticated successful plan-run identity, checkout SHA
   and the existing signed plan/assets before local private rendering. No backend init/apply;
   new 0700 destination with 0600 bounded outputs. It refuses execution inside Actions.
-- `v2/ci_failure_diagnostics.py` privately drains plan/apply output, preserves the command's
-  failure code and retains at most 1 MiB encrypted for explicit dispatch failures only.
-  Recovery authenticates the exact failed attempt/context/content. Existing CBC transport
-  and manifest HMAC remain; keys never reach the captured Terraform process.
-  Only owned ciphertext is uploaded for five days. Cleanup failures are reported safely;
-  successful commands cannot pass with failed plaintext cleanup. Host loss can leave residue.
-  Tests: `test_ci_plan_inspect.py` and `test_ci_failure_diagnostics.py`.
+- `v2/ci_failure_diagnostics.py` drains bounded output in memory until Terraform exits; no scratch-write error may kill apply or replace its result. Retain the last 1 MiB and signed total/capture status. No success/advisory raw log is written.
+- Strip GitHub command-file/token variables and encryption keys from captured Terraform and pre-apply scope-check children; keep AWS STS credentials including AWS_SESSION_TOKEN. Publish only a validated owned single ciphertext path, gated by dispatch plus failure/cancellation, with attempt-specific artifact names and five-day retention.
+- Fixed public audit fields distinguish command, capture, retention and cleanup status; numeric standard Terraform success counts never include resource/output text. Missing summaries stay unavailable. Schema-2 failure HMAC uses its own domain with the existing CBC cipher/key. Recovery verifies the exact failed attempt and emits fixed timeout/errors; private inspection remains authenticated and bounded to 32 MiB.
+- Sealing/storage/publication failures preserve the command exit. Already sealed but unpublished ciphertext remains for private owner recovery. Cleanup and cancellation are best effort, not shared-UID isolation or a SIGKILL guarantee.
 - `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
 - Dev/preview private discovery requires explicit full-plan rollout and preserves public DNS/certificates. `runtime-ecr-bootstrap` permits exactly three repositories. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy.
 - `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-registry proof before manual full dev activation plans; apply rechecks the approved profile. Automatic PR/push plans never receive the host-probe credential. Database-only proof is rejected; credentials stay private and failures use a fixed code. Flags/policy checks do not prove live access.
@@ -118,7 +115,7 @@ secrets-manager) — installed by `make deps`.
   gates remain required. Fixtures: `python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py`.
 - `v2/ci_plan_context.py` — accepts only successful explicit Terraform plan dispatches from
   the exact deployment repository, branch and SHA; PR/push plans are advisory.
-- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,deployment_workflows,terraform_reads,tf_assets}.py` —
+- `v2/test_ci_{db_diagnostics,dev_domain,dns_policy,plan_context,plan_inspect,failure_diagnostics,failure_review,deployment_workflows,terraform_reads,tf_assets}.py` —
   workflow fixtures, real no-provider plans and a localhost state backend verify deployment
   gates without AWS calls. From repo root: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
   Summaries allow certificate suffixes/publication/change counts and addresses, plus active

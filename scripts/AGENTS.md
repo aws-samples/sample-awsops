@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8e02f7193cbe · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 4af710acc71b · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -11,11 +11,10 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 - `v2/ci_plan_inspect.py` is local-only: authenticate successful plan-run context, checkout
   SHA and existing signed plan/assets before private rendering. No backend init/apply.
   Outputs are bounded 0600 files in a new 0700 destination.
-- `v2/ci_failure_diagnostics.py` retains at most 1 MiB of encrypted plan/apply output only
-  for explicit dispatch failures. Authenticate the exact failed attempt/context/content
-  before private recovery. Existing CBC/HMAC remain; the key never reaches Terraform.
-  Preserve command failure codes, report cleanup errors safely and fail successful commands
-  when plaintext cleanup fails. Five-day ciphertext retention; abrupt host loss can leave residue.
+- `v2/ci_failure_diagnostics.py` drains bounded output in memory until Terraform exits; no scratch-write error may kill apply or replace its result. Retain the last 1 MiB and signed total/capture status. No success/advisory raw log is written.
+- Strip GitHub command-file/token variables and encryption keys from captured Terraform and pre-apply scope-check children; keep AWS STS credentials including AWS_SESSION_TOKEN. Publish only a validated owned single ciphertext path, gated by dispatch plus failure/cancellation, with attempt-specific artifact names and five-day retention.
+- Fixed public audit fields distinguish command, capture, retention and cleanup status; numeric standard Terraform success counts never include resource/output text. Missing summaries stay unavailable. Schema-2 failure HMAC uses its own domain with the existing CBC cipher/key. Recovery verifies the exact failed attempt and emits fixed timeout/errors; private inspection remains authenticated and bounded to 32 MiB.
+- Sealing/storage/publication failures preserve the command exit. Already sealed but unpublished ciphertext remains for private owner recovery. Cleanup and cancellation are best effort, not shared-UID isolation or a SIGKILL guarantee.
 - `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
 - Dev/preview private discovery requires explicit full-plan rollout and preserves public DNS/certificates. `runtime-ecr-bootstrap` permits exactly three repositories. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy.
 - `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-registry proof before manual full dev activation plans; apply rechecks the approved profile. Automatic PR/push plans never receive the host-probe credential. Database-only proof is rejected; credentials stay private and failures use a fixed code. Flags/policy checks do not prove live access.
