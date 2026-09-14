@@ -19,6 +19,8 @@ secrets-manager) — installed by `make deps`.
   Pin child PATH to `/usr/local/bin:/usr/bin:/bin`; omit caller HOME without reassigning it.
   Only curl receives explicit private stdin (`-q -K -`); no signed URL enters argv.
   Digest reads may return identical rows for multiple tags; reject conflicting row evidence.
+  Recognized non-success producer jobs skip timestamp checks; successful jobs still require
+  the artifact window. Stdout stays `{digest, image_sha, rollback}`; recovery evidence is caller-owned.
   `v2/test_ci_web_image.py` tests the contract; jq is required for compare projection.
   See `docs/runbooks/web-image-provenance.md` for future receipt-step names, inputs and
   expiry/rollback limits. Operator CI publication adds no ADR-005 exception or IAM grant.

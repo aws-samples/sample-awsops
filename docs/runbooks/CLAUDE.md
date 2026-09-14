@@ -39,8 +39,12 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
   never manually mint migration evidence or silently fall back to mutable-tag authority.
   Require a nonempty preflight digest on all paths and fresh digest/source-tag agreement.
   Preserve OCI indexes with unambiguous ARM64 verification. Document the producer's
-  ci-build role, both jobs' `actions: read`, upload-artifact v4+, and repository-scoped
+  ci-build role, producer/reuse-consumer `actions: read`, upload-artifact v4 plus required Artifact API digest, and repository-scoped
   config-download permission; publication uses the deployer role and explicit ECR media.
+  Success stdout remains `{digest, image_sha, rollback}` with no tag history. Recovery
+  requires independently retained source/digest evidence; receipt cleanup targets only an
+  owned run/attempt directory. Migration/preflight assertions use verified job outputs,
+  never dispatch inputs. Fresh-only consumers do not need `actions: read`.
   Provider children require explicit exported auth, disabled AWS config files, private GH config and filtered
   environments; signed curl URLs use private stdin, never argv. Multi-tag digest rows
   are accepted only with matching identity and byte-identical manifest/media evidence.
