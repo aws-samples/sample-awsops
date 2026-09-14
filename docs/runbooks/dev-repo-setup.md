@@ -12,6 +12,8 @@
 `docs/runbooks/branch-strategy.md`, `.github/workflows/pr-review.yml`,
 `scripts/v2/ci_review_access.py`, `scripts/v2/ci_dns_policy.py`, `scripts/v2/ci_plan_context.py`,
 `scripts/v2/ci_plan_inspect.py`, `scripts/v2/ci_readiness_plan_summary.py`,
+`scripts/v2/ci_private_plan.py`, `scripts/v2/test_ci_private_plan.py`,
+`docs/reference/private-plan-transport.md` (unwired S3 transport prerequisite),
 `scripts/v2/test_ci_readiness_plan_summary.py`,
 `scripts/v2/ci_failure_diagnostics.py`,
 `scripts/v2/ci_db_diagnostics.py`, `scripts/v2/test_ci_db_diagnostics.py`,
@@ -24,6 +26,12 @@
 `terraform/foundation/controller-readiness.tf`, `terraform/foundation/tests/controller_readiness.tftest.hcl`,
 `terraform/foundation/tests/dns_deferred.tftest.hcl`, `docs/reference/01-edge-network.md`,
 `docs/reference/03-data-aurora.md`
+
+`ci_plan_inspect.py` is the current encrypted-artifact inspector. The separate
+`ci_private_plan.py` cannot inspect this base workflow's runs: its future consumer
+must migrate the `tfplan` artifact to `tfplan-<attempt>` and publish S3 references
+before operators use the new inspection path. See the transport contract for the
+required access-policy, lifecycle and coordinated Apply migration.
 
 > Historical note: this file previously described the two-repo split
 > (`Atom-oh/sample-awsops-dev`). The project consolidated into the single public
