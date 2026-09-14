@@ -72,7 +72,7 @@ for (const path of ['/topology/infra', '/topology/resource/vpc%3Aone', '/topolog
       await page.route('**/api/**', route => {
         if (new URL(route.request().url()).pathname !== '/api/graph') return route.fulfill({ json: { accounts: [], rows: [], clusters: [] } });
         if (++reads === 1) return route.fulfill({ status: 503, json: { message: 'PRIVATE',
-          collection: { status: 'unknown', stale: true, readStatus: 'unavailable', readReason: 'busy' } } });
+          collection: { status: 'unknown', stale: true, readStatus: 'unavailable', readReason: 'query_failed' } } });
         return route.fulfill({ json: { nodes: [{ id: 'vpc:one', kind: 'vpc', label: 'Example VPC' }], edges: [],
           captured_at: null, collection: { status: 'ok', stale: false, sources: [] } } });
       });

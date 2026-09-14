@@ -8,6 +8,7 @@ vi.mock('@/lib/db', () => ({ getPool: () => api.pool }));
 import { GET } from '../app/api/graph/route';
 import { graphTransaction } from './graph-transaction';
 import { projectGraphDetails } from './graph-state';
+import { buildInfraGraph } from './infra-topology';
 
 const socket = process.env.GRAPH_TEST_POSTGRES_SOCKET;
 describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
@@ -84,6 +85,33 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     expect(body.collection).toMatchObject({ status: 'partial', readStatus: 'partial', readReason: 'row_limit', readTruncated: true });
   });
 
+  it('preserves actual infra placement containers and connectivity above the class node cap', async () => {
+    const graph = buildInfraGraph({
+      resources: Array.from({ length: 4001 }, (_, i) => ({
+        resource_type: 'ec2', resource_id: `i-${i}`, data: { vpc_id: 'vpc-1' },
+      })),
+      vpcs: [{ resource_id: 'vpc-1' }], subnets: [{ resource_id: 'subnet-1' }],
+      securityGroups: [{ resource_id: 'sg-1' }],
+    });
+    await pool.query(`INSERT INTO topology_nodes(account_id,id,kind,label,class,run_id)
+      SELECT 'self',n.id,n.kind,n.label,'infra','read-fixture'
+      FROM jsonb_to_recordset($1::jsonb) n(id text,kind text,label text)`, [JSON.stringify(graph.nodes)]);
+    await pool.query(`INSERT INTO topology_edges(account_id,source,target,rel,class,run_id)
+      SELECT 'self',e.source,e.target,e.rel,'infra','read-fixture'
+      FROM jsonb_to_recordset($1::jsonb) e(source text,target text,rel text)`, [JSON.stringify(graph.edges)]);
+    const response = await GET(new Request('http://localhost/api/graph?class=infra'));
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.nodes).toHaveLength(4000);
+    const ids = new Set(body.nodes.map((n: { id: string }) => n.id));
+    for (const id of ['vpc:vpc-1', 'subnet:subnet-1', 'sg:sg-1']) expect(ids.has(id)).toBe(true);
+    const connected = new Set(body.edges.filter((e: { target: string }) => e.target === 'vpc:vpc-1')
+      .map((e: { source: string }) => e.source));
+    expect(body.nodes.filter((n: { kind: string }) => n.kind === 'ec2')).toHaveLength(3996);
+    expect(body.nodes.every((n: { id: string; kind: string }) => n.kind !== 'ec2' || connected.has(n.id))).toBe(true);
+    expect(body.collection).toMatchObject({ readStatus: 'partial', readTruncated: true });
+  });
+
   it('retains the requested root when a reachable subgraph exceeds the node cap', async () => {
     await pool.query(`INSERT INTO topology_nodes(account_id,id,kind,label,class,run_id)
       SELECT 'self',CASE WHEN i=1 THEN 'zz:root' WHEN i<=18 THEN 'z:near:'||i WHEN i<=307 THEN 'm:mid:'||i ELSE 'a:far:'||i END,'vpc','node','infra','read-fixture'
@@ -154,6 +182,12 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
         status: 'partial', producerStatus: 'succeeded', capturedAtMs: null, reasons: ['count_not_confirmed'] }] },
     { sources: [null, { sourceId: 'invalid PRIVATE' }, { sourceId: 'tempo:1', status: 'partial', reasons: ['PRIVATE','query_failed'] }] },
     { sources: 'PRIVATE', publishedSources: null },
+    ...['status','producerStatus','scope'].flatMap(key => [null,false,{},'future_value']
+      .map(value => ({ sources: [{ sourceId: 'inventory:vpc', [key]: value }] }))),
+    ...['itemCount','windowStartMs','windowEndMs','capturedAtMs','lastSuccessAtMs','attemptedAtMs','finishedAtMs']
+      .flatMap(key => [-1,'123',8640000000000001].map(value => ({ publishedSources: [{ sourceId: 'inventory:vpc', [key]: value }] }))),
+    { windowStartMs: -1 }, { nodeDrops: '3' }, { infraUnavailable: 'true' },
+    { failureReason: 'future_value' }, { metadataTruncated: null },
   ])('SQL and HTTP expose the same bounded metadata and omission flag', async details => {
     await pool.query("UPDATE topology_graph_state SET details=$1 WHERE account_id='self' AND class='infra'", [details]);
     const projected = (await pool.query("SELECT details FROM sql_reader.topology_graph_state WHERE account_id='self' AND class='infra'")).rows[0].details;

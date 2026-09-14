@@ -30,7 +30,7 @@ it.each(['infra', 'resource'])('shows retained collection warnings in the %s gra
 
 it.each(['infra', 'resource', 'services'])('shows safe unavailable evidence for a failed %s read', async page => {
   vi.stubGlobal('fetch', async () => Response.json({ message: 'PRIVATE', collection: {
-    status: 'unknown', stale: true, readStatus: 'unavailable', readReason: 'busy' } }, { status: 503 }));
+    status: 'unknown', stale: true, readStatus: 'unavailable', readReason: 'query_failed' } }, { status: 503 }));
   render(page === 'infra' ? <InfraPage /> : page === 'resource' ? <ResourcePage params={{ id: 'alb:one' }} /> : <ServicesPage />);
   const warning = await screen.findByRole('alert');
   expect(warning.textContent).toContain('Graph read unavailable');
@@ -43,7 +43,7 @@ it('aborts the obsolete resource-depth fetch before displaying the latest read r
   const signals: AbortSignal[] = [];
   vi.stubGlobal('fetch', (_url: string, options: { signal: AbortSignal }) => {
     signals.push(options.signal);
-    return signals.length === 1 ? new Promise(() => {}) : Promise.resolve(Response.json({
+    return signals.length === 1 ? new Promise((_resolve, reject) => { options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }); }) : Promise.resolve(Response.json({
       collection: { status: 'unknown', readReason: 'timeout' } }, { status: 500 }));
   });
   render(<ResourcePage params={{ id: 'vpc:one' }} />);
@@ -60,4 +60,14 @@ it.each(['infra', 'resource', 'services'])('shows a sign-in action for %s auth e
   expect(screen.getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('/login');
   expect(document.body.textContent).not.toContain('Graph read unavailable');
   expect(document.body.textContent).not.toContain('PRIVATE');
+});
+
+it.each(['infra','resource','services'])('recovers a typed busy response automatically on %s', async page => {
+  const fetch = vi.fn().mockResolvedValueOnce(Response.json({ collection: { readStatus: 'unavailable', readReason: 'busy' } }, { status: 503 }))
+    .mockResolvedValueOnce(Response.json({ nodes: [], edges: [], captured_at: null,
+      collection: { status: 'error', stale: true, retainedPrevious: true, sources: [] } }));
+  vi.stubGlobal('fetch', fetch);
+  render(page === 'infra' ? <InfraPage /> : page === 'resource' ? <ResourcePage params={{ id: 'vpc:one' }} /> : <ServicesPage />);
+  expect((await screen.findByRole('alert')).textContent).toContain('Collection failed');
+  expect(fetch).toHaveBeenCalledTimes(2);
 });

@@ -65,6 +65,13 @@ export function projectGraphDetails(value: unknown): Record<string, any> {
   }
   if (['publication_failed','source_read_failed','not_attempted'].includes(raw.failureReason)) result.failureReason = raw.failureReason;
   let limited = raw.metadataTruncated === true;
+  // Recognized fields with invalid types/ranges or unknown vocabulary cannot silently
+  // disappear into a complete-looking envelope. Unrelated private fields remain omitted.
+  const omitted = (source: Record<string, any>, projected: Record<string, any>, keys: string[]) =>
+    keys.some(key => Object.prototype.hasOwnProperty.call(source, key) && !Object.prototype.hasOwnProperty.call(projected, key));
+  limited ||= omitted(raw, result, ['windowStartMs','windowEndMs','nodeDrops','edgeDrops',
+    'orphanSpans','invalidSpans','unresolvedMessaging','retainedPrevious','infraUnavailable',
+    'inputTruncated','graphTruncated','sourceAttempted','metadataTruncated','failureReason']);
   for (const key of ['sources','publishedSources']) {
     if (Object.prototype.hasOwnProperty.call(raw, key) && !Array.isArray(raw[key])) limited = true;
     if (key === 'publishedSources' && !Array.isArray(raw[key])) continue;
@@ -82,6 +89,8 @@ export function projectGraphDetails(value: unknown): Record<string, any> {
       for (const clock of ['itemCount','windowStartMs','windowEndMs','capturedAtMs','lastSuccessAtMs','attemptedAtMs','finishedAtMs']) {
         if (number(source[clock]) || source[clock] === null) projected[clock] = source[clock];
       }
+      limited ||= omitted(source, projected, ['status','producerStatus','scope','itemCount',
+        'windowStartMs','windowEndMs','capturedAtMs','lastSuccessAtMs','attemptedAtMs','finishedAtMs']);
       const unique = Array.isArray(source.reasons) ? [...new Set(source.reasons)] : [];
       const allowed = unique.filter((v): v is string => typeof v === 'string' && reasons.has(v)).sort();
       if (allowed.length > 16 || allowed.length < unique.length
@@ -134,8 +143,12 @@ export function inventorySourcesStale(value: unknown): boolean {
   return value.some(source => {
     if (!source || typeof source !== 'object') return true;
     if (!Number.isSafeInteger(source.itemCount) || source.itemCount < 0) return true;
-    const clocks = [source.lastSuccessAtMs, ...(source.itemCount > 0 ? [source.capturedAtMs] : [])];
-    return (source.status === 'empty' && source.itemCount !== 0) || source.producerStatus !== 'succeeded' || !['ok', 'empty'].includes(source.status) || clocks.some(clock =>
+    const clocks = [source.lastSuccessAtMs,
+      ...(source.itemCount > 0 || source.capturedAtMs != null ? [source.capturedAtMs] : [])];
+    return (source.status === 'empty' && source.itemCount !== 0)
+      || (source.status === 'ok' && source.itemCount === 0)
+      || (Object.prototype.hasOwnProperty.call(source, 'reasons') && (!Array.isArray(source.reasons) || source.reasons.length > 0))
+      || source.producerStatus !== 'succeeded' || !['ok', 'empty'].includes(source.status) || clocks.some(clock =>
       typeof clock !== 'number' || !Number.isFinite(clock) || clock <= 0
       || clock > Date.now() || Date.now() - clock > minutes * 60_000);
   });
