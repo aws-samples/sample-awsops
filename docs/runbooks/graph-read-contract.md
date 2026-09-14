@@ -1,19 +1,43 @@
 # Graph read and collection contract
 
+## Symptoms and candidate causes
+
+Missing graph clocks can mean legacy rows without collection state; missing metadata is unknown, not collection failure. A stale publication can have a newer attempt or failed producer. A busy/failed read describes the API, not a collection outcome.
+
+## Request contract
+
 `GET /api/graph` reads nodes, edges and collection state in one repeatable-read
 transaction. The shared helper bounds statements, lock waits and transaction
-duration, handles checked-out client errors, and discards failed connections.
+duration, handles checked-out client errors, and discards failed connections. One graph
+request per pool is admitted; others receive 503 without queueing a checkout. Request
+statements/idle time are bounded to 1.5s, total transaction to 2s; writer helper budgets
+stay unchanged. Serialization happens after release. Reads cap nodes/raw edges at
+4000/8000 plus a sentinel; returned edges reference visible nodes. Read limits and
+500/503 failures are disclosed separately from collector status.
 PostgreSQL 17 is required for the total transaction timeout.
 
 The reader supports flow, infra and trace metadata. Missing state remains unknown;
 an account union does not borrow the host's publication clock. Inventory publication
 is supplied by the separate graph-publication change. This reader prerequisite does
-not activate its writer, schedule, migration or Lambda deployment.
+not activate its writer or schedule. Source integration does not execute migration,
+Lambda or Runtime deployment.
 
 `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql` widens only the existing
 SQL-reader collection projection with bounded scalar metadata. It adds no base-table
 or public grants. `INVENTORY_STALE_AFTER_MINUTES` governs inventory source age
-independently of the graph publication cadence.
+independently of the graph publication cadence. A producer must be succeeded with
+ok/empty source evidence and valid clocks; published-source clocks remain visible.
+Future timestamps are conservatively stale, not assumed provider clock skew.
+
+## Operator action
+
+Apply `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql` and
+`01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql` through the existing authorized
+`make migrate` flow from the operator/VPC context. Apply the reviewed Terraform web
+`INVENTORY_STALE_AFTER_MINUTES` environment binding and deploy the matching web image
+separately. This document supplies no deployment authorization. Check the canonical
+[source rollout list](source-sync-observability.md) and [SQL reader contract](agent-sql-reader.md).
+A source merge or automatic web CD result is not proof that these steps completed.
 
 ## Local PostgreSQL verification
 
@@ -46,3 +70,11 @@ The fixture creates and independently marks `awsops_graph_read_test`. Without th
 socket environment variable, the disposable PostgreSQL suite is skipped explicitly;
 the ordinary API and state unit tests still run. These are local contract tests,
 not live AWS or deployment acceptance.
+
+
+## Related files and decisions
+
+`web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
+`web/lib/graph-read-postgres.test.ts`, `web/components/topology/GraphCollectionStatus.tsx`.
+ADR-005 (read-only product), ADR-004 (SQL-reader projection), ADR-043 (graph reads;
+decision bodies are maintained upstream).

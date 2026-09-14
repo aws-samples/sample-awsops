@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 8ec1d4420ab9 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 582a03507684 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -194,3 +194,5 @@ probe/worker allowances before billing or enqueue; retry includes cooldown and r
 Collection windows are caps, so late completion may fail admission. Keep the probe contract
 before Related/ADR references. Run `node --test scripts/v2/deployment-smoke.test.mjs`
 from the repository root; it imports the runtime-smoke suite.
+
+Graph reads use one admitted request per pool, bounded snapshot transactions and explicit read-limit/failure disclosure. Collection state remains distinct from read availability. The indexed runbook `graph-read-contract.md` covers the additive collection projection/index migrations, separate source/publication freshness clocks and disposable PostgreSQL tests; source integration does not establish deployment.

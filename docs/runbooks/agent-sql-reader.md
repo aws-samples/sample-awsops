@@ -293,9 +293,13 @@ The projection is not an ownership validator:
   partition's `account_id` proves telemetry ownership.
 
 The node's exposed `captured_at` is graph materialization time, not its underlying
-inventory capture or observation time. For trace collection quality, consult
+inventory capture or observation time. For collection quality, consult
 `sql_reader.topology_graph_state`: status, attempt/publication times, observation
-window, retained flag and projected source reasons. The current writer records only
+window, retained flag and projected source reasons. Its current projection owner is
+`01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql`, which also exposes bounded
+`publishedSources`, producer status, per-source capture/success/attempt/finish clocks,
+aggregate/account scope, failure reasons and numeric loss counters. It does not expose
+raw provider JSON or widen grants. The current writer records only
 `class='trace'`; a missing flow/infra state row is not evidence of complete or empty
 coverage. Missing qualifiers or timestamps never establish confidence.
 
@@ -304,7 +308,11 @@ coverage. Missing qualifiers or timestamps never establish confidence.
 Those baseline text assertions do **not** enforce the current topology projection.
 Inspect the current migration and the queue/view cases in
 `scripts/v2/workers/test_graph_collection.py`; this clarification does not retarget
-tests or claim a fresh PostgreSQL execution.
+tests or claim a fresh PostgreSQL execution. The current collection-view projection and
+API repeatable-read/timeout/cap behavior are independently covered by
+`web/lib/graph-read-postgres.test.ts`; see [local test prerequisites](graph-read-contract.md).
+Apply the new collection projection with the existing `make migrate` operator flow;
+the queue projection remains separately owned by the migration above.
 
 ### Trace queue projection / 트레이스 큐 투영
 

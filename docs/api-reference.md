@@ -256,11 +256,12 @@ runtime payloads for compatibility with older or malformed responses.
 | `sources[].sourceId/status/reasons/itemCount` | Per-source collection result and bounded reason vocabulary. |
 | `sources[].producerStatus/attemptedAtMs/finishedAtMs` | Underlying inventory job outcome and start/finish clocks; not graph publication time or per-account success proof. |
 | `failureReason` | Bounded failure category: `publication_failed`, `source_read_failed`, or API-only `state_read_failed`. |
-| `coverage` | `unknown` for an `__all__` union; host state cannot prove union coverage, and top-level `captured_at` is null. |
+| `coverage` | `unknown` for a flow/infra `__all__` union; host state cannot prove union coverage and top-level `captured_at` is null. Trace `__all__` reads the existing host storage scope. |
 | `windowStartMs/windowEndMs` | Optional graph-attempt window, distinct from per-source query windows and saved publication time. |
 | `sources[].windowStartMs/windowEndMs` | Actual trace query window, in epoch milliseconds; displayed independently of publication time. |
 | `nodeDrops`, `edgeDrops`, `orphanSpans`, `invalidSpans`, `unresolvedMessaging`, `infraUnavailable` | Existing trace loss counters and unavailable inventory context; span/messaging problems are distinct from processing limits. Positive losses are visible even for older rows without newer truncation flags. Loss alone does not imply that a previous graph was retained. |
-| `evidenceKind`, `inputTruncated`, `graphTruncated` | Optional additive producer metadata; `inventory` changes the empty-result wording, and truncation is disclosed conservatively. |
+| `evidenceKind`, `inputTruncated`, `graphTruncated` | Evidence kind is derived from graph class; `inventory` changes empty-result wording. Producer truncation remains separate from API read truncation. |
+| `readStatus`, `readReason`, `readTruncated` | API read availability/coverage, independent of collector status: `ok`, `partial` (`row_limit`), or `unavailable` (`busy`/`query_failed`). |
 | `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Optional source scope/capture/sweep clocks and saved-source provenance used by the graph-publication companion. Absent fields are not fabricated. |
 
 The UI supports the existing trace envelope and optional inventory/saved-source
@@ -269,3 +270,10 @@ not activate flow/infra publication; the existing materializer still writes trac
 Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded; their count
 includes saved-source entries. Runtime, Lambda and migration rollout remain separate
 from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
+
+
+Graph requests admit one transaction per shared pool, with 1.5s statement/idle and 2s total transaction limits (below the auth revocation budget). JSON serialization runs after commit and release. Class reads return at most 4000 nodes and 8000 raw edges, then deduplicate bounded edge evidence; edges reference returned nodes. A sentinel row discloses read truncation without claiming collection failure. Existing per-hop traversal caps remain.
+
+A missing or failed state read remains unknown; `failureReason=state_read_failed` is shown separately. Saved-source provenance is visible whenever present, including stale successful publications. Producer start/finish/status and source/attempt windows are separate clocks. For legacy single-account flow/infra rows, top-level `captured_at` may retain the old row display clock; `collection.captured_at` remains null and no source freshness is inferred.
+
+Excess graph requests return HTTP 503, other read failures HTTP 500, with fixed `message="Graph read failed"`, class/account and unknown collection/read-unavailable metadata. Raw database messages are never returned. See [request/rollout details](runbooks/graph-read-contract.md).
