@@ -33,6 +33,19 @@ def _eni_read(read, key, unknown, component, *, resource_id=None, **kwargs):
     return rows, None
 
 
+def _eni_list(resource, key, unknown, component, resource_id):
+    """A missing collection is unassessed; only an actual empty list is empty evidence."""
+    rows = resource.get(key)
+    if not isinstance(rows, list):
+        unknown.append({"component": component, "resourceId": resource_id,
+                        "field": key, "reason": "response_missing"})
+        return []
+    if any(not isinstance(row, dict) for row in rows):
+        unknown.append({"component": component, "resourceId": resource_id,
+                        "field": key, "reason": "response_invalid"})
+    return [row for row in rows if isinstance(row, dict)]
+
+
 def _eni_route_table(ec2, subnet_id, vpc_id, unknown):
     """An explicit subnet association wins; only an absent association permits main."""
     selection = {"status": "unknown", "basis": None, "candidateIds": []}
@@ -147,7 +160,7 @@ def _get_eni_details(ec2, eni_id):
     eni = enis[0]
     subnet_id, vpc_id = eni.get("SubnetId"), eni.get("VpcId")
     sgs, nacl_rules = [], []
-    for sg in eni.get("Groups") or []:
+    for sg in _eni_list(eni, "Groups", unknown, "securityGroups", eni_id):
         sg_id = sg.get("GroupId")
         projected = {"id": sg_id, "name": sg.get("GroupName"), "inbound": [], "outbound": [],
                      "partial": True}
@@ -166,7 +179,8 @@ def _get_eni_details(ec2, eni_id):
         unknown_before_rules = len(unknown)
         for key, side, peer_key in (("IpPermissions", "inbound", "source"),
                                     ("IpPermissionsEgress", "outbound", "dest")):
-            projected[side] = _eni_permissions(groups[0].get(key) or [], peer_key, sg_id, unknown)
+            rules = _eni_list(groups[0], key, unknown, "securityGroups", sg_id)
+            projected[side] = _eni_permissions(rules, peer_key, sg_id, unknown)
         # Completeness is local to this group, including any missing rule peers.
         projected["partial"] = len(unknown) != unknown_before_rules
 
@@ -178,7 +192,7 @@ def _get_eni_details(ec2, eni_id):
             unknown.append({"component": "nacl", "reason": "ambiguous" if nacls else "missing"})
         elif not reason:
             nacl_id = nacls[0].get("NetworkAclId")
-            for entry in nacls[0].get("Entries") or []:
+            for entry in _eni_list(nacls[0], "Entries", unknown, "nacl", nacl_id):
                 ports = entry.get("PortRange") or {}
                 icmp = entry.get("IcmpTypeCode") or {}
                 nacl_rules.append({
@@ -192,7 +206,9 @@ def _get_eni_details(ec2, eni_id):
     else:
         unknown.append({"component": "nacl", "reason": "scope_missing"})
     table, selection = _eni_route_table(ec2, subnet_id, vpc_id, unknown)
-    routes = [_eni_route(r, unknown) for r in (table or {}).get("Routes") or []]
+    route_rows = (_eni_list(table, "Routes", unknown, "routes", table.get("RouteTableId"))
+                  if table is not None else [])
+    routes = [_eni_route(r, unknown) for r in route_rows]
     return ok({"eniId": eni_id, "privateIp": eni.get("PrivateIpAddress"), "vpcId": vpc_id,
                "subnetId": subnet_id, "az": eni.get("AvailabilityZone"),
                "securityGroups": sgs, "nacl": nacl_rules, "routes": routes,

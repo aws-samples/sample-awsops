@@ -120,3 +120,10 @@ guard — see the section below.
   noted as a follow-up, out of scope here).
 
 Detail: ADR-004 §7 amendment (2026-07-31).
+
+## ENI configuration evidence
+
+`get_eni_details` reports configuration, not connectivity. Missing or malformed `Groups`,
+`IpPermissions`, `IpPermissionsEgress`, `Entries` or `Routes` is partial evidence, with the
+affected resource and field in `unknown`. Actual empty lists remain distinct. Per-group
+completeness includes both rule lists and their peers; preserve other returned evidence.

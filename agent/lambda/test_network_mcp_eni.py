@@ -406,6 +406,63 @@ def test_multi_sg_incomplete_read_differs_from_confirmed_ruleless_group(multi_sg
     assert body["routes"][0]["target"] == "nat-main"
 
 
+@pytest.mark.parametrize("field", ["IpPermissions", "IpPermissionsEgress"])
+@pytest.mark.parametrize("value", ["missing", None, {}, "invalid"])
+def test_missing_nested_sg_rules_cannot_confirm_ruleless(multi_sg_ec2, field, value):
+    group = multi_sg_ec2.groups[1]
+    if value == "missing":
+        group.pop(field)
+    else:
+        group[field] = value
+    body = call_eni()
+    groups = {sg["id"]: sg for sg in body["securityGroups"]}
+    assert body["partial"] is True
+    assert groups["sg-unassessed"]["partial"] is True
+    assert groups["sg-ruleless"]["partial"] is False
+    assert groups["sg-after"]["partial"] is False
+    assert any(gap.get("resourceId") == "sg-unassessed" and gap.get("field") == field
+               for gap in body["unknown"])
+    retained_side = "outbound" if field == "IpPermissions" else "inbound"
+    assert groups["sg-unassessed"][retained_side]
+    assert body["nacl"] and body["routes"]
+
+
+@pytest.mark.parametrize("attribute,field,component,resource_id", [
+    ("enis", "Groups", "securityGroups", "eni-test"),
+    ("nacls", "Entries", "nacl", "acl-test"),
+    ("tables", "Routes", "routes", "rtb-main"),
+])
+@pytest.mark.parametrize("value", ["missing", None, {}, "invalid", []])
+def test_nested_configuration_lists_distinguish_absent_from_empty(
+        ec2, attribute, field, component, resource_id, value):
+    row = getattr(ec2, attribute)[0]
+    if value == "missing":
+        row.pop(field)
+    else:
+        row[field] = value
+    body = call_eni()
+    assert body["partial"] is (value != [])
+    gaps = [gap for gap in body["unknown"] if gap["component"] == component]
+    if value == []:
+        assert gaps == []
+    else:
+        assert any(gap.get("resourceId") == resource_id and gap.get("field") == field
+                   for gap in gaps)
+    if field != "Groups":
+        assert body["securityGroups"][0]["partial"] is False
+
+
+def test_invalid_nested_rule_keeps_valid_rules_and_marks_only_affected_group(multi_sg_ec2):
+    multi_sg_ec2.groups[1]["IpPermissions"].append(None)
+    body = call_eni()
+    groups = {sg["id"]: sg for sg in body["securityGroups"]}
+    assert groups["sg-unassessed"]["partial"] is True
+    assert groups["sg-unassessed"]["inbound"][0]["source"] == "10.0.0.0/16"
+    assert groups["sg-ruleless"]["partial"] is False
+    assert any(gap.get("reason") == "response_invalid" and gap.get("field") == "IpPermissions"
+               for gap in body["unknown"])
+
+
 @pytest.mark.parametrize("attribute,component", [("groups", "securityGroups"), ("nacls", "nacl")])
 def test_empty_component_response_is_unknown(ec2, attribute, component):
     setattr(ec2, attribute, [])
