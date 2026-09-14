@@ -36,9 +36,10 @@ async function runTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: Poo
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    // Capture before cleanup: a later disconnect/rollback error must not replace the
-    // original rejection (notably SQLSTATE 25P04) used by callers and failure recording.
-    const failure = error;
+    // Keep an original SQLSTATE ahead of later client/rollback errors. If pg only reports
+    // "not queryable" after an idle disconnect, the earlier client event owns the cause.
+    const code = (error as { code?: unknown } | null)?.code;
+    const failure = typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) ? error : clientError ?? error;
     if (!clientError) {
       try { await client.query('ROLLBACK'); }
       catch { discard = true; }
