@@ -101,6 +101,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python and pip for verified Lambda layers
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.15.7
@@ -260,6 +265,7 @@ jobs:
           PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
         run: |
           set -euo pipefail
+          python3 -m pip --version
           [ -z "$(git ls-files -- .build)" ] || { echo "::error::.build must contain generated files only"; exit 1; }
           terraform console -no-color \
             <<<'jsonencode({steampipe_enabled=var.steampipe_enabled, workers_enabled=var.workers_enabled})' |

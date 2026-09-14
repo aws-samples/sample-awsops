@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d3615469e155 · generated-at: 2026-09-13 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 22d41bd9fa0a · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -71,6 +71,15 @@ Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not 
 
 ## Local verification
 
+Runtime image/provisioning: verify the independent account, configured role, actual STS caller
+and ARM64 digest. Build-role scopes cover `-steampipe`/`-worker`; deployer scopes cover `-agentcore`.
+Web-only ECR grants are insufficient; IAM is separate. No repository creation or latest-tag writes.
+Dev requires applied migration infrastructure and non-null `migration_job`, private migration,
+then bounded digest-bound phases with fresh same-role sessions. Guard selection uses TARGET/dev ref.
+Provision-only never rebuilds. Fixed diagnostics preserve failure codes without raw secrets/ARNs.
+Smoke uses applied readiness enablement and nonce/account/freshness evidence; legacy checks stay
+advisory, transport errors fatal. Full web/collection/worker proof remains separate.
+
 ```bash
 python3 -m pytest -q scripts/v2/test_ci_db_diagnostics.py
 python3 -m pytest -q scripts/v2/test_ci_*.py
@@ -85,6 +94,7 @@ They require bare `docker` on PATH, a reachable daemon, OpenSSL and `postgres:17
 automatic `sudo`/`DOCKER` override. The web connection suite uses the locked web driver and
 TypeScript, covering phase/timing logs, asynchronous passwords and original error propagation.
 
+The CI glob also needs Python boto3/botocore (`pip install -r agent/requirements.txt`).
 The CI fixtures use mocked AWS responses or local Terraform backends, not live AWS. Terraform
 checks use 1.15.7 with isolated data and mocked providers; dependencies are declared in
 `v2/requirements-test.txt`. Do not initialize a real backend for tests.
@@ -94,7 +104,6 @@ checks fresh collection, real runtime access and workers. Optional hostOnly reje
 Cap the file at 16 KiB; require a recent start (30 minutes) and unique types including cloudfront.
 HTTP files default to 64 KiB; only the CloudFront inventory leg allows 2 MiB. The utility
 alone does not change workflow wiring.
-Only applied `agentcore.deployment_readiness_enabled` sets `DEPLOYMENT_READINESS_ENABLED`; missing/false is off, ignoring shell overrides.
 
 ## Plan asset utility
 

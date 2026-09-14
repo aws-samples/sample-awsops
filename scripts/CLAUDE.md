@@ -139,11 +139,23 @@ secrets-manager) — installed by `make deps`.
   `.github/workflows/deploy-migrations.yml`: clone the reviewed ARM64 template with an
   immutable image digest, run one private task, verify ownership/exit, and clean up only that run.
   Read retries are bounded; public failure categories use the runtime diagnostic contract.
-- `v2/agentcore.mjs` + `agentcore/` — `make agentcore`: arm64 agent image + idempotent
-  provisioner, writes to SSM.
+- `v2/ci/runtime-build.mjs` — manual dev transport for existing backend repositories.
+  Require secret `AWS_ACCOUNT_ID_DEV`, configured-role and actual STS agreement, and verified
+  Linux/ARM64 manifest digests. Build-role ECR scopes cover `-steampipe`/`-worker`; deployer scopes
+  cover `-agentcore`. IAM is provisioned separately; web-only grants are insufficient.
+  Preflight rejects missing repositories/denied access. No repository creation or latest-tag writes.
+- `v2/agentcore.mjs` + `agentcore/` — dev uses applied `ci_migrations_enabled=true`
+  (`CI_MIGRATIONS_ENABLED_DEV=true`) and non-null `migration_job`, then private migration and
+  digest-bound build-only/provision-only phases. Fresh sessions of the same role follow setup
+  and separate the bounded phases; provision-only rechecks identity/tag/digest without rebuilding.
+  Dev guards are selected by `TARGET=dev` or `GITHUB_REF=refs/heads/dev`; main/preview retain the legacy path.
+  Diagnostics expose bounded fixed stages/codes/catalog counts, never raw errors, ARNs or credentials.
+  Optional smoke honors applied readiness enablement, nonce/account and producer freshness;
+  other stacks retain advisory compatibility with transport failures still fatal. It is not the
+  full web/collection/worker release gate. Exact timing and wire contracts: `docs/reference/05-agentcore.md`.
 - `v2/*.itest.mjs` — migration integration tests against a disposable PostgreSQL 17 container.
 - `v2/ci/*.test.mjs` — migration runtime/controller/workflow tests and mocked Terraform plans; install locked scripts/v2
-  dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`; PyYAML and Terraform 1.15.7 are also required.
+  dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`; Python PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform 1.15.7 are also required.
   `v2/ci/migration.itest.mjs` includes initializer regressions. It and
   `v2/ci/web-db-connection.itest.mjs` are **required fail-hard exceptions** to the legacy
   optional itest convention: bare `docker` on PATH, OpenSSL, postgres:17,
