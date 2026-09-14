@@ -2,7 +2,7 @@
 // Dev-only image transport. Infrastructure and repository creation belong to Terraform.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, cpSync, lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -166,20 +166,30 @@ export function buildImage({ env = process.env, project, component, root = ROOT,
     }
     localImage = true;
     enter('build');
+    const metadataFile = join(scratch, 'build-metadata.json');
     docker(['buildx', 'build', '--platform', 'linux/arm64', '--provenance=false', '--sbom=false',
-      '--load', '-t', reference, context], { timeout: TIMEOUTS.build });
+      '--metadata-file', metadataFile, '--load', '-t', reference, context], { timeout: TIMEOUTS.build });
     enter('inspect');
+    const metadataStat = lstatSync(metadataFile);
+    requireValue(metadataStat.isFile() && metadataStat.size <= 65_536, 'build_metadata_invalid');
+    const metadataText = readFileSync(metadataFile, 'utf8');
+    requireValue(Buffer.byteLength(metadataText) <= 65_536, 'build_metadata_invalid');
+    const metadata = json(metadataText);
+    const configDigest = metadata?.['containerimage.config.digest'];
+    requireValue(DIGEST.test(configDigest || ''), 'build_metadata_invalid');
     const images = json(docker(['image', 'inspect', reference]));
     requireValue(Array.isArray(images) && images.length === 1 && images[0].Architecture === 'arm64' &&
       images[0].Os === 'linux' && DIGEST.test(images[0].Id || ''), 'built_image_not_arm64');
     enter('push');
-    docker(['push', reference], { env: dockerEnv, timeout: TIMEOUTS.transfer });
+    // Containerd can expose a manifest/index ID instead of the config ID.
+    // Push one platform and bind ECR to BuildKit's actual configuration.
+    docker(['push', '--platform', 'linux/arm64', reference], { env: dockerEnv, timeout: TIMEOUTS.transfer });
     enter('verify');
     const response = json(aws(['ecr', 'batch-get-image', '--registry-id', plan.account,
       '--repository-name', plan.repository, '--image-ids', `imageTag=${plan.tag}`,
       '--accepted-media-types', 'application/vnd.docker.distribution.manifest.v2+json',
       'application/vnd.oci.image.manifest.v1+json']));
-    const digest = verifyManifest(plan, response, images[0].Id);
+    const digest = verifyManifest(plan, response, configDigest);
     return { project: plan.project, digest, architecture: 'arm64' };
   } catch (error) {
     const failure = error instanceof RuntimeBuildError ? error : new RuntimeBuildError('image_build_failed');

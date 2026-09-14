@@ -7,7 +7,17 @@
 # rewrite versions.json so `steampipe plugin list` sees it installed under that canonical name.
 # aws plugin uses 0.x versioning (no 1.x); 0.142.0 (plugin-sdk v5.10.0) is protocol-compatible with
 # steampipe 0.22.0 (plugin-sdk v5.9.0) — the gRPC protocol stayed at 20 across SDK v5. Pinned = deterministic schema.
-FROM turbot/steampipe:0.22.0
+FROM turbot/steampipe:0.22.0 AS steampipe-base
+# The frozen Bullseye image's package indexes reference unavailable security packages.
+# Use a relocatable ARM64 Python distribution, verified before extraction/execution.
+FROM steampipe-base AS python-runtime
+USER root
+ADD https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-aarch64-unknown-linux-gnu-install_only.tar.gz /tmp/python.tar.gz
+RUN echo 'b61b856c3e1a4fc65b8f6e6b0495ef975dd0924f90c59f3ea61b38a079173b84  /tmp/python.tar.gz' | sha256sum -c - \
+ && mkdir -p /opt/python \
+ && tar -xzf /tmp/python.tar.gz --strip-components=1 -C /opt/python
+
+FROM steampipe-base
 RUN steampipe plugin install "ghcr.io/turbot/steampipe/plugins/turbot/aws:0.142.0" \
  && P=/home/steampipe/.steampipe/plugins \
  && mkdir -p "$P/hub.steampipe.io/plugins/turbot" \
@@ -19,11 +29,9 @@ RUN steampipe plugin install "ghcr.io/turbot/steampipe/plugins/turbot/aws:0.142.
 # Needs python3 + pg8000 (Aurora connection) + boto3 (rds.generate_db_auth_token — IAM database
 # auth as the least-privilege steampipe_reader role; M1 — no Aurora secret is ever used).
 USER root
-RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 python3-pip ca-certificates \
- && (pip3 install --no-cache-dir --break-system-packages pg8000==1.31.2 boto3==1.34.162 \
-     || pip3 install --no-cache-dir pg8000==1.31.2 boto3==1.34.162) \
- && rm -rf /var/lib/apt/lists/*
+COPY --from=python-runtime /opt/python /opt/python
+ENV PATH="/opt/python/bin:${PATH}"
+RUN python3 -m pip install --no-cache-dir --only-binary=:all: pg8000==1.31.2 boto3==1.34.162
 # RDS global CA truststore bundle (AWS's own published PEM, covers all regions): enables TLS
 # VERIFY_FULL on the boot generator's Aurora connection instead of CERT_NONE (M3 fix). Fetched at
 # build time — this image already requires network access at build (aws plugin from ghcr.io
