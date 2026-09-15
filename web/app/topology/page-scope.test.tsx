@@ -186,7 +186,8 @@ it('updates the cluster filter from same-page navigation and writes filter contr
     act(() => router.push('/topology'));
     expect(select.value).toBe('');
     fireEvent.change(select, { target: { value: 'ecs:ecs-app' } });
-    expect(router.push).toHaveBeenLastCalledWith('/topology?cluster=ecs%3Aecs-app', { scroll: false });
+    expect(new URLSearchParams(window.location.search).get('cluster')).toBe('ecs:ecs-app');
+    expect(new URLSearchParams(window.location.search).get('clusterScope')).toBe('accounts=self&regions=__all__&includeGlobal=1');
     act(() => router.back());
     expect(select.value).toBe('');
   });
@@ -213,6 +214,31 @@ it.each([
     const expected = nextScope.accounts[0] === 'self' ? 'ecs-api' : 'member-api';
     search(expected);
     expect(await screen.findByRole('button', { name: new RegExp(expected) })).toBeTruthy();
+  });
+
+it.each([
+    { ...DEFAULT_SCOPE, accounts: ['123456789012'] },
+    { ...DEFAULT_SCOPE, regions: ['us-west-2'] },
+    { ...DEFAULT_SCOPE, includeGlobal: false },
+  ])('rejects historical cluster filters after a scope change even when the cluster name still exists: %j', async nextScope => {
+    serve();
+    const router = mount('/topology?cluster=ecs%3Aecs-app&monitor=kept');
+    await flowReady();
+    const select = () => screen.getByRole('option', { name: 'Cluster: 전체' }).parentElement as HTMLSelectElement;
+    expect(select().value).toBe('ecs:ecs-app');
+    fireEvent.change(select(), { target: { value: 'eks:good' } });
+    act(() => setActiveScope(nextScope));
+    await flowReady();
+    await waitFor(() => expect(select().value).toBe(''));
+    act(() => router.back());
+    await flowReady();
+    await waitFor(() => expect(select().value).toBe(''));
+    expect(new URLSearchParams(window.location.search).get('cluster')).toBeNull();
+    expect(new URLSearchParams(window.location.search).get('monitor')).toBe('kept');
+    search(nextScope.accounts[0] === 'self' ? 'ecs-api' : 'member-api');
+    expect(await screen.findByRole('button', { name: /(?:ecs|member)-api/ })).toBeTruthy();
+    act(() => router.forward());
+    await waitFor(() => expect(select().value).toBe(''));
   });
 
 it.each([

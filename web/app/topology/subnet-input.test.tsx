@@ -11,7 +11,7 @@ vi.mock('next/dynamic', () => ({
   default: () => ({ nodes }: { nodes: { id: string; data: { fnode: FlowNode } }[] }) =>
     <div>{nodes.map(n => <span key={n.id} data-testid={n.data.fnode.kind}>{n.data.fnode.label}</span>)}</div>,
 }));
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }), useSearchParams: () => new URLSearchParams(window.location.search) }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }), useSearchParams: () => new URLSearchParams(window.location.search) }));
 import TopologyPage from './page';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });

@@ -427,6 +427,9 @@ test('region/global scope changes reach inventory requests and remove excluded g
   await page.goto('/topology?view=e2e&cluster=eks%3Ademo');
   await expect(page.locator('[data-e2e-kind="cloudfront"]')).toHaveCount(1);
   await expect(page).toHaveURL(/cluster=/);
+  await page.getByRole('link', { name: '구성 흐름으로 돌아가기' }).click();
+  await page.getByRole('link', { name: '서비스 + 네트워크 →' }).click();
+  await expect(page.locator('[data-e2e-kind="cloudfront"]')).toHaveCount(1);
   await page.evaluate(() => {
     localStorage.setItem('awsops:scope', JSON.stringify({
       accounts: ['self'], regions: ['us-east-1'], includeGlobal: false,
@@ -436,6 +439,12 @@ test('region/global scope changes reach inventory requests and remove excluded g
   await expect(page.locator('[data-e2e-kind="cloudfront"]')).toHaveCount(0);
   await expect(page).not.toHaveURL(/cluster=/);
   await expect(page.locator('[data-e2e-kind="alb"]')).toHaveCount(1);
+  await page.goBack();
+  await expect(page.getByRole('option', { name: 'Cluster: 전체' }).locator('..')).toHaveValue('');
+  await expect(page).not.toHaveURL(/cluster=/);
+  await page.goForward();
+  await expect(page.locator('[data-e2e-kind="alb"]')).toHaveCount(1);
+  await expect(page.locator('[data-e2e-kind="cloudfront"]')).toHaveCount(0);
   expect(calls.some((value) => {
     const url = new URL(value, 'http://localhost');
     return url.pathname === '/api/inventory/alb'

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { DEFAULT_SCOPE, setActiveScope } from '@/lib/account-context';
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }), useSearchParams: () => new URLSearchParams(window.location.search) }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }), useSearchParams: () => new URLSearchParams(window.location.search) }));
 vi.mock('next/dynamic', () => ({ default: () => () => <div data-testid="default-flow" /> }));
 vi.mock('@/components/shell/LanguageProvider', () => ({ useI18n: () => ({ lang: 'en', tt: (s: string) => s, t: (s: string) => s }) }));
 vi.mock('@/lib/use-theme', () => ({ useTheme: () => 'light' }));
