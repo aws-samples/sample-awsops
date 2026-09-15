@@ -31,9 +31,26 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('AccountsPage regions', () => {
+  it('does not treat a failed registry lookup as an empty registry', async () => {
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/api/accounts') return new Response('{}', { status: 500 });
+      if (url === '/api/accounts/onboarding') return Response.json({
+        hostAccountId: '111111111111', hostTaskRoleArn: 'arn:aws:iam::111111111111:role/task',
+        region: 'ap-northeast-2', registrationEnabled: true,
+      });
+      return Response.json({ regions: [] });
+    });
+    render(<AccountsPage />);
+    await screen.findByText('계정 목록을 불러오지 못했습니다. 페이지를 새로고침하세요.');
+    expect(screen.queryByText('등록된 계정이 없습니다.')).toBeNull();
+    expect(screen.getByLabelText('Account ID').matches(':disabled')).toBe(true);
+    expect((screen.getByRole('button', { name: '연결 확인 및 등록' }) as HTMLButtonElement).disabled).toBe(true);
+  });
   it('adds another region for an existing account without re-registering the account', async () => {
     render(<AccountsPage />);
 
@@ -47,5 +64,23 @@ describe('AccountsPage regions', () => {
         body: JSON.stringify({ accountId: '210987654321', region: 'us-east-1' }),
       }));
     });
+  });
+  it.each(['remove', 'test', 'region'])('reports a failed reload after a successful %s without a success message', async (operation) => {
+    render(<AccountsPage />);
+    await screen.findByText('Prod');
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (init?.method) return Response.json({ ok: true });
+      return new Response('{}', { status: 500 });
+    });
+    if (operation === 'remove') fireEvent.click(screen.getByRole('button', { name: '제거' }));
+    if (operation === 'test') fireEvent.click(screen.getByRole('button', { name: 'Prod 연결 테스트' }));
+    if (operation === 'region') {
+      fireEvent.change(screen.getByLabelText('Prod 추가 리전'), { target: { value: 'us-east-1' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Prod 리전 추가' }));
+    }
+    await screen.findByText('계정 목록을 불러오지 못했습니다. 페이지를 새로고침하세요.');
+    expect(screen.queryByText('리전 추가 완료')).toBeNull();
+    expect(screen.queryByText('210987654321 연결 확인됨 (verified)')).toBeNull();
   });
 });
