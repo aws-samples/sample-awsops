@@ -362,3 +362,26 @@ def test_observed_counts_exclude_malformed_placeholders_and_records():
     assert trace["observedCount"] == 1
     table = src._summarize_result({"rows": [None, {}, {"c": 0}], "collectionStatus": "partial"})
     assert table["observedCount"] == 1
+
+
+@pytest.mark.parametrize("body,observed", [
+    ({"resultType": "vector", "result": [None, {}]}, None),
+    ({"result": [{"metric": {}, "value": [1, "0"]}]}, None),
+    ({"traces": [None, {"traceID": "invalid-id"}]}, None),
+    ({"rows": [None, {"c": 0}]}, 1),
+    ({"result": {"rows": [None, {"c": 0}]}}, 1),
+    ({"resultType": "scalar", "result": [None, "0"]}, None),
+    ({"resultType": "scalar", "result": []}, None),
+])
+def test_unmarked_validation_loss_is_incomplete_not_clean_zero(body, observed):
+    result = src._summarize_result(body)
+    assert result["incomplete"] is True
+    assert result["collectionStatus"] == "partial"
+    assert "count" not in result
+    assert result.get("observedCount") == observed
+
+
+def test_valid_unmarked_scalar_pair_is_one_sample_not_validation_loss():
+    result = src._summarize_result({"resultType": "scalar", "result": [1, "0"]})
+    assert result["count"] == 1
+    assert "incomplete" not in result
