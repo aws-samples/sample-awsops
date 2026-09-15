@@ -87,7 +87,7 @@ web task role an **EKS Access Entry + AWS-managed view policy** (cluster-scoped,
 exposing endpoint/CA so the dashboard can run **read-only** Kubernetes queries. EKS Access Entry +
 view 정책(읽기 전용).
 
-**E2E observability — [observability-e2e.md](observability-e2e.md).** The opt-in `/topology?view=e2e` page connects account-scoped configuration, host service snapshots and explicit NFM queries using source-quality and scoped-identity gates. The reference distinguishes implemented contracts from the broader observability roadmap.
+**E2E observability — [observability-e2e.md](observability-e2e.md).** The opt-in `/topology?view=e2e` page connects account/region/global-scoped configuration, host service snapshots and explicit NFM queries using source-quality and scoped-identity gates. The reference distinguishes implemented contracts from the broader observability roadmap.
 
 **Private plan transport — [private-plan-transport.md](private-plan-transport.md).**
 Operator CI helper with four modes: policy, publication, inspection and restore.

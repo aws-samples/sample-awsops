@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
+import { projectGraphDetails } from '../lib/graph-state';
 
 // Browser fixtures validate UI/correlation behavior without changing app auth or using live AWS data.
 const END = new Date().toISOString();
@@ -30,14 +31,16 @@ const inventory: Record<string, { resource_id: string; region: string; data: Rec
   vpc: [{ resource_id: 'vpc-demo', region: 'us-east-1', data: { tags: { Name: 'application-vpc' } } }],
 };
 const partialCollection = {
-    status: 'partial', stale: true, retainedPrevious: true,
-    readStatus: 'ok', readTruncated: false, metadataTruncated: false,
-    nodeDrops: 0, edgeDrops: 0,
-    attempted_at: END, captured_at: STALE_CAPTURE,
+  status: 'partial', stale: true, readStatus: 'ok', readTruncated: false,
+  attempted_at: END, captured_at: STALE_CAPTURE,
+  ...projectGraphDetails({ retainedPrevious: true, nodeDrops: 0, edgeDrops: 0,
     sources: Array.from({ length: 48 }, (_, i) => ({
-      sourceId: `clickhouse:fixture-${i}`, status: 'partial', reasons: ['cap_reached'], itemCount: 1000,
+      sourceId: `clickhouse:fixture-${i}`, status: i ? 'partial' : 'future-status',
+      reasons: ['cap_reached'], itemCount: i ? 1000 : null,
     })),
+  }),
 };
+
 const services = {
   class: 'trace', account: 'self', captured_at: END,
   collection: { status: 'ok', stale: false, readStatus: 'ok', retainedPrevious: false,
@@ -134,7 +137,7 @@ async function fixtures(page: Page, opts: {
     if (url.pathname === '/api/nfm/query') {
       const category = url.searchParams.get('category')!;
       const metric = url.searchParams.get('metric')!;
-      if (opts.partial && category === 'INTER_REGION') return json({ message: 'fixture query unavailable' }, 502);
+      if (opts.partial && category === 'INTER_REGION') return json({ message: 'fixture-query-credential' }, 502);
       const local = { ip: groupPods.at(-1)?.podIP ?? '10.0.1.10', podName: groupPods.at(-1)?.name ?? 'frontend-a', podNamespace: 'shop', serviceName: 'frontend',
         region: 'us-east-1', vpcId: 'vpc-demo', az: 'us-east-1a' };
       const unit = metric === 'DATA_TRANSFERRED' ? 'Bytes' : metric === 'ROUND_TRIP_TIME' ? 'Milliseconds' : 'Count';
@@ -421,8 +424,9 @@ test('a same-IP ECS task from another subnet/VPC cannot name the configured targ
 
 test('region/global scope changes reach inventory requests and remove excluded global resources', async ({ page }, testInfo) => {
   const calls = await fixtures(page);
-  await page.goto('/topology?view=e2e');
+  await page.goto('/topology?view=e2e&cluster=eks%3Ademo');
   await expect(page.locator('[data-e2e-kind="cloudfront"]')).toHaveCount(1);
+  await expect(page).toHaveURL(/cluster=/);
   await page.evaluate(() => {
     localStorage.setItem('awsops:scope', JSON.stringify({
       accounts: ['self'], regions: ['us-east-1'], includeGlobal: false,
@@ -430,6 +434,7 @@ test('region/global scope changes reach inventory requests and remove excluded g
     window.dispatchEvent(new CustomEvent('awsops:scopechange'));
   });
   await expect(page.locator('[data-e2e-kind="cloudfront"]')).toHaveCount(0);
+  await expect(page).not.toHaveURL(/cluster=/);
   await expect(page.locator('[data-e2e-kind="alb"]')).toHaveCount(1);
   expect(calls.some((value) => {
     const url = new URL(value, 'http://localhost');

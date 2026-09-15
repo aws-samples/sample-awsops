@@ -6,6 +6,7 @@ import type { FlowGraph } from '@/lib/flow-topology';
 import { buildFlowGraph } from '@/lib/flow-topology';
 import { buildTraceGraph } from '@/lib/trace-graph';
 import * as e2e from '@/lib/e2e-topology';
+import { projectGraphDetails } from '@/lib/graph-state';
 
 class ResizeObserverStub { observe() {} unobserve() {} disconnect() {} }
 beforeEach(() => {
@@ -106,6 +107,50 @@ async function expectRejectedSnapshot(body: unknown, message?: string) {
   expect(screen.queryByRole('button', { name: '선택: checkout-service' })).toBeNull();
   await ready();
 }
+
+async function expectUnconfirmedSnapshot(body: unknown) {
+  const compose = vi.spyOn(e2e, 'buildE2eGraph');
+  renderTopology({ service: () => json(body) });
+  search('checkout-service');
+  expect(await screen.findByRole('button', { name: '선택: checkout-service' })).toBeTruthy();
+  expect(compose.mock.lastCall?.[0].servicesComplete).toBe(false);
+  expect(compose.mock.lastCall?.[0].services?.nodes).toHaveLength(1);
+  const panel = within(screen.getByRole('region', { name: '서비스 소스' }));
+  expect(await panel.findByText('일부 수집 메타데이터가 생략되어 범위가 불완전합니다.')).toBeTruthy();
+  expect(panel.queryByText('올바르지 않은 서비스 수집 상태입니다.')).toBeNull();
+  await ready();
+  return compose.mock.lastCall?.[0].services as typeof snapshot;
+}
+
+describe('projected collection compatibility', () => {
+  it.each(['sources', 'publishedSources'])('retains real projected unknown status and null evidence in %s', async key => {
+    const details = projectGraphDetails({ ...completeCollection, retainedPrevious: true,
+      [key]: [{ sourceId: 'tempo:unknown', status: 'future-status', itemCount: null,
+        windowStartMs: null, windowEndMs: null, capturedAtMs: null, reasons: ['cap_reached'] }],
+    });
+    expect(details[key][0]).not.toHaveProperty('status');
+    expect(details[key][0].itemCount).toBeNull();
+    const data = await expectUnconfirmedSnapshot({ ...snapshot, collection: {
+      ...completeCollection, ...details, status: 'partial',
+    } });
+    expect(data.collection[key as 'sources'][0]).toMatchObject({ sourceId: 'tempo:unknown', status: 'unknown' });
+  });
+  it.each(['itemCount', 'windowStartMs', 'capturedAtMs'])('does not turn projected null %s into complete evidence', async key => {
+    const details = projectGraphDetails({ ...completeCollection,
+      sources: [{ ...completeCollection.sources[0], [key]: null }],
+    });
+    expect(details.metadataTruncated).toBeUndefined();
+    await expectUnconfirmedSnapshot({ ...snapshot, collection: { ...completeCollection, ...details } });
+  });
+  it('keeps other source fields when a producer timeline is impossible', async () => {
+    const data = await expectUnconfirmedSnapshot({ ...snapshot, collection: { ...completeCollection,
+      sources: [{ ...completeCollection.sources[0], attemptedAtMs: 2000, finishedAtMs: 1000 }],
+    } });
+    expect(data.collection.sources[0]).toMatchObject({ sourceId: 'tempo', status: 'ok' });
+    expect(data.collection.sources[0]).not.toHaveProperty('attemptedAtMs');
+    expect(data.collection.sources[0]).not.toHaveProperty('finishedAtMs');
+  });
+});
 
 describe('ServiceNetworkTopology', () => {
   it.each([[true, {}, true], [false, {}, false], [true, { stale: true }, false],
@@ -459,12 +504,12 @@ it('keeps actual graph-cap and unavailable-infrastructure explanations through v
     expect(panel.textContent).not.toContain('부모 또는 링크 미확인 스팬: 0');
   });
 
-it.each([-1, 0.5, '2', null, Number.MAX_SAFE_INTEGER + 1])('rejects invalid loss counts: %s', async orphanSpans => {
-    await expectRejectedSnapshot({ ...snapshot, collection: { ...snapshot.collection, orphanSpans } }, '올바르지 않은 서비스 수집 상태');
+it.each([-1, 0.5, '2', null, Number.MAX_SAFE_INTEGER + 1])('preserves graph data with unconfirmed loss counts: %s', async orphanSpans => {
+    await expectUnconfirmedSnapshot({ ...snapshot, collection: { ...snapshot.collection, orphanSpans } });
   });
 
-it('rejects a non-boolean infrastructure availability flag', async () => {
-    await expectRejectedSnapshot({ ...snapshot, collection: { ...snapshot.collection, infraUnavailable: 'false' } }, '올바르지 않은 서비스 수집 상태');
+it('preserves graph data with unconfirmed infrastructure availability', async () => {
+    await expectUnconfirmedSnapshot({ ...snapshot, collection: { ...snapshot.collection, infraUnavailable: 'false' } });
   });
 
 it('preserves real public collection clocks and keeps reasons in one bounded panel', async () => {
@@ -527,8 +572,8 @@ it.each([
     { failureReason: 'constructor' }, { windowStartMs: 2000, windowEndMs: 1000 },
     { sources: [{ sourceId: 'trace', status: 'ok', producerStatus: 'success' }] },
     { sources: [{ sourceId: 'trace', status: 'ok', attemptedAtMs: '1000' }] },
-  ])('rejects malformed current read/producer metadata: %j', async fields => {
-    await expectRejectedSnapshot({ ...snapshot, collection: { ...snapshot.collection, ...fields } }, '올바르지 않은 서비스 수집 상태');
+  ])('withholds completeness for malformed read/producer metadata: %j', async fields => {
+    await expectUnconfirmedSnapshot({ ...snapshot, collection: { ...snapshot.collection, ...fields } });
   });
 
 it('validates optional provenance without replacing snapshot time or claiming current production availability', async () => {
@@ -563,8 +608,8 @@ it.each([
       { reasons: [false] }, { status: 'constructor' },
       { windowStartMs: 'invalid' }, { windowEndMs: -1 }, { windowStartMs: 2000, windowEndMs: 1000 },
     ].map(bad => ({ publishedSources: [{ sourceId: 'saved', status: 'ok', ...bad }] })),
-  ])('rejects malformed optional metadata instead of certifying a snapshot: %j', async bad => {
-    await expectRejectedSnapshot({ ...snapshot, collection: { ...snapshot.collection, ...bad } }, '올바르지 않은 서비스 수집 상태');
+  ])('retains the graph without certifying malformed optional metadata: %j', async bad => {
+    await expectUnconfirmedSnapshot({ ...snapshot, collection: { ...snapshot.collection, ...bad } });
   });
 
 it.each([
@@ -575,8 +620,9 @@ it.each([
     { collection: { status: 'ok', stale: false, sources: [{ sourceId: 'trace', status: 'partial', reasons: 'cap' }] } },
     { collection: { status: 'ok', stale: false, sources: [{ sourceId: 'trace', status: 'partial', reasons: [1] }] } },
     { collection: { status: 'ok', stale: false, sources: [{ sourceId: 'trace', status: 'ok', itemCount: -1 }] } },
-  ])('rejects unproven scope or malformed collection metadata: %j', async bad => {
-    await expectRejectedSnapshot({ ...snapshot, ...bad });
+  ])('rejects unproven scope but retains graph rows with unknown metadata: %j', async bad => {
+    if (Object.hasOwn(bad, 'collection')) await expectUnconfirmedSnapshot({ ...snapshot, ...bad });
+    else await expectRejectedSnapshot({ ...snapshot, ...bad });
   });
 
 it('keeps source query windows from the real producer envelope', async () => {

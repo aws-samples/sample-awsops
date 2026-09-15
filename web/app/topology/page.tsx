@@ -291,13 +291,25 @@ export default function TopologyPage() {
 
 function TopologyScope() {
   const [scope, , ready] = useActiveScope();
+  const router = useRouter();
+  const params = useSearchParams() ?? new URLSearchParams();
+  const [boundScope, setBoundScope] = useState<string | null>(null);
   // Remount all graph/detail/evidence state on selection changes. A saved member/all scope
   // must be known before the first load; the hook's hydration default is not a host selection.
-  if (!ready) return null;
   const account = Array.isArray(scope.accounts) ? scope.accounts.join(',') : scope.accounts;
   const inventoryScope = new URLSearchParams({ accounts: account,
     regions: Array.isArray(scope.regions) ? scope.regions.join(',') : scope.regions,
     includeGlobal: scope.includeGlobal ? '1' : '0' }).toString();
+  const resetCluster = boundScope !== null && boundScope !== inventoryScope && params.has('cluster');
+  useEffect(() => {
+    if (!ready) return;
+    if (resetCluster) {
+      const next = new URLSearchParams(params.toString()); next.delete('cluster');
+      router.replace(`/topology${next.size ? `?${next}` : ''}`, { scroll: false });
+    } else if (boundScope !== inventoryScope) setBoundScope(inventoryScope);
+  }, [ready, resetCluster, inventoryScope, boundScope, params, router]);
+  // Initial deep links are valid; a prior scope's cluster cannot filter the new graph.
+  if (!ready || resetCluster) return null;
   return <ScopedTopologyPage key={inventoryScope} activeAccount={account} inventoryScope={inventoryScope} />;
 }
 

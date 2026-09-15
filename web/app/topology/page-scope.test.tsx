@@ -195,6 +195,30 @@ it.each([
     { ...DEFAULT_SCOPE, accounts: ['123456789012'] },
     { ...DEFAULT_SCOPE, regions: ['us-west-2'] },
     { ...DEFAULT_SCOPE, includeGlobal: false },
+  ])('clears a previous scope cluster while retaining other URL settings: %j', async nextScope => {
+    let changed = false;
+    serve({ inventoryReply: (url, body) => Response.json({
+      ...body, rows: changed && url.pathname.endsWith('/ecs_task') ? body.rows.map(row => ({
+        ...row, data: { ...row.data, cluster_arn: 'cluster/new-scope' },
+      })) : body.rows,
+    }) });
+    const router = mount('/topology?monitor=retained-monitor&range=1800&cluster=ecs%3Aecs-app');
+    await flowReady();
+    expect((screen.getByRole('option', { name: 'Cluster: 전체' }).parentElement as HTMLSelectElement).value).toBe('ecs:ecs-app');
+    changed = true;
+    act(() => setActiveScope(nextScope));
+    await screen.findByRole('option', { name: 'ECS · new-scope' });
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Cluster: 전체' }).parentElement as HTMLSelectElement).value).toBe(''));
+    expect(router.replace).toHaveBeenCalledWith('/topology?monitor=retained-monitor&range=1800', { scroll: false });
+    const expected = nextScope.accounts[0] === 'self' ? 'ecs-api' : 'member-api';
+    search(expected);
+    expect(await screen.findByRole('button', { name: new RegExp(expected) })).toBeTruthy();
+  });
+
+it.each([
+    { ...DEFAULT_SCOPE, accounts: ['123456789012'] },
+    { ...DEFAULT_SCOPE, regions: ['us-west-2'] },
+    { ...DEFAULT_SCOPE, includeGlobal: false },
   ])('clears selected resource details on scope changes: %j', async nextScope => {
     serve();
     mount();

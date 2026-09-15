@@ -15,7 +15,7 @@ import { GraphFetchError, type GraphFetchFailure } from '@/lib/graph-fetch';
 import PageHeader from '@/components/ui/PageHeader';
 import Button from '@/components/ui/Button';
 import E2eGraphCanvas from './E2eGraphCanvas';
-import GraphCollectionStatus, { type GraphCollection, type GraphCollectionSource } from './GraphCollectionStatus';
+import GraphCollectionStatus, { COLLECTION_LOSS_KEYS, isCollectionLossCount, type GraphCollection, type GraphCollectionSource } from './GraphCollectionStatus';
 import GraphReadError from './GraphReadError';
 
 export interface ConfigurationStatus {
@@ -95,70 +95,67 @@ function readMonitors(body: Record<string, unknown>): MonitorStatus {
   return { monitors: body.monitors as TopologyMonitor[], scopeCount: body.scopeCount };
 }
 
-const COLLECTION_LOSS_KEYS = ['nodeDrops', 'edgeDrops', 'orphanSpans', 'invalidSpans', 'unresolvedMessaging'] as const;
-const isCollectionLossCount = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-
 function readCollection(value: unknown): ObservedServices['collection'] {
   if (value == null) return undefined;
+  const raw = object(value) ? value : {};
   const statuses = ['ok', 'empty', 'partial', 'unavailable', 'error', 'unknown'];
-  const status = (v: unknown): v is string => typeof v === 'string' && statuses.includes(v);
-  const boolKeys = ['retainedPrevious', 'inputTruncated', 'graphTruncated', 'infraUnavailable',
-    'sourceAttempted', 'metadataTruncated', 'readTruncated'] as const;
-  const timeKeys = ['attempted_at', 'captured_at'] as const;
-  const enumFields = {
+  const oneOf = (values: readonly string[]) => (v: unknown) => typeof v === 'string' && values.includes(v);
+  const status = oneOf(statuses);
+  const millis = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 8640000000000000;
+  let limited = !status(raw.status) || typeof raw.stale !== 'boolean' || raw.metadataTruncated === true;
+  const parsed: GraphCollection = { status: status(raw.status) ? raw.status as string : 'unknown', stale: raw.stale === true };
+  // A bad metadata field must not discard valid graph rows or become positive proof.
+  const copy = (from: Record<string, unknown>, to: object, keys: readonly string[], valid: (v: unknown) => boolean) => {
+    for (const key of keys) if (Object.hasOwn(from, key)) {
+      if (valid(from[key])) Object.assign(to, { [key]: from[key] });
+      else limited = true;
+    }
+  };
+  const ordered = (target: object, start: string, end: string) => {
+    const a: unknown = Reflect.get(target, start), b: unknown = Reflect.get(target, end);
+    if (typeof a === 'number' && typeof b === 'number' && a > b) {
+      Reflect.deleteProperty(target, start); Reflect.deleteProperty(target, end); limited = true;
+    }
+  };
+  copy(raw, parsed, ['retainedPrevious', 'inputTruncated', 'graphTruncated', 'infraUnavailable',
+    'sourceAttempted', 'metadataTruncated', 'readTruncated'], v => typeof v === 'boolean');
+  copy(raw, parsed, COLLECTION_LOSS_KEYS, isCollectionLossCount);
+  copy(raw, parsed, ['windowStartMs', 'windowEndMs'], millis);
+  copy(raw, parsed, ['attempted_at', 'captured_at'], v => v === null || validTime(v));
+  const enums = {
     evidenceKind: ['inventory', 'trace'],
     failureReason: ['publication_failed', 'source_read_failed', 'state_read_failed', 'not_attempted'],
     coverage: ['unknown'], readStatus: ['ok', 'partial', 'unavailable'],
     readReason: ['row_limit', 'busy', 'timeout', 'query_failed'],
-  } as const;
-  const choice = (v: unknown, choices: readonly string[]) =>
-    v === undefined || (typeof v === 'string' && choices.includes(v));
-  const millis = (v: unknown) => v == null || (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 8640000000000000);
-  if (!object(value) || !status(value.status) || typeof value.stale !== 'boolean'
-    || boolKeys.some(key => value[key] !== undefined && typeof value[key] !== 'boolean')
-    || COLLECTION_LOSS_KEYS.some(key => value[key] !== undefined && !isCollectionLossCount(value[key]))
-    || timeKeys.some(key => value[key] != null && !validTime(value[key]))
-    || Object.entries(enumFields).some(([key, choices]) => !choice(value[key], choices))
-    || !millis(value.windowStartMs) || !millis(value.windowEndMs)
-    || (typeof value.windowStartMs === 'number' && typeof value.windowEndMs === 'number'
-      && value.windowStartMs > value.windowEndMs)) {
-    throw new SourceReadError('올바르지 않은 서비스 수집 상태입니다.');
-  }
+  };
+  for (const [key, values] of Object.entries(enums)) copy(raw, parsed, [key], oneOf(values));
+  ordered(parsed, 'windowStartMs', 'windowEndMs');
   const readSources = (rows: unknown): GraphCollectionSource[] | undefined => {
     if (rows === undefined) return undefined;
-    if (!Array.isArray(rows) || !rows.every(source =>
-      object(source) && nonempty(source.sourceId) && status(source.status)
-        && (source.reasons === undefined || (Array.isArray(source.reasons) && source.reasons.every(reason => typeof reason === 'string')))
-        && (source.itemCount === undefined || (typeof source.itemCount === 'number' && Number.isInteger(source.itemCount) && source.itemCount >= 0))
-        && (source.scope === undefined || source.scope === 'aggregate' || source.scope === 'account')
-        && millis(source.capturedAtMs) && millis(source.lastSuccessAtMs)
-        && millis(source.attemptedAtMs) && millis(source.finishedAtMs)
-        && choice(source.producerStatus, ['succeeded', 'failed', 'partial', 'running', 'unknown'])
-        && millis(source.windowStartMs) && millis(source.windowEndMs)
-        && (source.windowStartMs == null || source.windowEndMs == null || source.windowStartMs <= source.windowEndMs))) {
-      throw new SourceReadError('올바르지 않은 서비스 수집 상태입니다.');
-    }
-    const optionalFields = ['reasons', 'itemCount', 'scope', 'producerStatus',
-      'attemptedAtMs', 'finishedAtMs', 'capturedAtMs', 'lastSuccessAtMs',
-      'windowStartMs', 'windowEndMs'] as const;
-    return rows.map(source => ({
-      sourceId: source.sourceId, status: source.status,
-      ...Object.fromEntries(optionalFields.filter(key => key === 'windowStartMs' || key === 'windowEndMs'
-        ? typeof source[key] === 'number' : source[key] !== undefined).map(key => [key, source[key]])),
-    }));
+    if (!Array.isArray(rows)) { limited = true; return undefined; }
+    if (rows.length > 128) limited = true;
+    return rows.slice(0, 128).flatMap(row => {
+      if (!object(row) || !nonempty(row.sourceId)) { limited = true; return []; }
+      const source: GraphCollectionSource = { sourceId: row.sourceId, status: status(row.status) ? row.status as string : 'unknown' };
+      if (!status(row.status)) limited = true;
+      copy(row, source, ['scope'], oneOf(['aggregate', 'account']));
+      copy(row, source, ['producerStatus'], oneOf(['succeeded', 'failed', 'partial', 'running', 'unknown']));
+      // The server preserves null as "not confirmed". Omit it without certifying completeness.
+      copy(row, source, ['itemCount'], isCollectionLossCount);
+      copy(row, source, ['windowStartMs', 'windowEndMs', 'capturedAtMs', 'lastSuccessAtMs', 'attemptedAtMs', 'finishedAtMs'], millis);
+      if (Array.isArray(row.reasons)) {
+        const reasons = [...new Set(row.reasons.filter((reason): reason is string => typeof reason === 'string'))];
+        if (row.reasons.some(reason => typeof reason !== 'string') || reasons.length > 16) limited = true;
+        source.reasons = reasons.slice(0, 16);
+      } else if (Object.hasOwn(row, 'reasons')) limited = true;
+      ordered(source, 'windowStartMs', 'windowEndMs');
+      ordered(source, 'attemptedAtMs', 'finishedAtMs');
+      return [source];
+    });
   };
-  const parsed: GraphCollection = {
-    status: value.status, stale: value.stale,
-    sources: readSources(value.sources), publishedSources: readSources(value.publishedSources),
-  };
-  Object.assign(parsed, Object.fromEntries(Object.keys(enumFields)
-    .filter(key => value[key] !== undefined).map(key => [key, value[key]])));
-  if (typeof value.windowStartMs === 'number') parsed.windowStartMs = value.windowStartMs;
-  if (typeof value.windowEndMs === 'number') parsed.windowEndMs = value.windowEndMs;
-  for (const key of boolKeys) if (value[key] !== undefined) parsed[key] = value[key] as boolean;
-  for (const key of COLLECTION_LOSS_KEYS) if (value[key] !== undefined) parsed[key] = value[key] as number;
-  for (const key of timeKeys) if (value[key] !== undefined) parsed[key] = value[key] as string | null;
+  parsed.sources = readSources(raw.sources);
+  parsed.publishedSources = readSources(raw.publishedSources);
+  if (limited) parsed.metadataTruncated = true;
   return parsed;
 }
 
@@ -205,8 +202,7 @@ function serviceReadComplete(snapshot: ObservedServices | null): boolean {
     || c.failureReason != null || c.coverage === 'unknown' || c.sourceAttempted === false) return false;
   if (['retainedPrevious', 'metadataTruncated', 'readTruncated', 'inputTruncated', 'graphTruncated', 'infraUnavailable']
     .some(key => c[key] !== undefined && c[key] !== false)) return false;
-  if (['nodeDrops', 'edgeDrops', 'orphanSpans', 'invalidSpans', 'unresolvedMessaging']
-    .some(key => c[key] !== 0)) return false;
+  if (COLLECTION_LOSS_KEYS.some(key => c[key] !== 0)) return false;
   const sources = c.publishedSources ?? c.sources;
   return Array.isArray(sources) && sources.length > 0 && sources.every(source => object(source)
     && ['ok', 'empty'].includes(String(source.status)) && Array.isArray(source.reasons) && !source.reasons.length

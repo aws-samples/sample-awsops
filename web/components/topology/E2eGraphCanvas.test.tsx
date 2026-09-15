@@ -53,6 +53,19 @@ async function select(label: string) {
 }
 
 describe('E2eGraphCanvas', () => {
+  it.each(['ko', 'en', 'zh', 'ja'] as const)('names the actual context control in the %s guide', lang => {
+    const label = applyTerms(lang, '참고 정보 (캐시된 구성·경유 구성요소)');
+    const path = lang === 'ko' ? '../../../docs-site/docs/resources/topology.md'
+      : `../../../docs-site/i18n/${lang}/docusaurus-plugin-content-docs/current/resources/topology.md`;
+    localStorage.setItem('awsops-lang', lang);
+    try {
+      render(<LanguageProvider><E2eGraphCanvas graph={graph} /></LanguageProvider>);
+      expect(screen.getByRole('checkbox', { name: label, exact: true })).toBeTruthy();
+      const guide = readSource(path);
+      expect(guide).toContain(`**${label}**`);
+      expect(guide.split(label).length - 1).toBeGreaterThanOrEqual(2);
+    } finally { localStorage.clear(); }
+  });
   it('qualifies real builder endpoint labels and retains service-only identities', async () => {
     const built = buildE2eGraph({
       account: 'self', configured: { nodes: [], edges: [] }, services: null,
