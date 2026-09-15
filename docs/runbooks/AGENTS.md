@@ -1,8 +1,12 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: bc232a691add · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a97ed46a729d · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
 # Runbooks — Reviewer Context
+
+- `review-image-capability.md` documents the separate manual dev-only synthetic image
+  Read diagnostic. Existing OIDC role/environment only; safe proof and cleanup do not
+  replace latest-HEAD review or required CI.
 
 Web image receipt/ECR proof precedes private migrations, including reuse; promotion retains that digest. Automatic DDL is expand-only; contract cutovers require a merge freeze, drained queues and explicit operator coordination. Legacy images without receipts use the separately approved `legacy-web-image-recovery.md` path with trusted digest/source evidence and schema approval, never a fabricated receipt or mutable-tag fallback.
 

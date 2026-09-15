@@ -1,0 +1,48 @@
+name: Review Image Capability Diagnostic
+
+on:
+  workflow_dispatch:
+
+jobs:
+  capability:
+    if: >-
+      github.repository == 'aws-samples/sample-awsops' &&
+      github.ref == 'refs/heads/dev' &&
+      github.event_name == 'workflow_dispatch'
+    runs-on: sample-awsops
+    environment: ci-review-auto
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Prepare private synthetic image before credentials
+        id: prepare
+        run: python3 scripts/pr-review/image_capability.py prepare
+
+      - name: Authenticate with the existing review role
+        uses: aws-actions/configure-aws-credentials@v4
+        timeout-minutes: 1
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_REVIEW_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 900
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          use-existing-credentials: false
+
+      - name: Verify one authenticated Read
+        env:
+          PROBE_ROOT: ${{ steps.prepare.outputs.root }}
+        run: python3 scripts/pr-review/image_capability.py run
+
+      - name: Publish safe proof and clean up owned files
+        if: always()
+        env:
+          PROBE_ROOT: ${{ steps.prepare.outputs.root }}
+        run: python3 scripts/pr-review/image_capability.py finish

@@ -6,6 +6,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 
 | Runbook | Topic |
 |---|---|
+| [review-image-capability.md](review-image-capability.md) | Manual authenticated runner Read proof for a synthetic image; no review-gate substitution |
 | [start-services.md](start-services.md) | **⚠️ v1 (legacy)** — start all services (Steampipe + Next.js on EC2); v2 runs ECS always-on |
 | [deploy-new-version.md](deploy-new-version.md) | **⚠️ v1 (legacy)** — deploy a new version (CDK); v2 uses `make deploy` |
 | [add-new-page.md](add-new-page.md) | Adding a new dashboard page |
