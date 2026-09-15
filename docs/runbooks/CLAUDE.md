@@ -25,7 +25,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 | [alert-pipeline-troubleshoot.md](alert-pipeline-troubleshoot.md) | Alert pipeline failure response (ADR-008/013) |
 | [cache-warmer-issues.md](cache-warmer-issues.md) | Cache warmer staleness / error response |
 | [tempo-query-generation.md](tempo-query-generation.md) | Tempo query generation — connector/web deployment, admin API schema refresh, cached summaries, and recent-window limits |
-| [graph-read-contract.md](graph-read-contract.md) | Bounded graph reads, legacy execution/infra dependency, registry diagnostics, projection/index migrations and local PostgreSQL fixtures |
+| [graph-read-contract.md](graph-read-contract.md) | Shared request/background admission, bounded inventory reads, legacy execution, registry diagnostics and PostgreSQL fixtures |
 | [source-sync-observability.md](source-sync-observability.md) | Public source rollout — graph evidence/identity boundaries, DX assessment scope, migrations and Lambda deployment prerequisites |
 | [cognito-auth-issues.md](cognito-auth-issues.md) | Login failures, Lambda@Edge verification errors |
 | [user-offboarding.md](user-offboarding.md) | Offboarding a departing employee's Cognito account — closing the account-takeover path (ADR-002/009) |
@@ -325,7 +325,7 @@ Combined checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/
 
 ## Graph read contract
 
-Graph reads admit at most two requests per shared max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. Source-attempt metadata is supported before the separately gated inventory publisher is activated. See `graph-read-contract.md` for operator rollout and disposable tests; source integration does not establish deployment.
+Request and background graph transaction helpers share two admissions per max:3 pool; either can cause an HTTP read to return busy. The legacy materializer is not wired to the new inventory-read helper. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. Source-attempt metadata is supported before the separately gated inventory publisher is activated. See `graph-read-contract.md` for operator rollout and disposable tests; source integration does not establish deployment.
 
 Legacy graph execution reports node/edge totals only. Same-cycle infra execution failure skips dependent trace collection/publication. Registry query failures remain synthetic error sources and are explicitly diagnosed; CLI exit 0 is not completeness or empty-publication proof.
 

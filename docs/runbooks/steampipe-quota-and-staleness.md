@@ -15,7 +15,6 @@ prepare the host registry and ensure the account-management path enforces the in
 종료와 재시작은 같은 잠금을 사용하고 backoff도 중단됩니다. 기본 다중 계정 동작은
 유지하며, 활성화 전에 호스트 행과 계정 관리 경로의 범위 제어를 준비합니다.
 
-
 > Data-flow diagram / 데이터 흐름 다이어그램: [`docs/diagrams/inventory-freshness-dataflow.html`](../diagrams/inventory-freshness-dataflow.html) (archify — collector → guard → ledger → freshness disclosure)
 
 Phase 1의 Steampipe 인벤토리 sync를 운영하는 절차다. Phase 1 구현은 저장소에 있다. **이 변경을 수행한 에이전트는 Terraform apply를 실행하지 않았으며, controller의 실제 배포 상태는 별도로 확인해야 한다.** 현재 ops gateway의 제한된 Aurora `inventory-read-target`은 direct domain inventory/configuration target과 공존한다.
@@ -159,7 +158,7 @@ roll out this Lambda. If the order below cannot be satisfied, do not deploy the 
 ## 3. limiter 구성 확인 / Inspect limiter configuration
 
 정적 기본 파일은 `scripts/v2/steampipe/aws.spc`다. 실행 중 컨테이너는 Aurora account/Region scope를 읽어 기본 경로 `/home/steampipe/.steampipe/config/aws.spc`에 실제 구성을 생성한다.
-The checked-in default is `scripts/v2/steampipe/aws.spc`. The running container reads Aurora account/Region scope and renders the actual configuration at `/home/steampipe/.steampipe/config/aws.spc`.
+The checked-in default is `scripts/v2/steampipe/aws.spc`. The running container reads Aurora account/region scope and publishes a regular SPC file at the default `AWS_SPC_PATH`, `/home/steampipe/.steampipe/config/aws.spc`, alongside the shared-profile generation described below.
 
 배포 전 렌더러 검증 / Validate the renderer before deployment:
 
@@ -183,6 +182,84 @@ fields @timestamp, event, max_concurrency, bucket_size, fill_rate
 - `max_concurrency`, `bucket_size`, `fill_rate`가 approved Terraform values와 일치한다.
 - renderer test가 `scope =` 부재를 검증한다. 계정·리전별 budget 증식이 아니라 하나의 global budget이어야 한다 / the renderer test verifies no `scope =`, preserving one global budget.
 
+### Pinned AWS profile contract
+
+AWS plugin **0.142.0** declares `profile` in `awsConfig`; its credential loader passes
+that name to AWS SDK Go `WithSharedConfigProfile`. It does not declare the previously
+emitted `assume_role_arn` / `assume_role_external_id` SPC attributes. Members use
+`profile = "aws_<account-id>"` plus a private AWS INI section containing `role_arn`,
+`credential_source = EcsContainer` and optional `external_id`. No static AWS credentials,
+credential processes or host/default profile override are generated.
+
+The service uses `AWS_CONFIG_FILE=/home/steampipe/.awsops-runtime/current/config`
+for the shared-profile generation. The loopback pg8000 health probe does not read this
+file. `AWS_SPC_PATH` defaults to `/home/steampipe/.steampipe/config/aws.spc` and is a
+regular file, not a symlinked SPC entry. SPC and profile files are 0600; profile generations
+are kept in owner-controlled 0700 directories. Each retained generation contains an
+SPC scope copy and role/ExternalId profile metadata, not access keys or session tokens.
+These private generations remain for the container's lifetime.
+
+Boot publishes both files before first launch. Reload publication holds the existing
+restart lock with the service stopped: stage both files, switch the profile-generation
+pointer, then replace the regular SPC file. Launch only after both publications succeed. Each replacement
+is atomic; the stopped-service boundary protects the pair, not an atomic transaction
+for arbitrary concurrent readers of the two paths. A failed
+write/publication blocks launch and triggers fatal shutdown. Identity and ExternalId
+values reject control characters and INI injection. An `AWS_CONFIG_FILE` override must
+match the generated `current/config` path; `AWS_SPC_PATH` must be absolute and its parent
+must satisfy the publisher's path checks. Unsupported path/config overrides fail closed
+with `runtime_configuration_write_failed`; do not work around them with symlinked SPC files.
+
+The 300-second watchdog compares both rendered files, so an ExternalId-only change
+requests reload. It reaps the tracked foreground child, requests `service stop --force`
+and requires observable closure of the loopback listener before publication/start.
+The CLI exit code alone is not proof of a stopped listener: a completed CLI call, regardless
+of its return code, requires `ECONNREFUSED` from `127.0.0.1:9193`. Poll for at most
+10 seconds with 0.2-second intervals and per-connection timeout at most one second,
+clipping both to the remaining budget. An accepted connection means the listener is
+open; timeout or another socket error leaves closure unconfirmed. Continue bounded
+observation, but neither outcome authorizes restart. If no refusal is observed before
+the deadline, fail closed. CLI timeout/error also blocks restart. An unconfirmed stop or failed
+publication marks fatal shutdown before unlocking; queued callers cannot launch another
+service. PID 1 exits nonzero for ECS replacement; ordinary SIGTERM retains best-effort
+cleanup. Its one-second child waits let fatal/stop events reach final cleanup when a
+child cannot be reaped. `steampipe restart launched for updated scope` records launch,
+not schema import, AWS access or collection readiness. Confirm those separately.
+
+Container health runs `python3 /app/healthcheck.py`: only a TLS loopback PostgreSQL
+connection using the existing database-password environment value and `SELECT 1`.
+It has a five-second alarm and two-second socket timeout, emits no credential/error text,
+and makes no CLI or AWS calls. This replaces `steampipe query`, whose pinned 0.22
+`GetLocalClient` calls `StartServices` outside the supervisor lock. Health failures are
+observations and never auto-start the service. Build the image containing this script
+before the matching Terraform health-command apply. The existing 30-second interval,
+10-second timeout and five retries remain; the ALLDNS restrictions above still govern
+image/task changes and apply authority.
+
+Primary sources: [plugin configuration](https://github.com/turbot/steampipe-plugin-aws/blob/v0.142.0/aws/connection_config.go),
+[plugin credential loading](https://github.com/turbot/steampipe-plugin-aws/blob/v0.142.0/aws/service.go),
+and [SDK credential sources](https://github.com/aws/aws-sdk-go-v2/blob/config/v1.27.16/config/resolve_credentials.go).
+`scripts/v2/steampipe/fixtures/aws-plugin-0.142.0-contract.json` is **manually transcribed**
+from these pinned sources, including the digit-containing `s3_force_path_style` attribute.
+Its recorded SHA-256 values identify source bytes; offline CI does not download upstream
+files or verify those hashes. The local contract test checks rendered attribute names
+against the fixture and positively requires the member `profile` reference and connections.
+The credential-resolution test runs **Python botocore** with mocked ECS/STS transport;
+it is not execution of the plugin's Go SDK or proof that the deployed image loaded profiles.
+
+Run the focused offline checks from the repository root:
+
+```bash
+python3 -m pytest -q scripts/v2/steampipe/test_spc_render.py \
+  scripts/v2/steampipe/test_runtime_config.py scripts/v2/steampipe/test_host_scope.py \
+  scripts/v2/steampipe/test_healthcheck.py scripts/v2/steampipe/test_observed_stop.py
+bash scripts/v2/terraform-test.sh
+```
+
+These checks cover profile injection rejection, private publication, ExternalId reload,
+restart/failure races, process exit, SIGTERM and non-spawning health. The Terraform fixture
+checks the health command and unchanged timing. No live collection is invoked.
+
 ## 4. 배포 순서 / Deployment order
 
 ### 기존 활성 환경 / Existing environment (`steampipe_enabled=true`)
@@ -198,8 +275,10 @@ fields @timestamp, event, max_concurrency, bucket_size, fill_rate
 4. ECS Steampipe service가 stable이 될 때까지 기다린다.
 5. bounded async path로 sync 하나를 trigger하고 freshness/lifecycle log를 확인한다.
 
-1. Build/push the new ARM64 Steampipe image to the existing ECR repository without rolling the
-   ECS service.
+1. Build/push the reviewed ARM64 Steampipe image containing the scope guard, supported
+   shared-profile publisher and `/app/healthcheck.py` to the existing ECR repository
+   without rolling the ECS service. Pair its digest with `CMD python3 /app/healthcheck.py`
+   in the reviewed saved plan.
 2. Run `make migrate` against the current foundation outputs and confirm the `run_token` migration
    is applied.
 3. Only then create/review and controller-apply the saved Terraform plan that updates the Lambda
@@ -255,7 +334,9 @@ aws lambda invoke \
 3. After migration, use a repository-only saved target plan to create only the Steampipe ECR
    repository. This bootstrap apply must not create the Lambda, event rule, task definition, or
    service.
-4. Build/push the ARM64 Steampipe image to that repository.
+4. Build/push the reviewed ARM64 Steampipe image containing the scope guard, supported
+   shared-profile publisher and `/app/healthcheck.py` to that repository. Pair its
+   digest with `CMD python3 /app/healthcheck.py` in the reviewed saved plan.
 5. Set `steampipe_enabled=true`, create/review a fresh full saved plan, and have the controller
    apply it.
 6. Wait for service stability, trigger one sync, and verify freshness/logs.
@@ -285,6 +366,17 @@ terraform -chdir=terraform/foundation apply tfplan
 Manual UI refresh uses the same `InvocationType=Event` path and Lambda reserved concurrency. Do not bypass it with a separate bulk parallel invocation.
 
 ## 5. 로그와 신선도 확인 / Check logs and freshness
+
+The entrypoint writes the following fixed failure tokens to stderr. Keep these distinct
+from the JSON collector events below; no token alone proves a specific IAM or network cause.
+
+| Token | Meaning and operator check |
+|---|---|
+| `invalid_runtime_configuration` | Registry/rendered profile data failed validation. Inspect account, role, region and ExternalId format privately; never print the ExternalId value. |
+| `runtime_configuration_write_failed` | Path ownership/mode, staging or publication failed. Check the configured paths and container filesystem; no service launch is permitted. |
+| `steampipe_configuration_publish_failed` | Restart could not publish the stopped service's new pair. Keep it stopped and inspect the preceding fixed failure. |
+| `steampipe_child_stop_failed` | Foreground child teardown failed. Fatal shutdown retains its reference for bounded final cleanup. |
+| `steampipe_service_stop_failed` | Reason `listener_open` or `listener_unconfirmed`: the bounded 10-second observation did not establish closure. An accepted connection is open; socket timeout/other errors are unconfirmed, not proof of closure. Reasons `timeout`/`error` describe a stop CLI that did not complete. `exit_code` records its integer return code, or `unknown` if unavailable. A completed nonzero CLI exit is acceptable only after observed `ECONNREFUSED`. |
 
 CloudWatch Logs에서 다음 JSON event 이름을 조회한다:
 
@@ -428,6 +520,18 @@ authorization may a fresh reviewed plan and its apply dispatch **both** set
 `allow_dns_changes=true`. Do not exercise that permission while ALLDNS is active or add a
 private-DNS exception.
 
+When rolling back across the introduction of `/app/healthcheck.py`, pair the prior
+Steampipe image digest with its compatible task-definition health command **in the same
+reviewed saved plan**. An older image without that script cannot retain
+`CMD python3 /app/healthcheck.py`; do not apply an image-only rollback or disable health
+checks. Follow [runtime rollback](runtime-foundation.md#rollback--롤백), retaining
+ALLDNS and every existing plan/apply/runtime gate.
+
+A pre-profile-publisher image also loses supported member credential resolution.
+Review the rollback's compatible collector configuration and scan scope, including
+registered targets and strict member proof. Health success alone does not preserve
+member collection; do not silently remove targets or weaken gates to accept that image.
+
 1. 런타임을 유지한 채 limiter/concurrency 또는 이미지 digest를 이전 검토 값으로 되돌린 계획을 만든다. [런타임 롤백](runtime-foundation.md#rollback--롤백)을 따르며 전체 종료는 별도 검토 절차가 필요하다.
 2. controller-approved `apply tfplan`으로 적용한다.
 3. 필요한 경우 현재 catalog를 유지한다. Phase 2 이후의 별도 catalog cutover가 있다면 이전 target set을 복원한다.
@@ -447,6 +551,7 @@ requires a separate reviewed procedure. This development guard does not apply to
 
 ## Related
 
+- ADR-011: governed cross-account read-only role assumption and ExternalId trust; see [target onboarding](onboard-target-account.md).
 - ADR-021: `docs/decisions/021-quota-isolated-inventory-reads.md`
 - Approved design: `docs/superpowers/specs/2026-08-31-steampipe-quota-safe-aurora-mcp-design.md`
 - Renderer: `scripts/v2/steampipe/spc_render.py`

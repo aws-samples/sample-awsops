@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e3521da62cca · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3f2bcf49e15e · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -257,7 +257,7 @@ CLI inputs and fixture prerequisites: `runtime-foundation.md#controller-cli-cont
 Catalog/per-type timeouts: `runtime-verifier-sessions.md#collection-effects-and-proof`.
 Checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
 
-Graph reads admit at most two requests per shared max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. Source-attempt metadata is supported before the separately gated inventory publisher is activated. See `graph-read-contract.md` for operator rollout and disposable tests; source integration does not establish deployment.
+Request and background graph transaction helpers share two admissions per max:3 pool; either can cause an HTTP read to return busy. The legacy materializer is not wired to the new inventory-read helper. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. Source-attempt metadata is supported before the separately gated inventory publisher is activated. See `graph-read-contract.md` for operator rollout and disposable tests; source integration does not establish deployment.
 
 Legacy graph execution reports node/edge totals only. Same-cycle infra execution failure skips dependent trace collection/publication. Registry query failures remain synthetic error sources and are explicitly diagnosed; CLI exit 0 is not completeness or empty-publication proof.
 

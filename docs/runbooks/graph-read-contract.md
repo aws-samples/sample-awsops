@@ -8,8 +8,9 @@ Missing graph clocks can mean legacy rows without collection state; missing meta
 
 `GET /api/graph` reads nodes, edges and collection state in one repeatable-read
 transaction. The shared helper bounds statements, lock waits and transaction
-duration, handles checked-out client errors, and discards failed connections. At most two graph
-requests per pool are admitted, leaving one of the three pool slots for auth; others receive 503 without queueing a checkout. Request
+duration, handles checked-out client errors, and discards failed connections. Request and background transaction helpers share two admissions per pool, leaving one
+of the three pool slots for auth. An HTTP read receives 503 when either kind occupies
+that shared budget, without queueing a checkout. Request
 statements/idle time are bounded to 1.5s, total transaction to 2s; the new companion publication helper has separate bounds; the legacy writer in this
 reader prerequisite does not use that helper yet. Serialization happens after release. Reads cap nodes/raw edges at
 4000/8000 plus a sentinel; returned edges reference visible nodes. Infra class reads rank
@@ -38,15 +39,23 @@ disclosed by metadataTruncated in both HTTP and SQL projections.
 
 `web/lib/graph-inventory-read.ts` provides internal account discovery, count reconciliation,
 projected snapshots and an attempt-evidence calculation for flow/infra callers. Callers use the
-existing `self` host sentinel and the exported SDK host-only type filter. A member needs current
-registered participation evidence; an aggregate zero alone does not establish participation.
+existing `self` host sentinel and the exported SDK host-only type filter. Every selected slice, including `self`, needs a current participation snapshot; members
+also require registration. Its `scope: account` and item count describe that slice, not
+the global producer ledger. Aggregate zero alone never proves slice participation.
 Count proof is reused only when the snapshot observes the identical ledger row version.
 The helper returns source clocks/completeness, not a freshness or deployment verdict.
+Running/partial producer states report `incomplete_collection` before unresolved scope;
+confirmed empty additionally requires known-zero unknown attributes and matched counts.
+`inventoryAccounts` returns null if the state schema is unavailable; otherwise it returns
+at most 100 `accounts` plus `truncated`, detected with a 101st sentinel. Unattempted keys
+precede oldest recorded attempts, then self/account-ID tie breaks. Callers must record
+actual attempts to advance this bounded selection; the read helper does not rotate it
+by itself or rely on an unwritten scheduling-clock key.
 
 Snapshots project consumed fields before SQL byte guards: both classes allow 8,192 rows
 plus a sentinel, within the existing 64KiB per-row and 8MiB projected data/identifier
-budgets (excluding the result envelope). Flow projection preserves listener/API-route
-labels. Target-health arrays retain every Id, Port and State in order while dropping
+budgets (excluding the result envelope). Flow projection preserves listener/API-route labels and the placement/display fields
+consumed from `meta.row`. Target-health arrays retain every Id, Port and State in order while dropping
 unconsumed diagnostic fields. A row withheld by its own byte limit does not consume the
 later-row budget. `truncatedTypes` identifies incomplete payload types in the same snapshot;
 only those source item counts become unknown. Any truncation still withholds publication.
@@ -214,7 +223,7 @@ docker exec "$graph_test_container" pg_isready -U postgres -d awsops
 docker exec "$graph_test_container" psql -U postgres -d awsops \
   -c "COMMENT ON DATABASE awsops IS 'awsops-disposable-graph-test'"
 cd web
-npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts \
+npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts lib/graph-inventory-read-postgres.test.ts \
   app/api/graph/route.test.ts lib/graph-state.test.ts
 docker rm -f "$graph_test_container"
 ```
@@ -245,6 +254,7 @@ A source merge or automatic web CD result is not proof that these steps complete
 ## Related files and decisions
 
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
+`web/lib/graph-inventory-read.ts`, `web/lib/graph-inventory-read-postgres.test.ts`,
 `web/lib/graph-execution.ts`, `scripts/v2/graph-rebuild.mjs`, `web/instrumentation.ts`,
 `web/lib/graph-rebuild-runner.test.ts`, `web/lib/instrumentation-runner.test.ts`,
 `web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`, `web/lib/graph-fetch.ts`, `web/lib/graph-fetch.test.ts`,
