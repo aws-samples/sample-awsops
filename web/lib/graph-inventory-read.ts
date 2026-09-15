@@ -3,6 +3,7 @@ import { graphTransaction } from './graph-transaction';
 import type { GraphAttempt, GraphClass } from './graph-state';
 import type { Row } from './infra-topology';
 import { HOST_ONLY_TREND_TYPES } from './trend-utils';
+import { redactInventorySecrets } from './inventory-redaction';
 
 /** Same SDK host-only scope used by the existing inventory producer/trend contract. */
 export const inventoryTypesForAccount = (types: string[], account: string) =>
@@ -44,7 +45,8 @@ export async function inventoryAccounts(pool: Pool, cls: GraphClass, types: stri
         AND a.account_id <> 'self' AND (a.all_regions OR EXISTS (
           SELECT 1 FROM account_regions ar WHERE ar.account_id=a.account_id AND ar.enabled))
     ) accounts LEFT JOIN topology_graph_state s ON s.account_id=accounts.account_id AND s.class=$1
-    ORDER BY CASE WHEN s.details->>'sourceAttempted'='false' THEN
+    ORDER BY CASE WHEN $1='infra' AND accounts.account_id='self' THEN 0 ELSE 1 END,
+      CASE WHEN s.details->>'sourceAttempted'='false' THEN
       CASE WHEN jsonb_typeof(s.details->'lastSourceAttemptedAtMs')='number'
         THEN (s.details->>'lastSourceAttemptedAtMs')::numeric END
       ELSE extract(epoch FROM s.attempted_at)*1000 END NULLS FIRST,
@@ -92,7 +94,14 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
     const result = await client.query(`WITH bounded AS MATERIALIZED (
       SELECT account_id, resource_type, resource_id, region, captured_at,
         (SELECT coalesce(jsonb_object_agg(key,
-          CASE WHEN key='target_health_descriptions' AND jsonb_typeof(value)='array' THEN
+          CASE WHEN key IN ('origins','actions') AND jsonb_typeof(value)='array' THEN
+            (SELECT coalesce(jsonb_agg(CASE WHEN jsonb_typeof(item)='object' THEN
+              CASE WHEN key='origins' THEN item - 'CustomHeaders' - 'custom_headers' - 'customHeaders'
+                - 'OriginCustomHeaders' - 'origin_custom_headers'
+              ELSE item #- '{AuthenticateOidcConfig,ClientSecret}' #- '{authenticate_oidc_config,client_secret}' END
+              ELSE item END ORDER BY ordinal), '[]'::jsonb)
+             FROM jsonb_array_elements(value) WITH ORDINALITY AS parts(item,ordinal))
+          WHEN key='target_health_descriptions' AND jsonb_typeof(value)='array' THEN
             (SELECT coalesce(jsonb_agg(CASE WHEN jsonb_typeof(item)='object' THEN
               jsonb_strip_nulls(jsonb_build_object(
                 'Target',jsonb_build_object('Id',item#>'{Target,Id}','Port',item#>'{Target,Port}'),
@@ -115,7 +124,7 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
       bytes > $5 OR total_bytes > $6 AS oversized
       FROM budgeted ORDER BY resource_type, region, resource_id`,
     [account, types, cls === 'infra' ? INFRA_FIELDS : FLOW_FIELDS, rowCap + 1, ROW_BYTES, SNAPSHOT_BYTES]);
-    const rows = result.rows as InventoryRow[];
+    const rows = result.rows.map(row => ({ ...row, data: redactInventorySecrets(row.data) })) as InventoryRow[];
     const truncated = rows.length > rowCap || rows.some(row => row.oversized);
     let truncatedTypes: string[] = [];
     if (truncated) {

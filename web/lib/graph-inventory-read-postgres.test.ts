@@ -217,7 +217,8 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
       SELECT account,'infra','unavailable',now(),'{}'::jsonb FROM unnest($1::text[]) account`, [first!.accounts]);
     const second = await inventoryAccounts(pool, 'infra', ['vpc']);
     expect(second?.accounts).toHaveLength(100);
-    expect(second?.accounts.some(account => first!.accounts.includes(account))).toBe(false);
+    expect(second?.accounts[0]).toBe('self');
+    expect(second?.accounts.some(account => account !== 'self' && first!.accounts.includes(account))).toBe(false);
     expect(second?.truncated).toBe(true);
   });
   it('read/background helpers share two admissions and leave an ordinary pool slot free', async () => {

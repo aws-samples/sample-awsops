@@ -214,6 +214,37 @@ describe('queue attribution on retained snapshots', () => {
 
 
 describe('request acquisition deadline', () => {
+  it('leaves post-checkout margin for the original PostgreSQL abort response', async () => {
+    vi.useFakeTimers();
+    const original = Object.assign(new Error('fixture transaction timeout'), { code: '25P04' });
+    const client = Object.assign(new EventEmitter(), {
+      query: vi.fn((sql: string) => sql === 'work' ? new Promise((_, reject) => setTimeout(() => {
+        client.emit('error', original); reject(original);
+      }, 4200)) : Promise.resolve({ rows: [] })), release: vi.fn(),
+    });
+    let failure: unknown;
+    const pending = graphTransaction({ connect: () => new Promise(resolve => setTimeout(() => resolve(client), 1900)) } as never,
+      false, c => c.query('work')).catch(error => { failure = error; });
+    try { await vi.advanceTimersByTimeAsync(6100); expect(failure).toBe(original); }
+    finally { await pending; vi.useRealTimers(); }
+  });
+  it('does not destroy or misreport an in-flight write COMMIT at the watchdog boundary', async () => {
+    vi.useFakeTimers();
+    let commit!: (value: unknown) => void, result: unknown, failure: unknown;
+    const client = Object.assign(new EventEmitter(), {
+      query: vi.fn((sql: string) => sql === 'COMMIT' ? new Promise(resolve => { commit = resolve; }) : Promise.resolve({ rows: [] })),
+      release: vi.fn(),
+    });
+    const pending = graphTransaction({ connect: () => new Promise(resolve => setTimeout(() => resolve(client), 1900)) } as never,
+      false, async () => 42).then(value => { result = value; }, error => { failure = error; });
+    try {
+      await vi.advanceTimersByTimeAsync(7900);
+      expect(failure).toBeUndefined(); expect(result).toBeUndefined();
+      expect(client.release).not.toHaveBeenCalled();
+      commit({ rows: [] }); await pending;
+      expect(result).toBe(42); expect(client.release).toHaveBeenCalledTimes(1);
+    } finally { commit?.({ rows: [] }); await pending; vi.useRealTimers(); }
+  });
   it('bounds a stalled background response while preserving the separate SQL budget', async () => {
     vi.useFakeTimers();
     let rejectQuery!: (error: Error) => void;

@@ -1,5 +1,5 @@
 import { graphDiagnostic } from './graph-state';
-import { GRAPH_REBUILD_REASONS, type GraphRebuildResult } from './graph-store';
+import { GRAPH_REBUILD_REASONS, SELF_INFRA_STATES, type GraphRebuildResult } from './graph-store';
 const reasons = GRAPH_REBUILD_REASONS;
 
 export type GraphExecutionTotals = GraphRebuildResult;
@@ -20,25 +20,33 @@ function projectOutcome(value: unknown, stage: string): GraphExecutionTotals {
   if (raw.selfInfraComplete !== undefined && (typeof raw.selfInfraComplete !== 'boolean'
     || (raw.selfInfraComplete && (stage !== 'infra' || count('published') === 0))))
     throw new Error('Invalid self infra evidence');
+  if (raw.selfInfraStatus !== undefined && (stage !== 'infra'
+    || !SELF_INFRA_STATES.includes(raw.selfInfraStatus as never)
+    || ((raw.selfInfraStatus === 'complete') !== (raw.selfInfraComplete === true))
+    || (['complete', 'degraded', 'stale'].includes(String(raw.selfInfraStatus)) && count('published') === 0)))
+    throw new Error('Invalid self infra status');
   const failed = raw.failed === undefined ? 0 : count('failed');
   return { nodes: count('nodes'), edges: count('edges'), published: count('published'),
     retained: count('retained'), skipped: count('skipped'), degraded: count('degraded'),
     reasons: [...new Set(raw.reasons)],
     ...(raw.accountsTruncated !== undefined ? { accountsTruncated: raw.accountsTruncated } : {}),
     ...(raw.selfInfraComplete !== undefined ? { selfInfraComplete: raw.selfInfraComplete as boolean } : {}),
+    ...(raw.selfInfraStatus !== undefined ? { selfInfraStatus: raw.selfInfraStatus as GraphRebuildResult['selfInfraStatus'] } : {}),
     ...(failed ? { failed, failureCode: JSON.parse(graphDiagnostic(stage, { code: raw.failureCode })).code } : {}) };
 }
 
 /** The caller must respect layer dependencies; this helper reports execution, not completeness. */
 export async function executeGraphLayer(
   stage: string, action: () => Promise<unknown>, report: (line: string, failed?: boolean) => void,
-): Promise<{ failed: boolean; incomplete?: boolean; selfInfraComplete?: boolean; totals?: GraphExecutionTotals }> {
+): Promise<{ failed: boolean; incomplete?: boolean; selfInfraComplete?: boolean;
+  selfInfraStatus?: GraphRebuildResult['selfInfraStatus']; totals?: GraphExecutionTotals }> {
   const safeStage: string = JSON.parse(graphDiagnostic(stage, null)).stage;
   try {
     const totals = projectOutcome(await action(), safeStage);
     report(`[graph-rebuild] ${safeStage}: ${JSON.stringify(totals)}`);
     if (totals.failed) report(`[graph-rebuild] failed ${graphDiagnostic(safeStage, { code: totals.failureCode })}`, true);
     return { totals, failed: !!totals.failed, selfInfraComplete: safeStage === 'infra' && totals.selfInfraComplete === true,
+      selfInfraStatus: safeStage === 'infra' ? totals.selfInfraStatus : undefined,
       incomplete: !totals.published || !!(totals.retained || totals.skipped || totals.degraded || totals.accountsTruncated || totals.reasons.length) };
   } catch (error) {
     report(`[graph-rebuild] failed ${graphDiagnostic(safeStage, error)}`, true);

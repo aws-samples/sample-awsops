@@ -1,5 +1,5 @@
 // ADR-043 — manual graph execution; the default-off timer uses these builders in the web process.
-// Flow failure does not block infra; trace requires a complete same-cycle infra publication.
+// Complete self infra supports normal trace; published stale/degraded self permits only qualified partial telemetry.
 // Builders retain their existing collection/publication behavior:
 //   - flow  (class='flow')  via rebuildGraph      → traffic-flow topology
 //   - infra (class='infra') via rebuildInfraGraph → resource-relationship topology (Step 2)
@@ -30,18 +30,20 @@ const execute = async (stage, action) => {
 try {
   await execute('flow', () => rebuildGraph(pool));
   const infra = await execute('infra', () => rebuildInfraGraph(pool));
-  if (!infra.selfInfraComplete) {
+  const qualification = ['degraded', 'stale'].includes(infra.selfInfraStatus) ? infra.selfInfraStatus : undefined;
+  if (!infra.selfInfraComplete && !qualification) {
     console.error(infra.failed ? '[graph-rebuild] trace skipped: infra execution failed'
       : '[graph-rebuild] trace skipped: infra publication incomplete');
     await execute('trace', () => recordTraceDependencySkip(pool));
   } else {
+    if (qualification) console.error(`[graph-rebuild] trace qualified: self infra ${qualification}`);
     try {
       const { sources, metricsSources, registryFailed } = await loadGraphSources(pool);
       if (registryFailed) {
         failed = true;
         console.error('[graph-rebuild] trace_sources: registry_read_failed');
         await execute('trace', () => recordTraceSourceFailure(pool));
-      } else await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
+      } else await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources, qualification));
     } catch (error) {
       failed = true;
       await execute('trace', () => recordTraceSourceFailure(pool));

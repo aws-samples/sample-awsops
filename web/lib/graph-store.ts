@@ -7,6 +7,7 @@ import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
 import { graphDiagnostic, inventorySourcesStale, writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
 import { currentAccountId } from './account';
 import { GraphReadBusy, GraphReadDeadline } from './graph-transaction';
+import { redactInventorySecrets } from './inventory-redaction';
 import { graphTransaction, inventoryAccounts, inventoryCounts, inventorySnapshot, inventoryAttempt, inventoryTypesForAccount, recordUnattempted, INFRA_TYPES, type InventoryRow } from './graph-inventory';
 export { resolveInfraRef } from './trace-graph';
 
@@ -62,7 +63,9 @@ export interface GraphRebuildResult {
   degraded: number; reasons: string[]; accountsTruncated?: boolean;
   failed?: number; failureCode?: string;
   selfInfraComplete?: boolean;
+  selfInfraStatus?: typeof SELF_INFRA_STATES[number];
 }
+export const SELF_INFRA_STATES = ['complete', 'degraded', 'stale', 'retained', 'skipped', 'failed', 'unattempted'] as const;
 export const GRAPH_REBUILD_REASONS: ReadonlySet<string> = new Set(['publication_busy', 'superseded', 'rebuild_busy', 'state_schema_missing',
   'account_limit', 'time_limit', 'skip_record_busy', 'skip_record_failed', 'snapshot_limit',
   'graph_limit', 'account_failed', 'rebuild_deadline', 'collection_ok', 'collection_empty', 'collection_partial',
@@ -145,7 +148,8 @@ async function replaceGraph(client: PoolClient, cls: GraphClass, account: string
       FROM jsonb_to_recordset($4::jsonb) AS n(id text,kind text,label text,meta jsonb)
       ON CONFLICT(account_id,id,class) DO UPDATE SET kind=EXCLUDED.kind,label=EXCLUDED.label,
         meta=EXCLUDED.meta,run_id=EXCLUDED.run_id,captured_at=now()`,
-    [account, cls, runId, JSON.stringify(nodes.slice(offset, offset + 200))]);
+    [account, cls, runId, JSON.stringify(nodes.slice(offset, offset + 200).map(node =>
+      ({ ...node, meta: redactInventorySecrets(node.meta) })))]);
   }
   const trace = cls === 'trace'; // Inventory preserves existing edge metadata and schema compatibility.
   for (let offset = 0; offset < edges.length; offset += 200) {
@@ -154,7 +158,8 @@ async function replaceGraph(client: PoolClient, cls: GraphClass, account: string
       FROM jsonb_to_recordset($4::jsonb) AS e(source text,target text,rel text,confidence text,meta jsonb)
       ON CONFLICT(account_id,source,target,rel,class) DO UPDATE SET confidence=EXCLUDED.confidence,
         run_id=EXCLUDED.run_id,captured_at=now()${trace ? ',meta=EXCLUDED.meta' : ''}`,
-    [account, cls, runId, JSON.stringify(edges.slice(offset, offset + 200))]);
+    [account, cls, runId, JSON.stringify(edges.slice(offset, offset + 200).map(edge =>
+      ({ ...edge, meta: redactInventorySecrets(edge.meta) })))]);
   }
   await client.query('DELETE FROM topology_edges WHERE account_id=$1 AND class=$2 AND run_id<>$3', [account, cls, runId]);
   await client.query('DELETE FROM topology_nodes WHERE account_id=$1 AND class=$2 AND run_id<>$3', [account, cls, runId]);
@@ -163,7 +168,7 @@ async function replaceGraph(client: PoolClient, cls: GraphClass, account: string
 async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId: string,
   types: string[], build: (rows: InventoryRow[]) => { nodes: GNode[]; edges: GEdge[] }): Promise<GraphRebuildResult> {
   const totals = emptyResult();
-  if (cls === 'infra') totals.selfInfraComplete = false;
+  if (cls === 'infra') { totals.selfInfraComplete = false; totals.selfInfraStatus = 'unattempted'; }
   const reason = (value: string) => { if (!totals.reasons.includes(value)) totals.reasons.push(value); };
   const active = inventoryBusy.get(pool) ?? new Set<GraphClass>();
   if (active.has(cls)) return { ...totals, skipped: 1, reasons: ['rebuild_busy'] };
@@ -211,13 +216,16 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
         }
         publishing = true;
         const outcome = await writeGraph(pool, cls, lock, account, graph.nodes, graph.edges, runId, attempt);
-        if (cls === 'infra' && account === 'self') totals.selfInfraComplete =
-          outcome.published === 1 && !outcome.retained && !outcome.skipped && !outcome.degraded
-          && !inventorySourcesStale(attempt.details.sources);
+        if (cls === 'infra' && account === 'self') {
+          totals.selfInfraStatus = outcome.retained ? 'retained' : outcome.skipped ? 'skipped'
+            : outcome.degraded ? 'degraded' : inventorySourcesStale(attempt.details.sources) ? 'stale' : 'complete';
+          totals.selfInfraComplete = outcome.published === 1 && totals.selfInfraStatus === 'complete';
+        }
         for (const key of ['nodes', 'edges', 'published', 'retained', 'skipped', 'degraded'] as const) totals[key] += outcome[key];
         outcome.reasons.forEach(reason);
       } catch (error) {
         const deferred = deferredReason(error, 'rebuild_busy');
+        if (cls === 'infra' && account === 'self') totals.selfInfraStatus = deferred ? 'skipped' : 'failed';
         if (deferred) {
           totals.skipped++; reason(deferred);
           await new Promise<void>(resolve => setImmediate(resolve)); continue;
@@ -274,6 +282,7 @@ export async function rebuildTraceGraph(
   sources: TraceSource[],
   runId: string = randomUUID(),
   metricsSources: MetricsCallsSourceLike[] = [],
+  infraQualification?: 'degraded' | 'stale',
 ): Promise<GraphRebuildResult> {
   let schema;
   try {
@@ -321,12 +330,19 @@ export async function rebuildTraceGraph(
       : partial ? 'partial' : 'unavailable';
     return writeGraph(pool, 'trace', TRACE_LOCK, 'self', [], [], runId, {
       status, attemptedAt: new Date(endMs).toISOString(), publish: false,
-      details: { sources: sourceDetails, retainedPrevious: true, windowStartMs: startMs, windowEndMs: endMs },
+      details: { sources: sourceDetails, retainedPrevious: true, windowStartMs: startMs, windowEndMs: endMs,
+        ...(infraQualification ? { infraUnavailable: true } : {}) },
+    });
+  }
+  if (infraQualification && !spans.length && !calls.length) {
+    return writeGraph(pool, 'trace', TRACE_LOCK, 'self', [], [], runId, {
+      status: 'partial', attemptedAt: new Date(endMs).toISOString(), publish: false,
+      details: { sources: sourceDetails, infraUnavailable: true, windowStartMs: startMs, windowEndMs: endMs },
     });
   }
   let infraNodes: InfraNodeLike[] = [];
-  let infraUnavailable = false;
-  try {
+  let infraUnavailable = !!infraQualification;
+  if (!infraQualification) try {
     const result = await graphTransaction(pool, true, client => client.query(
       `SELECT id, kind, meta FROM topology_nodes WHERE account_id = 'self' AND class = 'infra'`));
     infraNodes = result.rows as InfraNodeLike[];

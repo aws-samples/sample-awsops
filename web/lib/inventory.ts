@@ -4,6 +4,7 @@ import { isAdmin } from '@/lib/admin';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { AGG_DERIVED_KEYS } from '@/lib/inventory-derived';
 import type { User } from '@/lib/auth';
+import { redactInventorySecrets } from './inventory-redaction';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 let lambda: LambdaClient | null = null;
@@ -202,7 +203,8 @@ export async function readResources(type: string, { limit, offset, regions = '__
   );
   const page = result.rows[0];
   if (!page || !Array.isArray(page.rows)) throw new Error('invalid inventory snapshot');
-  return { rows: page.rows, run: page.run, consistency: 'statement-snapshot' };
+  return { rows: page.rows.map(row => ({ ...row, data: redactInventorySecrets(row.data) })),
+    run: page.run, consistency: 'statement-snapshot' };
 }
 
 export async function triggerSync(type: string): Promise<{ status: 'queued' }> {

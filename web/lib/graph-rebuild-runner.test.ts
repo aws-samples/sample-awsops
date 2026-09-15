@@ -55,7 +55,7 @@ function run(options: Record<string, unknown> = {}) {
               : input.partialFailure === stage || input.memberOnlyGap ? [{ account_id: '123456789012' }] : [])] };
         }
         if (sql.includes('FROM inventory_sync_runs')) {
-          const now = fixtureNow;
+          const now = fixtureNow - (stage === 'infra' && input.infraOutcome === 'stale' ? 3600000 : 0);
           return { rows: args[0].map(resource_type => ({ resource_type, account_id: 'self',
             status: stage === 'infra' && input.infraOutcome === 'retained' && resource_type === 'vpc' ? 'failed' : 'succeeded',
             row_count: stage === 'infra' && input.infraOutcome === 'degraded' && resource_type === 'vpc' ? 1 : 0,
@@ -72,7 +72,7 @@ function run(options: Record<string, unknown> = {}) {
           return { rows: [] };
         }
         if (sql.includes('FROM inventory_snapshots')) return { rows: input.memberOnlyGap && args[0] !== 'self' ? [] : args[1].map(resource_type => ({
-          resource_type, captured_at: new Date(fixtureNow - 1000).toISOString(),
+          resource_type, captured_at: new Date(fixtureNow - 1000 - (stage === 'infra' && input.infraOutcome === 'stale' ? 3600000 : 0)).toISOString(),
           resource_count: stage === 'infra' && input.infraOutcome === 'degraded' && resource_type === 'vpc' ? 1 : 0,
         })) };
         if (sql.includes('FROM datasource_graph_queries')) {
@@ -197,7 +197,7 @@ describe('graph execution and publication contract', () => {
     expect(result.errors).toContain('[graph-rebuild] trace skipped: infra execution failed');
   });
   it.each([false, true])('returned incomplete infra never refreshes trace (timer=%s)', timer => {
-    for (const infraOutcome of ['retained', 'skipped', 'degraded']) {
+    for (const infraOutcome of ['retained', 'skipped']) {
       const result = run({ timer, infraOutcome });
       expect(result.code).toBe(timer ? null : 2);
       expect(result.registryReads).toBe(0);
@@ -211,6 +211,19 @@ describe('graph execution and publication contract', () => {
       expect(result.errors).toContain('[graph-rebuild] trace skipped: infra publication incomplete');
     }
   });
+  it.each([false, true].flatMap(timer => ['degraded', 'stale'].map(infraOutcome => ({ timer, infraOutcome }))))(
+    'published $infraOutcome self context permits only qualified partial telemetry (timer=$timer)', ({ timer, infraOutcome }) => {
+      const result = run({ timer, infraOutcome });
+      expect(result.code).toBe(timer ? null : 2);
+      expect(result.traceCollections).toBe(cycles(timer)); expect(result.infraReads).toBe(0);
+      expect(result.traceWrites).toBeGreaterThan(0);
+      expect(result.attempts.every((a: { publish: boolean; status: string; details: Record<string, unknown> }) =>
+        a.publish && a.status === 'partial' && a.details.infraUnavailable === true)).toBe(true);
+      const empty = run({ timer, infraOutcome, empty: true });
+      expect(empty.traceWrites).toBe(0); expect(empty.traceDeletes).toBe(0);
+      expect(empty.savedCapture).toBe('previous');
+      expect(empty.attempts.every((a: { publish: boolean }) => !a.publish)).toBe(true);
+    });
   it.each([false, true])('member retention keeps fleet incomplete but does not poison clean self trace context (timer=%s)', timer => {
     const result = run({ timer, memberOnlyGap: true });
     expect(result.code).toBe(timer ? null : 2);

@@ -19,6 +19,7 @@ vi.mock('@/lib/mcp-lambda-invoke', () => ({ invokeMcpLambdaTool: (...args: unkno
 vi.mock('@/lib/auth', () => ({ verifyUser: async () => ({ sub: 'fixture' }) }));
 vi.mock('@/lib/db', () => ({ getPool: () => api.pool }));
 import { GET } from '../app/api/graph/route';
+import { GET as inventoryGET } from '../app/api/inventory/[type]/route';
 
 // Opt-in, disposable PG17 server only. The Unix socket is mounted in a private task directory;
 // no host port, AWS endpoint, or product dependency is needed.
@@ -191,6 +192,71 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await state('trace')).toMatchObject({ status: 'unavailable', sourceAttempted: false,
       failureReason: 'not_attempted', captured_at: previous.captured_at });
     expect((await pool.query("SELECT id FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
+  });
+  it.each(['object', 'encoded', 'mixed_case', 'root_string'])('redacts stored graph secrets on full and subgraph reads (%s)', async shape => {
+    const secret = 'FIXTURE_ORIGIN_SECRET_DO_NOT_EXPOSE', oidcSecret = 'FIXTURE_OIDC_SECRET_DO_NOT_EXPOSE';
+    const origin = { Id: 'main', DomainName: 'origin.example.test',
+      [shape === 'mixed_case' ? 'custom_headers' : 'CustomHeaders']: { Items: [{ HeaderName: 'X-Origin', HeaderValue: secret }] } };
+    const action = { Type: 'authenticate-oidc', AuthenticateOidcConfig: {
+      ClientId: 'public-client', [shape === 'mixed_case' ? 'client_secret' : 'ClientSecret']: oidcSecret } };
+    const row = { domain_name: 'dist.example.test', origins: shape === 'encoded' ? JSON.stringify(JSON.stringify([origin])) : [origin],
+      actions: shape === 'encoded' ? JSON.stringify([action]) : [action] };
+    const meta = shape === 'root_string' ? JSON.stringify({ row }) : { row };
+    await pool.query(`INSERT INTO topology_nodes(account_id,id,kind,label,meta,run_id,class)
+      VALUES ('self','cf:legacy','cf','legacy',$1::jsonb,'old','flow')`, [JSON.stringify(meta)]);
+    for (const suffix of ['', '&from=cf:legacy']) {
+      const response = await GET(new Request(`http://localhost/api/graph?class=flow${suffix}`));
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).not.toContain(secret); expect(text).not.toContain(oidcSecret);
+      expect(text).toContain('origin.example.test'); expect(text).toContain('public-client');
+    }
+    expect(JSON.stringify((await pool.query("SELECT meta FROM topology_nodes WHERE id='cf:legacy'")).rows)).toContain(secret);
+  });
+  it('new graph writes omit origin/OIDC secrets while preserving routing fields', async () => {
+    await seed('flow');
+    const data = { id: 'dist-fixture', domain_name: 'dist.example.test', origins: [{ Id: 'main',
+      DomainName: 'web.example.test', CustomHeaders: { Items: [{ HeaderName: 'X-Origin', HeaderValue: 'FIXTURE_WRITE_SECRET' }] } }],
+      actions: [{ TargetGroupArn: 'tg-safe', AuthenticateOidcConfig: { ClientId: 'public-client', ClientSecret: 'FIXTURE_WRITE_OIDC' } }] };
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
+      VALUES ('cloudfront','dist-fixture',$1::jsonb,$2)`, [JSON.stringify(data), recent]);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=1 WHERE resource_type='cloudfront'");
+    await hostParticipation();
+    expect(await build('flow')).toMatchObject({ published: 1 });
+    const stored = JSON.stringify((await pool.query("SELECT meta FROM topology_nodes WHERE class='flow'")).rows);
+    expect(stored).not.toContain('FIXTURE_WRITE_SECRET'); expect(stored).not.toContain('FIXTURE_WRITE_OIDC');
+    expect(stored).toContain('web.example.test'); expect(stored).toContain('tg-safe');
+    expect((await pool.query("SELECT * FROM topology_edges WHERE class='flow'")).rowCount).toBeGreaterThan(0);
+  });
+  it('generic inventory reads redact existing CloudFront secrets without changing snapshot evidence', async () => {
+    const data = { domain_name: 'dist.example.test', origins: [{ DomainName: 'origin.example.test',
+      CustomHeaders: { Items: [{ HeaderName: 'X-Origin', HeaderValue: 'FIXTURE_INVENTORY_SECRET' }] } }] };
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
+      VALUES ('cloudfront','legacy-dist',$1::jsonb,$2)`, [JSON.stringify(data), recent]);
+    const response = await inventoryGET(new Request('http://localhost/api/inventory/cloudfront'), { params: { type: 'cloudfront' } });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.consistency).toBe('statement-snapshot');
+    expect(body.rows[0]).toMatchObject({ resource_id: 'legacy-dist', account_id: 'self' });
+    expect(JSON.stringify(body)).toContain('origin.example.test');
+    expect(JSON.stringify(body)).not.toContain('FIXTURE_INVENTORY_SECRET');
+    expect(JSON.stringify((await pool.query("SELECT data FROM inventory_resources WHERE resource_id='legacy-dist'")).rows))
+      .toContain('FIXTURE_INVENTORY_SECRET');
+  });
+  it.each(['root', 'items_wrapper'])('malformed JSON-looking strings cannot leak through either public read path (%s)', async shape => {
+    const malformed = '{"row":{"origins":[{"CustomHeaders":"FIXTURE_ROOT_SECRET"}]}, broken';
+    const payload = shape === 'root' ? malformed : { row: { origins: { Items: malformed } } };
+    await pool.query(`INSERT INTO topology_nodes(account_id,id,kind,label,meta,run_id,class)
+      VALUES ('self','cf:broken','cf','{ordinary label',$1::jsonb,'old','flow')`, [JSON.stringify(payload)]);
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
+      VALUES ('cloudfront','broken',$1::jsonb,$2)`, [JSON.stringify(payload), recent]);
+    for (const response of [
+      await GET(new Request('http://localhost/api/graph?class=flow')),
+      await inventoryGET(new Request('http://localhost/api/inventory/cloudfront'), { params: { type: 'cloudfront' } }),
+    ]) {
+      expect(response.status).toBe(500);
+      expect(await response.text()).not.toContain('FIXTURE_ROOT_SECRET');
+    }
   });
 
   it.each(tempoContracts)('Tempo producer $name preserves the graph unless empty is confirmed', async fixture => {
@@ -732,14 +798,17 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await seed('infra'); await seed('infra', recent, member);
     await pool.query(`INSERT INTO topology_graph_state(account_id,class,status,attempted_at,details)
       VALUES ('self','infra','ok',$1,'{}'),($2,'infra','unavailable',$1,'{"sourceAttempted":false}')`, [recent, member]);
-    expect((await inventoryAccounts(pool, 'infra', INFRA_TYPES))?.accounts[0]).toBe(member);
+    expect((await inventoryAccounts(pool, 'infra', INFRA_TYPES))?.accounts.slice(0, 2)).toEqual(['self', member]);
+    await pool.query(`INSERT INTO topology_graph_state(account_id,class,status,attempted_at,details)
+      SELECT account_id,'flow',status,attempted_at,details FROM topology_graph_state WHERE class='infra'`);
+    expect((await inventoryAccounts(pool, 'flow', INFRA_TYPES))?.accounts[0]).toBe(member);
   });
   it.each(['flow', 'infra'])('rotates all accounts over repeated two-account %s passes', async cls => {
     const accounts = ['self', ...Array.from({ length: 6 }, (_, i) => `10000000000${i}`)];
     for (const account of accounts) await seed(cls, recent, account);
     await pool.query('UPDATE inventory_sync_runs SET row_count=$1 WHERE resource_type=$2',
       [accounts.length, cls === 'flow' ? 'alb' : 'vpc']);
-    for (let pass = 0; pass < 4; pass++) {
+    for (let pass = 0; pass < (cls === 'infra' ? 6 : 4); pass++) {
       let ticks = 0;
       const timer = vi.spyOn(performance, 'now').mockImplementation(() => ticks++ <= 2 ? 0 : 31_000);
       const clock = vi.spyOn(Date, 'now').mockReturnValue(now + pass * 1000);

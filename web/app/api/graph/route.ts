@@ -4,23 +4,27 @@ import { downstream, upstream, FANOUT_CAP } from '@/lib/graph-query';
 import { readGraphState, graphDiagnostic, type GraphClass } from '@/lib/graph-state';
 import { graphReadTransaction, GraphReadBusy, GraphReadDeadline } from '@/lib/graph-transaction';
 import { queueClaimMeta } from '@/lib/trace-evidence';
+import { redactInventorySecrets } from '@/lib/inventory-redaction';
 
 export const dynamic = 'force-dynamic';
 
 function evidenceNodes(rows: Record<string, any>[], cls: string) {
-  return cls !== 'trace' ? rows : rows.map(node =>
-    node.kind === 'queue' ? { ...node, meta: queueClaimMeta(node.meta ?? {}) } : node);
+  return rows.map(node => {
+    const meta = redactInventorySecrets(node.meta);
+    return { ...node, meta: cls === 'trace' && node.kind === 'queue' ? queueClaimMeta(meta ?? {}) : meta };
+  });
 }
 
 function evidenceEdges(rows: Record<string, any>[], cls: string) {
-  if (cls !== 'trace') return rows;
   return rows.map((edge) => {
-    const spans = edge.meta?.spanCount;
-    const metrics = edge.meta?.metricCount;
+    const meta = redactInventorySecrets(edge.meta);
+    if (cls !== 'trace') return { ...edge, meta };
+    const spans = meta?.spanCount;
+    const metrics = meta?.metricCount;
     const observed = typeof spans === 'number' && Number.isFinite(spans) && spans >= 0
       && typeof metrics === 'number' && Number.isFinite(metrics) && metrics >= 0
       && spans + metrics > 0;
-    return { ...edge, confidence: observed ? 'observed' : 'unknown' };
+    return { ...edge, meta, confidence: observed ? 'observed' : 'unknown' };
   });
 }
 
@@ -115,8 +119,8 @@ export async function GET(request: Request) {
           ...(rows.truncated ? { readTruncated: true, readReason: 'row_limit' } : {}) } };
     });
     // Normalize annotations/deduplicate and serialize only after commit and client release.
-    const edges = [...new Map(result.edges.map(edge => [JSON.stringify(edge), edge])).values()];
-    return Response.json({ ...result, nodes: evidenceNodes(result.nodes, cls), edges: evidenceEdges(edges, cls) });
+    const edges = [...new Map(evidenceEdges(result.edges, cls).map(edge => [JSON.stringify(edge), edge])).values()];
+    return Response.json({ ...result, nodes: evidenceNodes(result.nodes, cls), edges });
   } catch (error) {
     const busy = error instanceof GraphReadBusy;
     const code = (error as { code?: string } | null)?.code;

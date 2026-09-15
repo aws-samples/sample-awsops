@@ -5,7 +5,8 @@ export class GraphReadBusy extends Error {}
 export class GraphReadDeadline extends Error {
   constructor(readonly phase: 'acquire' | 'transaction') { super('graph read deadline exceeded'); }
 }
-type ReadLease = { client?: PoolClient; expired: boolean; released: boolean };
+type ReadLease = { client?: PoolClient; expired: boolean; released: boolean;
+  acquired?: () => void; committing?: boolean };
 
 function admit(pool: Pool) {
   const active = activeGraphWork.get(pool) ?? 0;
@@ -35,6 +36,8 @@ async function admittedTransaction<T>(pool: Pool, readOnly: boolean,
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     const expire = () => {
+      // Once a write COMMIT is sent, only its response/error can establish the outcome.
+      if (!readOnly && lease.committing) return;
       lease.expired = true;
       reject(new GraphReadDeadline(lease.client ? 'transaction' : 'acquire'));
       if (lease.client && !lease.released) {
@@ -45,9 +48,8 @@ async function admittedTransaction<T>(pool: Pool, readOnly: boolean,
     timer = setTimeout(() => {
       if (requestBudget || !lease.client) expire();
     }, 2000);
-    // PG retains its separate 4s transaction limit/fatal SQLSTATE. This caller-side
-    // ceiling also covers a response that never arrives after checkout.
-    if (!requestBudget) watchdog = setTimeout(expire, 6000);
+    // Leave two seconds beyond PG's 4s limit for abort/response handling, excluding checkout.
+    if (!requestBudget) lease.acquired = () => { watchdog = setTimeout(expire, 6000); };
   });
   try { return await Promise.race([operation, deadline]); }
   finally { clearTimeout(timer!); if (watchdog) clearTimeout(watchdog); }
@@ -63,6 +65,7 @@ async function runTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: Poo
       lease.released = true; client.release();
       throw new GraphReadDeadline('acquire');
     }
+    lease.acquired?.();
   }
   // pg-pool removes its idle error listener while checked out. A fatal query response
   // can be followed by a separate error event while ROLLBACK is pending.
@@ -78,7 +81,10 @@ async function runTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: Poo
     await client.query(requestBudget ? "SET LOCAL transaction_timeout = '2s'" : "SET LOCAL transaction_timeout = '4s'");
     const result = await fn(client);
     if (clientError) throw clientError;
-    await client.query('COMMIT');
+    if (lease?.expired) throw new GraphReadDeadline('transaction');
+    if (lease) lease.committing = true;
+    try { await client.query('COMMIT'); }
+    finally { if (lease) lease.committing = false; }
     return result;
   } catch (error) {
     // Preserve the original query/application error. Only pg's generic follow-on rejection
