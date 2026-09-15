@@ -238,7 +238,8 @@ Positive `nodeDrops/edgeDrops/orphanSpans/invalidSpans/unresolvedMessaging` and
 `infraUnavailable` remain visible for older persisted envelopes as well as newer producer flags.
 Only node/edge drops or explicit truncation flags imply a processing limit; malformed spans
 and unresolved parent/link/messaging evidence are distinct partial-result causes. Losses alone do not prove retention:
-`retainedPrevious` is required for that claim. Source-detail totals include saved sources, with latest-attempt status counts labeled separately.
+`retainedPrevious` is required for that claim. Source-detail totals count displayed entries;
+identical attempted/saved source lists are shown once, while their status/count labels remain separate.
 Missing collection metadata stays unknown rather than implying collector failure.
 
 
@@ -269,8 +270,12 @@ runtime payloads for compatibility with older or malformed responses.
 The UI supports the existing trace envelope and optional inventory/saved-source
 fields accepted from the inventory publication companion. This reader prerequisite does
 not activate flow/infra publication; the existing materializer still writes trace state.
-Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded; their count
-includes saved-source entries. Runtime, Lambda and migration rollout remain separate
+Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded.
+If `sources` and `publishedSources` have equal ordered identity, status, scope, producer,
+count, clock and string-reason fields, one shared list is displayed. Distinct metadata stays
+separate; source-detail totals count the displayed list once, and latest-attempt/saved-source
+counts retain separate labels. This display comparison does not merge stored records.
+Runtime, Lambda and migration rollout remain separate
 from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
 
 
@@ -282,6 +287,21 @@ Excess graph requests return HTTP 503, other read failures HTTP 500, with fixed 
 
 
 All three graph pages render collection/read errors, parse safe non-2xx envelopes, abort superseded fetches and provide refresh. A shed request includes Retry-After: 1 and a fixed server-side shed diagnostic. Timeout SQLSTATEs (57014/25P03/25P04/55P03) produce readReason=timeout; they never imply empty collection or successful partial publication. Requested subgraph roots are prioritized before the node cap; fan-out capped and readTruncated remain distinct.
+
+The active `fetchGraph` consumer retries only HTTP503 responses whose collection metadata
+explicitly has `readStatus: "unavailable"` and `readReason: "busy"`. It makes at most five
+requests to the same URL, with 250/750/1500/5000 ms waits inside one ten-second abort budget.
+Authentication, other4xx, query failures and untyped service errors are not retried.
+Cancellation propagates through pending waits/reads. Exhausted recovery returns unknown,
+read-unavailable metadata; it never certifies empty collection or exposes an error-body payload.
+
+Trace and servicegraph adapters accept an empty normalized connector result only with explicit
+`collectionStatus: "ok"` or `"empty"` evidence and no existing error, malformed, cap or truncation
+reason. The ClickHouse adapter accepts that marker on the outer or selected nested result.
+Unmarked legacy empty results, including vectors whose valid samples all have zero count,
+are partial with `incomplete_collection`; valid nonempty legacy evidence remains compatible.
+Markers are an accepted consumer input contract, not proof that a particular producer has
+been deployed or that publication/storage behavior changed.
 
 HTTP collection details use the same bounded key/status/reason vocabulary as the SQL-reader view: raw/private keys and injected read/coverage fields are excluded. Source arrays are capped at 128 and reason lists at 16; metadataTruncated discloses omitted/malformed metadata separately from graph row truncation. Safe null source clocks remain unknown for compatibility.
 

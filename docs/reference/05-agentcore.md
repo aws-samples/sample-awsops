@@ -96,6 +96,21 @@ interpreter_id, memory_id}`. The web BFF reads these at **runtime** via the task
 **not** ECS `valueFrom` — to avoid a task-start race. Placeholders are written by
 Terraform; `provision.py` overwrites with real values.
 
+### Graph query collection evidence
+
+ClickHouse queries, Tempo search, and Prometheus/Mimir query endpoints expose a
+`collectionStatus` marker: `ok`, `empty`, `partial`, `unknown` or `error`. Only validated
+successful empty collections are marked `empty`. Missing/malformed data, upstream
+warnings, partial responses, saturated limits and unfinished Tempo jobs cannot prove
+absence. Existing nonempty data remains available with its completeness disclosure.
+
+`agent/lambda/test_collection_markers.py` invokes the real handlers with mocked HTTP
+and credential lookup. Shared `agent/fixtures/tempo-topology-contract.json` and
+`agent/fixtures/query-topology-contract.json` bodies are consumed by the web adapter
+tests. Deploy these Lambda code changes through the existing reviewed Terraform
+release; `make agentcore` and web image deployment do not ship Lambda code. The web
+adapter retains graphs for empty legacy responses until completion evidence is available.
+
 ## Provisioner reconciliation
 
 Before upgrading, verify that the operator-owned deployer has

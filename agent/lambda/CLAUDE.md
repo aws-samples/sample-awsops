@@ -6,6 +6,11 @@ added 2026-06-18: `core_helpers` / `reachability_read` / `istio_read` — see th
 lists below.
 
 ## Key Files
+- Graph query/search producers in `clickhouse_mcp.py`, `tempo_mcp.py`, `prometheus_mcp.py`
+  and `mimir_mcp.py` disclose `collectionStatus`. Validated empty results differ from
+  missing/malformed, partial or failed responses. `test_collection_markers.py` binds
+  actual handler bodies to shared Tempo/query fixtures consumed by web adapters.
+  Deploy Lambda code through the reviewed Terraform flow; web/AgentCore images do not ship it.
 - `inventory_read_mcp.py` supports a CloudFront-only exact `query_inventory.resource_id`.
   Validate the ID before SQL; bind it as a parameter, select only identity and cap at one row.
   Responses disclose `projection=identity_only` and echo the validated ID. Existing sql_reader

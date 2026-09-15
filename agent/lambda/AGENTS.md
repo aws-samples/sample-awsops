@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f4c42651914a · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 59e2d591b0eb · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -9,6 +9,10 @@ inventories live in `ai.tf`'s `local.agent_lambdas` and the Lambda source files 
 that's the source of truth for tool counts, not this doc.
 
 ## Rules
+- Graph query/search producers disclose typed `collectionStatus`; validated empty differs
+  from incomplete or failed input. Actual handler/HTTP fixtures are checked by
+  `test_collection_markers.py` and shared with web adapters. These Lambda changes require
+  the reviewed Terraform deployment; web/AgentCore image changes do not ship them.
 - Exact `query_inventory.resource_id` is CloudFront-only: validate before SQL, bind the ID,
   return at most one identity-only row, and disclose the projection plus validated ID.
   It uses existing sql_reader columns/grants without schema, permission or AWS mutation changes.

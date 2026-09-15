@@ -52,6 +52,35 @@ starting SQL, and its admission remains held until settlement to prevent a queue
 Annotation normalization and serialization run after release; SQL deadlines remain defense
 in depth. The graph-attempt window has labels distinct from each source query window.
 
+## Browser recovery and source evidence
+
+The existing graph consumer retries only a typed HTTP503 admission failure:
+`collection.readStatus="unavailable"` together with `collection.readReason="busy"`.
+It keeps the same URL/scope and uses at most five requests, with waits of
+250/750/1500/5000 ms inside a single ten-second abort budget. This client budget is
+separate from the server transaction limit. Caller cancellation stops waits and reads.
+Auth/rejection responses and generic errors do not enter this recovery loop.
+Exhaustion remains unknown/read-unavailable, rather than a confirmed empty graph.
+
+For an empty trace/metric result, inspect the adapter's source evidence.
+Without an explicit `collectionStatus` of `ok` or `empty`, a legacy empty result
+becomes partial with `incomplete_collection`; this includes valid zero-valued metric
+samples. Nonempty legacy results retain compatibility. Existing malformed, error, cap and
+truncation reasons remain authoritative even beside a completion marker.
+
+The collection panel shows matching ordered attempted/saved source metadata once.
+Attempt and saved-source counts keep separate labels; differing status, reasons or
+clocks remain separate. The comparison affects display only.
+
+Consumer-only checks from `web/` use mocked transport/state and need no PostgreSQL:
+
+```bash
+npx vitest run lib/trace-source.test.ts lib/graph-fetch.test.ts components/topology/GraphCollectionStatus.test.tsx
+```
+
+These changes add no database write, migration, publisher or schedule. Datastore
+verification below applies when those paths change.
+
 ## Operator action
 
 Apply `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql` and

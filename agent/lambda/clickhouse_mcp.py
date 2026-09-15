@@ -163,11 +163,34 @@ def _run_sql(sql, max_rows, trusted=False, max_execution_time=None):
     # timeout_overflow_mode=throw — the server-side bound must fire first.
     status, data = http_json("POST", url, headers=headers, body=body, timeout=max_execution_time + 3)
     if status >= 400:
-        snippet = data.get("raw") or data.get("exception") or data
+        snippet = (data.get("raw") or data.get("exception") or data) if isinstance(data, dict) else "non-object error response"
         return err(f"ClickHouse query failed ({status}): {str(snippet)[:300]}")
-    rows = data.get("data", []) if isinstance(data, dict) else []
+    if isinstance(data, dict) and (data.get("status") == "error"
+            or any(data.get(key) not in (None, "") for key in ("exception", "error", "errorType"))):
+        return err("ClickHouse query returned an error")
+    raw = data.get("data") if isinstance(data, dict) else None
+    rows = raw if isinstance(raw, list) else []
+    valid = (status in (200, 206) and isinstance(raw, list) and all(isinstance(row, dict) for row in rows[:max_rows])
+             and type(data.get("rows")) is int and data["rows"] == len(rows)
+             and isinstance(data.get("meta"), list)
+             and all(isinstance(column, dict) and isinstance(column.get("name"), str)
+                     and isinstance(column.get("type"), str) for column in data["meta"]))
+    state = "unknown" if not valid else "partial" if status == 206 or len(rows) >= max_rows else "ok" if rows else "empty"
+    if isinstance(data, dict):
+        for key in ("warnings", "partial", "truncated", "rows_before_limit_at_least"):
+            if key not in data:
+                continue
+            value = data[key]
+            good = (isinstance(value, list) and all(isinstance(item, str) for item in value) if key == "warnings" else
+                    type(value) is int and value >= 0 if key == "rows_before_limit_at_least" else
+                    type(value) is bool)
+            if not good:
+                state = "unknown"
+            elif state != "unknown" and (value > len(rows) if key == "rows_before_limit_at_least" else bool(value)):
+                state = "partial"
     return ok({"rowCount": len(rows[:max_rows]), "rows": rows[:max_rows],
-               "meta": data.get("meta") if isinstance(data, dict) else None})
+               "meta": data.get("meta") if isinstance(data, dict) else None,
+               "collectionStatus": state})
 
 
 def clickhouse_query(args):
@@ -289,4 +312,4 @@ def ok(body):
 
 
 def err(msg):
-    return {"statusCode": 400, "body": json.dumps({"error": msg})}
+    return {"statusCode": 400, "body": json.dumps({"error": msg, "collectionStatus": "error"})}

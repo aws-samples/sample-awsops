@@ -183,9 +183,31 @@ as processing limits. The panel discloses positive loss counters and unavailable
 source windows separately from publication/capture clocks, and does not infer retention
 from losses. `retainedPrevious` alone establishes that a saved graph is being reused.
 The typed collection contract also describes optional additive producer fields; unknown
-runtime data remains defensively normalized. Source-detail totals include saved sources; latest-attempt status counts have separate labels.
+runtime data remains defensively normalized. Matching ordered attempted/saved source
+metadata is displayed once; different status, reasons or clocks remain separate.
+Source-detail totals count displayed entries, while latest-attempt and saved-source
+counts have separate labels. This display behavior does not change stored provenance.
 Verify locally with `cd web && npx vitest run components/topology/GraphCollectionStatus.test.tsx`;
 the regression uses the real graph-state reader with a database boundary fixture.
+
+### Empty trace results at the consumer boundary
+
+ClickHouse, Tempo and servicegraph adapters require an explicit `collectionStatus`
+of `ok` or `empty` before accepting an empty normalized result. Unmarked empty legacy
+responses, including valid zero-valued metric samples, remain partial with
+`incomplete_collection`. Valid nonempty legacy data stays compatible; error, malformed,
+cap or truncation reasons are not erased by an empty marker.
+
+The shared `agent/fixtures/tempo-topology-contract.json` data exercises this consumer
+contract with observed empty, missing/malformed and unfinished search cases. These
+fixtures do not establish producer rollout or add publication behavior. The ClickHouse,
+Prometheus and Mimir fixtures in `agent/fixtures/query-topology-contract.json` also
+bind actual handler bodies to adapter outcomes. The corresponding query/search
+Lambda changes must be deployed through the reviewed Terraform operator flow; web
+or AgentCore image deployment alone does not ship their code. During a web-first
+rollout, unmarked empty responses retain the previous graph rather than proving absence. For typed busy
+read recovery and the consumer-only tests, see
+[the graph read contract](graph-read-contract.md#browser-recovery-and-source-evidence).
 
 
 ## Topology evidence compatibility
