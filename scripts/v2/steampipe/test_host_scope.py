@@ -104,6 +104,19 @@ def test_default_mode_preserves_existing_render_without_sts():
         sdk.client.assert_not_called()
 
 
+def test_legacy_self_host_does_not_relax_explicit_deployment_scope():
+    legacy = {**HOST, "account_id": "self"}
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(entrypoint, "boto3") as sdk:
+        spc, profiles = entrypoint._render_runtime_config([legacy])
+        assert 'connection "aws_self"' in spc and profiles == ""
+        sdk.client.assert_not_called()
+    for env in (ENV, SCOPED_ENV):
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(entrypoint, "boto3") as sdk:
+            with pytest.raises(entrypoint.HostScopeError):
+                entrypoint._render_runtime_config([legacy])
+            sdk.client.assert_not_called()
+
+
 def test_verified_host_keeps_all_regions_without_self_assume():
     with mock.patch.dict(os.environ, ENV, clear=True), mock.patch.object(entrypoint, "boto3") as sdk:
         sdk.client.return_value.get_caller_identity.return_value = {"Account": ACCOUNT}
@@ -455,6 +468,7 @@ def test_fatal_during_crash_backoff_does_not_restart_and_exits_nonzero():
 
 @pytest.mark.parametrize("mode,expected", [
     ("fatal", 1), ("sigterm", 0), ("stop_failure", 1), ("blocked_child", 1),
+    ("supervisor_child", 1),
 ])
 def test_actual_supervisor_process_exit_classification(mode, expected):
     script = r'''
@@ -471,10 +485,11 @@ if sys.argv[2] in ("stop_failure", "blocked_child"):
 class Proc:
     def __init__(self): self.done = threading.Event()
     def terminate(self):
-        if sys.argv[2] == "blocked_child": raise OSError("fixture child teardown failure")
+        if sys.argv[2] in ("blocked_child", "supervisor_child"): raise OSError("fixture child teardown failure")
         self.done.set()
     def kill(self): self.done.set()
     def wait(self, timeout=None):
+        if sys.argv[2] == "supervisor_child": return 0
         if not self.done.wait(timeout): raise subprocess.TimeoutExpired("fixture", timeout)
         return 0
 proc = Proc()
@@ -492,7 +507,7 @@ e._host_sts_client = lambda region: types.SimpleNamespace(get_caller_identity=la
 e.write_spc = lambda *pair: None
 e._start_steampipe = start
 e._stop_steampipe_service = lambda: False if sys.argv[2] in ("stop_failure", "blocked_child") else True
-e.SCOPE_WATCH_INTERVAL = 0.01
+e.SCOPE_WATCH_INTERVAL = 10 if sys.argv[2] == "supervisor_child" else 0.01
 if sys.argv[2] == "sigterm":
     threading.Timer(0.1, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
 e.main()
@@ -512,4 +527,8 @@ e.main()
         assert "restarted with updated scope" not in result.stderr
     if mode == "blocked_child":
         assert "steampipe_child_stop_failed" in result.stderr
+        assert result.stdout.count("TEST_START") == 1
+    if mode == "supervisor_child":
+        assert "[gen-spc] FATAL: steampipe_child_stop_failed" in result.stderr
+        assert "fixture child teardown failure" not in result.stderr
         assert result.stdout.count("TEST_START") == 1

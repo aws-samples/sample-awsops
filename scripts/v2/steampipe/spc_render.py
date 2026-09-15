@@ -81,7 +81,8 @@ def _scan_rows(rows):
         if not regions:
             continue
         account = row.get("account_id")
-        if (not isinstance(account, str) or not re.fullmatch(r"[0-9]{12}", account)
+        legacy_host = account == "self" and row.get("is_host") is True
+        if (not isinstance(account, str) or not (legacy_host or re.fullmatch(r"[0-9]{12}", account))
                 or account in seen):
             raise ValueError("invalid AWS profile configuration")
         seen.add(account)

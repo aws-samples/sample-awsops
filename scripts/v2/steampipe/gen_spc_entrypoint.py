@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Steampipe container entrypoint: generate aws.spc from Aurora, then supervise the service.
+"""Generate SPC/shared profiles from Aurora, then supervise the Steampipe service.
 
 Reads the enabled accounts + their scan scope from Aurora (account_regions / all_regions), renders
-the multi-account/region connection config via spc_render, writes it, then starts `steampipe
-service start` as a child process (Python stays alive as the ECS PID-1 supervisor).
+the multi-account/region SPC and AWS shared profiles via spc_render, publishes both while
+the service is stopped, then launches its child (Python remains the ECS PID-1 supervisor).
 
 Aurora auth uses IAM database authentication (M1 fix): the task role has `rds-db:connect` scoped
 to the dedicated least-privilege `steampipe_reader` Postgres role (SELECT-only on accounts/
@@ -14,11 +14,13 @@ network-listening Steampipe process (port 9193) cannot leak a DB credential it n
 
 On Aurora-unreachable: bounded retry, then fail-closed (exit non-zero) — never start with an
 empty/stale config. A background watchdog re-queries Aurora every SCOPE_WATCH_INTERVAL seconds and
-restarts Steampipe when account/region scope changes (MAJOR 3 fix — M3).
+restarts Steampipe when scope or profile metadata changes, including ExternalId-only changes.
+Failure to confirm listener closure or publish the stopped service's pair causes fatal
+shutdown; bounded child waits let that failure reach PID 1.
 
 Every render also discloses the effective plugin rate-limiter knobs to stderr as a
 `steampipe_limiter_config` JSON event (max_concurrency / bucket_size / fill_rate), so the
-quota posture a task actually started with is visible in its logs.
+configured quota posture is visible in its logs; this event does not prove launch or readiness.
 """
 import errno
 import json
@@ -390,6 +392,10 @@ def _restart_steampipe(proc_ref: list, restart_lock: threading.Lock, old: "subpr
         if stopped is True and prepare is not None:
             try:
                 prepare()
+            except HostScopeError as error:
+                if str(error) == "runtime_configuration_write_failed":
+                    print("[gen-spc] FATAL: runtime_configuration_write_failed", file=sys.stderr)
+                failure = "steampipe_configuration_publish_failed"
             except Exception:
                 failure = "steampipe_configuration_publish_failed"
             if stop is not None and stop.is_set():
@@ -546,7 +552,11 @@ def main() -> None:
                 print(f"[gen-spc] steampipe exited unexpectedly (code {code}) — restarting",
                       file=sys.stderr)
             last_restart_time = time.time()
-            _restart_steampipe(proc_ref, restart_lock, current, stop, fatal)
+            try:
+                _restart_steampipe(proc_ref, restart_lock, current, stop, fatal)
+            except SteampipeRestartError as error:
+                print(f"[gen-spc] FATAL: {error}", file=sys.stderr)
+                break
     finally:
         try:
             with restart_lock:

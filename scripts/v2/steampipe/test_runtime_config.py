@@ -158,3 +158,14 @@ def test_publish_failure_prevents_launch_and_sets_fatal_before_unlock():
                 prepare=lambda: (_ for _ in ()).throw(ValueError("PRIVATE_PROFILE_DETAIL")))
         assert stop.is_set() and fatal.is_set() and refs[0] is None
         start.assert_not_called()
+
+
+def test_publish_failure_keeps_the_underlying_fixed_diagnostic(capsys):
+    stop, fatal = threading.Event(), threading.Event()
+    proc = mock.Mock()
+    with mock.patch.object(entrypoint, "_stop_steampipe_service", return_value=True):
+        with pytest.raises(entrypoint.SteampipeRestartError, match="steampipe_configuration_publish_failed"):
+            entrypoint._restart_steampipe([proc], threading.Lock(), proc, stop, fatal,
+                prepare=lambda: (_ for _ in ()).throw(
+                    entrypoint.HostScopeError("runtime_configuration_write_failed")))
+    assert "[gen-spc] FATAL: runtime_configuration_write_failed" in capsys.readouterr().err

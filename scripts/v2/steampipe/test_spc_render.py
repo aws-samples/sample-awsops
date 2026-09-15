@@ -41,6 +41,25 @@ def test_host_only_no_role_arn_no_external_id():
     assert "assume_role_arn" not in spc        # host uses the task role's default chain
     assert "assume_role_external_id" not in spc
     assert 'regions = ["*"]' in spc
+    assert "profile =" not in spc
+
+
+def test_legacy_self_host_keeps_ambient_credentials_and_all_regions():
+    rows = [{"account_id": "self", "is_host": True, "all_regions": False, "regions": []}]
+    spc = render_spc(rows)
+    assert 'connection "aws_self"' in spc
+    assert 'regions = ["*"]' in spc
+    assert "profile =" not in spc
+    assert spc_render.render_aws_config(rows) == ""
+
+
+@pytest.mark.parametrize("is_host", [False, None, "true", 1])
+def test_self_sentinel_cannot_create_a_member_profile(is_host):
+    row = {"account_id": "self", "is_host": is_host, "all_regions": True,
+           "regions": [], "role_name": "AWSopsReadOnlyRole", "external_id": "fixture"}
+    for render in (render_spc, spc_render.render_aws_config):
+        with pytest.raises(ValueError, match="invalid AWS profile"):
+            render([row])
 
 
 def test_non_host_with_external_id():
