@@ -24,13 +24,17 @@ RUN steampipe plugin install "ghcr.io/turbot/steampipe/plugins/turbot/aws:0.142.
  && cp -a "$P/ghcr.io/turbot/steampipe/plugins/turbot/aws@0.142.0" "$P/hub.steampipe.io/plugins/turbot/aws@0.142.0" \
  && sed -i 's#ghcr.io/turbot/steampipe/plugins/turbot/aws#hub.steampipe.io/plugins/turbot/aws#g' "$P/versions.json" \
  && rm -rf "$P/ghcr.io"
-# Boot-time aws.spc generator: query Aurora (accounts ⋈ account_regions / all_regions) → render a
-# per-account/region connection config + aggregator, then supervise `steampipe service start`.
+# Boot-time publisher: query Aurora (accounts ⋈ account_regions / all_regions), render
+# SPC connections/aggregator plus private member AWS profiles, then supervise the service.
 # Needs python3 + pg8000 (Aurora connection) + boto3 (rds.generate_db_auth_token — IAM database
 # auth as the least-privilege steampipe_reader role; M1 — no Aurora secret is ever used).
 USER root
 COPY --from=python-runtime /opt/python /opt/python
 ENV PATH="/opt/python/bin:${PATH}"
+# Used by the foreground service for private profiles generated at runtime.
+# The loopback pg8000 health probe does not read AWS_CONFIG_FILE.
+# No AWS access keys or session tokens are baked into the image.
+ENV AWS_CONFIG_FILE=/home/steampipe/.awsops-runtime/current/config
 RUN python3 -m pip install --no-cache-dir --only-binary=:all: pg8000==1.31.2 boto3==1.34.162
 # RDS global CA truststore bundle (AWS's own published PEM, covers all regions): enables TLS
 # VERIFY_FULL on the boot generator's Aurora connection instead of CERT_NONE (M3 fix). Fetched at
@@ -51,9 +55,10 @@ assert d.startswith(b'-----BEGIN CERTIFICATE-----'), 'RDS CA bundle: missing PEM
 assert d.count(b'-----BEGIN CERTIFICATE-----') >= 5, 'RDS CA bundle: too few certificates — corrupt/truncated download'; \
 assert len(d) > 4096, 'RDS CA bundle: suspiciously small — corrupt/truncated download'" \
  && chmod 0644 /app/rds-ca-bundle.pem
-COPY --chown=steampipe:0 spc_render.py gen_spc_entrypoint.py /app/
+COPY --chown=steampipe:0 spc_render.py gen_spc_entrypoint.py healthcheck.py /app/
 USER steampipe
 EXPOSE 9193
-# Entrypoint generates aws.spc from Aurora, then exec's `steampipe service start` (network listener
-# so the in-VPC sync Lambda can reach it; password via env STEAMPIPE_DATABASE_PASSWORD).
+# Entrypoint publishes a regular SPC and private profile generation from Aurora.
+# Python remains PID 1 and supervises the network listener for the in-VPC sync Lambda;
+# its listener password comes from STEAMPIPE_DATABASE_PASSWORD.
 ENTRYPOINT ["python3", "/app/gen_spc_entrypoint.py"]

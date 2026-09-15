@@ -77,6 +77,9 @@ loads inventory into Aurora — not a Service-Connect live-query daemon. (See AD
   `steampipe_enabled=false`, migrate, create/push the image, and enable the feature only in the
   final saved-plan apply. `make deploy` rolls the web service, not this Lambda; if this order cannot
   be met, do not deploy the new Lambda.
+  The Steampipe image must also include the supported shared-profile publisher and
+  `healthcheck.py`, paired with its Terraform health command in that saved plan; follow
+  the [current image prerequisites](../runbooks/runtime-foundation.md#explicit-runtime-targets).
 
 ### ADR-001 schema tables / 스키마 테이블
 
