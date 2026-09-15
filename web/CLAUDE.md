@@ -45,8 +45,8 @@ An explicit `INVENTORY_TARGET_ACCOUNT_IDS` deployment allowlist also gates regis
 malformed configuration fails closed. `INVENTORY_TASK_ROLE_ARN` supplies the exact host
 collector principal to the create-only CloudFormation guide.
 
-`GET /api/deployment/member-inventory` authenticates and restricts queries to applied member
-targets. One read-only statement checks enabled account/region scope and exactly matches
+`GET /api/deployment/member-inventory` authenticates and restricts queries to applied target
+accounts. One read-only statement checks enabled account/region scope and exactly matches
 the resource ID, returning at most two minimal projections to reject ambiguity. It never
 returns full inventory records. The release controller checks identity and post-marker
 freshness; the required PostgreSQL/TLS suite covers large inventories and unusable scopes.

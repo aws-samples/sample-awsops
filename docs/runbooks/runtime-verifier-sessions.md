@@ -230,12 +230,13 @@ only to per-type collection, not catalog discovery. There is no separate 900-sec
 per-type budget. Disable automatic SDK/CLI invoke retries.
 
 Both prepare and collect default to the enabled host only. Nonempty applied
-`inventory.verification_targets` instead require exact enabled host/member registration,
-measured SQL reachability with zero unreachable accounts and fresh account-bound
-known-member EC2/CloudFront evidence. `account_reachability_scope` distinguishes
+`inventory.verification_targets` instead require exact enabled host/member registration
+in both modes. Only collect additionally proves measured SQL reachability with zero
+unreachable accounts and fresh account-bound known-member EC2/CloudFront evidence.
+`account_reachability_scope` distinguishes
 `enabled_scan_accounts` measurement from host-only and unmeasured results, whose counts stay
 null. CI permits host-only/null only for the five source-AST-pinned SDK types; aggregate
-catalog proof does not establish per-member43 coverage. See the [explicit target contract](runtime-foundation.md#explicit-runtime-targets).
+catalog proof does not establish 43-type coverage for every member. See the [explicit target contract](runtime-foundation.md#explicit-runtime-targets).
 Each member uses one exact `/api/deployment/member-inventory` lookup, whose bounded
 identity projection also rejects disabled, absent or ambiguous scan scope/evidence.
 Only Terraform onboarding preflight permits approved subsets, deriving apply scope

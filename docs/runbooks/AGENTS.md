@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 68da4a9694e8 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e71a235e698f · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -216,9 +216,9 @@ admission bounds, not guaranteed completion. Runtime foundation records a 43-typ
 57.461-second collection sample and its limits; it is not full live readiness.
 Require every pinned baseline name (currently 43, source-AST checked); valid growth
 is allowed up to 128 and every returned type needs strict proof. Both modes default
-to the enabled host only; explicit applied targets require exact enabled registration,
-measured SQL reachability with zero unreachable accounts and fresh account-bound
-EC2/CloudFront known-member proof. Explicit scope preserves null for host-only/unmeasured
+to the enabled host only; explicit applied targets require exact enabled registration.
+Collect additionally requires measured SQL reachability with zero unreachable accounts
+and fresh account-bound EC2/CloudFront known-member proof. Explicit scope preserves null for host-only/unmeasured
 counts; CI permits host-only/null only for five source-AST-pinned SDK types, not
 43-type coverage for every member. Only Terraform onboarding
 preflight permits approved subsets; apply reads the restored plan, not a newer secret.
