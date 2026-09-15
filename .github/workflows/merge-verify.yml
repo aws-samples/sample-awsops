@@ -43,7 +43,7 @@ jobs:
             -r scripts/v2/workers/requirements.txt
           python -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt
 
-      - name: Prepare isolated image codec for offline checks
+      - name: Prepare isolated image codec for confinement checks
         id: codec
         run: |
           set -euo pipefail
