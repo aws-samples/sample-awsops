@@ -114,7 +114,7 @@ MFA が有効化されていないユーザーがいる場合、上部に警告�
 | `roleDetail` | クリック時の動的 SQL — 信頼ポリシー + インスタンスプロファイルを含む |
 
 :::info SCP でブロックされるカラムの回避
-`iam_user` の `mfa_enabled` と `iam_role` の `attached_policy_arns` は行ごとのハイドレート列です。`iam_role` はハイドレートクエリが失敗した場合（SCP による `ListAttachedRolePolicies` のブロック、または接続全アカウント合算のロール数がリミッター予算を超えたタイムアウト）、**ハイドレート列なしで 1 回リトライ**します — 基本の iam_role インベントリは通常どおり更新され、ポリシー一覧列だけが欠落します（ハイドレート失敗自体は run を failed にせず、最終的な run 状態は通常のライフサイクルに従います — 到達不能アカウントが重なれば partial、後続段階のエラーなら failed）。この欠落列を、S3 詳細のアクセスロールセクションは「未同期」と表示します。運用者は `inventory_sync_hydrate_fallback` ログイベントの原因別 remedy で復旧します（タイムアウト → リミッターの `fill_rate` を引き上げ[ADR-021]、SCP/IAM 拒否 → `iam:ListAttachedRolePolicies` を付与 — レート調整では拒否を解決できません）。クエリ経路では基本クエリまで失敗した場合に、そのタイプの sync run 全体が failed として記録され（アカウント別 partial ではありません）、プルーニングがスキップされ全アカウントの last-good 行が保持・凍結されます（ADR-010 2026-09-02 改訂で公表済みのセマンティクス。汎用インベントリページでの run 状態表示は今後の課題）。`iam_user` の `mfa_enabled` はフォールバックなしで維持され、ブロック時はタイプ全体のセマンティクスがそのまま適用されます。MFA 統計は別の `summary` クエリで集計します。
+`iam_user.mfa_enabled` と `iam_role.attached_policy_arns` には追加の AWS 読み取りが必要です。ロールのクエリが失敗すると、`attached_policy_arns` だけを除いて1回再試行します。`GetRole` とインスタンスプロファイルの取得は残るため、再試行も失敗する可能性があります。成功した場合だけ基本行を更新し、ポリシー一覧は未確認（`unknown_attribute_count`）として S3 アクセス欄に「未同期」と表示します。両方のクエリが失敗した場合はタイプを failed とし、削除処理を行わず最後の正常な行を保持します。最終状態には通常の到達性・書き込み結果も反映されます。`inventory_sync_hydrate_fallback.remedy` を確認し、容量不足にはレビュー済みの refill 調整、IAM/SCP 拒否には `iam:ListAttachedRolePolicies` 権限の確認を行います。速度変更で権限拒否は解消できません（ADR-010、2026-09-02改訂）。ユーザー MFA クエリにはこのフォールバックがなく、MFA 統計は別の summary クエリで計算します。
 :::
 
 ## 関連ページ

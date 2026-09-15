@@ -10,10 +10,10 @@ import { useI18n } from '@/components/shell/LanguageProvider';
 // ADMIN-ONLY type: non-admins get a distinct permission note. Honest bounds:
 // - the LAST SYNC RUN's status gates every conclusion — a failed/partial run renders a
 //   stale-data banner, a MISSING ledger row renders an unverifiable-freshness note, and the
-//   empty state is never conclusive. A failed hydrate no longer fails the whole run: the sync
-//   retries hydrate-free (the base inventory stays live) and this section sees the absent
-//   column as "not synced yet" — the ADR-010 2026-09-02 amendment's disclosed degrade;
-//   whole-type last-good freeze remains only when the base query also fails;
+//   empty state is never conclusive. After a failed role query, sync retries without
+//   attached_policy_arns; GetRole/instance-profile hydrates remain and may also fail.
+//   Only a successful fallback refreshes base rows; the absent column is "not synced yet"
+//   (ADR-010, 2026-09-02). Both query failures preserve last-good inventory;
 // - a full page (fetched cap+1) is labeled sampled and its empty state is non-conclusive;
 // - pre-sync rows (column absent) render "not synced yet"; a succeeded run with zero rows
 //   renders "no roles exist" (a different truth). Named export per the metrics convention.
