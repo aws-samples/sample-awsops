@@ -12,14 +12,14 @@ export interface InfraInput { resources: Row[]; vpcs: Row[]; subnets: Row[]; sec
 
 const str = (v: unknown): string => (v == null ? '' : String(v));
 
-// Producer shapes include EC2 GroupId, RDS VpcSecurityGroupId and LB SubnetId.
+// Producer shapes include EC2 GroupId, RDS VpcSecurityGroupId, ElastiCache SecurityGroupId and LB SubnetId.
 export function idsFrom(v: unknown): string[] {
   if (v == null) return [];
   return (Array.isArray(v) ? v : [v])
     .map((x) => {
       if (typeof x === 'string') return x;
       const o = (x ?? {}) as Record<string, unknown>;
-      return str(o.GroupId ?? o.group_id ?? o.VpcSecurityGroupId ?? o.SubnetId ?? o.subnet_id ?? o.Id);
+      return str(o.GroupId ?? o.group_id ?? o.VpcSecurityGroupId ?? o.SecurityGroupId ?? o.SubnetId ?? o.subnet_id ?? o.Id);
     })
     .filter(Boolean);
 }

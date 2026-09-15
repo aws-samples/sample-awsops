@@ -76,12 +76,27 @@ export async function recordUnattempted(pool: Pool, cls: GraphClass, lock: numbe
   });
 }
 
-export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: string, types: string[]) {
+/** One fleet reconciliation per class/pass. A changed ledger invalidates its proof. */
+export async function inventoryCounts(pool: Pool, types: string[]) {
+  return graphTransaction(pool, true, async client => {
+    const runs = await client.query(`SELECT resource_type, xmin::text AS version
+      FROM inventory_sync_runs WHERE account_id='self' AND status='succeeded' AND resource_type=ANY($1)`, [types]);
+    const countTypes = runs.rows.map(run => run.resource_type);
+    const counts = countTypes.length ? await client.query(`SELECT resource_type, count(*)::int AS count
+      FROM inventory_resources WHERE resource_type=ANY($1) GROUP BY resource_type`, [countTypes]) : { rows: [] };
+    const byType = new Map(counts.rows.map(row => [row.resource_type, row.count]));
+    return new Map<string, { version: string; count: number }>(runs.rows.map(run =>
+      [run.resource_type, { version: run.version, count: byType.get(run.resource_type) ?? 0 }]));
+  });
+}
+
+export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: string, types: string[],
+  proof?: Awaited<ReturnType<typeof inventoryCounts>>) {
+  const counts = proof ?? await inventoryCounts(pool, types);
   return graphTransaction(pool, true, async client => {
     const runs = await client.query(`SELECT account_id, resource_type, status, started_at,
-      finished_at, last_success_at, row_count, unknown_attribute_count
-      FROM inventory_sync_runs WHERE account_id=ANY($1) AND resource_type=ANY($2)`,
-    [[...new Set(['self', account])], types]);
+      finished_at, last_success_at, row_count, unknown_attribute_count, xmin::text AS version
+      FROM inventory_sync_runs WHERE account_id='self' AND resource_type=ANY($1)`, [types]);
     // sync() writes these per-account counts only for observed/probed participants after
     // pruning. The self-keyed job ledger alone cannot prove a member's empty result.
     const participation = account === 'self' ? { rows: [] } : await client.query(`
@@ -111,15 +126,15 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
       FROM budgeted ORDER BY resource_type, region, resource_id`,
     [account, types, cls === 'infra' ? INFRA_FIELDS : FLOW_FIELDS, ROW_CAP + 1, ROW_BYTES, SNAPSHOT_BYTES]);
     const rows = result.rows as InventoryRow[];
-    // Reconcile every succeeded aggregate, including nonempty input, before any sweep.
-    // The producer count spans accounts; it is not this account's local row count.
+    // sync_lambda marks the ledger running before changing rows, then finalizes it.
+    // Only the identical ledger version can reuse this pass's reconciled count.
     // A matching aggregate still does not prove an unobserved member participated.
-    const countTypes = runs.rows.filter(run => run.account_id === 'self'
-      && run.status === 'succeeded').map(run => run.resource_type);
-    const counts = countTypes.length ? await client.query(`SELECT resource_type, count(*)::int AS count
-      FROM inventory_resources WHERE resource_type=ANY($1) GROUP BY resource_type`, [countTypes]) : { rows: [] };
-    const aggregateCounts = new Map<string, number>(countTypes.map(type => [type, 0]));
-    for (const row of counts.rows) aggregateCounts.set(row.resource_type, row.count);
+    const aggregateCounts = new Map<string, number>();
+    for (const run of runs.rows) {
+      const count = counts.get(run.resource_type);
+      if (count && typeof run.version === 'string' && count.version === run.version)
+        aggregateCounts.set(run.resource_type, count.count);
+    }
     return { rows, runs: runs.rows as Run[],
       aggregateCounts, participation: participation.rows as Run[], truncated: rows.length > ROW_CAP || rows.some(row => row.oversized) };
   });
@@ -174,5 +189,5 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
     : !sources.length || sources.some(s => s.status === 'unavailable') ? 'unavailable'
     : truncated || sources.some(s => s.status === 'partial') ? 'partial' : rows.length ? 'ok' : 'empty';
   return { status, attemptedAt, publish: safe,
-    details: { sources, retainedPrevious: !safe, ...(truncated ? { inputTruncated: true } : {}) } };
+    details: { sources, ...(truncated ? { inputTruncated: true } : {}) } };
 }

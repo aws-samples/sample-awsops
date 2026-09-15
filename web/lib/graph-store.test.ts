@@ -50,7 +50,7 @@ function mockPool(invRows: unknown[]) {
     'ecs_task', 's3', 'subnet', 'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin',
     ...INFRA_TYPES, ...resourceRows.map(row => (row as Record<string, unknown>).resource_type)];
   const snapshot = { inventory: resourceRows, runs: invRows.length ? [...new Set(types)].map(type => ({
-    account_id: 'self', resource_type: type, status: 'succeeded', unknown_attribute_count: 0,
+    account_id: 'self', resource_type: type, status: 'succeeded', unknown_attribute_count: 0, version: 'fixture-run-v1',
     row_count: resourceRows.filter(row => (row as Record<string, unknown>).resource_type === type).length,
     started_at: new Date().toISOString(), finished_at: new Date().toISOString(), last_success_at: new Date().toISOString(),
   })) : [] };

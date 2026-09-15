@@ -6,7 +6,7 @@ import type { TraceSource, TraceSpan, ServiceGraphCall, SourceRead } from './tra
 import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
 import { writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
 import { currentAccountId } from './account';
-import { graphTransaction, inventoryAccounts, inventorySnapshot, inventoryAttempt, inventoryTypesForAccount, recordUnattempted, INFRA_TYPES, type InventoryRow } from './graph-inventory';
+import { graphTransaction, inventoryAccounts, inventoryCounts, inventorySnapshot, inventoryAttempt, inventoryTypesForAccount, recordUnattempted, INFRA_TYPES, type InventoryRow } from './graph-inventory';
 export { resolveInfraRef } from './trace-graph';
 
 /** Structural (duck-typed) interface for a Prometheus/Mimir service-graph metrics source — matches
@@ -68,11 +68,16 @@ async function writeGraph(pool: Pool, cls: GraphClass, lockKey: number, accountI
   const publish = (value: GraphAttempt) => graphTransaction(pool, false, async client => {
     const locked = await client.query('SELECT pg_try_advisory_xact_lock($1) AS acquired', [lockKey]);
     if (!locked.rows[0]?.acquired) return { ...emptyResult(), skipped: 1, reasons: ['publication_busy'] };
-    if (!await writeGraphState(client, accountId, value, cls)) {
+    const retained = !value.publish && (await client.query(`SELECT
+      EXISTS(SELECT 1 FROM topology_nodes WHERE account_id=$1 AND class=$2) OR
+      EXISTS(SELECT 1 FROM topology_graph_state WHERE account_id=$1 AND class=$2 AND captured_at IS NOT NULL)
+      AS retained`, [accountId, cls])).rows[0]?.retained === true;
+    if (!await writeGraphState(client, accountId,
+      { ...value, details: { ...value.details, retainedPrevious: retained } }, cls)) {
       console.warn('[graph] publication skipped', { class: cls, reason: 'superseded' });
       return { ...emptyResult(), skipped: 1, reasons: ['superseded'] };
     }
-    if (!value.publish) return { ...emptyResult(), retained: 1,
+    if (!value.publish) return { ...emptyResult(), retained: retained ? 1 : 0, skipped: retained ? 0 : 1,
       reasons: cls === 'trace' ? [`collection_${value.status}`] : [] };
     await replaceGraph(client, cls, accountId, nodes, edges, runId);
     return { ...emptyResult(), nodes: nodes.length, edges: edges.length,
@@ -125,6 +130,7 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
   const runStartedAt = new Date(Date.now()).toISOString();
   const deadline = performance.now() + 30_000;
   let failed = false, firstFailure: unknown;
+  let counts: ReturnType<typeof inventoryCounts> | undefined;
   try {
     let accounts;
     try { accounts = await inventoryAccounts(pool, cls, types); }
@@ -149,7 +155,8 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
       let attempt: GraphAttempt | undefined, publishing = false;
       try {
         const accountTypes = inventoryTypesForAccount(types, account);
-        const snapshot = await inventorySnapshot(pool, cls, account, accountTypes);
+        const snapshot = await inventorySnapshot(pool, cls, account, accountTypes,
+          await (counts ??= inventoryCounts(pool, types)));
         attempt = inventoryAttempt(snapshot, accountTypes, cls, account, attemptedAt);
         if (snapshot.truncated) reason('snapshot_limit');
         const graph = attempt.publish ? build(snapshot.rows) : { nodes: [], edges: [] };
@@ -170,7 +177,7 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
           details: { sources: attempt?.details.sources ?? [], retainedPrevious: true,
             failureReason: attempt ? 'publication_failed' : 'source_read_failed' } }).catch(() => {});
         if (!failed) firstFailure = error;
-        failed = true; totals.retained++; reason('account_failed');
+        failed = true; reason('account_failed');
       }
       await new Promise<void>(resolve => setImmediate(resolve));
     }
