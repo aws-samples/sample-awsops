@@ -161,7 +161,6 @@ function workloadIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, Set<Work
   for (const node of nodes) {
     if (node.layer !== 'service' || node.kind !== 'workload') continue;
     const cluster = text(node.meta.cluster), namespace = text(node.meta.namespace);
-    if (!cluster || !namespace) continue;
     const identity = { node, scopes: [node.meta, ...(parents.get(node.id) ?? [])] };
     for (const pod of strings(node.meta.pods)) {
       const k = key(cluster, namespace, pod);
@@ -179,7 +178,8 @@ function workloadScopeReason(workload: WorkloadIdentity, target: TargetIdentity)
   const claims = (field: string) => workload.scopes.map(meta => meta[field])
     .filter(value => value !== undefined && value !== null && value !== '');
   const regions = claims('region'), accounts = claims('accountId');
-  if (regions.length > 0 && regions.every(region => region === target.region)
+  if (text(workload.node.meta.cluster) && text(workload.node.meta.namespace)
+    && regions.length > 0 && regions.every(region => region === target.region)
     && accounts.length > 0 && accounts.every(account =>
       account === 'self' || Boolean(target.accountId && account === target.accountId))
     && workload.scopes.some(meta => meta.region === target.region
@@ -333,14 +333,15 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     // group prevents false uniqueness. Missing scope never establishes disjointness.
     const hiddenCompetitor = truncated.some(scope => !candidates.has(scope.node.id) && overlaps(scope)
       && Boolean(text(data[scope.type === 'ip' ? 'ip' : 'instanceId'])));
-    const blocked = unverifiedScope || hiddenCompetitor
+    const blocked = summary.configurationComplete !== true || unverifiedScope || hiddenCompetitor
       || [...candidates.values()].some(candidate => candidate.blocked && !candidate.contextAllowed);
     const target = !blocked && candidates.size === 1 ? [...candidates.values()][0] : undefined;
     // A monitor's name-derived cluster is a display hint, never identity evidence.
     const { cluster, conflict } = targetWorkload(target, data);
     const namespace = text(data.podNamespace), pod = text(data.podName);
+    // Unknown dimensions overlap as veto-only claims; known disjoint dimensions do not.
     const matches = cluster && namespace && pod
-      ? [...(workloads.get(key(cluster, namespace, pod)) ?? [])] : [];
+      ? [cluster, ''].flatMap(c => [namespace, ''].flatMap(ns => [...(workloads.get(key(c, ns, pod)) ?? [])])) : [];
     // Do not choose a winner among conflicting scopes, target records, or workload memberships.
     const scopeReasons = target ? matches.map(workload => workloadScopeReason(workload, target)) : [];
     const reason: E2eCorrelationReason | undefined = candidates.size > 1 ? 'configuration_conflict'

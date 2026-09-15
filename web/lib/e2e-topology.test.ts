@@ -418,8 +418,19 @@ describe('buildE2eGraph — caller source contracts', () => {
     expect(graph.summary.networkFlows).toBe(1);
     if (!configurationComplete) {
       expect(graph.nodes.find(node => node.kind === 'target')?.meta.e2e_correlation_blocked).toBe(true);
-      expect(graph.summary.ambiguousEndpoints).toBe(1);
+      expect(graph.summary.ambiguousEndpoints).toBe(2);
     }
+  });
+
+  it.each([
+    [false, 'configuration_unverified', 0, 2], [undefined, 'configuration_unverified', 0, 2], [true, 'no_match', 2, 0],
+  ] as const)('distinguishes unverified empty configuration from absence: %s', (configurationComplete, reason, unmatchedEndpoints, ambiguousEndpoints) => {
+    const graph = buildE2eGraph(input({ configured: buildFlowGraph({ tg: [] }), configurationComplete, network }));
+    expect(graph.nodes.filter(node => node.kind === 'endpoint').map(node => node.meta.correlationReason))
+      .toEqual([reason, reason]);
+    expect(identityEdges(graph)).toEqual([]);
+    expect(graph.summary).toMatchObject({ configurationComplete: configurationComplete === true,
+      correlatedEndpoints: 0, unmatchedEndpoints, ambiguousEndpoints });
   });
 
   it.each([false, undefined, null, 'true', 1])('copies a veto onto ALL configured targets unless completeness is true: %j', complete => {
@@ -890,8 +901,10 @@ describe('buildE2eGraph — workload identity', () => {
       services: services(meta),
       network: [observation([flow({ local: endpoint({ podName: 'web-1', podNamespace: 'shop' }) })])],
     }));
-    expect(identityEdges(graph)).toHaveLength(1);
-    expect(identityEdges(graph)[0].meta?.match).toBe('ip-region-vpc');
+    const partial = meta.cluster === '' || meta.namespace === '';
+    expect(identityEdges(graph)).toHaveLength(partial ? 0 : 1);
+    if (partial) expect(localMeta(graph).correlationReason).toBe('workload_scope_unverified');
+    else expect(identityEdges(graph)[0].meta?.match).toBe('ip-region-vpc');
   });
 
   it('refuses service-name-only matching to both configured Kubernetes Services and trace services', () => {
@@ -1168,6 +1181,32 @@ describe('buildE2eGraph — trace scope constraints', () => {
       nodes: [...known.nodes, ...unknown.nodes], edges: [...known.edges, ...unknown.edges], captured_at: CAPTURED_AT,
     };
     expect(identityEdges(compose(snapshot, { account_id: host }))).toEqual([]);
+  });
+
+  it.each([
+    [undefined, 'shop', true], ['app', undefined, true], [undefined, undefined, true],
+    ['other', 'shop', false], [undefined, 'other', false], ['other', undefined, false],
+  ] as const)('arbitrates partial workload cluster=%s namespace=%s overlap=%s', (cluster, namespace, overlaps) => {
+    const span: TraceSpan = {
+      traceId: 'trace', spanId: 'partial', service: 'web', sourceId: 'tempo',
+      kind: 'SERVER', startMs: 0, durationMs: 1, accountId: 'self', region: REGION,
+      k8sCluster: cluster, k8sNamespace: 'shop', k8sDeployment: 'partial', k8sPod: 'web-1',
+    };
+    for (const withKnown of [true, false]) {
+      const snapshot = { ...buildTraceGraph([span, ...(withKnown
+        ? [{ ...span, spanId: 'known', k8sCluster: 'app', k8sDeployment: 'web' }] : [])], [], []),
+      captured_at: CAPTURED_AT };
+      const partial = snapshot.nodes.find(node => node.meta.deployment === 'partial')!;
+      expect(partial.meta.cluster).toBe(cluster ?? null);
+      partial.meta.namespace = namespace; // Missing namespace also occurs in partial snapshots.
+      for (const nodes of [snapshot.nodes, [...snapshot.nodes].reverse()]) {
+        const graph = compose({ ...snapshot, nodes });
+        const reason = overlaps ? withKnown ? 'workload_conflict' : 'workload_scope_unverified' : undefined;
+        expect(graph.nodes.filter(node => node.kind === 'workload')).toHaveLength(withKnown ? 2 : 1);
+        expect(localMeta(graph).correlationReason).toBe(reason);
+        expect(identityEdges(graph)).toHaveLength(reason ? 0 : withKnown ? 2 : 1);
+      }
+    }
   });
 });
 
