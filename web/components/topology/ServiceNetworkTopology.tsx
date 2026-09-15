@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import Link from 'next/link';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import type { FlowGraph } from '@/lib/flow-topology';
 import type { ServiceSnapshot } from '@/lib/e2e-topology-types';
@@ -28,7 +29,9 @@ interface Props {
   configured: FlowGraph;
   account: string;
   configuration: ConfigurationStatus;
-  onBack: () => void;
+  onBack?: () => void;
+  backHref?: string;
+  evidence?: ReactNode;
   onRefresh?: () => void;
 }
 
@@ -133,7 +136,7 @@ export default function ServiceNetworkTopology(props: Props) {
   return <ScopedServiceNetworkTopology key={props.account} {...props} />;
 }
 
-function ScopedServiceNetworkTopology({ configured, account, configuration, onBack, onRefresh }: Props) {
+function ScopedServiceNetworkTopology({ configured, account, configuration, onBack, backHref, evidence, onRefresh }: Props) {
   const { tt } = useI18n();
   const host = account === 'self';
   const [monitors, setMonitors] = useState<Source<MonitorStatus>>(() => emptySource(host));
@@ -237,7 +240,9 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
     <div className="flex h-full min-h-0 min-w-0 flex-col">
       <PageHeader title={tt('서비스 + 네트워크')} subtitle={tt('구성 흐름, 저장된 서비스 호출과 네트워크 관측을 함께 살펴봅니다.')}
         right={<div className="flex flex-wrap gap-2">
-          <Button variant="secondary" size="sm" onClick={onBack}><ArrowLeft size={14} aria-hidden />{tt('구성 흐름으로 돌아가기')}</Button>
+          {backHref ? <Link href={backHref} className="inline-flex items-center gap-2 rounded-md border border-ink-200 px-3 py-1 text-[12px]">
+            <ArrowLeft size={14} aria-hidden />{tt('구성 흐름으로 돌아가기')}
+          </Link> : <Button variant="secondary" size="sm" onClick={onBack}><ArrowLeft size={14} aria-hidden />{tt('구성 흐름으로 돌아가기')}</Button>}
           <Button variant="secondary" size="sm" onClick={refresh}><RefreshCw size={14} aria-hidden />{tt('새로고침')}</Button>
         </div>} />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-auto p-4 md:p-6">
@@ -248,7 +253,8 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
           <section aria-label={tt('구성 소스')} className="min-w-0 flex-1 basis-56 space-y-1 break-words">
             <h2 className="font-semibold text-ink-800">{tt('구성')}</h2>
             <p>{configuration.loading ? tt('구성을 불러오는 중…') : `${tt('노드')} ${configured.nodes.length} · ${tt('관계')} ${configured.edges.length}`}</p>
-            <p>{tt('구성 수집 시각')} · {time(configuration.capturedAt)}</p>
+            {!evidence && <p>{tt('구성 수집 시각')} · {time(configuration.capturedAt)}</p>}
+            {evidence}
             {configuration.error && <p role="alert" className="text-negative">{tt(configuration.error)}</p>}
             {configuration.failedTypes.length > 0 && <p role="alert" className="text-negative">{tt('구성 수집 실패:')} {configuration.failedTypes.join(', ')}</p>}
             {configuration.cappedTypes.length > 0 && <p>{tt('구성 수집 상한:')} {configuration.cappedTypes.join(', ')}</p>}

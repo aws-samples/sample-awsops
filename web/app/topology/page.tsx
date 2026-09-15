@@ -1,7 +1,9 @@
 'use client';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
+import ServiceNetworkTopology from '@/components/topology/ServiceNetworkTopology';
 import { Globe, Cloud, Network, Target as TargetIcon, Shield, CircleHelp, MoreHorizontal, Server, Zap, Hexagon, Boxes, Circle, Copy, Sparkles, Search, Webhook, Archive, type LucideIcon } from 'lucide-react';
 import { Background, Controls, MiniMap, Position, type Node, type Edge, type ReactFlowInstance } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -282,6 +284,10 @@ function networkNames(row: Record<string, unknown>, nm: NetMaps): Record<string,
 }
 
 export default function TopologyPage() {
+  return <Suspense fallback={null}><TopologyScope /></Suspense>;
+}
+
+function TopologyScope() {
   const [scope, , ready] = useActiveScope();
   // Remount all graph/detail/evidence state on selection changes. A saved member/all scope
   // must be known before the first load; the hook's hydration default is not a host selection.
@@ -292,6 +298,8 @@ export default function TopologyPage() {
 
 function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
   const { tt, lang } = useI18n();
+  const params = useSearchParams();
+  const e2e = params.get('view') === 'e2e';
   const copy = EVIDENCE_COPY[lang];
   const [data, setData] = useState<FlowInput | null>(null);
   const [syncedAt, setSyncedAt] = useState<string | null>(null);
@@ -433,16 +441,8 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
 
   useEffect(() => { void load(); return () => { loadGeneration.current += 1; loadAbort.current?.abort(); }; }, [load]);
 
-  // Deep-link from the service map (/topology/services): ?cluster=<resolved:name> seeds the cluster
-  // filter so a trace workload click lands on this cluster's request path. Reads directly from
-  // window.location (no useSearchParams → no Suspense boundary needed for the standalone build).
-  // Also re-reads on popstate so browser back/forward after the filter changes tracks the URL.
-  useEffect(() => {
-    const read = () => setClusterFilter(new URLSearchParams(window.location.search).get('cluster') ?? '');
-    read();
-    window.addEventListener('popstate', read);
-    return () => window.removeEventListener('popstate', read);
-  }, []);
+  const urlCluster = params.get('cluster') ?? '';
+  useEffect(() => { setClusterFilter(urlCluster); setSelected(null); }, [urlCluster]);
 
   const dark = useTheme() === 'dark';
 
@@ -494,7 +494,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
     return [...seen.entries()].map(([key, v]) => ({ key, ...v }));
   }, [full]);
 
-  const { nodes, edges } = useMemo(() => {
+  const scopedGraph = useMemo(() => {
     let gFull = filterFromEntry(full, entryId || null);
 
     // Cluster filter: keep target nodes belonging to the selected cluster + every upstream
@@ -515,6 +515,12 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
       gFull = { nodes: gFull.nodes.filter((n) => keep.has(n.id)), edges: gFull.edges.filter((e) => keep.has(e.source) && keep.has(e.target)) };
     }
 
+    return gFull;
+  }, [full, entryId, clusterFilter]);
+
+  const { nodes, edges } = useMemo(() => {
+    if (e2e) return { nodes: [], edges: [] };
+    const gFull = scopedGraph;
     // Focus: clicking a node collapses the view to ITS connected path (up + downstream), then
     // re-lays-out and re-centers (imperative fitView in the effect below) so the active subgraph
     // fills the screen — instead of dimming the rest and letting it overflow/clip off one screen.
@@ -567,7 +573,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
       style: e.confidence === 'inferred' ? { strokeDasharray: '4 4' } : {},
     }));
     return { nodes, edges };
-  }, [full, entryId, clusterFilter, dark, selected]);
+  }, [scopedGraph, dark, selected, e2e]);
 
   // Re-center imperatively (NOT by remounting — a remount destroys the user's pan/zoom and makes
   // dragging feel broken). Keep one mounted instance; refit when the entry filter or focus changes.
@@ -675,6 +681,53 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
     </div>
   ) : undefined;
 
+  // Keep the same collection evidence in both views. Retained/in-flight inventory remains
+  // visible context, but must not promote an observed endpoint to a configured identity.
+  const identityBlocked = busy || retained || !!err || syncIncomplete || readFailures.length > 0
+    || cappedTypes.length > 0 || collectionIssues.length > 0;
+  const correlationGraph = useMemo(() => identityBlocked ? {
+    ...scopedGraph, nodes: scopedGraph.nodes.map(node => node.kind === 'target'
+      ? { ...node, meta: { ...node.meta, e2e_correlation_blocked: true } } : node),
+  } : scopedGraph, [scopedGraph, identityBlocked]);
+  const inventoryEvidencePanel = <>
+        {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
+        {full.nodes.some(n => n.meta?.ambiguity === 'eks_not_enumerated') && <div role="status" className="text-[13px] text-warning">
+          {tt('EKS 조회 범위 밖의 대상은 소유권 미확인입니다. 조회 리전:')} {eksResolution?.coveredRegions.join(', ')}
+        </div>}
+        {(eksResolution?.status === 'unavailable' || eksResolution?.status === 'partial') && <div role="alert" aria-label={tt('EKS 식별 상태')} className="text-[13px] text-warning">
+          {eksResolution.reasons.length > 0 && eksResolution.reasons.every(reason => reason === 'cluster_not_connected')
+            ? copy.eksNotConnected : tt('EKS 조회 실패 또는 수집 범위 제한으로 IP 소유자를 확인할 수 없습니다.')} ({eksResolution.reasons.join(', ')})
+        </div>}
+        {(data?.ownershipRead?.targetGroup || data?.ownershipRead?.ecsTask || data?.ownershipRead?.subnet) && <div role="status" className="text-[13px] text-warning">
+          {tt(syncIncomplete ? '인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.' : '인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.')}
+        </div>}
+        {retained && <div role="status" className="text-[13px] text-warning">{tt('조회 실패로 이전 결과를 표시합니다.')}</div>}
+        {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
+        {data && <div aria-label="Inventory collection evidence" className="text-[12px] text-ink-400">
+          <div>{copy.inventoryScope}</div>
+          <span>{copy.capture} {syncedAt ? new Date(syncedAt).toLocaleString() : copy.unknown}</span>
+          {captureThrough && captureThrough !== syncedAt && <span> – {new Date(captureThrough).toLocaleString()}</span>}
+          {unknownCapture && <span> · {copy.missingCapture}</span>}
+          {aggregateRuns.length > 0 && <div>{copy.runs} {aggregateRuns.map(([status, count]) => `${copy.statuses[status]} (${count})`).join(', ')}</div>}
+          {readFailures.length > 0 && <div role="status">{copy.reads} {readFailures.map(type => `${type}: ${copy.failures.failed}`).join(', ')}</div>}
+          {collectionIssues.length > 0 && <div role="status">{copy.issues} {collectionIssues.map(issue => `${issue.type}: ${copy.failures[issue.status]}`).join(', ')}</div>}
+          {runHealthUnknown && <div>{copy.healthUnknown}</div>}
+          {eksCoverage && <div>{copy.eksScope} {eksCoverage.region ?? copy.unknown}; {copy.eksOtherRegions}</div>}
+          {!!eksCoverage?.notConnected && <div>{copy.eksNotConnected}: {eksCoverage.notConnected}</div>}
+          {eksStatus !== 'ok' && <div>{copy.eks[eksStatus]}</div>}
+          {cappedTypes.length > 0 && <div className="text-warning">{copy.limit}: {cappedTypes.map(type => `${type} (${rowLimit(type)})`).join(', ')}</div>}
+        </div>}
+  </>;
+  const viewHref = (view: boolean) => {
+    const next = new URLSearchParams(params.toString());
+    if (view) next.set('view', 'e2e'); else next.delete('view');
+    return `/topology${next.size ? `?${next}` : ''}`;
+  };
+  if (e2e) return <ServiceNetworkTopology configured={correlationGraph} account={activeAccount}
+    configuration={{ loading: busy || (!data && !err), capturedAt: syncedAt, error: '',
+      failedTypes: [], cappedTypes: [] }} evidence={inventoryEvidencePanel}
+    backHref={viewHref(false)} onRefresh={() => void load()} />;
+
   return (
     <div className="flex h-full flex-col">
       <PageHeader
@@ -728,6 +781,9 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
               ))}
             </select>
             <RefreshButton busy={busy} onClick={load} capturedAt={captureThrough} />
+            <Link href={viewHref(true)} className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
+              {tt('서비스 + 네트워크 →')}
+            </Link>
             <Link href="/topology/infra" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
               {tt('인프라 배치 →')}
             </Link>
@@ -738,33 +794,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
         }
       />
       <div className="flex-1 min-h-0 flex flex-col gap-4 px-8 py-6">
-        {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
-        {full.nodes.some(n => n.meta?.ambiguity === 'eks_not_enumerated') && <div role="status" className="text-[13px] text-warning">
-          {tt('EKS 조회 범위 밖의 대상은 소유권 미확인입니다. 조회 리전:')} {eksResolution?.coveredRegions.join(', ')}
-        </div>}
-        {(eksResolution?.status === 'unavailable' || eksResolution?.status === 'partial') && <div role="alert" aria-label={tt('EKS 식별 상태')} className="text-[13px] text-warning">
-          {eksResolution.reasons.length > 0 && eksResolution.reasons.every(reason => reason === 'cluster_not_connected')
-            ? copy.eksNotConnected : tt('EKS 조회 실패 또는 수집 범위 제한으로 IP 소유자를 확인할 수 없습니다.')} ({eksResolution.reasons.join(', ')})
-        </div>}
-        {(data?.ownershipRead?.targetGroup || data?.ownershipRead?.ecsTask || data?.ownershipRead?.subnet) && <div role="status" className="text-[13px] text-warning">
-          {tt(syncIncomplete ? '인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.' : '인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.')}
-        </div>}
-        {retained && <div role="status" className="text-[13px] text-warning">{tt('조회 실패로 이전 결과를 표시합니다.')}</div>}
-        {!data && !err && <div className="text-ink-400">{tt('로딩 중…')}</div>}
-        {data && <div aria-label="Inventory collection evidence" className="text-[12px] text-ink-400">
-          <div>{copy.inventoryScope}</div>
-          <span>{copy.capture} {syncedAt ? new Date(syncedAt).toLocaleString() : copy.unknown}</span>
-          {captureThrough && captureThrough !== syncedAt && <span> – {new Date(captureThrough).toLocaleString()}</span>}
-          {unknownCapture && <span> · {copy.missingCapture}</span>}
-          {aggregateRuns.length > 0 && <div>{copy.runs} {aggregateRuns.map(([status, count]) => `${copy.statuses[status]} (${count})`).join(', ')}</div>}
-          {readFailures.length > 0 && <div role="status">{copy.reads} {readFailures.map(type => `${type}: ${copy.failures.failed}`).join(', ')}</div>}
-          {collectionIssues.length > 0 && <div role="status">{copy.issues} {collectionIssues.map(issue => `${issue.type}: ${copy.failures[issue.status]}`).join(', ')}</div>}
-          {runHealthUnknown && <div>{copy.healthUnknown}</div>}
-          {eksCoverage && <div>{copy.eksScope} {eksCoverage.region ?? copy.unknown}; {copy.eksOtherRegions}</div>}
-          {!!eksCoverage?.notConnected && <div>{copy.eksNotConnected}: {eksCoverage.notConnected}</div>}
-          {eksStatus !== 'ok' && <div>{copy.eks[eksStatus]}</div>}
-          {cappedTypes.length > 0 && <div className="text-warning">{copy.limit}: {cappedTypes.map(type => `${type} (${rowLimit(type)})`).join(', ')}</div>}
-        </div>}
+        {inventoryEvidencePanel}
         {data && (
           full.nodes.length === 0 ? (
             !err && <div className="rounded-md border border-ink-100 bg-ink-50 px-3 py-3 text-[13px] text-ink-400">
