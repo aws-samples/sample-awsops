@@ -7,7 +7,7 @@ vi.mock('@/lib/auth', () => ({ verifyUser: async () => ({ sub: 'fixture' }) }));
 vi.mock('@/lib/db', () => ({ getPool: () => api.pool }));
 import { GET } from '../app/api/graph/route';
 import { graphTransaction } from './graph-transaction';
-import { projectGraphDetails } from './graph-state';
+import { projectGraphDetails, writeGraphState } from './graph-state';
 import { buildInfraGraph } from './infra-topology';
 
 const socket = process.env.GRAPH_TEST_POSTGRES_SOCKET;
@@ -55,6 +55,28 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
         '{"retainedPrevious":true,"secret":"PRIVATE","sources":[{"sourceId":"inventory:vpc","status":"partial","producerStatus":"succeeded","itemCount":1,"secret":"PRIVATE","reasons":["unknown_attributes","PRIVATE"]}]}')`);
   });
   afterAll(async () => { await pool?.end(); });
+
+  it.each(['flow', 'infra', 'trace'] as const)('accepts equal-timestamp %s attempts, rejects older ones and preserves last-good on failure', async cls => {
+    await pool.query('TRUNCATE topology_graph_state');
+    const at = '2026-09-14T12:00:00.000Z';
+    const source = { sourceId: 'inventory:fixture', status: 'ok', itemCount: 1 };
+    await graphTransaction(pool, false, async client => {
+      await client.query('SELECT pg_advisory_xact_lock($1)', [123456]);
+      const attempt = { status: 'ok' as const, attemptedAt: at, publish: true, details: { sources: [source], revision: 1 } };
+      expect(await writeGraphState(client, 'self', attempt, cls)).toBe(true);
+      expect(await writeGraphState(client, 'self', { ...attempt, details: { sources: [source], revision: 2 } }, cls)).toBe(true);
+      const saved = (await client.query('SELECT * FROM topology_graph_state WHERE class=$1', [cls])).rows[0];
+      expect(saved.details.revision).toBe(2); // Caller may proceed with the equal-timestamp publication.
+      expect(await writeGraphState(client, 'self', { ...attempt, publish: false, status: 'error',
+        details: { sources: [], retainedPrevious: true } }, cls)).toBe(true);
+      const retained = (await client.query('SELECT * FROM topology_graph_state WHERE class=$1', [cls])).rows[0];
+      expect(retained.status).toBe('error');
+      expect(retained.captured_at).toEqual(saved.captured_at);
+      if (cls !== 'trace') expect(retained.details.publishedSources).toEqual([source]);
+      expect(await writeGraphState(client, 'self', { ...attempt, attemptedAt: '2026-09-14T11:59:59.999Z' }, cls)).toBe(false);
+      expect((await client.query('SELECT * FROM topology_graph_state WHERE class=$1', [cls])).rows[0]).toEqual(retained);
+    });
+  });
 
   it('keeps nodes and collection on one snapshot while another connection publishes', async () => {
     api.pool = { connect: async () => {
