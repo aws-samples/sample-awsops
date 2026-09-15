@@ -9,14 +9,14 @@ META = [{"name": "TraceId", "type": "String"}]
 
 
 @pytest.mark.parametrize("data,expected", [
-    ({"data": [], "meta": META}, "empty"),
-    ({"data": [{"TraceId": "a"}], "meta": META}, "ok"),
+    ({"data": [], "meta": META, "rows": 0}, "empty"),
+    ({"data": [{"TraceId": "a"}], "meta": META, "rows": 1}, "ok"),
     ({"meta": META}, "unknown"),
-    ({"data": [], "meta": None}, "unknown"),
-    ({"data": [], "meta": []}, "unknown"),
-    ({"data": [], "meta": META, "exception": "PRIVATE"}, "error"),
-    ({"data": [{"TraceId": "a"}, None], "meta": META}, "partial"),
-    ({"data": [{"TraceId": "a"}] * 3, "meta": META}, "partial"),
+    ({"data": [], "meta": None, "rows": 0}, "unknown"),
+    ({"data": [], "meta": [], "rows": 0}, "unknown"),
+    ({"data": [], "meta": META, "rows": 0, "exception": "PRIVATE"}, "error"),
+    ({"data": [{"TraceId": "a"}, None], "meta": META, "rows": 2}, "partial"),
+    ({"data": [{"TraceId": "a"}] * 3, "meta": META, "rows": 3}, "partial"),
 ])
 def test_query_completion(data, expected):
     with patch.object(ch, "load_datasource", return_value={"endpoint": "https://fixture.invalid"}), \

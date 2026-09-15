@@ -163,7 +163,7 @@ def _run_sql(sql, max_rows, trusted=False, max_execution_time=None):
     # timeout_overflow_mode=throw — the server-side bound must fire first.
     status, data = http_json("POST", url, headers=headers, body=body, timeout=max_execution_time + 3)
     if status >= 400:
-        snippet = data.get("raw") or data.get("exception") or data
+        snippet = (data.get("raw") or data.get("exception") or data) if isinstance(data, dict) else "non-object error response"
         return err(f"ClickHouse query failed ({status}): {str(snippet)[:300]}")
     raw = data.get("data") if isinstance(data, dict) else None
     meta = data.get("meta") if isinstance(data, dict) else None
@@ -174,14 +174,28 @@ def _run_sql(sql, max_rows, trusted=False, max_execution_time=None):
         isinstance(column, dict) and isinstance(column.get("name"), str)
         and bool(column["name"]) and isinstance(column.get("type"), str)
         and bool(column["type"]) for column in meta)
-    if isinstance(data, dict) and (data.get("exception") is not None or data.get("error") is not None):
+    if isinstance(data, dict) and (data.get("status") == "error"
+            or any(data.get(key) is not None for key in ("exception", "error", "errorType"))):
         state = "error"
-    elif not isinstance(raw, list) or not valid_meta:
+    elif (status not in (200, 206) or not isinstance(raw, list) or not valid_meta
+          or type(data.get("rows")) is not int or data["rows"] != len(rows)):
         state = "unknown"
-    elif truncated or not all(isinstance(row, dict) for row in rows):
+    elif status == 206 or truncated or not all(isinstance(row, dict) for row in rows):
         state = "partial"
     else:
         state = "ok" if rows else "empty"
+    if isinstance(data, dict) and state != "error":
+        for key in ("warnings", "partial", "truncated", "rows_before_limit_at_least"):
+            if key not in data:
+                continue
+            value = data[key]
+            valid = (isinstance(value, list) and all(isinstance(item, str) for item in value)
+                     if key == "warnings" else type(value) is int and value >= 0
+                     if key == "rows_before_limit_at_least" else type(value) is bool)
+            if not valid:
+                state = "unknown"
+            elif state != "unknown" and (value > len(rows) if key == "rows_before_limit_at_least" else bool(value)):
+                state = "partial"
     return ok({"rowCount": len(rows[:max_rows]), "rows": rows[:max_rows],
                "meta": meta, "truncated": truncated, "collectionStatus": state})
 
@@ -305,4 +319,4 @@ def ok(body):
 
 
 def err(msg):
-    return {"statusCode": 400, "body": json.dumps({"error": msg})}
+    return {"statusCode": 400, "body": json.dumps({"error": msg, "collectionStatus": "error"})}

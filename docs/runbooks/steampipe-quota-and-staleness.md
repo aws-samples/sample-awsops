@@ -363,6 +363,12 @@ ORDER BY resource_type;
 
 The limited ops `inventory-read-target` already returns explicit freshness for `query_inventory` and `inventory_summary`; it never silently falls back to a live API. Direct domain targets still coexist until Phase 2 expands Aurora coverage and retires them. Aurora-only is not live.
 
+### Persisted identity counts
+
+Sync `row_count` and per-account snapshots count unique persisted `(account_id, region, resource_id)` identities. Duplicate rows retain the existing last-row-wins value. For an attribute-hydration fallback, `unknown_attribute_count` uses that same post-filter/post-deduplication count, so duplicate join rows cannot inflate unknown attributes above the persisted population.
+
+This uses ADR-021's persisted freshness-evidence basis; it changes no collection permission or release gate.
+
 ## 6. 안전한 튜닝 / Safe tuning
 
 throttling, sync latency 증가 또는 service instability가 보이면 `max_concurrency`, bucket size,
@@ -412,13 +418,6 @@ private-DNS exception.
 
 Phase 1 alone does not retire any direct AgentCore target, so it has no AgentCore catalog rollback of its own.
 
-## Related
-
-- ADR-021: `docs/decisions/021-quota-isolated-inventory-reads.md`
-- Approved design: `docs/superpowers/specs/2026-08-31-steampipe-quota-safe-aurora-mcp-design.md`
-- Renderer: `scripts/v2/steampipe/spc_render.py`
-- Sync Lambda: `scripts/v2/steampipe/sync_lambda.py`
-
 Manual dev/preview deployment blocks listed core-runtime deletion/replacement/forget.
 There is no retirement marker or supported teardown mode. Keep `steampipe_enabled=true`
 for ordinary rollback and restore prior reviewed settings; destructive decommissioning
@@ -427,3 +426,10 @@ requires a separate reviewed procedure. This development guard does not apply to
 지원되는 teardown 모드는 없다. 일반 롤백은 `steampipe_enabled=true`와 서비스·데이터를
 유지하고 이전 검토 설정을 복원한다. 파괴적 종료에는 별도 검토 절차가 필요하며
 이 개발 환경 가드는 main에는 적용되지 않는다.
+
+## Related
+
+- ADR-021: `docs/decisions/021-quota-isolated-inventory-reads.md`
+- Approved design: `docs/superpowers/specs/2026-08-31-steampipe-quota-safe-aurora-mcp-design.md`
+- Renderer: `scripts/v2/steampipe/spc_render.py`
+- Sync Lambda: `scripts/v2/steampipe/sync_lambda.py`

@@ -61,7 +61,7 @@ META = [{"name": "TraceId", "type": "String"}]
     ({"meta": META, "data": [{"TraceId": "a"}], "rows": 1}, "ok"),
     ({"meta": META, "rows": 0}, "unknown"),
     ({"data": [], "rows": 0}, "unknown"),
-    ({"meta": META, "data": []}, "empty"),
+    ({"meta": META, "data": []}, "unknown"),
     ({"meta": META, "data": [None], "rows": 1}, "partial"),
     ({"meta": META, "data": [], "rows": 0, "exception": "fixture error"}, "error"),
     ({"meta": META, "data": [], "rows": 0, "rows_before_limit_at_least": 1}, "partial"),
@@ -102,3 +102,4 @@ def test_tempo_requires_affirmative_jobs_before_complete_collection(metrics, exp
     assert body["collectionStatus"] == (("ok" if nonempty else "empty") if expected == "complete" else expected)
     assert body["traces"] == traces
     assert body["metrics"] == (None if metrics == "absent" else metrics)
+    assert body.get("collectionReason") == ("count_not_confirmed" if expected == "unknown" else None)

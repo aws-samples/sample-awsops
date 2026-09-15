@@ -40,9 +40,32 @@ zero returned nodes in this outcome do not mean an empty graph was published.
 
 ## Source completeness and retained publication
 
-An unproven empty read carries `canSweep: false`: a healthy sibling cannot replace the saved graph on its behalf. A missing or failed Tempo child also withholds publication, including mixed results with other fetched spans. The prior whole graph and capture clock remain; adapter items and bounded current attempt diagnostics are separate from published rows. No elapsed retention count grants empty proof.
+`empty_not_confirmed` is a soft reason for legacy unmarked empty results.
+Recognized producer `unknown` uses soft incomplete evidence, not a failed-query diagnosis. Tempo exposes absent/invalid/zero job counts distinctly as `count_not_confirmed`, using the existing HTTP/SQL reason vocabulary.
+That reason also includes producer warnings/partial results and missing Tempo children;
+the child-fetch path separately sets `canSweep: false` when a child has no fetched spans.
 
-Routine caps, truncation and warnings with useful valid items keep the existing partial-publication path. This refreshes bounded graphs, including first-time builds; partial data does not establish absence outside that sample. Typed `unknown` metadata becomes soft `incomplete_collection` evidence rather than a collector error. Unknown/partial empty results remain unconfirmed and retained. Valid spans outside the query window are not missing children. Limits and the query window are existing fixed bounds, not operator recovery knobs introduced by this change.
+A failed or malformed source, an unconfirmed empty result, or missing-child evidence retains
+the entire previous graph and capture clock even when a sibling has useful data. Current
+bounded counts/reasons remain attempt evidence; no mixed-generation upsert is performed.
+
+Valid nonempty reads with only caps, payload truncation, warnings or completion-unknown
+metadata use the existing atomic **partial snapshot** publication path. They can create and
+refresh a graph at the fixed query bounds. The returned bounded generation replaces the prior
+one; it is not complete source coverage or evidence that omitted resources disappeared.
+Warnings stay partial: the application does not guess that an annotation is benign. Empty
+partial results cannot authorize replacement. Only confirmed complete empty results clear a
+graph. Actual query/fetch failures and malformed data remain distinct from unknown metadata.
+Valid fetched spans outside the query window are not missing children. Existing query
+limits and windows remain fixed bounds, not new operator recovery controls.
+
+The existing PostgreSQL suite verifies first and repeated bounded publication, legitimate
+complete empty replacement, and all-empty/mixed missing-child retention. Shared fixtures in
+`agent/fixtures/` bind real mocked producer bodies to adapter outcomes. See
+[source completion and rollout](source-sync-observability.md#producer-completion-and-rollout)
+for producer deployment; source merge alone is not live completion proof.
+
+Oversized valid Tempo children keep a bounded structured OTLP projection and can refresh a partial snapshot with their siblings. The byte budget is unchanged; a failed or structurally unusable child still cannot authorize replacement. The [Tempo response-capability table](tempo-query-generation.md#search-result-evidence) distinguishes count-proof absence, unfinished work and byte limits. The shared budget fixture proves the actual producer output is mappable and publishes through PostgreSQL.
 
 ## Verification commands
 
@@ -85,14 +108,16 @@ docker exec "$graph_test_container" pg_isready -U postgres -d awsops
 docker exec "$graph_test_container" psql -U postgres -d awsops \
   -c "COMMENT ON DATABASE awsops IS 'awsops-disposable-graph-test'"
 cd web
-npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts app/api/graph/route.test.ts lib/graph-state.test.ts
+npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts \
+  app/api/graph/route.test.ts lib/graph-state.test.ts
 docker rm -f "$graph_test_container"
 ```
 
 The fixture creates and independently marks `awsops_graph_read_test`. Without the
 socket environment variable, the disposable PostgreSQL suite is skipped explicitly;
 the ordinary API and state unit tests still run. These are local contract tests,
-not live AWS or deployment acceptance. The suite consumes the shared Tempo producer fixture and checks both mixed-source retention and fresh bounded partial publication.
+not live AWS or deployment acceptance.
+
 
 ## Operator action
 
@@ -112,10 +137,13 @@ A source merge or automatic web CD result is not proof that these steps complete
 ## Related files and decisions
 
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
-`web/lib/graph-read-postgres.test.ts`, `web/components/topology/GraphCollectionStatus.tsx`,
-`web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`,
-`agent/lambda/prometheus_mcp.py`, `agent/lambda/mimir_mcp.py`, `agent/lambda/tempo_mcp.py`,
-`agent/lambda/clickhouse_mcp.py`, `agent/lambda/test_graph_source_producer_contract.py`,
-`agent/lambda/test_clickhouse_completion.py`, `agent/fixtures/tempo-topology-contract.json`.
+`web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`,
+`web/components/topology/GraphCollectionStatus.tsx`,
+`agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,
+`agent/lambda/prometheus_mcp.py`, `agent/lambda/mimir_mcp.py`,
+`agent/lambda/test_collection_markers.py`, `agent/lambda/test_clickhouse_completion.py`, `agent/lambda/test_tempo_trace_budget.py`,
+`agent/fixtures/tempo-trace-budget-contract.json`,
+`agent/lambda/test_graph_source_producer_contract.py`,
+`agent/fixtures/tempo-topology-contract.json`, `agent/fixtures/query-topology-contract.json`.
 ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-043 (graph reads;
 decision bodies are maintained upstream).

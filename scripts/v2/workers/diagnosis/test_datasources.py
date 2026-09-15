@@ -185,16 +185,29 @@ def test_incomplete_connector_signals_never_become_confident_zero(
     _patch_lambda(monkeypatch, FakeLambda(body={key: rows, **markers, "error": secret}))
     out = src.collect_datasources(FakeConn([(5, "source", kind, True)], {5: schema}))
     signal = out["data"]["findings"][0]["results"][0]
-    if expected == "error":
-        assert signal["error"] == "source collection error"
-    else:
-        assert "error" not in signal
-        assert signal["incomplete"] is True
     summary = signal["summary"]
+    if expected == "error":
+        assert signal["error"] == summary["error"] == "source collection error"
+    else:
+        assert "error" not in signal and "error" not in summary
+        assert signal["incomplete"] is True and summary["incomplete"] is True
     assert summary["collectionStatus"] == expected
     assert "count" not in summary
     assert summary.get("observedCount") == (1 if nonempty else None)
     assert secret not in json.dumps(out) and "sensitive-invalid-status" not in json.dumps(out)
+
+
+def test_partial_error_trace_observations_remain_evidence_not_query_failure(monkeypatch):
+    _patch_lambda(monkeypatch, FakeLambda(body={
+        "traces": [{"traceID": "private-trace"}] * 20, "collectionStatus": "partial",
+    }))
+    out = src.collect_datasources(FakeConn([(5, "source", "tempo", True)], {5: {"labels": ["service.name"]}}))
+    signal = out["data"]["findings"][0]["results"][0]
+    assert signal["label"] == "error_traces"
+    assert signal["incomplete"] is True and "error" not in signal
+    assert signal["summary"]["observedCount"] == 20
+    assert "count" not in signal["summary"]
+    assert "private-trace" not in json.dumps(out)
 
 
 def test_partial_error_trace_count_remains_observed_evidence(monkeypatch):
@@ -321,3 +334,12 @@ def test_no_signal_rows_falls_back_to_generic_planner(monkeypatch):
     conn.schemas = {5: {"metrics": ["http_requests_total"]}}
     src.collect_datasources(conn)
     assert fake.calls, "generic planner should run when no signals are materialized"
+
+
+@pytest.mark.parametrize("kind,value", [("scalar", "0"), ("string", "SYNTHETIC_PRIVATE_VALUE")])
+def test_scalar_summary_counts_one_sample_without_exposing_value(kind, value):
+    summary = src._summarize_result({"resultType": kind, "result": [1.5, value], "collectionStatus": "ok"})
+    assert summary["count"] == 1
+    assert summary["resultType"] == kind
+    assert "SYNTHETIC_PRIVATE_VALUE" not in json.dumps(summary)
+    assert "result" not in summary and "value" not in summary

@@ -178,11 +178,12 @@ application, without guaranteeing cancellation of a server query already started
 |------|--------|------|------|
 | `/api/vpce` | GET | VPC Endpoint 목록+분석 — 인벤토리 VPC 리전 fan-out + PrivateLink 메트릭 기반 미사용 감지 | verifyUser |
 
-## 기타 (54)
+## 기타 (55)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
 | `/api/accounts` | GET, POST, PATCH, DELETE | 등록 계정 CRUD (admin) — POST는 role assume + `GetCallerIdentity` anti-spoof 검증 후 insert; 호스트 전용 모드의 외부 계정 POST는 409 / host-only foreign account POST returns 409 | verifyUser |
 | `/api/accounts/regions` | GET, POST, DELETE | 계정별 리전 활성/비활성 (`'self'` → 호스트 실제 id 해석) — 조회 auth / 변경 admin | verifyUser |
+| `/api/accounts/onboarding` | GET | Host web task-role ARN, host account, region and `registrationEnabled`; authentication/admin checks precede STS (401/403), identity mismatch/discovery failure returns 503; `Cache-Control: private, no-store`. Generates no resources. | verifyUser + admin |
 | `/api/actions` | GET, POST | 액션 목록/생성 (ADR-007[legacy 040/041], admin) | verifyUser |
 | `/api/actions/[id]` | GET, POST | 액션 상세/실행 (admin) — kill-switch 분기(integrations-write vs mutating-actions), 빈 이름 fail-closed | verifyUser |
 | `/api/agentcore` | GET | AgentCore 컨트롤플레인 상태 (runtime/gateway/memory/interpreter, `?action=stats`) | verifyUser |
