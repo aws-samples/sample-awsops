@@ -51,6 +51,7 @@ adopting it. Deployment workflows verify this prerequisite but never apply boots
   section.
 
 ## Flag Gates
+- Optional `CI_STEAMPIPE_AWS_FILL_RATE_DEV` sets existing `steampipe_aws_fill_rate` only in full dev plans with the verified runtime profile. Empty preserves tfvars/defaults; finite 0.1–20 is required. Apply replays the saved plan and DNS/CORE guards still apply.
 - CI always generates ignored `ci-runtime.auto.tfvars.json`; `CI_READONLY_RUNTIME_DEV=true` enables
   inventory/AgentCore/workers and host-only inventory on dev; it does not enable readiness. A manual full activation first
   verifies the deployed login and host registry. Saved profile metadata enforces read-only
