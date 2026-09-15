@@ -95,6 +95,49 @@ These UI checks run from `web/` with mocked transport/state and require no Postg
 npx vitest run lib/graph-fetch.test.ts components/topology/GraphCollectionStatus.test.tsx
 ```
 
+## Layer execution and diagnostics
+
+Run `cd web && npx tsx ../scripts/v2/graph-rebuild.mjs` only from an authorized
+VPC/Aurora context with the existing database configuration and `HOST_ACCOUNT_ID`.
+The existing web-task principal uses its provisioned Aurora IAM authentication and
+curated connector-read permissions; this change creates no principal or grant.
+Flow and infra execute sequentially. A flow exception does not block infra, but an
+infra execution failure skips trace collection and publication for that cycle and
+logs `trace skipped: infra execution failed`. Saved trace rows/clocks are untouched
+by that skipped stage; stale infra must not become fresh trace context after failure.
+
+Registry query errors normally do **not** throw from `loadGraphSources`. The loader
+returns a synthetic error source and `registryFailed=true`. Both entrypoints log the
+fixed `trace_sources: registry_read_failed` diagnostic and pass that source to the
+existing trace builder, preserving its non-publishing retention path. A missing
+schema or failed state write can still prevent recording; the log is not a receipt
+that a trace attempt was persisted. Unexpected loader exceptions remain safely logged.
+
+`web/lib/graph-execution.ts` projects only the current builders' nonnegative safe-integer
+node/edge totals. Other result fields are unsupported and are not logged. Exceptions
+use normalized stage/SQLSTATE diagnostics, never raw provider errors or SQL text.
+The CLI awaits pool closure and exits **1** for a thrown/invalid layer execution,
+known registry failure, unexpected loader exception or failed cleanup; otherwise it
+exits **0**. There is no exit-2 publication contract. In particular, real legacy
+retention, missing state schema and confirmed-empty publication can all return the
+same zero totals. A source-level error/partial/unavailable response handled internally
+by the builder can still exit 0. Inspect the graph API's collection/source metadata;
+these execution totals and exit 0 do not prove complete or empty collection.
+
+The timer remains off when `GRAPH_REBUILD_INTERVAL_MINS` is unset, invalid or nonpositive.
+Its Terraform input is `graph_rebuild_interval_mins` (default 0; enabled values are whole
+minutes 1–1440). When enabled, the timer retains its initial 60-second delay, process-local
+overlap guard and outer catch/finally recovery. Existing per-class advisory locks serialize
+writes across ECS tasks; they do not eliminate duplicate cross-task reads. This runs outside
+HTTP handlers in the web process, not an async worker. A future EventBridge/ECS worker
+path needs separate review if this work outgrows that process. Deploy/apply separately;
+source changes do not enable the timer. Offline tests from `web/` exercise the actual
+legacy loader/builders with mocked SQL and connector IO:
+
+```bash
+npx vitest run lib/graph-rebuild-runner.test.ts lib/graph-sources.test.ts lib/instrumentation-runner.test.ts lib/graph-state.test.ts
+```
+
 ## Verification commands
 
 Use browser developer tools on an already-authorized page to distinguish HTTP503/busy,
@@ -174,6 +217,8 @@ A source merge or automatic web CD result is not proof that these steps complete
 ## Related files and decisions
 
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
+`web/lib/graph-execution.ts`, `scripts/v2/graph-rebuild.mjs`, `web/instrumentation.ts`,
+`web/lib/graph-rebuild-runner.test.ts`, `web/lib/instrumentation-runner.test.ts`,
 `web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`, `web/lib/graph-fetch.ts`, `web/lib/graph-fetch.test.ts`,
 `web/components/topology/GraphCollectionStatus.tsx`, `web/components/topology/GraphCollectionStatus.test.tsx`,
 `agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,
