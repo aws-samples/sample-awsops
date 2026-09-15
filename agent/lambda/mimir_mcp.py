@@ -58,7 +58,7 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params, http_timeout=None):
+def _get(creds, path, params, http_timeout=None, *, with_status=False):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
     kwargs = {"headers": _headers(creds)}
     if http_timeout is not None:
@@ -68,7 +68,12 @@ def _get(creds, path, params, http_timeout=None):
         raise _ApiError(f"Mimir HTTP {status}: {str(data.get('raw') or data.get('error') or data)[:300]}")
     if isinstance(data, dict) and data.get("status") and data.get("status") != "success":
         raise _ApiError(f"Mimir query failed ({data.get('errorType', 'error')}): {data.get('error', 'unknown')}")
-    return data.get("data") if isinstance(data, dict) else data
+    result = data.get("data") if isinstance(data, dict) else data
+    source_status = "unknown"
+    if isinstance(data, dict) and data.get("status") == "success":
+        warnings = data.get("warnings", [])
+        source_status = "unknown" if not isinstance(warnings, list) else "partial" if warnings else "ok"
+    return (result, source_status) if with_status else result
 
 
 def _bound(data):
@@ -90,6 +95,22 @@ def _bound(data):
             budget -= len(s["values"])
         out.append(s)
     return {"resultType": data.get("resultType"), "result": out}, truncated
+
+
+def _query_result(observed):
+    data, source_status = observed
+    raw_rows = data.get("result") if isinstance(data, dict) else None
+    raw_rows_valid = isinstance(raw_rows, list) and all(isinstance(row, dict) for row in raw_rows[:MAX_SERIES])
+    bounded, truncated = _bound(data)
+    state = source_status if raw_rows_valid else "unknown"
+    if state == "ok":
+        state = ("unknown" if not isinstance(bounded, dict)
+                 or bounded.get("resultType") not in ("vector", "matrix")
+                 or not isinstance(bounded.get("result"), list) else
+                 "partial" if truncated else "ok" if bounded["result"] else "empty")
+    return ok({"truncated": truncated,
+               **(bounded if isinstance(bounded, dict) else {"result": bounded}),
+               "collectionStatus": state})
 
 
 def _timeout_param(v):
@@ -114,9 +135,7 @@ def mimir_query(args):
     timeout = _timeout_param(args.get("timeout"))
     if timeout:
         params["timeout"] = timeout
-    data = _get(_ds(), f"{BASE}/query", params)
-    bounded, tr = _bound(data)
-    return ok({"truncated": tr, **(bounded if isinstance(bounded, dict) else {"result": bounded})})
+    return _query_result(_get(_ds(), f"{BASE}/query", params, with_status=True))
 
 
 def mimir_query_range(args):
@@ -128,24 +147,29 @@ def mimir_query_range(args):
     timeout = _timeout_param(args.get("timeout"))
     if timeout:
         params["timeout"] = timeout
-    data = _get(_ds(), f"{BASE}/query_range", params)
-    bounded, tr = _bound(data)
-    return ok({"truncated": tr, **(bounded if isinstance(bounded, dict) else {"result": bounded})})
+    return _query_result(_get(_ds(), f"{BASE}/query_range", params, with_status=True))
+
+
+def _list_result(observed, field, limit, kind):
+    data, source_status = observed
+    rows = data[:limit] if isinstance(data, list) else []
+    truncated = isinstance(data, list) and len(data) > limit
+    state = ("unknown" if source_status == "unknown" or not isinstance(data, list) else
+             "partial" if source_status == "partial" or truncated or not all(isinstance(row, kind) for row in rows) else
+             "ok" if rows else "empty")
+    return ok({field: rows, "truncated": truncated, "collectionStatus": state})
 
 
 def mimir_labels(args):
-    data = _get(_ds(), f"{BASE}/labels", {})
-    names = data if isinstance(data, list) else []
-    return ok({"labels": names[:1000], "truncated": len(names) > 1000})
+    return _list_result(_get(_ds(), f"{BASE}/labels", {}, with_status=True), "labels", 1000, str)
 
 
 def mimir_series(args):
     match = (args.get("match") or "").strip()
     if not match:
         return err("match (series selector) required")
-    data = _get(_ds(), f"{BASE}/series", {"match[]": match})
-    series = data if isinstance(data, list) else []
-    return ok({"series": series[:MAX_SERIES], "truncated": len(series) > MAX_SERIES})
+    return _list_result(_get(_ds(), f"{BASE}/series", {"match[]": match}, with_status=True),
+                        "series", MAX_SERIES, dict)
 
 
 def mimir_schema(args):
