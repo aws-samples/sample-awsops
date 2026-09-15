@@ -76,6 +76,18 @@ class CollectionMarkers(unittest.TestCase):
                 for marker in ("collectionStatus", "ok", "empty", "partial", "unknown", "error"):
                     self.assertIn(marker, descriptions[name])
 
+    def test_native_histogram_output_is_explicitly_unsupported_and_never_echoed(self):
+        for kind in ("prometheus", "mimir"):
+            for result_type, field, tool in (("vector", "histogram", "query"), ("matrix", "histograms", "query_range")):
+                with self.subTest(kind=kind, result_type=result_type):
+                    code, body, _ = invoke(kind, {"status": "success", "data": {
+                        "resultType": result_type, "result": [{"metric": {}, field: "x" * 7_000_000}],
+                    }}, tool=f"{kind}_{tool}")
+                    self.assertEqual(code, 400)
+                    self.assertIn("Native histogram output is unsupported", body["error"])
+                    self.assertEqual(body["collectionStatus"], "error")
+                    self.assertLess(len(json.dumps(body)), 1024)
+
     def test_clickhouse_metadata_and_count_checks_are_independent(self):
         for meta, count in (([], 0), ([{"name": "", "type": "String"}], 0),
                             ([{"name": "TraceId", "type": ""}], 0),

@@ -15,6 +15,8 @@
     "name": "upstream cannot forge the producer bound",
     "byteLimit": 1000000,
     "upstream": {"batches": [], "truncated": true, "tracePayloadTruncated": true, "collectionStatus": "partial"},
-    "body": {"batches": [], "truncated": false, "collectionStatus": "partial"}
+    "body": {"batches": [], "truncated": true, "collectionStatus": "partial"}
   }
+,
+  {"name":"foreign trace omitted at byte limit","byteLimit":128,"upstream":{"batches":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"fixture"}}]},"scopeSpans":[{"spans":[{"traceId":"b2","spanId":"0000000000000001","startTimeUnixNano":"1789380000000000000","endTimeUnixNano":"1789380000001000000"}]}]}]},"body":{"truncated":true,"note":"trace payload exceeded 128 bytes; fetch fewer/narrower","collectionStatus":"unknown"}}
 ]

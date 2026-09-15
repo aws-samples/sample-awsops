@@ -8,6 +8,8 @@ X-Scope-OrgID; trace_id is hex-validated then URL-quoted (path injection defense
 responses have NO envelope `status` field → success = HTTP 2xx. Trace payloads can be multi-MB →
 bound trace count + per-trace bytes (UTF-8) + ensure_ascii=False. Stdlib + boto3 only.
 """
+import base64
+import binascii
 import json
 import re
 import time
@@ -89,7 +91,8 @@ def _byte_bound(obj):
     body = json.dumps(obj, default=str, ensure_ascii=False)
     if len(body.encode("utf-8")) <= MAX_TOTAL_BYTES:
         return obj, False
-    return {"truncated": True, "note": "payload omitted at byte limit"}, True
+    return {"truncated": True,
+            "note": f"trace payload exceeded {MAX_TOTAL_BYTES} bytes; fetch fewer/narrower"}, True
 
 
 def _proto_integer(value, bits, signed=False):
@@ -114,6 +117,47 @@ def _search_metrics_valid(metrics):
             return False
     return True
 
+
+def _trace_identity(value, size, allow_zero=False):
+    if not isinstance(value, str) or not value:
+        return None
+    if len(value) <= size * 2 and _HEX.fullmatch(value):
+        if size == 8 and len(value) != 16:
+            return None
+        decoded = bytes.fromhex(value.zfill(size * 2))
+    else:
+        if len(value) != ((size + 2) // 3) * 4:
+            return None
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except (ValueError, binascii.Error):
+            return None
+        if len(decoded) != size or base64.b64encode(decoded).decode() != value:
+            return None
+    return decoded if allow_zero or any(decoded) else None
+
+def _valid_trace_span(span, trace_id):
+    if (not isinstance(span, dict) or not _trace_identity(span.get("spanId"), 8)
+            or not all(_proto_integer(span.get(key), 64) for key in ("startTimeUnixNano", "endTimeUnixNano"))
+            or int(span["endTimeUnixNano"]) < int(span["startTimeUnixNano"])
+            or ("traceId" in span and _trace_identity(span["traceId"], 16) != trace_id)):
+        return False
+    if "parentSpanId" in span and span["parentSpanId"] != "" and _trace_identity(span["parentSpanId"], 8, True) is None:
+        return False
+    if "name" in span and not isinstance(span["name"], str):
+        return False
+    if "status" in span:
+        if not isinstance(span["status"], dict):
+            return False
+        code = span["status"].get("code", 0)
+        if (type(code) not in (int, str)
+                or str(code).upper().removeprefix("STATUS_CODE_") not in ("0", "1", "2", "UNSET", "OK", "ERROR")):
+            return False
+    if "links" in span and (not isinstance(span["links"], list) or any(
+            not isinstance(link, dict) or not _trace_identity(link.get("traceId"), 16)
+            or not _trace_identity(link.get("spanId"), 8) for link in span["links"])):
+        return False
+    return True
 
 _TRACE_ATTRIBUTES = {
     "service.name", "service.namespace", "service.version", "cloud.account.id", "cloud.region",
@@ -141,14 +185,15 @@ def _trace_attributes(value):
     return list(selected.values())
 
 
-def _trace_projection(data):
+def _trace_projection(data, requested_trace_id):
     """Over-budget only: retain scoped identities/timing in valid OTLP, never a fake empty."""
     if (not isinstance(data, dict) or "error" in data or data.get("status") == "error"
             or data.get("collectionStatus") == "error"):
         return None
     key = "batches" if "batches" in data else "resourceSpans"
     batches = data.get(key)
-    if not isinstance(batches, list):
+    trace_id = _trace_identity(requested_trace_id, 16)
+    if not isinstance(batches, list) or trace_id is None:
         return None
     out = {"truncated": True, "projection": "bounded_otlp",
            "note": "Trace payload exceeded byte budget; bounded span projection", key: []}
@@ -166,7 +211,9 @@ def _trace_projection(data):
             group = {"resource": {"attributes": resource_attrs}, "scopeSpans": [{"spans": []}]}
             group_cost = _json_size(group) + 2
             for span in scope["spans"]:
-                if not isinstance(span, dict):
+                # Validate before spending output budget. Never turn malformed
+                # fitting spans into apparently usable projected evidence.
+                if not _valid_trace_span(span, trace_id):
                     return None
                 projected = {field: span[field] for field in (
                     "traceId", "spanId", "parentSpanId", "kind", "startTimeUnixNano", "endTimeUnixNano",
@@ -188,14 +235,6 @@ def _trace_projection(data):
                                           for link in span["links"][:64]]
                 cost = _json_size(projected) + 2
                 if used + group_cost + cost > MAX_TOTAL_BYTES:
-                    # A no-fit marker must not hide an already malformed child.
-                    sid = projected.get("spanId")
-                    if not out[key] and not (isinstance(sid, str) and len(sid) == 16
-                            and _HEX.fullmatch(sid) and int(sid, 16)
-                            and all(_proto_integer(projected.get(k), 64)
-                                    for k in ("startTimeUnixNano", "endTimeUnixNano"))
-                            and int(projected["endTimeUnixNano"]) >= int(projected["startTimeUnixNano"])):
-                        return None
                     return out if out[key] else {"truncated": True, "note": "payload omitted at byte limit",
                                                 "tracePayloadTruncated": True, "collectionStatus": "partial"}
                 if group_cost:
@@ -272,11 +311,11 @@ def tempo_get_trace(args):
         return err("Tempo trace fetch returned an error")
     payload, btr = _byte_bound(data if isinstance(data, dict) else {"trace": data})
     if btr:
-        projected = _trace_projection(data)
+        projected = _trace_projection(data, tid)
         return ok(projected if projected is not None else {**payload, "collectionStatus": "unknown"})
     # Only the local projection can issue the explicit no-fit marker.
-    payload.pop("tracePayloadTruncated", None)
-    return ok({**payload, "truncated": False})
+    payload = {key: value for key, value in payload.items() if key != "tracePayloadTruncated"}
+    return ok({"truncated": False, **payload})
 
 
 def tempo_search_tags(args):

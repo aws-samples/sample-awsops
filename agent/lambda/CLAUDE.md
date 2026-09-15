@@ -31,8 +31,12 @@ guard — see the section below.
 ClickHouse, Tempo and Prometheus/Mimir compute `collectionStatus` from validated HTTP
 responses, never copied upstream flags. Only complete ok/empty certifies empty. Tempo
 uses synchronous HTTP 200 response validation, not mandatory job counters; byte-omitted
-children retain structured spans or an explicit no-fit marker; an all-empty partial attempt
-cannot clear saved graphs. Prometheus/Mimir instant scalar/string results retain one bounded
+children retain structured spans or an explicit no-fit marker; a spanless/no-fit child
+cannot authorize graph replacement even alongside useful siblings. Preserve upstream truncation
+metadata without mutating its response dictionary. Projected spans validate identity/timing,
+reported trace ID and parent/link/status fields before budget admission; encountered malformed
+spans make the whole projection unknown, and unvisited rows remain unassessed.
+Prometheus/Mimir instant scalar/string results retain one bounded
 sample; malformed records are fixed markers with bounded output.
 Run `python3 -m pytest agent/lambda/test_collection_markers.py agent/lambda/test_collection_boundaries.py agent/lambda/test_graph_source_producer_contract.py -q` from the root.
 Deploy Lambda code separately from the updated `scripts/v2/agentcore/catalog.py` descriptions;

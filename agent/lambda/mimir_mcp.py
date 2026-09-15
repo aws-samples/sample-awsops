@@ -153,6 +153,10 @@ def _bound(data):
 
 def _query_result(observed, *, allow_scalar=False):
     data, state = observed
+    raw_rows = data.get("result") if isinstance(data, dict) else None
+    if isinstance(raw_rows, list) and any(isinstance(row, dict) and
+            ("histogram" in row or "histograms" in row) for row in raw_rows[:MAX_SERIES]):
+        return err("Native histogram output is unsupported; request float-valued results.")
     kind = data.get("resultType") if isinstance(data, dict) else None
     if kind in ("scalar", "string"):
         raw = data.get("result")

@@ -21,6 +21,8 @@ export interface NormalizedResult {
   seriesKeys?: string[];
   truncated?: boolean;
   note?: string;
+  collectionStatus?: 'ok' | 'empty' | 'partial' | 'unknown' | 'error';
+  collectionNote?: string;
 }
 
 const cols = (keys: string[]): Column[] => keys.map((k) => ({ key: k, label: k }));
@@ -45,8 +47,6 @@ function labelStr(metric: unknown): string {
 function prom(body: Record<string, unknown>): NormalizedResult {
   const result = Array.isArray(body.result) ? body.result : [];
   const truncated = body.truncated === true;
-  if (!result.length) return { shape: 'empty', truncated, note: '결과 없음' };
-
   if (body.resultType === 'scalar' || body.resultType === 'string') {
     if (result.length !== 2 || typeof result[0] !== 'number' || !Number.isFinite(result[0])
         || typeof result[1] !== 'string') return { shape: 'empty', truncated, note: '응답 형식 오류' };
@@ -55,6 +55,7 @@ function prom(body: Record<string, unknown>): NormalizedResult {
       timestamp: new Date(result[0] * 1000).toISOString(),
     }] };
   }
+  if (!result.length) return { shape: 'empty', truncated, note: '결과 없음' };
 
   if (body.resultType === 'matrix') {
     // v1 parity: up to 8 series merged on the timestamp axis → multi-line chart; all series →
@@ -242,7 +243,7 @@ function clickhouse(body: Record<string, unknown>): NormalizedResult {
   return { shape: 'table', rows, columns: cols(keys), truncated };
 }
 
-export function normalizeResult(kind: string, _tool: string, body: unknown): NormalizedResult {
+function normalizeBody(kind: string, _tool: string, body: unknown): NormalizedResult {
   if (!isObj(body)) return { shape: 'empty', note: '응답 없음' };
   try {
     switch (kind) {
@@ -267,4 +268,30 @@ export function normalizeResult(kind: string, _tool: string, body: unknown): Nor
   } catch (e) {
     return { shape: 'empty', note: `결과 파싱 실패: ${e instanceof Error ? e.message : 'unknown'}` };
   }
+}
+
+const COLLECTION_STATES = new Set(['ok', 'empty', 'partial', 'unknown', 'error']);
+const EMPTY_NOTES = new Set(['결과 없음', '행 없음', '트레이스 없음', '로그 없음', '시계열 포인트 없음']);
+
+export function normalizeResult(kind: string, tool: string, body: unknown): NormalizedResult {
+  const result = normalizeBody(kind, tool, body);
+  if (!isObj(body)) return result;
+  let status: NormalizedResult['collectionStatus'];
+  if (Object.prototype.hasOwnProperty.call(body, 'collectionStatus')) {
+    status = typeof body.collectionStatus === 'string' && COLLECTION_STATES.has(body.collectionStatus)
+      ? body.collectionStatus as NonNullable<NormalizedResult['collectionStatus']> : 'unknown';
+  }
+  const truncated = result.truncated === true || body.truncated === true;
+  if ('truncated' in body && typeof body.truncated !== 'boolean' && status !== 'error') status = 'unknown';
+  if (truncated && status !== 'error' && status !== 'unknown') status = 'partial';
+  if (!status) return result;
+  const collectionNote = status === 'error' ? '조회 실패 — 확인 불가'
+    : status === 'unknown' ? '수집 완료 여부 미확인 — 빈 결과를 확정할 수 없습니다.'
+    : status === 'partial' ? '부분 결과 — 전체 범위를 확인할 수 없습니다.' : undefined;
+  return {
+    ...result, collectionStatus: status, ...(truncated ? { truncated: true } : {}),
+    ...(collectionNote ? { collectionNote } : {}),
+    ...(collectionNote && result.shape === 'empty' && (!result.note || EMPTY_NOTES.has(result.note))
+      ? { note: collectionNote } : {}),
+  };
 }

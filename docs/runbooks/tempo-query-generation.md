@@ -62,7 +62,7 @@ After deployment and refresh, regenerate “HTTP 500 응답 스팬” and verify
 Local regression checks, from the repository root:
 
 ```bash
-(cd agent/lambda && python3 -m pytest test_tempo_mcp.py test_graph_source_producer_contract.py test_collection_boundaries.py -q)
+(cd agent/lambda && python3 -m pytest test_tempo_mcp.py test_graph_source_producer_contract.py test_collection_boundaries.py test_tempo_trace_budget.py -q)
 (cd web && npx vitest run lib/tempo-schema.test.ts lib/datasource-schema.test.ts lib/datasource-querygen.test.ts app/api/datasources/generate/route.test.ts app/api/integrations/schema/route.test.ts)
 python3 -m pytest scripts/v2/workers/test_datasource_index.py scripts/v2/workers/test_graph_catalog.py scripts/v2/workers/test_card_catalog.py scripts/v2/workers/diagnosis/test_signal_catalog.py -q
 ```
@@ -77,7 +77,11 @@ A recognizable, validated synchronous HTTP 200 `SearchResponse` establishes quer
 
 An explicit positive `totalJobs` with fewer completed jobs is partial; contradictory or malformed metrics are unknown. Bare/unrecognized responses, null/non-list traces and null/malformed metrics carry `completionReason: search_response_unverified`, not a fabricated query error. Explicit errors remain errors. These source-backed semantics are not live acceptance evidence for any deployment. See the [Search API](https://grafana.com/docs/tempo/latest/api_docs/) and [protobuf response types](https://github.com/grafana/tempo/blob/main/pkg/tempopb/tempo.proto). No extra query is issued to manufacture completion.
 
-`tempo_get_trace` above the byte cap retains a bounded structured OTLP span projection (`projection: bounded_otlp`, `truncated: true`), preserving scoped resource identities, timing and bounded links. If no span fits, a validated projection path returns computed `tracePayloadTruncated: true` with `partial`. Neither path returns a raw preview, and upstream flags cannot assert the no-fit marker. Such a bounded child may coexist with useful spans or another useful source in a partial snapshot. An all-empty partial attempt still retains the prior graph. Missing, unmarked-empty or failed children retain the prior graph even with useful siblings. See the [publication contract](graph-read-contract.md#source-completeness-and-retained-publication).
+`tempo_get_trace` above the byte cap retains a bounded structured OTLP span projection (`projection: bounded_otlp`, `truncated: true`), preserving scoped resource identities, timing and bounded links. Before adding each projected span, the producer validates identity/timing, any reported trace ID against the request, and present parent/link/status fields. Canonical hex, shortened trace hex and protobuf base64 identities are supported.
+
+An encountered malformed span leaves the whole projection unknown; unvisited rows beyond the budget remain unassessed. If a validated span cannot fit, the producer can return `tracePayloadTruncated: true` with `partial`, which still supplies no attributable spans. Neither path returns a raw preview, and upstream flags cannot assert the no-fit marker.
+
+Structured projected spans remain usable partial evidence after normal parser checks. A spanless no-fit response is unverified child evidence and retains the prior graph even with useful siblings, as do missing, unmarked-empty or failed children. Under-byte responses preserve upstream truncation metadata without mutating the input; malformed truncation values remain unverified in consumers. See the [publication contract](graph-read-contract.md#source-completeness-and-retained-publication).
 
 확인된 빈 사용자 정의 속성 캐시는 **60초 TTL**을 사용한다. 만료 후 다음 생성 요청에서 백그라운드 재수집 대상이 되며, 60초마다 자동 조회하는 타이머는 아니다. 불완전한 빈 결과는 이 TTL을 기다리지 않고 재수집 대상이 된다. Tempo의 백그라운드 재수집은 동일 인스턴스당 1분의 재시도 간격을 적용해 요청마다 반복 호출하지 않으며, 정상적인 빈 관측의 짧은 TTL도 유지한다. 아래 관리자 POST는 즉시 재수집하므로 TTL 만료를 기다릴 필요가 없다.
 
@@ -201,6 +205,8 @@ If the recent window remains empty, repeated refreshes cannot recover historical
 ## 관련 파일 / Related files
 
 - `agent/lambda/tempo_mcp.py`
+- `agent/lambda/test_tempo_trace_budget.py`
+- `agent/fixtures/tempo-trace-budget-contract.json`
 - `agent/lambda/test_tempo_trace_budget.py`
 - `agent/lambda/test_graph_source_producer_contract.py`
 - `agent/fixtures/tempo-trace-budget-contract.json`

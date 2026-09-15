@@ -86,7 +86,7 @@ function validWindow(window: ReadWindow): boolean {
 }
 function readResult<T>(
   sourceId: string, window: ReadWindow, items: T[] = [], reasons: Reason[] = [],
-  status?: SourceRead<T>['status'], boundedEmpty = false,
+  status?: SourceRead<T>['status'],
 ): SourceRead<T> {
   const unique = [...new Set(reasons)];
   const boundedReason = (r: Reason) => [
@@ -98,7 +98,7 @@ function readResult<T>(
   // malformed data still forbids replacement; Tempo adds its mixed-child guard below.
   const lostData = unique.some(r => !boundedReason(r));
   const retain = lostData || outcome === 'error' || outcome === 'unavailable'
-    || (outcome !== 'ok' && items.length === 0 && !boundedEmpty);
+    || (outcome !== 'ok' && items.length === 0);
   return {
     items, sourceId, ...window, reasons: unique,
     ...(retain ? { canSweep: false as const } : {}),
@@ -110,6 +110,7 @@ function envelopeReasons(value: unknown): Reason[] {
   const reasons: Reason[] = [];
   if (r?.error !== undefined || r?.status === 'error') reasons.push('query_failed');
   if (r?.truncated === true) reasons.push('payload_truncated');
+  if (r && 'truncated' in r && typeof r.truncated !== 'boolean') reasons.push('incomplete_collection');
   if (r && Object.prototype.hasOwnProperty.call(r, 'collectionStatus')) {
     if (r.collectionStatus === 'error') reasons.push('query_failed');
     else if (r.collectionStatus === 'partial') reasons.push('incomplete_collection');
@@ -354,6 +355,7 @@ export class ClickHouseOtelTraceSource implements TraceSource {
 
 const TEMPO_TRACE_CAP = 20; // graph_catalog.py tempo_v1; <=21 invokes per source
 
+// This marker describes omitted data, not verified child identity or replacement permission.
 function byteBoundedTempoTrace(value: unknown): boolean {
   const r = object(value);
   return r?.tracePayloadTruncated === true && r.truncated === true
@@ -385,7 +387,10 @@ function parseTempoTrace(traceId: string, value: unknown): { items: TraceSpan[];
   if (!normalizedTraceId) return { items, reasons: [...reasons, 'malformed_rows'] };
   if (byteBoundedTempoTrace(r)) return { items, reasons };
   const batches = r?.batches ?? r?.resourceSpans;
-  if (!Array.isArray(batches)) return { items, reasons: [...reasons, 'malformed_payload'] };
+  // The producer can omit an entire unverified projection. Keep that uncertainty
+  // distinct from a query failure; an empty child still vetoes replacement below.
+  if (!Array.isArray(batches)) return { items,
+    reasons: r?.collectionStatus === 'unknown' ? reasons : [...reasons, 'malformed_payload'] };
   for (const batch of batches) {
     const b = object(batch);
     if (b?.resource !== undefined && !object(b.resource)) reasons.push('malformed_rows');
@@ -479,7 +484,6 @@ export class TempoTraceSource implements TraceSource {
     }))].slice(0, TEMPO_TRACE_CAP);
     const items: TraceSpan[] = [];
     let missingChild = false;
-    let boundedChildren = 0;
     for (const traceId of traceIds) {
       if (items.length >= limit) { reasons.push('cap_reached'); break; }
       try {
@@ -488,9 +492,7 @@ export class TempoTraceSource implements TraceSource {
         });
         const parsed = parseTempoTrace(traceId, payload);
         reasons.push(...parsed.reasons);
-        const bounded = byteBoundedTempoTrace(payload);
-        if (bounded) boundedChildren++;
-        if (!parsed.items.length && !bounded) {
+        if (!parsed.items.length) {
           missingChild = true;
           if (!parsed.reasons.length) reasons.push('incomplete_collection');
         }
@@ -503,7 +505,7 @@ export class TempoTraceSource implements TraceSource {
       }
     }
     requireEmptyProof(search, items, reasons);
-    return { ...readResult(sourceId, window, items, reasons, undefined, boundedChildren > 0 && !missingChild),
+    return { ...readResult(sourceId, window, items, reasons),
       ...(missingChild ? { canSweep: false as const } : {}) };
   }
 }

@@ -37,9 +37,8 @@ disclosed by metadataTruncated in both HTTP and SQL projections.
 ## Source completeness and retained publication
 
 `empty_not_confirmed` is a soft reason for legacy unmarked empty results.
-Recognized producer `unknown` uses soft incomplete evidence, not a failed-query diagnosis. Tempo exposes an unverified response (`completionReason: search_response_unverified`) as `count_not_confirmed` in HTTP/SQL source reasons. Missing protobuf default counters alone do not make a valid synchronous response unknown.
-Producer warnings/partial results and missing Tempo children use `incomplete_collection`;
-the child-fetch path sets `canSweep: false` for a missing, failed or unmarked-empty child.
+Recognized producer `unknown` uses soft incomplete evidence, not a failed-query diagnosis. Tempo exposes an unverified response (`completionReason: search_response_unverified`) as `count_not_confirmed` in HTTP/SQL source reasons; missing protobuf default counters alone do not invalidate synchronous completion.
+Producer warnings and partial results use `incomplete_collection`; an empty returned Tempo child also uses it. Failed or malformed children keep their specific failure reasons. The child-fetch path separately sets `canSweep: false` when a child has no fetched spans.
 
 A failed or malformed source, an unconfirmed empty result, or missing-child evidence retains
 the entire previous graph and capture clock even when a sibling has useful data. Current
@@ -50,9 +49,8 @@ metadata use the existing atomic **partial snapshot** publication path. They can
 refresh a graph at the fixed query bounds. The returned bounded generation replaces the prior
 one; it is not complete source coverage or evidence that omitted resources disappeared.
 Warnings stay partial: the application does not guess that an annotation is benign. Empty
-partial attempts with no useful items cannot authorize replacement. A producer-certified
-byte-omitted Tempo child (`tracePayloadTruncated: true`, partial) may accompany useful
-siblings in a partial snapshot; it cannot clear a graph by itself. Only confirmed complete
+partial attempts with no useful items cannot authorize replacement. A byte-omitted Tempo child (`tracePayloadTruncated: true`, partial) has no attributable
+spans and retains the previous graph even when siblings have useful data. Only confirmed complete
 empty results clear a graph. Actual query/fetch failures and malformed data remain distinct from unknown metadata.
 Valid fetched spans outside the query window are not missing children. Existing query
 limits and windows remain fixed bounds, not new operator recovery controls.
@@ -64,6 +62,8 @@ complete empty replacement, and all-empty/mixed missing-child retention. Shared 
 for producer deployment; source merge alone is not live completion proof.
 
 Oversized valid Tempo children keep a bounded structured OTLP projection and can refresh a partial snapshot with their siblings. The byte budget is unchanged; a failed or structurally unusable child still cannot authorize replacement. The [Tempo completion contract](tempo-query-generation.md#search-completion-and-publication) distinguishes unverified shape, unfinished work and byte limits. The shared budget fixture proves the actual producer output is mappable and publishes through PostgreSQL.
+
+The shared query normalizer carries collection status into Explore. Marked partial, unknown or failed empty responses show an uncertainty/failure note instead of an ordinary empty-result claim; useful rows remain visible with the same disclosure. Scalar format failures remain distinct from empty responses. Non-boolean truncation metadata is unverified, never silently interpreted as complete output.
 
 ## Verification commands
 

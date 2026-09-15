@@ -275,7 +275,7 @@ The PostgreSQL read-contract suite also exercises real graph publication against
 
 #### Producer completion and rollout
 
-Prometheus/Mimir instant scalar and string results preserve one timestamp/value sample, with a 4096-byte UTF-8 value bound. Malformed non-series entries use a fixed null marker instead of echoing arbitrary upstream content; malformed or oversized scalar pairs remain unknown. Diagnosis counts a valid scalar pair as one sample and still excludes its raw value; Explore renders it as one row. Range queries retain their series-only contract.
+Prometheus/Mimir instant scalar and string results preserve one timestamp/value sample, with a 4096-byte UTF-8 value bound. Malformed non-series entries use a fixed null marker instead of echoing arbitrary upstream content; malformed or oversized scalar pairs remain unknown. Diagnosis counts a valid scalar pair as one sample and still excludes its raw value; Explore renders it as one row. Range queries retain their series-only contract. Native `histogram`/`histograms` output is explicitly unsupported and rejected before serialization; request float-valued output rather than treating an unsupported histogram as unknown collection.
 
 Catalog guidance accompanies every affected ClickHouse query/tables/describe and Prometheus/Mimir query/query-range/labels/series tool, as well as Tempo search. Run existing AgentCore provisioning to reconcile all these descriptions after the producer code rollout. Partial/unknown/error evidence cannot establish absence or full coverage.
 
@@ -299,8 +299,8 @@ keeps only the count and type; its raw value is excluded.
 Their label/series endpoints also propagate `error` and `unknown` without converting them
 to empty. Tempo treats malformed/null completion metrics as unknown and unfinished jobs
 as partial. `tempo_get_trace` retains bounded structured spans when possible; a no-fit byte
-omission is partial, never complete/empty. That explicit marker can accompany useful siblings; an all-empty
-partial attempt still retains the graph. Unmarked-empty/missing/failed children retain even
+omission is partial, never complete/empty. A spanless no-fit marker retains the previous graph even with useful siblings; only
+actual parsed structured spans can support partial publication. Encountered malformed projected spans make the whole producer projection unknown, which remains unverified evidence rather than a fabricated query failure. Unvisited tail data is not represented. Unmarked-empty/missing/failed children retain even
 with useful siblings. `tempo-child-contract.json` binds the actual producer envelope to
 adapter and PostgreSQL retention tests.
 
@@ -313,13 +313,20 @@ HTTP payloads to actual producer bodies and TypeScript adapter outcomes. The pro
 regressions retain valid-zero, nonempty, warning/error, malformed-metadata and limit cases;
 the PostgreSQL regressions independently enforce missing-child retention.
 
+### Explore evidence display
+
+`NormalizedResult` retains the validated collection status and a localized disclosure. Explore shows it for both empty and nonempty results, while boolean truncation remains visible. Unknown/error/partial empty bodies are not rendered as plain no-results; confirmed empty and unmarked legacy display behavior remain distinct. Scalar/string format validation precedes the empty-list shortcut. Non-boolean truncation flags receive an unverified-state disclosure, without discarding useful rows.
+
 ### Diagnosis signal completeness
+
+Any loss during record validation is disclosed as incomplete regardless of producer-marker presence, including Loki/legacy bodies. Valid unmarked records retain their previous count behavior; malformed nonempty lists cannot become a clean zero.
+
+
+Observed counts exclude null/empty placeholders. Known metric records require a metric object and usable numeric sample, trace records require a valid nonzero hex trace identity, and log streams require a usable timestamp/line pair. Generic table/aggregate counts include nonempty structured rows only. A missing validated count is not a confirmed zero.
+
 
 The diagnosis worker preserves connector `collectionStatus` and truncation before preparing model evidence. Partial/unknown results carry `incomplete: true`, not a query-error signal; nonempty observed records remain as `observedCount`, never a complete zero. `collectionStatus: error` keeps a fixed error signal. Known `ok`/`empty` results retain their counts. Raw rows, trace payloads, sample values and upstream error text are not copied into these summaries. Deploy the worker source update with the connector producer changes. Verify offline with `PYTHONPATH=scripts/v2/workers python3 -m pytest scripts/v2/workers/diagnosis/test_datasources.py -q`.
 
 Tempo search uses validated synchronous HTTP 200 completion, not a mandatory job-counter pair. Missing protobuf default fields can be valid; malformed or unrecognized responses remain unknown, explicit unfinished work remains partial. See [the canonical Tempo runbook](tempo-query-generation.md#search-completion-and-publication) for exact shape, limit and omission semantics. Deploy the producer Lambdas and reconcile all affected Gateway descriptions through the existing AgentCore provisioning flow; a source merge does not update deployed tools.
 
-Legacy diagnosis responses without a completion marker, including current Loki responses,
-retain their preexisting count behavior; a zero there is not new proof of query completeness.
-This is separate from the graph adapter's stricter empty-publication rule. `observedCount`
-counts returned records, not automatically violations; interpret it with the query's scope.
+Unmarked responses use the same structural validation. Valid, untruncated output keeps a `count` field without asserting collection completion. Validation loss or truncation produces incomplete evidence and only a validated nonzero `observedCount`, even for Loki or pre-rollout bodies. A legacy unmarked literal empty list still has its existing compatibility behavior; this does not introduce affirmative empty proof. `observedCount` counts validated returned records, not automatically violations; interpret it with the query scope.

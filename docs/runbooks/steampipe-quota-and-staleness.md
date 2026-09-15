@@ -369,7 +369,7 @@ Sync `row_count` and per-account snapshots count unique persisted `(account_id, 
 
 This uses ADR-021's persisted freshness-evidence basis; it changes no collection permission or release gate.
 
-Verify offline from the repository root with `python3 -m pytest scripts/v2/steampipe/test_sync_lambda_queries.py -k persisted_identity_counts -q`.
+Verify offline from the repository root with `python3 -m pytest scripts/v2/steampipe/test_sync_lambda_queries.py -k persisted_identity_counts -q` (ADR-021 collection accounting).
 
 ## 6. 안전한 튜닝 / Safe tuning
 

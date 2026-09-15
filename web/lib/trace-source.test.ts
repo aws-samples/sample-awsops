@@ -544,11 +544,11 @@ describe('SourceRead provenance and bounds', () => {
     expect(result).toMatchObject({ status: 'partial', reasons: ['incomplete_collection'], canSweep: false });
     expect(result.items).toHaveLength(mode === 'mixed' ? 1 : 0);
   });
-  it.each(['bounded-mixed', 'bounded-only', 'unmarked-mixed', 'forged-mixed'] as const)(
+  it.each(['bounded-mixed', 'bounded-only', 'unmarked-mixed', 'forged-mixed', 'foreign-bounded'] as const)(
     'distinguishes producer byte omission from missing children: %s', async mode => {
       configure('tempo');
-      const bounded = mode.startsWith('bounded');
-      const child = childContracts[bounded ? 0 : mode === 'forged-mixed' ? 2 : 1].body;
+      const bounded = mode.startsWith('bounded') || mode === 'foreign-bounded';
+      const child = childContracts[mode === 'foreign-bounded' ? 3 : bounded ? 0 : mode === 'forged-mixed' ? 2 : 1].body;
       const mixed = mode !== 'bounded-only';
       invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok',
         traces: mixed ? [{ traceID: 'a1' }, { traceID: 'b2' }] : [{ traceID: 'a1' }] })
@@ -558,7 +558,7 @@ describe('SourceRead provenance and bounds', () => {
       expect(read.status).toBe('partial');
       expect(read.items).toHaveLength(mixed ? 1 : 0);
       if (bounded) {
-        expect(read.canSweep).toBeUndefined();
+        expect(read.canSweep).toBe(false);
         expect(read.reasons).toContain('payload_truncated');
         expect(read.reasons).not.toContain('malformed_payload');
       } else expect(read.canSweep).toBe(false);
@@ -573,6 +573,14 @@ describe('SourceRead provenance and bounds', () => {
     const result = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
     expect(result).toMatchObject({ items: [], status: 'ok', reasons: [] });
     expect(result.canSweep).not.toBe(false);
+  });
+  it.each([true, 'unknown'])('preserves upstream child truncation evidence: %s', async truncated => {
+    configure('tempo');
+    invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: '1' }] })
+      .mockResolvedValueOnce({ ...tempoTrace([tempoSpan()]), truncated });
+    const read = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
+    expect(read.status).toBe('partial');
+    expect(read.items).toHaveLength(1);
   });
 
   it.each(factories)('%s returns ok with exact window for successful empty data', async (kind, read, payload) => {
