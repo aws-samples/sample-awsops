@@ -12,7 +12,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/resources/topology.png" alt="요청 흐름 그래프" />
 
-스크린샷의 계정 ID와 ARN은 가렸습니다.
+이 스크린샷은 설명용으로 저장한 예시이므로, 사용 시 선택한 계정과 현재 조회 범위를 확인하세요.
 
 ## 주요 기능
 ### 요청 흐름 그래프

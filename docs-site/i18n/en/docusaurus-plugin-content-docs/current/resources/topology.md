@@ -12,7 +12,7 @@ A page for exploring the request flow (**Route53 → CloudFront → Load Balance
 
 <Screenshot src="/screenshots/resources/topology.png" alt="Request-flow graph" />
 
-Account IDs and ARNs are redacted in the screenshots.
+These saved screenshots are illustrative examples; verify your selected account and current scope when using the page.
 
 ## Features
 ### Request-flow graph

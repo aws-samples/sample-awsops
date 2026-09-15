@@ -12,7 +12,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/resources/topology.png" alt="请求流图" />
 
-截图中的账户 ID 和 ARN 已隐藏。
+这些截图是保存的示例，仅供说明；使用页面时，请核对所选账户和当前查询范围。
 
 ## 主要功能
 ### 请求流图

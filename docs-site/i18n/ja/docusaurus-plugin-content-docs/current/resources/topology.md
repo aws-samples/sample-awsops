@@ -12,7 +12,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 <Screenshot src="/screenshots/resources/topology.png" alt="リクエストフローグラフ" />
 
-スクリーンショットのアカウント ID と ARN は非表示にしています。
+これらは説明用に保存したスクリーンショットです。ページを使用する際は、選択中のアカウントと現在の表示範囲を確認してください。
 
 ## 主な機能
 ### リクエストフローグラフ
