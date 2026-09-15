@@ -84,4 +84,10 @@ documentation alone do not establish completion.
 
 ## Service/network graph status
 
-The opt-in `/topology?view=e2e` page connects the full account-scoped inventory graph, saved host trace snapshots and explicitly queried NFM observations. Shared ranking precedes display bounds; category/detail omissions, cached context and withheld identities remain visible. Browser fixtures verify interaction and scope safeguards, not live E2E collection completeness.
+The opt-in `/topology?view=e2e` page connects the full configuration graph, host trace snapshots and explicit NFM queries through the pure correlator and shared selection. It preserves identity vetoes and discloses read state, cached context and omissions. Library/browser fixtures validate behavior, not live E2E coverage.
+
+### Graph source contract
+
+- `hostAccountId` is the trusted 12-digit ID from the authenticated account list's unique `isHost` entry. Never derive host authority from telemetry. It resolves the inventory `self` sentinel against numeric trace claims; missing or conflicting authority withholds numeric joins.
+- Only `configurationComplete === true` permits identity arbitration. Every target kind, including instances, receives a copied veto otherwise. The caller must pass actual load/coverage status; a bare `FlowGraph` cannot certify its own completeness.
+- `networkRead` carries idle/loading/complete/partial/failed/unknown/unsupported state, failed categories and unknown-window categories. Missing state stays unknown; complete state with failure/unknown-window evidence becomes partial. Non-host selection forces unsupported. Observation rows are positive evidence, never a successful-absence assertion by themselves.
