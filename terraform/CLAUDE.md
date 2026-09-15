@@ -10,7 +10,7 @@ lifecycle configuration per bucket: reconcile and preserve unrelated rules befor
 adopting it. Deployment workflows verify this prerequisite but never apply bootstrap.
 
 ## Key Files (`foundation/`)
-- `runtime-read-scope.tf` — default-off runtime rollout/host-only inventory controls, optional inventory/worker digests and the `runtime_deployment` identity output. IAM includes all known regions (including future opt-ins) and global-service reads;
+- `runtime-read-scope.tf` — default-off runtime rollout/host-only inventory controls, optional inventory/worker digests and the `runtime_deployment` identity output. Explicit `runtime_verification_targets` pin at most five foreign-account EC2/CloudFront known resources; empty preserves existing scope. Nonempty targets require the full runtime profile, disable host-only and scope collector AssumeRole to exact target role ARNs. Web receives the actual inventory role ARN when enabled and configured target IDs; the collector permits only host plus approved subsets during onboarding. IAM includes all known regions (including future opt-ins) and global-service reads;
   task/runtime IAM narrowing applies on the next apply to already-enabled stacks including main, independently of the dev profile; scopes are three web SSM parameters, runtime discovery/token actions, own-cluster task control and Claude-only models. This output describes configuration, not proof of effective permissions. The host-only renderer verifies STS and the account registry before rendering; Terraform omits
   only the collector cross-account grant. Agent MCP cross-account grants retain their existing behavior. Official MCP's conditional credential policy also permits GetWorkloadAccessToken only for the own default directory and external-obs
   gateway identity prefix. This restores a required credential prerequisite, not proof that backing-secret access or live MCP invocation succeeds.
@@ -53,8 +53,11 @@ adopting it. Deployment workflows verify this prerequisite but never apply boots
 ## Flag Gates
 - Optional `CI_STEAMPIPE_AWS_FILL_RATE_DEV` sets existing `steampipe_aws_fill_rate` only in full dev plans with the verified runtime profile. Empty preserves tfvars/defaults; finite 0.1–20 is required. Apply replays the saved plan and DNS/CORE guards still apply.
 - CI always generates ignored `ci-runtime.auto.tfvars.json`; `CI_READONLY_RUNTIME_DEV=true` enables
-  inventory/AgentCore/workers and host-only inventory on dev; it does not enable readiness. A manual full activation first
-  verifies the deployed login and host registry. Saved profile metadata enforces read-only
+  inventory/AgentCore/workers and host-only inventory on dev by default; it does not enable readiness.
+  Optional secret `CI_RUNTIME_TARGETS_DEV` configures explicit targets only in full dev scope.
+  Manual plan preflight resolves effective Terraform targets; apply reads the restored approved plan.
+  Both verify login/DB and host plus approved subsets; the later runtime release requires every target.
+  Saved profile metadata enforces read-only
   flags even without a discovery rollout. Default-false
   `ci_runtime_rollout` records explicit private-DNS activation in the saved plan.
 - `ci_readiness_enabled` in `ai.tf` defaults false. Its AgentCore output boolean controls the

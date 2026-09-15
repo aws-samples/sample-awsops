@@ -292,17 +292,39 @@ CloudWatch Logs에서 다음 JSON event 이름을 조회한다:
 - `inventory_sync_dispatch` — `type=all` fan-out 결과. `status=dispatched|partial|failed`,
   `queued_count`/`failed_count`, `queued_types`/`failed_types`만 포함하며 invoke exception
   text는 포함하지 않는다.
-- `inventory_sync_complete` — full success has `degraded=false`, `freshness=healthy`, and `age_minutes=0`. Unreachable-account partial results expose only `unreachable_account_count`, with degraded freshness and null age. SDK sub-call partials expose bounded `failure_count`/`failure_types` and skip stale pruning/snapshot replacement. Missing attributes from steady-state SDK denials or the IAM policy fallback contribute to `unknown_attribute_count`; a succeeded run with positive unknowns remains degraded. This disclosure does not itself suppress pruning or `last_success_at`.
+- `inventory_sync_complete` — full success has `degraded=false`, `freshness=healthy`, and `age_minutes=0`. Success/partial results and logs pair `account_reachability_scope` with a nullable `unreachable_account_count` as below; they never publish account IDs. SQL unreachable-account partials have degraded freshness and null age. SDK sub-call partials expose bounded `failure_count`/`failure_types` and skip stale pruning/snapshot replacement. Missing attributes from steady-state SDK denials or the IAM policy fallback contribute to `unknown_attribute_count`; a succeeded run with positive unknowns remains degraded. This disclosure does not itself suppress pruning or `last_success_at`.
 - `inventory_sync_hydrate_fallback` — under the ADR-010 amendment dated 2026-09-02, the primary query failed and retried without `attached_policy_arns`. The fallback still selects instance profiles and `GetRole`-backed fields; it is not hydrate-free. A successful fallback refreshes base inventory but records every row as unknown for policy attributes, so the release gate rejects such nonempty fallback data. Primary/fallback statement caps are 180s/90s, socket limits add 15s, and the remaining-time clamp reserves 120s for Aurora. The event's `remedy` field is cause-specific: review refill tuning for confirmed capacity limits, or `iam:ListAttachedRolePolicies` permission for confirmed IAM/SCP denial. Reachability probes remain capped at 30s and all query budgets use the remaining-time clamp. Positive unknown attributes set `degraded=true`; a later fallback failure records `inventory_sync_failed` and preserves last-good rows. Use the [separate capacity bounds](#development-ci-refill-override). An `InterfaceError/other` alone does not prove either cause. A zero-row fallback has no per-row missing attributes to count; empty-account identity checks still apply, and no successful fallback with positive unknowns passes the release gate.
 - `inventory_sync_busy` — `degraded=true`, `throttled=false`; 해당 type의 advisory lock이 이미 사용 중이며 retry storm을 만들지 않는다.
 - `inventory_sync_failed` — `resource_type`, `elapsed_ms`, `error_category`, `error_type`, `degraded=true`, structured `throttled`; raw exception text는 로그에 쓰지 않는다.
   - `error_category=superseded`는 이 실행이 lock을 해제한 뒤 더 새 실행이 같은 ledger row를 교체했다는 뜻이다. stale finalizer는 새 row를 수정하지 않고 안전한 degraded failure 하나만 기록하며 run token/account ID를 로그에 쓰지 않는다.
   - `error_category=superseded` means a newer run replaced the singleton ledger row after this invocation released its lock. The stale finalizer leaves that newer row untouched, records one safe degraded failure, and logs neither the run token nor account IDs.
 
+| `account_reachability_scope` | `unreachable_account_count` | Evidence |
+|---|---|---|
+| `enabled_scan_accounts` | Nonnegative integer | SQL completed checks for the host and enabled, renderable DB scan accounts, using returned rows or the bounded per-account probe. Zero means no unreachable account was observed in that checked scope; it does not cover every registered account or planned target. |
+| `host_only` | `null` | Successful SDK collection covers the host; registered target reachability was not measured. |
+| `unmeasured` | `null` | SDK sub-call partiality skipped reachability/pruning. It cannot establish complete scope. |
+
+The multi-account release gate requires enabled-scan-account zero for SQL types.
+Only its pinned, source-AST-verified `SDK_SYNCS` members may supply host-only/null;
+an arbitrary type's scope claim cannot bypass verification. Partial/failed results
+and unknown attributes still stop release, and every configured member still needs
+fresh known-resource evidence alongside the aggregate catalog proof.
+`collection_attempts` retains this bounded scope; null scope means no valid scope
+was reported yet. These RPC/log fields do not turn the singleton ledger into a
+per-account coverage report or assert that all 43 types cover each member.
+Enabled accounts with no enabled region and `all_regions=false` are excluded by
+`_enabled_target_accounts`; the metric must not imply they were measured. In explicit
+target mode the renderer rejects such registered members, and the exact member-proof
+endpoint independently rejects their references. Initial rendering still permits the
+host plus an approved subset before registration. The existing 300-second watchdog
+automatically re-reads registration/regions and rewrites/restarts the collector when
+an approved member enters the scan scope; validation is not startup-only.
+
 예시 Logs Insights query / Example Logs Insights query:
 
 ```text
-fields @timestamp, event, resource_type, row_count, unreachable_account_count,
+fields @timestamp, event, resource_type, row_count, account_reachability_scope, unreachable_account_count,
   unknown_attribute_count, elapsed_ms, degraded, throttled,
   freshness, age_minutes, error_category, error_type,
   max_concurrency, bucket_size, fill_rate

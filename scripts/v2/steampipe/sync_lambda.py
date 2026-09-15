@@ -1348,8 +1348,8 @@ def sync(resource_type):
             locked = True
             # NOTE (M4): inventory_sync_runs is a JOB-LEVEL ledger — one row per resource_type keyed
             # under the host 'self' sentinel, tracking the aggregator run's status/row_count. It is
-            # intentionally NOT per-account: a single aggregator run covers every connected account at
-            # once. Per-account freshness is the captured_at on each inventory_resources row (which IS
+            # intentionally NOT per-account: SQL aggregates connected accounts, while SDK types
+            # collect only the host. Per-account freshness is captured_at on each inventory_resources row (which IS
             # keyed by real account_id), so no per-account state is lost.
             # mark running INSIDE the try so a throw here records 'failed' and the finally still unlocks
             adb.run(
@@ -1473,6 +1473,17 @@ def sync(resource_type):
                             rg=rg,
                             id=rid,
                         )
+            # Only SQL paths above checked the enabled, renderable scan scope. SDK
+            # collectors never inspect target connections, and partial SDK runs
+            # skip reachability/pruning altogether; neither can report measured zero.
+            reachability_scope = ("unmeasured" if sdk_partial else
+                                  "host_only" if resource_type in SDK_SYNCS else "enabled_scan_accounts")
+            reachability = {
+                "account_reachability_scope": reachability_scope,
+                "unreachable_account_count": (
+                    len(unreachable_accounts) if reachability_scope == "enabled_scan_accounts" else None
+                ),
+            }
             if sdk_partial:
                 pending_ledger_status = "partial"
                 pending_ledger_row_count = len(recs)
@@ -1483,6 +1494,7 @@ def sync(resource_type):
                     "failure_count": sdk_failure_count,
                     "failure_types": sdk_failure_types,
                     "unknown_attribute_count": sdk_unknown_attrs,
+                    **reachability,
                 }
                 terminal_event = "inventory_sync_complete"
                 terminal_fields = {
@@ -1491,6 +1503,7 @@ def sync(resource_type):
                     "failure_count": sdk_failure_count,
                     "failure_types": sdk_failure_types,
                     "unknown_attribute_count": sdk_unknown_attrs,
+                    **reachability,
                     "degraded": True,
                     "throttled": any(
                         _failure_label_is_throttling(failure_type)
@@ -1506,7 +1519,7 @@ def sync(resource_type):
                     "status": "partial",
                     "type": resource_type,
                     "row_count": len(recs),
-                    "unreachable_account_count": len(unreachable_accounts),
+                    **reachability,
                     # a hydrate fallback can coincide with an unreachable-account partial —
                     # the blind-attribute count must not vanish from the event on that path
                     "unknown_attribute_count": sdk_unknown_attrs,
@@ -1515,7 +1528,7 @@ def sync(resource_type):
                 terminal_fields = {
                     "resource_type": resource_type,
                     "row_count": len(recs),
-                    "unreachable_account_count": len(unreachable_accounts),
+                    **reachability,
                     "unknown_attribute_count": sdk_unknown_attrs,
                     "degraded": True,
                     "throttled": False,
@@ -1530,12 +1543,14 @@ def sync(resource_type):
                     "type": resource_type,
                     "row_count": len(recs),
                     "unknown_attribute_count": sdk_unknown_attrs,
+                    **reachability,
                 }
                 terminal_event = "inventory_sync_complete"
                 terminal_fields = {
                     "resource_type": resource_type,
                     "row_count": len(recs),
                     "unknown_attribute_count": sdk_unknown_attrs,
+                    **reachability,
                     "degraded": bool(sdk_unknown_attrs),
                     "throttled": False,
                     # Attribute blind spots degrade the DISCLOSED freshness while the status stays

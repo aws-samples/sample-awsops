@@ -11,7 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { authenticatedSmoke, SmokeError } from '../authenticated-smoke.mjs';
 import { smokeConnectionArgs } from '../deployment-smoke.mjs';
 import { readSmokeCredentials, cleanupSmokeCredentials } from '../prepare-smoke-credentials.mjs';
-import { readRuntimeSmokeConfig, validateRuntimeSmokeConfig, runtimeSmokeDeadline } from '../runtime-smoke.mjs';
+import { readRuntimeSmokeConfig, validateRuntimeSmokeConfig, validateMemberTargets, runtimeSmokeDeadline } from '../runtime-smoke.mjs';
 
 const execute = promisify(execFile);
 const REGION = 'ap-northeast-2', REPO = 'aws-samples/sample-awsops';
@@ -29,6 +29,11 @@ export const REQUIRED_CATALOG_TYPES = Object.freeze([
   'opensearch_serverless', 'cloudfront_vpc_origin', 'alb_listener_rule', 's3_public_access',
 ]);
 export const MIN_CATALOG_TYPES = REQUIRED_CATALOG_TYPES.length;
+// Verified source membership, not an exemption granted by a collector response.
+export const HOST_ONLY_SDK_TYPES = Object.freeze([
+  's3', 'opensearch_serverless', 'cloudfront_vpc_origin', 'alb_listener_rule', 's3_public_access',
+]);
+const REACHABILITY_SCOPES = new Set(['enabled_scan_accounts', 'host_only', 'unmeasured']);
 // Five 35s HTTP calls, an 80s probe and two 370s worker paths need 995s.
 // The 15s collector and 50s final web rechecks bring this to 1060s; reserve 18m with 20s margin.
 // This reserves only the single-pass proof; no extra pages, polls or retries are allocated.
@@ -103,6 +108,8 @@ export function validateDeployment(value, context) {
   'web_deployment_mismatch');
   need(object(value.features) && ['inventory', 'agentcore', 'workers'].every(k =>
     typeof value.features[k] === 'boolean'), 'invalid_feature_state');
+  try { validateMemberTargets(value.inventory?.verification_targets === undefined ? [] : value.inventory.verification_targets, context.account); }
+  catch { throw new ReleaseError('inventory_deployment_mismatch'); }
   if (context.mode === 'collect') {
     need(['inventory', 'agentcore', 'workers'].every(k => value.features[k] === true), 'runtime_not_enabled');
     const config = value.inventory;
@@ -315,7 +322,9 @@ export async function release(deployment, {
     };
     verifyCaller(await aws(['sts', 'get-caller-identity']), context);
     const webIdentity = await verifyWeb(aws, deployment, context);
-    let config = { schemaVersion: 1, mode: 'prepare', hostOnly: true, expectedAccountId: context.account };
+    const targets = deployment.inventory?.verification_targets === undefined ? [] : deployment.inventory.verification_targets;
+    const scope = targets.length ? { expectedMemberTargets: targets } : { hostOnly: true };
+    let config = { schemaVersion: 1, mode: 'prepare', ...scope, expectedAccountId: context.account };
     if (context.mode === 'collect') {
       const expected = deployment.inventory;
       const lambdaConfig = await aws(['lambda', 'get-function-configuration', '--function-name', expected.sync_function_arn]);
@@ -360,6 +369,8 @@ export async function release(deployment, {
           need(object(result) && result.type === type, 'collection_probe_protocol');
           if (state) for (const field of ['row_count', 'unknown_attribute_count', 'unreachable_account_count'])
             state[field] = integer(result[field]) ? result[field] : null;
+          if (state) state.account_reachability_scope = REACHABILITY_SCOPES.has(result.account_reachability_scope)
+            ? result.account_reachability_scope : null;
           if (result.status === 'busy' || (result.status === 'failed' && result.error === 'inventory sync superseded')) {
             last = 'busy';
             if (state) state.last_outcome = result.status === 'busy' ? 'busy' : 'superseded';
@@ -371,11 +382,17 @@ export async function release(deployment, {
             throw new ReleaseError(`collection_${result.status}`);
           }
           need(result.status === 'succeeded', 'collection_probe_protocol');
-          if (!integer(result.row_count) || !integer(result.unknown_attribute_count)) {
+          const hostOnlySdk = HOST_ONLY_SDK_TYPES.includes(type);
+          const reachabilityValid = hostOnlySdk
+            ? result.account_reachability_scope === 'host_only' && result.unreachable_account_count === null
+            : result.account_reachability_scope === 'enabled_scan_accounts' && integer(result.unreachable_account_count);
+          if (!integer(result.row_count) || !integer(result.unknown_attribute_count)
+              || (targets.length && !reachabilityValid)) {
             if (state) state.status = 'unknown';
             throw new ReleaseError('collection_probe_incomplete');
           }
-          if (result.unknown_attribute_count > 0) {
+          if (result.unknown_attribute_count > 0
+              || (targets.length && !hostOnlySdk && result.unreachable_account_count !== 0)) {
             if (state) state.status = 'unknown';
             throw new ReleaseError('inventory_incomplete');
           }
@@ -413,15 +430,17 @@ export async function release(deployment, {
       now = () => rawNow() + offset;
       deadline += offset;
       const collectionStartedAt = clock.server_time;
-      config = { schemaVersion: 1, mode: 'verify', hostOnly: true, expectedAccountId: context.account,
+      config = { schemaVersion: 1, mode: 'verify', ...scope, expectedAccountId: context.account,
         expectedCloudfrontId: deployment.known.cloudfront_distribution_id,
         expectedQueuedTypes: types, collectionStartedAt, collectionMode: 'release',
         inventoryPolicy: context.inventoryPolicy };
       validateRuntimeSmokeConfig(config, now());
-      const collectionDeadline = runtimeSmokeDeadline(config, now(), deadline) - REQUIRED_PROOF_MS;
+      // One bounded exact inventory proof per member; no member pagination.
+      const collectionDeadline = runtimeSmokeDeadline(config, now(), deadline) - REQUIRED_PROOF_MS - targets.length * 35_000;
       const states = Object.fromEntries(types.map(type => [type, {
         status: 'not_started', attempts: 0, last_outcome: 'not_started',
         row_count: null, unknown_attribute_count: null, unreachable_account_count: null,
+        account_reachability_scope: null,
       }]));
       let cursor = 0, firstFailure;
       await Promise.all(Array.from({ length: Math.min(4, types.length) }, async () => {
@@ -482,6 +501,7 @@ export async function release(deployment, {
     need(result?.status === 'ok' && result.mode === config.mode, 'runtime_proof_required');
     // Authenticate performs the actual checks; reject incomplete adapter results as well.
     if (config.mode === 'verify') {
+      need(!targets.length || result.member_targets_verified === targets.length, 'complete_runtime_proof_required');
       const quality = result.inventory_quality, verified = quality?.types?.verified;
       need(result.inventory_policy === config.inventoryPolicy &&
         Array.isArray(quality?.catalog_types) && quality.catalog_types.join(',') === config.expectedQueuedTypes.join(',') &&

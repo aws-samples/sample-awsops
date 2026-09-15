@@ -36,6 +36,71 @@ class RuntimePolicyTests(unittest.TestCase):
         return self.module.runtime_overrides(target, profile, account, "full",
             DIGEST, DIGEST, False, steampipe_fill_rate=rate)
 
+    def test_explicit_targets_are_dev_full_only_and_disable_host_only_without_other_flag_changes(self):
+        member = {"account_id": "999999999999", "resource_type": "ec2", "resource_id": "i-fixture"}
+        baseline = self.module.runtime_overrides("dev", "true", ACCOUNT, "full", DIGEST, DIGEST, False)
+        for raw in ("", "[]"):
+            self.assertEqual(self.module.runtime_overrides("dev", "true", ACCOUNT, "full",
+                DIGEST, DIGEST, False, runtime_targets=raw), baseline)
+        self.assertEqual(self.module.runtime_overrides("dev", "true", ACCOUNT, "full",
+            DIGEST, DIGEST, False, runtime_targets=json.dumps([member])),
+            {**baseline, "inventory_host_only": False, "runtime_verification_targets": [member]})
+        for target, enabled, scope in (("main", "true", "full"), ("atomoh", "true", "full"),
+                                      ("dev", "false", "full"), ("dev", "true", "ecr-bootstrap")):
+            with self.subTest(target=target, enabled=enabled, scope=scope), self.assertRaises(ValueError):
+                self.module.runtime_overrides(target, enabled, ACCOUNT, scope, DIGEST, DIGEST,
+                    False, runtime_targets=json.dumps([member]))
+
+    def test_target_schema_rejects_duplicate_host_unknown_type_and_unbounded_inputs(self):
+        member = {"account_id": "999999999999", "resource_type": "ec2", "resource_id": "i-fixture"}
+        bad = ["not json", "null", "{}", json.dumps([member, member])]
+        bad += [json.dumps([{**member, **change}]) for change in (
+            {"account_id": ACCOUNT}, {"account_id": "９９９９９９９９９９９９"},
+            {"resource_type": "ec2_instance"}, {"resource_type": "iam_role"},
+            {"resource_id": ""}, {"resource_id": "x" * 2049}, {"extra": True})]
+        bad += [json.dumps([{**member, "account_id": str(i) * 12} for i in range(2, 8)])]
+        for raw in bad:
+            with self.subTest(raw=raw[:80]), self.assertRaisesRegex(ValueError, "runtime targets"):
+                self.module.runtime_overrides("dev", "true", ACCOUNT, "full",
+                    DIGEST, DIGEST, False, runtime_targets=raw)
+
+    def test_workflow_target_secret_is_plan_only_scoped_and_preflight_phases_are_explicit(self):
+        from test_ci_deployment_workflows import workflow_step, expression
+        step = workflow_step("terraform.yml", "plan", "Configure development runtime profile")
+        raw = '[{"account_id":"999999999999","resource_type":"ec2","resource_id":"i-fixture"}]'
+        for target, scope in (("dev", "full"), ("main", "full"), ("atomoh", "full"), ("dev", "ecr-bootstrap")):
+            context = {"env": {"TARGET": target}, "inputs": {"plan_scope": scope},
+                       "secrets": {"CI_RUNTIME_TARGETS_DEV": raw}}
+            self.assertEqual(expression(step["env"].get("CI_RUNTIME_TARGETS_DEV", ""), context),
+                             raw if target == "dev" and scope == "full" else "")
+        for job, name in (("plan", "Verify host registry before runtime activation"),
+                          ("apply", "Recheck actual host registry before apply")):
+            preflight = workflow_step("terraform.yml", job, name)
+            self.assertEqual(preflight["env"].get("RUNTIME_PREFLIGHT_PHASE"), job)
+            self.assertNotIn("CI_RUNTIME_TARGETS_DEV", preflight["env"])
+
+    def test_actual_full_dev_profile_step_consumes_target_secret_for_advisory_and_manual_plans(self):
+        from test_ci_deployment_workflows import DeploymentWorkflowTests, workflow_step
+        step = workflow_step("terraform.yml", "plan", "Configure development runtime profile")
+        targets = [{"account_id": "999999999999", "resource_type": "ec2", "resource_id": "i-fixture"}]
+        for event in ("pull_request", "push", "workflow_dispatch"):
+            with self.subTest(event=event):
+                result, calls = DeploymentWorkflowTests().run_step([step], TARGET="dev", context={
+                    "github": {"event_name": event},
+                    "inputs": {"plan_scope": "full", "runtime_rollout": False},
+                    "vars": {"CI_READONLY_RUNTIME_DEV": "true", "STEAMPIPE_IMAGE_DIGEST_DEV": DIGEST,
+                             "WORKER_IMAGE_DIGEST_DEV": DIGEST},
+                    "secrets": {"CI_RUNTIME_TARGETS_DEV": json.dumps(targets)},
+                })
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(calls, [])
+                values = json.loads(result.files["ci-runtime.auto.tfvars.json"])
+                self.assertEqual(values["runtime_verification_targets"], targets)
+                self.assertIs(values["inventory_host_only"], False)
+                self.assertTrue(all(values[flag] is True for flag in self.module.RUNTIME_FLAGS[:3]))
+                self.assertNotIn(targets[0]["account_id"], result.stdout + result.stderr)
+                self.assertNotIn(targets[0]["resource_id"], result.stdout + result.stderr)
+
     def test_fill_rate_is_optional_and_changes_only_the_existing_rate_variable(self):
         baseline = self.module.runtime_overrides("dev", "true", ACCOUNT, "full",
                                                  DIGEST, DIGEST, False)
@@ -314,6 +379,60 @@ class RuntimePolicyTests(unittest.TestCase):
     def change(self, address, kind, after, actions=None):
         return {"address": address, "type": kind,
                 "change": {"actions": actions or ["create"], "before": None, "after": after, "after_unknown": {}}}
+
+    def target_plan(self):
+        member = {"account_id": "999999999999", "resource_type": "ec2", "resource_id": "i-fixture"}
+        policy = {"Version": "2012-10-17", "Statement": [{
+            "Effect": "Allow", "Action": ["sts:AssumeRole"],
+            "Resource": ["arn:aws:iam::999999999999:role/AWSopsReadOnlyRole"]}]}
+        after = {"name": "awsops-dev-steampipe-read", "role": "awsops-dev-steampipe-task",
+                 "policy": json.dumps(policy)}
+        plan = self.plan([self.change("aws_iam_role_policy.steampipe_task[0]", "aws_iam_role_policy", after)], profile=True)
+        for flag in ("agentcore_enabled", "workers_enabled", "steampipe_enabled"):
+            plan["variables"][flag]["value"] = True
+        plan["variables"]["runtime_verification_targets"] = {"value": [member]}
+        return plan
+
+    def test_foreign_exception_is_only_exact_configured_assume_role_resource_in_owned_policy(self):
+        plan = self.target_plan()
+        self.assertEqual(self.module.check_plan(plan, "dev", "full", ACCOUNT)["runtime_policy"], "verified")
+        for change in (
+            {"Resource": "*"}, {"Resource": ["arn:aws:iam::888888888888:role/AWSopsReadOnlyRole"]},
+            {"Resource": ["arn:aws:iam::999999999999:role/Admin"]}, {"Action": ["iam:CreateRole"]},
+            {"NotAction": "iam:DeleteRole"}, {"Principal": {"AWS": "arn:aws:iam::999999999999:root"}},
+        ):
+            bad = copy.deepcopy(plan)
+            policy = json.loads(bad["resource_changes"][0]["change"]["after"]["policy"])
+            policy["Statement"][0].update(change)
+            bad["resource_changes"][0]["change"]["after"]["policy"] = json.dumps(policy)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        for address, kind, after in (
+            ("aws_lambda_function.foreign", "aws_lambda_function", {"arn": "arn:aws:lambda:ap-northeast-2:999999999999:function:test"}),
+            ("aws_iam_role_policy.other", "aws_iam_role_policy", plan["resource_changes"][0]["change"]["after"]),
+        ):
+            bad = copy.deepcopy(plan)
+            bad["resource_changes"].append(self.change(address, kind, after))
+            with self.assertRaises(ValueError):
+                self.module.check_plan(bad, "dev", "full", ACCOUNT)
+        for action in ("sts:*", "*", "sts:AssumeRole"):
+            bad = copy.deepcopy(plan)
+            policy = json.loads(bad["resource_changes"][0]["change"]["after"]["policy"])
+            policy["Statement"].append({"Effect": "Allow", "Action": [action], "Resource": "*"})
+            bad["resource_changes"][0]["change"]["after"]["policy"] = json.dumps(policy)
+            with self.subTest(extra_action=action), self.assertRaises(ValueError):
+                self.module.check_plan(bad, "dev", "full", ACCOUNT)
+
+    def test_target_saved_plan_requires_profile_full_features_and_no_host_only_conflict(self):
+        for key, value in (("ci_runtime_profile_enabled", False), ("inventory_host_only", True),
+                           ("steampipe_enabled", False), ("runtime_verification_targets", None)):
+            plan = self.target_plan()
+            plan["variables"][key]["value"] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.module.check_plan(plan, "dev", "full", ACCOUNT)
+        for target, scope in (("main", "full"), ("atomoh", "full"), ("dev", "runtime-ecr-bootstrap")):
+            with self.subTest(target=target, scope=scope), self.assertRaises(ValueError):
+                self.module.check_plan(self.target_plan(), target, scope, ACCOUNT)
 
     def test_repository_bootstrap_cannot_mutate_any_other_resource(self):
         changes = [self.change("aws_ecr_repository.steampipe[0]", "aws_ecr_repository",
