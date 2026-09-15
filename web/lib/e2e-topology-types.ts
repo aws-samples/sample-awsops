@@ -4,7 +4,7 @@ export type { NetworkObservation } from './topology-observations';
 
 export type E2eEvidence = 'configuration' | 'service' | 'network' | 'identity' | 'context';
 export type E2eLayer = 'configuration' | 'service' | 'network';
-/** UI-owned translation keys. Generated labels fall back to the code; source labels stay verbatim. */
+/** UI-owned translation keys; source identities are untranslated, with namespaces qualified on endpoint labels. */
 export type E2eLabelKey = 'network_observation' | 'local_endpoint' | 'remote_endpoint'
   | 'configured_endpoint_record' | 'cached_configured_endpoint_record' | 'configured_pod_identity';
 /** Endpoint meta.correlationReason explains withholding; correlated endpoints have no reason. */
@@ -89,8 +89,10 @@ export interface E2eView {
   /** Display-budget omissions after eligibility and focus/query reachability. */
   omittedNodes: number;
   omittedEdges: number;
-  /** Sorted eligible categories with any dropped or incomplete connection group. */
+  /** Sorted nonempty source category labels with any dropped or incomplete connection group. */
   omittedCategories: string[];
+  /** Hidden/incomplete observation counts after filtering/display bounds; empty key means a missing category label. */
+  omittedCategoryCounts: Record<string, number>;
   /** Eligible query hits before caps, or the selected node count without a query. */
   matchedNodes: number;
 }

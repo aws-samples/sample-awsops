@@ -5,7 +5,7 @@ Client components span `ui`, `shell`, `charts`, `chat`, `inventory` (including `
 
 ## Key Files
 - `topology/E2eGraphCanvas.tsx` — reusable evidence canvas. It preserves the search query and evidence filters while clearing invalid or explicitly reset selection. Details respect evidence filters independently of canvas caps and disclose bounded-list omissions. Shared ranking prioritizes comparable observations before display limits and names omitted categories. Unsupported/absent observations do not render match counters. Context covers cached records and traversed constructs.
-- `topology/ServiceNetworkTopology.tsx` — independently loads host trace/NFM sources, preserves collection metadata and safe auth/error states, and runs explicit network queries. The page supplies the full inventory-built graph plus incomplete/retained/loading vetoes.
+- `topology/ServiceNetworkTopology.tsx` — independently loads host trace/NFM sources, preserves usable graph rows with field-normalized collection metadata and safe auth/error states, and runs explicit network queries. The page supplies the full inventory-built graph plus incomplete/retained/loading vetoes. Unknown or omitted service collection fields remain visible as unconfirmed metadata; normalization loss sets `metadataTruncated` and cannot authorize workload completeness. The client follows the server projection, including omitted status and nullable source numbers.
 
 - `ui/DataTable.tsx` + `ui/DetailPanel.tsx` — the default list+detail combo. DetailPanel renders the full data the row already holds (plus a handful of type-specific fetching sections: RDS metrics/trends/SG rules, EBS related, live metrics, S3 IAM access) — if the spec (`InvType`) has `sections`, it renders grouped sections; otherwise a flat key list (backward-compat). New inventory types must define `sections`.
 - `inventory/metrics/MetricTable.tsx` — a declarative `MetricCol` model (`{value, render?, danger?, facet?, facetValues?, type}`) gets you sort, global search, facet filters, and a "problems only" toggle for free. Per-service tables (Ec2/Rds/Alb/...) are written purely as column definitions. Opt-in props: `facetValues` (multi-value facet — an exact-match on the joined display string drops multi-value rows), `maxRender`+`capKeep` (render-stage row cap — a data-stage cut silently zeroes an exact search), `rowClass` (per-row class hook).
@@ -27,3 +27,14 @@ Client components span `ui`, `shell`, `charts`, `chat`, `inventory` (including `
 - Prefer reusing `ui/` primitives (Badge, StatePill, Card, PageHeader, StatTile, etc.) over adding new ones — don't proliferate primitives.
 - User-facing display strings are Korean literals passed through `tt()` (unregistered strings pass through safely, so this is zero-risk).
 - Tests are colocated with components as `*.test.tsx` (vitest).
+
+## Evidence canvas
+
+`topology/E2eGraphCanvas.tsx` renders the correlation core supplied by the opt-in
+topology page. Keep configuration/service completeness notices even with zero
+service nodes, canonical source-read notices, source
+label preservation, source-specific clocks and bounded candidate/member details.
+The default viewport fits the ranked flow's two-hop neighborhood down to a 0.05 zoom
+(context edges only contribute at the first hop);
+search/evidence filters still precede display caps. Missing observations never become
+zero unmatched counts. The page owns source reads; the canvas never fetches them.

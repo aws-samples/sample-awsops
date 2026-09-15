@@ -32,7 +32,8 @@ Future timestamps are conservatively stale, not assumed provider clock skew. A z
 requires empty status, zero count, a succeeded producer and a valid last-success clock;
 optional non-null capture clocks must also be valid. Nonempty/malformed reason lists
 are incomplete evidence. Recognized malformed or unknown-vocabulary metadata is
-disclosed by metadataTruncated in both HTTP and SQL projections.
+disclosed by metadataTruncated in HTTP/SQL projections and the service-network client's
+normalization. This flag does not certify which upstream layer omitted or could not confirm a field.
 
 Publication versions must strictly advance per account/class under the class advisory lock. An equal
 or older attempt keeps both graph and state unchanged. The trace rebuild reports
@@ -161,13 +162,18 @@ The panel displays matching ordered attempted/saved source metadata once. Attemp
 saved-source counts keep separate labels; differing status, reasons or clocks remain
 separate. Display comparison does not merge stored provenance or change publication.
 Positive panel-valid loss counts and unavailable infrastructure remain in a visible,
-localized Collection limitations list. Saved source entries retain status, scope, reasons,
-producer status and all six supplied source clocks even when the lists differ.
+localized Collection limitations list. The standalone panel preserves saved status, scope,
+reasons, producer status and supplied source clocks when the lists differ. Before that panel,
+`ServiceNetworkTopology.tsx` bounds each source list in `readCollection` to 128 entries and reasons
+to 16, maps missing/unrecognized statuses to `unknown`, and omits invalid or unconfirmed
+source numbers/clocks and reversed clock pairs. Unconfirmed or truncated fields set `metadataTruncated`;
+valid graph rows remain visible, but incomplete metadata cannot authorize identity joins.
+Therefore only validated clocks reach this consumer's panel; missing clocks are not fresh evidence.
 
 These UI checks run from `web/` with mocked transport/state and require no PostgreSQL:
 
 ```bash
-npx vitest run lib/graph-fetch.test.ts components/topology/GraphCollectionStatus.test.tsx
+npx vitest run lib/graph-fetch.test.ts components/topology/GraphCollectionStatus.test.tsx components/topology/ServiceNetworkTopology.test.tsx
 ```
 
 ## Layer execution and diagnostics
@@ -316,6 +322,7 @@ A source merge or automatic web CD result is not proof that these steps complete
 `web/lib/graph-inventory.ts`, `web/lib/graph-store-postgres.test.ts`, `web/lib/fixtures/graph-fatal-child.mjs`,
 `web/lib/graph-execution.ts`, `scripts/v2/graph-rebuild.mjs`, `web/instrumentation.ts`, `web/lib/graph-rebuild-runner.test.ts`, `web/lib/instrumentation-runner.test.ts`,
 `web/components/topology/GraphCollectionStatus.tsx`, `web/components/topology/GraphCollectionStatus.test.tsx`,
+`web/components/topology/ServiceNetworkTopology.tsx`, `web/components/topology/ServiceNetworkTopology.test.tsx`,
 `web/lib/graph-fetch.ts`, `web/lib/graph-fetch.test.ts`,
 `agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,
 `agent/lambda/prometheus_mcp.py`, `agent/lambda/mimir_mcp.py`,

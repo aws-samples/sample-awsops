@@ -9,7 +9,7 @@ import ScopeSelector from '@/components/shell/ScopeSelector';
 vi.mock('@/components/shell/LanguageProvider', () => ({
   useI18n: () => ({ lang: 'en', tt: (s: string) => s, t: (s: string) => s }),
 }));
-vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams(window.location.search) }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }), useSearchParams: () => new URLSearchParams(window.location.search) }));
 vi.mock('@/lib/use-theme', () => ({ useTheme: () => 'light' }));
 // Keep the page's real data fetching, flow builder and layout; inspect the graph handed to the canvas.
 vi.mock('next/dynamic', () => ({
@@ -242,12 +242,16 @@ describe('sample topology evidence', () => {
     expect(text).toContain('Run health unknown for this account scope');
     expect(text).not.toContain('Aggregate sync issues:');
   });
-  it('does not reload unchanged account queries on a region-only selection change', async () => {
+  it('reloads inventory with the selected region while preserving account scope', async () => {
     serve({ runStatus: 'succeeded' });
     await ready();
     const count = vi.mocked(fetch).mock.calls.length;
     await act(async () => setActiveScope({ ...DEFAULT_SCOPE, regions: ['ap-northeast-2'] }));
-    expect(vi.mocked(fetch).mock.calls).toHaveLength(count);
+    const requests = vi.mocked(fetch).mock.calls.slice(count).map(([url]) => new URL(String(url), 'http://localhost'))
+      .filter(url => url.pathname.startsWith('/api/inventory/'));
+    expect(requests).toHaveLength(18);
+    expect(requests.every(url => url.searchParams.get('regions') === 'ap-northeast-2'
+      && url.searchParams.get('accounts') === 'self' && url.searchParams.get('includeGlobal') === '1')).toBe(true);
   });
   it('resolves a corroborated pod using its independently listed region and VPC', async () => {
     serve();

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Suspense, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import ServiceNetworkTopology from '@/components/topology/ServiceNetworkTopology';
 import { Globe, Cloud, Network, Target as TargetIcon, Shield, CircleHelp, MoreHorizontal, Server, Zap, Hexagon, Boxes, Circle, Copy, Sparkles, Search, Webhook, Archive, type LucideIcon } from 'lucide-react';
 import { Background, Controls, MiniMap, Position, type Node, type Edge, type ReactFlowInstance } from '@xyflow/react';
@@ -142,7 +142,7 @@ const EVIDENCE_COPY = {
   en: {
     capture: 'Capture range (last-success fallback):', unknown: 'unknown', missingCapture: 'Some capture times unknown',
     healthUnknown: 'Run health unknown for this account scope',
-    inventoryScope: 'Inventory uses account selection; region filters are not applied here.',
+    inventoryScope: 'Inventory follows the selected account, region and global-resource scope.',
     eksScope: 'EKS ownership scope: configured region', eksOtherRegions: 'other regions are not assessed',
     eksNotConnected: 'Not-connected clusters not queried',
     limit: 'Response limit reached; coverage may be incomplete',
@@ -155,7 +155,7 @@ const EVIDENCE_COPY = {
   ko: {
     capture: '수집 시각 범위 (최근 성공 시각으로 보완):', unknown: '미확인', missingCapture: '일부 수집 시각 미확인',
     healthUnknown: '이 계정 범위의 수집 실행 상태는 미확인',
-    inventoryScope: '인벤토리는 계정 선택을 사용하며 리전 필터는 여기에서 적용하지 않습니다.',
+    inventoryScope: '인벤토리는 선택한 계정·리전·전역 리소스 범위를 따릅니다.',
     eksScope: 'EKS 소유 근거 범위: 설정된 리전', eksOtherRegions: '다른 리전은 평가하지 않음',
     eksNotConnected: '연결되지 않아 조회하지 않은 클러스터',
     limit: '응답 상한 도달 — 일부 정보가 누락될 수 있음',
@@ -168,7 +168,7 @@ const EVIDENCE_COPY = {
   ja: {
     capture: '取得時刻の範囲（最終成功時刻で補完）:', unknown: '不明', missingCapture: '一部の取得時刻が不明',
     healthUnknown: 'このアカウント範囲の収集実行状態は不明',
-    inventoryScope: 'インベントリは選択したアカウントを使用し、ここではリージョンフィルターを適用しません。',
+    inventoryScope: 'インベントリは選択したアカウント・リージョン・グローバルリソースの範囲に従います。',
     eksScope: 'EKS所有情報の範囲: 設定リージョン', eksOtherRegions: '他のリージョンは未評価',
     eksNotConnected: '未接続のため取得していないクラスター',
     limit: '応答上限に到達 — 情報が不足している可能性があります',
@@ -181,7 +181,7 @@ const EVIDENCE_COPY = {
   zh: {
     capture: '采集时间范围（最近成功时间作为回退）:', unknown: '未知', missingCapture: '部分采集时间未知',
     healthUnknown: '此账户范围的采集运行状态未知',
-    inventoryScope: '资产清单使用所选账户，此处不应用区域筛选。',
+    inventoryScope: '资产清单遵循所选账户、区域及全局资源范围。',
     eksScope: 'EKS归属范围：配置区域', eksOtherRegions: '其他区域未评估',
     eksNotConnected: '未连接且未查询的集群',
     limit: '已达到响应上限 — 覆盖范围可能不完整',
@@ -196,7 +196,8 @@ const EVIDENCE_COPY = {
 const record = (v: unknown): v is Row => v !== null && typeof v === 'object' && !Array.isArray(v);
 const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
-async function fetchType(t: InvType | 'vpc' | 'security_group', account: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean }> {
+async function fetchType(t: InvType | 'vpc' | 'security_group', inventoryScope: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean }> {
+  const scopeQuery = new URLSearchParams(inventoryScope), account = scopeQuery.get('accounts') ?? 'self';
   const critical = CRITICAL_TYPES.has(t);
   const rows: Row[] = [], seen = new Set<string>();
   let version: string | undefined, finishedAt: string | null = null;
@@ -205,7 +206,8 @@ async function fetchType(t: InvType | 'vpc' | 'security_group', account: string,
   try {
     for (let page = 0; page < (critical ? CRITICAL_PAGES : 1); page++) {
       if (signal.aborted) throw new Error();
-      const qs = new URLSearchParams({ limit: String(ROW_CAP), offset: String(page * ROW_CAP), accounts: account });
+      const qs = new URLSearchParams(scopeQuery);
+      qs.set('limit', String(ROW_CAP)); qs.set('offset', String(page * ROW_CAP));
       const r = await fetch(`/api/inventory/${t}?${qs}`, { signal });
       if (!r.ok) throw new Error();
       const d: unknown = await r.json();
@@ -289,15 +291,33 @@ export default function TopologyPage() {
 
 function TopologyScope() {
   const [scope, , ready] = useActiveScope();
+  const router = useRouter();
+  const params = useSearchParams() ?? new URLSearchParams();
   // Remount all graph/detail/evidence state on selection changes. A saved member/all scope
   // must be known before the first load; the hook's hydration default is not a host selection.
-  if (!ready) return null;
   const account = Array.isArray(scope.accounts) ? scope.accounts.join(',') : scope.accounts;
-  return <ScopedTopologyPage key={account} activeAccount={account} />;
+  const inventoryScope = new URLSearchParams({ accounts: account,
+    regions: Array.isArray(scope.regions) ? scope.regions.join(',') : scope.regions,
+    includeGlobal: scope.includeGlobal ? '1' : '0' }).toString();
+  const clusterScope = params.get('clusterScope');
+  const resetCluster = params.has('cluster') && clusterScope !== null && clusterScope !== inventoryScope;
+  useEffect(() => {
+    if (!ready) return;
+    const next = new URLSearchParams(params.toString());
+    if (resetCluster) {
+      next.delete('cluster'); next.delete('clusterScope');
+    } else if (params.has('cluster') && clusterScope === null) next.set('clusterScope', inventoryScope);
+    else return;
+    router.replace(`/topology${next.size ? `?${next}` : ''}`, { scroll: false });
+  }, [ready, resetCluster, inventoryScope, clusterScope, params, router]);
+  // Bind initial deep links too: Back/Forward must not restore another scope's cluster.
+  if (!ready || resetCluster) return null;
+  return <ScopedTopologyPage key={inventoryScope} activeAccount={account} inventoryScope={inventoryScope} />;
 }
 
-function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
+function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: string; inventoryScope: string }) {
   const { tt, lang } = useI18n();
+  const router = useRouter();
   const params = useSearchParams() ?? new URLSearchParams();
   const e2e = params.get('view') === 'e2e';
   const copy = EVIDENCE_COPY[lang];
@@ -352,7 +372,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
     try {
       const NET = ['vpc', 'security_group'] as const;
       const read = async (type: InvType | typeof NET[number]) => {
-        try { return { ...await fetchType(type, account, controller.signal), readFailed: false, error: '' }; }
+        try { return { ...await fetchType(type, inventoryScope, controller.signal), readFailed: false, error: '' }; }
         catch { return { rows: [] as Row[], finishedAt: null, capped: false, incomplete: false,
           ...inventoryEvidence([], null, false), readFailed: true, error: `${type}: invalid inventory response` }; }
       };
@@ -437,7 +457,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
       clearTimeout(deadline);
       if (current()) setBusy(false);
     }
-  }, [activeAccount]);
+  }, [activeAccount, inventoryScope]);
 
   useEffect(() => { void load(); return () => { loadGeneration.current += 1; loadAbort.current?.abort(); }; }, [load]);
 
@@ -614,7 +634,13 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
   }, [selected, netMaps]);
 
   const onEntry = (e: React.ChangeEvent<HTMLSelectElement>) => setEntryId(e.target.value);
-  const onCluster = (e: React.ChangeEvent<HTMLSelectElement>) => { setClusterFilter(e.target.value); setSelected(null); };
+  const onCluster = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const value = e.target.value, next = new URLSearchParams(params.toString());
+    if (value) { next.set('cluster', value); next.set('clusterScope', inventoryScope); }
+    else { next.delete('cluster'); next.delete('clusterScope'); }
+    setClusterFilter(value); setSelected(null);
+    router.push(`/topology${next.size ? `?${next}` : ''}`, { scroll: false });
+  };
   // max-w bounds the select so a long CloudFront/LB option label can't blow the toolbar width out
   // and crush the PageHeader title/subtitle (which would wrap the subtitle one char per line).
   const selectCls = 'max-w-[170px] rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-700';
@@ -696,7 +722,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
         </div>}
         {(eksResolution?.status === 'unavailable' || eksResolution?.status === 'partial') && <div role="alert" aria-label={tt('EKS 식별 상태')} className="text-[13px] text-warning">
           {eksResolution.reasons.length > 0 && eksResolution.reasons.every(reason => reason === 'cluster_not_connected')
-            ? copy.eksNotConnected : tt('EKS 조회 실패 또는 수집 범위 제한으로 IP 소유자를 확인할 수 없습니다.')} ({eksResolution.reasons.join(', ')})
+            ? tt('연결되지 않은 EKS 클러스터 범위의 IP 소유권은 미확인입니다.') : tt('EKS 조회 실패 또는 수집 범위 제한으로 IP 소유자를 확인할 수 없습니다.')} ({eksResolution.reasons.join(', ')})
         </div>}
         {(data?.ownershipRead?.targetGroup || data?.ownershipRead?.ecsTask || data?.ownershipRead?.subnet) && <div role="status" className="text-[13px] text-warning">
           {tt(syncIncomplete ? '인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.' : '인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.')}
@@ -781,7 +807,7 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
               ))}
             </select>
             <RefreshButton busy={busy} onClick={load} capturedAt={captureThrough} />
-            <Link href={viewHref(true)} className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
+            <Link href={viewHref(true)} scroll={false} className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
               {tt('서비스 + 네트워크 →')}
             </Link>
             <Link href="/topology/infra" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">

@@ -44,7 +44,7 @@ const hasMarker = (value: unknown): boolean => {
 };
 
 /** Negative ownership evidence is monotonic; nested display candidates are never proof. */
-function ownershipVeto(meta: Meta, region: string, vpcId: string): boolean {
+export function ownershipVeto(meta: Meta, region: string, vpcId: string): boolean {
   if (meta.resolved === 'ambiguous' || hasMarker(meta.ambiguity)
     || meta.ownership_evidence === 'scope_unverified' || hasMarker(meta.ownership_reason)
     || meta.e2e_correlation_blocked === true) return true;
@@ -722,12 +722,18 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
       || Number(reservedNetworkEdges.has(b.id)) - Number(reservedNetworkEdges.has(a.id)))
     .slice(0, maxEdges);
   const visibleEdgeIds = new Set(visibleEdges.map(edge => edge.id));
-  const omittedCategories = [...new Set([...groups].filter(([connection, members]) =>
+  const omittedGroups = [...groups].filter(([connection, members]) =>
     [...members].some(id => !visibleIds.has(id))
     || (groupEdges.get(connection) ?? []).some(edge => !visibleEdgeIds.has(edge.id)),
-  ).map(([connection]) => text(byId.get(connection)!.meta.category)).filter(Boolean))].sort();
+  );
+  const omittedCategoryCounts: Record<string, number> = Object.create(null);
+  for (const [connection] of omittedGroups) {
+    const category = text(byId.get(connection)!.meta.category);
+    omittedCategoryCounts[category] = (omittedCategoryCounts[category] ?? 0) + 1;
+  }
+  const omittedCategories = Object.keys(omittedCategoryCounts).filter(Boolean).sort();
   return {
-    nodes, edges: visibleEdges, matchedNodes, omittedCategories,
+    nodes, edges: visibleEdges, matchedNodes, omittedCategories, omittedCategoryCounts,
     omittedNodes: selected.size - nodes.length,
     omittedEdges: selectedEdges.length - visibleEdges.length,
   };

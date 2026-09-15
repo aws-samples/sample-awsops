@@ -6,6 +6,7 @@ import type { FlowGraph } from '@/lib/flow-topology';
 import { buildFlowGraph } from '@/lib/flow-topology';
 import { buildTraceGraph } from '@/lib/trace-graph';
 import * as e2e from '@/lib/e2e-topology';
+import { projectGraphDetails } from '@/lib/graph-state';
 
 class ResizeObserverStub { observe() {} unobserve() {} disconnect() {} }
 beforeEach(() => {
@@ -31,6 +32,8 @@ const status = {
 };
 const completeCollection = {
   status: 'ok', stale: false, readStatus: 'ok', retainedPrevious: false,
+  attempted_at: '2026-09-11T11:55:00Z', captured_at: '2026-09-11T11:55:00Z',
+  windowStartMs: Date.parse('2026-09-11T10:55:00Z'), windowEndMs: Date.parse('2026-09-11T11:55:00Z'),
   nodeDrops: 0, edgeDrops: 0, orphanSpans: 0, invalidSpans: 0, unresolvedMessaging: 0,
   sources: [{ sourceId: 'tempo', status: 'ok', reasons: [],
     windowStartMs: Date.parse('2026-09-11T11:45:00Z'), windowEndMs: Date.parse('2026-09-11T12:00:00Z') }],
@@ -96,6 +99,59 @@ function search(value: string) {
   fireEvent.change(screen.getByRole('searchbox', { name: '서비스 또는 리소스 검색' }), { target: { value } });
 }
 
+async function expectRejectedSnapshot(body: unknown, message?: string) {
+  renderTopology({ service: () => json(body) });
+  const alert = await within(screen.getByRole('region', { name: '서비스 소스' })).findByRole('alert');
+  if (message) expect(alert.textContent).toContain(message);
+  search('checkout-service');
+  expect(screen.queryByRole('button', { name: '선택: checkout-service' })).toBeNull();
+  await ready();
+}
+
+async function expectUnconfirmedSnapshot(body: unknown) {
+  const compose = vi.spyOn(e2e, 'buildE2eGraph');
+  renderTopology({ service: () => json(body) });
+  search('checkout-service');
+  expect(await screen.findByRole('button', { name: '선택: checkout-service' })).toBeTruthy();
+  expect(compose.mock.lastCall?.[0].servicesComplete).toBe(false);
+  expect(compose.mock.lastCall?.[0].services?.nodes).toHaveLength(1);
+  const panel = within(screen.getByRole('region', { name: '서비스 소스' }));
+  expect(await panel.findByText('일부 수집 메타데이터가 생략되어 범위가 불완전합니다.')).toBeTruthy();
+  expect(panel.queryByText('올바르지 않은 서비스 수집 상태입니다.')).toBeNull();
+  await ready();
+  return compose.mock.lastCall?.[0].services as typeof snapshot;
+}
+
+describe('projected collection compatibility', () => {
+  it.each(['sources', 'publishedSources'])('retains real projected unknown status and null evidence in %s', async key => {
+    const details = projectGraphDetails({ ...completeCollection, retainedPrevious: true,
+      [key]: [{ sourceId: 'tempo:unknown', status: 'future-status', itemCount: null,
+        windowStartMs: null, windowEndMs: null, capturedAtMs: null, reasons: ['cap_reached'] }],
+    });
+    expect(details[key][0]).not.toHaveProperty('status');
+    expect(details[key][0].itemCount).toBeNull();
+    const data = await expectUnconfirmedSnapshot({ ...snapshot, collection: {
+      ...completeCollection, ...details, status: 'partial',
+    } });
+    expect(data.collection[key as 'sources'][0]).toMatchObject({ sourceId: 'tempo:unknown', status: 'unknown' });
+  });
+  it.each(['itemCount', 'windowStartMs', 'capturedAtMs'])('does not turn projected null %s into complete evidence', async key => {
+    const details = projectGraphDetails({ ...completeCollection,
+      sources: [{ ...completeCollection.sources[0], [key]: null }],
+    });
+    expect(details.metadataTruncated).toBeUndefined();
+    await expectUnconfirmedSnapshot({ ...snapshot, collection: { ...completeCollection, ...details } });
+  });
+  it('keeps other source fields when a producer timeline is impossible', async () => {
+    const data = await expectUnconfirmedSnapshot({ ...snapshot, collection: { ...completeCollection,
+      sources: [{ ...completeCollection.sources[0], attemptedAtMs: 2000, finishedAtMs: 1000 }],
+    } });
+    expect(data.collection.sources[0]).toMatchObject({ sourceId: 'tempo', status: 'ok' });
+    expect(data.collection.sources[0]).not.toHaveProperty('attemptedAtMs');
+    expect(data.collection.sources[0]).not.toHaveProperty('finishedAtMs');
+  });
+});
+
 describe('ServiceNetworkTopology', () => {
   it.each([[true, {}, true], [false, {}, false], [true, { stale: true }, false],
     [true, { status: 'partial' }, false], [true, { readTruncated: true }, false],
@@ -122,7 +178,7 @@ describe('ServiceNetworkTopology', () => {
       await ready(); select('목적지 분류', 'INTER_AZ');
       fireEvent.click(screen.getByRole('button', { name: '네트워크 조회' }));
       await screen.findByRole('region', { name: '적용된 네트워크 조회' });
-      search('web-1'); fireEvent.click(await screen.findByRole('button', { name: '선택: web-1' }));
+      search('web-1'); fireEvent.click(await screen.findByRole('button', { name: '선택: shop/web-1' }));
       const detail = within(screen.getByRole('region', { name: '선택한 노드 상세' }));
       expect(Boolean(detail.queryByText('구성에서 확인된 Pod 식별자'))).toBe(expected);
   });
@@ -214,6 +270,7 @@ describe('ServiceNetworkTopology', () => {
     fireEvent.click(await ready());
     const result = await screen.findByRole('region', { name: '적용된 네트워크 조회' });
     expect(within(result).getByText(/부분 성공/)).toBeTruthy();
+    expect(within(result).getByText('관측 구간이 미확인인 분류가 있어 부분 결과로 표시합니다.')).toBeTruthy();
     expect(within(result).queryByText(/^조회 완료/)).toBeNull();
     expect(within(result).getAllByText(/관측 시각 알 수 없음/).length).toBeGreaterThan(0);
   });
@@ -402,5 +459,195 @@ describe('ServiceNetworkTopology', () => {
     expect(applied.querySelector('time')).toBeNull();
     expect(screen.getByText('네트워크 관측 범위가 불완전합니다.')).toBeTruthy();
     expect(screen.queryByText(/트래픽이 없습니다|트래픽 없음/)).toBeNull();
+  });
+});
+
+describe('canonical service metadata preservation', () => {
+it('carries real trace-assembly losses through the HTTP collection envelope', async () => {
+    const span = { sourceId: 'trace:fixture', traceId: 'trace', service: 'producer-service',
+      kind: 'SERVER', startMs: Date.parse(snapshot.captured_at), durationMs: 1 };
+    const produced = buildTraceGraph([
+      { ...span, spanId: 'child', parentSpanId: 'not-collected' },
+      { ...span, spanId: 'invalid', service: '' },
+      { ...span, spanId: 'message', kind: 'PRODUCER', messagingSystem: 'sqs', messagingDestination: 'unqualified' },
+    ], [], []);
+    expect([produced.orphanSpans, produced.invalidSpans, produced.unresolvedMessaging]).toEqual([1, 1, 1]);
+    renderTopology({ service: () => json({ ...snapshot, nodes: produced.nodes, edges: produced.edges, collection: {
+      ...snapshot.collection, status: 'partial', attempted_at: new Date(snapshot.captured_at),
+      captured_at: new Date(snapshot.captured_at), nodeDrops: 0, edgeDrops: 0, infraUnavailable: false,
+      orphanSpans: produced.orphanSpans, invalidSpans: produced.invalidSpans,
+      unresolvedMessaging: produced.unresolvedMessaging,
+    } }) });
+    const source = screen.getByRole('region', { name: '서비스 소스' });
+    const alert = await within(source).findByRole('alert');
+    for (const label of ['부모 또는 링크 미확인 스팬', '잘못된 스팬', '메시징 연결 미확인 스팬']) {
+      expect(within(alert).getByText(`${label}: 1`).closest('details')).toBeNull();
+    }
+    expect(Array.from(alert.querySelectorAll('time'), time => time.dateTime)).toEqual([
+      new Date(snapshot.collection.windowStartMs).toISOString(), new Date(snapshot.collection.windowEndMs).toISOString(),
+      new Date(snapshot.captured_at).toISOString(), new Date(snapshot.captured_at).toISOString(),
+      new Date(snapshot.collection.sources[0].windowStartMs).toISOString(), new Date(snapshot.collection.sources[0].windowEndMs).toISOString(),
+    ]);
+    search('producer-service');
+    expect(screen.getByRole('button', { name: '선택: producer-service' })).toBeTruthy();
+  });
+
+it('keeps actual graph-cap and unavailable-infrastructure explanations through validation', async () => {
+    renderTopology({ service: () => json({ ...snapshot, collection: {
+      ...snapshot.collection, status: 'partial', nodeDrops: 2, edgeDrops: 3, orphanSpans: 0,
+      invalidSpans: 0, unresolvedMessaging: 0, infraUnavailable: true,
+    } }) });
+    const panel = await within(screen.getByRole('region', { name: '서비스 소스' })).findByRole('alert');
+    expect(panel.textContent).toContain('누락 노드: 2');
+    expect(panel.textContent).toContain('누락 엣지: 3');
+    expect(panel.textContent).toContain('인벤토리 정보를 사용할 수 없음');
+    expect(panel.textContent).not.toContain('부모 또는 링크 미확인 스팬: 0');
+  });
+
+it.each([-1, 0.5, '2', null, Number.MAX_SAFE_INTEGER + 1])('preserves graph data with unconfirmed loss counts: %s', async orphanSpans => {
+    await expectUnconfirmedSnapshot({ ...snapshot, collection: { ...snapshot.collection, orphanSpans } });
+  });
+
+it('preserves graph data with unconfirmed infrastructure availability', async () => {
+    await expectUnconfirmedSnapshot({ ...snapshot, collection: { ...snapshot.collection, infraUnavailable: 'false' } });
+  });
+
+it('preserves real public collection clocks and keeps reasons in one bounded panel', async () => {
+    renderTopology({ service: () => json({ ...snapshot, collection: {
+      ...snapshot.collection, status: 'partial',
+      sources: Array.from({ length: 48 }, (_, i) => ({
+        sourceId: `trace:${i}`, status: 'partial', reasons: [`reason_${i}`], itemCount: i,
+      })),
+    } }) });
+    const source = screen.getByRole('region', { name: '서비스 소스' });
+    const panel = await within(source).findByRole('alert');
+    expect(panel.querySelectorAll('time')).toHaveLength(4);
+    expect(Array.from(panel.querySelectorAll('time'), time => time.dateTime)).toEqual([
+      new Date(snapshot.collection.windowStartMs).toISOString(), new Date(snapshot.collection.windowEndMs).toISOString(),
+      '2026-09-11T11:55:00Z', '2026-09-11T11:55:00Z',
+    ]);
+    const details = source.querySelector('details')!;
+    expect(details).not.toBeNull();
+    for (const i of [0, 47]) {
+      const reason = within(source).getAllByText(`· reason_${i}`);
+      expect(reason).toHaveLength(1);
+      expect(details.contains(reason[0])).toBe(true);
+    }
+    search('checkout-service');
+    expect(screen.getByRole('button', { name: '선택: checkout-service' })).toBeTruthy();
+  });
+
+it('preserves read failures and producer clocks independently of a saved collection result', async () => {
+    const attempted = Date.parse('2026-09-11T11:56:00Z');
+    const finished = Date.parse('2026-09-11T11:57:00Z');
+    renderTopology({ service: () => json({ ...snapshot, nodes: [], edges: [], collection: {
+      ...snapshot.collection, evidenceKind: 'trace', readStatus: 'unavailable', readReason: 'timeout',
+      metadataTruncated: true, readTruncated: true, failureReason: 'state_read_failed',
+      sourceAttempted: false, coverage: 'unknown',
+      sources: [{ sourceId: 'trace:latest', status: 'partial', producerStatus: 'failed',
+        attemptedAtMs: attempted, finishedAtMs: finished, reasons: ['incomplete_collection'] }],
+    } }) });
+    const source = screen.getByRole('region', { name: '서비스 소스' });
+    const panel = await within(source).findByRole('alert');
+    for (const text of [
+      '그래프 조회 불가 — 수집 상태를 확인할 수 없습니다.',
+      '그래프 조회 시간이 초과되었습니다. 다시 조회하세요.',
+      '일부 수집 메타데이터가 생략되어 범위가 불완전합니다.',
+      '그래프 조회 한도 — 반환된 범위가 불완전합니다.',
+      '수집 메타데이터를 조회할 수 없습니다.',
+      '실행 예산으로 원본 조회를 시도하지 않음',
+      '선택한 계정 집합의 수집 범위 미확인',
+      '원본 작업 상태: failed',
+    ]) expect(within(panel).getByText(text)).toBeTruthy();
+    const times = Array.from(panel.querySelectorAll('time'), time => time.dateTime);
+    expect(times).toContain(new Date(attempted).toISOString());
+    expect(times).toContain(new Date(finished).toISOString());
+    expect(times).toContain(snapshot.captured_at);
+    expect(await ready()).toBeTruthy();
+  });
+
+it.each([
+    { readStatus: 'success' }, { readReason: 'permission' }, { metadataTruncated: 'false' },
+    { sourceAttempted: 0 }, { coverage: 'complete' }, { evidenceKind: 'other' },
+    { failureReason: 'constructor' }, { windowStartMs: 2000, windowEndMs: 1000 },
+    { sources: [{ sourceId: 'trace', status: 'ok', producerStatus: 'success' }] },
+    { sources: [{ sourceId: 'trace', status: 'ok', attemptedAtMs: '1000' }] },
+  ])('withholds completeness for malformed read/producer metadata: %j', async fields => {
+    await expectUnconfirmedSnapshot({ ...snapshot, collection: { ...snapshot.collection, ...fields } });
+  });
+
+it('validates optional provenance without replacing snapshot time or claiming current production availability', async () => {
+    // Optional compatibility fixture: current trace producer emits root clocks, not these extra fields.
+    renderTopology({ service: () => json({ ...snapshot, collection: {
+      ...snapshot.collection, status: 'error', stale: true, retainedPrevious: true,
+      evidenceKind: 'inventory', graphTruncated: true,
+      sources: [{ sourceId: 'current-attempt', status: 'error', reasons: ['read_failed'], scope: 'aggregate',
+        lastSuccessAtMs: Date.parse('2026-09-11T10:00:00Z') }],
+      publishedSources: [{ sourceId: 'saved-source', status: 'partial', reasons: ['saved_cap'], scope: 'account',
+        capturedAtMs: Date.parse('2026-09-11T09:00:00Z') }],
+    } }) });
+    const source = screen.getByRole('region', { name: '서비스 소스' });
+    const panel = await within(source).findByRole('alert');
+    expect(Array.from(panel.querySelectorAll('time'), time => time.dateTime)).toEqual([
+      new Date(snapshot.collection.windowStartMs).toISOString(), new Date(snapshot.collection.windowEndMs).toISOString(),
+      '2026-09-11T11:55:00Z', '2026-09-11T11:55:00Z', '2026-09-11T10:00:00.000Z', '2026-09-11T09:00:00.000Z',
+    ]);
+    expect(source.textContent).toContain('처리 한도 초과');
+    const details = source.querySelector('details')!;
+    expect(details.textContent).toContain('saved-source');
+    expect(within(source).getAllByText(/saved_cap/)).toHaveLength(1);
+    search('checkout-service');
+    expect(screen.getByRole('button', { name: '선택: checkout-service' })).toBeTruthy();
+  });
+
+it.each([
+    { attempted_at: [] }, { captured_at: 'invalid' }, { inputTruncated: 'false' }, { graphTruncated: 1 },
+    { evidenceKind: {} }, { publishedSources: {} },
+    ...[
+      { scope: 'global' }, { capturedAtMs: -1 }, { lastSuccessAtMs: 'yesterday' },
+      { reasons: [false] }, { status: 'constructor' },
+      { windowStartMs: 'invalid' }, { windowEndMs: -1 }, { windowStartMs: 2000, windowEndMs: 1000 },
+    ].map(bad => ({ publishedSources: [{ sourceId: 'saved', status: 'ok', ...bad }] })),
+  ])('retains the graph without certifying malformed optional metadata: %j', async bad => {
+    await expectUnconfirmedSnapshot({ ...snapshot, collection: { ...snapshot.collection, ...bad } });
+  });
+
+it.each([
+    { class: undefined }, { account: undefined }, { class: 'flow' },
+    { collection: [] }, { collection: { status: 'ok', stale: 'false' } },
+    { collection: { status: 'constructor', stale: false } },
+    { collection: { status: 'ok', stale: false, retainedPrevious: 'false' } },
+    { collection: { status: 'ok', stale: false, sources: [{ sourceId: 'trace', status: 'partial', reasons: 'cap' }] } },
+    { collection: { status: 'ok', stale: false, sources: [{ sourceId: 'trace', status: 'partial', reasons: [1] }] } },
+    { collection: { status: 'ok', stale: false, sources: [{ sourceId: 'trace', status: 'ok', itemCount: -1 }] } },
+  ])('rejects unproven scope but retains graph rows with unknown metadata: %j', async bad => {
+    if (Object.hasOwn(bad, 'collection')) await expectUnconfirmedSnapshot({ ...snapshot, ...bad });
+    else await expectRejectedSnapshot({ ...snapshot, ...bad });
+  });
+
+it('keeps source query windows from the real producer envelope', async () => {
+    renderTopology();
+    const source = screen.getByRole('region', { name: '서비스 소스' });
+    expect(await within(source).findByText(/원본 조회 시작/)).toBeTruthy();
+    const times = Array.from(source.querySelectorAll('time'), time => time.dateTime);
+    expect(times).toContain(new Date(snapshot.collection.sources[0].windowStartMs).toISOString());
+    expect(times).toContain(new Date(snapshot.collection.sources[0].windowEndMs).toISOString());
+  });
+});
+
+
+describe('service root coverage and capture contract', () => {
+  it.each([{ from: 'service-subgraph' }, { capped: true }])('keeps valid %j data without certifying full workload membership', async fields => {
+    const compose = vi.spyOn(e2e, 'buildE2eGraph');
+    renderTopology({ service: () => json({ ...snapshot, ...fields }) });
+    await waitFor(() => expect(compose.mock.lastCall?.[0].services?.captured_at).toBe(snapshot.captured_at));
+    expect(compose.mock.lastCall?.[0].servicesComplete).toBe(false);
+    expect(compose.mock.lastCall?.[0].services).toMatchObject(fields);
+    search('checkout-service');
+    expect(await screen.findByRole('button', { name: '선택: checkout-service' })).toBeTruthy();
+  });
+  it.each([{ from: 1 }, { capped: 'false' }, { nodes: [{ ...snapshot.nodes[0], captured_at: 'invalid' }] },
+    { nodes: [{ ...snapshot.nodes[0], captured_at: 123 }] }])('rejects malformed root/row provenance: %j', async fields => {
+    await expectRejectedSnapshot({ ...snapshot, ...fields });
   });
 });
