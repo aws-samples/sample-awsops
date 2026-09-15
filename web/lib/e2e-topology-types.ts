@@ -1,8 +1,12 @@
 import type { FlowGraph } from './flow-topology';
-import type { NfmCategory, NfmFlowRow, NfmMetric } from './nfm';
+import type { NetworkObservation } from './topology-observations';
+export type { NetworkObservation } from './topology-observations';
 
 export type E2eEvidence = 'configuration' | 'service' | 'network' | 'identity' | 'context';
 export type E2eLayer = 'configuration' | 'service' | 'network';
+/** Endpoint meta.correlationReason explains withholding; correlated endpoints have no reason. */
+export type E2eCorrelationReason = 'configuration_conflict' | 'configuration_unverified'
+  | 'workload_conflict' | 'workload_scope_unverified' | 'pod_identity_conflict' | 'context_only' | 'no_match';
 export interface E2eNode {
   /** Stable source/content identity; network IDs are opaque to substring search. */
   id: string;
@@ -28,20 +32,6 @@ export interface ServiceSnapshot {
   edges: { source: string; target: string; rel: string; confidence?: string }[];
   captured_at: string | null;
 }
-export interface NetworkObservation {
-  monitor: string;
-  /** Name-derived display hint only; never proof of endpoint/workload membership. */
-  cluster: string | null;
-  metric: NfmMetric;
-  category: NfmCategory;
-  rangeSec: number;
-  rows: NfmFlowRow[];
-  unit: string;
-  startTime?: string;
-  endTime?: string;
-  queriedAt?: string;
-  capped: boolean;
-}
 export interface E2eInput {
   account: string;
   configured: FlowGraph;
@@ -55,7 +45,7 @@ export interface E2eGraph {
     configuredNodes: number;
     serviceNodes: number;
     networkFlows: number;
-    /** Endpoints with identity-evidence links, including configured-record matches; not an ownership count. */
+    /** Per-row endpoint observations with identity evidence, not distinct endpoints or ownership. */
     correlatedEndpoints: number;
     unmatchedEndpoints: number;
     ambiguousEndpoints: number;

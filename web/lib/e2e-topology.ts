@@ -1,5 +1,5 @@
 import type {
-  E2eEdge, E2eEvidence, E2eGraph, E2eInput, E2eLayer, E2eNode, E2eSelection, E2eView,
+  E2eCorrelationReason, E2eEdge, E2eEvidence, E2eGraph, E2eInput, E2eLayer, E2eNode, E2eSelection, E2eView,
 } from './e2e-topology-types';
 
 // Pure composition of loaded evidence. No SDK, fetch, clock, or layout dependency.
@@ -24,6 +24,7 @@ interface TargetIdentity {
   accountId: string;
   blocked: boolean;
   cached: boolean;
+  contextAllowed: boolean;
 }
 
 const hasMarker = (value: unknown): boolean => {
@@ -71,7 +72,7 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
     const source = byId.get(edge.source);
     if (edge.evidence !== 'configuration' || source?.kind !== 'tg') continue;
     const rows = scopes.get(edge.target) ?? [];
-    rows.push(record(source.meta.row));
+    rows.push(source.meta);
     scopes.set(edge.target, rows);
   }
   const index = new Map<string, TargetIdentity[]>();
@@ -79,7 +80,8 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
     if (node.layer !== 'configuration' || node.kind !== 'target') continue;
     const type = node.meta.targetType;
     if (type !== 'ip' && type !== 'instance') continue;
-    const rows = scopes.get(node.id) ?? [];
+    const parents = scopes.get(node.id) ?? [];
+    const rows = parents.map(meta => record(meta.row));
     const common = (field: string): string => {
       const value = text(rows[0]?.[field]);
       return value && rows.every(row => row[field] === value) ? value : '';
@@ -90,7 +92,7 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
       const k = key(type, value);
       const entries = index.get(k) ?? [];
       const memberEvidence = list(node.meta.memberIdentities).map(record).filter(member => text(member.id) === value);
-      const evidence = [node.meta, ...rows, ...memberEvidence];
+      const evidence = [node.meta, ...parents, ...rows, ...memberEvidence];
       // Retain blocked candidates in the index: dropping one would let a competing
       // record win merely because the conflicting evidence was hidden.
       entries.push({
@@ -98,6 +100,13 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
         accountId: /^\d{12}$/.test(accountId) ? accountId : '',
         blocked: !region || !vpcId || evidence.some(meta => ownershipVeto(meta, region, vpcId)),
         cached: evidence.some(cachedConfiguration),
+        // Preserve every identity veto. Only the producer's configuration-only
+        // marker may be ignored for CONTEXT, with no other withholding evidence.
+        contextAllowed: Boolean(region && vpcId) && evidence.some(cachedConfiguration)
+          && evidence.every(meta => !ownershipVeto(
+            meta.ownership_evidence === 'cached_configuration' && meta.ownership_reason === 'eks_not_enumerated'
+              ? { ...meta, ownership_reason: undefined } : meta, region, vpcId,
+          )),
       });
       index.set(k, entries);
     }
@@ -136,15 +145,18 @@ function workloadIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, Set<Work
   return index;
 }
 
-function workloadScopeMatches(workload: WorkloadIdentity, target: TargetIdentity): boolean {
+function workloadScopeReason(workload: WorkloadIdentity, target: TargetIdentity): E2eCorrelationReason | undefined {
   // Real trace producers retain scope on incoming services. Never decode workload IDs.
   // A relative "self" claim cannot corroborate a numeric account without the TG row.
   const claims = (field: string) => workload.scopes.map(meta => meta[field])
     .filter(value => value !== undefined && value !== null && value !== '');
   const regions = claims('region'), accounts = claims('accountId');
-  return regions.length > 0 && regions.every(region => region === target.region)
+  if (regions.length > 0 && regions.every(region => region === target.region)
     && accounts.length > 0 && accounts.every(account =>
-      account === 'self' || Boolean(target.accountId && account === target.accountId));
+      account === 'self' || Boolean(target.accountId && account === target.accountId))) return;
+  const conflict = regions.some(region => /^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(text(region)) && region !== target.region)
+    || accounts.some(account => /^\d{12}$/.test(text(account)) && target.accountId && account !== target.accountId);
+  return conflict ? 'workload_conflict' : 'workload_scope_unverified';
 }
 
 function targetWorkload(target: TargetIdentity | undefined, endpoint: Meta): { cluster: string; conflict: boolean } {
@@ -269,7 +281,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
         }
       }
     }
-    const blocked = [...candidates.values()].some(candidate => candidate.blocked);
+    const blocked = [...candidates.values()].some(candidate => candidate.blocked && !candidate.contextAllowed);
     const target = !blocked && candidates.size === 1 ? [...candidates.values()][0] : undefined;
     // A monitor's name-derived cluster is a display hint, never identity evidence.
     const { cluster, conflict } = targetWorkload(target, data);
@@ -277,9 +289,15 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     const matches = cluster && namespace && pod
       ? [...(workloads.get(key(cluster, namespace, pod)) ?? [])] : [];
     // Do not choose a winner among conflicting scopes, target records, or workload memberships.
-    if (blocked || candidates.size > 1 || matches.length > 1 || conflict
-      || matches.some(workload => !target || !workloadScopeMatches(workload, target))) {
+    const scopeReasons = target ? matches.map(workload => workloadScopeReason(workload, target)) : [];
+    const reason: E2eCorrelationReason | undefined = candidates.size > 1 ? 'configuration_conflict'
+      : blocked ? 'configuration_unverified'
+      : conflict ? 'pod_identity_conflict'
+      : matches.length > 1 || scopeReasons.includes('workload_conflict') ? 'workload_conflict'
+      : scopeReasons.find(Boolean);
+    if (reason) {
       endpoint.meta.correlation = 'ambiguous';
+      endpoint.meta.correlationReason = reason;
       summary.ambiguousEndpoints++;
       return;
     }
@@ -310,6 +328,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     }
     const correlated = Boolean((target && !target.cached) || matches.length);
     endpoint.meta.correlation = correlated ? 'correlated' : 'unmatched';
+    if (!correlated) endpoint.meta.correlationReason = target?.cached ? 'context_only' : 'no_match';
     if (correlated) summary.correlatedEndpoints++;
     else summary.unmatchedEndpoints++;
   };
@@ -327,7 +346,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       addNode({
         id: connectionId, kind: 'connection', label: text(observation.metric) || '네트워크 관측', layer: 'network',
         meta: {
-          flow: rawFlow, metric: observation.metric, unit: observation.unit,
+          flow: { ...flow }, metric: observation.metric, unit: observation.unit,
           monitor: observation.monitor, cluster: observation.cluster, category: observation.category,
           rangeSec: observation.rangeSec, capped: observation.capped,
           ...(observation.startTime !== undefined ? { startTime: observation.startTime } : {}),
@@ -354,7 +373,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       }
 
       // The input list's order is retained in meta.flow for inspection, never as hop edges.
-      const constructs = new Set(strings(flow.traversedIds));
+      const constructs = new Set(strings(flow.traversedIds).filter(value => text(value.split(':')[0])));
       const representedTypes = new Set([...constructs].map(value => value.split(':')[0]));
       for (const type of strings(flow.traversed)) if (!representedTypes.has(type)) constructs.add(type);
       for (const construct of constructs) {
@@ -470,6 +489,16 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
     matchedNodes = matches.length;
     selected = reachable(matches, selected);
   }
+  // Complete only admitted connections from eligible network evidence. This is
+  // not another reachability pass: attached/shared context never grants transit.
+  for (const edge of edges) {
+    if (edge.evidence !== 'network') continue;
+    for (const [connection, endpoint] of [[edge.source, edge.target], [edge.target, edge.source]]) {
+      if (selected.has(connection) && byId.get(connection)?.kind === 'connection'
+        && byId.get(endpoint)?.kind === 'endpoint') selected.add(endpoint);
+    }
+  }
+  if (!query) matchedNodes = selected.size;
   const selectedEdges = edges.filter(edge => selected.has(edge.source) && selected.has(edge.target));
   const maxNodes = bound(selection.maxNodes, 350);
   const maxEdges = bound(selection.maxEdges, 700);
