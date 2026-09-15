@@ -23,7 +23,7 @@ node --test scripts/v2/ci/prepare-runtime-host.test.mjs
 ## Activation
 
 1. Configure the **secret** `AWS_ACCOUNT_ID_DEV`, backend and existing CI roles. Checks establish account/role consistency, not dev/production isolation.
-2. This controller adopts an already-running web stack with working foundation, migrations and login. A brand-new stack must first follow the [reviewed first-web bootstrap procedure](first-web-bootstrap.md). `CI_READONLY_RUNTIME_DEV=true` enables core runtime, without enabling the separate readiness capability; manual full plan/apply require real login/DB and an enabled host registry with no enabled foreign rows.
+2. This controller adopts an already-running web stack with working foundation, migrations and login. A brand-new stack must first follow the [reviewed first-web bootstrap procedure](first-web-bootstrap.md). `CI_READONLY_RUNTIME_DEV=true` enables core runtime, without enabling the separate readiness capability; manual full plan/apply require real login/DB and the enabled host registry. Empty target configuration permits no enabled foreign rows; [explicit targets](#explicit-runtime-targets) permit only approved subsets during onboarding.
 3. `runtime-ecr-bootstrap` creates only three repositories. Build ARM64 images and set verified `STEAMPIPE_IMAGE_DIGEST_DEV` / `WORKER_IMAGE_DIGEST_DEV` before a full plan.
 4. Dev/preview private discovery requires full-plan `runtime_rollout=true` and DNS permission; dev also requires the profile. Keep `domain_rollout=false`. Profile/rollout require remediation, RCA write-back, integrations write and diagnosis notifications off; governed external writes are not reclassified as FROZEN.
 5. Inspect the same branch/SHA plan privately in S3 and supply its `reviewed_plan_sha256` to apply; CI verifies pinned assets and HMAC. Preserve public DNS, certificates and network topology; unchanged owned ECS registration still requires DNS permission. Missing/mismatched bundles require a new plan. `CI_ASSETS_READY=true` selects layer verification, not rebuilding.
@@ -35,6 +35,73 @@ gh workflow run terraform.yml -R aws-samples/sample-awsops --ref dev -f mode=pla
 Host-only removes only collector AssumeRole; Agent MCP grants remain. IAM includes known regions regardless of current opt-in; newly launched AWS regions require a fresh apply. IAM narrowing also applies to already-enabled main/preview stacks independently of the dev profile.
 S3 steady denials remain unknown: rows carry `attributes_unknown`, the ledger increments `unknown_attribute_count`, and freshness is `degraded`. This incomplete evidence blocks release readiness for the affected catalog type, as defined in the [collection contract](#collection-contention--수집-경합).
 The digest/host-preflight profile is dev-only. Preview retains operator-configured mutable tags or digests and multi-account scope, without dev host verification; account/role and private-DNS ownership checks still apply.
+
+## Explicit runtime targets
+
+The optional repository **secret** `CI_RUNTIME_TARGETS_DEV` is a JSON array of
+`{"account_id":"<12-digit foreign account>","resource_type":"ec2","resource_id":"<known instance ID>"}`.
+At most five distinct foreign accounts are allowed. Initial supported proof types are
+`ec2` (`data.instance_id`) and `cloudfront` (`data.id`), both in the pinned catalog;
+resource IDs must contain 1–2048 printable ASCII characters without whitespace.
+Do not put operator account/resource IDs in source. Empty/unset configuration preserves
+the existing host-only dev profile; other branches and bootstrap scopes receive no
+target override. Nonempty configuration requires the full dev runtime profile and
+sets `inventory_host_only=false` with validated `runtime_verification_targets`.
+
+Apply publishes the exact array in `runtime_deployment.inventory.verification_targets`.
+Absent metadata defaults to `[]` for older deployments. The web task receives
+`INVENTORY_TASK_ROLE_ARN` from the actual inventory task role only when inventory is
+enabled, and `INVENTORY_TARGET_ACCOUNT_IDS` as a JSON array only for nonempty targets.
+The collector receives the same IDs plus the actual expected host account. Its source
+AssumeRole policy lists only configured `AWSopsReadOnlyRole` ARNs; target trust and
+the registry ExternalId remain separate prerequisites. Rendering preserves that
+ExternalId and fails closed on unapproved/duplicate enabled accounts or a wrong host.
+The running collector may contain the host plus a subset of approved targets during
+onboarding; it never silently discards an out-of-scope row. Empty non-profile
+configuration retains the legacy collector scope and AssumeRole behavior.
+
+Roll out code while host-only. After the runtime changes merge to `dev`, rebuild the
+Steampipe **ARM64** image through `build-runtime-images.yml` with `component=steampipe`:
+
+```bash
+gh workflow run build-runtime-images.yml -R aws-samples/sample-awsops --ref dev -f component=steampipe
+```
+
+Verify the build run's source SHA matches the reviewed merged runtime SHA, then update
+the protected `STEAMPIPE_IMAGE_DIGEST_DEV` variable to that run's verified digest.
+The image must contain the updated `gen_spc_entrypoint.py` allowlist guard. Retain the
+existing approved `WORKER_IMAGE_DIGEST_DEV`; no worker rebuild is needed when worker
+source is unchanged. Next review the configured saved Terraform plan and apply it
+before registering target roles through the UI. The same apply must deploy the
+`scripts/v2/steampipe/sync_lambda.py` archive that returns explicit
+`unreachable_account_count`, including zero on success, and persist its matching
+`runtime_deployment.inventory.sync_code_sha256`. Activation requires both the rebuilt
+inventory image and the updated Lambda archive. Plan preflight resolves effective
+Terraform targets; apply preflight reads targets from the exact restored approved
+`tfplan`, never a newer repository secret. Both use prepare-only
+`memberRegistryMode: "onboarding"` to permit the enabled host plus an approved subset,
+rejecting extras. Terraform does not automatically run the post-apply release gate.
+After registration, release prepare and collect require **exactly** the enabled host
+and every configured target, each unique. The controller never requests onboarding
+leniency. Missing, disabled or unexpected enabled members stop before type collection.
+
+Collect retains every aggregate catalog proof (currently 43), known counts and zero
+unknown attributes, and additionally requires numeric `unreachable_account_count=0`
+from every owned type RPC in target mode. SDK collectors remain host-only; this does
+not assert that every catalog type covers every member. Each configured member must
+also supply its known record through `/api/inventory/<type>?accounts=<account>`, with
+exact `account_id`, `resource_id`, the supported type-specific identifier and
+`captured_at >= collectionStartedAt`. Pages contain at most five rows, capped at 500
+examined rows per member and the shared deadline; no match is unverified, not proof of
+absence. Host CloudFront, host SSM/AgentCore/model, both workers and the closing web
+identity check remain mandatory.
+
+For `N` targets, reserve `1080 + 35*N` seconds for proof, leaving at most
+`720 - 35*N` seconds for collection and latest type admission at `270 - 35*N`
+seconds, reduced further by clock preparation and earlier outer deadlines. The extra
+allowance covers one initial inventory page per member. The base 20-second margin,
+conditional retry and additional-page rules below remain unchanged; no extra page
+or retry is guaranteed, and the original thirty-minute marker deadline never extends.
 
 ## Collector catalog prerequisite
 
@@ -163,7 +230,7 @@ Every current catalog type (43 in this version) must have succeeded after the re
 
 After catalog discovery, authenticated preparation verifies login, DB and host registration and samples Aurora's UTC clock. That `server_time` becomes the marker before all collection calls and remains fixed across retries. The controller calibrates later clock reads from the DB sample and local request-start timestamp, conservatively, and shifts the existing overall deadline by the same offset. It never anchors at response end or allows pre-marker data. DB-request and host-check elapsed time consume the marker window; malformed or missing clock evidence stops collection. Catalog admission allows up to 450 seconds. All type attempts and their retries share the remaining collection admission window; there is no separate fifteen-minute allowance per type. An invocation needs 450 seconds remaining for the verified function timeout of at most 420 seconds plus transport. Only confirmed throttling, busy and exact superseded outcomes retry, after ten seconds. Denied, uncertain-delivery, partial, failed, unknown and malformed outcomes cannot prove collection. All admitted workers settle before private files are cleaned.
 
-The controller has a fifty-minute overall deadline. The original proof deadline is the earlier of that deadline and marker plus thirty minutes, as defined in the [shared probe contract](#reusable-runtime-probe-contract). Authentication/model/worker proof receives a deadline fifty seconds earlier, reserving the closing web check inside the original deadline. Collection admission reserves eighteen minutes for the complete proof path, leaving at most twelve minutes after a fresh marker, reduced by clock-sampling and host-check elapsed time. Poll windows are caps rather than promises that every slow operation can finish. Missing capacity, time or permissions legitimately fail with type-specific diagnostics.
+The controller has a fifty-minute overall deadline. The original proof deadline is the earlier of that deadline and marker plus thirty minutes, as defined in the [shared probe contract](#reusable-runtime-probe-contract). Authentication/model/worker proof receives a deadline fifty seconds earlier, reserving the closing web check inside the original deadline. Empty-target collection admission reserves eighteen minutes for the complete proof path, leaving at most twelve minutes after a fresh marker, reduced by clock-sampling and host-check elapsed time. Each explicit target adds the [35-second proof reservation](#explicit-runtime-targets). Poll windows are caps rather than promises that every slow operation can finish. Missing capacity, time or permissions legitimately fail with type-specific diagnostics.
 
 The eighteen-minute reserve covers the single-pass allowances: five 35-second HTTP calls, one 80-second readiness probe, two 370-second worker paths, a 15-second collector revision read and a 50-second closing web check total 1,060 seconds, leaving twenty seconds. The closing check allows three sequential ECS reads of at most fifteen seconds each, plus five seconds overhead. One full contention retry adds at least 215 seconds: a 35-second confirmation read, 65-second cooldown, 35-second ledger recheck and another 80-second probe. The helper's remaining 180-second admission allowance is checked after the confirmation read; worker allowances are reused rather than counted twice. After maximum-window collection, that full retry needs at least 195 seconds saved by earlier work, and an extra 35-second read needs fifteen seconds saved. Insufficient time fails before cooldown; no second proof window is created.
 
@@ -181,7 +248,7 @@ The collector can finish while disclosing unknown attributes, or retain last-goo
 
 The existing fifteen-minute schedule remains active. The controller requires both its successful RPC results and strict ledger evidence at the verification observation. It does not attribute the singleton ledger to its own run token. A later scheduled partial/failed/unknown result can intentionally block acceptance, because current incomplete data is not eligible; a current running attempt waits within the shared window. The bounded retry policy never substitutes older success or suppresses the schedule to produce a green result.
 
-The time budget is a fail-closed admission policy, not a guarantee for every workload size. With a fresh marker, the twelve-minute collection window and 450-second full-invocation allowance mean a new type must start within the first 270 seconds; clock preparation and earlier outer bounds shorten that opportunity. The verified 420-second Lambda timeout sets that conservative allowance; the same function serves all types. Deployments whose volume, throttling or contention cannot fit must stop for capacity/permission investigation instead of shortening proof checks or accepting incomplete inventory.
+The time budget is a fail-closed admission policy, not a guarantee for every workload size. With a fresh marker and no targets, the twelve-minute collection window and 450-second full-invocation allowance mean a new type must start within the first 270 seconds; each target, clock preparation and earlier outer bounds shorten that opportunity. The verified 420-second Lambda timeout sets that conservative allowance; the same function serves all types. Deployments whose volume, throttling or contention cannot fit must stop for capacity/permission investigation instead of shortening proof checks or accepting incomplete inventory.
 
 A 2026-09-14 operator measurement used the reviewed deployed collector, all 43 catalog types, four synchronous lanes and the same admission floor: all RPCs succeeded with known counts/zero unknown attributes in **57.461 seconds**, with the last admitted call at **39.802 seconds**. A following SQL-reader check verified post-marker ledger evidence for all 43 types. The schedule was enabled before and after the measurement; that alone does not establish an overlapping scheduled invocation or a latency guarantee. This demonstrates feasibility for that measured development workload, not web-role/model/worker readiness or approval of other deployments.
 
@@ -302,15 +369,15 @@ lock or history audit; an unobserved intermediate change/restore is not disprove
 Prepare retains its existing result and has no closing web recheck.
 Use the [restrictive session contract](runtime-verifier-sessions.md) and private
 0700/0600 credential/state files. Both controller modes require exactly one enabled
-host matching the configured account and no enabled foreign accounts. This is the
-intended host-only first end-to-end target; the generic smoke helper's optional
-multi-account support does not widen the controller's scope. An incompatible registry
-fails as `host_only_registry_required`. Prepare verifies login/DB/host registration
+host matching the configured account. Empty targets retain the host-only boundary;
+explicit targets require the [exact applied member registry](#explicit-runtime-targets).
+Host-shape failures map to `host_only_registry_required`; member-scope failures retain
+`Runtime smoke: member_registry`. Prepare verifies login/DB/required registration
 but is never a full-release result. First-time stacks must complete the
 [bootstrap sequence](first-web-bootstrap.md) before this existing-web preflight.
 
 Collect checks web identity and the owned Lambda's configuration/catalog, then performs
-authenticated login, DB and host-only preparation with the DB-clock sample. This
+authenticated login, DB and exact-scope preparation with the DB-clock sample. This
 preflight rejects an incompatible registry before any per-type collection call; only
 metadata reads and read-only catalog discovery precede it. It validates canonical UTC
 milliseconds and request/response times inside the observed prepare interval, with
@@ -346,7 +413,7 @@ proof receives a deadline 50 seconds earlier. The closing web check is then capp
 at the earlier of the original proof deadline and 50 seconds from its own start:
 three sequential AWS reads capped at 15 seconds each, plus five seconds for overhead.
 Prepare's deadline handling is unchanged.
-The 18-minute reserve covers only the single-pass
+The base 18-minute reserve (plus 35 seconds per explicit target) covers only the single-pass
 base path: five 35-second HTTP calls, one 80-second probe, two 370-second worker paths
 plus the 15-second collector recheck and 50-second closing web check total 1,060 seconds,
 leaving 20 seconds of margin.
@@ -417,7 +484,7 @@ must fail for capacity/permission investigation. The separate deployment audit r
 observation-only and makes no collection invokes.
 
 The budget is a fail-closed admission policy, not a worst-case completion guarantee.
-With the full 720-second collection allocation, a new type needs admission by
+With the empty-target 720-second collection allocation, a new type needs admission by
 270 seconds to retain its 450-second call allowance; clock-prepare time and an earlier
 outer deadline shorten that opportunity. A 420-second Lambda timeout is an upper
 bound, not an assumed duration for every type. Slow or contended workloads can
@@ -428,7 +495,7 @@ intentionally leave later types unstarted and block release.
 A sanitized operator measurement on 2026-09-14 used a hash-verified deployed collector,
 all 43 catalog types, four synchronous lanes, reserved concurrency four, a 450-second
 admission floor and the then-current 780-second global collection budget (the current
-allocation is 720 seconds). All 43 per-type results succeeded
+empty-target allocation is 720 seconds). All 43 per-type results succeeded
 with known counts and zero unknown attributes in **57.461 seconds**; the last admitted
 call was at **39.802 seconds**. A following SQL-reader check verified post-marker ledger
 evidence for all 43 types with no gaps. The EC2 result records three attempts, but the
@@ -572,6 +639,7 @@ can instead produce the controller fallbacks above.
 | `Runtime smoke: collection_stale`, `Runtime smoke: collection_missing`, `Runtime smoke: collection_timeout`, `Runtime smoke: collection_unavailable` | Ledger freshness, presence, bounded waiting or availability failed. Missing/unavailable evidence is not healthy zero; preserve the marker and inspect the existing bounded observations. |
 | `Runtime smoke: release_timeout`, `Runtime smoke: runtime_inventory_contention` | Helper HTTP/proof admission or the single permitted contention retry cannot complete. Inspect timing and collision evidence before a fresh bounded attempt; no new proof window or scheduler suppression. |
 | `Runtime smoke: <code>` | Other wrapped configuration, clock, runtime/readiness or worker failures retain the complete helper message. Follow the [reusable probe contract](#reusable-runtime-probe-contract) and [DB-clock contract](#optional-database-clock-sample); do not reduce the message to a suffix or assume every helper exception uses this path. |
+| `Runtime smoke: member_registry`, `Runtime smoke: member_resource_unverified` | Compare enabled registration with the applied explicit targets, then inspect the configured member record's account, resource/type-specific ID and post-marker timestamp. A bounded scan without the record is unverified. Do not remove targets or weaken freshness to pass. |
 | `Authenticated smoke: <phase>` | Login/database, `host_registry_http`, `inventory_http`, `worker_http`, `runtime_http`, or private-request-file phase failure, with optional validated HTTP status. Inspect the target, session, TLS and response contract privately; retain the complete phase text rather than relabeling it as a ledger/RPC code. |
 
 Even a controller `full_verified` result retains

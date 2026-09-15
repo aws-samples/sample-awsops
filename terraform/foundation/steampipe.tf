@@ -152,10 +152,10 @@ resource "aws_iam_role_policy" "steampipe_task" {
         Action   = ["rds-db:connect"]
         Resource = "arn:aws:rds-db:${var.region}:${data.aws_caller_identity.current.account_id}:dbuser:${aws_rds_cluster.aurora.cluster_resource_id}/steampipe_reader"
         }], var.inventory_host_only ? [] : [{
-        # Legacy multi-account mode only. Verified host inventory never self-assumes.
+        # Explicit runtime scope pins target roles; empty retains non-profile legacy behavior.
         Effect   = "Allow"
         Action   = ["sts:AssumeRole"]
-        Resource = "arn:aws:iam::*:role/AWSopsReadOnlyRole"
+        Resource = jsondecode(length(local.runtime_target_role_arns) > 0 ? jsonencode(local.runtime_target_role_arns) : jsonencode("arn:aws:iam::*:role/AWSopsReadOnlyRole"))
     }])
   })
 }
@@ -193,7 +193,10 @@ resource "aws_ecs_task_definition" "steampipe" {
       { name = "STEAMPIPE_AWS_FILL_RATE", value = tostring(var.steampipe_aws_fill_rate) },
       ], var.inventory_host_only ? [
       { name = "INVENTORY_HOST_ONLY", value = "true" },
+      ] : [], var.inventory_host_only || length(local.runtime_target_account_ids) > 0 ? [
       { name = "EXPECTED_HOST_ACCOUNT_ID", value = data.aws_caller_identity.current.account_id },
+      ] : [], length(local.runtime_target_account_ids) > 0 ? [
+      { name = "INVENTORY_TARGET_ACCOUNT_IDS", value = jsonencode(local.runtime_target_account_ids) },
     ] : [])
     secrets = [
       { name = "STEAMPIPE_DATABASE_PASSWORD", valueFrom = aws_secretsmanager_secret.steampipe[0].arn },

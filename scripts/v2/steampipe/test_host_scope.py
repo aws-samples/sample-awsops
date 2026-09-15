@@ -1,5 +1,6 @@
 """Host-only inventory fails before rendering; all AWS/DB calls are mocked."""
 import os
+import json
 from pathlib import Path
 import signal
 import subprocess
@@ -18,6 +19,42 @@ ACCOUNT = "123456789012"
 HOST = {"account_id": ACCOUNT, "is_host": True, "role_name": "AWSopsReadOnlyRole",
         "external_id": None, "all_regions": False, "regions": []}
 ENV = {"INVENTORY_HOST_ONLY": "true", "EXPECTED_HOST_ACCOUNT_ID": ACCOUNT}
+TARGET = {**HOST, "account_id": "999999999999", "is_host": False,
+          "external_id": "fixture-external-id", "regions": ["ap-northeast-2"]}
+SCOPED_ENV = {"EXPECTED_HOST_ACCOUNT_ID": ACCOUNT, "INVENTORY_TARGET_ACCOUNT_IDS": '["999999999999"]'}
+
+
+@pytest.mark.parametrize("rows", [[HOST], [HOST, TARGET]])
+def test_explicit_scope_renders_only_approved_subset_and_preserves_external_id(rows):
+    with mock.patch.dict(os.environ, SCOPED_ENV, clear=True), mock.patch.object(entrypoint, "boto3") as sdk:
+        sdk.client.return_value.get_caller_identity.return_value = {"Account": ACCOUNT}
+        result = entrypoint._render_spc(rows)
+        sdk.client.return_value.get_caller_identity.assert_called_once()
+        if len(rows) == 2:
+            assert 'assume_role_arn = "arn:aws:iam::999999999999:role/AWSopsReadOnlyRole"' in result
+            assert 'assume_role_external_id = "fixture-external-id"' in result
+
+
+@pytest.mark.parametrize("rows", [[], [TARGET], [HOST, TARGET, TARGET],
+    [HOST, {**TARGET, "account_id": "888888888888"}], [HOST, {**TARGET, "is_host": True}],
+    [HOST, {**TARGET, "role_name": "AdministratorAccess"}]])
+def test_explicit_scope_rejects_unapproved_or_ambiguous_rows_before_render(rows):
+    with mock.patch.dict(os.environ, SCOPED_ENV, clear=True), mock.patch.object(entrypoint, "boto3") as sdk, \
+            mock.patch.object(entrypoint, "render_spc") as render:
+        sdk.client.return_value.get_caller_identity.return_value = {"Account": ACCOUNT}
+        with pytest.raises(entrypoint.HostScopeError):
+            entrypoint._render_spc(rows)
+        render.assert_not_called()
+
+
+@pytest.mark.parametrize("raw", ["null", "{}", "bad", '["999999999999","999999999999"]',
+    '["123456789012"]', json.dumps([str(i) * 12 for i in range(2, 8)])])
+def test_explicit_scope_configuration_fails_closed(raw):
+    with mock.patch.dict(os.environ, {**SCOPED_ENV, "INVENTORY_TARGET_ACCOUNT_IDS": raw}, clear=True), \
+            mock.patch.object(entrypoint, "boto3") as sdk:
+        with pytest.raises(entrypoint.HostScopeError):
+            entrypoint._render_spc([HOST])
+        sdk.client.assert_not_called()
 
 
 @pytest.fixture(autouse=True)

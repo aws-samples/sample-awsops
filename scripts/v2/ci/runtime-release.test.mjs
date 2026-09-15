@@ -95,7 +95,8 @@ function fixture(overrides = {}) {
       assert.ok(['catalog', ...(overrides.catalog?.types || catalog().types)].includes(type));
       writeFileSync(output, JSON.stringify(type === 'catalog' ? (overrides.catalog || catalog())
         : (overrides.probes?.[type] || (type === 'cloudfront' && overrides.probe) ||
-          { type, status: 'succeeded', row_count: 1, unknown_attribute_count: 0 })), { mode: 0o600 });
+          { type, status: 'succeeded', row_count: 1, unknown_attribute_count: 0,
+            ...(overrides.targets ? { unreachable_account_count: 0 } : {}) })), { mode: 0o600 });
       return JSON.stringify(overrides.invoke || { StatusCode: 200, ExecutedVersion: '$LATEST' });
     }
     if (overrides.throwAt === key) throw new Error('PRIVATE_REMOTE_DETAIL');
@@ -107,7 +108,8 @@ function fixture(overrides = {}) {
     if (options.includeDatabaseClock) {
       prepared.push({ input, options });
       assert.deepEqual(input.runtimeConfig, {
-        schemaVersion: 1, mode: 'prepare', hostOnly: true, expectedAccountId: account,
+        schemaVersion: 1, mode: 'prepare', expectedAccountId: account,
+        ...(overrides.targets ? { expectedMemberTargets: overrides.targets } : { hostOnly: true }),
       });
       const timestamp = options.now();
       return { status: 'ok', mode: 'prepare', public_tables: 1, database_clock: {
@@ -118,10 +120,12 @@ function fixture(overrides = {}) {
     authenticated.push({ input, options });
     const config = JSON.parse(readFileSync(join(directory, 'runtime-smoke.json'), 'utf8'));
     assert.deepEqual(config, input.runtimeConfig);
-    assert.equal(config.hostOnly, true);
+    if (overrides.targets) assert.deepEqual(config.expectedMemberTargets, overrides.targets);
+    else assert.equal(config.hostOnly, true);
     const gaps = { partial: [], failed: [], stale: [], missing: [], unknown: [], pending: [], invalid: [] };
     return overrides.authResult || { status: 'ok',
       mode: config.mode, workers: 2, inventory_policy: config.inventoryPolicy,
+      ...(overrides.targets ? { member_targets_verified: overrides.targets.length } : {}),
       inventory_quality: { status: 'complete', catalog_types: config.expectedQueuedTypes,
         counts: { expected: config.expectedQueuedTypes?.length, verified: config.expectedQueuedTypes?.length,
           ...Object.fromEntries(Object.keys(gaps).map(key => [key, 0])) },
@@ -140,6 +144,79 @@ async function withFixture(action, overrides = {}) {
   const f = fixture(overrides);
   try { return await action(f); } finally { f.cleanup(); }
 }
+
+const memberTargets = [{ account_id: '999999999999', resource_type: 'ec2', resource_id: 'i-fixture' }];
+function memberDeployment() {
+  const value = deployment();
+  value.inventory.verification_targets = memberTargets;
+  return value;
+}
+test('applied member targets bind both authentication phases and retain full catalog, web and workers', async () => {
+  await withFixture(async f => {
+    const result = await release(memberDeployment(), { env: f.env, run: f.run, authenticate: f.authenticate });
+    assert.equal(result.status, 'full_verified');
+    assert.equal(result.workers, 2);
+    assert.equal(f.calls.filter(a => a[0] === 'lambda' && a[1] === 'invoke').length, sourceTypes.length + 1);
+    assert.equal(f.calls.filter(a => a[0] === 'ecs' && a[1] === 'describe-services').length, 2);
+    for (const { input } of [...f.prepared, ...f.authenticated]) {
+      assert.deepEqual(input.runtimeConfig.expectedMemberTargets, memberTargets);
+      assert.equal(input.runtimeConfig.memberRegistryMode, undefined);
+      assert.equal(input.runtimeConfig.hostOnly, undefined);
+    }
+  }, { targets: memberTargets });
+});
+test('member collection refuses missing or nonzero unreachable counts before final authentication', async () => {
+  for (const count of [undefined, null, 1, -1, '0']) {
+    await withFixture(async f => {
+      await assert.rejects(release(memberDeployment(), { env: f.env, run: f.run, authenticate: f.authenticate }),
+        /collection_probe_incomplete|inventory_incomplete/);
+      assert.equal(f.authenticated.length, 0);
+    }, { targets: memberTargets, probe: { type: 'cloudfront', status: 'succeeded',
+      row_count: 1, unknown_attribute_count: 0, unreachable_account_count: count } });
+  }
+});
+test('member evidence reservation prevents late collector admission without extending the marker deadline', async () => {
+  for (const targets of [undefined, memberTargets]) {
+    await withFixture(async f => {
+      let clock = Date.now(), probes = 0;
+      const result = release(targets ? memberDeployment() : deployment(), {
+        env: f.env, authenticate: f.authenticate, now: () => clock, run: async (cmd, args) => {
+          const value = await f.run(cmd, args);
+          if (args[0] === 'lambda' && args[1] === 'invoke' &&
+              JSON.parse(args[args.indexOf('--payload') + 1]).type !== 'catalog') {
+            probes++;
+            if (probes === 1) clock += 240_000;
+          }
+          return value;
+        },
+      });
+      if (targets) {
+        await assert.rejects(result, /collection_probe_timeout/);
+        assert.ok(probes > 0 && probes < sourceTypes.length);
+        assert.equal(f.authenticated.length, 0);
+      } else assert.equal((await result).status, 'full_verified');
+    }, { targets });
+  }
+});
+test('malformed applied targets fail before AWS reads and absent member proof cannot return full_verified', async () => {
+  for (const targets of [null, [{ ...memberTargets[0], resource_type: 'ec2_instance' }]]) {
+    await withFixture(async f => {
+      const value = memberDeployment();
+      value.inventory.verification_targets = targets;
+      await assert.rejects(release(value, { env: f.env, run: f.run, authenticate: f.authenticate }),
+        /inventory_deployment_mismatch/);
+      assert.equal(f.calls.length, 0);
+    });
+  }
+  await withFixture(async f => {
+    await assert.rejects(release(memberDeployment(), { env: f.env, run: f.run,
+      authenticate: async (...args) => {
+        const result = await f.authenticate(...args);
+        delete result.member_targets_verified;
+        return result;
+      } }), /complete_runtime_proof_required/);
+  }, { targets: memberTargets });
+});
 
 function assertCollectionPartition(attempts) {
   const buckets = ['succeeded', 'partial', 'failed', 'unknown', 'deadline', 'not_started'];
@@ -1286,7 +1363,8 @@ test('dispatcher denial does not repeat and confirmed throttling has a hard admi
   });
 });
 
-for (const skew of [-5000, 5000]) test(`real authenticated smoke composes DB clock and full release with skew ${skew}`,
+for (const [skew, memberScope] of [[-5000, false], [5000, false], [5000, true]])
+  test(`real authenticated smoke composes DB clock and full release with skew ${skew}${memberScope ? ' and explicit member' : ''}`,
   async () => withFixture(async f => {
     let raw = Date.parse('2026-09-14T12:00:00.000Z'), marker, configReads = 0;
     const events = [], runs = [], jobs = [], phases = [];
@@ -1309,12 +1387,19 @@ for (const skew of [-5000, 5000]) test(`real authenticated smoke composes DB clo
         marker ??= server_time;
         response = { status: 'ok', public_tables: 42, server_time };
       } else if (path === '/api/accounts') {
-        response = { accounts: [{ accountId: account, isHost: true, enabled: true }] };
+        response = { accounts: [{ accountId: account, isHost: true, enabled: true },
+          ...(memberScope ? [{ accountId: memberTargets[0].account_id, isHost: false, enabled: true }] : [])] };
       } else if (path === '/api/inventory/summary') {
         response = { collection: { configured: true, readOk: true, runs } };
       } else if (path === '/api/inventory/cloudfront') {
         response = { rows: [{ resource_id: 'E123EXAMPLE', account_id: 'self',
           captured_at: runs[0].started_at, data: { id: 'E123EXAMPLE' } }] };
+      } else if (path === '/api/inventory/ec2') {
+        assert.equal(memberScope, true);
+        const target = memberTargets[0];
+        assert.equal(new URL(args.at(-1)).searchParams.get('accounts'), target.account_id);
+        response = { rows: [{ resource_id: target.resource_id, account_id: target.account_id,
+          captured_at: runs[0].started_at, data: { instance_id: target.resource_id } }] };
       } else if (path === '/api/deployment/readiness') {
         assert.equal(configReads, 2);
         response = { schemaVersion: 1, nonce: body.nonce, accountId: account, status: 'ready', reason: 'ok',
@@ -1337,7 +1422,7 @@ for (const skew of [-5000, 5000]) test(`real authenticated smoke composes DB clo
       writeFileSync(output, JSON.stringify(response));
       return { stdout: status };
     };
-    const result = await release(deployment(), { env: f.env, now: () => raw,
+    const result = await release(memberScope ? memberDeployment() : deployment(), { env: f.env, now: () => raw,
       run: async (cmd, args, options) => {
         if (args[0] === 'lambda' && args[1] === 'get-function-configuration') configReads++;
         if (args[0] === 'lambda' && args[1] === 'invoke') {
@@ -1370,6 +1455,8 @@ for (const skew of [-5000, 5000]) test(`real authenticated smoke composes DB clo
     assert.deepEqual(jobs.map(job => [job.type, job.runtime, job.dry_run]),
       [['noop', 'lambda', false], ['noop-heavy', 'fargate', false]]);
     assert.equal(result.workers, 2);
+    assert.equal(events.filter(path => path === '/api/inventory/ec2').length, memberScope ? 1 : 0);
+    assert.equal(f.calls.filter(args => args[1] === 'describe-services').length, 2);
     assert.equal(existsSync(f.directory), false);
     assert.ok(!JSON.stringify(result).includes('FIXTURE_COOKIE'));
-  }));
+  }, { targets: memberScope ? memberTargets : undefined }));

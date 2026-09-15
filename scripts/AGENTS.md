@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f7f540e1e632 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f9dff1195c50 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -231,8 +231,12 @@ needs post-marker succeeded evidence, known counts and
 zero unknowns, with at most four concurrent in-flight synchronous owned calls. Prepare obtains authenticated
 DB time plus host proof; calibration anchors at request start and shifts the existing
 deadline equally. No lower-bound freshness tolerance or rolling prior success is introduced.
-Both modes require the enabled host only; collect's authenticated DB/host preflight
-fails `host_only_registry_required` before type calls. AWS CLI children use an explicit
+Both modes default to the enabled host only. Applied targets require exact enabled
+host/member registration, every owned RPC's unreachable count zero and fresh
+account-bound EC2/CloudFront member evidence; host-only SDK collectors do not prove
+per-member43 coverage. Only Terraform onboarding preflight permits approved subsets;
+apply reads the restored saved plan, never a newer secret. Runtime release stays exact.
+AWS CLI children use an explicit
 credential/settings allowlist, pinned path, disabled config/credential files/metadata
 and endpoint isolation; drop ambient profiles/providers/CA/proxy/hooks and CI secrets.
 First chronological terminal failure stops new type admission; admitted work settles
@@ -253,7 +257,9 @@ immutable task-definition ARN, count and digest set; never resolve the ECR tag a
 A changed ID fails even with the same task definition. Matching snapshots are not
 continuous/history proof or an atomic lock. Prepare has no closing recheck.
 Budgets and boundaries: `docs/runbooks/runtime-foundation.md#strict-release-controller-capability`
-and `runtime-verifier-sessions.md`. The 18-minute reserve covers a single-pass
+and `runtime-verifier-sessions.md`. Each explicit target adds 35 seconds to the proof
+reserve and removes 35 seconds from collection/admission. Empty-target budgets:
+the 18-minute reserve covers a single-pass
 1,060-second path plus 20 seconds. Auth proof ends 50 seconds before the original
 deadline for three 15-second closing reads plus five seconds overhead, still within
 the original window. Collection is at most 720 seconds; 450-second admission requires

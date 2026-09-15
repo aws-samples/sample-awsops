@@ -18,6 +18,35 @@ variable "inventory_host_only" {
   description = "Restrict the inventory collector to its verified host account; omit cross-account AssumeRole."
 }
 
+variable "runtime_verification_targets" {
+  type = list(object({
+    account_id    = string
+    resource_type = string
+    resource_id   = string
+  }))
+  default     = []
+  nullable    = false
+  description = "Explicit dev runtime member proofs; empty preserves legacy scope. Only EC2 and CloudFront identifiers are supported."
+  validation {
+    condition = (
+      length(var.runtime_verification_targets) <= 5 &&
+      length(distinct([for t in var.runtime_verification_targets : t.account_id])) == length(var.runtime_verification_targets) &&
+      alltrue([for t in var.runtime_verification_targets :
+        can(regex("^[0-9]{12}$", t.account_id)) && t.account_id != data.aws_caller_identity.current.account_id &&
+        contains(["ec2", "cloudfront"], t.resource_type) && can(regex("^[!-~]+$", t.resource_id)) &&
+        try(length(t.resource_id) <= 2048, false)
+      ])
+    )
+    error_message = "Runtime targets require at most five unique foreign accounts and bounded supported resource identifiers."
+  }
+  validation {
+    condition = length(var.runtime_verification_targets) == 0 || (
+      var.ci_runtime_profile_enabled && var.steampipe_enabled && var.agentcore_enabled && var.workers_enabled && !var.inventory_host_only
+    )
+    error_message = "Runtime targets require the explicit full dev runtime profile with inventory_host_only=false."
+  }
+}
+
 variable "steampipe_image_digest" {
   type        = string
   default     = null
@@ -48,6 +77,8 @@ data "aws_regions" "runtime_read" {
 }
 
 locals {
+  runtime_target_account_ids = [for target in var.runtime_verification_targets : target.account_id]
+  runtime_target_role_arns   = [for id in local.runtime_target_account_ids : "arn:aws:iam::${id}:role/AWSopsReadOnlyRole"]
   runtime_read_regions = local.core_runtime_enabled ? sort(distinct(concat(
     tolist(data.aws_regions.runtime_read[0].names), [var.region, "us-east-1"]
   ))) : [var.region, "us-east-1"]
@@ -77,12 +108,13 @@ output "runtime_deployment" {
       task_role_arn = aws_iam_role.task.arn
     }
     inventory = {
-      ecr_uri             = one(aws_ecr_repository.steampipe[*].repository_url)
-      service             = one(aws_ecs_service.steampipe[*].name)
-      task_definition_arn = one(aws_ecs_task_definition.steampipe[*].arn)
-      task_role_arn       = one(aws_iam_role.steampipe_task[*].arn)
-      sync_function_name  = one(aws_lambda_function.inv_sync[*].function_name)
-      sync_function_arn   = one(aws_lambda_function.inv_sync[*].arn)
+      verification_targets = var.runtime_verification_targets
+      ecr_uri              = one(aws_ecr_repository.steampipe[*].repository_url)
+      service              = one(aws_ecs_service.steampipe[*].name)
+      task_definition_arn  = one(aws_ecs_task_definition.steampipe[*].arn)
+      task_role_arn        = one(aws_iam_role.steampipe_task[*].arn)
+      sync_function_name   = one(aws_lambda_function.inv_sync[*].function_name)
+      sync_function_arn    = one(aws_lambda_function.inv_sync[*].arn)
       # Bind verification to the configured archive, not a provider read-back
       # that can lag an update or later reflect an out-of-band code change.
       sync_code_sha256 = one(aws_lambda_function.inv_sync[*].source_code_hash)

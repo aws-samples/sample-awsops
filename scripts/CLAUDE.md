@@ -369,8 +369,13 @@ concurrent in-flight synchronous invocations. It requires succeeded results, kno
 It samples the authenticated DB clock before collecting, anchors calibration at request
 start, shifts the existing deadline by the same offset, and retains strict post-marker
 ledger checks. Collector code hash and RevisionId must remain stable through collection.
-Both modes require the enabled host only. Collect's authenticated DB/host preflight
-rejects incompatible registries as `host_only_registry_required` before per-type calls.
+Both modes default to the enabled host only. Explicit applied verification targets
+require the exact enabled host/member registry before type calls, zero unreachable
+accounts in every owned RPC, and fresh account-bound known EC2/CloudFront member rows.
+SDK catalog collectors remain host-only; aggregate43 is not per-member43 coverage.
+Only Terraform plan/apply onboarding preflight permits approved subsets; apply reads
+the restored saved plan, not a newer secret. Runtime release never requests that leniency.
+See the canonical `runtime-foundation.md#explicit-runtime-targets` contract.
 AWS CLI children use an explicit credential/settings allowlist, pinned path, disabled
 config/credential files and metadata, and endpoint isolation; never forward ambient CI
 secrets, profiles, providers, CA/proxy overrides or hooks.
@@ -394,7 +399,9 @@ Private credentials/configuration and cleanup, restrictive consumer sessions and
 explicit capability activation remain mandatory integration prerequisites.
 See [runtime-foundation.md](../docs/runbooks/runtime-foundation.md#strict-release-controller-capability)
 for budgets and [runtime-verifier-sessions.md](../docs/runbooks/runtime-verifier-sessions.md)
-for session boundaries. The 18-minute reserve covers the single-pass 1,060-second
+for session boundaries. Empty-target budgets follow below; each configured target
+adds 35 seconds of proof reserve and removes 35 seconds from collection/admission.
+The 18-minute base reserve covers the single-pass 1,060-second
 path plus 20 seconds. Auth proof ends 50 seconds before the original proof deadline,
 reserving three sequential 15-second closing reads plus five seconds overhead.
 Collection has at most 720 seconds; the 450-second floor puts last admission at

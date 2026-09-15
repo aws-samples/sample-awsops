@@ -81,6 +81,80 @@ test('optional hostOnly defaults false and regular multi-account registries rema
   }
   assert.throws(() => validateRuntimeSmokeConfig({ ...config, hostOnly: 'true' }, Date.parse(start) + 1000), /configuration/);
 });
+const member = { account_id: '999999999999', resource_type: 'ec2', resource_id: 'i-0123456789abcdef0' };
+const memberPath = `/api/inventory/ec2?accounts=${member.account_id}&limit=5&offset=0`;
+const hostRow = { accountId: account, isHost: true, enabled: true };
+const memberRow = { accountId: member.account_id, isHost: false, enabled: true };
+const memberEvidence = { account_id: member.account_id, resource_id: member.resource_id,
+  captured_at: start, data: { instance_id: member.resource_id } };
+test('explicit member scope proves fresh EC2 identity and retains host model and both workers', async () => {
+  const f = fixture({ '/api/accounts': () => ({ accounts: [hostRow, memberRow] }),
+    [memberPath]: () => ({ rows: [memberEvidence] }) });
+  const result = await f.run({ ...config, expectedMemberTargets: [member] });
+  assert.equal(result.member_targets_verified, 1);
+  assert.equal(result.workers, 2);
+  assert.equal(f.calls.filter(c => c.path === '/api/deployment/readiness').length, 1);
+  assert.equal(f.calls.filter(c => c.path === '/api/jobs').length, 2);
+});
+test('release prepare requires exact members while onboarding prepare allows only approved subsets', async () => {
+  for (const accounts of [[hostRow], [hostRow, memberRow]]) {
+    const scope = { schemaVersion: 1, mode: 'prepare', expectedAccountId: account, expectedMemberTargets: [member] };
+    assert.equal((await fixture({ '/api/accounts': () => ({ accounts }) })
+      .run({ ...scope, memberRegistryMode: 'onboarding' })).status, 'ok');
+    const release = fixture({ '/api/accounts': () => ({ accounts }) });
+    if (accounts.length === 1) await assert.rejects(release.run(scope), /member_registry/);
+    else assert.equal((await release.run(scope)).status, 'ok');
+  }
+  for (const accounts of [[hostRow, memberRow, memberRow], [hostRow, { ...memberRow, accountId: '888888888888' }],
+    [hostRow, { ...memberRow, enabled: false }], [hostRow, { ...memberRow, isHost: true }]]) {
+    await assert.rejects(fixture({ '/api/accounts': () => ({ accounts }) })
+      .run({ ...config, expectedMemberTargets: [member] }), /registry/);
+  }
+  await assert.rejects(fixture({ '/api/accounts': () => ({ accounts: [hostRow,
+    { ...memberRow, accountId: '888888888888' }] }) }).run({
+    schemaVersion: 1, mode: 'prepare', expectedAccountId: account,
+    expectedMemberTargets: [member], memberRegistryMode: 'onboarding',
+  }), /member_registry/);
+});
+test('member proof rejects wrong account, resource, timestamp and type-specific identifier before billing', async () => {
+  for (const change of [{ account_id: 'self' }, { resource_id: 'i-other' }, { captured_at: '2020-01-01T00:00:00Z' },
+    { captured_at: 'invalid' }, { data: { id: member.resource_id } }, { data: { instance_id: 'i-other' } }]) {
+    const f = fixture({ '/api/accounts': () => ({ accounts: [hostRow, memberRow] }),
+      [memberPath]: () => ({ rows: [{ ...memberEvidence, ...change }] }) });
+    await assert.rejects(f.run({ ...config, expectedMemberTargets: [member] }), /member_resource_unverified/);
+    assert.ok(f.calls.every(c => !['/api/jobs', '/api/deployment/readiness'].includes(c.path)));
+  }
+});
+test('member config is bounded, exact and cannot enable onboarding leniency during verify', () => {
+  for (const expectedMemberTargets of [null, {}, [member, member], [{ ...member, account_id: account }],
+    [{ ...member, resource_type: 'ec2_instance' }], [{ ...member, resource_type: 'iam_role' }],
+    [{ ...member, resource_type: ['ec2'] }],
+    [{ ...member, resource_id: '' }], [{ ...member, resource_id: 'x'.repeat(2049) }],
+    [{ ...member, extra: true }], Array.from({ length: 6 }, (_, i) => ({ ...member, account_id: `${i + 2}00000000000` }))]) {
+    assert.throws(() => validateRuntimeSmokeConfig({ ...config, expectedMemberTargets }, Date.parse(start)), /configuration/);
+  }
+  for (const extra of [{ hostOnly: true }, { memberRegistryMode: 'onboarding' }]) {
+    assert.throws(() => validateRuntimeSmokeConfig({ ...config, expectedMemberTargets: [member], ...extra },
+      Date.parse(start)), /configuration/);
+  }
+  assert.equal(validateRuntimeSmokeConfig({ ...config, expectedMemberTargets: [] }, Date.parse(start)).mode, 'verify');
+});
+test('member CloudFront uses its own account and id field, and bounded EC2 scans cannot prove absence', async () => {
+  const cf = { ...member, resource_type: 'cloudfront', resource_id: 'EMEMBER123' };
+  const f = fixture({ '/api/accounts': () => ({ accounts: [hostRow, memberRow] }),
+    [`/api/inventory/cloudfront?accounts=${member.account_id}&limit=5&offset=0`]: () => ({
+      rows: [{ account_id: member.account_id, resource_id: cf.resource_id, captured_at: start, data: { id: cf.resource_id } }],
+    }) });
+  assert.equal((await f.run({ ...config, expectedMemberTargets: [cf] })).member_targets_verified, 1);
+  const pages = Object.fromEntries(Array.from({ length: 100 }, (_, n) => [
+    `/api/inventory/ec2?accounts=${member.account_id}&limit=5&offset=${n * 5}`,
+    () => ({ rows: Array.from({ length: 5 }, () => ({ ...memberEvidence, resource_id: 'i-other' })) }),
+  ]));
+  const missing = fixture({ ...pages, '/api/accounts': () => ({ accounts: [hostRow, memberRow] }) });
+  await assert.rejects(missing.run({ ...config, expectedMemberTargets: [member] }), /member_resource_unverified/);
+  assert.equal(missing.calls.filter(c => c.path.startsWith('/api/inventory/ec2?')).length, 100);
+  assert.ok(missing.calls.every(c => c.path !== '/api/deployment/readiness'));
+});
 test('CloudFront requests have small pages and a bounded budget only for the inventory leg', async () => {
   const f = fixture();
   await f.run();
