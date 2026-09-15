@@ -40,6 +40,13 @@ zero returned nodes in this outcome do not mean an empty graph was published.
 
 ## Source completeness and retained publication
 
+Inventory aggregate counts are reconciled once per class/pass in a bounded read transaction.
+Each account snapshot must observe the same ledger row version before reusing that proof:
+the producer marks a run active before modifying inventory and finalizes the ledger afterward.
+A changed ledger invalidates the proof until the next pass; it never authorizes an empty sweep.
+`retainedPrevious` requires an actual publication clock or saved graph rows. With neither,
+an unproven first collection is skipped (`retained: 0`, `skipped: 1`), preserving CLI exit 2.
+
 `empty_not_confirmed` is a soft reason for legacy unmarked empty results.
 Recognized producer `unknown` uses soft incomplete evidence, not a failed-query diagnosis. Tempo exposes absent/invalid/zero job counts distinctly as `count_not_confirmed`, using the existing HTTP/SQL reason vocabulary.
 Producer warnings and partial results use `incomplete_collection`; an empty returned Tempo child also uses it. Failed or malformed children keep their specific failure reasons. The child-fetch path separately sets `canSweep: false` when a child has no fetched spans.

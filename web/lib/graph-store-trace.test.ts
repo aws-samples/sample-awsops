@@ -36,7 +36,9 @@ function mockPool(infraNodeRows: unknown[] = []) {
           ? [row.id, row.kind, row.label, JSON.stringify(row.meta ?? {}), p[2], p[1], p[0]]
           : [row.source, row.target, row.rel, row.confidence, p[2], p[1], p[0], JSON.stringify(row.meta)]);
       } else if (p) params.push(p);
-      return Promise.resolve({ rows: sql.includes('pg_try_advisory') ? [{ acquired: true }] : [] });
+      // This fixture has a previous trace publication, independent of its infra rows.
+      return Promise.resolve({ rows: sql.includes('pg_try_advisory') ? [{ acquired: true }]
+        : sql.includes('AS retained') ? [{ retained: true }] : [] });
     }),
     release: vi.fn(),
   });

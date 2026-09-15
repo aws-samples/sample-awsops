@@ -39,6 +39,15 @@ describe('buildInfraGraph', () => {
     expect(g.nodes.find((n) => n.id === 'sg:sg-1')?.meta?.default).toBe(false);
   });
 
+  it('preserves ElastiCache placement from the actual producer SecurityGroupId shape', () => {
+    const g = buildInfraGraph({ resources: [{ resource_type: 'elasticache', resource_id: 'cache',
+      data: { security_groups: [{ SecurityGroupId: 'sg-1', Status: 'active' }] } }],
+    vpcs: [], subnets: [], securityGroups });
+    expect(g.nodes.find(node => node.id === 'elasticache:cache')?.kind).toBe('elasticache');
+    expect(g.edges).toContainEqual({ id: 'infra:uses_sg:elasticache:cache->sg:sg-1',
+      source: 'elasticache:cache', target: 'sg:sg-1', rel: 'infra:uses_sg' });
+  });
+
   it('preserves RDS security-group relationships from the inventory producer shape', () => {
     const g = buildInfraGraph({
       resources: [{

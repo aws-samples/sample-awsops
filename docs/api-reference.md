@@ -261,7 +261,7 @@ Positive `nodeDrops/edgeDrops/orphanSpans/invalidSpans/unresolvedMessaging` and
 `infraUnavailable` remain visible for older persisted envelopes as well as newer producer flags.
 Only node/edge drops or explicit truncation flags imply a processing limit; malformed spans
 and unresolved parent/link/messaging evidence are distinct partial-result causes. Losses alone do not prove retention:
-`retainedPrevious` is required for that claim. Source-detail totals include saved sources, with latest-attempt status counts labeled separately.
+`retainedPrevious` is required for that claim. Source-detail totals and status counts describe the displayed rows: identical latest/saved details appear once, while differing or saved-only details retain their saved provenance.
 Missing collection metadata stays unknown rather than implying collector failure.
 
 
