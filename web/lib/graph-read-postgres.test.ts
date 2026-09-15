@@ -63,7 +63,9 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
   });
   afterAll(async () => { await pool?.end(); });
 
-  it.each([...tempoContracts, { name: 'legacy unmarked empty', body: { traces: [] }, readStatus: 'partial' }])(
+  it.each([...tempoContracts, { name: 'legacy unmarked empty', body: { traces: [] }, readStatus: 'partial' },
+    { name: 'completed search but empty child trace', body: { collectionStatus: 'ok', traces: [{ traceID: '1' }] },
+      readStatus: 'partial' }])(
     'producer $name cannot sweep unless empty is confirmed', async fixture => {
       await rebuildTraceGraph(pool, [], undefined, [{
         available: async () => true,
@@ -73,7 +75,7 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
       }]);
       const previous = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
       expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
-      producer.invoke.mockReset().mockResolvedValue(fixture.body);
+      producer.invoke.mockReset().mockResolvedValue({ batches: [] }).mockResolvedValueOnce(fixture.body);
       const source = new TempoTraceSource(7), observed = vi.spyOn(source, 'recentSpans');
       const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + 1);
       try { await rebuildTraceGraph(pool, [source]); }
