@@ -37,6 +37,7 @@ import time
 import uuid
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 import boto3
 from botocore.config import Config
@@ -266,32 +267,51 @@ class SteampipeRestartError(RuntimeError):
     """A failed teardown cannot safely admit another service start."""
 
 
-def _steampipe_listener_closed(port: int = 9193) -> bool:
-    """Only connection refusal establishes closure; do not spawn or query a DB."""
+def _steampipe_listener_closed(port: int = 9193, timeout: float = 1) -> Optional[bool]:
+    """True = refused, False = listening, None = unconfirmed local probe."""
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=1):
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
             return False
     except OSError as error:
-        return error.errno == errno.ECONNREFUSED
+        return True if error.errno == errno.ECONNREFUSED else None
+
+
+def _wait_for_steampipe_listener_closed() -> str:
+    """Give the listener one bounded grace period, including probe time."""
+    deadline = time.monotonic() + 10
+    reason = "listener_unconfirmed"
+    while (remaining := deadline - time.monotonic()) > 0:
+        closed = _steampipe_listener_closed(timeout=min(1, remaining))
+        if closed is True:
+            return "closed"
+        reason = "listener_open" if closed is False else "listener_unconfirmed"
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.2, remaining))
+    return reason
 
 
 def _stop_steampipe_service(timeout: int = 30) -> bool:
     """Report the bounded full-service stop outcome without exposing CLI output.
 
     Completed CLI exit codes do not prove embedded PostgreSQL stopped. Require a
-    refused loopback connection; shutdown is best-effort, restart requires True.
+    refused loopback connection within ten seconds; shutdown is best-effort,
+    restart requires True. Probe errors remain unconfirmed and can be retried.
     """
+    exit_code = "unknown"
     try:
-        subprocess.run(["steampipe", "service", "stop", "--force"],
-                       timeout=timeout, capture_output=True)
-        if _steampipe_listener_closed():
+        result = subprocess.run(["steampipe", "service", "stop", "--force"],
+                                timeout=timeout, capture_output=True)
+        if isinstance(result.returncode, int):
+            exit_code = str(result.returncode)
+        reason = _wait_for_steampipe_listener_closed()
+        if reason == "closed":
             return True
-        reason = "listener_not_closed"
     except subprocess.TimeoutExpired:
         reason = "timeout"
     except Exception:  # noqa: BLE001 — fixed diagnostic, never raw CLI/exception text
         reason = "error"
-    print(f"[gen-spc] steampipe_service_stop_failed ({reason})", file=sys.stderr)
+    print(f"[gen-spc] steampipe_service_stop_failed ({reason}; exit_code={exit_code})", file=sys.stderr)
     return False
 
 
