@@ -1,12 +1,14 @@
 [
-  {"name":"omitted traces","upstream":{},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"unknown"},"readStatus":"partial"},
-  {"name":"null traces","upstream":{"traces":null},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"unknown"},"readStatus":"partial"},
-  {"name":"non-list traces","upstream":{"traces":{}},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"unknown"},"readStatus":"partial"},
+  {"name":"omitted traces","upstream":{},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"unknown","completionReason":"search_response_unverified"},"readStatus":"partial"},
+  {"name":"null traces","upstream":{"traces":null},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"unknown","completionReason":"search_response_unverified"},"readStatus":"partial"},
+  {"name":"non-list traces","upstream":{"traces":{}},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"unknown","completionReason":"search_response_unverified"},"readStatus":"partial"},
   {"name":"observed empty","upstream":{"traces":[],"metrics":{"completedJobs":1,"totalJobs":1}},"body":{"truncated":false,"traces":[],"metrics":{"completedJobs":1,"totalJobs":1},"collectionStatus":"empty"},"readStatus":"ok"},
   {"name":"unfinished jobs","upstream":{"traces":[],"metrics":{"completedJobs":1,"totalJobs":2}},"body":{"truncated":false,"traces":[],"metrics":{"completedJobs":1,"totalJobs":2},"collectionStatus":"partial"},"readStatus":"partial"},
-  {"name":"unknown job completion","upstream":{"traces":[],"metrics":{"totalJobs":2}},"body":{"truncated":false,"traces":[],"metrics":{"totalJobs":2},"collectionStatus":"unknown","collectionReason":"count_not_confirmed"},"readStatus":"partial"},
-  {"name":"missing completion counters","upstream":{"traces":[]},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"unknown","collectionReason":"count_not_confirmed"},"readStatus":"partial"},
-  {"name":"null completion counters","upstream":{"traces":[],"metrics":null},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"unknown","collectionReason":"count_not_confirmed"},"readStatus":"partial"},
-  {"name":"empty completion counters","upstream":{"traces":[],"metrics":{}},"body":{"truncated":false,"traces":[],"metrics":{},"collectionStatus":"unknown","collectionReason":"count_not_confirmed"},"readStatus":"partial"},
-  {"name":"no search jobs","upstream":{"traces":[],"metrics":{"completedJobs":0,"totalJobs":0}},"body":{"truncated":false,"traces":[],"metrics":{"completedJobs":0,"totalJobs":0},"collectionStatus":"unknown","collectionReason":"count_not_confirmed"},"readStatus":"partial"}
+  {"name":"unknown job completion","upstream":{"traces":[],"metrics":{"totalJobs":2}},"body":{"truncated":false,"traces":[],"metrics":{"totalJobs":2},"collectionStatus":"partial"},"readStatus":"partial"},
+  {"name":"missing completion counters","upstream":{"traces":[]},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"empty"},"readStatus":"ok"},
+  {"name":"null completion counters","upstream":{"traces":[],"metrics":null},"body":{"truncated":false,"traces":[],"metrics":null,"collectionStatus":"unknown","completionReason":"search_response_unverified"},"readStatus":"partial"},
+  {"name":"empty completion counters","upstream":{"traces":[],"metrics":{}},"body":{"truncated":false,"traces":[],"metrics":{},"collectionStatus":"empty"},"readStatus":"ok"},
+  {"name":"no search jobs","upstream":{"traces":[],"metrics":{"completedJobs":0,"totalJobs":0}},"body":{"truncated":false,"traces":[],"metrics":{"completedJobs":0,"totalJobs":0},"collectionStatus":"empty"},"readStatus":"ok"},
+  {"name":"protobuf omitted empty traces","upstream":{"metrics":{}},"body":{"truncated":false,"traces":[],"metrics":{},"collectionStatus":"empty"},"readStatus":"ok"},
+  {"name":"HTTPFinal completed-only jobs","upstream":{"metrics":{"completedJobs":2}},"body":{"truncated":false,"traces":[],"metrics":{"completedJobs":2},"collectionStatus":"empty"},"readStatus":"ok"}
 ]
