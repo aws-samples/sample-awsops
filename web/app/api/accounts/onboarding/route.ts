@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 
 export const dynamic = 'force-dynamic';
 const PROBE_COOLDOWN_MS = 60_000;
+const REGISTRY_LOOKUP_MS = 3_000;
 let probeInFlight = false;
 let nextProbeAt = 0;
 
@@ -95,19 +96,31 @@ export async function POST(request: Request) {
       Math.max(1, Math.min(60, Math.ceil((nextProbeAt - now) / 1000))));
   }
   probeInFlight = true;
+  nextProbeAt = now + PROBE_COOLDOWN_MS;
   try {
     const hostOnly = process.env.INVENTORY_HOST_ONLY === 'true';
     if (!targetAccountIds?.includes(input.accountId)) {
       let registered;
-      try { registered = await getAccount(input.accountId); }
+      const controller = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error('Account scope lookup timed out'));
+            controller.abort();
+          }, REGISTRY_LOOKUP_MS);
+        });
+        registered = await Promise.race([getAccount(input.accountId, controller.signal), timeout]);
+      }
       catch {
         return reject('scope_unavailable', 'Deployment account scope is unavailable', 503);
+      } finally {
+        clearTimeout(timer);
       }
       if (registered?.accountId !== input.accountId || registered.enabled !== true || registered.isHost !== false) {
         return reject('target_not_configured', 'Connection checks require an enabled registered or deployment-approved target.', 409);
       }
     }
-    nextProbeAt = Date.now() + PROBE_COOLDOWN_MS;
     const diagnostic = await verifyAccountConnection(input, {
       hostAccountId, registrationEnabled: !hostOnly && (!targetAccountIds || targetAccountIds.includes(input.accountId)),
     });

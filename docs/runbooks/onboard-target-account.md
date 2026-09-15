@@ -65,12 +65,13 @@ beside stale rows. When browser session
 storage is unavailable or a new session is used, restore the ExternalId from the original
 script or target role trust policy. Allow for IAM propagation after creation.
 For a combined registration failure, the page shows a fixed status-specific explanation.
-When this target is eligible for a connection probe, an assume/validation failure offers
-**Diagnose connection** (Korean: **연결 원인 확인**). Without an applied probe allowlist,
-legacy registration failures instead point to the available read-only commands and
-operator scope configuration; they do not recommend the disabled control.
-Select an available check explicitly; the page does not automatically repeat STS requests.
-Editing only the alias or CLI profile preserves the previous diagnostic;
+An assume/validation failure offers **Diagnose connection** (Korean: **연결 원인 확인**)
+only when the form's target is explicitly allowlisted and its check is available.
+Legacy multi-account registration without an allowlist can still be attempted, but a failed
+new-target registration cannot use that check. Its fixed recovery message instead points
+to the read-only commands, role/trust/ExternalId configuration and operator approval scope.
+When available, select the diagnostic explicitly; the page does not automatically repeat
+STS requests. Editing only the alias or CLI profile preserves the previous diagnostic;
 changing account, region, ExternalId or first-party choice clears it.
 
 `AlreadyExists` can refer to the **stack name**, even when no role exists. In CloudFormation,
@@ -112,13 +113,16 @@ separate operator configuration step. AWSops itself never executes the generated
 
 ## Connection evidence and AI guidance
 
+Diagnostics report `stsRegion` separately from the requested registration/inventory
+`region`. Older responses leave the endpoint region unknown. Neither field proves
+activation of the requested inventory region.
+
 The admin-only `POST /api/accounts/onboarding` validates the target ID, region and current
 ExternalId/first-party choice. Within one 15-second deadline, it verifies the actual host
 STS identity, assumes only `AWSopsReadOnlyRole`, then verifies the resulting target account.
-All STS stages use the deployment's `AWS_REGION` (default `ap-northeast-2`), matching
-registration. The submitted region remains registration/inventory metadata; it does not
-select the diagnostic endpoint or prove region activation. Responses disclose `stsRegion`
-separately; older responses leave that endpoint region unknown.
+All three STS operations use the deployment `AWS_REGION`, defaulting to `ap-northeast-2`,
+matching registration. `diagnostic.region` records the selected collection region, not the
+STS endpoint; successful identity checks do not prove inventory collection in that region.
 Success establishes that web-role connection only; it neither registers the account nor
 certifies collection, worker or AgentCore access.
 
@@ -134,8 +138,12 @@ Probe admission follows the applied configuration:
 - Host-account and invalid-input checks remain in place.
 
 The server permits one in-flight probe per process, including its approval lookup, and
-at least 60 seconds between STS check starts. Scope rejections do not consume that
-STS cooldown. A concurrent or cooling-down request returns HTTP 429 with
+at least 60 seconds between admissions. The cooldown begins before lookup, so rejected
+or failed registry lookups consume it too. Registry lookup has a separate three-second
+deadline: timeout returns fixed `scope_unavailable`/503, releases admission and discards
+any checked-out DB connection. A late checkout is released without SQL; a late approval
+cannot start STS. The independent 15-second STS budget is unchanged.
+A concurrent or cooling-down request returns HTTP 429 with
 `probe_in_flight` or `probe_cooldown`, `retryAfterSeconds` and `Retry-After`.
 Respect that wait and retry manually; the page never auto-resubmits. The wait is guidance,
 not a promise that another administrator's in-flight request will have finished.
