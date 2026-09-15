@@ -44,7 +44,7 @@ function mockPool(invRows: unknown[]) {
   const calls: string[] = [];
   const params: unknown[][] = [];
   const resourceRows = (invRows as Record<string, unknown>[]).map(row => ({
-    ...row, account_id: 'self', captured_at: new Date().toISOString(),
+    ...row, account_id: 'self', captured_at: row.captured_at ?? new Date().toISOString(),
   }));
   const types = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2', 'lambda',
     'ecs_task', 's3', 'subnet', 'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin',
@@ -75,12 +75,28 @@ function mockPool(invRows: unknown[]) {
 }
 
 describe('rebuildGraph', () => {
+  it.each([['instance', 'i-cache'], ['ip', '10.0.1.10'], ['lambda', 'arn:lambda:cache']])(
+    'tags every materialized %s target as cached configuration', async (type, id) => {
+      const { pool, client } = mockPool([
+        { resource_type: 'target_group', resource_id: 'tg-cache', region: 'us-east-1',
+          data: { target_type: type, vpc_id: 'vpc-cache', target_health_descriptions: [{ Target: { Id: id } }] } },
+      ]);
+      await rebuildGraph(pool as never, 'CACHED_TARGET');
+      const nodes = client.query.mock.calls.filter(([sql]) => sql.includes('INSERT INTO topology_nodes'))
+        .flatMap(([, params]) => JSON.parse(String(params?.[3])));
+      expect(nodes.find(node => node.kind === 'target').meta).toMatchObject({
+        targetType: type, ownership_evidence: 'cached_configuration',
+      });
+    },
+  );
+
   it('materializes ECS scope from the account-scoped synced subnet rows it actually requests', async () => {
     const inventory = [
-      { resource_type: 'target_group', resource_id: 'tg-b', region: 'us-east-1', data: {
+      { resource_type: 'target_group', resource_id: 'tg-b', region: 'us-east-1', captured_at: new Date('2026-09-11T10:00:00Z'), data: {
+        resource_id: 'spoofed', region: 'us-west-2',
         target_type: 'ip', vpc_id: 'vpc-b', target_health_descriptions: [{ Target: { Id: '10.0.1.10' } }],
       } },
-      { resource_type: 'ecs_task', resource_id: 'task-b', region: 'us-east-1', data: {
+      { resource_type: 'ecs_task', resource_id: 'task-b', region: 'us-east-1', captured_at: '2020-01-01T00:00:00Z', data: {
         cluster_arn: 'cluster/b', last_status: 'RUNNING', task_group: 'service:orders', attachments: [{ Details: [
           { Name: 'subnetId', Value: 'subnet-b' }, { Name: 'privateIPv4Address', Value: '10.0.1.10' },
         ] }],
@@ -93,8 +109,11 @@ describe('rebuildGraph', () => {
       .flatMap(([, params]) => JSON.parse(String(params?.[3])));
     const target = written.find(node => node.kind === 'target');
     expect(target.label).toBe('orders');
+    expect(target.id).toContain('tg-b');
+    expect(target.meta).not.toHaveProperty('capturedAt');
     expect(target.meta).toMatchObject({
       resolved: 'ecs', region: 'us-east-1', vpcId: 'vpc-b', subnetId: 'subnet-b',
+      ownership_evidence: 'cached_configuration', targetCapturedAt: '2026-09-11T10:00:00.000Z',
     });
   });
 

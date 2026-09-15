@@ -28,7 +28,12 @@ export async function assertInventoryTypeAllowed(
 }
 
 export interface SyncRun { status: string; finished_at: string | null; row_count: number | null; error?: string | null; last_success_at?: string | null }
-export interface InventoryPage { rows: Record<string, unknown>[]; run: SyncRun | null }
+export interface InventoryPage {
+  rows: Record<string, unknown>[];
+  run: SyncRun | null;
+  /** Rows and the global ledger/count were read from one database snapshot. */
+  consistency: 'statement-snapshot';
+}
 
 /** Region allow-list, or '__all__' for no region filter. */
 export type RegionScope = string[] | '__all__';
@@ -176,20 +181,28 @@ export async function readAggregates(
 }
 
 export async function readResources(type: string, { limit, offset, regions = '__all__', includeGlobal = true, accounts = ['self'] }: ReadResourcesOpts): Promise<InventoryPage> {
-  const pool = getPool();
   const params: unknown[] = [type];
   const where = `resource_type = $1` + accountWhereClause(accounts, params) + regionWhereClause(regions, includeGlobal, params);
   params.push(limit, offset);
-  const r = await pool.query(
-    `SELECT resource_id, region, account_id, data, captured_at FROM inventory_resources
-     WHERE ${where} ORDER BY ${worstFirstOrderBy(type)}captured_at DESC, account_id ASC, region ASC, resource_id ASC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+  const order = `${worstFirstOrderBy(type)}captured_at DESC, account_id ASC, region ASC, resource_id ASC`;
+  // A single SELECT shares one MVCC snapshot and lets pool.query release its own client.
+  // Order both the limited page and JSON aggregation; an empty page still returns its ledger.
+  const result = await getPool().query<{ rows: Record<string, unknown>[]; run: SyncRun | null }>(
+    `WITH inventory_page AS (
+      SELECT resource_id, region, account_id, data, captured_at FROM inventory_resources
+      WHERE ${where} ORDER BY ${order} LIMIT $${params.length - 1} OFFSET $${params.length}
+    ), inventory_run AS (
+      SELECT status, finished_at, row_count, error, last_success_at FROM inventory_sync_runs
+      WHERE resource_type = $1 AND account_id = 'self'
+    )
+    SELECT COALESCE((SELECT jsonb_agg(to_jsonb(inventory_page) ORDER BY ${order})
+      FROM inventory_page), '[]'::jsonb) AS rows,
+      (SELECT to_jsonb(inventory_run) FROM inventory_run) AS run`,
     params,
   );
-  const s = await pool.query(
-    `SELECT status, finished_at, row_count, error, last_success_at FROM inventory_sync_runs WHERE resource_type = $1 AND account_id = 'self'`,
-    [type],
-  );
-  return { rows: r.rows, run: s.rows[0] ?? null };
+  const page = result.rows[0];
+  if (!page || !Array.isArray(page.rows)) throw new Error('invalid inventory snapshot');
+  return { rows: page.rows, run: page.run, consistency: 'statement-snapshot' };
 }
 
 export async function triggerSync(type: string): Promise<{ status: 'queued' }> {

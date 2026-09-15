@@ -35,7 +35,7 @@
 ### Inventory pagination and sweep ledger
 
 In normal row mode, `GET /api/inventory/[type]` returns scoped `rows` plus nullable
-`run` metadata. `limit` defaults to 100 and is upper-capped at 500; `offset` defaults
+`run` metadata and `consistency: "statement-snapshot"`. `limit` defaults to 100 and is upper-capped at 500; `offset` defaults
 to 0. The route uses numeric coercion/defaults, without positive/integer validation
 or a lower-bound clamp. Callers should send a positive integer limit and nonnegative
 integer offset; negative/fractional values can reach PostgreSQL, with row-mode errors
@@ -52,15 +52,43 @@ finish advances `finished_at` and `last_success_at`; partial/failed finishes do 
 advance the last-success timestamp. The endpoint exposes `status`, `finished_at`,
 `row_count`, `error` and `last_success_at`, not a per-account completion certificate.
 
-Rows and run metadata are separate reads, not an atomic snapshot across one request
-or multiple pages. Missing run/timestamps, `running`/`partial`/`failed`, stale last
-success or changed metadata between pages must not be read as fresh complete coverage.
-Even stable successful metadata does not certify atomic page contents or AWS absence.
-Bounded paging, freshness and coverage decisions belong to the caller.
+`readResources` uses one read-only SQL statement: an ordered, limited page CTE and a
+single-row global-ledger CTE are combined into one result. JSON aggregation repeats the
+page ordering, including worst-first rules. An empty page still returns its ledger;
+a missing ledger remains null. One `pool.query` call borrows/releases its connection
+without a manually held transaction. PostgreSQL supplies one MVCC snapshot for that
+statement; `statement-snapshot` describes this guarantee, not a requested transaction
+isolation level. Parameters and scope filters are unchanged. `view=agg` remains separate.
+
+Topology reads target groups/ECS tasks/subnets in at most 20 pages of 500 under one
+30-second browser load budget shared with EKS. All inventory and VPC/security-group
+enrichment requests share two lanes per load; critical pages run sequentially within a
+lane. This bounds this loader’s fan-out against the shared pool. Each critical page must carry the marker;
+legacy/missing markers fail closed. Succeeded status, finish, last-success and row-count
+must remain stable across pages. Ownership decisions do not compare browser and database clocks. The snapshot
+prevents a finalizing sweep from mixing one page's rows with another ledger snapshot.
+Separate pages/types are not a single snapshot; success still proves neither freshness
+nor complete AWS coverage. All ECS snapshot labels,
+including host labels, remain cached configuration rather than current ownership.
+Incomplete or changed
+sweeps retain bounded cached rows with confidence withheld; missing ledger, failed,
+malformed or capped reads never prove absence. Other display reads keep their
+existing row cap. Authentication and type-specific admin checks still apply.
+Inventory and EKS reads share the abort signal; superseded loads are aborted
+and late completions cannot overwrite newer results. If a failed/incomplete load builds
+an empty graph, the previous nonempty same-account graph and its provenance are retained;
+a complete empty load replaces it. Target-node `targetCapturedAt` dates only the
+target-group row, not the independent task/subnet/pod evidence. The Refresh chip uses
+the newest source/eligible last-success capture time, so a new read does not reset old
+data freshness. Onboarding gaps use `cluster_not_connected` separately from actual
+read failures; their unknown ownership scopes remain blocked.
 
 Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
-[row/ledger reads](../web/lib/inventory.ts), and
-[collector lifecycle](../scripts/v2/steampipe/sync_lambda.py).
+[row/ledger reads](../web/lib/inventory.ts),
+[collector lifecycle](../scripts/v2/steampipe/sync_lambda.py),
+[topology loader](../web/app/topology/page.tsx),
+[EKS evidence producer](../web/lib/topology-config.ts), and
+[IP-target builder](../web/lib/flow-topology.ts).
 
 ## eks (10)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -227,16 +255,10 @@ the existing SAMPLE unavailable response except for independently resolved built
 
 ## Configuration topology inventory evidence
 
-`/api/inventory/{type}` returns scoped row captures and a self-keyed `run` describing
-an aggregate sweep across connected accounts. The configuration page labels aggregate
-status under every account scope, separately from inventory read failures. A successful
-sweep is not per-account health proof; member clocks never borrow aggregate last-success.
-Only RUNNING ECS tasks with subnet/VPC corroboration establish current IP ownership.
-Ordinary EKS pod-IP ambiguity removes attribution without implying a failed read.
-EKS evidence is limited to connected clusters returned in `/api/eks`'s configured
-`region`; other regions are not assessed. Listed `entry-only`/`no-entry` clusters are
-counted as not queried, independently of read failure/truncation. Inventory reads apply
-account selection only. Failed HTTP reads do not synthesize unknown aggregate status.
+The row/ledger wire contract is defined once in
+[Inventory pagination and sweep ledger](#inventory-pagination-and-sweep-ledger).
+For unresolved targets, incomplete reads, onboarding gaps and retained results, use
+[Topology evidence compatibility](runbooks/source-sync-observability.md#topology-evidence-compatibility).
 
 ## Collection disclosure (including trace)
 
