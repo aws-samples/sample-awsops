@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { buildFlowGraph } from './flow-topology';
+import { buildTraceGraph } from './trace-graph';
 import type { FlowGraph, FlowNode } from './flow-topology';
+import type { TraceIdentity, TraceSpan } from './trace-source';
 import type { E2eGraph, E2eInput, NetworkObservation, ServiceSnapshot } from './e2e-topology-types';
 import type { NfmEndpoint, NfmFlowRow } from './nfm';
 import { buildE2eGraph, filterE2eGraph, matchesE2eQuery, selectE2eGraph } from './e2e-topology';
@@ -51,13 +53,24 @@ function configured(
 function services(overrides: Record<string, unknown> = {}): ServiceSnapshot {
   return {
     nodes: [
-      { id: 'svc:web', kind: 'svc', label: 'web', meta: { source: 'trace' } },
+      { id: 'svc:web', kind: 'svc', label: 'web', meta: { source: 'trace', accountId: 'self', region: REGION } },
       { id: 'wl:web', kind: 'workload', label: 'web deployment',
         meta: { cluster: 'app', namespace: 'shop', pods: ['web-1', 'web-2'], ...overrides } },
     ],
     edges: [{ source: 'svc:web', target: 'wl:web', rel: 'runs_on', confidence: 'observed' }],
     captured_at: CAPTURED_AT,
   };
+}
+
+function producedServices(scope: Partial<TraceIdentity> = {}): ServiceSnapshot {
+  const span: TraceSpan = {
+    traceId: 'trace-web', spanId: 'span-web', service: 'web', sourceId: 'tempo',
+    kind: 'SERVER', startMs: 0, durationMs: 1,
+    accountId: 'self', region: REGION,
+    k8sCluster: 'app', k8sNamespace: 'shop', k8sDeployment: 'web', k8sPod: 'web-1',
+    ...scope,
+  };
+  return { ...buildTraceGraph([span], [], [], '111111111111'), captured_at: CAPTURED_AT };
 }
 
 function input(overrides: Partial<E2eInput> = {}): E2eInput {
@@ -88,12 +101,13 @@ describe('buildE2eGraph — evidence and provenance', () => {
         target_health_descriptions: [{ Target: { Id: '10.0.1.10', Port: 443 } }],
       }],
       ipResolved: {
-        '10.0.1.10': { label: 'shop/web', resolved: 'eks', meta: { cluster: 'app', pod: 'web-2', namespace: 'shop' } },
+        '10.0.1.10': { label: 'shop/web', resolved: 'eks',
+          meta: { cluster: 'app', pod: 'web-2', namespace: 'shop', region: REGION, vpcId: VPC } },
       },
     });
     const trace = services();
     trace.nodes.push(
-      { id: 'svc:db', kind: 'svc', label: 'database' },
+      { id: 'svc:db', kind: 'svc', label: 'database', meta: { accountId: 'self', region: REGION } },
       { id: 'wl:db', kind: 'workload', label: 'db deployment',
         meta: { cluster: 'app', namespace: 'shop', pods: ['db-1'] } },
     );
@@ -328,7 +342,7 @@ describe('buildE2eGraph — scoped target identity', () => {
     config.edges.push({ id: 'other-to-target', source: 'tg:other', target: 'target:web', confidence: 'observed' });
     const graph = buildE2eGraph(input({ configured: config, network: [observation()] }));
     expect(identityEdges(graph)).toEqual([]);
-    expect(graph.summary.unmatchedEndpoints).toBe(2);
+    expect(graph.summary).toMatchObject({ unmatchedEndpoints: 1, ambiguousEndpoints: 1 });
   });
 
   it.each([
@@ -571,6 +585,95 @@ describe('buildE2eGraph — workload identity', () => {
   });
 });
 
+describe('buildE2eGraph — trace scope constraints', () => {
+  const local = endpoint({ podName: 'web-1', podNamespace: 'shop' });
+  const host = '111111111111';
+  const compose = (snapshot: ServiceSnapshot, tgScope: Record<string, unknown> = {}) => buildE2eGraph(input({
+    configured: configured([eksTarget()], { region: REGION, vpc_id: VPC, ...tgScope }),
+    services: snapshot, network: [observation([flow({ local })])],
+  }));
+
+  it.each([
+    { scope: { region: 'us-east-1' }, tg: {} },
+    { scope: { accountId: '999999999999' }, tg: { account_id: host } },
+    { scope: { accountId: host }, tg: {} },
+    { scope: { accountId: host }, tg: { account_id: 'self' } },
+    { scope: { accountId: undefined }, tg: { account_id: host } },
+    { scope: { region: undefined }, tg: { account_id: host } },
+    { scope: { accountId: 'unknown' }, tg: { account_id: host } },
+  ])('withholds identity for unknown or conflicting real trace scope: %j', ({ scope, tg }) => {
+    const snapshot = producedServices(scope);
+    const graph = compose(snapshot, tg);
+    expect(graph.nodes.filter(node => node.layer === 'service')).toHaveLength(2);
+    expect(identityEdges(graph)).toEqual([]);
+    expect(graph.summary.ambiguousEndpoints).toBe(1);
+    expectNoDanglingEdges(graph);
+  });
+
+  it.each([
+    { scope: { accountId: 'self' }, tg: {} },
+    { scope: { accountId: host }, tg: { account_id: host } },
+  ])('corroborates real trace scope using incoming runs_on evidence: %j', ({ scope, tg }) => {
+    const snapshot = producedServices(scope);
+    // The real producer stores these claims on the service, not the hashed workload.
+    expect(snapshot.nodes.find(node => node.kind === 'workload')?.meta?.accountId).toBeUndefined();
+    const graph = compose(snapshot, tg);
+    expect(identityEdges(graph)).toHaveLength(2);
+    expect(identityEdges(graph).find(edge => edge.relation === 'same-identity')?.meta)
+      .toMatchObject({ region: REGION, cluster: 'app', namespace: 'shop', pod: 'web-1' });
+  });
+
+  it.each([{ region: 'us-east-1' }, { accountId: '999999999999' }])(
+    'preserves conflicting claims on the workload itself: %j', scope => {
+      const snapshot = producedServices();
+      const workload = snapshot.nodes.find(node => node.kind === 'workload')!;
+      workload.meta = { ...workload.meta, ...scope };
+      expect(identityEdges(compose(snapshot, { account_id: host }))).toEqual([]);
+    },
+  );
+
+  it('uses complete workload scope when incoming service scope is unavailable', () => {
+    const snapshot = producedServices({ accountId: undefined, region: undefined });
+    const workload = snapshot.nodes.find(node => node.kind === 'workload')!;
+    workload.meta = { ...workload.meta, accountId: host, region: REGION };
+    expect(identityEdges(compose(snapshot, { account_id: host }))).toHaveLength(2);
+  });
+
+  it('retains every incoming runs_on constraint instead of selecting a permissive service', () => {
+    const snapshot = producedServices();
+    const workload = snapshot.nodes.find(node => node.kind === 'workload')!;
+    snapshot.nodes.push({ id: 'foreign-service', kind: 'service', label: 'foreign',
+      meta: { accountId: '999999999999', region: REGION } });
+    snapshot.edges.push({ source: 'foreign-service', target: workload.id, rel: 'runs_on' });
+    for (const edges of [snapshot.edges, [...snapshot.edges].reverse()]) {
+      expect(identityEdges(compose({ ...snapshot, edges }, { account_id: host }))).toEqual([]);
+    }
+  });
+
+  it('does not use an unrelated calling service as workload scope', () => {
+    const snapshot = producedServices();
+    const service = snapshot.nodes.find(node => node.kind === 'service')!;
+    snapshot.nodes.push({ id: 'foreign-service', kind: 'service', label: 'foreign',
+      meta: { accountId: '999999999999', region: 'us-east-1' } });
+    snapshot.edges.push({ source: 'foreign-service', target: service.id, rel: 'calls' });
+    expect(identityEdges(compose(snapshot))).toHaveLength(2);
+  });
+
+  it('cannot recover missing service scope from a workload hash', () => {
+    const snapshot = producedServices({ accountId: host });
+    snapshot.nodes = snapshot.nodes.filter(node => node.kind === 'workload');
+    expect(identityEdges(compose(snapshot, { account_id: host }))).toEqual([]);
+  });
+
+  it('does not discard a scope-unverified workload to choose its scoped competitor', () => {
+    const known = producedServices({ accountId: host }), unknown = producedServices({ accountId: undefined });
+    const snapshot = {
+      nodes: [...known.nodes, ...unknown.nodes], edges: [...known.edges, ...unknown.edges], captured_at: CAPTURED_AT,
+    };
+    expect(identityEdges(compose(snapshot, { account_id: host }))).toEqual([]);
+  });
+});
+
 describe('buildE2eGraph — ownership evidence vetoes', () => {
   const vetoes = [
     { resolved: 'ambiguous' },
@@ -625,6 +728,72 @@ describe('buildE2eGraph — ownership evidence vetoes', () => {
       expect(identityEdges(graph)).toEqual([]);
       expect(graph.summary).toMatchObject({ correlatedEndpoints: 0, ambiguousEndpoints: 1 });
     }
+  });
+
+  function competingScopes(scopes: Record<string, unknown>[], meta: Record<string, unknown> = {}): FlowGraph {
+    const config = configured([eksTarget()]);
+    config.nodes.push(eksTarget({ resolved: 'ambiguous', ownership_evidence: 'scope_unverified', ...meta }, 'blocked'));
+    scopes.forEach((scope, i) => {
+      config.nodes.push({ id: `uncertain-tg:${i}`, kind: 'tg', label: 'uncertain-tg', meta: { row: scope } });
+      config.edges.push({ id: `uncertain-edge:${i}`, source: `uncertain-tg:${i}`, target: 'blocked', confidence: 'observed' });
+    });
+    return config;
+  }
+
+  it.each([
+    [],
+    [{}],
+    [{ region: REGION }],
+    [{ vpc_id: VPC }],
+    [{ region: REGION, vpc_id: VPC }, { region: REGION }],
+    [{ region: REGION, vpc_id: VPC }, { region: REGION, vpc_id: 'vpc-other' }],
+    [{ region: REGION, vpc_id: VPC }, { region: 'us-east-1', vpc_id: VPC }],
+  ])('keeps incomplete/conflicting parent scope as a veto, never a winning competitor: %j', (...scopes) => {
+    // Each table entry is an array of parent rows, including an orphan with no rows.
+    const config = competingScopes(scopes);
+    for (const configured of [config, { nodes: [...config.nodes].reverse(), edges: [...config.edges].reverse() }]) {
+      const graph = buildE2eGraph(input({ configured, services: producedServices(), network: [observation([flow({ local })])] }));
+      expect(identityEdges(graph)).toHaveLength(0);
+      expect(graph.summary).toMatchObject({ correlatedEndpoints: 0, ambiguousEndpoints: 1 });
+    }
+  });
+
+  it.each([
+    { region: 'us-east-1', vpc_id: 'vpc-other' },
+    { region: 'us-east-1', vpc_id: VPC },
+    { region: REGION, vpc_id: 'vpc-other' },
+    { region: 'us-east-1' },
+    { vpc_id: 'vpc-other' },
+  ])('keeps a blocked target with known disjoint scope independent: %j', scope => {
+    const graph = buildE2eGraph(input({
+      configured: competingScopes([scope]), services: producedServices(), network: [observation([flow({ local })])],
+    }));
+    expect(identityEdges(graph)).toHaveLength(2);
+    expect(graph.summary.ambiguousEndpoints).toBe(0);
+  });
+
+  it('does not promote a sole target whose parent scope is unknown', () => {
+    const config = competingScopes([{ region: REGION }], { resolved: 'eks', ownership_evidence: undefined });
+    config.nodes = config.nodes.filter(node => node.id !== 'target:web');
+    const graph = buildE2eGraph(input({ configured: config, network: [observation([flow({ local })])] }));
+    expect(identityEdges(graph)).toHaveLength(0);
+    expect(graph.summary.ambiguousEndpoints).toBe(1);
+  });
+
+  it('retains uncertain instance targets independently of IP-target arbitration', () => {
+    const config = competingScopes([{}], { targetType: 'instance', id: 'i-unverified' });
+    const graph = buildE2eGraph(input({
+      configured: config, services: producedServices(),
+      network: [observation([flow({ local: { ...local, instanceId: 'i-unverified' } })])],
+    }));
+    expect(identityEdges(graph)).toHaveLength(0);
+    expect(graph.summary.ambiguousEndpoints).toBe(1);
+    // A different instance ID cannot veto an independently scoped IP match.
+    const other = buildE2eGraph(input({
+      configured: config, services: producedServices(),
+      network: [observation([flow({ local: { ...local, instanceId: 'i-unrelated' } })])],
+    }));
+    expect(identityEdges(other)).toHaveLength(2);
   });
 
   it.each([
@@ -754,6 +923,48 @@ describe('selectE2eGraph — filtering before bounds', () => {
     expect(view.omittedEdges).toBe(graph.edges.length - 4);
     expectNoDanglingEdges(view);
   });
+
+  it.each(['query', 'focus', 'overview'])(
+    'reserves complete connections before optional identity neighbors in a default-budget %s', mode => {
+      const rows = Array.from({ length: 100 }, (_, i) => flow({
+        local: endpoint({ ip: `10.0.${i}.1` }), remote: endpoint({ ip: `10.0.${i}.2` }),
+      }));
+      const config = buildFlowGraph({
+        tg: rows.flatMap((row, i) => [row.local, row.remote].map((ep, side) => ({
+          resource_id: `tg-${i}-${side}`, region: REGION, vpc_id: VPC, target_type: 'ip',
+          target_health_descriptions: [{ Target: { Id: ep.ip, Port: 443 } }],
+        }))),
+      });
+      // A shared configuration entry makes all observations reachable from explicit focus.
+      config.nodes.push({ id: 'entry', kind: 'origin', label: 'entry' });
+      for (const node of config.nodes.filter(node => node.kind === 'tg')) {
+        config.edges.push({ id: `entry-${node.id}`, source: 'entry', target: node.id, confidence: 'observed' });
+      }
+      const network = [
+        observation(rows.slice(0, 50), { capped: true }),
+        observation(rows.slice(50).map(row => ({ ...row, category: 'INTER_VPC' })), { category: 'INTER_VPC', capped: true }),
+      ];
+      const graph = buildE2eGraph(input({ configured: config, network }));
+      const focusId = graph.nodes.find(node => node.kind === 'connection')!.id;
+      const selection = mode === 'query' ? { query: 'DATA_TRANSFERRED' } : mode === 'focus' ? { focusId } : {};
+      const view = selectE2eGraph(graph, selection);
+      expect(view.nodes).toHaveLength(350);
+      expect(view.nodes.filter(node => node.kind === 'connection')).toHaveLength(100);
+      expect(view.nodes.filter(node => node.kind === 'endpoint')).toHaveLength(200);
+      expect(view.edges.filter(edge => edge.evidence === 'network')).toHaveLength(200);
+      for (const connection of view.nodes.filter(node => node.kind === 'connection')) {
+        expect(view.edges.filter(edge => edge.evidence === 'network'
+          && (edge.source === connection.id || edge.target === connection.id))).toHaveLength(2);
+      }
+      expect(view.omittedNodes).toBe(351);
+      expect(view.omittedEdges).toBe(graph.edges.length - view.edges.length);
+      expectNoDanglingEdges(view);
+      const reordered = buildE2eGraph(input({
+        configured: config, network: [...network].reverse().map(obs => ({ ...obs, rows: [...obs.rows].reverse() })),
+      }));
+      expect(ids(selectE2eGraph(reordered, selection))).toEqual(ids(view));
+    },
+  );
 
   it('does not spend a remaining node slot on an incomplete unselected connection group', () => {
     const graph = buildE2eGraph(input({

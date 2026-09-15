@@ -21,6 +21,7 @@ interface TargetIdentity {
   value: string;
   region: string;
   vpcId: string;
+  accountId: string;
   blocked: boolean;
   cached: boolean;
 }
@@ -79,12 +80,14 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
     const type = node.meta.targetType;
     if (type !== 'ip' && type !== 'instance') continue;
     const rows = scopes.get(node.id) ?? [];
-    if (!rows.length || rows.some(row => !text(row.region) || !text(row.vpc_id))) continue;
-    const region = text(rows[0].region), vpcId = text(rows[0].vpc_id);
-    // A target without one coherent scope cannot prove an endpoint's identity.
-    if (rows.some(row => row.region !== region || row.vpc_id !== vpcId)) continue;
+    const common = (field: string): string => {
+      const value = text(rows[0]?.[field]);
+      return value && rows.every(row => row[field] === value) ? value : '';
+    };
+    // Missing/conflicting dimensions are unknown, not evidence of a disjoint scope.
+    const region = common('region'), vpcId = common('vpc_id'), accountId = common('account_id');
     for (const value of targetValues(node.meta)) {
-      const k = key(region, vpcId, type, value);
+      const k = key(type, value);
       const entries = index.get(k) ?? [];
       const memberEvidence = list(node.meta.memberIdentities).map(record).filter(member => text(member.id) === value);
       const evidence = [node.meta, ...rows, ...memberEvidence];
@@ -92,7 +95,8 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
       // record win merely because the conflicting evidence was hidden.
       entries.push({
         node, type, value, region, vpcId,
-        blocked: evidence.some(meta => ownershipVeto(meta, region, vpcId)),
+        accountId: /^\d{12}$/.test(accountId) ? accountId : '',
+        blocked: !region || !vpcId || evidence.some(meta => ownershipVeto(meta, region, vpcId)),
         cached: evidence.some(cachedConfiguration),
       });
       index.set(k, entries);
@@ -101,20 +105,46 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
   return index;
 }
 
-function workloadIndex(nodes: E2eNode[]): Map<string, Set<E2eNode>> {
-  const index = new Map<string, Set<E2eNode>>();
+interface WorkloadIdentity {
+  node: E2eNode;
+  scopes: Meta[];
+}
+
+function workloadIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, Set<WorkloadIdentity>> {
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  const parents = new Map<string, Meta[]>();
+  for (const edge of edges) {
+    const source = byId.get(edge.source);
+    if (edge.evidence !== 'service' || edge.relation !== 'runs_on' || source?.layer !== 'service') continue;
+    const scopes = parents.get(edge.target) ?? [];
+    scopes.push(source.meta);
+    parents.set(edge.target, scopes);
+  }
+  const index = new Map<string, Set<WorkloadIdentity>>();
   for (const node of nodes) {
     if (node.layer !== 'service' || node.kind !== 'workload') continue;
     const cluster = text(node.meta.cluster), namespace = text(node.meta.namespace);
     if (!cluster || !namespace) continue;
+    const identity = { node, scopes: [node.meta, ...(parents.get(node.id) ?? [])] };
     for (const pod of strings(node.meta.pods)) {
       const k = key(cluster, namespace, pod);
-      const matches = index.get(k) ?? new Set<E2eNode>();
-      matches.add(node);
+      const matches = index.get(k) ?? new Set<WorkloadIdentity>();
+      matches.add(identity);
       index.set(k, matches);
     }
   }
   return index;
+}
+
+function workloadScopeMatches(workload: WorkloadIdentity, target: TargetIdentity): boolean {
+  // Real trace producers retain scope on incoming services. Never decode workload IDs.
+  // A relative "self" claim cannot corroborate a numeric account without the TG row.
+  const claims = (field: string) => workload.scopes.map(meta => meta[field])
+    .filter(value => value !== undefined && value !== null && value !== '');
+  const regions = claims('region'), accounts = claims('accountId');
+  return regions.length > 0 && regions.every(region => region === target.region)
+    && accounts.length > 0 && accounts.every(account =>
+      account === 'self' || Boolean(target.accountId && account === target.accountId));
 }
 
 function targetWorkload(target: TargetIdentity | undefined, endpoint: Meta): { cluster: string; conflict: boolean } {
@@ -224,7 +254,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     });
   }
   const targets = targetIndex(nodes, edges);
-  const workloads = workloadIndex(nodes);
+  const workloads = workloadIndex(nodes, edges);
 
   const correlate = (endpoint: E2eNode, side: Side) => {
     const data = record(endpoint.meta.endpoint);
@@ -233,7 +263,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     if (region && vpcId) {
       for (const [type, value] of [['ip', text(data.ip)], ['instance', text(data.instanceId)]] as const) {
         if (!value) continue;
-        for (const candidate of targets.get(key(region, vpcId, type, value)) ?? []) {
+        for (const candidate of targets.get(key(type, value)) ?? []) {
+          if ((candidate.region && candidate.region !== region) || (candidate.vpcId && candidate.vpcId !== vpcId)) continue;
           candidates.set(candidate.node.id, candidate);
         }
       }
@@ -246,7 +277,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     const matches = cluster && namespace && pod
       ? [...(workloads.get(key(cluster, namespace, pod)) ?? [])] : [];
     // Do not choose a winner among conflicting scopes, target records, or workload memberships.
-    if (blocked || candidates.size > 1 || matches.length > 1 || conflict) {
+    if (blocked || candidates.size > 1 || matches.length > 1 || conflict
+      || matches.some(workload => !target || !workloadScopeMatches(workload, target))) {
       endpoint.meta.correlation = 'ambiguous';
       summary.ambiguousEndpoints++;
       return;
@@ -266,12 +298,13 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     }
     if (matches.length === 1) {
       addEdge({
-        source: endpoint.id, target: matches[0].id, relation: 'same-identity',
+        source: endpoint.id, target: matches[0].node.id, relation: 'same-identity',
         evidence: 'identity', directed: false, label: 'Configured pod identity',
         meta: {
           match: 'configured-cluster', ownership: 'unverified',
           account: input.account, cluster, namespace, pod, side,
           viaTarget: target!.node.id, region, vpcId,
+          ...(target!.accountId ? { accountId: target!.accountId } : {}),
         },
       });
     }
@@ -475,6 +508,7 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
     }
   }
   const reservedNetworkEdges = new Set<string>();
+  const admittedGroups = new Set<string>();
   const addGroup = (connection: string) => {
     const group = groups.get(connection)!;
     const missing = [...group].filter(id => !visibleIds.has(id));
@@ -484,9 +518,7 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
     // Never spend the residual budget on half of an unselected connection.
     for (const id of group) add(id);
     for (const edge of requiredEdges) reservedNetworkEdges.add(edge.id);
-    for (const id of group) {
-      for (const context of [...(identityContext.get(id) ?? [])].sort()) add(context);
-    }
+    admittedGroups.add(connection);
   };
   const networkRank = (id: string) => byId.get(id)?.kind === 'connection' ? 0 : groupOf.has(id) ? 1 : 2;
   const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
@@ -514,6 +546,13 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
     return Number(pinned(b)) - Number(pinned(a)) || compare(a, b);
   });
   for (const connection of orderedGroups) addGroup(connection);
+  // Complete observation groups before optional identity neighbors consume the budget.
+  for (const connection of orderedGroups) {
+    if (!admittedGroups.has(connection)) continue;
+    for (const id of groups.get(connection)!) {
+      for (const context of [...(identityContext.get(id) ?? [])].sort()) add(context);
+    }
+  }
   for (const id of selected) if (!groupOf.has(id)) add(id);
   const nodes = [...visibleIds].map(id => byId.get(id)!);
   const edgePriority: Record<E2eEvidence, number> = { network: 0, identity: 1, context: 2, service: 3, configuration: 4 };
