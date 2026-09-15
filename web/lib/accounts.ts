@@ -2,6 +2,7 @@
 // /api/accounts route. The host row is seeded from HOST_ACCOUNT_ID (no AssumeRole for host).
 import { getPool } from '@/lib/db';
 import { currentAccountId } from '@/lib/account';
+import type { PoolClient } from 'pg';
 
 export interface Account {
   accountId: string;
@@ -42,9 +43,45 @@ export async function listAccounts(): Promise<Account[]> {
   return rows.map(mapRow);
 }
 
-export async function getAccount(id: string): Promise<Account | undefined> {
-  const { rows } = await getPool().query('SELECT * FROM accounts WHERE account_id = $1', [id]);
-  return rows[0] ? mapRow(rows[0]) : undefined;
+export async function getAccount(id: string, signal?: AbortSignal): Promise<Account | undefined> {
+  const text = 'SELECT * FROM accounts WHERE account_id = $1';
+  if (!signal) {
+    const { rows } = await getPool().query(text, [id]);
+    return rows[0] ? mapRow(rows[0]) : undefined;
+  }
+  if (signal.aborted) throw new Error('Account lookup cancelled');
+  let client: PoolClient | undefined;
+  let discard = false;
+  let cancel!: () => void;
+  const cancelled = new Promise<never>((_, reject) => {
+    cancel = () => {
+      discard = true;
+      reject(new Error('Account lookup cancelled'));
+    };
+  });
+  signal.addEventListener('abort', cancel, { once: true });
+  const lookup = async () => {
+    const acquired = await getPool().connect();
+    // A checkout can settle after cancellation; never start abandoned SQL.
+    if (signal.aborted) {
+      acquired.release(false);
+      throw new Error('Account lookup cancelled');
+    }
+    client = acquired;
+    client.on('error', cancel);
+    const { rows } = await client.query(text, [id]);
+    return rows[0] ? mapRow(rows[0]) : undefined;
+  };
+  try {
+    return await Promise.race([lookup(), cancelled]);
+  } finally {
+    signal.removeEventListener('abort', cancel);
+    if (client) {
+      // Discard a timed-out socket instead of stranding a shared-pool slot.
+      try { client.release(discard); }
+      finally { client.removeListener('error', cancel); }
+    }
+  }
 }
 
 export async function getHostAccount(): Promise<Account | undefined> {

@@ -39,6 +39,76 @@ describe('buildInfraGraph', () => {
     expect(g.nodes.find((n) => n.id === 'sg:sg-1')?.meta?.default).toBe(false);
   });
 
+  it.each([{ availability_zones: ['ap-northeast-2a', 'ap-northeast-2b'] }, { availability_zones: 'ap-northeast-2a' }])(
+    'does not turn Neptune availability-zone names into subnet identities: %j', ({ availability_zones }) => {
+      const g = buildInfraGraph({ resources: [{ resource_type: 'neptune_cluster', resource_id: 'graph-db',
+        data: { availability_zones, db_subnet_group: 'database-subnets',
+          vpc_security_groups: [{ VpcSecurityGroupId: 'sg-1' }] } }],
+      vpcs: [], subnets: [], securityGroups });
+      expect(g.nodes.filter(node => node.kind === 'subnet')).toEqual([]);
+      expect(g.edges.map(edge => [edge.rel, edge.target])).toEqual([['infra:uses_sg', 'sg:sg-1']]);
+    });
+
+  it('uses only explicit subnet identifiers from load-balancer availability-zone objects', () => {
+    const g = buildInfraGraph({ resources: [{ resource_type: 'alb', resource_id: 'lb',
+      data: { availability_zones: [{ ZoneName: 'ap-northeast-2a', SubnetId: 'subnet-a' },
+        { ZoneName: 'ap-northeast-2b' }, { GroupId: 'sg-not-a-subnet' }, 'ap-northeast-2c', null] } }],
+    vpcs: [], subnets: [], securityGroups: [] });
+    expect(g.edges.map(edge => [edge.rel, edge.target])).toEqual([['infra:in_subnet', 'subnet:subnet-a']]);
+  });
+
+  it('preserves ElastiCache placement from the actual producer SecurityGroupId shape', () => {
+    const g = buildInfraGraph({ resources: [{ resource_type: 'elasticache', resource_id: 'cache',
+      data: { security_groups: [{ SecurityGroupId: 'sg-1', Status: 'active' }] } }],
+    vpcs: [], subnets: [], securityGroups });
+    expect(g.nodes.find(node => node.id === 'elasticache:cache')?.kind).toBe('elasticache');
+    expect(g.edges).toContainEqual({ id: 'infra:uses_sg:elasticache:cache->sg:sg-1',
+      source: 'elasticache:cache', target: 'sg:sg-1', rel: 'infra:uses_sg' });
+  });
+
+  it('preserves RDS security-group relationships from the inventory producer shape', () => {
+    const g = buildInfraGraph({
+      resources: [{
+        resource_type: 'rds', resource_id: 'orders-db', region: 'ap-northeast-2',
+        data: {
+          db_instance_identifier: 'orders-db', vpc_id: 'vpc-1',
+          endpoint_address: 'orders-db.example.rds.amazonaws.com',
+          vpc_security_groups: [
+            { VpcSecurityGroupId: 'sg-1', Status: 'active' },
+            { VpcSecurityGroupId: 'sg-def', Status: 'active' },
+          ],
+        },
+      }],
+      vpcs, subnets, securityGroups,
+    });
+    expect(g.edges.filter((e) => e.rel === 'infra:uses_sg')).toEqual([
+      { id: 'infra:uses_sg:rds:orders-db->sg:sg-1', source: 'rds:orders-db', target: 'sg:sg-1', rel: 'infra:uses_sg' },
+      { id: 'infra:uses_sg:rds:orders-db->sg:sg-def', source: 'rds:orders-db', target: 'sg:sg-def', rel: 'infra:uses_sg' },
+    ]);
+    expect(g.nodes.find((n) => n.id === 'rds:orders-db')?.meta?.host).toBe('orders-db.example.rds.amazonaws.com');
+  });
+
+  it('preserves every Lambda vpc_subnet_ids relationship and deduplicates overlapping fields', () => {
+    const g = buildInfraGraph({
+      resources: [{
+        resource_type: 'lambda', resource_id: 'orders-handler', region: 'ap-northeast-2',
+        data: {
+          name: 'orders-handler', vpc_id: 'vpc-1',
+          vpc_subnet_ids: ['subnet-a', 'subnet-b', 'subnet-b'],
+          vpc_security_group_ids: ['sg-1'], subnet_ids: ['subnet-a'],
+        },
+      }],
+      vpcs, subnets, securityGroups,
+    });
+    expect(g.edges.filter((e) => e.rel === 'infra:in_subnet').map((e) => [e.source, e.target])).toEqual([
+      ['lambda:orders-handler', 'subnet:subnet-a'],
+      ['lambda:orders-handler', 'subnet:subnet-b'],
+    ]);
+    expect(g.edges.filter((e) => e.rel === 'infra:uses_sg').map((e) => e.target)).toEqual(['sg:sg-1']);
+    const nodeIds = new Set(g.nodes.map((n) => n.id));
+    expect(g.edges.every((e) => nodeIds.has(e.source) && nodeIds.has(e.target))).toBe(true);
+  });
+
   it('skips resources with no network context (not part of the infra graph)', () => {
     const resources = [{ resource_type: 'route53', resource_id: 'r1', data: { name: 'x.example.com' } }];
     const g = buildInfraGraph({ resources, vpcs: [], subnets: [], securityGroups: [] });

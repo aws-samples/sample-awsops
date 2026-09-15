@@ -45,9 +45,26 @@ Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/a
 When `INVENTORY_HOST_ONLY=true`, `POST /api/accounts` rejects onboarding with 409 after
 authentication/admin checks and before STS or registry writes. Reads, connection re-tests
 and removal retain their behavior. Configure multi-account collection before onboarding.
-An explicit `INVENTORY_TARGET_ACCOUNT_IDS` deployment allowlist also gates registration;
-malformed configuration fails closed. `INVENTORY_TASK_ROLE_ARN` supplies the exact host
-collector principal to the create-only CloudFormation guide.
+The separate admin-only `POST /api/accounts/onboarding` performs a bounded, read-only
+host/AssumeRole/target identity check and never writes the registry. One probe per process
+may run at a time, including approval lookup, with a 60-second admission cooldown.
+Registry lookup has a separate three-second deadline; timeout returns `scope_unavailable`/503,
+discards any checked-out DB connection and releases admission without clearing cooldown.
+Late checkout results never start SQL, and late approval results never start STS.
+The caller needs a nonempty immutable `sub`; rejected and completed checks log it.
+Only an enabled registered target or an applied allowlist entry permits a probe.
+Missing lists never allow arbitrary targets, and malformed configuration/failed lookup
+fails closed. Registration remains governed by canonical `runtime_verification_targets`
+and `INVENTORY_TARGET_ACCOUNT_IDS`; registered-target probing grants no new registration.
+Existing registered-account readers and PATCH tests retain
+their separate authorization paths. Diagnostic fields exclude provider error text,
+credentials and the ExternalId value. AI guidance prefills the existing assistant composer
+without sending. Optional `INVENTORY_TASK_ROLE_ARN` supplies the exact host Steampipe
+collector principal to the create-only CloudFormation role guide.
+Registration failure advice offers diagnostics only when the form's check is permitted;
+legacy unlisted targets receive read-only CLI/trust and operator-scope guidance instead.
+STS clients use the deployment `AWS_REGION` (default `ap-northeast-2`); the selected
+inventory region remains diagnostic metadata and does not select the STS endpoint.
 
 `GET /api/deployment/member-inventory` authenticates and restricts queries to applied target
 accounts. One read-only statement checks enabled account/region scope and exactly matches
