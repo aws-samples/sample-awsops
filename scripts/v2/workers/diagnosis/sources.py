@@ -519,6 +519,7 @@ def _summarize_result(body):
     out = {}
     if not isinstance(body, dict):
         return out
+    validation_loss = False
     # top-level list-bearing key (prom/loki `result`, tempo `traces`, clickhouse `rows`, generic `data`/`series`)
     for key in ("result", "traces", "rows", "data", "series"):
         v = body.get(key)
@@ -527,6 +528,9 @@ def _summarize_result(body):
             out["count"] = sum(bool(_summary_record(row, key, body.get("resultType"))) for row in v)
             if key == "result" and body.get("resultType") in ("scalar", "string"):
                 out["count"] = int(_summary_sample(v, string=body["resultType"] == "string"))
+                validation_loss = out["count"] == 0
+            else:
+                validation_loss = out["count"] < len(v)
             # non-PII metadata only: the union of metric LABEL NAMES (keys), NEVER their values
             names = set()
             for item in v[:50]:
@@ -543,6 +547,7 @@ def _summarize_result(body):
             series = res.get("series") or res.get("rows") or res.get("data")
             if isinstance(series, list):
                 out["count"] = sum(bool(_summary_record(row, "rows", None)) for row in series)
+                validation_loss = out["count"] < len(series)
             if "shape" in res:
                 out["shape"] = res.get("shape")
     if "resultType" in body:
@@ -558,6 +563,8 @@ def _summarize_result(body):
         out["truncated"] = True
         if out.get("collectionStatus") not in ("error", "unknown"):
             out["collectionStatus"] = "partial"
+    if validation_loss and out.get("collectionStatus") not in ("error", "unknown"):
+        out["collectionStatus"] = "partial"
     if out.get("collectionStatus") in ("partial", "error", "unknown"):
         if out["collectionStatus"] == "error":
             out["error"] = "source collection error"
