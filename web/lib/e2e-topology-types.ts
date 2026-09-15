@@ -1,5 +1,5 @@
 import type { FlowGraph } from './flow-topology';
-import type { NetworkObservation } from './topology-observations';
+import type { NetworkBatch, NetworkObservation } from './topology-observations';
 export type { NetworkObservation } from './topology-observations';
 
 export type E2eEvidence = 'configuration' | 'service' | 'network' | 'identity' | 'context';
@@ -28,15 +28,37 @@ export interface E2eEdge {
 }
 export interface ServiceSnapshot {
   /** Workload identity requires accountId/region claims here or on incoming runs_on services. */
-  nodes: { id: string; kind: string; label: string; meta?: Record<string, unknown> }[];
+  nodes: { id: string; kind: string; label: string; meta?: Record<string, unknown>; captured_at?: string | null }[];
   edges: { source: string; target: string; rel: string; confidence?: string }[];
+  /** Legacy envelope display clock, not per-node or edge capture. */
   captured_at: string | null;
+  /** Actual /api/graph fields; collector partial/stale is distinct from read truncation. */
+  collection?: { status?: string; stale?: boolean; readStatus?: string;
+    readTruncated?: boolean; metadataTruncated?: boolean };
+  from?: string;
+  capped?: boolean;
+}
+export type E2eSourceStatus = 'complete' | 'partial' | 'unavailable' | 'unknown';
+export interface E2eServiceQuality {
+  status: string;
+  stale: boolean | null;
+  readStatus: 'ok' | 'partial' | 'unavailable' | 'unknown';
+  readTruncated: boolean | null;
+  metadataTruncated: boolean | null;
+}
+export interface E2eNetworkQuality {
+  status: E2eSourceStatus;
+  failedCategories: NetworkBatch['failedCategories'] | null;
+  cappedCategories: NetworkBatch['cappedCategories'] | null;
+  windowQuality: NetworkBatch['windowQuality'] | null;
 }
 export interface E2eInput {
   account: string;
   configured: FlowGraph;
   services: ServiceSnapshot | null;
   network: NetworkObservation[];
+  /** Configuration census completeness, including instance-target-bearing reads. Missing means unknown. */
+  quality?: { configuration?: E2eSourceStatus; network?: Partial<E2eNetworkQuality> | null };
 }
 export interface E2eGraph {
   nodes: E2eNode[];
@@ -50,6 +72,8 @@ export interface E2eGraph {
     unmatchedEndpoints: number;
     ambiguousEndpoints: number;
     observationsUnsupported: boolean;
+    quality: { configuration: E2eSourceStatus; services: E2eServiceQuality;
+      network: E2eNetworkQuality; unresolvedTargetGroups: number };
   };
 }
 export interface E2eSelection {

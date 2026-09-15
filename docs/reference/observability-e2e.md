@@ -27,13 +27,43 @@ connectors. No new telemetry backend or AWS-mutating tool.
 prerequisite. They consume already-loaded configuration graphs, service snapshots and
 network observations; they make no SDK/API calls and activate no page or canvas.
 Existing routes, collection metadata and their authorization remain separate contracts.
-Future consumers must validate their API envelopes and retain collection/unknown states.
+Consumers must validate their API envelopes and pass the read-quality contract below;
+showing quality only in a panel cannot protect uniqueness decisions inside the engine.
 
 `buildE2eGraph` keeps source records and evidence classes separate. Account, region/VPC,
 pod/workload agreement and existing ownership/read-gap vetoes govern identity edges.
 Cached configuration stays context and cannot become live/exclusive ownership.
 Source capture times and observation windows retain their distinct meanings.
 The non-self composition guard is not an authorization boundary.
+
+### Input and output quality contract
+
+| Input | Required consumer mapping | Correlation effect |
+|---|---|---|
+| `quality.configuration` | `complete`, `partial`, `unavailable` or `unknown`; default is unknown. Only mark complete after the full relevant target-bearing inventory census is read without failures/caps. Include instance-target reads: the current flow producer attaches its read-gap markers only to IP targets. Do not pass an entry/cluster-filtered graph as a complete census. | Anything except complete withholds configuration uniqueness for both IP and instance targets. Existing node/parent vetoes still apply. |
+| `services.collection` | Pass the actual `/api/graph` **nested** `collection.readStatus`, `readTruncated`, `metadataTruncated`, plus producer `status` and `stale`. `readStatus: ok` permits omitted false flags, as the API does. Preserve root `from`/`capped` too: a subgraph or root cap is not a complete uniqueness index. | Incomplete/unknown graph reads withhold `same-identity` workload edges, while otherwise valid configuration-record matches remain. Visible duplicate/scope conflicts still veto; they are never discarded merely because the read is partial. |
+| `quality.network` | Pass the NFM batch `status`, `failedCategories`, `cappedCategories` and `windowQuality`; the batch itself is structurally compatible. Missing/invalid fields remain unknown. Observed row caps and missing category-window entries prevent a complete-looking summary. | Partial/failing categories do not globally veto valid observed rows when the relevant configuration/service indexes are complete. This does not turn a sample into complete traffic coverage. |
+
+`summary.quality` exposes configuration read status, service read status separately from
+collector status/staleness, NFM status/failures/caps/window quality, and
+`unresolvedTargetGroups`. Collector `partial` or `stale` does not itself make a complete
+stored-graph read incomplete. All existing ownership/scope conflicts remain vetoes.
+An endpoint can retain a configuration-record link while `workloadReadStatus` explains
+why no workload link was admitted. Consumers must show these distinctions and keep the
+existing account/generation guards when retaining data after a failed refresh.
+
+A group with hidden or indeterminate membership is an unresolved competitor for its
+known region/VPC and target type; unknown dimensions cannot prove disjointness. This
+includes hidden IP/instance members, not only the displayed list. Such scope matches
+remain unverified even when another visible record looks unique. Known disjoint scopes
+remain independent. The group producer already keys by cluster/resolution; this change
+does not invent a mixed-cluster group or borrow another member's pod/namespace.
+
+The graph API returns genuine `nodes[].captured_at` but does not select an edge timestamp.
+Pass that node field unchanged: service-node `meta.capturedAt` is that validated value
+or null. The legacy envelope `captured_at` becomes **`snapshotCapturedAt`** on service
+nodes/edges, never a fabricated node/edge capture time. Configuration target time remains
+`targetCapturedAt`. None of these clocks establishes simultaneous snapshots or live ownership.
 
 `filterE2eGraph` and `matchesE2eQuery` expose eligible evidence for consumers.
 `mainE2eConnection(nodes)` chooses a primary observation before display caps: prefer
@@ -44,10 +74,12 @@ across metric/unit groups or normalized into a common time window.
 `rankE2eConnections(nodes)` exposes the same deterministic complete order without mutating
 the input.
 
-`selectE2eGraph` retains the focused node and fitting non-network query hits, then fits
-complete matching network groups before residual explicit hits and optional neighbors.
+`selectE2eGraph` reserves the focused node and non-network query hits whenever that
+subset fits, independently of how many network hits match. It next attempts complete
+focused/matching network groups, then other eligible groups, residual explicit hits,
+and optional identity/configuration neighbors in that order.
 Reserved group edges survive the edge cap. Tiny budgets may keep partial explicit hits.
-Context attaches once and never grants transit reachability. Defaults remain 350 nodes
+Context attaches once and never grants transit reachability. Defaults are 350 nodes
 and 700 edges. `omittedCategories: Record<string, number>` counts observations hidden
 **or incompletely displayed** by those caps after eligibility/focus/query filtering.
 Each affected observation counts once, even when several endpoints/edges are omitted;

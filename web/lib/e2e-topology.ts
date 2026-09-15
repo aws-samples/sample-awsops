@@ -1,5 +1,6 @@
 import type {
   E2eCorrelationReason, E2eEdge, E2eEvidence, E2eGraph, E2eInput, E2eLayer, E2eNode, E2eSelection, E2eView,
+  E2eSourceStatus, E2eServiceQuality, E2eNetworkQuality,
 } from './e2e-topology-types';
 
 // Pure composition of loaded evidence. No SDK, fetch, clock, or layout dependency.
@@ -10,6 +11,46 @@ const record = (value: unknown): Meta =>
 const text = (value: unknown): string => typeof value === 'string' && value.trim() ? value : '';
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const strings = (value: unknown): string[] => list(value).map(text).filter(Boolean);
+const sourceStatus = (value: unknown): E2eSourceStatus =>
+  value === 'complete' || value === 'partial' || value === 'unavailable' ? value : 'unknown';
+const sourceTime = (value: unknown): string | null =>
+  typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null;
+function serviceQuality(value: unknown): E2eServiceQuality {
+  const snapshot = record(value), c = record(snapshot.collection);
+  let readStatus: E2eServiceQuality['readStatus'] =
+    c.readStatus === 'ok' || c.readStatus === 'partial' || c.readStatus === 'unavailable' ? c.readStatus : 'unknown';
+  const flag = (v: unknown) => typeof v === 'boolean' ? v : v === undefined && readStatus !== 'unknown' ? false : null;
+  const readTruncated = flag(c.readTruncated), metadataTruncated = flag(c.metadataTruncated);
+  if (readStatus !== 'unavailable' && (readTruncated || metadataTruncated || snapshot.capped === true || text(snapshot.from))) readStatus = 'partial';
+  if ((c.readTruncated !== undefined && readTruncated === null)
+    || (c.metadataTruncated !== undefined && metadataTruncated === null)
+    || (snapshot.capped !== undefined && typeof snapshot.capped !== 'boolean')
+    || (snapshot.from !== undefined && typeof snapshot.from !== 'string')) readStatus = 'unknown';
+  return { status: ['ok', 'empty', 'partial', 'error', 'unavailable', 'unknown'].includes(text(c.status)) ? text(c.status) : 'unknown',
+    stale: typeof c.stale === 'boolean' ? c.stale : null, readStatus, readTruncated, metadataTruncated };
+}
+function networkQuality(value: unknown, observations: unknown): E2eNetworkQuality {
+  const raw = record(value);
+  const categories = ['INTRA_AZ', 'INTER_AZ', 'INTER_VPC', 'INTER_REGION', 'AMAZON_S3', 'AMAZON_DYNAMODB', 'UNCLASSIFIED'];
+  const categoryList = (v: unknown): E2eNetworkQuality['failedCategories'] =>
+    Array.isArray(v) && v.every(item => categories.includes(item)) ? [...new Set(v)] : null;
+  const failedCategories = categoryList(raw.failedCategories), cappedCategories = categoryList(raw.cappedCategories);
+  const windows = record(raw.windowQuality);
+  const windowQuality: E2eNetworkQuality['windowQuality'] = raw.windowQuality && !Array.isArray(raw.windowQuality)
+    && typeof raw.windowQuality === 'object' && Object.entries(windows).every(([key, quality]) =>
+      categories.includes(key) && (quality === 'verified' || quality === 'unknown')) ? { ...windows } : null;
+  for (const observation of list(observations).map(record)) {
+    const category = text(observation.category) as keyof NonNullable<E2eNetworkQuality['windowQuality']>;
+    if (!categories.includes(category)) continue;
+    if (windowQuality && !windowQuality[category]) windowQuality[category] = 'unknown';
+    if (cappedCategories && observation.capped === true && !cappedCategories.includes(category)) cappedCategories.push(category);
+  }
+  let status = sourceStatus(raw.status);
+  if (status !== 'unavailable' && (!failedCategories || !cappedCategories || !windowQuality)) status = 'unknown';
+  else if (status === 'complete' && (failedCategories!.length || cappedCategories!.length
+    || Object.values(windowQuality!).includes('unknown'))) status = 'partial';
+  return { status, failedCategories, cappedCategories, windowQuality };
+}
 // Tuple encoding avoids collisions from separators occurring in source IDs or names.
 const key = (...parts: string[]): string => JSON.stringify(parts);
 const nodeId = (layer: E2eLayer, account: string, ...parts: string[]): string =>
@@ -65,7 +106,7 @@ function targetValues(meta: Meta): string[] {
   return [...result];
 }
 
-function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIdentity[]> {
+function targetIndex(nodes: E2eNode[], edges: E2eEdge[]) {
   const byId = new Map(nodes.map(node => [node.id, node]));
   const scopes = new Map<string, Meta[]>();
   for (const edge of edges) {
@@ -76,6 +117,7 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
     scopes.set(edge.target, rows);
   }
   const index = new Map<string, TargetIdentity[]>();
+  let unresolvedTargetGroups = 0;
   for (const node of nodes) {
     if (node.layer !== 'configuration' || node.kind !== 'target') continue;
     const type = node.meta.targetType;
@@ -88,7 +130,13 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
     };
     // Missing/conflicting dimensions are unknown, not evidence of a disjoint scope.
     const region = common('region'), vpcId = common('vpc_id'), accountId = common('account_id');
-    for (const value of targetValues(node.meta)) {
+    const limited = (node.meta.membersTruncated !== undefined && (!Number.isSafeInteger(node.meta.membersTruncated)
+      || Number(node.meta.membersTruncated) !== 0))
+      || (node.meta.count !== undefined && (!Number.isSafeInteger(node.meta.count)
+        || Number(node.meta.count) < 0 || Number(node.meta.count) > list(node.meta.members).length));
+    if (limited) unresolvedTargetGroups++;
+    // Empty value is a private wildcard: hidden members can contest any matching network scope.
+    for (const value of [...targetValues(node.meta), ...(limited ? [''] : [])]) {
       const k = key(type, value);
       const entries = index.get(k) ?? [];
       const memberEvidence = list(node.meta.memberIdentities).map(record).filter(member => text(member.id) === value);
@@ -98,11 +146,11 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
       entries.push({
         node, type, value, region, vpcId,
         accountId: /^\d{12}$/.test(accountId) ? accountId : '',
-        blocked: !region || !vpcId || evidence.some(meta => ownershipVeto(meta, region, vpcId)),
+        blocked: !value || !region || !vpcId || evidence.some(meta => ownershipVeto(meta, region, vpcId)),
         cached: evidence.some(cachedConfiguration),
         // Preserve every identity veto. Only the producer's configuration-only
         // marker may be ignored for CONTEXT, with no other withholding evidence.
-        contextAllowed: Boolean(region && vpcId) && evidence.some(cachedConfiguration)
+        contextAllowed: Boolean(value && region && vpcId) && evidence.some(cachedConfiguration)
           && evidence.every(meta => !ownershipVeto(
             meta.ownership_evidence === 'cached_configuration' && meta.ownership_reason === 'eks_not_enumerated'
               ? { ...meta, ownership_reason: undefined } : meta, region, vpcId,
@@ -111,7 +159,7 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
       index.set(k, entries);
     }
   }
-  return index;
+  return { index, unresolvedTargetGroups };
 }
 
 interface WorkloadIdentity {
@@ -206,6 +254,9 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       configuredNodes: 0, serviceNodes: 0, networkFlows: 0,
       correlatedEndpoints: 0, unmatchedEndpoints: 0, ambiguousEndpoints: 0,
       observationsUnsupported: input.account !== 'self',
+      quality: { configuration: sourceStatus(input.quality?.configuration),
+        services: serviceQuality(input.services), network: networkQuality(input.quality?.network, input.network),
+        unresolvedTargetGroups: 0 },
     },
   };
   const { nodes, edges, summary } = graph;
@@ -252,7 +303,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     addNode({
       id: nodeId('service', input.account, id), layer: 'service',
       kind: text(node.kind), label: text(node.label) || id,
-      meta: { ...record(node.meta), capturedAt: input.services?.captured_at ?? null },
+      meta: { ...record(node.meta), capturedAt: sourceTime(node.captured_at),
+        snapshotCapturedAt: sourceTime(input.services?.captured_at) },
     });
   }
   summary.serviceNodes = nodes.length - summary.configuredNodes;
@@ -262,10 +314,11 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       source: nodeId('service', input.account, text(edge.source)),
       target: nodeId('service', input.account, text(edge.target)),
       relation: text(edge.rel), evidence: 'service', directed: true,
-      meta: { confidence: edge.confidence, capturedAt: input.services?.captured_at ?? null },
+      meta: { confidence: edge.confidence, snapshotCapturedAt: sourceTime(input.services?.captured_at) },
     });
   }
-  const targets = targetIndex(nodes, edges);
+  const { index: targets, unresolvedTargetGroups } = targetIndex(nodes, edges);
+  summary.quality.unresolvedTargetGroups = unresolvedTargetGroups;
   const workloads = workloadIndex(nodes, edges);
 
   const correlate = (endpoint: E2eNode, side: Side) => {
@@ -275,7 +328,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     if (region && vpcId) {
       for (const [type, value] of [['ip', text(data.ip)], ['instance', text(data.instanceId)]] as const) {
         if (!value) continue;
-        for (const candidate of targets.get(key(type, value)) ?? []) {
+        for (const candidate of [...(targets.get(key(type, value)) ?? []), ...(targets.get(key(type, '')) ?? [])]) {
           if ((candidate.region && candidate.region !== region) || (candidate.vpcId && candidate.vpcId !== vpcId)) continue;
           candidates.set(candidate.node.id, candidate);
         }
@@ -290,7 +343,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       ? [...(workloads.get(key(cluster, namespace, pod)) ?? [])] : [];
     // Do not choose a winner among conflicting scopes, target records, or workload memberships.
     const scopeReasons = target ? matches.map(workload => workloadScopeReason(workload, target)) : [];
-    const reason: E2eCorrelationReason | undefined = candidates.size > 1 ? 'configuration_conflict'
+    const reason: E2eCorrelationReason | undefined = summary.quality.configuration !== 'complete' ? 'configuration_unverified'
+      : candidates.size > 1 ? 'configuration_conflict'
       : blocked ? 'configuration_unverified'
       : conflict ? 'pod_identity_conflict'
       : matches.length > 1 || scopeReasons.includes('workload_conflict') ? 'workload_conflict'
@@ -314,7 +368,10 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
         },
       });
     }
-    if (matches.length === 1) {
+    if (cluster && namespace && pod && summary.quality.services.readStatus !== 'ok') {
+      endpoint.meta.workloadReadStatus = summary.quality.services.readStatus;
+    }
+    if (matches.length === 1 && summary.quality.services.readStatus === 'ok') {
       addEdge({
         source: endpoint.id, target: matches[0].node.id, relation: 'same-identity',
         evidence: 'identity', directed: false, label: 'Configured pod identity',
@@ -326,7 +383,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
         },
       });
     }
-    const correlated = Boolean((target && !target.cached) || matches.length);
+    const correlated = Boolean((target && !target.cached) || (matches.length && summary.quality.services.readStatus === 'ok'));
     endpoint.meta.correlation = correlated ? 'correlated' : 'unmatched';
     if (!correlated) endpoint.meta.correlationReason = target?.cached ? 'context_only' : 'no_match';
     if (correlated) summary.correlatedEndpoints++;
@@ -349,6 +406,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
           flow: { ...flow }, metric: observation.metric, unit: observation.unit,
           monitor: observation.monitor, cluster: observation.cluster, category: observation.category,
           rangeSec: observation.rangeSec, capped: observation.capped,
+          windowQuality: summary.quality.network.windowQuality?.[text(observation.category) as keyof NonNullable<E2eNetworkQuality['windowQuality']>] ?? 'unknown',
           ...(observation.startTime !== undefined ? { startTime: observation.startTime } : {}),
           ...(observation.endTime !== undefined ? { endTime: observation.endTime } : {}),
           ...(observation.queriedAt !== undefined ? { queriedAt: observation.queriedAt } : {}),
@@ -593,9 +651,11 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
     || compareText(a, b));
   if (focusId) add(focusId);
   const explicitFits = new Set([...(focusId && selected.has(focusId) ? [focusId] : []), ...matches]).size <= maxNodes;
+  const nonNetworkFits = new Set([...(focusId && selected.has(focusId) ? [focusId] : []),
+    ...matches.filter(id => !groupOf.has(id))]).size <= maxNodes;
   // Reserve fitting non-network hits, then complete matching observations before
   // spending the budget on isolated connection glyphs.
-  if (explicitFits) for (const id of matches) if (!groupOf.has(id)) add(id);
+  if (nonNetworkFits) for (const id of matches) if (!groupOf.has(id)) add(id);
   if (focusId && groupOf.has(focusId)) addGroup(groupOf.get(focusId)!);
   for (const id of matches) {
     const connection = groupOf.get(id);

@@ -10,6 +10,8 @@ import { buildE2eGraph, filterE2eGraph, mainE2eConnection, matchesE2eQuery, rank
 const REGION = 'ap-northeast-2';
 const VPC = 'vpc-app';
 const CAPTURED_AT = '2026-09-11T09:00:00Z';
+const COMPLETE_COLLECTION = { status: 'ok', stale: false, readStatus: 'ok',
+  readTruncated: false, metadataTruncated: false } as const;
 
 function endpoint(overrides: Partial<NfmEndpoint> = {}): NfmEndpoint {
   return { ip: '10.0.1.10', region: REGION, vpcId: VPC, ...overrides };
@@ -53,12 +55,13 @@ function configured(
 function services(overrides: Record<string, unknown> = {}): ServiceSnapshot {
   return {
     nodes: [
-      { id: 'svc:web', kind: 'svc', label: 'web', meta: { source: 'trace', accountId: 'self', region: REGION } },
-      { id: 'wl:web', kind: 'workload', label: 'web deployment',
+      { id: 'svc:web', kind: 'svc', label: 'web', captured_at: CAPTURED_AT, meta: { source: 'trace', accountId: 'self', region: REGION } },
+      { id: 'wl:web', kind: 'workload', label: 'web deployment', captured_at: CAPTURED_AT,
         meta: { cluster: 'app', namespace: 'shop', pods: ['web-1', 'web-2'], ...overrides } },
     ],
     edges: [{ source: 'svc:web', target: 'wl:web', rel: 'runs_on', confidence: 'observed' }],
     captured_at: CAPTURED_AT,
+    collection: { ...COMPLETE_COLLECTION },
   };
 }
 
@@ -70,16 +73,130 @@ function producedServices(scope: Partial<TraceIdentity> = {}): ServiceSnapshot {
     k8sCluster: 'app', k8sNamespace: 'shop', k8sDeployment: 'web', k8sPod: 'web-1',
     ...scope,
   };
-  return { ...buildTraceGraph([span], [], [], '111111111111'), captured_at: CAPTURED_AT };
+  const graph = buildTraceGraph([span], [], [], '111111111111');
+  return { ...graph, nodes: graph.nodes.map(node => ({ ...node, captured_at: CAPTURED_AT })),
+    captured_at: CAPTURED_AT, collection: { ...COMPLETE_COLLECTION } };
 }
 
 function input(overrides: Partial<E2eInput> = {}): E2eInput {
-  return { account: 'self', configured: { nodes: [], edges: [] }, services: null, network: [], ...overrides };
+  const network = overrides.network ?? [];
+  return { account: 'self', configured: { nodes: [], edges: [] }, services: null, network: [],
+    quality: { configuration: 'complete', network: {
+      status: network.some(row => row.capped) ? 'partial' : 'complete', failedCategories: [],
+      cappedCategories: [...new Set(network.filter(row => row.capped).map(row => row.category))],
+      windowQuality: Object.fromEntries(network.map(row => [row.category, 'verified' as const])),
+    } }, ...overrides };
 }
 
 const identityEdges = (graph: E2eGraph) => graph.edges.filter(e => e.evidence === 'identity');
 const ids = (graph: { nodes: { id: string }[] }) => new Set(graph.nodes.map(n => n.id));
 const labels = (graph: { nodes: { label: string }[] }) => graph.nodes.map(n => n.label);
+
+describe('read completeness, hidden competitors and source clocks', () => {
+  it.each(['ip', 'instance'] as const)('retains truncated %s groups as unknown scoped competitors', type => {
+    for (const disjoint of [false, true]) {
+      const values = Array.from({ length: 21 }, (_, i) => type === 'ip' ? `10.0.3.${i + 1}` : `i-member-${i}`);
+      const grouped = buildFlowGraph({ tg: [{ resource_id: 'blocked', target_type: type,
+        region: disjoint ? 'us-east-1' : REGION, vpc_id: VPC,
+        target_health_descriptions: values.map(Id => ({ Target: { Id } })) }] });
+      const group = grouped.nodes.find(node => node.kind === 'target')!;
+      group.meta = { ...group.meta, resolved: 'ambiguous', ambiguity: 'ownership_unverified' };
+      expect(group.meta?.membersTruncated).toBe(1);
+      const clean = configured([target({ targetType: type, id: values[20] }, 'clean')]);
+      grouped.nodes.push(...clean.nodes); grouped.edges.push(...clean.edges);
+      const local = endpoint(type === 'ip' ? { ip: values[20] } : { instanceId: values[20] });
+      const graph = buildE2eGraph(input({ configured: grouped, network: [observation([flow({ local })])] }));
+      expect(identityEdges(graph)).toHaveLength(disjoint ? 1 : 0);
+      expect(graph.summary.quality.unresolvedTargetGroups).toBe(1);
+    }
+  });
+
+  it.each([undefined, 'unknown', 'partial', 'unavailable'] as const)(
+    'requires explicit complete configuration reads, including real instance targets: %s', status => {
+      const config = buildFlowGraph({ ownershipRead: { targetGroup: 'failed' }, tg: [{
+        resource_id: 'tg-instance', region: REGION, vpc_id: VPC, target_type: 'instance',
+        target_health_descriptions: [{ Target: { Id: 'i-target' } }],
+      }] });
+      const source = input({ configured: config, network: [observation([flow({
+        local: endpoint({ instanceId: 'i-target' }),
+      })])] });
+      source.quality = status === undefined ? undefined : { configuration: status };
+      const graph = buildE2eGraph(source);
+      expect(identityEdges(graph)).toEqual([]);
+      expect(graph.summary.quality.configuration).toBe(status ?? 'unknown');
+      expect(graph.nodes.find(node => node.meta.side === 'local')?.meta.correlationReason).toBe('configuration_unverified');
+    },
+  );
+
+  it.each([
+    { collection: undefined }, { collection: { ...COMPLETE_COLLECTION, readStatus: 'partial' } },
+    { collection: { ...COMPLETE_COLLECTION, readTruncated: true } },
+    { collection: { ...COMPLETE_COLLECTION, metadataTruncated: true } },
+    { capped: true }, { from: 'svc:web', capped: false },
+  ])('does not infer workload uniqueness from an incomplete graph read: %j', change => {
+    const snapshot = { ...producedServices(), ...change };
+    const source = input({ configured: configured([eksTarget()]), services: snapshot,
+      network: [observation([flow({ local: endpoint({ podName: 'web-1', podNamespace: 'shop' }) })])] });
+    const graph = buildE2eGraph(source);
+    expect(identityEdges(graph).map(edge => edge.relation)).toEqual(['configured-endpoint-match']);
+    expect(graph.summary.quality.services.readStatus).not.toBe('ok');
+    const conflicting = structuredClone(snapshot);
+    conflicting.nodes.find(node => node.kind === 'workload')!.meta!.region = 'us-east-1';
+    expect(identityEdges(buildE2eGraph({ ...source, services: conflicting }))).toEqual([]);
+  });
+
+  it('keeps valid observed tuples under sampled/stale collection and partial NFM when indexes are complete', () => {
+    const snapshot = producedServices();
+    snapshot.collection = { status: 'partial', stale: true, readStatus: 'ok' };
+    const graph = buildE2eGraph(input({ configured: configured([eksTarget()]), services: snapshot,
+      network: [observation([flow({ local: endpoint({ podName: 'web-1', podNamespace: 'shop' }) })], { capped: true })],
+      quality: { configuration: 'complete', network: { status: 'partial',
+        failedCategories: ['INTER_VPC'], cappedCategories: ['INTER_AZ'], windowQuality: { INTER_AZ: 'unknown' } } },
+    }));
+    expect(identityEdges(graph)).toHaveLength(2);
+    expect(graph.summary.quality.services).toMatchObject({ readStatus: 'ok', status: 'partial', stale: true });
+    expect(graph.summary.quality.network).toEqual({ status: 'partial', failedCategories: ['INTER_VPC'],
+      cappedCategories: ['INTER_AZ'], windowQuality: { INTER_AZ: 'unknown' } });
+    expect(buildE2eGraph(input({ quality: undefined })).summary.quality.network.status).toBe('unknown');
+    const missingWindow = buildE2eGraph(input({ network: [observation([], { capped: true })],
+      quality: { configuration: 'complete', network: { status: 'complete',
+        failedCategories: [], cappedCategories: [], windowQuality: {} } } }));
+    expect(missingWindow.summary.quality.network).toMatchObject({ status: 'partial',
+      cappedCategories: ['INTER_AZ'], windowQuality: { INTER_AZ: 'unknown' } });
+  });
+
+  it('uses genuine API node timestamps without manufacturing edge or node capture from the envelope', () => {
+    const nodeTime = '2026-09-11T08:00:00Z';
+    const graph = buildE2eGraph(input({ services: { nodes: [
+      { id: 'actual', kind: 'svc', label: 'actual', captured_at: nodeTime },
+      { id: 'legacy', kind: 'svc', label: 'legacy' },
+    ], edges: [{ source: 'actual', target: 'legacy', rel: 'calls' }],
+    captured_at: CAPTURED_AT, collection: { ...COMPLETE_COLLECTION } } }));
+    expect(graph.nodes.find(node => node.label === 'actual')?.meta).toMatchObject({
+      capturedAt: nodeTime, snapshotCapturedAt: CAPTURED_AT,
+    });
+    expect(graph.nodes.find(node => node.label === 'legacy')?.meta).toMatchObject({
+      capturedAt: null, snapshotCapturedAt: CAPTURED_AT,
+    });
+    expect(graph.edges[0].meta).toMatchObject({ snapshotCapturedAt: CAPTURED_AT });
+    expect(graph.edges[0].meta).not.toHaveProperty('capturedAt');
+  });
+
+  it('reserves fitting non-network query hits even when network hits overflow the budget', () => {
+    const graph = buildE2eGraph(input({ configured: { nodes: [
+      { id: 'pin', kind: 'origin', label: 'needle configuration', meta: {} },
+      { id: 'second', kind: 'origin', label: 'needle second', meta: {} },
+      { id: 'third', kind: 'origin', label: 'needle third', meta: {} },
+    ], edges: [] }, network: Array.from({ length: 20 }, (_, i) => observation([
+      flow({ value: i, local: endpoint({ ip: `10.0.${i}.1` }) }),
+    ], { monitor: 'needle monitor' })) }));
+    const view = selectE2eGraph(graph, { query: 'needle', maxNodes: 6 });
+    expect(labels(view)).toEqual(expect.arrayContaining(['needle configuration', 'needle second', 'needle third']));
+    expect(view.nodes.filter(node => node.kind === 'connection')).toHaveLength(1);
+    expect(view.nodes.filter(node => node.kind === 'endpoint')).toHaveLength(2);
+    expect(view.edges.filter(edge => edge.evidence === 'network')).toHaveLength(2);
+  });
+});
 
 describe('connection ranking and category omissions', () => {
   function rankedGraph() {
@@ -253,6 +370,8 @@ describe('buildE2eGraph — evidence and provenance', () => {
     expect(graph.summary).toEqual({
       configuredNodes: 6, serviceNodes: 4, networkFlows: 1,
       correlatedEndpoints: 2, unmatchedEndpoints: 0, ambiguousEndpoints: 0, observationsUnsupported: false,
+      quality: { configuration: 'complete', services: { ...COMPLETE_COLLECTION }, unresolvedTargetGroups: 0,
+        network: { status: 'complete', failedCategories: [], cappedCategories: [], windowQuality: { INTER_AZ: 'verified' } } },
     });
     expect(identityEdges(graph)).toHaveLength(4);
     const cf = graph.nodes.find(n => n.kind === 'cloudfront')!;
@@ -483,10 +602,10 @@ describe('buildE2eGraph — scoped target identity', () => {
     expect(graph.summary.correlatedEndpoints).toBe(count);
   });
 
-  it('uses only shown members of capped target groups, stripping explicit IPv4 and instance ports', () => {
+  it.each([false, true])('preserves port parsing while treating hidden group membership as unknown (truncated=%s)', truncated => {
     const graph = buildE2eGraph(input({
       configured: configured([
-        target({ id: undefined, count: 300, members: ['10.0.1.10:443', '10.0.9.9:443'], membersTruncated: 298 }),
+        target({ id: undefined, count: truncated ? 300 : 2, members: ['10.0.1.10:443', '10.0.9.9:443'], membersTruncated: truncated ? 298 : 0 }),
         target({ targetType: 'instance', id: undefined, members: ['i-012345:8080'] }, 'instance'),
       ]),
       network: [observation([
@@ -494,8 +613,10 @@ describe('buildE2eGraph — scoped target identity', () => {
         flow({ local: endpoint({ ip: '10.0.1.11' }), remote: {} }),
       ])],
     }));
-    expect(identityEdges(graph)).toHaveLength(2);
-    expect(graph.summary).toMatchObject({ correlatedEndpoints: 2, unmatchedEndpoints: 2, ambiguousEndpoints: 0 });
+    expect(identityEdges(graph)).toHaveLength(truncated ? 1 : 2);
+    expect(graph.summary).toMatchObject(truncated
+      ? { correlatedEndpoints: 1, unmatchedEndpoints: 1, ambiguousEndpoints: 2 }
+      : { correlatedEndpoints: 2, unmatchedEndpoints: 2, ambiguousEndpoints: 0 });
   });
 
   it('does not use SNAT or DNAT aliases as endpoint identities', () => {

@@ -7,12 +7,23 @@ Domain-logic modules shared by API routes and components, mostly React-free (inc
 - `e2e-topology.ts` / `e2e-topology-types.ts` — **unwired pure correlation prerequisite**:
   compose loaded configuration/service/network records without SDK calls, fetch, clocks or
   layout. Keep the existing scoped identity vetoes, cached/qualified context and per-source times.
-  `mainE2eConnection(nodes)` chooses from eligible uncapped nodes: DATA_TRANSFERRED first,
+  `quality.configuration` must explicitly certify complete target-bearing reads (including
+  instance targets), otherwise configuration uniqueness is withheld. Truncated/indeterminate
+  target groups remain scoped unknown competitors, including hidden members.
+  Service uniqueness uses actual `collection.readStatus/readTruncated/metadataTruncated`
+  plus root `from/capped`, not collector partial/stale. Incomplete reads block workload links;
+  valid configuration-record matches may remain, but visible conflicts always veto.
+  Pass `quality.network` batch status/failures/caps/window quality; partial samples do not
+  globally veto valid rows. `summary.quality` exposes read/collector distinctions and unresolved groups.
+  Genuine node `captured_at` becomes `meta.capturedAt`; the envelope is only `snapshotCapturedAt`
+  on service nodes/edges. The current graph API returns no genuine edge capture field.
+  `mainE2eConnection(nodes)` chooses from eligible nodes before display caps: DATA_TRANSFERRED first,
   then deterministic metric/unit groups, descending valid nonnegative value within a group,
   stable ID ties. `rankE2eConnections` exposes the same complete ordering. Never compare raw
-  magnitudes across metrics/units. `selectE2eGraph` preserves focused and fitting non-network
-  hits, then admits complete matching network groups before residual explicit hits and optional
-  neighbors. Reserved network edges survive the edge cap. `omittedCategories` counts hidden
+  magnitudes across metrics/units. `selectE2eGraph` reserves focus plus fitting non-network
+  hits independently of total network matches, then attempts complete focused/matching groups,
+  other eligible groups, residual hits and optional neighbors. Reserved network edges survive
+  the edge cap. `omittedCategories` counts hidden
   or incompletely displayed observations after filters/caps, not endpoint/edge totals or
   filtered-out data; missing categories use UNKNOWN. A tiny-budget explicit hit may remain
   partial; both its category and node/edge omissions are disclosed.
