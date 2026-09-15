@@ -1401,6 +1401,8 @@ def sync(resource_type):
                 acct = _rec_account(rec)  # the row's real account (aggregator fan-out), not a literal 'self'
                 by_identity[(acct, region, rid)] = rec
             recs = list(by_identity.values())
+            if resource_type not in SDK_SYNCS and hydrate_fallback_used:
+                sdk_unknown_attrs = len(recs)  # Every persisted fallback identity lacks the attribute.
             seen = set(by_identity)
             for (acct, region, rid), rec in by_identity.items():
                 adb.run("INSERT INTO inventory_resources (resource_type, account_id, region, resource_id, data, captured_at) "
