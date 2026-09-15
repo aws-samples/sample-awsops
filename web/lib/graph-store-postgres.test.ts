@@ -9,6 +9,7 @@ import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } from './graph-stor
 import { inventorySnapshot, inventoryAccounts, recordUnattempted, INFRA_TYPES } from './graph-inventory';
 import { HOST_ONLY_TREND_TYPES } from './trend-utils';
 import { readGraphState, writeGraphState } from './graph-state';
+import { graphTransaction } from './graph-transaction';
 import type { ServiceGraphCall, SourceRead } from './trace-source';
 const api = vi.hoisted(() => ({ pool: null as unknown }));
 const producer = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -685,15 +686,12 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await build('infra');
     vi.restoreAllMocks();
     expect(await state('infra')).toEqual(previous);
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    await graphTransaction(pool, false, async client => {
       await client.query('SELECT pg_advisory_xact_lock($1)', [0x696e6672]);
       expect(await writeGraphState(client, 'self', {
         status: 'error', publish: false, attemptedAt: new Date(previous.attempted_at).toISOString(), details: {},
       }, 'infra' as never)).toBe(false);
-      await client.query('COMMIT');
-    } finally { client.release(); }
+    });
     expect((await pool.query('SELECT * FROM topology_nodes')).rowCount).toBeGreaterThan(0);
   });
   it('aggregate API scope is unknown; a vanished member keeps its own last-good graph', async () => {
