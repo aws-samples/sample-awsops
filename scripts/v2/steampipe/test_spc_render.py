@@ -23,6 +23,15 @@ def _conn_names(spc):
     return re.findall(r'connection\s+"([^"]+)"', spc)
 
 
+def _connection_attributes(body):
+    return set(re.findall(r"^  ([a-z0-9_]+) =", body, re.M))
+
+
+def test_contract_scanner_keeps_digit_attributes_visible_to_the_allowlist():
+    body = "  s3_force_path_style = true\n  unsupported3_attribute = true\n"
+    assert _connection_attributes(body) == {"s3_force_path_style", "unsupported3_attribute"}
+
+
 def test_host_only_no_role_arn_no_external_id():
     spc = render_spc([
         {"account_id": "123456789012", "is_host": True, "role_name": "AWSopsReadOnlyRole",
@@ -105,14 +114,20 @@ def test_hcl_escapes_dollar_and_percent_template_markers():
 
 def test_rendered_connection_attributes_match_pinned_upstream_plugin_schema():
     contract = json.loads((Path(__file__).parent / "fixtures/aws-plugin-0.142.0-contract.json").read_text())
+    assert "s3_force_path_style" in contract["connection_hcl_attributes"]
+    assert "s" not in contract["connection_hcl_attributes"]
     rows = [
         {"account_id": "123456789012", "is_host": True, "all_regions": True, "regions": []},
         {"account_id": "210987654321", "is_host": False, "all_regions": True, "regions": [],
          "role_name": "AWSopsReadOnlyRole", "external_id": "fixture-external-id"},
     ]
     assert spc_render.PLUGIN == contract["plugin"]
-    for name, body in re.findall(r'^connection "([^"]+)" \{\n(.*?)^\}', render_spc(rows), re.M | re.S):
-        attributes = set(re.findall(r"^  ([a-z_]+) =", body, re.M))
+    connections = dict(re.findall(r'^connection "([^"]+)" \{\n(.*?)^\}', render_spc(rows), re.M | re.S))
+    assert set(connections) == {"aws_123456789012", "aws_210987654321", "aws"}
+    assert re.search(r'^  profile = "aws_210987654321"$', connections["aws_210987654321"], re.M)
+    assert "profile" not in _connection_attributes(connections["aws_123456789012"])
+    for name, body in connections.items():
+        attributes = _connection_attributes(body)
         allowed = {"plugin", "type", "connections"} if name == "aws" else {"plugin", *contract["connection_hcl_attributes"]}
         assert attributes <= allowed, attributes - allowed
         assert attributes.isdisjoint({"access_key", "secret_key", "session_token", "credential_process"})
@@ -297,7 +312,8 @@ def test_stop_steampipe_service_runs_the_canonical_stop_command():
     embedded PostgreSQL + on-disk service-state lock that our process-level kill does not
     guarantee is released before the next `service start`."""
     import gen_spc_entrypoint
-    with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)) as run:
+    with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)) as run, \
+            mock.patch.object(gen_spc_entrypoint, "_steampipe_listener_closed", return_value=True):
         assert gen_spc_entrypoint._stop_steampipe_service() is True
     args, kwargs = run.call_args
     assert args[0] == ["steampipe", "service", "stop", "--force"]

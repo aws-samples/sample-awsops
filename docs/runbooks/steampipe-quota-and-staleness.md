@@ -15,66 +15,6 @@ prepare the host registry and ensure the account-management path enforces the in
 종료와 재시작은 같은 잠금을 사용하고 backoff도 중단됩니다. 기본 다중 계정 동작은
 유지하며, 활성화 전에 호스트 행과 계정 관리 경로의 범위 제어를 준비합니다.
 
-## Pinned AWS profile contract
-
-AWS plugin **0.142.0** declares `profile` in `awsConfig`; its credential loader passes
-that name to AWS SDK Go `WithSharedConfigProfile`. It does not declare the previously
-emitted `assume_role_arn` / `assume_role_external_id` SPC attributes. The supported
-member configuration is a `profile = "aws_<account-id>"` reference plus a private AWS
-INI section containing `role_arn`, `credential_source = EcsContainer` and optional
-`external_id`. The SDK assumes the role using ambient ECS task credentials; no static
-credentials or credential processes are generated. No host/default profile is written.
-
-The image exposes `AWS_CONFIG_FILE=/home/steampipe/.awsops-runtime/current/config`
-to service and health-check processes. SPC and INI are immutable 0600 files inside
-0700 generation directories; a single atomic `current` switch publishes the pair.
-Prior generations contain metadata only and remain private for this container's lifetime.
-Identity/ExternalId values reject control characters and INI injection. Either file
-failing to stage prevents publication; a failure after the atomic switch retains the
-complete new pair and still prevents service launch.
-
-The 300-second watchdog compares both files, so an ExternalId-only change requests
-a reload. Under the existing restart lock it reaps only the tracked foreground child,
-requires `service stop --force` to complete successfully, publishes the pair, then
-launches the service. A timeout/nonzero full stop or publication failure marks fatal
-shutdown before releasing the lock and cannot launch an “already running” service.
-PID 1 exits nonzero for ECS replacement; ordinary SIGTERM retains best-effort cleanup.
-The main child wait is bounded to one second so fatal/stop events can reach final
-cleanup even when teardown could not reap the child.
-`steampipe restart launched for updated scope` records launch only, not schema import
-or AWS/collection readiness. Confirm those separately; `SELECT 1` alone is insufficient.
-
-Container health runs `python3 /app/healthcheck.py`: only a TLS loopback PostgreSQL
-connection using the existing database-password environment value and `SELECT 1`.
-It has a five-second alarm and two-second socket timeout, emits no credential/error
-text, and makes no CLI or AWS calls. This replaces `steampipe query`, whose pinned
-0.22 `GetLocalClient` calls `StartServices` and can race the supervisor by starting the
-singleton service. Health failures remain observations; they never auto-start it.
-Build the image containing this script before applying the matching Terraform health
-command; the existing 30-second interval, 10-second timeout and five retries remain.
-
-Primary contracts: [plugin configuration](https://github.com/turbot/steampipe-plugin-aws/blob/v0.142.0/aws/connection_config.go),
-[plugin credential loading](https://github.com/turbot/steampipe-plugin-aws/blob/v0.142.0/aws/service.go),
-and [pinned SDK credential sources](https://github.com/aws/aws-sdk-go-v2/blob/config/v1.27.16/config/resolve_credentials.go).
-Their hashes and extracted contract fields are recorded in
-`scripts/v2/steampipe/fixtures/aws-plugin-0.142.0-contract.json`.
-Run the focused, offline checks:
-
-```bash
-python3 -m pytest -q scripts/v2/steampipe/test_spc_render.py \
-  scripts/v2/steampipe/test_runtime_config.py scripts/v2/steampipe/test_host_scope.py \
-  scripts/v2/steampipe/test_healthcheck.py
-bash scripts/v2/terraform-test.sh
-```
-
-The contract test checks emitted attributes against pinned upstream schema data.
-The profile test exercises an AWS SDK credential resolver with mocked ECS/STS transport;
-filesystem and supervisor tests cover paired publication, failed stop/write, ExternalId
-reload, queued-restart races, process exit and SIGTERM. No live collection is invoked.
-The health tests cover stopped/unresponsive services without spawning a process;
-the mocked Terraform plan asserts the non-spawning command and unchanged timing.
-
-
 > Data-flow diagram / 데이터 흐름 다이어그램: [`docs/diagrams/inventory-freshness-dataflow.html`](../diagrams/inventory-freshness-dataflow.html) (archify — collector → guard → ledger → freshness disclosure)
 
 Phase 1의 Steampipe 인벤토리 sync를 운영하는 절차다. Phase 1 구현은 저장소에 있다. **이 변경을 수행한 에이전트는 Terraform apply를 실행하지 않았으며, controller의 실제 배포 상태는 별도로 확인해야 한다.** 현재 ops gateway의 제한된 Aurora `inventory-read-target`은 direct domain inventory/configuration target과 공존한다.
@@ -218,7 +158,7 @@ roll out this Lambda. If the order below cannot be satisfied, do not deploy the 
 ## 3. limiter 구성 확인 / Inspect limiter configuration
 
 정적 기본 파일은 `scripts/v2/steampipe/aws.spc`다. 실행 중 컨테이너는 Aurora account/Region scope를 읽어 기본 경로 `/home/steampipe/.steampipe/config/aws.spc`에 실제 구성을 생성한다.
-The checked-in default is `scripts/v2/steampipe/aws.spc`. The running container reads Aurora account/Region scope and renders the actual configuration at `/home/steampipe/.steampipe/config/aws.spc`.
+The checked-in default is `scripts/v2/steampipe/aws.spc`. The running container reads Aurora account/region scope and publishes a regular SPC file at the default `AWS_SPC_PATH`, `/home/steampipe/.steampipe/config/aws.spc`, alongside the shared-profile generation described below.
 
 배포 전 렌더러 검증 / Validate the renderer before deployment:
 
@@ -241,6 +181,80 @@ fields @timestamp, event, max_concurrency, bucket_size, fill_rate
 - renderer test가 `plugin "aws"`와 `limiter "awsops_global"`가 정확히 하나임을 검증한다 / the renderer test verifies exactly one `plugin "aws"` and one `limiter "awsops_global"`.
 - `max_concurrency`, `bucket_size`, `fill_rate`가 approved Terraform values와 일치한다.
 - renderer test가 `scope =` 부재를 검증한다. 계정·리전별 budget 증식이 아니라 하나의 global budget이어야 한다 / the renderer test verifies no `scope =`, preserving one global budget.
+
+### Pinned AWS profile contract
+
+AWS plugin **0.142.0** declares `profile` in `awsConfig`; its credential loader passes
+that name to AWS SDK Go `WithSharedConfigProfile`. It does not declare the previously
+emitted `assume_role_arn` / `assume_role_external_id` SPC attributes. Members use
+`profile = "aws_<account-id>"` plus a private AWS INI section containing `role_arn`,
+`credential_source = EcsContainer` and optional `external_id`. No static AWS credentials,
+credential processes or host/default profile override are generated.
+
+The service uses `AWS_CONFIG_FILE=/home/steampipe/.awsops-runtime/current/config`
+for the shared-profile generation. The loopback pg8000 health probe does not read this
+file. `AWS_SPC_PATH` defaults to `/home/steampipe/.steampipe/config/aws.spc` and is a
+regular file, not a symlinked SPC entry. SPC and profile files are 0600; profile generations
+are kept in owner-controlled 0700 directories. Prior generations contain only private
+role/ExternalId metadata, not access keys or session tokens.
+
+Boot publishes both files before first launch. Reload publication holds the existing
+restart lock with the service stopped: stage both files, publish the regular SPC and
+profile generation, then launch only after both publications succeed. Each replacement
+is atomic; the stopped-service boundary protects the pair, not an atomic transaction
+for arbitrary concurrent readers of the two paths. A failed
+write/publication blocks launch and triggers fatal shutdown. Identity and ExternalId
+values reject control characters and INI injection. An `AWS_CONFIG_FILE` override must
+match the generated `current/config` path; `AWS_SPC_PATH` must be absolute and its parent
+must satisfy the publisher's path checks. Unsupported path/config overrides fail closed
+with `runtime_configuration_write_failed`; do not work around them with symlinked SPC files.
+
+The 300-second watchdog compares both rendered files, so an ExternalId-only change
+requests reload. It reaps the tracked foreground child, requests `service stop --force`
+and requires observable closure of the loopback listener before publication/start.
+The CLI exit code alone is not proof of a stopped listener: a completed CLI call, regardless
+of its return code, requires `ECONNREFUSED` from `127.0.0.1:9193`. An open listener, timeout
+or other unknown socket result does not establish closure. CLI timeout/error or failed
+closure observation blocks restart. An unconfirmed stop or failed
+publication marks fatal shutdown before unlocking; queued callers cannot launch another
+service. PID 1 exits nonzero for ECS replacement; ordinary SIGTERM retains best-effort
+cleanup. Its one-second child waits let fatal/stop events reach final cleanup when a
+child cannot be reaped. `steampipe restart launched for updated scope` records launch,
+not schema import, AWS access or collection readiness. Confirm those separately.
+
+Container health runs `python3 /app/healthcheck.py`: only a TLS loopback PostgreSQL
+connection using the existing database-password environment value and `SELECT 1`.
+It has a five-second alarm and two-second socket timeout, emits no credential/error text,
+and makes no CLI or AWS calls. This replaces `steampipe query`, whose pinned 0.22
+`GetLocalClient` calls `StartServices` outside the supervisor lock. Health failures are
+observations and never auto-start the service. Build the image containing this script
+before the matching Terraform health-command apply. The existing 30-second interval,
+10-second timeout and five retries remain; the ALLDNS restrictions above still govern
+image/task changes and apply authority.
+
+Primary sources: [plugin configuration](https://github.com/turbot/steampipe-plugin-aws/blob/v0.142.0/aws/connection_config.go),
+[plugin credential loading](https://github.com/turbot/steampipe-plugin-aws/blob/v0.142.0/aws/service.go),
+and [SDK credential sources](https://github.com/aws/aws-sdk-go-v2/blob/config/v1.27.16/config/resolve_credentials.go).
+`scripts/v2/steampipe/fixtures/aws-plugin-0.142.0-contract.json` is **manually transcribed**
+from these pinned sources, including the digit-containing `s3_force_path_style` attribute.
+Its recorded SHA-256 values identify source bytes; offline CI does not download upstream
+files or verify those hashes. The local contract test checks rendered attribute names
+against the fixture and positively requires the member `profile` reference and connections.
+The credential-resolution test runs **Python botocore** with mocked ECS/STS transport;
+it is not execution of the plugin's Go SDK or proof that the deployed image loaded profiles.
+
+Run the focused offline checks from the repository root:
+
+```bash
+python3 -m pytest -q scripts/v2/steampipe/test_spc_render.py \
+  scripts/v2/steampipe/test_runtime_config.py scripts/v2/steampipe/test_host_scope.py \
+  scripts/v2/steampipe/test_healthcheck.py scripts/v2/steampipe/test_observed_stop.py
+bash scripts/v2/terraform-test.sh
+```
+
+These checks cover profile injection rejection, private publication, ExternalId reload,
+restart/failure races, process exit, SIGTERM and non-spawning health. The Terraform fixture
+checks the health command and unchanged timing. No live collection is invoked.
 
 ## 4. 배포 순서 / Deployment order
 
@@ -344,6 +358,17 @@ terraform -chdir=terraform/foundation apply tfplan
 Manual UI refresh uses the same `InvocationType=Event` path and Lambda reserved concurrency. Do not bypass it with a separate bulk parallel invocation.
 
 ## 5. 로그와 신선도 확인 / Check logs and freshness
+
+The entrypoint writes the following fixed failure tokens to stderr. Keep these distinct
+from the JSON collector events below; no token alone proves a specific IAM or network cause.
+
+| Token | Meaning and operator check |
+|---|---|
+| `invalid_runtime_configuration` | Registry/rendered profile data failed validation. Inspect account, role, region and ExternalId format privately; never print the ExternalId value. |
+| `runtime_configuration_write_failed` | Path ownership/mode, staging or publication failed. Check the configured paths and container filesystem; no service launch is permitted. |
+| `steampipe_configuration_publish_failed` | Restart could not publish the stopped service's new pair. Keep it stopped and inspect the preceding fixed failure. |
+| `steampipe_child_stop_failed` | Foreground child teardown failed. Fatal shutdown retains its reference for bounded final cleanup. |
+| `steampipe_service_stop_failed` | Reason `listener_not_closed`, `timeout` or `error`: closure was not established or the stop CLI failed to complete. Inspect listener/process state; a completed nonzero CLI exit is acceptable only with `ECONNREFUSED`. |
 
 CloudWatch Logs에서 다음 JSON event 이름을 조회한다:
 
@@ -506,6 +531,7 @@ requires a separate reviewed procedure. This development guard does not apply to
 
 ## Related
 
+- ADR-011: governed cross-account read-only role assumption and ExternalId trust; see [target onboarding](onboard-target-account.md).
 - ADR-021: `docs/decisions/021-quota-isolated-inventory-reads.md`
 - Approved design: `docs/superpowers/specs/2026-08-31-steampipe-quota-safe-aurora-mcp-design.md`
 - Renderer: `scripts/v2/steampipe/spc_render.py`

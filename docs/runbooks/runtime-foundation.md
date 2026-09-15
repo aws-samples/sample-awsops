@@ -14,7 +14,9 @@ Use Terraform 1.15.7 and both `scripts/v2/requirements-test.txt` and `scripts/v2
 ```bash
 python3 -m pytest -q scripts/v2/test_ci_*.py
 bash scripts/v2/terraform-test.sh
-python3 -m pytest -q scripts/v2/steampipe/test_host_scope.py
+python3 -m pytest -q scripts/v2/steampipe/test_spc_render.py \
+  scripts/v2/steampipe/test_runtime_config.py scripts/v2/steampipe/test_host_scope.py \
+  scripts/v2/steampipe/test_healthcheck.py scripts/v2/steampipe/test_observed_stop.py
 node --test scripts/v2/ci/prepare-runtime-host.test.mjs
 ```
 
@@ -60,10 +62,14 @@ ExternalId and fails closed on unapproved/duplicate enabled accounts or a wrong 
 The pinned AWS plugin 0.142.0 accepts `profile`, not `assume_role_arn` or
 `assume_role_external_id` connection attributes. Members select generated AWS shared
 profiles with `role_arn`, optional `external_id` and `credential_source=EcsContainer`;
-the host keeps ambient ECS task credentials. The image sets `AWS_CONFIG_FILE` to
-`/home/steampipe/.awsops-runtime/current/config` for both service and health-check processes.
-The generator writes SPC and profile files as 0600 in a 0700 generation directory,
-then atomically switches one `current` link; no access keys or session tokens are stored.
+the host keeps ambient ECS task credentials. The service reads `AWS_CONFIG_FILE` at
+`/home/steampipe/.awsops-runtime/current/config`; the pg8000 health probe does not use it.
+`AWS_SPC_PATH` remains a regular file, defaulting to
+`/home/steampipe/.steampipe/config/aws.spc`. SPC and profile files are 0600, with private
+profile generations in 0700 directories; no access keys or session tokens are stored.
+The publisher stages and replaces the files while the service is stopped, and launches
+only after both publications succeed. Each replacement is atomic; the stopped-service
+boundary protects the pair, not an atomic transaction for arbitrary concurrent readers.
 Profile values reject INI injection. See the [pinned contract and checks](steampipe-quota-and-staleness.md#pinned-aws-profile-contract).
 The running collector may contain the host plus a subset of approved targets during
 onboarding; it never silently discards an out-of-scope row. A registered member must
@@ -71,8 +77,10 @@ have `all_regions=true` or at least one enabled region; a member with no rendera
 scope fails closed. The existing watchdog re-reads Aurora every 300 seconds and
 rewrites/restarts Steampipe when scope changes, including host-only startup followed
 by approved member registration or an ExternalId-only change. Restart holds the existing
-lock across confirmed full-service stop, paired-file publication and process launch.
-A stop timeout/nonzero result or publication failure blocks launch and causes PID 1
+lock across observable loopback-listener closure, paired-file publication and process launch.
+The stop CLI exit code alone is not proof that the listener stopped.
+After a completed CLI call, any return code requires loopback `ECONNREFUSED` before launch.
+CLI timeout/error, an open or unconfirmed listener, or publication failure blocks launch and causes PID 1
 to exit nonzero so ECS can replace its own container; graceful SIGTERM remains graceful.
 The supervisor checks shutdown at most one second between child waits, including
 when teardown fails and the child remains alive. Health uses a bounded loopback

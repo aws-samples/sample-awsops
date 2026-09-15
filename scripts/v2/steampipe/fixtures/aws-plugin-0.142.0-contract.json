@@ -1,5 +1,6 @@
 {
   "plugin": "aws@0.142.0",
+  "provenance": "Manually transcribed from the pinned sources below. Hashes identify those source bytes; offline CI checks the local fixture and does not download or verify upstream hashes.",
   "connection_hcl_attributes": [
     "regions",
     "default_region",
@@ -11,7 +12,7 @@
     "min_error_retry_delay",
     "ignore_error_codes",
     "endpoint_url",
-    "s"
+    "s3_force_path_style"
   ],
   "credential_profile_keys": [
     "role_arn",

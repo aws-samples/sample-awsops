@@ -31,8 +31,9 @@ RUN steampipe plugin install "ghcr.io/turbot/steampipe/plugins/turbot/aws:0.142.
 USER root
 COPY --from=python-runtime /opt/python /opt/python
 ENV PATH="/opt/python/bin:${PATH}"
-# Shared by the foreground service and ECS health-check processes. Generated at
-# runtime as private metadata-only profiles; no credentials are baked into the image.
+# Used by the foreground service for private profiles generated at runtime.
+# The loopback pg8000 health probe does not read AWS_CONFIG_FILE.
+# No AWS access keys or session tokens are baked into the image.
 ENV AWS_CONFIG_FILE=/home/steampipe/.awsops-runtime/current/config
 RUN python3 -m pip install --no-cache-dir --only-binary=:all: pg8000==1.31.2 boto3==1.34.162
 # RDS global CA truststore bundle (AWS's own published PEM, covers all regions): enables TLS
