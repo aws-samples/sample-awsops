@@ -42,16 +42,21 @@ zero returned nodes in this outcome do not mean an empty graph was published.
 ## Bounded inventory-read primitives
 
 `web/lib/graph-inventory-read.ts` provides internal account discovery, count reconciliation,
-projected snapshots and an attempt-evidence calculation for flow/infra callers. It uses the
-existing `self` host sentinel and SDK host-only type exclusions. A member needs current
+projected snapshots and an attempt-evidence calculation for flow/infra callers. Callers use the
+existing `self` host sentinel and the exported SDK host-only type filter. A member needs current
 registered participation evidence; an aggregate zero alone does not establish participation.
 Count proof is reused only when the snapshot observes the identical ledger row version.
 The helper returns source clocks/completeness, not a freshness or deployment verdict.
 
-Snapshots project consumed fields before SQL byte guards: 2,000 infra rows or 8,192 flow
-rows (plus a sentinel), 64KiB per projected row and 8MiB for projected data/identifiers
-(excluding the result envelope). Exceeded bounds
-remain explicit and cannot authorize empty proof. Request and background transaction
+Snapshots project consumed fields before SQL byte guards: both classes allow 8,192 rows
+plus a sentinel, within the existing 64KiB per-row and 8MiB projected data/identifier
+budgets (excluding the result envelope). Flow projection preserves listener/API-route
+labels. Target-health arrays retain every Id, Port and State in order while dropping
+unconsumed diagnostic fields. A row withheld by its own byte limit does not consume the
+later-row budget. `truncatedTypes` identifies incomplete payload types in the same snapshot;
+only those source item counts become unknown. Any truncation still withholds publication.
+A readable snapshot can exceed the caller's graph-size limit; these bounds do not promise
+an unlimited graph. Inspect the affected type's paginated Inventory view when a cap is hit. Request and background transaction
 helpers share two admissions per pool, reserving the third ordinary slot for authentication;
 request limits stay 1.5s statements/2s total, background limits 2s statements/4s total.
 
@@ -107,8 +112,7 @@ The shared query normalizer carries collection status into Explore. Marked parti
 
 ## Rebuild capacity
 
-Flow input allows 8192 rows (8MiB / a nominal 1KiB row allowance) for record-granular DNS inventory;
-infra retains its 2000-row guard. The 64KiB-per-row and 8MiB projected-data/identifier limits still apply, as do the
+Flow and infra input allow 8192 rows within the same bounded read envelope. The 64KiB-per-row and 8MiB projected-data/identifier limits still apply, as do the
 4000-node/8000-edge/8MiB graph limits. A source-proof or capacity failure retains last-good data.
 All listed sources feed the builders: a failed/missing source cannot be dropped to authorize replacement,
 and elapsed retentions never authorize an unproven sweep. Larger generations need a separately reviewed capacity path.
@@ -168,11 +172,11 @@ node/edge and published/degraded/retained/skipped counts, fixed reasons, optiona
 count and account-limit flag. It projects only those fields and sanitized failure codes.
 Node/edge totals alone are not sufficient. Partial account progress remains visible alongside
 its unexpected failure; an infra failed-account result also skips dependent trace work.
-The dependency guard concerns execution failures; returned retained/skipped outcomes are
-reported as incomplete and keep the trace builder's existing source/infra read behavior.
-The CLI awaits pool closure and exits **1** for execution, registry or cleanup failure,
-otherwise **2** for any retained/skipped work, otherwise **0**. Degraded publications are
-explicitly counted; exit 0 does not prove complete collection. Inspect source metadata for quality.
+The dependency guard also withholds trace on retained/skipped/degraded results, traversal
+limits, missing publication or invalid metadata. A reported clean complete-empty infra
+publication remains valid. The CLI awaits pool closure and exits **1** for failure,
+including registry or cleanup failure; otherwise **2** for incomplete publication and
+**0** for clean publication. These graph outcomes do not replace full runtime release proof.
 
 The timer remains off when `GRAPH_REBUILD_INTERVAL_MINS` is unset, invalid or nonpositive.
 Its Terraform input is `graph_rebuild_interval_mins` (default 0; enabled values are whole

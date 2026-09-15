@@ -21,10 +21,11 @@ const FLOW_FIELDS = ['name', 'arn', 'dns_name', 'domain_name', 'aliases', 'origi
   'target_group_name', 'target_type', 'target_health_descriptions', 'load_balancer_arns',
   'vpc_id', 'scheme', 'private_zone', 'alias_target', 'records', 'type', 'last_status',
   'task_group', 'cluster_arn', 'attachments', 'origin_refs', 'api_id', 'integration_uri',
-  'connection_type', 'tags', 'status', 'enabled', 'protocol', 'port', 'subnet_ids', 'security_groups'];
+  'connection_type', 'tags', 'status', 'enabled', 'protocol', 'port', 'subnet_ids', 'security_groups',
+  'load_balancer_arn', 'conditions', 'actions', 'is_default', 'target', 'route_key'];
 export type InventoryRow = Row & { resource_type: string; captured_at?: unknown; account_id: string };
 type Run = Record<string, any>;
-const ROW_CAP = 2000;
+export const INVENTORY_ROW_CAP = 8192;
 const ROW_BYTES = 64 * 1024;
 const SNAPSHOT_BYTES = 8 * 1024 * 1024;
 
@@ -69,9 +70,8 @@ export async function inventoryCounts(pool: Pool, types: string[]) {
 export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: string, types: string[],
   proof?: Awaited<ReturnType<typeof inventoryCounts>>) {
   const counts = proof ?? await inventoryCounts(pool, types);
-  // Route53 is record-granular. A nominal 1KiB row allowance permits dense flow
-  // input while the existing projected-payload and graph byte budgets still apply.
-  const rowCap = cls === 'flow' ? SNAPSHOT_BYTES / 1024 : ROW_CAP;
+  // Both classes use the already-supported flow envelope; bytes/time still bound the read.
+  const rowCap = INVENTORY_ROW_CAP;
   return graphTransaction(pool, true, async client => {
     const runs = await client.query(`SELECT account_id, resource_type, status, started_at,
       finished_at, last_success_at, row_count, unknown_attribute_count, xmin::text AS version
@@ -89,14 +89,23 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
     // provider payloads from reaching Node. Identity columns remain authoritative.
     const result = await client.query(`WITH bounded AS MATERIALIZED (
       SELECT account_id, resource_type, resource_id, region, captured_at,
-        (SELECT coalesce(jsonb_object_agg(key,value), '{}'::jsonb)
+        (SELECT coalesce(jsonb_object_agg(key,
+          CASE WHEN key='target_health_descriptions' AND jsonb_typeof(value)='array' THEN
+            (SELECT coalesce(jsonb_agg(CASE WHEN jsonb_typeof(item)='object' THEN
+              jsonb_strip_nulls(jsonb_build_object(
+                'Target',jsonb_build_object('Id',item#>'{Target,Id}','Port',item#>'{Target,Port}'),
+                'TargetHealth',jsonb_build_object('State',item#>'{TargetHealth,State}')))
+              ELSE item END ORDER BY ordinal), '[]'::jsonb)
+             FROM jsonb_array_elements(value) WITH ORDINALITY AS targets(item,ordinal))
+          ELSE value END), '{}'::jsonb)
          FROM jsonb_each(data) WHERE key=ANY($3)) AS data
       FROM inventory_resources WHERE account_id=$1 AND resource_type=ANY($2)
       ORDER BY resource_type, region, resource_id LIMIT $4
     ), sized AS MATERIALIZED (
       SELECT *, octet_length(data::text)+octet_length(resource_id)+octet_length(region) AS bytes FROM bounded
     ), budgeted AS (
-      SELECT *, sum(bytes) OVER (ORDER BY resource_type, region, resource_id) AS total_bytes FROM sized
+      SELECT *, sum(CASE WHEN bytes <= $5 THEN bytes ELSE 0 END)
+        OVER (ORDER BY resource_type, region, resource_id) AS total_bytes FROM sized
     ) SELECT account_id, resource_type,
       CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN resource_id ELSE '' END AS resource_id,
       CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN region ELSE '' END AS region, captured_at,
@@ -105,6 +114,17 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
       FROM budgeted ORDER BY resource_type, region, resource_id`,
     [account, types, cls === 'infra' ? INFRA_FIELDS : FLOW_FIELDS, rowCap + 1, ROW_BYTES, SNAPSHOT_BYTES]);
     const rows = result.rows as InventoryRow[];
+    const truncated = rows.length > rowCap || rows.some(row => row.oversized);
+    let truncatedTypes: string[] = [];
+    if (truncated) {
+      // Diagnose omitted payload by type in the SAME snapshot; this never authorizes a sweep.
+      const totals = await client.query(`SELECT resource_type, count(*)::int AS account_count
+        FROM inventory_resources WHERE account_id=$1 AND resource_type=ANY($2) GROUP BY resource_type`, [account, types]);
+      const valid = totals.rows.every(row => Number.isSafeInteger(row.account_count) && row.account_count >= 0);
+      const counts = new Map(totals.rows.map(row => [row.resource_type, row.account_count]));
+      const returned = rows.slice(0, rowCap).filter(row => !row.oversized);
+      truncatedTypes = types.filter(type => !valid || (counts.get(type) ?? 0) > returned.filter(row => row.resource_type === type).length);
+    }
     // sync_lambda marks the ledger running before changing rows, then finalizes it.
     // Only the identical ledger version can reuse this pass's reconciled count.
     // A matching aggregate still does not prove an unobserved member participated.
@@ -115,7 +135,7 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
         aggregateCounts.set(run.resource_type, count.count);
     }
     return { rows, runs: runs.rows as Run[],
-      aggregateCounts, participation: participation.rows as Run[], truncated: rows.length > rowCap || rows.some(row => row.oversized) };
+      aggregateCounts, participation: participation.rows as Run[], truncated, truncatedTypes };
   });
 }
 
@@ -129,6 +149,7 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
   const { rows, runs, aggregateCounts, participation, truncated } = snapshot;
   // Every source this class can collect in this account contributes a coverage result.
   const required = [...new Set(types)];
+  const limitedTypes = new Set(snapshot.truncatedTypes ?? (truncated ? required : []));
   let safe = required.length > 0 && !truncated;
   const sources = required.map(type => {
     const items = rows.filter(row => row.resource_type === type);
@@ -158,12 +179,12 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
       : !lastSuccessAtMs || (items.length > 0 && capturedAtMs === null) ? ['unknown_capture'] : [];
     if (blockers.length) safe = false;
     const reasons = [...blockers, ...(run && unknownAttributes ? ['unknown_attributes'] : []),
-      ...(truncated ? ['payload_truncated'] : [])];
+      ...(limitedTypes.has(type) ? ['payload_truncated'] : [])];
     const status = producerStatus === 'failed' ? 'error'
       : producerStatus === 'unknown' || !lastSuccessAtMs || unknownScope ? 'unavailable'
       : reasons.length ? 'partial' : items.length ? 'ok' : 'empty';
     return { sourceId: `inventory:${type}`, scope: account !== 'self' && participated ? 'account' : 'aggregate',
-      status, producerStatus, reasons, itemCount: truncated ? null : items.length, capturedAtMs, lastSuccessAtMs,
+      status, producerStatus, reasons, itemCount: limitedTypes.has(type) ? null : items.length, capturedAtMs, lastSuccessAtMs,
       attemptedAtMs: stamp(run?.started_at), finishedAtMs: stamp(run?.finished_at) };
   });
   const status = sources.some(s => s.status === 'error') ? 'error'

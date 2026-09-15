@@ -284,8 +284,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   it('does not certify an omitted nonempty source as empty at the row cap', async () => {
     await seed('infra'); await build('infra');
     await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
-      SELECT 'ec2','i-'||n,'{}',$1 FROM generate_series(1,2001) n`, [recent]);
-    await pool.query("UPDATE inventory_sync_runs SET row_count=2001 WHERE resource_type='ec2'");
+      SELECT 'ec2','i-'||n,'{}',$1 FROM generate_series(1,8193) n`, [recent]);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=8193 WHERE resource_type='ec2'");
     expect(await build('infra')).toMatchObject({ retained: 1, published: 0 });
     expect((await state('infra')).sources).toContainEqual(expect.objectContaining({
       sourceId: 'inventory:vpc', status: 'partial', itemCount: null,
@@ -377,7 +377,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await seed('infra');
     await build('infra');
     await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
-      SELECT 'vpc', 'vpc-'||n, '{}', $1 FROM generate_series(1,2000) n`, [recent]);
+      SELECT 'vpc', 'vpc-'||n, '{}', $1 FROM generate_series(1,8192) n`, [recent]);
     expect(await build('infra')).toMatchObject({ published: 0, retained: 1, reasons: ['snapshot_limit'] });
     expect(await state('infra')).toMatchObject({ status: 'partial', retainedPrevious: true, inputTruncated: true });
     expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
@@ -643,9 +643,9 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   });
   it('continues a small account after skipping an oversized first collection', async () => {
     await pool.query(`INSERT INTO inventory_resources(resource_type,account_id,resource_id,data,captured_at)
-      SELECT 'vpc','self','vpc-'||n,'{}',$1 FROM generate_series(1,2001) n`, [recent]);
+      SELECT 'vpc','self','vpc-'||n,'{}',$1 FROM generate_series(1,8193) n`, [recent]);
     await seed('infra', recent, '111122223333');
-    await pool.query("UPDATE inventory_sync_runs SET row_count=2002 WHERE resource_type='vpc'");
+    await pool.query("UPDATE inventory_sync_runs SET row_count=8194 WHERE resource_type='vpc'");
     expect(await build('infra')).toMatchObject({ published: 1, retained: 0, skipped: 1, reasons: ['snapshot_limit'] });
     expect(await state('infra', '111122223333')).toMatchObject({ retainedPrevious: false, status: 'ok' });
   });

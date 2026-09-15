@@ -21,9 +21,9 @@ Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/a
 - `middleware.ts` — global 2MB body cap over all of `/api/*` (defense-in-depth above each route's own `readJsonBounded`).
 - `instrumentation.ts` — server-boot hook: runs the periodic graph rebuild, default off (`GRAPH_REBUILD_INTERVAL_MINS`).
   Its outer catch and process-local overlap guard remain in force. `lib/graph-execution.ts` reports
-  validated publication counts, fixed reasons and sanitized failures. Unexpected infra execution
-  failure skips dependent trace work; registry errors retain synthetic source/fallback failure evidence.
-  CLI exits 1 for failure, 2 for retained/skipped work, otherwise 0; degraded publication is labeled.
+  validated publication counts, fixed reasons and sanitized failures. Failed or incomplete infra
+  outcomes withhold trace; registry errors use the non-publishing recorder without invented counts/windows.
+  CLI exits 1 for failure, 2 for incomplete publication (including degradation), otherwise 0.
 - `next.config.mjs` — `output: 'standalone'` + `experimental.instrumentationHook` + legacy-path redirects (`/ec2`, `/opencost`).
 - `Dockerfile` — node:20-alpine 2-stage standalone build, `CMD ["node","server.js"]`.
 
