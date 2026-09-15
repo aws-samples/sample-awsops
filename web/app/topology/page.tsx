@@ -684,7 +684,8 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
   // Correlation must see every loaded candidate, including competitors hidden by a default
   // view filter. Retained/in-flight inventory remains visible but cannot promote identity.
   const identityBlocked = busy || retained || !!err || syncIncomplete || readFailures.length > 0
-    || cappedTypes.length > 0 || collectionIssues.length > 0;
+    || cappedTypes.length > 0 || collectionIssues.length > 0 || runHealthUnknown || unknownCapture
+    || aggregateRuns.some(([status]) => status === 'running');
   const inventoryEvidencePanel = <>
         {e2e && <p className="text-[12px] text-ink-600">
           {tt('선택 계정의 전체 구성으로 비교합니다. 진입점·클러스터 필터는 기본 화면에만 적용됩니다.')}

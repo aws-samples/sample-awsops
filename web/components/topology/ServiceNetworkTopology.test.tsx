@@ -64,7 +64,10 @@ function observation(url: URL, overrides: Record<string, unknown> = {}) {
   };
 }
 type HttpHandler = (url: URL, init?: RequestInit) => Response | Promise<Response>;
-function serve(options: { nfm?: HttpHandler; service?: HttpHandler; query?: HttpHandler; host?: HttpHandler } = {}) {
+function renderTopology(
+  options: { nfm?: HttpHandler; service?: HttpHandler; query?: HttpHandler; host?: HttpHandler } = {},
+  overrides: Partial<Parameters<typeof ServiceNetworkTopology>[0]> = {},
+) {
   const requests: { url: URL; signal?: AbortSignal | null }[] = [];
   vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost');
@@ -78,7 +81,8 @@ function serve(options: { nfm?: HttpHandler; service?: HttpHandler; query?: Http
     if (url.pathname === '/api/nfm/query') return Promise.resolve(options.query?.(url, init) ?? json(observation(url)));
     throw new Error(`Unexpected HTTP request: ${url}`);
   }));
-  return { requests, queries: () => requests.filter(({ url }) => url.pathname === '/api/nfm/query') };
+  const view = render(<ServiceNetworkTopology {...props} {...overrides} />);
+  return { view, requests, queries: () => requests.filter(({ url }) => url.pathname === '/api/nfm/query') };
 }
 async function ready() {
   const button = screen.getByRole('button', { name: '네트워크 조회' });
@@ -110,12 +114,11 @@ describe('ServiceNetworkTopology', () => {
     });
     const trace = buildTraceGraph([{ traceId: 't', spanId: 's', service: 'web', sourceId: 'tempo', kind: 'SERVER', startMs: 0, durationMs: 1,
       accountId: host, region, k8sCluster: 'app', k8sNamespace: 'shop', k8sPod: 'web-1', k8sDeployment: 'web' }], [], [], host);
-    serve({ host: () => json({ accounts: known ? [{ accountId: host, isHost: true }] : [] }),
+    renderTopology({ host: () => json({ accounts: known ? [{ accountId: host, isHost: true }] : [] }),
       service: () => json({ ...trace, class: 'trace', account: 'self', captured_at: snapshot.captured_at, collection: { ...completeCollection, ...quality } }),
       query: url => { const result = observation(url); Object.assign(result.rows[0].local,
         { podName: 'web-1', podNamespace: 'shop' }); return json(result); },
-    });
-      render(<ServiceNetworkTopology {...props} configured={configured} />);
+    }, { configured });
       await ready(); select('목적지 분류', 'INTER_AZ');
       fireEvent.click(screen.getByRole('button', { name: '네트워크 조회' }));
       await screen.findByRole('region', { name: '적용된 네트워크 조회' });
@@ -124,8 +127,7 @@ describe('ServiceNetworkTopology', () => {
       expect(Boolean(detail.queryByText('구성에서 확인된 Pod 식별자'))).toBe(expected);
   });
   it('preserves an all-failed network read instead of presenting successful absence', async () => {
-    serve({ query: () => json({ error: 'unavailable' }, 503) });
-    render(<ServiceNetworkTopology {...props} />);
+    renderTopology({ query: () => json({ error: 'unavailable' }, 503) });
     fireEvent.click(await ready());
     await screen.findByRole('region', { name: '적용된 네트워크 조회' });
     expect(screen.getByText('네트워크 관측 조회가 실패했습니다.')).toBeTruthy();
@@ -134,8 +136,7 @@ describe('ServiceNetworkTopology', () => {
   it('loads independent sources concurrently but does not query NFM before an explicit click', async () => {
     const compose = vi.spyOn(e2e, 'buildE2eGraph');
     const service = deferred<Response>();
-    const http = serve({ service: () => service.promise });
-    render(<ServiceNetworkTopology {...props} />);
+    const http = renderTopology({ service: () => service.promise });
     const button = await ready();
     expect(http.requests.map(({ url }) => url.pathname + url.search)).toEqual(['/api/nfm', '/api/graph?class=trace', '/api/accounts']);
     expect((screen.getByRole('combobox', { name: '모니터' }) as HTMLSelectElement).value).toBe('nfm-vpc-all');
@@ -161,8 +162,7 @@ describe('ServiceNetworkTopology', () => {
     ['200 error envelope', () => json({ ...status, monitors: [], error: 'private-role-arn' }), /소스를 불러오지 못했습니다/],
     ['malformed status', () => json({ monitors: 'broken', scopeCount: 0 }), /올바르지 않은/],
   ])('distinguishes %s from an unconfigured NFM source', async (_, nfm, error) => {
-    const http = serve({ nfm });
-    render(<ServiceNetworkTopology {...props} />);
+    const http = renderTopology({ nfm });
     const source = screen.getByRole('region', { name: 'NFM 소스' });
     expect(await within(source).findByRole('alert')).toHaveProperty('textContent', expect.stringMatching(error));
     expect(document.body.textContent).not.toMatch(/private-auth-detail|private-role-arn/);
@@ -173,8 +173,7 @@ describe('ServiceNetworkTopology', () => {
   });
 
   it('accepts a null error field in an otherwise successful source response', async () => {
-    serve({ nfm: () => json({ ...status, error: null }) });
-    render(<ServiceNetworkTopology {...props} />);
+    renderTopology({ nfm: () => json({ ...status, error: null }) });
     await ready();
     expect(within(screen.getByRole('region', { name: 'NFM 소스' })).queryByRole('alert')).toBeNull();
   });
@@ -182,19 +181,17 @@ describe('ServiceNetworkTopology', () => {
   it.each(['class', 'account'])('rejects service snapshots with missing %s scope', async field => {
     const missing = { ...snapshot } as Record<string, unknown>;
     delete missing[field];
-    serve({ service: () => json(missing) });
-    render(<ServiceNetworkTopology {...props} />);
+    renderTopology({ service: () => json(missing) });
     expect(await within(screen.getByRole('region', { name: '서비스 소스' })).findByRole('alert')).toBeTruthy();
     await ready();
   });
 
   it('preserves partial, stale and retained collection evidence from the service snapshot', async () => {
-    serve({ service: () => json({ ...snapshot, collection: {
+    renderTopology({ service: () => json({ ...snapshot, collection: {
       status: 'partial', stale: true, retainedPrevious: true,
       captured_at: snapshot.captured_at,
       sources: [{ sourceId: 'trace:tempo', status: 'error', itemCount: 0 }],
     } }) });
-    render(<ServiceNetworkTopology {...props} />);
     const source = screen.getByRole('region', { name: '서비스 소스' });
     expect(await within(source).findByText(/부분 수집/)).toBeTruthy();
     expect(within(source).getByText(/이전 그래프/)).toBeTruthy();
@@ -202,8 +199,7 @@ describe('ServiceNetworkTopology', () => {
   });
 
   it('keeps evidence preferences when a query replaces observation data', async () => {
-    serve();
-    render(<ServiceNetworkTopology {...props} />);
+    renderTopology();
     const button = await ready();
     const configurationLayer = screen.getByRole('checkbox', { name: '구성 관계' });
     fireEvent.click(configurationLayer);
@@ -214,8 +210,7 @@ describe('ServiceNetworkTopology', () => {
   });
 
   it('discloses incomplete observation windows even when category requests succeeded', async () => {
-    serve({ query: url => json(observation(url, { startTime: null, endTime: null, queriedAt: null })) });
-    render(<ServiceNetworkTopology {...props} />);
+    renderTopology({ query: url => json(observation(url, { startTime: null, endTime: null, queriedAt: null })) });
     fireEvent.click(await ready());
     const result = await screen.findByRole('region', { name: '적용된 네트워크 조회' });
     expect(within(result).getByText(/부분 성공/)).toBeTruthy();
@@ -224,11 +219,10 @@ describe('ServiceNetworkTopology', () => {
   });
 
   it('accepts empty source arrays as unavailable observations, never as proof of zero traffic', async () => {
-    serve({
+    renderTopology({
       nfm: () => json({ monitors: [], scopeCount: 0 }),
       service: () => json({ ...snapshot, nodes: [], edges: [], captured_at: null }),
     });
-    render(<ServiceNetworkTopology {...props} />);
     expect(await screen.findByText(/설정된 NFM 모니터가 없습니다/)).toBeTruthy();
     expect(await screen.findByText(/저장된 서비스 스냅샷이 없습니다/)).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
@@ -242,8 +236,7 @@ describe('ServiceNetworkTopology', () => {
     () => json({ ...snapshot, nodes: [{ id: 'bad' }] }),
     () => json({ ...snapshot, account: '123456789012' }),
   ])('rejects a failed, malformed or incorrectly scoped service snapshot without disabling NFM', async (service) => {
-    serve({ service });
-    render(<ServiceNetworkTopology {...props} />);
+    renderTopology({ service });
     expect(await within(screen.getByRole('region', { name: '서비스 소스' })).findByRole('alert')).toBeTruthy();
     expect(await ready()).toBeTruthy();
     search('checkout-service');
@@ -253,7 +246,7 @@ describe('ServiceNetworkTopology', () => {
   it('retains successful categories and reports bounded progress, failures, caps and original windows', async () => {
     const slow = deferred<Response>();
     let slowUrl!: URL;
-    const http = serve({ query: (url) => {
+    const http = renderTopology({ query: (url) => {
       const category = url.searchParams.get('category');
       if (category === 'INTER_AZ') return json({ message: 'category unavailable' }, 503);
       if (category === 'UNCLASSIFIED') { slowUrl = url; return slow.promise; }
@@ -261,7 +254,6 @@ describe('ServiceNetworkTopology', () => {
         startTime: '2026-09-11T10:45:00Z', endTime: '2026-09-11T11:00:00Z',
       } : {}) }));
     } });
-    render(<ServiceNetworkTopology {...props} />);
     fireEvent.click(await ready());
     await waitFor(() => expect(http.queries()).toHaveLength(7));
     expect(screen.getByRole('status', { name: '네트워크 조회 진행' }).textContent).toMatch(/6\s*\/\s*7/);
@@ -278,8 +270,7 @@ describe('ServiceNetworkTopology', () => {
   });
 
   it('keeps applied labels and graph while edited filters wait for the next click', async () => {
-    const http = serve();
-    render(<ServiceNetworkTopology {...props} />);
+    const http = renderTopology();
     await ready();
     select('목적지 분류', 'INTER_AZ');
     fireEvent.click(screen.getByRole('button', { name: '네트워크 조회' }));
@@ -300,8 +291,7 @@ describe('ServiceNetworkTopology', () => {
   });
 
   it.each(['123456789012', '__all__'])('shows configuration alone with no source calls for account %s', (account) => {
-    const http = serve();
-    render(<ServiceNetworkTopology {...props} account={account} />);
+    const http = renderTopology({}, { account });
     expect(http.requests).toHaveLength(0);
     expect(screen.queryByRole('combobox')).toBeNull();
     expect(screen.getByText(/호스트 계정.*지원/)).toBeTruthy();
@@ -314,11 +304,10 @@ describe('ServiceNetworkTopology', () => {
     const lateQuery = deferred<Response>();
     let queryUrl!: URL;
     let serviceCalls = 0;
-    const http = serve({
+    const { view, ...http } = renderTopology({
       service: () => ++serviceCalls === 1 ? lateService.promise : json({ ...snapshot, nodes: [], edges: [] }),
       query: (url) => { queryUrl = url; return lateQuery.promise; },
     });
-    const view = render(<ServiceNetworkTopology {...props} />);
     await ready();
     select('목적지 분류', 'INTER_AZ');
     fireEvent.click(screen.getByRole('button', { name: '네트워크 조회' }));
@@ -345,12 +334,11 @@ describe('ServiceNetworkTopology', () => {
     const next = deferred<Response>();
     let count = 0;
     let nextUrl!: URL;
-    serve({ query: (url) => {
+    renderTopology({ query: (url) => {
       if (++count === 1) return json(observation(url));
       nextUrl = url;
       return next.promise;
     } });
-    render(<ServiceNetworkTopology {...props} />);
     await ready();
     select('목적지 분류', 'INTER_AZ');
     fireEvent.click(screen.getByRole('button', { name: '네트워크 조회' }));
@@ -370,10 +358,10 @@ describe('ServiceNetworkTopology', () => {
   it('refreshes sources and invokes the parent without running or accepting an old network query', async () => {
     const pending = deferred<Response>();
     let queryUrl!: URL;
-    const http = serve({ query: (url) => { queryUrl = url; return pending.promise; } });
     let refreshes = 0;
     let backs = 0;
-    render(<ServiceNetworkTopology {...props} onRefresh={() => { refreshes += 1; }} onBack={() => { backs += 1; }} />);
+    const http = renderTopology({ query: (url) => { queryUrl = url; return pending.promise; } },
+      { onRefresh: () => { refreshes += 1; }, onBack: () => { backs += 1; } });
     await ready();
     select('목적지 분류', 'INTER_AZ');
     fireEvent.click(screen.getByRole('button', { name: '네트워크 조회' }));
@@ -395,8 +383,7 @@ describe('ServiceNetworkTopology', () => {
     ['monitor=nfm-paused&metric=garbage&category=INTERNET&range=86400', 'nfm-vpc-all', 'DATA_TRANSFERRED', 'ALL', '900'],
   ])('validates initial URL filters (%s) without querying automatically', async (params, monitor, metric, category, range) => {
     window.history.replaceState({}, '', `/topology?view=e2e&${params}`);
-    const http = serve();
-    render(<ServiceNetworkTopology {...props} />);
+    const http = renderTopology();
     await ready();
     for (const [label, value] of [['모니터', monitor], ['메트릭', metric], ['목적지 분류', category], ['조회 범위', range]]) {
       expect((screen.getByRole('combobox', { name: label }) as HTMLSelectElement).value).toBe(value);
@@ -405,8 +392,7 @@ describe('ServiceNetworkTopology', () => {
   });
 
   it('labels an empty successful query as no matching top contributors and leaves unknown windows unknown', async () => {
-    serve({ query: (url) => json(observation(url, { rows: [], startTime: undefined, endTime: undefined, queriedAt: undefined })) });
-    render(<ServiceNetworkTopology {...props} />);
+    renderTopology({ query: (url) => json(observation(url, { rows: [], startTime: undefined, endTime: undefined, queriedAt: undefined })) });
     await ready();
     select('목적지 분류', 'INTER_AZ');
     fireEvent.click(screen.getByRole('button', { name: '네트워크 조회' }));

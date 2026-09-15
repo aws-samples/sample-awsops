@@ -39,6 +39,12 @@ const graph: E2eGraph = {
     unmatchedEndpoints: 1, ambiguousEndpoints: 0, observationsUnsupported: false },
 };
 
+function renderConnection(flow: Record<string, unknown>, meta: Record<string, unknown> = {}) {
+  const nodes = graph.nodes.map(node => node.id === 'f1'
+    ? { ...node, meta: { ...node.meta, ...meta, flow: { ...(node.meta.flow as object), ...flow } } } : node);
+  return render(<E2eGraphCanvas graph={{ ...graph, nodes }} />);
+}
+
 async function select(label: string) {
   fireEvent.change(screen.getByRole('searchbox'), { target: { value: label } });
   fireEvent.click(await screen.findByRole('button', { name: `선택: ${label}` }));
@@ -192,9 +198,7 @@ describe('E2eGraphCanvas', () => {
   });
 
   it.each([NaN, Infinity, -1])('shows an unavailable metric instead of rendering invalid value %s', async value => {
-    const nodes = graph.nodes.map(node => node.id === 'f1'
-      ? { ...node, meta: { ...node.meta, flow: { ...(node.meta.flow as object), value } } } : node);
-    render(<E2eGraphCanvas graph={{ ...graph, nodes }} />);
+    renderConnection({ value });
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'checkout-flow' } });
     fireEvent.click(await screen.findByRole('button', { name: '선택: checkout-flow' }));
     const detail = screen.getByRole('region', { name: '선택한 노드 상세' });
@@ -203,9 +207,7 @@ describe('E2eGraphCanvas', () => {
   });
 
   it('keeps traversed type context readable when an ID list is unavailable', async () => {
-    const nodes = graph.nodes.map(node => node.id === 'f1'
-      ? { ...node, meta: { ...node.meta, flow: { ...(node.meta.flow as object), traversedIds: undefined } } } : node);
-    render(<E2eGraphCanvas graph={{ ...graph, nodes }} />);
+    renderConnection({ traversedIds: undefined });
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'checkout-flow' } });
     fireEvent.click(await screen.findByRole('button', { name: '선택: checkout-flow' }));
     expect(within(screen.getByRole('region', { name: '선택한 노드 상세' })).getByText('NAT')).toBeTruthy();
@@ -285,9 +287,7 @@ describe('E2eGraphCanvas', () => {
   });
 
   it('discloses the source sample cap and an unknown traversed list', async () => {
-    const nodes = graph.nodes.map(node => node.id === 'f1' ? { ...node, meta: { ...node.meta, capped: true,
-      flow: { ...(node.meta.flow as object), traversed: [], traversedIds: [] } } } : node);
-    render(<E2eGraphCanvas graph={{ ...graph, nodes }} />);
+    renderConnection({ traversed: [], traversedIds: [] }, { capped: true });
     const detail = await select('checkout-flow');
     expect(detail.getByText('상위 기여자 표본 상한에 도달했습니다. 전체 트래픽을 나타내지 않습니다.')).toBeTruthy();
     expect(detail.getByText('관측에 경유 구성요소 정보가 없습니다.')).toBeTruthy();

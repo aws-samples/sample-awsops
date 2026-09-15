@@ -13,15 +13,19 @@ const region = 'us-east-1', vpcId = 'vpc-demo', ip = '10.0.1.10';
 const lb = ['a', 'b'].map(x => ({ resource_id: x, region, data: { arn: `arn:fixture:lb:${x}`, dns_name: `lb-${x}.example.test` } }));
 const rows: Record<string, { resource_id: string; region: string; data: object }[]> = { alb: lb, target_group: lb.map((l, i) => ({ resource_id: `tg-${i}`, region, data: { vpc_id: vpcId, target_type: 'ip', load_balancer_arns: [l.data.arn], target_health_descriptions: [{ Target: { Id: ip, Port: 443 } }] } })) };
 function readGraph() { return JSON.parse(screen.getByTestId('actual-composed-graph').textContent!); }
+let quality: 'healthy' | 'missing-run' | 'running' | 'missing-capture' = 'healthy';
 beforeEach(() => {
+ quality = 'healthy';
  localStorage.clear(); setActiveScope(DEFAULT_SCOPE);
  window.history.replaceState({}, '', '/topology');
  vi.stubGlobal('requestAnimationFrame', () => 0); vi.stubGlobal('cancelAnimationFrame', () => {});
  vi.stubGlobal('fetch', vi.fn(async (input: string) => {
   const url = new URL(input, 'http://localhost');
   if (url.pathname.startsWith('/api/inventory/')) return Response.json({
-   rows: (rows[url.pathname.split('/').pop()!] ?? []).map(row => ({ ...row, account_id: 'self', captured_at: END })),
-   consistency: 'statement-snapshot', run: { status: 'succeeded', finished_at: END, last_success_at: END, row_count: 2 },
+   rows: (rows[url.pathname.split('/').pop()!] ?? []).map(row => ({ ...row, account_id: 'self',
+    captured_at: quality === 'missing-capture' && url.pathname.endsWith('/alb') ? null : END })),
+   consistency: 'statement-snapshot', run: quality === 'missing-run' && url.pathname.endsWith('/alb') ? null
+    : { status: quality === 'running' && url.pathname.endsWith('/alb') ? 'running' : 'succeeded', finished_at: END, last_success_at: END, row_count: 2 },
   });
   if (url.pathname === '/api/eks') return Response.json({ clusters: [], region });
   if (url.pathname === '/api/accounts') return Response.json({ accounts: [{ accountId: '111111111111', isHost: true }] });
@@ -38,6 +42,15 @@ beforeEach(() => {
  }));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+it.each(['healthy', 'missing-run', 'running', 'missing-capture'] as const)(
+ 'configuration completeness reflects non-critical inventory quality: %s', async state => {
+  quality = state;
+  window.history.replaceState({}, '', '/topology?view=e2e');
+  render(<TopologyPage />);
+  await screen.findByLabelText('Inventory collection evidence');
+  await waitFor(() => expect(readGraph().summary.configuredNodes).toBeGreaterThan(0));
+  expect(readGraph().summary.configurationComplete).toBe(state === 'healthy');
+ });
 it.each([false, true])('entry preference %s cannot discard competing configured candidates', async filtered => {
  const view = render(<TopologyPage />);
  await screen.findByTestId('default-flow');
