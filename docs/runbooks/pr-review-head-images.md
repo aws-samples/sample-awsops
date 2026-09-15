@@ -164,6 +164,17 @@ recovery path is unchanged; this helper adds no manual event or approval bypass.
 Require completed review of the latest HEAD and existing CI/branch protection.
 The full raw-diff guard, all required cells, chair and Critical/Major gates remain.
 
+## Authenticated runner evidence
+
+The [manual diagnostic run](https://github.com/aws-samples/sample-awsops/actions/runs/34932133944)
+on source `0fc1d7fee4d1db9ade36ec3d085f1ecbee7f4963` verified one actual authenticated
+Read with Claude CLI 2.1.270 and requested model `us.anthropic.claude-fable-5`.
+The generated image was outside both the checkout and CLI temp directory. The exact
+Read and answer matched, the CLI exited zero, and owned scratch cleanup completed.
+This establishes that run's capability with the existing role and tools. It does not
+certify every panel model or image, and never replaces required latest-HEAD coverage.
+See [the diagnostic contract](review-image-capability.md) for its fixed proof fields.
+
 ## Related files and policy
 
 - [Workflow](../../.github/workflows/pr-review.yml)

@@ -6,6 +6,14 @@ Deployment/ops automation behind the Makefile targets (`v2/`), plus the PR revie
 secrets-manager) — installed by `make deps`.
 
 ## Key Files
+- `pr-review/image_capability.py` — manual dev-only authenticated runner Read diagnostic.
+  Standard-library synthetic PNG before credentials; one bounded Claude call, exact
+  Read/answer/exit trace proof from the actual checkout, image outside workspace/CLI temp.
+  Safe JSON carries observations or null plus independent cleanup status; cleanup failure
+  preserves Read proof but fails the job. Reused roots cannot invoke again or publish stale
+  proof. Existing role/environment/tools only: operator CI under ADR-005, no mutation
+  exception or review gate replacement.
+  Offline tests: `v2/test_review_image_capability.py`; runbook: `docs/runbooks/review-image-capability.md`.
 - `v2/ci_web_read.py` and `v2/ci_web_deploy.py` serve the Deploy Web controller. Only allowlisted idempotent reads raise typed transient errors; one shared deadline bounds retries and subprocess cleanup. Identity/permission/unknown failures are fatal; writes remain single-attempt. Exact failed/replaced ECS deployments fail promptly, with at most 15 seconds for the known old PRIMARY in receipt verification. Tests are `v2/test_ci_web_read.py` and `v2/test_ci_web_deploy.py`.
 - `v2/automatic-migration-policy.mjs` admits a conservative additive SQL subset only when `AUTOMATIC_MIGRATION=1`, forced by every web migration caller. Check all actual pending files before pending SQL, ledger upgrades or reader synchronization; function defaults (`now()`/`gen_random_uuid()`), `ALTER`, `GRANT`, views and unknown syntax require reviewed standalone migration. Automatic calls reject a missing `public.schema_migrations` under the lock and never call `initializeEmptyDatabase`, regardless of `INITIALIZE_EMPTY_DB`. Complete standalone empty-only bootstrap/historical SQL/reader sync, then dispatch a fresh web build; no historical exemptions. `migrate.mjs` uses `pg_try_advisory_lock` and holds acquired locks through SQL-reader synchronization; contention fails immediately. Tests: `v2/ci/automatic-migration-policy.test.mjs`, `migration-runtime.test.mjs` and real PostgreSQL `migration.itest.mjs`. Contract and operator scope: `docs/runbooks/release-safety-primitives.md` (ADR-001/005).
 - `v2/ci_web_image.py` — web provenance helper called by `ci_web_deploy.py`.
@@ -73,6 +81,9 @@ secrets-manager) — installed by `make deps`.
   Operator collection writes application inventory, not AWS resources; this is not an ADR-005 exception.
   Tests: `v2/test_ci_verifier_sessions.py`; contract: `docs/runbooks/runtime-verifier-sessions.md`.
 - `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
+  Plan's optional nonsecret `CI_STEAMPIPE_AWS_FILL_RATE_DEV` requires full scope and that verified dev profile;
+  empty preserves configuration. Apply replays the saved plan, not the current repository variable.
+  Canonical contract: [Steampipe refill override](../docs/runbooks/steampipe-quota-and-staleness.md#development-ci-refill-override).
 - Readiness is separate from the runtime profile: `CI_READINESS_ENABLED_DEV=true/false`
   explicitly overrides `ci_readiness_enabled` on dev; empty/unset preserves operator tfvars
   and default false. Enabled readiness is rejected outside dev. Applied readiness plus
@@ -272,6 +283,8 @@ secrets-manager) — installed by `make deps`.
   `CONFIRM=go`.
 - `pr-review/` — lens×model review panel: `run-panel.sh` (parallel fan-out, one `*.txt` prompt
   per lens), `synthesize.sh` (chair synthesis), `lib.sh` (slots, scrubbing, response/coverage checks).
+  `image_capability.py` is the separate manual diagnostic, not a panel or gate override;
+  its source contract and offline test entry are listed above.
   `review_context.py` pins the trusted CI checkout and reviewed PR/base metadata.
   `stage_head_pngs.py` stages bounded regular HEAD raster Git blobs as read-only data before
   review credentials; prompts use 200-character safe path labels, exact names stay in JSON data.

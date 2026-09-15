@@ -1,8 +1,14 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 13b199ae98a6 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: c7d54b01fee2 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
 # Runbooks — Reviewer Context
+
+- `review-image-capability.md` documents the separate manual dev-only synthetic image
+  Read diagnostic. Existing OIDC role/environment only; safe proof and cleanup do not
+  replace latest-HEAD review or required CI (operator CI under ADR-005, no mutation exception).
+  Model cwd is the checkout; image evidence stays outside it and CLI temp. Observations
+  may be unknown; cleanup failure fails the job while retaining valid Read evidence.
 
 Web image receipt/ECR proof precedes private migrations, including reuse; promotion retains that digest. Automatic DDL is expand-only; contract cutovers require a merge freeze, drained queues and explicit operator coordination. Legacy images without receipts use the separately approved `legacy-web-image-recovery.md` path with trusted digest/source evidence and schema approval, never a fabricated receipt or mutable-tag fallback.
 
@@ -133,6 +139,8 @@ evidence, with bounded data-only extraction and explicit unavailable-image failu
   even with DNS permission. Ownership migration and record retirement need separate review.
 - ALLDNS includes private Cloud Map, validation CNAMEs and registered ECS task changes:
   Steampipe tuning, hydrate-fallback remedies and rollback/disable can change private DNS.
+  The Plan-only full-dev refill override is documented in
+  [Steampipe quota and staleness](steampipe-quota-and-staleness.md#development-ci-refill-override).
   Ordinary full plans (`domain_rollout=false`) retain broad DNS behavior only with explicit
   permission. No private-DNS exception. Authorized cutovers set `allow_dns_changes=true` on
   both plan and apply; documentation is not authorization.

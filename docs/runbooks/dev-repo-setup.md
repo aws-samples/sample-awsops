@@ -94,7 +94,7 @@ mutation roles. Role-to-sub matrix:
 | `sample-awsops-dev-ci-build` | dev + user-branch builds (no environment) | StringLike, one entry per branch: `...:ref:refs/heads/dev`, `...:ref:refs/heads/atomoh`, `...:ref:refs/heads/ssminji`, `...:ref:refs/heads/whchoi` | Development/preview ECR build and push; the configured build-role policy covers repositories across the CI account, not one stack, so each target requires authenticated branch/stack checks |
 | `sample-awsops-dev-ci-deployer` | dev + user-branch rolls/apply/private-plan publication, dev agentcore (jobs carry `environment: development`) | StringEquals `repo:aws-samples/sample-awsops:environment:development` | Development/preview ECS/ECR-pin/apply and AgentCore control plane, including `GetGateway`; current `AdministratorAccess` includes wider account access, so authenticated branch/stack checks and production-account separation are required; private-plan publication additionally requires the scoped S3/KMS permissions below |
 | `sample-awsops-ci-terraform-plan` | plan (PR/push incl. user-branch own-stack plans, read-only) | StringLike: `...:pull_request` + refs `main`, `dev`, `atomoh`, `ssminji`, `whchoi` | ReadOnlyAccess |
-| `sample-awsops-ci-review` | AI pr-review | StringEquals: verified subject prefix + environments `ci-review-auto` / `ci-review-recovery`, or legacy refs `main` / `dev`; no bare `pull_request` subject | Bedrock / Mantle policies — inspect actual permissions before approval |
+| `sample-awsops-ci-review` | AI pr-review; manual dev-only image capability diagnostic | StringEquals: verified subject prefix + environments `ci-review-auto` / `ci-review-recovery`, or legacy refs `main` / `dev`; no bare `pull_request` subject | Bedrock / Mantle policies — inspect actual permissions before approval |
 
 CRITICAL sub rule: **a job that declares `environment:` presents the
 `repo:<owner>/<repo>:environment:<name>` sub — NOT its branch ref.** Deployer
@@ -133,6 +133,13 @@ Recovery approval is enforced by GitHub environments, outside PR-controlled code
 GitHub evaluates environment branch rules against the actual execution ref. A
 `pull_request` job uses `refs/pull/<number>/merge`; a `pull_request_target` job uses the
 trusted default-branch ref. A feature PR cannot select `ci-review-auto` to avoid approval.
+The separate `review-image-capability.yml` consumer uses `workflow_dispatch` on `dev`,
+the repository default branch, and reuses `ci-review-auto` plus `AWS_CI_REVIEW_ROLE_ARN`.
+Its exact repository/event/dev-ref guard and immutable `github.sha` checkout add no trust
+subject or permissions. The existing environment policy allows dev/main; this diagnostic
+is narrower and never runs on main. See [authenticated image capability](review-image-capability.md)
+for observed Read proof, independent cleanup and failure interpretation. This is operator
+CI under ADR-005, not a mutation exception or substitute for required PR reviews.
 The recovery job must wait for a listed reviewer before checkout or credential issuance.
 Self-review prevention is false so a designated operator may initiate and explicitly
 approve their own repair; an ordinary PR author who is not that reviewer cannot approve it.
@@ -450,6 +457,7 @@ real login/DB/host-registry preflight. Readiness is a separate capability contro
 `CI_READINESS_ENABLED_DEV`: true/false explicitly overrides the dev Terraform value; empty/unset
 preserves explicit tfvars and its default false. The runtime profile alone never enables it.
 See [readiness capability](runtime-foundation.md#readiness-capability) for billed access and revocation.
+`CI_STEAMPIPE_AWS_FILL_RATE_DEV` optionally overrides refill 0.1–20 on full dev plans with the verified runtime profile; empty/unset preserves tfvars/defaults. Apply replays the reviewed plan. See the [refill contract](steampipe-quota-and-staleness.md#development-ci-refill-override).
 `AWS_ACCOUNT_ID_DEV` is a required repository **secret** for both migration jobs, runtime image builds, dev AgentCore provisioning and every AWS-facing Deploy Web job (including main's exclusion check); the guard job does not need it. No variable/default-account fallback exists. On dev/preview it must match the configured role accounts and actual STS
 callers; this agreement is not proof of effective permissions or an independent classification of the account as development.
 
