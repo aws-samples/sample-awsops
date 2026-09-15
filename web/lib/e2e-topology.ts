@@ -382,11 +382,21 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       const occurrence = flowOccurrences.get(identity) ?? 0;
       flowOccurrences.set(identity, occurrence + 1);
       const connectionId = nodeId('network', input.account, 'connection', identity, String(occurrence));
+      // Flat NFM fields must not write through to the loader's cached row.
+      const projectedFlow = { ...flow };
+      for (const side of ['local', 'remote']) {
+        if (flow[side] && typeof flow[side] === 'object' && !Array.isArray(flow[side])) {
+          projectedFlow[side] = { ...record(flow[side]) };
+        }
+      }
+      for (const field of ['traversed', 'traversedIds']) {
+        if (Array.isArray(flow[field])) projectedFlow[field] = [...flow[field]];
+      }
       addNode({
         id: connectionId, kind: 'connection', layer: 'network',
         ...(text(observation.metric) ? { label: text(observation.metric) } : generatedLabel('network_observation')),
         meta: {
-          flow: { ...flow }, metric: observation.metric, unit: observation.unit,
+          flow: projectedFlow, metric: observation.metric, unit: observation.unit,
           monitor: observation.monitor, cluster: observation.cluster, category: observation.category,
           rangeSec: observation.rangeSec, capped: observation.capped,
           ...(observation.startTime !== undefined ? { startTime: observation.startTime } : {}),
@@ -548,10 +558,17 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
   if (query) {
     matches = [...selected].filter(id => matchesE2eQuery(byId.get(id)!, query));
     matchedNodes = matches.length;
-    selected = reachable(matches, selected);
+    selected = reachable(focusId ? [focusId, ...matches] : matches, selected);
   }
-  // Complete only admitted connections from eligible network evidence. This is
-  // not another reachability pass: attached/shared context never grants transit.
+  // A context-reached endpoint selects its own observation, too. Separate passes
+  // make completion edge-order independent without traversing identity/context again.
+  for (const edge of edges) {
+    if (edge.evidence !== 'network') continue;
+    for (const [connection, endpoint] of [[edge.source, edge.target], [edge.target, edge.source]]) {
+      if (selected.has(endpoint) && byId.get(endpoint)?.kind === 'endpoint'
+        && byId.get(connection)?.kind === 'connection') selected.add(connection);
+    }
+  }
   for (const edge of edges) {
     if (edge.evidence !== 'network') continue;
     for (const [connection, endpoint] of [[edge.source, edge.target], [edge.target, edge.source]]) {
@@ -613,22 +630,45 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
   const networkRank = (id: string) => byId.get(id)?.kind === 'connection' ? 0 : groupOf.has(id) ? 1 : 2;
   const ranks = new Map(rankE2eConnections(filtered.nodes).map((node, i) => [node.id, i]));
   const ranked = (id: string) => ranks.get(groupOf.get(id) ?? id) ?? ranks.size;
+  const groupDistances = (seeds: string[]) => {
+    const distances = new Map(seeds.filter(id => selected.has(id)).map(id => [id, 0]));
+    const queue = [...distances.keys()];
+    for (let i = 0; i < queue.length; i++) {
+      for (const next of adjacency.get(queue[i]) ?? []) {
+        if (selected.has(next) && !distances.has(next)) {
+          distances.set(next, distances.get(queue[i])! + 1);
+          queue.push(next);
+        }
+      }
+    }
+    const result = new Map<string, number>();
+    const offer = (id: string, distance: number) => {
+      const group = groupOf.get(id);
+      if (group) result.set(group, Math.min(result.get(group) ?? Infinity, distance));
+    };
+    for (const [id, distance] of distances) offer(id, distance);
+    // Rank directly attached cached records/constructs without using them as transit.
+    for (const edge of selectedEdges) {
+      if (edge.evidence !== 'context') continue;
+      for (const [source, target] of [[edge.source, edge.target], [edge.target, edge.source]]) {
+        if (distances.has(source)) offer(target, distances.get(source)! + 1);
+      }
+    }
+    return result;
+  };
+  const focusDistances = groupDistances(focusId ? [focusId] : []);
+  const matchDistances = groupDistances(matches);
+  const distance = (distances: Map<string, number>, id: string) => distances.get(id) ?? selected.size + 1;
   matches.sort((a, b) => networkRank(a) - networkRank(b) || ranked(a) - ranked(b) || compare(a, b));
   if (focusId) add(focusId);
   const explicitFits = new Set([...(focusId && selected.has(focusId) ? [focusId] : []), ...matches]).size <= maxNodes;
   // Preserve fitting non-network hits, then admit whole matching observations.
   if (explicitFits) for (const id of matches) if (!groupOf.has(id)) add(id);
   if (focusId && groupOf.has(focusId)) addGroup(groupOf.get(focusId)!);
-  for (const id of matches) {
-    const connection = groupOf.get(id);
-    if (connection) addGroup(connection);
-    else add(id);
-  }
-  // Tiny budgets may fit explicit hits but no complete observation; disclose those partial groups.
-  if (explicitFits && !admittedGroups.size) for (const id of matches) add(id);
   const orderedGroups = [...groups.keys()].sort((a, b) => {
-    const pinned = (id: string) => [...groups.get(id)!].some(member => visibleIds.has(member));
-    return Number(pinned(b)) - Number(pinned(a)) || ranked(a) - ranked(b) || compare(a, b);
+    return distance(focusDistances, a) - distance(focusDistances, b)
+      || distance(matchDistances, a) - distance(matchDistances, b)
+      || ranked(a) - ranked(b) || compare(a, b);
   });
   for (const connection of orderedGroups) addGroup(connection);
   // Residual explicit hits still outrank optional context; incomplete groups are disclosed below.
