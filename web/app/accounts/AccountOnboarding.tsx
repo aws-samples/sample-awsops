@@ -186,6 +186,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
         <details className="mt-3 text-[12px] text-ink-600">
           <summary className="cursor-pointer">{tt('고급 설정: ExternalId · AWS CLI 프로필')}</summary>
           <p className="my-2">{tt('ExternalId는 자동 생성되며 역할 생성과 등록에 같은 값이 사용됩니다. 기존 역할을 연결하려면 해당 역할의 ExternalId로 바꾸세요.')}</p>
+          <p className="my-2">{tt('계정별 설정은 이 브라우저 세션에 보존됩니다. 새 세션에서는 기존 스크립트 또는 역할의 신뢰 정책에서 ExternalId를 확인하세요.')}</p>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <label>ExternalId
               <input className={`${inputClass} mt-1 font-mono`} readOnly={Boolean(registeredAccount)} disabled={!/^\d{12}$/.test(form.accountId)} value={externalId} onChange={(event) => updateForm({ externalId: event.target.value.trim() })} />
@@ -219,10 +220,10 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
             </div>
             {copyError && <p role="alert" className="mb-2 text-[12px] text-negative-600">{copyError}</p>}
             <p className="mb-2 text-[12px] text-ink-600">{tt('복사한 명령어를 붙여넣거나, 다운로드한 파일을 CloudShell의 Actions → Upload file로 업로드한 뒤 실행하세요.')}</p>
-            <pre className="overflow-x-auto rounded bg-ink-800 p-3 text-[11px] text-white"><code>{guide.command}</code></pre>
+            <pre className="overflow-x-auto rounded bg-ink-800 p-3 text-[12px] text-paper"><code>{guide.command}</code></pre>
             <details className="mt-3 text-[12px] text-ink-600">
               <summary className="cursor-pointer">{tt('AWS CLI 명령어 전체 보기')}</summary>
-              <pre className="mt-2 max-h-80 overflow-auto rounded bg-ink-800 p-3 text-[11px] text-white"><code>{guide.commands}</code></pre>
+              <pre className="mt-2 max-h-80 overflow-auto rounded bg-ink-800 p-3 text-[12px] text-paper"><code>{guide.commands}</code></pre>
             </details>
             <p className="mt-2 text-[12px] text-ink-500">{tt('템플릿이 스크립트에 포함되어 있어 저장소 다운로드는 필요하지 않습니다. 로그인 계정이 다르면 역할 생성 전에 중단합니다.')}</p>
           </>
@@ -235,7 +236,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
         <p className="mb-3 text-[12px] text-ink-600">{tt('역할 생성이 완료되면 연결을 확인하세요. AWSops가 AssumeRole과 계정 ID를 검증한 뒤 저장합니다. 이미 역할이 있다면 바로 확인할 수 있습니다.')}</p>
         <p className="mb-3 text-[12px] text-ink-500">{tt('연결 확인은 웹 역할의 접근만 검증합니다. 인벤토리 수집·AgentCore·워커의 연결과 수집 완료를 보장하지 않습니다.')}</p>
         <button type="button" onClick={register} disabled={!canRegister}
-          className="rounded-md bg-brand-500 px-3 py-2 text-[12px] font-semibold text-white hover:bg-brand-600 disabled:opacity-50">
+          className="rounded-md bg-brand-800 px-3 py-2 text-[12px] font-semibold text-white hover:bg-brand-900 disabled:opacity-50">
           {tt(busy ? '검증 중…' : '연결 확인 및 등록')}
         </button>
         {guide && !form.alias.trim() && <p className="mt-2 text-[12px] text-ink-500">{tt('등록하려면 계정 별칭을 입력하세요.')}</p>}
