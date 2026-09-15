@@ -56,7 +56,7 @@ Domain-logic modules shared by API routes and components, mostly React-free (inc
 - Display selection applies evidence/search/focus before the 350-node/700-edge bound. Reserve admitted connections with their endpoints before optional identity neighbors; rank unpinned flows by comparable value before caps and name omitted categories; shared traversed context never grants transit to unrelated paths. Details use eligible evidence before display caps, with bounded lists and explicit omissions. Counts cannot establish complete traffic coverage.
 
 ## Rules
-- The new i18n catalog pre-registers follow-up Service + Network source-panel labels alongside canvas strings; the unwired prerequisite does not consume the source-panel labels yet.
+- The prerequisite catalog covers consumed canvas strings. Navigation, source-panel and query-control translations belong to the UI integration follow-up.
 - New live-AWS-query layers should clone `nfm.ts`'s TTL-cache + in-flight-dedupe pattern.
 - Adding/changing a language starts at `SUPPORTED_LANGS` — TS consumers break at compile time, but the 5 lockstep sites above require manual updates.
 - DB access must go through `getPool()` — never create a new pool or use the master secret.
