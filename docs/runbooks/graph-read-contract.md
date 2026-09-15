@@ -34,6 +34,29 @@ optional non-null capture clocks must also be valid. Nonempty/malformed reason l
 are incomplete evidence. Recognized malformed or unknown-vocabulary metadata is
 disclosed by metadataTruncated in both HTTP and SQL projections.
 
+## Bounded inventory-read primitives
+
+`web/lib/graph-inventory-read.ts` provides internal account discovery, count reconciliation,
+projected snapshots and an attempt-evidence calculation for flow/infra callers. It uses the
+existing `self` host sentinel and SDK host-only type exclusions. A member needs current
+registered participation evidence; an aggregate zero alone does not establish participation.
+Count proof is reused only when the snapshot observes the identical ledger row version.
+The helper returns source clocks/completeness, not a freshness or deployment verdict.
+
+Snapshots project consumed fields before SQL byte guards: 2,000 infra rows or 8,192 flow
+rows (plus a sentinel), 64KiB per projected row and 8MiB for projected data/identifiers
+(excluding the result envelope). Exceeded bounds
+remain explicit and cannot authorize empty proof. Request and background transaction
+helpers share two admissions per pool, reserving the third ordinary slot for authentication;
+request limits stay 1.5s statements/2s total, background limits 2s statements/4s total.
+
+These primitives do not write graph/state rows or wire the legacy materializer to new
+publication behavior. Existing timer/defaults and AWS permissions are unchanged. Callers
+must enforce their scope and interpret clocks before publication. Offline PG tests use the
+same private socket/admin marker below and a distinct `awsops_inventory_read_test` database
+marked `awsops-disposable-inventory-read-test` before any reset. Run from `web/`:
+`npx vitest run lib/graph-inventory-read-postgres.test.ts lib/graph-read-postgres.test.ts`.
+
 ## Source completeness and retained publication
 
 `empty_not_confirmed` is a soft reason for legacy unmarked empty results.
