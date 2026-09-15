@@ -1,22 +1,23 @@
 import { describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { rebuildTraceGraph } from './graph-store';
 
-function database() {
+function database(ready = true) {
   const writes: { sql: string; args: unknown[] }[] = [];
-  const client = {
+  const client = Object.assign(new EventEmitter(), {
     query: async (sql: string, args: unknown[] = []) => {
       writes.push({ sql, args });
-      return { rows: sql.includes('to_regclass') ? [{ ready: true }] : [] };
+      return { rows: sql.includes('to_regclass') ? [{ ready }] : sql.includes('pg_try_advisory') ? [{ acquired: true }] : [] };
     },
     release() {},
-  };
+  });
   return {
     pool: { connect: async () => client, query: client.query } as never,
     writes,
     nodes: () => writes.filter((w) => w.sql.includes('INSERT INTO topology_nodes'))
-      .map((w) => ({ id: w.args[0], kind: w.args[1], meta: JSON.parse(String(w.args[3])) })),
+      .flatMap((w) => JSON.parse(String(w.args[3]))),
     edges: () => writes.filter((w) => w.sql.includes('INSERT INTO topology_edges'))
-      .map((w) => ({ source: w.args[0], target: w.args[1], rel: w.args[2] })),
+      .flatMap((w) => JSON.parse(String(w.args[3]))),
   };
 }
 
@@ -38,12 +39,12 @@ function source(items: ReturnType<typeof span>[], status = 'ok') {
 describe('trace graph evidence', () => {
   it('does not query backends before the collection-state migration exists', async () => {
     let reads = 0;
-    const pool = { query: async () => ({ rows: [{ ready: false }] }) };
+    const pool = database(false).pool;
     const backend = {
       available: async () => true,
       recentSpans: async () => { reads++; throw new Error('must not query'); },
     };
-    await expect(rebuildTraceGraph(pool as never, [backend])).resolves.toEqual({ nodes: 0, edges: 0 });
+    await expect(rebuildTraceGraph(pool as never, [backend])).resolves.toMatchObject({ nodes: 0, edges: 0, published: 0, skipped: 1, reasons: ['state_schema_missing'] });
     expect(reads).toBe(0);
   });
   it('keeps identical service names in prod and staging separate', async () => {

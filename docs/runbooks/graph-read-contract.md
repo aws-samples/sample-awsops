@@ -8,19 +8,19 @@ Missing graph clocks can mean legacy rows without collection state; missing meta
 
 `GET /api/graph` reads nodes, edges and collection state in one repeatable-read
 transaction. The shared helper bounds statements, lock waits and transaction
-duration, handles checked-out client errors, and discards failed connections. At most two graph
-requests per pool are admitted, leaving one of the three pool slots for auth; others receive 503 without queueing a checkout. Request
-statements/idle time are bounded to 1.5s, total transaction to 2s; the new companion publication helper has separate bounds; the legacy writer in this
-reader prerequisite does not use that helper yet. Serialization happens after release. Reads cap nodes/raw edges at
+duration, handles checked-out client errors, and discards failed connections. Reads and rebuild
+transactions share at most two admissions per pool, reserving one of the three pool slots for auth.
+Excess reads receive typed 503/busy and rebuilds report busy/skipped without queueing a checkout. Request
+statements/idle time are bounded to 1.5s, total transaction to 2s; publication helpers use 2s statements and a 4s total transaction budget, separately
+from the stricter request budget. Serialization happens after release. Reads cap nodes/raw edges at
 4000/8000 plus a sentinel; returned edges reference visible nodes. Infra class reads rank
 VPC/subnet/SG container kinds first so resource IDs cannot alphabetically exclude all placement targets. Read limits and
 500/503 failures are disclosed separately from collector status.
 PostgreSQL 17 is required for the total transaction timeout.
 
 The reader supports flow, infra and trace metadata. Missing state remains unknown;
-an account union does not borrow the host's publication clock. Inventory publication
-is supplied by the separate graph-publication change. This reader prerequisite does
-not activate its writer or schedule. Source integration does not execute migration,
+an account union does not borrow the host's publication clock. Inventory publication is implemented in `web/lib/graph-store.ts`; it requires the separately
+authorized schedule/manual invocation. The reader does not activate that schedule. Source integration does not execute migration,
 Lambda or Runtime deployment.
 
 `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql` widens only the existing
@@ -34,7 +34,24 @@ optional non-null capture clocks must also be valid. Nonempty/malformed reason l
 are incomplete evidence. Recognized malformed or unknown-vocabulary metadata is
 disclosed by metadataTruncated in both HTTP and SQL projections.
 
+Publication versions must strictly advance under the class advisory lock. An equal
+or older attempt keeps both graph and state unchanged. The trace rebuild reports
+`published: 0`, `skipped: 1`, `reasons: ['superseded']` and a fixed skip diagnostic;
+zero returned nodes in this outcome do not mean an empty graph was published.
+
 ## Source completeness and retained publication
+
+Inventory aggregate counts use one fulfilled proof per class/pass in a bounded read transaction;
+a failed proof read is not cached, so later accounts can retry while the original failure is reported.
+Each account snapshot must observe the same ledger row version before reusing that proof:
+the producer marks a run active before modifying inventory and finalizes the ledger afterward.
+A changed ledger invalidates the proof until the next pass; it never authorizes an empty sweep.
+`retainedPrevious` requires an actual publication clock or saved graph rows. With neither,
+an unproven first collection is skipped (`retained: 0`, `skipped: 1`), preserving CLI exit 2.
+Truncated snapshots disclose partial source evidence with unknown (`null`) item counts, including
+types omitted by the row ordering boundary. They never certify those sources as empty.
+Discovery uses current eligible accounts, inventory and saved graph keys; daily snapshots are
+read only for a selected account's participation proof, not scanned for historical account discovery.
 
 `empty_not_confirmed` is a soft reason for legacy unmarked empty results.
 Recognized producer `unknown` uses soft incomplete evidence, not a failed-query diagnosis. Tempo exposes an unverified response (`completionReason: search_response_unverified`) as `count_not_confirmed` in HTTP/SQL source reasons; missing protobuf default counters alone do not invalidate synchronous completion.
@@ -64,6 +81,14 @@ for producer deployment; source merge alone is not live completion proof.
 Oversized valid Tempo children keep a bounded structured OTLP projection and can refresh a partial snapshot with their siblings. The byte budget is unchanged; a failed or structurally unusable child still cannot authorize replacement. The [Tempo completion contract](tempo-query-generation.md#search-completion-and-publication) distinguishes unverified shape, unfinished work and byte limits. The shared budget fixture proves the actual producer output is mappable and publishes through PostgreSQL.
 
 The shared query normalizer carries collection status into Explore. Marked partial, unknown or failed empty responses show an uncertainty/failure note instead of an ordinary empty-result claim; useful rows remain visible with the same disclosure. Scalar format failures remain distinct from empty responses. Non-boolean truncation metadata is unverified, never silently interpreted as complete output.
+
+## Rebuild capacity
+
+Flow input allows 8192 rows (8MiB / a nominal 1KiB row allowance) for record-granular DNS inventory;
+infra retains its 2000-row guard. The 64KiB-per-row and 8MiB projected-data/identifier limits still apply, as do the
+4000-node/8000-edge/8MiB graph limits. A source-proof or capacity failure retains last-good data.
+All listed sources feed the builders: a failed/missing source cannot be dropped to authorize replacement,
+and elapsed retentions never authorize an unproven sweep. Larger generations need a separately reviewed capacity path.
 
 ## Browser recovery and source evidence
 
@@ -111,18 +136,19 @@ returns a synthetic error source and `registryFailed=true`. Both entrypoints log
 fixed `trace_sources: registry_read_failed` diagnostic and pass that source to the
 existing trace builder, preserving its non-publishing retention path. A missing
 schema or failed state write can still prevent recording; the log is not a receipt
-that a trace attempt was persisted. Unexpected loader exceptions remain safely logged.
+that a trace attempt was persisted. Unexpected loader exceptions also call the non-publishing
+`recordTraceSourceFailure` path before the sanitized diagnostic.
 
-`web/lib/graph-execution.ts` projects only the current builders' nonnegative safe-integer
-node/edge totals. Other result fields are unsupported and are not logged. Exceptions
-use normalized stage/SQLSTATE diagnostics, never raw provider errors or SQL text.
-The CLI awaits pool closure and exits **1** for a thrown/invalid layer execution,
-known registry failure, unexpected loader exception or failed cleanup; otherwise it
-exits **0**. There is no exit-2 publication contract. In particular, real legacy
-retention, missing state schema and confirmed-empty publication can all return the
-same zero totals. A source-level error/partial/unavailable response handled internally
-by the builder can still exit 0. Inspect the graph API's collection/source metadata;
-these execution totals and exit 0 do not prove complete or empty collection.
+`web/lib/graph-execution.ts` validates the current publishers' nonnegative safe-integer
+node/edge and published/degraded/retained/skipped counts, fixed reasons, optional failed-account
+count and account-limit flag. It projects only those fields and sanitized failure codes.
+Node/edge totals alone are not sufficient. Partial account progress remains visible alongside
+its unexpected failure; an infra failed-account result also skips dependent trace work.
+The dependency guard concerns execution failures; returned retained/skipped outcomes are
+reported as incomplete and keep the trace builder's existing source/infra read behavior.
+The CLI awaits pool closure and exits **1** for execution, registry or cleanup failure,
+otherwise **2** for any retained/skipped work, otherwise **0**. Degraded publications are
+explicitly counted; exit 0 does not prove complete collection. Inspect source metadata for quality.
 
 The timer remains off when `GRAPH_REBUILD_INTERVAL_MINS` is unset, invalid or nonpositive.
 Its Terraform input is `graph_rebuild_interval_mins` (default 0; enabled values are whole
@@ -132,7 +158,7 @@ writes across ECS tasks; they do not eliminate duplicate cross-task reads. This 
 HTTP handlers in the web process, not an async worker. A future EventBridge/ECS worker
 path needs separate review if this work outgrows that process. Deploy/apply separately;
 source changes do not enable the timer. Offline tests from `web/` exercise the actual
-legacy loader/builders with mocked SQL and connector IO:
+loader, publishers and coordinator with mocked SQL and connector IO:
 
 ```bash
 npx vitest run lib/graph-rebuild-runner.test.ts lib/graph-sources.test.ts lib/instrumentation-runner.test.ts lib/graph-state.test.ts
@@ -187,12 +213,16 @@ docker exec "$graph_test_container" psql -U postgres -d awsops \
   -c "COMMENT ON DATABASE awsops IS 'awsops-disposable-graph-test'"
 cd web
 npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts \
-  app/api/graph/route.test.ts lib/graph-state.test.ts
+  lib/graph-store-postgres.test.ts app/api/graph/route.test.ts lib/graph-state.test.ts
 docker rm -f "$graph_test_container"
 ```
 
-The fixture creates and independently marks `awsops_graph_read_test`. Without the
-socket environment variable, the disposable PostgreSQL suite is skipped explicitly;
+The fixtures create and independently mark `awsops_graph_read_test` and
+`awsops_graph_task3`; an existing unmarked database is rejected before schema reset.
+The publication suite also invokes `lib/fixtures/graph-fatal-child.mjs`, which checks
+both server/target database markers before mutation. It covers atomic publication,
+retention, pool admission, truncation and fatal-connection recovery. Without the
+socket environment variable, the disposable PostgreSQL suites are skipped explicitly;
 the ordinary API and state unit tests still run. These are local contract tests,
 not live AWS or deployment acceptance.
 
@@ -217,10 +247,11 @@ A source merge or automatic web CD result is not proof that these steps complete
 ## Related files and decisions
 
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
-`web/lib/graph-execution.ts`, `scripts/v2/graph-rebuild.mjs`, `web/instrumentation.ts`,
-`web/lib/graph-rebuild-runner.test.ts`, `web/lib/instrumentation-runner.test.ts`,
-`web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`, `web/lib/graph-fetch.ts`, `web/lib/graph-fetch.test.ts`,
+`web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`,
+`web/lib/graph-inventory.ts`, `web/lib/graph-store-postgres.test.ts`, `web/lib/fixtures/graph-fatal-child.mjs`,
+`web/lib/graph-execution.ts`, `scripts/v2/graph-rebuild.mjs`, `web/instrumentation.ts`, `web/lib/graph-rebuild-runner.test.ts`, `web/lib/instrumentation-runner.test.ts`,
 `web/components/topology/GraphCollectionStatus.tsx`, `web/components/topology/GraphCollectionStatus.test.tsx`,
+`web/lib/graph-fetch.ts`, `web/lib/graph-fetch.test.ts`,
 `agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,
 `agent/lambda/prometheus_mcp.py`, `agent/lambda/mimir_mcp.py`,
 `agent/lambda/test_collection_markers.py`, `agent/lambda/test_clickhouse_completion.py`, `agent/lambda/test_tempo_trace_budget.py`,

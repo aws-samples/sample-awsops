@@ -13,18 +13,18 @@
 //
 // The gated web/instrumentation.ts timer invokes this logic in the web process.
 import { getPool } from '../../web/lib/db.ts';
-import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } from '../../web/lib/graph-store.ts';
+import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph, recordTraceSourceFailure } from '../../web/lib/graph-store.ts';
 import { loadGraphSources } from '../../web/lib/graph-sources.ts';
 import { graphDiagnostic } from '../../web/lib/graph-state.ts';
 import { executeGraphLayer } from '../../web/lib/graph-execution.ts';
 
-// Exit 1: thrown/invalid execution, known registry failure or cleanup failure; otherwise 0.
-// Legacy zero totals cannot distinguish retained/skipped from confirmed-empty publication.
+// Exit 1: unexpected/invalid execution, registry or cleanup failure; 2: retained/skipped; otherwise 0.
 const pool = getPool();
-let failed = false;
+let failed = false, incomplete = false;
 const execute = async (stage, action) => {
   const result = await executeGraphLayer(stage, action, (line, error) => console[error ? 'error' : 'log'](line));
   failed ||= result.failed;
+  incomplete ||= !!result.incomplete;
   return result;
 };
 try {
@@ -42,10 +42,11 @@ try {
       await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
     } catch (error) {
       failed = true;
+      await execute('trace', () => recordTraceSourceFailure(pool));
       console.error(`[graph-rebuild] failed ${graphDiagnostic('trace_sources', error)}`);
     }
   }
-  process.exitCode = failed ? 1 : 0;
+  process.exitCode = failed ? 1 : incomplete ? 2 : 0;
 } finally {
   try { await pool.end(); }
   catch (error) {

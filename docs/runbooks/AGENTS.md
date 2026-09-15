@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: e3521da62cca · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 7ea6cdc9ab56 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -12,7 +12,8 @@
 
 Web image receipt/ECR proof precedes private migrations, including reuse; promotion retains that digest. Automatic DDL is expand-only; contract cutovers require a merge freeze, drained queues and explicit operator coordination. Legacy images without receipts use the separately approved `legacy-web-image-recovery.md` path with trusted digest/source evidence and schema approval, never a fabricated receipt or mutable-tag fallback.
 
-Operational playbooks organized by scenario, each following symptoms → diagnosis → action. See
+Operational playbooks organized by scenario, each following symptoms → diagnosis → action.
+Graph collection/projection, freshness and retained-evidence rollout contracts live in `source-sync-observability.md`. See
 `docs/runbooks/CLAUDE.md`'s index for the current runbook list (several are marked **v1
 (legacy)** — v2 has since replaced their procedure with a different mechanism; don't treat a
 legacy runbook's steps as the current operational path).
@@ -257,9 +258,9 @@ CLI inputs and fixture prerequisites: `runtime-foundation.md#controller-cli-cont
 Catalog/per-type timeouts: `runtime-verifier-sessions.md#collection-effects-and-proof`.
 Checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
 
-Graph reads admit at most two requests per shared max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. Source-attempt metadata is supported before the separately gated inventory publisher is activated. See `graph-read-contract.md` for operator rollout and disposable tests; source integration does not establish deployment.
+Graph reads and rebuild/publication transactions share at most two admissions per max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Rebuilds retain the separate PostgreSQL four-second transaction timeout. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. The implemented publisher in `web/lib/graph-store.ts` verifies source/account evidence before atomic replacement and retains last-good data on unproven collection. Execution still requires the default-off timer or an operator invocation. See `graph-read-contract.md` for budgets, CLI outcomes, rollout and disposable tests; source integration does not establish deployment.
 
-Legacy graph execution reports node/edge totals only. Same-cycle infra execution failure skips dependent trace collection/publication. Registry query failures remain synthetic error sources and are explicitly diagnosed; CLI exit 0 is not completeness or empty-publication proof.
+Graph execution validates typed publication counts and fixed reasons. Unexpected same-cycle infra execution failure skips dependent trace collection/publication. Registry query failures retain their synthetic error source; unexpected loader failures attempt a non-publishing error record. CLI exits 1 for execution/registry/cleanup failure, 2 for retained/skipped work and otherwise 0; degraded publication remains explicitly labeled and does not prove complete collection.
 
 Changed HEAD image review uses the shared static-raster format table, source/render lineage
 and bounded decoding. All eight cells and chair must declare required coverage; explicit
