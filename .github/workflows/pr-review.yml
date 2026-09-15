@@ -111,8 +111,13 @@ jobs:
           command -v claude >/dev/null 2>&1 || { echo "::warning::claude not found"; npm install -g @anthropic-ai/claude-code; }
           claude --version
           command -v codex >/dev/null 2>&1 || echo "::warning::codex not found on runner (image needs rebuild)"
+          if command -v codex >/dev/null 2>&1; then
+            CODEX_HELP="$(codex exec --help)"
+            grep -q -- '--image' <<< "$CODEX_HELP" || { echo "::error::Codex initial-image support is required"; exit 1; }
+          fi
 
       - name: Get PR diff
+        id: diff
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.review_context.outputs.head_sha }}
@@ -133,6 +138,8 @@ jobs:
           # commit + head (both shallow, single SHA — no full-history fetch needed), then a plain
           # two-dot diff between merge-base and head is exactly equivalent to BASE...HEAD.
           MERGE_BASE_SHA=$(gh api "repos/${{ github.repository }}/compare/${BASE_SHA}...${HEAD_SHA}" --jq '.merge_base_commit.sha')
+          [[ "$MERGE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Invalid merge-base SHA"; exit 1; }
+          echo "merge_base_sha=$MERGE_BASE_SHA" >> "$GITHUB_OUTPUT"
           git fetch --depth=1 origin "$MERGE_BASE_SHA" "$HEAD_SHA" "$BASE_SHA"
           # TWO passes, code first: git emits hunks in tree (alphabetical) order, so on a >3000-line
           # PR the docs/ diff (sorting before scripts/terraform/web) ate the truncation budget and
@@ -161,6 +168,7 @@ jobs:
           git diff -z --no-color --name-status "$MERGE_BASE_SHA" "$HEAD_SHA" -- docs/decisions docs/runbooks >> /tmp/pr-diff-namestatus.nul
           git diff -z --no-color --name-status "$MERGE_BASE_SHA" "$HEAD_SHA" -- docs ':(exclude)docs/decisions' ':(exclude)docs/runbooks' >> /tmp/pr-diff-namestatus.nul
           python3 - <<'PYEOF'
+          import re
           data = open('/tmp/pr-diff-namestatus.nul', 'rb').read().decode('utf-8', 'surrogateescape')
           parts = data.split('\0')
           if parts and parts[-1] == '':
@@ -173,6 +181,10 @@ jobs:
                       old, new = parts[i], parts[i + 1]; i += 2
                   else:
                       old = new = parts[i]; i += 1
+                  # Preserve full directory/suffix classification, but never let author
+                  # control bytes delimit TSV or GitHub command files. Display labels
+                  # use the same safe alphabet as HEAD image context, bounded below.
+                  old, new = (re.sub(r"[^A-Za-z0-9._/-]", "?", p) for p in (old, new))
                   out.write(f"{old}\t{new}\n")
           PYEOF
           awk '
@@ -253,16 +265,17 @@ jobs:
             #     the gate turns into a deterministic FAIL — the fail-closed contract for unseen content.
             # An inline marker is always left for the panel models too.
             length($0) > 50000 {
-              if (!(path in warned)) {
-                print "[omitted: a line over 50000 chars in " path " — likely a minified/generated export]"
-                print path >> "/tmp/pr-diff-omitted.txt"
+              if (!(idx in warned)) {
+                label = substr(path, 1, 200)
+                print "[omitted: a line over 50000 chars in " label " — likely a minified/generated export]"
+                print label >> "/tmp/pr-diff-omitted.txt"
                 generated = (path ~ /\.(svg|drawio|map)$/) &&
                             (newpath ~ /\.(svg|drawio|map)$/) &&
                             (path !~ /(^|\/)(web|docs-site)\//) && (newpath !~ /(^|\/)(web|docs-site)\//)
                 if (!generated) {
-                  print path >> "/tmp/pr-diff-omitted-source.txt"
+                  print label >> "/tmp/pr-diff-omitted-source.txt"
                 }
-                warned[path]=1
+                warned[idx]=1
               }
               next
             }
@@ -275,6 +288,27 @@ jobs:
           if [ -s /tmp/pr-diff-omitted-source.txt ]; then
             echo "omitted_source_paths=$(tr '\n' ' ' < /tmp/pr-diff-omitted-source.txt)" >> "$GITHUB_ENV"
           fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Stage changed HEAD PNG evidence (trusted Git blobs, no HEAD checkout)
+        id: head_images
+        timeout-minutes: 15
+        env:
+          HEAD_SHA: ${{ steps.review_context.outputs.head_sha }}
+          MERGE_BASE_SHA: ${{ steps.diff.outputs.merge_base_sha }}
+        run: |
+          set -euo pipefail
+          HEAD_PNG_ROOT=$(mktemp -d "$RUNNER_TEMP/pr-review-head-png.XXXXXX")
+          echo "root=$HEAD_PNG_ROOT" >> "$GITHUB_OUTPUT"
+          echo "context=$HEAD_PNG_ROOT/images/context.txt" >> "$GITHUB_OUTPUT"
+          python3 "$GITHUB_WORKSPACE/scripts/pr-review/codec_sandbox.py" prepare --state "$HEAD_PNG_ROOT/codec.json"
+          AWSOPS_REVIEW_CODEC_STATE="$HEAD_PNG_ROOT/codec.json" \
+            python3 "$GITHUB_WORKSPACE/scripts/pr-review/stage_head_pngs.py" \
+            --repo "$GITHUB_WORKSPACE" --head "$HEAD_SHA" --merge-base "$MERGE_BASE_SHA" \
+            --output "$HEAD_PNG_ROOT/images"
 
       - name: Build lens prompts (L2-L5 — each self-contained, one lens only)
         run: |
@@ -433,6 +467,7 @@ jobs:
         id: panel_review
         env:
           BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
+          HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}
           # Every Codex/Claude lens has the same bounded review budget.
           # All eight cells run in parallel; the longest-cell ceiling is unchanged.
           PANEL_TIMEOUT: "1200"
@@ -467,6 +502,7 @@ jobs:
           PR_NUMBER: ${{ steps.review_context.outputs.number }}
           PR_TITLE: ${{ fromJSON(steps.review_context.outputs.title_json) }}
           BASE_SHA: ${{ steps.review_context.outputs.base_sha }}
+          HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}
         run: |
           set -euo pipefail
           SCRIPT_ROOT="$GITHUB_WORKSPACE/scripts/pr-review"
@@ -479,13 +515,39 @@ jobs:
 
       - name: Check for blocking issues
         id: gate
+        if: always() && !cancelled() && steps.review_context.outcome == 'success' && steps.diff.outcome == 'success'
+        env:
+          IMAGE_STAGE_OUTCOME: ${{ steps.head_images.outcome }}
+          PANEL_OUTCOME: ${{ steps.panel_review.outcome }}
+          CHAIR_OUTCOME: ${{ steps.chair_review.outcome }}
         run: |
           # Fail-closed first: if an oversized line was dropped from a real source/IaC file (not a
           # known generated/export type), no lens saw that content — force BLOCKED regardless of the
           # chair's VERDICT, matching the pre-cap behaviour where the oversized line failed the job.
-          if [ -n "${omitted_source_paths:-}" ]; then
+          if [ "$IMAGE_STAGE_OUTCOME" != "success" ]; then
+            printf '%s\n' "HEAD image evidence preparation failed; inspect the staging diagnostic. Review incomplete; not an application finding." "IMAGE_COVERAGE: FAILED" "VERDICT: FAIL" > /tmp/review.md
+            echo "image_coverage_failed=1" >> "$GITHUB_ENV"
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            echo "reason=HEAD image evidence unavailable" >> "$GITHUB_OUTPUT"
+          elif [ "$PANEL_OUTCOME" != "success" ] || [ "$CHAIR_OUTCOME" != "success" ]; then
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            if [ "${image_coverage_failed:-0}" = "1" ]; then
+              printf '%s\n' "HEAD image evidence preparation failed. Review incomplete." "VERDICT: FAIL" > /tmp/review.md
+              echo "reason=HEAD image evidence unavailable" >> "$GITHUB_OUTPUT"
+            else
+              printf '%s\n' "Review preparation failed; required panel/chair execution is incomplete. This is not an application finding." "VERDICT: FAIL" > /tmp/review.md
+              echo "chair_failed=1" >> "$GITHUB_ENV"
+              echo "reason=Required review execution incomplete" >> "$GITHUB_OUTPUT"
+            fi
+          elif [ -n "${omitted_source_paths:-}" ]; then
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=oversized line(s) omitted from reviewable source/IaC file(s): ${omitted_source_paths} — no lens saw them, fail-closed" >> "$GITHUB_OUTPUT"
+          elif [ "${report_invalid:-0}" = "1" ]; then
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            echo "reason=Review output unavailable" >> "$GITHUB_OUTPUT"
+          elif [ "${image_coverage_failed:-0}" = "1" ]; then
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            echo "reason=Image coverage unavailable — review incomplete, not an application finding" >> "$GITHUB_OUTPUT"
           elif grep -q "^VERDICT: FAIL$" /tmp/review.md; then
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=VERDICT: FAIL" >> "$GITHUB_OUTPUT"
@@ -498,12 +560,14 @@ jobs:
           fi
 
       - name: Post review comment (upsert)
+        if: always() && !cancelled() && steps.gate.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.review_context.outputs.number }}
           REVIEW_HEAD: ${{ steps.review_context.outputs.head_sha }}
           REPO: ${{ github.repository }}
           GATE_RESULT: ${{ steps.gate.outputs.result }}
+          GATE_REASON: ${{ steps.gate.outputs.reason }}
         run: |
           CURRENT_HEAD=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
           if [ "$CURRENT_HEAD" != "$REVIEW_HEAD" ]; then
@@ -511,7 +575,13 @@ jobs:
             exit 1
           fi
           MARKER="<!-- multi-ai-pr-review -->"
-          if [ "$GATE_RESULT" = "fail" ] && [ "${chair_failed:-0}" = "1" ]; then
+          if [[ "$GATE_REASON" == "oversized line(s) omitted"* ]]; then
+            STATUS_BADGE="**Status: BLOCKED** — reviewable source input was omitted; review incomplete"
+          elif [ "$GATE_REASON" = "Review output unavailable" ]; then
+            STATUS_BADGE="**Status: BLOCKED** — review output unreadable or over limit; not an image or application finding"
+          elif [[ "$GATE_REASON" == "HEAD image evidence unavailable" || "$GATE_REASON" == "Image coverage unavailable"* ]]; then
+            STATUS_BADGE="**Status: BLOCKED** — image coverage unavailable; review incomplete, not an application finding"
+          elif [ "$GATE_RESULT" = "fail" ] && [ "${chair_failed:-0}" = "1" ]; then
             # The chair (both Fable 5 and Opus 5) failed to produce a review due to a
             # timeout/connection error — still BLOCKED (fail-closed), but this does NOT mean
             # the code has a CRITICAL/MAJOR, so the message says so distinctly
@@ -549,7 +619,42 @@ jobs:
           fi
 
       - name: Fail if CRITICAL or MAJOR
-        if: steps.gate.outputs.result == 'fail'
+        if: always() && steps.gate.outputs.result == 'fail'
+        env:
+          GATE_REASON: ${{ steps.gate.outputs.reason }}
         run: |
-          echo "AI Review failed: ${{ steps.gate.outputs.reason }}"
+          echo "AI Review failed: $GATE_REASON"
           exit 1
+
+      - name: Remove current-run HEAD image evidence
+        if: always()
+        env:
+          HEAD_PNG_ROOT: ${{ steps.head_images.outputs.root }}
+        run: |
+          set -euo pipefail
+          if [ -n "$HEAD_PNG_ROOT" ]; then
+            case "$HEAD_PNG_ROOT" in
+              "$RUNNER_TEMP"/pr-review-head-png.*)
+                cleanup_rc=0
+                if [ -f "$HEAD_PNG_ROOT/codec.json" ]; then
+                  python3 "$GITHUB_WORKSPACE/scripts/pr-review/codec_sandbox.py" cleanup \
+                    --state "$HEAD_PNG_ROOT/codec.json" || cleanup_rc=$?
+                fi
+                python3 - "$HEAD_PNG_ROOT/images" <<'PY'
+          import os, sys
+          try:
+              fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+          except OSError:
+              pass
+          else:
+              try:
+                  os.fchmod(fd, 0o700)
+              finally:
+                  os.close(fd)
+          PY
+                rm -rf -- "$HEAD_PNG_ROOT"
+                exit "$cleanup_rc"
+                ;;
+              *) echo "::error::Unexpected HEAD PNG cleanup path"; exit 1 ;;
+            esac
+          fi

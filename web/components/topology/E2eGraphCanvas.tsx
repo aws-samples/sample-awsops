@@ -129,7 +129,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
       if (node.layer === 'network' && node.kind === 'endpoint' && endpoint && (generatedEndpoint || builderEndpoint)) {
         return { ...node, label: endpointLabel(endpoint, tt(fallback)) };
       }
-      if (node.labelKey && GENERATED_LABELS[node.labelKey]) {
+      if (node.labelKey && Object.hasOwn(GENERATED_LABELS, node.labelKey)) {
         return { ...node, label: tt(GENERATED_LABELS[node.labelKey]) };
       }
       const flow = flowOf(node);
@@ -139,9 +139,9 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
       return flow && node.label === node.meta.metric
         ? { ...node, label: `${endpointLabel(flow.local, tt('식별 정보 없음'))} ↔ ${endpointLabel(flow.remote, tt('식별 정보 없음'))}` } : node;
     }),
-    edges: inputGraph.edges.map(edge => edge.labelKey && GENERATED_LABELS[edge.labelKey]
+    edges: inputGraph.edges.map(edge => edge.labelKey && Object.hasOwn(GENERATED_LABELS, edge.labelKey)
       ? { ...edge, label: tt(GENERATED_LABELS[edge.labelKey]) } : edge.label
-      && ['configured-endpoint-match', 'same-identity'].includes(edge.relation) && GENERATED_LABELS[edge.label]
+      && ['configured-endpoint-match', 'same-identity'].includes(edge.relation) && Object.hasOwn(GENERATED_LABELS, edge.label)
       ? { ...edge, label: tt(GENERATED_LABELS[edge.label]) } : edge),
   }), [inputGraph, tt]);
   const readState = graph.summary.observationsUnsupported ? 'unsupported' : graph.summary.networkRead?.status ?? 'unknown';
@@ -302,8 +302,9 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
         {!!graph.summary.networkRead?.failedCategories?.length && <span>{tt('조회 실패 분류:')} {graph.summary.networkRead.failedCategories.join(', ')}</span>}
         {!!graph.summary.networkRead?.unknownWindowCategories?.length && <span>{tt('관측 기간 미확인 분류:')} {graph.summary.networkRead.unknownWindowCategories.join(', ')}</span>}
         <span>{tt('네트워크 관계')} <span data-testid="e2e-network-edge-count">{view.edges.filter((e) => e.evidence === 'network').length}</span></span>
-        {graph.summary.observationsUnsupported ? null
-          : graph.summary.networkFlows === 0 ? <span>{tt('네트워크 관측 데이터가 없어 연결 여부를 집계할 수 없습니다.')}</span>
+        {readState === 'unsupported' ? null
+          : graph.summary.networkFlows === 0 ? <span>{tt(readState === 'complete'
+            ? '표시할 네트워크 관측이 없습니다.' : '네트워크 관측 데이터가 없어 연결 여부를 집계할 수 없습니다.')}</span>
             : <>
               <span>{tt('미연결 관측')} {graph.summary.unmatchedEndpoints}</span>
               {graph.summary.ambiguousEndpoints > 0 && <span>{tt('식별 보류 관측')} {graph.summary.ambiguousEndpoints}</span>}

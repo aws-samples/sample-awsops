@@ -225,8 +225,11 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
       </ul>}
       {published.length > 0 ? <div className="mt-2">
         <p>{copy.savedSources}</p>
-        {sharedSources ? <p>{copy.sharedSources}</p> : <ul>{published.map((source, i) => <li key={i}>
-          {typeof source.sourceId === 'string' ? source.sourceId : '—'}{producer(source)}{sourceTimes(source)}
+        {sharedSources ? <p>{copy.sharedSources}</p> : <ul>{published.map((source, i) => <li key={i} className="break-words">
+          {typeof source.sourceId === 'string' ? source.sourceId : '—'}: {copy[statusOf(source.status)]}
+          {source.scope === 'aggregate' || source.scope === 'account' ? <span> · {source.scope}</span> : null}
+          {sourceReasons(source).length > 0 && <span> · {sourceReasons(source).join(', ')}</span>}
+          {producer(source)}{sourceTimes(source)}
         </li>)}</ul>}
       </div> : null}
         </div>

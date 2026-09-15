@@ -107,6 +107,21 @@ describe('E2eGraphCanvas', () => {
     expect(controls.querySelector('.react-flow__controls-fitview')).not.toBeNull();
     expect(controls.querySelector('.react-flow__controls-interactive')).toBeNull();
   });
+  it('keeps a completed empty network read distinct from missing observations', () => {
+    render(<E2eGraphCanvas graph={{ ...graph, nodes: [], edges: [],
+      summary: { ...graph.summary, networkFlows: 0,
+        networkRead: { status: 'complete', failedCategories: [], unknownWindowCategories: [] } },
+    }} />);
+    expect(screen.getByText('표시할 네트워크 관측이 없습니다.')).toBeTruthy();
+    expect(screen.queryByText('네트워크 관측 데이터가 없어 연결 여부를 집계할 수 없습니다.')).toBeNull();
+  });
+  it('withholds correlation totals when the read is unsupported despite retained rows', () => {
+    render(<E2eGraphCanvas graph={{ ...graph, summary: { ...graph.summary,
+      networkRead: { status: 'unsupported', failedCategories: [], unknownWindowCategories: [] },
+    }}} />);
+    expect(screen.getByText('이 계정에서 네트워크 관측을 사용할 수 없습니다.')).toBeTruthy();
+    expect(screen.queryByText(/미연결 관측/)).toBeNull();
+  });
   it.each(['ko', 'en', 'zh', 'ja'] as const)('covers every canvas prose literal and label catalog in %s', lang => {
     const source = ts.createSourceFile('canvas.tsx',
       readSource('./E2eGraphCanvas.tsx'),
@@ -332,9 +347,10 @@ describe('E2eGraphCanvas', () => {
       render(<LanguageProvider><E2eGraphCanvas graph={{ ...graph, nodes: [
         { ...graph.nodes[1], label: 'local_endpoint', labelKey: 'local_endpoint', meta: { endpoint: { podName: ' ' }, side: 'local' } },
         { ...graph.nodes[0], label: '로컬 엔드포인트' },
+        { ...graph.nodes[0], id: 'raw-source-name', label: 'local_endpoint' },
         { ...graph.nodes[2], label: 'endpoint-resource-123', meta: { endpoint: {}, side: 'remote' } },
         { ...graph.nodes[3], label: 'network_observation', labelKey: 'network_observation', meta: { ...graph.nodes[3].meta, metric: '' } },
-        { ...graph.nodes[1], id: 'service-endpoint', label: '로컬 엔드포인트',
+        { ...graph.nodes[1], id: 'service-endpoint', label: 'local_endpoint', labelKey: 'local_endpoint',
           meta: { endpoint: { podName: ' ', serviceName: 'payments-service' }, side: 'local' } },
       ] }} /></LanguageProvider>);
       const search = screen.getByRole('searchbox');
@@ -343,6 +359,8 @@ describe('E2eGraphCanvas', () => {
       expect(screen.getByRole('heading', { name: local })).toBeTruthy();
       fireEvent.change(search, { target: { value: '로컬 엔드포인트' } });
       expect(screen.getAllByRole('button', { name: /로컬 엔드포인트/ }).length).toBeGreaterThan(0);
+      fireEvent.change(search, { target: { value: 'local_endpoint' } });
+      expect(screen.getAllByRole('button', { name: /local_endpoint/ }).length).toBeGreaterThan(0);
       fireEvent.change(search, { target: { value: 'endpoint-resource-123' } });
       fireEvent.click(screen.getByRole('button', { name: /endpoint-resource-123/ }));
       expect(screen.getByRole('heading', { name: 'endpoint-resource-123' })).toBeTruthy();

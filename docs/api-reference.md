@@ -133,7 +133,7 @@ These are query bounds and truncation signals, not proof of complete traffic cov
 The route owns `RANGE_ALLOWED` (900/1800/3600 seconds); an unsupported or omitted range
 uses its existing 3600-second default. Metric/category allowlists remain in `nfm.ts`.
 
-The standalone `topology-observations.ts` loader is **unwired until topology integration**.
+The client-side `topology-observations.ts` loader powers explicit queries in `/topology?view=e2e`.
 Its `NetworkBatch` is a client result, not additional HTTP response fields: it carries
 failed/capped categories, `complete`/`partial` status and per-category `verified`/`unknown`
 window quality. `verified` means parseable, ordered bounds only. Failures use closed codes
@@ -141,6 +141,10 @@ window quality. `verified` means parseable, ordered bounds only. Failures use cl
 upstream error text. Missing/invalid windows remain unknown and make the batch partial.
 At most three workers bound category concurrency; cancellation stops further scheduling and result
 application, without guaranteeing cancellation of a server query already started.
+
+### Service/network graph composition
+
+The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` model and existing authenticated APIs. Source-evidence, identity and selection contracts are maintained in [E2E observability](reference/observability-e2e.md#graph-source-contract); `ServiceNetworkTopology` orchestrates sources and `E2eGraphCanvas` renders the model.
 
 ## dns-logs (2)
 | 경로 | 메서드 | 역할 | 인증 |
