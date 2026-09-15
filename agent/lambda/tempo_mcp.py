@@ -118,14 +118,14 @@ def tempo_search(args):
         elif len(raw) >= requested:
             state = "partial"  # Hitting the limit does not prove all matching traces were searched.
     metrics = data.get("metrics") if isinstance(data, dict) else None
-    if isinstance(metrics, dict) and state != "unknown":
-        completed, total = metrics.get("completedJobs"), metrics.get("totalJobs")
-        if "completedJobs" in metrics or "totalJobs" in metrics:
-            if (type(completed) is not int or type(total) is not int
-                    or min(completed, total) < 0 or completed > total):
-                state = "unknown"  # Missing counters are not affirmative completion (or assumed zero).
-            elif completed < total:
-                state = "partial"
+    if state in ("ok", "empty"):
+        completed = metrics.get("completedJobs") if isinstance(metrics, dict) else None
+        total = metrics.get("totalJobs") if isinstance(metrics, dict) else None
+        if (type(completed) is not int or type(total) is not int
+                or completed < 0 or total <= 0 or completed > total):
+            state = "unknown"  # Missing counters or zero jobs are not affirmative completion.
+        elif completed < total:
+            state = "partial"
     payload, btr = _byte_bound({"traces": traces, "metrics": data.get("metrics") if isinstance(data, dict) else None})
     if btr:
         return ok({**payload, "collectionStatus": "unknown" if state == "unknown" else "partial"})

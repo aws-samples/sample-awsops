@@ -75,3 +75,30 @@ def test_clickhouse_computes_completion_from_observed_response(response, expecte
     assert body["collectionStatus"] == expected
     assert body["rows"] == response.get("data", [])
     assert "exception" not in body
+
+
+@pytest.mark.parametrize("metrics,expected", [
+    ("absent", "unknown"), (None, "unknown"), ({}, "unknown"),
+    ({"inspectedBytes": 17}, "unknown"),
+    ({"completedJobs": 0, "totalJobs": 0}, "unknown"),
+    ({"completedJobs": 1}, "unknown"), ({"totalJobs": 1}, "unknown"),
+    ({"completedJobs": True, "totalJobs": 1}, "unknown"),
+    ({"completedJobs": 2, "totalJobs": 1}, "unknown"),
+    ({"completedJobs": 0, "totalJobs": 1}, "partial"),
+    ({"completedJobs": 1, "totalJobs": 1}, "complete"),
+])
+@pytest.mark.parametrize("nonempty", [False, True])
+def test_tempo_requires_affirmative_jobs_before_complete_collection(metrics, expected, nonempty):
+    traces = [{"traceID": "a1"}] if nonempty else []
+    upstream = {"traces": traces}
+    if metrics != "absent":
+        upstream["metrics"] = metrics
+    with patch.object(tempo, "_ds", return_value={"endpoint": "https://fixture.invalid"}), \
+            patch.object(tempo, "http_json", return_value=(200, upstream)) as http:
+        out = tempo.lambda_handler({"tool_name": "tempo_search", "arguments": {"query": "{}"}}, None)
+    http.assert_called_once()
+    assert out["statusCode"] == 200
+    body = json.loads(out["body"])
+    assert body["collectionStatus"] == (("ok" if nonempty else "empty") if expected == "complete" else expected)
+    assert body["traces"] == traces
+    assert body["metrics"] == (None if metrics == "absent" else metrics)

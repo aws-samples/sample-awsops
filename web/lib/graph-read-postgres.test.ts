@@ -4,7 +4,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 const api = vi.hoisted(() => ({ pool: null as unknown }));
 const producer = vi.hoisted(() => ({ invoke: vi.fn() }));
-vi.mock('@/lib/datasources', () => ({ getDatasource: async () => ({ id: 7, kind: 'tempo' }),
+vi.mock('@/lib/datasources', () => ({ getDatasource: async (id: number) => ({ id, kind: ({ 7: 'tempo', 8: 'clickhouse', 9: 'prometheus', 10: 'mimir' } as Record<number, string>)[id] }),
   getDefaultDatasource: async () => ({ id: 7, kind: 'tempo' }), resolveConnConfig: async () => ({}) }));
 vi.mock('@/lib/mcp-lambda-invoke', () => ({ invokeMcpLambdaTool: (...args: unknown[]) => producer.invoke(...args) }));
 vi.mock('@/lib/auth', () => ({ verifyUser: async () => ({ sub: 'fixture' }) }));
@@ -14,7 +14,7 @@ import { graphTransaction } from './graph-transaction';
 import { projectGraphDetails, writeGraphState } from './graph-state';
 import { buildInfraGraph } from './infra-topology';
 import { rebuildTraceGraph } from './graph-store';
-import { TempoTraceSource } from './trace-source';
+import { TempoTraceSource, ClickHouseOtelTraceSource, MetricsCallsSource } from './trace-source';
 import tempoContracts from '../../agent/fixtures/tempo-topology-contract.json';
 
 const socket = process.env.GRAPH_TEST_POSTGRES_SOCKET;
@@ -94,6 +94,35 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     expect(after.captured_at).toEqual(previous.captured_at);
     expect((await pool.query("SELECT id FROM topology_nodes WHERE class='trace' ORDER BY id")).rows).toEqual(nodes);
   });
+
+  it.each(['tempo', 'clickhouse', 'prometheus', 'mimir'] as const)(
+    'unproven empty %s cannot sweep saved identities beside a useful sibling', async kind => {
+      const metric = (name: string) => ({ available: async () => true,
+        calls: async (mins: number, endMs = Date.now()) => ({ sourceId: `metrics:${name}`,
+          items: [{ client: name, server: `${name}-db`, count: 7 }], status: 'ok' as const,
+          reasons: [], windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }) });
+      await rebuildTraceGraph(pool, [], undefined, [metric('saved')]);
+      const previous = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
+      const nodes = (await pool.query("SELECT id FROM topology_nodes WHERE class='trace' ORDER BY id")).rows;
+      producer.invoke.mockReset().mockResolvedValue(kind === 'tempo' ? { traces: [] }
+        : kind === 'clickhouse' ? { rows: [] } : { resultType: 'vector', result: [] });
+      const trace = kind === 'tempo' ? new TempoTraceSource(7) : new ClickHouseOtelTraceSource(8);
+      const calls = kind === 'prometheus' || kind === 'mimir'
+        ? [new MetricsCallsSource(kind === 'prometheus' ? 9 : 10, kind, 'fixture'), metric('new')]
+        : [metric('new')];
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + 1000);
+      try { await rebuildTraceGraph(pool, kind === 'tempo' || kind === 'clickhouse' ? [trace] : [], undefined, calls); }
+      finally { clock.mockRestore(); }
+      const after = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
+      expect(after).toMatchObject({ status: 'partial', captured_at: previous.captured_at });
+      expect(after.details.retainedPrevious).toBe(true);
+      expect(after.details.sources).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sourceId: 'metrics:new', itemCount: 1 }),
+        expect.objectContaining({ reasons: ['empty_not_confirmed'] }),
+      ]));
+      // Retain the whole saved graph: do not silently combine old and new generations.
+      expect((await pool.query("SELECT id FROM topology_nodes WHERE class='trace' ORDER BY id")).rows).toEqual(nodes);
+    });
 
   it.each([...tempoContracts, { name: 'legacy unmarked empty', body: { traces: [] }, readStatus: 'partial' },
     { name: 'completed search but empty child trace', body: { collectionStatus: 'ok', traces: [{ traceID: '1' }] },

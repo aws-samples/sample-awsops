@@ -29,7 +29,7 @@ connectors. No new telemetry backend or AWS-mutating tool.
    - Verify source paths, migration immutability, public boundaries, web/worker tests and build.
 
 2. **Evidence and identity / 근거와 식별자**
-   - `SourceRead<T>` carries items, status, source ID, reason codes and the exact time window.
+   - `SourceRead<T>` carries items, status, source ID, reason codes, the exact time window, and optional `canSweep: false` for incomplete evidence. Such a source retains the whole saved trace graph even beside useful siblings; adapter items and bounded attempt diagnostics are distinct from published graph rows.
    - Normalize cloud account/region, deployment environment, service namespace and Kubernetes scope.
    - Index spans by source, trace and span identity; preserve asynchronous span links.
    - Keep metric and sampled-span evidence distinguishable.
