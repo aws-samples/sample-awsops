@@ -282,6 +282,12 @@ TEXT and cannot tell you whether the SQL parses, which is how two separate parse
 shipped during review (an unescaped quote, then an untagged dollar delimiter closing the enclosing
 DO block).
 
+Those historical text checks remain limited. The current `TestTopologySelectionSQL`
+suite in `agent/lambda/test_inventory_read_mcp.py` executes actual topology selection
+SQL through the view-only role on disposable PostgreSQL 17. See the exact setup,
+sentinel, driver and execution commands in
+[Reader PostgreSQL verification](graph-read-contract.md#reader-postgresql-verification).
+
 `data/schema.sql` + 37 개 ULID 마이그레이션을 순서대로 적용했다. 롤 마이그레이션 3 개와 이 파일은 RDS
 가 제공하는 롤(`rds_iam`, `awsops_admin`)을 필요로 하므로 vanilla 서버에서는 먼저 만들어야 한다. 그
 다음 `awsops_sql_reader` 로:
@@ -358,7 +364,16 @@ Inspect the current migration and the queue/view cases in
 `scripts/v2/workers/test_graph_collection.py`; this clarification does not retarget
 tests or claim a fresh PostgreSQL execution. The current collection-view projection and
 API repeatable-read/timeout/cap behavior are independently covered by
-`web/lib/graph-read-postgres.test.ts`; see [local test prerequisites](graph-read-contract.md).
+`web/lib/graph-read-postgres.test.ts`; the Python reader's actual canonical/raw-ID,
+neighbourhood and truncation SQL is covered by `TestTopologySelectionSQL` under the
+current collection, queue-provenance and read-index migrations. See
+[local test prerequisites](graph-read-contract.md#reader-postgresql-verification).
+Its `selection`, `truncation`, `readOutcome` and `snapshotConsistent` envelope is
+reader-specific and does not assert HTTP transaction parity. `readOutcome` describes
+state-read failure or detected publication change without extending the stored
+`failureReason` vocabulary. Absence of `snapshotConsistent` never certifies a coherent
+multi-query snapshot. The internal writer scheduling clock `lastSourceAttemptedAtMs`
+stays outside the projection and is covered by `web/lib/graph-reader-privacy.test.ts`.
 Apply the new collection projection with the existing `make migrate` operator flow;
 the queue projection remains separately owned by the migration above.
 
