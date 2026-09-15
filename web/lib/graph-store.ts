@@ -209,14 +209,17 @@ export async function rebuildTraceGraph(
     itemCount: read.items.length, windowStartMs: read.windowStartMs, windowEndMs: read.windowEndMs,
   }));
   const hasFailure = reads.some((read) => read.status === 'error' || read.status === 'unavailable');
-  const partial = reads.some((read) => read.status === 'partial');
+  const cannotSweep = reads.some((read) => read.canSweep === false);
+  const partial = reads.some((read) => read.status === 'partial') || (cannotSweep && !hasFailure);
   const spans = spanReads.flatMap((read) => read.items.map((span) => ({ ...span, sourceId: span.sourceId ?? read.sourceId })));
   const calls = metricReads.flatMap((read) => read.items.map((call) => ({
     ...call,
     clientIdentity: { ...call.clientIdentity, sourceId: call.clientIdentity?.sourceId ?? read.sourceId },
     serverIdentity: { ...call.serverIdentity, sourceId: call.serverIdentity?.sourceId ?? read.sourceId },
   })));
-  if (!reads.length || hasFailure || (partial && !spans.length && !calls.length)) {
+  // Unproven empty/lost-data reads retain the prior generation. Valid nonempty
+  // bounded reads continue through the existing atomic partial-snapshot publisher.
+  if (!reads.length || hasFailure || cannotSweep || (partial && !spans.length && !calls.length)) {
     const status = reads.some((read) => read.status === 'error') ? 'error'
       : partial ? 'partial' : 'unavailable';
     return writeGraph(pool, 'trace', TRACE_LOCK, 'self', [], [], runId, true, {
