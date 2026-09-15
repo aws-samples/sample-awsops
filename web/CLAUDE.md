@@ -41,3 +41,12 @@ Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/a
 When `INVENTORY_HOST_ONLY=true`, `POST /api/accounts` rejects onboarding with 409 after
 authentication/admin checks and before STS or registry writes. Reads, connection re-tests
 and removal retain their behavior. Configure multi-account collection before onboarding.
+An explicit `INVENTORY_TARGET_ACCOUNT_IDS` deployment allowlist also gates registration;
+malformed configuration fails closed. `INVENTORY_TASK_ROLE_ARN` supplies the exact host
+collector principal to the create-only CloudFormation guide.
+
+`GET /api/deployment/member-inventory` authenticates and restricts queries to applied target
+accounts. One read-only statement checks enabled account/region scope and exactly matches
+the resource ID, returning at most two minimal projections to reject ambiguity. It never
+returns full inventory records. The release controller checks identity and post-marker
+freshness; the required PostgreSQL/TLS suite covers large inventories and unusable scopes.

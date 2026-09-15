@@ -1,5 +1,6 @@
 """Offline account, immutable-image and private runtime rollout boundaries."""
 import argparse
+import fnmatch
 import json
 import math
 import os
@@ -44,8 +45,24 @@ def account_id(value):
     return value
 
 
+def verification_targets(value, host):
+    if not isinstance(value, list) or len(value) > 5:
+        raise ValueError("Invalid runtime targets")
+    seen = {host}
+    for item in value:
+        if (not isinstance(item, dict) or set(item) != {"account_id", "resource_type", "resource_id"}
+                or not isinstance(item["account_id"], str)
+                or not re.fullmatch(r"[0-9]{12}", item["account_id"])
+                or item["account_id"] in seen or item["resource_type"] not in ("ec2", "cloudfront")
+                or not isinstance(item["resource_id"], str)
+                or not re.fullmatch(r"[\x21-\x7e]{1,2048}", item["resource_id"])):
+            raise ValueError("Invalid runtime targets")
+        seen.add(item["account_id"])
+    return value
+
+
 def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest, worker_digest,
-                      rollout, *, advisory=False, readiness="", steampipe_fill_rate=""):
+                      rollout, *, advisory=False, readiness="", steampipe_fill_rate="", runtime_targets=""):
     if (scope not in SCOPES or enabled not in ("", "false", "true")
             or type(rollout) is not bool):
         raise ValueError("Invalid runtime profile or scope")
@@ -56,6 +73,12 @@ def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest
     # Absence is intentional: do not erase an explicit operator tfvars decision.
     readiness_override = {} if readiness == "" else {"ci_readiness_enabled": readiness == "true"}
     profile = target == "dev" and enabled == "true"
+    try:
+        targets = verification_targets(json.loads(runtime_targets) if runtime_targets else [], expected_account)
+    except (ValueError, TypeError):
+        raise ValueError("Invalid runtime targets") from None
+    if targets and (not profile or scope != "full"):
+        raise ValueError("Explicit runtime targets require the full dev runtime profile")
     rate_override = {}
     if steampipe_fill_rate != "":
         if not profile or scope != "full":
@@ -84,6 +107,8 @@ def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest
     if not profile:
         return result
     result.update({key: True for key in RUNTIME_FLAGS})
+    if targets:
+        result.update(inventory_host_only=False, runtime_verification_targets=targets)
     for key, value in (("steampipe_image_digest", steampipe_digest), ("worker_image_digest", worker_digest)):
         if value:
             if not re.fullmatch(r"sha256:[a-f0-9]{64}", value):
@@ -254,6 +279,43 @@ def _check_accounts(value, expected):
                 raise ValueError("A runtime resource belongs to a different account")
 
 
+def _check_target_policy(resource, targets, project, expected):
+    """Exempt only exact target role Resource positions, never foreign resources."""
+    after = resource["change"].get("after")
+    if (resource["address"] != "aws_iam_role_policy.steampipe_task[0]"
+            or resource["type"] != "aws_iam_role_policy" or not targets or not isinstance(after, dict)):
+        _check_accounts(after, expected)
+        return
+    if after.get("name") != f"{project}-steampipe-read" or after.get("role") != f"{project}-steampipe-task":
+        raise ValueError("Invalid runtime target policy owner")
+    try:
+        policy = json.loads(after["policy"])
+        statements = policy["Statement"]
+        if not isinstance(statements, list):
+            raise ValueError
+        allowed = {f"arn:aws:iam::{t['account_id']}:role/AWSopsReadOnlyRole" for t in targets}
+        found = 0
+        for statement in statements:
+            actions = statement.get("Action")
+            if (not isinstance(actions, list) or not actions
+                    or any(not isinstance(action, str) for action in actions)
+                    or "NotAction" in statement or "NotResource" in statement):
+                raise ValueError
+            if any(fnmatch.fnmatchcase("sts:assumerole", action.lower()) for action in actions):
+                resources = statement.get("Resource")
+                if (actions != ["sts:AssumeRole"] or set(statement) != {"Effect", "Action", "Resource"} or statement["Effect"] != "Allow"
+                        or not isinstance(resources, list) or len(resources) != len(allowed)
+                        or set(resources) != allowed):
+                    raise ValueError
+                found += 1
+                statement["Resource"] = []  # Local parsed copy only; scan every other policy position.
+        if found != 1:
+            raise ValueError
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise ValueError("Invalid runtime target AssumeRole policy") from None
+    _check_accounts({**after, "policy": policy}, expected)
+
+
 def check_plan(plan, target, scope, expected_account, *, advisory=False):
     if scope not in SCOPES or not isinstance(plan, dict) or not plan.get("format_version"):
         raise ValueError("Invalid runtime plan scope or document")
@@ -261,6 +323,11 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
     rollout = variables.get("ci_runtime_rollout", False)
     profile = variables.get("ci_runtime_profile_enabled", False)
     readiness = variables.get("ci_readiness_enabled", False)
+    targets = verification_targets(variables.get("runtime_verification_targets", []), expected_account)
+    if targets and (target != "dev" or scope != "full" or profile is not True
+                    or variables.get("inventory_host_only") is not False
+                    or any(variables.get(flag) is not True for flag in RUNTIME_FLAGS[:3])):
+        raise ValueError("Explicit runtime targets require full dev runtime with host-only disabled")
     # Terraform show records CLI input spelling even for a declared bool variable.
     # Decode only its two canonical literals; never use truthiness for a string.
     if type(readiness) is str and readiness in ("true", "false"):
@@ -303,13 +370,15 @@ def check_plan(plan, target, scope, expected_account, *, advisory=False):
         if not isinstance(address, str) or not isinstance(kind, str) or not isinstance(change, dict):
             raise ValueError("Malformed resource change")
         actions = change.get("actions")
+        if targets and address == "aws_iam_role_policy.steampipe_task[0]":
+            _check_target_policy(resource, targets, project, expected)
         if actions in (["no-op"], ["read"]):
             continue
         if not isinstance(actions, list) or not actions or any(
                 action not in ("create", "update", "delete", "forget") for action in actions):
             raise ValueError("Invalid resource actions")
         after = change.get("after")
-        _check_accounts(after, expected)
+        _check_target_policy(resource, targets, project, expected)
         if rollout and (kind.startswith(("aws_route53", "aws_acm_")) or kind in NETWORK_TYPES):
             raise ValueError("Runtime operations must preserve public DNS, certificates and network topology")
         if scope == "runtime-ecr-bootstrap":
@@ -385,6 +454,7 @@ def main():
                 rollout == "true", advisory=args.advisory == "true",
                 readiness=os.environ.get("CI_READINESS_ENABLED_DEV", ""),
                 steampipe_fill_rate=os.environ.get("CI_STEAMPIPE_AWS_FILL_RATE_DEV", ""),
+                runtime_targets=os.environ.get("CI_RUNTIME_TARGETS_DEV", ""),
             )
             with OVERRIDES.open("x") as output:
                 json.dump(value, output)
