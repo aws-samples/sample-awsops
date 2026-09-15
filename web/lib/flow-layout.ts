@@ -15,7 +15,7 @@ export const NODE_H = 44;
  * Lay the graph out left→right (rankdir LR). Returns React-Flow top-left positions.
  *
  * `opts.nodeSize` lets a caller override the per-node width/height dagre reserves — it MUST match
- * whatever width/height the caller actually renders that node at (e.g. PolicyGraph.tsx), or dagre's
+ * whatever width/height the caller actually renders that node at (e.g. PolicyGraph.tsx and E2eGraphCanvas.tsx), or dagre's
  * spacing decisions are made against dimensions the DOM doesn't use, which is exactly how long
  * labels end up overflowing into — or overlapping — a neighboring node. When omitted, every node
  * uses the module default (NODE_W x NODE_H), same as before this option existed.

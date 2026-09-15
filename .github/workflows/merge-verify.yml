@@ -41,6 +41,7 @@ jobs:
             -r scripts/v2/remediation/requirements.txt \
             -r scripts/v2/steampipe/requirements.txt \
             -r scripts/v2/workers/requirements.txt
+          python -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt
 
       - name: Prepare isolated image codec for confinement checks
         id: codec

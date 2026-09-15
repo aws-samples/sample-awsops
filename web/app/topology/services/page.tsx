@@ -156,9 +156,14 @@ export default function ServiceMapPage() {
         title="서비스 맵 (trace)"
         subtitle="ClickHouse · Tempo · Prometheus · Mimir"
         right={
+          <div className="flex flex-wrap gap-2">
+          <Link href="/topology?view=e2e" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
+            {tt('서비스 + 네트워크 →')}
+          </Link>
           <Link href="/topology" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
             {tt('← 트래픽 흐름')}
           </Link>
+          </div>
         }
       />
       {graph && <GraphCollectionStatus collection={graph.collection} />}

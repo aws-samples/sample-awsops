@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 6670ef8675ac · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 2198df7ce18d · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -17,6 +17,9 @@ Graph collection/projection, freshness and retained-evidence rollout contracts l
 `docs/runbooks/CLAUDE.md`'s index for the current runbook list (several are marked **v1
 (legacy)** — v2 has since replaced their procedure with a different mechanism; don't treat a
 legacy runbook's steps as the current operational path).
+
+`pr-review-head-images.md` distinguishes historical BASE pixels from staged HEAD PNG
+evidence, with bounded data-only extraction and explicit unavailable-image failures.
 
 ## Deployment review checks
 - Web migrations force automatic checks of every pending file on initialized DBs. Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the init flag. Standalone empty-only bootstrap applies historical SQL and reader sync first; function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL need reviewed standalone migration, then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Contention fails immediately under the shared lock. Read retries share a deadline and never retry writes; failed/replaced ECS deployment evidence is terminal. See `release-safety-primitives.md`.
@@ -250,6 +253,11 @@ Catalog/per-type timeouts: `runtime-verifier-sessions.md#collection-effects-and-
 Checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
 
 Graph reads admit at most two requests per shared max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. Source-attempt metadata is supported before the separately gated inventory publisher is activated. See `graph-read-contract.md` for operator rollout and disposable tests; source integration does not establish deployment.
+
+Changed HEAD image review uses the shared static-raster format table, source/render lineage
+and bounded decoding. All eight cells and chair must declare required coverage; explicit
+unavailable entries block. Response presence and unusable reports remain separate;
+see `pr-review-head-images.md`. No new tool or IAM grants.
 
 ## Isolated review codec
 

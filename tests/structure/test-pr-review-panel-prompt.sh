@@ -53,7 +53,7 @@ fi
 
 # Exercise the actual panel script with fake external CLIs: this checks what each
 # CLI receives, rather than requiring the source text of the retired Kiro adapter.
-if PANEL_RESULT=$(python3 scripts/v2/test_pr_review_pipeline.py 2>&1); then
+if PANEL_RESULT=$(python3 -m unittest scripts.v2.test_pr_review_pipeline scripts.v2.test_pr_review_head_images 2>&1); then
   pass "Codex/Claude receive guarded prompts and read-only tools; coverage fails closed"
 else
   printf '%s\n' "$PANEL_RESULT" | sed 's/^/# /'
