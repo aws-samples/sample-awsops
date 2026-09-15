@@ -726,12 +726,12 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
     [...members].some(id => !visibleIds.has(id))
     || (groupEdges.get(connection) ?? []).some(edge => !visibleEdgeIds.has(edge.id)),
   );
-  const omittedCategoryCounts: Record<string, number> = {};
+  const omittedCategoryCounts: Record<string, number> = Object.create(null);
   for (const [connection] of omittedGroups) {
-    const category = text(byId.get(connection)!.meta.category) || 'UNKNOWN';
+    const category = text(byId.get(connection)!.meta.category);
     omittedCategoryCounts[category] = (omittedCategoryCounts[category] ?? 0) + 1;
   }
-  const omittedCategories = Object.keys(omittedCategoryCounts).sort();
+  const omittedCategories = Object.keys(omittedCategoryCounts).filter(Boolean).sort();
   return {
     nodes, edges: visibleEdges, matchedNodes, omittedCategories, omittedCategoryCounts,
     omittedNodes: selected.size - nodes.length,

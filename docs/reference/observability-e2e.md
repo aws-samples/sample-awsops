@@ -105,14 +105,18 @@ Workload scope requires at least one compatible record attesting both account an
 ## Evidence canvas
 
 The reusable canvas uses the canonical read/completeness and ranking contracts. It
-keeps the primary observed flow and its related configuration/workload nodes visible,
-with a viewport-sized canvas and fit zoom that can accommodate the full neighborhood.
+keeps the ranked primary observed flow and a two-hop neighborhood visible. Context
+edges contribute only at the first hop. The viewport-sized canvas can fit that
+neighborhood down to 0.05 zoom. Incomplete configuration and service reads remain
+visible even when no service nodes exist; withheld node identity has an icon and subtitle.
 Candidate context remains distinct from verified matches; group details retain at
 most 20 displayed entries with safe omission counts and member-specific identity.
 Target-group capture, node capture and legacy snapshot clocks remain distinct.
 
 The additive `omittedCategoryCounts` field counts hidden or incomplete observation
-groups after eligibility/focus/query filtering, alongside `omittedCategories`. This
+groups after eligibility/focus/query filtering, alongside the unchanged sorted,
+nonempty source labels in `omittedCategories`. The counts map's empty key records
+missing category labels, rendered as localized "Category unknown" prose. This
 display budget is separate from source collection caps or missing telemetry.
-No source is fetched and no route activated by the standalone canvas; its integration
-retains the full service/network browser and multilingual-guide acceptance suite.
+The standalone canvas does not fetch sources or activate routes. Page wiring and
+its service/network browser checks and multilingual guide builds remain separate work.

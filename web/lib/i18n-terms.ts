@@ -116,6 +116,7 @@ export const TERMS: Record<string, Pair> = {
   '표시할 네트워크 관측이 없습니다.': { en: 'No network observations to display.', zh: '没有可显示的网络观测。', ja: '表示するネットワーク観測はありません。' },
   '화살표는 구성·서비스 관계의 방향입니다. NFM 연결은 로컬·원격 관측이며 동일한 요청의 인과관계를 뜻하지 않습니다.': { en: 'Arrows show configuration and service relationship direction. NFM links show local/remote observations, not causality within one request.', zh: '箭头表示配置和服务关系的方向。NFM关联表示本地／远程观测，并不代表同一请求内的因果关系。', ja: '矢印は構成・サービス関係の方向を示します。NFMの接続はローカル／リモート観測であり、同一リクエストの因果関係ではありません。' },
   '로컬 엔드포인트': { en: 'Local endpoint', zh: '本地端点', ja: 'ローカルエンドポイント' },
+  '분류 미확인': { en: 'Category unknown', zh: '类别未确认', ja: '分類未確認' },
   '원격 엔드포인트': { en: 'Remote endpoint', zh: '远程端点', ja: 'リモートエンドポイント' },
   '캐시된 구성 엔드포인트 기록': { en: 'Cached configured endpoint record', zh: '缓存的配置端点记录', ja: 'キャッシュされた設定エンドポイントの記録' },
   '구성 엔드포인트 기록': { en: 'Configured endpoint record', zh: '配置端点记录', ja: '設定エンドポイントの記録' },

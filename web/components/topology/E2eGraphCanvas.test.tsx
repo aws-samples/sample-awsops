@@ -7,9 +7,11 @@ import { ReactFlow, getNodesBounds, getViewportForBounds, type ReactFlowProps } 
 import E2eGraphCanvas from './E2eGraphCanvas';
 import { LanguageProvider } from '@/components/shell/LanguageProvider';
 import { buildFlowGraph } from '@/lib/flow-topology';
-import { buildE2eGraph } from '@/lib/e2e-topology';
+import { buildE2eGraph, selectE2eGraph } from '@/lib/e2e-topology';
 import type { E2eGraph, E2eNode } from '@/lib/e2e-topology-types';
 import { applyTerms } from '@/lib/i18n-terms';
+
+const readSource = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
 // Observe our viewport contract while keeping React Flow and graph selection real.
 vi.mock('@xyflow/react', async importOriginal => {
@@ -51,6 +53,53 @@ async function select(label: string) {
 }
 
 describe('E2eGraphCanvas', () => {
+  it('qualifies real builder endpoint labels and retains service-only identities', async () => {
+    const built = buildE2eGraph({
+      account: 'self', configured: { nodes: [], edges: [] }, services: null,
+      network: [{ metric: 'DATA_TRANSFERRED', unit: 'Bytes', category: 'INTER_AZ',
+        monitor: 'fixture', cluster: 'fixture', rangeSec: 60, rows:
+        ['shop', 'payments'].map(podNamespace => ({
+          local: { podNamespace, podName: 'web-1' }, remote: { serviceName: 'external-api' },
+          value: 1, unit: 'Bytes', category: 'INTER_AZ',
+        })) }],
+    });
+    render(<E2eGraphCanvas graph={built} />);
+    await screen.findByTitle('shop/web-1');
+    await screen.findByTitle('payments/web-1');
+    expect(await screen.findAllByTitle('external-api')).toHaveLength(2);
+  });
+  it.each([false, true])('discloses incomplete sources even without service nodes (hasServices=%s)', async hasServices => {
+    const configured = buildFlowGraph({ tg: [{ resource_id: 'tg-one', target_type: 'ip',
+      target_health_descriptions: [{ Target: { Id: '10.0.1.1', Port: 80 } }] }] });
+    const built = buildE2eGraph({ account: 'self', configured,
+      services: hasServices ? { nodes: [{ id: 'service', kind: 'service', label: 'service', meta: {} }], edges: [], captured_at: null } : null,
+      configurationComplete: false, servicesComplete: false, network: [],
+    });
+    render(<E2eGraphCanvas graph={built} />);
+    expect(screen.getByText('구성 근거를 확인할 수 없어 연결을 보류했습니다.')).toBeTruthy();
+    expect(screen.getByText('서비스 근거의 완전성·신선도를 확인할 수 없어 워크로드 식별을 보류했습니다.')).toBeTruthy();
+    await waitFor(() => {
+      const props = vi.mocked(ReactFlow).mock.lastCall?.[0];
+      const target = built.nodes.find(node => node.kind === 'target')!;
+      expect(props?.nodes.find(node => node.id === target.id)?.data.label).toBeTruthy();
+      expect(screen.getAllByText(/구성 · 식별 보류/).length).toBeGreaterThan(0);
+    });
+  });
+  it('keeps omittedCategories label-only and safely counts missing or prototype-like labels', () => {
+    const nodes = ['', '__proto__'].flatMap((category, i) => [
+      { ...graph.nodes[1], id: `local-${i}` }, { ...graph.nodes[2], id: `remote-${i}` },
+      { ...graph.nodes[3], id: `flow-${i}`, meta: { ...graph.nodes[3].meta, category } },
+    ]);
+    const edges = [0, 1].flatMap(i => ['local', 'remote'].map(side => ({
+      id: `${side}-${i}`, source: `${side}-${i}`, target: `flow-${i}`,
+      evidence: 'network' as const, relation: side, directed: false,
+    })));
+    const view = selectE2eGraph({ ...graph, nodes, edges }, { maxNodes: 1 });
+    expect(view.omittedCategories).toEqual(['__proto__']);
+    expect(view.omittedCategoryCounts['']).toBe(1);
+    expect(view.omittedCategoryCounts.__proto__).toBe(1);
+    expect(Object.getPrototypeOf(view.omittedCategoryCounts)).toBeNull();
+  });
   it('keeps navigation controls without exposing the interaction unlock', async () => {
     render(<E2eGraphCanvas graph={graph} />);
     const controls = await screen.findByTestId('rf__controls');
@@ -60,7 +109,7 @@ describe('E2eGraphCanvas', () => {
   });
   it.each(['ko', 'en', 'zh', 'ja'] as const)('covers every canvas prose literal and label catalog in %s', lang => {
     const source = ts.createSourceFile('canvas.tsx',
-      readFileSync('components/topology/E2eGraphCanvas.tsx', 'utf8'),
+      readSource('./E2eGraphCanvas.tsx'),
       ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
     const literals = new Set<string>();
     const visit = (node: ts.Node) => {

@@ -27,8 +27,10 @@ Client components span `ui`, `shell`, `charts`, `chat`, `inventory` (including `
 ## Evidence canvas prerequisite
 
 `topology/E2eGraphCanvas.tsx` renders the merged correlation core without fetching or
-activating a page. Keep canonical source-read/service-completeness notices, source
+activating a page. Keep configuration/service completeness notices even with zero
+service nodes, canonical source-read notices, source
 label preservation, source-specific clocks and bounded candidate/member details.
-The default viewport fits complete observed neighborhoods down to a 0.05 zoom;
+The default viewport fits the ranked flow's two-hop neighborhood down to a 0.05 zoom
+(context edges only contribute at the first hop);
 search/evidence filters still precede display caps. Missing observations never become
 zero unmatched counts. Four-language terms and tests are included; page wiring follows.

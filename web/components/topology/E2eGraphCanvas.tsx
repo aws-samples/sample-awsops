@@ -104,10 +104,14 @@ function traversedItems(flow: NfmFlowRow): string[] {
   return [...new Set([...ids, ...strings(flow.traversed).filter(kind => !represented.has(kind))])];
 }
 function IconForNode({ node }: { node: E2eNode }) {
-  const Icon = node.kind === 'connection' ? Activity : node.kind === 'db' ? Database
+  const Icon = identityWithheld(node) ? CircleHelp : node.kind === 'connection' ? Activity : node.kind === 'db' ? Database
     : node.kind === 'construct' ? GitBranch : node.kind === 'workload' ? Box
       : node.layer === 'network' ? Network : node.kind === 'target' ? node.meta.resolved === 'ambiguous' ? CircleHelp : Server : Cloud;
   return <Icon size={16} aria-hidden className="shrink-0" />;
+}
+function identityWithheld(node: E2eNode): boolean {
+  return node.meta.e2e_correlation_blocked === true || node.meta.correlation === 'ambiguous'
+    || node.meta.resolved === 'ambiguous' || !!text(node.meta.ambiguity);
 }
 
 export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph }) {
@@ -116,16 +120,19 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
   const graph = useMemo(() => ({
     ...inputGraph,
     nodes: inputGraph.nodes.map((node) => {
+      const endpoint = object(node.meta.endpoint) ? node.meta.endpoint : null;
+      const fallback = node.meta.side === 'local' ? '로컬 엔드포인트' : '원격 엔드포인트';
+      const generatedEndpoint = node.labelKey === 'local_endpoint' || node.labelKey === 'remote_endpoint'
+        || node.label === fallback;
+      const builderEndpoint = endpoint && [text(endpoint.podName), text(endpoint.instanceId), text(endpoint.ip)]
+        .filter(Boolean).includes(node.label);
+      if (node.layer === 'network' && node.kind === 'endpoint' && endpoint && (generatedEndpoint || builderEndpoint)) {
+        return { ...node, label: endpointLabel(endpoint, tt(fallback)) };
+      }
       if (node.labelKey && GENERATED_LABELS[node.labelKey]) {
         return { ...node, label: tt(GENERATED_LABELS[node.labelKey]) };
       }
       const flow = flowOf(node);
-      const endpoint = object(node.meta.endpoint) ? node.meta.endpoint : null;
-      const fallback = node.meta.side === 'local' ? '로컬 엔드포인트' : '원격 엔드포인트';
-      if (node.layer === 'network' && node.kind === 'endpoint' && endpoint
-        && node.label === fallback) {
-        return { ...node, label: endpointLabel(endpoint, tt(fallback)) };
-      }
       if (node.kind === 'connection' && !text(node.meta.metric) && node.label === '네트워크 관측') {
         return { ...node, label: tt('네트워크 관측') };
       }
@@ -182,7 +189,8 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
     const positions = new Map(layoutFlow(view, { nodeSize: () => NODE_SIZE }).map((p) => [p.id, p]));
     const nodes: Node[] = view.nodes.map((n) => {
       const flow = flowOf(n);
-      const color = n.layer === 'network' ? '#0284c7' : n.layer === 'service' ? '#8b5cf6' : '#7c8b9c';
+      const color = identityWithheld(n) ? '#c08438'
+        : n.layer === 'network' ? '#0284c7' : n.layer === 'service' ? '#8b5cf6' : '#7c8b9c';
       return {
         id: n.id, position: positions.get(n.id) ?? { x: 0, y: 0 },
         sourcePosition: Position.Right, targetPosition: Position.Left,
@@ -194,7 +202,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
             </div>
             <span className="truncate text-[11px] opacity-70">
               {flow ? `${tt(METRIC_LABELS[text(n.meta.metric)] ?? (text(n.meta.metric) || '네트워크 관측'))} · ${metricValue(flow.value, text(n.meta.unit) || text(flow.unit), locale)}`
-                : `${tt(SOURCE_LABELS[n.layer])} · ${n.meta.resolved === 'ambiguous' ? tt('식별 정보 없음') : n.kind}`}
+                : `${tt(SOURCE_LABELS[n.layer])} · ${identityWithheld(n) ? tt('식별 보류') : n.kind}`}
             </span>
           </div>
         ) },
@@ -288,10 +296,11 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-500" role="status">
         <span>{tt('표시 노드')} {view.nodes.length} · {tt('관계')} {view.edges.length}</span>
-        {graph.summary.serviceNodes > 0 && !graph.summary.servicesComplete && <span>{tt('서비스 근거의 완전성·신선도를 확인할 수 없어 워크로드 식별을 보류했습니다.')}</span>}
+        {!graph.summary.configurationComplete && <span>{tt('구성 근거를 확인할 수 없어 연결을 보류했습니다.')}</span>}
+        {!graph.summary.servicesComplete && <span>{tt('서비스 근거의 완전성·신선도를 확인할 수 없어 워크로드 식별을 보류했습니다.')}</span>}
         {readState !== 'complete' && <span>{tt(READ_LABELS[readState])}</span>}
-        {!!graph.summary.networkRead?.failedCategories.length && <span>{tt('조회 실패 분류:')} {graph.summary.networkRead.failedCategories.join(', ')}</span>}
-        {!!graph.summary.networkRead?.unknownWindowCategories.length && <span>{tt('관측 기간 미확인 분류:')} {graph.summary.networkRead.unknownWindowCategories.join(', ')}</span>}
+        {!!graph.summary.networkRead?.failedCategories?.length && <span>{tt('조회 실패 분류:')} {graph.summary.networkRead.failedCategories.join(', ')}</span>}
+        {!!graph.summary.networkRead?.unknownWindowCategories?.length && <span>{tt('관측 기간 미확인 분류:')} {graph.summary.networkRead.unknownWindowCategories.join(', ')}</span>}
         <span>{tt('네트워크 관계')} <span data-testid="e2e-network-edge-count">{view.edges.filter((e) => e.evidence === 'network').length}</span></span>
         {graph.summary.observationsUnsupported ? null
           : graph.summary.networkFlows === 0 ? <span>{tt('네트워크 관측 데이터가 없어 연결 여부를 집계할 수 없습니다.')}</span>
@@ -305,7 +314,8 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
         )}
         {Object.keys(view.omittedCategoryCounts).length > 0 && (
           <span className="text-amber-700">{tt('표시 한도로 제한된 관측 (분류별):')} {Object.entries(view.omittedCategoryCounts)
-            .map(([category, count]) => `${category}: ${count}`).join(', ')}</span>
+            .sort(([a], [b]) => a.localeCompare(b, 'en'))
+            .map(([category, count]) => `${category || tt('분류 미확인')}: ${count}`).join(', ')}</span>
         )}
       </div>
       <div className={`grid h-[min(900px,calc(100dvh-64px))] min-h-[480px] min-w-0 shrink-0 gap-3 ${selected ? 'xl:grid-cols-[minmax(0,1fr)_320px]' : 'grid-cols-1'}`}>
