@@ -258,7 +258,8 @@ def validate_trace(raw, image, answer, observations=None):
             elif block_type == "tool_result":
                 content = block.get("content")
                 if (kind != "user" or read_ok or not read_id or block.get("tool_use_id") != read_id
-                        or block.get("is_error") is True or not isinstance(content, list)
+                        or (block.get("is_error") is not None and block.get("is_error") is not False)
+                        or not isinstance(content, list)
                         or not any(isinstance(part, dict) and part.get("type") == "image" for part in content)):
                     raise ProbeError("read_unavailable")
                 read_ok = True
@@ -267,7 +268,9 @@ def validate_trace(raw, image, answer, observations=None):
                 raise ProbeError("unexpected_tool")
     if not read_ok:
         raise ProbeError("read_unavailable")
-    if not isinstance(result, str) or result.strip() != answer:
+    if not isinstance(result, str):
+        raise ProbeError("invalid_trace")
+    if result.strip() != answer:
         raise ProbeError("answer_mismatch")
 
 

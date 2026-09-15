@@ -65,7 +65,10 @@ are no dispatch inputs. Check the authentication step and final safe JSON separa
 `incomplete` can mean preparation/authentication stopped before the model call or the
 root/proof is missing. `cli_failed` includes an observed numeric exit code but does not
 by itself distinguish auth, transport or file access. `invalid_trace` describes a schema
-or declaration problem; it does not establish that Read is unsupported.
+or declaration problem, including an absent or non-string final result; it does not
+establish that Read is unsupported. Only a present, different string result is
+`answer_mismatch`. A malformed tool error flag is `read_unavailable`, never successful
+Read evidence.
 `invalid_state` rejects malformed private control data without a traceback; malformed
 or missing persisted proof returns `incomplete`.
 `reused_root` rejects repeated attempts or pre-existing proof/trace, prevents another

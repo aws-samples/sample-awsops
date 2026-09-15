@@ -138,6 +138,38 @@ class CapabilityTests(unittest.TestCase):
             self.module.cleanup(outsider, self.env)
         self.assertTrue(outsider.exists())
 
+    def test_absent_or_non_string_result_is_not_an_answer_mismatch(self):
+        image = self.parent / "image.png"
+        for value in ("missing", None, 123, {}, []):
+            with self.subTest(value=value):
+                events = trace(image, "012345")
+                if value == "missing":
+                    events.pop()
+                else:
+                    events[-1]["result"] = value
+                observed = {}
+                with self.assertRaises(self.module.ProbeError) as caught:
+                    self.module.validate_trace(encode(events), image, "012345", observed)
+                self.assertEqual(caught.exception.code, "invalid_trace")
+                self.assertIs(observed["read_exact_file"], True)
+                self.assertNotIn("answer_matches", observed)
+
+    def test_tool_error_field_requires_false_or_absent(self):
+        image = self.parent / "image.png"
+        for value in ("true", 1, 0, "", {}, []):
+            with self.subTest(value=value):
+                events = trace(image, "012345")
+                events[2]["message"]["content"][0]["is_error"] = value
+                observed = {}
+                with self.assertRaises(self.module.ProbeError) as caught:
+                    self.module.validate_trace(encode(events), image, "012345", observed)
+                self.assertEqual(caught.exception.code, "read_unavailable")
+                self.assertNotIn("read_exact_file", observed)
+        for value in (None, False):
+            events = trace(image, "012345")
+            events[2]["message"]["content"][0]["is_error"] = value
+            self.module.validate_trace(encode(events), image, "012345")
+
     def test_child_env_requires_fresh_credentials_and_drops_command_channels(self):
         root = self.prepare()
         with self.assertRaises(self.module.ProbeError):
