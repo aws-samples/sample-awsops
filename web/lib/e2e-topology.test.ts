@@ -288,6 +288,14 @@ describe('buildE2eGraph — evidence and provenance', () => {
     const graph = buildE2eGraph(source);
     const projected = graph.nodes.find(node => node.kind === 'connection')!.meta.flow as NfmFlowRow;
     expect(() => { projected.value = 999; }).not.toThrow();
+    expect(() => {
+      projected.local.ip = 'changed-local';
+      projected.remote.ip = 'changed-remote';
+      projected.traversed.push('NAT');
+      projected.traversedIds.push('NAT:changed');
+      const local = graph.nodes.find(node => node.kind === 'endpoint' && node.meta.side === 'local')!;
+      (local.meta.endpoint as NfmEndpoint).ip = 'changed-endpoint';
+    }).not.toThrow();
     selectE2eGraph(graph, { query: 'web', maxNodes: 1 });
     expect(source).toEqual(before);
   });
@@ -1306,6 +1314,118 @@ describe('selectE2eGraph — filtering before bounds', () => {
     expect(view.edges.filter(e => e.evidence === 'network')).toHaveLength(2);
     expect(view.omittedCategories).toEqual(['AMAZON_DYNAMODB']);
     expectNoDanglingEdges(view);
+  });
+
+  function connectedFlows(count = 2, cached = false, sharedWorkload = true): E2eGraph {
+    const config: FlowGraph = { nodes: [], edges: [] };
+    const trace = services({ pods: Array.from({ length: count }, (_, i) => `web-${i + 1}`) });
+    const network = Array.from({ length: count }, (_, i) => {
+      const suffix = i ? `High${i}` : 'Low', ip = `10.0.${i}.10`;
+      config.nodes.push(
+        { id: `tg${suffix}`, kind: 'tg', label: `group${suffix}`, meta: { row: { region: REGION, vpc_id: VPC } } },
+        { ...eksTarget({ id: ip, pod: `web-${i + 1}`,
+          ...(cached && !i ? { ownership_evidence: 'cached_configuration' } : {}) }, `target${suffix}`),
+        label: `target${suffix}` },
+      );
+      config.edges.push({ id: `cfg${i}`, source: `tg${suffix}`, target: `target${suffix}`, confidence: 'observed' });
+      return observation([flow({ value: i + 1, local: endpoint({ ip, podName: `web-${i + 1}`, podNamespace: 'shop' }),
+        remote: endpoint({ ip: `10.1.${i}.20` }), traversedIds: ['NAT:nat-shared'],
+      })], { category: i ? 'INTER_VPC' : 'INTER_AZ' });
+    });
+    config.nodes.push({ id: 'originLow', kind: 'origin', label: 'originLow' });
+    config.edges.push({ id: 'origin-tg', source: 'originLow', target: 'tgLow', confidence: 'observed' });
+    if (!sharedWorkload) {
+      trace.nodes[0].label = 'serviceLow';
+      trace.nodes[1].label = 'workloadLow';
+      trace.nodes[1].meta!.pods = ['web-1'];
+      trace.nodes.push({ id: 'wl:high', kind: 'workload', label: 'workloadHigh',
+        meta: { cluster: 'app', namespace: 'shop', pods: ['web-2'], accountId: 'self', region: REGION } },
+      { id: 'svc:high', kind: 'svc', label: 'serviceHigh', meta: { accountId: 'self', region: REGION } });
+      trace.edges.push({ source: 'svc:web', target: 'svc:high', rel: 'calls' },
+        { source: 'svc:high', target: 'wl:high', rel: 'runs_on' });
+    }
+    return buildE2eGraph(input({ configured: config, services: trace, network }));
+  }
+
+  it.each(['targetLow', 'groupLow', 'originLow', 'workloadLow', 'serviceLow'])(
+    'prioritizes the nearest whole flow for focused/matched %s in a connected graph', label => {
+      const graph = connectedFlows(2, false, !['workloadLow', 'serviceLow'].includes(label));
+      const focus = graph.nodes.find(node => node.label === label)!;
+      const low = graph.nodes.find(node => node.kind === 'connection')!;
+      expect(selectE2eGraph(graph, { focusId: focus.id }).nodes.filter(node => node.kind === 'connection')).toHaveLength(2);
+      for (const selection of [{ focusId: focus.id }, { query: label }]) {
+        const view = selectE2eGraph(graph, { ...selection, maxNodes: 4, maxEdges: 10 });
+        expect(ids(view)).toEqual(new Set([focus.id, low.id, ...graph.nodes
+          .filter(node => node.kind === 'endpoint' && node.meta.connectionId === low.id).map(node => node.id)]));
+        expect(view.edges.filter(edge => edge.evidence === 'network')).toHaveLength(2);
+        if (label === 'targetLow' || label === 'workloadLow') {
+          expect(view.edges.filter(edge => edge.evidence === 'identity')).toHaveLength(1);
+        }
+        expect(view.omittedCategories).toEqual(['INTER_VPC']);
+        expectNoDanglingEdges(view);
+      }
+    },
+  );
+
+  it('pins focus and its flow before broader query hits, retaining focus even with no hits', () => {
+    const graph = connectedFlows(), focusId = graph.nodes.find(node => node.label === 'targetLow')!.id;
+    for (const query of ['network', 'targetHigh1', 'does-not-exist']) {
+      const view = selectE2eGraph(graph, { focusId, query, maxNodes: query === 'targetHigh1' ? 5 : 4 });
+      expect(view.nodes[0].id).toBe(focusId);
+      expect(view.nodes.filter(node => node.kind === 'connection').map(node => (node.meta.flow as NfmFlowRow).value)).toEqual([1]);
+      expect(view.edges.filter(edge => edge.evidence === 'network')).toHaveLength(2);
+      expectNoDanglingEdges(view);
+    }
+  });
+
+  it('preserves focus priority under the default cap while overview still keeps the highest values', () => {
+    const graph = connectedFlows(120), focusId = graph.nodes.find(node => node.label === 'targetLow')!.id;
+    for (const selection of [{ focusId }, { query: 'targetLow' }, {}]) {
+      const view = selectE2eGraph(graph, selection);
+      const values = view.nodes.filter(node => node.kind === 'connection').map(node => (node.meta.flow as NfmFlowRow).value);
+      expect(values).toHaveLength(116);
+      expect(values.includes(1)).toBe('focusId' in selection || 'query' in selection);
+      expect(values).toContain(120);
+      expect(view.nodes.length).toBeLessThanOrEqual(350);
+      expect(view.edges.filter(edge => edge.evidence === 'network')).toHaveLength(232);
+      expect(view.edges.length).toBeLessThanOrEqual(700);
+      expect(view.omittedNodes).toBe(graph.nodes.length - view.nodes.length);
+      expect(view.omittedEdges).toBe(graph.edges.length - view.edges.length);
+      expectNoDanglingEdges(view);
+    }
+  });
+
+  it.each(['focus', 'query', 'both'])('completes a cached record’s own group once for %s and discloses cap omissions', mode => {
+    const graph = connectedFlows(2, true), focusId = graph.nodes.find(node => node.label === 'targetLow')!.id;
+    const selection = { ...(mode !== 'query' ? { focusId } : {}), ...(mode !== 'focus' ? { query: 'targetLow' } : {}) };
+    for (const [maxNodes, maxEdges, complete] of [[6, 10, true], [4, 3, true], [3, 10, false], [6, 1, false]] as const) {
+      // Reverse edges to catch order-dependent endpoint -> connection -> endpoint completion.
+      const view = selectE2eGraph({ ...graph, edges: [...graph.edges].reverse() }, { ...selection, maxNodes, maxEdges });
+      expect(view.nodes.filter(node => node.kind === 'connection')).toHaveLength(complete ? 1 : 0);
+      expect(view.nodes.filter(node => node.kind === 'endpoint')).toHaveLength(complete ? 2 : 0);
+      expect(view.edges.filter(edge => edge.evidence === 'network')).toHaveLength(complete ? 2 : 0);
+      expect(view.nodes.some(node => node.kind === 'construct' || node.layer === 'service')).toBe(false);
+      expect(view.nodes.some(node => node.label === 'targetHigh1')).toBe(false);
+      expect(view.edges.filter(edge => edge.evidence === 'identity')).toHaveLength(0);
+      expect(view.omittedCategories).toEqual(complete ? [] : ['INTER_AZ']);
+      expect(view.omittedNodes).toBe(6 - view.nodes.length);
+      expect(view.omittedEdges).toBe(5 - view.edges.length);
+      expectNoDanglingEdges(view);
+    }
+  });
+
+  it('pins a cached record’s direct group before a higher-value flow reached through configuration', () => {
+    const graph = connectedFlows(2, true), focusId = graph.nodes.find(node => node.label === 'targetLow')!.id;
+    const other = graph.nodes.find(node => node.label === 'targetHigh1')!;
+    graph.edges.push({ id: 'related-config', source: focusId, target: other.id,
+      relation: 'configuration', evidence: 'configuration', directed: true });
+    for (const selection of [{ focusId }, { query: 'targetLow' }]) {
+      const view = selectE2eGraph(graph, { ...selection, maxNodes: 4, maxEdges: 10 });
+      expect(view.nodes.filter(node => node.kind === 'connection').map(node => (node.meta.flow as NfmFlowRow).value)).toEqual([1]);
+      expect(view.edges.filter(edge => edge.evidence === 'context')).toHaveLength(1);
+      expect(view.omittedCategories).toEqual(['INTER_VPC']);
+      expectNoDanglingEdges(view);
+    }
   });
 
   function largeGraph(size = 410): E2eGraph {

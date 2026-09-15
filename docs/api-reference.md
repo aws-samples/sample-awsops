@@ -144,9 +144,7 @@ application, without guaranteeing cancellation of a server query already started
 
 ### Service/network graph composition
 
-`web/lib/e2e-topology.ts` powers the opt-in `/topology?view=e2e` view without adding an HTTP API. The integration uses the full inventory-built configuration graph, the host trace snapshot and explicit NFM queries; authenticated `/api/accounts` supplies trusted host identity. Caller configuration completeness and network read state are mandatory evidence for honest composition; see `reference/observability-e2e.md` §Graph source contract. `NetworkObservation` remains owned by the category loader and is re-exported as a type.
-
-Only the host `self` scope combines observations. Unique scoped record matches and corroborated workload tuples remain separate from ownership assertions; missing/conflicting evidence withholds identity. Cached records can supply context without a veto; `eks_not_enumerated` is the only permitted non-empty ownership reason in the documented exception, never an identity grant. Counters count row/side observations. `selectE2eGraph` defaults to 350 nodes/700 edges, preserves complete admitted connections and reports omitted categories separately from source completeness. `ServiceNetworkTopology` renders source panels and orchestrates the existing APIs; `E2eGraphCanvas` renders the model.
+The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` model and existing authenticated APIs. Source-evidence, identity and selection contracts are maintained in [E2E observability](reference/observability-e2e.md#graph-source-contract); `ServiceNetworkTopology` orchestrates sources and `E2eGraphCanvas` renders the model.
 
 ## dns-logs (2)
 | 경로 | 메서드 | 역할 | 인증 |

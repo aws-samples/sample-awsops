@@ -102,6 +102,7 @@ owners must provision scoped access and plan-prefix lifecycle before publication
 | AgentCore Agents | [05-agentcore.md](05-agentcore.md) | `scripts/v2/agentcore/` (`catalog.py`, `provision.py`; `terraform/foundation/ai.tf`) |
 | Async Worker Backbone | [06-workers.md](06-workers.md) | `terraform/foundation/workers.tf` (+ `scripts/v2/workers/`) |
 | EKS Onboarding | [07-eks.md](07-eks.md) | `terraform/foundation/eks.tf` (+ `scripts/v2/configure.mjs`) |
+| E2E observability | [observability-e2e.md](observability-e2e.md) | `web/lib/e2e-topology.ts`, `web/lib/topology-observations.ts` |
 | Private plan transport | [private-plan-transport.md](private-plan-transport.md) | `scripts/v2/ci_private_plan.py`, `.github/workflows/terraform.yml` |
 
 ## Status / 상태
@@ -116,5 +117,3 @@ register) is in [`../decisions/BASELINE.md`](../decisions/BASELINE.md). 단계�
 
 Per-phase execution history (plans, verification logs, design notes) lives under
 [`../history/archive/`](../history/archive/) — see its README. 각 단계의 실행 이력은 `../history/archive/`를 참조한다.
-
-- [E2E observability contracts and status](observability-e2e.md) — source evidence, trusted identity and integration status.
