@@ -11,6 +11,12 @@ const [mode, recording = 'available'] = process.argv.slice(2);
 assert.ok(process.env.GRAPH_TEST_POSTGRES_SOCKET?.startsWith('/'), 'A disposable PostgreSQL Unix socket is required');
 const pool = new pg.Pool({ host: process.env.GRAPH_TEST_POSTGRES_SOCKET,
   user: 'postgres', database: 'awsops_graph_task3', max: 1, connectionTimeoutMillis: 1000 });
+const markers = await pool.query(`SELECT shobj_description(oid,'pg_database') AS marker
+  FROM pg_database WHERE datname IN ('awsops',current_database())`);
+if (markers.rowCount !== 2 || markers.rows.some(row => row.marker !== 'awsops-disposable-graph-test')) {
+  await pool.end();
+  throw new Error('Refusing mutation without both disposable database sentinels');
+}
 const output = { logs: [], errors: [], removed: 0, closed: 0, scheduled: [] };
 pool.on('remove', () => { output.removed++; });
 const compile = (file, module = ts.ModuleKind.CommonJS) => ts.transpileModule(readFileSync(file, 'utf8'), {

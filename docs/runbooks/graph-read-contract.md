@@ -8,8 +8,9 @@ Missing graph clocks can mean legacy rows without collection state; missing meta
 
 `GET /api/graph` reads nodes, edges and collection state in one repeatable-read
 transaction. The shared helper bounds statements, lock waits and transaction
-duration, handles checked-out client errors, and discards failed connections. At most two graph
-requests per pool are admitted, leaving one of the three pool slots for auth; others receive 503 without queueing a checkout. Request
+duration, handles checked-out client errors, and discards failed connections. Reads and rebuild
+transactions share at most two admissions per pool, reserving one of the three pool slots for auth.
+Excess reads receive typed 503/busy and rebuilds report busy/skipped without queueing a checkout. Request
 statements/idle time are bounded to 1.5s, total transaction to 2s; publication helpers use 2s statements and a 4s total transaction budget, separately
 from the stricter request budget. Serialization happens after release. Reads cap nodes/raw edges at
 4000/8000 plus a sentinel; returned edges reference visible nodes. Infra class reads rank
@@ -40,12 +41,17 @@ zero returned nodes in this outcome do not mean an empty graph was published.
 
 ## Source completeness and retained publication
 
-Inventory aggregate counts are reconciled once per class/pass in a bounded read transaction.
+Inventory aggregate counts use one fulfilled proof per class/pass in a bounded read transaction;
+a failed proof read is not cached, so later accounts can retry while the original failure is reported.
 Each account snapshot must observe the same ledger row version before reusing that proof:
 the producer marks a run active before modifying inventory and finalizes the ledger afterward.
 A changed ledger invalidates the proof until the next pass; it never authorizes an empty sweep.
 `retainedPrevious` requires an actual publication clock or saved graph rows. With neither,
 an unproven first collection is skipped (`retained: 0`, `skipped: 1`), preserving CLI exit 2.
+Truncated snapshots disclose partial source evidence with unknown (`null`) item counts, including
+types omitted by the row ordering boundary. They never certify those sources as empty.
+Discovery uses current eligible accounts, inventory and saved graph keys; daily snapshots are
+read only for a selected account's participation proof, not scanned for historical account discovery.
 
 `empty_not_confirmed` is a soft reason for legacy unmarked empty results.
 Recognized producer `unknown` uses soft incomplete evidence, not a failed-query diagnosis. Tempo exposes absent/invalid/zero job counts distinctly as `count_not_confirmed`, using the existing HTTP/SQL reason vocabulary.
@@ -80,6 +86,8 @@ The shared query normalizer carries collection status into Explore. Marked parti
 Use browser developer tools on an already-authorized page to distinguish HTTP503/busy,
 500/timeout, and successful partial reads.401/login redirects require sign-in;403 is access denial; other4xx responses require correcting the request. These are distinct from a read outage. The page preserves the safe envelope and offers
 refresh; it does not display a bare status code or treat a failed read as empty collection.
+Typed busy responses have bounded automatic recovery (five requests within ten seconds);
+scope changes cancel the recovery, and exhausted attempts remain unavailable.
 Timeout SQLSTATEs 57014/25P03/25P04/55P03 remain read failures.
 Application logs contain fixed `[graph-read] shed` or SQLSTATE diagnostics. In the local
 fixture below, run `npx vitest run lib/graph-read-postgres.test.ts lib/graph-fetch.test.ts`
@@ -117,12 +125,16 @@ docker exec "$graph_test_container" psql -U postgres -d awsops \
   -c "COMMENT ON DATABASE awsops IS 'awsops-disposable-graph-test'"
 cd web
 npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts \
-  app/api/graph/route.test.ts lib/graph-state.test.ts
+  lib/graph-store-postgres.test.ts app/api/graph/route.test.ts lib/graph-state.test.ts
 docker rm -f "$graph_test_container"
 ```
 
-The fixture creates and independently marks `awsops_graph_read_test`. Without the
-socket environment variable, the disposable PostgreSQL suite is skipped explicitly;
+The fixtures create and independently mark `awsops_graph_read_test` and
+`awsops_graph_task3`; an existing unmarked database is rejected before schema reset.
+The publication suite also invokes `lib/fixtures/graph-fatal-child.mjs`, which checks
+both server/target database markers before mutation. It covers atomic publication,
+retention, pool admission, truncation and fatal-connection recovery. Without the
+socket environment variable, the disposable PostgreSQL suites are skipped explicitly;
 the ordinary API and state unit tests still run. These are local contract tests,
 not live AWS or deployment acceptance.
 
@@ -146,6 +158,7 @@ A source merge or automatic web CD result is not proof that these steps complete
 
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
 `web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`,
+`web/lib/graph-inventory.ts`, `web/lib/graph-store-postgres.test.ts`, `web/lib/fixtures/graph-fatal-child.mjs`,
 `web/components/topology/GraphCollectionStatus.tsx`,
 `agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,
 `agent/lambda/prometheus_mcp.py`, `agent/lambda/mimir_mcp.py`,
