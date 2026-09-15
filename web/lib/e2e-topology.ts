@@ -7,7 +7,7 @@ type Meta = Record<string, unknown>;
 type Side = 'local' | 'remote';
 const record = (value: unknown): Meta =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Meta : {};
-const text = (value: unknown): string => typeof value === 'string' && value.trim() ? value : '';
+const text = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const strings = (value: unknown): string[] => list(value).map(text).filter(Boolean);
 const generatedLabel = (labelKey: E2eLabelKey) => ({ label: labelKey, labelKey });
@@ -230,6 +230,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       correlatedEndpoints: 0, unmatchedEndpoints: 0, ambiguousEndpoints: 0,
       observationsUnsupported: input.account !== 'self',
       configurationComplete: input.configurationComplete === true,
+      servicesComplete: input.servicesComplete === true && Number.isFinite(Date.parse(text(input.services?.captured_at))),
       networkRead: {
         status: input.account !== 'self' ? 'unsupported'
           : readStatus === 'complete' && (failedCategories.length || unknownWindowCategories.length) ? 'partial' : readStatus,
@@ -333,7 +334,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       : blocked ? 'configuration_unverified'
       : conflict ? 'pod_identity_conflict'
       : matches.length > 1 || scopeReasons.includes('workload_conflict') ? 'workload_conflict'
-      : scopeReasons.find(Boolean);
+      // Retain visible vetoes before withholding a survivor's unverified uniqueness.
+      : scopeReasons.find(Boolean) ?? (matches.length > 0 && !summary.servicesComplete ? 'service_source_unverified' : undefined);
     if (reason) {
       endpoint.meta.correlation = 'ambiguous';
       endpoint.meta.correlationReason = reason;

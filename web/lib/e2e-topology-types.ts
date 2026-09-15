@@ -9,7 +9,8 @@ export type E2eLabelKey = 'network_observation' | 'local_endpoint' | 'remote_end
   | 'configured_endpoint_record' | 'cached_configured_endpoint_record' | 'configured_pod_identity';
 /** Endpoint meta.correlationReason explains withholding; correlated endpoints have no reason. */
 export type E2eCorrelationReason = 'configuration_conflict' | 'configuration_unverified'
-  | 'workload_conflict' | 'workload_scope_unverified' | 'pod_identity_conflict' | 'context_only' | 'no_match';
+  | 'workload_conflict' | 'workload_scope_unverified' | 'service_source_unverified'
+  | 'pod_identity_conflict' | 'context_only' | 'no_match';
 export interface E2eNode {
   /** Stable source/content identity; network IDs are opaque to substring search. */
   id: string;
@@ -50,6 +51,8 @@ export interface E2eInput {
   /** Caller-owned inventory read quality. Only true permits identity; absent/retained/incomplete fails closed. */
   configurationComplete?: boolean;
   services: ServiceSnapshot | null;
+  /** Caller attests a fresh, complete service query scope; absent/retained/incomplete fails closed. */
+  servicesComplete?: boolean;
   /** Positive observations remain evidence independently of batch read quality. */
   network: NetworkObservation[];
   networkRead?: E2eNetworkRead;
@@ -67,6 +70,8 @@ export interface E2eGraph {
     ambiguousEndpoints: number;
     observationsUnsupported: boolean;
     configurationComplete: boolean;
+    /** Explicit caller attestation plus a nonempty, parseable services.captured_at; no clock-based freshness check. */
+    servicesComplete: boolean;
     /** Always includes both arrays; omitted input is unknown, non-self scope is unsupported. */
     networkRead: Required<E2eNetworkRead>;
   };

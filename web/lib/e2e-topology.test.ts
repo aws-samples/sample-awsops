@@ -76,7 +76,7 @@ function producedServices(scope: Partial<TraceIdentity> = {}): ServiceSnapshot {
 
 function input(overrides: Partial<E2eInput> = {}): E2eInput {
   return {
-    account: 'self', configurationComplete: true, networkRead: { status: 'complete' },
+    account: 'self', configurationComplete: true, servicesComplete: true, networkRead: { status: 'complete' },
     configured: { nodes: [], edges: [] }, services: null, network: [], ...overrides,
   };
 }
@@ -164,7 +164,7 @@ describe('buildE2eGraph — evidence and provenance', () => {
     expect(graph.summary).toEqual({
       configuredNodes: 6, serviceNodes: 4, networkFlows: 1,
       correlatedEndpoints: 2, unmatchedEndpoints: 0, ambiguousEndpoints: 0, observationsUnsupported: false,
-      configurationComplete: true,
+      configurationComplete: true, servicesComplete: true,
       networkRead: { status: 'complete', failedCategories: [], unknownWindowCategories: [] },
     });
     expect(identityEdges(graph)).toHaveLength(4);
@@ -657,6 +657,8 @@ describe('buildE2eGraph — display-truncated membership', () => {
 
   it.each([
     { scope: { region: REGION, vpc_id: VPC }, ambiguous: 1 },
+    { scope: { region: ` ${REGION} `, vpc_id: VPC }, ambiguous: 1 },
+    { scope: { region: REGION, vpc_id: ` ${VPC} ` }, ambiguous: 1 },
     { scope: { region: REGION }, ambiguous: 1 },
     { scope: { vpc_id: VPC }, ambiguous: 1 },
     { scope: {}, ambiguous: 1 },
@@ -676,6 +678,19 @@ describe('buildE2eGraph — display-truncated membership', () => {
       expect(graph.summary).toMatchObject({ correlatedEndpoints: ambiguous ? 0 : 1,
         unmatchedEndpoints: 1, ambiguousEndpoints: ambiguous });
     }
+  });
+
+  it('does not exclude a blocked truncated group because its TG scope is padded', () => {
+    const config = group({ region: ` ${REGION} `, vpc_id: ` ${VPC} ` });
+    config.nodes.find(n => n.kind === 'target')!.meta!.e2e_correlation_blocked = true;
+    const eligible = configured([eksTarget({ id: hidden.ip })]);
+    config.nodes.push(...eligible.nodes);
+    config.edges.push(...eligible.edges);
+    const graph = buildE2eGraph(input({ configured: config, services: services(),
+      network: [observation([flow({ local: hidden, remote: {} })])] }));
+    expect(identityEdges(graph)).toEqual([]);
+    expect(graph.nodes.find(n => n.meta.side === 'local')?.meta)
+      .toMatchObject({ correlation: 'ambiguous', correlationReason: 'configuration_unverified' });
   });
 
   it.each(['ip', 'instance'])('retains hidden %s members only for endpoints carrying that identity type', type => {
@@ -911,6 +926,80 @@ describe('buildE2eGraph — workload identity', () => {
   });
 });
 
+describe('buildE2eGraph — service source quality', () => {
+  const compose = (source: Partial<E2eInput> = {}) => buildE2eGraph(input({
+    configured: configured([eksTarget()]), services: producedServices(),
+    network: [observation([flow({ local: endpoint({ podName: 'web-1', podNamespace: 'shop' }) })])], ...source,
+  }));
+
+  it('cannot promote a surviving real workload after a competing datasource is dropped', () => {
+    const spans: TraceSpan[] = ['tempo-a', 'tempo-b'].map(sourceId => ({
+      traceId: 'trace-web', spanId: 'span-web', service: 'web', sourceId,
+      kind: 'SERVER', startMs: 0, durationMs: 1, accountId: 'self', region: REGION,
+      k8sCluster: 'app', k8sNamespace: 'shop', k8sDeployment: 'web', k8sPod: 'web-1',
+    }));
+    const snapshot = (rows: TraceSpan[]): ServiceSnapshot =>
+      ({ ...buildTraceGraph(rows, [], []), captured_at: CAPTURED_AT });
+    for (const servicesComplete of [true, false]) {
+      const graph = compose({ services: snapshot(spans), servicesComplete });
+      expect(graph.nodes.filter(n => n.kind === 'workload')).toHaveLength(2);
+      expect(identityEdges(graph)).toEqual([]);
+      expect(graph.nodes.find(n => n.meta.side === 'local')?.meta.correlationReason).toBe('workload_conflict');
+    }
+    for (const survivor of spans) {
+      const services = snapshot([survivor]), before = structuredClone(services);
+      const graph = compose({ services, servicesComplete: false });
+      expect(graph.nodes.filter(n => n.layer === 'service')).toHaveLength(2);
+      expect(graph.edges.filter(e => e.evidence === 'service')).toHaveLength(1);
+      expect(identityEdges(graph)).toEqual([]);
+      expect(graph.nodes.find(n => n.meta.side === 'local')?.meta)
+        .toMatchObject({ correlation: 'ambiguous', correlationReason: 'service_source_unverified' });
+      expect(graph.summary).toMatchObject({ servicesComplete: false, correlatedEndpoints: 0,
+        ambiguousEndpoints: 1, unmatchedEndpoints: 1, serviceNodes: 2, networkFlows: 1 });
+      expect(services).toEqual(before);
+      expectNoDanglingEdges(graph);
+    }
+  });
+
+  it.each([
+    { name: 'healthy caller attestation', complete: true, captured: CAPTURED_AT, allowed: true },
+    { name: 'missing attestation', complete: undefined, captured: CAPTURED_AT, allowed: false },
+    { name: 'truncated query', complete: false, captured: CAPTURED_AT, allowed: false },
+    { name: 'stale attestation', complete: false, captured: '2020-01-01T00:00:00Z', allowed: false },
+    { name: 'retained snapshot', complete: false, captured: CAPTURED_AT, allowed: false },
+    { name: 'failed query', complete: false, captured: CAPTURED_AT, allowed: false },
+    { name: 'null capture', complete: true, captured: null, allowed: false },
+    { name: 'empty capture', complete: true, captured: '', allowed: false },
+    { name: 'blank capture', complete: true, captured: ' \t ', allowed: false },
+    { name: 'invalid capture', complete: true, captured: 'not-a-timestamp', allowed: false },
+    { name: 'invalid date', complete: true, captured: '2026-99-99T00:00:00Z', allowed: false },
+    { name: 'truthy string', complete: 'true', captured: CAPTURED_AT, allowed: false },
+    { name: 'truthy number', complete: 1, captured: CAPTURED_AT, allowed: false },
+  ])('gates workload identity for $name while retaining service evidence', ({ complete, captured, allowed }) => {
+    const snapshot = { ...producedServices(), captured_at: captured };
+    const graph = compose({ services: snapshot, servicesComplete: complete as boolean | undefined });
+    expect(identityEdges(graph).map(e => e.relation)).toEqual(allowed ? ['configured-endpoint-match', 'same-identity'] : []);
+    expect(graph.summary.servicesComplete).toBe(allowed);
+    expect(graph.nodes.filter(n => n.layer === 'service')).toHaveLength(2);
+    expect(graph.nodes.filter(n => n.layer === 'service').every(n => n.meta.capturedAt === captured)).toBe(true);
+    expect(graph.edges.filter(e => e.evidence === 'service')).toHaveLength(1);
+    expect(graph.nodes.find(n => n.meta.side === 'local')?.meta).toMatchObject(allowed
+      ? { correlation: 'correlated' } : { correlation: 'ambiguous', correlationReason: 'service_source_unverified' });
+  });
+
+  it.each([null, producedServices({ k8sNamespace: 'unrelated-namespace' }), { ...producedServices(), nodes: [], edges: [] }])(
+    'preserves independent configured references without a related workload claim: %j', services => {
+      const graph = compose({ services, servicesComplete: false });
+      expect(identityEdges(graph).map(e => e.relation)).toEqual(['configured-endpoint-match']);
+      expect(graph.summary).toMatchObject({ servicesComplete: false, correlatedEndpoints: 1, ambiguousEndpoints: 0 });
+    },
+  );
+
+  it('cannot attest an absent service snapshot complete', () => {
+    expect(compose({ services: null, servicesComplete: true }).summary.servicesComplete).toBe(false);
+  });
+});
+
 describe('buildE2eGraph — trace scope constraints', () => {
   const local = endpoint({ podName: 'web-1', podNamespace: 'shop' });
   const host = '111111111111';
@@ -930,12 +1019,14 @@ describe('buildE2eGraph — trace scope constraints', () => {
     { scope: { accountId: 'unknown' }, tg: { account_id: host }, reason: 'workload_scope_unverified' },
   ])('withholds identity for unknown or conflicting real trace scope: %j', ({ scope, tg, source, reason }) => {
     const snapshot = producedServices(scope);
-    const graph = compose(snapshot, tg, source);
-    expect(graph.nodes.filter(node => node.layer === 'service')).toHaveLength(2);
-    expect(identityEdges(graph)).toEqual([]);
-    expect(graph.summary.ambiguousEndpoints).toBe(1);
-    expect(graph.nodes.find(n => n.meta.side === 'local')?.meta.correlationReason).toBe(reason);
-    expectNoDanglingEdges(graph);
+    for (const servicesComplete of [true, false]) {
+      const graph = compose(snapshot, tg, { ...source, servicesComplete });
+      expect(graph.nodes.filter(node => node.layer === 'service')).toHaveLength(2);
+      expect(identityEdges(graph)).toEqual([]);
+      expect(graph.summary.ambiguousEndpoints).toBe(1);
+      expect(graph.nodes.find(n => n.meta.side === 'local')?.meta.correlationReason).toBe(reason);
+      expectNoDanglingEdges(graph);
+    }
   });
 
   it.each([
