@@ -87,6 +87,8 @@ web task role an **EKS Access Entry + AWS-managed view policy** (cluster-scoped,
 exposing endpoint/CA so the dashboard can run **read-only** Kubernetes queries. EKS Access Entry +
 view 정책(읽기 전용).
 
+**E2E observability — [observability-e2e.md](observability-e2e.md).** The current graph model carries source quality, trusted identity and bounded selection. UI orchestration remains a separate integration; the reference also distinguishes implemented contracts from the broader observability roadmap.
+
 **Private plan transport — [private-plan-transport.md](private-plan-transport.md).**
 Operator CI helper with four modes: policy, publication, inspection and restore.
 It grants no IAM permission, provisions no storage and does not enable product mutation
@@ -102,6 +104,7 @@ owners must provision scoped access and plan-prefix lifecycle before publication
 | AgentCore Agents | [05-agentcore.md](05-agentcore.md) | `scripts/v2/agentcore/` (`catalog.py`, `provision.py`; `terraform/foundation/ai.tf`) |
 | Async Worker Backbone | [06-workers.md](06-workers.md) | `terraform/foundation/workers.tf` (+ `scripts/v2/workers/`) |
 | EKS Onboarding | [07-eks.md](07-eks.md) | `terraform/foundation/eks.tf` (+ `scripts/v2/configure.mjs`) |
+| E2E observability | [observability-e2e.md](observability-e2e.md) | `web/lib/e2e-topology.ts`, `web/lib/e2e-topology-types.ts`, `web/lib/topology-observations.ts` |
 | Private plan transport | [private-plan-transport.md](private-plan-transport.md) | `scripts/v2/ci_private_plan.py`, `.github/workflows/terraform.yml` |
 
 ## Status / 상태
