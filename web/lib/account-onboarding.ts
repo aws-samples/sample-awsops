@@ -1,6 +1,8 @@
 export interface AccountOnboardingConfig {
   hostAccountId: string;
   hostTaskRoleArn: string;
+  inventoryTaskRoleArn?: string;
+  registrationTargetAccountIds?: string[];
   region: string;
   registrationEnabled: boolean;
 }
@@ -43,6 +45,9 @@ export function buildAccountOnboarding(input: AccountOnboardingInput, config: Ac
   if (error) throw new Error(error);
   const roleMatch = config.hostTaskRoleArn.match(ROLE_ARN);
   if (!roleMatch || roleMatch[1] !== config.hostAccountId) throw new Error('Invalid host task role');
+  if (config.inventoryTaskRoleArn && config.inventoryTaskRoleArn.match(ROLE_ARN)?.[1] !== config.hostAccountId) {
+    throw new Error('Invalid inventory task role');
+  }
   if (input.accountId === config.hostAccountId) throw new Error('호스트 계정은 이미 연결되어 있습니다.');
 
   const template = JSON.stringify({
@@ -51,12 +56,14 @@ export function buildAccountOnboarding(input: AccountOnboardingInput, config: Ac
     Parameters: {
       HostTaskRoleArn: { Type: 'String', AllowedPattern: '^arn:aws:iam::\\d{12}:role/.+$' },
       WorkerTaskRoleArn: { Type: 'String', Default: '', AllowedPattern: '^$|^arn:aws:iam::\\d{12}:role/.+$' },
+      InventoryTaskRoleArn: { Type: 'String', Default: '', AllowedPattern: '^$|^arn:aws:iam::\\d{12}:role/.+$' },
       ExternalId: { Type: 'String', Default: '', AllowedPattern: '^$|^.{8,}$', NoEcho: true },
       RoleName: { Type: 'String', Default: 'AWSopsReadOnlyRole' },
     },
     Conditions: {
       HasExternalId: { 'Fn::Not': [{ 'Fn::Equals': [{ Ref: 'ExternalId' }, ''] }] },
       HasWorkerTaskRoleArn: { 'Fn::Not': [{ 'Fn::Equals': [{ Ref: 'WorkerTaskRoleArn' }, ''] }] },
+      HasInventoryTaskRoleArn: { 'Fn::Not': [{ 'Fn::Equals': [{ Ref: 'InventoryTaskRoleArn' }, ''] }] },
     },
     Resources: {
       AWSopsReadOnlyRole: {
@@ -74,7 +81,13 @@ export function buildAccountOnboarding(input: AccountOnboardingInput, config: Ac
               Action: 'sts:AssumeRole',
               Condition: { 'Fn::If': ['HasExternalId',
                 { StringEquals: { 'sts:ExternalId': { Ref: 'ExternalId' } } }, { Ref: 'AWS::NoValue' }] },
-            }],
+            }, { 'Fn::If': ['HasInventoryTaskRoleArn', {
+              Effect: 'Allow',
+              Principal: { AWS: { Ref: 'InventoryTaskRoleArn' } },
+              Action: 'sts:AssumeRole',
+              Condition: { 'Fn::If': ['HasExternalId',
+                { StringEquals: { 'sts:ExternalId': { Ref: 'ExternalId' } } }, { Ref: 'AWS::NoValue' }] },
+            }, { Ref: 'AWS::NoValue' }] }],
           },
           ManagedPolicyArns: ['arn:aws:iam::aws:policy/ReadOnlyAccess'],
         },
@@ -85,6 +98,7 @@ export function buildAccountOnboarding(input: AccountOnboardingInput, config: Ac
   const parameters = JSON.stringify([
     { ParameterKey: 'HostTaskRoleArn', ParameterValue: config.hostTaskRoleArn },
     { ParameterKey: 'RoleName', ParameterValue: 'AWSopsReadOnlyRole' },
+    ...(config.inventoryTaskRoleArn ? [{ ParameterKey: 'InventoryTaskRoleArn', ParameterValue: config.inventoryTaskRoleArn }] : []),
     ...(input.externalId ? [{ ParameterKey: 'ExternalId', ParameterValue: input.externalId }] : []),
   ], null, 2);
   const filename = `awsops-readonly-role-${input.accountId}.sh`;

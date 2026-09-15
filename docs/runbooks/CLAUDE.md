@@ -37,7 +37,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 | [legacy-web-image-recovery.md](legacy-web-image-recovery.md) | Explicitly approved private-host recovery for images without receipts: trusted source/digest evidence, schema approval, exact image verification, no migrations (ADR-001/005) |
 | [web-image-provenance.md](web-image-provenance.md) | Helper contract: receipt steps/inputs, composed promotion, main account prerequisite, migration/rollback/expiry limits (ADR-005) |
 | [first-web-bootstrap.md](first-web-bootstrap.md) | New unpublished stacks only: reviewed web ECR/base, matching ARM64 image, guarded empty-DB initialization, local deploy and authenticated host preparation before mandatory runtime release verification |
-| [runtime-foundation.md](runtime-foundation.md) | Runtime activation and strict host-only release controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage |
+| [runtime-foundation.md](runtime-foundation.md) | Runtime activation and strict release controller: host-only default, explicit targets, pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage |
 | [deployment-audit.md](deployment-audit.md) | Manual development observations: restrictive session, ECS/Lambda/AgentCore status, schedule metrics and SQL-reader metadata; no full-readiness claim |
 | [runtime-verifier-sessions.md](runtime-verifier-sessions.md) | Development verification policies: manual backend/workload phases, Deploy Web workload-only collect, owned collector invocation, synchronous/HTTP proof, and cleanup gates (ADR-002/005/021) |
 | [dev-domain-rollout.md](dev-domain-rollout.md) | Unpublished/same-domain dev rollout; saved-plan scope, links to branch-independent artifact inspection/recovery, certificate issuance, smoke-before-publication and owned-record-preserving rollback (ADR-005/016) |
@@ -90,7 +90,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 - Sealing uses OpenSSL stdin without plaintext staging. Captured Terraform uses Linux parent-death protection and escalates a second interrupt after graceful first-interrupt forwarding.
 - Key/storage/seal/publication/cleanup outcomes are distinct. Delete owned ciphertext only after the identified upload succeeds; failed/cancelled/skipped/unknown uploads retain it privately. Audits report pending_upload and final upload/cleanup outcomes; no broad temp sweep, host-loss guarantee or shared-UID isolation.
 - `deployment-audit.md` separates manual dev observations under backend-bound and workload-read sessions. Preserve identity/resource guards and private cleanup. Web and AgentCore observations do not prove applied versions or invocation readiness; observed SQL-reader types never establish complete inventory.
-- `runtime-foundation.md` covers activation and the strict host-only release controller: pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
+- `runtime-foundation.md` covers activation and the strict release controller: host-only default, explicit targets, pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
 - The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
 - Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
 - `scripts/v2/ci_tf_assets.py` shares one locked pg8000 installer with Terraform.
@@ -275,8 +275,14 @@ admission bounds, not guaranteed completion. Runtime foundation records a 43-typ
 57.461-second collection sample and its limits; it is not full live readiness.
 The catalog must include the pinned baseline (currently 43 names, source-AST checked);
 valid growth is allowed up to 128 types and every returned type needs strict proof.
-Both modes require the enabled host only. Collect's authenticated DB/host preflight
-rejects incompatible registries before type calls with `host_only_registry_required`.
+Both modes default to the enabled host only. Explicit applied targets require exact
+enabled host/member registration before type calls, measured SQL reachability with zero
+unreachable accounts, and fresh account-bound EC2/CloudFront known-member evidence.
+Host-only/unmeasured counts remain null under explicit `account_reachability_scope`;
+CI permits host-only/null only for five source-AST-pinned SDK types, not per-member43
+coverage. Terraform plan/apply onboarding
+alone allows approved subsets; apply derives scope from the restored saved plan.
+Runtime release never requests subset leniency. See `runtime-foundation.md#explicit-runtime-targets`.
 Preserve the AWS CLI environment allowlist, configuration isolation and endpoint restrictions.
 The first chronological terminal failure stops new type admission; admitted work settles
 and untouched types remain `not_started`.
@@ -297,7 +303,8 @@ Collect's closing service/list-tasks/describe-tasks reads must match the initial
 deployment ID, immutable task-definition ARN, count and ECR digest set before success;
 never resolve the tag again. A changed ID fails even with the same task definition.
 Equal snapshots are not continuous identity/history proof or an atomic lock; prepare is unchanged.
-The 18-minute reserve covers the single-pass 1,060-second path plus 20 seconds.
+Each explicit target reserves another 35 seconds, reducing collection/latest admission
+equally. The empty-target 18-minute reserve covers the single-pass 1,060-second path plus 20 seconds.
 Auth proof ends 50 seconds before the original proof deadline for three closing reads
 at 15 seconds each plus five seconds overhead, all inside that original deadline.
 Collection has at most 720 seconds; the 450-second floor requires admission by 270

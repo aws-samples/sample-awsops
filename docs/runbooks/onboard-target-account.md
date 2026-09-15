@@ -41,6 +41,9 @@ Existing stacks/roles stop creation; inspect them and use their current External
 The page preserves the stored ExternalId and hides creation controls for registered accounts;
 use the registered row's **Test** control for those accounts.
 
+When Terraform supplies `INVENTORY_TASK_ROLE_ARN`, the script also passes the exact
+Steampipe collector role as `InventoryTaskRoleArn` with the same ExternalId condition.
+Existing stacks require a reviewed update; the browser script remains create-only.
 New stacks leave worker trust empty. Worker reads require the additional setup below.
 The generated template's deployment contract matches `infra/cfn/awsops-target-account-role.yaml`;
 only explanatory template/parameter/output descriptions differ. The required offline
@@ -89,10 +92,20 @@ button. Script generation remains available for preparation; running it does not
 `inventory_host_only`, collector IAM, or readiness policy. Multi-account activation is a
 separate operator configuration step. AWSops itself never executes the generated AWS writes.
 
+For explicit development scope, configure `CI_RUNTIME_TARGETS_DEV` as described in
+[runtime activation](runtime-foundation.md#explicit-runtime-targets). Rebuild/pin the
+Steampipe ARM64 image, inspect/apply the exact Terraform plan, then register approved
+targets. The collector's 300-second watchdog reloads account/region changes; observe
+fresh target data before release verification. A configured account allowlist limits
+registration and malformed configuration fails closed. Existing registered-account
+readers and connection re-tests retain their separate behavior.
+
 ## Prerequisites
 - Admin access to AWSops (`/accounts` is gated by Cognito `ADMIN_GROUP` or the SSM email allowlist).
 - For the manual CLI path below: the **host web task role ARN** — full ARN `arn:aws:iam::<host>:role/awsops-v2-task` (Terraform output `web_task_role_arn`). The browser path discovers it automatically.
-  The generated template does not add the separate Steampipe collector principal.
+- The **host Steampipe collector role ARN**, available when inventory is enabled with
+  `terraform -chdir=terraform/foundation output -raw inventory_task_role_arn`. Supply it
+  as `InventoryTaskRoleArn` for target inventory collection.
 - **Optional** — the **host worker task role ARN**, `arn:aws:iam::<host>:role/awsops-v2-worker-task`
   (Terraform output `worker_task_role_arn`): only needed if this target account will be read by a
   WORKER-driven member-account job against it — the sg-rules Athena scan (`sg_rule_scan.py`) or a
@@ -113,15 +126,20 @@ separate operator configuration step. AWSops itself never executes the generated
      --capabilities CAPABILITY_NAMED_IAM \
      --parameter-overrides \
        HostTaskRoleArn=arn:aws:iam::<host>:role/awsops-v2-task \
+       InventoryTaskRoleArn=arn:aws:iam::<host>:role/awsops-v2-steampipe-task \
        WorkerTaskRoleArn=arn:aws:iam::<host>:role/awsops-v2-worker-task \
        ExternalId=<YOUR_EXTERNAL_ID>
    ```
+   Use the actual `inventory_task_role_arn` output for inventory collection.
    Omit `WorkerTaskRoleArn` unless a worker job needs the account. Omit `ExternalId` for
    explicitly selected first-party onboarding. Keep line continuations only between actual arguments.
    The stack outputs `RoleArn` (`arn:aws:iam::<target>:role/AWSopsReadOnlyRole`). Re-running
    `aws cloudformation deploy` with the SAME `--stack-name` against an already-onboarded account is
    an in-place update — adding `WorkerTaskRoleArn` to an existing stack is additive and does not
-   revoke the existing web-task-role trust.
+   revoke the existing web-task-role trust. The collector principal is also additive.
+   Preserve the existing ExternalId during updates; rotation must coordinate the target
+   policy and the registered value used by the web and collector. Explicit first-party
+   omission removes that condition from both trust statements.
 2. In AWSops, open **Accounts (`/accounts`)** as an admin → **Connect an AWS account**
    (Korean: **AWS 계정 연결**) → enter the target Account ID, alias and initial region.
    In **Advanced: ExternalId · AWS CLI profile**, enter the ExternalId already used above.

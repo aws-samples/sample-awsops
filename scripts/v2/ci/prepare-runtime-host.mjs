@@ -4,10 +4,26 @@ import { pathToFileURL } from 'node:url';
 import { dirname } from 'node:path';
 import { authenticatedSmoke } from '../authenticated-smoke.mjs';
 import { readSmokeCredentials, cleanupSmokeCredentials } from '../prepare-smoke-credentials.mjs';
+import { validateMemberTargets } from '../runtime-smoke.mjs';
 
 export async function prepareRuntimeHost(env, {
   authenticate = authenticatedSmoke, readCredentials = readSmokeCredentials,
   cleanup = cleanupSmokeCredentials,
+  terraform = (args, options) => execFileSync('terraform', args, {
+    encoding: 'utf8', timeout: 120_000, maxBuffer: 32 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], ...options,
+  }),
+  plannedTargets = () => {
+    const phase = env.RUNTIME_PREFLIGHT_PHASE ?? 'plan';
+    if (phase === 'apply') {
+      const plan = JSON.parse(terraform(['show', '-json', 'tfplan'], {}));
+      return Object.hasOwn(plan.variables, 'runtime_verification_targets')
+        ? plan.variables.runtime_verification_targets.value : [];
+    }
+    if (phase !== 'plan') throw new Error('invalid_preflight_phase');
+    return JSON.parse(JSON.parse(terraform(['console', '-no-color'], {
+      input: 'jsonencode(var.runtime_verification_targets)\n',
+    })));
+  },
   output = name => execFileSync('terraform', ['output', '-raw', name], {
     encoding: 'utf8', timeout: 60_000, maxBuffer: 65_536, stdio: ['ignore', 'pipe', 'pipe'],
   }).trim(),
@@ -17,11 +33,14 @@ export async function prepareRuntimeHost(env, {
         env.PLAN_SCOPE !== 'full' || !/^[0-9]{12}$/.test(env.AWS_ACCOUNT_ID_DEV || '')) {
       throw new Error('invalid_context');
     }
+    const targets = validateMemberTargets(plannedTargets(), env.AWS_ACCOUNT_ID_DEV);
+    const scope = targets.length
+      ? { expectedMemberTargets: targets, memberRegistryMode: 'onboarding' } : { hostOnly: true };
     const credentials = readCredentials(env.SMOKE_CREDENTIAL_FILE);
     const result = await authenticate({
       publicUrl: output('public_url'), cloudfrontDomain: output('cloudfront_domain'),
       email: credentials.email, password: credentials.password,
-      runtimeConfig: { schemaVersion: 1, mode: 'prepare', hostOnly: true,
+      runtimeConfig: { schemaVersion: 1, mode: 'prepare', ...scope,
         expectedAccountId: env.AWS_ACCOUNT_ID_DEV },
     }, { tempRoot: dirname(env.SMOKE_CREDENTIAL_FILE) });
     if (result?.status !== 'ok' || result.mode !== 'prepare') throw new Error('proof_missing');
