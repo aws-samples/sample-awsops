@@ -32,11 +32,22 @@ export interface ServiceSnapshot {
   edges: { source: string; target: string; rel: string; confidence?: string }[];
   captured_at: string | null;
 }
+export interface E2eNetworkRead {
+  status: 'idle' | 'loading' | 'complete' | 'partial' | 'failed' | 'unknown' | 'unsupported';
+  failedCategories?: readonly string[];
+  unknownWindowCategories?: readonly string[];
+}
 export interface E2eInput {
   account: string;
+  /** Trusted 12-digit ID from authenticated /api/accounts' unique isHost entry, never telemetry. */
+  hostAccountId?: string;
   configured: FlowGraph;
+  /** Caller-owned inventory read quality. Only true permits identity; absent/retained/incomplete fails closed. */
+  configurationComplete?: boolean;
   services: ServiceSnapshot | null;
+  /** Positive observations remain evidence independently of batch read quality. */
   network: NetworkObservation[];
+  networkRead?: E2eNetworkRead;
 }
 export interface E2eGraph {
   nodes: E2eNode[];
@@ -50,6 +61,9 @@ export interface E2eGraph {
     unmatchedEndpoints: number;
     ambiguousEndpoints: number;
     observationsUnsupported: boolean;
+    configurationComplete: boolean;
+    /** Always includes both arrays; omitted input is unknown, non-self scope is unsupported. */
+    networkRead: Required<E2eNetworkRead>;
   };
 }
 export interface E2eSelection {

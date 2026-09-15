@@ -39,6 +39,7 @@ function ownershipVeto(meta: Meta, region: string, vpcId: string): boolean {
   if (meta.resolved === 'ambiguous' || hasMarker(meta.ambiguity)
     || meta.ownership_evidence === 'scope_unverified' || hasMarker(meta.ownership_reason)
     || meta.e2e_correlation_blocked === true) return true;
+  // Retain legacy node vetoes; actual producer read quality is caller-owned configurationComplete.
   const reads = record(meta.ownershipRead);
   return ['targetGroup', 'ecsTask', 'subnet'].some(field => hasMarker(reads[field]) && reads[field] !== 'ok')
     || reads.eksUnknown === true
@@ -65,7 +66,7 @@ function targetValues(meta: Meta): string[] {
   return [...result];
 }
 
-function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIdentity[]> {
+function targetIndex(nodes: E2eNode[], edges: E2eEdge[], hostAccountId: string): Map<string, TargetIdentity[]> {
   const byId = new Map(nodes.map(node => [node.id, node]));
   const scopes = new Map<string, Meta[]>();
   for (const edge of edges) {
@@ -87,7 +88,13 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
       return value && rows.every(row => row[field] === value) ? value : '';
     };
     // Missing/conflicting dimensions are unknown, not evidence of a disjoint scope.
-    const region = common('region'), vpcId = common('vpc_id'), accountId = common('account_id');
+    const region = common('region'), vpcId = common('vpc_id');
+    // Only the trusted host may resolve the configuration's relative self sentinel.
+    // Numeric configuration scope must also agree; traces never supply this authority.
+    const accounts = rows.map(row => row.account_id === 'self' ? hostAccountId : text(row.account_id));
+    const accountId = accounts[0] && accounts.every(account => account === accounts[0]) ? accounts[0] : '';
+    const accountBlocked = rows.some(row => hasMarker(row.account_id) && row.account_id !== 'self'
+      && (!hostAccountId || row.account_id !== hostAccountId));
     for (const value of targetValues(node.meta)) {
       const k = key(type, value);
       const entries = index.get(k) ?? [];
@@ -98,11 +105,11 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
       entries.push({
         node, type, value, region, vpcId,
         accountId: /^\d{12}$/.test(accountId) ? accountId : '',
-        blocked: !region || !vpcId || evidence.some(meta => ownershipVeto(meta, region, vpcId)),
+        blocked: accountBlocked || !region || !vpcId || evidence.some(meta => ownershipVeto(meta, region, vpcId)),
         cached: evidence.some(cachedConfiguration),
         // Preserve every identity veto. Only the producer's configuration-only
         // marker may be ignored for CONTEXT, with no other withholding evidence.
-        contextAllowed: Boolean(region && vpcId) && evidence.some(cachedConfiguration)
+        contextAllowed: !accountBlocked && Boolean(region && vpcId) && evidence.some(cachedConfiguration)
           && evidence.every(meta => !ownershipVeto(
             meta.ownership_evidence === 'cached_configuration' && meta.ownership_reason === 'eks_not_enumerated'
               ? { ...meta, ownership_reason: undefined } : meta, region, vpcId,
@@ -200,12 +207,23 @@ function observationIdentity(observation: Meta, flow: Meta): string {
 
 /** Keep source records separate; identity edges express correlation, never a traced request. */
 export function buildE2eGraph(input: E2eInput): E2eGraph {
+  const hostAccountId = typeof input.hostAccountId === 'string' && /^\d{12}$/.test(input.hostAccountId)
+    ? input.hostAccountId : '';
+  const failedCategories = strings(input.networkRead?.failedCategories);
+  const unknownWindowCategories = strings(input.networkRead?.unknownWindowCategories);
+  const readStatus = input.networkRead?.status ?? 'unknown';
   const graph: E2eGraph = {
     nodes: [], edges: [],
     summary: {
       configuredNodes: 0, serviceNodes: 0, networkFlows: 0,
       correlatedEndpoints: 0, unmatchedEndpoints: 0, ambiguousEndpoints: 0,
       observationsUnsupported: input.account !== 'self',
+      configurationComplete: input.configurationComplete === true,
+      networkRead: {
+        status: input.account !== 'self' ? 'unsupported'
+          : readStatus === 'complete' && (failedCategories.length || unknownWindowCategories.length) ? 'partial' : readStatus,
+        failedCategories, unknownWindowCategories,
+      },
     },
   };
   const { nodes, edges, summary } = graph;
@@ -229,7 +247,9 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     if (!id) continue;
     addNode({
       id: nodeId('configuration', input.account, id), layer: 'configuration',
-      kind: text(node.kind), label: text(node.label) || id, meta: { ...record(node.meta) },
+      kind: text(node.kind), label: text(node.label) || id,
+      meta: { ...record(node.meta),
+        ...(!summary.configurationComplete && node.kind === 'target' ? { e2e_correlation_blocked: true } : {}) },
     });
   }
   summary.configuredNodes = nodes.length;
@@ -265,7 +285,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       meta: { confidence: edge.confidence, capturedAt: input.services?.captured_at ?? null },
     });
   }
-  const targets = targetIndex(nodes, edges);
+  const targets = targetIndex(nodes, edges, hostAccountId);
   const workloads = workloadIndex(nodes, edges);
 
   const correlate = (endpoint: E2eNode, side: Side) => {
