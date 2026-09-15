@@ -275,7 +275,7 @@ The PostgreSQL read-contract suite also exercises real graph publication against
 
 #### Producer completion and rollout
 
-Prometheus/Mimir instant scalar and string results preserve one timestamp/value sample, with a 4096-byte UTF-8 value bound. Malformed non-series entries use a fixed null marker instead of echoing arbitrary upstream content; malformed or oversized scalar pairs remain unknown. Diagnosis counts a valid scalar pair as one sample and still excludes its raw value; Explore renders it as one row. Range queries retain their series-only contract.
+Prometheus/Mimir instant scalar and string results preserve one timestamp/value sample, with a 4096-byte UTF-8 value bound. Malformed non-series entries use a fixed null marker instead of echoing arbitrary upstream content; malformed or oversized scalar pairs remain unknown. Diagnosis counts a valid scalar pair as one sample and still excludes its raw value; Explore renders it as one row. Range queries retain their series-only contract. Native `histogram`/`histograms` output is explicitly unsupported and rejected before serialization; request float-valued output rather than treating an unsupported histogram as unknown collection.
 
 Catalog guidance accompanies every affected ClickHouse query/tables/describe and Prometheus/Mimir query/query-range/labels/series tool, as well as Tempo search. Run existing AgentCore provisioning to reconcile all these descriptions after the producer code rollout. Partial/unknown/error evidence cannot establish absence or full coverage.
 
@@ -313,6 +313,9 @@ the PostgreSQL regressions independently enforce missing-child retention.
 `NormalizedResult` retains the validated collection status and a localized disclosure. Explore shows it for both empty and nonempty results, while boolean truncation remains visible. Unknown/error/partial empty bodies are not rendered as plain no-results; confirmed empty and unmarked legacy display behavior remain distinct. Scalar/string format validation precedes the empty-list shortcut.
 
 ### Diagnosis signal completeness
+
+Observed counts exclude null/empty placeholders. Known metric records require a metric object and usable numeric sample, trace records require a valid nonzero hex trace identity, and log streams require a usable timestamp/line pair. Generic table/aggregate counts include nonempty structured rows only. A missing validated count is not a confirmed zero.
+
 
 The diagnosis worker preserves connector `collectionStatus` and truncation before preparing model evidence. Partial/unknown results carry `incomplete: true`, not a query-error signal; nonempty observed records remain as `observedCount`, never a complete zero. `collectionStatus: error` keeps a fixed error signal. Known `ok`/`empty` results retain their counts. Raw rows, trace payloads, sample values and upstream error text are not copied into these summaries. Deploy the worker source update with the connector producer changes. Verify offline with `PYTHONPATH=scripts/v2/workers python3 -m pytest scripts/v2/workers/diagnosis/test_datasources.py -q`.
 
