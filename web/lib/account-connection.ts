@@ -42,6 +42,8 @@ export async function verifyAccountConnection(
   settings: { hostAccountId: string; registrationEnabled: boolean },
 ): Promise<AccountConnectionDiagnostic> {
   const started = Date.now();
+  // Match registration's STS endpoint; input.region remains collection metadata.
+  const deploymentRegion = process.env.AWS_REGION || 'ap-northeast-2';
   const result: AccountConnectionDiagnostic = {
     checkId: randomUUID(), checkedAt: new Date(started).toISOString(), accountId: input.accountId,
     region: input.region, roleArn: `arn:aws:iam::${input.accountId}:role/AWSopsReadOnlyRole`,
@@ -59,7 +61,7 @@ export async function verifyAccountConnection(
   });
   const bounded = <T>(request: Promise<T>) => Promise.race([request, timeout]);
   const options = { abortSignal: controller.signal };
-  const host = new STSClient({ region: input.region, maxAttempts: 2 });
+  const host = new STSClient({ region: deploymentRegion, maxAttempts: 2 });
   let target: STSClient | undefined;
   try {
     const identity = await bounded(host.send(new GetCallerIdentityCommand({}), options));
@@ -79,7 +81,7 @@ export async function verifyAccountConnection(
       return result;
     }
     target = new STSClient({
-      region: input.region, maxAttempts: 2,
+      region: deploymentRegion, maxAttempts: 2,
       credentials: {
         accessKeyId: credentials.AccessKeyId, secretAccessKey: credentials.SecretAccessKey,
         sessionToken: credentials.SessionToken,

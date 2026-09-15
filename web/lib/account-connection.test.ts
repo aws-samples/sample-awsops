@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const aws = vi.hoisted(() => ({ send: vi.fn(), destroy: vi.fn(), configurations: [] as unknown[] }));
+const aws = vi.hoisted(() => ({
+  send: vi.fn(), destroy: vi.fn(), configurations: [] as unknown[], requestRegions: [] as unknown[],
+}));
 vi.mock('@aws-sdk/client-sts', () => ({
   STSClient: class {
-    constructor(config: unknown) { aws.configurations.push(config); }
-    send = aws.send;
+    constructor(private options: { region?: unknown }) { aws.configurations.push(options); }
+    send(command: unknown, options: unknown) {
+      aws.requestRegions.push(this.options.region);
+      return aws.send(command, options);
+    }
     destroy = aws.destroy;
   },
   GetCallerIdentityCommand: class { constructor(public input: unknown) {} },
@@ -21,13 +26,36 @@ const requestId = '01234567-89ab-cdef-0123-456789abcdef';
 beforeEach(() => {
   vi.resetAllMocks();
   aws.configurations.length = 0;
+  aws.requestRegions.length = 0;
   aws.send.mockResolvedValueOnce(host)
     .mockResolvedValueOnce({ Credentials: credentials })
     .mockResolvedValueOnce({ Account: input.accountId, $metadata: { requestId } });
 });
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe('account connection verification', () => {
+  it.each([
+    ['ap-northeast-2', 'ap-east-1'],
+    ['ap-northeast-2', 'xx-nonexistent-1'],
+    ['eu-west-1', 'ap-east-1'],
+    [undefined, 'ap-east-1'],
+    ['', 'xx-nonexistent-1'],
+  ])('uses deployment region %s for all STS stages while retaining selected region %s', async (deploymentRegion, selectedRegion) => {
+    vi.stubEnv('AWS_REGION', deploymentRegion);
+    const result = await verifyAccountConnection({ ...input, region: selectedRegion! }, settings);
+    const expected = deploymentRegion || 'ap-northeast-2';
+    expect(aws.configurations).toEqual([
+      { region: expected, maxAttempts: 2 },
+      { region: expected, maxAttempts: 2, credentials: {
+        accessKeyId: credentials.AccessKeyId, secretAccessKey: credentials.SecretAccessKey,
+        sessionToken: credentials.SessionToken,
+      } },
+    ]);
+    expect(aws.requestRegions).toEqual([expected, expected, expected]);
+    expect(result).toMatchObject({ verified: true, region: selectedRegion, stage: 'get_caller_identity' });
+    expect(aws.destroy).toHaveBeenCalledTimes(2);
+  });
+
   it('verifies the real web role and target even while registration is host-only', async () => {
     const result = await verifyAccountConnection(input, settings);
     expect(result).toMatchObject({
