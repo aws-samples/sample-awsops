@@ -261,7 +261,7 @@ Positive `nodeDrops/edgeDrops/orphanSpans/invalidSpans/unresolvedMessaging` and
 `infraUnavailable` remain visible for older persisted envelopes as well as newer producer flags.
 Only node/edge drops or explicit truncation flags imply a processing limit; malformed spans
 and unresolved parent/link/messaging evidence are distinct partial-result causes. Losses alone do not prove retention:
-`retainedPrevious` is required for that claim. Source-detail totals include saved sources, with latest-attempt status counts labeled separately.
+`retainedPrevious` is required for that claim. Source-detail totals count displayed current/saved rows; status counts summarize latest-attempt sources. Identical current/saved lists are displayed once with saved provenance.
 Missing collection metadata stays unknown rather than implying collector failure.
 
 
@@ -293,7 +293,7 @@ The UI supports the existing trace envelope and optional inventory/saved-source
 fields accepted from the inventory publication companion. This reader prerequisite does
 not activate flow/infra publication; the existing materializer still writes trace state.
 Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded; their count
-includes saved-source entries. Runtime, Lambda and migration rollout remain separate
+includes distinct displayed saved-source entries. Identical current/saved lists are shown once with the saved-source heading and a localized “Same displayed source evidence as above.” note. Differing and saved-only evidence remains visible. Runtime, Lambda and migration rollout remain separate
 from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
 
 
@@ -313,5 +313,7 @@ The two-second request deadline includes pool acquisition. Expired late checkout
 Capped resource neighborhoods keep the requested root and nearest hops first, using the minimum distance from both traversal directions; lexical order only breaks ties within a hop. Authentication expiry (401 or a followed /login redirect), authorization denial (403), and other4xx rejections use a separate localized error path. They do not become query_failed or a retriable graph outage. Sign-in links stay on the local /login route, and stale graph content is cleared on rejection.
 
 A reader-synthesized unknown result with no collection clocks or source records is neutral “No collection state recorded” information; it does not assert stale age or a collector failure. Unknown aggregate coverage has its own neutral wording. This presentation does not change the backend unknown/stale envelope or establish completeness. Read failures, retention, truncation, metadata loss and other actionable evidence still render alerts.
+
+Shipped graph consumers retry only typed HTTP503 admission responses (readStatus=unavailable, readReason=busy), at most five requests within ten seconds. Auth/rejection, query, and untyped service errors are not retried. Scope changes/unmounts cancel waits and reads; exhausted recovery remains explicit unknown/unavailable, never confirmed empty.
 
 Class-wide infra truncation prioritizes the actual `vpc`, `subnet`, and `sg` container kinds before resource nodes; within each rank, IDs provide deterministic order. The cap still bounds the response and does not certify complete connectivity. Recognized metadata fields with invalid types/ranges or unknown enum vocabulary set `metadataTruncated` in both projections; unknown private fields remain excluded without that signal. This deliberately treats vocabulary not understood by the reader as unknown coverage. Published inventory evidence is stale for contradictory status/count pairs, any nonempty or malformed reason list, or an invalid/future optional capture clock. A confirmed zero may omit its capture clock or use null, but requires `empty`, zero count, a succeeded producer and a valid last-success clock.
