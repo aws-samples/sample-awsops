@@ -33,7 +33,7 @@ export const MIN_CATALOG_TYPES = REQUIRED_CATALOG_TYPES.length;
 export const HOST_ONLY_SDK_TYPES = Object.freeze([
   's3', 'opensearch_serverless', 'cloudfront_vpc_origin', 'alb_listener_rule', 's3_public_access',
 ]);
-const REACHABILITY_SCOPES = new Set(['registered_accounts', 'host_only', 'unmeasured']);
+const REACHABILITY_SCOPES = new Set(['enabled_scan_accounts', 'host_only', 'unmeasured']);
 // Five 35s HTTP calls, an 80s probe and two 370s worker paths need 995s.
 // The 15s collector and 50s final web rechecks bring this to 1060s; reserve 18m with 20s margin.
 // This reserves only the single-pass proof; no extra pages, polls or retries are allocated.
@@ -385,7 +385,7 @@ export async function release(deployment, {
           const hostOnlySdk = HOST_ONLY_SDK_TYPES.includes(type);
           const reachabilityValid = hostOnlySdk
             ? result.account_reachability_scope === 'host_only' && result.unreachable_account_count === null
-            : result.account_reachability_scope === 'registered_accounts' && integer(result.unreachable_account_count);
+            : result.account_reachability_scope === 'enabled_scan_accounts' && integer(result.unreachable_account_count);
           if (!integer(result.row_count) || !integer(result.unknown_attribute_count)
               || (targets.length && !reachabilityValid)) {
             if (state) state.status = 'unknown';
@@ -435,7 +435,7 @@ export async function release(deployment, {
         expectedQueuedTypes: types, collectionStartedAt, collectionMode: 'release',
         inventoryPolicy: context.inventoryPolicy };
       validateRuntimeSmokeConfig(config, now());
-      // One bounded initial inventory page per member; further pages must use saved time.
+      // One bounded exact inventory proof per member; no member pagination.
       const collectionDeadline = runtimeSmokeDeadline(config, now(), deadline) - REQUIRED_PROOF_MS - targets.length * 35_000;
       const states = Object.fromEntries(types.map(type => [type, {
         status: 'not_started', attempts: 0, last_outcome: 'not_started',

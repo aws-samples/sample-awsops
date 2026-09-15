@@ -41,7 +41,8 @@ The digest/host-preflight profile is dev-only. Preview retains operator-configur
 The optional repository **secret** `CI_RUNTIME_TARGETS_DEV` is a JSON array of
 `{"account_id":"<12-digit foreign account>","resource_type":"ec2","resource_id":"<known instance ID>"}`.
 At most five distinct foreign accounts are allowed. Initial supported proof types are
-`ec2` (`data.instance_id`) and `cloudfront` (`data.id`), both in the pinned catalog;
+`ec2` and `cloudfront`, both in the pinned catalog. The exact proof endpoint checks
+their underlying `data.instance_id` and `data.id` respectively;
 resource IDs must contain 1–2048 printable ASCII characters without whitespace.
 Do not put operator account/resource IDs in source. Empty/unset configuration preserves
 the existing host-only dev profile; other branches and bootstrap scopes receive no
@@ -57,7 +58,12 @@ AssumeRole policy lists only configured `AWSopsReadOnlyRole` ARNs; target trust 
 the registry ExternalId remain separate prerequisites. Rendering preserves that
 ExternalId and fails closed on unapproved/duplicate enabled accounts or a wrong host.
 The running collector may contain the host plus a subset of approved targets during
-onboarding; it never silently discards an out-of-scope row. Empty non-profile
+onboarding; it never silently discards an out-of-scope row. A registered member must
+have `all_regions=true` or at least one enabled region; a member with no renderable
+scope fails closed. The existing watchdog re-reads Aurora every 300 seconds and
+rewrites/restarts Steampipe when scope changes, including host-only startup followed
+by approved member registration. No exact-member requirement is imposed on initial
+rendering. Empty non-profile
 configuration retains the legacy collector scope and AssumeRole behavior.
 
 Roll out code while host-only. After the runtime changes merge to `dev`, rebuild the
@@ -87,8 +93,10 @@ leniency. Missing, disabled or unexpected enabled members stop before type colle
 
 Collect retains every aggregate catalog proof (currently 43), known row/unknown-attribute
 counts and zero unknown attributes. In target mode, SQL types must report
-`account_reachability_scope="registered_accounts"` and numeric
-`unreachable_account_count=0`. Only the five pinned SDK types (`s3`,
+`account_reachability_scope="enabled_scan_accounts"` and numeric
+`unreachable_account_count=0`. This measures the enabled, renderable DB scan scope
+used by `_enabled_target_accounts`, not all registered accounts or planned target IDs.
+Only the five pinned SDK types (`s3`,
 `opensearch_serverless`, `cloudfront_vpc_origin`, `alb_listener_rule`, `s3_public_access`)
 may report `account_reachability_scope="host_only"` with a **null** count. Their list
 is tied to `SDK_SYNCS` by a source-AST regression and the deployed collector hash remains
@@ -97,19 +105,24 @@ types claiming `host_only`, missing/mismatched scope/counts, and `unmeasured` su
 all fail. SDK partials report `unmeasured`/null because reachability/pruning was skipped;
 partial status remains a terminal failure. Null discloses absent cross-account
 measurement, never measured zero. This does not assert every catalog type covers
-every member. Each configured member must
-also supply its known record through `/api/inventory/<type>?accounts=<account>`, with
-exact `account_id`, `resource_id`, the supported type-specific identifier and
-`captured_at >= collectionStartedAt`. Pages contain at most five rows, capped at 500
-examined rows per member and the shared deadline; no match is unverified, not proof of
-absence. Host CloudFront, host SSM/AgentCore/model, both workers and the closing web
-identity check remain mandatory.
+every member. Each configured member must also pass one authenticated
+`GET /api/deployment/member-inventory?accountId=<account>&type=<type>&resourceId=<encoded-id>`.
+The endpoint checks the applied allowlist, enabled nonhost/default-role registration,
+enabled scan scope and the reference's currently enabled region for EC2, using one
+exact Aurora lookup with a two-row ambiguity guard. It returns only bounded identity
+and capture metadata, so neither the first 500 rows nor full-row payload sizes limit
+this proof. The helper requires `schemaVersion:1`, `status:"verified"`, exact
+`accountId`/`type`/`resourceId`, bounded region and fresh `capturedAt >= collectionStartedAt`.
+A `not_ready`, malformed or non-200 reply is not proof; the endpoint independently
+rejects zero-scope references. The host CloudFront scan remains unchanged, as do host
+SSM/AgentCore/model, both workers and the closing web identity check.
 
 For `N` targets, reserve `1080 + 35*N` seconds for proof, leaving at most
 `720 - 35*N` seconds for collection and latest type admission at `270 - 35*N`
 seconds, reduced further by clock preparation and earlier outer deadlines. The extra
-allowance covers one initial inventory page per member. The base 20-second margin,
-conditional retry and additional-page rules below remain unchanged; no extra page
+allowance covers one exact 35-second proof request per member, with no member paging.
+The base 20-second margin, conditional retry and host-CloudFront additional-page rules
+below remain unchanged; no extra page
 or retry is guaranteed, and the original thirty-minute marker deadline never extends.
 
 ## Collector catalog prerequisite
@@ -609,7 +622,7 @@ context/source, deployment/web identity, collection/proof and local execution fa
 | `invalid_application_target` | The public URL or CloudFront target fails the connection contract. Check the captured HTTPS targets while preserving Host/SNI/TLS validation. |
 | `deployment_identity_mismatch`, `web_deployment_mismatch` | Captured schema/account/region/project or web cluster/service/task-role identity is inconsistent. Re-capture the reviewed applied deployment; do not guess resource identities. |
 | `invalid_feature_state`, `runtime_not_enabled` | Feature metadata is invalid or collect prerequisites are inactive. Complete the reviewed activation sequence; prepare is not a substitute for full release proof. |
-| `inventory_deployment_mismatch`, `known_resource_required` | The captured owned collector name/ARN/hash or known CloudFront identity is missing/invalid. Reconcile the applied runtime contract before invoking collection. |
+| `inventory_deployment_mismatch`, `known_resource_required` | The captured owned collector name/ARN/hash, applied `inventory.verification_targets`, or known host CloudFront identity is missing/invalid. For target metadata, check that it is an array of at most five unique non-host account IDs with supported `ec2`/`cloudfront` types and bounded resource IDs. Inspect the applied `runtime_deployment` output and reconcile the reviewed contract before invoking collection. |
 | `expected_web_image_missing` | ECR returned no usable image set or reported lookup failures. Check the selected repository and reviewed tag/digest; missing evidence cannot authorize another image. |
 | `web_image_identity_mismatch`, `web_manifest_digest_mismatch` | Account/repository/tag/digest, alias consistency or the manifest hash disagrees. Verify the approved identity and identical manifest bytes; do not discard conflicting entries to pass. |
 | `invalid_web_manifest`, `invalid_web_index`, `web_arm64_image_missing` | Manifest/schema/media or index/ARM64 evidence is unsupported or ambiguous. Use a reviewed Linux/ARM64 image with valid manifest evidence; never rewrite the response to manufacture a match. |
@@ -621,12 +634,12 @@ context/source, deployment/web identity, collection/proof and local execution fa
 | `aws_throttled`, `aws_timeout`, `aws_request_failed`, `aws_access_denied` | AWS metadata read/recheck failed, including the final collector recheck. These are distinct from remapped invoke failures. Identify the read and investigate throttling, timing/provider failure or access under existing bounds; never treat unavailable metadata as empty or valid. |
 | `invalid_collection_catalog` | Missing pinned membership, invalid names/shape or bounds. Reconcile the reviewed collector source, applied hash and catalog; do not pad the response or waive required types. |
 | `inventory_code_mismatch` | Configured hash/revision and live collector evidence disagree or cannot be verified. Reconcile the reviewed deployment; discard the attempt's readiness claim. |
-| `collection_partial`, `collection_failed`, `inventory_incomplete`, `collection_probe_incomplete` | Owned RPC result is partial/failed, has unknown attributes, unusable counts or incompatible reachability scope. Target-mode SQL requires registered-account zero; only pinned host-only SDK types accept explicit null. This is an expected hard stop, including limiter/hydrate degradation. Diagnose capacity, reachability and actual denials before an authorized fresh bounded attempt; no automatic partial/unknown retry or degraded acceptance. |
+| `collection_partial`, `collection_failed`, `inventory_incomplete`, `collection_probe_incomplete` | Owned RPC result is partial/failed, has unknown attributes, unusable counts or incompatible reachability scope. Target-mode SQL requires enabled-scan-account zero; only pinned host-only SDK types accept explicit null. This is an expected hard stop, including limiter/hydrate degradation. Diagnose capacity, reachability and actual denials before an authorized fresh bounded attempt; no automatic partial/unknown retry or degraded acceptance. |
 | `collection_probe_busy`, `collection_probe_throttled` | Another attempt could not be admitted after busy/superseded or confirmed invoke-throttling outcomes. Check phase budget and contention, with per-type outcomes when present; do not infer success or suppress the scheduler. |
 | `collection_probe_protocol` | The collector payload is not an object with the requested type and a recognized result shape/status. Reconcile the reviewed collector/protocol without printing its raw response. |
 | `collection_probe_denied` | The owned invocation was denied. Check its exact operation under the existing identity/session/IAM boundaries; do not restore ambient profiles/endpoints or grant permissions automatically. |
 | `collection_probe_timeout`, `collection_probe_failed` | Inspect per-type attempts and known delivery evidence. A timeout may mean uncertain delivery or failed admission; use the structured status rather than assuming a safe blind retry. |
-| `host_only_registry_required` | Mapping of the helper's registry check: missing, disabled, wrong or duplicate host; enabled foreign accounts; or malformed/oversized `/api/accounts` data. Check response shape and host registration as well as scope. Use the existing preparation/bootstrap procedure when the host is absent; do not assume foreign accounts are the cause or change scope/accounts automatically. |
+| `host_only_registry_required` | Mapping of the host-shape check: missing, disabled, wrong or duplicate host, or malformed/oversized `/api/accounts` data. In the default empty-target host-only mode, enabled foreign accounts also cause this failure. With explicit targets, member membership violations use `member_registry`; inspect that row rather than treating every foreign account as invalid. Use the existing preparation/bootstrap procedure when the host is absent, and do not change scope/accounts automatically. |
 | `database_clock_invalid` | The prepared result, canonical DB timestamp or local request/response bracket is invalid. Check authenticated preparation and the 35-second sample bound; do not add lower-bound tolerance or reset the marker. |
 | `runtime_proof_required`, `complete_runtime_proof_required` | Returned status/mode or complete inventory/worker evidence is missing or inconsistent. Require the actual expected proof; never synthesize a successful adapter result. |
 | `authenticated_runtime_proof_failed` | The proof catch received an exception other than `SmokeError`. This includes direct private-config `RuntimeSmokeError`; inspect local config/clock/file validation before assuming remote authentication failed. |
@@ -648,7 +661,7 @@ can instead produce the controller fallbacks above.
 | `Runtime smoke: collection_stale`, `Runtime smoke: collection_missing`, `Runtime smoke: collection_timeout`, `Runtime smoke: collection_unavailable` | Ledger freshness, presence, bounded waiting or availability failed. Missing/unavailable evidence is not healthy zero; preserve the marker and inspect the existing bounded observations. |
 | `Runtime smoke: release_timeout`, `Runtime smoke: runtime_inventory_contention` | Helper HTTP/proof admission or the single permitted contention retry cannot complete. Inspect timing and collision evidence before a fresh bounded attempt; no new proof window or scheduler suppression. |
 | `Runtime smoke: <code>` | Other wrapped configuration, clock, runtime/readiness or worker failures retain the complete helper message. Follow the [reusable probe contract](#reusable-runtime-probe-contract) and [DB-clock contract](#optional-database-clock-sample); do not reduce the message to a suffix or assume every helper exception uses this path. |
-| `Runtime smoke: member_registry`, `Runtime smoke: member_resource_unverified` | Compare enabled registration with the applied explicit targets, then inspect the configured member record's account, resource/type-specific ID and post-marker timestamp. A bounded scan without the record is unverified. Do not remove targets or weaken freshness to pass. |
+| `Runtime smoke: member_registry`, `Runtime smoke: member_resource_unverified` | Compare enabled registration with the applied explicit targets, then inspect the exact member proof's scan scope, account/type/resource ID and post-marker capture timestamp. Missing, ambiguous or out-of-scope references remain unverified. Do not remove targets or weaken freshness to pass. |
 | `Authenticated smoke: <phase>` | Login/database, `host_registry_http`, `inventory_http`, `worker_http`, `runtime_http`, or private-request-file phase failure, with optional validated HTTP status. Inspect the target, session, TLS and response contract privately; retain the complete phase text rather than relabeling it as a ledger/RPC code. |
 
 Even a controller `full_verified` result retains

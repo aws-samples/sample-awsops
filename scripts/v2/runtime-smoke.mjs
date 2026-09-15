@@ -20,7 +20,7 @@ const WORKER_POLL_SECONDS = 300;
 // Enqueue plus the polling window and its last admitted HTTP request.
 const WORKER_MS = REQUEST_MS + WORKER_POLL_SECONDS * 1000 + REQUEST_MS;
 const COOLDOWN_MS = 65_000;
-const memberIdentifiers = { ec2: 'instance_id', cloudfront: 'id' };
+const memberTypes = new Set(['ec2', 'cloudfront']);
 export function validateMemberTargets(value, host) {
   if (!Array.isArray(value) || value.length > 5) fail('configuration');
   const accounts = new Set([host]);
@@ -28,7 +28,7 @@ export function validateMemberTargets(value, host) {
     if (!exact(target, ['account_id', 'resource_type', 'resource_id'])
         || typeof target.account_id !== 'string' || !/^[0-9]{12}$/.test(target.account_id)
         || accounts.has(target.account_id) || typeof target.resource_type !== 'string'
-        || !Object.hasOwn(memberIdentifiers, target.resource_type)
+        || !memberTypes.has(target.resource_type)
         || typeof target.resource_id !== 'string' || !/^[\x21-\x7e]{1,2048}$/.test(target.resource_id)) fail('configuration');
     accounts.add(target.account_id);
   }
@@ -229,17 +229,14 @@ export async function verifyRuntimeSmoke(configuration, send, {
   }
   if (!found) fail('inventory_known_resource_unverified');
   for (const target of targets) {
-    let matched = false;
-    for (let offset = 0; offset < 500 && !matched; offset += 5) {
-      const page = await request(`/api/inventory/${target.resource_type}?accounts=${target.account_id}&limit=5&offset=${offset}`,
-        target.resource_type === 'cloudfront' ? { maxResponseBytes: 2 * 1024 * 1024 } : {});
-      if (!Array.isArray(page?.rows) || page.rows.length > 5) fail('member_resource_unverified');
-      matched = page.rows.some(row => row?.account_id === target.account_id
-        && row.resource_id === target.resource_id && row.data?.[memberIdentifiers[target.resource_type]] === target.resource_id
-        && freshTime(row.captured_at, started, now()));
-      if (page.rows.length < 5) break;
-    }
-    if (!matched) fail('member_resource_unverified');
+    const proof = await request(`/api/deployment/member-inventory?accountId=${target.account_id}`
+      + `&type=${target.resource_type}&resourceId=${encodeURIComponent(target.resource_id)}`);
+    if (!exact(proof, ['schemaVersion', 'status', 'accountId', 'type', 'resourceId', 'region', 'capturedAt'])
+        || proof.schemaVersion !== 1 || proof.status !== 'verified'
+        || proof.accountId !== target.account_id || proof.type !== target.resource_type
+        || proof.resourceId !== target.resource_id || typeof proof.region !== 'string'
+        || proof.region.length > 64 || (target.resource_type === 'ec2' && !/^[a-z]{2}-[a-z]+-\d+$/.test(proof.region))
+        || !freshTime(proof.capturedAt, started, now())) fail('member_resource_unverified');
   }
   const nonce = randomBytes(24).toString('hex');
   let response;

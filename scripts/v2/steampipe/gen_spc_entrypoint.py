@@ -134,7 +134,13 @@ def _validate_host_scope(rows):
         if (not isinstance(rows, list) or not rows or any(not isinstance(row, dict) for row in rows)
                 or any(not isinstance(row.get("account_id"), str) or row["account_id"] not in allowed
                        or row.get("is_host") is not (row["account_id"] == expected)
-                       or (row["account_id"] != expected and row.get("role_name") != "AWSopsReadOnlyRole")
+                       or (row["account_id"] != expected and (
+                           row.get("role_name") != "AWSopsReadOnlyRole"
+                           or (row.get("all_regions") is not True and not (
+                               isinstance(row.get("regions"), list)
+                               and any(isinstance(region, str) and region for region in row["regions"])
+                           ))
+                       ))
                        for row in rows)
                 or len({row["account_id"] for row in rows}) != len(rows)
                 or sum(row["account_id"] == expected for row in rows) != 1):

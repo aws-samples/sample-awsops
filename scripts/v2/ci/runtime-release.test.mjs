@@ -100,7 +100,7 @@ function fixture(overrides = {}) {
         : (overrides.probes?.[type] || (type === 'cloudfront' && overrides.probe) ||
           { type, status: 'succeeded', row_count: 1, unknown_attribute_count: 0,
             ...(overrides.targets ? {
-              account_reachability_scope: sourceSdkTypes.includes(type) ? 'host_only' : 'registered_accounts',
+              account_reachability_scope: sourceSdkTypes.includes(type) ? 'host_only' : 'enabled_scan_accounts',
               unreachable_account_count: sourceSdkTypes.includes(type) ? null : 0,
             } : {}) })), { mode: 0o600 });
       return JSON.stringify(overrides.invoke || { StatusCode: 200, ExecutedVersion: '$LATEST' });
@@ -178,7 +178,7 @@ test('member collection refuses missing or nonzero unreachable counts before fin
         /collection_probe_incomplete|inventory_incomplete/);
       assert.equal(f.authenticated.length, 0);
     }, { targets: memberTargets, probe: { type: 'cloudfront', status: 'succeeded',
-      row_count: 1, unknown_attribute_count: 0, account_reachability_scope: 'registered_accounts',
+      row_count: 1, unknown_attribute_count: 0, account_reachability_scope: 'enabled_scan_accounts',
       unreachable_account_count: count } });
   }
 });
@@ -186,15 +186,16 @@ test('host-only SDK acceptance is pinned to the actual source catalog, not an RP
   assert.deepEqual(runtimeRelease.HOST_ONLY_SDK_TYPES, sourceSdkTypes);
   assert.ok(sourceSdkTypes.every(type => REQUIRED_CATALOG_TYPES.includes(type)));
 });
-test('member acceptance requires registered SQL zero or pinned SDK host-only null, never unmeasured evidence', async () => {
+test('member acceptance requires enabled-scan SQL zero or pinned SDK host-only null, never unmeasured evidence', async () => {
   for (const type of ['ec2', ...sourceSdkTypes, 'future_type']) {
     const sdk = sourceSdkTypes.includes(type);
-    const correct = { account_reachability_scope: sdk ? 'host_only' : 'registered_accounts',
+    const correct = { account_reachability_scope: sdk ? 'host_only' : 'enabled_scan_accounts',
       unreachable_account_count: sdk ? null : 0 };
     for (const [scope, count, allowed] of [
       [correct.account_reachability_scope, correct.unreachable_account_count, true],
-      [sdk ? 'registered_accounts' : 'host_only', sdk ? 0 : null, false],
+      [sdk ? 'enabled_scan_accounts' : 'host_only', sdk ? 0 : null, false],
       ['unmeasured', null, false], [undefined, correct.unreachable_account_count, false],
+      ['registered_accounts', 0, false],
       [correct.account_reachability_scope, undefined, false],
       [correct.account_reachability_scope, sdk ? 0 : null, false],
       ['PRIVATE_SCOPE_DETAIL', 0, false],
@@ -1419,8 +1420,10 @@ test('dispatcher denial does not repeat and confirmed throttling has a hard admi
   });
 });
 
-for (const [skew, memberScope] of [[-5000, false], [5000, false], [5000, true]])
-  test(`real authenticated smoke composes DB clock and full release with skew ${skew}${memberScope ? ' and explicit member' : ''}`,
+for (const [skew, memberScope, memberStatus = '200'] of [[-5000, false], [5000, false], [5000, true],
+  ...['400', '401', '403', '503'].map(status => [5000, true, status])])
+  test(`real authenticated smoke composes DB clock and full release with skew ${skew}`
+    + `${memberScope ? ' and explicit member' : ''}${memberStatus !== '200' ? ` HTTP ${memberStatus}` : ''}`,
   async () => withFixture(async f => {
     let raw = Date.parse('2026-09-14T12:00:00.000Z'), marker, configReads = 0;
     const events = [], runs = [], jobs = [], phases = [];
@@ -1450,12 +1453,17 @@ for (const [skew, memberScope] of [[-5000, false], [5000, false], [5000, true]])
       } else if (path === '/api/inventory/cloudfront') {
         response = { rows: [{ resource_id: 'E123EXAMPLE', account_id: 'self',
           captured_at: runs[0].started_at, data: { id: 'E123EXAMPLE' } }] };
-      } else if (path === '/api/inventory/ec2') {
+      } else if (path === '/api/deployment/member-inventory') {
         assert.equal(memberScope, true);
         const target = memberTargets[0];
-        assert.equal(new URL(args.at(-1)).searchParams.get('accounts'), target.account_id);
-        response = { rows: [{ resource_id: target.resource_id, account_id: target.account_id,
-          captured_at: runs[0].started_at, data: { instance_id: target.resource_id } }] };
+        const query = new URL(args.at(-1)).searchParams;
+        assert.equal(query.get('accountId'), target.account_id);
+        assert.equal(query.get('type'), target.resource_type);
+        assert.equal(query.get('resourceId'), target.resource_id);
+        response = { schemaVersion: 1, status: 'verified', accountId: target.account_id,
+          type: target.resource_type, resourceId: target.resource_id,
+          region, capturedAt: runs[0].started_at };
+        status = memberStatus; // Even a verified-looking body on an HTTP error cannot be proof.
       } else if (path === '/api/deployment/readiness') {
         assert.equal(configReads, 2);
         response = { schemaVersion: 1, nonce: body.nonce, accountId: account, status: 'ready', reason: 'ok',
@@ -1478,7 +1486,7 @@ for (const [skew, memberScope] of [[-5000, false], [5000, false], [5000, true]])
       writeFileSync(output, JSON.stringify(response));
       return { stdout: status };
     };
-    const result = await release(memberScope ? memberDeployment() : deployment(), { env: f.env, now: () => raw,
+    const pending = release(memberScope ? memberDeployment() : deployment(), { env: f.env, now: () => raw,
       run: async (cmd, args, options) => {
         if (args[0] === 'lambda' && args[1] === 'get-function-configuration') configReads++;
         if (args[0] === 'lambda' && args[1] === 'invoke') {
@@ -1504,6 +1512,15 @@ for (const [skew, memberScope] of [[-5000, false], [5000, false], [5000, true]])
         return authenticatedSmoke(input, { ...options, runCurl });
       },
     });
+    if (memberStatus !== '200') {
+      await assert.rejects(pending,
+        error => error.message === `Authenticated smoke: runtime_http; HTTP status ${memberStatus}`);
+      assert.ok(!events.includes('/api/deployment/readiness'));
+      assert.equal(jobs.length, 0);
+      assert.equal(existsSync(f.directory), false);
+      return;
+    }
+    const result = await pending;
     assert.equal(result.status, 'full_verified');
     assert.deepEqual(phases, ['prepare', 'verify']);
     assert.deepEqual(events.slice(0, 4), ['catalog', '/api/auth/login', '/api/db', '/api/accounts']);
@@ -1511,7 +1528,7 @@ for (const [skew, memberScope] of [[-5000, false], [5000, false], [5000, true]])
     assert.deepEqual(jobs.map(job => [job.type, job.runtime, job.dry_run]),
       [['noop', 'lambda', false], ['noop-heavy', 'fargate', false]]);
     assert.equal(result.workers, 2);
-    assert.equal(events.filter(path => path === '/api/inventory/ec2').length, memberScope ? 1 : 0);
+    assert.equal(events.filter(path => path === '/api/deployment/member-inventory').length, memberScope ? 1 : 0);
     assert.equal(f.calls.filter(args => args[1] === 'describe-services').length, 2);
     assert.equal(existsSync(f.directory), false);
     assert.ok(!JSON.stringify(result).includes('FIXTURE_COOKIE'));

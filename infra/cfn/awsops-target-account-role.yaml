@@ -2,7 +2,8 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   AWSops cross-account read-only role. Deploy this in each TARGET account you want AWSops to read
   (cost, Bedrock metrics, inventory, etc.). The host AWSops web task role assumes this role via
-  STS; optionally, the host worker task role can be trusted too (WorkerTaskRoleArn, ADR-011
+  STS. The optional InventoryTaskRoleArn adds its distinct Steampipe collector principal.
+  Optionally, the host worker task role can be trusted too (WorkerTaskRoleArn, ADR-011
   amended 2026-08-25) for the Network Path Check / SG Rules & Usage workers' own reads.
   ExternalId is OPTIONAL (ADR-011 amended 2026-06-26): omit it for 1st-party accounts — trust is
   pinned to the exact host task-role ARN(s) that are set; supply it for 3rd-party/shared accounts.

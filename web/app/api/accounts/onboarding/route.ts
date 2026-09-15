@@ -5,10 +5,11 @@ import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
 import { onboardingInputError } from '@/lib/account-onboarding';
 import { verifyAccountConnection } from '@/lib/account-connection';
 import { registrationTargetAccountIds } from '@/lib/account-registration-scope';
+import { getAccount } from '@/lib/accounts';
 import { randomUUID } from 'node:crypto';
 
 export const dynamic = 'force-dynamic';
-const PROBE_COOLDOWN_MS = 10_000;
+const PROBE_COOLDOWN_MS = 60_000;
 let probeInFlight = false;
 let nextProbeAt = 0;
 
@@ -48,7 +49,8 @@ export async function POST(request: Request) {
     status, headers: { 'Cache-Control': 'private, no-store', ...headers },
   });
   const user = await verifyUser(request.headers.get('cookie'));
-  if (!user) return reply({ message: 'unauthenticated' }, 401);
+  const actorSub = typeof user?.sub === 'string' ? user.sub.trim() : '';
+  if (!user || !actorSub || actorSub.length > 128) return reply({ message: 'unauthenticated' }, 401);
   if (!(await isAdmin(user))) return reply({ message: 'forbidden: admin only' }, 403);
   let raw: unknown;
   try {
@@ -74,7 +76,7 @@ export async function POST(request: Request) {
   const reject = (code: string, message: string, status: number, retryAfterSeconds?: number) => {
     const checkId = randomUUID();
     console.info(JSON.stringify({
-      event: 'account_connection_rejected', checkId, actor_sub: user.sub,
+      event: 'account_connection_rejected', checkId, actor_sub: actorSub,
       accountId: input.accountId, code,
     }));
     return reply({ message, code, checkId, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) }, status,
@@ -90,24 +92,33 @@ export async function POST(request: Request) {
   if (probeInFlight || now < nextProbeAt) {
     return reject(probeInFlight ? 'probe_in_flight' : 'probe_cooldown',
       'A connection check is already running or cooling down. Retry shortly.', 429,
-      Math.max(1, Math.ceil((nextProbeAt - now) / 1000)));
+      Math.max(1, Math.min(60, Math.ceil((nextProbeAt - now) / 1000))));
   }
   probeInFlight = true;
-  nextProbeAt = now + PROBE_COOLDOWN_MS;
   try {
     const hostOnly = process.env.INVENTORY_HOST_ONLY === 'true';
-    if ((targetAccountIds && !targetAccountIds.includes(input.accountId)) || (hostOnly && !targetAccountIds)) {
-      return reject('target_not_configured', 'Configure this target in the deployment before checking its connection.', 409);
+    if (!targetAccountIds?.includes(input.accountId)) {
+      let registered;
+      try { registered = await getAccount(input.accountId); }
+      catch {
+        return reject('scope_unavailable', 'Deployment account scope is unavailable', 503);
+      }
+      if (registered?.accountId !== input.accountId || registered.enabled !== true || registered.isHost !== false) {
+        return reject('target_not_configured', 'Connection checks require an enabled registered or deployment-approved target.', 409);
+      }
     }
+    nextProbeAt = Date.now() + PROBE_COOLDOWN_MS;
     const diagnostic = await verifyAccountConnection(input, {
-      hostAccountId, registrationEnabled: !hostOnly,
+      hostAccountId, registrationEnabled: !hostOnly && (!targetAccountIds || targetAccountIds.includes(input.accountId)),
     });
     // Attribute the safe diagnostic to its requesting admin; never log the request body.
-    console.info(JSON.stringify({ event: 'account_connection_check', actor_sub: user.sub, ...diagnostic }));
+    console.info(JSON.stringify({ event: 'account_connection_check', ...diagnostic, actor_sub: actorSub }));
     const status = diagnostic.verified ? 200
       : diagnostic.code === 'timeout' ? 504
       : ['access_denied', 'identity_mismatch'].includes(diagnostic.code) ? 400 : 503;
     return reply({ ok: diagnostic.verified, diagnostic }, status);
+  } catch {
+    return reject('check_failed', 'Connection check is unavailable', 503);
   } finally {
     probeInFlight = false;
   }

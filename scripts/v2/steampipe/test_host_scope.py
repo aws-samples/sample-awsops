@@ -37,7 +37,8 @@ def test_explicit_scope_renders_only_approved_subset_and_preserves_external_id(r
 
 @pytest.mark.parametrize("rows", [[], [TARGET], [HOST, TARGET, TARGET],
     [HOST, {**TARGET, "account_id": "888888888888"}], [HOST, {**TARGET, "is_host": True}],
-    [HOST, {**TARGET, "role_name": "AdministratorAccess"}]])
+    [HOST, {**TARGET, "role_name": "AdministratorAccess"}],
+    [HOST, {**TARGET, "regions": []}], [HOST, {**TARGET, "regions": [None, ""]}]])
 def test_explicit_scope_rejects_unapproved_or_ambiguous_rows_before_render(rows):
     with mock.patch.dict(os.environ, SCOPED_ENV, clear=True), mock.patch.object(entrypoint, "boto3") as sdk, \
             mock.patch.object(entrypoint, "render_spc") as render:
@@ -45,6 +46,32 @@ def test_explicit_scope_rejects_unapproved_or_ambiguous_rows_before_render(rows)
         with pytest.raises(entrypoint.HostScopeError):
             entrypoint._render_spc(rows)
         render.assert_not_called()
+
+def test_explicit_member_with_all_regions_enabled_needs_no_region_rows():
+    with mock.patch.dict(os.environ, SCOPED_ENV, clear=True), mock.patch.object(entrypoint, "boto3") as sdk:
+        sdk.client.return_value.get_caller_identity.return_value = {"Account": ACCOUNT}
+        result = entrypoint._render_spc([HOST, {**TARGET, "regions": [], "all_regions": True}])
+        assert 'assume_role_arn = "arn:aws:iam::999999999999:role/AWSopsReadOnlyRole"' in result
+
+
+def test_watchdog_automatically_reloads_approved_member_after_host_only_initial_render():
+    stop = mock.Mock()
+    stop.wait.side_effect = [False, True]
+    proc_ref = [mock.Mock()]
+    with mock.patch.dict(os.environ, SCOPED_ENV, clear=True), mock.patch.object(entrypoint, "boto3") as sdk, \
+            mock.patch.object(entrypoint, "fetch_rows", return_value=[HOST, TARGET]), \
+            mock.patch.object(entrypoint, "write_spc") as write, \
+            mock.patch.object(entrypoint, "_restart_steampipe", return_value=True) as restart:
+        sdk.client.return_value.get_caller_identity.return_value = {"Account": ACCOUNT}
+        initial = entrypoint._render_spc([HOST])
+        assert "assume_role_arn" not in initial
+        entrypoint._scope_watchdog(initial, proc_ref, threading.Lock(), stop)
+        assert entrypoint.SCOPE_WATCH_INTERVAL == 300
+        assert stop.wait.call_args_list == [mock.call(300), mock.call(300)]
+        write.assert_called_once()
+        assert 'assume_role_arn = "arn:aws:iam::999999999999:role/AWSopsReadOnlyRole"' in write.call_args.args[0]
+        restart.assert_called_once()
+        stop.set.assert_not_called()
 
 
 @pytest.mark.parametrize("raw", ["null", "{}", "bad", '["999999999999","999999999999"]',

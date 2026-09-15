@@ -99,8 +99,8 @@ propagated there. Operators must coordinate the shared reader value and its trus
 principal before expecting AgentCore cross-account reads; the wizard does not configure them.
 
 Host-only deployments display the restriction before registration and disable the register
-button. A separate connection check performs no registry writes, but it requires an explicitly
-approved target in host-only mode. Without an applied target list, the new probe is disabled.
+button. A separate connection check performs no registry writes. The onboarding form offers
+it only for an explicitly allowlisted new target; without an applied list that control is disabled.
 Registered rows retain their existing **Test** (`PATCH /api/accounts`) action; the onboarding
 form does not recreate roles or change saved ExternalIds for those rows.
 Script generation remains available for preparation; running it does not change
@@ -117,19 +117,24 @@ certifies collection, worker or AgentCore access.
 
 Probe admission follows the applied configuration:
 
-- If `INVENTORY_TARGET_ACCOUNT_IDS` is present, the target must be in that list.
-- If no list is configured and `INVENTORY_HOST_ONLY=true`, probes return HTTP 409
-  with `code: target_not_configured`, before STS.
-- Legacy multi-account mode without a list retains its existing onboarding reach.
-- Host-account and invalid-input checks remain in place. The new endpoint does not use
-  registered/enabled rows as an exception to these rules.
+- The caller must be an administrator with a nonempty immutable Cognito `sub`.
+- A target must be in `INVENTORY_TARGET_ACCOUNT_IDS` **or** match an enabled, nonhost
+  registry entry. An out-of-list registered target can be checked, but this does not
+  permit a new registration or change collector/runtime scope.
+- Unregistered, unlisted targets return HTTP 409 with `code: target_not_configured`
+  before STS, including legacy multi-account mode. Missing allowlists do not authorize
+  arbitrary diagnostic targets. Invalid configuration or failed registry lookup returns 503.
+- Host-account and invalid-input checks remain in place.
 
-The server permits one in-flight probe per process and at least ten seconds between
-admissions. A concurrent or cooling-down request returns HTTP 429 with
+The server permits one in-flight probe per process, including its approval lookup, and
+at least 60 seconds between STS check starts. Scope rejections do not consume that
+STS cooldown. A concurrent or cooling-down request returns HTTP 429 with
 `probe_in_flight` or `probe_cooldown`, `retryAfterSeconds` and `Retry-After`.
 Respect that wait and retry manually; the page never auto-resubmits. The wait is guidance,
 not a promise that another administrator's in-flight request will have finished.
 These scope/rate rejections contain safe boundary metadata, not an AWS-stage diagnostic.
+Unexpected verifier failures return fixed `check_failed`/503, release single-flight,
+and preserve the cooldown; provider exception text is never returned.
 
 Each result includes a check ID, UTC timestamp, verification stage, fixed failure code,
 duration and an AWS request ID when available. The web log event is
@@ -184,6 +189,10 @@ proof are documented in [runtime activation](runtime-foundation.md). Rebuild and
 reviewed ARM64 Steampipe image containing the scope guard before applying member scope.
 The role trust, source permission, registry and release proof must agree; role creation alone
 does not complete activation. No app request changes these deployment settings.
+The collector's existing 300-second watchdog reloads approved account/region changes;
+observe fresh target evidence before release verification. Coordinate any ExternalId
+rotation between target trust and the registered web/collector value. Explicit first-party
+omission removes that condition from both trust statements.
 
 The onboarding list is not a retroactive revocation mechanism for existing registered-account
 reads or PATCH re-tests. Collector and CI scope are enforced separately. Review/remove or

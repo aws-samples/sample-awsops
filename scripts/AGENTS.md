@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 08e5e3678844 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 1a25879766a2 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -231,11 +231,13 @@ needs post-marker succeeded evidence, known counts and
 zero unknowns, with at most four concurrent in-flight synchronous owned calls. Prepare obtains authenticated
 DB time plus host proof; calibration anchors at request start and shifts the existing
 deadline equally. No lower-bound freshness tolerance or rolling prior success is introduced.
+Legacy host-only registry violations retain `host_only_registry_required`.
 Both modes default to the enabled host only. Applied targets require exact enabled
-host/member registration, measured SQL reachability with zero unreachable accounts and
-fresh account-bound EC2/CloudFront member evidence. Explicit scope preserves null for
+host/member registration, measured SQL reachability over enabled scan accounts with zero
+unreachable accounts and fresh account-bound EC2/CloudFront member evidence from one
+exact minimal `/api/deployment/member-inventory` lookup. Explicit scope preserves null for
 host-only/unmeasured counts; CI allows host-only/null only for five source-AST-pinned
-SDK types, not per-member43 coverage. Only Terraform onboarding preflight permits approved subsets;
+SDK types, not 43-type coverage for every member. Only Terraform onboarding preflight permits approved subsets;
 apply reads the restored saved plan, never a newer secret. Runtime release stays exact.
 AWS CLI children use an explicit
 credential/settings allowlist, pinned path, disabled config/credential files/metadata
@@ -301,3 +303,12 @@ The helper has no orphan recovery, legacy fallback or Terraform apply operation.
 `docs/reference/private-plan-transport.md`; validate both helper and consumer workflow tests.
 
 This is operator CI artifact transport, not an ADR-005 exception; no frozen product capability is enabled.
+
+## Isolated review codec
+
+`pr-review/codec_sandbox.py` prepares a digest-pinned Python/Pillow decoder image and
+runs bytes in a non-root, network-none, read-only container with no workspace mounts.
+No direct host fallback is allowed. State binds an immutable image, owned tag and run
+label; per-decode and final cleanup are bounded and scoped to that ownership.
+`v2/test_review_codec_sandbox.py` requires prepared Docker state and verifies actual
+confinement, transport and cleanup. Privileged review wiring is a separate change.

@@ -369,12 +369,15 @@ concurrent in-flight synchronous invocations. It requires succeeded results, kno
 It samples the authenticated DB clock before collecting, anchors calibration at request
 start, shifts the existing deadline by the same offset, and retains strict post-marker
 ledger checks. Collector code hash and RevisionId must remain stable through collection.
+Legacy host-only registry violations retain `host_only_registry_required`.
 Both modes default to the enabled host only. Explicit applied verification targets
 require the exact enabled host/member registry before type calls, measured SQL reachability
 with zero unreachable accounts, and fresh account-bound known EC2/CloudFront member rows.
-`account_reachability_scope` distinguishes registered-account measurement from host-only
+`account_reachability_scope` distinguishes `enabled_scan_accounts` measurement from host-only
 and unmeasured results; the latter counts stay null. CI permits host-only/null only for
-the five source-AST-pinned SDK types. Aggregate43 is not per-member43 coverage.
+the five source-AST-pinned SDK types. The aggregate 43-type proof does not establish 43-type coverage for every member.
+Member evidence uses one exact, bounded `/api/deployment/member-inventory` response,
+never a scan of full inventory pages.
 Only Terraform plan/apply onboarding preflight permits approved subsets; apply reads
 the restored saved plan, not a newer secret. Runtime release never requests that leniency.
 See the canonical `runtime-foundation.md#explicit-runtime-targets` contract.
@@ -424,3 +427,12 @@ Four lanes are a concurrency ceiling, not a throughput guarantee; the active sch
 and shared limiter can cause throttling or incomplete data. Budgets fail closed rather
 than promise every workload fits. Preserve the recorded feasibility sample and its
 limitations in the runbook; do not suppress the schedule or weaken proof to pass.
+
+## Isolated review codec
+
+`pr-review/codec_sandbox.py` prepares a digest-pinned Python/Pillow decoder image and
+runs bytes in a non-root, network-none, read-only container with no workspace mounts.
+No direct host fallback is allowed. State binds an immutable image, owned tag and run
+label; per-decode and final cleanup are bounded and scoped to that ownership.
+`v2/test_review_codec_sandbox.py` requires prepared Docker state and verifies actual
+confinement, transport and cleanup. Privileged review wiring is a separate change.

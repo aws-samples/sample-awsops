@@ -215,6 +215,12 @@ describe('account onboarding flow', () => {
 });
 
 describe('read-only account connection diagnostics', () => {
+  const checkConfig = { ...config, registrationTargetAccountIds: [diagnostic.accountId] };
+  beforeEach(() => {
+    vi.mocked(fetch).mockImplementation(async (url) => new Response(JSON.stringify(
+      url === '/api/accounts/onboarding' ? checkConfig : { ok: true, status: 'verified' },
+    )));
+  });
   function mockCheck(result = diagnostic, status = 200) {
     vi.mocked(fetch).mockImplementation(async (_url, options) => new Response(JSON.stringify(
       options?.method === 'POST' ? { ok: result.verified, diagnostic: result }
@@ -331,7 +337,7 @@ describe('read-only account connection diagnostics', () => {
       url === '/api/accounts' ? { message: 'PRIVATE_REGISTER_ERROR' }
         : options?.method === 'POST' ? { ok: false, diagnostic: {
           ...diagnostic, code: 'access_denied', stage: 'assume_role', verified: false, registrationEnabled: true,
-        } } : config,
+        } } : checkConfig,
     ), { status: options?.method === 'POST' ? 400 : 200 }));
     render(<AccountOnboarding onRegistered={onRegistered} />);
     await fillAccount();
@@ -421,7 +427,7 @@ describe('read-only account connection diagnostics', () => {
 
   it.each([
     [false, undefined, false], [false, [], false], [false, ['333333333333'], false],
-    [false, [diagnostic.accountId], true], [true, undefined, true],
+    [false, [diagnostic.accountId], true], [true, undefined, false],
   ])('enforces probe scope with registration=%s and targets=%j', async (registrationEnabled, targets, allowed) => {
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({
       ...config, registrationEnabled, ...(targets === undefined ? {} : { registrationTargetAccountIds: targets }),

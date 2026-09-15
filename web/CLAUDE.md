@@ -43,11 +43,20 @@ authentication/admin checks and before STS or registry writes. Reads, connection
 and removal retain their behavior. Configure multi-account collection before onboarding.
 The separate admin-only `POST /api/accounts/onboarding` performs a bounded, read-only
 host/AssumeRole/target identity check and never writes the registry. One probe per process
-may run at a time, with a 10-second start cooldown; rejected and completed checks log the
-requesting `actor_sub`. Host-only deployments require an explicitly allowed probe target.
-`INVENTORY_TARGET_ACCOUNT_IDS` constrains new probes and registration; malformed
-configuration fails closed. Existing registered-account readers and PATCH tests retain
+may run at a time, including approval lookup, with a 60-second STS-start cooldown.
+The caller needs a nonempty immutable `sub`; rejected and completed checks log it.
+Only an enabled registered target or an applied allowlist entry permits a probe.
+Missing lists never allow arbitrary targets, and malformed configuration/failed lookup
+fails closed. Registration remains governed by canonical `runtime_verification_targets`
+and `INVENTORY_TARGET_ACCOUNT_IDS`; registered-target probing grants no new registration.
+Existing registered-account readers and PATCH tests retain
 their separate authorization paths. Diagnostic fields exclude provider error text,
 credentials and the ExternalId value. AI guidance prefills the existing assistant composer
 without sending. Optional `INVENTORY_TASK_ROLE_ARN` supplies the exact host Steampipe
 collector principal to the create-only CloudFormation role guide.
+
+`GET /api/deployment/member-inventory` authenticates and restricts queries to applied target
+accounts. One read-only statement checks enabled account/region scope and exactly matches
+the resource ID, returning at most two minimal projections to reject ambiguity. It never
+returns full inventory records. The release controller checks identity and post-marker
+freshness; the required PostgreSQL/TLS suite covers large inventories and unusable scopes.

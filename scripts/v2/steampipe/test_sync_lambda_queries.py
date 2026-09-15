@@ -398,7 +398,7 @@ def test_duplicate_collector_rows_use_persisted_identity_counts(mode, capsys, mo
     result = mod.sync("duplicate_test")
     assert result["status"] == ("partial" if mode == "sdk_partial" else "succeeded")
     expected_scope = ("unmeasured" if mode == "sdk_partial" else
-                      "host_only" if mode == "sdk" else "registered_accounts")
+                      "host_only" if mode == "sdk" else "enabled_scan_accounts")
     assert result["account_reachability_scope"] == expected_scope
     assert result["unreachable_account_count"] == (0 if mode.startswith("steampipe") else None)
     assert len(persisted) == 3
@@ -768,7 +768,7 @@ def test_sync_partial_account_omission_preserves_last_good_and_logs_only_count(
         "status": "partial",
         "type": "partial_account_test",
         "row_count": 1,
-        "account_reachability_scope": "registered_accounts",
+        "account_reachability_scope": "enabled_scan_accounts",
         "unreachable_account_count": 1,
         "unknown_attribute_count": 0,
     }
@@ -800,7 +800,7 @@ def test_sync_partial_account_omission_preserves_last_good_and_logs_only_count(
         "event": "inventory_sync_complete",
         "resource_type": "partial_account_test",
         "row_count": 1,
-        "account_reachability_scope": "registered_accounts",
+        "account_reachability_scope": "enabled_scan_accounts",
         "unreachable_account_count": 1,
         "unknown_attribute_count": 0,
         "degraded": True,
@@ -894,7 +894,7 @@ def test_zero_row_success_is_durable_across_later_failure(capsys, monkeypatch):
         "type": "zero_row_history_test",
         "row_count": 0,
         "unknown_attribute_count": 0,
-        "account_reachability_scope": "registered_accounts",
+        "account_reachability_scope": "enabled_scan_accounts",
         "unreachable_account_count": 0,
     }
     assert second["status"] == "failed"

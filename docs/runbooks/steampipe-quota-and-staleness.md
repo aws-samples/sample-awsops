@@ -301,11 +301,11 @@ CloudWatch Logs에서 다음 JSON event 이름을 조회한다:
 
 | `account_reachability_scope` | `unreachable_account_count` | Evidence |
 |---|---|---|
-| `registered_accounts` | Nonnegative integer | SQL completed checks for the host and enabled in-scope target connections, using returned rows or the bounded per-account probe. Zero means no unreachable account was observed in that checked scope. |
+| `enabled_scan_accounts` | Nonnegative integer | SQL completed checks for the host and enabled, renderable DB scan accounts, using returned rows or the bounded per-account probe. Zero means no unreachable account was observed in that checked scope; it does not cover every registered account or planned target. |
 | `host_only` | `null` | Successful SDK collection covers the host; registered target reachability was not measured. |
 | `unmeasured` | `null` | SDK sub-call partiality skipped reachability/pruning. It cannot establish complete scope. |
 
-The multi-account release gate requires registered-account zero for SQL types.
+The multi-account release gate requires enabled-scan-account zero for SQL types.
 Only its pinned, source-AST-verified `SDK_SYNCS` members may supply host-only/null;
 an arbitrary type's scope claim cannot bypass verification. Partial/failed results
 and unknown attributes still stop release, and every configured member still needs
@@ -313,6 +313,13 @@ fresh known-resource evidence alongside the aggregate catalog proof.
 `collection_attempts` retains this bounded scope; null scope means no valid scope
 was reported yet. These RPC/log fields do not turn the singleton ledger into a
 per-account coverage report or assert that all 43 types cover each member.
+Enabled accounts with no enabled region and `all_regions=false` are excluded by
+`_enabled_target_accounts`; the metric must not imply they were measured. In explicit
+target mode the renderer rejects such registered members, and the exact member-proof
+endpoint independently rejects their references. Initial rendering still permits the
+host plus an approved subset before registration. The existing 300-second watchdog
+automatically re-reads registration/regions and rewrites/restarts the collector when
+an approved member enters the scan scope; validation is not startup-only.
 
 예시 Logs Insights query / Example Logs Insights query:
 

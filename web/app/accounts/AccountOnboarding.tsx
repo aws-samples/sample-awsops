@@ -127,8 +127,8 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
   const guide = config && accounts !== null && !inputError && !isHost && !registeredAccount ? buildAccountOnboarding(submission, config) : null;
   const outsideTargets = config?.registrationTargetAccountIds !== undefined
     && (!Array.isArray(config.registrationTargetAccountIds) || !config.registrationTargetAccountIds.includes(form.accountId));
-  const probePermitted = config?.registrationTargetAccountIds === undefined
-    ? config?.registrationEnabled === true : !outsideTargets;
+  const probePermitted = Array.isArray(config?.registrationTargetAccountIds)
+    && config.registrationTargetAccountIds.includes(form.accountId);
   const connectionReason = config && accounts !== null && !connectionInputError && !isHost && !registeredAccount && !probePermitted
     ? '현재 배포에서 승인된 계정만 연결을 확인할 수 있습니다. 운영자에게 확인 범위를 요청하세요.' : null;
   const registrationReason = config && !config.registrationEnabled

@@ -1473,15 +1473,15 @@ def sync(resource_type):
                             rg=rg,
                             id=rid,
                         )
-            # Only SQL paths above checked the registered account scope. SDK
+            # Only SQL paths above checked the enabled, renderable scan scope. SDK
             # collectors never inspect target connections, and partial SDK runs
             # skip reachability/pruning altogether; neither can report measured zero.
             reachability_scope = ("unmeasured" if sdk_partial else
-                                  "host_only" if resource_type in SDK_SYNCS else "registered_accounts")
+                                  "host_only" if resource_type in SDK_SYNCS else "enabled_scan_accounts")
             reachability = {
                 "account_reachability_scope": reachability_scope,
                 "unreachable_account_count": (
-                    len(unreachable_accounts) if reachability_scope == "registered_accounts" else None
+                    len(unreachable_accounts) if reachability_scope == "enabled_scan_accounts" else None
                 ),
             }
             if sdk_partial:

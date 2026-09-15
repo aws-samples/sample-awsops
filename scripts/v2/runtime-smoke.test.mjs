@@ -82,14 +82,14 @@ test('optional hostOnly defaults false and regular multi-account registries rema
   assert.throws(() => validateRuntimeSmokeConfig({ ...config, hostOnly: 'true' }, Date.parse(start) + 1000), /configuration/);
 });
 const member = { account_id: '999999999999', resource_type: 'ec2', resource_id: 'i-0123456789abcdef0' };
-const memberPath = `/api/inventory/ec2?accounts=${member.account_id}&limit=5&offset=0`;
+const memberPath = `/api/deployment/member-inventory?accountId=${member.account_id}&type=ec2&resourceId=${encodeURIComponent(member.resource_id)}`;
 const hostRow = { accountId: account, isHost: true, enabled: true };
 const memberRow = { accountId: member.account_id, isHost: false, enabled: true };
-const memberEvidence = { account_id: member.account_id, resource_id: member.resource_id,
-  captured_at: start, data: { instance_id: member.resource_id } };
+const memberEvidence = { schemaVersion: 1, status: 'verified', accountId: member.account_id,
+  type: member.resource_type, resourceId: member.resource_id, region: 'ap-northeast-2', capturedAt: start };
 test('explicit member scope proves fresh EC2 identity and retains host model and both workers', async () => {
   const f = fixture({ '/api/accounts': () => ({ accounts: [hostRow, memberRow] }),
-    [memberPath]: () => ({ rows: [memberEvidence] }) });
+    [memberPath]: () => memberEvidence });
   const result = await f.run({ ...config, expectedMemberTargets: [member] });
   assert.equal(result.member_targets_verified, 1);
   assert.equal(result.workers, 2);
@@ -116,13 +116,21 @@ test('release prepare requires exact members while onboarding prepare allows onl
     expectedMemberTargets: [member], memberRegistryMode: 'onboarding',
   }), /member_registry/);
 });
-test('member proof rejects wrong account, resource, timestamp and type-specific identifier before billing', async () => {
-  for (const change of [{ account_id: 'self' }, { resource_id: 'i-other' }, { captured_at: '2020-01-01T00:00:00Z' },
-    { captured_at: 'invalid' }, { data: { id: member.resource_id } }, { data: { instance_id: 'i-other' } }]) {
+test('member proof rejects wrong account, resource, type, timestamp and malformed attestations before billing', async () => {
+  for (const change of [{ accountId: 'self' }, { resourceId: 'i-other' }, { capturedAt: '2020-01-01T00:00:00Z' },
+    { capturedAt: 'invalid' }, { type: 'cloudfront' }, { schemaVersion: 2 },
+    { region: null }, { region: '' }, { region: 'invalid' }, { region: 'x'.repeat(65) },
+    { status: 'not_ready', reason: 'not_found' }, { capturedAt: undefined },
+    { data: { secret: 'PRIVATE_PAYLOAD' } }]) {
     const f = fixture({ '/api/accounts': () => ({ accounts: [hostRow, memberRow] }),
-      [memberPath]: () => ({ rows: [{ ...memberEvidence, ...change }] }) });
-    await assert.rejects(f.run({ ...config, expectedMemberTargets: [member] }), /member_resource_unverified/);
+      [memberPath]: () => ({ ...memberEvidence, ...change }) });
+    await assert.rejects(f.run({ ...config, expectedMemberTargets: [member] }),
+      error => /member_resource_unverified/.test(error.message) && !error.message.includes('PRIVATE_PAYLOAD'));
     assert.ok(f.calls.every(c => !['/api/jobs', '/api/deployment/readiness'].includes(c.path)));
+  }
+  for (const reply of [null, [], {}, { schemaVersion: 1, status: 'not_ready', reason: 'ambiguous' }]) {
+    await assert.rejects(fixture({ '/api/accounts': () => ({ accounts: [hostRow, memberRow] }),
+      [memberPath]: () => reply }).run({ ...config, expectedMemberTargets: [member] }), /member_resource_unverified/);
   }
 });
 test('member config is bounded, exact and cannot enable onboarding leniency during verify', () => {
@@ -139,21 +147,40 @@ test('member config is bounded, exact and cannot enable onboarding leniency duri
   }
   assert.equal(validateRuntimeSmokeConfig({ ...config, expectedMemberTargets: [] }, Date.parse(start)).mode, 'verify');
 });
-test('member CloudFront uses its own account and id field, and bounded EC2 scans cannot prove absence', async () => {
+test('member CloudFront uses the exact endpoint with encoded identifiers and no inventory paging', async () => {
   const cf = { ...member, resource_type: 'cloudfront', resource_id: 'EMEMBER123' };
+  const path = `/api/deployment/member-inventory?accountId=${cf.account_id}&type=cloudfront&resourceId=${cf.resource_id}`;
   const f = fixture({ '/api/accounts': () => ({ accounts: [hostRow, memberRow] }),
-    [`/api/inventory/cloudfront?accounts=${member.account_id}&limit=5&offset=0`]: () => ({
-      rows: [{ account_id: member.account_id, resource_id: cf.resource_id, captured_at: start, data: { id: cf.resource_id } }],
-    }) });
+    [path]: () => ({ ...memberEvidence, type: 'cloudfront', resourceId: cf.resource_id, region: 'global' }) });
   assert.equal((await f.run({ ...config, expectedMemberTargets: [cf] })).member_targets_verified, 1);
-  const pages = Object.fromEntries(Array.from({ length: 100 }, (_, n) => [
-    `/api/inventory/ec2?accounts=${member.account_id}&limit=5&offset=${n * 5}`,
-    () => ({ rows: Array.from({ length: 5 }, () => ({ ...memberEvidence, resource_id: 'i-other' })) }),
-  ]));
-  const missing = fixture({ ...pages, '/api/accounts': () => ({ accounts: [hostRow, memberRow] }) });
-  await assert.rejects(missing.run({ ...config, expectedMemberTargets: [member] }), /member_resource_unverified/);
-  assert.equal(missing.calls.filter(c => c.path.startsWith('/api/inventory/ec2?')).length, 100);
-  assert.ok(missing.calls.every(c => c.path !== '/api/deployment/readiness'));
+  assert.equal(f.calls.filter(c => c.path === path).length, 1);
+  assert.equal(f.calls.find(c => c.path === path).options.maxResponseBytes, undefined);
+  const escaped = { ...member, resource_id: 'fixture/id?key=value&other=one#fragment' };
+  const encoded = `/api/deployment/member-inventory?accountId=${escaped.account_id}&type=ec2&resourceId=${encodeURIComponent(escaped.resource_id)}`;
+  const safe = fixture({ '/api/accounts': () => ({ accounts: [hostRow, memberRow] }),
+    [encoded]: () => ({ ...memberEvidence, resourceId: escaped.resource_id }) });
+  assert.equal((await safe.run({ ...config, expectedMemberTargets: [escaped] })).member_targets_verified, 1);
+  assert.equal(safe.calls.filter(c => c.path === encoded).length, 1);
+});
+test('one exact member proof succeeds beyond 500 rows whose full attributes exceed 64 KiB', async () => {
+  const payload = 'x'.repeat(70_000);
+  const fleet = Array.from({ length: 600 }, (_, index) => ({
+    ...memberEvidence, resourceId: index === 599 ? member.resource_id : `i-other-${index}`, data: payload,
+  }));
+  assert.ok(JSON.stringify(fleet[599]).length > 65_536);
+  const f = fixture({ '/api/accounts': () => ({ accounts: [hostRow, memberRow] }),
+    [memberPath]: () => {
+      const record = fleet.find(row => row.resourceId === member.resource_id);
+      assert.equal(fleet.indexOf(record), 599);
+      const { data, ...proof } = record;
+      return proof;
+    } });
+  assert.equal((await f.run({ ...config, expectedMemberTargets: [member] })).member_targets_verified, 1);
+  const reads = f.calls.filter(c => c.path.startsWith('/api/deployment/member-inventory?'));
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].options.timeout, 35_000);
+  assert.equal(reads[0].options.maxResponseBytes, undefined);
+  assert.ok(f.calls.every(c => !c.path.startsWith('/api/inventory/ec2')));
 });
 test('CloudFront requests have small pages and a bounded budget only for the inventory leg', async () => {
   const f = fixture();
