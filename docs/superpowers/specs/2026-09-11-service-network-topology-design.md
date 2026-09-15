@@ -33,7 +33,7 @@ Traversed constructs attach as context, not an ordered packet trace. NAT aliases
 - 호스트 계정 `self`에서만 NFM·서비스 계층을 결합한다. 다른 계정/전체 계정 선택은 구성 계층만 표시하고 지원 범위를 명시한다. / Cross-account observation attribution is not implemented by the existing sources and must not be invented.
 - 구성 타깃의 IP·instance ID는 TG의 region/VPC 문맥과 함께 비교한다. 필수 문맥이 없거나 후보가 여러 개면 연결하지 않고 미확인으로 표시한다. / Require exact endpoint identity plus matching network scope; ambiguous matches stay unlinked.
 - `service.name`과 Kubernetes Service 이름이 같다는 이유로 합치지 않는다. 서비스 그래프의 workload는 cluster·namespace·pod의 정확한 일치로 연결한다. / Never join application and Kubernetes services by name alone.
-- NFM의 이름 기반 monitor→cluster 규약은 local에만 사용한다. remote 클러스터는 정확하게 식별된 구성 타깃으로 확인할 때만 사용한다. / Do not assume a remote endpoint belongs to the monitor's cluster.
+- A monitor-name-derived cluster is a hint, not ownership evidence. Both local and remote workload links require an independently corroborated configured endpoint with matching cluster, namespace and pod; otherwise leave the observation unlinked.
 - RDS DNS와 IP, S3 범주와 특정 bucket 등은 현재 데이터로 입증되지 않으면 별개 노드로 남긴다. / Preserve unresolved database and managed-service identities.
 
 ## 제한·실패 상태 / Bounds and failures
