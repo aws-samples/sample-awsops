@@ -61,6 +61,31 @@ describe('GET /api/accounts', () => {
 });
 
 describe('POST /api/accounts', () => {
+  it('rejects an account outside the explicitly configured deployment scope before AWS or writes', async () => {
+    vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '["333333333333"]');
+    const { POST } = await import('./route');
+    expect((await POST(req('POST'))).status).toBe(409);
+    expect(send).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+  });
+  it('permits registration for an explicitly configured target', async () => {
+    vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', JSON.stringify([TARGET]));
+    const { POST } = await import('./route');
+    expect((await POST(req('POST'))).status).toBe(200);
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+  it.each(['invalid', '{}', '["111111111111"]', '["210987654321","210987654321"]'])(
+    'fails closed on malformed deployment account scope %s', async (scope) => {
+      vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
+      vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', scope);
+      const { POST } = await import('./route');
+      expect((await POST(req('POST'))).status).toBe(503);
+      expect(send).not.toHaveBeenCalled();
+      expect(query).not.toHaveBeenCalled();
+    },
+  );
   it('rejects target onboarding in host-only mode before STS or registry writes', async () => {
     vi.stubEnv('INVENTORY_HOST_ONLY', 'true');
     const { POST } = await import('./route');

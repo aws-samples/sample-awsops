@@ -65,6 +65,10 @@ variables {
 run "defaults_remain_dark" {
   command = plan
   assert {
+    condition     = length([for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e if contains(["INVENTORY_TASK_ROLE_ARN", "INVENTORY_TARGET_ACCOUNT_IDS"], e.name)]) == 0
+    error_message = "Disabled inventory must not advertise a role or target allowlist."
+  }
+  assert {
     condition     = [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.value if e.name == "SSM_RUNTIME_ARN_PARAM"] == [""]
     error_message = "Disabled AgentCore must not advertise an unavailable runtime parameter."
   }
@@ -76,6 +80,61 @@ run "defaults_remain_dark" {
     condition     = (length(aws_iam_role_policy.agentcore) == 0 && length(aws_iam_role_policy.official_mcp_credentials) == 0 && length(aws_iam_role_policy.steampipe_task) == 0 && length(aws_iam_role_policy.worker_lambda) == 0 && !var.inventory_host_only && var.steampipe_image_digest == null && var.worker_image_digest == null && !var.remediation_enabled && !var.diagnosis_notify_enabled && !var.integrations_write_enabled)
     error_message = "Core runtime and host/image overrides must remain opt-in."
   }
+}
+
+run "explicit_inventory_targets_pin_metadata_permissions_and_actual_principal" {
+  command = plan
+  variables {
+    ci_runtime_profile_enabled = true
+    steampipe_enabled          = true
+    agentcore_enabled          = true
+    workers_enabled            = true
+    runtime_verification_targets = [
+      { account_id = "999999999999", resource_type = "ec2", resource_id = "i-fixture" }
+    ]
+  }
+  assert {
+    condition     = output.runtime_deployment.inventory.verification_targets == var.runtime_verification_targets
+    error_message = "Applied output must pin the exact target proof contract."
+  }
+  assert {
+    condition = (
+      [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.value if e.name == "INVENTORY_TASK_ROLE_ARN"] == [aws_iam_role.steampipe_task[0].arn] &&
+      [for e in jsondecode(aws_ecs_task_definition.web.container_definitions)[0].environment : e.value if e.name == "INVENTORY_TARGET_ACCOUNT_IDS"] == [jsonencode(["999999999999"])] &&
+      [for e in jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].environment : e.value if e.name == "INVENTORY_TARGET_ACCOUNT_IDS"] == [jsonencode(["999999999999"])] &&
+      [for e in jsondecode(aws_ecs_task_definition.steampipe[0].container_definitions)[0].environment : e.value if e.name == "EXPECTED_HOST_ACCOUNT_ID"] == ["123456789012"]
+    )
+    error_message = "Web and collector must receive the same allowlist and actual inventory principal."
+  }
+  assert {
+    condition     = [for s in jsondecode(aws_iam_role_policy.steampipe_task[0].policy).Statement : s.Resource if s.Action == ["sts:AssumeRole"]] == [["arn:aws:iam::999999999999:role/AWSopsReadOnlyRole"]]
+    error_message = "Explicit targets must not retain the legacy wildcard AssumeRole resource."
+  }
+}
+
+run "explicit_targets_cannot_disable_runtime_or_combine_with_host_only" {
+  command = plan
+  variables {
+    inventory_host_only = true
+    runtime_verification_targets = [
+      { account_id = "999999999999", resource_type = "ec2", resource_id = "i-fixture" }
+    ]
+  }
+  expect_failures = [var.runtime_verification_targets]
+}
+
+run "explicit_targets_reject_host_and_unsupported_proof_types" {
+  command = plan
+  variables {
+    ci_runtime_profile_enabled = true
+    steampipe_enabled          = true
+    agentcore_enabled          = true
+    workers_enabled            = true
+    runtime_verification_targets = [
+      { account_id = "123456789012", resource_type = "ec2_instance", resource_id = "i-fixture" }
+    ]
+  }
+  expect_failures = [var.runtime_verification_targets]
 }
 
 run "inventory_fingerprint_uses_the_deployed_archive" {
