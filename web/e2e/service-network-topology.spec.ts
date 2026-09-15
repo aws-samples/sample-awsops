@@ -1,11 +1,18 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // Browser fixtures validate UI/correlation behavior without changing app auth or using live AWS data.
-const SHOTS = '/tmp/awsops-service-network-topology';
+const SHOTS = join(tmpdir(), 'awsops-service-network-topology');
 mkdirSync(SHOTS, { recursive: true });
 const END = '2026-09-11T14:00:00.000Z';
 const START = '2026-09-11T13:45:00.000Z';
+const RUN = { status: 'succeeded', finished_at: END, last_success_at: END, row_count: 100 };
+const envelope = (rows: unknown[], account = 'self') => ({
+  rows: rows.map(row => ({ ...row as object, account_id: account, captured_at: END })),
+  consistency: 'statement-snapshot', run: RUN,
+});
 const LB = 'arn:aws:elasticloadbalancing:us-east-1:000000000000:loadbalancer/app/demo/id';
 const CATEGORIES = ['INTRA_AZ', 'INTER_AZ', 'INTER_VPC', 'INTER_REGION', 'AMAZON_S3', 'AMAZON_DYNAMODB', 'UNCLASSIFIED'];
 const METRICS = ['DATA_TRANSFERRED', 'RETRANSMISSIONS', 'TIMEOUTS', 'ROUND_TRIP_TIME'];
@@ -49,6 +56,7 @@ const services = {
 
 async function fixtures(page: Page, opts: {
   partial?: boolean; unavailable?: boolean; podsUnavailable?: 'empty' | 'failed'; foreignEcs?: boolean;
+  crowded?: boolean;
 } = {}) {
   const calls: string[] = [];
   const data: typeof inventory = opts.foreignEcs ? {
@@ -60,7 +68,10 @@ async function fixtures(page: Page, opts: {
       ] }],
     } }],
     subnet: [{ resource_id: 'subnet-foreign', region: 'us-east-1', data: { vpc_id: 'vpc-peer' } }],
-  } : inventory;
+  } : opts.crowded ? { ...inventory, alb: [...inventory.alb, ...Array.from({ length: 400 }, (_, i) => ({
+    resource_id: `crowded-alb-${i}`, region: 'us-east-1',
+    data: { arn: `${LB}-${i}`, dns_name: `crowded-${i}.example.test`, vpc_id: 'vpc-demo' },
+  }))] } : inventory;
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url());
     calls.push(`${url.pathname}${url.search}`);
@@ -72,15 +83,15 @@ async function fixtures(page: Page, opts: {
         const regions = url.searchParams.get('regions');
         return !regions || regions === '__all__' || regions.split(',').includes(row.region);
       });
-      return json({ rows, run: { finished_at: END } });
+      return json(envelope(rows, url.searchParams.get('accounts') === 'self' ? 'self' : url.searchParams.get('accounts')!));
     }
-    if (url.pathname === '/api/eks') return json({ clusters: opts.foreignEcs ? [] : [{ name: 'demo', access: 'connected', region: 'us-east-1', vpcId: 'vpc-demo' }] });
+    if (url.pathname === '/api/eks') return json({ region: 'us-east-1', clusters: opts.foreignEcs ? [] : [{ name: 'demo', access: 'connected', region: 'us-east-1', vpcId: 'vpc-demo' }] });
     if (url.pathname === '/api/eks/demo/incluster') {
       if (url.searchParams.get('kind') === 'pods' && opts.podsUnavailable) {
         return json({ rows: [] }, opts.podsUnavailable === 'failed' ? 502 : 200);
       }
       return json({ rows: ['frontend', 'orders'].map((name, index) => url.searchParams.get('kind') === 'pods'
-        ? { name: `${name}-a`, namespace: 'shop', podIP: `10.0.${index + 1}.10`, workload: name }
+        ? { name: `${name}-a`, namespace: 'shop', podIP: `10.0.${index + 1}.10`, workload: name, status: 'Running' }
         : { name, namespace: 'shop', ips: [`10.0.${index + 1}.10`], targets: [{ ip: `10.0.${index + 1}.10`, pod: `${name}-a` }] }) });
     }
     if (url.pathname === '/api/graph') return json(services);
@@ -140,6 +151,8 @@ test('desktop: combine traffic evidence, inspect a flow and change the applied m
   await expect(page.getByRole('heading', { name: '서비스 + 네트워크', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '네트워크 조회', exact: true })).toBeEnabled();
   expect(calls.filter((u) => u.startsWith('/api/nfm/query'))).toHaveLength(0);
+  await expect(page.locator('[data-e2e-kind="target"]')).toHaveCount(2);
+  await expect(page.getByLabel('구성 소스')).not.toContainText('로드 실패');
   await page.getByRole('button', { name: '네트워크 조회', exact: true }).click();
   await expect(page.getByRole('region', { name: '적용된 네트워크 조회' })).toContainText('성공한 분류 7');
   await expect(page.locator('[data-e2e-kind="connection"]')).toHaveCount(3);
@@ -179,6 +192,25 @@ test('mobile: graph and controls remain readable when one destination category f
   await expect(page.locator('[data-e2e-kind="connection"]')).toHaveCount(3);
   await noOverflow(page);
   await page.screenshot({ path: `${SHOTS}/mobile-partial.png`, fullPage: true });
+  await page.locator('.react-flow').scrollIntoViewIfNeeded();
+  await expect(page.locator('.react-flow')).toBeVisible();
+  await expect(page.locator('.react-flow__minimap')).not.toBeVisible();
+  await page.screenshot({ path: `${SHOTS}/mobile-partial-graph.png`, fullPage: true });
+});
+
+test('large configuration cannot starve observations and search reaches nodes beyond the display cap', async ({ page }) => {
+  await fixtures(page, { crowded: true });
+  await page.goto('/topology?view=e2e');
+  await page.getByRole('button', { name: '네트워크 조회', exact: true }).click();
+  await expect(page.locator('[data-e2e-kind="connection"]')).toHaveCount(3);
+  expect(await page.locator('.react-flow__node').count()).toBeLessThanOrEqual(350);
+  await page.getByRole('searchbox', { name: '서비스 또는 리소스 검색' }).fill('crowded-alb-399');
+  await page.getByRole('button', { name: '선택: crowded-399.example.test', exact: true }).click();
+  await expect(page.getByRole('region', { name: '선택한 노드 상세' })).toContainText('crowded-399.example.test');
+  await page.getByRole('checkbox', { name: '구성 관계', exact: true }).uncheck();
+  await expect(page.getByRole('region', { name: '선택한 노드 상세' })).toHaveCount(0);
+  await page.getByRole('searchbox', { name: '서비스 또는 리소스 검색' }).fill('');
+  await expect(page.locator('[data-e2e-kind="connection"]')).toHaveCount(3);
 });
 
 test('member account: never fetch host observations into a selected member topology', async ({ page }) => {
@@ -211,7 +243,7 @@ test('late host inventory cannot overwrite a newly selected member account', asy
     const type = url.pathname.split('/').pop()!;
     const rows = (inventory[type] ?? []).map((row) => type === 'cloudfront'
       ? { ...row, data: { ...row.data, aliases: [member ? 'member.example.test' : 'host.example.test'] } } : row);
-    await route.fulfill({ json: { rows, run: { finished_at: END } } });
+    await route.fulfill({ json: envelope(rows, member ? '000000000001' : 'self') });
   });
   await page.goto('/topology?view=e2e');
   await expect(page.getByRole('heading', { name: '서비스 + 네트워크', exact: true })).toBeVisible();
@@ -236,7 +268,7 @@ test('same-page navigation and browser history keep the opt-in view consistent w
   await expect(page).toHaveURL(/\/topology$/);
   await expect(page.getByRole('heading', { name: 'Topology', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '네트워크 조회', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: '서비스 + 네트워크', exact: true }).click();
+  await page.getByRole('link', { name: '서비스 + 네트워크 →', exact: true }).click();
   await expect(page.getByRole('heading', { name: '서비스 + 네트워크', exact: true })).toBeVisible();
   await page.goBack();
   await expect(page.getByRole('heading', { name: 'Topology', exact: true })).toBeVisible();
@@ -271,7 +303,7 @@ test('a same-IP ECS task from another subnet/VPC cannot name the configured targ
   await expect(page.locator('[data-e2e-kind="target"]').filter({ hasText: '10.0.1.10' })).toHaveCount(1);
 });
 
-test('region/global scope changes reach inventory requests and remove excluded global resources', async ({ page }) => {
+test('the current account-only inventory contract remains disclosed after region changes', async ({ page }) => {
   const calls = await fixtures(page);
   await page.goto('/topology?view=e2e');
   await expect(page.locator('[data-e2e-kind="cloudfront"]')).toHaveCount(1);
@@ -281,11 +313,12 @@ test('region/global scope changes reach inventory requests and remove excluded g
     }));
     window.dispatchEvent(new CustomEvent('awsops:scopechange'));
   });
-  await expect(page.locator('[data-e2e-kind="cloudfront"]')).toHaveCount(0);
+  await expect(page.locator('[data-e2e-kind="cloudfront"]')).toHaveCount(1);
+  await expect(page.getByLabel('Inventory collection evidence')).toContainText('리전 필터');
   await expect(page.locator('[data-e2e-kind="alb"]')).toHaveCount(1);
   expect(calls.some((value) => {
     const url = new URL(value, 'http://localhost');
     return url.pathname === '/api/inventory/alb'
-      && url.searchParams.get('regions') === 'us-east-1' && url.searchParams.get('includeGlobal') === '0';
+      && url.searchParams.get('accounts') === 'self' && !url.searchParams.has('regions');
   })).toBe(true);
 });

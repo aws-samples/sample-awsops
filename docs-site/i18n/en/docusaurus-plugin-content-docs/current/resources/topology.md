@@ -8,7 +8,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 # Topology
 
-A page for exploring the request flow (**Route53 → CloudFront → Load Balancer → Target Group → target**) as an interactive graph.
+The default `/topology` view explores the configured request flow (**Route53 → CloudFront → Load Balancer → Target Group → target**) as an interactive graph. The optional **Service + Network** view is described below.
 
 <Screenshot src="/screenshots/resources/topology.png" alt="Request-flow graph" />
 
@@ -64,6 +64,48 @@ Configuration topology shows the source capture range, with eligible host last-s
 - Inventory reads are bounded to keep the dashboard responsive. If a read fails, collection changes while loading, or a displayed limit is reached, ownership remains unverified. Check the collection and scope notices, retry after collection completes, and review the appropriate account inventory. A missing target does not prove the resource or its traffic is absent.
 - Check the read/scope warnings and ambiguous-target icon before using cluster filters. Successful types remain visible after partial failures. If failed/incomplete reads produce an empty graph, the prior nonempty graph and its original evidence remain only within the same account, with a retained-data notice; complete empty reads replace it normally.
 - Target collection time describes the target-group configuration, not when a task or pod owned the address. Member/materialized labels and host ECS snapshots are cached configuration. AI context may omit these qualifiers, so verify current ownership before relying on a flow label.
+
+## Service + Network (opt-in)
+
+Open `/topology?view=e2e`, or select **Service + Network →** on the configuration topology, service map (`/topology/services`) or network monitor (`/network-flow`). The default `/topology` configuration view remains available through **Back to configuration flow**.
+
+Service and Network Flow Monitor (NFM) observations are supported only for the **host account (`self`)**. Member and all-account selections show configuration only; host observations are never overlaid on those accounts. NFM uses the host account's configured AWS region, not an account-wide or multi-region traffic census.
+
+Configuration inventory keeps the existing **account-only** scope: region/global selectors do not filter these inventory reads. The inventory collection-evidence panel discloses that scope. EKS evidence covers only connected clusters in its configured region; it does not extend coverage to other regions.
+
+### Query network observations
+
+1. Check the separate configuration, saved service snapshot and NFM source panels. Loading a page reads source/status information; it does not start an NFM contributor query.
+2. Select an active monitor, a metric (**Transferred**, **RTT**, **Retransmissions** or **Timeouts**), and a window: **15 min (900 seconds)**, **30 min (1800 seconds)** or **1 hour (3600 seconds)**.
+3. Choose one destination category or **All categories**: `INTRA_AZ`, `INTER_AZ`, `INTER_VPC`, `INTER_REGION`, `AMAZON_S3`, `AMAZON_DYNAMODB`, `UNCLASSIFIED`. All categories queries the seven categories with at most **three concurrent requests**.
+4. Click **Query network** explicitly. Progress and cancellation are available while it runs. Changing controls does not apply them until you query again; the applied-result heading and per-category windows continue to describe the result actually returned.
+5. Check successful, failed and capped categories separately. A failed category does not erase successful observations. **Refresh** reloads the sources; use **Query network** again to load network observations.
+
+### Read source state before drawing conclusions
+
+| State | Meaning |
+| --- | --- |
+| Empty | The read succeeded but returned no matching observations in its scope/window. This does not prove there is no traffic. |
+| Partial | Some categories, source reads or collection steps were incomplete. Successful evidence remains useful, but failed portions cannot establish traffic presence or absence. |
+| Stale | The source capture is old. Reloading cached data does not make the evidence fresh. |
+| Retained | A previous graph and its original evidence remain after a failed or incomplete refresh. Read the retained-data notice; it does not describe current traffic. |
+| Capped | A contributor, inventory, processing or graph-read limit was reached. Coverage is incomplete; distinguish this from the canvas display limit below. |
+| Unavailable or unknown | No active/configured monitor, unsupported account scope, an inaccessible source, failed read or missing collection metadata is not an empty successful observation. The panel identifies the applicable condition. |
+
+Compare configuration capture/last-success times, service snapshot/collection windows and **Observation windows by category**. Cached NFM results retain their original windows, which may differ between categories; a service snapshot can fall outside them. Missing times or collection state remain unknown. Configuration relationships describe setup, service snapshots are saved samples, and NFM returns top contributors rather than every flow. A source failure does not invalidate independent sources or prove them complete.
+
+### Search, filter and inspect
+
+- Search loaded evidence by service, Pod, IP or resource, then select a result or node to focus its neighborhood. Search respects the active relationship filters: **Configuration relationships**, **Service observations**, **Network observations**, **Identity correlations** and **Traversed components**.
+- Use **Focus main flow**, **View all**, the MiniMap and zoom controls to move between focused and overview views. Details show available endpoint identifiers, local/remote IPs, ports, metric/unit, monitor/category, observation window, SNAT/DNAT and connection evidence.
+- The canvas displays at most **350 nodes and 700 edges**, with omitted counts. Search, focus and relationship filters apply before that bound, so search can find loaded evidence outside the initial display. They cannot recover observations omitted by a source limit.
+- Service relationships marked **Inferred relationship** remain estimates; observed service relationships are still limited to their source samples. Identity correlations are a separate kind of evidence.
+
+### What a connection proves
+
+Configuration and service-call arrows retain their direction. NFM **Local** and **Remote** identify observation sides, not the request initiator and recipient. The metric is aggregated between those endpoints, not measured per hop. **Traversed components** are unordered context, not a packet itinerary; sharing a NAT gateway or TGW does not prove an end-to-end path. SNAT/DNAT aliases are displayed for context and are never identity keys.
+
+Resource matching requires an exact IP or instance ID with corroborating **region and VPC** scope. A workload link additionally needs configured endpoint evidence confirming the exact **cluster + namespace + Pod** tuple on the relevant side. A cluster name inferred from a monitor prefix is only a hint. Matching service names alone, a NAT address, or an unsupported DNS/IP or managed-service association cannot establish identity. Missing scope, duplicate candidates and conflicting identities remain unlinked or ambiguous. Cross-source correlations never prove one traced request, causality or an E2E traffic total.
 
 ## AI analysis tips
 Using the detail panel's question chips or the **Ask AI** button opens the AI assistant pre-seeded with the selected resource's context. Example questions:

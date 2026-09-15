@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import E2eGraphCanvas from './E2eGraphCanvas';
+import { LanguageProvider } from '@/components/shell/LanguageProvider';
 import type { E2eGraph } from '@/lib/e2e-topology-types';
 
 class ResizeObserverStub { observe() {} unobserve() {} disconnect() {} }
@@ -31,6 +32,21 @@ const graph: E2eGraph = {
 };
 
 describe('E2eGraphCanvas', () => {
+  it('localizes generated endpoint labels while preserving resource names in search and details', async () => {
+    localStorage.setItem('awsops-lang', 'ja');
+    try {
+      render(<LanguageProvider><E2eGraphCanvas graph={{ ...graph, nodes: [
+        { ...graph.nodes[1], label: '로컬 엔드포인트', meta: { endpoint: {}, side: 'local' } },
+        { ...graph.nodes[0], label: '로컬 엔드포인트' },
+      ] }} /></LanguageProvider>);
+      const search = screen.getByRole('searchbox');
+      fireEvent.change(search, { target: { value: 'ローカルエンドポイント' } });
+      fireEvent.click(await screen.findByRole('button', { name: /ローカルエンドポイント/ }));
+      expect(screen.getByRole('heading', { name: 'ローカルエンドポイント' })).toBeTruthy();
+      fireEvent.change(search, { target: { value: '로컬 엔드포인트' } });
+      expect(screen.getByRole('button', { name: /로컬 엔드포인트/ })).toBeTruthy();
+    } finally { localStorage.clear(); }
+  });
   it('provides an honest empty state instead of a blank canvas', () => {
     render(<E2eGraphCanvas graph={{ ...graph, nodes: [], edges: [] }} />);
     expect(screen.getByText('표시할 관계 데이터가 없습니다.')).toBeTruthy();

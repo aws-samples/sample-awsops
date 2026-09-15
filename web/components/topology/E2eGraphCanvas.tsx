@@ -27,6 +27,11 @@ const METRIC_LABELS: Record<string, string> = {
   DATA_TRANSFERRED: '전송량', ROUND_TRIP_TIME: 'RTT', RETRANSMISSIONS: '재전송', TIMEOUTS: '타임아웃',
 };
 const SOURCE_LABELS = { configuration: '구성', service: '서비스', network: 'NFM' };
+const GENERATED_LABELS: Record<string, string> = {
+  'Cached configured endpoint record': '캐시된 구성 엔드포인트 기록',
+  'Configured endpoint record': '구성 엔드포인트 기록',
+  'Configured pod identity': '구성에서 확인된 Pod 식별자',
+};
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const display = (v: unknown): string => v == null || v === '' ? '—' : Array.isArray(v) ? v.join(', ') : String(v);
 function metricValue(value: number, unit: string): string {
@@ -43,9 +48,9 @@ function timeLabel(value: unknown): string {
   return typeof value === 'string' && Number.isFinite(Date.parse(value))
     ? new Date(value).toLocaleString() : '—';
 }
-function endpointLabel(endpoint: NfmEndpoint): string {
+function endpointLabel(endpoint: NfmEndpoint, missing: string): string {
   return endpoint.podName ? `${endpoint.podNamespace ?? '?'}/${endpoint.podName}`
-    : endpoint.instanceId || endpoint.ip || endpoint.serviceName || '식별 정보 없음';
+    : endpoint.instanceId || endpoint.ip || endpoint.serviceName || missing;
 }
 function flowOf(node: E2eNode): NfmFlowRow | null {
   const flow = node.meta.flow;
@@ -72,10 +77,18 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
     ...inputGraph,
     nodes: inputGraph.nodes.map((node) => {
       const flow = flowOf(node);
+      const endpoint = object(node.meta.endpoint) ? node.meta.endpoint : null;
+      if (node.layer === 'network' && node.kind === 'endpoint' && endpoint
+        && !endpoint.podName && !endpoint.instanceId && !endpoint.ip) {
+        return { ...node, label: tt(node.meta.side === 'local' ? '로컬 엔드포인트' : '원격 엔드포인트') };
+      }
       return flow && node.label === node.meta.metric
-        ? { ...node, label: `${endpointLabel(flow.local)} ↔ ${endpointLabel(flow.remote)}` } : node;
+        ? { ...node, label: `${endpointLabel(flow.local, tt('식별 정보 없음'))} ↔ ${endpointLabel(flow.remote, tt('식별 정보 없음'))}` } : node;
     }),
-  }), [inputGraph]);
+    edges: inputGraph.edges.map(edge => edge.label
+      && ['configured-endpoint-match', 'same-identity'].includes(edge.relation) && GENERATED_LABELS[edge.label]
+      ? { ...edge, label: tt(GENERATED_LABELS[edge.label]) } : edge),
+  }), [inputGraph, tt]);
   const dark = useTheme() === 'dark';
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -234,7 +247,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
               fitViewOptions={fitOptions} proOptions={{ hideAttribution: true }}
               onInit={(value) => { instance.current = value; }}
               onNodeClick={(_, node) => selectNode(node.id)} onPaneClick={() => setSelectedId(null)}>
-              <Background /><Controls /><MiniMap pannable zoomable />
+              <Background /><Controls /><MiniMap className="hidden md:block" pannable zoomable />
             </ReactFlow>
           )}
         </div>
@@ -254,7 +267,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                 </div>
                 <dl className="space-y-2">
                   {[
-                    ['로컬', endpointLabel(selectedFlow.local)], ['원격', endpointLabel(selectedFlow.remote)],
+                    ['로컬', endpointLabel(selectedFlow.local, tt('식별 정보 없음'))], ['원격', endpointLabel(selectedFlow.remote, tt('식별 정보 없음'))],
                     ['로컬 IP', selectedFlow.local.ip], ['원격 IP', selectedFlow.remote.ip],
                     ['포트', selectedFlow.targetPort], ['SNAT', selectedFlow.snatIp], ['DNAT', selectedFlow.dnatIp],
                     ['분류', selected.meta.category], ['모니터', selected.meta.monitor],

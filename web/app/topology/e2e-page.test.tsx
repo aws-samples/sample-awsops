@@ -37,7 +37,7 @@ function serve(fail = false) {
           captured_at: '2026-09-15T00:00:00Z', data: {},
         }] : [],
         consistency: 'statement-snapshot',
-        run: { status: 'succeeded', last_success_at: '2026-09-15T00:00:00Z' },
+        run: { status: 'succeeded', last_success_at: '2026-09-15T00:00:00Z', finished_at: '2026-09-15T00:00:00Z', row_count: 1 },
       });
     }
     throw new Error(`Unexpected request: ${url}`);

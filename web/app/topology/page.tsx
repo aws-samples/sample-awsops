@@ -298,7 +298,7 @@ function TopologyScope() {
 
 function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
   const { tt, lang } = useI18n();
-  const params = useSearchParams();
+  const params = useSearchParams() ?? new URLSearchParams();
   const e2e = params.get('view') === 'e2e';
   const copy = EVIDENCE_COPY[lang];
   const [data, setData] = useState<FlowInput | null>(null);
@@ -690,6 +690,9 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
       ? { ...node, meta: { ...node.meta, e2e_correlation_blocked: true } } : node),
   } : scopedGraph, [scopedGraph, identityBlocked]);
   const inventoryEvidencePanel = <>
+        {e2e && (entryId || clusterFilter) && <p className="text-[12px] text-ink-600">
+          {tt('필터')}: {[full.nodes.find(node => node.id === entryId)?.label, clusterFilter].filter(Boolean).join(' · ')}
+        </p>}
         {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
         {full.nodes.some(n => n.meta?.ambiguity === 'eks_not_enumerated') && <div role="status" className="text-[13px] text-warning">
           {tt('EKS 조회 범위 밖의 대상은 소유권 미확인입니다. 조회 리전:')} {eksResolution?.coveredRegions.join(', ')}

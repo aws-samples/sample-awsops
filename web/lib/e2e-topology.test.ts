@@ -88,7 +88,7 @@ describe('buildE2eGraph — evidence and provenance', () => {
         target_health_descriptions: [{ Target: { Id: '10.0.1.10', Port: 443 } }],
       }],
       ipResolved: {
-        '10.0.1.10': { label: 'shop/web', resolved: 'eks', meta: { cluster: 'app', pod: 'web-2', namespace: 'shop' } },
+        '10.0.1.10': { label: 'shop/web', resolved: 'eks', meta: { cluster: 'app', pod: 'web-2', namespace: 'shop', region: REGION, vpcId: VPC } },
       },
     });
     const trace = services();
