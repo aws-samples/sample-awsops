@@ -1,7 +1,7 @@
 import tempoContracts from '../../agent/fixtures/tempo-topology-contract.json';
 import { TempoTraceSource } from './trace-source';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Pool } from 'pg';
+import { Client, Pool } from 'pg';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -225,15 +225,55 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     '%s member first publication includes aggregate %s with no member rows/history for that type', async (cls, status) => {
       await seed(cls, recent, '111122223333');
       await pool.query("UPDATE inventory_sync_runs SET status=$1 WHERE resource_type='lambda'", [status]);
-      await build(cls);
+      expect(await build(cls)).toMatchObject({ retained: 0 });
       const result = await state(cls, '111122223333');
-      expect(result).toMatchObject({ stale: true, retainedPrevious: true, captured_at: null });
+      expect(result).toMatchObject({ stale: true, retainedPrevious: false, captured_at: null });
       expect(result.sources).toContainEqual(expect.objectContaining({
         sourceId: 'inventory:lambda', scope: 'aggregate', producerStatus: status, itemCount: 0,
         status: status === 'failed' ? 'error' : 'unavailable',
       }));
       expect((await pool.query("SELECT * FROM topology_nodes WHERE account_id='111122223333'")).rowCount).toBe(0);
     });
+  it.each(['flow', 'infra', 'trace'])('%s first failed collection does not invent a retained graph', async cls => {
+    await pool.query("UPDATE inventory_sync_runs SET status='failed'");
+    expect(await (cls === 'trace' ? trace([], 'error') : build(cls)))
+      .toMatchObject({ published: 0, retained: 0, skipped: 1 });
+    expect(await state(cls)).toMatchObject({ retainedPrevious: false, captured_at: null, status: 'error' });
+  });
+  it('reconciles fleet counts once for multiple accounts in one class pass', async () => {
+    await seed('infra'); await seed('infra', recent, '111122223333');
+    await pool.query("UPDATE inventory_sync_runs SET row_count=2 WHERE resource_type='vpc'");
+    const query = Client.prototype.query;
+    let scans = 0;
+    vi.spyOn(Client.prototype, 'query').mockImplementation(function (sql, ...args) {
+      if (String(sql).includes('count(*)::int AS count')) scans++;
+      return Reflect.apply(query, this, [sql, ...args]);
+    });
+    expect(await build('infra')).toMatchObject({ published: 2 });
+    expect(scans).toBe(1);
+  });
+  it('does not reuse count proof after the producer ledger version changes', async () => {
+    await seed('infra'); await build('infra');
+    const previous = await state('infra');
+    await pool.query("DELETE FROM inventory_resources; UPDATE inventory_sync_runs SET row_count=0");
+    const query = Client.prototype.query;
+    let changed = false;
+    vi.spyOn(Client.prototype, 'query').mockImplementation(function (sql, ...args) {
+      const result = Reflect.apply(query, this, [sql, ...args]);
+      if (!changed && String(sql).includes('count(*)::int AS count')) {
+        changed = true;
+        return result.then(async rows => {
+          await pool.query("UPDATE inventory_sync_runs SET run_token='next-run' WHERE resource_type='vpc'");
+          return rows;
+        });
+      }
+      return result;
+    });
+    expect(await build('infra')).toMatchObject({ published: 0, retained: 1 });
+    expect(await state('infra')).toMatchObject({ captured_at: previous.captured_at, retainedPrevious: true });
+    expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
+    expect(await build('infra')).toMatchObject({ published: 1, retained: 0 });
+  });
   it('skips a contended publication without holding a pool connection in a lock wait', async () => {
     await seed('infra');
     const holder = await pool.connect();
@@ -263,7 +303,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       return { on: client.on.bind(client), removeListener: client.removeListener.bind(client),
         release: client.release.bind(client), query: async (sql: string, args?: unknown[]) => {
         const result = await query(sql, args);
-        if (sql.includes('FROM inventory_sync_runs') && !sql.includes('UNION') && !changed) {
+        if (sql.includes('FROM inventory_sync_runs') && sql.includes('unknown_attribute_count') && !changed) {
           changed = true;
           const freeLock = await pool.query('SELECT pg_try_advisory_xact_lock($1) AS acquired', [0x696e6672]);
           expect(freeLock.rows[0].acquired).toBe(true);
@@ -450,12 +490,12 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await build('infra')).toMatchObject({ retained: 1, reasons: ['snapshot_limit'] });
     expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
   });
-  it('continues a small account after retaining an oversized account', async () => {
+  it('continues a small account after skipping an oversized first collection', async () => {
     await pool.query(`INSERT INTO inventory_resources(resource_type,account_id,resource_id,data,captured_at)
       SELECT 'vpc','self','vpc-'||n,'{}',$1 FROM generate_series(1,2001) n`, [recent]);
     await seed('infra', recent, '111122223333');
     await pool.query("UPDATE inventory_sync_runs SET row_count=2002 WHERE resource_type='vpc'");
-    expect(await build('infra')).toMatchObject({ published: 1, retained: 1, reasons: ['snapshot_limit'] });
+    expect(await build('infra')).toMatchObject({ published: 1, retained: 0, skipped: 1, reasons: ['snapshot_limit'] });
     expect(await state('infra', '111122223333')).toMatchObject({ retainedPrevious: false, status: 'ok' });
   });
   it('projects skip/count reasons without widening reader metadata', async () => {
@@ -779,7 +819,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect((await state('infra')).sources).toContainEqual(expect.objectContaining({
       sourceId: 'inventory:neptune_cluster', status: 'unavailable', reasons: expect.arrayContaining(['missing_ledger']),
     }));
-    expect(await state('infra')).toMatchObject({ retainedPrevious: true });
+    expect(await state('infra')).toMatchObject({ retainedPrevious: false, captured_at: null });
   });
   it('does not infer member successful absence from the host aggregate ledger', async () => {
     await seed('infra', recent, '111122223333');
