@@ -261,7 +261,7 @@ Positive `nodeDrops/edgeDrops/orphanSpans/invalidSpans/unresolvedMessaging` and
 `infraUnavailable` remain visible for older persisted envelopes as well as newer producer flags.
 Only node/edge drops or explicit truncation flags imply a processing limit; malformed spans
 and unresolved parent/link/messaging evidence are distinct partial-result causes. Losses alone do not prove retention:
-`retainedPrevious` is required for that claim. Source-detail totals and status counts describe the displayed rows: identical latest/saved details appear once, while differing or saved-only details retain their saved provenance.
+`retainedPrevious` is required for that claim. Source-detail totals count displayed current/saved rows; status counts summarize latest-attempt sources. Identical current/saved lists are displayed once with saved provenance.
 Missing collection metadata stays unknown rather than implying collector failure.
 
 
@@ -292,7 +292,7 @@ runtime payloads for compatibility with older or malformed responses.
 The UI supports the existing trace envelope and optional inventory/saved-source
 fields emitted by the bounded publication implementation in `web/lib/graph-store.ts`.
 Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded; their count
-includes distinct displayed saved-source entries. Identical latest/saved details are shown once, with the saved-source heading and a localized “Same displayed source evidence as above.” note; differing and saved-only evidence remains visible. Runtime, Lambda and migration rollout remain separate
+includes distinct displayed saved-source entries. Identical current/saved lists are shown once with the saved-source heading and a localized “Same displayed source evidence as above.” note. Differing and saved-only evidence remains visible. Runtime, Lambda and migration rollout remain separate
 from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
 
 
