@@ -17,7 +17,7 @@ function run(outcome = 'published', failed = '', traceOutcome = 'published', tim
     import fs from 'node:fs';
     import * as url from 'node:url';
     const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-    const result = { code: null, logs: [], errors: [], opened: 0, closed: 0, scheduled: [] };
+    const result = { code: null, logs: [], errors: [], opened: 0, closed: 0, recorded: 0, scheduled: [] };
     const ticks = [];
     const schedule = kind => (callback, delay) => { ticks.push(callback); result.scheduled.push({ kind, delay }); };
     const processSink = { argv: ['node', input.file], env: input.env, exit: code => { result.code = code; } };
@@ -35,9 +35,13 @@ function run(outcome = 'published', failed = '', traceOutcome = 'published', tim
     const load = async specifier => {
       const exports = specifier === 'node:url' ? url
         : specifier.includes('/db') ? { getPool: () => { result.opened++; return { end: async () => { result.closed++; } }; } }
-        : specifier.includes('graph-sources') ? { loadGraphSources: async () => ({ sources: [], metricsSources: [] }) }
+        : specifier.includes('graph-sources') ? { loadGraphSources: async () => {
+            if (input.failed === 'trace_sources') throw Object.assign(new Error('credential=secret'), { code: input.code });
+            return { sources: [], metricsSources: [] };
+          } }
         : { rebuildGraph: rebuild('flow', input.outcome), rebuildInfraGraph: rebuild('infra', input.outcome),
-            rebuildTraceGraph: rebuild('trace', input.traceOutcome) };
+            rebuildTraceGraph: rebuild('trace', input.traceOutcome),
+            recordTraceSourceFailure: async () => { result.recorded++; return { retained: 1, reasons: [] }; } };
       const loaded = specifier.includes('graph-state') ? new vm.SourceTextModule(input.state, { context })
         : new vm.SyntheticModule(Object.keys(exports), function() {
         for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
@@ -67,6 +71,13 @@ function run(outcome = 'published', failed = '', traceOutcome = 'published', tim
 }
 
 describe('graph rebuild runner outcomes', () => {
+  it.each([false, true])('records registry failure before finishing the pass (timer=%s)', timer => {
+    const result = run('published', 'trace_sources', 'published', timer);
+    expect(result.recorded).toBe(timer ? 2 : 1);
+    expect(result.code).toBe(timer ? null : 1);
+    expect(result.errors.join('\n')).toContain('"stage":"trace_sources"');
+    expect(result.errors.join('\n')).not.toContain('credential');
+  });
   it('reports a confirmed empty publication as success and closes its pool', () => {
     const result = run();
     expect(result.code).toBe(0);

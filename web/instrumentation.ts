@@ -19,7 +19,7 @@ export async function register() {
     if (!Number.isFinite(mins) || mins <= 0) return;
 
     const { getPool } = await import('./lib/db');
-    const { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } = await import('./lib/graph-store');
+    const { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph, recordTraceSourceFailure } = await import('./lib/graph-store');
     const { loadGraphSources } = await import('./lib/graph-sources');
     const { graphDiagnostic } = await import('./lib/graph-state');
     const pool = getPool();
@@ -52,6 +52,7 @@ export async function register() {
           const { sources, metricsSources } = await loadGraphSources(pool);
           await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
         } catch (error) {
+          await execute('trace', () => recordTraceSourceFailure(pool));
           console.error(`[graph-rebuild] failed ${graphDiagnostic('trace_sources', error)}`);
         }
       } finally {

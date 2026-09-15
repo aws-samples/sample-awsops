@@ -97,6 +97,15 @@ async function writeGraph(pool: Pool, cls: GraphClass, lockKey: number, accountI
   }
 }
 
+/** Registry failure is attempt evidence, never permission to replace a trace generation. */
+export function recordTraceSourceFailure(pool: Pool) {
+  return writeGraph(pool, 'trace', TRACE_LOCK, 'self', [], [], randomUUID(), {
+    status: 'error', attemptedAt: new Date(Date.now()).toISOString(), publish: false,
+    details: { failureReason: 'source_read_failed',
+      sources: [{ sourceId: 'trace:registry', status: 'error', reasons: ['registry_read_failed'] }] },
+  });
+}
+
 // Duplicate calls for the same class skip; distinct class locks may progress independently.
 const inventoryBusy = new WeakMap<Pool, Set<GraphClass>>();
 
@@ -170,8 +179,6 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
           attempt.publish = false; attempt.status = 'partial';
           attempt.details = { ...attempt.details, retainedPrevious: true, graphTruncated: true };
           reason('graph_limit');
-        } else if (attempt.publish && attempt.status !== 'partial') {
-          attempt.status = graph.nodes.length ? 'ok' : 'empty';
         }
         publishing = true;
         const outcome = await writeGraph(pool, cls, lock, account, graph.nodes, graph.edges, runId, attempt);
@@ -289,7 +296,10 @@ export async function rebuildTraceGraph(
     const result = await graphTransaction(pool, true, client => client.query(
       `SELECT id, kind, meta FROM topology_nodes WHERE account_id = 'self' AND class = 'infra'`));
     infraNodes = result.rows as InfraNodeLike[];
-  } catch { infraUnavailable = true; }
+  } catch (error) {
+    if (error instanceof GraphReadBusy) return { ...emptyResult(), skipped: 1, reasons: ['rebuild_busy'] };
+    infraUnavailable = true;
+  }
   const graph = buildTraceGraph(spans, calls, infraNodes, currentAccountId());
   // Preserve structurally important DB/queue/workload nodes before ranking service volume.
   const rank = (kind: string) => kind === 'service' ? 0 : 1;
