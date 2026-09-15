@@ -304,7 +304,7 @@ Graph adapters honor typed collection status and withhold empty publication when
 
 The PostgreSQL read-contract suite also exercises real graph publication against the shared producer fixture and a legacy unmarked-empty response. Producer/source integration does not deploy Lambda code; rollout remains separately controlled.
 
-The shared `agent/fixtures/tempo-topology-contract.json` fixture binds actual producer bodies to adapter and PostgreSQL publication regressions; the source-only producer check ships with the prerequisite and Runtime receipt-wire tests follow the Runtime core. Account discovery includes scan-scope registry entries and inventory snapshots, including first-collection zeros. Discovery alone never grants participation or empty proof; current-account/snapshot/count checks remain mandatory. Zero-row inventory with unknown attribute completeness retains last-good data.
+The shared `agent/fixtures/tempo-topology-contract.json` fixture binds actual producer bodies to adapter and PostgreSQL publication regressions; the source-only producer check ships with the prerequisite and Runtime receipt-wire tests follow the Runtime core. Account discovery uses scan-scope registry entries plus current inventory and saved graph/state keys. Per-account inventory snapshots are queried only after selection to prove participation, including first-collection zeros. Discovery alone never grants participation or empty proof; current-account/snapshot/count checks remain mandatory. Zero-row inventory with unknown attribute completeness retains last-good data.
 
 #### Producer completion and rollout
 

@@ -92,6 +92,9 @@ export async function inventoryCounts(pool: Pool, types: string[]) {
 export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: string, types: string[],
   proof?: Awaited<ReturnType<typeof inventoryCounts>>) {
   const counts = proof ?? await inventoryCounts(pool, types);
+  // Route53 is record-granular. A nominal 1KiB row allowance permits dense flow
+  // input while the existing projected-payload and graph byte budgets still apply.
+  const rowCap = cls === 'flow' ? SNAPSHOT_BYTES / 1024 : ROW_CAP;
   return graphTransaction(pool, true, async client => {
     const runs = await client.query(`SELECT account_id, resource_type, status, started_at,
       finished_at, last_success_at, row_count, unknown_attribute_count, xmin::text AS version
@@ -123,7 +126,7 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
       CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN data ELSE NULL END AS data,
       bytes > $5 OR total_bytes > $6 AS oversized
       FROM budgeted ORDER BY resource_type, region, resource_id`,
-    [account, types, cls === 'infra' ? INFRA_FIELDS : FLOW_FIELDS, ROW_CAP + 1, ROW_BYTES, SNAPSHOT_BYTES]);
+    [account, types, cls === 'infra' ? INFRA_FIELDS : FLOW_FIELDS, rowCap + 1, ROW_BYTES, SNAPSHOT_BYTES]);
     const rows = result.rows as InventoryRow[];
     // sync_lambda marks the ledger running before changing rows, then finalizes it.
     // Only the identical ledger version can reuse this pass's reconciled count.
@@ -135,7 +138,7 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
         aggregateCounts.set(run.resource_type, count.count);
     }
     return { rows, runs: runs.rows as Run[],
-      aggregateCounts, participation: participation.rows as Run[], truncated: rows.length > ROW_CAP || rows.some(row => row.oversized) };
+      aggregateCounts, participation: participation.rows as Run[], truncated: rows.length > rowCap || rows.some(row => row.oversized) };
   });
 }
 
@@ -170,6 +173,7 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
       && (account === 'self' || (participated && point!.resource_count === items.length));
     const confirmedEmpty = !unknownScope && countConfirmed;
     const unknownAttributes = !Number.isSafeInteger(run?.unknown_attribute_count) || run!.unknown_attribute_count !== 0;
+    // Unknown attributes permit nonempty partial evidence, never affirmative empty proof.
     const blockers = !run ? ['missing_ledger'] : producerStatus === 'failed' ? ['source_failed']
       : unknownScope ? ['unknown_account_coverage'] : producerStatus !== 'succeeded' ? ['incomplete_collection']
       : items.length > 0 && !countConfirmed ? ['count_not_confirmed']
