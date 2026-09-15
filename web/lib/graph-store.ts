@@ -217,6 +217,8 @@ export async function rebuildTraceGraph(
     clientIdentity: { ...call.clientIdentity, sourceId: call.clientIdentity?.sourceId ?? read.sourceId },
     serverIdentity: { ...call.serverIdentity, sourceId: call.serverIdentity?.sourceId ?? read.sourceId },
   })));
+  // Unproven empty/lost-data reads retain the prior generation. Valid nonempty
+  // bounded reads continue through the existing atomic partial-snapshot publisher.
   if (!reads.length || hasFailure || cannotSweep || (partial && !spans.length && !calls.length)) {
     const status = reads.some((read) => read.status === 'error') ? 'error'
       : partial ? 'partial' : 'unavailable';

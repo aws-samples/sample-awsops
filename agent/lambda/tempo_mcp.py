@@ -74,14 +74,14 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params=None, *, timeout=None):
+def _get(creds, path, params=None, *, timeout=None, with_status=False):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
     request_options = {"timeout": timeout} if timeout is not None else {}
     status, data = http_json("GET", url, headers=_headers(creds), **request_options)
     if status >= 400:  # Tempo has no envelope status → HTTP 2xx is success
         detail = (data.get("raw") or data.get("error") or data) if isinstance(data, dict) else data
         raise _ApiError(f"Tempo HTTP {status}: {str(detail)[:300]}", status)
-    return data
+    return (data, status) if with_status else data
 
 
 def _byte_bound(obj):
@@ -98,26 +98,34 @@ def tempo_search(args):
     if not query:
         return err("query (TraceQL) required")
     params = {"q": query, "start": _parse_time_s(args.get("start"), 3600), "end": _parse_time_s(args.get("end"))}
-    # Pin the request default so collection evidence does not guess the server's configuration.
     params["limit"] = str(args.get("limit") or DEFAULT_SEARCH_LIMIT)
     try:
         requested = int(params["limit"])
     except ValueError:
         requested = 0
-    data = _get(_ds(), "/api/search", params)
+    data, status = _get(_ds(), "/api/search", params, with_status=True)
+    if isinstance(data, dict) and (data.get("status") == "error"
+            or any(data.get(key) not in (None, "") for key in ("error", "errorType", "exception"))):
+        return err("Tempo search returned an error")
     raw = data.get("traces") if isinstance(data, dict) else None
     traces = raw[:MAX_TRACES] if isinstance(raw, list) else []
     truncated = isinstance(raw, list) and len(raw) > MAX_TRACES
-    state = ("unknown" if not isinstance(raw, list) else
-             "partial" if truncated or not all(isinstance(t, dict) and isinstance(t.get("traceID"), str)
-                                                and _HEX.fullmatch(t["traceID"]) for t in traces) else
-             "ok" if traces else "empty")
-    if state in ("ok", "empty"):
-        if requested <= 0:
-            state = "unknown"
-        elif len(raw) >= requested:
-            state = "partial"  # Hitting the limit does not prove all matching traces were searched.
+    valid = (status in (200, 206) and requested > 0 and isinstance(raw, list)
+             and all(isinstance(t, dict) and isinstance(t.get("traceID"), str)
+                     and _HEX.fullmatch(t["traceID"]) for t in traces))
+    state = "unknown" if not valid else "partial" if status == 206 or truncated or len(raw) >= requested else "ok" if traces else "empty"
     metrics = data.get("metrics") if isinstance(data, dict) else None
+    if isinstance(data, dict):
+        for key in ("warnings", "partial", "truncated"):
+            if key in data:
+                value = data[key]
+                if not (isinstance(value, list) and all(isinstance(item, str) for item in value)
+                        if key == "warnings" else type(value) is bool):
+                    state = "unknown"
+                elif value and state != "unknown":
+                    state = "partial"
+        if "metrics" in data and not isinstance(metrics, dict):
+            state = "unknown"
     if state in ("ok", "empty"):
         completed = metrics.get("completedJobs") if isinstance(metrics, dict) else None
         total = metrics.get("totalJobs") if isinstance(metrics, dict) else None
@@ -126,7 +134,7 @@ def tempo_search(args):
             state = "unknown"  # Missing counters or zero jobs are not affirmative completion.
         elif completed < total:
             state = "partial"
-    payload, btr = _byte_bound({"traces": traces, "metrics": data.get("metrics") if isinstance(data, dict) else None})
+    payload, btr = _byte_bound({"traces": traces, "metrics": metrics})
     if btr:
         return ok({**payload, "collectionStatus": "unknown" if state == "unknown" else "partial"})
     return ok({"truncated": truncated, **payload, "collectionStatus": state})
@@ -382,4 +390,4 @@ def ok(body):
 
 
 def err(msg):
-    return {"statusCode": 400, "body": json.dumps({"error": msg})}
+    return {"statusCode": 400, "body": json.dumps({"error": msg, "collectionStatus": "error"})}

@@ -277,10 +277,37 @@ The paired `prometheus_mcp`, `mimir_mcp`, `tempo_mcp` and `clickhouse_mcp` code 
 
 An observed zero sample remains a zero sample. It does not prove the entire query was complete when an old wrapper discarded upstream warnings or accepted missing success status. Paired metric producers preserve those conditions; complete zero-only responses remain `ok`, while incomplete responses preserve the zero data with a partial marker. Tempo search IDs followed by no fetched spans are incomplete regardless of the parent search marker. The source-only producer contract test exercises the shared fixture's upstream-to-body mapping; Runtime receipt-wire tests remain with the later Runtime/producer stages.
 
-Incomplete source evidence carries `SourceRead.canSweep: false`, including unconfirmed empties, failed/malformed child fetches, and source caps/truncation. A useful sibling does not authorize a destructive account/class sweep. The publisher retains the whole saved graph and its capture clock; newly fetched items remain available in the adapter result, while only bounded counts/reasons are recorded in graph attempt details. It does not upsert a mixed generation or publish fetched items on this path. Repeated retention grants no sweep permission: recovery requires complete source evidence, for example after a source recovers or an existing query window is narrowed. Valid spans outside the requested window are not missing children. ClickHouse completion is computed from observed data and column metadata; exceptions and row limits cannot certify empty collection.
+Publication versus retention is defined in the
+[graph read contract](graph-read-contract.md#source-completeness-and-retained-publication).
+Missing-child/unconfirmed-empty/failed-source evidence retains the prior graph despite useful
+siblings; valid nonempty bounded reads publish partial snapshots. This is not accumulating
+old generations or upgrading warnings/unknown metadata to complete coverage.
+
+HTTP 206 and explicit upstream warnings/partial signals cannot establish complete empty
+collection. Error envelopes remain errors even when they also contain an empty array.
+Prometheus/Mimir retain outer success and warning/info evidence before unwrapping query
+results; malformed series/samples are unconfirmed, while usable rows remain available.
+Their label/series endpoints also propagate `error` and `unknown` without converting them
+to empty. Tempo treats malformed/null completion metrics as unknown and unfinished jobs
+as partial. This adds no completion claim to `tempo_get_trace`; the separate missing-child
+guard above remains required.
+
+ClickHouse's upstream JSON `rows` must be an integer equal to `data.length`, and `meta`
+must contain nonempty column names/types. A valid zero uses `rows: 0` and a real column
+schema; missing, contradictory or malformed counts/metadata cannot certify it. Preserve
+the connector's existing bounded rows and `truncated` field alongside `collectionStatus`.
+`agent/fixtures/query-topology-contract.json` and the existing Tempo fixture bind mocked
+HTTP payloads to actual producer bodies and TypeScript adapter outcomes. The producer
+regressions retain valid-zero, nonempty, warning/error, malformed-metadata and limit cases;
+the PostgreSQL regressions independently enforce missing-child retention.
 
 ### Diagnosis signal completeness
 
-The diagnosis worker preserves connector `collectionStatus` and truncation before preparing model evidence. Explicit `unknown`, `error`, or `partial` results carry a fixed error signal; only nonempty observed counts remain as `observedCount`, never a complete zero. Known `ok`/`empty` results retain their counts. Raw rows, trace payloads, sample values and upstream error text are not copied into these summaries. Deploy the worker source update with the connector producer changes. Verify offline with `PYTHONPATH=scripts/v2/workers python3 -m pytest scripts/v2/workers/diagnosis/test_datasources.py -q`.
+The diagnosis worker preserves connector `collectionStatus` and truncation before preparing model evidence. Partial/unknown results carry `incomplete: true`, not a query-error signal; nonempty observed records remain as `observedCount`, never a complete zero. `collectionStatus: error` keeps a fixed error signal. Known `ok`/`empty` results retain their counts. Raw rows, trace payloads, sample values and upstream error text are not copied into these summaries. Deploy the worker source update with the connector producer changes. Verify offline with `PYTHONPATH=scripts/v2/workers python3 -m pytest scripts/v2/workers/diagnosis/test_datasources.py -q`.
 
-Tempo search complete/empty proof requires an observed positive completed/total job pair. Absent, malformed or zero-job counters cannot certify empty; incomplete reads retain fetched data without authorizing a graph sweep. See [the canonical Tempo runbook](tempo-query-generation.md) for the pinned default of 20, limit/partial semantics, source-contract checks and the required Lambda deployment plus AgentCore description reconciliation.
+Tempo search complete/empty proof requires an observed positive completed/total job pair. Absent, malformed or zero-job counters cannot certify empty; valid fetched items remain available as partial evidence under the publication contract above. See [the canonical Tempo runbook](tempo-query-generation.md) for the pinned default of 20, limit/partial semantics, source-contract checks and the required Lambda deployment plus AgentCore description reconciliation.
+
+Legacy diagnosis responses without a completion marker, including current Loki responses,
+retain their preexisting count behavior; a zero there is not new proof of query completeness.
+This is separate from the graph adapter's stricter empty-publication rule. `observedCount`
+counts returned records, not automatically violations; interpret it with the query's scope.

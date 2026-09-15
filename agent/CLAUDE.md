@@ -48,6 +48,9 @@ re-introduce a hand-maintained table that goes stale again, read the actual sour
 
 ## Rules
 - Offline checks: `cd agent && python3 -m pytest test_agent.py test_readiness.py -q`.
+- `fixtures/*-topology-contract.json` is shared with `web/lib/trace-source.test.ts`.
+  Lambda completion tests bind mocked HTTP payloads to those exact producer bodies;
+  preserve unknown/partial evidence and distinguish it from actual query errors.
 - Workload inventory reads go through MCP tools. Readiness directly checks only execution
   identity and model permission; it sends no inventory data to the model.
 - Docker image must be arm64 (`docker buildx --platform linux/arm64`).
