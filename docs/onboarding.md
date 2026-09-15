@@ -35,12 +35,20 @@ npm run dev                    # next dev
 ```
 - 프로덕션 env는 ECS task definition이 주입 — `.env.example`은 로컬(`web/.env.local`) 참조용.
 - **루트 경로 서빙(basePath 없음)** — fetch는 `/api/*` (v1의 `/awsops/api/*` 규칙 미적용).
-- web은 thin-BFF: 무거운/장기 작업은 인라인 실행하지 말고 `POST /api/jobs`로 워커에 enqueue.
+- Keep the web layer thin. Heavy jobs use ownership-checked domain routes such as
+  `/api/diagnosis` and `/api/compliance/run`; generic `POST /api/jobs` accepts only allowlisted noop types.
 - Aurora 연결은 `AURORA_ENDPOINT` 미설정 시 `/api/db`가 503 — DB 없는 UI 작업은 그대로 가능.
 
+Full image checks require Docker and prepared `AWSOPS_REVIEW_CODEC_STATE`; follow [the sandbox setup](runbooks/review-codec-sandbox.md#verification).
+
 ## 테스트 / Tests
+
+Run these commands from the repository root, with Python 3.12 in an activated
+virtual environment. The shared structure runner requires the pinned image codec:
+
 ```bash
-cd web && npx vitest run       # 단위 테스트 (= npm test)
+python -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt
+(cd web && npx vitest run)     # 단위 테스트 (= npm test)
 bash tests/run-all.sh          # 저장소 루트 — TAP 구조/훅 테스트
 ```
 - 통합 테스트는 `scripts/v2/*.itest.mjs` (마이그레이션/백필 — DB 필요).

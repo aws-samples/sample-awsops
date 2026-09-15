@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import { Activity, Boxes, Globe, Loader2, Radar } from 'lucide-react';
+import Link from 'next/link';
 import PageHeader from '@/components/ui/PageHeader';
 import Card from '@/components/ui/Card';
 import StatTile from '@/components/ui/StatTile';
@@ -222,6 +223,10 @@ export default function NetworkFlowPage() {
   return (
     <>
       <PageHeader
+        right={<Link href={`/topology?${new URLSearchParams({ view: 'e2e', monitor, metric, category, range: String(range) })}`}
+          className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
+          {tt('서비스 + 네트워크 →')}
+        </Link>}
         title="Network Flow"
         subtitle="CloudWatch Network Flow Monitor(NFM) 기반 플로우 조회 — 모니터·메트릭·카테고리·기간별 top-contributors 탐색"
       />

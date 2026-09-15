@@ -9,6 +9,7 @@ import ScopeSelector from '@/components/shell/ScopeSelector';
 vi.mock('@/components/shell/LanguageProvider', () => ({
   useI18n: () => ({ lang: 'en', tt: (s: string) => s, t: (s: string) => s }),
 }));
+vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams(window.location.search) }));
 vi.mock('@/lib/use-theme', () => ({ useTheme: () => 'light' }));
 // Keep the page's real data fetching, flow builder and layout; inspect the graph handed to the canvas.
 vi.mock('next/dynamic', () => ({
