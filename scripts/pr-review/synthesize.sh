@@ -4,19 +4,18 @@ set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"; . "$DIR/lib.sh"
 DIFF="$1"; WORK="$2"; PR_NUMBER="$3"; PR_TITLE="$4"; OUT="$5"
 SLOT="$WORK/slot"
-HEAD_PNG_PROMPT="$(head_png_context)" || exit 1
+if [ -n "${HEAD_PNG_CONTEXT:-}" ]; then
+  refresh_panel_presence
+elif { [ -f "$WORK/image-coverage-failed.flag" ] || [ -f "$WORK/report-invalid.flag" ]; } &&
+     [ ! -s "$WORK/degraded-models.txt" ] && [ ! -s "$WORK/degraded-lenses.txt" ]; then
+  rm -f "$WORK/coverage-severe.flag"
+fi
+rm -f "$WORK/image-coverage-failed.flag" "$WORK/report-invalid.flag"
+HEAD_PNG_PROMPT="$(head_png_context)" || { mark_image_coverage_failure "context"; exit 1; }
 HEAD_PNG_REQUIRED="$(head_png_required)" || { mark_image_coverage_failure "manifest"; exit 1; }
 HEAD_PNG_UNAVAILABLE="$(head_png_unavailable)" || { mark_image_coverage_failure "manifest"; exit 1; }
 [ "$HEAD_PNG_UNAVAILABLE" = "0" ] || mark_image_coverage_failure "unavailable evidence"
 head_png_attachments > /dev/null || { mark_image_coverage_failure "attachments"; exit 1; }
-# Required image reviews need all eight files, independently of the responded list.
-if [ "$HEAD_PNG_REQUIRED" = "1" ]; then
-  for vendor in codex claude; do
-    for lens in L2 L3 L4 L5; do
-      [ -f "$SLOT/$vendor-$lens.md" ] || mark_image_coverage_failure "$vendor/$lens"
-    done
-  done
-fi
 rm -f "$WORK/chair-failed.flag" "$WORK/chair-primary.err" "$WORK/chair-fallback.err" \
       "$WORK/chair-primary.err.scrubbed" "$WORK/chair-fallback.err.scrubbed"
 # chair-raw.txt is never written any more (run_chair pipes instead of staging the pre-scrub output
@@ -66,10 +65,7 @@ SCRUB_TMP="$WORK/scrub-cell.tmp"
 # UTF-8 caveat: stripping C1 (\x80-\x9F) as raw bytes would corrupt multibyte characters (this
 # log is mostly non-ASCII text), so only the UTF-8-encoded form `\xC2[\x80-\x9F]` is removed.
 # \x09 (TAB) / \x0A (LF) are preserved.
-strip_controls() {
-  sed -E -e 's#(\x1B\][^\x07\x1B]*(\x07|\x1B\\)|\x1B\[[0-?]*[ -/]*[@-~]|\x1B[()][0-9A-Z])##g' \
-         -e 's#(\xC2[\x80-\x9F]|[\x00-\x08\x0B-\x1F\x7F])##g'
-}
+# strip_controls is shared with panel validation/preview in lib.sh.
 
 # run_chair scrubs its stderr file in place once the call returns — but that call is the chair
 # model, bounded at CHAIR_TIMEOUT, which makes it by far the likeliest moment for the job to
@@ -109,9 +105,12 @@ trap 'on_chair_signal 2' INT
 trap 'on_chair_signal 15' TERM
 
 while IFS= read -r f; do
-  # Validate the bounded full report before truncation, including code-only failure signals.
-  image_coverage_valid "$f" || mark_image_coverage_failure "$(basename "$f")"
   [ -s "$f" ] || continue
+  # Presence is already counted. Unusable bytes are a report failure, not image failure.
+  if ! check_review_report "$f"; then
+    PANEL+=$'\n\n=== PANEL: '"$(basename "$f" .md)"$' ===\nReview output unavailable (encoding/read/size).'
+    continue
+  fi
   # Credential scrub (last line of defense) — Kiro can read/grep the entire base checkout in
   # this repo (BASE CONTEXT verification is an intended feature), so a diff injection that
   # steers it into reading an absolute path/out-of-repo credential leaves a residual risk of it
@@ -326,8 +325,8 @@ run_chair() {  # $1=model $2=err-file -> writes "$OUT". Continues via `|| true` 
   rm -f "$outfifo" "$errfifo"
   # A failed or timed-out CLI can leave complete-looking text. It is not a completed review.
   [ "$chair_rc" -eq 0 ] || : > "$OUT"
-  if [ "$chair_rc" -eq 0 ] && ! image_coverage_valid "$OUT"; then
-    mark_image_coverage_failure "chair"
+  if [ "$chair_rc" -eq 0 ] && [ -s "$OUT" ] && ! check_review_report "$OUT"; then
+    printf '%s\n' 'Review output unavailable (encoding/read/size).' 'VERDICT: FAIL' > "$OUT"
   fi
 }
 
@@ -460,7 +459,9 @@ if [ -f "$WORK/coverage-severe.flag" ]; then
   fi
   # Distinguish image evidence, missing lens responses and vendor collapse so the
   # diagnostic describes the actual coverage failure without inventing a code finding.
-  if [ -f "$WORK/image-coverage-failed.flag" ]; then
+  if [ -f "$WORK/report-invalid.flag" ]; then
+    SEVERE_REASON="review output is unreadable or exceeds the input bound; this is not an application or image finding"
+  elif [ -f "$WORK/image-coverage-failed.flag" ]; then
     SEVERE_REASON="image coverage is unavailable or not explicitly complete in every required report; this is an incomplete review, not an application code finding"
   elif [ -s "$WORK/degraded-lenses.txt" ]; then
     SEVERE_REASON="lens(es) [$(tr '\n' ',' < "$WORK/degraded-lenses.txt" | sed 's/,$//; s/,/, /g')] has incomplete required model responses, so cross-verification is incomplete"
@@ -482,6 +483,11 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     echo "image_coverage_failed=1" >> "$GITHUB_ENV"
   else
     echo "image_coverage_failed=0" >> "$GITHUB_ENV"
+  fi
+  if [ -f "$WORK/report-invalid.flag" ]; then
+    echo "report_invalid=1" >> "$GITHUB_ENV"
+  else
+    echo "report_invalid=0" >> "$GITHUB_ENV"
   fi
   # chair-failed.flag (above) — signals the workflow so it can distinguish, in the PR comment
   # badge text (separately from the gate verdict), a FAIL caused by an actual code finding from

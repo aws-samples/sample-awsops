@@ -7,7 +7,7 @@ DIFF="$1"; LENSES_DIR="$2"; WORK="$3"
 DIR="$(cd "$(dirname "$0")" && pwd)"; . "$DIR/lib.sh"
 ensure_slots "$WORK"
 SLOT="$WORK/slot"; RESP="$WORK/responded.txt"; : > "$RESP"
-rm -f "$WORK/coverage-severe.flag" "$WORK/image-coverage-failed.flag"
+rm -f "$WORK/coverage-severe.flag" "$WORK/image-coverage-failed.flag" "$WORK/report-invalid.flag"
 HEAD_PNG_PROMPT="$(head_png_context)" || { : > "$WORK/coverage-severe.flag"; exit 1; }
 HEAD_PNG_REQUIRED="$(head_png_required)" || { mark_image_coverage_failure "manifest"; exit 1; }
 HEAD_PNG_UNAVAILABLE="$(head_png_unavailable)" || { mark_image_coverage_failure "manifest"; exit 1; }

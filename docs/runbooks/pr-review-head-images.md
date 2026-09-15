@@ -19,8 +19,12 @@ target BASE worktree for source context. Before obtaining review credentials,
 checks out HEAD or executes its scripts, filters, hooks, or image metadata.
 
 The current-run manifest records HEAD, merge-base, original and renamed paths, Git
-blob IDs, SHA256 hashes, sizes and dimensions. Each PNG is stored unchanged under an
-opaque generated filename outside the checkout. Prompts contain a shared safe summary:
+blob IDs, original `source_sha256`/size/geometry, rendered `sha256`/size/geometry,
+frame count and pinned decoder version. PNG bytes are retained after bounded decoding;
+static WebP and single-rendition ICO become lossless RGBA PNGs under opaque generated
+filenames. Conversion applies EXIF orientation and retains ICC color profiles; original
+blob/hash lineage remains authoritative even when rendered bytes differ.
+Prompts contain a shared safe summary:
 path labels use the existing `[A-Za-z0-9._/-]` alphabet with other characters replaced
 by `?`, capped at 200 characters. Exact names remain only in the JSON data artifact.
 Codex receives the hash-checked PNGs as initial `--image` attachments; Claude cells and
@@ -40,7 +44,7 @@ sanitization cannot sanitize pixels, and output scrubbing cannot recognize every
 When the manifest contains HEAD images, all eight panel cells and the chair must
 each emit exactly one plain, unquoted line at column zero:
 `IMAGE_COVERAGE: COMPLETE`. Use `IMAGE_COVERAGE: FAILED` when inspection is unavailable.
-Only a manifest without images, unavailable entries or omitted metadata permits
+Only a manifest without images, unavailable entries or `omitted_entries` permits
 `IMAGE_COVERAGE: NOT_REQUIRED` or no marker. Any unavailable/omitted entry forces FAIL
 even if models incorrectly declare COMPLETE; successfully staged files are retained.
 The validator reads each full report before chair-input truncation; missing required,
@@ -48,16 +52,25 @@ duplicate, conflicting or FAILED declarations block a later `VERDICT: PASS`.
 The chair rechecks all eight reports independently of the responded-cell list.
 This is a declared review outcome, not automated proof of the model's visual perception.
 
-Fenced code, blockquotes, inline quotations, indented examples and prose mentions are
-not declarations. A standalone legacy `IMAGE COVERAGE FAILURE` line, optionally
-followed by a colon and explanation, also blocks. Even a code-only review must fail
-on an explicit failure. Read/size/encoding errors make coverage unavailable; the
-public status distinguishes an incomplete image review from an application finding.
+Fenced code, blockquotes, inline quotations, indented examples and prose containing
+markers are not declarations. An unquoted line starting with `IMAGE_COVERAGE:` is
+reserved: malformed/decorated declarations fail closed, including FAILED followed by
+an em dash or explanation. Legacy `IMAGE COVERAGE FAILURE` prefixes also block.
+Terminal controls are stripped before validation, and only LF separates protocol lines.
 
-Offline verification from the repository root:
+Response presence is separate from coverage. A nonempty successful CLI response remains
+counted even when its image declaration fails. Empty/failed CLI results retain the
+vendor/lens failure diagnosis. Unreadable, invalid-UTF-8 or oversized reports fail as
+unusable review output, not as absent responses or image findings. Current reports and
+manifest are rechecked for each synthesis; stale image flags do not poison a new run.
+Neither a later PASS nor a retry can erase a failure declared in that synthesis.
+
+Use Python 3.12 on Linux in a virtual environment. Install the pinned binary codec,
+then run offline verification from the repository root:
 
 ```bash
-python3 -m unittest scripts.v2.test_pr_review_head_images scripts.v2.test_pr_review_pipeline
+python -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt
+python -m unittest scripts.v2.test_pr_review_head_images scripts.v2.test_pr_review_pipeline
 ```
 
 The existing `test-pr-review-panel-prompt.sh` structure check runs both suites in CI.
@@ -72,20 +85,30 @@ limits, prompt propagation and missing-evidence failures.
 
 | Bound | Enforced value |
 | --- | --- |
-| Successfully staged PNGs | 8; deletions do not consume attachment slots |
-| One PNG / all staged PNG bytes | 8 MiB / 32 MiB |
+| Decode attempts / staged files | 32; deletions do not consume slots |
+| One source or rendered file | 8 MiB |
+| All source bytes / rendered bytes | 32 MiB each |
 | Width or height / pixel count | 8,192 / 16,777,216 |
 | Git change listing | 5,000 entries and 2 MiB |
 | One Git subprocess / prompt context | 30 seconds / 32 KiB |
+| One decoder | 20 CPU seconds, 25 wall seconds, 512 MiB address space, 32 file descriptors |
 | Exact manifest data | 64 records and 24 KiB record budget; excess deletion names counted separately |
 | One report checked for image coverage | 1 MiB; larger reports fail coverage |
 | Repository path | 512 UTF-8 bytes; no traversal or control characters |
 
-Only regular static PNG blobs are staged; executable Git file mode is removed from
-the output. Symlinks, gitlinks, invalid signatures/chunks/CRCs, animation and exceeded
-bounds become per-entry unavailable evidence. Validation checks PNG structure, not full
-pixel decompression. Non-deleted JPEG, GIF, WebP, AVIF, BMP, ICO and TIFF changes and
-renames away from PNG are unavailable; deletion-only changes need no HEAD pixels,
+The observed repository has 95 PNGs, 23 WebPs and one single-rendition ICO, all static.
+Its largest PNG directory has 13 files; 32 covers it and the complete WebP set.
+The largest source is below 744 KiB and 8.2 million pixels. These are bounded inventory
+observations, not permission to truncate future assets or silently keep only frame one.
+
+Only regular PNG/WebP/ICO blobs are decoded. PNG structure/CRC checks remain, and an
+isolated Python process using hash-pinned Pillow 12.3.0 fully loads each image. The
+worker receives image bytes via stdin with a minimal environment, no credential variables,
+no shell invocation and no HEAD code execution. Animated/multiple-frame images and ICOs
+with multiple renditions fail as whole assets; no first-frame fallback is accepted.
+Symlinks, gitlinks, invalid inputs and exceeded bounds become unavailable evidence.
+Other raster formats remain outside this bounded codec scope.
+Deletion-only changes need no HEAD pixels,
 including deletion names summarized beyond the metadata budget.
 An incomplete manifest is a successful extraction of partial evidence, not review
 approval: it deterministically blocks PASS and reaches the published coverage failure.
@@ -95,7 +118,11 @@ but mark required unsupported visual inspection as unavailable. Never fall back 
 BASE pixels or count an unreadable image as reviewed.
 
 Files are owner-read-only (0400), inside an owner-only directory (0500 after staging).
-The helper adds no dependencies, credentials, AWS actions or model tool permissions.
+Pillow is an explicit dependency, locked to Python 3.12 Linux wheels for ARM64/x86-64.
+The review workflow installs it into a private virtualenv before review credentials;
+Merge Verify installs the same hash lock for its fixtures. Decoder input/output reads
+are bounded; PNGs retain exact source bytes while converted files retain source lineage.
+No credentials, AWS actions or model tool permissions are added.
 The workflow removes only its generated scratch root in an always-run cleanup step;
 runner loss can prevent that cleanup. It does not upload image artifacts.
 
@@ -122,6 +149,7 @@ The full raw-diff guard, all required cells, chair and Critical/Major gates rema
 
 - [Workflow](../../.github/workflows/pr-review.yml)
 - [Git blob stager](../../scripts/pr-review/stage_head_pngs.py)
+- [Bounded decoder](../../scripts/pr-review/render_head_image.py) and [binary codec lock](../../scripts/pr-review/image-requirements.txt)
 - [Coverage declaration validator](../../scripts/pr-review/image_coverage.py)
 - [Panel runner](../../scripts/pr-review/run-panel.sh) and [chair](../../scripts/pr-review/synthesize.sh)
 - [Protected review recovery](dev-repo-setup.md)

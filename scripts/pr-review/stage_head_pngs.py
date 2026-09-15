@@ -22,7 +22,7 @@ class CoverageError(Exception):
 
 @dataclass(frozen=True)
 class Limits:
-    files: int = 8
+    files: int = 32
     file_bytes: int = 8 * 1024 * 1024
     total_bytes: int = 32 * 1024 * 1024
     dimension: int = 8192
@@ -33,6 +33,55 @@ RASTER = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".ico", ".t
 CONTEXT_LIMIT = 32768
 MANIFEST_LIMIT = 24576
 RECORD_LIMIT = 64
+DECODE_ERRORS = {"image_codec_unavailable", "image_format_mismatch", "image_frame_limit",
+                 "image_dimension_limit", "image_file_limit", "image_output_limit", "image_decode_failed"}
+
+
+def render_blob(blob, suffix, limits):
+    command = [sys.executable, "-I", str(Path(__file__).with_name("render_head_image.py")),
+               suffix, str(limits.dimension), str(limits.pixels), str(limits.file_bytes)]
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, env={"LANG": "C", "LC_ALL": "C"})
+    timer = threading.Timer(25, process.kill)
+    timer.start()
+    try:
+        process.stdin.write(blob)
+        process.stdin.close()
+        output = process.stdout.read(limits.file_bytes + 2049)
+        if len(output) > limits.file_bytes + 2048:
+            process.kill()
+            raise CoverageError("image_output_limit")
+        status = process.wait()
+        header, separator, rendered = output.partition(b"\n")
+        if not separator or len(header) > 2048:
+            raise CoverageError("image_decode_failed")
+        metadata = json.loads(header)
+        if not isinstance(metadata, dict):
+            raise CoverageError("image_decode_failed")
+        if status:
+            code = metadata.get("error")
+            raise CoverageError(code if isinstance(code, str) and code in DECODE_ERRORS else "image_decode_failed")
+        if (set(metadata) != {"source_format", "source_width", "source_height", "frames", "decoder"}
+                or metadata.get("source_format") != {".png": "PNG", ".webp": "WEBP", ".ico": "ICO"}[suffix]
+                or type(metadata.get("frames")) is not int or metadata["frames"] != 1
+                or metadata.get("decoder") != "Pillow-12.3.0"
+                or any(type(metadata.get(key)) is not int or not 0 < metadata[key] <= limits.dimension
+                       for key in ("source_width", "source_height"))
+                or metadata["source_width"] * metadata["source_height"] > limits.pixels):
+            raise CoverageError("image_decode_failed")
+        return rendered, metadata
+    except (OSError, ValueError):
+        raise CoverageError("image_decode_failed") from None
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+        process.stdout.close()
+        timer.cancel()
 
 
 def git_read(repo, args, limit):
@@ -177,7 +226,9 @@ from every panel cell and the chair; missing, failed or conflicting declarations
 review regardless of any later VERDICT: PASS. Unavailable/omitted entries force FAILED
 even if all listed files were inspected. With no required evidence, the marker is optional,
 but an explicit failure still blocks. Discuss example markers inside quotes or fences.
-This staging covers static PNGs. Other binary raster formats fail coverage; SVG/PDF/PPTX
+This staging covers static PNG, WebP and single-rendition ICO. PNG bytes are preserved;
+WebP/ICO become lossless PNG evidence with original blob/hash and rendering lineage.
+No animation or icon rendition is silently dropped. Other raster formats and SVG/PDF/PPTX
 visual rendering is unsupported. Visible source diff can still be reviewed normally,
 but a needed unsupported visual inspection must be reported as a coverage failure.
 {paths}
@@ -200,7 +251,8 @@ def stage_images(repo, head, merge_base, output, limits=Limits()):
     if (output == repo or repo in output.parents or output.exists() or output.is_symlink()
             or any(parent.is_symlink() for parent in output.parents)):
         raise CoverageError("unsafe_output")
-    if any(not isinstance(value, int) or value <= 0 for value in asdict(limits).values()):
+    if (any(type(value) is not int or value <= 0 for value in asdict(limits).values())
+            or limits.files > 32):
         raise CoverageError("invalid_limit")
     try:
         output.mkdir(mode=0o700)
@@ -215,12 +267,16 @@ def stage_images(repo, head, merge_base, output, limits=Limits()):
     manifest = {"schema": 1, "status": "complete", "head": head, "merge_base": merge_base,
                 "limits": asdict(limits), "images": [], "deleted": [], "unavailable": [],
                 "omitted_entries": 0, "omitted_deletions": 0}
-    blobs, total = [], 0
+    blobs, total, rendered_total, attempts = [], 0, 0, 0
 
     def record(key, entry):
-        count = sum(len(manifest[k]) for k in ("images", "deleted", "unavailable"))
         manifest[key].append(entry)
-        if count >= RECORD_LIMIT or len(json.dumps(manifest, ensure_ascii=True).encode()) > MANIFEST_LIMIT:
+        while (sum(len(manifest[k]) for k in ("images", "deleted", "unavailable")) > RECORD_LIMIT
+               or len(json.dumps(manifest, ensure_ascii=True).encode()) > MANIFEST_LIMIT):
+            if key != "deleted" and manifest["deleted"]:
+                manifest["deleted"].pop()
+                manifest["omitted_deletions"] += 1
+                continue
             manifest[key].pop()
             manifest["omitted_deletions" if key == "deleted" else "omitted_entries"] += 1
             return False
@@ -237,12 +293,14 @@ def stage_images(repo, head, merge_base, output, limits=Limits()):
                     if status == "D":
                         record("deleted", old)
                         continue
-                    if Path(new).suffix.lower() != ".png":
+                    suffix = Path(new).suffix.lower()
+                    if suffix not in (".png", ".webp", ".ico"):
                         raise CoverageError("unsupported_format")
                     if mode not in ("100644", "100755"):
                         raise CoverageError("non_regular_image")
-                    if len(blobs) >= limits.files:
+                    if attempts >= limits.files:
                         raise CoverageError("image_count_limit")
+                    attempts += 1
                     size = int(git_read(repo, ["cat-file", "-s", oid], 32))
                     if size > limits.file_bytes:
                         raise CoverageError("image_file_limit")
@@ -251,16 +309,23 @@ def stage_images(repo, head, merge_base, output, limits=Limits()):
                     blob = git_read(repo, ["cat-file", "blob", oid], limits.file_bytes)
                     if len(blob) != size:
                         raise CoverageError("invalid_blob_size")
-                    width, height = png_size(blob, limits)
+                    if suffix == ".png":
+                        png_size(blob, limits)
+                    rendered, metadata = render_blob(blob, suffix, limits)
+                    if len(rendered) > limits.file_bytes or rendered_total + len(rendered) > limits.total_bytes:
+                        raise CoverageError("image_output_limit")
+                    width, height = png_size(rendered, limits)
                     name = f"image-{len(blobs) + 1:04d}.png"
                     entry = {"path": new, "change": status, "blob": oid,
-                             "sha256": hashlib.sha256(blob).hexdigest(), "bytes": size,
-                             "width": width, "height": height, "file": name}
+                             "sha256": hashlib.sha256(rendered).hexdigest(), "bytes": len(rendered),
+                             "source_sha256": hashlib.sha256(blob).hexdigest(), "source_bytes": size,
+                             "width": width, "height": height, "file": name, **metadata}
                     if status in ("R", "C"):
                         entry["old_path"] = old
                     if record("images", entry):
-                        blobs.append((name, blob))
+                        blobs.append((name, rendered))
                         total += size
+                        rendered_total += len(rendered)
                 except CoverageError as error:
                     if str(error).startswith("git_"):
                         raise

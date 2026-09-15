@@ -329,10 +329,73 @@ class HeadImageTests(unittest.TestCase):
     def test_ninth_image_is_unavailable_without_discarding_first_eight(self):
         for index in range(9):
             self.write(f"docs/added-{index}.png", png())
-        result = self.stage(self.head())
+        result = self.stage(self.head(), files=8)
         self.assertEqual(len(result["images"]), 8)
         self.assertEqual(result["unavailable"][0]["code"], "image_count_limit")
         self.assertEqual(result["status"], "incomplete")
+
+    def test_actual_static_webp_and_icon_sets_render_with_blob_lineage(self):
+        from PIL import Image, ImageOps
+        import io
+        names = subprocess.check_output(["git", "ls-files", "-z", "*.webp"], cwd=ROOT).decode().split("\0")
+        paths = [ROOT / name for name in names if name]
+        paths.append(ROOT / "docs-site/static/img/favicon.ico")
+        self.assertTrue(paths)
+        self.assertLessEqual(len(paths), 32)
+        originals = {}
+        for index, path in enumerate(paths):
+            relative = f"docs/asset-{index}{path.suffix}"
+            originals[relative] = path.read_bytes()
+            self.write(relative, originals[relative])
+        result = self.stage(self.head())
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(len(result["images"]), len(paths))
+        for entry in result["images"]:
+            source = originals[entry["path"]]
+            rendered = (self.out / entry["file"]).read_bytes()
+            self.assertEqual(entry["source_sha256"], hashlib.sha256(source).hexdigest())
+            self.assertEqual(entry["sha256"], hashlib.sha256(rendered).hexdigest())
+            self.assertEqual(entry["frames"], 1)
+            self.assertTrue(rendered.startswith(b"\x89PNG\r\n\x1a\n"))
+            with Image.open(io.BytesIO(source)) as original, Image.open(io.BytesIO(rendered)) as decoded:
+                expected = ImageOps.exif_transpose(original).convert("RGBA")
+                self.assertEqual(decoded.size, expected.size)
+                self.assertEqual(decoded.convert("RGBA").tobytes(), expected.tobytes())
+
+    def test_largest_existing_screenshot_directory_fits_default_bound(self):
+        paths = sorted((ROOT / "docs-site/static/screenshots/compute").glob("*.png"))
+        self.assertGreaterEqual(len(paths), 13)
+        for index, path in enumerate(paths):
+            self.write(f"docs/refresh-{index}.png", path.read_bytes())
+        result = self.stage(self.head())
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(len(result["images"]), len(paths))
+        self.assertEqual(result["limits"]["files"], 32)
+
+    def test_animation_and_multiple_icon_renditions_fail_without_first_frame_fallback(self):
+        from PIL import Image
+        import io
+        red = Image.new("RGBA", (32, 32), "red")
+        blue = Image.new("RGBA", (32, 32), "blue")
+        animated, icons = io.BytesIO(), io.BytesIO()
+        red.save(animated, "WEBP", save_all=True, append_images=[blue], duration=100)
+        red.save(icons, "ICO", sizes=[(16, 16), (32, 32)])
+        self.write("docs/animated.webp", animated.getvalue())
+        self.write("docs/variants.ico", icons.getvalue())
+        result = self.stage(self.head())
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["images"], [])
+        self.assertEqual({e["code"] for e in result["unavailable"]}, {"image_frame_limit"})
+
+    def test_rendered_output_has_its_own_byte_bound(self):
+        from PIL import Image
+        import io
+        buffer = io.BytesIO()
+        Image.new("RGB", (4, 4), "red").save(buffer, "WEBP", lossless=True)
+        self.write("docs/source.webp", buffer.getvalue())
+        result = self.stage(self.head(), file_bytes=len(buffer.getvalue()))
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["unavailable"][0]["code"], "image_output_limit")
 
     def test_deletion_metadata_overflow_does_not_invent_unavailable_head_pixels(self):
         for index in range(65):
@@ -342,11 +405,12 @@ class HeadImageTests(unittest.TestCase):
         self.base = self.git("rev-parse", "HEAD").strip()
         for path in (self.repo / "docs").glob("deleted-*.ico"):
             path.unlink()
+        self.write("docs/zz-current.png", png())
         result = self.stage(self.head())
         self.assertEqual(result["status"], "complete")
-        self.assertEqual(result["omitted_deletions"], 1)
+        self.assertEqual(result["omitted_deletions"], 2)
         self.assertEqual(result["omitted_entries"], 0)
-        self.assertEqual(result["images"], [])
+        self.assertEqual(len(result["images"]), 1)
 
     def test_output_dotdot_cannot_enter_base_and_does_not_change_existing_modes(self):
         (self.root / "outside").mkdir()
@@ -410,6 +474,8 @@ class ImageCoverageParserTests(unittest.TestCase):
             ("> IMAGE_COVERAGE: COMPLETE", False),
             ("```text\nIMAGE_COVERAGE: COMPLETE\n```", False),
             ("No images were inspected.", False),
+            ("Example\u2028IMAGE_COVERAGE: COMPLETE", False),
+            ("Example\x0cIMAGE_COVERAGE: COMPLETE", False),
         ]
         for report, valid in cases:
             with self.subTest(report=report):
@@ -426,7 +492,8 @@ class ImageCoverageParserTests(unittest.TestCase):
             self.assertTrue(self.tool.required_images(context))
             manifest.write_text(json.dumps({"schema": 1, "status": "complete", "images": []}))
             self.assertFalse(self.tool.required_images(context))
-            for invalid in ({}, {"schema": 1, "status": "incomplete", "images": []},
+            for invalid in ({}, {"schema": True, "status": "complete", "images": []},
+                            {"schema": 1, "status": "incomplete", "images": []},
                             {"schema": 1, "status": "complete", "images": "none"}):
                 manifest.write_text(json.dumps(invalid))
                 with self.assertRaises(ValueError):

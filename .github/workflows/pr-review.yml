@@ -111,6 +111,10 @@ jobs:
           command -v claude >/dev/null 2>&1 || { echo "::warning::claude not found"; npm install -g @anthropic-ai/claude-code; }
           claude --version
           command -v codex >/dev/null 2>&1 || echo "::warning::codex not found on runner (image needs rebuild)"
+          if command -v codex >/dev/null 2>&1; then
+            CODEX_HELP="$(codex exec --help)"
+            grep -q -- '--image' <<< "$CODEX_HELP" || { echo "::error::Codex initial-image support is required"; exit 1; }
+          fi
 
       - name: Get PR diff
         id: diff
@@ -279,8 +283,13 @@ jobs:
             echo "omitted_source_paths=$(tr '\n' ' ' < /tmp/pr-diff-omitted-source.txt)" >> "$GITHUB_ENV"
           fi
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Stage changed HEAD PNG evidence (trusted Git blobs, no HEAD checkout)
         id: head_images
+        timeout-minutes: 15
         env:
           HEAD_SHA: ${{ steps.review_context.outputs.head_sha }}
           MERGE_BASE_SHA: ${{ steps.diff.outputs.merge_base_sha }}
@@ -289,7 +298,10 @@ jobs:
           HEAD_PNG_ROOT=$(mktemp -d "$RUNNER_TEMP/pr-review-head-png.XXXXXX")
           echo "root=$HEAD_PNG_ROOT" >> "$GITHUB_OUTPUT"
           echo "context=$HEAD_PNG_ROOT/images/context.txt" >> "$GITHUB_OUTPUT"
-          python3 "$GITHUB_WORKSPACE/scripts/pr-review/stage_head_pngs.py" \
+          python3 -m venv --copies "$HEAD_PNG_ROOT/codec"
+          "$HEAD_PNG_ROOT/codec/bin/python" -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary=:all: -r "$GITHUB_WORKSPACE/scripts/pr-review/image-requirements.txt"
+          "$HEAD_PNG_ROOT/codec/bin/python" "$GITHUB_WORKSPACE/scripts/pr-review/stage_head_pngs.py" \
             --repo "$GITHUB_WORKSPACE" --head "$HEAD_SHA" --merge-base "$MERGE_BASE_SHA" \
             --output "$HEAD_PNG_ROOT/images"
 
@@ -513,13 +525,21 @@ jobs:
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=HEAD image evidence unavailable" >> "$GITHUB_OUTPUT"
           elif [ "$PANEL_OUTCOME" != "success" ] || [ "$CHAIR_OUTCOME" != "success" ]; then
-            printf '%s\n' "Review preparation failed; required panel/chair execution is incomplete. This is not an application finding." "VERDICT: FAIL" > /tmp/review.md
-            echo "chair_failed=1" >> "$GITHUB_ENV"
             echo "result=fail" >> "$GITHUB_OUTPUT"
-            echo "reason=Required review execution incomplete" >> "$GITHUB_OUTPUT"
+            if [ "${image_coverage_failed:-0}" = "1" ]; then
+              printf '%s\n' "HEAD image evidence preparation failed. Review incomplete." "VERDICT: FAIL" > /tmp/review.md
+              echo "reason=HEAD image evidence unavailable" >> "$GITHUB_OUTPUT"
+            else
+              printf '%s\n' "Review preparation failed; required panel/chair execution is incomplete. This is not an application finding." "VERDICT: FAIL" > /tmp/review.md
+              echo "chair_failed=1" >> "$GITHUB_ENV"
+              echo "reason=Required review execution incomplete" >> "$GITHUB_OUTPUT"
+            fi
           elif [ -n "${omitted_source_paths:-}" ]; then
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=oversized line(s) omitted from reviewable source/IaC file(s): ${omitted_source_paths} — no lens saw them, fail-closed" >> "$GITHUB_OUTPUT"
+          elif [ "${report_invalid:-0}" = "1" ]; then
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            echo "reason=Review output unavailable" >> "$GITHUB_OUTPUT"
           elif [ "${image_coverage_failed:-0}" = "1" ]; then
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=Image coverage unavailable — review incomplete, not an application finding" >> "$GITHUB_OUTPUT"
@@ -542,6 +562,7 @@ jobs:
           REVIEW_HEAD: ${{ steps.review_context.outputs.head_sha }}
           REPO: ${{ github.repository }}
           GATE_RESULT: ${{ steps.gate.outputs.result }}
+          GATE_REASON: ${{ steps.gate.outputs.reason }}
         run: |
           CURRENT_HEAD=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
           if [ "$CURRENT_HEAD" != "$REVIEW_HEAD" ]; then
@@ -549,7 +570,11 @@ jobs:
             exit 1
           fi
           MARKER="<!-- multi-ai-pr-review -->"
-          if [ "$GATE_RESULT" = "fail" ] && [ "${image_coverage_failed:-0}" = "1" ]; then
+          if [[ "$GATE_REASON" == "oversized line(s) omitted"* ]]; then
+            STATUS_BADGE="**Status: BLOCKED** — reviewable source input was omitted; review incomplete"
+          elif [ "$GATE_REASON" = "Review output unavailable" ]; then
+            STATUS_BADGE="**Status: BLOCKED** — review output unreadable or over limit; not an image or application finding"
+          elif [[ "$GATE_REASON" == "HEAD image evidence unavailable" || "$GATE_REASON" == "Image coverage unavailable"* ]]; then
             STATUS_BADGE="**Status: BLOCKED** — image coverage unavailable; review incomplete, not an application finding"
           elif [ "$GATE_RESULT" = "fail" ] && [ "${chair_failed:-0}" = "1" ]; then
             # The chair (both Fable 5 and Opus 5) failed to produce a review due to a
@@ -607,7 +632,7 @@ jobs:
           import os, sys
           try:
               fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-          except FileNotFoundError:
+          except OSError:
               pass
           else:
               try:

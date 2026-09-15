@@ -36,6 +36,47 @@ mark_image_coverage_failure() {
   : > "$WORK/image-coverage-failed.flag"
   : > "$WORK/coverage-severe.flag"
   echo "[image coverage unavailable] $1" >&2
+  [ -z "${GITHUB_ENV:-}" ] || echo "image_coverage_failed=1" >> "$GITHUB_ENV"
+}
+
+check_review_report() {
+  local rc=0
+  image_coverage_valid "$1" || rc=$?
+  if [ "$rc" = 1 ]; then
+    mark_image_coverage_failure "$(basename "$1")"
+  elif [ "$rc" != 0 ]; then
+    : > "$WORK/report-invalid.flag"
+    : > "$WORK/coverage-severe.flag"
+    echo "[review output unavailable] $(basename "$1")" >&2
+    return 1
+  fi
+  return 0
+}
+
+strip_controls() {
+  sed -E -e 's#(\x1B\][^\x07\x1B]*(\x07|\x1B\\)|\x1B\[[0-?]*[ -/]*[@-~]|\x1B[()][0-9A-Z])##g' \
+         -e 's#(\xC2[\x80-\x9F]|[\x00-\x08\x0B-\x1F\x7F])##g'
+}
+
+# Recompute response presence, independently of image outcomes or stale flags.
+refresh_panel_presence() {
+  local model lens count
+  : > "$WORK/responded.txt"; : > "$WORK/degraded-models.txt"; : > "$WORK/degraded-lenses.txt"
+  rm -f "$WORK/coverage-severe.flag"
+  for model in codex claude; do
+    count=0
+    for lens in L2 L3 L4 L5; do
+      if [ -s "$WORK/slot/$model-$lens.md" ]; then
+        echo "$model/$lens" >> "$WORK/responded.txt"; count=$((count+1))
+      fi
+    done
+    [ "$count" -gt 0 ] || echo "$model" >> "$WORK/degraded-models.txt"
+  done
+  for lens in L2 L3 L4 L5; do
+    if [ ! -s "$WORK/slot/codex-$lens.md" ] || [ ! -s "$WORK/slot/claude-$lens.md" ]; then
+      echo "$lens" >> "$WORK/degraded-lenses.txt"; : > "$WORK/coverage-severe.flag"
+    fi
+  done
 }
 
 # slot 디렉터리 보장 — 비-ephemeral 러너에서 $WORK 가 재사용될 수 있으므로, 이전 실행의
@@ -56,13 +97,12 @@ ensure_slots() {
 # 사람 범위보다 넓을 수 있으므로, 원시 200B 를 그대로 찍으면 별도의 스크럽 없는 유출구가 된다.
 record_result() {
   local slot="$1" label="$2" responded="$3"
-  echo "[preview] $label: $(scrub_secrets < "$slot" | head -c 200 | tr '\n' ' ')" >&2
-  if [ "${HEAD_PNG_UNAVAILABLE:-0}" = "1" ] || ! image_coverage_valid "$slot"; then
-    mark_image_coverage_failure "$label"
-    return 0
-  fi
   if [ -s "$slot" ]; then
     echo "$label" >> "$responded"
+    [ "${HEAD_PNG_UNAVAILABLE:-0}" = "0" ] || mark_image_coverage_failure "$label"
+    if check_review_report "$slot"; then
+      echo "[preview] $label: $(strip_controls < "$slot" | scrub_secrets | head -c 200 | tr '\n' ' ')" >&2
+    fi
   else
     echo "[skip] $label" >&2
     : > "$slot"  # 빈 슬롯 보장

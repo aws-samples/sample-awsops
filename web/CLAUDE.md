@@ -10,7 +10,7 @@ Next.js 14 thin-BFF. Serves at the root path (`/`) — no basePath, fetch is `/a
   and a nonce/account-bound AgentCore response. Disabled, pending, denied and missing
   dependencies return safe structured failure; chat fallback is never readiness proof.
 - `lib/agentcore-config.ts` — validates runtime ARNs before caching. Explicitly empty
-  `SSM_RUNTIME_ARN_PARAM` disables discovery; undefined retains the legacy project fallback.
+  `SSM_RUNTIME_ARN_PARAM` disables discovery, including status-page SSM lookup; undefined retains the legacy project fallback.
 - `lib/inventory-collection.ts` — aggregate job-ledger metadata (`scope: aggregate`) in inventory
   summaries. Account/region selections affect resource counts, not this whole-sweep ledger.
   Missing runs and unknown attributes remain unknown. `/api/inventory/summary?view=collection`

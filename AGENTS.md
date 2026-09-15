@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 570c26465da2 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 192913362ba0 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -57,6 +57,8 @@ before `make agentcore`. Migrations and reader password sync always precede Agen
 additionally uses the locked web driver and TypeScript dependencies. Both PostgreSQL suites are fail-hard exceptions to legacy optional `scripts/v2/*.itest.mjs`; missing Docker is never a skip.
 
 No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scripts/v2/package.json` (`make deps` runs `npm ci --prefix scripts/v2`). `next build` fails on app-level type errors but `*.test.ts(x)` type noise is non-blocking.
+
+Dev Deploy Web requires applied inventory (`steampipe_enabled`), AgentCore, workers and readiness, their deployed images/runtime and enabled dispatch. Every activated dev release performs collection, a billed model probe and two real worker jobs. Every current catalog type needs clean post-marker success with known counts/zero unknown attributes; retained operational degraded data does not pass release acceptance. Preserve web identity/image, fresh known resource, SSM/AgentCore/model and both owned worker proofs. Activation and bounded failure policy: `docs/runbooks/runtime-foundation.md`.
 
 The web image provenance helper is unwired. Future dev web wiring must supply real successful
 migration outputs and the named producer-receipt steps, then use composed `promote`.

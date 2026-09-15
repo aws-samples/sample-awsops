@@ -76,6 +76,9 @@ if os.environ.get('OVERSIZE_CELL') == cell:
 if os.environ.get('LATE_IMAGE_FAILURE_CELL') == cell:
     print('Review context.\\n' * 2000)
     print('IMAGE_COVERAGE: FAILED')
+if os.environ.get('INVALID_UTF8_CELL') == cell:
+    sys.stdout.flush()
+    sys.stdout.buffer.write(b'\xff')
 """
 
 RECORDING_TIMEOUT = r"""#!/usr/bin/python3
@@ -486,7 +489,10 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
         for report in ("IMAGE_COVERAGE: FAILED", "IMAGE COVERAGE FAILURE: cannot inspect pixels"):
             with self.subTest(report=report):
                 work, root = self.review(panel_report=report)
-                self.assertEqual((work / "responded.txt").read_text(), "")
+                self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
+                self.assertEqual((work / "degraded-models.txt").read_text(), "")
+                self.assertEqual((work / "degraded-lenses.txt").read_text(), "")
+                self.assertNotIn("had no response", (root / "work/review.md").read_text())
                 self.assertTrue((work / "coverage-severe.flag").exists())
                 self.assert_blocked(root)
 
@@ -501,8 +507,8 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
         for signal in ("", "IMAGE_COVERAGE: NOT_REQUIRED"):
             with self.subTest(signal=signal):
                 work, root = self.review(PANEL_IMAGE_REPORTS=json.dumps({"claude/L5": signal}))
-                self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 7)
-                self.assertNotIn("claude/L5", (work / "responded.txt").read_text())
+                self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
+                self.assertIn("claude/L5", (work / "responded.txt").read_text())
                 self.assert_blocked(root)
 
     def test_chair_must_explicitly_complete_required_images(self):
@@ -515,7 +521,7 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
 
     def test_quoted_fenced_and_prose_mentions_are_not_failure_declarations(self):
         report = ('The IMAGE_COVERAGE: FAILED rule is discussed here.\n'
-                  'IMAGE_COVERAGE: FAILED is an example marker, not this review outcome.\n'
+                  'Example: IMAGE_COVERAGE: FAILED is not this review outcome.\n'
                   '> IMAGE_COVERAGE: FAILED\n`IMAGE_COVERAGE: FAILED`\n'
                   '"IMAGE_COVERAGE: FAILED"\n    IMAGE_COVERAGE: FAILED\n'
                   '```text\nIMAGE COVERAGE FAILURE\nIMAGE_COVERAGE: FAILED\n```\n'
@@ -541,13 +547,65 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
 
     def test_oversized_report_is_unavailable_not_a_truncated_complete(self):
         _, root = self.review(OVERSIZE_CELL="codex/L2")
-        self.assert_blocked(root)
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: FAIL"))
+        self.assertTrue((root / "work/report-invalid.flag").exists())
+        self.assertFalse((root / "work/image-coverage-failed.flag").exists())
+        self.assertIn("review output", (root / "work/review.md").read_text().lower())
 
     def test_failure_beyond_chair_cell_truncation_is_not_hidden(self):
         work, root = self.review(LATE_IMAGE_FAILURE_CELL="codex/L2")
         self.assertGreater((work / "slot/codex-L2.md").stat().st_size, 20000)
-        self.assertNotIn("codex/L2", (work / "responded.txt").read_text())
+        self.assertIn("codex/L2", (work / "responded.txt").read_text())
         self.assert_blocked(root)
+
+    def test_decorated_failure_cannot_be_overridden_by_complete(self):
+        for signal in ("IMAGE_COVERAGE:FAILED — decoder failed",
+                       "IMAGE_COVERAGE: FAILED: unreadable image",
+                       "IMAGE COVERAGE FAILURE — unreadable image",
+                       "**IMAGE_COVERAGE: FAILED** — unreadable image",
+                       "### IMAGE_COVERAGE: FAILED — unreadable image",
+                       "  IMAGE COVERAGE FAILURE — unreadable image"):
+            for required in (True, False):
+                with self.subTest(signal=signal, required=required):
+                    _, root = self.review(panel_report=signal + "\nIMAGE_COVERAGE: COMPLETE",
+                                          chair_report="IMAGE_COVERAGE: COMPLETE", required=required)
+                    self.assert_blocked(root)
+                    _, root = self.review(chair_report=signal + "\nIMAGE_COVERAGE: COMPLETE",
+                                          required=required)
+                    self.assert_blocked(root)
+
+    def test_control_stripped_complete_is_valid_and_presence_is_retained(self):
+        complete = "\x1b[32mIMAGE_COVERAGE: COMPLETE\x1b[0m\r\n"
+        work, root = self.review(panel_report=complete, chair_report=complete)
+        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: PASS"))
+        self.assertFalse((root / "work/image-coverage-failed.flag").exists())
+
+    def test_missing_cli_response_is_not_an_image_failure(self):
+        work, root = self.review(FAIL_CELL="claude/L2")
+        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 7)
+        self.assertFalse((work / "image-coverage-failed.flag").exists())
+        self.assertFalse((root / "work/image-coverage-failed.flag").exists())
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: FAIL"))
+
+    def test_invalid_utf8_is_a_report_failure_not_missing_response_or_image_failure(self):
+        work, root = self.review(INVALID_UTF8_CELL="codex/L2")
+        self.assertEqual(len((work / "responded.txt").read_text().splitlines()), 8)
+        self.assertTrue((root / "work/report-invalid.flag").exists())
+        self.assertFalse((root / "work/image-coverage-failed.flag").exists())
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: FAIL"))
+
+    def test_stale_image_flags_do_not_poison_a_new_synthesis(self):
+        work, _ = self.panel.run_panel(HEAD_PNG_CONTEXT=str(self.context),
+                                      PANEL_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE")
+        (work / "image-coverage-failed.flag").touch()
+        (work / "coverage-severe.flag").touch()
+        root, process = self.chair.start_chair(
+            ("valid",), panel_work=work, HEAD_PNG_CONTEXT=str(self.context),
+            CHAIR_IMAGE_REPORT="IMAGE_COVERAGE: COMPLETE")
+        self.chair.finish_chair(process)
+        self.assertFalse((root / "work/image-coverage-failed.flag").exists())
+        self.assertTrue((root / "work/review.md").read_text().rstrip().endswith("VERDICT: PASS"))
 
     def test_a_later_successful_chair_retry_cannot_clear_declared_failure(self):
         root, process = self.chair.start_chair(

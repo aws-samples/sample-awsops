@@ -11,12 +11,10 @@ development verification phase. It does not assume a role or wire workflows.
 Review each consumer's credential-assumption steps separately; helper availability
 alone does not establish that a workflow uses a restricted session.
 
-**Current wiring:** this checkout does not contain `collect-runtime.yml`.
-Deploy Web's existing smoke is dispatch-only database verification. It never
-captures `runtime_deployment`; its `verify_database` credential path exists only
-for dispatch runs.
-The integration requirements below do not describe already-wired verification
-steps. The helper change does not install either consumer path.
+**Current wiring:** `collect-runtime.yml` provides manual prepare/collect.
+Every dev Deploy Web push or dispatch captures `runtime_deployment`, prepares
+authenticated proof credentials, and requires full verification after rollout.
+The helper generates the session policies consumed by both workflows.
 
 ## Candidate causes
 
@@ -57,8 +55,8 @@ The Node fixtures require the tools listed in the
 ## Action and integration contract
 
 Retain the existing operator-owned deployer role. For manual collection, apply
-the backend and workload policies in separate OIDC sessions. When adding Deploy Web
-verification, use only the workload policy; the earlier deployment phase
+the backend and workload policies in separate OIDC sessions. Deploy Web
+verification uses only the workload policy; the earlier deployment phase
 retains the existing credential contract. Consumers must pass the generated
 policy to the credential-assumption step. No role, trust policy or persistent
 IAM attachment is added here.
@@ -155,8 +153,8 @@ workload policy:
 - Prepare the existing configured HTTP proof credentials and capture validated
   `runtime_deployment` privately in the same run, before deployment mutations,
   under the existing deployment credentials and backend/account guards. These
-  steps and cleanup must cover push as well as manual dev runs; the current
-  dispatch-only `verify_database` credential path is insufficient for push.
+  steps and cleanup cover push and manual dev runs, independently of the legacy
+  `verify_database` input.
 - Resolve `PIN_SHA` exactly as the image-promotion step:
   `${{ inputs.image_sha || github.sha }}`. Require a full lower-case 40-character
   commit SHA; reject invalid values rather than substituting a different image.
@@ -196,9 +194,8 @@ hash-verified owned function, with hash/RevisionId rechecked after collection.
 
 There is at least one catalog request plus at least one request per type, not four calls in total.
 At most four owned invocations are **concurrent and in flight**. Catalog throttling
-can retry too; busy/superseded or throttled retries add calls within the same finite budget. The controller is
-unwired in this prerequisite; integrating it does not authorize changing schedule,
-reserved concurrency, feature flags or IAM without their separate reviewed procedures.
+can retry too; busy/superseded or throttled retries add calls within the same finite budget. The wired controller does not authorize changing schedule, reserved concurrency,
+feature flags or IAM without their separate reviewed procedures.
 
 The existing collector can upsert/prune application inventory and ledger rows in
 Aurora and replace that day's inventory snapshot rows. This is explicitly
@@ -293,7 +290,7 @@ can also block release, even after the owned RPC succeeded. The schedule remains
 enabled, and no scheduler attribution is inferred from verifier-produced freshness.
 Fresh known-host CloudFront, actual AgentCore/model proof and both owned workers
 remain mandatory. The policy generator neither invokes types nor repairs failures;
-the strict controller supplies the collection orchestration when wired.
+the strict controller supplies collection orchestration for both workflows.
 Its `remaining_prerequisites: "not_assessed"` result does not approve the separate
 workflow/plan/promotion gates; see the [fixed diagnostics](runtime-foundation.md#fixed-diagnostics-and-remaining-prerequisites).
 That table distinguishes controller reasons from passed-through `SmokeError` messages.
@@ -313,7 +310,8 @@ IAM-owner work, outside this policy helper.
 
 ## Related files and decisions
 
-- `scripts/v2/ci/runtime-release.mjs` and `scripts/v2/ci/runtime-release.test.mjs`;
+- `.github/workflows/collect-runtime.yml`, `.github/workflows/deploy-web.yml`,
+  `scripts/v2/ci/runtime-release.mjs` and `scripts/v2/ci/runtime-release.test.mjs`;
   [controller CLI inputs and combined tests](runtime-foundation.md#controller-cli-contract)
 - `scripts/v2/ci_verifier_sessions.py` and `scripts/v2/test_ci_verifier_sessions.py`
 - `scripts/v2/ci_deployment_audit.py` and `scripts/v2/test_ci_deployment_audit.py`

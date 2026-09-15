@@ -257,14 +257,19 @@ Review: `v2-p1f-scope-architecture-review` (private upstream repo)
 
 ## Deployment readiness mode
 
-`agent/readiness.py` implements bounded, default-off `mode=deployment_readiness`. Apply `ci_readiness_enabled=true` with AgentCore enabled, then provision.
+`agent/readiness.py` implements bounded, default-off `mode=deployment_readiness`. Before the
+mandatory dev Deploy Web gate, explicitly apply `ci_readiness_enabled=true` with AgentCore
+enabled, then provision. `CI_READINESS_ENABLED_DEV=true` supplies this separate opt-in in public dev CI.
 Only the applied `agentcore.deployment_readiness_enabled` sets `DEPLOYMENT_READINESS_ENABLED`; shell overrides are ignored.
 Fixed MCP tools read one CloudFront identity; producer freshness and bounded inference leave unknown attributes unassessed.
-Nonce/account-bound responses retain completed checks on timeout; administrator or deployment-verifiers membership and process cooldown are required.
+Nonce/account-bound responses retain completed checks on timeout. Administrator or deployment-verifiers membership, one in-flight request and a 60-second process cooldown are required.
+The mandatory release gate combines web-role SSM/AgentCore/model proof, a fresh known CloudFront record, complete post-marker evidence for every current catalog type and both owned workers under the [collection contract](../runbooks/runtime-foundation.md#collection-contention--수집-경합). Partial, failed, stale or unknown evidence cannot pass; the configured catalog does not establish universal AWS-resource coverage.
 An opt-in apply creates the verifier group only with readiness and AgentCore enabled; membership
 additionally requires the managed demo flag. No admin/IAM role is granted. Public CI permits
 readiness only on dev. CI_READINESS_ENABLED_DEV is a dedicated true/false override; empty/unset
 preserves explicit Terraform configuration and default false. The runtime profile alone does not enable it.
+The controller verifies authenticated readiness access, not live group/membership state. Use the [reviewed import procedure](../runbooks/runtime-foundation.md#adopting-an-existing-verifier-group--기존-검증-그룹-채택) for existing resources; do not create duplicates.
+Use a fresh login after membership changes. Removal leaves issued group claims unchanged for their remaining 12-hour lifetime unless session revocation rejects them; [runtime disablement is independent](../runbooks/runtime-foundation.md#readiness-capability).
 Web invocation validates the runtime ARN before caching; `PENDING` or malformed values fail.
 Status discovery only extracts a runtime ID and does not perform that full ARN validation.
 Both honor an explicitly empty `SSM_RUNTIME_ARN_PARAM`, which the web task receives when

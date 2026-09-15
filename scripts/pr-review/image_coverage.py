@@ -31,7 +31,7 @@ def read_data(path, limit):
 
 def load_manifest(context):
     manifest = json.loads(read_data(Path(context).with_name("manifest.json"), MANIFEST_LIMIT))
-    if (not isinstance(manifest, dict) or manifest.get("schema") != 1
+    if (not isinstance(manifest, dict) or type(manifest.get("schema")) is not int or manifest["schema"] != 1
             or manifest.get("status") not in ("complete", "incomplete")
             or not isinstance(manifest.get("images"), list)
             or any(not isinstance(image, dict) for image in manifest["images"])
@@ -57,7 +57,8 @@ def attachment_paths(context):
         raise ValueError("invalid_attachment_root")
     root = root.resolve(strict=True)
     paths, total = [], 0
-    if len(manifest["images"]) > 8:
+    file_limit = manifest.get("limits", {}).get("files", 32)
+    if type(file_limit) is not int or not 0 < file_limit <= 32 or len(manifest["images"]) > file_limit:
         raise ValueError("attachment_count_limit")
     for image in manifest["images"]:
         name, size, digest = image.get("file"), image.get("bytes"), image.get("sha256")
@@ -77,8 +78,11 @@ def attachment_paths(context):
 
 
 def validate_report(text, required):
+    # Same terminal controls stripped before public synthesis; only LF creates lines.
+    text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][0-9A-Z]", "", text)
+    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", text)
     signals, fence = [], None
-    for line in text.splitlines():
+    for line in text.split("\n"):
         if fence:
             if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}[ \t]*", line):
                 fence = None
@@ -87,13 +91,15 @@ def validate_report(text, required):
         if opening:
             fence = (opening[1][0], len(opening[1]))
             continue
-        # Only declarations at column zero count. Quotes, lists, code and prose are data.
-        if re.match(r"^IMAGE COVERAGE FAILURE(?:[ \t]*$|:)", line):
+        # Reserved prefixes declare outcomes. Decoration cannot turn failure into prose.
+        candidate = re.sub(r"^ {0,3}(?:#{1,6}[ \t]+)?(?:\*\*|__|\*|_)?(?=IMAGE[_ ])", "", line)
+        if candidate.startswith("IMAGE COVERAGE FAILURE"):
             return False
-        if line.startswith("IMAGE_COVERAGE:"):
+        if candidate.startswith("IMAGE_COVERAGE:"):
             match = re.fullmatch(r"IMAGE_COVERAGE:[ \t]*(COMPLETE|FAILED|NOT_REQUIRED)[ \t]*", line)
-            if match:
-                signals.append(match[1])
+            if not match:
+                return False
+            signals.append(match[1])
     # Duplicate/contradictory declarations cannot override an earlier failure.
     if len(signals) > 1 or "FAILED" in signals:
         return False
@@ -120,7 +126,9 @@ def main():
         if validate_report(read_data(args.path, REPORT_LIMIT), args.required == "1"):
             return 0
     except (OSError, ValueError, UnicodeError):
-        pass
+        if args.mode == "report":
+            print("Review output unavailable: invalid encoding, type, size or read.", file=sys.stderr)
+            return 2
     print("Image coverage unavailable: missing, invalid, failed or unreadable declaration/evidence.", file=sys.stderr)
     return 1
 

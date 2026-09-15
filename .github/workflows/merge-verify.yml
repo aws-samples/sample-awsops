@@ -34,6 +34,7 @@ jobs:
 
       - name: Install Python test dependencies
         run: |
+          python -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt
           python -m pip install \
             -r scripts/v2/requirements-test.txt \
             -r agent/requirements.txt \
