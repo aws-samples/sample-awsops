@@ -86,8 +86,14 @@ The shared query normalizer carries collection status into Explore. Marked parti
 Use browser developer tools on an already-authorized page to distinguish HTTP503/busy,
 500/timeout, and successful partial reads.401/login redirects require sign-in;403 is access denial; other4xx responses require correcting the request. These are distinct from a read outage. The page preserves the safe envelope and offers
 refresh; it does not display a bare status code or treat a failed read as empty collection.
-Typed busy responses have bounded automatic recovery (five requests within ten seconds);
-scope changes cancel the recovery, and exhausted attempts remain unavailable.
+One page read may issue up to five requests within a ten-second client deadline, retrying
+only typed 503/busy responses. Base waits are 250/500/1000/2000ms; a positive numeric
+`Retry-After` can lengthen a wait, but cannot extend the overall budget. A wait beyond that
+budget ends recovery instead of retrying early. Scope changes cancel waits and reads.
+Exhaustion preserves the last observed typed `busy` reason. With no such observation
+(or after a later non-busy response), the client deadline reports `timeout`; this may occur
+without any HTTP500 or SQLSTATE log. Multiple server shed logs can therefore belong to
+one bounded client recovery, not multiple independent user actions.
 Timeout SQLSTATEs 57014/25P03/25P04/55P03 remain read failures.
 Application logs contain fixed `[graph-read] shed` or SQLSTATE diagnostics. In the local
 fixture below, run `npx vitest run lib/graph-read-postgres.test.ts lib/graph-fetch.test.ts`
@@ -160,6 +166,7 @@ A source merge or automatic web CD result is not proof that these steps complete
 `web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`,
 `web/lib/graph-inventory.ts`, `web/lib/graph-store-postgres.test.ts`, `web/lib/fixtures/graph-fatal-child.mjs`,
 `web/components/topology/GraphCollectionStatus.tsx`,
+`web/lib/graph-fetch.ts`, `web/lib/graph-fetch.test.ts`,
 `agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,
 `agent/lambda/prometheus_mcp.py`, `agent/lambda/mimir_mcp.py`,
 `agent/lambda/test_collection_markers.py`, `agent/lambda/test_clickhouse_completion.py`, `agent/lambda/test_tempo_trace_budget.py`,
