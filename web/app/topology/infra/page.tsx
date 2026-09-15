@@ -8,7 +8,10 @@ import Link from 'next/link';
 import { Background, Controls, Position, type Node, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import PageHeader from '@/components/ui/PageHeader';
+import GraphCollectionStatus from '@/components/topology/GraphCollectionStatus';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { fetchGraph, GraphFetchError, type GraphFetchFailure } from '@/lib/graph-fetch';
+import GraphReadError from '@/components/topology/GraphReadError';
 import { layoutFlow } from '@/lib/flow-layout';
 import InfraMapView from '@/components/topology/InfraMapView';
 import K8sMapView from '@/components/topology/K8sMapView';
@@ -18,7 +21,7 @@ const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow)
 
 interface GNode { id: string; kind: string; label: string; meta?: Record<string, unknown> }
 interface GEdge { source: string; target: string; rel: string }
-interface Graph { nodes: GNode[]; edges: GEdge[]; captured_at: string | null; capped?: boolean }
+interface Graph { nodes: GNode[]; edges: GEdge[]; captured_at: string | null; capped?: boolean; collection?: unknown }
 
 // kind → [bg, border] — same palette as the ego-graph page, plus new network kinds.
 const COLORS: Record<string, [string, string]> = {
@@ -43,19 +46,24 @@ function GraphView({ q }: { q: string }) {
   const { tt } = useI18n();
   const [activeAccount] = useActiveAccount();
   const [graph, setGraph] = useState<Graph | null>(null);
-  const [err, setErr] = useState('');
+  const [err, setErr] = useState<GraphFetchFailure | null>(null);
   const [busy, setBusy] = useState(false);
+  const [revision, setRevision] = useState(0);
+
+  const unavailable = (graph?.collection as { readStatus?: string } | undefined)?.readStatus === 'unavailable';
 
   useEffect(() => {
     let live = true;
+    const controller = new AbortController();
     setBusy(true);
-    fetch(`/api/graph?class=infra&${accountParam(activeAccount) || 'account=self'}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((d) => { if (live) { setGraph(d); setErr(''); } })
-      .catch((e) => { if (live) setErr(String(e instanceof Error ? e.message : e)); })
+    setErr(null);
+    setGraph(null);
+    fetchGraph(`/api/graph?class=infra&${accountParam(activeAccount) || 'account=self'}`, controller.signal)
+      .then((d) => { if (live) { setGraph(d); setErr(null); } })
+      .catch((e) => { if (live) { setGraph(null); setErr(e instanceof GraphFetchError ? e.reason : 'rejected'); } })
       .finally(() => { if (live) setBusy(false); });
-    return () => { live = false; };
-  }, [activeAccount]);
+    return () => { live = false; controller.abort(); };
+  }, [activeAccount, revision]);
 
   // Multi-match search highlight (v1 parity): id/label/kind/meta substring, case-insensitive.
   const matches = useMemo(() => {
@@ -110,9 +118,10 @@ function GraphView({ q }: { q: string }) {
   return (
     <>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-1 text-[11px] text-ink-500">
+        <button type="button" disabled={busy || err !== null} onClick={() => setRevision(n => n + 1)} className="rounded border border-ink-200 px-2 py-1 disabled:opacity-50">{tt('새로고침')}</button>
         {busy && <span>{tt('불러오는 중…')}</span>}
-        {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
-        {graph && <span>{tt(`노드 ${graph.nodes.length.toLocaleString()} · 엣지 ${graph.edges.length.toLocaleString()}`)}</span>}
+        {err && <GraphReadError reason={err} />}
+        {graph && !unavailable && <span>{tt(`노드 ${graph.nodes.length.toLocaleString()} · 엣지 ${graph.edges.length.toLocaleString()}`)}</span>}
         {q.trim() && <span className="font-semibold text-brand-700">{tt(`매치 ${matches.size}개`)}</span>}
         {LEGEND.map((l) => {
           const [bg, border] = COLORS[l.kind] ?? RESOURCE;
@@ -124,9 +133,10 @@ function GraphView({ q }: { q: string }) {
           );
         })}
         {graph?.captured_at && <span>{tt('그래프 시점:')} {new Date(graph.captured_at).toLocaleString()}</span>}
-        {graph && graph.nodes.length === 0 && !busy && <span>{tt('인프라 그래프가 비어 있습니다 (materializer 미실행).')}</span>}
+        {graph && !unavailable && graph.nodes.length === 0 && !busy && <span>{tt('표시할 그래프 노드가 없습니다. 수집 상태를 확인하세요.')}</span>}
       </div>
-      <div className="min-h-0 flex-1">
+      {!busy && !err && graph ? <div className="shrink-0 px-4"><GraphCollectionStatus collection={graph.collection} /></div> : null}
+      <div className="min-h-[240px] flex-1">
         <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.15 }} minZoom={0.05} proOptions={{ hideAttribution: true }}>
           <Background />
           <Controls />

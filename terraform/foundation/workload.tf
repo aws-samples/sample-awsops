@@ -408,6 +408,7 @@ resource "aws_ecs_task_definition" "web" {
         # so the app listened on the ENI IP and the 127.0.0.1 container healthcheck probe failed
         # (ALB to the ENI IP still passed). Pinning HOSTNAME here makes loopback reachable.
         { name = "HOSTNAME", value = "0.0.0.0" },
+        { name = "INVENTORY_STALE_AFTER_MINUTES", value = tostring(var.inventory_stale_after_minutes) },
         # The legacy email-keyed ownership match is the email-reassignment exposure; it stays on
         # until `make backfill-owner-sub` (PR #203) has rewritten legacy rows, then this flips to
         # "false" and matchesIdentity() looks at the immutable sub only. Wired here because

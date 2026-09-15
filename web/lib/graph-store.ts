@@ -4,7 +4,7 @@ import { buildFlowGraph, type FlowInput, type FlowKind } from './flow-topology';
 import { buildInfraGraph, type Row } from './infra-topology';
 import type { TraceSource, TraceSpan, ServiceGraphCall, SourceRead } from './trace-source';
 import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
-import { writeGraphState, type GraphAttempt } from './graph-state';
+import { writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
 import { currentAccountId } from './account';
 export { resolveInfraRef } from './trace-graph';
 
@@ -65,14 +65,14 @@ interface GEdge { source: string; target: string; rel: string; confidence: strin
 // the exception: an intentionally-empty build (source unavailable) MUST sweep its stale rows, so it
 // passes `allowEmpty = true`. Default false keeps the flow/infra guard verbatim (one writer, no
 // duplicate sweep). The sweep is ACCOUNT-scoped so one account's rebuild never wipes another's rows.
-async function writeGraph(pool: Pool, cls: string, lockKey: number, accountId: string, nodes: GNode[], edges: GEdge[], runId: string, allowEmpty = false, attempt?: GraphAttempt) {
+async function writeGraph(pool: Pool, cls: GraphClass, lockKey: number, accountId: string, nodes: GNode[], edges: GEdge[], runId: string, allowEmpty = false, attempt?: GraphAttempt) {
   if (nodes.length === 0 && !allowEmpty) return { nodes: 0, edges: 0 };
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock($1)', [lockKey]);
     if (attempt) {
-      const current = await writeGraphState(client, accountId, attempt);
+      const current = await writeGraphState(client, accountId, attempt, cls);
       if (!current || !attempt.publish) {
         await client.query('COMMIT');
         return { nodes: 0, edges: 0 };

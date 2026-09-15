@@ -1279,10 +1279,10 @@ export const TERMS: Record<string, Pair> = {
   'trace 데이터 없음 — ClickHouse 데이터소스 등록 여부와 최근 60분 내 span 존재 여부를 확인하세요.': { en: 'No trace data — check whether a ClickHouse datasource is registered and whether spans exist in the last 60 minutes.', zh: '没有 trace 数据 — 请检查是否已注册 ClickHouse 数据源，以及最近60分钟内是否存在 span。', ja: 'trace データがありません — ClickHouse データソースが登録されているか、直近60分以内に span が存在するかを確認してください。' },
   '계정 전체 리소스-관계 토폴로지 (VPC · Subnet · SG · 리소스). 노드 검색으로 하이라이트.': { en: 'Account-wide resource-relationship topology (VPC · Subnet · SG · Resources). Search nodes to highlight.', zh: '账号级资源关系拓扑 (VPC · Subnet · SG · 资源)。通过节点搜索高亮显示。', ja: 'アカウント全体のリソース関係トポロジー（VPC・Subnet・SG・リソース）。ノード検索でハイライト。' },
   '검색 (id · 이름 · IP · 타입)…': { en: 'Search (id · name · IP · type)…', zh: '搜索 (id · 名称 · IP · 类型)…', ja: '検索（id・名前・IP・タイプ）…' },
-  '인프라 그래프가 비어 있습니다 (materializer 미실행).': { en: 'Infra graph is empty (materializer not run).', zh: '基础设施图为空（materializer 未运行）。', ja: 'インフラグラフが空です（materializer 未実行）。' },
+  '표시할 그래프 노드가 없습니다. 수집 상태를 확인하세요.': { en: 'No graph nodes to display. Check collection status.', zh: '没有可显示的图谱节点。请检查采集状态。', ja: '表示するグラフノードがありません。収集状態を確認してください。' },
   '리소스-관계 토폴로지 (VPC · subnet · security group). 트래픽 흐름이 아닌 리소스 배치 그래프.': { en: 'Resource-relationship topology (VPC · subnet · security group). A resource-layout graph, not a traffic flow.', zh: '资源关系拓扑 (VPC · subnet · security group)。这是资源布局图，而非流量图。', ja: 'リソース関係トポロジー（VPC・subnet・security group）。トラフィックフローではなくリソース配置グラフです。' },
   '일부 허브는 이웃이 많아 상위 일부만 표시됩니다 (cap).': { en: 'Some hubs have too many neighbors — only the top few are shown (cap).', zh: '部分枢纽的邻居过多 — 仅显示前几个（cap）。', ja: '一部のハブは近隣が多いため、上位の一部のみ表示されます（cap）。' },
-  '이 리소스의 관계 그래프가 비어 있습니다 (materializer 미실행이거나 네트워크 배치 없음).': { en: 'This resource\'s relationship graph is empty (materializer not run, or no network placement).', zh: '此资源的关系图为空（materializer 未运行，或无网络布局）。', ja: 'このリソースの関係グラフは空です（materializer 未実行、またはネットワーク配置なし）。' },
+  '표시할 관계 노드가 없습니다. 수집 상태를 확인하세요.': { en: 'No relationship nodes to display. Check collection status.', zh: '没有可显示的关系节点。请检查采集状态。', ja: '表示する関係ノードがありません。収集状態を確認してください。' },
   '인벤토리 동기화:': { en: 'Inventory sync:', zh: '清单同步：', ja: 'インベントリ同期:' },
 
   // ---- diagnostic metric tables: per-service titles, subtitles, column tooltips (auto-merged) ----

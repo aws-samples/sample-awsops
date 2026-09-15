@@ -335,9 +335,13 @@ The projection is not an ownership validator:
   partition's `account_id` proves telemetry ownership.
 
 The node's exposed `captured_at` is graph materialization time, not its underlying
-inventory capture or observation time. For trace collection quality, consult
+inventory capture or observation time. For collection quality, consult
 `sql_reader.topology_graph_state`: status, attempt/publication times, observation
-window, retained flag and projected source reasons. The current writer records only
+window, retained flag and projected source reasons. Its current projection owner is
+`01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql`, extending the prior inventory/attempt projections and exposing bounded
+`publishedSources`, producer status, per-source capture/success/attempt/finish clocks,
+aggregate/account scope, failure reasons and numeric loss counters. It does not expose
+raw provider JSON or widen grants. Computed `metadataTruncated` discloses omitted/malformed source metadata; the Python reader and HTTP reader both treat it as stale. The shared vocabulary includes sourceAttempted, not_attempted and count_not_confirmed. The current writer records only
 `class='trace'`; a missing flow/infra state row is not evidence of complete or empty
 coverage. Missing qualifiers or timestamps never establish confidence.
 
@@ -346,7 +350,11 @@ coverage. Missing qualifiers or timestamps never establish confidence.
 Those baseline text assertions do **not** enforce the current topology projection.
 Inspect the current migration and the queue/view cases in
 `scripts/v2/workers/test_graph_collection.py`; this clarification does not retarget
-tests or claim a fresh PostgreSQL execution.
+tests or claim a fresh PostgreSQL execution. The current collection-view projection and
+API repeatable-read/timeout/cap behavior are independently covered by
+`web/lib/graph-read-postgres.test.ts`; see [local test prerequisites](graph-read-contract.md).
+Apply the new collection projection with the existing `make migrate` operator flow;
+the queue projection remains separately owned by the migration above.
 
 ### Trace queue projection / 트레이스 큐 투영
 
@@ -374,3 +382,5 @@ Lambda도 배포해야 한다. [적용 절차 / Rollout](source-sync-observabili
 - [Trace collection-state and edge projections](../../terraform/foundation/migrations/01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql)
 - `scripts/v2/migrate.mjs` (`syncSqlReaderPassword`) — 동기화 / the sync
 - ADR-004 §7 — SQL reader security model; the ADR body is maintained in the private upstream repository.
+
+The bounded collection projection sets `metadataTruncated` when recognized fields have malformed types/ranges or unrecognized status/producer/scope vocabulary. Both HTTP and SQL readers conservatively disclose these omissions; unrelated private fields remain excluded. Nullable source clocks stay compatible with confirmed-zero evidence, and reason ordering uses the C collation for cross-runtime parity.

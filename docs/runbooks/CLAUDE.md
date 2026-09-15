@@ -17,6 +17,7 @@ Operational playbooks organized by scenario. Each follows symptoms → diagnosis
 | [alert-pipeline-troubleshoot.md](alert-pipeline-troubleshoot.md) | Alert pipeline failure response (ADR-008/013) |
 | [cache-warmer-issues.md](cache-warmer-issues.md) | Cache warmer staleness / error response |
 | [tempo-query-generation.md](tempo-query-generation.md) | Tempo query generation — connector/web deployment, admin API schema refresh, cached summaries, and recent-window limits |
+| [graph-read-contract.md](graph-read-contract.md) | Bounded graph requests, collection/read failures, projection/index migrations and local PostgreSQL fixtures |
 | [source-sync-observability.md](source-sync-observability.md) | Public source rollout — graph evidence/identity boundaries, DX assessment scope, migrations and Lambda deployment prerequisites |
 | [cognito-auth-issues.md](cognito-auth-issues.md) | Login failures, Lambda@Edge verification errors |
 | [user-offboarding.md](user-offboarding.md) | Offboarding a departing employee's Cognito account — closing the account-takeover path (ADR-002/009) |
@@ -300,3 +301,7 @@ Additional reads/waits/overhead require more time; no extras are guaranteed.
 CLI inputs and fixture prerequisites: `runtime-foundation.md#controller-cli-contract`.
 Catalog/per-type timeouts: `runtime-verifier-sessions.md#collection-effects-and-proof`.
 Combined checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
+
+## Graph read contract
+
+Graph reads admit at most two requests per shared max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. Source-attempt metadata is supported before the separately gated inventory publisher is activated. See `graph-read-contract.md` for operator rollout and disposable tests; source integration does not establish deployment.
