@@ -1,6 +1,7 @@
 """Offline account, immutable-image and private runtime rollout boundaries."""
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -44,7 +45,7 @@ def account_id(value):
 
 
 def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest, worker_digest,
-                      rollout, *, advisory=False, readiness=""):
+                      rollout, *, advisory=False, readiness="", steampipe_fill_rate=""):
     if (scope not in SCOPES or enabled not in ("", "false", "true")
             or type(rollout) is not bool):
         raise ValueError("Invalid runtime profile or scope")
@@ -55,6 +56,19 @@ def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest
     # Absence is intentional: do not erase an explicit operator tfvars decision.
     readiness_override = {} if readiness == "" else {"ci_readiness_enabled": readiness == "true"}
     profile = target == "dev" and enabled == "true"
+    rate_override = {}
+    if steampipe_fill_rate != "":
+        if not profile or scope != "full":
+            raise ValueError("CI_STEAMPIPE_AWS_FILL_RATE_DEV requires full dev scope with CI_READONLY_RUNTIME_DEV=true")
+        try:
+            if not isinstance(steampipe_fill_rate, str):
+                raise ValueError
+            rate = float(steampipe_fill_rate)
+            if not math.isfinite(rate) or not 0.1 <= rate <= 20:
+                raise ValueError
+        except ValueError:
+            raise ValueError("CI_STEAMPIPE_AWS_FILL_RATE_DEV must be a finite number from 0.1 to 20") from None
+        rate_override["steampipe_aws_fill_rate"] = rate
     if target not in DEV_TARGETS:
         if rollout or scope == "runtime-ecr-bootstrap":
             raise ValueError("Runtime operation requires a development target")
@@ -63,7 +77,8 @@ def runtime_overrides(target, enabled, expected_account, scope, steampipe_digest
         raise ValueError("Runtime bootstrap is dev-only")
     if rollout and (scope != "full" or advisory or (target == "dev" and not profile)):
         raise ValueError("Runtime rollout requires manual full scope and the dev activation profile on dev")
-    result = {"ci_runtime_profile_enabled": profile, "ci_runtime_rollout": rollout, **readiness_override}
+    result = {"ci_runtime_profile_enabled": profile, "ci_runtime_rollout": rollout,
+              **readiness_override, **rate_override}
     if profile or rollout:
         account_id(expected_account)
     if not profile:
@@ -369,6 +384,7 @@ def main():
                 os.environ.get("STEAMPIPE_IMAGE_DIGEST_DEV", ""), os.environ.get("WORKER_IMAGE_DIGEST_DEV", ""),
                 rollout == "true", advisory=args.advisory == "true",
                 readiness=os.environ.get("CI_READINESS_ENABLED_DEV", ""),
+                steampipe_fill_rate=os.environ.get("CI_STEAMPIPE_AWS_FILL_RATE_DEV", ""),
             )
             with OVERRIDES.open("x") as output:
                 json.dump(value, output)
