@@ -41,16 +41,21 @@ The non-self composition guard is not an authorization boundary.
 | Input | Required consumer mapping | Correlation effect |
 |---|---|---|
 | `quality.configuration` | `complete`, `partial`, `unavailable` or `unknown`; default is unknown. Only mark complete after the full relevant target-bearing inventory census is read without failures/caps. Include instance-target reads: the current flow producer attaches its read-gap markers only to IP targets. Do not pass an entry/cluster-filtered graph as a complete census. | Anything except complete withholds configuration uniqueness for both IP and instance targets. Existing node/parent vetoes still apply. |
-| `services.collection` | Pass the actual `/api/graph` **nested** `collection.readStatus`, `readTruncated`, `metadataTruncated`, plus producer `status` and `stale`. `readStatus: ok` permits omitted false flags, as the API does. Preserve root `from`/`capped` too: a subgraph or root cap is not a complete uniqueness index. | Incomplete/unknown graph reads withhold `same-identity` workload edges, while otherwise valid configuration-record matches remain. Visible duplicate/scope conflicts still veto; they are never discarded merely because the read is partial. |
+| `services.collection` | Pass the actual `/api/graph` **nested** `collection.readStatus`, `readTruncated`, `metadataTruncated`, `nodeDrops`, `edgeDrops`, `inputTruncated`, `graphTruncated`, plus producer `status` and `stale`. The API flattens stored `details` into `collection`; do not pass a second `details` wrapper. The current materializer records both drop counts, including zero. Omitted false flags are allowed with a known read; missing/invalid counts cannot certify the stored index. Preserve root `from`/`capped` too. | Successful API reads do not restore rows lost during materialization. Any recorded input/graph truncation or positive drop count withholds `same-identity`; missing/invalid drop counts leave an otherwise successful read unknown. Valid configuration-record matches may remain. Visible duplicate/scope conflicts always veto. |
 | `quality.network` | Pass the NFM batch `status`, `failedCategories`, `cappedCategories` and `windowQuality`; the batch itself is structurally compatible. Missing/invalid fields remain unknown. Observed row caps and missing category-window entries prevent a complete-looking summary. | Partial/failing categories do not globally veto valid observed rows when the relevant configuration/service indexes are complete. This does not turn a sample into complete traffic coverage. |
 
 `summary.quality` exposes configuration read status, service read status separately from
 collector status/staleness, NFM status/failures/caps/window quality, and
-`unresolvedTargetGroups`. Collector `partial` or `stale` does not itself make a complete
-stored-graph read incomplete. All existing ownership/scope conflicts remain vetoes.
+`unresolvedTargetGroups` (grouped target nodes, not distinct target-group resources).
+Collector `partial` or `stale` does not itself make a stored-graph read incomplete
+when zero materialization losses and complete API scope are established.
+All existing ownership/scope conflicts remain vetoes.
 An endpoint can retain a configuration-record link while `workloadReadStatus` explains
 why no workload link was admitted. Consumers must show these distinctions and keep the
 existing account/generation guards when retaining data after a failed refresh.
+With an incomplete configuration census, endpoint observations are counted as
+`ambiguousEndpoints`/`configuration_unverified`, even with no visible candidate;
+that missing candidate is not evidence that no competitor exists.
 
 A group with hidden or indeterminate membership is an unresolved competitor for its
 known region/VPC and target type; unknown dimensions cannot prove disjointness. This

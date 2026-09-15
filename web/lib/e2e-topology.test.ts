@@ -11,7 +11,8 @@ const REGION = 'ap-northeast-2';
 const VPC = 'vpc-app';
 const CAPTURED_AT = '2026-09-11T09:00:00Z';
 const COMPLETE_COLLECTION = { status: 'ok', stale: false, readStatus: 'ok',
-  readTruncated: false, metadataTruncated: false } as const;
+  readTruncated: false, metadataTruncated: false, nodeDrops: 0, edgeDrops: 0,
+  inputTruncated: false, graphTruncated: false } as const;
 
 function endpoint(overrides: Partial<NfmEndpoint> = {}): NfmEndpoint {
   return { ip: '10.0.1.10', region: REGION, vpcId: VPC, ...overrides };
@@ -145,9 +146,32 @@ describe('read completeness, hidden competitors and source clocks', () => {
     expect(identityEdges(buildE2eGraph({ ...source, services: conflicting }))).toEqual([]);
   });
 
+  it.each([
+    { nodeDrops: 1 }, { edgeDrops: 1 }, { inputTruncated: true }, { graphTruncated: true },
+    { nodeDrops: undefined }, { edgeDrops: undefined },
+    { nodeDrops: -1 }, { edgeDrops: 0.5 },
+  ])('withholds workload uniqueness when stored rows were lost or loss counts are unverified: %j', loss => {
+    // The surviving node came from the real trace builder; a missing competitor
+    // cannot be ruled out by the API's independent successful read alone.
+    const snapshot = producedServices();
+    snapshot.collection = { ...COMPLETE_COLLECTION, status: 'partial', ...loss };
+    const graph = buildE2eGraph(input({ configured: configured([eksTarget()]), services: snapshot,
+      network: [observation([flow({ local: endpoint({ podName: 'web-1', podNamespace: 'shop' }) })])] }));
+    expect(identityEdges(graph).map(edge => edge.relation)).toEqual(['configured-endpoint-match']);
+    expect(graph.summary.quality.services.readStatus).not.toBe('ok');
+    expect(graph.summary.quality.services.status).toBe('partial');
+  });
+
+  it('does not upgrade an unknown API read because a stored-loss flag exists', () => {
+    const graph = buildE2eGraph(input({ services: {
+      ...services(), collection: { nodeDrops: 0, edgeDrops: 0, graphTruncated: true },
+    } }));
+    expect(graph.summary.quality.services.readStatus).toBe('unknown');
+  });
+
   it('keeps valid observed tuples under sampled/stale collection and partial NFM when indexes are complete', () => {
     const snapshot = producedServices();
-    snapshot.collection = { status: 'partial', stale: true, readStatus: 'ok' };
+    snapshot.collection = { ...COMPLETE_COLLECTION, status: 'partial', stale: true };
     const graph = buildE2eGraph(input({ configured: configured([eksTarget()]), services: snapshot,
       network: [observation([flow({ local: endpoint({ podName: 'web-1', podNamespace: 'shop' }) })], { capped: true })],
       quality: { configuration: 'complete', network: { status: 'partial',

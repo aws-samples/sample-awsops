@@ -10,8 +10,11 @@ Domain-logic modules shared by API routes and components, mostly React-free (inc
   `quality.configuration` must explicitly certify complete target-bearing reads (including
   instance targets), otherwise configuration uniqueness is withheld. Truncated/indeterminate
   target groups remain scoped unknown competitors, including hidden members.
-  Service uniqueness uses actual `collection.readStatus/readTruncated/metadataTruncated`
-  plus root `from/capped`, not collector partial/stale. Incomplete reads block workload links;
+  Service uniqueness uses actual `collection.readStatus/readTruncated/metadataTruncated`,
+  zero `nodeDrops/edgeDrops`, no `inputTruncated/graphTruncated`, plus root `from/capped`.
+  API read success cannot restore competitors dropped before persistence; missing/invalid
+  loss counts stay unknown. Collector partial/stale alone is separate. Incomplete indexes
+  block workload links (`workloadReadStatus` explains withholding);
   valid configuration-record matches may remain, but visible conflicts always veto.
   Pass `quality.network` batch status/failures/caps/window quality; partial samples do not
   globally veto valid rows. `summary.quality` exposes read/collector distinctions and unresolved groups.

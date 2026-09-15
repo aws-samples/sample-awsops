@@ -34,7 +34,8 @@ export interface ServiceSnapshot {
   captured_at: string | null;
   /** Actual /api/graph fields; collector partial/stale is distinct from read truncation. */
   collection?: { status?: string; stale?: boolean; readStatus?: string;
-    readTruncated?: boolean; metadataTruncated?: boolean };
+    readTruncated?: boolean; metadataTruncated?: boolean;
+    nodeDrops?: number; edgeDrops?: number; inputTruncated?: boolean; graphTruncated?: boolean };
   from?: string;
   capped?: boolean;
 }
@@ -45,6 +46,10 @@ export interface E2eServiceQuality {
   readStatus: 'ok' | 'partial' | 'unavailable' | 'unknown';
   readTruncated: boolean | null;
   metadataTruncated: boolean | null;
+  nodeDrops: number | null;
+  edgeDrops: number | null;
+  inputTruncated: boolean | null;
+  graphTruncated: boolean | null;
 }
 export interface E2eNetworkQuality {
   status: E2eSourceStatus;

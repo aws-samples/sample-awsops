@@ -1,4 +1,4 @@
-// Dagre layered layout for request-flow, policy and E2E graphs.
+// Dagre layered layout for the shared {nodes, edges} graph contract.
 // Returns React Flow positions without mutating caller-owned node dimensions.
 import dagre from '@dagrejs/dagre';
 

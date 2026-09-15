@@ -20,14 +20,27 @@ function serviceQuality(value: unknown): E2eServiceQuality {
   let readStatus: E2eServiceQuality['readStatus'] =
     c.readStatus === 'ok' || c.readStatus === 'partial' || c.readStatus === 'unavailable' ? c.readStatus : 'unknown';
   const flag = (v: unknown) => typeof v === 'boolean' ? v : v === undefined && readStatus !== 'unknown' ? false : null;
+  const count = (v: unknown): number | null => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null;
   const readTruncated = flag(c.readTruncated), metadataTruncated = flag(c.metadataTruncated);
-  if (readStatus !== 'unavailable' && (readTruncated || metadataTruncated || snapshot.capped === true || text(snapshot.from))) readStatus = 'partial';
+  const nodeDrops = count(c.nodeDrops), edgeDrops = count(c.edgeDrops);
+  const inputTruncated = flag(c.inputTruncated), graphTruncated = flag(c.graphTruncated);
+  // API row completeness cannot restore competitors dropped before persistence.
+  // The current materializer records both loss counts, including zero; absent
+  // legacy counts cannot certify uniqueness in the surviving stored rows.
+  if (readStatus === 'ok' && (nodeDrops === null || edgeDrops === null)) readStatus = 'unknown';
+  if (readStatus === 'ok' && (readTruncated || metadataTruncated || inputTruncated || graphTruncated
+    || nodeDrops! > 0 || edgeDrops! > 0 || snapshot.capped === true || text(snapshot.from))) readStatus = 'partial';
   if ((c.readTruncated !== undefined && readTruncated === null)
     || (c.metadataTruncated !== undefined && metadataTruncated === null)
+    || (c.inputTruncated !== undefined && inputTruncated === null)
+    || (c.graphTruncated !== undefined && graphTruncated === null)
+    || (c.nodeDrops !== undefined && nodeDrops === null)
+    || (c.edgeDrops !== undefined && edgeDrops === null)
     || (snapshot.capped !== undefined && typeof snapshot.capped !== 'boolean')
     || (snapshot.from !== undefined && typeof snapshot.from !== 'string')) readStatus = 'unknown';
   return { status: ['ok', 'empty', 'partial', 'error', 'unavailable', 'unknown'].includes(text(c.status)) ? text(c.status) : 'unknown',
-    stale: typeof c.stale === 'boolean' ? c.stale : null, readStatus, readTruncated, metadataTruncated };
+    stale: typeof c.stale === 'boolean' ? c.stale : null, readStatus, readTruncated, metadataTruncated,
+    nodeDrops, edgeDrops, inputTruncated, graphTruncated };
 }
 function networkQuality(value: unknown, observations: unknown): E2eNetworkQuality {
   const raw = record(value);
