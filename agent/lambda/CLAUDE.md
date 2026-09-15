@@ -6,6 +6,13 @@ added 2026-06-18: `core_helpers` / `reachability_read` / `istio_read` — see th
 lists below.
 
 ## Key Files
+- `inventory_read_mcp.py` supports a CloudFront-only exact `query_inventory.resource_id`.
+  Validate the ID before SQL; bind it as a parameter, select only identity and cap at one row.
+  Responses disclose `projection=identity_only` and echo the validated ID. Existing sql_reader
+  view columns/grants suffice; this adds no schema/permission change or AWS mutation.
+  A zero-row identity result includes a fixed note: synced-inventory absence is not AWS absence.
+  Deploy Lambda code through the reviewed Terraform flow before updating the gateway schema.
+  Consumers must match projection and echoed ID; missing/mismatched metadata means unverified lookup.
 - `create_targets.py` — **v1/dark**: an older, hand-written Gateway Target creator (8 gateways,
   no `external-obs`). The live v2 provisioner is `scripts/v2/agentcore/{catalog,provision}.py`
   (9 gateways) — read those, not this file, for the current provisioning path.
@@ -81,6 +88,24 @@ guard — see the section below.
     `query_inventory`/`get_topology`). So it's allowlist projection, and the `data` allowlist
     must be a superset of `inventory_read_mcp.PROJECTIONS` —
     `agent/lambda/test_inventory_view_contract.py` fails the build on drift.
+  - `sql_reader.topology_nodes.meta` is a named-key allowlist, currently owned by
+    `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Any unlisted key,
+    including ownership, ambiguity or target-time fields a future writer might add, remains
+    absent until a reviewed additive migration exposes it. This is a projection rule, not a
+    claim that current raw writers emit those fields.
+  - Interpret evidence per class: flow/infra labels are cached configuration, not live
+    ownership. Trace service/database account or region metadata, when present, is telemetry
+    attribution; database `infra_ref` is a host-name/prefix inference, not identity proof.
+    Trace queues explicitly carry `identityProvenance='telemetry_claim'`; destination ARN
+    qualifiers become nullable `claimedAccountId`/`claimedRegion`, never verified ownership.
+    Missing qualifiers never establish confidence.
+  - Node `captured_at` is graph materialization time, not underlying inventory or event time.
+    `sql_reader.topology_graph_state` supplies trace status, observation-window and retained
+    evidence; its current writer records only `class='trace'`, not flow/infra coverage.
+  - The topology assertions in `test_inventory_view_contract.py` still read the original
+    `01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql`; they do not enforce the current
+    topology projection. Inspect its current owner and the queue/view tests in
+    `scripts/v2/workers/test_graph_collection.py` separately.
   - Effect: a new base-table column is **invisible** until someone adds it to a view (silently
     absent instead of silently exposed — the right direction for a model-invocable tool).
   - `search_path = sql_reader, pg_catalog` → an unqualified `FROM worker_jobs` written by the
@@ -113,3 +138,17 @@ guard — see the section below.
   noted as a follow-up, out of scope here).
 
 Detail: ADR-004 §7 amendment (2026-07-31).
+
+## ENI configuration evidence
+
+`get_eni_details` reports configuration, not connectivity. Missing or malformed `Groups`,
+`IpPermissions`, `IpPermissionsEgress`, `Entries` or `Routes` is partial evidence, with the
+affected resource and field in `unknown`. Actual empty lists remain distinct. Per-group
+completeness includes both rule lists and their peers; preserve other returned evidence.
+
+Route selection requires an explicit associated state; missing state is unknown and
+never permits a fallback. All ENI/component SDK failures expose only allowlisted codes.
+Each SG has a shared 200-row inbound/outbound budget, explicit peer fields and 100-character
+descriptions; omissions are marked partial/truncated. Returned data is configuration only.
+Test with `python3 -m pytest -q agent/lambda/test_network_mcp_eni.py`. Roll out Lambda through
+Terraform, then deploy the AgentCore prompt and reconcile the live Gateway catalog.

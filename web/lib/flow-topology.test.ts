@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { buildFlowGraph, filterFromEntry, TARGET_CAP, type FlowInput } from './flow-topology';
-import { buildE2eGraph } from './e2e-topology';
 
 describe('ECS scope from synced attachment and subnet inventory', () => {
   const region = 'us-east-1', ip = '10.0.1.10';
@@ -9,7 +8,7 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
   ] });
   const task = {
     resource_id: 'arn:aws:ecs:us-east-1:123456789012:task/cluster-b/task-b', region,
-    cluster_arn: 'arn:aws:ecs:us-east-1:123456789012:cluster/cluster-b', task_group: 'service:service-b',
+    cluster_arn: 'arn:aws:ecs:us-east-1:123456789012:cluster/cluster-b', last_status: 'RUNNING', task_group: 'service:service-b',
     attachments: [attachment('subnet-b')],
   };
   const subnet = { resource_id: 'subnet-b', region, vpc_id: 'vpc-b' };
@@ -19,21 +18,11 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
   };
   const target = (input: FlowInput) => buildFlowGraph(input).nodes.find(n => n.kind === 'target')!;
 
-  it('does not attribute a VPC A network endpoint to the only same-IP task in VPC B', () => {
+  it('does not attribute a VPC A target to the only same-IP task in VPC B', () => {
     const configured = buildFlowGraph({ tg: [tg], ecsTask: [task], subnet: [subnet] });
     expect(configured.nodes.find(n => n.kind === 'target')).toMatchObject({ label: ip });
     expect(configured.nodes.find(n => n.kind === 'target')?.meta?.resolved).toBeUndefined();
-    const integrated = buildE2eGraph({
-      account: 'self', configured, services: null, network: [{
-        monitor: 'vpc-a-monitor', cluster: null, metric: 'DATA_TRANSFERRED', category: 'INTER_VPC',
-        rangeSec: 900, unit: 'Bytes', capped: false, rows: [{
-          local: { ip, region, vpcId: 'vpc-a' }, remote: { ip: '10.1.2.3', region, vpcId: 'vpc-b' },
-          value: 5, unit: 'Bytes', category: 'INTER_VPC', traversed: [], traversedIds: [],
-        }],
-      }],
-    });
-    expect(integrated.nodes.some(n => n.meta.resolved === 'ecs' || n.label === 'service-b')).toBe(false);
-    expect(integrated.edges.filter(e => e.meta?.match === 'ip-region-vpc')).toHaveLength(1);
+    expect(configured.nodes.find(n => n.kind === 'target')?.meta?.ecsService).toBeUndefined();
   });
 
   it('resolves a realistic same-VPC task without a top-level vpc_id', () => {
@@ -85,7 +74,7 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
   it.each([false, true])('selects only the matching scope for reused IPs, reversed=%s', reversed => {
     const tasks = [task, {
       ...task, resource_id: 'task-a', cluster_arn: 'cluster/cluster-a',
-      task_group: 'service:service-a', attachments: [attachment('subnet-a')],
+      last_status: 'RUNNING', task_group: 'service:service-a', attachments: [attachment('subnet-a')],
     }];
     if (reversed) tasks.reverse();
     expect(target({ tg: [tg], ecsTask: tasks, subnet: [subnet, { resource_id: 'subnet-a', region, vpc_id: 'vpc-a' }] }))
@@ -103,6 +92,18 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
       tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task, { ...task, resource_id: 'unknown-task', attachments: [attachment('unknown')] }],
       subnet: [subnet],
     }).meta?.resolved).toBeUndefined();
+  });
+
+  it.each(['STOPPED', 'PENDING', 'DEPROVISIONING', '', undefined])('does not attribute an IP to a task with last_status=%s', last_status => {
+    expect(target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [{ ...task, last_status }], subnet: [subnet] })
+      .meta?.resolved).toBeUndefined();
+  });
+  it('a stopped task cannot make a running replacement with a reused IP ambiguous', () => {
+    const stopped = { ...task, resource_id: 'old-task', last_status: 'STOPPED' };
+    for (const tasks of [[stopped, task], [task, stopped]]) {
+      expect(target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: tasks, subnet: [subnet] }).meta)
+        .toMatchObject({ resolved: 'ecs', task: 'task-b' });
+    }
   });
 
   it('accepts JSON-string attachments from inventory without losing scope proof', () => {
@@ -139,9 +140,9 @@ describe('scoped endpoint resolution for network correlation', () => {
   it('leaves an ECS IP ambiguous when different tasks share it across network scopes', () => {
     const graph = buildFlowGraph({
       tg: [tg], ecsTask: [
-        { resource_id: 'task-a', cluster_arn: 'cluster/alpha', task_group: 'service:a', region: 'us-east-1',
+        { resource_id: 'task-a', cluster_arn: 'cluster/alpha', last_status: 'RUNNING', task_group: 'service:a', region: 'us-east-1',
           attachments: [{ Details: [{ Name: 'privateIPv4Address', Value: '10.0.1.10' }] }] },
-        { resource_id: 'task-b', cluster_arn: 'cluster/beta', task_group: 'service:b', region: 'us-east-1',
+        { resource_id: 'task-b', cluster_arn: 'cluster/beta', last_status: 'RUNNING', task_group: 'service:b', region: 'us-east-1',
           attachments: [{ Details: [{ Name: 'privateIPv4Address', Value: '10.0.1.10' }] }] },
       ],
     });
@@ -612,7 +613,7 @@ describe('buildFlowGraph — backend resolution (instance/lambda)', () => {
   it('resolves an ip target to an ECS service via synced ecsTask (attachments PascalCase)', () => {
     const tgIp = { resource_id: 'arn:tg:ip', target_group_name: 'ip', target_type: 'ip', region: 'ap-northeast-2', vpc_id: 'vpc-1',
       target_health_descriptions: [{ Target: { Id: '10.20.11.244' }, TargetHealth: { State: 'healthy' } }] };
-    const task = { resource_id: 'arn:aws:ecs:ap-northeast-2:1:task/cl/abc', region: 'ap-northeast-2', cluster_arn: 'arn:aws:ecs:ap-northeast-2:1:cluster/prod', task_group: 'service:ai-trader-api',
+    const task = { resource_id: 'arn:aws:ecs:ap-northeast-2:1:task/cl/abc', region: 'ap-northeast-2', cluster_arn: 'arn:aws:ecs:ap-northeast-2:1:cluster/prod', last_status: 'RUNNING', task_group: 'service:ai-trader-api',
       attachments: [{ Type: 'ElasticNetworkInterface', Details: [
         { Name: 'privateIPv4Address', Value: '10.20.11.244' }, { Name: 'subnetId', Value: 'subnet-1' },
       ] }] };

@@ -1,0 +1,80 @@
+name: Build Development Runtime Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: Existing backend image to build (repository must already exist)
+        required: true
+        type: choice
+        options: [steampipe, worker]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-image-dev-${{ inputs.component }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a samples development dispatch
+        env:
+          COMPONENT: ${{ inputs.component }}
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REPOSITORY" = "aws-samples/sample-awsops" ] &&
+          [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
+          [ "$GITHUB_REF" = "refs/heads/dev" ] || exit 1
+          case "$COMPONENT" in steampipe|worker) ;; *) exit 1;; esac
+
+  build:
+    needs: [guard]
+    runs-on: sample-awsops
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ap-northeast-2
+      AWS_ACCOUNT_ID_DEV: ${{ secrets.AWS_ACCOUNT_ID_DEV }}
+      RUNTIME_ROLE_ARN: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+      RUNTIME_COMPONENT: ${{ inputs.component }}
+    outputs:
+      project: ${{ steps.image.outputs.project }}
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate independent development account before OIDC
+        run: node scripts/v2/ci/runtime-build.mjs check-role
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
+          aws-region: ap-northeast-2
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          role-duration-seconds: 3600
+      - name: Verify caller, build ARM64 and bind uploaded digest
+        id: image
+        timeout-minutes: 50
+        env:
+          DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
+        run: |
+          set -euo pipefail
+          umask 077
+          CONFIG=$(mktemp "$RUNNER_TEMP/runtime-project.XXXXXX")
+          trap 'rm -f "$CONFIG"' EXIT
+          [ -n "$DEV_TFVARS_B64" ] || { echo "::error::TF_TFVARS_DEV is required"; exit 1; }
+          printf '%s' "$DEV_TFVARS_B64" | base64 --decode > "$CONFIG"
+          unset DEV_TFVARS_B64
+          node scripts/v2/ci/runtime-build.mjs build < "$CONFIG"

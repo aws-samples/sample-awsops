@@ -36,6 +36,8 @@
     "@aws-sdk/credential-providers": "^3.1064.0",
     "@aws-sdk/rds-signer": "^3.1079.0",
     "@dagrejs/dagre": "^3.0.0",
+    "@grafana/lezer-traceql": "1.0.0",
+    "@lezer/lr": "1.4.10",
     "@smithy/protocol-http": "^5.4.6",
     "@smithy/signature-v4": "^5.4.6",
     "@xyflow/react": "^12.11.0",

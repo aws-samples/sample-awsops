@@ -66,9 +66,24 @@ describe('sectionSeverity', () => {
   it('a degraded/failed section body never reads green', () => {
     expect(sectionSeverity('_이 섹션 생성에 실패했습니다 (degraded): boom_')).toBe('warning');
   });
+  it('keeps explicit information neutral rather than displaying an assessed pass', () => {
+    expect(sectionSeverity('[Info]\nNo active invariants. No assessment was performed.', 'Intended vs Actual')).toBe('info');
+    expect(sectionSeverity('[Info] note\n[Warning] failed invariant')).toBe('warning');
+    expect(sectionSeverity('[Info] note\n[Critical] failed invariant')).toBe('critical');
+  });
+  it('preserves existing LLM-section display when findings contain Info markers', () => {
+    expect(sectionSeverity('[Info] Healthy observation.', 'Executive Summary')).toBe('ok');
+    expect(sectionSeverity('[Info]\nHealthy observation.', 'Security Posture')).toBe('ok');
+    expect(sectionSeverity('An inline [Info] example.', 'Intended vs Actual')).toBe('ok');
+  });
 });
 
 describe('ReportSections', () => {
+  it('shows neutral information icons in both card and TOC for an unconfigured assessment', () => {
+    const { container } = render(<ReportSections markdown={'## Intended vs Actual\n\n[Info]\nNo active invariants.'} />);
+    expect(container.querySelectorAll('svg.text-sky-500')).toHaveLength(2);
+    expect(container.querySelectorAll('svg.text-emerald-500')).toHaveLength(0);
+  });
   it('renders section cards + a TOC sidebar; collapse toggle hides the body', () => {
     render(<ReportSections markdown={MD} />);
     // TOC + card both carry the title.

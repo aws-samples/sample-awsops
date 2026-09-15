@@ -70,7 +70,7 @@ When SCP (Service Control Policy) or an IAM boundary blocks specific AWS APIs, o
 | `ce:GetCostAndUsage` | Cannot query Cost data |
 | `cloudwatch:GetMetricData` | Cannot query metrics/graphs |
 
-Because AWSops is read-only, blocked APIs simply render as empty for that item while everything else works. If you need the missing data, add read permission for that API. When a partial query is possible without permission changes, asking the AI assistant returns whatever data is available.
+Because AWSops is read-only, blocked APIs mostly render as empty for that item while everything else works — except per-row hydrate columns: for iam_role.attached_policy_arns a blocked hydrate triggers one hydrate-free retry, so the base inventory stays live and only the policy-list column is absent (the operator restores it via the inventory_sync_hydrate_fallback log's cause-specific remedy — a timeout calls for raising the limiter's fill_rate, an SCP/IAM denial for granting iam:ListAttachedRolePolicies), while blocking iam_user.mfa_enabled — or a failure of the base query itself — fails that type's entire sync run and freezes its last-good data (even after a successful fallback the final run status follows the normal lifecycle, e.g. partial when an unreachable account coincides) (ADR-010 amendment, 2026-09-02). If you need the missing data, add read permission for that API. When a partial query is possible without permission changes, asking the AI assistant returns whatever data is available.
 
 ## Pages load slowly
 

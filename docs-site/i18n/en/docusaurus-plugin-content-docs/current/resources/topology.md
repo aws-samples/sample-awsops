@@ -15,8 +15,8 @@ A page for exploring the request flow (**Route53 → CloudFront → Load Balance
 ## Features
 ### Request-flow graph
 - Visualizes the traffic path **Route53 → CloudFront → Load Balancer → Target Group → target** as nodes and edges.
-- Nodes are distinguished by per-kind color and icon; target nodes change color by their health state (**healthy / unhealthy / draining**, etc.).
-- The header above the graph shows the current **node count** and **edge count**, plus the inventory sync time.
+- Nodes are distinguished by per-kind color and icon; target nodes change color by their health state (**healthy / unhealthy / draining**, etc.). The info line above the graph shows color legend chips for the kinds/health states present in the current graph.
+- The graph shows the current **node count** and **edge count**; a separate collection-evidence area shows source capture/last-success times and read status.
 - Use the **MiniMap** at the bottom-right and the **Controls** at the bottom-left to pan and zoom freely.
 
 ### Entry-point filter
@@ -52,7 +52,7 @@ To see a service's full path, pick an entry point with the **CloudFront** or **L
 :::
 
 :::info Displayed times
-The inventory sync time in the graph header and the times in the detail panel are all in Korea Standard Time (KST, Asia/Seoul).
+Configuration topology shows the range of source capture times, using last-success time as a fallback in host scope when captures are missing. Times use the browser timezone; they are neither the current fetch time nor proof of live traffic. Aggregate account-sweep status and inventory read failures are shown separately. Aggregate success does not establish per-account collection health. Inventory reads apply account selection only. EKS ownership checks cover listed connected clusters in the API’s configured region; other regions and listed not-connected clusters are explicitly unassessed, separately from failed reads. Response caps remain visible even when the graph is empty.
 :::
 
 ## AI analysis tips

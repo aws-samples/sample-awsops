@@ -93,8 +93,8 @@ TARGETS = {
         "tools": [
             {"name": "find_unused_resources", "description": "Find unused/orphaned resources from the synced inventory: orphan target groups (no LB / 0 healthy), empty CloudFront origins, dead/idle load balancers, unattached EBS volumes", "inputSchema": {"type": "object", "properties": {"category": _p("string", "Optional category filter, e.g. 'TargetGroup' or 'CloudFront'")}}},
             {"name": "get_topology", "description": "Return the materialized topology graph (nodes + edges) from Aurora topology_nodes/edges — matches the /api/graph contract. class='flow' (default) for traffic-path graph (CF→LB→TG→target); class='infra' for resource-relationship graph. Optionally scope to a node's 1-hop neighbourhood via resource_id.", "inputSchema": {"type": "object", "properties": {"resource_id": _p("string", "Optional node id (e.g. CloudFront id, ALB ARN) to scope to its 1-hop neighbourhood"), "class": _p("string", "Graph class: 'flow' (traffic path, default) or 'infra' (resource relationships)")}}},
-            {"name": "query_inventory", "description": "List synced resources of one type (alb, nlb, target_group, cloudfront, ec2, ebs, security_group, route53, lambda, ecs_task, ecs_service, s3)", "inputSchema": {"type": "object", "properties": {"resource_type": _p("string", "Resource type to list"), "limit": _p("integer", "Max rows (default 200, cap 500)")}, "required": ["resource_type"]}},
-            {"name": "inventory_summary", "description": "Per-type counts + last-sync freshness (inventory_sync_runs)", "inputSchema": {"type": "object", "properties": {}}},
+            {"name": "query_inventory", "description": "List synced resources of one type (alb, nlb, target_group, cloudfront, ec2, ebs, security_group, route53, lambda, ecs_task, ecs_service, s3); the response includes a freshness block (healthy|degraded|stale|unavailable, from durable last-success + oldest-capture)", "inputSchema": {"type": "object", "properties": {"resource_type": _p("string", "Resource type to list"), "limit": _p("integer", "Max rows (default 200, cap 500)"), "resource_id": _p("string", "Optional exact CloudFront ID; returns only matching identity (id), at most one row")}, "required": ["resource_type"]}},
+            {"name": "inventory_summary", "description": "Per-type host/self-scoped current_count from Aurora inventory resources, plus last-run row_count and per-type freshness (healthy|degraded|stale|unavailable; degraded includes attribute blind spots)", "inputSchema": {"type": "object", "properties": {}}},
         ],
     },
     "reachability-read-target": {
@@ -127,7 +127,16 @@ TARGETS = {
         "tools": [
             {"name": "get_path_trace_methodology", "description": "Network troubleshooting methodology", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "find_ip_address", "description": "Locate ENIs by IP", "inputSchema": {"type": "object", "properties": {"ip_address": _p("string", "IP")}, "required": ["ip_address"]}},
-            {"name": "get_eni_details", "description": "ENI details with SG, NACL, routes", "inputSchema": {"type": "object", "properties": {"eni_id": _p("string", "ENI ID")}, "required": ["eni_id"]}},
+            {"name": "get_eni_details", "description": (
+                "ENI SG/NACL/route configuration evidence (describe-only, not a live connectivity test). "
+                "An error, partial=true, unknown entries, or routeSelection.status=unknown means affected "
+                "evidence is unassessed; never infer no rules/no routes or healthy/failed connectivity "
+                "from these gaps. Attribute SG gaps by unknown[].resourceId: empty inbound/outbound with "
+                "SG partial=true is unassessed; both empty with SG partial=false confirms only that "
+                "group is ruleless. Preserve other returned evidence. Each SG has a shared 200-peer-row "
+                "inbound/outbound budget and 100-character descriptions; truncation is unknown/partial. "
+                "Route selection requires explicit associated state."
+            ), "inputSchema": {"type": "object", "properties": {"eni_id": _p("string", "ENI ID")}, "required": ["eni_id"]}},
             {"name": "list_vpcs", "description": "List VPCs", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "get_vpc_network_details", "description": "Full VPC config", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
             {"name": "get_vpc_flow_logs", "description": "VPC flow logs", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
@@ -385,7 +394,7 @@ TARGETS = {
             {"name": "prometheus_query_range", "description": "Range PromQL query over a time window", "inputSchema": {"type": "object", "properties": {"query": _p("string", "PromQL"), "start": _p("string", "1h/30m or unix/ISO (default now-1h)"), "end": _p("string", "unix/ISO (default now)"), "step": _p("string", "Step seconds (default 60)")}, "required": ["query"]}},
             {"name": "prometheus_labels", "description": "List label names", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "prometheus_series", "description": "Find series matching a selector", "inputSchema": {"type": "object", "properties": {"match": _p("string", "Series selector e.g. up{job=\"x\"}")}, "required": ["match"]}},
-            {"name": "prometheus_metric_meta", "description": "Per-metric type (metadata) + label names for the given metrics (read-only)", "inputSchema": {"type": "object", "properties": {"metrics": {"type": "array", "items": {"type": "string"}, "description": "Metric names (max 12)"}}, "required": ["metrics"]}},
+            {"name": "prometheus_metric_meta", "description": "Per-metric type (metadata) + label names + tri-state exists (true/false/null=unknown on backend failure or spent time budget) for the given metrics (read-only)", "inputSchema": {"type": "object", "properties": {"metrics": {"type": "array", "items": {"type": "string"}, "description": "Metric names (max 12)"}}, "required": ["metrics"]}},
         ],
     },
     # Loki datasource (v1 family #3) — read-only LogQL. monitoring gateway. User-supplied endpoint via
@@ -408,11 +417,11 @@ TARGETS = {
         "lambda_key": "tempo-mcp",
         "description": "Tempo read-only — TraceQL search, get trace, tags, tag values (4 tools)",
         "tools": [
-            {"name": "tempo_schema", "description": "Introspect tag names (cached)", "inputSchema": {"type": "object", "properties": {}}},
+            {"name": "tempo_schema", "description": "Discover bounded custom TraceQL attributes from the last hour, raw compatibility tags, optional version/type evidence, and separate name/type truncation flags. Builtins are excluded; v1 fallback has unknown scope and types.", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "tempo_search", "description": "Search traces by TraceQL over a time window", "inputSchema": {"type": "object", "properties": {"query": _p("string", "TraceQL"), "start": _p("string", "1h/30m or unix sec (default now-1h)"), "end": _p("string", "unix sec (default now)"), "limit": _p("string", "Max traces")}, "required": ["query"]}},
             {"name": "tempo_get_trace", "description": "Fetch a full trace by hex trace ID", "inputSchema": {"type": "object", "properties": {"trace_id": _p("string", "Hex trace ID")}, "required": ["trace_id"]}},
             {"name": "tempo_search_tags", "description": "List searchable tag names", "inputSchema": {"type": "object", "properties": {}}},
-            {"name": "tempo_tag_values", "description": "List values of a tag", "inputSchema": {"type": "object", "properties": {"tag": _p("string", "Tag name")}, "required": ["tag"]}},
+            {"name": "tempo_tag_values", "description": "List values of a custom attribute or raw tag. Qualified/dot-prefixed identifiers use v2 typed values, with v1 raw-key fallback on HTTP 404/405/501 (scope/type evidence is lost); raw tag names use v1.", "inputSchema": {"type": "object", "properties": {"tag": _p("string", 'Raw tag key or TraceQL custom identifier, e.g. span.http.status_code, resource.service.name, .custom, span."key with spaces"')}, "required": ["tag"]}},
         ],
     },
     # Mimir datasource (v1 family #5 final) — read-only PromQL (Prometheus-compatible, multi-tenant). monitoring.
@@ -426,7 +435,7 @@ TARGETS = {
             {"name": "mimir_query_range", "description": "Range PromQL query", "inputSchema": {"type": "object", "properties": {"query": _p("string", "PromQL"), "start": _p("string", "1h/30m or unix (default now-1h)"), "end": _p("string", "unix (default now)"), "step": _p("string", "Step seconds (default 60)")}, "required": ["query"]}},
             {"name": "mimir_labels", "description": "List label names", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "mimir_series", "description": "Find series matching a selector", "inputSchema": {"type": "object", "properties": {"match": _p("string", "Series selector")}, "required": ["match"]}},
-            {"name": "mimir_metric_meta", "description": "Per-metric type (metadata) + label names for the given metrics (read-only)", "inputSchema": {"type": "object", "properties": {"metrics": {"type": "array", "items": {"type": "string"}, "description": "Metric names (max 12)"}}, "required": ["metrics"]}},
+            {"name": "mimir_metric_meta", "description": "Per-metric type (metadata) + label names + tri-state exists (true/false/null=unknown on backend failure or spent time budget) for the given metrics (read-only)", "inputSchema": {"type": "object", "properties": {"metrics": {"type": "array", "items": {"type": "string"}, "description": "Metric names (max 12)"}}, "required": ["metrics"]}},
         ],
     },
 }

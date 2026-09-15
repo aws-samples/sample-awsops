@@ -21,6 +21,10 @@ same read-only substrate, not an escalation path for mutating actions.
 영구 동결(FROZEN, do-not-enable)이며, 향후 추가되는 비동기 작업도 같은 read-only substrate 안에
 머문다(mutate 작업으로 가는 확장 경로가 아니다).
 
+## Development release proof
+
+After runtime/readiness activation, every dev Deploy Web release submits one owned `noop` Lambda job and one owned `noop-heavy` Fargate job through the authenticated application. Both must reach `succeeded` with matching identity/runtime and a successful result after complete catalog and AgentCore/model proof. These are real, billed executions; enqueue acknowledgement does not pass. Worker dispatch must remain enabled for this gate. See the [runtime release contract](../runbooks/runtime-foundation.md#collection-contention--수집-경합).
+
 ## Current design / 현행 설계
 
 **Flow / 흐름**
@@ -73,7 +77,7 @@ ledger 행을 먼저 쓰고(권위), 그 다음 best-effort SQS send. 디스패�
 
 ## Decisions (ADRs) / 결정
 
-- **[ADR-005 — AWS mutation & autonomy (FROZEN)](../../decisions/005-aws-mutation-autonomy-frozen.md)** — P2
+- **[ADR-005 — AWS mutation & autonomy (FROZEN)](../decisions/005-aws-mutation-autonomy-frozen.md)** — P2
   implements the *safety hooks* (idempotency token, kill-switch, mutate/unknown-type guard, dry-run
   pass-through) as a dark/inactive substrate for a potential future mutate-action registry — this is
   architecturally reserved, not an implicit escalation path. AWS-resource mutation stays FROZEN per
@@ -84,7 +88,7 @@ ledger 행을 먼저 쓰고(권위), 그 다음 best-effort SQS send. 디스패�
   경로가 아니다. AWS 리소스 변경은 ADR-005에 따라 계속 FROZEN이며, 이를 실제 mutate 작업(승인
   워크플로·1급 롤백·mutate-action 레지스트리 자체)으로 전환하려면 구현이 아니라 새 ADR 결정이
   필요하다.
-- **[ADR-001 — v2 foundation (ECS/Fargate + Aurora split)](../../decisions/001-v2-foundation.md)** — the job
+- **[ADR-001 — v2 foundation (ECS/Fargate + Aurora split)](../decisions/001-v2-foundation.md)** — the job
   ledger is the Aurora `worker_jobs` table (an infra table orthogonal to the 7 app-state tables); the
   worker_jobs row, not the SFN execution status, is the source of truth.
   / 잡 ledger는 Aurora `worker_jobs` 테이블(7개 app-state 테이블과 직교하는 인프라 테이블); 권위는
@@ -95,6 +99,9 @@ ledger 행을 먼저 쓰고(권위), 그 다음 best-effort SQS send. 디스패�
 | File / 파일 | Role / 역할 |
 |---|---|
 | `terraform/foundation/workers.tf` | All P2 infra, gated on `var.workers_enabled` (SQS+DLQ, S3 results, SFN Standard, 4 Lambdas, Fargate task def, ECR, IAM, reaper schedule, kill-switch ESM, web SQS grant) |
+| `scripts/v2/ci_tf_assets.py` | Shared locked layer builder and saved-plan asset validation / 공통 해시 고정 레이어 설치·계획 asset 검증 |
+| `scripts/v2/ci/pg8000-requirements.txt` | Authoritative Lambda-layer wheel lock / Lambda 레이어 wheel lock |
+| `scripts/v2/test_ci_tf_assets.py` | Installer, real targeted-plan and artifact regressions / 설치·실제 타깃 계획·artifact 회귀 검사 |
 | `scripts/v2/workers/db.py` | Shared Aurora access (pg8000) + `worker_jobs` CRUD with conditional, terminal-immutable transitions |
 | `scripts/v2/workers/dispatcher.py` | SQS-triggered: type guard + `StartExecution` (`ExecutionAlreadyExists`=ok) + `ReportBatchItemFailures` |
 | `scripts/v2/workers/handlers.py` | Job-type registry (read/compute only; `noop`→lambda, `noop-heavy`→fargate) |
@@ -108,6 +115,7 @@ ledger 행을 먼저 쓰고(권위), 그 다음 best-effort SQS send. 디스패�
 | `web/lib/jobs.ts` | Shared `enqueueJob()` (ledger insert + SQS send; `ON CONFLICT` idempotency dedup) — used by `/api/jobs`, `/api/diagnosis`, `/api/compliance/run` |
 | `web/lib/db.ts` | Shared `getPool()` (node-postgres) used by jobs routes |
 | `scripts/v2/workers.mjs` | `make workers`: build+push the arm64 Fargate worker image |
+| `.github/workflows/build-runtime-images.yml` + `scripts/v2/ci/runtime-build.mjs` | Manual dev worker image build: configured secret account, existing repository, ARM64 digest verification |
 
 ## Status / 상태
 
@@ -134,8 +142,25 @@ These are reuse-critical — re-read before extending the backbone.
   `State=Disabled` before asserting "stays queued." / ESM disable는 폴러 드레인에 ~1–2분 → 킬스위치
   테스트는 Disabled 후 ~120초 대기 후 assert.
 - **`pg8000` is vendored as a Lambda layer** (pure-python, arch-agnostic) — attached to
-  worker/status/reaper only; dispatcher needs no DB. / `pg8000`은 Lambda 레이어로 벤더링(순수 파이썬,
-  아키텍처 무관); 디스패처는 DB 불요.
+  the Lambda consumers that need PostgreSQL; dispatcher needs no DB. / `pg8000`은 PostgreSQL이
+  필요한 Lambda 소비자에 레이어로 벤더링(순수 파이썬, 아키텍처 무관); 디스패처는 DB 불요.
+- Both worker and inventory Lambda layers use `scripts/v2/ci_tf_assets.py build-layer` and
+  the authoritative `scripts/v2/ci/pg8000-requirements.txt` lock: wheel hashes, no bytecode,
+  normalized modes/timestamps. `CI_ASSETS_READY=true` validates the restored layer instead.
+  Prepare invalidates old markers and removes stale ZIPs before planning. Markers record
+  installed-file hashes; validation separately checks the fixed required-import list.
+  To bump pg8000, update the lock, verified wheel hashes and all four shared-layer requirements:
+  `scripts/v2/{workers,steampipe,incident,remediation}/requirements.txt`. The validator requires
+  these five pins to match. Terraform rebuild triggers include the lock and installer; neither
+  Lambda layer has a bare-pip fallback. The separate Steampipe container still has its own
+  `scripts/v2/steampipe/Dockerfile` pin/installer, outside this Lambda lock and validator.
+  Check the required-import list when updating the locked wheels.
+  워커·인벤토리 레이어는 같은 lock과 설치기를 사용하며 CI 복원본은 재설치하지 않고 검사합니다.
+  버전 변경은 lock·검증된 wheel 해시·workers/steampipe/incident/remediation의 네 requirements를
+  함께 수정하며 다섯 pin이 같아야 합니다. 별도 Steampipe 컨테이너의 Dockerfile pin·설치기는
+  이 Lambda lock·검사 범위 밖입니다.
+  prepare는 이전 marker·ZIP을 정리하고 파일 해시를 기록합니다. 검증 시 고정 import 목록도
+  확인하므로 wheel 변경 때 이 목록을 함께 점검합니다.
 - **Reuse the existing `aws_security_group.service`** for the worker Lambdas + Fargate. The P1c
   Aurora SG uses inline ingress that already allows `service`; adding a standalone SG/ingress rule
   causes a perpetual diff. / 기존 `aws_security_group.service` 재사용 — Aurora SG 인라인 ingress가

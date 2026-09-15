@@ -14,7 +14,8 @@ def lambda_handler(event, _ctx):
             return {"job_id": job_id, "status": "skipped"}  # already terminal/claimed (C7)
         fn, _rt = handlers.REGISTRY[type_]
         result, _artifact = fn(payload, dry_run)  # C15: inline result only; artifact upload deferred to P3
-        db.finish_job(conn, job_id, "succeeded", result=result)
+        if db.finish_job(conn, job_id, "succeeded", result=result) == 0:
+            return {"job_id": job_id, "status": "skipped"}  # another terminal write won
         return {"job_id": job_id, "status": "succeeded"}
     finally:
         conn.close()

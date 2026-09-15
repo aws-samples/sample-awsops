@@ -1,0 +1,781 @@
+"""Offline behavior tests; neither the workflow nor AWS is dispatched."""
+import base64
+from copy import deepcopy
+from datetime import datetime, timezone
+import fnmatch
+import json
+import os
+from pathlib import Path
+import subprocess
+
+from botocore.exceptions import ClientError
+import pytest
+import yaml
+
+import ci_deployment_audit as audit
+
+
+ACCOUNT = "123456789012"
+PROJECT = "fixture-dev"
+REGION = "ap-northeast-2"
+ROLE = f"arn:aws:iam::{ACCOUNT}:role/fixture-ci"
+RUNTIME_ROLE = f"arn:aws:iam::{ACCOUNT}:role/{PROJECT}-agentcore"
+CLUSTER = f"arn:aws:ecs:{REGION}:{ACCOUNT}:cluster/{PROJECT}"
+FUNCTION = f"arn:aws:lambda:{REGION}:{ACCOUNT}:function:{PROJECT}-inv-sync"
+RULE = f"arn:aws:events:{REGION}:{ACCOUNT}:rule/{PROJECT}-inv-sync-ec2"
+RUNTIME = f"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT}:runtime/awsops_v2_agent-fixture"
+CODE_SHA = base64.b64encode(b"x" * 32).decode()
+GATEWAY_ID = "awsops-v2-data-gateway-abcdefgh12"
+GATEWAY_ARN = f"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT}:gateway/{GATEWAY_ID}"
+TARGET_ID = "Abcd123456"
+RDS_LAMBDA = f"arn:aws:lambda:{REGION}:{ACCOUNT}:function:{PROJECT}-agent-rds-mcp"
+NOW = datetime(2026, 9, 14, 4, 0, tzinfo=timezone.utc)
+ENV = {
+    "GITHUB_REPOSITORY": "aws-samples/sample-awsops",
+    "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/dev",
+    "AWS_REGION": REGION, "AWS_ACCOUNT_ID_DEV": ACCOUNT, "RUNTIME_ROLE_ARN": ROLE,
+    "EXPECTED_PROJECT": PROJECT,
+}
+BACKEND = 'bucket = "fixture-state"\nkey = "dev/terraform.tfstate"\nregion = "ap-northeast-2"\nencrypt = true\nuse_lockfile = true\n'
+
+
+def definition(component, revision=3):
+    return f"arn:aws:ecs:{REGION}:{ACCOUNT}:task-definition/{PROJECT}-{component}:{revision}"
+
+
+def outputs():
+    return {
+        "runtime_deployment": {
+            "schema_version": 1, "account_id": ACCOUNT, "region": REGION, "project": PROJECT,
+            "features": {"inventory": True, "agentcore": True, "workers": True},
+            "web": {"cluster": PROJECT, "service": f"{PROJECT}-web",
+                    "task_role_arn": f"arn:aws:iam::{ACCOUNT}:role/{PROJECT}-task"},
+            "inventory": {"service": f"{PROJECT}-steampipe",
+                          "task_definition_arn": definition("steampipe"),
+                          "task_role_arn": f"arn:aws:iam::{ACCOUNT}:role/{PROJECT}-steampipe-task",
+                          "sync_function_name": f"{PROJECT}-inv-sync", "sync_function_arn": FUNCTION,
+                          "sync_code_sha256": CODE_SHA},
+            "agentcore": {"role_arn": RUNTIME_ROLE,
+                          "runtime_arn_param": f"/ops/{PROJECT}/agentcore/runtime_arn"},
+            "known": {"cloudfront_distribution_id": "E123456789ABC"},
+        },
+        "agentcore": {"project": PROJECT, "region": REGION, "role_arn": RUNTIME_ROLE,
+                      "lambda_arns": {"rds-mcp": RDS_LAMBDA},
+                      "ssm_runtime_arn": f"/ops/{PROJECT}/agentcore/runtime_arn"},
+        "agent_sql_reader_secret_arn":
+            f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:ops/{PROJECT}/agent/sql-reader-Ab1234",
+        "aurora_database": "awsops",
+    }
+
+
+class FakeAWS:
+    def __init__(self):
+        self.calls = []
+        self.overrides = {}
+
+    def __call__(self, service, operation, **params):
+        self.calls.append((service, operation, params))
+        key = (service, operation)
+        if key in self.overrides:
+            value = self.overrides[key]
+            if isinstance(value, Exception):
+                raise value
+            return deepcopy(value)
+        if operation == "get_caller_identity":
+            return {"Account": ACCOUNT, "Arn": f"arn:aws:sts::{ACCOUNT}:assumed-role/fixture-ci/session"}
+        if operation == "describe_services":
+            name = params["services"][0]
+            component = name.removeprefix(f"{PROJECT}-")
+            return {"services": [{"serviceName": name, "clusterArn": CLUSTER,
+                                 "serviceArn": f"arn:aws:ecs:{REGION}:{ACCOUNT}:service/{PROJECT}/{name}",
+                                 "status": "ACTIVE", "desiredCount": 1, "runningCount": 1,
+                                 "pendingCount": 0, "taskDefinition": definition(component)}]}
+        if operation == "list_tasks":
+            component = params["serviceName"].removeprefix(f"{PROJECT}-")
+            suffix = "a" if component == "web" else "b"
+            return {"taskArns": [f"arn:aws:ecs:{REGION}:{ACCOUNT}:task/{PROJECT}/{suffix * 32}"]}
+        if operation == "describe_tasks":
+            component = "web" if params["tasks"][0].endswith("a" * 32) else "steampipe"
+            return {"tasks": [{"taskArn": params["tasks"][0], "clusterArn": CLUSTER,
+                              "group": f"service:{PROJECT}-{component}",
+                              "lastStatus": "RUNNING", "healthStatus": "HEALTHY",
+                              "taskDefinitionArn": definition(component)}]}
+        if operation == "get_function_configuration":
+            return {"FunctionArn": FUNCTION, "State": "Active", "LastUpdateStatus": "Successful",
+                    "CodeSha256": CODE_SHA, "LastModified": "2026-09-14T03:00:00.000+0000"}
+        if operation == "describe_rule":
+            return {"Arn": RULE, "State": "ENABLED", "ScheduleExpression": "rate(15 minutes)"}
+        if operation == "list_targets_by_rule":
+            return {"Targets": [{"Id": "inv-sync-ec2", "Arn": FUNCTION, "Input": '{"type":"all"}'}]}
+        if operation == "get_policy":
+            return {"Policy": json.dumps({"Statement": [{
+                "Effect": "Allow", "Principal": {"Service": "events.amazonaws.com"},
+                "Action": "lambda:InvokeFunction", "Resource": FUNCTION,
+                "Condition": {"ArnLike": {"AWS:SourceArn": RULE}},
+            }]})}
+        if operation == "get_metric_data":
+            return {"MetricDataResults": [
+                {"Id": q["Id"], "StatusCode": "Complete", "Timestamps": [NOW.replace(hour=3)],
+                 "Values": [0 if q["Id"] == "lambda_errors" else 2]}
+                for q in params["MetricDataQueries"]
+            ]}
+        if operation == "get_parameter":
+            return {"Parameter": {"Value": RUNTIME}}
+        if operation == "get_agent_runtime":
+            return {"agentRuntimeArn": RUNTIME, "agentRuntimeName": "awsops_v2_agent",
+                    "status": "READY", "roleArn": RUNTIME_ROLE, "agentRuntimeVersion": "2"}
+        if operation == "list_gateways":
+            return {"items": [{"name": "awsops-v2-data-gateway", "gatewayId": GATEWAY_ID}]}
+        if operation == "get_gateway":
+            return {"gatewayId": GATEWAY_ID, "gatewayArn": GATEWAY_ARN,
+                    "name": "awsops-v2-data-gateway", "roleArn": RUNTIME_ROLE,
+                    "status": "READY", "statusReasons": []}
+        if operation == "list_gateway_targets":
+            return {"items": [{"name": "rds-mcp-target", "targetId": TARGET_ID}]}
+        if operation == "get_gateway_target":
+            return {"gatewayArn": GATEWAY_ARN, "targetId": TARGET_ID, "name": "rds-mcp-target",
+                    "status": "READY", "statusReasons": [],
+                    "targetConfiguration": {"mcp": {"lambda": {"lambdaArn": RDS_LAMBDA}}}}
+        if operation == "describe_db_clusters":
+            return {"DBClusters": [{
+                "DBClusterArn": f"arn:aws:rds:{REGION}:{ACCOUNT}:cluster:{PROJECT}-aurora",
+                "DBClusterIdentifier": f"{PROJECT}-aurora", "DatabaseName": "awsops",
+                "HttpEndpointEnabled": True,
+            }]}
+        if operation == "execute_statement":
+            sql = params["sql"]
+            if sql == audit.READER_SQL:
+                records = [{"reader": True, "restricted": True}]
+            elif sql == audit.LEDGER_SQL:
+                records = [{"resource_type": "cloudfront", "status": "succeeded", "row_count": 1,
+                            "last_success_row_count": 1, "unknown_attribute_count": 0,
+                            "started_at": "2026-09-14T03:30:00Z",
+                            "finished_at": "2026-09-14T03:31:00Z",
+                            "last_success_at": "2026-09-14T03:31:00Z"}]
+            elif sql == audit.COUNTS_SQL:
+                records = [{"resource_type": "cloudfront", "row_count": 1,
+                            "oldest_at": "2026-09-14T03:31:00Z", "newest_at": "2026-09-14T03:31:00Z"}]
+            elif sql == audit.CLOUDFRONT_SQL:
+                records = [{"row_count": 1, "oldest_at": "2026-09-14T03:31:00Z",
+                            "newest_at": "2026-09-14T03:31:00Z"}]
+            else:
+                raise AssertionError("Unexpected SQL")
+            return {"formattedRecords": json.dumps(records)}
+        raise AssertionError(f"Unexpected mock operation: {service}/{operation}")
+
+
+@pytest.mark.parametrize("key,value", [
+    ("GITHUB_REPOSITORY", "Atom-oh/awsops"), ("GITHUB_EVENT_NAME", "pull_request"),
+    ("GITHUB_REF", "refs/heads/main"), ("GITHUB_REF", "refs/heads/preview"),
+    ("AWS_REGION", "us-east-1"), ("AWS_ACCOUNT_ID_DEV", ""),
+    ("RUNTIME_ROLE_ARN", ROLE.replace(ACCOUNT, "999999999999")),
+    ("EXPECTED_PROJECT", "../other"),
+])
+def test_context_rejected_before_any_api(key, value):
+    aws = FakeAWS()
+    with pytest.raises(ValueError):
+        audit.collect(outputs(), {**ENV, key: value}, aws, NOW)
+    assert aws.calls == []
+
+
+@pytest.mark.parametrize("path,value", [
+    (("runtime_deployment", "account_id"), "999999999999"),
+    (("runtime_deployment", "project"), "foreign"),
+    (("runtime_deployment", "web", "service"), "foreign-web"),
+    (("runtime_deployment", "inventory", "sync_function_arn"), FUNCTION.replace(ACCOUNT, "999999999999")),
+    (("runtime_deployment", "inventory", "task_definition_arn"), definition("foreign")),
+    (("agentcore", "role_arn"), RUNTIME_ROLE.replace(PROJECT, "foreign")),
+    (("agent_sql_reader_secret_arn",), f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:rds!cluster-master"),
+])
+def test_foreign_outputs_rejected_before_any_api(path, value):
+    data, aws = outputs(), FakeAWS()
+    parent = data
+    for key in path[:-1]:
+        parent = parent[key]
+    parent[path[-1]] = value
+    with pytest.raises(ValueError):
+        audit.collect(data, ENV, aws, NOW)
+    assert aws.calls == []
+
+
+def test_complete_observations_are_not_complete_inventory():
+    aws = FakeAWS()
+    report = audit.collect(outputs(), ENV, aws, NOW)
+    assert report["deployment"]["web"]["status"] == "OBSERVED"
+    assert report["deployment"]["web"]["target_matches_state"] is None
+    assert report["deployment"]["steampipe"]["running_revisions"] == [3]
+    assert report["deployment"]["sync_lambda"]["code_matches_state"] is True
+    assert report["deployment"]["agentcore"]["role_matches_state"] is True
+    assert report["events"]["schedule"]["permission_matches"] is True
+    assert report["events"]["metrics"]["lambda_errors"]["sum"] == 0
+    assert report["data"]["coverage"] == "observed_types_only"
+    assert report["data"]["completeness"] == "UNKNOWN"
+    assert report["data"]["known_cloudfront"]["row_count"] == 1
+    assert report["read_errors"] == 0
+    encoded = json.dumps(report)
+    assert ACCOUNT not in encoded and "arn:aws" not in encoded and "sql-reader" not in encoded
+    queries = [p for _, op, p in aws.calls if op == "execute_statement"]
+    assert len(queries) == 4
+    assert all(p["secretArn"] == outputs()["agent_sql_reader_secret_arn"] for p in queries)
+    assert all(p["sql"].lstrip().startswith("SELECT ") for p in queries)
+
+
+@pytest.mark.parametrize("result", [
+    {"Id": "lambda_errors", "StatusCode": "Complete", "Timestamps": [], "Values": []},
+    {"Id": "lambda_errors", "StatusCode": "PartialData", "Timestamps": [NOW], "Values": [0]},
+    {"Id": "lambda_errors", "StatusCode": "Forbidden", "Timestamps": [], "Values": []},
+])
+def test_missing_or_partial_metrics_are_unknown_not_zero(result):
+    aws = FakeAWS()
+    aws.overrides["cloudwatch", "get_metric_data"] = {"MetricDataResults": [result]}
+    item = audit.collect(outputs(), ENV, aws, NOW)["events"]["metrics"]["lambda_errors"]
+    assert item["status"] == "UNKNOWN" and item["sum"] is None
+
+
+def test_foreign_task_not_described():
+    aws = FakeAWS()
+    aws.overrides["ecs", "list_tasks"] = {"taskArns": [CLUSTER.replace(ACCOUNT, "999999999999")]}
+    assert audit.collect(outputs(), ENV, aws, NOW)["deployment"]["web"]["status"] == "UNKNOWN"
+    assert not any(op == "describe_tasks" for _, op, _ in aws.calls)
+
+
+@pytest.mark.parametrize("runtime", ["PENDING", "", RUNTIME.replace(ACCOUNT, "999999999999")])
+def test_pending_and_foreign_runtime_never_reach_control_api(runtime):
+    aws = FakeAWS()
+    aws.overrides["ssm", "get_parameter"] = {"Parameter": {"Value": runtime}}
+    assert audit.collect(outputs(), ENV, aws, NOW)["deployment"]["agentcore"]["status"] != "READY"
+    assert not any(op == "get_agent_runtime" for _, op, _ in aws.calls)
+
+
+def test_runtime_ready_is_only_observed_without_endpoint_or_applied_version_proof():
+    result = audit.collect(outputs(), ENV, FakeAWS(), NOW)["deployment"]["agentcore"]
+    assert result["status"] == "OBSERVED"
+    assert result["runtime_status"] == "READY"
+    assert result["invocation_readiness"] == "UNKNOWN"
+
+
+def test_wrong_caller_stops_after_sts():
+    aws = FakeAWS()
+    aws.overrides["sts", "get_caller_identity"] = {
+        "Account": ACCOUNT, "Arn": f"arn:aws:sts::{ACCOUNT}:assumed-role/wrong/session"}
+    with pytest.raises(ValueError):
+        audit.collect(outputs(), ENV, aws, NOW)
+    assert len(aws.calls) == 1
+
+
+def test_errors_are_safe_and_other_sections_survive():
+    aws = FakeAWS()
+    aws.overrides["lambda", "get_function_configuration"] = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "SECRET raw-token=never-print"}}, "GetFunctionConfiguration")
+    report = audit.collect(outputs(), ENV, aws, NOW)
+    assert report["deployment"]["sync_lambda"] == {"status": "UNKNOWN", "reason": "access_denied"}
+    assert report["deployment"]["web"]["status"] == "OBSERVED"
+    assert report["read_errors"] == 1
+    assert "SECRET" not in json.dumps(report) and "raw-token" not in json.dumps(report)
+
+
+def test_unexpected_database_identity_never_reads_inventory():
+    aws = FakeAWS()
+    aws.overrides["rds-data", "execute_statement"] = {
+        "formattedRecords": '[{"reader":false,"restricted":false}]'}
+    assert audit.collect(outputs(), ENV, aws, NOW)["data"]["status"] == "UNKNOWN"
+    assert len([1 for _, op, _ in aws.calls if op == "execute_statement"]) == 1
+
+
+def test_read_adapter_rejects_mutations_without_creating_client():
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Client creation must not happen")
+    api = audit.ReadAPI(forbidden)
+    with pytest.raises(audit.ReadOnlyViolation):
+        api("ecs", "run_task", cluster=CLUSTER)
+    with pytest.raises(audit.ReadOnlyViolation):
+        api("rds-data", "execute_statement", sql="DELETE FROM inventory_resources")
+
+
+def workflow():
+    path = Path(__file__).resolve().parents[2] / ".github/workflows/audit-deployment.yml"
+    return yaml.safe_load(path.read_text())
+
+
+@pytest.mark.parametrize("key,value", [
+    ("GITHUB_REPOSITORY", "foreign/repo"), ("GITHUB_REF", "refs/heads/main"),
+    ("GITHUB_EVENT_NAME", "push"),
+])
+def test_actual_workflow_guard_rejects_wrong_context(key, value):
+    script = workflow()["jobs"]["guard"]["steps"][0]["run"]
+    result = subprocess.run(["bash", "-c", script], env={**os.environ, **ENV, key: value},
+                            capture_output=True, text=True)
+    assert result.returncode != 0
+
+
+def test_actual_workflow_guard_accepts_development():
+    script = workflow()["jobs"]["guard"]["steps"][0]["run"]
+    assert subprocess.run(["bash", "-c", script], env={**os.environ, **ENV},
+                          capture_output=True).returncode == 0
+
+
+@pytest.mark.parametrize("failure", ["", "init", "output", "agentcore_disabled", "agentcore_enabled"])
+def test_actual_capture_keeps_outputs_private_and_removes_backend(tmp_path, failure):
+    directory, binaries = tmp_path / "audit", tmp_path / "bin"
+    directory.mkdir(mode=0o700)
+    binaries.mkdir()
+    fake = binaries / "terraform"
+    fake.write_text("""#!/usr/bin/env python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+with open(os.environ['CALL_LOG'], 'a') as log: log.write(json.dumps(args) + '\\n')
+assert not any(k.startswith(('TF_LOG', 'TF_CLI_ARGS')) for k in os.environ)
+if 'init' in args:
+    data = pathlib.Path(os.environ['TF_DATA_DIR'])
+    data.mkdir()
+    (data / 'terraform.tfstate').write_text('PRIVATE_BACKEND')
+if os.environ['FAILURE'] in args or ('agentcore' in args and os.environ['FAILURE'].startswith('agentcore_')):
+    print('SECRET_TEST_DETAIL', file=sys.stderr)
+    sys.exit(1)
+print(json.dumps({'features': {'agentcore': os.environ['FAILURE'] != 'agentcore_disabled'}})
+      if args[-1] == 'runtime_deployment' else '{}')
+""")
+    fake.chmod(0o755)
+    steps = workflow()["jobs"]["audit"]["steps"]
+    capture = next(s["run"] for s in steps if s.get("name", "").startswith("Capture only"))
+    cleanup = next(s for s in steps if s.get("name", "").startswith("Always remove"))
+    env = {**os.environ, **ENV, "PATH": f"{binaries}:{os.environ['PATH']}",
+           "AUDIT_DIR": str(directory), "FAILURE": failure, "CALL_LOG": str(tmp_path / "calls"),
+           "BACKEND_B64": base64.b64encode(b'bucket="private-test-state"').decode(),
+           "TF_LOG": "TRACE", "TF_CLI_ARGS": "-not-an-audit-argument"}
+    result = subprocess.run(["bash", "-c", capture], env=env, capture_output=True, text=True)
+    succeeded = failure in ("", "agentcore_disabled")
+    assert (result.returncode == 0) == succeeded
+    assert not (directory / "backend.hcl").exists() and not (directory / "tfdata").exists()
+    assert "PRIVATE_BACKEND" not in result.stdout + result.stderr
+    assert "SECRET_TEST_DETAIL" not in result.stdout + result.stderr
+    assert directory.stat().st_mode & 0o777 == 0o700
+    if succeeded:
+        assert {p.stem for p in directory.iterdir()} == set(audit.OUTPUTS)
+        assert all(p.stat().st_mode & 0o777 == 0o600 for p in directory.iterdir())
+        calls = [json.loads(line) for line in (tmp_path / "calls").read_text().splitlines()]
+        assert len(calls) == (4 if failure == "agentcore_disabled" else 5)
+        assert all(args[1] == "output" and args[2] == "-json" for args in calls[1:])
+        if failure == "agentcore_disabled":
+            assert json.loads((directory / "agentcore.json").read_text()) is None
+            assert not any(args[-1] == "agentcore" for args in calls)
+    assert cleanup["if"] == "always()"
+    subprocess.run(["bash", "-c", cleanup["run"]], env=env, check=True)
+    assert not directory.exists()
+
+
+def test_actual_cli_retains_safe_partial_report_and_fails_on_read_error(tmp_path, monkeypatch, capsys):
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary"))
+    for key, value in outputs().items():
+        (tmp_path / f"{key}.json").write_text(json.dumps(value))
+    aws = FakeAWS()
+    aws.overrides["lambda", "get_function_configuration"] = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "SECRET_SHOULD_NOT_APPEAR"}}, "GetFunctionConfiguration")
+    monkeypatch.setattr(audit, "ReadAPI", lambda factory: aws)
+    assert audit.main(["audit", "--directory", str(tmp_path)]) == 1
+    text = capsys.readouterr().out
+    report = json.loads(text)
+    assert report["deployment"]["web"]["status"] == "OBSERVED"
+    assert report["read_errors"] == 1
+    assert "SECRET_SHOULD_NOT_APPEAR" not in text + (tmp_path / "summary").read_text()
+
+
+def test_actual_cli_rejects_bad_context_without_any_client(monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.setattr(audit, "ReadAPI", lambda _: pytest.fail("must fail before client factory"))
+    assert audit.main(["guard"]) == 1
+    assert json.loads(capsys.readouterr().out) == {"status": "UNKNOWN", "reason": "audit_failed"}
+
+
+def test_old_steampipe_revision_cannot_satisfy_applied_revision():
+    data = outputs()
+    data["runtime_deployment"]["inventory"]["task_definition_arn"] = definition("steampipe", 4)
+    observed = audit.collect(data, ENV, FakeAWS(), NOW)["deployment"]["steampipe"]
+    assert observed["status"] == "NOT_READY" and observed["target_matches_state"] is False
+
+
+def test_missing_task_health_is_unknown():
+    aws = FakeAWS()
+    original = aws.__call__
+    def read(service, operation, **params):
+        response = original(service, operation, **params)
+        if operation == "describe_tasks":
+            del response["tasks"][0]["healthStatus"]
+        return response
+    assert audit.collect(outputs(), ENV, read, NOW)["deployment"]["web"]["status"] == "UNKNOWN"
+
+
+def test_desired_running_task_is_not_reported_as_actually_running_while_pending():
+    aws = FakeAWS()
+    def read(service, operation, **params):
+        response = aws(service, operation, **params)
+        if operation == "describe_tasks":
+            response["tasks"][0]["lastStatus"] = "PENDING"
+        return response
+    item = audit.collect(outputs(), ENV, read, NOW)["deployment"]["web"]
+    assert item["status"] != "READY"
+    assert item["running_revisions"] == []
+    assert item["healthy_tasks"] == 0
+
+
+def test_disabled_inventory_and_agentcore_do_not_discover_resources():
+    data, aws = outputs(), FakeAWS()
+    data["runtime_deployment"]["features"].update(inventory=False, agentcore=False)
+    data["agentcore"] = None
+    data["agent_sql_reader_secret_arn"] = ""
+    result = audit.collect(data, ENV, aws, NOW)
+    assert result["deployment"]["steampipe"]["status"] == "DISABLED"
+    assert result["deployment"]["agentcore"]["status"] == "DISABLED"
+    assert result["data"]["completeness"] == "UNKNOWN"
+    assert all(service in ("sts", "ecs") for service, _, _ in aws.calls)
+
+
+def test_wrong_schedule_target_or_permission_never_looks_ready():
+    aws = FakeAWS()
+    aws.overrides["events", "list_targets_by_rule"] = {"Targets": [{
+        "Id": "inv-sync-ec2", "Arn": FUNCTION.replace(PROJECT, "foreign"), "Input": '{"type":"all"}'}]}
+    item = audit.collect(outputs(), ENV, aws, NOW)["events"]["schedule"]
+    assert item["status"] == "NOT_READY" and item["target_all_matches"] is False
+    assert all(params["FunctionName"] == FUNCTION for _, op, params in aws.calls if op == "get_policy")
+    aws.overrides["lambda", "get_policy"] = {"Policy": '{"Statement":[]}'}
+    assert audit.collect(outputs(), ENV, aws, NOW)["events"]["schedule"]["permission_matches"] is False
+
+
+def test_absent_lambda_policy_preserves_schedule_observations():
+    aws = FakeAWS()
+    aws.overrides["lambda", "get_policy"] = ClientError(
+        {"Error": {"Code": "ResourceNotFoundException", "Message": "private detail"}}, "GetPolicy")
+    item = audit.collect(outputs(), ENV, aws, NOW)["events"]["schedule"]
+    assert item["status"] == "NOT_READY"
+    assert item["enabled"] is True and item["target_all_matches"] is True
+    assert item["permission_matches"] is False
+
+
+def test_foreign_runtime_role_is_not_ready():
+    aws = FakeAWS()
+    aws.overrides["bedrock-agentcore-control", "get_agent_runtime"] = {
+        "agentRuntimeArn": RUNTIME, "agentRuntimeName": "awsops_v2_agent", "status": "READY",
+        "roleArn": RUNTIME_ROLE.replace(PROJECT, "foreign"), "agentRuntimeVersion": "2"}
+    item = audit.collect(outputs(), ENV, aws, NOW)["deployment"]["agentcore"]
+    assert item["status"] == "NOT_READY" and item["role_matches_state"] is False
+
+
+def test_session_policy_cannot_authorize_mutations_or_master_secret():
+    policy = audit.session_policy(ENV, outputs())
+    def permits(action, resource):
+        return any(s["Effect"] == "Allow" and action in s["Action"]
+                   and any(fnmatch.fnmatchcase(resource, pattern)
+                           for pattern in ([s["Resource"]] if isinstance(s["Resource"], str) else s["Resource"]))
+                   for s in policy["Statement"])
+    assert permits("ecs:DescribeServices", f"arn:aws:ecs:{REGION}:{ACCOUNT}:service/{PROJECT}/{PROJECT}-web")
+    assert permits("lambda:GetFunctionConfiguration", FUNCTION)
+    assert permits("rds-data:ExecuteStatement", f"arn:aws:rds:{REGION}:{ACCOUNT}:cluster:{PROJECT}-aurora")
+    assert permits("secretsmanager:GetSecretValue", outputs()["agent_sql_reader_secret_arn"])
+    assert not permits("secretsmanager:GetSecretValue",
+                       f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:rds!cluster-master")
+    assert not permits("ssm:GetParameter", f"arn:aws:ssm:{REGION}:{ACCOUNT}:parameter/foreign/password")
+    for action in ("ecs:RunTask", "ecs:StopTask", "ecs:UpdateService", "lambda:InvokeFunction",
+                   "events:PutRule", "iam:PutRolePolicy", "s3:PutObject"):
+        assert not permits(action, FUNCTION)
+    for statement in policy["Statement"]:
+        assert all("*" not in action for action in statement["Action"])
+        if statement["Resource"] == "*":
+            assert statement["Condition"]
+
+
+def test_session_policy_fits_sts_limit_at_max_project_length():
+    data = json.loads(json.dumps(outputs()).replace(PROJECT, "a" * 40))
+    policy = audit.session_policy({**ENV, "EXPECTED_PROJECT": "a" * 40}, data)
+    assert len(json.dumps(policy, separators=(",", ":"))) <= 2048
+
+
+def test_guard_publishes_only_validated_session_restriction(tmp_path, monkeypatch, capsys):
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("AUDIT_DIR", str(tmp_path))
+    monkeypatch.setenv("BACKEND_B64", base64.b64encode(BACKEND.encode()).decode())
+    assert audit.main(["guard"]) == 0
+    name, value = output.read_text().strip().split("=", 1)
+    assert name == "policy_file"
+    assert json.loads(Path(value).read_text()) == audit.backend_policy({**ENV, "BACKEND_B64": base64.b64encode(BACKEND.encode()).decode()})
+    assert Path(value).stat().st_mode & 0o777 == 0o600
+    assert not capsys.readouterr().out
+    workflow_config = workflow()["jobs"]["audit"]["steps"]
+    credential_step = next(s for s in workflow_config if s.get("uses", "").startswith("aws-actions/"))
+    assert credential_step["with"]["inline-session-policy"] == "${{ steps.backend_session.outputs.session_policy }}"
+    assert credential_step["with"]["role-duration-seconds"] == 900
+
+
+def test_missing_policy_output_sink_fails_closed(monkeypatch, capsys):
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("BACKEND_B64", base64.b64encode(BACKEND.encode()).decode())
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    assert audit.main(["guard"]) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "UNKNOWN"
+
+
+def test_list_tasks_uses_resource_star_and_cluster_condition():
+    policy = audit.session_policy(ENV, outputs())
+    grant = next(s for s in policy["Statement"] if "ecs:ListTasks" in s["Action"])
+    assert grant["Resource"] == "*"
+    assert grant["Condition"]["ArnEquals"]["ecs:cluster"] == CLUSTER
+    assert grant["Condition"]["StringEquals"]["aws:RequestedRegion"] == REGION
+
+
+@pytest.mark.parametrize("encrypt", [None, False, True])
+def test_audit_accepts_the_same_optional_state_encryption_contract(encrypt):
+    key = f"arn:aws:kms:{REGION}:{ACCOUNT}:key/11111111-1111-1111-1111-111111111111"
+    line = "" if encrypt is None else f"encrypt = {str(encrypt).lower()}\n"
+    backend = BACKEND.replace("encrypt = true\n", line) + f'kms_key_id = "{key}"\n'
+    policy = audit.backend_policy({**ENV, "BACKEND_B64": base64.b64encode(backend.encode()).decode()})
+    decrypt = next(s for s in policy["Statement"] if "kms:Decrypt" in s["Action"])
+    assert decrypt["Resource"] == (key if encrypt is True else "*")
+    assert decrypt["Condition"]["StringEquals"]["kms:ViaService"] == f"s3.{REGION}.amazonaws.com"
+    assert decrypt["Condition"]["StringEquals"]["kms:EncryptionContext:aws:s3:arn"] == [
+        "arn:aws:s3:::fixture-state", "arn:aws:s3:::fixture-state/dev/terraform.tfstate"]
+
+
+def test_backend_policy_scopes_state_and_kms_encryption_context():
+    policy = audit.backend_policy({**ENV, "BACKEND_B64": base64.b64encode(BACKEND.encode()).decode()})
+    s3 = next(s for s in policy["Statement"] if "s3:GetObject" in s["Action"])
+    assert s3["Resource"] == ["arn:aws:s3:::fixture-state", "arn:aws:s3:::fixture-state/dev/terraform.tfstate"]
+    assert s3["Condition"]["StringEquals"]["aws:ResourceAccount"] == ACCOUNT
+    kms = next(s for s in policy["Statement"] if "kms:Decrypt" in s["Action"])
+    conditions = kms["Condition"]["StringEquals"]
+    assert conditions["aws:ResourceAccount"] == ACCOUNT
+    assert conditions["kms:EncryptionContext:aws:s3:arn"] == s3["Resource"]
+    assert conditions["kms:ViaService"] == "s3.ap-northeast-2.amazonaws.com"
+    assert "kms:CallerAccount" not in conditions
+    assert len(json.dumps(policy, separators=(",", ":"))) <= 2048
+
+
+@pytest.mark.parametrize("extra", [
+    'bucket = "other"\n', 'profile = "other"\n', 'role_arn = "anything"\n',
+    'endpoints = {}\n', 'key = "*"\n', 'region = "us-east-1"\n',
+])
+def test_backend_scope_rejects_duplicate_or_unsupported_configuration(extra):
+    with pytest.raises(ValueError):
+        audit.backend_policy({**ENV, "BACKEND_B64": base64.b64encode((BACKEND + extra).encode()).decode()})
+
+
+def test_workload_policy_is_published_after_private_capture_without_aws(tmp_path, monkeypatch, capsys):
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    for key, value in outputs().items():
+        (tmp_path / f"{key}.json").write_text(json.dumps(value))
+    output = tmp_path / "policy-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("AUDIT_DIR", str(tmp_path))
+    monkeypatch.setattr(audit, "ReadAPI", lambda _: pytest.fail("policy construction must not call AWS"))
+    assert audit.main(["audit-policy", "--directory", str(tmp_path)]) == 0
+    policy_file = Path(output.read_text().strip().split("=", 1)[1])
+    policy = json.loads(policy_file.read_text())
+    assert policy == audit.session_policy(ENV, outputs())
+    assert not any(action.startswith(("s3:", "kms:")) for s in policy["Statement"] for action in s["Action"])
+    assert not capsys.readouterr().out
+    steps = workflow()["jobs"]["audit"]["steps"]
+    captures = next(i for i, s in enumerate(steps) if s.get("name", "").startswith("Capture only"))
+    scope = next(i for i, s in enumerate(steps) if s.get("id") == "read_scope")
+    credentials = [i for i, s in enumerate(steps) if s.get("uses", "").startswith("aws-actions/")]
+    assert credentials[0] < captures < scope < credentials[1]
+    assert steps[credentials[1]]["with"]["inline-session-policy"] == "${{ steps.workload_session.outputs.session_policy }}"
+
+
+@pytest.mark.parametrize("step_id", ["backend_session", "workload_session"])
+def test_workflow_masks_policy_before_output_and_removes_private_file(tmp_path, step_id):
+    policy = audit.backend_policy({**ENV, "BACKEND_B64": base64.b64encode(BACKEND.encode()).decode()})
+    path = tmp_path / "session-policy.json"
+    path.write_text(json.dumps(policy))
+    step = next(s for s in workflow()["jobs"]["audit"]["steps"] if s.get("id") == step_id)
+    harness = """
+const masked = [];
+let published = false;
+const core = {
+  setSecret: text => masked.push(text),
+  setOutput: (name, text) => {
+    if (!masked.includes(text)) throw new Error('policy must be masked first');
+    published = name === 'session_policy';
+  },
+  setFailed: () => { process.exitCode = 1; }
+};
+"""
+    result = subprocess.run(["node", "-e", harness + step["with"]["script"] +
+                             "\nconsole.log(JSON.stringify({published, masks: masked.length}));"],
+                            env={**os.environ, "POLICY_FILE": str(path), "AUDIT_DIR": str(tmp_path)},
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["published"] and summary["masks"] > 1
+    assert not path.exists()
+
+
+def test_mixed_capture_times_are_reported_without_invented_product_freshness():
+    aws = FakeAWS()
+    def read(service, operation, **params):
+        result = aws(service, operation, **params)
+        if operation == "execute_statement" and params["sql"] == audit.COUNTS_SQL:
+            rows = json.loads(result["formattedRecords"])
+            rows[0]["oldest_at"] = "2026-09-13T01:00:00Z"
+            result["formattedRecords"] = json.dumps(rows)
+        return result
+    result = audit.collect(outputs(), ENV, read, NOW)["data"]
+    assert result["resource_counts"][0]["oldest_at"] == "2026-09-13T01:00:00Z"
+    assert "fresh_within_2h" not in json.dumps(result)
+    assert result["completeness"] == "UNKNOWN"
+
+
+def test_malformed_section_retains_other_observations():
+    aws = FakeAWS()
+    aws.overrides["events", "list_targets_by_rule"] = {"Targets": [None]}
+    result = audit.collect(outputs(), ENV, aws, NOW)
+    assert result["events"]["schedule"] == {"status": "UNKNOWN", "reason": "unexpected_state"}
+    assert result["data"]["status"] == "OBSERVED"
+
+
+def test_metric_forbidden_counts_as_read_error_without_losing_other_groups():
+    aws = FakeAWS()
+    aws.overrides["cloudwatch", "get_metric_data"] = {"MetricDataResults": [
+        {"Id": "lambda_errors", "StatusCode": "Forbidden", "Timestamps": [], "Values": []}]}
+    result = audit.collect(outputs(), ENV, aws, NOW)
+    assert result["events"]["metrics"]["lambda_errors"]["reason"] == "access_denied"
+    assert result["read_errors"] == 1
+    assert result["data"]["status"] == "OBSERVED"
+
+
+@pytest.mark.parametrize("api_error", [False, True])
+def test_summary_write_error_does_not_publish_exception(tmp_path, monkeypatch, capsys, api_error):
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    for key, value in outputs().items():
+        (tmp_path / f"{key}.json").write_text(json.dumps(value))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path))
+    aws = FakeAWS()
+    if api_error:
+        aws.overrides["lambda", "get_function_configuration"] = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "PRIVATE"}}, "GetFunctionConfiguration")
+    monkeypatch.setattr(audit, "ReadAPI", lambda factory: aws)
+    assert audit.main(["audit", "--directory", str(tmp_path)]) == int(api_error)
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert report["deployment"]["web"]["status"] == "OBSERVED" and report["read_errors"] == int(api_error)
+    assert captured.err.strip() == "::warning::audit_summary_unavailable"
+    assert str(tmp_path) not in captured.err
+
+
+@pytest.mark.parametrize("kind", ["backend", "workload"])
+@pytest.mark.parametrize("value,allowed", [("", False), (" \n\t", False), ('{"Statement":[]}', True)])
+def test_empty_policy_stops_actual_shell_before_credentials(tmp_path, kind, value, allowed):
+    steps = workflow()["jobs"]["audit"]["steps"]
+    index = next(i for i, step in enumerate(steps)
+                 if step.get("name") == f"Require the {kind} session restriction")
+    assertion, credentials = steps[index], steps[index + 1]
+    assert credentials["uses"] == "aws-actions/configure-aws-credentials@v4"
+    assert credentials["if"] == "${{ success() && steps." + kind + "_session.outputs.session_policy != '' }}"
+    marker = tmp_path / "credentials-called"
+    result = subprocess.run(["bash", "-c", assertion["run"] + '\nprintf called > "$CREDENTIAL_MARKER"\n'],
+                            env={**os.environ, "SESSION_POLICY": value, "CREDENTIAL_MARKER": str(marker)},
+                            capture_output=True, text=True)
+    assert (result.returncode == 0) == allowed
+    assert marker.exists() == allowed
+
+
+def test_inventory_disabled_remains_explicit_when_reader_is_available():
+    data = outputs()
+    data["runtime_deployment"]["features"]["inventory"] = False
+    result = audit.collect(data, ENV, FakeAWS(), NOW)
+    assert result["data"]["inventory_enabled"] is False
+    assert result["data"]["completeness"] == "UNKNOWN"
+    assert result["events"]["schedule"]["status"] == "DISABLED"
+
+
+def test_gateway_drift_reports_only_match_flags_without_following_foreign_arns():
+    aws = FakeAWS()
+    foreign_role = RUNTIME_ROLE.replace(PROJECT, "old-project")
+    foreign_lambda = RDS_LAMBDA.replace(ACCOUNT, "999999999999")
+    reason = f"Role denied access to lambda {foreign_lambda}; SECRET_FIXTURE"
+    aws.overrides["bedrock-agentcore-control", "get_gateway"] = {
+        "gatewayId": GATEWAY_ID, "gatewayArn": GATEWAY_ARN, "name": "awsops-v2-data-gateway",
+        "roleArn": foreign_role, "status": "READY", "statusReasons": []}
+    aws.overrides["bedrock-agentcore-control", "get_gateway_target"] = {
+        "gatewayArn": GATEWAY_ARN, "targetId": TARGET_ID, "name": "rds-mcp-target",
+        "status": "UPDATE_UNSUCCESSFUL", "statusReasons": [reason],
+        "targetConfiguration": {"mcp": {"lambda": {"lambdaArn": foreign_lambda}}}}
+    result = audit.collect(outputs(), ENV, aws, NOW)["deployment"]["data_gateway"]
+    assert result["gateway_role_matches_state"] is False
+    assert result["target_lambda_matches_state"] is False
+    assert result["status"] == "NOT_READY"
+    assert not any(word in json.dumps(result) for word in ("fingerprint", "sha256", "hmac"))
+    assert "mentions_permission" in result["target_status_reasons"]["items"][0]["categories"]
+    assert "arn:aws" not in json.dumps(result) and "SECRET_FIXTURE" not in json.dumps(result)
+    assert not any(foreign_lambda in json.dumps(params, default=str) for _, _, params in aws.calls)
+    assert next(params for _, op, params in aws.calls if op == "get_gateway")["gatewayIdentifier"] == GATEWAY_ID
+
+
+def test_foreign_data_gateway_identifier_is_rejected_before_get():
+    aws = FakeAWS()
+    aws.overrides["bedrock-agentcore-control", "list_gateways"] = {
+        "items": [{"name": "awsops-v2-data-gateway", "gatewayId": "another-gateway-abcdefgh12"}]}
+    result = audit.collect(outputs(), ENV, aws, NOW)["deployment"]["data_gateway"]
+    assert result["status"] == "UNKNOWN"
+    assert not any(op == "get_gateway" for _, op, _ in aws.calls)
+
+
+def test_gateway_role_evidence_survives_target_read_denial():
+    aws = FakeAWS()
+    aws.overrides["bedrock-agentcore-control", "get_gateway_target"] = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "PRIVATE"}}, "GetGatewayTarget")
+    result = audit.collect(outputs(), ENV, aws, NOW)
+    gateway = result["deployment"]["data_gateway"]
+    assert gateway["gateway_role_matches_state"] is True
+    assert gateway["target_status"] == "UNKNOWN"
+    assert gateway["target_reason"] == "access_denied"
+    assert result["read_errors"] == 1
+
+
+def test_control_plane_reads_use_region_bound_wildcard_authorization():
+    policy = audit.session_policy(ENV, outputs())
+    for action in ("GetAgentRuntime", "GetGateway", "ListGatewayTargets", "GetGatewayTarget"):
+        grant = next(s for s in policy["Statement"] if f"bedrock-agentcore:{action}" in s["Action"])
+        assert grant["Resource"] == "*"
+        assert grant["Condition"]["StringEquals"]["aws:RequestedRegion"] == REGION
+
+
+@pytest.mark.parametrize("state", ["FAILED", "UPDATE_UNSUCCESSFUL", "DELETING"])
+def test_failed_gateway_is_not_ready_even_when_identifiers_match(state):
+    aws = FakeAWS()
+    aws.overrides["bedrock-agentcore-control", "get_gateway"] = {
+        "gatewayId": GATEWAY_ID, "gatewayArn": GATEWAY_ARN, "name": "awsops-v2-data-gateway",
+        "roleArn": RUNTIME_ROLE, "status": state, "statusReasons": []}
+    result = audit.collect(outputs(), ENV, aws, NOW)["deployment"]["data_gateway"]
+    assert result["gateway_role_matches_state"] is True
+    assert result["status"] == "NOT_READY"
+
+
+def test_missing_rds_target_is_not_ready():
+    aws = FakeAWS()
+    aws.overrides["bedrock-agentcore-control", "list_gateway_targets"] = {"items": []}
+    result = audit.collect(outputs(), ENV, aws, NOW)["deployment"]["data_gateway"]
+    assert result["status"] == "NOT_READY" and result["target_status"] == "MISSING"
+
+
+def test_audit_directory_is_selected_with_runtime_environment(tmp_path):
+    job = workflow()["jobs"]["audit"]
+    assert "runner." not in json.dumps(job.get("env", {}))
+    step = next(s for s in job["steps"] if s.get("name") == "Select private audit directory")
+    env_file = tmp_path / "github-env"
+    runner_temp = tmp_path / "runner temp"
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", step["run"]],
+                            env={**os.environ, "RUNNER_TEMP": str(runner_temp),
+                                 "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2",
+                                 "GITHUB_ENV": str(env_file)}, capture_output=True, text=True)
+    assert result.returncode == 0
+    assert env_file.read_text() == f"AUDIT_DIR={runner_temp}/deployment-audit-123-2\n"
+    assert job["steps"].index(step) < next(i for i, s in enumerate(job["steps"])
+                                           if s.get("id") == "scope")

@@ -42,7 +42,7 @@ export default function LogStreamView({ rows }: { rows: LogRow[] }) {
     <Card className="overflow-hidden">
       <div className="border-b border-ink-100 px-3 py-2 text-[12px] text-ink-500">
         {/* the connector/normalizer may truncate upstream — the count is what is DISPLAYED */}
-        {tt(`로그 ${rows.length.toLocaleString()}줄 — 최신순, 표시 상한 적용 가능`)}
+        {tt(`로그 ${rows.length.toLocaleString('en-US')}줄 — 최신순, 표시 상한 적용 가능`)}
       </div>
       <div className="max-h-[500px] overflow-auto">
         {sorted.map((r, i) => {

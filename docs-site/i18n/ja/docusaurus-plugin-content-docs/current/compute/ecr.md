@@ -31,15 +31,16 @@ ECR リポジトリとイメージ情報を確認できるページです。
 | URI | リポジトリ URI(イメージのプッシュ/プル用アドレス) |
 | Tag mutability | タグの変更可否(MUTABLE/IMMUTABLE) |
 | Scan on Push (Basic) | リポジトリレベルの基本スキャン設定 (Yes/No) |
+| Encryption | 暗号化タイプ（値そのまま — AES256/KMS/KMS_DSSE など） |
 | Created | 作成日 |
 
-暗号化タイプは**テーブルのカラムではありません** — 下の詳細パネルで確認します。Scan on Push (Basic) カラムはリポジトリレベルの基本スキャン設定のみを反映し、レジストリレベルの Inspector 拡張スキャンは反映しません。
+Encryption カラムは encryption_configuration から派生した暗号化タイプです（値をそのまま表示 — AES256/KMS/KMS_DSSE など）。Scan on Push (Basic) カラムはリポジトリレベルの基本スキャン設定のみを反映し、レジストリレベルの Inspector 拡張スキャンは反映しません。
 
 ### 詳細パネル
 リポジトリをクリックすると詳細情報を確認できます:
 - **Identity セクション**: Name、Account、Region、ARN、Registry ID、URI、Created
 - **Config セクション**: Tag Mutability、Image Scanning Configuration(Scan on Push を含む)、Lifecycle Policy
-- **Security セクション**: Encryption Configuration(AES256/KMS)
+- **Security セクション**: Encryption Type（派生パススルー — AES256/KMS/KMS_DSSE など）+ 生の Encryption Configuration
 - **Tags セクション**: リポジトリに設定されたタグ
 
 ## 使い方

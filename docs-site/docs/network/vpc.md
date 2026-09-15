@@ -21,7 +21,7 @@ AWS 네트워크 인프라를 한눈에 파악할 수 있는 통합 모니터링
 | 탭 | 리소스 | 주요 정보 |
 |---|--------|----------|
 | **VPCs** | Virtual Private Cloud | CIDR, 테넌시, DNS 설정 |
-| **Subnets** | 서브넷 | AZ, CIDR, 퍼블릭/프라이빗 |
+| **Subnets** | 서브넷 | AZ, CIDR, 퍼블릭/프라이빗, VPC별 서브넷 수 바 차트 |
 | **Security Groups** | 보안 그룹 | 인바운드/아웃바운드 규칙 |
 | **Route Tables** | 라우팅 테이블 | 라우트, 서브넷 연결 |
 | **Transit Gateway** | TGW | VPC 연결, 라우트 테이블 |

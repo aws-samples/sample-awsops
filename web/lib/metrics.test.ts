@@ -136,6 +136,15 @@ describe('bedrockModelMetrics', () => {
     expect(r.totalCost).toBeCloseTo(11.1);
     // combined token series sums input+output per timestamp
     expect(r.series.find((s) => s.t === '2026-06-10T00:00:00Z')?.tokens).toBe(2_600_000);
+    // gap L184: per-model series preserved (invocations; in+out tokens merged per timestamp)
+    expect(m.invSeries).toEqual([
+      { t: '2026-06-10T00:00:00Z', v: 10 },
+      { t: '2026-06-10T01:00:00Z', v: 5 },
+    ]);
+    expect(m.tokenSeries).toEqual([
+      { t: '2026-06-10T00:00:00Z', v: 2_600_000 },
+      { t: '2026-06-10T01:00:00Z', v: 400_000 },
+    ]);
   });
 
   it('returns empty when ListMetrics finds no models (no GetMetricData call)', async () => {
@@ -271,6 +280,46 @@ describe('liveResourceTrends (gap L118)', () => {
   });
 });
 
+describe('ebs_volume live spec (gap L233 — measured IOPS)', () => {
+  it('latest grid: perSecond metrics query Period 300 and divide the newest COMPLETE 5-min bucket by 300 (fresh, never a partial underestimate)', async () => {
+    cwSend.mockResolvedValueOnce({ MetricDataResults: [
+      // newest-first (CloudWatch default): a 2-min-old PARTIAL bucket must be skipped —
+      // dividing a still-filling Sum by the period systematically understates the headline.
+      { Id: 'lm0',
+        Timestamps: [new Date(Date.now() - 2 * 60_000), new Date(Date.now() - 7 * 60_000)],
+        Values: [100, 600] }, // partial (skip) · complete 600/300 = 2 IOPS
+    ] });
+    const { liveResourceMetrics } = await import('./metrics');
+    const rows = await liveResourceMetrics('ebs_volume', 'vol-0abc');
+    expect(rows.find((r) => r.label === 'Read IOPS')?.value).toBe('2 IOPS');
+    // the perSecond queries went out at Period 300 (an hourly bucket made the headline
+    // 1–2h stale — round-3 gate); non-perSecond stay 3600
+    const q = (cwSend.mock.calls[0][0] as { input: { MetricDataQueries: { MetricStat: { Period: number; Metric: { MetricName: string } } }[] } }).input.MetricDataQueries;
+    expect(q.find((x) => x.MetricStat.Metric.MetricName === 'VolumeReadOps')?.MetricStat.Period).toBe(300);
+    expect(q.find((x) => x.MetricStat.Metric.MetricName === 'BurstBalance')?.MetricStat.Period).toBe(3600);
+  });
+  it("latest grid: only-partial data renders '—' (never a partial-bucket underestimate)", async () => {
+    cwSend.mockResolvedValueOnce({ MetricDataResults: [
+      { Id: 'lm0', Timestamps: [new Date(Date.now() - 60_000)], Values: [600] },
+    ] });
+    const { liveResourceMetrics } = await import('./metrics');
+    const rows = await liveResourceMetrics('ebs_volume', 'vol-0abc');
+    expect(rows.find((r) => r.label === 'Read IOPS')?.value).toBe('—');
+  });
+  it('spark trends: complete period-300 buckets scale ÷300; the still-filling trailing bucket is dropped (no fake dip)', async () => {
+    cwSend.mockResolvedValueOnce({ MetricDataResults: [
+      { Id: 'lt0',
+        Timestamps: [new Date(Date.now() - 10 * 60_000), new Date(Date.now() - 2 * 60_000)],
+        Values: [1500, 100] }, // complete 1500/300=5 · partial (dropped)
+    ] });
+    const { liveResourceTrends } = await import('./metrics');
+    const t = await liveResourceTrends('ebs_volume', 'vol-0abc');
+    expect(t[0]).toMatchObject({ label: 'Read IOPS', fmt: 'iops' });
+    expect(t[0].samples).toHaveLength(1);
+    expect(t[0].samples?.[0].v).toBe(5);
+  });
+});
+
 describe('live fmt (ratio/native units)', () => {
   it('CacheHitRate uses ratioPct — 0.92 renders 92%, never 0.9% (0–1 ratio source)', async () => {
     cwSend.mockResolvedValueOnce({ MetricDataResults: [
@@ -318,5 +367,37 @@ describe('ec2NetworkTrends (gap L139)', () => {
     expect(await ec2NetworkTrends('i-abc12345')).toEqual({ netIn: null, netOut: null });
     cwSend.mockRejectedValueOnce(new Error('AccessDenied'));
     expect(await ec2NetworkTrends('i-abc12345')).toEqual({ netIn: null, netOut: null });
+  });
+});
+
+describe('ec2DiagFleetLive completeBuckets (gap L228 rate honesty)', () => {
+  it('skips the still-filling newest bucket and returns the newest COMPLETE one; default keeps Values[0]', async () => {
+    const now = Date.now();
+    const partial = new Date(now - 10 * 60_000);   // bucket started 10min ago → still filling (Period 3600)
+    const complete = new Date(now - 70 * 60_000);  // ended 10min ago → complete
+    cwSend.mockImplementation(async () => ({
+      MetricDataResults: [
+        { Id: 'netIn_i0', Timestamps: [partial, complete], Values: [1_000, 3_600_000] },
+      ],
+    }));
+    const { ec2DiagFleetLive } = await import('./metrics');
+    const strict = await ec2DiagFleetLive(['i-1'], undefined, 3600, true);
+    expect(strict['i-1'].netIn).toBe(3_600_000); // the complete previous-hour bucket
+    const dflt = await ec2DiagFleetLive(['i-1'], undefined, 3600);
+    expect(dflt['i-1'].netIn).toBe(1_000); // legacy consumers keep the latest (partial) bucket
+    // completeBuckets doubles the window so a complete bucket always exists
+    const strictCall = cwSend.mock.calls[0][0].input as { StartTime: Date };
+    expect(now - strictCall.StartTime.getTime()).toBeGreaterThanOrEqual(2 * 3600_000 - 5_000);
+  });
+
+  it('returns null (not a partial value) when NO complete bucket exists in the window', async () => {
+    cwSend.mockImplementation(async () => ({
+      MetricDataResults: [
+        { Id: 'netIn_i0', Timestamps: [new Date(Date.now() - 5 * 60_000)], Values: [1_000] },
+      ],
+    }));
+    const { ec2DiagFleetLive } = await import('./metrics');
+    const strict = await ec2DiagFleetLive(['i-1'], undefined, 3600, true);
+    expect(strict['i-1'].netIn).toBeNull();
   });
 });

@@ -9,6 +9,13 @@ variable "agentcore_enabled" {
   default     = false
 }
 
+variable "ci_readiness_enabled" {
+  type        = bool
+  default     = false
+  nullable    = false
+  description = "Enable the bounded deployment readiness runtime mode through applied provisioning inputs."
+}
+
 variable "integrations_enabled" {
   type        = bool
   description = "ADR-039 P2-infra inc2: grant the AgentCore runtime scoped Secrets Manager + KMS for egress integration credentials. Requires agentcore_enabled. Default false → no-op ($0, plan = No changes). PERSIST in live terraform.tfvars so a later full apply does not destroy these."
@@ -175,13 +182,31 @@ resource "aws_iam_role_policy" "agentcore" {
         Sid      = "BedrockModelInvoke"
         Effect   = "Allow"
         Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
-        Resource = "*"
+        Resource = local.runtime_model_resources
       },
       {
-        Sid      = "AgentCoreControlAndData"
+        Sid       = "DiscoverGateways"
+        Effect    = "Allow"
+        Action    = ["bedrock-agentcore:ListGateways"]
+        Resource  = "*"
+        Condition = local.runtime_region_condition
+      },
+      {
+        Sid      = "InvokeOwnGateways"
         Effect   = "Allow"
-        Action   = ["bedrock-agentcore:*"]
-        Resource = "*"
+        Action   = ["bedrock-agentcore:InvokeGateway"]
+        Resource = "arn:aws:bedrock-agentcore:${var.region}:${data.aws_caller_identity.current.account_id}:gateway/*"
+      },
+      {
+        # Runtime execution identity only; CI's separate role owns provisioning.
+        # Caller-supplied user IDs are not part of this application's token flow.
+        Sid    = "RuntimeWorkloadToken"
+        Effect = "Allow"
+        Action = ["bedrock-agentcore:GetWorkloadAccessToken", "bedrock-agentcore:GetWorkloadAccessTokenForJWT"]
+        Resource = [
+          "arn:aws:bedrock-agentcore:${var.region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default",
+          "arn:aws:bedrock-agentcore:${var.region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default/workload-identity/${local.agent_runtime_name}-*",
+        ]
       },
       {
         Sid      = "InvokeAgentLambdasOnly"
@@ -191,10 +216,11 @@ resource "aws_iam_role_policy" "agentcore" {
       },
       {
         # Runtime pulls its container image from the private ECR repo via this role.
-        Sid      = "EcrAuthToken"
-        Effect   = "Allow"
-        Action   = ["ecr:GetAuthorizationToken"]
-        Resource = "*"
+        Sid       = "EcrAuthToken"
+        Effect    = "Allow"
+        Action    = ["ecr:GetAuthorizationToken"]
+        Resource  = "*"
+        Condition = local.runtime_region_condition
       },
       {
         Sid      = "EcrPullAgentImage"
@@ -209,6 +235,35 @@ resource "aws_iam_role_policy" "agentcore" {
         Resource = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"
       }
     ]
+  })
+}
+
+# Gateway and Runtime share the role. Preserve API-key retrieval for the three
+# governed vendor presets, including Identity's required parent resources.
+resource "aws_iam_role_policy" "official_mcp_credentials" {
+  count = local.official_mcp_count
+  name  = "${var.project}-official-mcp-credentials"
+  role  = aws_iam_role.agentcore[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = ["bedrock-agentcore:GetResourceApiKey"]
+      Resource = concat([
+        for suffix in ["token-vault/default", "token-vault/default/apikeycredentialprovider",
+        "workload-identity-directory/default", "workload-identity-directory/default/workload-identity/*"] :
+        "arn:aws:bedrock-agentcore:${var.region}:${data.aws_caller_identity.current.account_id}:${suffix}"
+        ], [for preset in ["datadog", "dynatrace", "newrelic"] :
+        "arn:aws:bedrock-agentcore:${var.region}:${data.aws_caller_identity.current.account_id}:token-vault/default/apikeycredentialprovider/awsops-v2-${preset}-mcp"
+      ])
+      }, {
+      Effect = "Allow"
+      Action = ["bedrock-agentcore:GetWorkloadAccessToken"]
+      Resource = [
+        "arn:aws:bedrock-agentcore:${var.region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default",
+        "arn:aws:bedrock-agentcore:${var.region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default/workload-identity/awsops-v2-external-obs-gateway-*",
+      ]
+    }]
   })
 }
 
@@ -347,7 +402,7 @@ resource "aws_iam_role_policy" "agent_lambda_reader_scoped" {
   role  = aws_iam_role.agent_lambda_reader[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid    = "AuroraDataApiRead"
         Effect = "Allow"
@@ -369,11 +424,13 @@ resource "aws_iam_role_policy" "agent_lambda_reader_scoped" {
       {
         # rds-mcp's other 5 tools (list/describe) — carried over from the shared role's DataRead
         # statement so moving rds-mcp off that role does not remove capability, only narrow it.
-        Sid      = "RdsDescribeRead"
-        Effect   = "Allow"
-        Action   = ["rds:Describe*", "rds:ListTagsForResource"]
-        Resource = "*"
+        Sid       = "RdsDescribeRead"
+        Effect    = "Allow"
+        Action    = ["rds:Describe*", "rds:ListTagsForResource"]
+        Resource  = "*"
+        Condition = local.runtime_read_condition
       },
+      ], [
       {
         # Cross-account describe/list for rds-mcp's non-execute_sql tools (execute_sql itself
         # rejects a foreign target_account_id before this could even be reached — see
@@ -384,7 +441,7 @@ resource "aws_iam_role_policy" "agent_lambda_reader_scoped" {
         Action   = ["sts:AssumeRole"]
         Resource = "arn:aws:iam::*:role/AWSopsReadOnlyRole"
       },
-    ]
+    ])
   })
 }
 
@@ -442,10 +499,11 @@ resource "aws_iam_role_policy" "agent_lambda_opensearch" {
         Resource = "arn:aws:es:${var.region}:${data.aws_caller_identity.current.account_id}:domain/*/*"
       },
       {
-        Sid      = "OpenSearchDescribe"
-        Effect   = "Allow"
-        Action   = ["es:ListDomainNames", "es:DescribeDomain", "es:DescribeDomains"]
-        Resource = "*"
+        Sid       = "OpenSearchDescribe"
+        Effect    = "Allow"
+        Action    = ["es:ListDomainNames", "es:DescribeDomain", "es:DescribeDomains"]
+        Resource  = "*"
+        Condition = local.runtime_read_condition
       },
     ]
   })
@@ -511,9 +569,13 @@ resource "aws_iam_role_policy" "task_agentcore_ssm" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = ["ssm:GetParameter", "ssm:GetParameters"]
-      Resource = "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/ops/${var.project}/agentcore/*"
+      Effect = "Allow"
+      Action = ["ssm:GetParameter", "ssm:GetParameters"]
+      Resource = [
+        "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/ops/${var.project}/agentcore/runtime_arn",
+        "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/ops/${var.project}/agentcore/interpreter_id",
+        "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/ops/${var.project}/agentcore/memory_id",
+      ]
     }]
   })
 }
@@ -537,7 +599,8 @@ resource "aws_iam_role_policy" "task_agentcore_status" {
         "bedrock-agentcore:ListMemories",
         "bedrock-agentcore:ListCodeInterpreters",
       ]
-      Resource = "*"
+      Resource  = "*"
+      Condition = local.runtime_region_condition
     }]
   })
 }
@@ -597,9 +660,10 @@ resource "aws_iam_role_policy" "task_cost" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = ["ce:GetCostAndUsage", "ce:GetCostForecast"]
-      Resource = "*"
+      Effect    = "Allow"
+      Action    = ["ce:GetCostAndUsage", "ce:GetCostForecast"]
+      Resource  = "*"
+      Condition = local.runtime_read_condition
     }]
   })
 }
@@ -635,13 +699,14 @@ resource "aws_iam_role_policy" "agent_lambda_read" {
   role  = aws_iam_role.agent_lambda[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         # Existing slice (iam-mcp / flow-monitor). ec2:Describe* also serves network-mcp.
-        Sid      = "ReadOnlySlice"
-        Effect   = "Allow"
-        Action   = ["iam:Get*", "iam:List*", "iam:SimulatePrincipalPolicy", "ec2:Describe*"]
-        Resource = "*"
+        Sid       = "ReadOnlySlice"
+        Effect    = "Allow"
+        Action    = ["iam:Get*", "iam:List*", "iam:SimulatePrincipalPolicy", "ec2:Describe*"]
+        Resource  = "*"
+        Condition = local.runtime_read_condition
       },
       {
         # network-mcp (ELB + Network Firewall; ec2:Describe* above covers VPC/TGW/VPN/ENI/FlowLogs).
@@ -652,7 +717,8 @@ resource "aws_iam_role_policy" "agent_lambda_read" {
           "network-firewall:Describe*",
           "network-firewall:List*"
         ]
-        Resource = "*"
+        Resource  = "*"
+        Condition = local.runtime_read_condition
       },
       {
         # container: eks-mcp (control-plane) + ecs-mcp (ECS + ECR).
@@ -667,7 +733,8 @@ resource "aws_iam_role_policy" "agent_lambda_read" {
           "ecr:List*",
           "ecr:BatchGet*"
         ]
-        Resource = "*"
+        Resource  = "*"
+        Condition = local.runtime_read_condition
       },
       {
         # data: rds (describe; execute_sql via Data API not granted → SELECT errors gracefully),
@@ -687,7 +754,8 @@ resource "aws_iam_role_policy" "agent_lambda_read" {
           "kafka:List*",
           "kafka:Get*"
         ]
-        Resource = "*"
+        Resource  = "*"
+        Condition = local.runtime_read_condition
       },
       {
         # cost: cost-mcp (Cost Explorer + Pricing + Budgets) + finops-mcp (Compute Optimizer +
@@ -715,7 +783,8 @@ resource "aws_iam_role_policy" "agent_lambda_read" {
           "support:Describe*",
           "cost-optimization-hub:ListRecommendations"
         ]
-        Resource = "*"
+        Resource  = "*"
+        Condition = local.runtime_read_condition
       },
       {
         # monitoring: cloudwatch-mcp (metrics + Logs Insights) + cloudtrail-mcp (Lake; StartQuery = read).
@@ -736,7 +805,8 @@ resource "aws_iam_role_policy" "agent_lambda_read" {
           "cloudtrail:List*",
           "cloudtrail:StartQuery"
         ]
-        Resource = "*"
+        Resource  = "*"
+        Condition = local.runtime_read_condition
       },
       {
         # iac: iac-mcp (CloudFormation). terraform-mcp / aws-knowledge need no AWS IAM (public HTTPS).
@@ -749,15 +819,17 @@ resource "aws_iam_role_policy" "agent_lambda_read" {
           "cloudformation:List*",
           "cloudformation:ValidateTemplate"
         ]
-        Resource = "*"
+        Resource  = "*"
+        Condition = local.runtime_read_condition
       },
+      ], [
       {
         Sid      = "CrossAccountAssumeReadOnly"
         Effect   = "Allow"
         Action   = ["sts:AssumeRole"]
         Resource = "arn:aws:iam::*:role/AWSopsReadOnlyRole"
       }
-    ]
+    ])
   })
 }
 
@@ -874,9 +946,12 @@ resource "aws_lambda_function" "agent" {
       # least-privilege `awsops_sql_reader` secret, NOT the RDS-managed master secret (both this
       # connector and rds-mcp's execute_sql are pure SELECT paths).
       each.key == "inventory-read" ? {
-        AURORA_CLUSTER_ARN = aws_rds_cluster.aurora.arn
-        AURORA_SECRET_ARN  = aws_secretsmanager_secret.agent_sql_reader[0].arn
-        AURORA_DATABASE    = aws_rds_cluster.aurora.database_name
+        AURORA_CLUSTER_ARN            = aws_rds_cluster.aurora.arn
+        AURORA_SECRET_ARN             = aws_secretsmanager_secret.agent_sql_reader[0].arn
+        AURORA_DATABASE               = aws_rds_cluster.aurora.database_name
+        INVENTORY_STALE_AFTER_MINUTES = tostring(var.inventory_stale_after_minutes)
+        # Share the web reader's freshness cadence; zero retains the 15-minute floor.
+        GRAPH_REBUILD_INTERVAL_MINS = tostring(var.graph_rebuild_interval_mins)
       } : {},
       # rds-mcp's execute_sql resolves its Data API credential and database from env ONLY — the
       # caller-supplied secret_arn/database arguments are ignored (and removed from the tool schema).
@@ -918,14 +993,15 @@ resource "aws_lambda_permission" "agent_agentcore" {
 output "agentcore" {
   description = "AgentCore provisioning inputs for scripts/v2/agentcore/provision.py (null when disabled)."
   value = var.agentcore_enabled ? {
-    region             = var.region
-    project            = var.project
-    role_arn           = aws_iam_role.agentcore[0].arn
-    ecr_uri            = aws_ecr_repository.agentcore[0].repository_url
-    lambda_arns        = { for k, fn in aws_lambda_function.agent : k => fn.arn }
-    ssm_runtime_arn    = aws_ssm_parameter.agentcore_runtime_arn[0].name
-    ssm_interpreter_id = aws_ssm_parameter.agentcore_interpreter_id[0].name
-    ssm_memory_id      = aws_ssm_parameter.agentcore_memory_id[0].name
+    deployment_readiness_enabled = var.ci_readiness_enabled
+    region                       = var.region
+    project                      = var.project
+    role_arn                     = aws_iam_role.agentcore[0].arn
+    ecr_uri                      = aws_ecr_repository.agentcore[0].repository_url
+    lambda_arns                  = { for k, fn in aws_lambda_function.agent : k => fn.arn }
+    ssm_runtime_arn              = aws_ssm_parameter.agentcore_runtime_arn[0].name
+    ssm_interpreter_id           = aws_ssm_parameter.agentcore_interpreter_id[0].name
+    ssm_memory_id                = aws_ssm_parameter.agentcore_memory_id[0].name
     # ADR-017 — curated official-MCP preset endpoints (empty map when official_mcp_enabled=false).
     # provision.py SKIPs any catalog.MCP_SERVER_TARGETS preset whose key is missing here.
     official_mcp_endpoints = local.official_mcp_count > 0 ? var.official_mcp_endpoints : {}

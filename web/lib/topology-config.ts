@@ -1,31 +1,90 @@
 import { scopedTargetIp, type FlowInput } from './flow-topology';
 import type { EndpointRow } from './eks-incluster';
-import type { PodRow } from './eks-resources';
+import { isTerminalPodPhase, type PodRow } from './eks-resources';
 
 type Resolution = NonNullable<FlowInput['ipResolved']>[string];
 type Cluster = { name: string; access?: string; region?: string; vpcId?: string };
 
+export type AggregateRunStatus = 'succeeded' | 'running' | 'partial' | 'failed' | 'unknown';
+
+export interface InventoryEvidence {
+  capturedAt: string | null;
+  capturedThrough: string | null;
+  unknownCapture: boolean;
+  aggregateStatus: AggregateRunStatus;
+}
+
+const validTime = (value: unknown): value is string =>
+  typeof value === 'string' && Number.isFinite(Date.parse(value));
+
+/** Row captures are scoped; the self-keyed run ledger describes an aggregate account sweep. */
+export function inventoryEvidence(
+  rows: { captured_at?: unknown }[],
+  run: { status?: unknown; last_success_at?: unknown } | null | undefined,
+  host: boolean,
+): InventoryEvidence {
+  const times = rows.map(row => row.captured_at).filter(validTime);
+  const lastSuccess = host && validTime(run?.last_success_at) ? run.last_success_at : null;
+  // Retained row captures take precedence over a newer success or failed attempt.
+  // Missing captures may fall back to host last-success evidence, never finished_at.
+  if (times.length < rows.length && lastSuccess) times.push(lastSuccess);
+  if (rows.length === 0 && lastSuccess) times.push(lastSuccess);
+  times.sort((a, b) => Date.parse(a) - Date.parse(b));
+  return {
+    capturedAt: times[0] ?? null,
+    capturedThrough: times[times.length - 1] ?? null,
+    unknownCapture: rows.some(row => !validTime(row.captured_at)) || times.length === 0,
+    aggregateStatus: typeof run?.status === 'string'
+      && ['succeeded', 'running', 'partial', 'failed'].includes(run.status) ? run.status as AggregateRunStatus : 'unknown',
+  };
+}
+
 // Endpoints describes Service membership, not cluster ownership. Only an independently listed,
 // unique pod can establish ownership; conflicting references also disqualify the pod fallback.
-export async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved']>> {
+export interface EksIpEvidence {
+  ipResolved: NonNullable<FlowInput['ipResolved']>;
+  // Read outcome within declared coverage, never a whole-account completeness verdict.
+  status: 'ok' | 'partial' | 'failed';
+  region: string | null;
+  notConnected: number;
+}
+
+export async function fetchEksIpEvidence(signal?: AbortSignal): Promise<EksIpEvidence> {
   const candidates = new Map<string, Resolution | null>();
+  let degraded = false;
+  let region: string | null = null, notConnected = 0;
   try {
-    const response = await fetch('/api/eks');
+    const response = await fetch('/api/eks', { signal });
     const list = response.ok ? await response.json() : null;
-    if (list?.error || !Array.isArray(list?.clusters)) return {};
-    await Promise.all((list.clusters as Cluster[]).filter(c =>
-      c.access === 'connected' && c.name && c.region && c.vpcId,
-    ).map(async cluster => {
+    if (signal?.aborted || list?.error || !Array.isArray(list?.clusters)) {
+      return { ipResolved: {}, status: 'failed', region, notConnected };
+    }
+    region = typeof list.region === 'string' && /^[a-z0-9-]{1,64}$/.test(list.region) ? list.region : null;
+    degraded = list.truncated === true || (list.truncated !== undefined && typeof list.truncated !== 'boolean');
+    await Promise.all((list.clusters as Cluster[]).filter(c => {
+      // Deliberately un-onboarded clusters are an explicit coverage limit, not failed reads.
+      if (c && (c.access === 'entry-only' || c.access === 'no-entry')) {
+        notConnected++;
+        return false;
+      }
+      const usable = c && c.access === 'connected' && typeof c.name === 'string' && c.name
+        && typeof c.region === 'string' && c.region && typeof c.vpcId === 'string' && c.vpcId;
+      if (!usable) degraded = true;
+      return usable;
+    }).map(async cluster => {
       const get = async (kind: string) => {
         try {
-          const r = await fetch(`/api/eks/${encodeURIComponent(cluster.name)}/incluster?kind=${kind}`);
+          const r = await fetch(`/api/eks/${encodeURIComponent(cluster.name)}/incluster?kind=${kind}`, { signal });
           const d = r.ok ? await r.json() : null;
-          return !d?.error && Array.isArray(d?.rows) ? d.rows : [];
-        } catch { return []; }
+          if (!d?.error && d?.status !== 'error' && Array.isArray(d?.rows)) return d.rows;
+          degraded = true;
+          return [];
+        } catch { degraded = true; return []; }
       };
       const [endpoints, pods]: [EndpointRow[], PodRow[]] = await Promise.all([get('endpoints'), get('pods')]);
       const podsByIp = new Map<string, PodRow[]>();
       for (const pod of pods) {
+        if (isTerminalPodPhase(pod.status)) continue;
         if (pod.podIP) podsByIp.set(pod.podIP, [...(podsByIp.get(pod.podIP) ?? []), pod]);
       }
       const servicesByIp = new Map<string, EndpointRow[]>();
@@ -55,11 +114,20 @@ export async function fetchEksIpMap(): Promise<NonNullable<FlowInput['ipResolved
           };
         }
         const key = scopedTargetIp(cluster.region!, cluster.vpcId!, ip);
+        // Ambiguous/uncorroborated IPs are ordinary non-evidence, not failed collection.
         // An IP seen in two clusters in the same network scope is never last-wins, even if their
         // workload labels coincide. Unproven records block ownership rather than asserting it.
         candidates.set(key, candidates.has(key) ? null : resolution);
       }
     }));
-  } catch { /* no EKS ownership evidence */ }
-  return Object.fromEntries([...candidates].filter((entry): entry is [string, Resolution] => entry[1] !== null));
+  } catch { return { ipResolved: {}, status: 'failed', region, notConnected }; }
+  return {
+    ipResolved: Object.fromEntries([...candidates].filter((entry): entry is [string, Resolution] => entry[1] !== null)),
+    status: degraded ? 'partial' : 'ok', region, notConnected,
+  };
+}
+
+/** Compatibility API for callers that only consume the corroborated map. */
+export async function fetchEksIpMap(signal?: AbortSignal): Promise<NonNullable<FlowInput['ipResolved']>> {
+  return (await fetchEksIpEvidence(signal)).ipResolved;
 }

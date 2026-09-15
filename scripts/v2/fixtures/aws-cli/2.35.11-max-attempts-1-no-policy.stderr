@@ -1,0 +1,2 @@
+
+aws: [ERROR]: An error occurred (NoSuchBucketPolicy) when calling the GetBucketPolicyStatus operation (reached max retries: 0): The bucket policy does not exist

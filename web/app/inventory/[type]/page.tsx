@@ -13,13 +13,16 @@ import DonutBreakdown from '@/components/charts/DonutBreakdown';
 import BarDistribution from '@/components/charts/BarDistribution';
 import RiskHero from '@/components/inventory/RiskHero';
 import CloudTrailEvents from '@/components/inventory/CloudTrailEvents';
+import EcsCostBasisPanel from '@/components/inventory/EcsCostBasisPanel';
+import { EcsCostByService } from '@/components/inventory/metrics/EcsCostByService';
+import { S3BucketMap } from '@/components/inventory/S3BucketMap';
 import VpcResourceMap from '@/components/inventory/VpcResourceMap';
 import { ElasticacheNodeMetrics, OpensearchDomainMetrics, MskBrokerNodes, RdsInstanceMetrics, DynamoTableMetrics, AlbMetrics, NlbMetrics, S3Metrics, EbsMetrics, Ec2Metrics, LambdaMetrics, TgwSection } from '@/components/inventory/NodeMetricsTables';
 import { INVENTORY_TYPES, HIGHLIGHTS, computeHighlights, layoutOf, worstFirst } from '@/lib/inventory-types';
 import { TYPE_ICON, GROUP_ICON, highlightIcon } from '@/lib/type-icons';
 import { useActiveScope, scopeParams } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
-import { deriveRow } from '@/lib/inventory-derived';
+import { deriveRow, countFlags } from '@/lib/inventory-derived';
 
 type Row = Record<string, unknown>;
 
@@ -46,6 +49,7 @@ const FACET_LABELS: Record<string, string> = {
   http_version: 'HTTP Version', is_ipv6_enabled: 'IPv6', role_last_used_region: 'Last Used Region',
   include_global_service_events: 'Global Service Events', statistic: 'Statistic',
   comparison_operator: 'Comparison', period: 'Period (s)',
+  bucket_policy_is_public: 'Policy Public',
 };
 
 // Count rows by a column value (stringified), descending by count.
@@ -83,24 +87,33 @@ export default function InventoryTypePage() {
   const [metricBar, setMetricBar] = useState<{ title: string; data: { label: string; value: number }[] } | null>(null);
   const [scope] = useActiveScope();
 
-  // Accurate fleet total past the 500-row cap (gap L110): the summary endpoint's byType
-  // count is the true DB count (scoped by the SAME accounts+regions params as the rows).
-  // Fetched only once the cap is actually hit (it is the heaviest inventory aggregation);
-  // refreshTick refetches after an on-demand sync. Failure degrades silently to the row count.
+  // Full-fleet aggregates past the 500-row cap (gaps L110 + L102): ONE scoped server-side
+  // aggregation supplies the true total AND the state/dist/facet buckets (v1 ran its
+  // summary/statusCount/typeDistribution SQL fleet-wide; the sample-based client counts were
+  // silently inaccurate above 500). Fetched only once the cap is actually hit; refreshTick
+  // refetches after an on-demand sync. Failure degrades to the sample (donuts then carry the
+  // 표본 qualifier).
   const [trueTotal, setTrueTotal] = useState<number | null>(null);
+  const [aggs, setAggs] = useState<{
+    total: number;
+    state: { name: string; value: number }[] | null;
+    dist: { name: string; value: number }[] | null;
+    dist2: { name: string; value: number }[] | null;
+    facets: Record<string, { name: string; value: number }[]>;
+  } | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const atCap = (rows?.length ?? 0) >= ROW_LIMIT;
   useEffect(() => {
     setTrueTotal(null);
+    setAggs(null);
     if (!spec || !atCap) return;
     let alive = true;
-    fetch(`/api/inventory/summary?${scopeParams(scope)}`)
+    fetch(`/api/inventory/${type}?view=agg&${scopeParams(scope)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (!alive) return;
-        const n = (d?.byType as { type: string; count: number }[] | undefined)
-          ?.find((t) => t.type === type)?.count;
-        if (typeof n === 'number') setTrueTotal(n);
+        if (!alive || !d) return;
+        if (typeof d.total === 'number') setTrueTotal(d.total);
+        setAggs(d);
       })
       .catch(() => {});
     return () => { alive = false; };
@@ -154,9 +167,13 @@ export default function InventoryTypePage() {
   const isTruncated = allRows.length >= ROW_LIMIT && (trueTotal == null || trueTotal > allRows.length);
 
   // KPI state breakdown — from the FULL row set (not filtered).
+  // A 50-bucket agg list HIT THE CAP — completeness untrustworthy for option lists; fall
+  // back to the sample for that dimension (donut remainders handle the cap via `total`).
+  const aggListComplete = (b: { name: string; value: number }[] | null | undefined) =>
+    (b && b.length < 50 ? b : null);
   const stateCounts = useMemo(
-    () => (spec?.stateKey ? countBy(allRows, spec.stateKey) : []),
-    [allRows, spec?.stateKey],
+    () => (spec?.stateKey ? (aggListComplete(aggs?.state) ?? countBy(allRows, spec.stateKey)) : []),
+    [allRows, spec?.stateKey, aggs],  // eslint-disable-line react-hooks/exhaustive-deps -- aggListComplete stable
   );
 
   // Per-type highlight cards (tailored top KPIs from synced columns). Empty → fall
@@ -175,13 +192,32 @@ export default function InventoryTypePage() {
     const rest = counts.slice(6).reduce((acc, c) => acc + c.value, 0);
     return rest > 0 ? [...head, { name: tt('기타'), value: rest }] : head;
   };
+  // Full-fleet donut: top 6 + a REMAINDER computed against the fleet total (the server caps
+  // buckets at 50 — summing only visible buckets would silently drop rank-51+ values, the
+  // exact sample-inaccuracy failure this feature exists to fix).
+  const top6Agg = (buckets: { name: string; value: number }[], total: number) => {
+    const head = buckets.slice(0, 6);
+    const rest = total - head.reduce((a, b) => a + b.value, 0);
+    return rest > 0 ? [...head, { name: tt('기타'), value: rest }] : head;
+  };
   const distData = useMemo(
-    () => (spec?.distKey ? top6(countBy(allRows, spec.distKey)) : []),
-    [allRows, spec?.distKey],
+    () => (spec?.distKey
+      ? (aggs?.dist ? top6Agg(aggs.dist, aggs.total) : top6(countBy(allRows, spec.distKey)))
+      : []),
+    [allRows, spec?.distKey, aggs],  // eslint-disable-line react-hooks/exhaustive-deps -- top6/tt stable
   );
   const distData2 = useMemo(
-    () => (spec?.distKey2 ? top6(countBy(allRows, spec.distKey2)) : []),
-    [allRows, spec?.distKey2],
+    () => {
+      if (!spec?.distKey2) return [];
+      if (aggs?.dist2) {
+        const filtered = aggs.dist2.filter((d) => !(spec.distKey2DropNone && d.name === '(none)'));
+        // DropNone removes real rows from the denominator — the remainder must not re-add
+        // them as 기타, so fall back to bucket-sum semantics for the dropped-none case.
+        return spec.distKey2DropNone ? top6(filtered) : top6Agg(filtered, aggs.total);
+      }
+      return top6(countBy(allRows, spec.distKey2).filter((d) => !(spec.distKey2DropNone && d.name === '(none)')));
+    },
+    [allRows, spec?.distKey2, aggs],  // eslint-disable-line react-hooks/exhaustive-deps -- top6/tt stable
   );
 
   // Reset transient filters when switching resource type (a stale facet key would filter to zero).
@@ -193,9 +229,13 @@ export default function InventoryTypePage() {
     return keys.map((key) => ({
       key,
       label: spec?.columns.find((c) => c.key === key)?.label ?? FACET_LABELS[key] ?? key,
-      options: countBy(allRows, key),
+      // full-fleet option list when available AND complete (<50 buckets — an at-cap list is
+      // an arbitrary top-50 and can even MISS values visible in the loaded table); a value
+      // that exists only beyond the cap now appears; selecting it filters the visible
+      // 500-row sample — the shown/total counter keeps the sample scope explicit
+      options: aggListComplete(aggs?.facets?.[key]) ?? countBy(allRows, key),
     }));
-  }, [spec, allRows]);
+  }, [spec, allRows, aggs]);
 
   // Filters narrow ONLY the displayed table rows.
   const filteredRows = useMemo(() => {
@@ -233,6 +273,22 @@ export default function InventoryTypePage() {
         .sort((a, b) => Number(a.name) - Number(b.name))
         .map((d) => ({ label: `${d.name}${spec.histKey!.suffix ?? ''}`, value: d.value }))
     : []), [allRows, spec?.histKey]);
+
+  // Count-distribution bar data (gap L221) — hook ABOVE the !spec early return (rules of
+  // hooks; the histData precedent), top-10 by count with '(none)' filtered.
+  const countBarData = useMemo(
+    () => (spec?.countBarKey
+      ? countBy(allRows, spec.countBarKey.col).filter((d) => d.name !== '(none)').sort((a, b) => b.value - a.value).slice(0, 10)
+      : []),
+    [allRows, spec?.countBarKey],
+  );
+
+  // Independent flag-count bars (gap L240) — hook ABOVE the !spec early return (rules of
+  // hooks). Declared order kept; zero bars kept (a zero Public bar is signal).
+  const flagBarData = useMemo(
+    () => (spec?.flagBarKey ? countFlags(allRows, spec.flagBarKey.flags) : []),
+    [allRows, spec?.flagBarKey],
+  );
 
   if (!spec) {
     return (
@@ -276,17 +332,24 @@ export default function InventoryTypePage() {
       {metricCards.map((c) => <StatTile key={c.label} label={c.label} value={c.value} variant="accent" icon={<Activity size={16} />} />)}
     </div>
   );
+  // Donuts are full-fleet only when THEIR dimension's aggregate landed (client-derived keys
+  // are server-excluded and stay sample-based) — each donut discloses its own fallback
+  // (previously a capped donut was silently sample-based with no label).
+  // The composed title stays FULLY KOREAN here: Card applies ONE tt() to the whole string
+  // and the '<label> 분포( (표본 기준))?' RULE translates it — pre-translating the suffix
+  // produced a mixed string no rule could match (PR #288 round-1).
+  const sampleTag = (has: boolean) => (isTruncated && !has ? ' (표본 기준)' : '');
   const donut = spec.distKey && distData.length > 0
-    ? <DonutBreakdown title={`${distLabel} 분포`} data={distData} nameKey="name" valueKey="value" />
+    ? <DonutBreakdown title={`${distLabel} 분포${sampleTag(Boolean(aggs?.dist))}`} data={distData} nameKey="name" valueKey="value" />
     : null;
   const donut2 = spec.distKey2 && spec.distKey2 !== spec.distKey && distData2.length > 0
-    ? <DonutBreakdown title={`${colLabel(spec.distKey2)} 분포`} data={distData2} nameKey="name" valueKey="value" colors={spec.distKey2Colors} />
+    ? <DonutBreakdown title={`${spec.distKey2Label ?? colLabel(spec.distKey2)} 분포${sampleTag(Boolean(aggs?.dist2))}`} data={distData2} nameKey="name" valueKey="value" colors={spec.distKey2Colors} />
     : null;
   // Optional Top-N numeric bar (spec.barKey): rows ranked by the column, labelled by name/id.
   const hist = spec.histKey && histData.length > 0
     ? (
       <BarDistribution
-        title={isTruncated ? `${spec.histKey.label} (${tt('표본 기준')})` : spec.histKey.label}
+        title={isTruncated ? `${spec.histKey.label} (표본 기준)` : spec.histKey.label}
         data={histData}
         xKey="label"
         yKey="value"
@@ -311,6 +374,18 @@ export default function InventoryTypePage() {
   // Server-computed ranking chart (gap L138): the metrics route's optional `bar` payload.
   const serverBar = metricBar
     ? <BarDistribution title={metricBar.title} data={metricBar.data} xKey="label" yKey="value" decimals={1} />
+    : null;
+  // Count-distribution bar (gap L221): row counts per distinct value, count-desc (the
+  // BarDistribution default) — distinct from barKey (numeric ranking) and hist (numeric axis).
+
+  const countBar = spec.countBarKey && countBarData.length > 0
+    ? <BarDistribution title={isTruncated ? `${spec.countBarKey.label} (${tt('표본 기준')})` : spec.countBarKey.label} data={countBarData} xKey="name" yKey="value" />
+    : null;
+  // Flag-count bars (gap L240): rendered only when at least one flag column has a known
+  // value (countFlags drops all-unknown columns — a 0/0 must not read as all-clear);
+  // preserveOrder keeps the declared semantic order instead of the count-desc re-sort.
+  const flagBar = spec.flagBarKey && flagBarData.length > 0
+    ? <BarDistribution title={isTruncated ? `${spec.flagBarKey.label} (${tt('표본 기준')})` : spec.flagBarKey.label} data={flagBarData} xKey="name" yKey="value" preserveOrder />
     : null;
   // Graph band: one full-width donut, or two side-by-side when the spec has a second dimension.
   const graphBand = donut && donut2
@@ -374,7 +449,7 @@ export default function InventoryTypePage() {
             )}
             {graphBand}
             {(() => {
-              const charts = [barChart, hist, serverBar].filter(Boolean);
+              const charts = [barChart, hist, countBar, flagBar, serverBar].filter(Boolean);
               if (charts.length === 0) return null;
               if (charts.length === 1) return charts[0];
               return <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">{charts.map((c, i) => <div key={i} className="min-w-0">{c}</div>)}</div>;
@@ -390,8 +465,13 @@ export default function InventoryTypePage() {
             {type === 'dynamodb' && <DynamoTableMetrics rows={filteredRows} />}
             {type === 'alb' && <AlbMetrics rows={filteredRows} />}
             {type === 'nlb' && <NlbMetrics rows={filteredRows} />}
+            {/* Bucket Map by Region (gap L241) — block click opens the same detail panel. */}
+            {type === 's3' && <S3BucketMap rows={filteredRows} isTruncated={isTruncated} onSelect={setSelected} />}
             {type === 's3' && <S3Metrics rows={filteredRows} />}
             {type === 'ebs_volume' && <EbsMetrics rows={filteredRows} />}
+            {/* Cost by Service grouped bar (gap L195) + Cost Calculation Basis (gap L194). */}
+            {type === 'ecs_task' && <EcsCostByService rows={filteredRows} isTruncated={isTruncated} />}
+            {type === 'ecs_task' && <EcsCostBasisPanel />}
             {type === 'ec2' && <Ec2Metrics rows={filteredRows} />}
             {type === 'lambda' && <LambdaMetrics rows={filteredRows} />}
             {type === 'transit_gateway' && <TgwSection rows={filteredRows} />}

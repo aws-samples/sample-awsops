@@ -22,7 +22,7 @@ v2는 **Cognito 인증을 CloudFront 엣지 앞단에 배치**하여 공개 경�
 
 ## Decisions (ADRs) / 결정
 
-- [ADR-002 — Auth & Login (Cognito + Lambda@Edge)](../../decisions/002-auth-and-login.md) — Accepted (2026-04-22). Edge-level rejection over ALB-native / Next.js-middleware / SigV4 alternatives; `viewer-request` over `origin-request`; HttpOnly cookie; decode-only at the app trusting the edge.
+- [ADR-002 — Auth & Login (Cognito + Lambda@Edge)](../decisions/002-auth-and-login.md) — Accepted (2026-04-22). Edge-level rejection over ALB-native / Next.js-middleware / SigV4 alternatives; `viewer-request` over `origin-request`; HttpOnly cookie; decode-only at the app trusting the edge.
   - **2026-06-03 "Post-acceptance deviation":** the v1 edge was **exp-only** (base64 decode + expiry, no signature verification), so the "decode-only app trusts the edge" claim was not actually backed by signature verification. v2 (`feat/v2-architecture-design`, commit `8313b0e`) hardens the edge to **JWKS RS256 signature verification** + issuer/audience checks + OAuth `state` + PKCE public client (secret dropped). Operators on v1 should treat edge auth as exp-only until v2 is deployed.
 
 ## Key files / 핵심 파일

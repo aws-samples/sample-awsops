@@ -34,9 +34,12 @@ EBS(Elastic Block Store) 볼륨 및 스냅샷을 관리하고 모니터링합니
 볼륨 클릭 시 우측 패널에서 확인:
 - 볼륨 ID, 이름, 타입, 크기
 - IOPS, Throughput, AZ
+- 실측 라이브 메트릭 (Read/Write IOPS · Queue Length · Burst Balance[gp2/st1/sc1만 발행]) — 최근값 + 1시간 5분 스파크라인 (CloudWatch, 시리즈 없으면 '데이터 불가' 표시)
 - Multi-Attach 설정
-- 암호화 상태 및 KMS 키
-- 연결된 EC2 인스턴스 정보
+- **암호화 판정 배너**: 암호화됨(green, KMS 키 표기) / 미암호화(red, 암호화 사본 권고) — 암호화 여부를 알 수 없으면 배너를 표시하지 않습니다
+- **유휴 볼륨 힌트**: 마지막 sync 시점에 미연결(available) 상태면 비용 절감 권고 배너 표시
+- 암호화 상태 및 KMS 키 (필드)
+- 연결된 EC2 인스턴스 정보 — attachment마다 **DeleteOnTermination** 플래그(설정 시 인스턴스 종료와 함께 볼륨 삭제)
 - 해당 볼륨의 스냅샷 목록
 
 ## 사용 방법
@@ -56,11 +59,12 @@ EBS(Elastic Block Store) 볼륨 및 스냅샷을 관리하고 모니터링합니
 - 연결된 EC2 인스턴스 ID
 - 디바이스 경로 (예: /dev/xvda)
 - 인스턴스 이름, 타입, 상태
+- DeleteOnTermination 플래그 (설정된 attachment에만 표시)
 
 ## 사용 팁
 
 :::tip 유휴 볼륨 관리
-"available" 상태의 볼륨은 EC2에 연결되지 않아 비용만 발생합니다. Idle Volumes 카드에서 유휴 볼륨을 확인하고 불필요한 볼륨은 삭제하세요.
+"available" 상태의 볼륨은 EC2에 연결되지 않아 비용만 발생합니다. Idle Volumes 카드와 볼륨 상세의 유휴 배너에서 확인하고 불필요한 볼륨은 삭제하세요.
 :::
 
 :::info 암호화 권장

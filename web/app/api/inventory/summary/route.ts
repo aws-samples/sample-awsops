@@ -2,6 +2,7 @@ import { verifyUser } from '@/lib/auth';
 import { getPool } from '@/lib/db';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { PUBLIC_S3_WHERE } from '@/lib/security-findings';
+import { readCollectionStatus } from '@/lib/inventory-collection';
 
 export const dynamic = 'force-dynamic';
 
@@ -93,6 +94,9 @@ export async function GET(request: Request) {
   const ACC = `(${accountCond(accounts)}) AND (${regionCond(regions, includeGlobal)})`;
   try {
     const pool = getPool();
+    if (url.searchParams.get('view') === 'collection') {
+      return Response.json({ collection: await readCollectionStatus(pool) });
+    }
     const r = await pool.query<{ resource_type: string; n: number }>(
       `SELECT resource_type, count(*)::int AS n FROM inventory_resources
        WHERE ${ACC} GROUP BY resource_type`,
@@ -190,7 +194,8 @@ export async function GET(request: Request) {
       // freshness omitted — non-fatal.
     }
 
-    return Response.json({ byType, byCategory, total, splits: splitsOk ? splits : null, ec2Types, lastSyncAt });
+    const collection = await readCollectionStatus(pool);
+    return Response.json({ byType, byCategory, total, splits: splitsOk ? splits : null, ec2Types, lastSyncAt, collection });
   } catch (e) {
     return Response.json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }

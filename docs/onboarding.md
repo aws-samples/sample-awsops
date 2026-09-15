@@ -52,7 +52,11 @@ make deploy                    # = migrate 후 scripts/v2/deploy.mjs
 `deploy.mjs` 5단계: ECR login → `buildx --platform linux/arm64 --push web/` → `ecs update-service --force-new-deployment` → `ecs wait services-stable` → smoke `curl {public_url}/api/health`.
 - terraform output(`ecr_web_uri` 등)을 읽으므로 **해당 디렉토리 init/apply가 선행**되어야 함.
 - docker가 PATH에 있어야 하며 기본 `sudo docker`(`DOCKER=docker`로 변경 가능). `IMAGE_TAG` 기본 `web-latest`.
-- 기타 타깃: `make agentcore`(apply 후, `SMOKE=1`로 호출 검증) · `make workers`(`workers_enabled=true` apply 후) · `make upgrade`(`CONFIRM=go` 없으면 PREVIEW) · `make migrate` / `make migrate-status`(`DRY_RUN=1` 프리뷰). 전체 목록은 `make help`.
+- 기타 타깃: `make agentcore`(apply·migration 후, `SMOKE=1`은 provisioning 후 검사) · `make workers`(`workers_enabled=true` apply 후) · `make upgrade`(`CONFIRM=go` 없으면 PREVIEW) · `make migrate` / `make migrate-status`(`DRY_RUN=1` 프리뷰). 전체 목록은 `make help`.
+
+Dev AgentCore uses the reusable private migration workflow and requires the `AWS_ACCOUNT_ID_DEV` repository secret. Optional smoke needs the deployed readiness producer, `runtime_deployment` and enabled/collected inventory; it checks producer-classified
+freshness. Main/preview keep `make migrate` and advisory compatibility smoke, without a development-output prerequisite before provisioning. See [the AgentCore contract](reference/05-agentcore.md). dev AgentCore는 사설 재사용 migration과
+저장소 시크릿 `AWS_ACCOUNT_ID_DEV`를 사용한다. 선택 smoke는 대응 readiness producer·`runtime_deployment`·활성/수집된 inventory가 필요하다. main/preview는 `make migrate`와 참고용 호환 smoke를 유지하며 dev output 부재로 provisioning 자체를 차단하지 않는다.
 
 ## 주요 문서 / Key Docs
 - `CLAUDE.md`(루트) — 필수 규칙·알려진 함정 (SG description 불변, HOSTNAME=0.0.0.0, ENTRYPOINT 금지 등)

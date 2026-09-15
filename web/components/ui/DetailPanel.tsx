@@ -14,6 +14,8 @@ import { EbsRelatedSection } from '@/components/inventory/metrics/EbsRelatedSect
 import { RdsTrendsSection } from '@/components/inventory/metrics/RdsTrendsSection';
 import { LiveTrendsSection } from '@/components/inventory/metrics/LiveTrendsSection';
 import { RdsSgRulesSection } from '@/components/inventory/metrics/RdsSgRulesSection';
+import { S3IamAccessSection } from '@/components/inventory/metrics/S3IamAccessSection';
+import { EbsVerdictBanners } from '@/components/inventory/metrics/EbsVerdictBanners';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
 // v1-parity: each detail section is a titled card with a leading icon. Section labels are a small
@@ -114,7 +116,8 @@ function copyText(fmt: DetailValue): string | null {
     case 'tags':
       return fmt.entries!.map(([k, v]) => `${k}=${v}`).join('\n') || null;
     case 'idlist':
-      return fmt.items!.map((it) => [it.id, it.name, it.extra].filter(Boolean).join(' ')).join('\n') || null;
+      // include the flag — a copied Attachments list must not drop DeleteOnTermination/BLACKHOLE.
+      return fmt.items!.map((it) => [it.id, it.name, it.extra, it.flag].filter(Boolean).join(' ')).join('\n') || null;
     default:
       return fmt.text?.trim() ? fmt.text : null;
   }
@@ -203,7 +206,8 @@ function RdsMetricsSection({ instanceId }: { instanceId: string }) {
 
 // Generic live CloudWatch metrics (ElastiCache/OpenSearch/MSK) — the BFF returns pre-formatted
 // {label, value} rows from /api/inventory/<type>/metrics?id=. Same degrade behavior as RDS.
-const LIVE_METRIC_TYPES = new Set(['elasticache', 'opensearch', 'msk']);
+// live-metric detail types (latest grid + 1h sparklines): elasticache/opensearch/msk/ebs_volume
+const LIVE_METRIC_TYPES = new Set(['elasticache', 'opensearch', 'msk', 'ebs_volume']);
 
 function LiveMetricsSection({ type, id, accountId, region }: { type: string; id: string; accountId?: string; region?: string }) {
   const { tt } = useI18n();
@@ -292,19 +296,25 @@ export default function DetailPanel({
   const rdsInstanceId = resourceType === 'rds' && typeof data.resource_id === 'string' ? data.resource_id : null;
   // SG inbound chaining (gap L154): parse attached SG ids from the row's vpc_security_groups
   // (Steampipe JSONB — PascalCase or snake_case depending on plugin version; string ids too).
+  const sgIdList = (src: unknown): string[] =>
+    (Array.isArray(src) ? src : [])
+      .map((g) => {
+        if (typeof g === 'string') return g;
+        if (g && typeof g === 'object') {
+          const o = g as Record<string, unknown>;
+          const v = o.VpcSecurityGroupId ?? o.vpc_security_group_id ?? o.GroupId ?? o.group_id
+            ?? o.SecurityGroupId ?? o.security_group_id;
+          return typeof v === 'string' ? v : null;
+        }
+        return null;
+      })
+      .filter((v): v is string => !!v && v.startsWith('sg-'));
+  // SG inbound-rule chaining (RDS gap L154; elasticache gap L223 reuses the same section/route).
   const rdsSgIds = rdsInstanceId
-    ? (Array.isArray(data.vpc_security_groups) ? data.vpc_security_groups : [])
-        .map((g) => {
-          if (typeof g === 'string') return g;
-          if (g && typeof g === 'object') {
-            const o = g as Record<string, unknown>;
-            const v = o.VpcSecurityGroupId ?? o.vpc_security_group_id ?? o.GroupId ?? o.group_id;
-            return typeof v === 'string' ? v : null;
-          }
-          return null;
-        })
-        .filter((v): v is string => !!v && v.startsWith('sg-'))
-    : [];
+    ? sgIdList(data.vpc_security_groups)
+    : resourceType === 'elasticache'
+      ? sgIdList(data.security_groups)
+      : [];
   // EBS drill-down (gap L97/L98): per-volume snapshots + attached-instance enrichment.
   const ebsVolumeId = resourceType === 'ebs_volume' && typeof data.resource_id === 'string' ? data.resource_id : null;
   const liveMetricId =
@@ -369,6 +379,7 @@ export default function DetailPanel({
         </header>
         {actions && <div className="border-b border-ink-100 px-4 py-3">{actions}</div>}
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+          {ebsVolumeId != null && <EbsVerdictBanners data={data} />}
           {groups.map((group, gi) => {
             // v1-parity: each section is a rounded card with a leading icon + title. An unlabelled
             // group (no spec/sections) renders as a plain card without the header row.
@@ -424,6 +435,11 @@ export default function DetailPanel({
                 accountId={typeof data.account_id === 'string' ? data.account_id : undefined}
                 region={typeof data.region === 'string' ? data.region : undefined}
               />
+            </section>
+          )}
+          {resourceType === 's3' && (
+            <section className="rounded-lg border border-ink-100 bg-paper-muted/40 p-3">
+              <S3IamAccessSection accountId={typeof data.account_id === 'string' ? data.account_id : undefined} />
             </section>
           )}
           {ebsVolumeId && (

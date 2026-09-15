@@ -47,7 +47,7 @@ CloudWatch에서 수집한 실시간 메트릭:
 - 네트워크 설정 (서브넷 그룹, AZ)
 - 보안 설정 (At-Rest/Transit 암호화, Auth Token)
 - 구성 설정 (스냅샷 보존, 유지보수 윈도우)
-- Security Group 및 인바운드 규칙
+- Security Group 및 인바운드 규칙 — 각 SG가 동기화된 security_group 인벤토리에서 protocol/port/소스(CIDR·SG·prefix list)로 전개됩니다(라이브 AWS 호출 없음; 미동기화 SG는 'not synced' 표시)
 - CloudWatch 메트릭 차트
 
 ## 사용 방법

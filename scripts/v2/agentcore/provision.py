@@ -15,15 +15,20 @@ import copy
 import ipaddress
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+import uuid
+from pathlib import Path
 from urllib.parse import urlparse
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 import catalog  # same directory
+import provision_report as diagnostics
 
 TFDIR = "terraform/foundation"
 RUNTIME_NAME = "awsops_v2_agent"                 # underscores only
@@ -36,15 +41,64 @@ report = []  # (resource, status, detail)
 
 def log(resource, status, detail=""):
     report.append((resource, status, detail))
-    print(f"  [{status:8}] {resource}  {detail}")
+    diagnostics.result(resource, status, detail)
+
+
+def development_run():
+    return os.environ.get("TARGET") == "dev" or os.environ.get("GITHUB_REF") == "refs/heads/dev"
+
+
+def runtime_image(ac):
+    digest = os.environ.get("AGENT_IMAGE_DIGEST")
+    if digest is not None or development_run():
+        if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ValueError("invalid_agent_image_digest")
+        return f"{ac['ecr_uri']}@{digest}"
+    return f"{ac['ecr_uri']}:{IMAGE_TAG}"
+
+
+def validate_dev_deployment(ac):
+    """Bind direct provisioner invocation too; no writes before independent STS proof."""
+    if not development_run():
+        return
+    env = os.environ
+    account = env.get("AWS_ACCOUNT_ID_DEV", "")
+    role = re.fullmatch(r"arn:aws:iam::([0-9]{12}):role/((?:[\x21-\x7e]+/)?)([A-Za-z0-9+=,.@_-]{1,64})",
+                        env.get("RUNTIME_ROLE_ARN", "").strip())
+    project = ac.get("project", "")
+    sha = env.get("GITHUB_SHA", "")
+    if not (env.get("GITHUB_REPOSITORY") == "aws-samples/sample-awsops"
+            and env.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and env.get("GITHUB_REF") == "refs/heads/dev"
+            and re.fullmatch(r"[0-9a-f]{40}", sha)
+            and env.get("AGENT_IMAGE_TAG") == f"agent-{sha}"
+            and re.fullmatch(r"[0-9]{12}", account) and role and role[1] == account
+            and len(role[2]) <= 511 and re.fullmatch(r"[a-z][a-z0-9-]{1,39}", project)
+            and env.get("AWS_REGION") == ac.get("region") == "ap-northeast-2"
+            and ac.get("ecr_uri") == f"{account}.dkr.ecr.ap-northeast-2.amazonaws.com/{project}-agentcore"
+            and re.fullmatch(rf"arn:aws:iam::{account}:role/[A-Za-z0-9+=,.@_/-]+", ac.get("role_arn", ""))):
+        raise ValueError("invalid_dev_deployment")
+    runtime_image(ac)
+    caller = boto3.client("sts", region_name=ac["region"], config=Config(
+        connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 1})).get_caller_identity()
+    if (caller.get("Account") != account or not re.fullmatch(
+            rf"arn:aws:sts::{account}:assumed-role/{re.escape(role[3])}/[A-Za-z0-9+=,.@_-]{{2,64}}",
+            caller.get("Arn", ""))):
+        raise ValueError("actual_dev_caller_mismatch")
 
 
 def tf_outputs():
-    raw = subprocess.check_output(["terraform", f"-chdir={TFDIR}", "output", "-json"], text=True)
+    raw = subprocess.check_output(["terraform", f"-chdir={TFDIR}", "output", "-json"],
+                                  text=True, stderr=subprocess.DEVNULL, timeout=120)
     data = json.loads(raw)
     if "agentcore" not in data or data["agentcore"]["value"] is None:
-        sys.exit("agentcore output is null — set agentcore_enabled=true and `terraform apply` first.")
-    return data["agentcore"]["value"]
+        raise ValueError("agentcore_output_unavailable")
+    ac = data["agentcore"]["value"]
+    deployment = (data.get("runtime_deployment") or {}).get("value") or {}
+    ac["readiness_cloudfront_id"] = (deployment.get("known") or {}).get("cloudfront_distribution_id")
+    ac["readiness_inventory_enabled"] = (deployment.get("features") or {}).get("inventory")
+    ac["readiness_protocol_available"] = Path("agent/readiness.py").is_file()
+    return ac
 
 
 def _items(resp):
@@ -71,42 +125,44 @@ def gateway_url(gw_id, region):
 
 
 def ensure_gateways(ctrl, ac):
-    """9 gateways, idempotent by exact name. Returns {short_key: gateway_id}.
+    """Reconcile catalog role/description without changing deployed auth/protocol.
 
-    Description drift converges too (PR #246 review): a catalog description edit used to apply
-    only at create_gateway — an already-live gateway kept the stale text forever (observed: the
-    ops gateway still advertised "Steampipe SQL ..." long after ADR-001/010 removed live
-    Steampipe). list_gateways already returns each gateway's description, so drift detection is
-    free; on mismatch, update_gateway is called with exactly the same required fields
-    create_gateway sends (name/roleArn/protocolType/authorizerType) — same converge-on-catalog
-    posture ensure_targets already has for tool schemas.
+    Known IDs survive read/update failures for Runtime routing and ADR-017 teardown.
+    CREATED/UPDATED records mean the API accepted a request, not readiness.
     """
     existing = {g.get("name"): g for g in _list_all(ctrl.list_gateways)}
     ids = {}
     for key in catalog.GATEWAYS:
         name = f"awsops-v2-{key}-gateway"  # v2-namespaced: isolate from v1 awsops-* in shared accounts
         if name in existing:
-            gw = existing[name]
-            ids[key] = gw.get("gatewayId")
-            want = catalog.GATEWAY_DESCRIPTIONS.get(key, key)
-            if gw.get("description") != want:
-                try:
-                    ctrl.update_gateway(
-                        gatewayIdentifier=gw.get("gatewayId"),
-                        name=name,
-                        roleArn=ac["role_arn"],
-                        protocolType="MCP",
-                        authorizerType="NONE",
-                        description=want,
-                    )
-                    log(f"gateway:{key}", "UPDATED", "description drift")
-                except ClientError as e:
-                    # Description convergence is cosmetic — never fail the provisioning run on it.
-                    # WARN, not ERR: main() exits 1 on any ERR in the report (provision.py tail),
-                    # which would fail `make agentcore` over a label.
-                    log(f"gateway:{key}", "WARN", f"description update failed: {str(e)[:120]}")
-            else:
-                log(f"gateway:{key}", "EXISTS", name)
+            gid = existing[name].get("gatewayId")
+            if not isinstance(gid, str) or not gid:
+                log(f"gateway:{key}", "ERR", "gateway_configuration_unavailable")
+                continue
+            ids[key] = gid
+            failure_status = "ERR"
+            try:
+                gw = ctrl.get_gateway(gatewayIdentifier=gid)
+                role_drift = gw.get("roleArn") != ac["role_arn"]
+                failure_status = "ERR" if role_drift else "WARN"
+                want = catalog.GATEWAY_DESCRIPTIONS.get(key, key)
+                if role_drift or gw.get("description") != want:
+                    if not gw.get("authorizerType"):
+                        log(f"gateway:{key}", failure_status, "gateway_configuration_unavailable")
+                        continue
+                    preserve = ("authorizerType", "authorizerConfiguration", "protocolType",
+                                "protocolConfiguration", "kmsKeyArn", "interceptorConfigurations",
+                                "policyEngineConfiguration", "exceptionLevel",
+                                "customTransformConfiguration", "wafConfiguration")
+                    request = {field: copy.deepcopy(gw[field]) for field in preserve
+                               if gw.get(field) is not None}
+                    ctrl.update_gateway(gatewayIdentifier=gid, name=name,
+                                        roleArn=ac["role_arn"], description=want, **request)
+                    log(f"gateway:{key}", "UPDATED", "role drift" if role_drift else "description drift")
+                else:
+                    log(f"gateway:{key}", "EXISTS", name)
+            except (ClientError, BotoCoreError) as error:
+                log(f"gateway:{key}", failure_status, diagnostics.error_code(error))
             continue
         try:
             resp = ctrl.create_gateway(
@@ -118,8 +174,8 @@ def ensure_gateways(ctrl, ac):
             )
             ids[key] = resp["gatewayId"]
             log(f"gateway:{key}", "CREATED", name)
-        except ClientError as e:
-            log(f"gateway:{key}", "ERR", str(e)[:140])
+        except (ClientError, BotoCoreError) as error:
+            log(f"gateway:{key}", "ERR", diagnostics.error_code(error))
     return ids
 
 
@@ -163,7 +219,8 @@ def tool_fingerprint(tools):
 
 
 def ensure_targets(ctrl, ac, gw_ids, skip_names=frozenset()):
-    """Slice targets, idempotent by name. update_gateway_target on tool-schema drift.
+    """Slice targets: reconcile Lambda ARN, credential type and managed tool schema.
+    An accepted create/update is not a readiness or recovery guarantee.
 
     skip_names: legacy TARGETS names that ensure_mcp_server_targets owns THIS run (the preset is
     active or actively cutting over). Without this, ensure_targets (which only looks at whether
@@ -189,27 +246,35 @@ def ensure_targets(ctrl, ac, gw_ids, skip_names=frozenset()):
         tools = _inject_account(spec["tools"])
         cfg = {"mcp": {"lambda": {"lambdaArn": lambda_arn, "toolSchema": {"inlinePayload": tools}}}}
         creds = [{"credentialProviderType": "GATEWAY_IAM_ROLE"}]
-        existing = {t.get("name"): t for t in _list_all(ctrl.list_gateway_targets, gatewayIdentifier=gw_id)}
         try:
+            existing = {t.get("name"): t for t in _list_all(ctrl.list_gateway_targets, gatewayIdentifier=gw_id)}
             if tname in existing:
                 tid = existing[tname]["targetId"]
                 cur = ctrl.get_gateway_target(gatewayIdentifier=gw_id, targetId=tid)
-                cur_tools = cur.get("targetConfiguration", {}).get("mcp", {}).get("lambda", {}).get("toolSchema", {}).get("inlinePayload", [])
+                current_lambda = cur.get("targetConfiguration", {}).get("mcp", {}).get("lambda", {})
+                cur_tools = current_lambda.get("toolSchema", {}).get("inlinePayload", [])
+                credential_types = [item.get("credentialProviderType")
+                                    for item in (cur.get("credentialProviderConfigurations") or [])]
                 # Drift = the full managed tool definition (name + description + inputSchema), not
                 # just the name set — an in-place schema edit keeping the same name re-syncs too.
-                if tool_fingerprint(cur_tools) == tool_fingerprint(tools):
+                if (current_lambda.get("lambdaArn") == lambda_arn
+                        and credential_types == ["GATEWAY_IAM_ROLE"]
+                        and tool_fingerprint(cur_tools) == tool_fingerprint(tools)):
                     log(f"target:{tname}", "EXISTS", f"{len(tools)} tools")
                 else:
+                    preserve = {field: copy.deepcopy(cur[field])
+                                for field in ("metadataConfiguration", "privateEndpoint")
+                                if cur.get(field) is not None}
                     ctrl.update_gateway_target(gatewayIdentifier=gw_id, targetId=tid, name=tname,
                                                 description=spec["description"], targetConfiguration=cfg,
-                                                credentialProviderConfigurations=creds)
-                    log(f"target:{tname}", "UPDATED", f"{len(tools)} tools (schema drift)")
+                                                credentialProviderConfigurations=creds, **preserve)
+                    log(f"target:{tname}", "UPDATED", f"{len(tools)} tools (ARN/credential/schema drift)")
             else:
                 ctrl.create_gateway_target(gatewayIdentifier=gw_id, name=tname, description=spec["description"],
                                             targetConfiguration=cfg, credentialProviderConfigurations=creds)
                 log(f"target:{tname}", "CREATED", f"{len(tools)} tools")
-        except ClientError as e:
-            log(f"target:{tname}", "ERR", str(e)[:140])
+        except (ClientError, BotoCoreError) as error:
+            log(f"target:{tname}", "ERR", diagnostics.error_code(error))
 
 
 def _endpoint_blocked(endpoint, spec=None):
@@ -985,7 +1050,11 @@ def ensure_interpreter(ctrl):
 def ensure_runtime(ctrl, ac, gw_ids):
     region = ac["region"]
     gateways_json = json.dumps({k: gateway_url(v, region) for k, v in gw_ids.items()})
-    artifact = {"containerConfiguration": {"containerUri": f"{ac['ecr_uri']}:{IMAGE_TAG}"}}
+    try:
+        artifact = {"containerConfiguration": {"containerUri": runtime_image(ac)}}
+    except (ValueError, KeyError):
+        log("runtime", "ERR", "invalid_agent_image_digest")
+        return ""
     # VPC mode when the TF output supplies subnets+SGs (Pattern 2: ENIs in our VPC so agents reach
     # private Aurora/EKS; egress to Bedrock/AgentCore still works via the subnets' NAT). Falls back
     # to PUBLIC otherwise. networkMode/networkModeConfig flip in-place (no interruption).
@@ -1001,6 +1070,9 @@ def ensure_runtime(ctrl, ac, gw_ids):
     # Lambdas). Account parsed from the role ARN (arn:aws:iam::<account>:role/...).
     env = {"AWS_REGION": region, "GATEWAYS_JSON": gateways_json,
            "AWSOPS_HOST_ACCOUNT_ID": ac["role_arn"].split(":")[4],
+           # Applied Terraform boolean only; shell environment cannot enable this billed probe.
+           "DEPLOYMENT_READINESS_ENABLED":
+               "true" if ac.get("deployment_readiness_enabled") is True else "false",
            # Dark-path chat loop (ADR-008 amended / BASELINE §2) — default OFF. Set explicitly on the
            # runtime so it survives re-provisioning and is toggleable via the normal deploy path:
            # `ANTHROPIC_AGENT_LOOP_ENABLED=true make agentcore`.
@@ -1051,6 +1123,9 @@ def ensure_runtime(ctrl, ac, gw_ids):
         # exactly this reason; this middle block was the remaining gap).
         log("runtime", "ERR", f"{type(e).__name__}: {str(e)[:150]}")
         return ""
+    if not arn or arn == "PENDING" or (os.environ.get("AGENT_IMAGE_DIGEST") and not valid_runtime_arn(ac, arn, rid)):
+        log("runtime", "ERR", "runtime_identity_unconfirmed")
+        return ""
     # review MAJOR (follow-up): the request above is only ACCEPTED, not live — a caller treating a
     # non-empty ARN as "safe to expose new gateway targets" (main() does, via the ensure_runtime ->
     # ensure_mcp_server_targets ordering) would otherwise race the new revision's actual rollout.
@@ -1081,40 +1156,154 @@ def write_ssm(ac, runtime_arn, interpreter_id, memory_id):
         log(f"ssm:{pname}", "WROTE", val[:60])
 
 
-def smoke(ac, runtime_arn):
-    if not runtime_arn:
-        log("smoke", "ERR", "no runtime arn")
-        return
-    data = boto3.client("bedrock-agentcore", region_name=ac["region"])
-    payload = json.dumps({"gateway": "security", "prompt": "List the IAM roles in this account. Use the list_roles tool."}).encode()
+def valid_runtime_arn(ac, arn, rid=None):
+    account = ac.get("role_arn", "").split(":")[4:5]
+    pattern = (rf"arn:aws:bedrock-agentcore:{re.escape(ac['region'])}:"
+               rf"{re.escape(account[0]) if account else 'INVALID'}:runtime/({re.escape(RUNTIME_NAME)}-[A-Za-z0-9]{{1,64}})")
+    match = re.fullmatch(pattern, arn) if isinstance(arn, str) else None
+    return bool(match and (rid is None or match[1] == rid))
+
+
+def readiness_code(raw, request):
+    """One bounded SSE payload; freshness is classified by the producer, not a local timer."""
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError()
+            result[key] = value
+        return result
     try:
+        if not isinstance(raw, bytes) or len(raw) > 16384:
+            return "protocol_invalid"
+        payloads = []
+        for frame in raw.decode("utf-8").replace("\r\n", "\n").split("\n\n"):
+            data = []
+            for line in frame.split("\n"):
+                if not line or line.startswith((":", "event:", "id:")):
+                    continue
+                if not line.startswith("data:"):
+                    return "protocol_invalid"
+                data.append(line[5:].removeprefix(" "))
+            payload = "\n".join(data).strip()
+            if payload and payload != "[DONE]":
+                payloads.append(payload)
+        if len(payloads) != 1:
+            return "protocol_invalid"
+        value = json.loads(payloads[0], object_pairs_hook=unique_object)
+        checks = ("identity", "inventorySummary", "inventoryQuery", "knownResource", "freshInventory", "model")
+        inventory = value.get("inventory") if isinstance(value, dict) else None
+        valid = (isinstance(value, dict) and set(value) == {
+                    "schemaVersion", "mode", "nonce", "accountId", "status", "reason", "checks", "inventory"}
+                and type(value["schemaVersion"]) is int and value["schemaVersion"] == 1
+                and value["mode"] == "deployment_readiness"
+                and value["status"] in ("ready", "not_ready")
+                and isinstance(value["checks"], dict) and set(value["checks"]) == set(checks)
+                and all(type(value["checks"][key]) is bool for key in checks)
+                and isinstance(inventory, dict) and set(inventory) == {"count", "ageMinutes"}
+                and (inventory["count"] is None or (type(inventory["count"]) is int and 0 <= inventory["count"] <= 500))
+                and (inventory["ageMinutes"] is None or (type(inventory["ageMinutes"]) is int and 0 <= inventory["ageMinutes"] <= 1440)))
+        if not valid:
+            return "protocol_invalid"
+        if value["nonce"] != request["nonce"] or value["accountId"] != request["expectedAccountId"]:
+            return "response_identity_mismatch"
+        failures = {"disabled", "invalid_request", "identity_failed", "account_mismatch", "gateway_unavailable",
+                    "tools_unavailable", "inventory_unavailable", "inventory_incomplete", "inventory_stale",
+                    "known_resource_missing", "known_resource_unverified", "model_failed", "timeout"}
+        if value["status"] == "not_ready":
+            return value["reason"] if value["reason"] in failures else "protocol_invalid"
+        if value["reason"] != "ok":
+            return "protocol_invalid"
+        if not all(value["checks"].values()):
+            return "checks_failed"
+        if inventory["count"] is None or inventory["count"] < 1:
+            return "inventory_empty"
+        if inventory["ageMinutes"] is None:
+            return "protocol_invalid"
+        return "readiness_confirmed"
+    except (ValueError, KeyError, TypeError, UnicodeError):
+        return "protocol_invalid"
+
+
+def valid_readiness_response(raw, request):
+    return readiness_code(raw, request) == "readiness_confirmed"
+
+
+def smoke(ac, runtime_arn):
+    strict = development_run()
+    protocol = ac.get("readiness_protocol_available") is True
+    configured = bool(re.fullmatch(r"[A-Z0-9]{5,32}", ac.get("readiness_cloudfront_id") or ""))
+    inventory = ac.get("readiness_inventory_enabled")
+    enabled = ac.get("deployment_readiness_enabled") is True
+    structured = enabled and protocol and configured and inventory is True
+    if not valid_runtime_arn(ac, runtime_arn):
+        log("smoke", "ERR", "runtime_unavailable")
+        return
+    if strict and not structured:
+        code = ("disabled" if not enabled else "readiness_protocol_unavailable" if not protocol else
+                "readiness_configuration_unavailable" if not configured else
+                "inventory_disabled" if inventory is False else "inventory_configuration_unavailable")
+        log("smoke", "ERR", code)
+        return
+    code = "invoke_failed"
+    failed_transport = False
+    body = None
+    try:
+        payload = (dict(mode="deployment_readiness", nonce=uuid.uuid4().hex,
+                       expectedAccountId=ac["role_arn"].split(":")[4],
+                       expectedCloudfrontId=ac["readiness_cloudfront_id"]) if structured else
+                   {"gateway": "security", "prompt": "List the IAM roles in this account. Use the list_roles tool."})
+        data = boto3.client("bedrock-agentcore", region_name=ac["region"], config=Config(
+            connect_timeout=3, read_timeout=60, retries={"total_max_attempts": 1}))
         resp = data.invoke_agent_runtime(agentRuntimeArn=runtime_arn, qualifier="DEFAULT",
-                                         runtimeSessionId="p1f-smoke-session-000000000000000000000000000000000",
-                                         payload=payload)
-        body = resp["response"].read().decode() if hasattr(resp.get("response"), "read") else str(resp.get("response"))
-        ok = "role" in body.lower()
-        log("smoke", "OK" if ok else "WARN", body[:160])
-    except ClientError as e:
-        log("smoke", "ERR", str(e)[:160])
+                                         runtimeSessionId=f"readiness-{uuid.uuid4()}",
+                                         contentType="application/json", accept="text/event-stream",
+                                         payload=json.dumps(payload).encode())
+        body = resp.get("response")
+        if not structured:
+            if hasattr(body, "read"):
+                body.read(16385)
+            code = "legacy_invocation_only"  # Advisory, never inspect text for a success substring.
+        elif not str(resp.get("contentType", "")).startswith("text/event-stream"):
+            code = "not_event_stream"
+        elif not hasattr(body, "read"):
+            code = "protocol_invalid"
+        else:
+            code = readiness_code(body.read(16385), payload)
+    except (BotoCoreError, ClientError) as error:
+        failed_transport = True
+        code = {"aws_access_denied": "invoke_access_denied", "aws_throttled": "invoke_throttled",
+                "aws_credentials_expired": "invoke_credentials_expired",
+                "read_timeout": "invoke_timeout"}.get(diagnostics.error_code(error), "invoke_failed")
+    except (ValueError, KeyError, TypeError):
+        code = "protocol_invalid"
+    finally:
+        if hasattr(body, "close"):
+            try:
+                body.close()
+            except Exception:
+                pass  # Cleanup is not evidence and must preserve the classified result.
+    status = "OK" if code == "readiness_confirmed" else "ERR" if strict or failed_transport else "WARN"
+    log("smoke", status, code)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--smoke", action="store_true", help="invoke the runtime through one gateway after provisioning")
-    args = ap.parse_args()
-
+def _provision(args):
     ac = tf_outputs()
+    diagnostics.stage("identity")
+    validate_dev_deployment(ac)
     region = ac["region"]
     ctrl = boto3.client("bedrock-agentcore-control", region_name=region)
 
-    print(f"\n=== AWSops v2 AgentCore provisioner (region={region}) ===")
+    diagnostics.stage("gateways")
     gw_ids = ensure_gateways(ctrl, ac)
     # Load the ADR-017 credentials secret ONCE and share it with both calls below — also lets
     # ensure_targets know which legacy lambda targets ensure_mcp_server_targets owns this run (see
     # ensure_targets' skip_names docstring: without this a legacy target flaps every run).
+    diagnostics.stage("credentials")
     secrets, secrets_read_ok = _load_official_mcp_secret(ac)
     legacy_skip = {catalog.legacy_target_name(pk) for pk in _cutover_preset_keys(ac, secrets, secrets_read_ok)}
     legacy_skip.discard(None)
+    diagnostics.stage("lambda_targets")
     ensure_targets(ctrl, ac, gw_ids, skip_names=legacy_skip)
     # ensure_runtime BEFORE ensure_mcp_server_targets (review MAJOR L3-1): a gateway mcpServer target
     # is exposed to whatever runtime revision is currently serving the instant it's created. Creating
@@ -1125,6 +1314,7 @@ def main():
     # catalog.MCP_SERVER_TARGETS directly, not from anything ensure_mcp_server_targets produces), so
     # reordering is a pure reorder — the new runtime revision (allowlist included) is live before any
     # mcpServer target that depends on it can exist.
+    diagnostics.stage("runtime")
     runtime_arn = ensure_runtime(ctrl, ac, gw_ids)
     # review MAJOR (follow-up): the reorder above closes the WINDOW between target-creation and
     # allowlist-deployment, but ensure_runtime can still fail outright, or accept the request
@@ -1133,22 +1323,43 @@ def main():
     # ensure_mcp_server_targets call on runtime_arn being falsy would ALSO block its teardown paths
     # (an operator revoking an ack specifically to shut a live target off) — so the call always
     # runs; only its internal create/update/sync path is gated on allow_provision.
+    diagnostics.stage("mcp_targets")
     ensure_mcp_server_targets(ctrl, ac, gw_ids, secrets=secrets, secrets_read_ok=secrets_read_ok,
                                allow_provision=bool(runtime_arn))  # ADR-017 curated official-vendor MCP presets
+    diagnostics.stage("prune")
     prune_moved_targets(ctrl, gw_ids)  # remove split-brain orphans after a catalog gateway move
+    diagnostics.stage("memory")
     memory_id = ensure_memory(ctrl)
+    diagnostics.stage("interpreter")
     interpreter_id = ensure_interpreter(ctrl)
+    diagnostics.stage("ssm")
     write_ssm(ac, runtime_arn, interpreter_id, memory_id)
 
     if args.smoke:
-        print("\n=== smoke (runtime -> gateway -> tool) ===")
+        diagnostics.stage("smoke")
         # the runtime may need a few seconds after create/update to become invokable
         time.sleep(10)
         smoke(ac, runtime_arn)
 
     errs = [r for r in report if r[1] == "ERR"]
-    print(f"\n=== report: {len(report)} actions, {len(errs)} errors ===")
-    sys.exit(1 if errs else 0)
+    return 1 if errs else 0
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--smoke", action="store_true", help="post-provision smoke; strict readiness on dev, advisory on other stacks")
+    args = ap.parse_args()
+    report.clear()
+    diagnostics.reset()
+    diagnostics.stage("configuration")
+    try:
+        result = _provision(args)
+    except Exception as error:
+        log("operation", "ERR", diagnostics.error_code(error))
+        result = 1
+    diagnostics.stage("complete")
+    diagnostics.summary()
+    sys.exit(result)
 
 
 if __name__ == "__main__":

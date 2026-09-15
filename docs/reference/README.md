@@ -87,6 +87,12 @@ web task role an **EKS Access Entry + AWS-managed view policy** (cluster-scoped,
 exposing endpoint/CA so the dashboard can run **read-only** Kubernetes queries. EKS Access Entry +
 view 정책(읽기 전용).
 
+**Private plan transport — [private-plan-transport.md](private-plan-transport.md).**
+Operator CI helper with four modes: policy, publication, inspection and restore.
+It grants no IAM permission, provisions no storage and does not enable product mutation
+or an ADR-005 exception. The Terraform workflow supplies the protected integration;
+owners must provision scoped access and plan-prefix lifecycle before publication.
+
 | Component | Reference | Key files |
 |---|---|---|
 | Edge & Networking | [01-edge-network.md](01-edge-network.md) | `terraform/foundation/edge.tf` (+ `network.tf`, `workload.tf`) |
@@ -96,6 +102,7 @@ view 정책(읽기 전용).
 | AgentCore Agents | [05-agentcore.md](05-agentcore.md) | `scripts/v2/agentcore/` (`catalog.py`, `provision.py`; `terraform/foundation/ai.tf`) |
 | Async Worker Backbone | [06-workers.md](06-workers.md) | `terraform/foundation/workers.tf` (+ `scripts/v2/workers/`) |
 | EKS Onboarding | [07-eks.md](07-eks.md) | `terraform/foundation/eks.tf` (+ `scripts/v2/configure.mjs`) |
+| Private plan transport | [private-plan-transport.md](private-plan-transport.md) | `scripts/v2/ci_private_plan.py`, `.github/workflows/terraform.yml` |
 
 ## Status / 상태
 

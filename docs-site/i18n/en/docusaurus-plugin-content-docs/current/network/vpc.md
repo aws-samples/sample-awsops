@@ -21,7 +21,7 @@ Manage network resources systematically across 8 tabs:
 | Tab | Resource | Key Information |
 |-----|----------|-----------------|
 | **VPCs** | Virtual Private Cloud | CIDR, Tenancy, DNS Settings |
-| **Subnets** | Subnets | AZ, CIDR, Public/Private |
+| **Subnets** | Subnets | AZ, CIDR, Public/Private, Subnets-per-VPC bar chart |
 | **Security Groups** | Security Groups | Inbound/Outbound Rules |
 | **Route Tables** | Route Tables | Routes, Subnet Associations |
 | **Transit Gateway** | TGW | VPC Attachments, Route Tables |

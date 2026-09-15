@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const query = vi.fn();
 vi.mock('@/lib/db', () => ({ getPool: () => ({ query }) }));
-import { upsertSchema, getSchema, listConfiguredSchemas, renderSchemaForPrompt, prioritizeSchemaForQuery, isSchemaStale } from './datasource-schema';
+import { upsertSchema, getSchema, listConfiguredSchemas, renderSchemaForPrompt, prioritizeSchemaForQuery, isSchemaStale, nlSearchTerms, nlSearchConcepts, termMatches } from './datasource-schema';
 
 beforeEach(() => { query.mockReset().mockResolvedValue({ rows: [] }); });
 
@@ -14,10 +14,37 @@ describe('datasource-schema (keyed by integration_id)', () => {
     expect(params[0]).toBe('acct'); expect(params[1]).toBe(7); expect(params[2]).toBe('prometheus');
     expect(JSON.parse(params[3])).toEqual({ metrics: ['up'] });
   });
-  it('rejects an oversized schema with NO query', async () => {
+  it('rejects an oversized UNTRIMMABLE schema with NO query', async () => {
     const huge = { blob: 'x'.repeat(300_000) };
     await expect(upsertSchema('a', 1, 'clickhouse', huge)).rejects.toThrow(/size|limit|large/i);
     expect(query).not.toHaveBeenCalled();
+  });
+  it('stores an oversized METRIC schema as a bounded, truncated copy (every writer gets the fallback)', async () => {
+    query.mockResolvedValueOnce({ rows: [] });
+    const big = { metrics: Array.from({ length: 3000 }, (_, i) => `very_long_metric_name_${'x'.repeat(80)}_${i}`), truncated: false };
+    await upsertSchema('a', 1, 'prometheus', big);
+    const params = query.mock.calls[0][1] as unknown[];
+    const stored = JSON.parse(params[3] as string) as { metrics: string[]; truncated: boolean };
+    expect(Buffer.byteLength(params[3] as string, 'utf8')).toBeLessThanOrEqual(256_000);
+    expect(stored.truncated).toBe(true);
+    expect(stored.metrics.length).toBeGreaterThan(0);
+    expect(stored.metrics).toContain(big.metrics[0]);
+  });
+  it('the metric trim keeps probed∩metrics names (definitive-absence contract) and marks `trimmed`', async () => {
+    const { trimSchemaForCache, isLegacyCapSnapshot } = await import('./datasource-schema');
+    const metrics = Array.from({ length: 3000 }, (_, i) => `very_long_metric_name_${'x'.repeat(80)}_${i}`);
+    const probed = [metrics[1], metrics[1501], 'absent_metric'];
+    const out = trimSchemaForCache({ metrics, probed, truncated: false }) as { metrics: string[]; probed: string[]; trimmed: boolean; truncated: boolean };
+    expect(out.trimmed).toBe(true);
+    expect(out.metrics).toContain(metrics[1]);
+    expect(out.metrics).toContain(metrics[1501]);
+    expect(out.metrics).not.toContain('absent_metric');
+    expect(out.probed).toEqual(probed);
+    // a size-trimmed row is never mistaken for an old-cap snapshot, even at exactly 500 names
+    expect(isLegacyCapSnapshot('prometheus', { truncated: true, trimmed: true }, Array.from({ length: 500 }, (_, i) => `m${i}`))).toBe(false);
+    // probe-enriched old-cap snapshots (500 + ≤24 probed names) DO qualify
+    expect(isLegacyCapSnapshot('prometheus', { truncated: true }, Array.from({ length: 512 }, (_, i) => `m${i}`))).toBe(true);
+    expect(isLegacyCapSnapshot('prometheus', { truncated: true }, Array.from({ length: 525 }, (_, i) => `m${i}`))).toBe(false);
   });
   it('getSchema returns the row (by integration_id) or null', async () => {
     query.mockResolvedValueOnce({ rows: [{ integration_id: 9, kind: 'loki', schema: { labels: ['app'] }, fetched_at: 't' }] });
@@ -40,6 +67,154 @@ describe('datasource-schema (keyed by integration_id)', () => {
 });
 
 describe('renderSchemaForPrompt', () => {
+  it('does not present intrinsic-only cached rows as custom attributes', () => {
+    expect(renderSchemaForPrompt({
+      attributes: [{ name: 'duration' }, { name: 'span:status' }, { name: 'trace:id' }],
+      tags: ['duration', 'status'],
+    }, 'tempo')).toBe('');
+  });
+
+  it('keeps raw legacy custom keys distinct from similarly named intrinsics', () => {
+    const out = renderSchemaForPrompt({ tags: ['duration', 'status', 'rootServiceName', 'http.status_code'] }, 'tempo');
+    expect(out).toContain('.http.status_code');
+    expect(out).toContain('.duration (type unknown)');
+    expect(out).toContain('.status (type unknown)');
+    expect(out).toContain('.rootServiceName (type unknown)');
+  });
+
+  it('keeps genuinely scoped attributes even when their names match intrinsics', () => {
+    expect(renderSchemaForPrompt({ attributes: [{ name: 'span.duration', types: ['int'] }] }, 'tempo'))
+      .toContain('span.duration (int)');
+  });
+
+  it('returns no usable schema when the budget cannot hold any complete attribute', () => {
+    expect(renderSchemaForPrompt({
+      version: '2.9.0', attributes: [{ name: 'span.' + 'a'.repeat(1000), types: ['string'] }],
+    }, 'tempo', 100)).toBe('');
+  });
+
+  it('preserves Tempo attribute scopes, observed types, and server version', () => {
+    const out = renderSchemaForPrompt({
+      version: '2.8.0',
+      tags: ['http.status_code', 'service.name'],
+      attributes: [
+        { name: 'span.http.status_code', types: ['int'] },
+        { name: 'span.http.response.status_code', types: ['string', 'int'] },
+        { name: 'resource.service.name', types: ['string'] },
+      ],
+    }, 'tempo');
+    expect(out).toContain('Tempo version: 2.8.0');
+    expect(out).toContain('span.http.status_code (int)');
+    expect(out).toContain('span.http.response.status_code (string | int)');
+    expect(out).toContain('resource.service.name (string)');
+    expect(out).not.toContain('tags: http.status_code');
+  });
+
+  it('renders old Tempo cache tags as valid unscoped attributes without guessing scope or type', () => {
+    const out = renderSchemaForPrompt({ tags: ['http.status_code', 'service.name', 'http status'] }, 'tempo');
+    expect(out).toContain('.http.status_code (type unknown)');
+    expect(out).toContain('.service.name (type unknown)');
+    expect(out).toContain('."http status" (type unknown)');
+    expect(out).not.toContain('span.http.status_code');
+  });
+
+  it.each(['resource.service.name', 'span.foo', 'parent.foo', 'event', 'trace.foo'])(
+    'quotes a legacy Tempo key beginning with a reserved scope: %s', (tag) => {
+      expect(renderSchemaForPrompt({ tags: [tag] }, 'tempo')).toContain(`."${tag}" (type unknown)`);
+    },
+  );
+
+  it('keeps relevant typed Tempo attributes within the render budget', () => {
+    const schema = {
+      attributes: [
+        ...Array.from({ length: 150 }, (_, i) => ({ name: `span.attr${i}`, types: ['string'] })),
+        { name: 'span.http.response.status_code', types: ['int'] },
+      ],
+    };
+    const out = renderSchemaForPrompt(prioritizeSchemaForQuery(schema, 'HTTP 500 응답 스팬'), 'tempo', 300);
+    expect(out).toContain('span.http.response.status_code (int)');
+    expect(out.length).toBeLessThanOrEqual(300);
+    expect(out).toMatch(/more attributes/);
+    expect(schema.attributes[0].name).toBe('span.attr0');
+  });
+
+  it('does not treat a version-only Tempo schema as observed attributes', () => {
+    expect(renderSchemaForPrompt({ version: '2.8.0', tags: [] }, 'tempo')).toBe('');
+  });
+
+  it('marks limited Tempo type evidence unknown without tainting an uncapped sibling sample', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: [
+        { name: 'span.http.status_code', types: ['string'], types_truncated: true },
+        { name: 'span.http.response.status_code', types: ['int'], types_truncated: false },
+      ],
+    }, 'tempo');
+    expect(out).toContain('span.http.status_code (type unknown; observed: string; sampling incomplete)');
+    expect(out).not.toContain('span.http.status_code (string)');
+    expect(out).toContain('span.http.response.status_code (int)');
+  });
+
+  it('treats old truncated Tempo caches without per-attribute sampling metadata conservatively', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: [{ name: 'span.http.status_code', types: ['string'] }],
+    }, 'tempo');
+    expect(out).toContain('span.http.status_code (type unknown; observed: string; sampling incomplete)');
+  });
+
+  it('does not label a type-only sampling limit as incomplete attribute-name discovery', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true, names_truncated: false, types_truncated: true,
+      attributes: [{ name: 'span.http.status_code', types: ['string'], types_truncated: true }],
+    }, 'tempo');
+    expect(out).toContain('type unknown; observed: string; sampling incomplete');
+    expect(out).not.toContain('discovery limited');
+    expect(out).not.toContain('more attributes');
+  });
+
+  it('retains explicit name-limit disclosure without tainting a complete type sample', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true, names_truncated: true, types_truncated: false,
+      attributes: [{ name: 'span.http.status_code', types: ['int'], types_truncated: false }],
+    }, 'tempo');
+    expect(out).toContain('span.http.status_code (int)');
+    expect(out).toContain('schema discovery limited');
+  });
+
+  it('discloses limited discovery without claiming zero additional Tempo attributes', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: [{ name: 'span.custom' }],
+    }, 'tempo');
+    expect(out).toContain('span.custom (type unknown)');
+    expect(out).toContain('schema discovery limited');
+    expect(out).not.toMatch(/\+0/);
+    expect(out).not.toContain('more attributes');
+  });
+
+  it('reports known omitted Tempo attributes separately from discovery limits', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: Array.from({ length: 81 }, (_, i) => ({ name: `span.attr${i}` })),
+    }, 'tempo');
+    expect(out).toContain('(+1 more attributes; discovery also limited)');
+    expect(out).not.toContain('+1+');
+  });
+
+  it('keeps incomplete Tempo sampling disclosures within a small prompt budget', () => {
+    const out = renderSchemaForPrompt({
+      truncated: true,
+      attributes: [
+        { name: 'span.http.status_code', types: ['string'], types_truncated: true },
+        ...Array.from({ length: 10 }, (_, i) => ({ name: `span.attr${i}` })),
+      ],
+    }, 'tempo', 300);
+    expect(out.length).toBeLessThanOrEqual(300);
+    expect(out).toContain('span.http.status_code (type unknown; observed: string; sampling incomplete)');
+    expect(out).toContain('discovery also limited');
+  });
+
   it('emits SQL tables WITH columns and types (not just names) — the core ClickHouse fix', () => {
     const schema = {
       version: '24.8.1',
@@ -139,5 +314,39 @@ describe('isSchemaStale (lazy-refresh TTL)', () => {
   });
   it('respects a custom TTL', () => {
     expect(isSchemaStale('2026-06-18T11:00:00Z', now, 30 * 60 * 1000)).toBe(true); // 1h old > 30m TTL
+  });
+});
+
+describe('nlSearchTerms / Korean ops vocabulary (the 메모리 사용률 chip)', () => {
+  const metrics = ['ALERTS', 'aggregator_discovery_total', 'apiserver_request_total',
+    'container_memory_working_set_bytes', 'kube_pod_status_phase', 'node_memory_MemAvailable_bytes', 'node_memory_MemTotal_bytes', 'up'];
+  it('a Korean request expands to English metric substrings (particles tolerated)', () => {
+    const terms = nlSearchTerms('메모리 사용률이 높은 인스턴스');
+    expect(terms).toEqual(expect.arrayContaining(['memory', 'mem', 'usage', 'utilization', 'instance', 'node']));
+  });
+  it('floats node_memory_* / container_memory_* to the front for the reported Korean chip', () => {
+    const out = prioritizeSchemaForQuery({ metrics }, '메모리 사용률이 높은 인스턴스') as { metrics: string[] };
+    // node_memory_* match memory+mem+node (3), container_memory_* match memory+mem (2)
+    expect(out.metrics.slice(0, 2).sort()).toEqual(['node_memory_MemAvailable_bytes', 'node_memory_MemTotal_bytes']);
+    expect(out.metrics[2]).toBe('container_memory_working_set_bytes');
+    expect(out.metrics.indexOf('ALERTS')).toBeGreaterThan(2);
+  });
+  it('scores per CONCEPT, not per expansion term (memory+mem count once)', () => {
+    // '메모리' alone → one concept; a name matching both 'memory' and 'mem' must not outrank one
+    // that matches a different concept as well.
+    const out = prioritizeSchemaForQuery({ metrics: ['container_memory_working_set_bytes', 'node_memory_MemTotal_bytes'] }, '노드 메모리') as { metrics: string[] };
+    expect(out.metrics[0]).toBe('node_memory_MemTotal_bytes'); // memory(1) + node(1) = 2 vs memory(1)
+    expect(nlSearchConcepts('메모리').length).toBe(1);
+  });
+  it('short expansions (<3 chars) match only whole name segments — "up" never hits "group"/"setup"', () => {
+    expect(termMatches('up', 'up')).toBe(true);
+    expect(termMatches('probe_up_total', 'up')).toBe(true);
+    expect(termMatches('kube_pod_group_total', 'up')).toBe(false);
+    expect(termMatches('node_setup_seconds', 'up')).toBe(false);
+    const out = prioritizeSchemaForQuery({ metrics: ['kube_pod_group_total', 'up'] }, '다운된 타깃') as { metrics: string[] };
+    expect(out.metrics[0]).toBe('up');
+  });
+  it('unmapped Korean still leaves the order unchanged', () => {
+    expect((prioritizeSchemaForQuery({ metrics }, '조회') as { metrics: string[] }).metrics).toEqual(metrics);
   });
 });

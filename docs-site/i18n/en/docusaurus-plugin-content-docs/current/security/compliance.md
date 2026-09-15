@@ -68,7 +68,11 @@ Displays the distribution of control statuses:
 - **Info** (Cyan): Informational
 
 ### Alarms by Section (Bar Chart)
-Compares the number of failures (Alarm) by section. Focus on sections with the most failures first.
+Compares the number of failures (Alarm) by section. Focus on sections with the most failures first. Zero-alarm sections get no bar, and when every section is alarm-free the chart itself is omitted. Bar values count **per checked resource (finding)**, so they can exceed the control-level Alarm KPI tile (the card says 'per finding'); with more than 10 alarming sections only the top 10 show ('Top 10 of N').
+
+## Completion Email Notification
+
+When a benchmark run **successfully** completes (failed runs send nothing), an SNS email is sent with the benchmark name, scope, total/passed/failed (Alarm) counts, the pass rate, and a `/compliance` link. It uses the same SNS topic/subscriptions as the AI-diagnosis notifications (gated by `diagnosis_notify_enabled`), and the admin pause switch (diagnosis email pause) silences it too. Mail for the same benchmark is limited to one per 60 minutes (re-runs don't re-blast). A notification failure never affects the benchmark result (best-effort).
 
 ## Section Details
 

@@ -130,7 +130,9 @@ resource "aws_iam_role_policy" "task_metrics" {
         "ec2:DescribeNetworkInterfaces",
         "ec2:DescribeAddresses",
         # inventory transit_gateway 상세: 어태치먼트 + 라우트 테이블 + 라우트 검색
+        # (+ VPC 어태치먼트 options — gap L168, read-only Describe 1종 추가)
         "ec2:DescribeTransitGatewayAttachments",
+        "ec2:DescribeTransitGatewayVpcAttachments",
         "ec2:DescribeTransitGatewayRouteTables",
         "ec2:SearchTransitGatewayRoutes",
         # /vpc-endpoints: 엔드포인트 리스트+분석 (PrivateLink 메트릭 미사용 감지)
@@ -406,6 +408,7 @@ resource "aws_ecs_task_definition" "web" {
         # so the app listened on the ENI IP and the 127.0.0.1 container healthcheck probe failed
         # (ALB to the ENI IP still passed). Pinning HOSTNAME here makes loopback reachable.
         { name = "HOSTNAME", value = "0.0.0.0" },
+        { name = "INVENTORY_STALE_AFTER_MINUTES", value = tostring(var.inventory_stale_after_minutes) },
         # The legacy email-keyed ownership match is the email-reassignment exposure; it stays on
         # until `make backfill-owner-sub` (PR #203) has rewritten legacy rows, then this flips to
         # "false" and matchesIdentity() looks at the immutable sub only. Wired here because
@@ -427,7 +430,7 @@ resource "aws_ecs_task_definition" "web" {
         # alone leaves the Cognito session live). APP_DOMAIN matches auth.tf logout_urls.
         { name = "COGNITO_DOMAIN", value = "${aws_cognito_user_pool_domain.main.domain}.auth.${var.region}.amazoncognito.com" },
         { name = "APP_DOMAIN", value = var.domain_name },
-        { name = "SSM_RUNTIME_ARN_PARAM", value = "/ops/${var.project}/agentcore/runtime_arn" },
+        { name = "SSM_RUNTIME_ARN_PARAM", value = var.agentcore_enabled ? "/ops/${var.project}/agentcore/runtime_arn" : "" },
         # v1-parity Code Interpreter chat route: the BFF reads the provisioned interpreter id from
         # SSM (fail-open — absent/pending ⇒ the code route no-ops and normal routing runs).
         { name = "SSM_INTERPRETER_ID_PARAM", value = "/ops/${var.project}/agentcore/interpreter_id" },
@@ -445,7 +448,9 @@ resource "aws_ecs_task_definition" "web" {
         { name = "HOST_ACCOUNT_ID", value = data.aws_caller_identity.current.account_id },
         # AI Diagnosis (Task 1b): the diagnosis POST route reads process.env.AWS_ACCOUNT_ID.
         { name = "AWS_ACCOUNT_ID", value = data.aws_caller_identity.current.account_id },
-        ], var.workers_enabled ? [
+        ], var.inventory_host_only ? [
+        { name = "INVENTORY_HOST_ONLY", value = "true" }
+        ] : [], var.workers_enabled ? [
         { name = "JOBS_QUEUE_URL", value = one(aws_sqs_queue.jobs[*].url) }
         ] : [], var.remediation_enabled ? [
         # ADR-029+036: the web execute route reads the kill-switch param name + remediation SM ARN.
@@ -641,6 +646,7 @@ resource "aws_security_group" "service" {
 }
 
 resource "aws_acm_certificate" "alb" {
+  count             = var.existing_alb_certificate_arn == null ? 1 : 0
   domain_name       = var.domain_name
   validation_method = "DNS"
   lifecycle {
@@ -649,8 +655,20 @@ resource "aws_acm_certificate" "alb" {
 }
 
 resource "aws_acm_certificate_validation" "alb" {
-  certificate_arn         = aws_acm_certificate.alb.arn
+  count                   = var.existing_alb_certificate_arn == null ? 1 : 0
+  certificate_arn         = aws_acm_certificate.alb[0].arn
   validation_record_fqdns = [for r in aws_route53_record.cf_validation : r.fqdn]
+}
+
+# Preserve existing managed certificates when the optional ARN remains null.
+moved {
+  from = aws_acm_certificate.alb
+  to   = aws_acm_certificate.alb[0]
+}
+
+moved {
+  from = aws_acm_certificate_validation.alb
+  to   = aws_acm_certificate_validation.alb[0]
 }
 
 resource "aws_lb" "internal" {
@@ -685,7 +703,7 @@ resource "aws_lb_listener" "https" {
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = aws_acm_certificate_validation.alb.certificate_arn
+  certificate_arn   = var.existing_alb_certificate_arn != null ? var.existing_alb_certificate_arn : aws_acm_certificate_validation.alb[0].certificate_arn
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.web.arn

@@ -55,6 +55,8 @@ describe('GET /api/eks/fleet', () => {
     const down = body.clusters.find((c: { name: string }) => c.name === 'down');
     expect(down.reachable).toBe(false);
     expect(down.counts.nodes).toBe(0);
+    // gap L227: the /eks no-access banner shows WHY — the truncated error string survives
+    expect(down.error).toBe('403');
   });
   it('an events-only failure keeps the cluster reachable with empty events', async () => {
     listInCluster.mockImplementation(async (_c: string, kind: string) => {

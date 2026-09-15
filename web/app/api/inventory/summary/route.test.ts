@@ -7,6 +7,46 @@ const req = (q = '', cookie = 'awsops_token=t') => new Request(`http://x/api/inv
 beforeEach(() => { verifyUser.mockReset(); query.mockReset(); });
 
 describe('GET /api/inventory/summary', () => {
+  it('returns safe aggregate collection evidence without ledger error text', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    query.mockImplementation(async (sql: string) => ({
+      rows: sql.includes('unknown_attribute_count') ? [{
+        resource_type: 'cloudfront', account_id: 'self', status: 'succeeded', row_count: 0,
+        last_success_at: '2026-09-13T14:00:00Z', unknown_attribute_count: 0, error: 'PRIVATE ERROR',
+      }] : [],
+    }));
+    const { GET } = await import('./route');
+    const body = await (await GET(req())).json();
+    expect(body.collection.readOk).toBe(true);
+    expect(body.collection.scope).toBe('aggregate');
+    expect(body.collection.runs[0]).toMatchObject({ type: 'cloudfront', status: 'succeeded', row_count: 0, unknown_attributes: false });
+    expect(JSON.stringify(body.collection)).not.toContain('PRIVATE');
+  });
+  it.each(['123456789012', 'self', '__all__', 'invalid'])(
+    'account selection %s cannot hide a partial aggregate sweep', async account => {
+      verifyUser.mockResolvedValue({ sub: 'u' });
+      query.mockImplementation(async (sql: string, params?: unknown[]) => {
+        if (!sql.includes('unknown_attribute_count')) return { rows: [] };
+        // Model the producer: there is only a job-level self row, never a member row.
+        const selection = params?.[0];
+        const includesAggregate = selection === 'self' || selection === null
+          || (Array.isArray(selection) && selection.includes('self'));
+        return { rows: includesAggregate ? [{
+          resource_type: 'ec2', account_id: 'self', status: 'partial', row_count: 3,
+          last_success_at: null, unknown_attribute_count: null,
+        }] : [] };
+      });
+      const { GET } = await import('./route');
+      const body = await (await GET(req(`?accounts=${account}`))).json();
+      expect(body.collection.runs).toHaveLength(1);
+      expect(body.collection).toMatchObject({
+        scope: 'aggregate', readOk: true,
+        runs: [{ type: 'ec2', accountId: 'self', status: 'partial', unknown_attributes: null }],
+      });
+      if (account === '123456789012') expect(query.mock.calls[0][0]).toContain("'123456789012'");
+      const ledgerCall = query.mock.calls.find(([sql]) => sql.includes('unknown_attribute_count'));
+      expect(ledgerCall?.[1]).toEqual(['self']);
+    });
   it('401 unauth', async () => {
     verifyUser.mockResolvedValue(null);
     const { GET } = await import('./route');
@@ -159,5 +199,28 @@ describe('GET /api/inventory/summary — region scope (gap L110)', () => {
     const sql = String(query.mock.calls[0][0]);
     expect(sql).toContain("region IN ('ap-northeast-2')");
     expect(sql).not.toContain('bad');
+  });
+});
+
+describe('collection-only verification view', () => {
+  it('reads the sanitized ledger without scanning fleet aggregates', async () => {
+    verifyUser.mockResolvedValue({ sub: 'u' });
+    query.mockResolvedValue({ rows: [{ resource_type: 'cloudfront', account_id: 'self',
+      status: 'succeeded', row_count: 1, unknown_attribute_count: 0, error: 'PRIVATE' }] });
+    const { GET } = await import('./route');
+    const response = await GET(req('?view=collection&accounts=self'));
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(Object.keys(body)).toEqual(['collection']);
+    expect(body.collection.readOk).toBe(true);
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0]).toContain('FROM inventory_sync_runs');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE');
+  });
+  it('authenticates before reading even the collection-only view', async () => {
+    verifyUser.mockResolvedValue(null);
+    const { GET } = await import('./route');
+    expect((await GET(req('?view=collection'))).status).toBe(401);
+    expect(query).not.toHaveBeenCalled();
   });
 });

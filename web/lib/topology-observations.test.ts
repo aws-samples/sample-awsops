@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { loadNetworkObservations, type NetworkFilters } from './topology-observations';
+import { loadNetworkObservations, TOPOLOGY_METRICS, TOPOLOGY_CATEGORIES, type NetworkFilters } from './topology-observations';
+import { NFM_METRICS, NFM_CATEGORIES } from './nfm';
 
 const monitor = { name: 'nfm-eks-demo', status: 'ACTIVE', cluster: 'demo' };
 const filters: NetworkFilters = {
@@ -21,6 +22,35 @@ function reply(url: string, overrides: Record<string, unknown> = {}) {
 }
 
 describe('loadNetworkObservations', () => {
+  it('keeps client metric/category sets equal to the NFM exports', () => {
+    expect(new Set(TOPOLOGY_METRICS)).toEqual(new Set(NFM_METRICS));
+    expect(new Set(TOPOLOGY_CATEGORIES)).toEqual(new Set(NFM_CATEGORIES));
+  });
+  it.each(['http', 'transport', 'json'])('never exposes upstream error details for %s failures', async mode => {
+    const secret = 'secret=not-a-real-credential-1234567890 SELECT private_table';
+    const batch = await loadNetworkObservations({ ...filters, category: 'INTRA_AZ' }, monitor, {
+      fetch: (async () => {
+        if (mode === 'transport') throw new Error(secret);
+        if (mode === 'json') return new Response(secret);
+        return Response.json({ message: secret }, { status: 503 });
+      }) as typeof fetch,
+    });
+    expect(batch.errors.INTRA_AZ).toBe(mode === 'json' ? 'malformed_payload' : 'query_failed');
+    expect(JSON.stringify(batch)).not.toContain(secret);
+  });
+  it.each([
+    { startTime: undefined, endTime: undefined },
+    { startTime: 'invalid' },
+    { startTime: '2026-09-11T12:15:00.000Z' },
+  ])('retains observations but marks unverified windows unknown: %j', async times => {
+    const batch = await loadNetworkObservations({ ...filters, category: 'INTRA_AZ' }, monitor, {
+      fetch: (async url => Response.json(reply(String(url), times))) as typeof fetch,
+    });
+    expect(batch.observations[0].rows).toHaveLength(1);
+    expect(batch.windowQuality.INTRA_AZ).toBe('unknown');
+    expect(batch.status).toBe('partial');
+  });
+
   it('bounds concurrent category queries and preserves partial failures without fabricating zero traffic', async () => {
     let active = 0;
     let maximum = 0;
@@ -36,7 +66,7 @@ describe('loadNetworkObservations', () => {
     const batch = await loadNetworkObservations(filters, monitor, { fetch: request as typeof fetch });
     expect(maximum).toBeLessThanOrEqual(3);
     expect(batch.failedCategories).toEqual(['INTER_VPC']);
-    expect(batch.errors.INTER_VPC).toBe('query failed');
+    expect(batch.errors.INTER_VPC).toBe('query_failed');
     expect(batch.observations).toHaveLength(6);
     expect(batch.observations.every((o) => o.category !== 'INTER_VPC')).toBe(true);
     expect(batch.observations[0]).toMatchObject({

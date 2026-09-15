@@ -91,6 +91,12 @@ def _ip_always_blocked(ip_str):
 def assert_host_allowed(endpoint, resolver=socket.getaddrinfo):
     """Allow only http/https to a host whose every resolved IP is not always-blocked. Private
     (RFC1918/ULA) is ALLOWED — in-cluster datasources are the intended target."""
+    # URL-parser-differential completion (PR #286 rounds 9-10): the Node-side guards reject
+    # backslash endpoints at WRITE time; re-reject here so a PRE-EXISTING stored endpoint
+    # (written before the guard) can't exploit the WHATWG-vs-urlparse host disagreement.
+    # SsrfBlocked (the module's contract), placed BELOW the docstring (round-10 minor).
+    if "\\" in str(endpoint):
+        raise SsrfBlocked("endpoint blocked: must not contain a backslash")
     parsed = urlparse(endpoint)
     if parsed.scheme not in ("http", "https"):
         raise SsrfBlocked(f"endpoint blocked: scheme '{parsed.scheme}' not allowed (http/https only)")

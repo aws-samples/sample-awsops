@@ -8,13 +8,14 @@
 // a strict translate-to-query prompt + the schema (real table/COLUMN names) injected as data.
 import { verifyUser } from '@/lib/auth';
 import { generateQuery } from '@/lib/datasource-querygen';
-import { listConfiguredSchemas, renderSchemaForPrompt, prioritizeSchemaForQuery, isSchemaStale, upsertSchema } from '@/lib/datasource-schema';
+import { listConfiguredSchemas, renderSchemaForPrompt, prioritizeSchemaForQuery, isSchemaStale, upsertSchema, schemaMetricNames, isLegacyCapSnapshot, REFRESH_COOLDOWN_MS } from '@/lib/datasource-schema';
 import { currentAccountId } from '@/lib/account';
 import { getDatasource, resolveConnConfig, type DatasourceRow } from '@/lib/datasources';
 import { invokeMcpLambdaTool } from '@/lib/mcp-lambda-invoke';
 import { assertDatasourceEndpointAllowed } from '@/lib/ssrf-guard';
 import { isDatasourceKind } from '@/lib/integrations-category';
 import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
+import { normalizeTempoSchema, type TempoAttribute } from '@/lib/tempo-schema';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -25,32 +26,18 @@ const LANG: Record<string, string> = {
   dynatrace: 'Dynatrace metricSelector (Metrics API v2)', datadog: 'Datadog metrics query',
 };
 const MAX_NL = 4_000;
+const TEMPO_EMPTY_SCHEMA_TTL_MS = 60_000;
 
 function json(obj: unknown, status: number) {
   return new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
 }
 
-/** Trim an introspected schema so it fits under the cache size limit — used as a fallback so a large
- *  warehouse (>256KB schema) is still cached (bounded), instead of re-introspecting on EVERY request. */
-function trimSchemaForCache(schema: unknown): unknown {
-  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return schema;
-  const s = schema as Record<string, unknown>;
-  if (!Array.isArray(s.tables)) return schema;
-  const tables = (s.tables as unknown[]).slice(0, 50).map((t) =>
-    t && typeof t === 'object' && Array.isArray((t as { columns?: unknown }).columns)
-      ? { ...(t as object), columns: ((t as { columns: unknown[] }).columns).slice(0, 80) }
-      : t,
-  );
-  return { ...s, tables, truncated: true };
-}
 
-/** Cache the introspected schema; on a size-limit failure, persist a trimmed copy so subsequent requests
- *  hit the cache instead of re-running the full (100+ DESCRIBE) introspect. All best-effort. */
+/** Cache the introspected schema (best-effort — the read path never depends on the write). */
 async function cacheSchemaBestEffort(accountId: string, id: number, kind: string, schema: unknown): Promise<void> {
-  try { await upsertSchema(accountId, id, kind, schema); return; }
-  catch { /* likely over the size limit — fall through to a bounded write */ }
-  try { await upsertSchema(accountId, id, kind, trimSchemaForCache(schema)); }
-  catch { /* give up; manual Refresh remains */ }
+  // upsertSchema itself stores a bounded (trimmed, `truncated`) copy when the schema is over the
+  // size limit — the same fallback every other writer gets. Best-effort: manual Refresh remains.
+  try { await upsertSchema(accountId, id, kind, schema); } catch { /* give up */ }
 }
 
 /** Resolve a prompt-ready schema block. When an instance id is given, use ONLY that instance's cached
@@ -71,14 +58,29 @@ async function introspectAndCache(accountId: string, ds: DatasourceRow, id: numb
 // Dedupe concurrent background refreshes per instance (the web tier is long-lived Fargate, so a
 // fire-and-forget refresh completes after the response).
 const refreshing = new Set<number>();
+// Per-instance cooldown: a trigger whose condition survives the refresh (e.g. a schema that is
+// truncated for reasons a re-introspect cannot change) must not fire a fresh introspect on EVERY
+// request — one attempt per cooldown window per instance, regardless of trigger.
+const lastRefreshAt = new Map<number, number>();
 function refreshInBackground(accountId: string, ds: DatasourceRow, id: number, kind: string): void {
   if (refreshing.has(id)) return;
+  const now = Date.now();
+  // Match Tempo's short empty-observation TTL; other kinds retain the shared cooldown.
+  const cooldown = kind === 'tempo' ? TEMPO_EMPTY_SCHEMA_TTL_MS : REFRESH_COOLDOWN_MS;
+  if (now - (lastRefreshAt.get(id) ?? 0) < cooldown) return;
+  lastRefreshAt.set(id, now);
   refreshing.add(id);
   void introspectAndCache(accountId, ds, id, kind).catch(() => {}).finally(() => refreshing.delete(id));
 }
 
-async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: boolean, kind: string, nl: string): Promise<string> {
+async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: boolean, kind: string, nl: string): Promise<{
+  schemaBlock: string; tempoSchemaEmpty: boolean; tempoSchemaIncomplete: boolean;
+  tempoSchemaNamesTruncated?: boolean; tempoAttributes?: TempoAttribute[];
+  metricNames: string[]; vocabularyComplete: boolean;
+}> {
   const accountId = currentAccountId();
+  let tempoSchemaIncomplete = false;
+  let tempoSchemaNamesTruncated = false;
   // Float NL-relevant metric/label names to the front so they survive the render cap (Prometheus/Mimir
   // return hundreds of metrics alphabetically; the relevant ones would otherwise be dropped).
   const render = (schema: unknown, k: string | null) => renderSchemaForPrompt(prioritizeSchemaForQuery(schema, nl), k);
@@ -87,10 +89,37 @@ async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: b
     const own = hasId ? schemas.find((s) => s.integrationId === id) : schemas.find((s) => s.kind === kind);
     if (own?.schema) {
       const block = render(own.schema, own.kind);
-      if (block) {
+      const normalized = kind === 'tempo' ? normalizeTempoSchema(own.schema) : undefined;
+      tempoSchemaNamesTruncated = normalized?.namesTruncated ?? false;
+      const emptyTempoResult = !!normalized && !block && normalized.attributes.length === 0;
+      // A proxy's malformed 200 or a truncated name listing can also normalize
+      // to empty arrays. Such results are not evidence of an idle window.
+      tempoSchemaIncomplete = !!normalized && !block && normalized.incomplete;
+      const tempoSchemaEmpty = emptyTempoResult && !!normalized?.hasShape && !tempoSchemaIncomplete;
+      if (block || tempoSchemaEmpty) {
         // Lazy refresh: cache hit but stale → refresh in the background (next lookup is fresh), serve now.
-        if (hasId && ds && isSchemaStale(own.fetched_at)) refreshInBackground(accountId, ds, id, kind);
-        return block;
+        // Keep a brief empty-observation cache, so traffic resuming does not wait
+        // for the normal six-hour schema TTL. Refresh remains off the read path.
+        const stale = tempoSchemaEmpty
+          ? isSchemaStale(own.fetched_at, Date.now(), TEMPO_EMPTY_SCHEMA_TTL_MS)
+          : isSchemaStale(own.fetched_at);
+        // ALSO refresh a PromQL cache that is provably a snapshot under the connectors' former
+        // 500-name cap (now 3000): it lacks whole metric families (node_*/kube_*) the prompt
+        // needs — one background re-introspect (cooldown-guarded) brings the fuller list.
+        const names = schemaMetricNames(own.schema);
+        const legacySnapshot = isLegacyCapSnapshot(own.kind, own.schema, names);
+        if (hasId && ds && (stale || legacySnapshot)) refreshInBackground(accountId, ds, id, kind);
+        // FULL cached metric list (not the ~80-name rendered block) — the querygen anchor;
+        // an in-block-only anchor falsely rejected real metrics past the render cap.
+        // vocabularyComplete: the connector's OWN truncated flag (never inferred from length)
+        // AND cache freshness — an incomplete/stale vocabulary softens the advisory warning.
+        const truncated = Boolean((own.schema as { truncated?: unknown })?.truncated);
+        return {
+          schemaBlock: block, tempoSchemaEmpty, tempoSchemaIncomplete: false,
+          ...(normalized ? { tempoAttributes: normalized.attributes, tempoSchemaNamesTruncated } : {}),
+          metricNames: names,
+          vocabularyComplete: !truncated && !isSchemaStale(own.fetched_at),
+        };
       }
     }
   } catch { /* cache is optional */ }
@@ -100,7 +129,9 @@ async function resolveSchemaBlock(ds: DatasourceRow | null, id: number, hasId: b
   // Warm the cache in the BACKGROUND so the NEXT lookup is grounded; serve schema-less now (the model
   // writes a best-effort query and the connector's read-only guard backstops it on run).
   if (hasId && ds) refreshInBackground(accountId, ds, id, kind);
-  return '';
+  return { schemaBlock: '', tempoSchemaEmpty: false, tempoSchemaIncomplete,
+    metricNames: [], vocabularyComplete: false,
+    ...(kind === 'tempo' ? { tempoAttributes: [], tempoSchemaNamesTruncated } : {}) };
 }
 
 export async function POST(request: Request) {
@@ -133,11 +164,12 @@ export async function POST(request: Request) {
   const nl = typeof body.nl === 'string' ? body.nl.trim().slice(0, MAX_NL) : '';
   if (!nl) return json({ error: 'nl (natural-language request) required' }, 400);
 
-  const schemaBlock = await resolveSchemaBlock(ds, id, hasId, kind, nl);
+  const schema = await resolveSchemaBlock(ds, id, hasId, kind, nl);
 
   try {
-    const query = await generateQuery({ nl, lang, schemaBlock, isSql });
-    return json({ query, lang }, 200);
+    // PromQL vocabulary warnings remain advisory; invalid TraceQL drafts still fail validation.
+    const { query, warning } = await generateQuery({ nl, lang, ...schema, isSql });
+    return json({ query, lang, ...(warning ? { warning } : {}) }, 200);
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : 'generation failed' }, 502);
   }

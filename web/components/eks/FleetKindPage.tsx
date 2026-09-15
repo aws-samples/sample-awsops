@@ -1,5 +1,6 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useI18n } from '@/components/shell/LanguageProvider';
 import { Search } from 'lucide-react';
 import DataTable, { type Column } from '@/components/ui/DataTable';
 import NodeDrilldownPanel from '@/components/eks/NodeDrilldownPanel';
@@ -14,7 +15,11 @@ import Card from '@/components/ui/Card';
 import Meter from '@/components/ui/Meter';
 import StatCard from '@/components/ui/StatCard';
 import DonutBreakdown from '@/components/charts/DonutBreakdown';
+import BarDistribution from '@/components/charts/BarDistribution';
 import { podStatusCounts, serviceTypeCounts } from '@/lib/eks-tab-stats';
+import { serviceResources, topServiceResources } from '@/lib/eks-service-resources';
+import type { ServiceRow } from '@/lib/eks-incluster';
+import type { PodRow } from '@/lib/eks-resources';
 
 // Fleet-wide kind page (v1 /k8s/nodes|pods|deployments|services parity):
 // GET /api/eks → connected cluster names → per-cluster GET
@@ -84,6 +89,7 @@ function readyParts(ready: unknown): { ready: number; desired: number } {
 }
 
 export default function FleetKindPage({ kind }: { kind: FleetKind }) {
+  const { tt } = useI18n();
   const meta = KIND_META[kind];
   const [rows, setRows] = useState<Row[] | null>(null);
   const [clusters, setClusters] = useState<string[]>([]);
@@ -101,6 +107,11 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
   const [podReq, setPodReq] = useState<Record<string, Record<string, { cpu: number; mem: number }> | null>>({});
   // Tri-state: false = pods fan-out still pending (bars caption '로딩 중', not '미상').
   const [podReqReady, setPodReqReady] = useState(false);
+  // Gap L229 (services only): raw pod rows per cluster for the Service-selector join; a
+  // cluster whose pods fetch failed maps to null — its services are EXCLUDED from the charts
+  // (never silently zeroed). Tri-state ready flag like podReqReady.
+  const [svcPods, setSvcPods] = useState<Record<string, PodRow[] | null>>({});
+  const [svcPodsReady, setSvcPodsReady] = useState(false);
   const [selected, setSelected] = useState<Row | null>(null);
 
   // Monotonic load sequence — a late response from a superseded load must not
@@ -115,6 +126,8 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
     // A refresh must not pair NEW node rows with the PREVIOUS run's request numbers.
     setPodReq({});
     setPodReqReady(false);
+    setSvcPods({});
+    setSvcPodsReady(false);
     try {
       const r = await fetch('/api/eks?account=self');
       if (!r.ok) throw new Error(String(r.status));
@@ -177,6 +190,26 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
         if (!fresh()) return;
         setPodReq(Object.fromEntries(podResults.map((p) => [p.name, p.agg])));
         setPodReqReady(true);
+      }
+      // Gap L229 (services only): raw pods per cluster for the Service-selector join.
+      // Failures degrade per cluster (null) — that cluster's services are excluded from the
+      // resource charts (disclosed), never charted as 0 from missing pods.
+      if (kind === 'services') {
+        const podResults = await Promise.all(
+          names.map(async (name) => {
+            try {
+              const rr = await fetch(`/api/eks/${encodeURIComponent(name)}/incluster?kind=pods`);
+              if (!rr.ok) return { name, rows: null as PodRow[] | null };
+              const dd = await rr.json();
+              return { name, rows: (dd.rows ?? []) as PodRow[] };
+            } catch {
+              return { name, rows: null as PodRow[] | null };
+            }
+          }),
+        );
+        if (!fresh()) return;
+        setSvcPods(Object.fromEntries(podResults.map((p) => [p.name, p.rows])));
+        setSvcPodsReady(true);
       }
     } catch (e) {
       if (fresh()) setErr(e instanceof Error ? e.message : String(e));
@@ -283,6 +316,16 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
               const ready = allRows.filter((r) => String(r.status ?? '') === 'Ready').length;
               const cpu = allRows.reduce((s, r) => s + (Number(r.cpuCapacity) || 0), 0);
               const memMiB = allRows.reduce((s, r) => s + (Number(r.memCapacity) || 0), 0);
+              // gap L234 (v1 memory analysis KPI): allocatable + reserved% — shown only when
+              // allocatable is actually reported (an unreported fleet must not read 'reserved 100%').
+              const memAllocMiB = allRows.reduce((s, r) => s + (Number(r.memAllocatable) || 0), 0);
+              // every capacity-bearing node must report allocatable — a partial fleet would
+              // inflate reserved% (missing allocatable counts 0 in the numerator but full
+              // capacity in the denominator).
+              const allocComplete = allRows.every((r) => !(Number(r.memCapacity) > 0) || Number(r.memAllocatable) > 0);
+              const memHint = allocComplete && memAllocMiB > 0 && memMiB > 0
+                ? `allocatable ${Math.round(memAllocMiB / 1024).toLocaleString()} GiB · reserved ${Math.round((1 - memAllocMiB / memMiB) * 100)}%`
+                : undefined;
               const types = new Map<string, number>();
               for (const r of allRows) {
                 const t = String(r.instanceType ?? '') || 'unknown';
@@ -295,7 +338,7 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
                     <StatCard label="총 노드" value={allRows.length} />
                     <StatCard label="Ready" value={ready} variant={ready < allRows.length ? 'warn' : 'default'} />
                     <StatCard label="총 vCPU" value={Math.round(cpu).toLocaleString()} />
-                    <StatCard label="총 Memory (GiB)" value={Math.round(memMiB / 1024).toLocaleString()} />
+                    <StatCard label="총 Memory (GiB)" value={Math.round(memMiB / 1024).toLocaleString()} hint={memHint} />
                   </div>
                   <DonutBreakdown title="Instance Types" data={donut} nameKey="name" valueKey="value" />
                 </>
@@ -400,6 +443,53 @@ export default function FleetKindPage({ kind }: { kind: FleetKind }) {
                     <StatCard label="LoadBalancer" value={t.LoadBalancer ?? 0} />
                   </div>
                   <DonutBreakdown title="Service Types" data={donut} nameKey="name" valueKey="value" />
+
+                  {/* Gap L229 (v1 'Service Resources' chart tab): top-15 CPU/Memory REQUEST
+                      footprint per Service from selector-matched RUNNING pods. Honesty: only
+                      clusters whose BOTH services and pods fetches succeeded participate; a
+                      selectorless / zero-match service is EXCLUDED (absence ≠ zero claim). */}
+                  {(() => {
+                    if (!svcPodsReady) {
+                      return <Card title="Service Resources"><div className="text-[13px] text-ink-400">{tt('로딩 중…')}</div></Card>;
+                    }
+                    const okClusters = clusters.filter((c) => !failed.includes(c) && svcPods[c] != null);
+                    const services = (allRows as unknown as (ServiceRow & { cluster: string })[])
+                      .filter((r) => okClusters.includes(r.cluster));
+                    const pods = okClusters.flatMap((c) => (svcPods[c] ?? []).map((p) => ({ ...p, cluster: c })));
+                    const res = serviceResources(services, pods);
+                    const podFailed = clusters.filter((c) => !failed.includes(c) && svcPods[c] == null);
+                    const excluded = services.length - res.length;
+                    // exclusion/failure notes only — the unconditional basis sentence joins later,
+                    // so the zero-results branch shows a real "no services" message, not just it
+                    const notes = [
+                      excluded > 0 ? `${tt('셀렉터 없음/매칭 Running Pod 없음으로 제외')}: ${excluded}` : '',
+                      podFailed.length ? `${tt('Pod 조회 실패로 차트에서 제외된 클러스터')}: ${podFailed.join(', ')}` : '',
+                    ].filter(Boolean).join(' · ');
+                    const caption = [tt('컨테이너 요청량(request) 기준 — 실사용량 아님, Running Pod만 집계'), notes]
+                      .filter(Boolean).join(' · ');
+                    if (res.length === 0) {
+                      return (
+                        <Card title="Service Resources">
+                          <div className="text-[13px] text-ink-400">
+                            {tt('표시할 서비스가 없습니다')}{notes ? ` · ${notes}` : ''}
+                          </div>
+                        </Card>
+                      );
+                    }
+                    const label = (r: { cluster: string; namespace: string; name: string }) =>
+                      okClusters.length > 1 ? `${r.cluster}/${r.namespace}/${r.name}` : `${r.namespace}/${r.name}`;
+                    const cpuTop = topServiceResources(res, 'cpuMillicores').map((r) => ({ label: label(r), v: r.cpuMillicores }));
+                    const memTop = topServiceResources(res, 'memMiB').map((r) => ({ label: label(r), v: r.memMiB }));
+                    return (
+                      <>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                          <BarDistribution title="CPU per Service (millicores)" data={cpuTop} xKey="label" yKey="v" />
+                          <BarDistribution title="Memory per Service (MiB)" data={memTop} xKey="label" yKey="v" />
+                        </div>
+                        <div className="text-[11px] text-ink-400">{caption}</div>
+                      </>
+                    );
+                  })()}
                 </>
               );
             })()}

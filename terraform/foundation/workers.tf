@@ -192,14 +192,20 @@ data "archive_file" "workers_src" {
 
 # pg8000 (pure-Python; works on any arch incl. arm64 Lambda). Rebuilt only when requirements change.
 resource "terraform_data" "pg8000_layer_build" {
-  count            = local.we
-  triggers_replace = filemd5("${local.workers_src}/requirements.txt")
+  count = local.we
+  triggers_replace = [
+    filemd5("${local.workers_src}/requirements.txt"),
+    filemd5("${path.module}/../../scripts/v2/ci/pg8000-requirements.txt"),
+    filemd5("${path.module}/../../scripts/v2/ci_tf_assets.py"),
+  ]
   provisioner "local-exec" {
     command = <<-EOT
       set -e
-      rm -rf ${path.module}/.build/pg8000_layer
-      mkdir -p ${path.module}/.build/pg8000_layer/python
-      python3 -m pip install pg8000==1.31.2 --target ${path.module}/.build/pg8000_layer/python
+      if [ "$${CI_ASSETS_READY:-}" = "true" ]; then
+        python3 ${path.module}/../../scripts/v2/ci_tf_assets.py check-layer --layer pg8000_layer
+      else
+        python3 ${path.module}/../../scripts/v2/ci_tf_assets.py build-layer --layer pg8000_layer
+      fi
     EOT
   }
 }
@@ -309,10 +315,11 @@ resource "aws_iam_role_policy" "worker_lambda" {
       {
         # reaper kill-switch check: GetEventSourceMapping has no resource-level scoping → "*".
         # Read-only; the slight over-grant to worker/status is acceptable & documented.
-        Sid      = "ReaperReadEsm"
-        Effect   = "Allow"
-        Action   = ["lambda:GetEventSourceMapping"]
-        Resource = "*"
+        Sid       = "ReaperReadEsm"
+        Effect    = "Allow"
+        Action    = ["lambda:GetEventSourceMapping"]
+        Resource  = "*"
+        Condition = local.runtime_region_condition
       }
     ]
   })
@@ -391,22 +398,25 @@ resource "aws_iam_role_policy" "sfn" {
         Effect   = "Allow"
         Action   = ["ecs:RunTask"]
         Resource = "arn:aws:ecs:${var.region}:${local.acct}:task-definition/${var.project}-worker:*"
+        Condition = {
+          ArnEquals = { "ecs:cluster" = aws_ecs_cluster.main.arn }
+        }
       },
       {
         # .sync (runTask.sync) needs StopTask (on SFN timeout/abort) + DescribeTasks (poll). C5.
         Sid      = "ControlTasks"
         Effect   = "Allow"
         Action   = ["ecs:StopTask", "ecs:DescribeTasks"]
-        Resource = "*"
+        Resource = "arn:aws:ecs:${var.region}:${local.acct}:task/${aws_ecs_cluster.main.name}/*"
       },
       {
         # RunTask's EnableECSManagedTags+PropagateTags (sfn.asl.json) tags the started task —
         # AWS requires ecs:TagResource on the caller for that, even though the tag itself is
-        # AWS-generated (aws:ecs:clusterName). Task ARNs are per-run, so wildcard like ControlTasks.
+        # AWS-generated (aws:ecs:clusterName). Bind generated task IDs to this cluster.
         Sid      = "TagRunTasks"
         Effect   = "Allow"
         Action   = ["ecs:TagResource"]
-        Resource = "*"
+        Resource = "arn:aws:ecs:${var.region}:${local.acct}:task/${aws_ecs_cluster.main.name}/*"
         Condition = {
           StringEquals = { "ecs:CreateAction" = "RunTask" }
         }
@@ -428,10 +438,11 @@ resource "aws_iam_role_policy" "sfn" {
         Resource = "arn:aws:events:${var.region}:${local.acct}:rule/StepFunctionsGetEventsForECSTaskRule"
       },
       {
-        Sid      = "SfnLogging"
-        Effect   = "Allow"
-        Action   = ["logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery", "logs:DeleteLogDelivery", "logs:ListLogDeliveries", "logs:PutResourcePolicy", "logs:DescribeResourcePolicies", "logs:DescribeLogGroups"]
-        Resource = "*"
+        Sid       = "SfnLogging"
+        Effect    = "Allow"
+        Action    = ["logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery", "logs:DeleteLogDelivery", "logs:ListLogDeliveries", "logs:PutResourcePolicy", "logs:DescribeResourcePolicies", "logs:DescribeLogGroups"]
+        Resource  = "*"
+        Condition = local.runtime_region_condition
       }
     ]
   })
@@ -500,7 +511,7 @@ resource "aws_ecs_task_definition" "worker" {
   container_definitions = jsonencode([
     {
       name      = local.worker_cname
-      image     = "${aws_ecr_repository.worker[0].repository_url}:${var.worker_image_tag}"
+      image     = var.worker_image_digest != null ? "${aws_ecr_repository.worker[0].repository_url}@${var.worker_image_digest}" : "${aws_ecr_repository.worker[0].repository_url}:${var.worker_image_tag}"
       essential = true
       environment = concat([
         { name = "AURORA_ENDPOINT", value = aws_rds_cluster.aurora.endpoint },
@@ -813,13 +824,10 @@ resource "aws_iam_role_policy" "worker_diagnosis" {
       {
         # report.py invokes a global.anthropic.* Sonnet/Opus inference profile from var.region
         # (BEDROCK_REGION=var.region). Scoped to the Claude FM + global cross-region inference profiles.
-        Sid    = "BedrockInvokeReadOnly"
-        Effect = "Allow"
-        Action = ["bedrock:InvokeModel"]
-        Resource = [
-          "arn:aws:bedrock:*::foundation-model/anthropic.*",
-          "arn:aws:bedrock:*:*:inference-profile/global.anthropic.*",
-        ]
+        Sid      = "BedrockInvokeReadOnly"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel"]
+        Resource = local.runtime_model_resources
       },
       {
         # The diagnosis data sources (Cost Explorer, CloudWatch, X-Ray, Security Hub, CloudTrail) —
@@ -835,7 +843,8 @@ resource "aws_iam_role_policy" "worker_diagnosis" {
           "securityhub:GetFindings",
           "cloudtrail:LookupEvents",
         ]
-        Resource = "*"
+        Resource  = "*"
+        Condition = local.runtime_read_condition
       },
       {
         # Upload the markdown report — scoped to diagnosis/* on the artifact bucket only.
@@ -886,13 +895,10 @@ resource "aws_iam_role_policy" "worker_lambda_diagnosis" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "BedrockInvokeReadOnly"
-        Effect = "Allow"
-        Action = ["bedrock:InvokeModel"]
-        Resource = [
-          "arn:aws:bedrock:*::foundation-model/anthropic.*",
-          "arn:aws:bedrock:*:*:inference-profile/global.anthropic.*",
-        ]
+        Sid      = "BedrockInvokeReadOnly"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel"]
+        Resource = local.runtime_model_resources
       },
       {
         Sid    = "DiagnosisDataSourcesReadOnly"
@@ -906,7 +912,8 @@ resource "aws_iam_role_policy" "worker_lambda_diagnosis" {
           "securityhub:GetFindings",
           "cloudtrail:LookupEvents",
         ]
-        Resource = "*"
+        Resource  = "*"
+        Condition = local.runtime_read_condition
       },
       {
         Sid      = "PutDiagnosisArtifact"
@@ -1062,8 +1069,8 @@ resource "aws_iam_role_policy" "worker_lambda_datasource_invoke" {
 # (graph_querygen.py:_code_interpreter_check). Reads the provisioned interpreter id from SSM, then
 # starts/invokes/stops a session. No static ARN exists for the session actions (the interpreter id is
 # a runtime value written by agentcore.mjs's provisioner, not a Terraform resource here) — Resource
-# "*" on this narrow, session-scoped action set, consistent with the AgentCore execution role's own
-# broader `bedrock-agentcore:*` grant elsewhere (ai.tf). Every failure mode in _code_interpreter_check
+# "*" remains on this separately gated, session-scoped action set. The AgentCore execution
+# role is independently scoped in ai.tf. Every failure mode in _code_interpreter_check
 # already degrades to a safe skip (None), so an AccessDenied here just means step (b) never runs — it
 # does not weaken (a)/(c), which are the checks that actually gate.
 resource "aws_iam_role_policy" "worker_lambda_graph_querygen" {

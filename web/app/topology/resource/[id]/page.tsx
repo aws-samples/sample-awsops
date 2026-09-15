@@ -7,6 +7,9 @@ import Link from 'next/link';
 import { Background, Controls, Position, type Node, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import PageHeader from '@/components/ui/PageHeader';
+import GraphCollectionStatus from '@/components/topology/GraphCollectionStatus';
+import { fetchGraph, GraphFetchError, type GraphFetchFailure } from '@/lib/graph-fetch';
+import GraphReadError from '@/components/topology/GraphReadError';
 import { layoutFlow } from '@/lib/flow-layout';
 import { useI18n } from '@/components/shell/LanguageProvider';
 
@@ -15,7 +18,7 @@ const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow)
 
 interface GNode { id: string; kind: string; label: string; meta?: Record<string, unknown> }
 interface GEdge { source: string; target: string; rel: string }
-interface Graph { nodes: GNode[]; edges: GEdge[]; captured_at: string | null; capped?: boolean }
+interface Graph { nodes: GNode[]; edges: GEdge[]; captured_at: string | null; capped?: boolean; collection?: unknown }
 
 // kind → [bg, border] (paper/ink tokens; infra kinds + a generic resource fallback)
 const COLORS: Record<string, [string, string]> = {
@@ -35,19 +38,24 @@ export default function ResourceTopologyPage({ params }: { params: { id: string 
   const [activeAccount] = useActiveAccount();
   const [depth, setDepth] = useState(2);
   const [graph, setGraph] = useState<Graph | null>(null);
-  const [err, setErr] = useState('');
+  const [err, setErr] = useState<GraphFetchFailure | null>(null);
   const [busy, setBusy] = useState(false);
+  const [revision, setRevision] = useState(0);
+
+  const unavailable = (graph?.collection as { readStatus?: string } | undefined)?.readStatus === 'unavailable';
 
   useEffect(() => {
     let live = true;
+    const controller = new AbortController();
     setBusy(true);
-    fetch(`/api/graph?class=infra&from=${encodeURIComponent(fromId)}&depth=${depth}&${accountParam(activeAccount) || 'account=self'}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((d) => { if (live) { setGraph(d); setErr(''); } })
-      .catch((e) => { if (live) setErr(String(e instanceof Error ? e.message : e)); })
+    setErr(null);
+    setGraph(null);
+    fetchGraph(`/api/graph?class=infra&from=${encodeURIComponent(fromId)}&depth=${depth}&${accountParam(activeAccount) || 'account=self'}`, controller.signal)
+      .then((d) => { if (live) { setGraph(d); setErr(null); } })
+      .catch((e) => { if (live) { setGraph(null); setErr(e instanceof GraphFetchError ? e.reason : 'rejected'); } })
       .finally(() => { if (live) setBusy(false); });
-    return () => { live = false; };
-  }, [fromId, depth, activeAccount]);
+    return () => { live = false; controller.abort(); };
+  }, [fromId, depth, activeAccount, revision]);
 
   const { nodes, edges } = useMemo(() => {
     if (!graph) return { nodes: [] as Node[], edges: [] as Edge[] };
@@ -102,13 +110,15 @@ export default function ResourceTopologyPage({ params }: { params: { id: string 
         }
       />
       <div className="flex items-center gap-3 px-4 py-1 text-[11px] text-ink-500">
+        <button type="button" disabled={busy || err !== null} onClick={() => setRevision(n => n + 1)} className="rounded border border-ink-200 px-2 py-1 disabled:opacity-50">{tt('새로고침')}</button>
         {busy && <span>{tt('불러오는 중…')}</span>}
-        {err && <span className="text-red-600">{tt('조회 실패:')} {err}</span>}
+        {err && <GraphReadError reason={err} />}
         {graph?.captured_at && <span>{tt('그래프 시점:')} {new Date(graph.captured_at).toLocaleString()}</span>}
         {graph?.capped && <span className="text-amber-600">{tt('일부 허브는 이웃이 많아 상위 일부만 표시됩니다 (cap).')}</span>}
-        {graph && graph.nodes.length === 0 && !busy && <span>{tt('이 리소스의 관계 그래프가 비어 있습니다 (materializer 미실행이거나 네트워크 배치 없음).')}</span>}
+        {graph && !unavailable && graph.nodes.length === 0 && !busy && <span>{tt('표시할 관계 노드가 없습니다. 수집 상태를 확인하세요.')}</span>}
       </div>
-      <div className="min-h-0 flex-1">
+      {!busy && !err && graph ? <div className="shrink-0 px-4"><GraphCollectionStatus collection={graph.collection} /></div> : null}
+      <div className="min-h-[240px] flex-1">
         <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.2 }} proOptions={{ hideAttribution: true }}>
           <Background />
           <Controls />

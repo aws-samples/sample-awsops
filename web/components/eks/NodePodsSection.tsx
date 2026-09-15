@@ -48,13 +48,15 @@ export function NodePodsSection({
         </div>
       ) : (
         <div className="overflow-x-auto rounded-md border border-ink-100">
-          <table className="w-full min-w-[520px] text-[12px]">
+          <table className="w-full min-w-[720px] text-[12px]">
             <thead className="bg-ink-50 text-[10px] uppercase tracking-[0.04em] text-ink-400">
               <tr>
                 <th className="px-2.5 py-2 text-left font-medium">Namespace</th>
                 <th className="px-2.5 py-2 text-left font-medium">Pod</th>
                 <th className="px-2.5 py-2 text-left font-medium">Status</th>
                 <th className="px-2.5 py-2 text-left font-medium">Owner</th>
+                <th className="px-2.5 py-2 text-left font-medium">Pod IP</th>
+                <th className="px-2.5 py-2 text-left font-medium">Service Account</th>
                 <th className="px-2.5 py-2 text-right font-medium">Restarts</th>
                 <th className="px-2.5 py-2 text-right font-medium">CPU</th>
                 <th className="px-2.5 py-2 text-right font-medium">Mem MiB</th>
@@ -72,6 +74,9 @@ export function NodePodsSection({
                     </Badge>
                   </td>
                   <td className="px-2.5 py-2 font-mono text-ink-600">{p.workload || '-'}</td>
+                  {/* v1 node-detail parity (gap L226) — '-' when unknown (a terminated pod has no IP) */}
+                  <td className="px-2.5 py-2 font-mono text-ink-600">{p.podIP || '-'}</td>
+                  <td className="px-2.5 py-2 font-mono text-ink-600">{p.serviceAccount || '-'}</td>
                   <td className="px-2.5 py-2 text-right tabular text-ink-700">{p.restarts ?? 0}</td>
                   <td className="px-2.5 py-2 text-right tabular text-ink-700">{fmtCpu(p.cpuRequest)}</td>
                   <td className="px-2.5 py-2 text-right tabular text-ink-700">{fmtMiB(p.memRequest)}</td>
