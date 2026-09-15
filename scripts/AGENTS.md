@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 71c00668fd03 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 1a25879766a2 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -303,3 +303,12 @@ The helper has no orphan recovery, legacy fallback or Terraform apply operation.
 `docs/reference/private-plan-transport.md`; validate both helper and consumer workflow tests.
 
 This is operator CI artifact transport, not an ADR-005 exception; no frozen product capability is enabled.
+
+## Isolated review codec
+
+`pr-review/codec_sandbox.py` prepares a digest-pinned Python/Pillow decoder image and
+runs bytes in a non-root, network-none, read-only container with no workspace mounts.
+No direct host fallback is allowed. State binds an immutable image, owned tag and run
+label; per-decode and final cleanup are bounded and scoped to that ownership.
+`v2/test_review_codec_sandbox.py` requires prepared Docker state and verifies actual
+confinement, transport and cleanup. Privileged review wiring is a separate change.

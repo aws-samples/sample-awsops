@@ -12,6 +12,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 
 | Runbook | Topic |
 |---|---|
+| [review-codec-sandbox.md](review-codec-sandbox.md) | Standalone Docker codec confinement, bounded byte transport and owned cleanup |
 | [review-image-capability.md](review-image-capability.md) | Manual authenticated runner Read proof for a synthetic image; no review-gate substitution |
 | [start-services.md](start-services.md) | **⚠️ v1 (legacy)** — start all services (Steampipe + Next.js on EC2); v2 runs ECS always-on |
 | [deploy-new-version.md](deploy-new-version.md) | **⚠️ v1 (legacy)** — deploy a new version (CDK); v2 uses `make deploy` |
@@ -320,3 +321,9 @@ Combined checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/
 ## Graph read contract
 
 Graph reads admit at most two requests per shared max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. Source-attempt metadata is supported before the separately gated inventory publisher is activated. See `graph-read-contract.md` for operator rollout and disposable tests; source integration does not establish deployment.
+
+## Isolated review codec
+
+`review-codec-sandbox.md` defines the standalone Docker/Pillow confinement and cleanup
+contract. Tests require Docker and prepared codec state; skipped confinement is not a pass.
+It adds no AWS/IAM/model grants and does not wire privileged PR review by itself.
