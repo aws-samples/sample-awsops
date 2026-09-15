@@ -31,8 +31,10 @@ def test_explicit_scope_renders_only_approved_subset_and_preserves_external_id(r
         result = entrypoint._render_spc(rows)
         sdk.client.return_value.get_caller_identity.assert_called_once()
         if len(rows) == 2:
-            assert 'assume_role_arn = "arn:aws:iam::999999999999:role/AWSopsReadOnlyRole"' in result
-            assert 'assume_role_external_id = "fixture-external-id"' in result
+            assert 'profile = "aws_999999999999"' in result
+            profiles = entrypoint.render_aws_config(rows)
+            assert "role_arn = arn:aws:iam::999999999999:role/AWSopsReadOnlyRole" in profiles
+            assert "external_id = fixture-external-id" in profiles
 
 
 @pytest.mark.parametrize("rows", [[], [TARGET], [HOST, TARGET, TARGET],
@@ -51,25 +53,30 @@ def test_explicit_member_with_all_regions_enabled_needs_no_region_rows():
     with mock.patch.dict(os.environ, SCOPED_ENV, clear=True), mock.patch.object(entrypoint, "boto3") as sdk:
         sdk.client.return_value.get_caller_identity.return_value = {"Account": ACCOUNT}
         result = entrypoint._render_spc([HOST, {**TARGET, "regions": [], "all_regions": True}])
-        assert 'assume_role_arn = "arn:aws:iam::999999999999:role/AWSopsReadOnlyRole"' in result
+        assert 'profile = "aws_999999999999"' in result
 
 
 def test_watchdog_automatically_reloads_approved_member_after_host_only_initial_render():
     stop = mock.Mock()
     stop.wait.side_effect = [False, True]
     proc_ref = [mock.Mock()]
+    def restart_requested(*_args, prepare):
+        prepare()
+        return True
     with mock.patch.dict(os.environ, SCOPED_ENV, clear=True), mock.patch.object(entrypoint, "boto3") as sdk, \
             mock.patch.object(entrypoint, "fetch_rows", return_value=[HOST, TARGET]), \
             mock.patch.object(entrypoint, "write_spc") as write, \
-            mock.patch.object(entrypoint, "_restart_steampipe", return_value=True) as restart:
+            mock.patch.object(entrypoint, "_restart_steampipe", side_effect=restart_requested) as restart:
         sdk.client.return_value.get_caller_identity.return_value = {"Account": ACCOUNT}
-        initial = entrypoint._render_spc([HOST])
-        assert "assume_role_arn" not in initial
+        initial = entrypoint._render_runtime_config([HOST])
+        assert "profile =" not in initial[0]
+        assert initial[1] == ""
         entrypoint._scope_watchdog(initial, proc_ref, threading.Lock(), stop)
         assert entrypoint.SCOPE_WATCH_INTERVAL == 300
         assert stop.wait.call_args_list == [mock.call(300), mock.call(300)]
         write.assert_called_once()
-        assert 'assume_role_arn = "arn:aws:iam::999999999999:role/AWSopsReadOnlyRole"' in write.call_args.args[0]
+        assert 'profile = "aws_999999999999"' in write.call_args.args[0]
+        assert "role_arn = arn:aws:iam::999999999999:role/AWSopsReadOnlyRole" in write.call_args.args[1]
         restart.assert_called_once()
         stop.set.assert_not_called()
 
@@ -95,6 +102,19 @@ def test_default_mode_preserves_existing_render_without_sts():
     with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(entrypoint, "boto3") as sdk:
         assert 'regions = ["*"]' in entrypoint._render_spc([HOST])
         sdk.client.assert_not_called()
+
+
+def test_legacy_self_host_does_not_relax_explicit_deployment_scope():
+    legacy = {**HOST, "account_id": "self"}
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(entrypoint, "boto3") as sdk:
+        spc, profiles = entrypoint._render_runtime_config([legacy])
+        assert 'connection "aws_self"' in spc and profiles == ""
+        sdk.client.assert_not_called()
+    for env in (ENV, SCOPED_ENV):
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(entrypoint, "boto3") as sdk:
+            with pytest.raises(entrypoint.HostScopeError):
+                entrypoint._render_runtime_config([legacy])
+            sdk.client.assert_not_called()
 
 
 def test_verified_host_keeps_all_regions_without_self_assume():
@@ -178,6 +198,108 @@ def test_watchdog_scope_rejection_stops_running_inventory_instead_of_keeping_sta
         shutdown.assert_called_once()
         proc.terminate.assert_called_once()
         write.assert_not_called()
+
+@pytest.mark.parametrize("failure", ["timeout", "nonzero"])
+def test_failed_full_stop_never_launches_already_running_service_or_claims_updated_scope(failure, capsys):
+    stop, fatal = threading.Event(), threading.Event()
+    proc = mock.Mock()
+    proc.wait.return_value = 0
+    proc_ref = [proc]
+    stop_result = (subprocess.TimeoutExpired(["steampipe", "service", "stop", "--force"], 30)
+                   if failure == "timeout" else mock.Mock(returncode=1, stderr=b"PRIVATE_STOP_DETAIL"))
+    def run_stop(*args, **kwargs):
+        if isinstance(stop_result, Exception):
+            raise stop_result
+        return stop_result
+    def already_running():
+        print("Steampipe service is already running")
+        return mock.Mock()
+    with mock.patch.object(entrypoint, "SCOPE_WATCH_INTERVAL", 0.001), \
+            mock.patch.object(entrypoint, "fetch_rows", return_value=[]), \
+            mock.patch.object(entrypoint, "_render_spc", return_value="new member scope"), \
+            mock.patch.object(entrypoint, "write_spc"), \
+            mock.patch.object(entrypoint.subprocess, "run", side_effect=run_stop) as run, \
+            mock.patch.object(entrypoint, "_wait_for_steampipe_listener_closed", return_value="listener_open"), \
+            mock.patch.object(entrypoint, "_start_steampipe", side_effect=already_running) as start:
+        # Bound the old implementation too: without fatal stop it would poll forever.
+        with mock.patch.object(stop, "wait", side_effect=[False, True]):
+            entrypoint._scope_watchdog("old scope", proc_ref, threading.Lock(), stop, fatal)
+        assert stop.is_set() and fatal.is_set()
+        assert proc_ref[0] is None
+        start.assert_not_called()
+        run.assert_called_once()
+    output = capsys.readouterr()
+    assert "steampipe_service_stop_failed" in output.err
+    assert "restarted with updated scope" not in output.err
+    assert "already running" not in output.out
+    assert "PRIVATE_STOP_DETAIL" not in output.err
+
+
+def test_graceful_stop_during_full_stop_failure_does_not_become_fatal():
+    stop, fatal = threading.Event(), threading.Event()
+    proc = mock.Mock()
+    proc.wait.return_value = 0
+    def interrupted_stop(*_args, **_kwargs):
+        stop.set()  # The lock-free SIGTERM handler publishes this while restart holds the lock.
+        raise subprocess.TimeoutExpired(["steampipe", "service", "stop", "--force"], 30)
+    with mock.patch.object(entrypoint.subprocess, "run", side_effect=interrupted_stop), \
+            mock.patch.object(entrypoint, "_start_steampipe") as start:
+        assert entrypoint._restart_steampipe([proc], threading.Lock(), proc, stop, fatal) is False
+        start.assert_not_called()
+        assert not fatal.is_set()
+
+def test_watchdog_does_not_acknowledge_an_unperformed_restart():
+    stop = mock.Mock()
+    stop.wait.side_effect = [False, False, False, True]
+    outcomes = iter([False, True])
+    def restart_requested(*_args, prepare):
+        performed = next(outcomes)
+        if performed:
+            prepare()
+        return performed
+    with mock.patch.object(entrypoint, "fetch_rows", return_value=[]), \
+            mock.patch.object(entrypoint, "_render_spc", return_value="new scope"), \
+            mock.patch.object(entrypoint, "write_spc") as write, \
+            mock.patch.object(entrypoint, "_restart_steampipe", side_effect=restart_requested) as restart:
+        entrypoint._scope_watchdog("old scope", [mock.Mock()], threading.Lock(), stop)
+    assert restart.call_count == 2
+    assert write.call_count == 1
+
+def test_failed_stop_blocks_a_queued_restart_under_the_same_lock():
+    entered, release, queued = threading.Event(), threading.Event(), threading.Event()
+    stop, fatal = threading.Event(), threading.Event()
+    proc = mock.Mock()
+    proc.wait.return_value = 0
+    proc_ref, lock, results = [proc], threading.Lock(), []
+    def fail_stop(*_args, **_kwargs):
+        entered.set()
+        assert release.wait(2)
+        raise subprocess.TimeoutExpired(["steampipe", "service", "stop", "--force"], 30)
+    def restart(first):
+        if not first:
+            queued.set()
+        try:
+            results.append(entrypoint._restart_steampipe(proc_ref, lock, proc, stop, fatal))
+        except RuntimeError as error:
+            results.append(str(error))
+    with mock.patch.object(entrypoint.subprocess, "run", side_effect=fail_stop) as run, \
+            mock.patch.object(entrypoint, "_start_steampipe") as start:
+        threads = [threading.Thread(target=restart, args=(first,)) for first in [True, False]]
+        threads[0].start()
+        try:
+            assert entered.wait(1)
+            threads[1].start()
+            assert queued.wait(1)
+        finally:
+            release.set()
+            for thread in threads:
+                if thread.ident is not None:
+                    thread.join(3)
+        assert all(not thread.is_alive() for thread in threads)
+        assert stop.is_set() and fatal.is_set() and proc_ref[0] is None
+        assert sorted(results, key=str) == [False, "steampipe_service_stop_failed"]
+        run.assert_called_once()
+        start.assert_not_called()
 
 
 def sts_response(account=ACCOUNT, error=None, status=200):
@@ -344,7 +466,10 @@ def test_fatal_during_crash_backoff_does_not_restart_and_exits_nonzero():
         assert code == 1
 
 
-@pytest.mark.parametrize("mode,expected", [("fatal", 1), ("sigterm", 0)])
+@pytest.mark.parametrize("mode,expected", [
+    ("fatal", 1), ("sigterm", 0), ("stop_failure", 1), ("blocked_child", 1),
+    ("supervisor_child", 1),
+])
 def test_actual_supervisor_process_exit_classification(mode, expected):
     script = r'''
 import os, signal, subprocess, sys, threading, types
@@ -352,25 +477,37 @@ sys.path.insert(0, sys.argv[1])
 import gen_spc_entrypoint as e
 account = "123456789012"
 host = {"account_id": account, "is_host": True, "regions": [], "all_regions": True}
+member = {"account_id": "999999999999", "is_host": False, "regions": ["ap-northeast-2"],
+          "all_regions": False, "role_name": "AWSopsReadOnlyRole", "external_id": "fixture"}
+if sys.argv[2] in ("stop_failure", "blocked_child"):
+    os.environ["INVENTORY_HOST_ONLY"] = "false"
+    os.environ["INVENTORY_TARGET_ACCOUNT_IDS"] = '["999999999999"]'
 class Proc:
     def __init__(self): self.done = threading.Event()
-    def terminate(self): self.done.set()
+    def terminate(self):
+        if sys.argv[2] in ("blocked_child", "supervisor_child"): raise OSError("fixture child teardown failure")
+        self.done.set()
     def kill(self): self.done.set()
     def wait(self, timeout=None):
-        if not self.done.wait(timeout or 3): raise subprocess.TimeoutExpired("fixture", timeout)
+        if sys.argv[2] == "supervisor_child": return 0
+        if not self.done.wait(timeout): raise subprocess.TimeoutExpired("fixture", timeout)
         return 0
 proc = Proc()
 calls = 0
 def fetch():
     global calls
     calls += 1
-    return [host] if calls == 1 or sys.argv[2] == "sigterm" else []
+    if calls == 1 or sys.argv[2] == "sigterm": return [host]
+    return [host, member] if sys.argv[2] in ("stop_failure", "blocked_child") else []
+def start():
+    print("TEST_START", flush=True)
+    return proc
 e.fetch_rows = fetch
 e._host_sts_client = lambda region: types.SimpleNamespace(get_caller_identity=lambda: {"Account": account})
-e.write_spc = lambda text: None
-e._start_steampipe = lambda: proc
-e._stop_steampipe_service = lambda: None
-e.SCOPE_WATCH_INTERVAL = 0.01
+e.write_spc = lambda *pair: None
+e._start_steampipe = start
+e._stop_steampipe_service = lambda: False if sys.argv[2] in ("stop_failure", "blocked_child") else True
+e.SCOPE_WATCH_INTERVAL = 10 if sys.argv[2] == "supervisor_child" else 0.01
 if sys.argv[2] == "sigterm":
     threading.Timer(0.1, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
 e.main()
@@ -384,3 +521,14 @@ e.main()
     assert result.returncode == expected, result.stderr
     if mode == "fatal":
         assert "invalid_enabled_host_scope" in result.stderr
+    if mode == "stop_failure":
+        assert "steampipe_service_stop_failed" in result.stderr
+        assert result.stdout.count("TEST_START") == 1
+        assert "restarted with updated scope" not in result.stderr
+    if mode == "blocked_child":
+        assert "steampipe_child_stop_failed" in result.stderr
+        assert result.stdout.count("TEST_START") == 1
+    if mode == "supervisor_child":
+        assert "[gen-spc] FATAL: steampipe_child_stop_failed" in result.stderr
+        assert "fixture child teardown failure" not in result.stderr
+        assert result.stdout.count("TEST_START") == 1

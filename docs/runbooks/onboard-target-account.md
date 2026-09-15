@@ -201,7 +201,11 @@ and collector tasks. The collector role is the **Steampipe task role**
 not a separate role. Read its ARN from the `inventory_task_role_arn` Terraform output.
 The dev/full `CI_RUNTIME_TARGETS_DEV` input, saved-plan binding and strict member runtime
 proof are documented in [runtime activation](runtime-foundation.md). Rebuild and pin the
-reviewed ARM64 Steampipe image containing the scope guard before applying member scope.
+reviewed ARM64 Steampipe image containing the scope guard, supported AWS shared-profile
+publisher and `/app/healthcheck.py` before applying member scope. Pair that immutable
+image digest with `CMD python3 /app/healthcheck.py` in the same reviewed saved Terraform
+plan; an older scope-guard-only image does not meet this prerequisite. Preserve ALLDNS
+and the existing plan/apply/runtime gates.
 The role trust, source permission, registry and release proof must agree; role creation alone
 does not complete activation. No app request changes these deployment settings.
 The collector's existing 300-second watchdog reloads approved account/region changes;
