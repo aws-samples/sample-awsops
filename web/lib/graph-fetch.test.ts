@@ -156,3 +156,32 @@ it('consumes an error body once without cloning or exposing it', async () => {
   expect(clone).not.toHaveBeenCalled();
   expect(response.bodyUsed).toBe(true);
 });
+
+it('keeps observed busy evidence when slow busy reads exhaust the overall deadline', async () => {
+  virtualTime();
+  const fetch = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); reject(init.signal!.reason); };
+    const timer = setTimeout(() => { init.signal!.removeEventListener('abort', abort); resolve(busyResponse()); }, 1800);
+    init.signal!.addEventListener('abort', abort, { once: true });
+  }));
+  vi.stubGlobal('fetch', fetch);
+  const pending = fetchGraph('/api/graph', new AbortController().signal);
+  await vi.advanceTimersByTimeAsync(10000);
+  expect((await pending).collection).toMatchObject({ readStatus: 'unavailable', readReason: 'busy' });
+  expect(fetch.mock.calls.length).toBeGreaterThan(1);
+  expect(fetch.mock.calls.length).toBeLessThanOrEqual(5);
+});
+it('honors the server numeric retry delay without exceeding the recovery budget', async () => {
+  virtualTime();
+  const graph = { nodes: [], edges: [], captured_at: null };
+  const fetch = vi.fn().mockResolvedValueOnce(Response.json(
+    { collection: { readStatus: 'unavailable', readReason: 'busy' } },
+    { status: 503, headers: { 'Retry-After': '1' } })).mockResolvedValueOnce(Response.json(graph));
+  vi.stubGlobal('fetch', fetch);
+  const pending = fetchGraph('/api/graph', new AbortController().signal);
+  await vi.advanceTimersByTimeAsync(999);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(await pending).toEqual(graph);
+  expect(fetch).toHaveBeenCalledTimes(2);
+});

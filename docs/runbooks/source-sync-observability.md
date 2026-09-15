@@ -183,10 +183,10 @@ as processing limits. The panel discloses positive loss counters and unavailable
 source windows separately from publication/capture clocks, and does not infer retention
 from losses. `retainedPrevious` alone establishes that a saved graph is being reused.
 The typed collection contract also describes optional additive producer fields; unknown
-runtime data remains defensively normalized. Matching ordered attempted/saved source
-metadata is displayed once; different status, reasons or clocks remain separate.
-Source-detail totals count displayed entries, while latest-attempt and saved-source
-counts have separate labels. This display behavior does not change stored provenance.
+runtime data remains defensively normalized. Source-detail totals count displayed rows:
+identical current/saved lists appear once with saved provenance, while differing or saved-only
+lists remain separate. Status counts summarize latest-attempt sources. A shared saved list
+does not add a second saved-count chip to the collapsed summary.
 Verify locally with `cd web && npx vitest run components/topology/GraphCollectionStatus.test.tsx`;
 the regression uses the real graph-state reader with a database boundary fixture.
 

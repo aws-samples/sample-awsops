@@ -264,8 +264,7 @@ The panel groups positive safe-integer losses and unavailable infrastructure in 
 predicate; it does not redefine the server projector's general numeric contract.
 Only node/edge drops or explicit truncation flags imply a processing limit; malformed spans
 and unresolved parent/link/messaging evidence are distinct partial-result causes. Losses alone do not prove retention:
-`retainedPrevious` is required for that claim. Source-detail totals count displayed entries;
-identical attempted/saved source lists are shown once, while their status/count labels remain separate.
+`retainedPrevious` is required for that claim. Source-detail totals count displayed current/saved rows; status counts summarize latest-attempt sources. Identical current/saved lists are displayed once with saved provenance.
 Missing collection metadata stays unknown rather than implying collector failure.
 
 
@@ -296,12 +295,8 @@ runtime payloads for compatibility with older or malformed responses.
 The UI supports the existing trace envelope and optional inventory/saved-source
 fields accepted from the inventory publication companion. This reader prerequisite does
 not activate flow/infra publication; the existing materializer still writes trace state.
-Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded.
-If `sources` and `publishedSources` have equal ordered identity, status, scope, producer,
-count, clock and string-reason fields, one shared list is displayed. Distinct metadata stays
-separate; source-detail totals count the displayed list once, and latest-attempt/saved-source
-counts retain separate labels. This display comparison does not merge stored records.
-Runtime, Lambda and migration rollout remain separate
+Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded; their count
+includes displayed saved-source rows except when the entire current/saved lists match. Identical current/saved lists are shown once with the saved-source heading and a localized “Same displayed source evidence as above.” note. Differing and saved-only evidence remains visible. Runtime, Lambda and migration rollout remain separate
 from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
 
 
