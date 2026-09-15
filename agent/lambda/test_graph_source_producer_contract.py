@@ -102,3 +102,4 @@ def test_tempo_requires_affirmative_jobs_before_complete_collection(metrics, exp
     assert body["collectionStatus"] == (("ok" if nonempty else "empty") if expected == "complete" else expected)
     assert body["traces"] == traces
     assert body["metrics"] == (None if metrics == "absent" else metrics)
+    assert body.get("collectionReason") == ("count_not_confirmed" if expected == "unknown" else None)

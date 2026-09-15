@@ -181,8 +181,13 @@ def test_summarize_handles_tempo_traces_envelope(monkeypatch):
 def test_incomplete_connector_signals_never_become_confident_zero(
         monkeypatch, kind, key, schema, markers, expected, nonempty):
     secret = "raw-sensitive-payload"
-    rows = [{"payload": secret}] if nonempty else []
-    _patch_lambda(monkeypatch, FakeLambda(body={key: rows, **markers, "error": secret}))
+    record = ({"traceID": "a1", "payload": secret} if kind == "tempo" else
+              {"stream": {"app": "api"}, "values": [["1", secret]]} if kind == "loki" else
+              {"metric": {"job": "api"}, "value": [1, "1"], "payload": secret} if kind in ("prometheus", "mimir") else
+              {"c": 0, "payload": secret})
+    rows = [record] if nonempty else []
+    shape = {"resultType": "streams" if kind == "loki" else "vector"}
+    _patch_lambda(monkeypatch, FakeLambda(body={key: rows, **shape, **markers, "error": secret}))
     out = src.collect_datasources(FakeConn([(5, "source", kind, True)], {5: schema}))
     signal = out["data"]["findings"][0]["results"][0]
     summary = signal["summary"]
@@ -199,7 +204,7 @@ def test_incomplete_connector_signals_never_become_confident_zero(
 
 def test_partial_error_trace_observations_remain_evidence_not_query_failure(monkeypatch):
     _patch_lambda(monkeypatch, FakeLambda(body={
-        "traces": [{"traceID": "private-trace"}] * 20, "collectionStatus": "partial",
+        "traces": [{"traceID": f"{i + 1:x}", "payload": "private-trace"} for i in range(20)], "collectionStatus": "partial",
     }))
     out = src.collect_datasources(FakeConn([(5, "source", "tempo", True)], {5: {"labels": ["service.name"]}}))
     signal = out["data"]["findings"][0]["results"][0]
@@ -212,7 +217,7 @@ def test_partial_error_trace_observations_remain_evidence_not_query_failure(monk
 
 def test_partial_error_trace_count_remains_observed_evidence(monkeypatch):
     _patch_lambda(monkeypatch, FakeLambda(body={
-        "traces": [{"traceID": str(i)} for i in range(20)], "collectionStatus": "partial",
+        "traces": [{"traceID": f"{i + 1:x}"} for i in range(20)], "collectionStatus": "partial",
     }))
     out = src.collect_datasources(FakeConn([(5, "tempo", "tempo", True)], {5: {"labels": []}}))
     signal = out["data"]["findings"][0]["results"][0]
@@ -222,7 +227,7 @@ def test_partial_error_trace_count_remains_observed_evidence(monkeypatch):
     assert signal["summary"]["collectionStatus"] == "partial"
 
 
-@pytest.mark.parametrize("status,rows", [("empty", []), ("ok", [{"traceID": "redacted"}])])
+@pytest.mark.parametrize("status,rows", [("empty", []), ("ok", [{"traceID": "abcdef"}])])
 def test_confirmed_connector_summaries_retain_counts(monkeypatch, status, rows):
     _patch_lambda(monkeypatch, FakeLambda(body={
         "traces": rows, "collectionStatus": status, "truncated": False,
@@ -232,7 +237,7 @@ def test_confirmed_connector_summaries_retain_counts(monkeypatch, status, rows):
     assert "error" not in signal
     assert signal["summary"]["count"] == len(rows)
     assert signal["summary"]["collectionStatus"] == status
-    assert "redacted" not in json.dumps(out)
+    assert "abcdef" not in json.dumps(out)
 
 
 # consensus gate finding: a crafted/poisoned ClickHouse table name must NOT reach the SQL (identifier-validated).
@@ -334,3 +339,49 @@ def test_no_signal_rows_falls_back_to_generic_planner(monkeypatch):
     conn.schemas = {5: {"metrics": ["http_requests_total"]}}
     src.collect_datasources(conn)
     assert fake.calls, "generic planner should run when no signals are materialized"
+
+
+@pytest.mark.parametrize("kind,value", [("scalar", "0"), ("string", "SYNTHETIC_PRIVATE_VALUE")])
+def test_scalar_summary_counts_one_sample_without_exposing_value(kind, value):
+    summary = src._summarize_result({"resultType": kind, "result": [1.5, value], "collectionStatus": "ok"})
+    assert summary["count"] == 1
+    assert summary["resultType"] == kind
+    assert "SYNTHETIC_PRIVATE_VALUE" not in json.dumps(summary)
+    assert "result" not in summary and "value" not in summary
+
+
+def test_observed_counts_exclude_malformed_placeholders_and_records():
+    valid = {"metric": {"job": "api"}, "value": [1, "0"]}
+    invalid = [None, {}, {"metric": {}, "value": [1, "not-a-number"]}]
+    for rows, count in [(invalid, None), (invalid + [valid], 1)]:
+        result = src._summarize_result({"resultType": "vector", "result": rows, "collectionStatus": "unknown"})
+        assert result.get("observedCount") == count
+        assert "count" not in result
+        assert result["incomplete"] is True
+    trace = src._summarize_result({"traces": [None, {}, {"traceID": "a1"}], "collectionStatus": "partial"})
+    assert trace["observedCount"] == 1
+    table = src._summarize_result({"rows": [None, {}, {"c": 0}], "collectionStatus": "partial"})
+    assert table["observedCount"] == 1
+
+
+@pytest.mark.parametrize("body,observed", [
+    ({"resultType": "vector", "result": [None, {}]}, None),
+    ({"result": [{"metric": {}, "value": [1, "0"]}]}, None),
+    ({"traces": [None, {"traceID": "invalid-id"}]}, None),
+    ({"rows": [None, {"c": 0}]}, 1),
+    ({"result": {"rows": [None, {"c": 0}]}}, 1),
+    ({"resultType": "scalar", "result": [None, "0"]}, None),
+    ({"resultType": "scalar", "result": []}, None),
+])
+def test_unmarked_validation_loss_is_incomplete_not_clean_zero(body, observed):
+    result = src._summarize_result(body)
+    assert result["incomplete"] is True
+    assert result["collectionStatus"] == "partial"
+    assert "count" not in result
+    assert result.get("observedCount") == observed
+
+
+def test_valid_unmarked_scalar_pair_is_one_sample_not_validation_loss():
+    result = src._summarize_result({"resultType": "scalar", "result": [1, "0"]})
+    assert result["count"] == 1
+    assert "incomplete" not in result

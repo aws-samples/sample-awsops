@@ -37,9 +37,8 @@ disclosed by metadataTruncated in both HTTP and SQL projections.
 ## Source completeness and retained publication
 
 `empty_not_confirmed` is a soft reason for legacy unmarked empty results.
-Recognized producer `unknown` uses `incomplete_collection`, not a failed-query diagnosis.
-That reason also includes producer warnings/partial results and missing Tempo children;
-the child-fetch path separately sets `canSweep: false` when a child has no fetched spans.
+Recognized producer `unknown` uses soft incomplete evidence, not a failed-query diagnosis. Tempo exposes absent/invalid/zero job counts distinctly as `count_not_confirmed`, using the existing HTTP/SQL reason vocabulary.
+Producer warnings and partial results use `incomplete_collection`; an empty returned Tempo child also uses it. Failed or malformed children keep their specific failure reasons. The child-fetch path separately sets `canSweep: false` when a child has no fetched spans.
 
 A failed or malformed source, an unconfirmed empty result, or missing-child evidence retains
 the entire previous graph and capture clock even when a sibling has useful data. Current
@@ -60,6 +59,10 @@ complete empty replacement, and all-empty/mixed missing-child retention. Shared 
 `agent/fixtures/` bind real mocked producer bodies to adapter outcomes. See
 [source completion and rollout](source-sync-observability.md#producer-completion-and-rollout)
 for producer deployment; source merge alone is not live completion proof.
+
+Oversized valid Tempo children keep a bounded structured OTLP projection and can refresh a partial snapshot with their siblings. The byte budget is unchanged; a failed or structurally unusable child still cannot authorize replacement. The [Tempo response-capability table](tempo-query-generation.md#search-result-evidence) distinguishes count-proof absence, unfinished work and byte limits. The shared budget fixture proves the actual producer output is mappable and publishes through PostgreSQL.
+
+The shared query normalizer carries collection status into Explore. Marked partial, unknown or failed empty responses show an uncertainty/failure note instead of an ordinary empty-result claim; useful rows remain visible with the same disclosure. Scalar format failures remain distinct from empty responses.
 
 ## Browser recovery and source evidence
 
@@ -156,7 +159,8 @@ A source merge or automatic web CD result is not proof that these steps complete
 `web/components/topology/GraphCollectionStatus.tsx`, `web/components/topology/GraphCollectionStatus.test.tsx`,
 `agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,
 `agent/lambda/prometheus_mcp.py`, `agent/lambda/mimir_mcp.py`,
-`agent/lambda/test_collection_markers.py`, `agent/lambda/test_clickhouse_completion.py`,
+`agent/lambda/test_collection_markers.py`, `agent/lambda/test_clickhouse_completion.py`, `agent/lambda/test_tempo_trace_budget.py`,
+`agent/fixtures/tempo-trace-budget-contract.json`,
 `agent/lambda/test_graph_source_producer_contract.py`,
 `agent/fixtures/tempo-topology-contract.json`, `agent/fixtures/query-topology-contract.json`.
 ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-043 (graph reads;
