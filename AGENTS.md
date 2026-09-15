@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d3b8e71a26a7 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f3a5d381d11b · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -35,7 +35,7 @@ cd web && npx vitest run                 # web test suite (vitest)
 npm ci --prefix web
 npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund
 node --test scripts/v2/ci/*.test.mjs
-node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs
+node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs
 
 # agent (Python)
 cd agent && python3 -m pytest test_agent.py test_readiness.py -q
@@ -53,8 +53,8 @@ make workers     # arm64 worker image push (after apply with workers_enabled=tru
 ```
 Dev Deploy Web requires readonly producer/ECR proof before migrations and promotes only that same digest. Dev Deploy AgentCore and current-source dev Deploy Web require the reusable private `deploy-migrations.yml` workflow before provisioning or image promotion. Guarded dev web pushes run it automatically; explicit older-image rollback requires producer/schema acknowledgement and runs no DDL. Every dev web release verifies the exact ECS/image deployment, then full runtime readiness including login/DB; the compatibility input cannot disable these checks. This is operator CI under ADR-005, not product autonomy. It requires `CI_MIGRATIONS_ENABLED_DEV=true` and applied `ci_migrations_enabled=true` with a non-null `migration_job` output before release. Main/preview and direct private-host CLI retain `make migrate`
 before `make agentcore`. Migrations and reader password sync always precede AgentCore provisioning. Private migration offline `scripts/v2/ci/*.test.mjs` fixtures require locked Node dependencies, Python PyYAML and boto3/botocore (`pip install -r agent/requirements.txt`), and Terraform
-1.15.7; runtime/controller/workflow and mock-plan checks make no AWS calls. Both `scripts/v2/ci/migration.itest.mjs` and `scripts/v2/ci/web-db-connection.itest.mjs` require bare `docker` on PATH, a reachable daemon and OpenSSL, with no automatic `sudo`/`DOCKER` override. The web connection-phase suite
-additionally uses the locked web driver and TypeScript dependencies. Both PostgreSQL suites are fail-hard exceptions to legacy optional `scripts/v2/*.itest.mjs`; missing Docker is never a skip.
+1.15.7; runtime/controller/workflow and mock-plan checks make no AWS calls. The three PostgreSQL suites above require bare `docker` on PATH, a reachable daemon and OpenSSL, with no automatic `sudo`/`DOCKER` override. The web connection-phase and policy suites
+additionally use the locked web driver and TypeScript dependencies. All three PostgreSQL suites are fail-hard exceptions to legacy optional `scripts/v2/*.itest.mjs`; missing Docker is never a skip.
 
 No repo-root `package.json` — the only one outside `web/`/`docs-site/` is `scripts/v2/package.json` (`make deps` runs `npm ci --prefix scripts/v2`). `next build` fails on app-level type errors but `*.test.ts(x)` type noise is non-blocking.
 
@@ -80,6 +80,7 @@ HEAD image fixtures and the panel-prompt structure check (`bash tests/run-all.sh
 Python 3.12 on Linux ARM64/x86-64 and Pillow 12.3.0. Run separately:
 `python3 -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt`.
 Never combine this hash-locked file with unhashed requirements.
+
 
 ## BANNED PATTERNS (enforce in review)
 - **AWS security:** no `0.0.0.0/0` ingress; no IAM `Principal:"*"`/wildcard-action without scoped condition; **no secrets in env/code/IaC** (Secrets Manager / SSM).

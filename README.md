@@ -196,9 +196,9 @@ Python 3.12 on Linux ARM64/x86-64 and a separate hash-pinned Pillow install:
 Do not combine this command with the unhashed requirements install.
 Private migration tests require `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`
 (`pg` + AWS SDK), OpenSSL and a reachable Docker daemon for `postgres:17`.
-The required migration and web connection-phase PostgreSQL suites fail if Docker is missing;
+The required migration, web connection-phase and agent tool-policy history PostgreSQL suites fail if Docker is missing;
 they use bare `docker` on PATH (the documented exceptions to optional legacy itests).
-The web suite also requires `npm ci --prefix web` for the locked driver and TypeScript.
+The web connection and policy suites also require `npm ci --prefix web` for the locked driver and TypeScript.
 These suites and their offline companion use no AWS credentials.
 Authenticated deployment smoke tests require curl, OpenSSL, Python 3 with PyYAML and Terraform **1.15.7**;
 their offline variable fixture needs no providers. Terraform mock tests require **1.15.7** and installed/cached
@@ -213,7 +213,7 @@ See [web release](docs/runbooks/web-release.md) for standalone bootstrap or unsu
 ```bash
 bash scripts/v2/merge-verify.sh   # required Python, web and deployment tests
 node --test scripts/v2/ci/*.test.mjs # offline private migration runtime fixtures (CI required)
-node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs # real PG migration + web connection-phase regressions (CI required)
+node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs # real PG migration + web connections + agent policy regressions (CI required)
 bash scripts/v2/terraform-test.sh # isolated, backend-disabled Terraform mock tests (also required in CI)
 node --test scripts/v2/deployment-smoke.test.mjs # offline health/auth/credential preparation and workflow checks
 bash tests/run-all.sh             # repo-wide hook/structure tests + agent Python unittests
@@ -426,8 +426,8 @@ Python 3.12와 해시가 고정된 Pillow가 필요합니다. 다음 명령을 �
 `python3 -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt`.
 Private migration 테스트는 `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`로
 `pg`·AWS SDK를 설치하며 PostgreSQL 테스트에는 OpenSSL·접근 가능한 Docker·`postgres:17`이
-필요합니다. 필수 migration·웹 연결 단계 PostgreSQL 테스트는 레거시 선택적 itest와 달리
-Docker 부재 시 gate가 실패하고 PATH의 `docker`를 직접 사용합니다. 웹 테스트는 잠긴 드라이버와
+필요합니다. 필수 migration·웹 연결 단계·에이전트 도구 정책 이력 PostgreSQL 테스트는 레거시 선택적 itest와 달리
+Docker 부재 시 gate가 실패하고 PATH의 `docker`를 직접 사용합니다. 웹 연결·정책 테스트는 잠긴 드라이버와
 TypeScript를 위해 `npm ci --prefix web`도 필요합니다. 이 테스트들과 오프라인 companion은
 AWS 자격증명을 사용하지 않습니다.
 인증 배포 smoke 테스트는 curl·OpenSSL·Python 3·PyYAML·Terraform **1.15.7**을 필수로 요구하며,
@@ -443,7 +443,7 @@ Deploy Web은 사설 마이그레이션 전에 이미지를 검증하고 해당 
 ```bash
 bash scripts/v2/merge-verify.sh   # 필수 Python·웹·배포 테스트
 node --test scripts/v2/ci/*.test.mjs # private migration runtime 오프라인 fixture (CI 필수)
-node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs # 실제 PG migration·웹 연결 단계 회귀 테스트 (CI 필수)
+node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs # 실제 PG migration·웹 연결·에이전트 정책 회귀 테스트 (CI 필수)
 bash scripts/v2/terraform-test.sh # 별도 복사본·backend 비활성 Terraform mock 테스트 (CI 필수)
 node --test scripts/v2/deployment-smoke.test.mjs # 오프라인 health·인증·자격증명 준비·워크플로 검사
 bash tests/run-all.sh             # repo 전반 hook/structure 테스트 + agent Python unittest

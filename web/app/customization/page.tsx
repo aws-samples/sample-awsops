@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { Lang } from '@/lib/i18n';
 import PageHeader from '@/components/ui/PageHeader';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { INTEGRATION_KINDS_EGRESS, INTEGRATION_KINDS_INGRESS, INTEGRATION_TRANSPORTS } from '@/lib/integration-validation';
@@ -9,7 +10,7 @@ interface SkillRow { id: number; name: string; description: string; tier: string
 interface SpaceState { enabledAgentIds: number[]; enabledSkillIds: number[]; enabledIntegrationIds: number[]; toolAllowlist: string[]; version?: number }
 interface IntegrationRow { id: number; name: string; kind: string; direction: string; capability: string; enabled: boolean; tier: string; receivePath?: string | null; }
 
-const GATEWAYS = ['network', 'container', 'iac', 'data', 'security', 'monitoring', 'cost', 'ops'];
+const GATEWAYS = ['network', 'container', 'iac', 'data', 'security', 'monitoring', 'cost', 'ops', 'observability'];
 // ADR-039 agent-type lifecycle roles (mirrors web/lib/skill-validation.ts AGENT_TYPES).
 const AGENT_TYPES = ['generic', 'on_demand', 'triage', 'rca', 'mitigation', 'evaluation'];
 // ADR-039 P2 — integration kinds. Imported (not re-hardcoded) so this dropdown can't drift from the
@@ -22,8 +23,18 @@ const INTEG_TRANSPORTS = INTEGRATION_TRANSPORTS;
 // hub (/integrations) — Datasources tab + Connectors tab. This page keeps Agents/Skills/Agent-Space +
 // the advanced custom-integration registration.
 
+const POLICY_TEXT: Record<Lang, { loading: string; unavailable: string; retry: string }> = {
+  ko: { loading: '정책을 불러오는 중입니다.', unavailable: '정책을 불러올 수 없습니다. 다시 불러오기에 성공할 때까지 저장할 수 없습니다. 이전 값은 유지됩니다.', retry: '정책 다시 불러오기' },
+  en: { loading: 'Loading policy.', unavailable: 'Policy is unavailable. Saving is disabled until a reload succeeds. Previously loaded values are retained.', retry: 'Retry policy load' },
+  ja: { loading: 'ポリシーを読み込み中です。', unavailable: 'ポリシーを読み込めません。再読み込みに成功するまで保存できません。以前の値は保持されます。', retry: 'ポリシーを再読み込み' },
+  zh: { loading: '正在加载策略。', unavailable: '无法读取策略。重新加载成功前不能保存，之前的值会保留。', retry: '重新加载策略' },
+};
+
 export default function CustomizationPage() {
-  const { tt } = useI18n();
+  const { tt, lang } = useI18n();
+  const text = POLICY_TEXT[lang];
+  const [policyState, setPolicyState] = useState<'loading' | 'ready' | 'unavailable'>('loading');
+  const loadGeneration = useRef(0);
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [skills, setSkills] = useState<SkillRow[]>([]);
   const [denied, setDenied] = useState(false);
@@ -38,20 +49,37 @@ export default function CustomizationPage() {
   const [integForm, setIntegForm] = useState({ direction: 'egress', name: '', kind: 'grafana', endpoint: '', transport: 'api_key', capability: 'read', authMode: 'hmac', sourceAllowlist: '', triggerTarget: 'incident' });
 
   async function load() {
-    const r = await fetch('/api/customization');
-    if (r.status === 401 || r.status === 403) { setDenied(true); return; }
-    if (r.status === 400) { setNoAurora(true); return; }
-    const d = await r.json();
-    setAgents(d.agents || []); setSkills(d.skills || []);
-    setAccountId(d.accountId || 'self');
-    setSpace(d.space ? {
-      enabledAgentIds: d.space.enabledAgentIds || [], enabledSkillIds: d.space.enabledSkillIds || [],
-      enabledIntegrationIds: d.space.enabledIntegrationIds || [],
-      toolAllowlist: d.space.toolAllowlist || [], version: d.space.version,
-    } : null);
-    setAllowlistText((d.space?.toolAllowlist || []).join(', '));
-    const ir = await fetch('/api/integrations');
-    if (ir.ok) setIntegrations((await ir.json()).integrations || []);
+    const generation = ++loadGeneration.current;
+    setPolicyState('loading');
+    try {
+      const r = await fetch('/api/customization');
+      if (generation !== loadGeneration.current) return;
+      if (r.status === 401 || r.status === 403) { setDenied(true); return; }
+      if (r.status === 400) { setNoAurora(true); return; }
+      if (!r.ok) throw new Error('Policy unavailable');
+      const d = await r.json();
+      const ids = (v: unknown) => Array.isArray(v) && v.every(n => Number.isSafeInteger(n) && n > 0);
+      if (!d || d.aurora !== true || typeof d.accountId !== 'string' || !d.accountId
+        || !Array.isArray(d.agents) || !d.agents.every((a: AgentRow) => a && typeof a.name === 'string' && Array.isArray(a.skills))
+        || !Array.isArray(d.skills) || !d.skills.every((k: SkillRow) => k && typeof k.name === 'string')
+        || (d.space !== null && (!d.space || !ids(d.space.enabledAgentIds) || !ids(d.space.enabledSkillIds)
+          || !ids(d.space.enabledIntegrationIds) || !Array.isArray(d.space.toolAllowlist)
+          || !d.space.toolAllowlist.every((t: unknown) => typeof t === 'string')))) {
+        throw new Error('Invalid policy state');
+      }
+      const nextText = (d.space?.toolAllowlist ?? []).join(', ');
+      if (generation !== loadGeneration.current) return;
+      setAgents(d.agents); setSkills(d.skills); setAccountId(d.accountId);
+      setSpace(d.space); setAllowlistText(nextText); setPolicyState('ready');
+      // Integration labels are ancillary; failure must not replace stored membership.
+      const ir = await fetch('/api/integrations').catch(() => null);
+      if (ir?.ok) {
+        const data = await ir.json().catch(() => null);
+        if (generation === loadGeneration.current && Array.isArray(data?.integrations)) setIntegrations(data.integrations);
+      }
+    } catch {
+      if (generation === loadGeneration.current) setPolicyState('unavailable');
+    }
   }
 
   async function createIntegration() {
@@ -68,7 +96,7 @@ export default function CustomizationPage() {
     await fetch('/api/integrations', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ op: enabled ? 'disable' : 'enable', id }) });
     load();
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); return () => { loadGeneration.current++; }; }, []);
 
   async function createAgent() {
     const res = await fetch('/api/customization', {
@@ -108,6 +136,7 @@ export default function CustomizationPage() {
     load();
   }
   async function saveSpace() {
+    if (policyState !== 'ready') return;
     const enabledAgentIds = space?.enabledAgentIds ?? [];
     const enabledSkillIds = space?.enabledSkillIds ?? [];
     const enabledIntegrationIds = space?.enabledIntegrationIds ?? [];
@@ -270,9 +299,14 @@ export default function CustomizationPage() {
         </details>
       </section>
 
-      <section className="space-y-2 rounded-lg border border-ink-100 bg-paper-muted/60 p-4">
-        <h2 className="text-[13px] font-semibold">Agent Space — account {accountId}</h2>
-        {!space && (
+      {policyState === 'loading' && <p role="status">{text.loading}</p>}
+      {policyState === 'unavailable' && <div role="alert">
+        <p>{text.unavailable}</p>
+        <button onClick={load} className="rounded border px-3 py-1">{text.retry}</button>
+      </div>}
+      <fieldset disabled={policyState !== 'ready'} aria-labelledby="agent-space-heading" className="space-y-2 rounded-lg border border-ink-100 bg-paper-muted/60 p-4">
+        <h2 id="agent-space-heading" className="text-[13px] font-semibold">Agent Space — account {accountId}</h2>
+        {policyState === 'ready' && !space && (
           <div className="text-[12px] text-ink-500">
             Global (Phase-1) mode — all globally-enabled custom agents are available for this account.
             Saving below creates an Agent Space and scopes this account.
@@ -301,12 +335,12 @@ export default function CustomizationPage() {
         <div className="text-[12px]">
           <div className="mb-1 font-medium">Tool allowlist (account cap, comma-separated)</div>
           <input className="w-full rounded border border-ink-100 bg-paper px-2 py-1 text-[12px]"
-                 placeholder="e.g. simulate_principal_policy, get_account_authorization_details"
+                 placeholder="e.g. simulate_principal_policy, get_account_security_summary"
                  value={allowlistText} onChange={(e) => setAllowlistText(e.target.value)} />
           <div className="mt-1 text-ink-400">Empty = no account cap (Phase-1 advisory). A non-empty list can only REMOVE tools a skill declared — it never grants new tools.</div>
         </div>
         <button onClick={saveSpace} className="rounded bg-brand-500 px-3 py-1 text-[12px] font-medium text-white">Save Agent Space</button>
-      </section>
+      </fieldset>
       </div>
     </div>
   );

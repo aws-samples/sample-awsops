@@ -431,16 +431,24 @@ def build_skill_prompt(gateway_role, tools):
 def _filter_tools(tools, allowlist):
     """ADR-031/ADR-039: enforce the resolver-computed tool allowlist OUTSIDE the model.
 
-    Keeps only tools whose ``.tool_name`` is in ``allowlist``, preserving the original
-    tool order. ``None`` or ``[]`` ⇒ no restriction (the resolver omits the key when
-    empty; ``[]`` is NOT deny-all). Unknown names in the allowlist are ignored. A
-    non-empty allowlist that matches nothing yields an empty tool set (the agent then
-    runs tool-less — safe). This is the single point where the per-account / per-skill
-    cap actually takes effect at the runtime (the cap was previously dropped here)."""
-    if not allowlist:
+    None is legacy unrestricted; [] or the reserved wire token is deny-all. The BFF resolves gateway aliases
+    to exact target-qualified names; NEVER authorize by suffix here. Duplicate
+    identities are ambiguous across sources and denied before deduplication.
+    """
+    if allowlist is None:
         return tools
+    if not isinstance(allowlist, list) or any(not isinstance(n, str) for n in allowlist):
+        return []
+    if '!awsops-deny-all!' in allowlist:
+        return []  # also denies a malicious advertised token or a malformed mixed list
     allow = set(allowlist)
-    return [t for t in tools if getattr(t, "tool_name", None) in allow]
+    counts = {}
+    for t in tools:
+        name = getattr(t, "tool_name", None)
+        if isinstance(name, str):
+            counts[name] = counts.get(name, 0) + 1
+    return [t for t in tools if getattr(t, "tool_name", None) in allow
+            and counts.get(getattr(t, "tool_name", None)) == 1]
 
 
 # ADR-017 (amended 2026-08-05) — fail-closed runtime allowlist for the vendor-hosted official-MCP
@@ -1181,10 +1189,11 @@ async def handler(payload):
                 integrations, lambda spec: _connect_integration(spec, stack))
             # ADR-031/039: enforce the resolver-computed allowlist OUTSIDE the model over BOTH gateway +
             # integration tools BEFORE the prompt tool-list and Agent(tools=) are built (cap is the ceiling).
-            # Dedup first (gateway precedence) so a name collision never hands Agent two same-named tools.
-            tools = _filter_tools(_dedup_by_tool_name(gateway_tools + clickhouse_stdio_tools + integration_tools), tool_allowlist)
+            # Filter before dedup: ambiguous identities must not silently pick the first source.
+            tools = _dedup_by_tool_name(_filter_tools(
+                gateway_tools + clickhouse_stdio_tools + integration_tools, tool_allowlist))
             tool_names = [t.tool_name for t in tools]
-            logging.info(f"Gateway [{gateway_role}] tools ({len(tools)} = {len(gateway_tools)} gw + {len(clickhouse_stdio_tools)} stdio + {len(integration_tools)} integ, allowlist={'on' if tool_allowlist else 'off'}): {tool_names}")
+            logging.info(f"Gateway [{gateway_role}] tools ({len(tools)} = {len(gateway_tools)} gw + {len(clickhouse_stdio_tools)} stdio + {len(integration_tools)} integ, allowlist={'on' if tool_allowlist is not None else 'off'}): {tool_names}")
 
             # ADR-031: resolver override (custom agent) OR built-in SKILL_BASE; + dynamic tools + account directive
             if system_prompt_override:

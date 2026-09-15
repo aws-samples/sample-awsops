@@ -64,3 +64,5 @@ Domain-logic modules shared by API routes and components, mostly React-free (inc
 sorted nonempty source category labels. Count only hidden or incompletely displayed
 observation groups after eligibility/focus/query filtering. The counts map's empty
 key records missing category labels; it does not add a synthetic AWS category.
+
+`gateway-tool-catalog.json` mirrors `scripts/v2/agentcore/catalog.py` TARGETS/MCP_SERVER_TARGETS read-only identities. `agent-resolver.test.ts` enforces exact parity; update the snapshot with catalog changes. The resolver qualifies unique same-gateway aliases and preserves deny-all. `catalog.ts` reads the persisted `agents.tool_policy_configured` history; deploy its migration before the Web reader.

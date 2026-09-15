@@ -8,65 +8,45 @@ import Screenshot from '@site/src/components/Screenshot';
 
 # Custom Agents
 
-A page for configuring how the AI assistant behaves through agents, skills, integrations, and tools.
+Configure custom personas, reusable instructions and read-only tool permissions at `/customization`. Open **Integrations → Agents & Skills** to reach this page.
 
-<Screenshot src="/screenshots/operations/custom-agents.png" alt="Custom Agents & Skills" />
+<Screenshot src="/screenshots/operations/custom-agents.png" alt="Custom Agents and Skills administration" />
 
 :::info Admin only
-This page is available to **admins** only (the Cognito admins group or the SSM admin allowlist). Non-admin users see an access-denied screen.
+Catalog writes require the Cognito admin group or the configured SSM admin allowlist. Connector credentials stay server-side and are not shown after saving.
 :::
 
-## Features
+## Register and attach
 
-### New Agent
-Create a new agent that defines how the assistant responds.
+1. In **New Agent**, enter a kebab-case name, description, persona, gateway and routing keywords. Optional agent types are `generic`, `on_demand`, `triage`, `rca`, `mitigation` and `evaluation`; choosing a type does not enable remediation or autonomous execution.
+2. Names matching built-in routing keys, such as `ops`, `security`, `observability`, `code`, or `auto`, are reserved. Existing conflicting custom rows remain stored but cannot shadow built-in routing. Create a nonreserved name and update its bindings and account membership.
+3. **New Skill** creates instruction-only skills. To declare tool grants, an admin uses `POST /api/customization` with `kind: "skill"` and `toolAllowlist`. A grant such as `iam-mcp-target___list_users` must belong to the selected gateway. A bare name is accepted only when unique there; unknown, ambiguous and foreign-target names grant nothing.
+4. Attach a skill through the existing admin API: `PUT /api/customization` with `{"op":"attach","agentId":1,"skillId":2,"ord":0}`, replacing the example IDs with catalog IDs. Selecting a skill in Agent Space does **not** attach it.
+5. Toggle new or edited items on in the **Agents / Skills** lists; saves start them disabled. Built-in rows cannot be toggled here.
+6. Save the account's **Agent Space** with the intended agents and integrations. A confirmed missing space preserves legacy global membership; after creating a space, only its selected custom agents qualify. Its skill selection is stored metadata, not a runtime permission control. Runtime instructions come from enabled, attached skills.
 
-- **name**: agent name (kebab-case)
-- **description**: agent description
-- **persona**: system prompt (the agent's voice and perspective)
-- **gateway**: area of focus — **network**, **container**, **iac**, **data**, **security**, **monitoring**, **cost**, **ops**
-- **routing keywords**: keywords that route questions to this agent (comma-separated)
-- **agent type**: lifecycle role — **generic**, **on_demand**, **triage**, **rca**, **mitigation**, **evaluation**
+Gateway choices are `network`, `container`, `iac`, `data`, `security`, `monitoring`, `cost`, `ops`, and `observability`. **New Skill** also offers **agent types (targeting)** checkboxes. In **Agent Space**, edit the comma-separated **Tool allowlist (account cap)** and click **Save Agent Space**; each successful save increments its version. During loading or a failed policy read the form is disabled, previously loaded values remain visible, and **Retry policy load** must succeed before saving.
 
-### New Skill
-Create a reusable skill shared across agents.
+## Tool restrictions and revocation
 
-- **name** / **description**: skill name and description
-- **instructions**: how the skill should be performed
-- **agent types (targeting)**: which agent types the skill applies to (multi-select checkboxes)
+The account tool allowlist is a ceiling on custom-agent grants. An empty account list means no account cap; a **nonempty cap with no eligible intersection means deny-all**. Built-in agents are independent of custom policy.
 
-### Agents / Skills lists
-- New agents and skills start **Disabled** and are toggled on in the lists below.
-- Built-in items show a **built-in** label and are not toggleable.
+Legacy gateway inheritance applies only when the agent has no restriction history, no account cap and no integration tool grant. A cap cannot create tool grants for an instruction-only skill. An instruction-only agent with an integration grant receives only eligible integration tools, not the whole gateway catalog. Integration tools use exact names, cannot grant gateway-qualified tools, and remain within their server/credential boundary.
 
-### Data-source connectors
-Connect read-only observability connectors (**Prometheus**, **Loki**, **Tempo**, **Mimir**, **ClickHouse**).
+Once a bound skill declares a nonempty tool list, the agent retains that policy history. Disabling the skill, editing its list to `[]`, detaching it or deleting it after detachment cannot restore unrestricted gateway reads. The persona and instructions can still work with no tools. To restore access, attach or update an explicitly scoped skill, enable it, and confirm that its grants intersect the account cap. Clearing lists is not a reset mechanism.
 
-- Enter the **endpoint** and credentials to connect. Credentials are stored server-side and are never shown back.
-- Use **Refresh schema** to cache the schema so the assistant can query that data source.
+Data-source endpoints, credentials and schema refresh are managed in the **Integrations** hub. The advanced registry contains legacy integration kinds; its presence does not authorize arbitrary BYO-MCP or frozen transports. Official presets remain gated, ClickHouse stdio remains frozen, and READ_WRITE metadata is proposal-only. No registration changes those gates.
 
-### Advanced
-The **Advanced — register custom integration** section registers custom egress/ingress integrations.
+Known tools for multiple gateways may share a skill; each attached agent must retain an effective grant in its own gateway. Unknown or ambiguous names and bindings with no effective grant are rejected before writing (400); unavailable validation returns 503. Instruction-only `[]` remains valid. Restricted agents cannot grant the bare vendor tools of frozen ClickHouse stdio: reattaching a skill cannot restore them. Keep `CLICKHOUSE_OFFICIAL_MCP` off; this catalog covers the gateway/Lambda path only.
 
-### Agent Space
-Choose which agents, skills, and integrations are active for the account, plus a **tool allowlist**, then save. The version increments on each save.
+## Availability and rollout
 
-## How to use
-1. Click **AI Operations > Custom Agents** in the sidebar
-2. In **New Agent**, enter name, description, and persona, pick a **gateway** and **agent type**, add routing keywords, and create
-3. Optionally create a skill in **New Skill** and select the **agent types** it applies to
-4. Toggle the new items on in the **Agents** / **Skills** lists below
-5. In **Data-source connectors**, enter an endpoint and credentials to connect, then **Refresh schema** to cache it
-6. In **Agent Space**, choose the active items and tool allowlist, then click **Save Agent Space**
-
-:::tip They start disabled
-New agents and skills are not enabled automatically. You must toggle them on in the lists and include them in the **Agent Space**, then save, for them to take effect in the assistant.
-:::
-
-:::info Credentials are not shown back
-Connector credentials are not displayed after saving. To change them, re-enter the values and click **Update**.
-:::
+- `GET /api/customization` returns HTTP **503** if its policy read fails. Retry after database availability is restored; an error is not an empty or unrestricted configuration.
+- An unavailable or disabled explicit custom chat pin returns an HTTP **200 SSE** guide without invoking a substitute. Automatic policy failure uses independent built-in routing with a visible, saved notice, including an Assistant fallback. Built-in pins remain usable in basic mode; product help bypasses custom selection when hybrid routing is enabled.
+- Apply `01M2K0BTQ4P4QHHFHR44ZK1YW6_agent_tool_policy_history.sql` through the reviewed standalone migration flow before the updated web reader, then deploy the agent runtime through the existing release process. Automatic Web migration rejects its ALTER/trigger statements; do not bypass that gate. Review existing names and saved tool lists. The migration backfills current bindings, including disabled restrictive skills; it cannot recover restrictions deleted before migration. Verify those older records manually.
+- An empty configured result is encoded fail-closed for both old and new exact-match runtimes. Source merge alone is not evidence that the migration or runtime has been deployed. AWS mutation, autonomy and connector write flags remain unchanged.
 
 ## Related pages
-- [Datasource Explorer](../observability/datasources) - Explore the observability data sources you connected
-- [AI Assistant](../overview/assistant) - Chat with the agents you configured
+
+- [Datasource Explorer](../observability/datasources) — explore connected observability sources
+- [AI Assistant](../overview/assistant) — use the configured assistant

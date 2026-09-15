@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const RUNTIME_ARN = 'arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:runtime/awsops_v2_agent-abcdefghij';
 const ssmSend = vi.fn();
@@ -43,6 +45,45 @@ function eventStreamOf(frames: string[], splitAt?: number) {
 }
 
 describe('agentcore', () => {
+  it.each([
+    [['list_users'], ['list_roles'], [], ['!awsops-deny-all!']],
+    [['list_users'], ['iam-mcp-target___list_users'], ['iam-mcp-target___list_users'], ['iam-mcp-target___list_users']],
+  ])('preserves resolved permissions through JSON and old/new Python filtering: %j', async (declared, cap, expected, wire) => {
+    vi.resetModules();
+    ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
+    acSend.mockResolvedValue({ response: streamOf('"ok"') });
+    const { resolveAgent } = await import('./agent-resolver');
+    const { invokeAgent } = await import('./agentcore');
+    const spec = resolveAgent('audit-agent', [{
+      id: 1, name: 'audit-agent', description: 'd', persona: 'Read only', gateway: 'security',
+      tier: 'custom', enabled: true, version: 1, routingKeywords: [],
+      skills: [{ name: 'audit-skill', instructions: 'Inspect', contentHash: 'h', ord: 0, toolAllowlist: declared }],
+    }], { accountId: 'self', enabledAgentIds: [1], enabledSkillIds: [], toolAllowlist: cap, version: 1 });
+    expect(spec.toolAllowlist).toEqual(expected);
+    await invokeAgent({ ...spec, messages: [{ role: 'user', content: 'inspect' }], sessionId: 's'.repeat(36) });
+    const payload = new TextDecoder().decode(acSend.mock.calls[0][0].input.payload);
+    expect(JSON.parse(payload).toolAllowlist).toEqual(wire);
+    // Execute only the production pure filter: never import the AWS runtime or contact AWS.
+    const script = `
+import ast,json,sys
+from pathlib import Path
+from types import SimpleNamespace
+tree=ast.parse(Path(sys.argv[1]).read_text())
+node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='_filter_tools')
+scope={}
+exec(compile(ast.Module(body=[node],type_ignores=[]),sys.argv[1],'exec'),scope)
+payload=json.load(sys.stdin)
+tools=[SimpleNamespace(tool_name=n) for n in ['iam-mcp-target___list_users','iam-mcp-target___list_roles','foreign___list_users']]
+allow=payload.get('toolAllowlist')
+# Pre-fix runtime semantics: falsy lists mean unrestricted, otherwise exact matching.
+legacy=tools if not allow else [t for t in tools if t.tool_name in set(allow)]
+print(json.dumps({'current': [t.tool_name for t in scope['_filter_tools'](tools,allow)],
+                  'legacy': [t.tool_name for t in legacy]}))
+`;
+    const filtered = execFileSync('python3', ['-B', '-c', script, fileURLToPath(new URL('../../agent/agent.py', import.meta.url))], { input: payload, encoding: 'utf8' });
+    expect(JSON.parse(filtered)).toEqual({ current: expected, legacy: expected });
+  });
+
   it('explicit empty disables discovery and absence retains the legacy parameter path', async () => {
     vi.resetModules();
     process.env.SSM_RUNTIME_ARN_PARAM = '';
@@ -279,4 +320,15 @@ describe('agentcore', () => {
     for await (const ev of invokeAgentStreamDetailed({ gateway: 'ops', messages: [{ role: 'user', content: 'x' }], sessionId: 's'.repeat(36) })) events.push(ev);
     expect(events).toEqual([{ delta: 'legacy answer' }]);
   });
+});
+
+
+it('serializes configured deny-all with a nonempty token safe for legacy runtimes', async () => {
+  vi.resetModules();
+  ssmSend.mockResolvedValue({ Parameter: { Value: RUNTIME_ARN } });
+  acSend.mockResolvedValue({ response: streamOf('"ok"') });
+  const { invokeAgent } = await import('./agentcore');
+  await invokeAgent({ gateway: 'security', messages: [{ role: 'user', content: 'hi' }], sessionId: 's'.repeat(36), toolAllowlist: [] });
+  const sent = JSON.parse(new TextDecoder().decode(acSend.mock.calls[0][0].input.payload));
+  expect(sent.toolAllowlist).toEqual(['!awsops-deny-all!']);
 });
