@@ -68,16 +68,25 @@ The shared query normalizer carries collection status into Explore. Marked parti
 
 The graph consumer retries only a typed HTTP503 admission failure:
 `collection.readStatus="unavailable"` together with `collection.readReason="busy"`.
-It keeps the same URL/scope and uses at most five requests, with waits of
-250/750/1500/5000 ms inside one ten-second abort budget. This client budget is separate
+It keeps the same URL/scope and uses at most five requests. Base waits are
+250/750/1500/2000 ms, respecting valid Retry-After seconds/dates as a floor and adding
+0–125 ms jitter inside one ten-second abort budget. Stop as busy if a wait plus the
+two-second read reserve cannot fit; five completed reads are not guaranteed. This client budget is separate
 from the server transaction limit. Caller cancellation stops pending waits and reads.
 Authentication/rejection responses and generic errors do not enter this recovery loop.
 Exhaustion stays unknown/read-unavailable; it does not certify empty collection or expose
 an error-body payload. Collection outcome and read availability remain separate.
+The budget also bounds a single stalled request. If no typed busy response was confirmed,
+expiry can produce a client-side `timeout` without any response or SQLSTATE. Once busy is confirmed,
+unfinished recovery keeps the last observed `busy` cause; it does not diagnose why the
+final request stalled. Inspect actual HTTP responses/server logs before attributing latency.
 
 The panel displays matching ordered attempted/saved source metadata once. Attempt and
 saved-source counts keep separate labels; differing status, reasons or clocks remain
 separate. Display comparison does not merge stored provenance or change publication.
+Positive panel-valid loss counts and unavailable infrastructure remain in a visible,
+localized Collection limitations list. Saved source entries retain status, scope, reasons,
+producer status and all six supplied source clocks even when the lists differ.
 
 These UI checks run from `web/` with mocked transport/state and require no PostgreSQL:
 
@@ -88,11 +97,12 @@ npx vitest run lib/graph-fetch.test.ts components/topology/GraphCollectionStatus
 ## Verification commands
 
 Use browser developer tools on an already-authorized page to distinguish HTTP503/busy,
-500/timeout, and successful partial reads.401/login redirects require sign-in;403 is access denial; other4xx responses require correcting the request. These are distinct from a read outage. The page preserves the safe envelope and offers
+500/timeout, client-side deadline expiry without a response, and successful partial reads.
+401/login redirects require sign-in;403 is access denial; other 4xx responses require correcting the request. These are distinct from a read outage. The page preserves the safe envelope and offers
 refresh; it does not display a bare status code or treat a failed read as empty collection.
 Timeout SQLSTATEs 57014/25P03/25P04/55P03 remain read failures.
 Application logs contain fixed `[graph-read] shed` or SQLSTATE diagnostics. In the local
-fixture below, run `npx vitest run lib/graph-read-postgres.test.ts lib/graph-fetch.test.ts`
+fixture below, run `npx vitest run lib/graph-read-postgres.test.ts`
 to exercise the 5220-node root-cap case, HTTP metadata projection and stalled reads with
 an available auth pool slot. These local timings are not an Aurora p99 benchmark;
 real-provider tests are separate operator work, and the conservative failure envelope
@@ -138,6 +148,8 @@ not live AWS or deployment acceptance.
 
 
 ## Operator action
+
+Deploy the matching web image to activate the recovery and collection-panel changes.
 
 Apply `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql` and
 `01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`,

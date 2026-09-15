@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { fetchGraph, GraphFetchError } from './graph-fetch';
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 it.each(['busy','timeout','query_failed'] as const)('retains safe %s read evidence without error-body data', async reason => {
   vi.stubGlobal('fetch', async () => Response.json({ nodes: [{ label: 'PRIVATE' }], message: 'PRIVATE',
     collection: { status: 'error', secret: 'PRIVATE', readReason: reason } }, { status: 503 }));
@@ -42,32 +42,117 @@ it('recognizes a followed login redirect without parsing or exposing its HTML', 
 });
 
 
-const busyResponse = () => Response.json({ collection: { readStatus: 'unavailable', readReason: 'busy' } }, { status: 503 });
+const busyResponse = (retryAfter = '1'): Response => ({
+  status: 503, ok: false, headers: new Headers({ 'Retry-After': retryAfter }),
+  json: async () => ({ collection: { readStatus: 'unavailable', readReason: 'busy' } }),
+  clone() { return this; },
+} as Response);
+function virtualTime() {
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+  vi.setSystemTime(new Date('2026-09-15T00:00:00Z'));
+  vi.spyOn(Math, 'random').mockReturnValue(0);
+}
 it('bounds persistent typed busy recovery to five requests without certifying empty data', async () => {
+  virtualTime();
   const fetch = vi.fn(async () => busyResponse()); vi.stubGlobal('fetch', fetch);
-  const result = await fetchGraph('/api/graph', new AbortController().signal);
+  const pending = fetchGraph('/api/graph', new AbortController().signal);
+  await vi.runAllTimersAsync();
+  const result = await pending;
   expect(result.collection).toMatchObject({ status: 'unknown', readStatus: 'unavailable', readReason: 'busy' });
   expect(fetch).toHaveBeenCalledTimes(5);
-}, 12000);
+  expect(vi.getTimerCount()).toBe(0);
+});
 it('cancels a pending busy retry when its scope is abandoned', async () => {
+  virtualTime();
   const controller = new AbortController(), fetch = vi.fn(async () => busyResponse()); vi.stubGlobal('fetch', fetch);
   const result = fetchGraph('/api/graph', controller.signal);
   const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' });
-  setTimeout(() => controller.abort(), 50);
+  await vi.advanceTimersByTimeAsync(50);
+  controller.abort();
   await rejected;
-  await new Promise(resolve => setTimeout(resolve, 300));
+  await vi.advanceTimersByTimeAsync(10000);
   expect(fetch).toHaveBeenCalledTimes(1);
+  expect(vi.getTimerCount()).toBe(0);
 });
 it('bounds a stuck request by the ten-second recovery deadline', async () => {
+  virtualTime();
   vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
     init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
   })));
-  const result = await fetchGraph('/api/graph', new AbortController().signal);
+  const pending = fetchGraph('/api/graph', new AbortController().signal);
+  await vi.advanceTimersByTimeAsync(10000);
+  const result = await pending;
   expect(result.collection).toMatchObject({ status: 'unknown', readStatus: 'unavailable', readReason: 'timeout' });
-}, 12000);
+  expect(vi.getTimerCount()).toBe(0);
+});
 it('recovers from typed busy and returns the actual subsequent graph', async () => {
+  virtualTime();
   const graph = { nodes: [{ id: 'one', kind: 'vpc', label: 'One' }], edges: [], captured_at: null };
   const fetch = vi.fn().mockResolvedValueOnce(busyResponse()).mockResolvedValueOnce(Response.json(graph)); vi.stubGlobal('fetch', fetch);
-  expect(await fetchGraph('/api/graph', new AbortController().signal)).toEqual(graph);
+  const pending = fetchGraph('/api/graph', new AbortController().signal);
+  await vi.runAllTimersAsync();
+  expect(await pending).toEqual(graph);
   expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it('preserves confirmed busy evidence when slow round trips exhaust recovery room', async () => {
+  virtualTime();
+  const start = Date.now();
+  const fetch = vi.fn(async () => { await new Promise(resolve => setTimeout(resolve, 1800)); return busyResponse(); });
+  vi.stubGlobal('fetch', fetch);
+  let finished = 0;
+  const pending = fetchGraph('/api/graph', new AbortController().signal).then(result => { finished = Date.now(); return result; });
+  await vi.runAllTimersAsync();
+  expect((await pending).collection?.readReason).toBe('busy');
+  expect(fetch.mock.calls.length).toBeLessThan(5);
+  expect(finished - start).toBeLessThanOrEqual(10000);
+});
+
+it('keeps the last confirmed busy cause when the following request stalls', async () => {
+  virtualTime();
+  const fetch = vi.fn().mockResolvedValueOnce(busyResponse()).mockImplementation(
+    (_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+    }));
+  vi.stubGlobal('fetch', fetch);
+  const pending = fetchGraph('/api/graph', new AbortController().signal);
+  await vi.runAllTimersAsync();
+  expect((await pending).collection).toMatchObject({ status: 'unknown', readReason: 'busy' });
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it.each(['seconds', 'date'])('honors Retry-After %s and bounded jitter before retrying', async kind => {
+  virtualTime();
+  vi.mocked(Math.random).mockReturnValue(.5);
+  const header = kind === 'seconds' ? '2' : new Date(Date.now() + 2000).toUTCString();
+  const graph = { nodes: [], edges: [], captured_at: null };
+  const fetch = vi.fn().mockResolvedValueOnce(busyResponse(header)).mockResolvedValueOnce(Response.json(graph));
+  vi.stubGlobal('fetch', fetch);
+  const pending = fetchGraph('/api/graph', new AbortController().signal);
+  await vi.advanceTimersByTimeAsync(1999);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(125);
+  expect(await pending).toEqual(graph);
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it('does not shorten a server delay that cannot fit the recovery budget', async () => {
+  virtualTime();
+  const fetch = vi.fn(async () => busyResponse('60')); vi.stubGlobal('fetch', fetch);
+  const pending = fetchGraph('/api/graph', new AbortController().signal);
+  await vi.runAllTimersAsync();
+  expect((await pending).collection?.readReason).toBe('busy');
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+it('consumes an error body once without cloning or exposing it', async () => {
+  const response = Response.json({ message: 'PRIVATE' }, { status: 503 });
+  const clone = vi.spyOn(response, 'clone'), json = vi.spyOn(response, 'json');
+  vi.stubGlobal('fetch', async () => response);
+  expect((await fetchGraph('/api/graph', new AbortController().signal)).collection?.readReason).toBe('query_failed');
+  expect(json).toHaveBeenCalledTimes(1);
+  expect(clone).not.toHaveBeenCalled();
+  expect(response.bodyUsed).toBe(true);
 });

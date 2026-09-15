@@ -68,21 +68,59 @@ for (const path of ['/topology/infra', '/topology/resource/vpc%3Aone', '/topolog
       await page.setViewportSize({ width, height: 900 });
       await page.addInitScript(() => localStorage.setItem('awsops-lang', 'en'));
       const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
-      let reads = 0;
+      let shed = true;
+      const statuses: number[] = [];
+      page.on('response', response => {
+        if (new URL(response.url()).pathname === '/api/graph') statuses.push(response.status());
+      });
       await page.route('**/api/**', route => {
         if (new URL(route.request().url()).pathname !== '/api/graph') return route.fulfill({ json: { accounts: [], rows: [], clusters: [] } });
-        if (++reads === 1) return route.fulfill({ status: 503, json: { message: 'PRIVATE',
+        if (shed) return route.fulfill({ status: 503, headers: { 'Retry-After': '1' }, json: { message: 'PRIVATE',
           collection: { status: 'unknown', stale: true, readStatus: 'unavailable', readReason: 'busy' } } });
         return route.fulfill({ json: { nodes: [{ id: 'vpc:one', kind: 'vpc', label: 'Example VPC' }], edges: [],
           captured_at: null, collection: { status: 'ok', stale: false, sources: [] } } });
       });
       await page.goto(path);
-      await expect(page.getByRole('alert').filter({ hasText: 'Graph read unavailable' })).toBeVisible();
+      await expect(page.getByRole('alert').filter({ hasText: 'Graph read unavailable' })).toBeVisible({ timeout: 12000 });
+      // An obsolete initial request can be cancelled while the page mounts.
+      // Count completed responses in the active recovery, not that obsolete request.
+      expect(statuses.length).toBeGreaterThan(1);
+      expect(statuses.length).toBeLessThanOrEqual(5);
+      expect(statuses.every(status => status === 503)).toBe(true);
       await expect(page.locator('body')).not.toContainText('PRIVATE');
       await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
+      shed = false;
       await page.getByRole('button', { name: 'Refresh', exact: true }).click();
       await expect(page.getByRole('status').filter({ hasText: 'Latest collection succeeded' })).toBeVisible();
       await expect(page.getByRole('alert').filter({ hasText: 'Graph read unavailable' })).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
+    test(`${path} recovers automatically after one busy read at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.addInitScript(() => localStorage.setItem('awsops-lang', 'en'));
+      let confirmedBusy = false;
+      const statuses: number[] = [];
+      page.on('response', response => {
+        if (new URL(response.url()).pathname === '/api/graph') {
+          statuses.push(response.status());
+          if (response.status() === 503) confirmedBusy = true;
+        }
+      });
+      const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+      await page.route('**/api/**', route => {
+        if (new URL(route.request().url()).pathname !== '/api/graph') return route.fulfill({ json: { accounts: [], rows: [], clusters: [] } });
+        if (!confirmedBusy) return route.fulfill({ status: 503, headers: { 'Retry-After': '1' },
+          json: { message: 'PRIVATE', collection: { status: 'unknown', stale: true, readStatus: 'unavailable', readReason: 'busy' } } });
+        return route.fulfill({ json: { nodes: [{ id: 'vpc:one', kind: 'vpc', label: 'Recovered fixture' }], edges: [],
+          captured_at: null, collection: { status: 'ok', stale: false, sources: [] } } });
+      });
+      await page.goto(path);
+      await expect(page.getByRole('status').filter({ hasText: 'Latest collection succeeded' })).toBeVisible();
+      await expect(page.locator('.react-flow')).toContainText('Recovered fixture');
+      expect(statuses).toEqual([503, 200]);
+      await expect(page.getByRole('alert').filter({ hasText: 'Graph read unavailable' })).toHaveCount(0);
+      await expect(page.locator('body')).not.toContainText('PRIVATE');
       expect(errors).toEqual([]);
     });
   }
@@ -94,16 +132,17 @@ for (const path of ['/topology/infra', '/topology/resource/vpc%3Aone', '/topolog
     test(`${path} clears stale graph and offers sign-in after expiry at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });
       await page.addInitScript(() => localStorage.setItem('awsops-lang', 'en'));
-      let reads = 0;
+      let expired = false;
       await page.route('**/api/**', route => {
         if (new URL(route.request().url()).pathname !== '/api/graph') return route.fulfill({ json: { accounts: [], rows: [] } });
-        if (++reads > 1) return route.fulfill({ status: 401, json: { message: 'PRIVATE' } });
+        if (expired) return route.fulfill({ status: 401, json: { message: 'PRIVATE' } });
         return route.fulfill({ json: { nodes: [{ id: 'vpc:one', kind: 'vpc', label: 'Visible fixture' }], edges: [],
           captured_at: null, collection: { status: 'ok', stale: false, sources: [] } } });
       });
       await page.goto(path);
       await expect(page.locator('.react-flow')).toContainText('Visible fixture');
       const refresh = page.getByRole('button', { name: 'Refresh', exact: true });
+      expired = true;
       await refresh.click();
       const error = page.getByRole('alert').filter({ hasText: 'Session expired' });
       await expect(error).toBeVisible();

@@ -259,6 +259,9 @@ Trace `sources[].windowStartMs/windowEndMs` identify the source query window, se
 from top-level `attempted_at/captured_at` and optional source capture/last-success clocks.
 Positive `nodeDrops/edgeDrops/orphanSpans/invalidSpans/unresolvedMessaging` and
 `infraUnavailable` remain visible for older persisted envelopes as well as newer producer flags.
+The panel groups positive safe-integer losses and unavailable infrastructure in a localized
+**Collection limitations** list outside collapsed source details. This is a display
+predicate; it does not redefine the server projector's general numeric contract.
 Only node/edge drops or explicit truncation flags imply a processing limit; malformed spans
 and unresolved parent/link/messaging evidence are distinct partial-result causes. Losses alone do not prove retention:
 `retainedPrevious` is required for that claim. Source-detail totals count displayed entries;
@@ -313,10 +316,19 @@ All three graph pages render collection/read errors, parse safe non-2xx envelope
 
 The active `fetchGraph` consumer retries only HTTP503 responses whose collection metadata
 explicitly has `readStatus: "unavailable"` and `readReason: "busy"`. It makes at most five
-requests to the same URL, with 250/750/1500/5000 ms waits inside one ten-second abort budget.
-Authentication, other4xx, query failures and untyped service errors are not retried.
+requests to the same URL inside one ten-second abort budget. Base waits are
+250/750/1500/2000 ms, with a valid `Retry-After` (seconds or date) as a floor and 0–125 ms
+jitter. If a wait plus a two-second read reserve cannot fit, recovery stops as busy;
+five completed requests are not guaranteed. Authentication, other 4xx, query failures
+and untyped service errors are not retried.
 Cancellation propagates through pending waits/reads. Exhausted recovery returns unknown,
 read-unavailable metadata; it never certifies empty collection or exposes an error-body payload.
+The budget also covers a single stalled request. Without a confirmed busy response, its
+expiry can synthesize `readReason: "timeout"` locally without any HTTP response or SQLSTATE.
+After confirmed admission shedding, an unfinished recovery retains `busy` as the last
+observed server cause, not a diagnosis of the final stalled request. The value alone does
+not identify its origin; inspect completed response bodies and server logs.
+Deploy the updated web image for both recovery and collection-panel changes.
 
 HTTP collection details use the same bounded key/status/reason vocabulary as the SQL-reader view: raw/private keys and injected read/coverage fields are excluded. Source arrays are capped at 128 and reason lists at 16; metadataTruncated discloses omitted/malformed metadata separately from graph row truncation. Safe null source clocks remain unknown for compatibility.
 
