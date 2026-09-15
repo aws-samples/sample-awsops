@@ -354,19 +354,17 @@ resource "aws_lambda_function" "inv_sync" {
   handler          = "sync_lambda.lambda_handler"
   filename         = data.archive_file.inv_sync_src[0].output_path
   source_code_hash = data.archive_file.inv_sync_src[0].output_base64sha256
-  # 420s, split by sync_lambda.py: hydrate-carrying queries (iam_role.attached_policy_arns ≈
-  # one ListAttachedRolePolicies per role, and the aggregator makes that the role total across
-  # ALL connected accounts) get ≤180s of statement_timeout (≈360 aggregate hydrates at the
-  # shared 2 req/s awsops_global limiter when idle — less under concurrent type syncs), a
-  # hydrate-free fallback retry gets ≤90s (the base inventory never regresses to a whole-type
-  # failure), leaving 150s of static slack for the post-query Aurora work — of which
-  # AURORA_RESERVE_S=120s is the dynamic clamp's hard reserve (the remaining 30s is extra
-  # slack). EVERY Steampipe query — the main/fallback queries AND the prune-phase
-  # _account_reachable probes (≤30s each) — is clamped to the invocation's remaining time
-  # minus that reserve, refusing up-front rather than racing the Lambda wall and stranding
-  # the ledger at 'running'. Fleets beyond the hydrate budget see the inventory_sync_hydrate_fallback log
-  # event, whose remedy is cause-specific: budget timeout → limiter fill_rate (ADR-021 knobs,
-  # 0.1–20); SCP/IAM denial → grant iam:ListAttachedRolePolicies.
+  # 420s Lambda wall: primary/fallback statement caps are 180s/90s, and each socket
+  # timeout adds 15s. The primary IAM query lists both instance profiles and attached
+  # policies per role and reads GetRole-backed fields. The fallback omits only attached
+  # policies; its remaining hydrates can fail too. At refill 2/burst 4, 180s supplies
+  # 364 limiter admissions, not 364 complete roles. See the quota/staleness runbook
+  # for cold lower bounds and why observed fast reads do not establish cold capacity.
+  # AURORA_RESERVE_S=120 clamps every query against the remaining Lambda time;
+  # reachability probes have an additional 30s cap. Both query failures preserve
+  # last-good rows; a successful fallback still reports unknown policy attributes.
+  # Remedy is cause-specific: reviewed refill tuning for capacity, permission review
+  # for a confirmed iam:ListAttachedRolePolicies denial. Neither guarantees success.
   timeout                        = 420
   memory_size                    = 512
   layers                         = [aws_lambda_layer_version.inv_pg8000[0].arn]
