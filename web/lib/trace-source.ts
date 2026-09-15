@@ -9,7 +9,7 @@ export interface SourceRead<T> {
   reasons: string[];
   windowStartMs: number;
   windowEndMs: number;
-  /** Unproven empty reads and lost children cannot authorize replacement. */
+  /** Missing data/unproven empty reads retain the prior snapshot despite useful siblings. */
   canSweep?: false;
 }
 
@@ -63,7 +63,7 @@ export interface ServiceGraphCall {
 // Never use backend exceptions, status messages, SQL, previews or credentials as reasons.
 type Reason = 'missing_configuration' | 'configuration_failed' | 'query_failed' |
   'malformed_payload' | 'malformed_rows' | 'payload_truncated' | 'trace_fetch_failed' |
-  'cap_reached' | 'invalid_request' | 'incomplete_collection' | 'empty_not_confirmed';
+  'cap_reached' | 'invalid_request' | 'incomplete_collection' | 'empty_not_confirmed' | 'count_not_confirmed';
 type ReadWindow = Pick<SourceRead<never>, 'windowStartMs' | 'windowEndMs'>;
 type Obj = Record<string, unknown>;
 
@@ -89,11 +89,20 @@ function readResult<T>(
   status?: SourceRead<T>['status'],
 ): SourceRead<T> {
   const unique = [...new Set(reasons)];
+  const boundedReason = (r: Reason) => [
+    'cap_reached', 'payload_truncated', 'incomplete_collection', 'empty_not_confirmed', 'count_not_confirmed',
+  ].includes(r);
+  const outcome = status ?? (unique.length === 0 ? 'ok' :
+    items.length > 0 || unique.every(boundedReason) ? 'partial' : 'error');
+  // Bounds and completion caveats do not freeze valid nonempty snapshots. Missing or
+  // malformed data still forbids replacement; Tempo adds its mixed-child guard below.
+  const lostData = unique.some(r => !boundedReason(r));
+  const retain = lostData || outcome === 'error' || outcome === 'unavailable'
+    || (outcome !== 'ok' && items.length === 0);
   return {
     items, sourceId, ...window, reasons: unique,
-    ...(items.length === 0 && (unique.length || (status && status !== 'ok')) ? { canSweep: false as const } : {}),
-    status: status ?? (unique.length === 0 ? 'ok' :
-      items.length > 0 || unique.every((r) => r === 'cap_reached' || r === 'incomplete_collection' || r === 'empty_not_confirmed') ? 'partial' : 'error'),
+    ...(retain ? { canSweep: false as const } : {}),
+    status: outcome,
   };
 }
 function envelopeReasons(value: unknown): Reason[] {
@@ -103,8 +112,14 @@ function envelopeReasons(value: unknown): Reason[] {
   if (r?.truncated === true) reasons.push('payload_truncated');
   if (r && Object.prototype.hasOwnProperty.call(r, 'collectionStatus')) {
     if (r.collectionStatus === 'error') reasons.push('query_failed');
-    else if (r.collectionStatus === 'partial' || r.collectionStatus === 'unknown') reasons.push('incomplete_collection');
+    else if (r.collectionStatus === 'partial') reasons.push('incomplete_collection');
+    else if (r.collectionStatus === 'unknown') reasons.push('incomplete_collection');
     else if (r.collectionStatus !== 'ok' && r.collectionStatus !== 'empty') reasons.push('malformed_payload');
+  }
+  if (r?.collectionReason === 'count_not_confirmed') {
+    const generic = reasons.indexOf('incomplete_collection');
+    if (r.collectionStatus === 'unknown' && generic !== -1) reasons.splice(generic, 1);
+    reasons.push('count_not_confirmed');
   }
   return reasons;
 }

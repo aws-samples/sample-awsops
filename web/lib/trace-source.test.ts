@@ -1,4 +1,6 @@
+import traceBudgetContract from '../../agent/fixtures/tempo-trace-budget-contract.json';
 import tempoContracts from '../../agent/fixtures/tempo-topology-contract.json';
+import queryContracts from '../../agent/fixtures/query-topology-contract.json';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const getDefaultDatasource = vi.fn();
@@ -567,6 +569,54 @@ describe('SourceRead provenance and bounds', () => {
     expect(await read()).toMatchObject({ items: [], status: 'partial', canSweep: false, reasons: ['empty_not_confirmed'] });
   });
 
+  it.each(factories)('%s reports recognized unknown completion softly', async (kind, read, payload) => {
+    configure(kind);
+    invokeMcpLambdaTool.mockResolvedValue({ ...payload, collectionStatus: 'unknown' });
+    expect(await read()).toMatchObject({
+      items: [], status: 'partial', canSweep: false, reasons: ['incomplete_collection'],
+    });
+  });
+
+  it.each(factories)('%s retains an explicitly truncated empty result as partial', async (kind, read, payload) => {
+    configure(kind);
+    invokeMcpLambdaTool.mockResolvedValue({ ...payload, truncated: true });
+    expect(await read()).toMatchObject({
+      items: [], status: 'partial', canSweep: false, reasons: ['payload_truncated'],
+    });
+  });
+
+  it.each([
+    { collectionStatus: 'partial' }, { collectionStatus: 'unknown' },
+    { collectionStatus: 'ok', truncated: true },
+  ])('keeps valid nonempty bounded metrics publishable: %j', async marker => {
+    configure('prometheus');
+    invokeMcpLambdaTool.mockResolvedValue({ resultType: 'vector', ...marker,
+      result: [{ metric: { client: 'api', server: 'db' }, value: [0, '7'] }] });
+    const read = await new MetricsCallsSource(7, 'prometheus', 'fixture').calls(30, END_MS);
+    expect(read.status).toBe('partial');
+    expect(read.items).toHaveLength(1);
+    expect(read.items[0].count).toBe(7);
+    expect(read.canSweep).not.toBe(false);
+  });
+
+  it('requires outer or nested completion evidence for an empty ClickHouse result', async () => {
+    configure('clickhouse');
+    const source = new ClickHouseOtelTraceSource();
+    for (const payload of [[], { result: { rows: [] } }]) {
+      invokeMcpLambdaTool.mockResolvedValue(payload);
+      expect(await source.recentSpans(30, 10, END_MS))
+        .toMatchObject({ status: 'partial', reasons: ['empty_not_confirmed'] });
+    }
+    for (const payload of [
+      { collectionStatus: 'empty', result: { rows: [] } },
+      { result: { collectionStatus: 'empty', rows: [] } },
+    ]) {
+      invokeMcpLambdaTool.mockResolvedValue(payload);
+      expect(await source.recentSpans(30, 10, END_MS))
+        .toMatchObject({ status: 'ok', reasons: [] });
+    }
+  });
+
   it.each(factories)('%s never turns errors/malformed payloads/truncation into valid empty data', async (kind, read) => {
     configure(kind);
     for (const payload of [null, {}, { error: 'private-token' }, { truncated: true, preview: 'private-token' }]) {
@@ -598,7 +648,6 @@ describe('SourceRead provenance and bounds', () => {
       windowStartMs: END_MS - 1_800_000, windowEndMs: END_MS,
       items: [{ sourceId: 'fake:default' }],
     });
-    expect(result.canSweep).toBeUndefined();
     expect(seeded[0].sourceId).toBeUndefined();
     expect(await new FakeTraceSource(seeded, false).recentSpans(30, 10, END_MS))
       .toMatchObject({ items: [], status: 'unavailable' });
@@ -859,15 +908,47 @@ describe('typed producer collection status', () => {
     invokeMcpLambdaTool.mockResolvedValue(fixture.body);
     const read = await new TempoTraceSource(7).recentSpans(30, 1000);
     expect(read.status).toBe(fixture.readStatus);
+    if ('collectionReason' in fixture.body) expect(read.reasons).toContain('count_not_confirmed');
     expect(read.items).toEqual([]);
     expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(read)).not.toContain('private-token');
   });
+  it.each(queryContracts.flatMap(fixture => fixture.kinds.map(kind => ({ ...fixture, kind }))))(
+    '$kind producer-bound $name keeps its collection outcome', async fixture => {
+      getDatasource.mockResolvedValue({ id: 7, kind: fixture.kind });
+      invokeMcpLambdaTool.mockResolvedValue(fixture.body);
+      expect(['clickhouse', 'prometheus', 'mimir']).toContain(fixture.kind);
+      const read = fixture.kind === 'clickhouse'
+        ? await new ClickHouseOtelTraceSource(7).recentSpans(30, 1000)
+        : await new MetricsCallsSource(7, fixture.kind as 'prometheus' | 'mimir', 'fixture').calls(30);
+      expect(read.status).toBe(fixture.readStatus);
+    if ('collectionReason' in fixture.body) expect(read.reasons).toContain('count_not_confirmed');
+      expect(read.items).toEqual([]);
+      expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(read)).not.toContain('private-token');
+    });
   it.each(['prometheus', 'mimir'] as const)('%s metric collection markers restrict empty reads', async kind => {
     getDatasource.mockResolvedValue({ id: 7, kind });
     for (const [collectionStatus, expected] of [['empty', 'ok'], ['partial', 'partial'], ['unknown', 'partial']] as const) {
       invokeMcpLambdaTool.mockResolvedValue({ resultType: 'vector', result: [], truncated: false, collectionStatus });
       expect((await new MetricsCallsSource(7, kind, 'fixture').calls(30)).status).toBe(expected);
     }
+  });
+});
+
+
+describe('oversized Tempo producer wire contract', () => {
+  it('keeps projected spans usable without claiming full trace coverage', async () => {
+    getDatasource.mockResolvedValue({ id: 7, kind: 'tempo' });
+    resolveConnConfig.mockResolvedValue({ endpoint: 'http://fixture' });
+    invokeMcpLambdaTool.mockReset()
+      .mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: traceBudgetContract.traceId }] })
+      .mockResolvedValueOnce(traceBudgetContract.expected);
+    const read = await new TempoTraceSource(7).recentSpans(30, 1000, traceBudgetContract.endMs);
+    expect(read).toMatchObject({ status: 'partial', reasons: ['payload_truncated'] });
+    expect(read.canSweep).toBeUndefined();
+    expect(read.items).toHaveLength(1);
+    expect(read.items[0]).toMatchObject({ service: 'bounded-api', accountId: '123456789012', environment: 'test',
+      spanId: '0000000000000001', startMs: traceBudgetContract.endMs - 1000 });
   });
 });

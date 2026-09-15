@@ -61,17 +61,32 @@ After deployment and refresh, regenerate “HTTP 500 응답 스팬” and verify
 
 ### Search result evidence
 
-`tempo_search` pins an omitted limit to **20**. Reaching the requested limit or trimming output beyond 50 traces is partial. Affirmative `ok`/`empty` requires observed integer `completedJobs == totalJobs > 0`; absent/invalid counters or 0/0 remain unknown, unfinished jobs partial. Returned traces and metrics remain available; missing completion metadata is uncertainty, not an API failure. This is the repository's conservative completion contract, not live acceptance evidence for any Tempo deployment.
+`tempo_search` pins an omitted limit to **20**. Reaching the requested limit or trimming output beyond 50 traces is partial. Affirmative `ok`/`empty` requires observed integer `completedJobs == totalJobs > 0`. Missing, invalid or zero-job counts carry `collectionReason: "count_not_confirmed"`; unfinished observed jobs remain partial. Useful nonempty observations still form partial graphs. Unconfirmed empty results remain retained, not certified empty. This is a response-shape capability boundary, not a claim that every Tempo topology supplies job counters.
+
+| Observed response | Supported evidence behavior |
+|---|---|
+| Clean search and positive completed/total job pair | `ok` or confirmed `empty`, unless a result cap is reached |
+| Missing/invalid counts or no jobs | `count_not_confirmed`; useful rows remain partial, empty remains unconfirmed |
+| Observed unfinished jobs or bounded output | Partial evidence; never complete-empty proof |
+| Valid oversized OTLP child | Bounded structured span projection with `truncated: true` |
+| Failed/malformed child with no usable representation | Retain previous graph, including affected mixed reads |
+
+An oversized `tempo_get_trace` response keeps a structured OTLP projection instead of only a text prefix. The existing 1,000,000-byte limit is unchanged. The projection keeps span IDs/times/kinds/status codes, recognized resource and peer/messaging identity attributes, and at most 64 links per span. Events, status messages, unrecognized attributes and long optional span names are omitted. Valid scoped identity values are not shortened. Payloads under the limit remain unchanged; structurally malformed/error payloads do not become projected successes. This lets valid large children and healthy siblings refresh a partial graph without manufacturing missing data.
+
 
 Local regression checks, from the repository root:
 
 ```bash
-(cd agent/lambda && python3 -m pytest test_tempo_mcp.py test_graph_source_producer_contract.py -q)
+(cd agent/lambda && python3 -m pytest test_tempo_mcp.py test_tempo_trace_budget.py test_graph_source_producer_contract.py -q)
 (cd web && npx vitest run lib/tempo-schema.test.ts lib/datasource-schema.test.ts lib/datasource-querygen.test.ts app/api/datasources/generate/route.test.ts app/api/integrations/schema/route.test.ts)
 python3 -m pytest scripts/v2/workers/test_datasource_index.py scripts/v2/workers/test_graph_catalog.py scripts/v2/workers/test_card_catalog.py scripts/v2/workers/diagnosis/test_signal_catalog.py -q
 ```
 
 ## 조치 / Action
+
+### Search completion and publication
+
+The pinned upstream [SearchMetrics schema](https://github.com/grafana/tempo/blob/f227ccdf89c1ef2b059520b678c1f639aef7cc09/pkg/tempopb/tempo.proto#L170) declares job counters, while [recent-search aggregation](https://github.com/grafana/tempo/blob/f227ccdf89c1ef2b059520b678c1f639aef7cc09/modules/querier/querier.go#L892) starts with empty metrics and merges its responders. Positive job counts are therefore not assumed for all response paths. These are static source observations, not verification of a deployed provider. Inspect the returned marker and optional schema version through the existing approved read path; absence of counter proof is uncertainty, not an API failure.
 
 확인된 빈 사용자 정의 속성 캐시는 **60초 TTL**을 사용한다. 만료 후 다음 생성 요청에서 백그라운드 재수집 대상이 되며, 60초마다 자동 조회하는 타이머는 아니다. 불완전한 빈 결과는 이 TTL을 기다리지 않고 재수집 대상이 된다. Tempo의 백그라운드 재수집은 동일 인스턴스당 1분의 재시도 간격을 적용해 요청마다 반복 호출하지 않으며, 정상적인 빈 관측의 짧은 TTL도 유지한다. 아래 관리자 POST는 즉시 재수집하므로 TTL 만료를 기다릴 필요가 없다.
 
@@ -96,7 +111,7 @@ make deploy
 make agentcore
 ```
 
-`make deploy` ships the web app. **`make agentcore` is required for this change** because it also updates Tempo tool descriptions (including the search default, limits and collection-status guidance) in `scripts/v2/agentcore/catalog.py`. The provisioner fingerprints tool names, descriptions, and input schemas and reconciles the descriptions on existing gateway targets. Neither command replaces Terraform's connector Lambda code deployment. Before running the provisioner, verify the deployment identity's `bedrock-agentcore:GetGateway` grant as described in [Provisioner reconciliation](../reference/05-agentcore.md#provisioner-reconciliation). This tool-description change adds no feature flag.
+`make deploy` ships the web app. **`make agentcore` is required for this change** because it also updates the affected Tempo, ClickHouse, Prometheus and Mimir tool descriptions (including the search default, limits and collection-status guidance) in `scripts/v2/agentcore/catalog.py`. The provisioner fingerprints tool names, descriptions, and input schemas and reconciles the descriptions on existing gateway targets. Neither command replaces Terraform's connector Lambda code deployment. Before running the provisioner, verify the deployment identity's `bedrock-agentcore:GetGateway` grant as described in [Provisioner reconciliation](../reference/05-agentcore.md#provisioner-reconciliation). This tool-description change adds no feature flag.
 
 배포 후 AWSops에 **관리자로 로그인한 탭**에서 개발자 도구의 Console을 열고 아래 블록 전체를 실행한다. 같은 출처의 세션 쿠키로만 요청하며 토큰·도메인을 붙여 넣지 않는다. 명령은 구성된 Tempo 인스턴스와 기존 캐시 요약을 먼저 출력한다. 프롬프트에 대상 인스턴스의 양의 정수 ID를 입력하면 `POST /api/integrations/schema`에 **`{ id }`**를 보내고, GET으로 다시 읽어 요약·`fetched_at`을 비교한다. 취소하면 POST하지 않는다.
 
@@ -195,6 +210,10 @@ If the recent window remains empty, repeated refreshes cannot recover historical
 ## 관련 파일 / Related files
 
 - `agent/lambda/tempo_mcp.py`
+- `agent/lambda/test_tempo_trace_budget.py`
+- `agent/lambda/test_graph_source_producer_contract.py`
+- `agent/fixtures/tempo-trace-budget-contract.json`
+- `agent/fixtures/tempo-topology-contract.json`
 - `web/lib/tempo-schema.ts`
 - `web/lib/tempo-schema.test.ts`
 - `web/lib/datasource-schema.ts`

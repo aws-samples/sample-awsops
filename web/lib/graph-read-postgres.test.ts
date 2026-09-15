@@ -1,3 +1,4 @@
+import traceBudgetContract from '../../agent/fixtures/tempo-trace-budget-contract.json';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Pool } from 'pg';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -124,6 +125,65 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
       expect((await pool.query("SELECT id FROM topology_nodes WHERE class='trace' ORDER BY id")).rows).toEqual(nodes);
     });
 
+  it.each([
+    { collectionStatus: 'partial' }, { collectionStatus: 'unknown' },
+    { collectionStatus: 'ok', truncated: true },
+  ])('publishes and refreshes a valid bounded snapshot with %j', async marker => {
+    const source = new MetricsCallsSource(9, 'prometheus', 'fixture');
+    let previousCapture: Date | undefined;
+    const start = Date.now();
+    for (let round = 0; round < 2; round++) {
+      producer.invoke.mockReset().mockResolvedValue({
+        resultType: 'vector', ...marker,
+        result: [{ metric: { client: `bounded-${round}`, server: 'db' }, value: [0, '7'] }],
+      });
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(start + round * 1000);
+      try { await rebuildTraceGraph(pool, [], undefined, [source]); }
+      finally { clock.mockRestore(); }
+      const state = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
+      const nodes = (await pool.query("SELECT label FROM topology_nodes WHERE class='trace'")).rows;
+      expect(state.status).toBe('partial');
+      expect(state.details.retainedPrevious).toBe(false);
+      expect(state.details.sources[0]).toMatchObject({ status: 'partial', itemCount: 1 });
+      expect(nodes).toHaveLength(2);
+      expect(nodes.map(row => row.label)).toContain(`bounded-${round}`);
+      expect(nodes.map(row => row.label)).not.toContain(`bounded-${1 - round}`);
+      if (previousCapture) expect(state.captured_at.getTime()).toBeGreaterThan(previousCapture.getTime());
+      previousCapture = state.captured_at;
+    }
+  });
+
+  it('refreshes a busy Tempo snapshot at the real 20-trace request cap', async () => {
+    const source = new TempoTraceSource(7);
+    const at = Date.now();
+    for (let round = 0; round < 2; round++) {
+      const end = at + round * 1000;
+      producer.invoke.mockReset().mockImplementation(async request => {
+        if (request.tool === 'tempo_search') {
+          expect(request.args.limit).toBe(20);
+          return { collectionStatus: 'partial',
+            traces: Array.from({ length: 20 }, (_, i) => ({ traceID: (i + 1).toString(16) })) };
+        }
+        return { batches: [{ resource: { attributes: [
+          { key: 'service.name', value: { stringValue: `busy-${round}` } },
+        ] }, scopeSpans: [{ spans: [{ traceId: request.args.trace_id, spanId: '0000000000000001',
+          kind: 1, startTimeUnixNano: String(BigInt(end - 1000) * 1_000_000n),
+          endTimeUnixNano: String(BigInt(end - 500) * 1_000_000n) }] }] }] };
+      });
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(end);
+      try { await rebuildTraceGraph(pool, [source]); }
+      finally { clock.mockRestore(); }
+      const state = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
+      expect(state).toMatchObject({ status: 'partial', captured_at: new Date(end) });
+      expect(state.details.retainedPrevious).toBe(false);
+      expect(state.details.sources[0]).toMatchObject({ itemCount: 20 });
+      expect(state.details.sources[0].reasons).toContain('cap_reached');
+      expect((await pool.query("SELECT label FROM topology_nodes WHERE class='trace'")).rows)
+        .toEqual([expect.objectContaining({ label: `busy-${round}` })]);
+      expect(producer.invoke).toHaveBeenCalledTimes(21);
+    }
+  });
+
   it.each(['tempo-cap', 'clickhouse-cap', 'metrics-warning', 'tempo-unknown'] as const)(
     'publishes fresh partial %s data for both first and subsequent reads', async mode => {
       for (const seeded of [false, true]) {
@@ -165,6 +225,30 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
       }
     });
 
+  it('publishes bounded oversized child spans instead of starving sibling observations', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(traceBudgetContract.endMs - 1000);
+    try {
+      await rebuildTraceGraph(pool, [], undefined, [{ available: async () => true,
+        calls: async (mins, endMs = Date.now()) => ({ sourceId: 'metrics:saved',
+          items: [{ client: 'saved', server: 'saved-db', count: 1 }], status: 'ok', reasons: [],
+          windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }) }]);
+      clock.mockReturnValue(traceBudgetContract.endMs);
+      producer.invoke.mockReset()
+        .mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: traceBudgetContract.traceId }] })
+        .mockResolvedValueOnce(traceBudgetContract.expected);
+      await rebuildTraceGraph(pool, [new TempoTraceSource(7)], undefined, [{ available: async () => true,
+        calls: async (mins, endMs = Date.now()) => ({ sourceId: 'metrics:current',
+          items: [{ client: 'current', server: 'current-db', count: 3 }], status: 'ok', reasons: [],
+          windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }) }]);
+      const state = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
+      expect(state.status).toBe('partial');
+      expect(state.captured_at.getTime()).toBe(traceBudgetContract.endMs);
+      expect(state.details.retainedPrevious).not.toBe(true);
+      const labels = (await pool.query("SELECT label FROM topology_nodes WHERE class='trace'")).rows.map(row => row.label);
+      expect(labels).toEqual(expect.arrayContaining(['bounded-api', 'current']));
+    } finally { clock.mockRestore(); }
+  });
+
   it.each([...tempoContracts, { name: 'legacy unmarked empty', body: { traces: [] }, readStatus: 'partial' },
     { name: 'completed search but empty child trace', body: { collectionStatus: 'ok', traces: [{ traceID: '1' }] },
       readStatus: 'partial' }])(
@@ -183,6 +267,10 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
       try { await rebuildTraceGraph(pool, [source]); }
       finally { clock.mockRestore(); }
       expect((await observed.mock.results[0].value).status).toBe(fixture.readStatus);
+      if ('collectionReason' in fixture.body) {
+        const details = (await pool.query("SELECT details FROM sql_reader.topology_graph_state WHERE class='trace'")).rows[0].details;
+        expect(details.sources[0].reasons).toContain('count_not_confirmed');
+      }
       const after = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
       const count = (await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount;
       if (fixture.readStatus === 'ok') {
