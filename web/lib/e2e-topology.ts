@@ -425,6 +425,27 @@ export function matchesE2eQuery(node: E2eNode, query: string): boolean {
 const bound = (value: number | undefined, fallback: number): number =>
   value === undefined || !Number.isFinite(value) ? fallback : Math.max(0, Math.floor(value));
 
+const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+
+/** Measured connections only: DATA_TRANSFERRED first, then source-order metric/unit
+ * groups. Compare finite nonnegative values only within a group; stable IDs break ties. */
+export function rankE2eConnections(nodes: readonly E2eNode[]): E2eNode[] {
+  const groups = new Map<string, number>();
+  const measured = nodes.flatMap(node => {
+    const flow = record(node.meta.flow), value = flow.value;
+    const metric = text(node.meta.metric).trim(), unit = (text(node.meta.unit) || text(flow.unit)).trim();
+    if (node.kind !== 'connection' || node.layer !== 'network' || !metric || !unit
+      || !flow.local || typeof flow.local !== 'object' || Array.isArray(flow.local)
+      || !flow.remote || typeof flow.remote !== 'object' || Array.isArray(flow.remote)
+      || typeof value !== 'number' || !Number.isFinite(value) || value < 0) return [];
+    const group = key(metric, unit);
+    if (!groups.has(group)) groups.set(group, groups.size);
+    return [{ node, metric, group: groups.get(group)!, value }];
+  });
+  return measured.sort((a, b) => Number(b.metric === 'DATA_TRANSFERRED') - Number(a.metric === 'DATA_TRANSFERRED')
+    || a.group - b.group || b.value - a.value || compare(a.node.id, b.node.id)).map(item => item.node);
+}
+
 /** Enabled relations keep their endpoints, including cross-layer identity/context evidence. */
 export function filterE2eGraph(graph: E2eGraph, evidence?: E2eEvidence[]): Pick<E2eGraph, 'nodes' | 'edges'> {
   const present = new Set(graph.nodes.map(node => node.id));
@@ -550,31 +571,28 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
     admittedGroups.add(connection);
   };
   const networkRank = (id: string) => byId.get(id)?.kind === 'connection' ? 0 : groupOf.has(id) ? 1 : 2;
-  const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
-  matches.sort((a, b) => networkRank(a) - networkRank(b) || compare(a, b));
+  const ranks = new Map(rankE2eConnections(filtered.nodes).map((node, i) => [node.id, i]));
+  const ranked = (id: string) => ranks.get(groupOf.get(id) ?? id) ?? ranks.size;
+  matches.sort((a, b) => networkRank(a) - networkRank(b) || ranked(a) - ranked(b) || compare(a, b));
   if (focusId) add(focusId);
-  if (new Set([...(focusId && selected.has(focusId) ? [focusId] : []), ...matches]).size <= maxNodes) {
-    // When all explicit hits fit, none may be displaced by a traversal neighbor.
-    for (const id of matches) add(id);
-    for (const edge of selectedEdges) {
-      if (edge.evidence === 'network' && visibleIds.has(edge.source) && visibleIds.has(edge.target)) {
-        reservedNetworkEdges.add(edge.id);
-      }
-    }
-  } else {
-    // An overfull query must still show complete matching observations before
-    // spending the budget on hundreds of matching configuration records.
-    for (const id of matches) {
-      const connection = groupOf.get(id);
-      if (connection) addGroup(connection);
-      add(id);
-    }
+  const explicitFits = new Set([...(focusId && selected.has(focusId) ? [focusId] : []), ...matches]).size <= maxNodes;
+  // Preserve fitting non-network hits, then admit whole matching observations.
+  if (explicitFits) for (const id of matches) if (!groupOf.has(id)) add(id);
+  if (focusId && groupOf.has(focusId)) addGroup(groupOf.get(focusId)!);
+  for (const id of matches) {
+    const connection = groupOf.get(id);
+    if (connection) addGroup(connection);
+    else add(id);
   }
+  // Tiny budgets may fit explicit hits but no complete observation; disclose those partial groups.
+  if (explicitFits && !admittedGroups.size) for (const id of matches) add(id);
   const orderedGroups = [...groups.keys()].sort((a, b) => {
     const pinned = (id: string) => [...groups.get(id)!].some(member => visibleIds.has(member));
-    return Number(pinned(b)) - Number(pinned(a)) || compare(a, b);
+    return Number(pinned(b)) - Number(pinned(a)) || ranked(a) - ranked(b) || compare(a, b);
   });
   for (const connection of orderedGroups) addGroup(connection);
+  // Residual explicit hits still outrank optional context; incomplete groups are disclosed below.
+  for (const id of matches) add(id);
   // Complete observation groups before optional identity neighbors consume the budget.
   for (const connection of orderedGroups) {
     if (!admittedGroups.has(connection)) continue;
@@ -587,10 +605,16 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
   const edgePriority: Record<E2eEvidence, number> = { network: 0, identity: 1, context: 2, service: 3, configuration: 4 };
   const visibleEdges = selectedEdges
     .filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target))
-    .sort((a, b) => edgePriority[a.evidence] - edgePriority[b.evidence])
+    .sort((a, b) => edgePriority[a.evidence] - edgePriority[b.evidence]
+      || Number(reservedNetworkEdges.has(b.id)) - Number(reservedNetworkEdges.has(a.id)))
     .slice(0, maxEdges);
+  const visibleEdgeIds = new Set(visibleEdges.map(edge => edge.id));
+  const omittedCategories = [...new Set([...groups].filter(([connection, members]) =>
+    [...members].some(id => !visibleIds.has(id))
+    || (groupEdges.get(connection) ?? []).some(edge => !visibleEdgeIds.has(edge.id)),
+  ).map(([connection]) => text(byId.get(connection)!.meta.category)).filter(Boolean))].sort();
   return {
-    nodes, edges: visibleEdges, matchedNodes,
+    nodes, edges: visibleEdges, matchedNodes, omittedCategories,
     omittedNodes: selected.size - nodes.length,
     omittedEdges: selectedEdges.length - visibleEdges.length,
   };

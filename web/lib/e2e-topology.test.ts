@@ -5,7 +5,7 @@ import type { FlowGraph, FlowInput, FlowNode } from './flow-topology';
 import type { TraceIdentity, TraceSpan } from './trace-source';
 import type { E2eGraph, E2eInput, NetworkObservation, ServiceSnapshot } from './e2e-topology-types';
 import type { NfmEndpoint, NfmFlowRow } from './nfm';
-import { buildE2eGraph, filterE2eGraph, matchesE2eQuery, selectE2eGraph } from './e2e-topology';
+import { buildE2eGraph, filterE2eGraph, matchesE2eQuery, rankE2eConnections, selectE2eGraph } from './e2e-topology';
 
 const REGION = 'ap-northeast-2';
 const VPC = 'vpc-app';
@@ -925,6 +925,74 @@ describe('buildE2eGraph — ownership evidence vetoes', () => {
 });
 
 describe('selectE2eGraph — filtering before bounds', () => {
+  it.each([undefined, 'DATA_TRANSFERRED', 'network'])('retains the late-category peak at seven-category loader scale, query %j', query => {
+    const categories = ['INTRA_AZ', 'INTER_AZ', 'INTER_VPC', 'INTER_REGION', 'AMAZON_S3', 'AMAZON_DYNAMODB', 'UNCLASSIFIED'] as const;
+    const graph = buildE2eGraph(input({ network: categories.map((category, c) => observation(
+      Array.from({ length: 50 }, (_, i) => flow({
+        category, value: c * 50 + i, local: endpoint({ ip: `10.${c}.${i}.1` }),
+        remote: endpoint({ ip: `10.${c}.${i}.2` }),
+      })), { category, capped: true },
+    )) }));
+    expect(graph.nodes).toHaveLength(1050);
+    const view = selectE2eGraph(graph, { query });
+    const connections = view.nodes.filter(n => n.kind === 'connection');
+    expect(connections.some(n => (n.meta.flow as NfmFlowRow).value === 349)).toBe(true);
+    expect(connections).toHaveLength(query ? 118 : 116);
+    expect(view.nodes).toHaveLength(query ? 350 : 348);
+    expect(view.nodes.filter(n => n.kind === 'endpoint')).toHaveLength(232);
+    expect(view.edges).toHaveLength(232);
+    expect(view.omittedCategories).toEqual(['AMAZON_S3', 'INTER_AZ', 'INTER_REGION', 'INTER_VPC', 'INTRA_AZ']);
+    expectNoDanglingEdges(view);
+    expect(ids(selectE2eGraph({ ...graph, nodes: [...graph.nodes].reverse() }, { query }))).toEqual(ids(view));
+  });
+
+  it.each<{ readings: [string, string, number][]; order: number[] }>([
+    { readings: [['TIMEOUTS', 'Count', 2], ['ROUND_TRIP_TIME', 'Milliseconds', 9999], ['TIMEOUTS', 'Count', 3]], order: [2, 0, 1] },
+    { readings: [['TIMEOUTS', 'Count', 9999], ['DATA_TRANSFERRED', 'Bytes', 2], ['DATA_TRANSFERRED', 'Count', 9999], ['DATA_TRANSFERRED', 'Bytes', 3]], order: [3, 1, 2, 0] },
+    { readings: [['DATA_TRANSFERRED', 'Bytes', Infinity], ['DATA_TRANSFERRED', 'Bytes', NaN], ['DATA_TRANSFERRED', 'Bytes', -1], ['DATA_TRANSFERRED', 'Bytes', 0]], order: [3] },
+  ])('shares finite ranking without comparing metric/unit magnitudes: %j', ({ readings, order }) => {
+    const graph = buildE2eGraph(input({ network: readings.map(([metric, unit, value]) =>
+      observation([flow({ unit, value })], { metric: metric as NetworkObservation['metric'], unit })) }));
+    const connections = graph.nodes.filter(n => n.kind === 'connection');
+    const before = [...graph.nodes];
+    expect(typeof rankE2eConnections).toBe('function');
+    expect(rankE2eConnections(graph.nodes)).toEqual(order.map(i => connections[i]));
+    const view = selectE2eGraph(graph, { maxNodes: 3 });
+    expect(view.nodes.find(n => n.kind === 'connection')).toEqual(connections[order[0]]);
+    expect(graph.nodes).toEqual(before);
+    expectNoDanglingEdges(view);
+  });
+
+  it.each(['local', 'remote'])('excludes malformed %s shapes from measured ranking but permits empty endpoints', side => {
+    const graph = buildE2eGraph(input({ network: [observation([
+      flow({ value: 1, local: {}, remote: {} }),
+      ...[null, [], undefined].map(bad => flow({ value: 9999, [side]: bad as unknown as NfmEndpoint })),
+    ])] }));
+    const valid = graph.nodes.find(n => n.kind === 'connection')!;
+    expect(rankE2eConnections(graph.nodes)).toEqual([valid]);
+    const view = selectE2eGraph(graph, { maxNodes: 3 });
+    expect(view.nodes.find(n => n.kind === 'connection')).toEqual(valid);
+    expectNoDanglingEdges(view);
+  });
+
+  it.each(['focus', 'query', 'both'])('completes a lower-value explicit %s before reachable higher-value groups', mode => {
+    const graph = buildE2eGraph(input({ configured: configured(), network: [
+      observation([flow({ value: 1, category: 'UNCLASSIFIED' })], { category: 'UNCLASSIFIED' }),
+      observation([flow({ value: 9999, category: 'AMAZON_DYNAMODB' })], { category: 'AMAZON_DYNAMODB' }),
+    ] }));
+    const focused = graph.nodes.find(n => n.kind === 'connection')!;
+    const view = selectE2eGraph(graph, {
+      focusId: mode === 'query' ? undefined : focused.id,
+      query: mode === 'focus' ? undefined : mode === 'query' ? 'UNCLASSIFIED' : 'network',
+      maxNodes: 3,
+    });
+    expect(view.nodes.find(n => n.kind === 'connection')).toEqual(focused);
+    expect(view.nodes.filter(n => n.kind === 'endpoint')).toHaveLength(2);
+    expect(view.edges.filter(e => e.evidence === 'network')).toHaveLength(2);
+    expect(view.omittedCategories).toEqual(['AMAZON_DYNAMODB']);
+    expectNoDanglingEdges(view);
+  });
+
   function largeGraph(size = 410): E2eGraph {
     return buildE2eGraph(input({
       configured: {
@@ -970,9 +1038,12 @@ describe('selectE2eGraph — filtering before bounds', () => {
     const pinned = selectE2eGraph(graph, { focusId, query, maxNodes: 2 });
     expect(pinned.nodes[0].id).toBe(focusId);
     expect(pinned.nodes[1].kind).toBe('connection');
+    expect(pinned.omittedCategories).toEqual(['INTER_AZ']);
     const complete = selectE2eGraph(graph, { focusId, query, maxNodes: 4, maxEdges: 2 });
     expect(complete.nodes.filter(n => n.kind === 'endpoint')).toHaveLength(2);
     expect(complete.edges.filter(e => e.evidence === 'network')).toHaveLength(2);
+    expect(complete.omittedCategories).toEqual([]);
+    expect(selectE2eGraph(graph, { focusId, query, maxEdges: 1 }).omittedCategories).toEqual(['INTER_AZ']);
     expectNoDanglingEdges(complete);
   });
 
@@ -1044,10 +1115,11 @@ describe('selectE2eGraph — filtering before bounds', () => {
 
   it('does not add unselected connection groups whose network edges cannot fit the edge cap', () => {
     const graph = buildE2eGraph(input({
-      network: [observation([flow(), flow({ local: endpoint({ ip: '10.0.3.30' }) })])],
+      network: [observation([flow(), flow({ value: 9999, local: endpoint({ ip: '10.0.3.30' }) })])],
     }));
     const view = selectE2eGraph(graph, { maxEdges: 2 });
     expect(view.nodes.filter(n => n.kind === 'connection')).toHaveLength(1);
+    expect((view.nodes.find(n => n.kind === 'connection')!.meta.flow as NfmFlowRow).value).toBe(9999);
     expect(view.nodes.filter(n => n.kind === 'endpoint')).toHaveLength(2);
     expect(view.edges).toHaveLength(2);
     expect(view.omittedNodes).toBe(3);
@@ -1078,6 +1150,19 @@ describe('selectE2eGraph — filtering before bounds', () => {
     const view = selectE2eGraph(graph, { query: 'DATA_TRANSFERRED', maxNodes: 3 });
     expect(view.matchedNodes).toBe(3);
     expect(labels(view).sort()).toEqual(['DATA_TRANSFERRED', 'DATA_TRANSFERRED one', 'DATA_TRANSFERRED two']);
+    expectNoDanglingEdges(view);
+  });
+
+  it.each(['DATA_TRANSFERRED', 'network'])('keeps residual query %s hits behind complete network edges but ahead of context', query => {
+    const graph = buildE2eGraph(input({ configured: configured(),
+      network: [observation([flow({ value: 1 }), flow({ value: 9999 })])] }));
+    const peak = graph.nodes.filter(n => n.kind === 'connection')[1];
+    const view = selectE2eGraph(graph, { query, maxNodes: 5, maxEdges: 2 });
+    expect(view.nodes.filter(n => n.kind === 'connection')).toHaveLength(2);
+    expect(view.nodes.filter(n => n.kind === 'endpoint')).toHaveLength(query === 'network' ? 3 : 2);
+    expect(view.edges.filter(e => e.evidence === 'network')).toHaveLength(2);
+    expect(view.edges.filter(e => e.target === peak.id)).toHaveLength(2);
+    expect(view.omittedCategories).toEqual(['INTER_AZ']);
     expectNoDanglingEdges(view);
   });
 
@@ -1146,14 +1231,14 @@ describe('selectE2eGraph — filtering before bounds', () => {
     const graph = buildE2eGraph(input({ services: services() }));
     expect(labels(selectE2eGraph(graph, { query: 'WEB-2', maxNodes: 1 }))).toEqual(['web deployment']);
     expect(selectE2eGraph(graph, { query: 'does-not-exist' })).toMatchObject({
-      nodes: [], edges: [], matchedNodes: 0, omittedNodes: 0, omittedEdges: 0,
+      nodes: [], edges: [], matchedNodes: 0, omittedNodes: 0, omittedEdges: 0, omittedCategories: [],
     });
   });
 
   it('never traverses a shared construct to another connection when focusing or searching', () => {
     const graph = buildE2eGraph(input({ network: [observation([
       flow({ local: { ip: '10.1.1.1' }, remote: { ip: '10.1.1.2' }, traversedIds: ['NAT:nat-shared'] }),
-      flow({ local: { ip: '10.2.2.1' }, remote: { ip: '10.2.2.2' }, traversedIds: ['NAT:nat-shared'] }),
+      flow({ category: 'INTER_VPC', value: 9999, local: { ip: '10.2.2.1' }, remote: { ip: '10.2.2.2' }, traversedIds: ['NAT:nat-shared'] }),
     ])] }));
     const first = graph.nodes.find(n => n.kind === 'connection')!;
     for (const view of [
@@ -1163,6 +1248,7 @@ describe('selectE2eGraph — filtering before bounds', () => {
       expect(view.nodes.filter(n => n.kind === 'connection')).toHaveLength(1);
       expect(view.nodes.filter(n => n.kind === 'construct')).toHaveLength(1);
       expect(view.nodes.filter(n => n.kind === 'endpoint')).toHaveLength(2);
+      expect(view.omittedCategories).toEqual([]);
       expectNoDanglingEdges(view);
     }
   });
@@ -1199,6 +1285,7 @@ describe('selectE2eGraph — filtering before bounds', () => {
     const configOnly = selectE2eGraph(graph, { evidence: ['configuration'] });
     expect(configOnly.nodes).toHaveLength(2);
     expect(configOnly.edges).toHaveLength(1);
+    expect(configOnly.omittedCategories).toEqual([]);
     const focusId = graph.nodes.find(n => n.kind === 'tg')!.id;
     const disconnected = selectE2eGraph(graph, {
       focusId, evidence: ['configuration', 'network', 'service', 'context'],
