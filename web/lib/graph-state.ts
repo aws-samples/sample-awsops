@@ -26,7 +26,9 @@ export function graphDiagnostic(stage: string, error: unknown): string {
 
 /** Caller holds the class advisory lock and publishes rows in this same transaction.
  * captured_at is the successful publication; source clocks belong to publishedSources.
- * Failed attempts preserve both. Trace keeps its existing window-end timestamp default. */
+ * Failed attempts preserve both. Versions must strictly advance: equal/older attempts
+ * return false without changing state. Callers must disclose this as a skipped publication.
+ * The publish flag still gates replacement. Trace keeps its window-end timestamp default. */
 export async function writeGraphState(client: PoolClient, account: string, attempt: GraphAttempt, cls: GraphClass) {
   const result = await client.query(
     `INSERT INTO topology_graph_state (account_id, class, status, attempted_at, captured_at, details)

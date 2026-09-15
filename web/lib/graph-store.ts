@@ -68,8 +68,10 @@ async function writeGraph(pool: Pool, cls: GraphClass, lockKey: number, accountI
   const publish = (value: GraphAttempt) => graphTransaction(pool, false, async client => {
     const locked = await client.query('SELECT pg_try_advisory_xact_lock($1) AS acquired', [lockKey]);
     if (!locked.rows[0]?.acquired) return { ...emptyResult(), skipped: 1, reasons: ['publication_busy'] };
-    if (!await writeGraphState(client, accountId, value, cls))
+    if (!await writeGraphState(client, accountId, value, cls)) {
+      console.warn('[graph] publication skipped', { class: cls, reason: 'superseded' });
       return { ...emptyResult(), skipped: 1, reasons: ['superseded'] };
+    }
     if (!value.publish) return { ...emptyResult(), retained: 1,
       reasons: cls === 'trace' ? [`collection_${value.status}`] : [] };
     await replaceGraph(client, cls, accountId, nodes, edges, runId);
