@@ -4,6 +4,9 @@ export type { NetworkObservation } from './topology-observations';
 
 export type E2eEvidence = 'configuration' | 'service' | 'network' | 'identity' | 'context';
 export type E2eLayer = 'configuration' | 'service' | 'network';
+/** UI-owned translation keys. Generated labels fall back to the code; source labels stay verbatim. */
+export type E2eLabelKey = 'network_observation' | 'local_endpoint' | 'remote_endpoint'
+  | 'configured_endpoint_record' | 'cached_configured_endpoint_record' | 'configured_pod_identity';
 /** Endpoint meta.correlationReason explains withholding; correlated endpoints have no reason. */
 export type E2eCorrelationReason = 'configuration_conflict' | 'configuration_unverified'
   | 'workload_conflict' | 'workload_scope_unverified' | 'pod_identity_conflict' | 'context_only' | 'no_match';
@@ -12,6 +15,7 @@ export interface E2eNode {
   id: string;
   kind: string;
   label: string;
+  labelKey?: E2eLabelKey;
   layer: E2eLayer;
   meta: Record<string, unknown>;
 }
@@ -24,6 +28,7 @@ export interface E2eEdge {
   evidence: E2eEvidence;
   directed: boolean;
   label?: string;
+  labelKey?: E2eLabelKey;
   meta?: Record<string, unknown>;
 }
 export interface ServiceSnapshot {

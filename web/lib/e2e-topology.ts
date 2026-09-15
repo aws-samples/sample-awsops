@@ -1,5 +1,5 @@
 import type {
-  E2eCorrelationReason, E2eEdge, E2eEvidence, E2eGraph, E2eInput, E2eLayer, E2eNode, E2eSelection, E2eView,
+  E2eCorrelationReason, E2eEdge, E2eEvidence, E2eGraph, E2eInput, E2eLabelKey, E2eLayer, E2eNode, E2eSelection, E2eView,
 } from './e2e-topology-types';
 
 // Pure composition of loaded evidence. No SDK, fetch, clock, or layout dependency.
@@ -10,6 +10,7 @@ const record = (value: unknown): Meta =>
 const text = (value: unknown): string => typeof value === 'string' && value.trim() ? value : '';
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const strings = (value: unknown): string[] => list(value).map(text).filter(Boolean);
+const generatedLabel = (labelKey: E2eLabelKey) => ({ label: labelKey, labelKey });
 // Tuple encoding avoids collisions from separators occurring in source IDs or names.
 const key = (...parts: string[]): string => JSON.stringify(parts);
 const nodeId = (layer: E2eLayer, account: string, ...parts: string[]): string =>
@@ -26,6 +27,7 @@ interface TargetIdentity {
   cached: boolean;
   contextAllowed: boolean;
 }
+type TargetScope = Pick<TargetIdentity, 'node' | 'type' | 'region' | 'vpcId'>;
 
 const hasMarker = (value: unknown): boolean => {
   if (typeof value === 'string') return Boolean(value.trim());
@@ -66,7 +68,9 @@ function targetValues(meta: Meta): string[] {
   return [...result];
 }
 
-function targetIndex(nodes: E2eNode[], edges: E2eEdge[], hostAccountId: string): Map<string, TargetIdentity[]> {
+function targetIndex(nodes: E2eNode[], edges: E2eEdge[], hostAccountId: string): {
+  shown: Map<string, TargetIdentity[]>; truncated: TargetScope[];
+} {
   const byId = new Map(nodes.map(node => [node.id, node]));
   const scopes = new Map<string, Meta[]>();
   for (const edge of edges) {
@@ -77,6 +81,7 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[], hostAccountId: string):
     scopes.set(edge.target, rows);
   }
   const index = new Map<string, TargetIdentity[]>();
+  const truncated: TargetScope[] = [];
   for (const node of nodes) {
     if (node.layer !== 'configuration' || node.kind !== 'target') continue;
     const type = node.meta.targetType;
@@ -89,6 +94,12 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[], hostAccountId: string):
     };
     // Missing/conflicting dimensions are unknown, not evidence of a disjoint scope.
     const region = common('region'), vpcId = common('vpc_id');
+    // Count displayed records before ID deduplication: one IP on two ports is two members.
+    // Hidden membership carries scope uncertainty only, never a target/pod identity.
+    if ((typeof node.meta.membersTruncated === 'number' && node.meta.membersTruncated > 0)
+      || (typeof node.meta.count === 'number' && node.meta.count > list(node.meta.members).length)) {
+      truncated.push({ node, type, region, vpcId });
+    }
     // Only the trusted host may resolve the configuration's relative self sentinel.
     // Numeric configuration scope must also agree; traces never supply this authority.
     const accounts = rows.map(row => row.account_id === 'self' ? hostAccountId : text(row.account_id));
@@ -118,7 +129,7 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[], hostAccountId: string):
       index.set(k, entries);
     }
   }
-  return index;
+  return { shown: index, truncated };
 }
 
 interface WorkloadIdentity {
@@ -285,23 +296,31 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       meta: { confidence: edge.confidence, capturedAt: input.services?.captured_at ?? null },
     });
   }
-  const targets = targetIndex(nodes, edges, hostAccountId);
+  const { shown: targets, truncated } = targetIndex(nodes, edges, hostAccountId);
   const workloads = workloadIndex(nodes, edges);
 
   const correlate = (endpoint: E2eNode, side: Side) => {
     const data = record(endpoint.meta.endpoint);
     const region = text(data.region), vpcId = text(data.vpcId);
+    const overlaps = (scope: TargetScope) =>
+      !(scope.region && region && scope.region !== region) && !(scope.vpcId && vpcId && scope.vpcId !== vpcId);
+    const unverifiedScope = Boolean(text(data.ip) || text(data.instanceId)) && (!region || !vpcId);
     const candidates = new Map<string, TargetIdentity>();
     if (region && vpcId) {
       for (const [type, value] of [['ip', text(data.ip)], ['instance', text(data.instanceId)]] as const) {
         if (!value) continue;
         for (const candidate of targets.get(key(type, value)) ?? []) {
-          if ((candidate.region && candidate.region !== region) || (candidate.vpcId && candidate.vpcId !== vpcId)) continue;
+          if (!overlaps(candidate)) continue;
           candidates.set(candidate.node.id, candidate);
         }
       }
     }
-    const blocked = [...candidates.values()].some(candidate => candidate.blocked && !candidate.contextAllowed);
+    // A shown member may use its own group; an unseen member in another overlapping
+    // group prevents false uniqueness. Missing scope never establishes disjointness.
+    const hiddenCompetitor = truncated.some(scope => !candidates.has(scope.node.id) && overlaps(scope)
+      && Boolean(text(data[scope.type === 'ip' ? 'ip' : 'instanceId'])));
+    const blocked = unverifiedScope || hiddenCompetitor
+      || [...candidates.values()].some(candidate => candidate.blocked && !candidate.contextAllowed);
     const target = !blocked && candidates.size === 1 ? [...candidates.values()][0] : undefined;
     // A monitor's name-derived cluster is a display hint, never identity evidence.
     const { cluster, conflict } = targetWorkload(target, data);
@@ -325,7 +344,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       addEdge({
         source: endpoint.id, target: target.node.id, relation: 'configured-endpoint-match',
         evidence: target.cached ? 'context' : 'identity', directed: false,
-        label: target.cached ? 'Cached configured endpoint record' : 'Configured endpoint record',
+        ...generatedLabel(target.cached ? 'cached_configured_endpoint_record' : 'configured_endpoint_record'),
         meta: {
           match: target.type === 'ip' ? 'ip-region-vpc' : 'instance-region-vpc',
           ownership: 'unverified', ownership_evidence: target.cached ? 'cached_configuration' : 'configured_record',
@@ -337,7 +356,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     if (matches.length === 1) {
       addEdge({
         source: endpoint.id, target: matches[0].node.id, relation: 'same-identity',
-        evidence: 'identity', directed: false, label: 'Configured pod identity',
+        evidence: 'identity', directed: false, ...generatedLabel('configured_pod_identity'),
         meta: {
           match: 'configured-cluster', ownership: 'unverified',
           account: input.account, cluster, namespace, pod, side,
@@ -364,7 +383,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       flowOccurrences.set(identity, occurrence + 1);
       const connectionId = nodeId('network', input.account, 'connection', identity, String(occurrence));
       addNode({
-        id: connectionId, kind: 'connection', label: text(observation.metric) || '네트워크 관측', layer: 'network',
+        id: connectionId, kind: 'connection', layer: 'network',
+        ...(text(observation.metric) ? { label: text(observation.metric) } : generatedLabel('network_observation')),
         meta: {
           flow: { ...flow }, metric: observation.metric, unit: observation.unit,
           monitor: observation.monitor, cluster: observation.cluster, category: observation.category,
@@ -377,11 +397,11 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       summary.networkFlows++;
       for (const side of ['local', 'remote'] as const) {
         const data = record(flow[side]);
+        const label = text(data.podName) || text(data.instanceId) || text(data.ip);
         const endpoint: E2eNode = {
           id: nodeId('network', input.account, 'endpoint', identity, String(occurrence), side),
           kind: 'endpoint', layer: 'network',
-          label: text(data.podName) || text(data.instanceId) || text(data.ip)
-            || (side === 'local' ? '로컬 엔드포인트' : '원격 엔드포인트'),
+          ...(label ? { label } : generatedLabel(side === 'local' ? 'local_endpoint' : 'remote_endpoint')),
           meta: { endpoint: { ...data }, side, connectionId },
         };
         addNode(endpoint);
