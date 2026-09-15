@@ -42,6 +42,15 @@ jobs:
             -r scripts/v2/steampipe/requirements.txt \
             -r scripts/v2/workers/requirements.txt
 
+      - name: Prepare isolated image codec for offline checks
+        id: codec
+        run: |
+          set -euo pipefail
+          root=$(mktemp -d "$RUNNER_TEMP/awsops-codec.XXXXXX")
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          python3 scripts/pr-review/codec_sandbox.py prepare --state "$root/state.json"
+          echo "AWSOPS_REVIEW_CODEC_STATE=$root/state.json" >> "$GITHUB_ENV"
+
       - name: Run merge verification
         run: bash scripts/v2/merge-verify.sh
 
@@ -55,3 +64,21 @@ jobs:
 
       - name: Verify mocked Terraform plans in an isolated tracked copy
         run: bash scripts/v2/terraform-test.sh
+
+      - name: Remove owned codec containers and image tag
+        if: always() && steps.codec.outputs.root != ''
+        env:
+          CODEC_ROOT: ${{ steps.codec.outputs.root }}
+        run: |
+          set -euo pipefail
+          case "$CODEC_ROOT" in
+            "$RUNNER_TEMP"/awsops-codec.*)
+              rc=0
+              if [ -f "$CODEC_ROOT/state.json" ]; then
+                python3 scripts/pr-review/codec_sandbox.py cleanup --state "$CODEC_ROOT/state.json" || rc=$?
+              fi
+              rm -rf -- "$CODEC_ROOT"
+              exit "$rc"
+              ;;
+            *) echo "::error::Unexpected codec cleanup path"; exit 1 ;;
+          esac
