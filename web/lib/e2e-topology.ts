@@ -21,7 +21,31 @@ interface TargetIdentity {
   value: string;
   region: string;
   vpcId: string;
+  blocked: boolean;
+  cached: boolean;
 }
+
+const hasMarker = (value: unknown): boolean => {
+  if (typeof value === 'string') return Boolean(value.trim());
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') return Object.keys(value).length > 0;
+  return value !== undefined && value !== null && value !== false;
+};
+
+/** Negative ownership evidence is monotonic; nested display candidates are never proof. */
+function ownershipVeto(meta: Meta, region: string, vpcId: string): boolean {
+  if (meta.resolved === 'ambiguous' || hasMarker(meta.ambiguity)
+    || meta.ownership_evidence === 'scope_unverified' || hasMarker(meta.ownership_reason)
+    || meta.e2e_correlation_blocked === true) return true;
+  const reads = record(meta.ownershipRead);
+  return ['targetGroup', 'ecsTask', 'subnet'].some(field => hasMarker(reads[field]) && reads[field] !== 'ok')
+    || reads.eksUnknown === true
+    || (Array.isArray(reads.eksRegions) && !strings(reads.eksRegions).includes(region))
+    || strings(reads.eksScopes).includes(`${region}|${vpcId}|`);
+}
+
+const cachedConfiguration = (meta: Meta): boolean =>
+  meta.ownership_evidence === 'cached_configuration' || record(meta.ownershipRead).configurationOnly === true;
 
 /** Grouped targets expose only a capped list, not all members in the TG's inventory row. */
 function targetValues(meta: Meta): string[] {
@@ -62,7 +86,15 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[]): Map<string, TargetIden
     for (const value of targetValues(node.meta)) {
       const k = key(region, vpcId, type, value);
       const entries = index.get(k) ?? [];
-      entries.push({ node, type, value, region, vpcId });
+      const memberEvidence = list(node.meta.memberIdentities).map(record).filter(member => text(member.id) === value);
+      const evidence = [node.meta, ...rows, ...memberEvidence];
+      // Retain blocked candidates in the index: dropping one would let a competing
+      // record win merely because the conflicting evidence was hidden.
+      entries.push({
+        node, type, value, region, vpcId,
+        blocked: evidence.some(meta => ownershipVeto(meta, region, vpcId)),
+        cached: evidence.some(cachedConfiguration),
+      });
       index.set(k, entries);
     }
   }
@@ -87,7 +119,7 @@ function workloadIndex(nodes: E2eNode[]): Map<string, Set<E2eNode>> {
 
 function targetWorkload(target: TargetIdentity | undefined, endpoint: Meta): { cluster: string; conflict: boolean } {
   const meta = target?.node.meta;
-  if (!meta || meta.resolved !== 'eks') return { cluster: '', conflict: false };
+  if (!meta || target?.blocked || target?.cached || meta.resolved !== 'eks') return { cluster: '', conflict: false };
   let identity = meta;
   if (Array.isArray(meta.members)) {
     // Group metadata retains the first replica's pod. Only the exact shown member
@@ -103,8 +135,8 @@ function targetWorkload(target: TargetIdentity | undefined, endpoint: Meta): { c
     (pod && text(endpoint.podName) && pod !== endpoint.podName)
     || (namespace && text(endpoint.podNamespace) && namespace !== endpoint.podNamespace),
   );
-  const completeMember = !Array.isArray(meta.members) || Boolean(pod && namespace);
-  return { cluster: completeMember ? text(meta.cluster) : '', conflict };
+  const completeMatch = Boolean(pod && namespace && pod === endpoint.podName && namespace === endpoint.podNamespace);
+  return { cluster: completeMatch ? text(meta.cluster) : '', conflict };
 }
 
 /** Fixed-field tuples are independent of object/row ordering and tolerate malformed metadata. */
@@ -206,24 +238,28 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
         }
       }
     }
-    const target = candidates.size === 1 ? [...candidates.values()][0] : undefined;
+    const blocked = [...candidates.values()].some(candidate => candidate.blocked);
+    const target = !blocked && candidates.size === 1 ? [...candidates.values()][0] : undefined;
     // A monitor's name-derived cluster is a display hint, never identity evidence.
     const { cluster, conflict } = targetWorkload(target, data);
     const namespace = text(data.podNamespace), pod = text(data.podName);
     const matches = cluster && namespace && pod
       ? [...(workloads.get(key(cluster, namespace, pod)) ?? [])] : [];
     // Do not choose a winner among conflicting scopes, target records, or workload memberships.
-    if (candidates.size > 1 || matches.length > 1 || conflict) {
+    if (blocked || candidates.size > 1 || matches.length > 1 || conflict) {
       endpoint.meta.correlation = 'ambiguous';
       summary.ambiguousEndpoints++;
       return;
     }
     if (target) {
       addEdge({
-        source: endpoint.id, target: target.node.id, relation: 'same-identity',
-        evidence: 'identity', directed: false,
+        source: endpoint.id, target: target.node.id, relation: 'configured-endpoint-match',
+        evidence: target.cached ? 'context' : 'identity', directed: false,
+        label: target.cached ? 'Cached configured endpoint record' : 'Configured endpoint record',
         meta: {
           match: target.type === 'ip' ? 'ip-region-vpc' : 'instance-region-vpc',
+          ownership: 'unverified', ownership_evidence: target.cached ? 'cached_configuration' : 'configured_record',
+          ...(target.node.meta.targetCapturedAt !== undefined ? { targetCapturedAt: target.node.meta.targetCapturedAt } : {}),
           account: input.account, region, vpcId, [target.type === 'ip' ? 'ip' : 'instanceId']: target.value,
         },
       });
@@ -231,16 +267,17 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     if (matches.length === 1) {
       addEdge({
         source: endpoint.id, target: matches[0].id, relation: 'same-identity',
-        evidence: 'identity', directed: false,
+        evidence: 'identity', directed: false, label: 'Configured pod identity',
         meta: {
-          match: 'configured-cluster',
+          match: 'configured-cluster', ownership: 'unverified',
           account: input.account, cluster, namespace, pod, side,
           viaTarget: target!.node.id, region, vpcId,
         },
       });
     }
-    endpoint.meta.correlation = target || matches.length ? 'correlated' : 'unmatched';
-    if (target || matches.length) summary.correlatedEndpoints++;
+    const correlated = Boolean((target && !target.cached) || matches.length);
+    endpoint.meta.correlation = correlated ? 'correlated' : 'unmatched';
+    if (correlated) summary.correlatedEndpoints++;
     else summary.unmatchedEndpoints++;
   };
 

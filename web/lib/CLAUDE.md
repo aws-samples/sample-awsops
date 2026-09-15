@@ -5,6 +5,7 @@ Domain-logic modules shared by API routes and components, mostly React-free (inc
 
 ## Key Files
 - `topology-config.ts` — client-safe EKS pod/endpoint evidence for the runtime IP-target view; returns scoped candidates and explicit read/coverage failures.
+- `e2e-topology.ts` / `e2e-topology-types.ts` — pure, unwired service/network correlation and bounded graph selection; honor ownership vetoes, require scoped identities, and never infer cluster identity from a monitor name.
 - `aws.ts` — `listClusterInventory` reports the configured EKS region and continuation state, with at most 25 descriptions. `listClusters` remains the array-only compatibility wrapper; this does not enumerate other regions or certify pod ownership.
 - `topology-observations.ts` — standalone, unwired NFM category loader; owns `NetworkObservation`.
   Keep category concurrency at most three, with closed errors, per-category window quality and caps. Metric/category
