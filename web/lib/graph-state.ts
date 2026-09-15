@@ -26,7 +26,9 @@ export function graphDiagnostic(stage: string, error: unknown): string {
 
 /** Caller holds the class advisory lock and publishes rows in this same transaction.
  * captured_at is the successful publication; source clocks belong to publishedSources.
- * Failed attempts preserve both. Trace keeps its existing window-end timestamp default. */
+ * Failed attempts preserve both. Equal timestamps are serialized retries, accepted as
+ * in the original trace contract; only strictly older attempts are superseded.
+ * The publish flag still gates replacement. Trace keeps its window-end timestamp default. */
 export async function writeGraphState(client: PoolClient, account: string, attempt: GraphAttempt, cls: GraphClass) {
   const result = await client.query(
     `INSERT INTO topology_graph_state (account_id, class, status, attempted_at, captured_at, details)
@@ -41,7 +43,7 @@ export async function writeGraphState(client: PoolClient, account: string, attem
            details = EXCLUDED.details || CASE WHEN NOT $4 AND $6 <> 'trace' THEN
              jsonb_build_object('publishedSources', coalesce(topology_graph_state.details->'publishedSources', '[]'::jsonb))
              ELSE '{}'::jsonb END
-     WHERE topology_graph_state.attempted_at < EXCLUDED.attempted_at`,
+     WHERE topology_graph_state.attempted_at <= EXCLUDED.attempted_at`,
     [account, attempt.status, attempt.attemptedAt, attempt.publish, JSON.stringify(attempt.details), cls],
   );
   return result.rowCount !== 0;
