@@ -142,6 +142,12 @@ upstream error text. Missing/invalid windows remain unknown and make the batch p
 At most three workers bound category concurrency; cancellation stops further scheduling and result
 application, without guaranteeing cancellation of a server query already started.
 
+### Unwired service/network graph composition
+
+`web/lib/e2e-topology.ts` and `E2eGraphCanvas.tsx` are reusable prerequisites, not a new HTTP API or an enabled page. The planned integration uses the current full inventory-built configuration graph, the existing host trace snapshot and explicit NFM queries. `NetworkObservation` remains owned by the category loader and is re-exported as a type.
+
+Only the host `self` scope combines observations. Unique scoped record matches and corroborated workload tuples remain separate from ownership assertions; missing/conflicting evidence withholds identity. Persisted configuration-only records can supply cached context under the documented sole-reason exception, never identity. Counters count row/side observations. The canvas bounds display at 350 nodes/700 edges, preserves complete admitted connections, and discloses omissions independently from source truncation and evidence-detail limits.
+
 ## dns-logs (2)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|

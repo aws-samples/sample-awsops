@@ -6,7 +6,7 @@ import { Activity, Box, Cloud, Database, GitBranch, Network, Search, Server, X }
 import { Background, Controls, MarkerType, MiniMap, Position, type Edge, type Node, type ReactFlowInstance } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { filterE2eGraph, matchesE2eQuery, selectE2eGraph } from '@/lib/e2e-topology';
-import type { E2eEvidence, E2eGraph, E2eNode } from '@/lib/e2e-topology-types';
+import type { E2eCorrelationReason, E2eEvidence, E2eGraph, E2eNode } from '@/lib/e2e-topology-types';
 import type { NfmEndpoint, NfmFlowRow } from '@/lib/nfm';
 import { layoutFlow } from '@/lib/flow-layout';
 import { useTheme } from '@/lib/use-theme';
@@ -32,8 +32,19 @@ const GENERATED_LABELS: Record<string, string> = {
   'Configured endpoint record': '구성 엔드포인트 기록',
   'Configured pod identity': '구성에서 확인된 Pod 식별자',
 };
+const CORRELATION: Record<string, string> = { correlated: '식별자 연결', unmatched: '미연결', ambiguous: '식별 보류' };
+const CORRELATION_REASONS: Record<E2eCorrelationReason, string> = {
+  configuration_conflict: '구성 기록이 충돌하여 연결을 보류했습니다.',
+  configuration_unverified: '구성 근거를 확인할 수 없어 연결을 보류했습니다.',
+  workload_conflict: '워크로드 식별자가 충돌하여 연결을 보류했습니다.',
+  workload_scope_unverified: '워크로드 범위를 확인할 수 없어 구성 기록 연결도 보류했습니다.',
+  pod_identity_conflict: 'Pod 식별 정보가 충돌하여 연결을 보류했습니다.',
+  context_only: '캐시된 구성 기록은 참고 정보이며 식별자 연결이 아닙니다.',
+  no_match: '연결할 식별 근거가 없습니다.',
+};
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const display = (v: unknown): string => v == null || v === '' ? '—' : Array.isArray(v) ? v.join(', ') : String(v);
+const text = (v: unknown): string => typeof v === 'string' ? v.trim() : '';
 function metricValue(value: number, unit: string): string {
   if (!Number.isFinite(value) || value < 0) return '—';
   if (unit === 'Bytes') {
@@ -49,13 +60,26 @@ function timeLabel(value: unknown): string {
     ? new Date(value).toLocaleString() : '—';
 }
 function endpointLabel(endpoint: NfmEndpoint, missing: string): string {
-  return endpoint.podName ? `${endpoint.podNamespace ?? '?'}/${endpoint.podName}`
-    : endpoint.instanceId || endpoint.ip || endpoint.serviceName || missing;
+  return text(endpoint.podName) ? `${text(endpoint.podNamespace) || '?'}/${text(endpoint.podName)}`
+    : text(endpoint.instanceId) || text(endpoint.ip) || text(endpoint.serviceName) || missing;
 }
 function flowOf(node: E2eNode): NfmFlowRow | null {
   const flow = node.meta.flow;
   return node.kind === 'connection' && object(flow) && object(flow.local) && object(flow.remote)
     && typeof flow.value === 'number' ? flow as unknown as NfmFlowRow : null;
+}
+function mainConnection(nodes: E2eNode[]): E2eNode | undefined {
+  const measured = nodes.flatMap(node => {
+    const flow = flowOf(node), metric = text(node.meta.metric), unit = text(node.meta.unit ?? flow?.unit);
+    return flow && metric && unit ? [{ node, metric, unit, value: flow.value }] : [];
+  });
+  const group = measured.find(item => item.metric === 'DATA_TRANSFERRED') ?? measured[0];
+  let best: typeof group | undefined;
+  for (const item of measured) {
+    if (item.metric === group.metric && item.unit === group.unit && Number.isFinite(item.value)
+      && item.value >= 0 && (!best || item.value > best.value)) best = item;
+  }
+  return best?.node;
 }
 function traversedItems(flow: NfmFlowRow): string[] {
   const strings = (value: unknown): string[] =>
@@ -78,9 +102,13 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
     nodes: inputGraph.nodes.map((node) => {
       const flow = flowOf(node);
       const endpoint = object(node.meta.endpoint) ? node.meta.endpoint : null;
+      const fallback = node.meta.side === 'local' ? '로컬 엔드포인트' : '원격 엔드포인트';
       if (node.layer === 'network' && node.kind === 'endpoint' && endpoint
-        && !endpoint.podName && !endpoint.instanceId && !endpoint.ip) {
-        return { ...node, label: tt(node.meta.side === 'local' ? '로컬 엔드포인트' : '원격 엔드포인트') };
+        && node.label === fallback) {
+        return { ...node, label: endpointLabel(endpoint, tt(fallback)) };
+      }
+      if (node.kind === 'connection' && !text(node.meta.metric) && node.label === '네트워크 관측') {
+        return { ...node, label: tt('네트워크 관측') };
       }
       return flow && node.label === node.meta.metric
         ? { ...node, label: `${endpointLabel(flow.local, tt('식별 정보 없음'))} ↔ ${endpointLabel(flow.remote, tt('식별 정보 없음'))}` } : node;
@@ -109,9 +137,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
   }, [eligible.nodes, query]);
   const byId = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
   const viewport = useMemo(() => {
-    const connections = view.nodes.filter((node) => node.kind === 'connection');
-    const primary = selected ?? [...connections].sort((a, b) =>
-      (flowOf(b)?.value ?? 0) - (flowOf(a)?.value ?? 0))[0];
+    const primary = selected ?? mainConnection(view.nodes);
     if (overview || !primary) return { nodes: view.nodes.map(({ id }) => ({ id })), minZoom: 0.05 };
     const keep = new Set([primary.id]);
     let frontier = new Set(keep);
@@ -143,7 +169,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
               <span className="min-w-0 truncate font-semibold" title={n.label}>{n.label}</span>
             </div>
             <span className="truncate text-[11px] opacity-70">
-              {flow ? `${tt(METRIC_LABELS[String(n.meta.metric)] ?? String(n.meta.metric))} · ${metricValue(flow.value, String(n.meta.unit ?? flow.unit))}`
+              {flow ? `${tt(METRIC_LABELS[text(n.meta.metric)] ?? (text(n.meta.metric) || '네트워크 관측'))} · ${metricValue(flow.value, text(n.meta.unit ?? flow.unit) || '—')}`
                 : `${tt(SOURCE_LABELS[n.layer])} · ${n.kind}`}
             </span>
           </div>
@@ -181,8 +207,11 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
     return () => cancelAnimationFrame(frame);
   }, [fitOptions, view.nodes.length]);
   useEffect(() => () => { instance.current = null; }, []);
-  const selectedEdges = selected ? view.edges.filter((e) => e.source === selected.id || e.target === selected.id) : [];
+  const selectedEdges = selected ? eligible.edges.filter((e) => e.source === selected.id || e.target === selected.id) : [];
+  const visibleEdgeIds = new Set(view.edges.map(edge => edge.id));
+  const omittedSelectedEdges = selectedEdges.filter(edge => !visibleEdgeIds.has(edge.id)).length;
   const selectedFlow = selected ? flowOf(selected) : null;
+  const traversed = selectedFlow ? traversedItems(selectedFlow) : [];
   const selectNode = (id: string) => { setOverview(false); setQuery(''); setSelectedId(id); };
 
   return (
@@ -230,8 +259,9 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-500" role="status">
         <span>{tt('표시 노드')} {view.nodes.length} · {tt('관계')} {view.edges.length}</span>
         <span>{tt('네트워크 관계')} <span data-testid="e2e-network-edge-count">{view.edges.filter((e) => e.evidence === 'network').length}</span></span>
-        <span>{tt('미연결 엔드포인트')} {graph.summary.unmatchedEndpoints}</span>
-        {graph.summary.ambiguousEndpoints > 0 && <span>{tt('식별자 중복')} {graph.summary.ambiguousEndpoints}</span>}
+        <span>{tt('미연결 관측')} {graph.summary.unmatchedEndpoints}</span>
+        {graph.summary.ambiguousEndpoints > 0 && <span>{tt('식별 보류 관측')} {graph.summary.ambiguousEndpoints}</span>}
+        <span>{tt('관측 행의 로컬·원격을 각각 집계하며 고유 엔드포인트 수가 아닙니다.')}</span>
         {(view.omittedNodes > 0 || view.omittedEdges > 0) && (
           <span className="text-amber-700">{tt('화면 한도:')} {view.omittedNodes} {tt('노드')}, {view.omittedEdges} {tt('관계 생략 — 검색으로 범위를 좁히세요.')}</span>
         )}
@@ -261,9 +291,10 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
             {selectedFlow ? (
               <div className="space-y-4">
                 <div className="rounded-lg bg-ink-50 p-3">
-                  <p className="text-[11px] text-ink-500">{tt(METRIC_LABELS[String(selected.meta.metric)] ?? String(selected.meta.metric))}</p>
-                  <p className="mt-1 text-xl font-semibold">{metricValue(selectedFlow.value, String(selected.meta.unit ?? selectedFlow.unit))}</p>
+                  <p className="text-[11px] text-ink-500">{tt(METRIC_LABELS[text(selected.meta.metric)] ?? (text(selected.meta.metric) || '네트워크 관측'))}</p>
+                  <p className="mt-1 text-xl font-semibold">{metricValue(selectedFlow.value, text(selected.meta.unit ?? selectedFlow.unit) || '—')}</p>
                   <p className="mt-1 text-[10px] text-ink-400">{tt('로컬·원격 간 집계값이며 개별 홉의 측정값이 아닙니다.')}</p>
+                  {selected.meta.capped === true && <p className="mt-2 text-[10px] text-amber-700">{tt('상위 기여자 표본 상한에 도달했습니다. 전체 트래픽을 나타내지 않습니다.')}</p>}
                 </div>
                 <dl className="space-y-2">
                   {[
@@ -278,8 +309,8 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                 </dl>
                 <div>
                   <p className="mb-2 font-medium">{tt('경유 구성요소')}</p>
-                  <ul className="space-y-1">{traversedItems(selectedFlow).map(item => <li key={item} className="break-all rounded bg-ink-50 px-2 py-1 font-mono text-[10px]">{item}</li>)}</ul>
-                  <p className="mt-2 text-[10px] text-ink-400">{tt('관측된 구성요소이며 패킷의 통과 순서를 보장하지 않습니다.')}</p>
+                  <ul className="space-y-1">{traversed.map(item => <li key={item} className="break-all rounded bg-ink-50 px-2 py-1 font-mono text-[10px]">{item}</li>)}</ul>
+                  <p className="mt-2 text-[10px] text-ink-400">{tt(traversed.length ? '관측된 구성요소이며 패킷의 통과 순서를 보장하지 않습니다.' : '관측에 경유 구성요소 정보가 없습니다.')}</p>
                 </div>
                 <Link href="/network-flow" className="inline-block text-brand-600 hover:underline">{tt('네트워크 모니터 열기')}</Link>
               </div>
@@ -288,23 +319,36 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                 {selected.layer !== 'network' && typeof selected.meta.id === 'string' && (
                   <div><dt className="text-[10px] text-ink-400">ID</dt><dd className="break-all font-mono text-[10px]">{selected.meta.id}</dd></div>
                 )}
-                {['cluster', 'namespace', 'deployment', 'podName', 'ip', 'vpcId', 'region', 'match', 'host', 'dbName', 'componentId', 'type'].map((key) => {
+                {['cluster', 'namespace', 'deployment', 'podName', 'podNamespace', 'instanceId', 'az', 'subnetId', 'serviceName', 'ip', 'vpcId', 'region', 'match', 'host', 'dbName', 'componentId', 'type'].map((key) => {
                   const nested = object(selected.meta.endpoint) ? selected.meta.endpoint[key] : undefined;
                   const value = selected.meta[key] ?? nested;
                   return value == null ? null : <div key={key}><dt className="text-[10px] text-ink-400">{key}</dt><dd className="break-all">{display(value)}</dd></div>;
                 })}
+                {typeof selected.meta.correlation === 'string' && <div>
+                  <dt className="text-[10px] text-ink-400">{tt('식별 상태')}</dt>
+                  <dd>{tt(CORRELATION[selected.meta.correlation] ?? selected.meta.correlation)}</dd>
+                </div>}
+                {typeof selected.meta.correlationReason === 'string' && <div>
+                  <dt className="text-[10px] text-ink-400">correlationReason</dt>
+                  <dd className="break-all">{selected.meta.correlationReason}</dd>
+                  <dd>{tt(CORRELATION_REASONS[selected.meta.correlationReason as E2eCorrelationReason] ?? '')}</dd>
+                </div>}
               </dl>
             )}
             <div className="mt-5 border-t border-ink-100 pt-3">
               <p className="mb-2 font-medium">{tt('연결 근거')}</p>
+              {omittedSelectedEdges > 0 && <p className="mb-2 text-[10px] text-amber-700">{tt('캔버스에서 생략된 관계:')} {omittedSelectedEdges}</p>}
+              {selectedEdges.length === 0 && <p>{tt('현재 관계 필터에서 연결 근거가 없습니다.')}</p>}
               <ul className="space-y-2">{selectedEdges.slice(0, 20).map((e) => (
                 <li key={e.id} className="break-words text-[11px]">
-                  <span style={{ color: EVIDENCE[e.evidence].color }}>{tt(EVIDENCE[e.evidence].label)}</span>
+                  <span style={{ color: EVIDENCE[e.evidence].color }}>{e.label || tt(EVIDENCE[e.evidence].label)}</span>
                   <p className="text-ink-500">{byId.get(e.source)?.label} {e.directed ? '→' : '↔'} {byId.get(e.target)?.label}</p>
                   {e.meta?.match != null && <p className="font-mono text-[10px] text-ink-400">{String(e.meta.match)}</p>}
                   {e.meta?.confidence === 'inferred' && <p>{tt('추정 관계')}</p>}
+                  {e.meta?.confidence != null && <p className="text-[10px] text-ink-400">confidence: {String(e.meta.confidence)}</p>}
                 </li>
               ))}</ul>
+              {selectedEdges.length > 20 && <p className="mt-2">+{selectedEdges.length - 20} {tt('관계 더 있음')}</p>}
             </div>
           </section>
         )}
