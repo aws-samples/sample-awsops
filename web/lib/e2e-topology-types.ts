@@ -34,7 +34,7 @@ export interface E2eEdge {
 }
 export interface ServiceSnapshot {
   /** Workload identity requires accountId/region claims here or on incoming runs_on services. */
-  nodes: { id: string; kind: string; label: string; meta?: Record<string, unknown> }[];
+  nodes: { id: string; kind: string; label: string; meta?: Record<string, unknown>; captured_at?: string | null }[];
   edges: { source: string; target: string; rel: string; confidence?: string }[];
   captured_at: string | null;
 }

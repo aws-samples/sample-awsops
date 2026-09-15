@@ -10,6 +10,12 @@ const record = (value: unknown): Meta =>
 const text = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const strings = (value: unknown): string[] => list(value).map(text).filter(Boolean);
+const sourceTime = (value: unknown): string | null => Number.isFinite(Date.parse(text(value))) ? text(value) : null;
+// Canonicalize IPv6 spelling without changing instance IDs or legacy opaque values.
+const address = (value: string): string => {
+  if (!value.includes(':') || !/^[\da-fA-F:.]+$/.test(value)) return value;
+  try { return new URL(`http://[${value}]/`).hostname.slice(1, -1); } catch { return value; }
+};
 const generatedLabel = (labelKey: E2eLabelKey) => ({ label: labelKey, labelKey });
 // Tuple encoding avoids collisions from separators occurring in source IDs or names.
 const key = (...parts: string[]): string => JSON.stringify(parts);
@@ -115,11 +121,12 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[], hostAccountId: string, 
     const accountId = accounts[0] && accounts.every(account => account === accounts[0]) ? accounts[0] : '';
     const accountBlocked = rows.some(row => hasMarker(row.account_id) && row.account_id !== 'self'
       && (!hostAccountId || row.account_id !== hostAccountId));
-    for (const value of full ? new Set(full.map(m => text(m.id))) : targetValues(node.meta)) {
+    const normalize = (value: string) => type === 'ip' ? address(value) : value;
+    for (const value of new Set((full ? full.map(m => text(m.id)) : targetValues(node.meta)).map(normalize))) {
       const k = key(type, value);
       const entries = index.get(k) ?? [];
       const memberEvidence = [...(full ?? []), ...list(node.meta.memberIdentities).map(record)]
-        .filter(member => text(member.id) === value);
+        .filter(member => normalize(text(member.id)) === value);
       const evidence = [node.meta, ...parents, ...rows, ...memberEvidence];
       // Retain blocked candidates in the index: dropping one would let a competing
       // record win merely because the conflicting evidence was hidden.
@@ -298,7 +305,8 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     addNode({
       id: nodeId('service', input.account, id), layer: 'service',
       kind: text(node.kind), label: text(node.label) || id,
-      meta: { ...record(node.meta), capturedAt: input.services?.captured_at ?? null },
+      meta: { ...record(node.meta), capturedAt: sourceTime(node.captured_at),
+        snapshotCapturedAt: sourceTime(input.services?.captured_at) },
     });
   }
   summary.serviceNodes = nodes.length - summary.configuredNodes;
@@ -308,7 +316,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       source: nodeId('service', input.account, text(edge.source)),
       target: nodeId('service', input.account, text(edge.target)),
       relation: text(edge.rel), evidence: 'service', directed: true,
-      meta: { confidence: edge.confidence, capturedAt: input.services?.captured_at ?? null },
+      meta: { confidence: edge.confidence, snapshotCapturedAt: sourceTime(input.services?.captured_at) },
     });
   }
   const { shown: targets, truncated } = targetIndex(nodes, edges, hostAccountId, targetMembers);
@@ -322,7 +330,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     const unverifiedScope = Boolean(text(data.ip) || text(data.instanceId)) && (!region || !vpcId);
     const candidates = new Map<string, TargetIdentity>();
     if (region && vpcId) {
-      for (const [type, value] of [['ip', text(data.ip)], ['instance', text(data.instanceId)]] as const) {
+      for (const [type, value] of [['ip', address(text(data.ip))], ['instance', text(data.instanceId)]] as const) {
         if (!value) continue;
         for (const candidate of targets.get(key(type, value)) ?? []) {
           if (!overlaps(candidate)) continue;
@@ -679,9 +687,11 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
   const distance = (distances: Map<string, number>, id: string) => distances.get(id) ?? selected.size + 1;
   matches.sort((a, b) => networkRank(a) - networkRank(b) || ranked(a) - ranked(b) || compare(a, b));
   if (focusId) add(focusId);
-  const explicitFits = new Set([...(focusId && selected.has(focusId) ? [focusId] : []), ...matches]).size <= maxNodes;
+  const allMatchesFit = new Set([...(focusId ? [focusId] : []), ...matches]).size <= maxNodes;
+  const nonNetwork = matches.filter(id => allMatchesFit ? !groupOf.has(id) : byId.get(id)?.layer !== 'network');
+  const explicitFits = new Set([...(focusId && selected.has(focusId) ? [focusId] : []), ...nonNetwork]).size <= maxNodes;
   // Preserve fitting non-network hits, then admit whole matching observations.
-  if (explicitFits) for (const id of matches) if (!groupOf.has(id)) add(id);
+  if (explicitFits) for (const id of nonNetwork) add(id);
   if (focusId && groupOf.has(focusId)) addGroup(groupOf.get(focusId)!);
   const orderedGroups = [...groups.keys()].sort((a, b) => {
     return distance(focusDistances, a) - distance(focusDistances, b)
