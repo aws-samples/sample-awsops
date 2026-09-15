@@ -26,6 +26,7 @@ interface TargetIdentity {
   blocked: boolean;
   cached: boolean;
   contextAllowed: boolean;
+  members: Meta[];
 }
 type TargetScope = Pick<TargetIdentity, 'node' | 'type' | 'region' | 'vpcId'>;
 
@@ -52,23 +53,31 @@ function ownershipVeto(meta: Meta, region: string, vpcId: string): boolean {
 const cachedConfiguration = (meta: Meta): boolean =>
   meta.ownership_evidence === 'cached_configuration' || record(meta.ownershipRead).configurationOnly === true;
 
-/** Grouped targets expose only a capped list, not all members in the TG's inventory row. */
-function targetValues(meta: Meta): string[] {
-  const result = new Set<string>();
-  if (text(meta.id)) result.add(text(meta.id));
-  for (const member of strings(meta.members)) {
-    const withPort = member.match(/^([^:]+):\d+$/);
-    const bracketed = member.match(/^\[([^\]]+)\](?::\d+)?$/);
-    if (bracketed) result.add(bracketed[1]);
-    else if (withPort) result.add(withPort[1]);
-    else if (!member.includes(':')) result.add(member);
-    // An unbracketed IPv6 member could be an address OR address:port. Do not guess.
-    // Exact IPv6 addresses remain usable through the single-target meta.id.
-  }
-  return [...result];
+// Unbracketed IPv6 display entries could include a port. Exact sidecar IDs need no parsing.
+const memberValue = (value: string): string => value.match(/^\[([^\]]+)\](?::\d+)?$/)?.[1]
+  ?? value.match(/^([^:]+):\d+$/)?.[1] ?? (value.includes(':') ? '' : value);
+
+/** Validate complete producer membership against count and the ordered display prefix. */
+function completeMembers(meta: Meta, raw: unknown): Meta[] | undefined {
+  const count = meta.count ?? (text(meta.id) ? 1 : 0);
+  if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 1
+    || !Array.isArray(raw) || raw.length !== count) return;
+  const members = Array.from(raw, record), shown = list(meta.members);
+  if (members.some(m => !text(m.id) || m.id !== text(m.id)
+    || ['pod', 'namespace'].some(field => m[field] !== undefined && typeof m[field] !== 'string'))
+    || (meta.members !== undefined && !Array.isArray(meta.members))
+    || shown.some((value, i) => !text(value) || memberValue(text(value)) !== members[i]?.id)
+    || (text(meta.id) && (count !== 1 || members[0].id !== text(meta.id)))
+    || (meta.membersTruncated !== undefined && meta.membersTruncated !== count - shown.length)) return;
+  return members;
 }
 
-function targetIndex(nodes: E2eNode[], edges: E2eEdge[], hostAccountId: string): {
+/** Legacy graphs expose only capped display members; never infer membership from a TG row. */
+function targetValues(meta: Meta): string[] {
+  return [...new Set([text(meta.id), ...strings(meta.members).map(memberValue)].filter(Boolean))];
+}
+
+function targetIndex(nodes: E2eNode[], edges: E2eEdge[], hostAccountId: string, targetMembers: Map<string, unknown>): {
   shown: Map<string, TargetIdentity[]>; truncated: TargetScope[];
 } {
   const byId = new Map(nodes.map(node => [node.id, node]));
@@ -94,10 +103,10 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[], hostAccountId: string):
     };
     // Missing/conflicting dimensions are unknown, not evidence of a disjoint scope.
     const region = common('region'), vpcId = common('vpc_id');
-    // Count displayed records before ID deduplication: one IP on two ports is two members.
-    // Hidden membership carries scope uncertainty only, never a target/pod identity.
-    if ((typeof node.meta.membersTruncated === 'number' && node.meta.membersTruncated > 0)
-      || (typeof node.meta.count === 'number' && node.meta.count > list(node.meta.members).length)) {
+    const full = completeMembers(node.meta, targetMembers.get(node.id));
+    // Without full membership, hidden records carry uncertainty, never identity.
+    if (!full && ((typeof node.meta.membersTruncated === 'number' && node.meta.membersTruncated > 0)
+      || (typeof node.meta.count === 'number' && node.meta.count > list(node.meta.members).length))) {
       truncated.push({ node, type, region, vpcId });
     }
     // Only the trusted host may resolve the configuration's relative self sentinel.
@@ -106,15 +115,16 @@ function targetIndex(nodes: E2eNode[], edges: E2eEdge[], hostAccountId: string):
     const accountId = accounts[0] && accounts.every(account => account === accounts[0]) ? accounts[0] : '';
     const accountBlocked = rows.some(row => hasMarker(row.account_id) && row.account_id !== 'self'
       && (!hostAccountId || row.account_id !== hostAccountId));
-    for (const value of targetValues(node.meta)) {
+    for (const value of full ? new Set(full.map(m => text(m.id))) : targetValues(node.meta)) {
       const k = key(type, value);
       const entries = index.get(k) ?? [];
-      const memberEvidence = list(node.meta.memberIdentities).map(record).filter(member => text(member.id) === value);
+      const memberEvidence = [...(full ?? []), ...list(node.meta.memberIdentities).map(record)]
+        .filter(member => text(member.id) === value);
       const evidence = [node.meta, ...parents, ...rows, ...memberEvidence];
       // Retain blocked candidates in the index: dropping one would let a competing
       // record win merely because the conflicting evidence was hidden.
       entries.push({
-        node, type, value, region, vpcId,
+        node, type, value, region, vpcId, members: memberEvidence,
         accountId: /^\d{12}$/.test(accountId) ? accountId : '',
         blocked: accountBlocked || !region || !vpcId || evidence.some(meta => ownershipVeto(meta, region, vpcId)),
         cached: evidence.some(cachedConfiguration),
@@ -171,7 +181,9 @@ function workloadScopeReason(workload: WorkloadIdentity, target: TargetIdentity)
   const regions = claims('region'), accounts = claims('accountId');
   if (regions.length > 0 && regions.every(region => region === target.region)
     && accounts.length > 0 && accounts.every(account =>
-      account === 'self' || Boolean(target.accountId && account === target.accountId))) return;
+      account === 'self' || Boolean(target.accountId && account === target.accountId))
+    && workload.scopes.some(meta => meta.region === target.region
+      && (meta.accountId === 'self' || Boolean(target.accountId && meta.accountId === target.accountId)))) return;
   const conflict = regions.some(region => /^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(text(region)) && region !== target.region)
     || accounts.some(account => /^\d{12}$/.test(text(account)) && target.accountId && account !== target.accountId);
   return conflict ? 'workload_conflict' : 'workload_scope_unverified';
@@ -181,10 +193,9 @@ function targetWorkload(target: TargetIdentity | undefined, endpoint: Meta): { c
   const meta = target?.node.meta;
   if (!meta || target?.blocked || target?.cached || meta.resolved !== 'eks') return { cluster: '', conflict: false };
   let identity = meta;
-  if (Array.isArray(meta.members)) {
-    // Group metadata retains the first replica's pod. Only the exact shown member
-    // can validate another replica; absent member evidence permits a bare IP join only.
-    const members = list(meta.memberIdentities).map(record).filter(member => text(member.id) === target!.value);
+  if (Array.isArray(meta.members) || (typeof meta.count === 'number' && meta.count > 1)) {
+    // Group metadata retains the first replica's pod; only exact member evidence is proof.
+    const members = target!.members;
     if (!members.length) return { cluster: '', conflict: false };
     const identities = new Set(members.map(member => key(text(member.pod), text(member.namespace))));
     if (identities.size !== 1) return { cluster: '', conflict: true };
@@ -240,6 +251,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
   };
   const { nodes, edges, summary } = graph;
   const present = new Set<string>();
+  const targetMembers = new Map<string, unknown>();
   const edgeOccurrences = new Map<string, number>();
   const addNode = (node: E2eNode) => {
     if (present.has(node.id)) return;
@@ -257,11 +269,12 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
   for (const raw of list(input.configured?.nodes)) {
     const node = record(raw), id = text(node.id);
     if (!id) continue;
+    targetMembers.set(nodeId('configuration', input.account, id), record(input.configured?.targetMembers)[id]);
     addNode({
       id: nodeId('configuration', input.account, id), layer: 'configuration',
       kind: text(node.kind), label: text(node.label) || id,
       meta: { ...record(node.meta),
-        ...(!summary.configurationComplete && node.kind === 'target' ? { e2e_correlation_blocked: true } : {}) },
+        ...(!summary.configurationComplete && text(node.kind) === 'target' ? { e2e_correlation_blocked: true } : {}) },
     });
   }
   summary.configuredNodes = nodes.length;
@@ -297,7 +310,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       meta: { confidence: edge.confidence, capturedAt: input.services?.captured_at ?? null },
     });
   }
-  const { shown: targets, truncated } = targetIndex(nodes, edges, hostAccountId);
+  const { shown: targets, truncated } = targetIndex(nodes, edges, hostAccountId, targetMembers);
   const workloads = workloadIndex(nodes, edges);
 
   const correlate = (endpoint: E2eNode, side: Side) => {
@@ -316,7 +329,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
         }
       }
     }
-    // A shown member may use its own group; an unseen member in another overlapping
+    // A known member may use its own group; an unseen member in another overlapping
     // group prevents false uniqueness. Missing scope never establishes disjointness.
     const hiddenCompetitor = truncated.some(scope => !candidates.has(scope.node.id) && overlaps(scope)
       && Boolean(text(data[scope.type === 'ip' ? 'ip' : 'instanceId'])));

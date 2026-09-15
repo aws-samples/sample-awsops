@@ -18,6 +18,19 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
   };
   const target = (input: FlowInput) => buildFlowGraph(input).nodes.find(n => n.kind === 'target')!;
 
+  it('keeps complete membership outside persisted node metadata and display caps', () => {
+    const graph = buildFlowGraph({ tg: [{ ...tg, target_health_descriptions: Array.from({ length: 25 }, (_, i) =>
+      ({ Target: { Id: `10.0.1.${i + 1}`, Port: 443 } })) }], ownershipRead: { configurationOnly: true } });
+    const node = graph.nodes.find(n => n.kind === 'target')!;
+    expect(graph.targetMembers?.[node.id]).toHaveLength(25);
+    expect(graph.targetMembers?.[node.id]?.[24]).toEqual({ id: '10.0.1.25' });
+    const stored = JSON.parse(JSON.stringify(graph.nodes)).find((n: { id: string }) => n.id === node.id);
+    expect(stored.meta).toMatchObject({ count: 25, membersTruncated: 5, ownership_evidence: 'cached_configuration' });
+    expect(stored.meta.members).toHaveLength(20);
+    expect(stored.meta.targetMembers).toBeUndefined();
+    expect(stored.meta.memberIdentities).toBeUndefined();
+  });
+
   it('withholds exclusive ownership outside the enumerated EKS region', () => {
     const configured = buildFlowGraph({ tg: [{ ...tg, vpc_id: 'vpc-b',
       target_health_descriptions: [ip, '10.0.1.11'].map(Id => ({ Target: { Id } })) }],
