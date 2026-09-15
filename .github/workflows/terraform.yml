@@ -198,6 +198,7 @@ jobs:
           CI_READONLY_RUNTIME_DEV: ${{ vars.CI_READONLY_RUNTIME_DEV }}
           CI_READINESS_ENABLED_DEV: ${{ env.TARGET == 'dev' && vars.CI_READINESS_ENABLED_DEV || '' }}
           CI_STEAMPIPE_AWS_FILL_RATE_DEV: ${{ env.TARGET == 'dev' && (inputs.plan_scope || 'full') == 'full' && vars.CI_STEAMPIPE_AWS_FILL_RATE_DEV || '' }}
+          CI_RUNTIME_TARGETS_DEV: ${{ env.TARGET == 'dev' && (inputs.plan_scope || 'full') == 'full' && secrets.CI_RUNTIME_TARGETS_DEV || '' }}
           STEAMPIPE_IMAGE_DIGEST_DEV: ${{ vars.STEAMPIPE_IMAGE_DIGEST_DEV }}
           WORKER_IMAGE_DIGEST_DEV: ${{ vars.WORKER_IMAGE_DIGEST_DEV }}
           RUNTIME_ROLLOUT: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_rollout }}
@@ -227,6 +228,7 @@ jobs:
         env:
           CI_READONLY_RUNTIME_DEV: ${{ vars.CI_READONLY_RUNTIME_DEV }}
           PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
+          RUNTIME_PREFLIGHT_PHASE: plan
           SMOKE_CREDENTIAL_FILE: ${{ steps.host_credentials.outputs.credential_file }}
         run: node ../../scripts/v2/ci/prepare-runtime-host.mjs
 
@@ -780,6 +782,7 @@ jobs:
         env:
           CI_READONLY_RUNTIME_DEV: "true"
           PLAN_SCOPE: full
+          RUNTIME_PREFLIGHT_PHASE: apply
           SMOKE_CREDENTIAL_FILE: ${{ steps.apply_host_credentials.outputs.credential_file }}
         run: node ../../scripts/v2/ci/prepare-runtime-host.mjs
 

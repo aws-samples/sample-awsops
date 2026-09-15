@@ -130,4 +130,25 @@ describe('account onboarding script', () => {
     expect(guide.script).not.toContain('Role ready.');
     expect(execFileSync('bash', ['-n'], { input: guide.commands }).toString()).toBe('');
   });
+
+  it('includes the configured inventory role with the same ExternalId protection', () => {
+    const inventoryTaskRoleArn = 'arn:aws:iam::111111111111:role/awsops-dev-steampipe-task';
+    const guide = buildAccountOnboarding(input, { ...config, inventoryTaskRoleArn });
+    const parameters = JSON.parse(guide.script.split("<<'AWSOPS_PARAMETERS'\n")[1].split('\nAWSOPS_PARAMETERS')[0]);
+    expect(parameters).toContainEqual({ ParameterKey: 'InventoryTaskRoleArn', ParameterValue: inventoryTaskRoleArn });
+    const template = JSON.parse(guide.script.split("<<'AWSOPS_TEMPLATE'\n")[1].split('\nAWSOPS_TEMPLATE')[0]);
+    const statement = template.Resources.AWSopsReadOnlyRole.Properties.AssumeRolePolicyDocument.Statement[1]['Fn::If'];
+    expect(statement[0]).toBe('HasInventoryTaskRoleArn');
+    expect(statement[1]).toMatchObject({
+      Principal: { AWS: { Ref: 'InventoryTaskRoleArn' } }, Action: 'sts:AssumeRole',
+      Condition: { 'Fn::If': ['HasExternalId', { StringEquals: { 'sts:ExternalId': { Ref: 'ExternalId' } } }, { Ref: 'AWS::NoValue' }] },
+    });
+    expect(statement[2]).toEqual({ Ref: 'AWS::NoValue' });
+  });
+
+  it.each(['*', 'arn:aws:iam::111111111111:root', 'arn:aws:iam::333333333333:role/collector'])(
+    'rejects an invalid configured inventory principal %s', (inventoryTaskRoleArn) => {
+      expect(() => buildAccountOnboarding(input, { ...config, inventoryTaskRoleArn })).toThrow();
+    },
+  );
 });

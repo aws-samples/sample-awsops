@@ -20,6 +20,20 @@ const WORKER_POLL_SECONDS = 300;
 // Enqueue plus the polling window and its last admitted HTTP request.
 const WORKER_MS = REQUEST_MS + WORKER_POLL_SECONDS * 1000 + REQUEST_MS;
 const COOLDOWN_MS = 65_000;
+const memberTypes = new Set(['ec2', 'cloudfront']);
+export function validateMemberTargets(value, host) {
+  if (!Array.isArray(value) || value.length > 5) fail('configuration');
+  const accounts = new Set([host]);
+  for (const target of value) {
+    if (!exact(target, ['account_id', 'resource_type', 'resource_id'])
+        || typeof target.account_id !== 'string' || !/^[0-9]{12}$/.test(target.account_id)
+        || accounts.has(target.account_id) || typeof target.resource_type !== 'string'
+        || !memberTypes.has(target.resource_type)
+        || typeof target.resource_id !== 'string' || !/^[\x21-\x7e]{1,2048}$/.test(target.resource_id)) fail('configuration');
+    accounts.add(target.account_id);
+  }
+  return value;
+}
 export function validateRuntimeSmokeConfig(value, now = Date.now()) {
   if (!Number.isFinite(now)) fail('configuration');
   const keys = value?.mode === 'prepare' ? [...baseKeys]
@@ -27,6 +41,10 @@ export function validateRuntimeSmokeConfig(value, now = Date.now()) {
   const hasHostOnly = object(value) && Object.hasOwn(value, 'hostOnly');
   const hasCollectionMode = object(value) && Object.hasOwn(value, 'collectionMode');
   const hasPolicy = object(value) && Object.hasOwn(value, 'inventoryPolicy');
+  const hasTargets = object(value) && Object.hasOwn(value, 'expectedMemberTargets');
+  const hasRegistryMode = object(value) && Object.hasOwn(value, 'memberRegistryMode');
+  if (hasTargets) keys.push('expectedMemberTargets');
+  if (hasRegistryMode) keys.push('memberRegistryMode');
   if (hasPolicy) keys.push('inventoryPolicy');
   if (hasCollectionMode) keys.push('collectionMode');
   if ((hasPolicy && (value.mode !== 'verify' || value.inventoryPolicy !== 'full'))
@@ -34,6 +52,10 @@ export function validateRuntimeSmokeConfig(value, now = Date.now()) {
       || !exact(value, hasHostOnly ? [...keys, 'hostOnly'] : keys) || (hasHostOnly && typeof value.hostOnly !== 'boolean')
       || value.schemaVersion !== 1 || !['prepare', 'verify'].includes(value.mode)
       || typeof value.expectedAccountId !== 'string' || !/^[0-9]{12}$/.test(value.expectedAccountId)) fail('configuration');
+  if (hasTargets) validateMemberTargets(value.expectedMemberTargets, value.expectedAccountId);
+  if ((hasTargets && value.expectedMemberTargets.length && hasHostOnly)
+      || (hasRegistryMode && (value.mode !== 'prepare' || value.memberRegistryMode !== 'onboarding'
+        || !hasTargets || !value.expectedMemberTargets.length))) fail('configuration');
   if (value.mode === 'verify') {
     const types = value.expectedQueuedTypes;
     const start = Date.parse(value.collectionStartedAt);
@@ -42,6 +64,7 @@ export function validateRuntimeSmokeConfig(value, now = Date.now()) {
         || !types.includes('cloudfront') || types.some(t => typeof t !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(t))
         || typeof value.collectionStartedAt !== 'string' || !Number.isFinite(start)
         || start > now || start < now - VERIFICATION_WINDOW_MS) fail('configuration');
+    if (value.expectedMemberTargets?.some(target => !types.includes(target.resource_type))) fail('configuration');
   }
   return value;
 }
@@ -141,6 +164,13 @@ export async function verifyRuntimeSmoke(configuration, send, {
       || accounts.filter(a => a.isHost).length !== 1
       || accounts.filter(a => a.accountId === config.expectedAccountId && a.isHost && a.enabled).length !== 1
       || (config.hostOnly === true && accounts.some(a => a.enabled && a.accountId !== config.expectedAccountId))) fail('host_registry');
+  const targets = config.expectedMemberTargets ?? [];
+  if (targets.length) {
+    const expected = new Set([config.expectedAccountId, ...targets.map(t => t.account_id)]);
+    const enabled = accounts.filter(a => a.enabled).map(a => a.accountId);
+    if (new Set(enabled).size !== enabled.length || enabled.some(id => !expected.has(id))
+        || (config.memberRegistryMode !== 'onboarding' && enabled.length !== expected.size)) fail('member_registry');
+  }
   if (config.mode === 'prepare') return { status: 'ok', mode: 'prepare' };
 
   async function poll(check, phase, seconds, collectionEnd = Infinity) {
@@ -198,6 +228,16 @@ export async function verifyRuntimeSmoke(configuration, send, {
     if (page.rows.length < 5) break;
   }
   if (!found) fail('inventory_known_resource_unverified');
+  for (const target of targets) {
+    const proof = await request(`/api/deployment/member-inventory?accountId=${target.account_id}`
+      + `&type=${target.resource_type}&resourceId=${encodeURIComponent(target.resource_id)}`);
+    if (!exact(proof, ['schemaVersion', 'status', 'accountId', 'type', 'resourceId', 'region', 'capturedAt'])
+        || proof.schemaVersion !== 1 || proof.status !== 'verified'
+        || proof.accountId !== target.account_id || proof.type !== target.resource_type
+        || proof.resourceId !== target.resource_id || typeof proof.region !== 'string'
+        || proof.region.length > 64 || (target.resource_type === 'ec2' && !/^[a-z]{2}-[a-z]+-\d+$/.test(proof.region))
+        || !freshTime(proof.capturedAt, started, now())) fail('member_resource_unverified');
+  }
   const nonce = randomBytes(24).toString('hex');
   let response;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -261,8 +301,9 @@ export async function verifyRuntimeSmoke(configuration, send, {
       return true;
     }, 'worker_timeout', WORKER_POLL_SECONDS);
   }
+  const memberProof = targets.length ? { member_targets_verified: targets.length } : {};
   return config.inventoryPolicy
     ? { status: 'ok', mode: 'verify', inventory_policy: config.inventoryPolicy,
-      inventory_quality: quality, workers: 2 }
-    : { status: 'ok', mode: 'verify', collected_types: config.expectedQueuedTypes.length, workers: 2 };
+      inventory_quality: quality, workers: 2, ...memberProof }
+    : { status: 'ok', mode: 'verify', collected_types: config.expectedQueuedTypes.length, workers: 2, ...memberProof };
 }

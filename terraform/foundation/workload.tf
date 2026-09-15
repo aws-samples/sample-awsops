@@ -450,6 +450,10 @@ resource "aws_ecs_task_definition" "web" {
         { name = "AWS_ACCOUNT_ID", value = data.aws_caller_identity.current.account_id },
         ], var.inventory_host_only ? [
         { name = "INVENTORY_HOST_ONLY", value = "true" }
+        ] : [], var.steampipe_enabled ? [
+        { name = "INVENTORY_TASK_ROLE_ARN", value = one(aws_iam_role.steampipe_task[*].arn) }
+        ] : [], length(local.runtime_target_account_ids) > 0 ? [
+        { name = "INVENTORY_TARGET_ACCOUNT_IDS", value = jsonencode(local.runtime_target_account_ids) }
         ] : [], var.workers_enabled ? [
         { name = "JOBS_QUEUE_URL", value = one(aws_sqs_queue.jobs[*].url) }
         ] : [], var.remediation_enabled ? [

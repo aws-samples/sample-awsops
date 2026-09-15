@@ -51,4 +51,17 @@ describe('GET /api/accounts/onboarding', () => {
     expect(response.status).toBe(503);
     expect(await response.text()).not.toContain('private diagnostics');
   });
+  it('returns the configured collector principal only from the verified host account', async () => {
+    const inventoryTaskRoleArn = 'arn:aws:iam::111111111111:role/awsops-dev-steampipe-task';
+    vi.stubEnv('INVENTORY_TASK_ROLE_ARN', inventoryTaskRoleArn);
+    expect(await (await GET(request())).json()).toMatchObject({ inventoryTaskRoleArn });
+    vi.stubEnv('INVENTORY_TASK_ROLE_ARN', 'arn:aws:iam::222222222222:role/other');
+    expect((await GET(request())).status).toBe(503);
+  });
+  it('discloses the applied account allowlist and rejects malformed scope', async () => {
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '["222222222222"]');
+    expect(await (await GET(request())).json()).toMatchObject({ registrationTargetAccountIds: ['222222222222'] });
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '{}');
+    expect((await GET(request())).status).toBe(503);
+  });
 });

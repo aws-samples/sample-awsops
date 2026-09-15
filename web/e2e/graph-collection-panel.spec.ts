@@ -68,22 +68,59 @@ for (const path of ['/topology/infra', '/topology/resource/vpc%3Aone', '/topolog
       await page.setViewportSize({ width, height: 900 });
       await page.addInitScript(() => localStorage.setItem('awsops-lang', 'en'));
       const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
-      let healthy = false;
+      let shed = true;
+      const statuses: number[] = [];
+      page.on('response', response => {
+        if (new URL(response.url()).pathname === '/api/graph') statuses.push(response.status());
+      });
       await page.route('**/api/**', route => {
         if (new URL(route.request().url()).pathname !== '/api/graph') return route.fulfill({ json: { accounts: [], rows: [], clusters: [] } });
-        if (!healthy) return route.fulfill({ status: 500, json: { message: 'PRIVATE',
-          collection: { status: 'unknown', stale: true, readStatus: 'unavailable', readReason: 'query_failed' } } });
+        if (shed) return route.fulfill({ status: 503, headers: { 'Retry-After': '1' }, json: { message: 'PRIVATE',
+          collection: { status: 'unknown', stale: true, readStatus: 'unavailable', readReason: 'busy' } } });
         return route.fulfill({ json: { nodes: [{ id: 'vpc:one', kind: 'vpc', label: 'Example VPC' }], edges: [],
           captured_at: null, collection: { status: 'ok', stale: false, sources: [] } } });
       });
       await page.goto(path);
-      await expect(page.getByRole('alert').filter({ hasText: 'Graph read unavailable' })).toBeVisible();
+      await expect(page.getByRole('alert').filter({ hasText: 'Graph read unavailable' })).toBeVisible({ timeout: 12000 });
+      // An obsolete initial request can be cancelled while the page mounts.
+      // Count completed responses in the active recovery, not that obsolete request.
+      expect(statuses.length).toBeGreaterThan(1);
+      expect(statuses.length).toBeLessThanOrEqual(5);
+      expect(statuses.every(status => status === 503)).toBe(true);
       await expect(page.locator('body')).not.toContainText('PRIVATE');
       await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
-      healthy = true;
+      shed = false;
       await page.getByRole('button', { name: 'Refresh', exact: true }).click();
       await expect(page.getByRole('status').filter({ hasText: 'Latest collection succeeded' })).toBeVisible();
       await expect(page.getByRole('alert').filter({ hasText: 'Graph read unavailable' })).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
+    test(`${path} recovers automatically after one busy read at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.addInitScript(() => localStorage.setItem('awsops-lang', 'en'));
+      let confirmedBusy = false;
+      const statuses: number[] = [];
+      page.on('response', response => {
+        if (new URL(response.url()).pathname === '/api/graph') {
+          statuses.push(response.status());
+          if (response.status() === 503) confirmedBusy = true;
+        }
+      });
+      const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+      await page.route('**/api/**', route => {
+        if (new URL(route.request().url()).pathname !== '/api/graph') return route.fulfill({ json: { accounts: [], rows: [], clusters: [] } });
+        if (!confirmedBusy) return route.fulfill({ status: 503, headers: { 'Retry-After': '1' },
+          json: { message: 'PRIVATE', collection: { status: 'unknown', stale: true, readStatus: 'unavailable', readReason: 'busy' } } });
+        return route.fulfill({ json: { nodes: [{ id: 'vpc:one', kind: 'vpc', label: 'Recovered fixture' }], edges: [],
+          captured_at: null, collection: { status: 'ok', stale: false, sources: [] } } });
+      });
+      await page.goto(path);
+      await expect(page.getByRole('status').filter({ hasText: 'Latest collection succeeded' })).toBeVisible();
+      await expect(page.locator('.react-flow')).toContainText('Recovered fixture');
+      expect(statuses).toEqual([503, 200]);
+      await expect(page.getByRole('alert').filter({ hasText: 'Graph read unavailable' })).toHaveCount(0);
+      await expect(page.locator('body')).not.toContainText('PRIVATE');
       expect(errors).toEqual([]);
     });
   }
@@ -143,6 +180,33 @@ for (const path of ['/topology/infra', '/topology/resource/vpc%3Aone', '/topolog
       await expect(refresh).toBeDisabled();
       await expect(page.locator('body')).not.toContainText('Visible fixture');
       await expect(page.locator('body')).not.toContainText('PRIVATE');
+    });
+  }
+}
+
+for (const path of ['/topology/infra', '/topology/resource/vpc%3Aone', '/topology/services']) {
+  for (const width of [1440, 390]) {
+    test(`${path} discloses a non-retryable query failure and recovers on refresh at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.addInitScript(() => localStorage.setItem('awsops-lang', 'en'));
+      const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+      let healthy = false;
+      await page.route('**/api/**', route => {
+        if (new URL(route.request().url()).pathname !== '/api/graph') return route.fulfill({ json: { accounts: [], rows: [], clusters: [] } });
+        if (!healthy) return route.fulfill({ status: 500, json: { message: 'PRIVATE',
+          collection: { status: 'unknown', stale: true, readStatus: 'unavailable', readReason: 'query_failed' } } });
+        return route.fulfill({ json: { nodes: [{ id: 'vpc:one', kind: 'vpc', label: 'Example VPC' }], edges: [],
+          captured_at: null, collection: { status: 'ok', stale: false, sources: [] } } });
+      });
+      await page.goto(path);
+      await expect(page.getByRole('alert').filter({ hasText: 'Graph read unavailable' })).toBeVisible();
+      await expect(page.locator('body')).not.toContainText('PRIVATE');
+      await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
+      healthy = true;
+      await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+      await expect(page.getByRole('status').filter({ hasText: 'Latest collection succeeded' })).toBeVisible();
+      await expect(page.getByRole('alert').filter({ hasText: 'Graph read unavailable' })).toHaveCount(0);
+      expect(errors).toEqual([]);
     });
   }
 }
