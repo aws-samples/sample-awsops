@@ -19,7 +19,7 @@ it('passes independently collected subnet rows to the real ECS target resolver',
   vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id));
   vi.stubGlobal('fetch', vi.fn(async (input: string) => {
     const url = new URL(input, 'http://localhost');
-    if (url.pathname === '/api/eks') return Response.json({ clusters: [] });
+    if (url.pathname === '/api/eks') return Response.json({ clusters: [], region: 'us-east-1', truncated: false });
     const type = url.pathname.split('/').at(-1);
     const rows = type === 'target_group' ? [{
       resource_id: 'tg-orders', region: 'us-east-1', data: {
@@ -36,7 +36,8 @@ it('passes independently collected subnet rows to the real ECS target resolver',
         ] }],
       },
     }] : [];
-    return Response.json({ rows });
+    return Response.json({ rows: rows.map(row => ({ ...row, account_id: 'self' })), consistency: 'statement-snapshot',
+      run: { status: 'succeeded', finished_at: '2026-09-13T00:00:00Z', last_success_at: '2026-09-13T00:00:00Z', row_count: 1 } });
   }));
   render(<TopologyPage />);
   await waitFor(() => expect(screen.getByTestId('target').textContent).toBe('ecs-orders'));
