@@ -700,13 +700,51 @@ class TestHandlerWithInjectedDataApi(unittest.TestCase):
         self.assertIn({"longValue": 1001}, values)
 
     def test_invalid_topology_identifier_is_rejected_before_sql(self):
-        for identifier in (None, "", "   ", 123, [], {}, "a" * 4097):
+        for identifier in ("", "   ", 123, [], {}, "a" * 4097):
             with self.subTest(identifier=identifier), mock.patch.object(inv, "_execute") as execute:
                 response = inv.lambda_handler({
                     "tool_name": "get_topology", "arguments": {"resource_id": identifier},
                 }, None)
                 self.assertEqual(response["statusCode"], 400)
                 execute.assert_not_called()
+
+    def test_null_optional_topology_identifier_keeps_the_whole_graph_path(self):
+        metadata = {"selection": {"status": "all"}, "truncation": {
+            "nodes": False, "edges": False, "node_limit": 500, "edge_limit": 1000}}
+        for arguments in ({}, {"resource_id": None}):
+            with self.subTest(arguments=arguments), mock.patch.object(inv, "_inventory_graph_collection",
+                    return_value={"status": "unknown", "stale": True, "captured_at": None}), \
+                    mock.patch.object(inv, "_fetch_topology_graph", return_value=([], [], metadata)) as fetch:
+                response = inv.lambda_handler({"tool_name": "get_topology", "arguments": arguments}, None)
+                self.assertEqual(response["statusCode"], 200)
+                fetch.assert_called_once_with(resource_id=None, cls="flow")
+                self.assertEqual(json.loads(response["body"])["selection"]["status"], "all")
+
+    def test_topology_identifier_is_normalized_before_resolution_and_echo(self):
+        metadata = {"selection": {"status": "resolved", "resolved_id": "cf:E1"},
+                    "truncation": {"nodes": False, "edges": False}}
+        with mock.patch.object(inv, "_inventory_graph_collection",
+                return_value={"status": "unknown", "stale": True, "captured_at": None}), \
+                mock.patch.object(inv, "_fetch_topology_graph", return_value=([], [], metadata)) as fetch:
+            body = json.loads(inv.lambda_handler({
+                "tool_name": "get_topology", "arguments": {"resource_id": "  cf:E1\n"}}, None)["body"])
+        fetch.assert_called_once_with(resource_id="cf:E1", cls="flow")
+        self.assertEqual(body["from"], "cf:E1")
+
+    def test_node_cap_edge_omission_is_disclosed_from_a_bounded_query(self):
+        nodes = [{"id": f"ec2:i-{i:04}", "kind": "ec2", "label": "fixture", "meta": {}}
+                 for i in range(501)]
+        for omitted in (False, True):
+            with self.subTest(omitted=omitted), mock.patch.object(inv, "_execute", side_effect=[
+                    nodes, [], [{"omitted": omitted}]]) as execute:
+                _, _, metadata = inv._fetch_topology_graph(cls="infra")
+                self.assertTrue(metadata["truncation"]["nodes"])
+                self.assertEqual(metadata["truncation"]["edges"], omitted)
+                sql = execute.call_args.args[0]
+                self.assertIn("EXISTS", sql)
+                self.assertIn("LIMIT :omission_limit", sql)
+                self.assertTrue(all("arrayValue" not in p["value"]
+                                    for p in execute.call_args.kwargs["params"]))
 
     def test_get_topology_empty_graph_returns_warning(self):
         """Absent state and nodes do not establish a successful empty collection."""
@@ -799,8 +837,9 @@ class TestTopologySelectionSQL(unittest.TestCase):
     """Execute the reader's actual SQL under view-only grants, not a fake SQL interpreter.
 
     The named container must be disposable: this fixture recreates its awsops graph tables.
-    A cached psql client shares the isolated server's network namespace; no AWS access,
-    host port, image pull, or extra Python dependency is needed.
+    Container mode uses a cached psql image in the isolated server's network namespace,
+    without AWS access, host ports or an image pull. Socket mode requires pg8000.
+    Use a dedicated disposable server: this fixture also creates/alters cluster roles.
     """
 
     @classmethod
@@ -863,7 +902,9 @@ class TestTopologySelectionSQL(unittest.TestCase):
                      "01KVAQ9MQNR5R97T5AXX4JVN6Q_topology_class.sql",
                      "01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql"):
             cls._psql((migrations / name).read_text())
-        for suffix in ("_topology_inventory_evidence.sql", "_graph_attempt_disclosure.sql", "_graph_projection_parity.sql"):
+        for suffix in ("_topology_inventory_evidence.sql", "_graph_attempt_disclosure.sql",
+                       "_graph_projection_parity.sql", "_trace_queue_claim_provenance.sql",
+                       "_graph_read_indexes.sql"):
             for path in sorted(migrations.glob("*" + suffix)):
                 cls._psql(path.read_text())
 
@@ -919,7 +960,8 @@ class TestTopologySelectionSQL(unittest.TestCase):
 
     def _execute(self, sql, params=None):
         # Translate the Data API's named scalar binds into PostgreSQL PREPARE binds.
-        # JSON arrays remain one string bind, as in the Data API (no arrayValue support needed).
+        # JSON ID sets remain scalar string binds. This shim verifies SQL/view semantics;
+        # unit tests separately verify the actual SDK parameter shapes.
         self.calls.append((sql, params))
         params = params or []
         positions = {p["name"]: f"${i}" for i, p in enumerate(params, 1)}
@@ -1039,7 +1081,7 @@ class TestTopologySelectionSQL(unittest.TestCase):
         self.assertEqual(len(ids), 500)
         self.assertEqual(body["edge_count"], 499)
         self.assertTrue(body.get("truncation", {}).get("nodes"))
-        self.assertFalse(body["truncation"]["edges"])
+        self.assertTrue(body["truncation"]["edges"])
         self.assertTrue(all(e["source"] in ids and e["target"] in ids for e in body["edges"]))
 
     def test_dense_selected_graph_has_a_bounded_edge_response(self):
@@ -1062,7 +1104,35 @@ class TestTopologySelectionSQL(unittest.TestCase):
         self.assertEqual(body["node_count"], 500)
         self.assertEqual([e["rel"] for e in body["edges"]], ["valid"])
         self.assertTrue(body.get("truncation", {}).get("nodes"))
+        self.assertTrue(body["truncation"]["edges"])
         self.assertEqual(body["selection"]["status"], "all")
+
+    def test_node_cap_does_not_invent_edge_omissions_for_isolated_nodes(self):
+        ids = [f"ec2:i-{i:04}" for i in range(510)]
+        self._seed(ids, [(ids[0], ids[1], "visible")])
+        body = self._read()
+        self.assertTrue(body["truncation"]["nodes"])
+        self.assertFalse(body["truncation"]["edges"])
+        self.assertEqual(body["edge_count"], 1)
+
+    def test_rca_uses_scoped_reader_when_entity_is_beyond_the_whole_graph_page(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from rca.tools import BoundedTools
+        root, neighbour = "ec2:zz-failing", "rds:dependency"
+        self._seed([f"ec2:i-{i:04}" for i in range(510)] + [root, neighbour],
+                   [(root, neighbour, "depends")], cls="flow")
+
+        class Client:
+            def call_tool_sync(self, tool_use_id, name, arguments=None):
+                response = inv.lambda_handler({"tool_name": name, "arguments": arguments}, None)
+                return {"status": "success", "toolUseId": tool_use_id,
+                        "content": [{"text": response["body"]}]}
+
+        graph = BoundedTools({"ops": Client()}).topology_edges("zz-failing")
+        self.assertEqual(graph["selection"]["resolved_id"], root)
+        self.assertEqual([edge["target"] for edge in graph["edges"]], [neighbour])
+        self.assertFalse(graph["truncation"]["edges"])
 
     def test_exact_caps_are_complete_not_truncated(self):
         ids = [f"ec2:i-{i:04}" for i in range(500)]
@@ -1617,10 +1687,10 @@ Promise.all(input.rows.map(({row, cls}) => context.exports.readGraphState({
         with mock.patch.object(inv, "_inventory_graph_collection", side_effect=[
             {"status": "ok", "stale": False, "captured_at": self.CAPTURED},
             {"status": "error", "stale": True, "captured_at": None,
-             "failureReason": "state_read_failed"},
+             "readOutcome": "state_read_failed"},
         ]):
             body, _ = self._read(None, arguments={"class": "infra"})
-        self.assertEqual(body["collection"]["failureReason"], "state_read_failed")
+        self.assertEqual(body["collection"]["readOutcome"], "state_read_failed")
         self.assertFalse(body["collection"]["snapshotConsistent"])
         self.assertEqual(body["node_count"], 1)
 
@@ -1632,8 +1702,25 @@ Promise.all(input.rows.map(({row, cls}) => context.exports.readGraphState({
             body, _ = self._read(None, arguments={"class": "infra"})
         self.assertTrue(body["collection"]["stale"])
         self.assertFalse(body["collection"]["snapshotConsistent"])
-        self.assertEqual(body["collection"]["failureReason"], "publication_changed")
+        self.assertEqual(body["collection"]["readOutcome"], "publication_changed")
         self.assertEqual(body["selection"]["status"], "all")
+
+    def test_both_failed_state_reads_do_not_claim_a_consistent_snapshot(self):
+        failed = {"status": "error", "stale": True, "captured_at": None,
+                  "readOutcome": "state_read_failed", "evidenceKind": "inventory"}
+        with mock.patch.object(inv, "_inventory_graph_collection", return_value=failed):
+            body, _ = self._read(None, arguments={"class": "infra"})
+        self.assertFalse(body["collection"]["snapshotConsistent"])
+        self.assertEqual(body["collection"]["readOutcome"], "state_read_failed")
+
+    def test_failed_inventory_state_read_keeps_its_evidence_kind(self):
+        with mock.patch.object(inv, "_fetch_trace_collection", side_effect=RuntimeError("credential=secret")):
+            result = inv._inventory_graph_collection("infra")
+        self.assertEqual(result["evidenceKind"], "inventory")
+        self.assertEqual(result["readOutcome"], "state_read_failed")
+        self.assertFalse(result["snapshotConsistent"])
+        self.assertNotIn("failureReason", result)
+        self.assertNotIn("credential", json.dumps(result))
 
     def test_inventory_classes_add_collection_without_changing_edge_contract(self):
         for cls in ("flow", "infra"):
