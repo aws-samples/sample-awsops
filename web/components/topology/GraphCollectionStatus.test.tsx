@@ -1,13 +1,85 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
 import { readGraphState } from '@/lib/graph-state';
 const language = vi.hoisted(() => ({ current: 'en' }));
 vi.mock('@/components/shell/LanguageProvider', () => ({ useI18n: () => ({ lang: language.current }) }));
 import GraphCollectionStatus from './GraphCollectionStatus';
+import * as CollectionStatusContract from './GraphCollectionStatus';
 
 afterEach(cleanup);
+
+describe('shared collection loss contract', () => {
+  beforeEach(() => { language.current = 'en'; });
+  it('exports exactly the five existing loss fields', () => {
+    expect(CollectionStatusContract.COLLECTION_LOSS_KEYS).toEqual([
+      'nodeDrops', 'edgeDrops', 'orphanSpans', 'invalidSpans', 'unresolvedMessaging',
+    ]);
+  });
+  it.each([
+    [0, true], [1, true], [Number.MAX_SAFE_INTEGER, true],
+    [-1, false], [0.5, false], [NaN, false], [Infinity, false],
+    [Number.MAX_SAFE_INTEGER + 1, false], ['3', false], [null, false],
+    [undefined, false], [true, false], [{}, false],
+  ])('validates shared count %s as %s', (value, expected) => {
+    expect(typeof CollectionStatusContract.isCollectionLossCount).toBe('function');
+    expect(CollectionStatusContract.isCollectionLossCount(value)).toBe(expected);
+  });
+  it.each([
+    ['ko', '수집 한계'], ['en', 'Collection limitations'],
+    ['ja', '収集上の制限'], ['zh', '采集限制'],
+  ])('groups all five losses and unavailable context accessibly in %s', (lang, label) => {
+    language.current = lang;
+    render(<GraphCollectionStatus collection={{ status: 'partial', nodeDrops: 1, edgeDrops: 2,
+      orphanSpans: 3, invalidSpans: 4, unresolvedMessaging: 5, infraUnavailable: true }} />);
+    const list = screen.getByRole('list', { name: label });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(6);
+    expect(list.closest('details')).toBeNull();
+    expect(screen.getByRole('alert').contains(list)).toBe(true);
+    if (lang !== 'ko') expect(list.textContent).not.toMatch(/[가-힣]/);
+  });
+  it('groups unavailable inventory without inventing a numeric loss', () => {
+    render(<GraphCollectionStatus collection={{ status: 'partial', infraUnavailable: true }} />);
+    const list = screen.getByRole('list', { name: 'Collection limitations' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(1);
+    expect(list.textContent).toBe('Inventory context unavailable');
+  });
+  it.each([
+    {}, { nodeDrops: 0, edgeDrops: 0, orphanSpans: 0, invalidSpans: 0, unresolvedMessaging: 0 },
+    { nodeDrops: -1, edgeDrops: 0.5, orphanSpans: '3', invalidSpans: Infinity,
+      unresolvedMessaging: Number.MAX_SAFE_INTEGER + 1, infraUnavailable: 'true', itemCount: 17 },
+  ])('does not create a loss group from absent, zero or invalid counters: %j', counters => {
+    render(<GraphCollectionStatus collection={{ status: 'unknown', stale: false, ...counters }} />);
+    expect(screen.queryByRole('list', { name: 'Collection limitations' })).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('Collection state unknown');
+  });
+  it.each([false, true])('preserves full saved reasons and six clocks without changing retention=%s', retainedPrevious => {
+    const times = Array.from({ length: 6 }, (_, i) => Date.parse('2026-09-14T09:00:00Z') + i * 60_000);
+    const { container } = render(<GraphCollectionStatus collection={{
+      status: 'partial', retainedPrevious,
+      sources: [{ sourceId: 'current', status: 'ok', reasons: ['current_reason'] }],
+      publishedSources: [{ sourceId: 'saved', status: 'partial', scope: 'account',
+        producerStatus: 'failed', reasons: ['saved_cap', null, { message: 'PRIVATE' }],
+        capturedAtMs: times[0], lastSuccessAtMs: times[1], attemptedAtMs: times[2],
+        finishedAtMs: times[3], windowStartMs: times[4], windowEndMs: times[5] }],
+    }} />);
+    const details = container.querySelector('details')!;
+    const saved = Array.from(details.querySelectorAll('li')).find(item => item.textContent?.startsWith('saved'))!;
+    expect(saved.textContent).toContain('Partial collection');
+    expect(saved.textContent).toContain('account');
+    expect(saved.textContent).toContain('saved_cap');
+    expect(saved.textContent).toContain('Producer status: failed');
+    expect(saved.textContent).not.toMatch(/PRIVATE|\[object Object\]/);
+    expect(Array.from(saved.querySelectorAll('time'), item => item.dateTime))
+      .toEqual(times.map(time => new Date(time).toISOString()));
+    expect(details.open).toBe(false);
+    expect(details.querySelector('[data-source-details]')?.className).toContain('overflow-y-auto');
+    expect(details.querySelector('summary')?.textContent).toContain('Source details (2)');
+    expect(container.textContent).not.toContain('Same displayed source evidence as above.');
+  });
+});
 
 describe('graph collection status', () => {
   beforeEach(() => { language.current = 'en'; });

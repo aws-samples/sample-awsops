@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 1a25879766a2 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 864089e7f572 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -17,6 +17,28 @@
 
 Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-review/`.
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
+
+Changed HEAD PNG evidence is staged from bounded Git blobs before review credentials.
+All panel lenses and chair share safe labels and read-only generated paths; exact
+names remain in JSON data. Codex gets hash-checked --image attachments, Claude uses Read;
+BASE pixels are historical. Required unavailable images fail coverage, never suppress
+findings. No HEAD execution or permission expansion. See `docs/runbooks/pr-review-head-images.md`.
+Bounded full-report validation requires a plain `IMAGE_COVERAGE: COMPLETE` from all
+eight cells and chair for staged images. Explicit failure overrides PASS even without
+images; examples inside quotes/fences/prose do not count as declarations.
+Unsupported/over-limit entries preserve staged files but force published coverage FAIL.
+Preparation faults publish fixed failures after context/diff validation. Both image
+and pipeline fixture suites are run by the existing panel-prompt structure check.
+Static PNG/WebP/single-rendition ICO use an isolated hash-pinned Pillow 12.3.0 decoder on
+Python 3.12 with 32 attempts/files and bounded CPU/memory/time/bytes. Preserve source/render
+hashes and geometry; reject extra frames/renditions. Context admission includes rendered
+paths and final counter reserve; report omitted scope without discarding admitted images.
+Check renamed blob size before reading. Image failure does not erase response
+presence. Decorated failures block; terminal controls normalize before parsing; unreadable
+review output is distinct from image coverage. No new tool or AWS permission.
+The accepted chair must satisfy required coverage; discarded invalid output without a
+declaration may recover. Explicit/malformed and panel failures remain sticky. Omitted-path
+diagnostics use safe labels, and gate reasons are quoted environment data.
 
 ## Diagnostic and deployment boundaries
 - `ci_web_read.py` / `ci_web_deploy.py` serve Deploy Web. Only typed transient reads retry within a shared deadline; writes/permissions/identity failures do not retry. Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.

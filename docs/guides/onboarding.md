@@ -68,6 +68,10 @@ Quick deploy: `bash scripts/03-build-deploy.sh`
 
 ## Useful Commands
 
+These commands document retired v1. For the current shared test runner, follow
+[the v2 runner prerequisites](../v2-merge-verification.md#runner-usage), including
+Python 3.12 and the separate hash-pinned Pillow installation before `tests/run-all.sh`.
+
 | Command | Description |
 |---------|-------------|
 | `npm run build` | Production build |

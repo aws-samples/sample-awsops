@@ -133,7 +133,7 @@ These are query bounds and truncation signals, not proof of complete traffic cov
 The route owns `RANGE_ALLOWED` (900/1800/3600 seconds); an unsupported or omitted range
 uses its existing 3600-second default. Metric/category allowlists remain in `nfm.ts`.
 
-The standalone `topology-observations.ts` loader is **unwired until topology integration**.
+The client-side `topology-observations.ts` loader powers explicit queries in `/topology?view=e2e`.
 Its `NetworkBatch` is a client result, not additional HTTP response fields: it carries
 failed/capped categories, `complete`/`partial` status and per-category `verified`/`unknown`
 window quality. `verified` means parseable, ordered bounds only. Failures use closed codes
@@ -141,6 +141,10 @@ window quality. `verified` means parseable, ordered bounds only. Failures use cl
 upstream error text. Missing/invalid windows remain unknown and make the batch partial.
 At most three workers bound category concurrency; cancellation stops further scheduling and result
 application, without guaranteeing cancellation of a server query already started.
+
+### Service/network graph composition
+
+The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` model and existing authenticated APIs. Source-evidence, identity and selection contracts are maintained in [E2E observability](reference/observability-e2e.md#graph-source-contract); `ServiceNetworkTopology` orchestrates sources and `E2eGraphCanvas` renders the model.
 
 ## dns-logs (2)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -260,6 +264,9 @@ Trace `sources[].windowStartMs/windowEndMs` identify the source query window, se
 from top-level `attempted_at/captured_at` and optional source capture/last-success clocks.
 Positive `nodeDrops/edgeDrops/orphanSpans/invalidSpans/unresolvedMessaging` and
 `infraUnavailable` remain visible for older persisted envelopes as well as newer producer flags.
+The panel groups positive safe-integer losses and unavailable infrastructure in a localized
+**Collection limitations** list outside collapsed source details. This is a display
+predicate; it does not redefine the server projector's general numeric contract.
 Only node/edge drops or explicit truncation flags imply a processing limit; malformed spans
 and unresolved parent/link/messaging evidence are distinct partial-result causes. Losses alone do not prove retention:
 `retainedPrevious` is required for that claim. Source-detail totals count displayed current/saved rows; status counts summarize latest-attempt sources. Identical current/saved lists are displayed once with saved provenance.
@@ -288,7 +295,7 @@ runtime payloads for compatibility with older or malformed responses.
 | `nodeDrops`, `edgeDrops`, `orphanSpans`, `invalidSpans`, `unresolvedMessaging`, `infraUnavailable` | Existing trace loss counters and unavailable inventory context; span/messaging problems are distinct from processing limits. Positive losses are visible even for older rows without newer truncation flags. Loss alone does not imply that a previous graph was retained. |
 | `evidenceKind`, `inputTruncated`, `graphTruncated` | Evidence kind is derived from graph class; `inventory` changes empty-result wording. Producer truncation remains separate from API read truncation. |
 | `readStatus`, `readReason`, `readTruncated` | API read availability/coverage, independent of collector status: `ok`, `partial` (`row_limit`), or `unavailable` (`busy`/`timeout`/`query_failed`). |
-| `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Optional source scope/capture/sweep clocks and saved-source provenance used by the graph-publication companion. Absent fields are not fabricated. |
+| `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Current/saved source status, scope and reasons, plus optional capture/sweep clocks and saved provenance. Missing status is explicitly unknown; absent clocks are not fabricated. |
 
 The UI supports the existing trace envelope and optional inventory/saved-source
 fields accepted from the inventory publication companion. This reader prerequisite does
@@ -307,7 +314,21 @@ Excess graph requests return HTTP 503, other read failures HTTP 500, with fixed 
 
 All three graph pages render collection/read errors, parse safe non-2xx envelopes, abort superseded fetches and provide refresh. A shed request includes Retry-After: 1 and a fixed server-side shed diagnostic. Timeout SQLSTATEs (57014/25P03/25P04/55P03) produce readReason=timeout; they never imply empty collection or successful partial publication. Requested subgraph roots are prioritized before the node cap; fan-out capped and readTruncated remain distinct.
 
-Shipped graph consumers retry only typed HTTP503 admission responses (readStatus=unavailable, readReason=busy), at most five requests within a ten-second client deadline. Base waits are 250/500/1000/2000ms; positive numeric Retry-After hints are honored within that total budget. Exhaustion after the last observed typed busy response retains readReason=busy. A client deadline without that observation, or after a later non-busy response, reports readReason=timeout without requiring an HTTP500 or SQLSTATE log. Auth/rejection, query, and untyped service errors are not retried. Scope changes cancel waits and reads; every exhausted outcome stays unknown/unavailable, never confirmed empty.
+The active `fetchGraph` consumer retries only HTTP503 responses whose collection metadata
+explicitly has `readStatus: "unavailable"` and `readReason: "busy"`. It makes at most five
+requests to the same URL inside one ten-second abort budget. Base waits are
+250/750/1500/2000 ms, with a valid `Retry-After` (seconds or date) as a floor and 0–125 ms
+jitter. If a wait plus a two-second read reserve cannot fit, recovery stops as busy;
+five completed requests are not guaranteed. Authentication, other 4xx, query failures
+and untyped service errors are not retried.
+Cancellation propagates through pending waits/reads. Exhausted recovery returns unknown,
+read-unavailable metadata; it never certifies empty collection or exposes an error-body payload.
+The budget also covers a single stalled request. Without a confirmed busy response, its
+expiry can synthesize `readReason: "timeout"` locally without any HTTP response or SQLSTATE.
+After confirmed admission shedding, an unfinished recovery retains `busy` as the last
+observed server cause, not a diagnosis of the final stalled request. A later non-busy response clears that prior cause; if its body then stalls, the client deadline reports timeout. The value alone does
+not identify its origin; inspect completed response bodies and server logs.
+Deploy the updated web image for both recovery and collection-panel changes.
 
 HTTP collection details use the same bounded key/status/reason vocabulary as the SQL-reader view: raw/private keys and injected read/coverage fields are excluded. Source arrays are capped at 128 and reason lists at 16; metadataTruncated discloses omitted/malformed metadata separately from graph row truncation. Safe null source clocks remain unknown for compatibility.
 
