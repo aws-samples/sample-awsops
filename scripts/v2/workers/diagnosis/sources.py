@@ -523,7 +523,10 @@ def _summarize_result(body):
         if out.get("collectionStatus") not in ("error", "unknown"):
             out["collectionStatus"] = "partial"
     if out.get("collectionStatus") in ("partial", "error", "unknown"):
-        out["error"] = f"source collection {out['collectionStatus']}"
+        if out["collectionStatus"] == "error":
+            out["error"] = "source collection error"
+        else:
+            out["incomplete"] = True
         count = out.pop("count", None)
         if count:
             out["observedCount"] = count
@@ -667,6 +670,8 @@ def collect_datasources(conn):
                     signal = {"label": label, "summary": summary}
                     if "error" in summary:
                         signal["error"] = summary["error"]
+                    if summary.get("incomplete"):
+                        signal["incomplete"] = True
                     results.append(signal)
             except Exception as e:  # noqa: BLE001 — per-query isolation; one bad query never sinks the rest
                 results.append({"label": label, "error": type(e).__name__})

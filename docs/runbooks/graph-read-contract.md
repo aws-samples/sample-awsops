@@ -38,6 +38,12 @@ or older attempt keeps both graph and state unchanged. The trace rebuild reports
 `published: 0`, `skipped: 1`, `reasons: ['superseded']` and a fixed skip diagnostic;
 zero returned nodes in this outcome do not mean an empty graph was published.
 
+## Source completeness and retained publication
+
+An unproven empty read carries `canSweep: false`: a healthy sibling cannot replace the saved graph on its behalf. A missing or failed Tempo child also withholds publication, including mixed results with other fetched spans. The prior whole graph and capture clock remain; adapter items and bounded current attempt diagnostics are separate from published rows. No elapsed retention count grants empty proof.
+
+Routine caps, truncation and warnings with useful valid items keep the existing partial-publication path. This refreshes bounded graphs, including first-time builds; partial data does not establish absence outside that sample. Typed `unknown` metadata becomes soft `incomplete_collection` evidence rather than a collector error. Unknown/partial empty results remain unconfirmed and retained. Valid spans outside the query window are not missing children. Limits and the query window are existing fixed bounds, not operator recovery knobs introduced by this change.
+
 ## Verification commands
 
 Use browser developer tools on an already-authorized page to distinguish HTTP503/busy,
@@ -55,21 +61,6 @@ The request deadline also covers pool acquisition. A late checkout is returned w
 starting SQL, and its admission remains held until settlement to prevent a queued backlog.
 Annotation normalization and serialization run after release; SQL deadlines remain defense
 in depth. The graph-attempt window has labels distinct from each source query window.
-
-## Operator action
-
-Apply `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql` and
-`01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`,
-`01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql` and
-`01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql` through the existing authorized
-`make migrate` flow from the operator/VPC context. Apply the reviewed Terraform web
-`INVENTORY_STALE_AFTER_MINUTES` environment binding and deploy the matching web image
-separately. Redeploy the updated `inventory_read_mcp` Lambda code through the existing
-operator-owned Terraform release flow so its future-clock and metadata-omission
-staleness checks match this source version. A web image or AgentCore Runtime image
-deployment does not ship that Lambda code. This document supplies no deployment authorization. Check the canonical
-[source rollout list](source-sync-observability.md) and [SQL reader contract](agent-sql-reader.md).
-A source merge or automatic web CD result is not proof that these steps completed.
 
 ## Local PostgreSQL verification
 
@@ -94,23 +85,37 @@ docker exec "$graph_test_container" pg_isready -U postgres -d awsops
 docker exec "$graph_test_container" psql -U postgres -d awsops \
   -c "COMMENT ON DATABASE awsops IS 'awsops-disposable-graph-test'"
 cd web
-npx vitest run lib/graph-read-postgres.test.ts app/api/graph/route.test.ts lib/graph-state.test.ts
+npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts app/api/graph/route.test.ts lib/graph-state.test.ts
 docker rm -f "$graph_test_container"
 ```
 
 The fixture creates and independently marks `awsops_graph_read_test`. Without the
 socket environment variable, the disposable PostgreSQL suite is skipped explicitly;
 the ordinary API and state unit tests still run. These are local contract tests,
-not live AWS or deployment acceptance.
+not live AWS or deployment acceptance. The suite consumes the shared Tempo producer fixture and checks both mixed-source retention and fresh bounded partial publication.
 
+## Operator action
+
+Apply `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql` and
+`01M2GRW64VTMC9AC8M7T9MZKQ4_graph_attempt_disclosure.sql`,
+`01M2GTT5VHHH3TZ4PDJS99HWMJ_graph_read_indexes.sql` and
+`01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql` through the existing authorized
+`make migrate` flow from the operator/VPC context. Apply the reviewed Terraform web
+`INVENTORY_STALE_AFTER_MINUTES` environment binding and deploy the matching web image
+separately. Redeploy the updated `inventory_read_mcp` Lambda code through the existing
+operator-owned Terraform release flow so its future-clock and metadata-omission
+staleness checks match this source version. A web image or AgentCore Runtime image
+deployment does not ship that Lambda code. This document supplies no deployment authorization. Check the canonical
+[source rollout list](source-sync-observability.md) and [SQL reader contract](agent-sql-reader.md).
+A source merge or automatic web CD result is not proof that these steps completed.
 
 ## Related files and decisions
 
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
-`web/lib/graph-read-postgres.test.ts`, `web/components/topology/GraphCollectionStatus.tsx`.
+`web/lib/graph-read-postgres.test.ts`, `web/components/topology/GraphCollectionStatus.tsx`,
+`web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`,
+`agent/lambda/prometheus_mcp.py`, `agent/lambda/mimir_mcp.py`, `agent/lambda/tempo_mcp.py`,
+`agent/lambda/clickhouse_mcp.py`, `agent/lambda/test_graph_source_producer_contract.py`,
+`agent/lambda/test_clickhouse_completion.py`, `agent/fixtures/tempo-topology-contract.json`.
 ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-043 (graph reads;
 decision bodies are maintained upstream).
-
-## Source completeness and retained publication
-
-`empty_not_confirmed` identifies a legacy empty response without affirmative collection proof; `incomplete_collection` includes missing Tempo children and typed partial producer results. Incomplete adapter reads supply `canSweep: false`, so healthy sibling data cannot authorize deleting saved identities. This retains the complete prior graph and capture clock, recording bounded current source counts/reasons rather than mixing generations. See [source completion proof](source-sync-observability.md) for recovery and producer rollout. The existing PostgreSQL suite includes cross-source retention and consumes the real Tempo producer fixture in `agent/fixtures/tempo-topology-contract.json`; run `npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts` from `web/` with the disposable PostgreSQL socket described above.
