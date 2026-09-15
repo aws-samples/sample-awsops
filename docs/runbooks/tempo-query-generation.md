@@ -62,7 +62,7 @@ After deployment and refresh, regenerate “HTTP 500 응답 스팬” and verify
 ### Search completion and publication
 
 `tempo_search` requests **20** traces by default and clamps supplied integer limits to
-**1–50**. Reaching the requested limit, HTTP 206, output truncation, warnings or an explicit
+**1–50**. Non-integer or over-16-character limit inputs return HTTP 400. Reaching the requested limit, HTTP 206, output truncation, warnings or an explicit
 partial signal remains incomplete. Search returns bounded first matches, not a deterministic
 latest/top or exhaustive set. Existing query windows remain fixed bounds.
 
@@ -75,8 +75,8 @@ checks errors and finalizes before returning 200. Its
 can omit empty/default fields; the
 [empty-response test](https://github.com/grafana/tempo/blob/f227ccdf89c1ef2b059520b678c1f639aef7cc09/modules/frontend/combiner/search_test.go#L268-L281)
 reports completed jobs without a total. Therefore an explicit traces list can omit metrics,
-and recognized metrics can accompany omitted empty traces. Bare or unrecognized messages
-remain unknown. This is source evidence, not live acceptance of every Tempo deployment.
+and recognized metrics can accompany omitted empty traces. Bare `{}` or unrecognized messages remain unknown; an explicit empty `metrics` object
+is a recognizable response shape. This is source evidence, not live acceptance of every Tempo deployment.
 
 Known [SearchMetrics counters](https://github.com/grafana/tempo/blob/f227ccdf89c1ef2b059520b678c1f639aef7cc09/pkg/tempopb/tempo.proto#L170-L184)
 retain bounded protobuf integer validation, including decimal-string 64-bit values.
@@ -94,9 +94,9 @@ retain prior graph data even alongside useful siblings.
 
 | Producer path | Bound and omission contract |
 |---|---|
-| Tempo search/trace payload | **1,000,000 serialized UTF-8 bytes** (`MAX_TOTAL_BYTES`), below the Lambda transport limit. No raw non-JSON fallback or truncated text preview is returned. |
+| Tempo search/trace payload | **1,000,000 serialized UTF-8 bytes** (`MAX_TOTAL_BYTES`), below the Lambda transport limit. Successful search/trace payloads have no raw non-JSON fallback or truncated text preview. HTTP errors retain the existing bounded error excerpt. |
 | Oversized `tempo_get_trace` | Structured OTLP projection retains IDs, timings, kinds, status codes and attributes in `_TRACE_ATTRIBUTES`; at most **64 links per span**, keeping link trace/span IDs. Events, status messages, link attributes, unrecognized attributes and optional span names over **1,024 serialized bytes** are omitted. Identity values are never shortened. |
-| Prometheus/Mimir query/discovery result | **1,000,000 serialized UTF-8 bytes** (`MAX_RESULT_BYTES`); fixed markers replace omitted/malformed result data. Query arrays retain at most **50 series**, **500 points per series** and **5,000 total samples**. A bounded result is not an absence claim. |
+| Prometheus/Mimir query/discovery result | **1,000,000 serialized UTF-8 bytes** (`MAX_RESULT_BYTES`); fixed markers replace omitted/malformed result data. Query arrays retain at most **50 series**, **500 points per series** and **5,000 total samples**. Matrix/vector queries require string metric-label keys/values and sample-value strings of at most **128 characters**; invalid series become null markers. Scalar/string values retain their separate **4,096 UTF-8 byte** bound. Metric-producer `err()` messages over **400 characters** are replaced with a fixed diagnostic. A bounded result is not an absence claim. |
 
 Projection validates each encountered span's identity/timing, requested trace-ID agreement,
 and present parent/link/status fields before admitting it. Canonical hex, shortened trace

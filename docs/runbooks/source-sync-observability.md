@@ -278,12 +278,12 @@ The PostgreSQL read-contract suite also exercises real graph publication against
 
 #### Producer completion and rollout
 
-Prometheus/Mimir instant scalar and string results preserve one timestamp/value sample, with a 4096-byte UTF-8 value bound. Malformed non-series entries use a fixed null marker instead of echoing arbitrary upstream content; malformed or oversized scalar pairs remain unknown. Diagnosis counts a valid scalar pair as one sample and still excludes its raw value; Explore renders it as one row. Range queries retain their series-only contract. Native `histogram`/`histograms` output is explicitly unsupported and rejected before serialization; request float-valued output rather than treating an unsupported histogram as unknown collection.
+Prometheus/Mimir instant scalar and string results preserve one timestamp/value sample, with a 4096-byte UTF-8 value bound. Invalid matrix/vector metric-label maps or samples use a fixed null marker instead of echoing arbitrary upstream content; malformed or oversized scalar pairs remain unknown. Diagnosis counts a valid scalar pair as one sample and still excludes its raw value; Explore renders it as one row. Range queries retain their series-only contract. Native `histogram`/`histograms` output is explicitly unsupported and rejected before serialization; request float-valued output rather than treating an unsupported histogram as unknown collection.
 
 Catalog guidance accompanies every affected ClickHouse query/tables/describe and Prometheus/Mimir query/query-range/labels/series tool, as well as Tempo search. Run existing AgentCore provisioning to reconcile all these descriptions after the producer code rollout. Partial/unknown/error evidence cannot establish absence or full coverage.
 
 
-The query/discovery paths in the paired `prometheus_mcp`, `mimir_mcp`, `tempo_mcp` and `clickhouse_mcp` modules compute `collectionStatus` from its own validated response, warnings, limits and completion evidence. It does not copy a datasource-supplied `collectionStatus`. `ok`/`empty` permit complete results; `partial`, `unknown` and `error` cannot certify an empty graph. Deploy the producer Lambda code before expecting confirmed-empty behavior; old unmarked empty/zero-only results intentionally remain unconfirmed during rollout. No connector activation or IAM change is implied.
+The query/discovery paths in the paired `prometheus_mcp`, `mimir_mcp`, `tempo_mcp` and `clickhouse_mcp` modules compute `collectionStatus` from their own validated responses, warnings, limits and completion evidence. They do not copy a datasource-supplied `collectionStatus`. `ok`/`empty` permit complete results; `partial`, `unknown` and `error` cannot certify an empty graph. Deploy the producer Lambda code before expecting confirmed-empty behavior; old unmarked empty/zero-only results intentionally remain unconfirmed during rollout. No connector activation or IAM change is implied.
 
 An observed zero sample remains a zero sample. It does not prove the entire query was complete when an old wrapper discarded upstream warnings or accepted missing success status. Paired metric producers preserve those conditions; complete zero-only responses remain `ok`, while incomplete responses preserve the zero data with a partial marker. Tempo search IDs followed by no fetched spans are incomplete regardless of the parent search marker. The source-only producer contract test exercises the shared fixture's upstream-to-body mapping; Runtime receipt-wire tests remain with the later Runtime/producer stages.
 
@@ -296,9 +296,9 @@ old generations or upgrading warnings/unknown metadata to complete coverage.
 HTTP 206 and explicit upstream warnings/partial signals cannot establish complete empty
 collection. Error envelopes remain errors even when they also contain an empty array.
 Prometheus/Mimir retain outer success and warning/info evidence before unwrapping query
-results; malformed series/samples become fixed null markers, while usable rows remain available.
+results. Matrix/vector metric-label keys/values must be strings and sample-value strings must not exceed 128 characters; invalid series become fixed null markers while valid sibling series remain available. Metric-producer errors longer than 400 characters become a fixed diagnostic.
 Query/label/series outputs are byte-bounded without raw previews. Instant scalar/string results are one bounded sample, never two records. Diagnosis
-keeps only the count and type; its raw value is excluded.
+keeps only the count and type; its raw value is excluded. Explore drops and counts invalid series, samples and log entries, preserves usable siblings, and marks normalization loss unknown (or retains an existing error). The displayed omission count measures discarded response entries, not total missing traffic.
 Their label/series endpoints also propagate `error` and `unknown` without converting them
 to empty. Tempo treats malformed/null completion metrics as unknown and unfinished jobs
 as partial. `tempo_get_trace` retains bounded structured spans when possible; a no-fit byte
