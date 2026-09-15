@@ -4,7 +4,7 @@
 Client components span `ui`, `shell`, `charts`, `chat`, `inventory` (including `metrics/`), `eks`, `diagnosis`, `datasources`, `dx`, `finops`, `graph`, `insights`, `nfm`, `overview`, and `topology`.
 
 ## Key Files
-- `topology/E2eGraphCanvas.tsx` — reusable evidence canvas; preserves query preferences and clears invalid or explicitly reset selection. It distinguishes configuration, service, network, identity and context edges, with no source fetching. Details respect evidence filters independently of canvas caps and disclose bounded-list omissions. Main-flow ranking compares only one metric/unit group.
+- `topology/E2eGraphCanvas.tsx` — reusable evidence canvas. It preserves the search query and evidence filters while clearing invalid or explicitly reset selection. Details respect evidence filters independently of canvas caps and disclose bounded-list omissions. Shared ranking prioritizes comparable observations before display limits and names omitted categories. Unsupported/absent observations do not render match counters. Context covers cached records and traversed constructs.
 - `topology/ServiceNetworkTopology.tsx` — independently loads host trace/NFM sources, preserves collection metadata and safe auth/error states, and runs explicit network queries. The page supplies the full inventory-built graph plus incomplete/retained/loading vetoes.
 
 - `ui/DataTable.tsx` + `ui/DetailPanel.tsx` — the default list+detail combo. DetailPanel renders the full data the row already holds (plus a handful of type-specific fetching sections: RDS metrics/trends/SG rules, EBS related, live metrics, S3 IAM access) — if the spec (`InvType`) has `sections`, it renders grouped sections; otherwise a flat key list (backward-compat). New inventory types must define `sections`.
@@ -15,7 +15,10 @@ Client components span `ui`, `shell`, `charts`, `chat`, `inventory` (including `
 - `eks/NodeCapacityCards.tsx` — node capacity 3-split cards; also exports the shared `StackBar` (named export) reused by `NodeCapacityList` on the nodes fleet page — a deliberate exception to the default-export-per-page convention.
 - `eks/NodeDrilldownPanel.tsx` — node drilldown (capacity cards + Pod/ENI sections, with its own live nodes+pods query). Shared by the EKS overview and the `/eks/nodes` fleet page (`FleetKindPage`).
 - `chat/MessageList.tsx` + `chat/useChat.ts` — streaming smoothing: throttles markdown-parse input at ~180ms via `useThrottled` (avoids O(n²) full reparse per token) and balances incomplete code fences (MessageList); a typewriter buffer batches deltas and emits proportionally to backlog every 24ms (min 3 chars), flushing immediately on completion (useChat).
+<<<<<<< HEAD
 - `../lib/i18n-terms.ts` supplies Service + Network source-panel and canvas labels in all four locales.
+=======
+>>>>>>> feat/pr44-correlation-core-20260915
 - `shell/LanguageProvider.tsx` — the `useI18n()` hook (`t`/`tt`/lang context).
 - `shell/Sidebar.tsx` — navigation; where new pages register.
 - `shell/ChangelogVersion.tsx` — sidebar footer version chip + changelog modal (`/api/changelog`). **The sidebar's transform becomes the containing block for fixed descendants** — modals rendered inside the sidebar must portal to `body` via `createPortal`.

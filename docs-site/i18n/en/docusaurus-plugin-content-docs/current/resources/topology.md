@@ -98,7 +98,7 @@ Compare configuration capture/last-success times, service snapshot/collection wi
 
 ### Search, filter and inspect
 
-- Search loaded evidence by service, Pod, IP or resource, then select a result or node to focus its neighborhood. Search respects the active relationship filters: **Configuration relationships**, **Service observations**, **Network observations**, **Identity correlations** and **Traversed components**.
+- Search loaded evidence by service, Pod, IP or resource, then select a result or node to focus its neighborhood. Search respects the active relationship filters: **Configuration relationships**, **Service observations**, **Network observations**, **Identity correlations** and **Context**.
 - Use **Focus main flow**, **View all**, the MiniMap and zoom controls to move between focused and overview views. Details show available endpoint identifiers, local/remote IPs, ports, metric/unit, monitor/category, observation window, SNAT/DNAT and connection evidence.
 - The canvas displays at most **350 nodes and 700 edges**, with omitted counts. Search, focus and relationship filters apply before that bound, so search can find loaded evidence outside the initial display. They cannot recover observations omitted by a source limit.
 - Service relationships marked **Inferred relationship** remain estimates; observed service relationships are still limited to their source samples. Identity correlations are a separate kind of evidence.
@@ -110,6 +110,8 @@ Configuration and service-call arrows retain their direction. NFM **Local** and 
 Resource matching requires an exact IP or instance ID with corroborating **region and VPC** scope. A workload link additionally needs configured endpoint evidence confirming the exact **cluster + namespace + Pod** tuple on the relevant side. A cluster name inferred from a monitor prefix is only a hint. Matching service names alone, a NAT address, or an unsupported DNS/IP or managed-service association cannot establish identity. Missing scope, duplicate candidates and conflicting identities remain unlinked or ambiguous. Cross-source correlations never prove one traced request, causality or an E2E traffic total.
 
 Unmatched and withheld counts measure row-side observations, not unique endpoints; the same Pod can appear in several rows. Details explain withheld identity and cached configuration context. Evidence lists show the first 20 entries and the remaining count independently of canvas limits. Main-flow ranking compares values only within one metric/unit group.
+
+Context includes traversed constructs and cached configuration records. The view names categories with omitted observations; high-value observations within the preferred metric/unit group are prioritized before display limits.
 
 ## AI analysis tips
 Using the detail panel's question chips or the **Ask AI** button opens the AI assistant pre-seeded with the selected resource's context. Example questions:

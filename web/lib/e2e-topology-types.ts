@@ -65,6 +65,8 @@ export interface E2eView {
   /** Display-budget omissions after eligibility and focus/query reachability. */
   omittedNodes: number;
   omittedEdges: number;
+  /** Sorted eligible categories with any dropped or incomplete connection group. */
+  omittedCategories: string[];
   /** Eligible query hits before caps, or the selected node count without a query. */
   matchedNodes: number;
 }
