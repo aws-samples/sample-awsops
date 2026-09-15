@@ -18,29 +18,39 @@ function admit(pool: Pool) {
 }
 
 /** Reads and rebuilds share two slots. Keep admission until a late checkout settles. */
-export async function graphReadTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>) {
+export function graphReadTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>) {
+  return admittedTransaction(pool, true, fn, true);
+}
+
+export function graphTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: PoolClient) => Promise<T>) {
+  return admittedTransaction(pool, readOnly, fn, false);
+}
+
+async function admittedTransaction<T>(pool: Pool, readOnly: boolean,
+  fn: (client: PoolClient) => Promise<T>, requestBudget: boolean) {
   const release = admit(pool);
   const lease: ReadLease = { expired: false, released: false };
-  const operation = runTransaction(pool, true, fn, true, lease).finally(release);
+  const operation = runTransaction(pool, readOnly, fn, requestBudget, lease).finally(release);
   let timer: ReturnType<typeof setTimeout>;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
+    const expire = () => {
       lease.expired = true;
       reject(new GraphReadDeadline(lease.client ? 'transaction' : 'acquire'));
       if (lease.client && !lease.released) {
         lease.released = true;
         try { lease.client.release(true); } catch { /* never replace the deadline */ }
       }
+    };
+    timer = setTimeout(() => {
+      if (requestBudget || !lease.client) expire();
     }, 2000);
+    // PG retains its separate 4s transaction limit/fatal SQLSTATE. This caller-side
+    // ceiling also covers a response that never arrives after checkout.
+    if (!requestBudget) watchdog = setTimeout(expire, 6000);
   });
   try { return await Promise.race([operation, deadline]); }
-  finally { clearTimeout(timer!); }
-}
-
-export async function graphTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: PoolClient) => Promise<T>) {
-  const release = admit(pool);
-  try { return await runTransaction(pool, readOnly, fn, false); }
-  finally { release(); }
+  finally { clearTimeout(timer!); if (watchdog) clearTimeout(watchdog); }
 }
 
 /** One shared-pool slot for a short transaction. Bounded lock waits and no remote IO in the callback.

@@ -70,6 +70,7 @@ export async function inventoryCounts(pool: Pool, types: string[]) {
 
 export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: string, types: string[],
   proof?: Awaited<ReturnType<typeof inventoryCounts>>) {
+  types = [...new Set(types)];
   const counts = proof ?? await inventoryCounts(pool, types);
   // Both classes use the already-supported flow envelope; bytes/time still bound the read.
   const rowCap = INVENTORY_ROW_CAP;
@@ -135,7 +136,7 @@ export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: st
       if (count && typeof run.version === 'string' && count.version === run.version)
         aggregateCounts.set(run.resource_type, count.count);
     }
-    return { rows, runs: runs.rows as Run[],
+    return { rows, types, runs: runs.rows as Run[],
       aggregateCounts, participation: participation.rows as Run[], truncated, truncatedTypes };
   });
 }
@@ -149,7 +150,7 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
   cls: GraphClass, account: string, attemptedAt: string): GraphAttempt {
   const { rows, runs, aggregateCounts, participation, truncated } = snapshot;
   // Every source this class can collect in this account contributes a coverage result.
-  const required = [...new Set(types)];
+  const required = [...new Set([...snapshot.types, ...types])];
   const limitedTypes = new Set(snapshot.truncatedTypes ?? (truncated ? required : []));
   let safe = required.length > 0 && !truncated;
   const sources = required.map(type => {

@@ -47,6 +47,7 @@ existing `self` host sentinel and the exported SDK host-only type filter. Every 
 also require registration. Its `scope: account` and item count describe that slice, not
 the global producer ledger. Aggregate zero alone never proves slice participation.
 Count proof is reused only when the snapshot observes the identical ledger row version.
+The snapshot records its queried types; an attempt cannot narrow that set to hide a failed source.
 The helper returns source clocks/completeness, not a freshness or deployment verdict.
 Running/partial producer states report `incomplete_collection` before unresolved scope;
 confirmed empty additionally requires known-zero unknown attributes and matched counts.
@@ -67,7 +68,15 @@ only those source item counts become unknown. Any truncation still withholds pub
 A readable snapshot can exceed the caller's graph-size limit; these bounds do not promise
 an unlimited graph. Inspect the affected type's paginated Inventory view when a cap is hit. Request and background transaction
 helpers share two admissions per pool, reserving the third ordinary slot for authentication;
-request limits stay 1.5s statements/2s total, background limits 2s statements/4s total.
+Request limits stay 1.5s statements/2s total including checkout. Background checkout
+expires after 2s; an acquired transaction separately retains 2s statements and PG's 4s
+transaction limit, with a six-second caller watchdog across both phases. The transaction callback
+must perform only bounded SQL/local work. An expired checkout never starts abandoned
+work; its admission remains held until the late connection is returned.
+All helpers can reject with `GraphReadBusy`; callers classify it as skipped/busy, never
+successful empty collection. `GraphReadDeadline` identifies checkout or watchdog timeout;
+the publisher records a source-read failure where possible. Do not nest these helpers
+inside an already-admitted transaction.
 
 These primitives do not write graph/state rows. The bounded publisher in `graph-store.ts`
 consumes their results; scheduling records stay in `graph-inventory.ts`. Existing timer/defaults and AWS permissions are unchanged. Callers

@@ -304,7 +304,7 @@ includes displayed saved-source rows except when the entire current/saved lists 
 from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
 
 
-Graph requests and rebuild transactions share two admissions per pool. Requests use 1.5s statement/idle and 2s total transaction limits; rebuild transactions use 2s statements and a 4s total budget. JSON serialization runs after commit and release. Class reads return at most 4000 nodes and 8000 raw edges, then deduplicate bounded edge evidence; edges reference returned nodes. A sentinel row discloses read truncation without claiming collection failure. Existing per-hop traversal caps remain.
+Graph requests and rebuild transactions share two admissions per pool. Requests use 1.5s statement/idle and 2s total transaction limits; rebuild checkout has a separate 2s deadline before 2s statements and a 4s PostgreSQL transaction budget, protected by a 6s caller watchdog. JSON serialization runs after commit and release. Class reads return at most 4000 nodes and 8000 raw edges, then deduplicate bounded edge evidence; edges reference returned nodes. A sentinel row discloses read truncation without claiming collection failure. Existing per-hop traversal caps remain.
 
 A missing or failed state read remains unknown; `failureReason=state_read_failed` is shown separately. Saved-source provenance is visible whenever present, including stale successful publications. Producer start/finish/status and source/attempt windows are separate clocks. For legacy single-account flow/infra rows, top-level `captured_at` may retain the old row display clock; `collection.captured_at` remains null and no source freshness is inferred.
 

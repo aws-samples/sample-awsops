@@ -24,8 +24,11 @@ function run(options: Record<string, unknown> = {}) {
       output[key].push(line);
     };
     const processSink = { env: input.env ?? { NEXT_RUNTIME: 'nodejs', GRAPH_REBUILD_INTERVAL_MINS: '1' } };
-    const context = vm.createContext({ process: processSink, Buffer, performance, setImmediate,
-      setTimeout: (fn, delay) => { ticks.push(fn); output.scheduled.push(['timeout', delay]); },
+    const context = vm.createContext({ process: processSink, Buffer, performance, setImmediate, clearTimeout,
+      setTimeout: (fn, delay) => {
+        if (delay < 60000) return setTimeout(fn, delay);
+        ticks.push(fn); output.scheduled.push(['timeout', delay]);
+      },
       setInterval: (fn, delay) => { ticks.push(fn); output.scheduled.push(['interval', delay]); },
       console: { log: report('logs'), error: report('errors'), warn: report('errors') } });
     const fail = () => { throw Object.assign(new Error('credential=database-secret'), { code: input.code ?? '23514' }); };

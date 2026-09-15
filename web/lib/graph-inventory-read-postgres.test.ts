@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { inventoryAccounts, inventoryAttempt, inventoryCounts, inventorySnapshot, inventoryTypesForAccount } from './graph-inventory-read';
-import { graphTransaction, graphReadTransaction, GraphReadBusy } from './graph-transaction';
+import { graphTransaction, graphReadTransaction, GraphReadBusy, GraphReadDeadline } from './graph-transaction';
 import { HOST_ONLY_TREND_TYPES } from './trend-utils';
 import { buildFlowGraph } from './flow-topology';
 
@@ -18,6 +18,8 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
   let pool: Pool;
   const at = () => new Date(Date.now() - 1000).toISOString();
   beforeAll(async () => {
+    expect(socket?.startsWith('/')).toBe(true);
+    expect(statSync(resolve(socket!, '.s.PGSQL.5432')).isSocket()).toBe(true);
     const admin = new Pool({ host: socket, user: 'postgres', database: 'awsops' });
     try {
       expect((await admin.query('SHOW server_version')).rows[0].server_version).toMatch(/^17\./);
@@ -29,6 +31,7 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
       }
     } finally { await admin.end(); }
     pool = new Pool({ host: socket, user: 'postgres', database: 'awsops_inventory_read_test', max: 3 });
+    expect((await pool.query('SHOW server_version')).rows[0].server_version).toMatch(/^17\./);
     if ((await pool.query("SELECT shobj_description(oid,'pg_database') AS marker FROM pg_database WHERE datname=current_database()")).rows[0]?.marker !== 'awsops-disposable-inventory-read-test')
       throw new Error('Refusing fixture without disposable target database marker');
     await pool.query(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;
@@ -96,6 +99,16 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     const snapshot = await inventorySnapshot(pool, 'infra', 'self', ['vpc'], proof);
     expect(snapshot.aggregateCounts.has('vpc')).toBe(false);
     expect(inventoryAttempt(snapshot, ['vpc'], 'infra', 'self', at()).publish).toBe(false);
+  });
+  it('cannot omit a failed queried type from the attempt evidence', async () => {
+    await seed();
+    await pool.query("INSERT INTO inventory_sync_runs(resource_type,status) VALUES ('ec2','failed')");
+    const snapshot = await inventorySnapshot(pool, 'infra', 'self', ['vpc', 'ec2']);
+    const attempt = inventoryAttempt(snapshot, ['vpc'], 'infra', 'self', at());
+    expect(attempt.publish).toBe(false);
+    expect(attempt.details.sources).toContainEqual(expect.objectContaining({
+      sourceId: 'inventory:ec2', producerStatus: 'failed', reasons: ['source_failed', 'unknown_attributes'],
+    }));
   });
   it('account discovery alone never supplies missing member participation', async () => {
     await seed();
@@ -219,5 +232,22 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
       expect(pool.waitingCount).toBe(0);
     } finally { release(); await Promise.all(tasks); }
     await expect(graphReadTransaction(pool, client => client.query('SELECT 1'))).resolves.toBeTruthy();
+  });
+  it('expires background checkout but holds admission until the late client is returned', async () => {
+    const holders = await Promise.all([pool.connect(), pool.connect(), pool.connect()]);
+    const failures: unknown[] = []; let called = false;
+    const work = [0, 1].map(() => graphTransaction(pool, true, async () => { called = true; })
+      .catch(error => { failures.push(error); }));
+    try {
+      await new Promise(resolve => setTimeout(resolve, 2200));
+      expect(failures).toHaveLength(2);
+      expect(failures.every(error => error instanceof GraphReadDeadline && error.phase === 'acquire')).toBe(true);
+      expect(called).toBe(false);
+      await expect(graphReadTransaction(pool, client => client.query('SELECT 1'))).rejects.toBeInstanceOf(GraphReadBusy);
+    } finally { holders.forEach(client => client.release()); await Promise.all(work); }
+    await new Promise(resolve => setImmediate(resolve));
+    expect(called).toBe(false);
+    expect((await graphReadTransaction(pool, client => client.query('SELECT 42 AS value'))).rows[0].value).toBe(42);
+    expect(pool.waitingCount).toBe(0);
   });
 });
