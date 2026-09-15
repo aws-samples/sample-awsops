@@ -59,7 +59,11 @@ Limited qualifiers such as `today`, `yesterday`, `last hour/day/week`, `오늘`,
 
 After deployment and refresh, regenerate “HTTP 500 응답 스팬” and verify that the draft uses observed HTTP attributes and types. An `&&` query can legitimately combine service and HTTP conditions on separate spans. A successful generation does not guarantee server acceptance; review the draft and inspect its execution result. If execution still returns 400, inspect the Tempo error and server version.
 
-로컬 회귀 검증 / Local regression checks, from the repository root:
+### Search result evidence
+
+`tempo_search` pins an omitted limit to **20**. Reaching the requested limit or trimming output beyond 50 traces is partial. Affirmative `ok`/`empty` requires observed integer `completedJobs == totalJobs > 0`; absent/invalid counters or 0/0 remain unknown, unfinished jobs partial. Returned traces and metrics remain available; missing completion metadata is uncertainty, not an API failure. This is the repository's conservative completion contract, not live acceptance evidence for any Tempo deployment.
+
+Local regression checks, from the repository root:
 
 ```bash
 (cd agent/lambda && python3 -m pytest test_tempo_mcp.py test_graph_source_producer_contract.py -q)

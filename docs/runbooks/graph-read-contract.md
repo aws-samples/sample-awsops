@@ -52,6 +52,8 @@ one; it is not complete source coverage or evidence that omitted resources disap
 Warnings stay partial: the application does not guess that an annotation is benign. Empty
 partial results cannot authorize replacement. Only confirmed complete empty results clear a
 graph. Actual query/fetch failures and malformed data remain distinct from unknown metadata.
+Valid fetched spans outside the query window are not missing children. Existing query
+limits and windows remain fixed bounds, not new operator recovery controls.
 
 The existing PostgreSQL suite verifies first and repeated bounded publication, legitimate
 complete empty replacement, and all-empty/mixed missing-child retention. Shared fixtures in
@@ -129,7 +131,7 @@ A source merge or automatic web CD result is not proof that these steps complete
 ## Related files and decisions
 
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
-`web/lib/trace-source.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`,
+`web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`,
 `web/components/topology/GraphCollectionStatus.tsx`,
 `agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,
 `agent/lambda/prometheus_mcp.py`, `agent/lambda/mimir_mcp.py`,

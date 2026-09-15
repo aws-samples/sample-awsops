@@ -28,9 +28,136 @@ class RuntimePolicyTests(unittest.TestCase):
     def test_profile_is_opt_in_and_does_not_modify_other_branches(self):
         self.assertEqual(self.module.runtime_overrides("main", "true", "", "full", "", "", False), {})
         self.assertEqual(self.module.runtime_overrides("dev", "", ACCOUNT, "full", "", "", False),
-                         {"ci_runtime_profile_enabled": False, "ci_runtime_rollout": False})
+                          {"ci_runtime_profile_enabled": False, "ci_runtime_rollout": False})
         self.assertEqual(self.module.runtime_overrides("dev", "false", ACCOUNT, "full", "", "", False),
-                         {"ci_runtime_profile_enabled": False, "ci_runtime_rollout": False})
+                          {"ci_runtime_profile_enabled": False, "ci_runtime_rollout": False})
+
+    def rate_overrides(self, rate, target="dev", profile="true", account=ACCOUNT):
+        return self.module.runtime_overrides(target, profile, account, "full",
+            DIGEST, DIGEST, False, steampipe_fill_rate=rate)
+
+    def test_fill_rate_is_optional_and_changes_only_the_existing_rate_variable(self):
+        baseline = self.module.runtime_overrides("dev", "true", ACCOUNT, "full",
+                                                 DIGEST, DIGEST, False)
+        self.assertEqual(self.rate_overrides(""), baseline)
+        for raw, expected in (("0.1", 0.1), ("10", 10), ("20", 20), ("1e1", 10)):
+            with self.subTest(rate=raw):
+                self.assertEqual(self.rate_overrides(raw),
+                                 {**baseline, "steampipe_aws_fill_rate": expected})
+
+    def test_fill_rate_requires_dev_profile_and_existing_account_validation(self):
+        for target in ("main", "atomoh", "ssminji", "whchoi"):
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "CI_STEAMPIPE_AWS_FILL_RATE_DEV"):
+                self.rate_overrides("10", target=target)
+            self.assertNotIn("steampipe_aws_fill_rate", self.rate_overrides("", target=target))
+        for profile in ("", "false"):
+            with self.subTest(profile=profile), self.assertRaisesRegex(ValueError, "CI_READONLY_RUNTIME_DEV"):
+                self.rate_overrides("10", profile=profile)
+        with self.assertRaisesRegex(ValueError, "AWS_ACCOUNT_ID_DEV"):
+            self.rate_overrides("10", account="")
+        with self.assertRaisesRegex(ValueError, "Build both runtime images"):
+            self.module.runtime_overrides("dev", "true", ACCOUNT, "full", "", "", False,
+                                          steampipe_fill_rate="10")
+
+    def test_fill_rate_rejects_nonfinite_out_of_range_and_non_numeric_inputs(self):
+        for raw in ("NaN", "Infinity", "-inf", "1e9999", "0", "-1", "0.09",
+                    "20.01", " ", "not-a-rate", "true", True, 10, None, []):
+            with self.subTest(value=raw), self.assertRaisesRegex(ValueError, "CI_STEAMPIPE_AWS_FILL_RATE_DEV"):
+                self.rate_overrides(raw)
+
+    def test_fill_rate_requires_full_scope_and_does_not_change_bootstrap_defaults(self):
+        for scope in ("ecr-bootstrap", "runtime-ecr-bootstrap"):
+            with self.subTest(scope=scope):
+                with self.assertRaisesRegex(ValueError, "full dev scope"):
+                    self.module.runtime_overrides("dev", "true", ACCOUNT, scope,
+                        DIGEST, DIGEST, False, steampipe_fill_rate="10")
+                baseline = self.module.runtime_overrides("dev", "true", ACCOUNT, scope,
+                    DIGEST, DIGEST, False)
+                self.assertNotIn("steampipe_aws_fill_rate", baseline)
+
+    def test_actual_plan_step_scopes_the_rate_to_dev_and_refuses_invalid_input(self):
+        from test_ci_deployment_workflows import DeploymentWorkflowTests, workflow_step
+        step = workflow_step("terraform.yml", "plan", "Configure development runtime profile")
+        harness = DeploymentWorkflowTests()
+        cases = [("dev", "true", "", True, None), ("dev", "true", "10", True, 10),
+                 ("dev", "false", "10", False, None), ("dev", "", "10", False, None),
+                 ("dev", "true", "NaN", False, None), ("dev", "true", "20.01", False, None)]
+        cases += [(target, "true", "invalid-unused-setting", True, None)
+                  for target in ("main", "atomoh", "ssminji", "whchoi")]
+        for target, profile, rate, allowed, expected in cases:
+            with self.subTest(target=target, profile=profile, rate=rate):
+                result, calls = harness.run_step([step], TARGET=target,
+                    files={"ci-runtime.auto.tfvars.json": '{"steampipe_aws_fill_rate":15}'}, context={
+                    "github": {"event_name": "pull_request"}, "inputs": {},
+                    "vars": {"CI_READONLY_RUNTIME_DEV": profile,
+                             "CI_STEAMPIPE_AWS_FILL_RATE_DEV": rate},
+                })
+                self.assertEqual(result.returncode == 0, allowed, result.stderr)
+                self.assertEqual(calls, [])  # Override preparation makes no provider call.
+                if allowed:
+                    values = json.loads(result.files["ci-runtime.auto.tfvars.json"])
+                    self.assertEqual(values.get("steampipe_aws_fill_rate"), expected)
+                else:
+                    self.assertIn("CI_STEAMPIPE_AWS_FILL_RATE_DEV", result.stderr)
+                    self.assertNotIn("ci-runtime.auto.tfvars.json", result.files)
+
+    def test_rate_scope_uses_dispatch_inputs_without_inherited_sibling_environment(self):
+        from test_ci_deployment_workflows import DeploymentWorkflowTests, workflow_step, expression
+        step = workflow_step("terraform.yml", "plan", "Configure development runtime profile")
+        harness = DeploymentWorkflowTests()
+        cases = [("dev", {}, "10", 10), ("dev", {"plan_scope": "full"}, "10", 10)]
+        cases += [("dev", {"plan_scope": scope}, "invalid-unused", None)
+                  for scope in ("ecr-bootstrap", "runtime-ecr-bootstrap")]
+        cases += [(target, {"plan_scope": "full"}, "invalid-unused", None)
+                  for target in ("main", "atomoh", "ssminji", "whchoi")]
+        for target, inputs, rate, expected in cases:
+            with self.subTest(target=target, inputs=inputs):
+                context = {"github": {"event_name": "workflow_dispatch"},
+                           "inputs": {"runtime_rollout": False, **inputs},
+                           "env": {"TARGET": target}, "vars": {
+                               "CI_READONLY_RUNTIME_DEV": "true", "CI_STEAMPIPE_AWS_FILL_RATE_DEV": rate,
+                               "STEAMPIPE_IMAGE_DIGEST_DEV": DIGEST, "WORKER_IMAGE_DIGEST_DEV": DIGEST}}
+                # GitHub resolves the whole step env map against inherited context, not siblings.
+                resolved = {key: expression(value, context) for key, value in step["env"].items()}
+                self.assertEqual(resolved["CI_STEAMPIPE_AWS_FILL_RATE_DEV"], rate if expected else "")
+                result, calls = harness.run_step([step], TARGET=target, PLAN_SCOPE="", context=context)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(calls, [])
+                self.assertEqual(json.loads(result.files["ci-runtime.auto.tfvars.json"])
+                                 .get("steampipe_aws_fill_rate"), expected)
+
+    def test_saved_plan_keeps_the_rate_when_later_configuration_changes(self):
+        # Real provider-free Terraform input resolution: do not invent an asset format.
+        for saved, rate, expected in ((None, "", 2), (3, "", 3), (3, "10", 10)):
+            with self.subTest(saved=saved, rate=rate), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                values = self.rate_overrides(rate)
+                declarations = [
+                    'variable "steampipe_aws_fill_rate" {\n type = number\n default = 2\n}',
+                    'output "rate" { value = var.steampipe_aws_fill_rate }',
+                ]
+                declarations += [f'variable "{key}" {{ default = {json.dumps(value)} }}'
+                                 for key, value in values.items() if key != "steampipe_aws_fill_rate"]
+                (root / "main.tf").write_text("\n".join(declarations))
+                if saved is not None:
+                    (root / "terraform.tfvars.json").write_text(json.dumps({"steampipe_aws_fill_rate": saved}))
+                overrides = root / "ci-runtime.auto.tfvars.json"
+                overrides.write_text(json.dumps(values))
+                env = {k: v for k, v in os.environ.items() if not k.startswith(("AWS_", "TF_"))}
+                env.update(CHECKPOINT_DISABLE="1", TF_CLI_CONFIG_FILE="/dev/null",
+                           AWS_CONFIG_FILE="/dev/null", AWS_SHARED_CREDENTIALS_FILE="/dev/null",
+                           AWS_EC2_METADATA_DISABLED="true")
+                for args in (["init", "-backend=false", "-input=false", "-no-color"],
+                             ["plan", "-input=false", "-no-color", "-out=tfplan"]):
+                    result = subprocess.run(["terraform", *args], cwd=root, env=env,
+                                            capture_output=True, text=True, timeout=15)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                overrides.write_text('{"steampipe_aws_fill_rate":20}')
+                env["CI_STEAMPIPE_AWS_FILL_RATE_DEV"] = "20"
+                snapshot = json.loads(subprocess.check_output(
+                    ["terraform", "show", "-json", "tfplan"], cwd=root, env=env, timeout=15))
+                self.assertEqual(snapshot["variables"]["steampipe_aws_fill_rate"]["value"], expected)
+                self.assertEqual(snapshot["planned_values"]["outputs"]["rate"]["value"], expected)
 
     def test_bootstrap_enables_only_existing_core_flags_without_fake_images(self):
         value = self.module.runtime_overrides("dev", "true", ACCOUNT, "runtime-ecr-bootstrap", "", "", False)
@@ -402,6 +529,40 @@ class RuntimePolicyTests(unittest.TestCase):
         for target in ("atomoh", "ssminji", "whchoi"):
             with self.assertRaises(ValueError):
                 self.module.check_plan(self.plan([foreign]), target, "full", ACCOUNT)
+
+    def test_rate_task_revision_does_not_require_weakening_core_or_dns_guards(self):
+        from ci_dns_policy import check_plan as check_dns_plan
+        registry = f"arn:aws:servicediscovery:ap-northeast-2:{ACCOUNT}:service/srv-owned"
+        cluster = f"arn:aws:ecs:ap-northeast-2:{ACCOUNT}:cluster/awsops-dev"
+        task_prefix = f"arn:aws:ecs:ap-northeast-2:{ACCOUNT}:task-definition/awsops-dev-steampipe:"
+        task = self.change("aws_ecs_task_definition.steampipe[0]", "aws_ecs_task_definition",
+                           {"arn": task_prefix + "2", "container_definitions": json.dumps([{
+                               "name": "steampipe", "environment": [
+                                   {"name": "STEAMPIPE_AWS_FILL_RATE", "value": "10"}]}])},
+                           ["delete", "create"])
+        service = self.change("aws_ecs_service.steampipe[0]", "aws_ecs_service", {
+            "name": "awsops-dev-steampipe", "cluster": cluster,
+            "service_registries": [{"registry_arn": registry}], "task_definition": task_prefix + "2",
+        }, ["update"])
+        service["change"]["before"] = {**service["change"]["after"], "task_definition": task_prefix + "1"}
+        plan = self.plan([task, service], profile=True)
+        plan["variables"]["steampipe_aws_fill_rate"] = {"value": 10}
+        plan["planned_values"]["root_module"]["resources"] += [
+            {"address": "aws_ecs_cluster.main", "values": {"arn": cluster, "name": "awsops-dev"}},
+            {"address": "aws_service_discovery_private_dns_namespace.main[0]",
+             "values": {"id": "ns-owned", "name": "awsops-dev.internal", "vpc": "vpc-0123"}},
+            {"address": "aws_service_discovery_service.steampipe[0]", "values": {
+                "name": "steampipe", "arn": registry, "dns_config": [{"namespace_id": "ns-owned"}]}},
+        ]
+        self.assertEqual(self.module.check_plan(plan, "dev", "full", ACCOUNT)["runtime_policy"], "verified")
+        # A service roll still has private discovery effects: the new knob grants no DNS bypass.
+        with self.assertRaisesRegex(ValueError, "DNS change prohibited"):
+            check_dns_plan(plan, False, "full", target="dev")
+        for actions in (["delete", "create"], ["create", "delete"], ["forget"]):
+            rejected = copy.deepcopy(plan)
+            rejected["resource_changes"][1]["change"]["actions"] = actions
+            with self.assertRaisesRegex(ValueError, "teardown"):
+                self.module.check_plan(rejected, "dev", "full", ACCOUNT)
 
     def test_embedded_arns_check_every_account_without_rejecting_wildcards(self):
         own = f"arn:aws:iam::{ACCOUNT}:role/owned"

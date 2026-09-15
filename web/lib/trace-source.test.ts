@@ -805,7 +805,7 @@ describe('SourceRead provenance and bounds', () => {
     const result = await new TempoTraceSource(7).recentSpans(30, 1, END_MS);
     expect(result.items).toHaveLength(1);
     expect(result).toMatchObject({ status: 'partial', reasons: ['payload_truncated'] });
-    expect(result.canSweep).not.toBe(false);
+    expect(result.canSweep).toBeUndefined();
   });
 
   it.each(['clickhouse', 'tempo'])('%s honors a zero cap without invoking a query', async (kind) => {

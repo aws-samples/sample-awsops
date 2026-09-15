@@ -445,6 +445,7 @@ real login/DB/host-registry preflight. Readiness is a separate capability contro
 `CI_READINESS_ENABLED_DEV`: true/false explicitly overrides the dev Terraform value; empty/unset
 preserves explicit tfvars and its default false. The runtime profile alone never enables it.
 See [readiness capability](runtime-foundation.md#readiness-capability) for billed access and revocation.
+`CI_STEAMPIPE_AWS_FILL_RATE_DEV` optionally overrides refill 0.1–20 on full dev plans with the verified runtime profile; empty/unset preserves tfvars/defaults. Apply replays the reviewed plan. See the [refill contract](steampipe-quota-and-staleness.md#development-ci-refill-override).
 `AWS_ACCOUNT_ID_DEV` is a required repository **secret** for both migration jobs, runtime image builds, dev AgentCore provisioning and every AWS-facing Deploy Web job (including main's exclusion check); the guard job does not need it. No variable/default-account fallback exists. On dev/preview it must match the configured role accounts and actual STS
 callers; this agreement is not proof of effective permissions or an independent classification of the account as development.
 
