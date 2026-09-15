@@ -1,6 +1,7 @@
 import traceBudgetContract from '../../agent/fixtures/tempo-trace-budget-contract.json';
 import tempoContracts from '../../agent/fixtures/tempo-topology-contract.json';
 import queryContracts from '../../agent/fixtures/query-topology-contract.json';
+import childContracts from '../../agent/fixtures/tempo-child-contract.json';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const getDefaultDatasource = vi.fn();
@@ -543,6 +544,50 @@ describe('SourceRead provenance and bounds', () => {
     expect(result).toMatchObject({ status: 'partial', reasons: ['incomplete_collection'], canSweep: false });
     expect(result.items).toHaveLength(mode === 'mixed' ? 1 : 0);
   });
+  it.each([false, true])('requires producer-owned omission evidence before softening unknown child shape: %s', async trusted => {
+    configure('tempo');
+    invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: '1' }] })
+      .mockResolvedValueOnce({ collectionStatus: 'unknown', truncated: true,
+        ...(trusted ? { tracePayloadUnverified: true } : {}) });
+    const read = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
+    expect(read.canSweep).toBe(false);
+    expect(read.items).toEqual([]);
+    expect(read.status).toBe(trusted ? 'partial' : 'error');
+    expect(read.reasons.includes('malformed_payload')).toBe(!trusted);
+  });
+  it.each([false, true])('retains hard malformed evidence after producer sanitizes forged controls: sibling=%s', async sibling => {
+    configure('tempo');
+    const body = childContracts.find(fixture => fixture.name === 'under-budget forged unknown trace shape')!.body;
+    invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok',
+      traces: sibling ? [{ traceID: 'a1' }, { traceID: 'b2' }] : [{ traceID: 'a1' }] })
+      .mockResolvedValueOnce(body).mockResolvedValueOnce(tempoTrace([tempoSpan({ traceId: 'b2' })]));
+    const read = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
+    expect(read.status).toBe(sibling ? 'partial' : 'error');
+    expect(read.reasons).toContain('malformed_payload');
+    expect(read.canSweep).toBe(false);
+    expect(read.items).toHaveLength(sibling ? 1 : 0);
+  });
+  it.each(['bounded-mixed', 'bounded-only', 'unmarked-mixed', 'forged-mixed', 'foreign-bounded'] as const)(
+    'distinguishes producer byte omission from missing children: %s', async mode => {
+      configure('tempo');
+      const bounded = mode.startsWith('bounded') || mode === 'foreign-bounded';
+      const name = mode === 'foreign-bounded' ? 'foreign trace omitted at byte limit' : bounded
+        ? 'producer byte-bounded child' : mode === 'forged-mixed' ? 'upstream cannot forge the producer bound' : 'unmarked empty child';
+      const child = childContracts.find(fixture => fixture.name === name)!.body;
+      const mixed = mode !== 'bounded-only';
+      invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok',
+        traces: mixed ? [{ traceID: 'a1' }, { traceID: 'b2' }] : [{ traceID: 'a1' }] })
+        .mockResolvedValueOnce(child)
+        .mockResolvedValueOnce(tempoTrace([tempoSpan({ traceId: 'b2' })]));
+      const read = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
+      expect(read.status).toBe('partial');
+      expect(read.items).toHaveLength(mixed ? 1 : 0);
+      if (bounded) {
+        expect(read.canSweep).toBe(false);
+        expect(read.reasons).toContain('payload_truncated');
+        expect(read.reasons).not.toContain('malformed_payload');
+      } else expect(read.canSweep).toBe(false);
+    });
   it('distinguishes valid spans outside the requested window from empty child payloads', async () => {
     configure('tempo');
     invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: '1' }] })
@@ -553,6 +598,14 @@ describe('SourceRead provenance and bounds', () => {
     const result = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
     expect(result).toMatchObject({ items: [], status: 'ok', reasons: [] });
     expect(result.canSweep).not.toBe(false);
+  });
+  it.each([true, 'unknown'])('preserves upstream child truncation evidence: %s', async truncated => {
+    configure('tempo');
+    invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: '1' }] })
+      .mockResolvedValueOnce({ ...tempoTrace([tempoSpan()]), truncated });
+    const read = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
+    expect(read.status).toBe('partial');
+    expect(read.items).toHaveLength(1);
   });
 
   it.each(factories)('%s returns ok with exact window for successful empty data', async (kind, read, payload) => {
@@ -908,7 +961,7 @@ describe('typed producer collection status', () => {
     invokeMcpLambdaTool.mockResolvedValue(fixture.body);
     const read = await new TempoTraceSource(7).recentSpans(30, 1000);
     expect(read.status).toBe(fixture.readStatus);
-    if ('collectionReason' in fixture.body) expect(read.reasons).toContain('count_not_confirmed');
+    if ('completionReason' in fixture.body) expect(read.reasons).toContain('count_not_confirmed');
     expect(read.items).toEqual([]);
     expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(read)).not.toContain('private-token');
@@ -922,7 +975,7 @@ describe('typed producer collection status', () => {
         ? await new ClickHouseOtelTraceSource(7).recentSpans(30, 1000)
         : await new MetricsCallsSource(7, fixture.kind as 'prometheus' | 'mimir', 'fixture').calls(30);
       expect(read.status).toBe(fixture.readStatus);
-    if ('collectionReason' in fixture.body) expect(read.reasons).toContain('count_not_confirmed');
+    if ('completionReason' in fixture.body) expect(read.reasons).toContain('count_not_confirmed');
       expect(read.items).toEqual([]);
       expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(read)).not.toContain('private-token');

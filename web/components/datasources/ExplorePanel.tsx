@@ -307,6 +307,11 @@ function ResultView({ result, kind, execMs }: { result: NormalizedResult; kind?:
       {result.collectionNote && (result.shape !== 'empty' || result.note !== result.collectionNote) && (
         <p role="status" className="text-[12px] text-amber-700">{tt(result.collectionNote)}</p>
       )}
+      {typeof result.droppedEntries === 'number' && Number.isSafeInteger(result.droppedEntries) && result.droppedEntries > 0 && (
+        <p role="status" data-testid="dropped-response-entries" className="text-[12px] text-amber-700">
+          {tt('잘못된 응답 항목 생략')}: {result.droppedEntries}
+        </p>
+      )}
       {result.shape === 'empty' && (
         <Card className="p-6 text-center text-[13px] text-ink-400">{result.note ? tt(result.note) : tt('결과 없음')}</Card>
       )}

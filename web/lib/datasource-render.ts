@@ -1,5 +1,6 @@
 // Pure normalizer: connector-Lambda query bodies → a render-ready shape for the Explore page.
-// No I/O. Never throws — malformed input degrades to { shape: 'empty', note }.
+// No I/O. Invalid metric/log entries are counted and omitted; valid siblings survive.
+// Wholly unusable or unsupported input degrades to { shape: 'empty', note }.
 // Connector return contracts (unwrapped by invokeConnectorTool from { statusCode, body }):
 //   prometheus/mimir : { truncated?, resultType: 'matrix'|'vector'|'scalar'|'string', result: [...] }
 //   loki             : { truncated?, resultType: 'streams', result: [{ stream, values:[[ns,line]] }] }
@@ -23,15 +24,32 @@ export interface NormalizedResult {
   note?: string;
   collectionStatus?: 'ok' | 'empty' | 'partial' | 'unknown' | 'error';
   collectionNote?: string;
+  /** Invalid series, samples or log entries encountered and omitted during normalization. */
+  droppedEntries?: number;
 }
 
 const cols = (keys: string[]): Column[] => keys.map((k) => ({ key: k, label: k }));
 const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
+const isLabelMap = (x: unknown): x is Record<string, string> =>
+  isObj(x) && Object.values(x).every(value => typeof value === 'string');
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 // Like `num` but PRESERVES non-finite samples as null (Prometheus "NaN"/"+Inf"/malformed). The instant
 // table uses this for the value so a non-numeric sample stays distinguishable downstream (the Explore
 // ranked-bar gate fail-closes on a non-number), instead of being silently coerced to a misleading 0.
 const finiteOrNull = (v: unknown): number | null => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+function epochMs(value: unknown, unit: 'seconds' | 'nanoseconds'): number | null {
+  if (typeof value !== 'number' && (typeof value !== 'string' || !value.trim())) return null;
+  const ms = unit === 'seconds' ? Number(value) * 1000 : Number(value) / 1e6;
+  return Number.isFinite(ms) && Math.abs(ms) <= 8640000000000000 ? ms : null;
+}
+function metricPoint(value: unknown): { ms: number; value: number | null } | null {
+  if (!Array.isArray(value) || value.length < 2
+      || !['number', 'string'].includes(typeof value[1])) return null;
+  const ms = epochMs(value[0], 'seconds');
+  return ms === null ? null : { ms, value: finiteOrNull(value[1]) };
+}
+const withDrops = (result: NormalizedResult, droppedEntries: number): NormalizedResult =>
+  droppedEntries ? { ...result, droppedEntries } : result;
 
 /** Prometheus metric object → "name{label="v",...}" for display. */
 function labelStr(metric: unknown): string {
@@ -48,20 +66,32 @@ function prom(body: Record<string, unknown>): NormalizedResult {
   const result = Array.isArray(body.result) ? body.result : [];
   const truncated = body.truncated === true;
   if (body.resultType === 'scalar' || body.resultType === 'string') {
-    if (result.length !== 2 || typeof result[0] !== 'number' || !Number.isFinite(result[0])
-        || typeof result[1] !== 'string') return { shape: 'empty', truncated, note: '응답 형식 오류' };
+    const ms = epochMs(result[0], 'seconds');
+    if (result.length !== 2 || typeof result[0] !== 'number' || ms === null
+        || typeof result[1] !== 'string') return withDrops({ shape: 'empty', truncated, note: '응답 형식 오류' }, 1);
     return { shape: 'table', truncated, columns: cols(['value', 'timestamp']), rows: [{
       value: body.resultType === 'scalar' ? finiteOrNull(result[1]) : result[1],
-      timestamp: new Date(result[0] * 1000).toISOString(),
+      timestamp: new Date(ms).toISOString(),
     }] };
   }
   if (!result.length) return { shape: 'empty', truncated, note: '결과 없음' };
+  const objects = result.filter(isObj);
+  let dropped = result.length - objects.length;
 
   if (body.resultType === 'matrix') {
     // v1 parity: up to 8 series merged on the timestamp axis → multi-line chart; all series →
     // a summary table. (Previously only the FIRST series was charted.)
     const MAX_SERIES = 8;
-    const charted = result.slice(0, MAX_SERIES) as Record<string, unknown>[];
+    const usable = objects.flatMap(so => {
+      if (!isLabelMap(so.metric) || !Array.isArray(so.values)) { dropped++; return []; }
+      const points = so.values.flatMap(value => {
+        const point = metricPoint(value);
+        if (!point) { dropped++; return []; }
+        return [point];
+      });
+      return [{ metric: so.metric, points }];
+    });
+    const charted = usable.slice(0, MAX_SERIES);
     const keys: string[] = charted.map((so, i) => {
       const raw = labelStr(so.metric) || `series ${i + 1}`;
       return raw.length > 60 ? `${raw.slice(0, 57)}…#${i + 1}` : raw;
@@ -71,34 +101,31 @@ function prom(body: Record<string, unknown>): NormalizedResult {
     // (review: exposed by the new 7d/30d presets). `_ts` rides along as chart-invisible metadata.
     const byT = new Map<number, Record<string, unknown>>();
     charted.forEach((so, i) => {
-      const values = Array.isArray(so.values) ? (so.values as unknown[][]) : [];
-      for (const pnt of values) {
-        const ms = num(pnt[0]) * 1000;
+      for (const pnt of so.points) {
+        const ms = pnt.ms;
         const row = byT.get(ms) ?? { t: new Date(ms).toISOString().slice(5, 16).replace('T', ' '), _ts: ms };
-        row[keys[i]] = num(pnt[1]);
+        row[keys[i]] = pnt.value;
         byT.set(ms, row);
       }
     });
     const series = [...byT.values()].sort((a, b) => Number(a._ts) - Number(b._ts));
-    const rows = result.map((s) => {
-      const so = s as Record<string, unknown>;
-      const pts = Array.isArray(so.values) ? (so.values as unknown[]).length : 0;
-      return { metric: labelStr(so.metric), points: pts };
-    });
-    if (!series.length) return { shape: 'empty', truncated, note: '시계열 포인트 없음' };
-    return {
+    const rows = usable.map(so => ({ metric: labelStr(so.metric), points: so.points.length }));
+    if (!series.length) return withDrops({ shape: 'empty', truncated,
+      note: dropped ? '응답 형식 오류' : '시계열 포인트 없음' }, dropped);
+    return withDrops({
       shape: 'series', series, seriesXKey: 't', seriesKeys: keys,
       rows, columns: cols(['metric', 'points']), truncated,
-      note: result.length > MAX_SERIES ? `상위 ${MAX_SERIES}개 시리즈만 차트에 표시 (총 ${result.length})` : undefined,
-    };
+      note: usable.length > MAX_SERIES ? `상위 ${MAX_SERIES}개 시리즈만 차트에 표시 (총 ${usable.length})` : undefined,
+    }, dropped);
   }
   // vector (instant)
-  const rows = result.map((e) => {
-    const eo = e as Record<string, unknown>;
-    const val = Array.isArray(eo.value) ? (eo.value as unknown[]) : [];
-    return { metric: labelStr(eo.metric), value: finiteOrNull(val[1]), timestamp: new Date(num(val[0]) * 1000).toISOString() };
+  const rows = objects.flatMap(eo => {
+    const point = metricPoint(eo.value);
+    if (!isLabelMap(eo.metric) || !point) { dropped++; return []; }
+    return [{ metric: labelStr(eo.metric), value: point.value, timestamp: new Date(point.ms).toISOString() }];
   });
-  return { shape: 'table', rows, columns: cols(['metric', 'value', 'timestamp']), truncated };
+  if (!rows.length) return withDrops({ shape: 'empty', truncated, note: '응답 형식 오류' }, dropped);
+  return withDrops({ shape: 'table', rows, columns: cols(['metric', 'value', 'timestamp']), truncated }, dropped);
 }
 
 function loki(body: Record<string, unknown>): NormalizedResult {
@@ -114,25 +141,29 @@ function loki(body: Record<string, unknown>): NormalizedResult {
     return prom(body);
   }
   const rows: Record<string, unknown>[] = [];
+  let dropped = 0;
   for (const stream of result) {
-    const so = stream as Record<string, unknown>;
+    if (!isObj(stream) || !isLabelMap(stream.stream) || !Array.isArray(stream.values)) { dropped++; continue; }
+    const so = stream;
     const labels = labelStr(so.stream);
     const values = Array.isArray(so.values) ? (so.values as unknown[][]) : [];
     for (const pair of values) {
-      const ns = num(pair[0]);
+      if (!Array.isArray(pair) || pair.length < 2 || typeof pair[1] !== 'string') { dropped++; continue; }
+      const ms = epochMs(pair[0], 'nanoseconds');
+      if (ms === null) { dropped++; continue; }
       // `_labelPairs` is additive display metadata (structured stream labels — quote-containing
       // values survive it, unlike the flat `labels` string the generic table path still shows).
       // The DataTable renders only `columns`, so it ignores this field.
       rows.push({
-        timestamp: new Date(ns / 1e6).toISOString(),
+        timestamp: new Date(ms).toISOString(),
         line: String(pair[1] ?? ''),
         labels,
         _labelPairs: isObj(so.stream) ? Object.entries(so.stream as Record<string, unknown>).map(([k, v]) => ({ key: k, value: String(v) })) : [],
       });
     }
   }
-  if (!rows.length) return { shape: 'empty', truncated, note: '로그 없음' };
-  return { shape: 'logs', rows, columns: cols(['timestamp', 'line', 'labels']), truncated };
+  if (!rows.length) return withDrops({ shape: 'empty', truncated, note: dropped ? '응답 형식 오류' : '로그 없음' }, dropped);
+  return withDrops({ shape: 'logs', rows, columns: cols(['timestamp', 'line', 'labels']), truncated }, dropped);
 }
 
 function tempo(body: Record<string, unknown>): NormalizedResult {
@@ -282,7 +313,9 @@ export function normalizeResult(kind: string, tool: string, body: unknown): Norm
       ? body.collectionStatus as NonNullable<NormalizedResult['collectionStatus']> : 'unknown';
   }
   const truncated = result.truncated === true || body.truncated === true;
+  if ('truncated' in body && typeof body.truncated !== 'boolean' && status !== 'error') status = 'unknown';
   if (truncated && status !== 'error' && status !== 'unknown') status = 'partial';
+  if (result.droppedEntries && status !== 'error') status = 'unknown';
   if (!status) return result;
   const collectionNote = status === 'error' ? '조회 실패 — 확인 불가'
     : status === 'unknown' ? '수집 완료 여부 미확인 — 빈 결과를 확정할 수 없습니다.'
