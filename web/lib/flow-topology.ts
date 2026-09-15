@@ -566,7 +566,7 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
       const aggHealth = total === healthy ? 'healthy' : g.members.some((m) => m.health === 'unhealthy') ? 'unhealthy' : (g.members.find((m) => m.health !== 'healthy')?.health || 'unknown');
       const single = total === 1;
       const nodeId = `target:${str(t.resource_id)}:${g.key}`;
-      targetMembers[nodeId] = g.members.map(({ id, pod, namespace }) => ({
+      if (!Object.hasOwn(targetMembers, nodeId)) targetMembers[nodeId] = g.members.map(({ id, pod, namespace }) => ({
         id, ...(g.resolved === 'eks' ? { pod, namespace } : {}),
       }));
       addNode(nodeId, 'target', single ? g.members[0].label : `${g.groupLabel} ×${total}`, {

@@ -31,6 +31,18 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
     expect(stored.meta.memberIdentities).toBeUndefined();
   });
 
+  it('keeps the first full membership when cross-region target IDs and display prefixes collide', () => {
+    const prefix = Array.from({ length: 20 }, (_, i) => `10.0.1.${i + 1}`);
+    const graph = buildFlowGraph({ tg: [region, 'us-west-2'].map((region, i) => ({
+      ...tg, region, target_health_descriptions: [...prefix, `10.0.${i + 2}.21`]
+        .map(Id => ({ Target: { Id, Port: 443 } })),
+    })) });
+    const nodes = graph.nodes.filter(n => n.kind === 'target');
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].meta).toMatchObject({ count: 21, membersTruncated: 1, members: prefix.map(id => `${id}:443`) });
+    expect(graph.targetMembers?.[nodes[0].id]).toEqual([...prefix, '10.0.2.21'].map(id => ({ id })));
+  });
+
   it('withholds exclusive ownership outside the enumerated EKS region', () => {
     const configured = buildFlowGraph({ tg: [{ ...tg, vpc_id: 'vpc-b',
       target_health_descriptions: [ip, '10.0.1.11'].map(Id => ({ Target: { Id } })) }],
