@@ -97,6 +97,43 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
         reasons: [], windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }),
     }]);
 
+  it('retains trace rows while a legacy empty producer has no collection marker', async () => {
+    await trace();
+    const previous = await state('trace');
+    producer.invoke.mockResolvedValue({ traces: [] });
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + 1);
+    try {
+      expect(await rebuildTraceGraph(pool, [new TempoTraceSource(7)]))
+        .toMatchObject({ published: 0, retained: 1 });
+    } finally { clock.mockRestore(); }
+    expect(await state('trace')).toMatchObject({ status: 'partial', retainedPrevious: true,
+      captured_at: previous.captured_at });
+    expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
+  });
+
+  it.each(['flow', 'infra'])('%s discovers a first-empty member from real participation snapshots', async cls => {
+    const account = '111122223333';
+    await pool.query(`INSERT INTO accounts(account_id,alias,external_id,all_regions)
+      VALUES ($1,'fixture','fixture-only',true)`, [account]);
+    await pool.query(`INSERT INTO inventory_snapshots(account_id,captured_at,resource_type,resource_count)
+      SELECT $1,$2,t,0 FROM unnest($3::text[]) t`,
+    [account, recent, requiredTypes.filter(t => !HOST_ONLY_TREND_TYPES.has(t))]);
+    expect((await pool.query('SELECT * FROM inventory_resources')).rowCount).toBe(0);
+    await build(cls);
+    expect(await state(cls, account)).toMatchObject({ status: 'empty', retainedPrevious: false });
+    expect((await state(cls, account)).captured_at).not.toBeNull();
+  });
+
+  it('discovers an enabled member without inventing participation or empty proof', async () => {
+    const account = '111122223333';
+    await pool.query(`INSERT INTO accounts(account_id,alias,external_id,all_regions)
+      VALUES ($1,'fixture','fixture-only',true)`, [account]);
+    expect(await inventoryAccounts(pool, 'infra', INFRA_TYPES)).toContain(account);
+    await build('infra');
+    expect((await state('infra', account)).status).not.toBe('empty');
+    expect((await state('infra', account)).captured_at).toBeNull();
+  });
+
   it.each(tempoContracts)('Tempo producer $name preserves the graph unless empty is confirmed', async fixture => {
     await trace();
     const previous = await state('trace');

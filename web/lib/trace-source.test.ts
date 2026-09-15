@@ -534,11 +534,16 @@ describe('SourceRead provenance and bounds', () => {
 
   it.each(factories)('%s returns ok with exact window for successful empty data', async (kind, read, payload) => {
     configure(kind);
-    invokeMcpLambdaTool.mockResolvedValue(payload);
+    invokeMcpLambdaTool.mockResolvedValue({ ...payload, collectionStatus: 'empty' });
     expect(await read()).toEqual({
       items: [], status: 'ok', sourceId: `${kind}:7`, reasons: [],
       windowStartMs: END_MS - 1_800_000, windowEndMs: END_MS,
     });
+  });
+  it.each(factories)('%s retains unmarked legacy empty data as unconfirmed', async (kind, read, payload) => {
+    configure(kind);
+    invokeMcpLambdaTool.mockResolvedValue(payload);
+    expect(await read()).toMatchObject({ items: [], status: 'partial', reasons: ['empty_not_confirmed'] });
   });
 
   it.each(factories)('%s never turns errors/malformed payloads/truncation into valid empty data', async (kind, read) => {
@@ -809,7 +814,10 @@ describe('metrics identity and query provenance', () => {
     expect(result.items).toHaveLength(1);
     expect(result.status).toBe('partial');
     expect(result.reasons).toEqual(expect.arrayContaining(['malformed_rows', 'payload_truncated']));
-    invokeMcpLambdaTool.mockResolvedValue({ resultType: 'vector', result: [{ ...valid, value: [0, '0'] }] });
+    const zero = { resultType: 'vector', result: [{ ...valid, value: [0, '0'] }] };
+    invokeMcpLambdaTool.mockResolvedValue(zero);
+    expect(await source.calls(30, END_MS)).toMatchObject({ items: [], status: 'partial', reasons: ['empty_not_confirmed'] });
+    invokeMcpLambdaTool.mockResolvedValue({ ...zero, collectionStatus: 'ok' });
     expect(await source.calls(30, END_MS)).toMatchObject({ items: [], status: 'ok', reasons: [] });
     invokeMcpLambdaTool.mockResolvedValue({ resultType: 'matrix', result: [] });
     expect(await source.calls(30, END_MS)).toMatchObject({ items: [], status: 'error' });

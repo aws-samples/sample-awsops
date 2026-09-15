@@ -40,6 +40,10 @@ export async function inventoryAccounts(pool: Pool, cls: GraphClass, types: stri
       UNION SELECT account_id FROM topology_graph_state WHERE class=$1
       UNION SELECT account_id FROM inventory_resources WHERE resource_type=ANY($2)
       UNION SELECT account_id FROM inventory_sync_runs WHERE resource_type=ANY($2)
+      UNION SELECT account_id FROM inventory_snapshots WHERE resource_type=ANY($2)
+      UNION SELECT a.account_id FROM accounts a WHERE a.enabled AND NOT a.is_host
+        AND a.account_id <> 'self' AND (a.all_regions OR EXISTS (
+          SELECT 1 FROM account_regions ar WHERE ar.account_id=a.account_id AND ar.enabled))
     ) accounts LEFT JOIN topology_graph_state s ON s.account_id=accounts.account_id AND s.class=$1
     ORDER BY CASE WHEN s.details->>'sourceAttempted'='false' THEN
       CASE WHEN jsonb_typeof(s.details->'lastSourceAttemptedAtMs')='number'

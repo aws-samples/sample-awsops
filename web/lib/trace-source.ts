@@ -61,7 +61,7 @@ export interface ServiceGraphCall {
 // Never use backend exceptions, status messages, SQL, previews or credentials as reasons.
 type Reason = 'missing_configuration' | 'configuration_failed' | 'query_failed' |
   'malformed_payload' | 'malformed_rows' | 'payload_truncated' | 'trace_fetch_failed' |
-  'cap_reached' | 'invalid_request' | 'incomplete_collection';
+  'cap_reached' | 'invalid_request' | 'incomplete_collection' | 'empty_not_confirmed';
 type ReadWindow = Pick<SourceRead<never>, 'windowStartMs' | 'windowEndMs'>;
 type Obj = Record<string, unknown>;
 
@@ -90,7 +90,7 @@ function readResult<T>(
   return {
     items, sourceId, ...window, reasons: unique,
     status: status ?? (unique.length === 0 ? 'ok' :
-      items.length > 0 || unique.every((r) => r === 'cap_reached' || r === 'incomplete_collection') ? 'partial' : 'error'),
+      items.length > 0 || unique.every((r) => r === 'cap_reached' || r === 'incomplete_collection' || r === 'empty_not_confirmed') ? 'partial' : 'error'),
   };
 }
 function envelopeReasons(value: unknown): Reason[] {
@@ -104,6 +104,13 @@ function envelopeReasons(value: unknown): Reason[] {
     else if (r.collectionStatus !== 'ok' && r.collectionStatus !== 'empty') reasons.push('malformed_payload');
   }
   return reasons;
+}
+function requireEmptyProof(value: unknown, items: unknown[], reasons: Reason[]): void {
+  if (items.length || reasons.length) return;
+  const outer = object(value), inner = object(outer?.result);
+  const status = outer?.collectionStatus ?? inner?.collectionStatus;
+  // Legacy delivery success is not evidence that the source query completed.
+  if (status !== 'ok' && status !== 'empty') reasons.push('empty_not_confirmed');
 }
 function inWindow(span: TraceSpan, window: ReadWindow): boolean {
   return span.startMs >= window.windowStartMs && span.startMs <= window.windowEndMs;
@@ -320,6 +327,7 @@ export class ClickHouseOtelTraceSource implements TraceSource {
           (links && item.links?.length !== links.length)) reasons.push('malformed_rows');
       if (inWindow(item, window)) items.push({ ...item, sourceId });
     }
+    requireEmptyProof(payload, items, reasons);
     return readResult(sourceId, window, items, reasons);
   }
 }
@@ -460,6 +468,7 @@ export class TempoTraceSource implements TraceSource {
         reasons.push('trace_fetch_failed');
       }
     }
+    requireEmptyProof(search, items, reasons);
     return readResult(sourceId, window, items, reasons);
   }
 }
@@ -545,6 +554,7 @@ export class MetricsCallsSource {
       return readResult(sourceId, window, [], ['query_failed']);
     }
     const { items, reasons } = parseServiceGraphCalls(payload);
+    requireEmptyProof(payload, items, reasons);
     return readResult(sourceId, window, items.map((item) => ({
       ...item, clientIdentity: { ...item.clientIdentity, sourceId }, serverIdentity: { ...item.serverIdentity, sourceId },
     })), reasons);

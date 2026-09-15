@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b058fe43050c · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 49e09e7f8813 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -53,7 +53,7 @@ that's the source of truth for tool counts, not this doc.
 - Node `captured_at` is materialization time, not inventory/event time. Use
   `sql_reader.topology_graph_state` for flow/infra/trace status, source clocks and retained
   evidence; trace adds query windows. Missing state remains unknown. Current collection-state
-  projection: `01M2FV44NER7VC3CTX2ZMT9FZG_topology_inventory_evidence.sql`.
+  projection: `01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql`.
 - `test_inventory_view_contract.py` reads the original reader-role migration for topology
   assertions, not the current projection owner. Do not claim it enforces that owner; inspect
   the current migration and `scripts/v2/workers/test_graph_collection.py` separately.

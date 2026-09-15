@@ -197,7 +197,7 @@ as processing limits. The panel discloses positive loss counters and unavailable
 source windows separately from publication/capture clocks, and does not infer retention
 from losses. `retainedPrevious` alone establishes that a saved graph is being reused.
 The typed collection contract also describes optional additive producer fields; unknown
-runtime data remains defensively normalized. Source-detail totals include saved sources; latest-attempt status counts have separate labels.
+runtime data remains defensively normalized. Source-detail totals count displayed detail rows: identical latest/saved evidence is shown once with explicit saved provenance and a localized shared-evidence note. Differing and saved-only details remain included; latest-attempt and saved-source counts keep separate labels.
 Verify locally with `cd web && npx vitest run components/topology/GraphCollectionStatus.test.tsx`;
 the regression uses the real graph-state reader with a database boundary fixture.
 
@@ -272,3 +272,5 @@ Separately, `inventory_stale_after_minutes` supplies `INVENTORY_STALE_AFTER_MINU
 See [graph read contract](graph-read-contract.md) for request budgets, read-vs-collection disclosure, legacy display clocks and the disposable PostgreSQL tests. No repeated retention count permits an unproven empty publication or sweep.
 
 Topology source adapters honor typed producer collection markers before accepting empty results. Unknown or incomplete empty responses cannot authorize an empty graph publication; a genuinely observed empty response can. The shared `agent/fixtures/tempo-topology-contract.json` fixture binds actual producer bodies to adapter and PostgreSQL publication regressions; the producer-side fixture check ships with the producer contract stage.
+
+An empty adapter result without an affirmative producer collection marker remains `empty_not_confirmed` during rollout; legacy delivery success cannot authorize an empty trace publication. Account discovery includes current scan-scope registry entries and inventory snapshots, including first-collection zeros. Discovery itself never establishes participation or empty proof; the existing current-account/snapshot/count checks still apply.
