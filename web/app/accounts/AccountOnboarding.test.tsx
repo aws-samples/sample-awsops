@@ -80,9 +80,12 @@ describe('account onboarding flow', () => {
     await fillAccount();
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ message: 'PRIVATE_REGISTER_FAILURE' }), { status: 400 }));
     fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));
-    await screen.findByText('등록하지 못했습니다. 연결 확인으로 진단 결과를 확인하세요.');
+    await screen.findByText('등록하지 못했습니다. 아래 읽기 전용 명령어로 역할·신뢰 정책·ExternalId 설정을 확인하고, 운영자에게 연결 확인 범위 설정을 요청하세요.');
     expect(document.body.textContent).not.toContain('PRIVATE_REGISTER_FAILURE');
-    expect(screen.getByRole('button', { name: '연결 원인 확인' })).toBeTruthy();
+    expect((screen.getByRole('button', { name: '연결 확인' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: '연결 원인 확인' })).toBeNull();
+    expect(screen.getByText('읽기 전용 연결 문제 해결')).toBeTruthy();
+    expect(vi.mocked(fetch).mock.calls.filter(([url, options]) => url === '/api/accounts/onboarding' && options?.method === 'POST')).toHaveLength(0);
     expect(onRegistered).not.toHaveBeenCalled();
     expect((screen.getByLabelText('Account ID') as HTMLInputElement).value).toBe('222222222222');
     fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));
@@ -342,7 +345,10 @@ describe('read-only account connection diagnostics', () => {
     render(<AccountOnboarding onRegistered={onRegistered} />);
     await fillAccount();
     fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));
-    fireEvent.click(await screen.findByRole('button', { name: '연결 원인 확인' }));
+    await screen.findByText('등록하지 못했습니다. 연결 확인으로 진단 결과를 확인하세요.');
+    const diagnose = await screen.findByRole('button', { name: '연결 원인 확인' });
+    expect((diagnose as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(diagnose);
     await screen.findByText('access_denied');
     expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/accounts')).toHaveLength(1);
     expect(vi.mocked(fetch).mock.calls.filter(([url, options]) => url === '/api/accounts/onboarding' && options?.method === 'POST')).toHaveLength(1);

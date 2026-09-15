@@ -233,7 +233,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
       });
       if (!response.ok) {
         setRegistrationFailed(response.status === 400);
-        setMessage(tt(accountRegistrationFailure(response.status)));
+        setMessage(tt(accountRegistrationFailure(response.status, canCheck)));
         return;
       }
       setSuccess(true);
@@ -352,7 +352,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
         <div className="flex flex-wrap gap-2">
           <button type="button" onClick={checkConnection} disabled={!canCheck}
             aria-describedby={connectionReason ? connectionReasonId : undefined} className={buttonClass}>
-            {tt(checking ? '연결 확인 중…' : registrationFailed ? '연결 원인 확인' : '연결 확인')}
+            {tt(checking ? '연결 확인 중…' : registrationFailed && probePermitted ? '연결 원인 확인' : '연결 확인')}
           </button>
           <button type="button" onClick={register} disabled={!canRegister} aria-describedby={disabledReason ? registrationReasonId : undefined}
             className="rounded-md bg-brand-800 px-3 py-2 text-[12px] font-semibold text-white hover:bg-brand-900 disabled:opacity-50">

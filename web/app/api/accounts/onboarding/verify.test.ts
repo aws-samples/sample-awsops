@@ -34,7 +34,7 @@ beforeEach(async () => {
   vi.spyOn(console, 'info').mockImplementation(() => {});
   route = await import('./route');
 });
-afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe('POST /api/accounts/onboarding', () => {
   it('supports a read-only connection check independently of registration', async () => {
@@ -128,6 +128,8 @@ describe('POST /api/accounts/onboarding', () => {
   });
 
   it('holds single-flight during approval lookup and releases it after a rejected target', async () => {
+    const started = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(started);
     vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '');
     let finish!: (value: undefined) => void;
     mocks.getAccount.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
@@ -140,7 +142,71 @@ describe('POST /api/accounts/onboarding', () => {
     finish(undefined);
     expect((await first).status).toBe(409);
     vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '["222222222222"]');
+    const coolingDown = await route.POST(request());
+    expect(coolingDown.status).toBe(429);
+    expect(await coolingDown.json()).toMatchObject({ code: 'probe_cooldown', retryAfterSeconds: 60 });
+    vi.mocked(Date.now).mockReturnValue(started + 60_000);
     expect((await route.POST(request())).status).toBe(200);
+  });
+
+  it('bounds a never-settling registry lookup and admits an approved probe only after cooldown', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '');
+    mocks.getAccount.mockImplementationOnce(() => new Promise(() => {}));
+    let response: Response | undefined;
+    const first = route.POST(request()).then(result => { response = result; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.getAccount).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(response).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(response?.status).toBe(503);
+    await first;
+    expect(await response!.json()).toMatchObject({ code: 'scope_unavailable' });
+    expect(response!.headers.get('Cache-Control')).toBe('private, no-store');
+    expect(mocks.getAccount.mock.calls[0][1]?.aborted).toBe(true);
+    expect(JSON.stringify(vi.mocked(console.info).mock.calls)).not.toContain(input.externalId);
+    expect(mocks.verifyAccountConnection).not.toHaveBeenCalled();
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '["222222222222"]');
+    const coolingDown = await route.POST(request());
+    expect(coolingDown.status).toBe(429);
+    expect(await coolingDown.json()).toMatchObject({ code: 'probe_cooldown', retryAfterSeconds: 57 });
+    await vi.advanceTimersByTimeAsync(57_000);
+    expect((await route.POST(request())).status).toBe(200);
+    expect(mocks.getAccount).toHaveBeenCalledOnce();
+    expect(mocks.verifyAccountConnection).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('ignores approval arriving after its lookup deadline without starting STS', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '');
+    let finish!: (value: unknown) => void;
+    mocks.getAccount.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    let response: Response | undefined;
+    const first = route.POST(request()).then(result => { response = result; });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(response?.status).toBe(503);
+    await first;
+    finish({ accountId: input.accountId, enabled: true, isHost: false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.verifyAccountConnection).not.toHaveBeenCalled();
+    expect((await route.POST(request())).status).toBe(429);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('retains the admission cooldown after a failed registry lookup', async () => {
+    const started = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(started);
+    vi.stubEnv('INVENTORY_TARGET_ACCOUNT_IDS', '');
+    mocks.getAccount.mockRejectedValueOnce(new Error('PRIVATE registry failure'));
+    expect((await route.POST(request())).status).toBe(503);
+    const retry = await route.POST(request());
+    expect(retry.status).toBe(429);
+    expect(await retry.json()).toMatchObject({ code: 'probe_cooldown', retryAfterSeconds: 60 });
+    expect(mocks.getAccount).toHaveBeenCalledOnce();
+    expect(mocks.verifyAccountConnection).not.toHaveBeenCalled();
+    expect(JSON.stringify(vi.mocked(console.info).mock.calls)).not.toContain('PRIVATE');
   });
 
   it('limits repeated probes on the server and provides a retry delay', async () => {

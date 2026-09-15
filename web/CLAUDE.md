@@ -43,7 +43,10 @@ authentication/admin checks and before STS or registry writes. Reads, connection
 and removal retain their behavior. Configure multi-account collection before onboarding.
 The separate admin-only `POST /api/accounts/onboarding` performs a bounded, read-only
 host/AssumeRole/target identity check and never writes the registry. One probe per process
-may run at a time, including approval lookup, with a 60-second STS-start cooldown.
+may run at a time, including approval lookup, with a 60-second admission cooldown.
+Registry lookup has a separate three-second deadline; timeout returns `scope_unavailable`/503,
+discards any checked-out DB connection and releases admission without clearing cooldown.
+Late checkout results never start SQL, and late approval results never start STS.
 The caller needs a nonempty immutable `sub`; rejected and completed checks log it.
 Only an enabled registered target or an applied allowlist entry permits a probe.
 Missing lists never allow arbitrary targets, and malformed configuration/failed lookup
@@ -54,6 +57,10 @@ their separate authorization paths. Diagnostic fields exclude provider error tex
 credentials and the ExternalId value. AI guidance prefills the existing assistant composer
 without sending. Optional `INVENTORY_TASK_ROLE_ARN` supplies the exact host Steampipe
 collector principal to the create-only CloudFormation role guide.
+Registration failure advice offers diagnostics only when the form's check is permitted;
+legacy unlisted targets receive read-only CLI/trust and operator-scope guidance instead.
+STS clients use the deployment `AWS_REGION` (default `ap-northeast-2`); the selected
+inventory region remains diagnostic metadata and does not select the STS endpoint.
 
 `GET /api/deployment/member-inventory` authenticates and restricts queries to applied target
 accounts. One read-only statement checks enabled account/region scope and exactly matches

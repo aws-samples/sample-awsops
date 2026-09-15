@@ -38,14 +38,15 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/;
 const HOST_ROLE = /^arn:aws:iam::\d{12}:role\/[A-Za-z0-9_+=,.@/-]+$/;
 const validRegion = (value: string) => value.length <= 32 && REGION.test(value);
 
-export function accountRegistrationFailure(status: number): string {
+export function accountRegistrationFailure(status: number, checkAvailable = false): string {
   if (status === 401) return '로그인 후 계정 등록을 다시 시도하세요.';
   if (status === 403) return '계정 등록은 관리자만 사용할 수 있습니다.';
   if (status === 409) return '현재 등록 정책 또는 계정 상태로 등록할 수 없습니다. 등록 범위와 계정 목록을 확인하세요.';
   if (status === 429) return '등록 요청이 잠시 제한되었습니다. 잠시 후 다시 시도하세요.';
   if (status === 503) return '등록 설정을 확인할 수 없습니다. 운영자에게 배포 설정을 확인하세요.';
   if (status >= 500) return '서버에서 등록을 완료하지 못했습니다. 계정 목록을 확인하고 운영자에게 문의하세요.';
-  return '등록하지 못했습니다. 연결 확인으로 진단 결과를 확인하세요.';
+  return checkAvailable ? '등록하지 못했습니다. 연결 확인으로 진단 결과를 확인하세요.'
+    : '등록하지 못했습니다. 아래 읽기 전용 명령어로 역할·신뢰 정책·ExternalId 설정을 확인하고, 운영자에게 연결 확인 범위 설정을 요청하세요.';
 }
 
 export function accountConnectionBoundaryFailure(status: number, code: unknown): string {
