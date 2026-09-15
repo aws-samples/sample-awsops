@@ -1,4 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 // FakeTraceSource lives in trace-source.ts, which transitively imports datasources →
 // integration-credentials (aws-sdk). Stub those so this DB-aggregation test needs no AWS SDK.
 vi.mock('@/lib/datasources', () => ({
@@ -25,10 +26,24 @@ class FakeMetricsCallsSource {
 function mockPool(infraNodeRows: unknown[] = []) {
   const calls: string[] = [];
   const params: unknown[][] = [];
-  const client = {
-    query: vi.fn((sql: string, p?: unknown[]) => { calls.push(String(sql)); if (p) params.push(p); return Promise.resolve({ rows: [] }); }),
+  const client = Object.assign(new EventEmitter(), {
+    query: vi.fn((sql: string, p?: unknown[]) => {
+      calls.push(sql);
+      // Decode batch binds into logical rows so identity/evidence assertions remain independent
+      // of the number of round trips. Actual SQL/metadata behavior is also exercised on PG17.
+      if (p && sql.includes('jsonb_to_recordset')) {
+        for (const row of JSON.parse(String(p[3]))) params.push(sql.includes('topology_nodes')
+          ? [row.id, row.kind, row.label, JSON.stringify(row.meta ?? {}), p[2], p[1], p[0]]
+          : [row.source, row.target, row.rel, row.confidence, p[2], p[1], p[0], JSON.stringify(row.meta)]);
+      } else if (p) params.push(p);
+      // This fixture has a previous trace publication, independent of its infra rows.
+      return Promise.resolve({ rows: sql.includes('pg_try_advisory') ? [{ acquired: true }]
+        : sql.includes('to_regclass') ? [{ ready: true }]
+        : sql.includes('AS retained') ? [{ retained: true }]
+        : sql.includes("class = 'infra'") ? infraNodeRows : [] });
+    }),
     release: vi.fn(),
-  };
+  });
   const pool = {
     // rebuildTraceGraph may query infra nodes for bridge-ref resolution
     query: vi.fn((sql: string) => Promise.resolve({
@@ -190,7 +205,7 @@ describe('rebuildTraceGraph multi-source union (registry-driven graph sources, 2
   it('an empty source registry preserves the previous snapshot', async () => {
     const { pool, calls } = mockPool();
     const res = await rebuildTraceGraph(pool as never, [], 'RUNM3');
-    expect(res).toEqual({ nodes: 0, edges: 0 });
+    expect(res).toMatchObject({ nodes: 0, edges: 0, published: 0, retained: 1 });
     expect(calls.some((s) => s.includes('DELETE FROM topology_edges') && s.includes('class = $1'))).toBe(false);
   });
 
@@ -210,7 +225,7 @@ describe('rebuildTraceGraph multi-source union (registry-driven graph sources, 2
     const metrics = new FakeMetricsCallsSource([{ client: 'a', server: 'b', count: 1 }], false);
     const { pool, params } = mockPool();
     const res = await rebuildTraceGraph(pool as never, [], 'RUNM5', [metrics]);
-    expect(res).toEqual({ nodes: 0, edges: 0 });
+    expect(res).toMatchObject({ nodes: 0, edges: 0, published: 0, retained: 1 });
     expect(params.some((p) => p.includes('svc:a'))).toBe(false);
   });
 
@@ -236,7 +251,7 @@ describe('rebuildTraceGraph preserves the snapshot when unavailable', () => {
   it('records unavailability without deleting graph data', async () => {
     const { pool, calls, params } = mockPool();
     const res = await rebuildTraceGraph(pool as never, [new FakeTraceSource([], false)], 'RUNT3');
-    expect(res).toEqual({ nodes: 0, edges: 0 });
+    expect(res).toMatchObject({ nodes: 0, edges: 0, published: 0, retained: 1 });
     // An unavailable source cannot establish an empty observation window.
     expect(calls.some((s) => s.includes('DELETE FROM topology_edges'))).toBe(false);
     expect(calls.some((s) => s.includes('DELETE FROM topology_nodes'))).toBe(false);

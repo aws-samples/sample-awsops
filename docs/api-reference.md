@@ -299,18 +299,17 @@ runtime payloads for compatibility with older or malformed responses.
 | `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Current/saved source status, scope and reasons, plus optional capture/sweep clocks and saved provenance. Missing status is explicitly unknown; absent clocks are not fabricated. |
 
 The UI supports the existing trace envelope and optional inventory/saved-source
-fields accepted from the inventory publication companion. This reader prerequisite does
-not activate flow/infra publication; the existing materializer still writes trace state.
+fields emitted by the bounded publication implementation in `web/lib/graph-store.ts`.
 Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded; their count
 includes displayed saved-source rows except when the entire current/saved lists match. Identical current/saved lists are shown once with the saved-source heading and a localized “Same displayed source evidence as above.” note. Differing and saved-only evidence remains visible. Runtime, Lambda and migration rollout remain separate
 from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
 
 
-Graph requests admit two transactions per shared pool, with 1.5s statement/idle and 2s total transaction limits (below the auth revocation budget). JSON serialization runs after commit and release. Class reads return at most 4000 nodes and 8000 raw edges, then deduplicate bounded edge evidence; edges reference returned nodes. A sentinel row discloses read truncation without claiming collection failure. Existing per-hop traversal caps remain.
+Graph requests and rebuild transactions share two admissions per pool. Requests use 1.5s statement/idle and 2s total transaction limits; rebuild transactions use 2s statements and a 4s total budget. JSON serialization runs after commit and release. Class reads return at most 4000 nodes and 8000 raw edges, then deduplicate bounded edge evidence; edges reference returned nodes. A sentinel row discloses read truncation without claiming collection failure. Existing per-hop traversal caps remain.
 
 A missing or failed state read remains unknown; `failureReason=state_read_failed` is shown separately. Saved-source provenance is visible whenever present, including stale successful publications. Producer start/finish/status and source/attempt windows are separate clocks. For legacy single-account flow/infra rows, top-level `captured_at` may retain the old row display clock; `collection.captured_at` remains null and no source freshness is inferred.
 
-Excess graph requests return HTTP 503, other read failures HTTP 500, with fixed `message="Graph read failed"`, class/account and unknown collection/read-unavailable metadata. Raw database messages are never returned. See [request/rollout details](runbooks/graph-read-contract.md).
+Graph requests above the shared read/rebuild admission budget return HTTP 503, including when rebuilds occupy the available admissions. Other read failures return HTTP 500, with fixed `message="Graph read failed"`, class/account and unknown collection/read-unavailable metadata. Raw database messages are never returned. See [request/rollout details](runbooks/graph-read-contract.md).
 
 
 All three graph pages render collection/read errors, parse safe non-2xx envelopes, abort superseded fetches and provide refresh. A shed request includes Retry-After: 1 and a fixed server-side shed diagnostic. Timeout SQLSTATEs (57014/25P03/25P04/55P03) produce readReason=timeout; they never imply empty collection or successful partial publication. Requested subgraph roots are prioritized before the node cap; fan-out capped and readTruncated remain distinct.

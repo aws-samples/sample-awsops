@@ -206,8 +206,8 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
   // collide across regions); the name/dns_name is the display label.
   const lbId = (kind: 'alb' | 'nlb', r: Row) => `${kind}:${str(r.arn) || str(r.resource_id)}`;
 
-  // meta.row + meta.invType carry the full source inventory row so the UI can show every
-  // field (vpc, subnet, tags, …) on click — no extra fetch.
+  // meta.row carries the fields supplied by the caller: the persisted publisher uses a
+  // bounded projection, while the live page can provide additional inventory detail.
   for (const c of input.cloudfront ?? []) {
     const al = aliasesOf(c);
     addNode(`cf:${str(c.resource_id)}`, 'cloudfront', al[0] || str(c.name) || str(c.resource_id), { row: c, invType: 'cloudfront', ...(al.length ? { aliases: al } : {}) });

@@ -3,8 +3,8 @@ import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { executeGraphLayer } from './graph-execution';
 
-// Run the actual legacy loader, builders, writer and coordinator. Only SQL/connector IO,
-// scheduling and process/log sinks are replaced; no hypothetical publisher result is returned.
+// Run the actual loader, bounded publishers, writer and coordinator. Only SQL/connector IO,
+// scheduling and process/log sinks are replaced; publication counts come from the real builders.
 function run(options: Record<string, unknown> = {}) {
   return JSON.parse(execFileSync('node', ['--experimental-vm-modules', '--input-type=module', '-e', String.raw`
     import vm from 'node:vm';
@@ -24,12 +24,14 @@ function run(options: Record<string, unknown> = {}) {
       output[key].push(line);
     };
     const processSink = { env: input.env ?? { NEXT_RUNTIME: 'nodejs', GRAPH_REBUILD_INTERVAL_MINS: '1' } };
-    const context = vm.createContext({ process: processSink, Buffer,
+    const context = vm.createContext({ process: processSink, Buffer, performance, setImmediate,
       setTimeout: (fn, delay) => { ticks.push(fn); output.scheduled.push(['timeout', delay]); },
       setInterval: (fn, delay) => { ticks.push(fn); output.scheduled.push(['interval', delay]); },
       console: { log: report('logs'), error: report('errors'), warn: report('errors') } });
     const fail = () => { throw Object.assign(new Error('credential=database-secret'), { code: input.code ?? '23514' }); };
+    let stage = '';
     class Source {
+      constructor() { if (input.failure === 'source_constructor') fail(); }
       async available() { return true; }
       async calls(mins, endMs) {
         output.traceCollections++;
@@ -41,13 +43,25 @@ function run(options: Record<string, unknown> = {}) {
           windowStartMs: endMs - mins * 60000, windowEndMs: endMs };
       }
     }
-    const pool = {
-      query: async (sql, args) => {
-        if (sql.includes('SELECT DISTINCT account_id')) {
-          if (input.failure === (sql.includes('ANY') ? 'flow' : 'infra')) fail();
-          return { rows: [{ account_id: 'self' }] };
+    const query = async (sql, args) => {
+        if (sql.includes('SELECT accounts.account_id')) {
+          if (input.failure === stage) fail();
+          return { rows: [{ account_id: 'self' },
+            ...(input.partialFailure === stage ? [{ account_id: '123456789012' }] : [])] };
         }
-        if (sql.includes('FROM inventory_resources')) return { rows: [] };
+        if (sql.includes('FROM inventory_sync_runs')) {
+          const now = Date.now();
+          return { rows: args[0].map(resource_type => ({ resource_type, account_id: 'self',
+            status: 'succeeded', row_count: 0, unknown_attribute_count: 0, version: '1',
+            started_at: new Date(now - 2000).toISOString(),
+            finished_at: new Date(now - 1000).toISOString(),
+            last_success_at: new Date(now - 1000).toISOString() })) };
+        }
+        if (sql.includes('FROM inventory_resources')) {
+          if (input.partialFailure === stage && args?.[0] === '123456789012') fail();
+          return { rows: [] };
+        }
+        if (sql.includes('FROM inventory_snapshots')) return { rows: [] };
         if (sql.includes('FROM datasource_graph_queries')) {
           output.registryReads++;
           if (input.failure === 'registry') fail();
@@ -55,19 +69,31 @@ function run(options: Record<string, unknown> = {}) {
             tool: 'prometheus_query', args_template: { query: 'fixture' } } }] };
         }
         if (sql.includes('to_regclass')) return { rows: [{ ready: input.schema !== false }] };
-        if (sql.includes("class = 'infra'")) { output.infraReads++; return { rows: [] }; }
-        throw new Error('Unexpected fixture query');
-      },
-      connect: async () => ({ release() {}, query: async (sql, args) => {
+        if (/class\s*=\s*'infra'/.test(sql)) { output.infraReads++; return { rows: [] }; }
+        if (sql.includes('pg_try_advisory_xact_lock')) return { rows: [{ acquired: input.skipStage !== stage }] };
+        if (sql.includes('AS retained')) return { rows: [{ retained: true }] };
         if (sql.includes('INSERT INTO topology_graph_state')) {
-          if (input.failure === 'trace_write') fail();
-          output.attempts.push({ status: args[1], publish: args[3], details: JSON.parse(args[4]) });
-          if (args[3]) output.savedCapture = 'new';
+          if (args[5] === 'trace') {
+            if (input.failure === 'trace_write') fail();
+            output.attempts.push({ status: args[1], publish: args[3], details: JSON.parse(args[4]) });
+            if (args[3]) output.savedCapture = 'new';
+          }
+          return { rows: [], rowCount: 1 };
         }
-        if (/INSERT INTO topology_(nodes|edges)/.test(sql)) output.traceWrites++;
-        if (/DELETE FROM topology_(nodes|edges)/.test(sql)) output.traceDeletes++;
-        return { rows: [], rowCount: 1 };
-      } }),
+        if (/INSERT INTO topology_(nodes|edges)/.test(sql)) {
+          if (stage === 'trace') output.traceWrites++;
+          return { rows: [], rowCount: 1 };
+        }
+        if (/DELETE FROM topology_(nodes|edges)/.test(sql)) {
+          if (stage === 'trace') output.traceDeletes++;
+          return { rows: [], rowCount: 1 };
+        }
+        if (/^(BEGIN|SET LOCAL|COMMIT|ROLLBACK)/.test(sql)) return { rows: [] };
+        throw new Error('Unexpected fixture query');
+    };
+    const pool = {
+      query,
+      connect: async () => ({ release() {}, on() {}, removeListener() {}, query }),
       end: async () => {
         output.closed++;
         if (input.closeFailure) throw Object.assign(new Error('credential=close-secret'), { code: '08006' });
@@ -92,8 +118,14 @@ function run(options: Record<string, unknown> = {}) {
       return module.exports;
     };
     const link = async specifier => {
-      const exports = specifier.includes('/db') ? { getPool: () => { output.opened++; return pool; } }
+      let exports = specifier.includes('/db') ? { getPool: () => { output.opened++; return pool; } }
         : load(resolve(input.root, 'lib', specifier.split('/').at(-1).replace(/\.ts$/, '') + '.ts'));
+      if (specifier.includes('graph-store')) {
+        const stages = { rebuildGraph: 'flow', rebuildInfraGraph: 'infra', rebuildTraceGraph: 'trace',
+          recordTraceSourceFailure: 'trace' };
+        exports = Object.fromEntries(Object.entries(exports).map(([name, value]) => [name,
+          stages[name] ? (...args) => { stage = stages[name]; return value(...args); } : value]));
+      }
       const module = new vm.SyntheticModule(Object.keys(exports), function() {
         for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
       }, { context });
@@ -115,12 +147,13 @@ function run(options: Record<string, unknown> = {}) {
 }
 
 const cycles = (timer: boolean) => timer ? 2 : 1;
-describe('legacy graph execution contract', () => {
-  it.each([false, true])('uses real builder totals and writes trace without inventing outcome metadata (timer=%s)', timer => {
+describe('graph execution and publication contract', () => {
+  it.each([false, true])('uses real publisher totals and writes trace (timer=%s)', timer => {
     const result = run({ timer });
     expect(result.code).toBe(timer ? null : 0);
     expect(result.logs).toHaveLength(cycles(timer) * 3);
-    for (const line of result.logs) expect(Object.keys(JSON.parse(line.slice(line.indexOf(': ') + 2)))).toEqual(['nodes', 'edges']);
+    for (const line of result.logs) expect(JSON.parse(line.slice(line.indexOf(': ') + 2)))
+      .toMatchObject({ published: 1, retained: 0, skipped: 0, degraded: 0 });
     expect(result.attempts).toHaveLength(cycles(timer));
     expect(result.attempts.every((a: { publish: boolean }) => a.publish)).toBe(true);
     expect(result.traceWrites).toBeGreaterThan(0);
@@ -158,29 +191,63 @@ describe('legacy graph execution contract', () => {
     expect(result.savedCapture).toBe('previous');
     expect(JSON.stringify(result)).not.toContain('credential');
   });
-  it.each(['error', 'unavailable', 'partial'])('legacy %s retention remains a zero-total execution, not exit-2 proof', sourceStatus => {
-    const result = run({ sourceStatus, empty: true });
-    expect(result.code).toBe(0);
-    expect(result.logs.at(-1)).toBe('[graph-rebuild] trace: {"nodes":0,"edges":0}');
-    expect(result.attempts).toMatchObject([{ status: sourceStatus, publish: false }]);
+  it.each(['error', 'unavailable', 'partial'].flatMap(sourceStatus =>
+    [false, true].map(timer => ({ sourceStatus, timer }))))('retention stays distinct from confirmed empty: %j', ({ sourceStatus, timer }) => {
+    const result = run({ timer, sourceStatus, empty: true });
+    expect(result.code).toBe(timer ? null : 2);
+    expect(result.logs.at(-1)).toContain('"retained":1');
+    expect(result.attempts).toHaveLength(cycles(timer));
+    expect(result.attempts.every((a: { status: string; publish: boolean }) => a.status === sourceStatus && !a.publish)).toBe(true);
     expect(result.savedCapture).toBe('previous');
     expect(result.traceWrites).toBe(0);
     expect(result.traceDeletes).toBe(0);
   });
-  it('a real confirmed-empty trace has the same legacy totals but actually publishes', () => {
+  it('a real confirmed-empty trace reports publication despite zero nodes and edges', () => {
     const result = run({ sourceStatus: 'empty' });
     expect(result.code).toBe(0);
-    expect(result.logs.at(-1)).toBe('[graph-rebuild] trace: {"nodes":0,"edges":0}');
+    expect(result.logs.at(-1)).toContain('"published":1');
     expect(result.attempts).toMatchObject([{ status: 'empty', publish: true }]);
     expect(result.savedCapture).toBe('new');
     expect(result.traceDeletes).toBe(2);
   });
-  it('missing legacy state schema returns zero without collection/publication proof', () => {
+  it('missing state schema reports skipped work without collection/publication proof', () => {
     const result = run({ schema: false });
-    expect(result.code).toBe(0);
+    expect(result.code).toBe(2);
     expect(result.attempts).toEqual([]);
     expect(result.traceCollections).toBe(0);
     expect(result.savedCapture).toBe('previous');
+  });
+  it.each([false, true])('unexpected loader exceptions persist non-publishing failure evidence (timer=%s)', timer => {
+    const result = run({ timer, failure: 'source_constructor' });
+    expect(result.code).toBe(timer ? null : 1);
+    expect(result.attempts).toHaveLength(cycles(timer));
+    expect(result.attempts.every((a: { publish: boolean }) => !a.publish)).toBe(true);
+    expect(result.attempts[0].details.sources).toMatchObject([{ sourceId: 'trace:registry', status: 'error' }]);
+    expect(result.traceWrites).toBe(0);
+    expect(result.traceDeletes).toBe(0);
+    expect(JSON.stringify(result)).not.toContain('credential');
+  });
+  it.each([false, true])('preserves partial account counts and the infra dependency (timer=%s)', timer => {
+    for (const partialFailure of ['flow', 'infra']) {
+      const result = run({ timer, partialFailure });
+      expect(result.code).toBe(timer ? null : 1);
+      const line = result.logs.find((line: string) => line.startsWith(`[graph-rebuild] ${partialFailure}:`));
+      expect(JSON.parse(line.slice(line.indexOf(': ') + 2))).toMatchObject({
+        published: 1, failed: 1, failureCode: '23514',
+      });
+      expect(result.traceCollections).toBe(partialFailure === 'infra' ? 0 : cycles(timer));
+      expect(JSON.stringify(result)).not.toContain('credential');
+    }
+  });
+  it.each([false, true])('reports trace lock skips and degraded publications (timer=%s)', timer => {
+    const skipped = run({ timer, skipStage: 'trace' });
+    expect(skipped.code).toBe(timer ? null : 2);
+    expect(skipped.logs.at(-1)).toContain('"skipped":1');
+    expect(skipped.traceDeletes).toBe(0);
+    const degraded = run({ timer, sourceStatus: 'partial' });
+    expect(degraded.code).toBe(timer ? null : 0);
+    expect(degraded.logs.at(-1)).toContain('"degraded":1');
+    expect(degraded.traceWrites).toBeGreaterThan(0);
   });
   it.each([false, true])('trace write exceptions remain sanitized failures (timer=%s)', timer => {
     const result = run({ timer, failure: 'trace_write' });
@@ -221,16 +288,22 @@ describe('legacy graph execution contract', () => {
   });
 });
 
-describe('legacy totals projection', () => {
+describe('publisher outcome projection', () => {
+  const valid = { nodes: 1, edges: 0, published: 1, retained: 0, skipped: 0, degraded: 0, reasons: [] };
   it('normalizes stage and ignores unsupported result fields without logging them', async () => {
     const lines: string[] = [];
     const result = await executeGraphLayer('credential=stage-secret', async () => ({ nodes: 1, edges: 0,
-      reasons: Array(100).fill('credential=reason-secret'), retained: 'future-field', secret: 'PRIVATE_VALUE',
+      published: 1, retained: 0, skipped: 0, degraded: 0, reasons: [], secret: 'PRIVATE_VALUE',
     }), line => lines.push(line));
-    expect(result).toEqual({ failed: false, totals: { nodes: 1, edges: 0 } });
-    expect(lines).toEqual(['[graph-rebuild] unknown: {"nodes":1,"edges":0}']);
+    expect(result).toMatchObject({ failed: false, incomplete: false,
+      totals: { nodes: 1, edges: 0, published: 1, retained: 0, skipped: 0, degraded: 0, reasons: [] } });
+    expect(lines[0]).toContain('[graph-rebuild] unknown:');
+    expect(lines.join('\n')).not.toContain('PRIVATE_VALUE');
   });
-  it.each([null, {}, { nodes: -1, edges: 0 }, { nodes: 1, edges: NaN }, { nodes: 1, edges: Number.MAX_SAFE_INTEGER + 1 }])(
+  it.each([null, {}, { nodes: 1, edges: 0 }, { ...valid, nodes: -1 },
+    { ...valid, edges: NaN }, { ...valid, edges: Number.MAX_SAFE_INTEGER + 1 },
+    { ...valid, retained: 'future-field' }, { ...valid, failed: -1 },
+    { ...valid, reasons: ['credential=reason-secret'] }, { ...valid, accountsTruncated: 'PRIVATE_VALUE' }])(
     'invalid required totals never become healthy zeros: %j', async value => {
       const lines: string[] = [];
       expect(await executeGraphLayer('flow', async () => value, line => lines.push(line))).toEqual({ failed: true });

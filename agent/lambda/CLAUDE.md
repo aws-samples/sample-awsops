@@ -124,8 +124,9 @@ see `docs/runbooks/source-sync-observability.md` for rollout and retention bound
     qualifiers become nullable `claimedAccountId`/`claimedRegion`, never verified ownership.
     Missing qualifiers never establish confidence.
   - Node `captured_at` is graph materialization time, not underlying inventory or event time.
-    `sql_reader.topology_graph_state` supplies trace status, observation-window and retained
-    evidence; its current writer records only `class='trace'`, not flow/infra coverage.
+    `sql_reader.topology_graph_state` supplies flow/infra/trace status, retained evidence
+    and source clocks; trace also has query windows. The writer records all three classes.
+    Missing state remains unknown. `01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql` owns the current collection-state projection.
   - The topology assertions in `test_inventory_view_contract.py` still read the original
     `01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql`; they do not enforce the current
     topology projection. Inspect its current owner and the queue/view tests in

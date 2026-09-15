@@ -349,9 +349,7 @@ window, retained flag and projected source reasons. Its current projection owner
 `01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql`, extending the prior inventory/attempt projections and exposing bounded
 `publishedSources`, producer status, per-source capture/success/attempt/finish clocks,
 aggregate/account scope, failure reasons and numeric loss counters. It does not expose
-raw provider JSON or widen grants. Computed `metadataTruncated` discloses omitted/malformed source metadata; the Python reader and HTTP reader both treat it as stale. The shared vocabulary includes sourceAttempted, not_attempted and count_not_confirmed. The current writer records only
-`class='trace'`; a missing flow/infra state row is not evidence of complete or empty
-coverage. Missing qualifiers or timestamps never establish confidence.
+raw provider JSON or widen grants. Computed `metadataTruncated` discloses omitted/malformed source metadata; the Python reader and HTTP reader both treat it as stale. The shared vocabulary includes sourceAttempted, not_attempted and count_not_confirmed. The writer records flow, infra and trace; a missing state row is not evidence of complete or empty coverage, including before rollout. Missing qualifiers or timestamps never establish confidence.
 
 `agent/lambda/test_inventory_view_contract.py` still reads the original
 `01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql` for its topology assertions.
@@ -366,7 +364,8 @@ the queue projection remains separately owned by the migration above.
 
 ### Trace queue projection / 트레이스 큐 투영
 
-`01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql` extends graph evidence;
+`01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql` introduces graph evidence;
+`01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql` is the current collection-state projection owner, adding bounded inventory source clocks/provenance;
 `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql` supersedes its node projection.
 After `make migrate`, spot-check `sql_reader.topology_nodes` where `class='trace' AND kind='queue'`:
 `claimedAccountId/claimedRegion` must match only parsed destination ARN qualifiers, including
@@ -388,6 +387,7 @@ Lambda도 배포해야 한다. [적용 절차 / Rollout](source-sync-observabili
 - [Original reader-role/view migration](../../terraform/foundation/migrations/01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql)
 - [Current topology-node projection](../../terraform/foundation/migrations/01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql)
 - [Trace collection-state and edge projections](../../terraform/foundation/migrations/01M279W0J9HNG1QT0MAS60KV8K_topology_graph_collection_state.sql)
+- [Current collection-state projection](../../terraform/foundation/migrations/01M2HM8BR5ZC0JZWGQ9ZFV1WT2_graph_projection_parity.sql)
 - `scripts/v2/migrate.mjs` (`syncSqlReaderPassword`) — 동기화 / the sync
 - ADR-004 §7 — SQL reader security model; the ADR body is maintained in the private upstream repository.
 
