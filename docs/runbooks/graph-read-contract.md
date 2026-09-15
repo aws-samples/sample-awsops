@@ -37,16 +37,21 @@ disclosed by metadataTruncated in both HTTP and SQL projections.
 ## Bounded inventory-read primitives
 
 `web/lib/graph-inventory-read.ts` provides internal account discovery, count reconciliation,
-projected snapshots and an attempt-evidence calculation for flow/infra callers. It uses the
-existing `self` host sentinel and SDK host-only type exclusions. A member needs current
+projected snapshots and an attempt-evidence calculation for flow/infra callers. Callers use the
+existing `self` host sentinel and the exported SDK host-only type filter. A member needs current
 registered participation evidence; an aggregate zero alone does not establish participation.
 Count proof is reused only when the snapshot observes the identical ledger row version.
 The helper returns source clocks/completeness, not a freshness or deployment verdict.
 
-Snapshots project consumed fields before SQL byte guards: 2,000 infra rows or 8,192 flow
-rows (plus a sentinel), 64KiB per projected row and 8MiB for projected data/identifiers
-(excluding the result envelope). Exceeded bounds
-remain explicit and cannot authorize empty proof. Request and background transaction
+Snapshots project consumed fields before SQL byte guards: both classes allow 8,192 rows
+plus a sentinel, within the existing 64KiB per-row and 8MiB projected data/identifier
+budgets (excluding the result envelope). Flow projection preserves listener/API-route
+labels. Target-health arrays retain every Id, Port and State in order while dropping
+unconsumed diagnostic fields. A row withheld by its own byte limit does not consume the
+later-row budget. `truncatedTypes` identifies incomplete payload types in the same snapshot;
+only those source item counts become unknown. Any truncation still withholds publication.
+A readable snapshot can exceed the caller's graph-size limit; these bounds do not promise
+an unlimited graph. Inspect the affected type's paginated Inventory view when a cap is hit. Request and background transaction
 helpers share two admissions per pool, reserving the third ordinary slot for authentication;
 request limits stay 1.5s statements/2s total, background limits 2s statements/4s total.
 

@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { inventoryAccounts, inventoryAttempt, inventoryCounts, inventorySnapshot, inventoryTypesForAccount } from './graph-inventory-read';
 import { graphTransaction, graphReadTransaction, GraphReadBusy } from './graph-transaction';
 import { HOST_ONLY_TREND_TYPES } from './trend-utils';
+import { buildFlowGraph } from './flow-topology';
 
 it('uses the existing SDK host-only type contract for member reads', () => {
   const types = ['vpc', ...HOST_ONLY_TREND_TYPES];
@@ -102,6 +103,64 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     const snapshot = await inventorySnapshot(pool, 'infra', '000000000001', ['vpc']);
     expect(inventoryAttempt(snapshot, ['vpc'], 'infra', '000000000001', at())).toMatchObject({ publish: false,
       details: { sources: [{ reasons: expect.arrayContaining(['unknown_account_coverage']) }] } });
+  });
+  it('preserves all consumed listener/route label fields through the real flow builder', async () => {
+    const rows = [
+      ['alb', 'lb', { arn: 'arn:lb', dns_name: 'lb.example.test' }],
+      ['target_group', 'tg', { load_balancer_arns: ['arn:lb'], target_type: 'ip' }],
+      ['alb_listener_rule', 'rule', { load_balancer_arn: 'arn:lb', port: 443,
+        conditions: [{ Field: 'path-pattern', Values: ['/orders'] }], actions: [{ TargetGroupArn: 'tg' }], is_default: false }],
+      ['alb_listener_rule', 'default', { load_balancer_arn: 'arn:lb', port: 8443, conditions: [], actions: [{ TargetGroupArn: 'tg' }], is_default: true }],
+      ['apigatewayv2_api', 'api', { name: 'api' }],
+      ['apigatewayv2_integration', 'int', { api_id: 'api', integration_uri: 'arn:aws:lambda:us-east-1:1:function:fixture' }],
+      ['apigatewayv2_route', 'route', { api_id: 'api', target: 'integrations/int', route_key: 'GET /orders' }],
+    ] as const;
+    for (const [type, id, data] of rows) await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
+      VALUES ($1,$2,'fixture',$3::jsonb,$4)`, [type, id, JSON.stringify(data), at()]);
+    const snapshot = await inventorySnapshot(pool, 'flow', 'self', [...new Set(rows.map(row => row[0]))]);
+    const items = (type: string) => snapshot.rows.filter(row => row.resource_type === type).map(row => ({ ...row.data, resource_id: row.resource_id }));
+    const graph = buildFlowGraph({ alb: items('alb'), tg: items('target_group'), alb_listener_rule: items('alb_listener_rule'),
+      apigatewayv2_api: items('apigatewayv2_api'), apigatewayv2_integration: items('apigatewayv2_integration'), apigatewayv2_route: items('apigatewayv2_route') });
+    expect(graph.edges.find(edge => edge.source === 'alb:arn:lb' && edge.target === 'tg:tg')?.label).toMatch(/default :8443/);
+    expect(graph.edges.find(edge => edge.source === 'alb:arn:lb' && edge.target === 'tg:tg')?.label).toMatch(/\/orders :443/);
+    expect(graph.edges.find(edge => edge.source === 'apigw:api')?.label).toBe('GET /orders');
+  });
+  it('keeps 400 target identities/ports/health states after dropping unused diagnostic payload', async () => {
+    const targets = Array.from({ length: 400 }, (_, i) => ({ Target: { Id: `2001:db8::${i+1}`, Port: 8080, AvailabilityZone: 'unused' },
+      TargetHealth: { State: i === 399 ? 'unhealthy' : 'healthy', Description: 'unused'.repeat(1000) } }));
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
+      VALUES ('target_group','tg','fixture',$1::jsonb,$2)`, [JSON.stringify({ target_type: 'ip', target_health_descriptions: targets }), at()]);
+    const snapshot = await inventorySnapshot(pool, 'flow', 'self', ['target_group']);
+    expect(snapshot.truncated).toBe(false);
+    const row = snapshot.rows[0];
+    expect((row.data as { target_health_descriptions: unknown[] }).target_health_descriptions).toHaveLength(400);
+    expect(JSON.stringify(row.data)).not.toContain('Description');
+    const graph = buildFlowGraph({ ownershipRead: { configurationOnly: true }, tg: [{ ...row.data, resource_id: row.resource_id, region: 'fixture' }] });
+    expect(graph.nodes.find(node => node.kind === 'target')?.meta).toMatchObject({ count: 400, health: 'unhealthy' });
+    expect(Object.values(graph.targetMembers)[0]).toHaveLength(400);
+  });
+  it('does not charge a withheld row against later rows and localizes the incomplete source', async () => {
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at) VALUES
+      ('ec2','large','fixture',jsonb_build_object('name',repeat('x',9000000)),$1),
+      ('vpc','small','fixture','{"vpc_id":"vpc-fixture"}',$1)`, [at()]);
+    const snapshot = await inventorySnapshot(pool, 'infra', 'self', ['ec2','vpc']);
+    expect(snapshot.truncated).toBe(true);
+    expect(snapshot.rows.find(row => row.resource_type === 'vpc')?.data).toEqual({ vpc_id: 'vpc-fixture' });
+    expect(snapshot.truncatedTypes).toEqual(['ec2']);
+    expect(inventoryAttempt(snapshot, ['ec2','vpc'], 'infra', 'self', at()).publish).toBe(false);
+  });
+  it('reads 5000 ordinary small records but retains at the explicit 8192-row boundary', async () => {
+    await seed(5000);
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
+      SELECT 'vpc','vpc-'||n,'fixture','{}',$1 FROM generate_series(1,5000)n`, [at()]);
+    expect((await inventorySnapshot(pool, 'infra', 'self', ['vpc'])).truncated).toBe(false);
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
+      SELECT 'vpc','vpc-'||n,'fixture','{}',$1 FROM generate_series(5001,8193)n`, [at()]);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=8193 WHERE resource_type='vpc'");
+    const bounded = await inventorySnapshot(pool, 'infra', 'self', ['vpc']);
+    expect(bounded.rows).toHaveLength(8193);
+    expect(bounded.truncated).toBe(true);
+    expect(inventoryAttempt(bounded, ['vpc'], 'infra', 'self', at()).publish).toBe(false);
   });
   it('read/background helpers share two admissions and leave an ordinary pool slot free', async () => {
     let release!: () => void; const hold = new Promise<void>(resolve => { release = resolve; });
