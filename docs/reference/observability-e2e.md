@@ -81,3 +81,23 @@ documentation alone do not establish completion.
 공개 통합은 samples 배포 동작과 소유권 검사를 보존해야 한다. P0 회귀는 실행 가능한 테스트로
 검증한다. E2E·성과 기능은 데이터 생성·조회 API·운영 화면이 연결되어 검증되어야 완료이며,
 인터페이스나 문서만 추가한 상태는 완료로 간주하지 않는다.
+
+## Service/network graph status
+
+The pure correlator and shared value-aware display selection now exist as unwired prerequisites. The canvas and its tests remain with the UI integration. They preserve identity vetoes, disclose category/detail omissions and distinguish cached context from identity. Source orchestration and the opt-in topology page remain the next integration step; passing library fixtures does not establish live E2E coverage.
+
+### Graph source contract
+
+- `hostAccountId` is the trusted 12-digit ID from the authenticated account list's unique `isHost` entry. Never derive host authority from telemetry. It resolves the inventory `self` sentinel against numeric trace claims; missing or conflicting authority withholds numeric joins.
+- Only `configurationComplete === true` permits identity arbitration. Every target kind, including instances, receives a copied veto otherwise. The caller must pass actual load/coverage status; a bare `FlowGraph` cannot certify its own completeness.
+- `networkRead` carries idle/loading/complete/partial/failed/unknown/unsupported state, failed categories and unknown-window categories. Missing state stays unknown; complete state with failure/unknown-window evidence becomes partial. Non-host selection forces unsupported. Observation rows are positive evidence, never a successful-absence assertion by themselves.
+- `servicesComplete` attests a complete, fresh service-snapshot read within its recorded scope, not all traffic. It defaults false and also requires a valid snapshot capture time. The UI derives it from successful, fresh, non-retained collection/read metadata without known truncation or loss. Matching workload claims cannot promote identity when this evidence is unverified; source nodes remain visible. Existing visible conflict vetoes remain in force, while unrelated configuration evidence remains usable.
+- Service node `capturedAt` preserves its own API row timestamp; `snapshotCapturedAt` records the separate legacy envelope clock. Missing row timestamps remain null, and service edges do not invent a capture timestamp from that envelope.
+
+Graph-generated labels use stable `labelKey` values; renderers translate those keys while preserving real source names. Display-truncated target membership is incomplete evidence, not a definitive missing match. Private implementation plans remain outside this public tree.
+
+Selection applies evidence/focus/query reachability before its default 350-node/700-edge bound. Explicit focus and query hits prioritize nearby complete observation groups before farther value-ranked groups. Shared context attaches once and never grants transit; incomplete residual explicit pins and other omissions remain disclosed.
+
+Complete target membership is carried by the in-memory `FlowGraph.targetMembers` sidecar, independently of capped display metadata. The persisted node projection does not gain that field. Missing or invalid full membership retains conservative uncertainty; a valid complete set permits exact exclusion of unrelated candidates and per-member Pod corroboration. IPv6 spelling variants share one comparison key, retaining all competing records.
+
+Workload scope requires at least one compatible record attesting both account and region. Other explicit claims remain constraints; complementary partial records cannot manufacture a complete scope tuple.
