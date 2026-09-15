@@ -2,6 +2,11 @@
 
 import { useI18n } from '@/components/shell/LanguageProvider';
 
+export const COLLECTION_LOSS_KEYS = ['nodeDrops', 'edgeDrops', 'orphanSpans', 'invalidSpans', 'unresolvedMessaging'] as const;
+export function isCollectionLossCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 export interface GraphCollectionSource {
   sourceId: string;
   status: string;
@@ -62,6 +67,7 @@ const COPY = {
     sourceCapture: '원본 행 수집 시각', lastSuccess: '최근 성공한 수집', inventoryEmpty: '성공한 수집의 그래프가 비어 있음',
     savedSources: '저장된 그래프의 원본', refresh: '최근 그래프 갱신 시도',
     sharedSources: '위에 표시된 원본 근거와 같습니다.',
+    losses: '수집 한계',
     sourceDetails: '원본 상세', limited: '처리 한도 초과 — 이전 그래프를 유지합니다.',
     limitedPartial: '처리 한도로 인해 그래프 범위가 불완전합니다.', nodeDrops: '누락 노드', edgeDrops: '누락 엣지',
     infraUnavailable: '인벤토리 정보를 사용할 수 없음', windowStart: '원본 조회 시작', windowEnd: '원본 조회 종료',
@@ -81,6 +87,7 @@ const COPY = {
     sourceCapture: 'Source capture', lastSuccess: 'Last successful sweep', inventoryEmpty: 'Successful collection produced an empty graph',
     savedSources: 'Sources used by saved graph', refresh: 'Latest graph refresh attempt',
     sharedSources: 'Same displayed source evidence as above.',
+    losses: 'Collection limitations',
     sourceDetails: 'Source details', limited: 'Processing limit reached — previous graph retained.',
     limitedPartial: 'Processing limit reached — graph coverage is incomplete.', nodeDrops: 'Nodes omitted', edgeDrops: 'Edges omitted',
     infraUnavailable: 'Inventory context unavailable', windowStart: 'Source window start', windowEnd: 'Source window end',
@@ -100,6 +107,7 @@ const COPY = {
     sourceCapture: '元データの収集時刻', lastSuccess: '最後に成功した収集', inventoryEmpty: '成功した収集のグラフは空です',
     savedSources: '保存されたグラフの元データ', refresh: '最新のグラフ更新試行',
     sharedSources: '上記と同じ収集根拠です。',
+    losses: '収集上の制限',
     sourceDetails: '元データの詳細', limited: '処理上限に到達 — 以前のグラフを保持します。',
     limitedPartial: '処理上限によりグラフの範囲は不完全です。', nodeDrops: '省略ノード', edgeDrops: '省略エッジ',
     infraUnavailable: 'インベントリ情報を利用できません', windowStart: '元データの照会開始', windowEnd: '元データの照会終了',
@@ -119,6 +127,7 @@ const COPY = {
     sourceCapture: '源数据采集时间', lastSuccess: '最后成功采集', inventoryEmpty: '成功采集的图为空',
     savedSources: '已保存图使用的源数据', refresh: '最近一次图刷新尝试',
     sharedSources: '与上方显示的源数据依据相同。',
+    losses: '采集限制',
     sourceDetails: '源数据详情', limited: '达到处理上限 — 保留上一次的图。',
     limitedPartial: '达到处理上限 — 图的覆盖范围不完整。', nodeDrops: '省略节点', edgeDrops: '省略边',
     infraUnavailable: '资产清单上下文不可用', windowStart: '源查询开始', windowEnd: '源查询结束',
@@ -142,8 +151,8 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
   const data = record(collection);
   const status = statusOf(data.status);
   const retained = data.retainedPrevious === true;
-  const losses = (['nodeDrops', 'edgeDrops', 'orphanSpans', 'invalidSpans', 'unresolvedMessaging'] as const).filter(key =>
-    typeof data[key] === 'number' && Number.isSafeInteger(data[key]) && (data[key] as number) > 0);
+  const losses = COLLECTION_LOSS_KEYS.filter(key =>
+    isCollectionLossCount(data[key]) && (data[key] as number) > 0);
   const limited = data.inputTruncated === true || data.graphTruncated === true
     || losses.some(key => key === 'nodeDrops' || key === 'edgeDrops');
   const sources = Array.isArray(data.sources) ? data.sources.map(record) : [];
@@ -180,6 +189,17 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
   const producer = (source: Record<string, unknown>) => typeof source.producerStatus === 'string'
     && ['succeeded','failed','partial','running','unknown'].includes(source.producerStatus)
     ? <span className="block">{copy.producerStatus}: {source.producerStatus}</span> : null;
+  const sourceList = (rows: Record<string, unknown>[]) => <ul className="mt-1 space-y-1">
+    {rows.map((source, i) => {
+      const reasons = sourceReasons(source);
+      return <li key={i} className="break-words">
+        <span className="font-mono">{typeof source.sourceId === 'string' ? source.sourceId : '—'}</span>: {copy[statusOf(source.status)]}
+        {source.scope === 'aggregate' || source.scope === 'account' ? <span> · {source.scope}</span> : null}
+        {reasons.length > 0 && <span> · {reasons.join(', ')}</span>}
+        {producer(source)}{sourceTimes(source)}
+      </li>;
+    })}
+  </ul>;
   return (
     <div role={warning ? 'alert' : 'status'}
       className={`my-2 max-h-[36vh] shrink-0 overflow-y-auto rounded-md border px-3 py-2 text-xs ${warning
@@ -195,8 +215,10 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
       {sourceTimes({ windowStartMs: data.windowStartMs, windowEndMs: data.windowEndMs }, { windowStartMs: copy.attemptWindowStart, windowEndMs: copy.attemptWindowEnd })}
       {retained && <p className="mt-1">{copy.retained}</p>}
       {limited && <p>{retained ? copy.limited : copy.limitedPartial}</p>}
-      {losses.map(key => <p key={key}>{copy[key]}: {String(data[key])}</p>)}
-      {data.infraUnavailable === true && <p>{copy.infraUnavailable}</p>}
+      {(losses.length > 0 || data.infraUnavailable === true) && <ul aria-label={copy.losses} className="mt-1 space-y-1 break-words">
+        {losses.map(key => <li key={key}>{copy[key]}: {(data[key] as number).toLocaleString()}</li>)}
+        {data.infraUnavailable === true && <li>{copy.infraUnavailable}</li>}
+      </ul>}
       {(['attempted_at', 'captured_at'] as const).map(key => {
         const value = data[key];
         return typeof value === 'string' && Number.isFinite(Date.parse(value))
@@ -212,25 +234,10 @@ export default function GraphCollectionStatus({ collection }: { collection?: unk
           {published.length > 0 && !sharedSources && <span> · {copy.savedSourceCount}: {published.length}</span>}
         </summary>
         <div data-source-details className="max-h-[18vh] overflow-y-auto overscroll-contain">
-      {sources.length > 0 && <ul className="mt-1 space-y-1">
-        {sources.map((source, i) => {
-          const reasons = sourceReasons(source);
-          return <li key={i} className="break-words">
-            <span className="font-mono">{typeof source.sourceId === 'string' ? source.sourceId : '—'}</span>: {copy[statusOf(source.status)]}
-            {source.scope === 'aggregate' || source.scope === 'account' ? <span> · {source.scope}</span> : null}
-            {reasons.length > 0 && <span> · {reasons.join(', ')}</span>}
-            {producer(source)}{sourceTimes(source)}
-          </li>;
-        })}
-      </ul>}
+      {sources.length > 0 && sourceList(sources)}
       {published.length > 0 ? <div className="mt-2">
         <p>{copy.savedSources}</p>
-        {sharedSources ? <p>{copy.sharedSources}</p> : <ul>{published.map((source, i) => <li key={i} className="break-words">
-          {typeof source.sourceId === 'string' ? source.sourceId : '—'}: {copy[statusOf(source.status)]}
-          {source.scope === 'aggregate' || source.scope === 'account' ? <span> · {source.scope}</span> : null}
-          {sourceReasons(source).length > 0 && <span> · {sourceReasons(source).join(', ')}</span>}
-          {producer(source)}{sourceTimes(source)}
-        </li>)}</ul>}
+        {sharedSources ? <p>{copy.sharedSources}</p> : sourceList(published)}
       </div> : null}
         </div>
       </details>}
