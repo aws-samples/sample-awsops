@@ -8,6 +8,7 @@ import os
 import re
 import json
 import logging
+import math
 import time as _time
 import boto3
 from botocore.exceptions import ClientError
@@ -491,6 +492,9 @@ def _summarize_result(body):
         v = body.get(key)
         if isinstance(v, list):
             out["source"], out["count"] = key, len(v)
+            if key == "result" and body.get("resultType") in ("scalar", "string"):
+                out["count"] = int(len(v) == 2 and type(v[0]) in (int, float)
+                                   and math.isfinite(v[0]) and isinstance(v[1], str))
             # non-PII metadata only: the union of metric LABEL NAMES (keys), NEVER their values
             names = set()
             for item in v[:50]:

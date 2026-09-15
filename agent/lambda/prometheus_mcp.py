@@ -10,6 +10,7 @@ attack surface is the endpoint, guarded by datasource_http.assert_host_allowed (
 validation on credential save). Stdlib + boto3 only.
 """
 import json
+import math
 import re
 import time
 from urllib.parse import urlencode
@@ -70,15 +71,32 @@ def _get(creds, path, params, http_timeout=None, *, with_status=False):
         kwargs["timeout"] = http_timeout
     status, data = http_json("GET", url, **kwargs)
     if status >= 400:
-        raise _ApiError(f"Prometheus HTTP {status}: {str(data.get('raw') or data.get('error') or data)[:300]}")
+        detail = (data.get("raw") or data.get("error") or data) if isinstance(data, dict) else "non-object error response"
+        raise _ApiError(f"Prometheus HTTP {status}: {str(detail)[:300]}")
     if isinstance(data, dict) and data.get("status") and data.get("status") != "success":
         raise _ApiError(f"Prometheus query failed ({data.get('errorType', 'error')}): {data.get('error', 'unknown')}")
     result = data.get("data") if isinstance(data, dict) else data
-    source_status = "unknown"
-    if isinstance(data, dict) and data.get("status") == "success":
-        warnings = data.get("warnings", [])
-        source_status = "unknown" if not isinstance(warnings, list) else "partial" if warnings else "ok"
-    return (result, source_status) if with_status else result
+    if not with_status:
+        return result
+    state = "unknown"
+    if status in (200, 206) and isinstance(data, dict) and data.get("status") == "success":
+        state = "partial" if status == 206 else "ok"
+    if isinstance(data, dict):
+        for key in ("warnings", "infos"):
+            if key in data:
+                if not isinstance(data[key], list) or not all(isinstance(item, str) for item in data[key]):
+                    state = "unknown"
+                elif data[key] and state == "ok":
+                    state = "partial"
+        for key in ("partial", "truncated"):
+            if key in data:
+                if type(data[key]) is not bool:
+                    state = "unknown"
+                elif data[key] and state == "ok":
+                    state = "partial"
+        if any(data.get(key) not in (None, "") for key in ("error", "errorType", "exception")):
+            state = "error"
+    return result, state
 
 
 class _ApiError(Exception):
@@ -97,6 +115,9 @@ def _bound(data):
     budget = MAX_TOTAL_SAMPLES
     out = []
     for series in result:
+        if not isinstance(series, dict):
+            out.append(None)  # Fixed malformed marker; never echo an unbounded non-series value.
+            continue
         s = dict(series)
         vals = s.get("values")
         if isinstance(vals, list):
@@ -111,20 +132,44 @@ def _bound(data):
     return {"resultType": data.get("resultType"), "result": out}, truncated
 
 
-def _query_result(observed):
-    data, source_status = observed
-    raw_rows = data.get("result") if isinstance(data, dict) else None
-    raw_rows_valid = isinstance(raw_rows, list) and all(isinstance(row, dict) for row in raw_rows[:MAX_SERIES])
+def _query_result(observed, *, allow_scalar=False):
+    data, state = observed
     bounded, truncated = _bound(data)
-    state = source_status if raw_rows_valid else "unknown"
-    if state == "ok":
-        state = ("unknown" if not isinstance(bounded, dict)
-                 or bounded.get("resultType") not in ("vector", "matrix")
-                 or not isinstance(bounded.get("result"), list) else
-                 "partial" if truncated else "ok" if bounded["result"] else "empty")
-    return ok({"truncated": truncated,
-               **(bounded if isinstance(bounded, dict) else {"result": bounded}),
-               "collectionStatus": state})
+    rows = bounded.get("result") if isinstance(bounded, dict) else None
+    kind = bounded.get("resultType") if isinstance(bounded, dict) else None
+    def sample(value):
+        if (not isinstance(value, list) or len(value) != 2
+                or type(value[0]) not in (int, float) or not math.isfinite(value[0])
+                or not isinstance(value[1], str)):
+            return False
+        try:
+            float(value[1])  # Prometheus also permits NaN and +/-Inf sample strings.
+            return True
+        except ValueError:
+            return False
+    if kind in ("scalar", "string"):
+        raw = data.get("result")
+        pair = isinstance(raw, list) and len(raw) == 2
+        oversized = pair and isinstance(raw[1], str) and (
+            len(raw[1]) > 4096 or len(raw[1].encode("utf-8")) > 4096)
+        valid_scalar = (allow_scalar and pair and type(raw[0]) in (int, float)
+                        and math.isfinite(raw[0]) and isinstance(raw[1], str)
+                        and not oversized and (kind == "string" or sample(raw)))
+        return ok({"resultType": kind, "result": raw if valid_scalar else [],
+                   "truncated": bool(oversized),
+                   "collectionStatus": state if valid_scalar or state == "error" else "unknown"})
+    valid = kind in ("vector", "matrix") and isinstance(rows, list)
+    if valid:
+        valid = all(isinstance(row, dict) and isinstance(row.get("metric"), dict)
+                    and (sample(row.get("value")) if kind == "vector" else
+                         isinstance(row.get("values"), list) and all(sample(v) for v in row["values"]))
+                    for row in rows)
+    if not valid and state != "error":
+        state = "unknown"
+    elif state == "ok":
+        state = "partial" if truncated or len(rows) >= MAX_SERIES else "ok" if rows else "empty"
+    return ok({**(bounded if isinstance(bounded, dict) else {"result": bounded}),
+               "truncated": truncated, "collectionStatus": state})
 
 
 def _timeout_param(v):
@@ -148,7 +193,7 @@ def prometheus_query(args):
     timeout = _timeout_param(args.get("timeout"))
     if timeout:
         params["timeout"] = timeout
-    return _query_result(_get(_ds(), "/api/v1/query", params, with_status=True))
+    return _query_result(_get(_ds(), "/api/v1/query", params, with_status=True), allow_scalar=True)
 
 
 def prometheus_query_range(args):
@@ -169,7 +214,8 @@ def _list_result(observed, field, limit, kind):
     data, source_status = observed
     rows = data[:limit] if isinstance(data, list) else []
     truncated = isinstance(data, list) and len(data) > limit
-    state = ("unknown" if source_status == "unknown" or not isinstance(data, list) else
+    state = (source_status if source_status in ("unknown", "error") else
+             "unknown" if not isinstance(data, list) else
              "partial" if source_status == "partial" or truncated or not all(isinstance(row, kind) for row in rows) else
              "ok" if rows else "empty")
     return ok({field: rows, "truncated": truncated, "collectionStatus": state})
@@ -335,4 +381,4 @@ def ok(body):
 
 
 def err(msg):
-    return {"statusCode": 400, "body": json.dumps({"error": msg})}
+    return {"statusCode": 400, "body": json.dumps({"error": msg, "collectionStatus": "error"})}
