@@ -47,7 +47,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 
 ## Deployment invariants
 
-- HEAD image review uses bounded PNG/WebP/ICO decoding, source/render lineage and a
+- HEAD image review uses bounded static raster decoding from one shared format table, source/render lineage and a
   deterministic declaration gate. Response presence, image failure and unusable report
   output are separate. See `pr-review-head-images.md`; no tool or IAM permissions are added.
 - `release-safety-primitives.md` defines the active web read/controller contracts and transactional pending-SQL admission forced by every web-driven migration clone. Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the template's init flag. Standalone empty-only bootstrap applies historical SQL and reader sync first; initialized DBs retain full pending checks. Function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL require reviewed standalone migration, then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads retry within a shared budget; writes and identity/permission failures do not retry. Receipt verification gives the known old PRIMARY 15 seconds of visibility grace; start confirmation retains its separate 120-second bound.

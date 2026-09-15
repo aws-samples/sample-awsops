@@ -570,6 +570,8 @@ class ImageCoverageOutcomeTests(unittest.TestCase):
                        "IMAGE COVERAGE FAILURE — unreadable image",
                        "**IMAGE_COVERAGE: FAILED** — unreadable image",
                        "### IMAGE_COVERAGE: FAILED — unreadable image",
+                       "- IMAGE_COVERAGE: FAILED",
+                       "1. IMAGE_COVERAGE: FAILED",
                        "  IMAGE COVERAGE FAILURE — unreadable image"):
             for required in (True, False):
                 with self.subTest(signal=signal, required=required):

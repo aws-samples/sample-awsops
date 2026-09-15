@@ -2,6 +2,7 @@
 """Isolated, bounded decoder. Stdin is image data; stdout is metadata LF PNG."""
 import io
 import json
+from pathlib import Path
 import resource
 import sys
 import warnings
@@ -31,7 +32,7 @@ def main():
         if len(data) > byte_limit:
             raise Refused("image_file_limit")
         with Image.open(io.BytesIO(data)) as image:
-            expected = {".png": "PNG", ".webp": "WEBP", ".ico": "ICO"}.get(suffix)
+            expected = json.loads(Path(__file__).with_name("image-formats.json").read_text()).get(suffix)
             if image.format != expected:
                 raise Refused("image_format_mismatch")
             width, height = image.size

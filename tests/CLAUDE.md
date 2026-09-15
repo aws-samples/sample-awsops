@@ -14,7 +14,10 @@ Bash-based structure/hook test suite. Separate from the v2 app's own tests — `
 alongside the hook/structure tests above.
 
 ## Running
+The image fixtures require Python 3.12 and the pinned binary Pillow codec in a virtualenv.
+
 ```bash
+python -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt
 bash tests/run-all.sh    # everything (TAP format: hooks + structure + agent)
 ```
 

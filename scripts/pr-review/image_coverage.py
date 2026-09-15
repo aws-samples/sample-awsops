@@ -92,7 +92,7 @@ def validate_report(text, required):
             fence = (opening[1][0], len(opening[1]))
             continue
         # Reserved prefixes declare outcomes. Decoration cannot turn failure into prose.
-        candidate = re.sub(r"^ {0,3}(?:#{1,6}[ \t]+)?(?:\*\*|__|\*|_)?(?=IMAGE[_ ])", "", line)
+        candidate = re.sub(r"^ {0,3}(?:(?:#{1,6}|[-*+]|\d+[.)])[ \t]+)?(?:\*\*|__|\*|_)?(?=IMAGE[_ ])", "", line)
         if candidate.startswith("IMAGE COVERAGE FAILURE"):
             return False
         if candidate.startswith("IMAGE_COVERAGE:"):

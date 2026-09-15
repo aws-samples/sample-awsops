@@ -273,11 +273,56 @@ class HeadImageTests(unittest.TestCase):
                 self.assertTrue(result["unavailable"])
 
     def test_unsupported_binary_image_format_is_explicitly_unavailable(self):
-        self.write("docs/photo.jpg", b"jpeg data")
-        self.assertEqual(self.stage(self.head())["unavailable"][0]["code"], "unsupported_format")
+        for suffix in ("heic", "jxl", "svgz"):
+            self.write(f"docs/photo.{suffix}", b"unsupported image")
+        result = self.stage(self.head())
+        self.assertEqual({e["code"] for e in result["unavailable"]}, {"unsupported_format"})
+        self.assertEqual(len(result["unavailable"]), 3)
         manifest = json.loads((self.out / "manifest.json").read_text())
         self.assertEqual(manifest["status"], "incomplete")
         self.assertEqual(manifest["images"], [])
+
+    def test_common_static_formats_decode_exact_source_pixels(self):
+        from PIL import Image, ImageOps
+        import io
+        originals = {}
+        for suffix, codec in {".jpg": "JPEG", ".jpeg": "JPEG", ".gif": "GIF", ".bmp": "BMP",
+                              ".tif": "TIFF", ".tiff": "TIFF", ".avif": "AVIF"}.items():
+            buffer = io.BytesIO()
+            Image.new("RGB", (4, 3), "#c84927").save(buffer, codec)
+            path = f"docs/static{suffix}"
+            originals[path] = buffer.getvalue()
+            self.write(path, originals[path])
+        result = self.stage(self.head())
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(len(result["images"]), len(originals))
+        for entry in result["images"]:
+            with Image.open(io.BytesIO(originals[entry["path"]])) as source:
+                with Image.open(self.out / entry["file"]) as staged:
+                    self.assertEqual(staged.convert("RGBA").tobytes(),
+                                     ImageOps.exif_transpose(source).convert("RGBA").tobytes())
+            self.assertEqual(entry["source_sha256"], hashlib.sha256(originals[entry["path"]]).hexdigest())
+
+    def test_rename_to_source_only_format_records_removed_raster(self):
+        from unittest.mock import patch
+        self.git("mv", "docs/image.png", "docs/diagram.svg")
+        self.write("docs/diagram.svg", b'<svg xmlns="http://www.w3.org/2000/svg"><rect width="2" height="2"/></svg>')
+        head = self.head()
+        oid = self.git("rev-parse", f"{head}:docs/diagram.svg").strip().decode()
+        with patch.object(self.tool, "changes", return_value=iter([
+            ("R", b"docs/image.png", b"docs/diagram.svg", "100644", oid),
+        ])):
+            result = self.stage(head)
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["deleted"], ["docs/image.png"])
+        self.assertEqual(result["images"], [])
+        self.assertEqual(result["unavailable"], [])
+
+    def test_suffix_only_rename_cannot_hide_binary_head_pixels(self):
+        self.git("mv", "docs/image.png", "docs/diagram.svg")
+        result = self.stage(self.head())
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["unavailable"][0]["code"], "unsupported_format")
 
     def test_references_must_be_full_existing_commit_ids(self):
         for ref in ["HEAD", "--help", "a" * 40, self.base.decode() + "\n"]:
@@ -294,13 +339,15 @@ class HeadImageTests(unittest.TestCase):
         for name in ("sample.webp", "favicon.ico"):
             self.write("docs/" + name, b"unsupported image")
         self.git("mv", "docs/image.png", "docs/renamed.svg")
+        self.write("docs/renamed.svg", b'<svg xmlns="http://www.w3.org/2000/svg"/>')
         self.write("docs/valid.png", png())
         head = self.head()
         result = self.stage(head)
         self.assertEqual(result["status"], "incomplete")
         self.assertEqual(len(result["images"]), 1)
         self.assertEqual({item["path"] for item in result["unavailable"]},
-                         {"docs/sample.webp", "docs/favicon.ico", "docs/renamed.svg"})
+                         {"docs/sample.webp", "docs/favicon.ico"})
+        self.assertEqual(result["deleted"], ["docs/image.png"])
         panel, chair = pipeline.PanelTests(), pipeline.ChairTests()
         self.addCleanup(panel.doCleanups)
         self.addCleanup(chair.doCleanups)
@@ -377,11 +424,15 @@ class HeadImageTests(unittest.TestCase):
         import io
         red = Image.new("RGBA", (32, 32), "red")
         blue = Image.new("RGBA", (32, 32), "blue")
-        animated, icons = io.BytesIO(), io.BytesIO()
+        animated, icons, gif, tiff = io.BytesIO(), io.BytesIO(), io.BytesIO(), io.BytesIO()
         red.save(animated, "WEBP", save_all=True, append_images=[blue], duration=100)
         red.save(icons, "ICO", sizes=[(16, 16), (32, 32)])
+        red.save(gif, "GIF", save_all=True, append_images=[blue], duration=100)
+        red.save(tiff, "TIFF", save_all=True, append_images=[blue])
         self.write("docs/animated.webp", animated.getvalue())
         self.write("docs/variants.ico", icons.getvalue())
+        self.write("docs/animated.gif", gif.getvalue())
+        self.write("docs/pages.tiff", tiff.getvalue())
         result = self.stage(self.head())
         self.assertEqual(result["status"], "incomplete")
         self.assertEqual(result["images"], [])

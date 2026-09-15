@@ -29,7 +29,7 @@ class Limits:
     pixels: int = 16 * 1024 * 1024
 
 
-RASTER = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".ico", ".tif", ".tiff"}
+FORMATS = json.loads(Path(__file__).with_name("image-formats.json").read_text())
 CONTEXT_LIMIT = 32768
 MANIFEST_LIMIT = 24576
 RECORD_LIMIT = 64
@@ -45,8 +45,11 @@ def render_blob(blob, suffix, limits):
     timer = threading.Timer(25, process.kill)
     timer.start()
     try:
-        process.stdin.write(blob)
-        process.stdin.close()
+        try:
+            process.stdin.write(blob)
+            process.stdin.close()
+        except BrokenPipeError:
+            pass  # The decoder may have returned a useful error before reading stdin.
         output = process.stdout.read(limits.file_bytes + 2049)
         if len(output) > limits.file_bytes + 2048:
             process.kill()
@@ -62,7 +65,7 @@ def render_blob(blob, suffix, limits):
             code = metadata.get("error")
             raise CoverageError(code if isinstance(code, str) and code in DECODE_ERRORS else "image_decode_failed")
         if (set(metadata) != {"source_format", "source_width", "source_height", "frames", "decoder"}
-                or metadata.get("source_format") != {".png": "PNG", ".webp": "WEBP", ".ico": "ICO"}[suffix]
+                or metadata.get("source_format") != FORMATS[suffix]
                 or type(metadata.get("frames")) is not int or metadata["frames"] != 1
                 or metadata.get("decoder") != "Pillow-12.3.0"
                 or any(type(metadata.get(key)) is not int or not 0 < metadata[key] <= limits.dimension
@@ -226,9 +229,12 @@ from every panel cell and the chair; missing, failed or conflicting declarations
 review regardless of any later VERDICT: PASS. Unavailable/omitted entries force FAILED
 even if all listed files were inspected. With no required evidence, the marker is optional,
 but an explicit failure still blocks. Discuss example markers inside quotes or fences.
-This staging covers static PNG, WebP and single-rendition ICO. PNG bytes are preserved;
-WebP/ICO become lossless PNG evidence with original blob/hash and rendering lineage.
-No animation or icon rendition is silently dropped. Other raster formats and SVG/PDF/PPTX
+This staging covers static PNG/JPEG/GIF/WebP/AVIF/BMP/TIFF and single-rendition ICO.
+PNG bytes are preserved; other supported formats become lossless PNG evidence with
+original blob/hash and rendering lineage. No animation, page or icon rendition is
+silently dropped. The shared image-formats.json also detects HEIC/HEIF/JXL/SVGZ as
+unsupported: unavailable entries identify the file; convert it to reviewable PNG assets.
+Other formats and SVG/PDF/PPTX
 visual rendering is unsupported. Visible source diff can still be reviewed normally,
 but a needed unsupported visual inspection must be reported as a coverage failure.
 {paths}
@@ -285,16 +291,26 @@ def stage_images(repo, head, merge_base, output, limits=Limits()):
     try:
         try:
             for status, raw_old, raw_new, mode, oid in changes(repo, merge_base, head):
-                if not any(Path(path.decode("utf-8", "surrogateescape")).suffix.lower() in RASTER
+                if not any(Path(path.decode("utf-8", "surrogateescape")).suffix.lower() in FORMATS
                            for path in (raw_old, raw_new)):
                     continue
                 try:
                     old, new = safe_path(raw_old), safe_path(raw_new)
+                    suffix = Path(new).suffix.lower()
                     if status == "D":
                         record("deleted", old)
                         continue
-                    suffix = Path(new).suffix.lower()
-                    if suffix not in (".png", ".webp", ".ico"):
+                    if suffix not in FORMATS:
+                        # A suffix-only rename must not hide the same binary pixels.
+                        if mode not in ("100644", "100755"):
+                            raise CoverageError("non_regular_image")
+                        body = git_read(repo, ["cat-file", "blob", oid], limits.file_bytes)
+                        if b"\0" in body[:8000]:
+                            raise CoverageError("unsupported_format")
+                        if status == "R":
+                            record("deleted", old)
+                        continue  # Copy to source-only format: no removed raster.
+                    if FORMATS[suffix] is None:
                         raise CoverageError("unsupported_format")
                     if mode not in ("100644", "100755"):
                         raise CoverageError("non_regular_image")
@@ -383,6 +399,11 @@ def main():
         return 1
     print(f"HEAD PNG coverage {result['status']}: {len(result['images'])} staged, "
           f"{len(result['unavailable'])} unavailable, {result['omitted_entries']} omitted")
+    for entry in result["unavailable"]:
+        label = re.sub(r"[^A-Za-z0-9._/-]", "?", entry["path"] or "(scope)")[:200]
+        print(f"Unavailable HEAD visual: {label}: {entry['code']}. "
+              "Provide supported static PNG evidence for every required frame/page/rendition, "
+              "or fix the reported path, codec or bound; coverage cannot be waived.")
     return 0
 
 

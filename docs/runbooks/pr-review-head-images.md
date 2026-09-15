@@ -21,7 +21,7 @@ checks out HEAD or executes its scripts, filters, hooks, or image metadata.
 The current-run manifest records HEAD, merge-base, original and renamed paths, Git
 blob IDs, original `source_sha256`/size/geometry, rendered `sha256`/size/geometry,
 frame count and pinned decoder version. PNG bytes are retained after bounded decoding;
-static WebP and single-rendition ICO become lossless RGBA PNGs under opaque generated
+static JPEG/GIF/WebP/AVIF/BMP/TIFF and single-rendition ICO become lossless RGBA PNGs under opaque generated
 filenames. Conversion applies EXIF orientation and retains ICC color profiles; original
 blob/hash lineage remains authoritative even when rendered bytes differ.
 Prompts contain a shared safe summary:
@@ -83,7 +83,8 @@ python -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/
 python -m unittest scripts.v2.test_pr_review_head_images scripts.v2.test_pr_review_pipeline
 ```
 
-The existing `test-pr-review-panel-prompt.sh` structure check runs both suites in CI.
+Merge Verify discovers both suites through isolated pytest execution.
+The local `test-pr-review-panel-prompt.sh` structure check also runs both suites.
 The image suite also supports the isolated `scripts/v2` cwd used by pytest:
 `python3 -m pytest test_pr_review_head_images.py`.
 
@@ -107,17 +108,29 @@ limits, prompt propagation and missing-evidence failures.
 | Repository path | 512 UTF-8 bytes; no traversal or control characters |
 
 The observed repository has 95 PNGs, 23 WebPs and one single-rendition ICO, all static.
-Its largest PNG directory has 13 files; 32 covers it and the complete WebP set.
+Its largest PNG directory has 13 files; each of that directory and the 23-file WebP
+set separately fits 32, while a combined refresh would exceed the limit.
 The largest source is below 744 KiB and 8.2 million pixels. These are bounded inventory
 observations, not permission to truncate future assets or silently keep only frame one.
 
-Only regular PNG/WebP/ICO blobs are decoded. PNG structure/CRC checks remain, and an
+The single trusted [format table](../../scripts/pr-review/image-formats.json) drives
+both detection and decoder selection. Regular PNG/JPEG/GIF/WebP/AVIF/BMP/TIFF/ICO
+blobs are decoded. PNG structure/CRC checks remain, and an
 isolated Python process using hash-pinned Pillow 12.3.0 fully loads each image. The
 worker receives image bytes via stdin with a minimal environment, no credential variables,
 no shell invocation and no HEAD code execution. Animated/multiple-frame images and ICOs
 with multiple renditions fail as whole assets; no first-frame fallback is accepted.
 Symlinks, gitlinks, invalid inputs and exceeded bounds become unavailable evidence.
-Other raster formats remain outside this bounded codec scope.
+HEIC/HEIF/JXL and compressed SVGZ are explicitly detected but have no approved codec;
+they block with `unsupported_format`, the affected safe filename and a conversion
+remedy. Provide supported PNG evidence for every required frame/page/rendition.
+Animated GIFs, multipage TIFFs and other multi-frame inputs remain explicitly outside
+the static contract; never silently convert only their first frame.
+Extension classification is not universal file-content discovery. Other extensions
+are outside this helper; reviewers must declare failure when their required visual
+inspection cannot be performed. Renaming a raster to a source-only format records
+removal of its old raster path; the new source remains in ordinary diff review.
+A suffix-only rename of binary pixels still blocks; it does not become source evidence.
 Deletion-only changes need no HEAD pixels,
 including deletion names summarized beyond the metadata budget.
 An incomplete manifest is a successful extraction of partial evidence, not review
