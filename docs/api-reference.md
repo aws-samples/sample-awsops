@@ -261,7 +261,7 @@ Positive `nodeDrops/edgeDrops/orphanSpans/invalidSpans/unresolvedMessaging` and
 `infraUnavailable` remain visible for older persisted envelopes as well as newer producer flags.
 Only node/edge drops or explicit truncation flags imply a processing limit; malformed spans
 and unresolved parent/link/messaging evidence are distinct partial-result causes. Losses alone do not prove retention:
-`retainedPrevious` is required for that claim. Source-detail totals and status counts describe the displayed rows: identical latest/saved details appear once, while differing or saved-only details retain their saved provenance.
+`retainedPrevious` is required for that claim. Source-detail totals count displayed current/saved rows; status counts summarize latest-attempt sources. Identical current/saved lists are displayed once with saved provenance.
 Missing collection metadata stays unknown rather than implying collector failure.
 
 
@@ -292,7 +292,7 @@ runtime payloads for compatibility with older or malformed responses.
 The UI supports the existing trace envelope and optional inventory/saved-source
 fields emitted by the bounded publication implementation in `web/lib/graph-store.ts`.
 Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded; their count
-includes distinct displayed saved-source entries. Identical latest/saved details are shown once, with the saved-source heading and a localized “Same displayed source evidence as above.” note; differing and saved-only evidence remains visible. Runtime, Lambda and migration rollout remain separate
+includes displayed saved-source rows except when the entire current/saved lists match. Identical current/saved lists are shown once with the saved-source heading and a localized “Same displayed source evidence as above.” note. Differing and saved-only evidence remains visible. Runtime, Lambda and migration rollout remain separate
 from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
 
 
@@ -305,6 +305,8 @@ Excess graph requests return HTTP 503, other read failures HTTP 500, with fixed 
 
 All three graph pages render collection/read errors, parse safe non-2xx envelopes, abort superseded fetches and provide refresh. A shed request includes Retry-After: 1 and a fixed server-side shed diagnostic. Timeout SQLSTATEs (57014/25P03/25P04/55P03) produce readReason=timeout; they never imply empty collection or successful partial publication. Requested subgraph roots are prioritized before the node cap; fan-out capped and readTruncated remain distinct.
 
+Shipped graph consumers retry only typed HTTP503 admission responses (readStatus=unavailable, readReason=busy), at most five requests within a ten-second client deadline. Base waits are 250/500/1000/2000ms; positive numeric Retry-After hints are honored within that total budget. Exhaustion after the last observed typed busy response retains readReason=busy. A client deadline without that observation, or after a later non-busy response, reports readReason=timeout without requiring an HTTP500 or SQLSTATE log. Auth/rejection, query, and untyped service errors are not retried. Scope changes cancel waits and reads; every exhausted outcome stays unknown/unavailable, never confirmed empty.
+
 HTTP collection details use the same bounded key/status/reason vocabulary as the SQL-reader view: raw/private keys and injected read/coverage fields are excluded. Source arrays are capped at 128 and reason lists at 16; metadataTruncated discloses omitted/malformed metadata separately from graph row truncation. Safe null source clocks remain unknown for compatibility.
 
 The two-second request deadline includes pool acquisition. Expired late checkouts return immediately without starting SQL; admission stays reserved until they settle, preventing an abandoned queue. Both annotation normalization and JSON serialization occur after release. Top-level windows use Graph attempt window start/end labels; individual source windows keep Source window start/end labels. SQL and HTTP projections share null-clock compatibility, the count/not-attempted vocabulary, and metadataTruncated. Reason deduplication alone is not omission.
@@ -312,7 +314,5 @@ The two-second request deadline includes pool acquisition. Expired late checkout
 Capped resource neighborhoods keep the requested root and nearest hops first, using the minimum distance from both traversal directions; lexical order only breaks ties within a hop. Authentication expiry (401 or a followed /login redirect), authorization denial (403), and other4xx rejections use a separate localized error path. They do not become query_failed or a retriable graph outage. Sign-in links stay on the local /login route, and stale graph content is cleared on rejection.
 
 A reader-synthesized unknown result with no collection clocks or source records is neutral “No collection state recorded” information; it does not assert stale age or a collector failure. Unknown aggregate coverage has its own neutral wording. This presentation does not change the backend unknown/stale envelope or establish completeness. Read failures, retention, truncation, metadata loss and other actionable evidence still render alerts.
-
-Shipped graph consumers retry only typed HTTP503 admission responses (readStatus=unavailable, readReason=busy), at most five requests within ten seconds. Auth/rejection, query, and untyped service errors are not retried. Scope changes/unmounts cancel waits and reads; exhausted recovery remains explicit unknown/unavailable, never confirmed empty.
 
 Class-wide infra truncation prioritizes the actual `vpc`, `subnet`, and `sg` container kinds before resource nodes; within each rank, IDs provide deterministic order. The cap still bounds the response and does not certify complete connectivity. Recognized metadata fields with invalid types/ranges or unknown enum vocabulary set `metadataTruncated` in both projections; unknown private fields remain excluded without that signal. This deliberately treats vocabulary not understood by the reader as unknown coverage. Published inventory evidence is stale for contradictory status/count pairs, any nonempty or malformed reason list, or an invalid/future optional capture clock. A confirmed zero may omit its capture clock or use null, but requires `empty`, zero count, a succeeded producer and a valid last-success clock.

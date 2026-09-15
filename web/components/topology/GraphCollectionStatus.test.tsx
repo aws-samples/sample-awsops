@@ -72,6 +72,7 @@ describe('graph collection status', () => {
     }} />);
     expect(container.querySelector('summary')?.textContent).toContain('Source details (1)');
     expect(container.querySelectorAll('li')).toHaveLength(1);
+    expect(container.querySelector('summary')?.textContent).not.toContain('Saved sources: 1');
     expect(container.textContent).toContain('Sources used by saved graph');
     expect(container.textContent).toContain('Same displayed source evidence as above.');
     if (retainedPrevious) expect(container.textContent).toContain('previous graph');

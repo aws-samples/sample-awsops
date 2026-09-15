@@ -40,7 +40,6 @@ export async function inventoryAccounts(pool: Pool, cls: GraphClass, types: stri
       UNION SELECT account_id FROM topology_graph_state WHERE class=$1
       UNION SELECT account_id FROM inventory_resources WHERE resource_type=ANY($2)
       UNION SELECT account_id FROM inventory_sync_runs WHERE resource_type=ANY($2)
-      UNION SELECT account_id FROM inventory_snapshots WHERE resource_type=ANY($2)
       UNION SELECT a.account_id FROM accounts a WHERE a.enabled AND NOT a.is_host
         AND a.account_id <> 'self' AND (a.all_regions OR EXISTS (
           SELECT 1 FROM account_regions ar WHERE ar.account_id=a.account_id AND ar.enabled))
@@ -177,12 +176,13 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
       : !items.length && (!confirmedEmpty || unknownAttributes) ? ['empty_not_confirmed']
       : !lastSuccessAtMs || (items.length > 0 && capturedAtMs === null) ? ['unknown_capture'] : [];
     if (blockers.length) safe = false;
-    const reasons = [...blockers, ...(run && unknownAttributes ? ['unknown_attributes'] : [])];
+    const reasons = [...blockers, ...(run && unknownAttributes ? ['unknown_attributes'] : []),
+      ...(truncated ? ['payload_truncated'] : [])];
     const status = producerStatus === 'failed' ? 'error'
       : producerStatus === 'unknown' || !lastSuccessAtMs || unknownScope ? 'unavailable'
       : reasons.length ? 'partial' : items.length ? 'ok' : 'empty';
     return { sourceId: `inventory:${type}`, scope: account !== 'self' && participated ? 'account' : 'aggregate',
-      status, producerStatus, reasons, itemCount: items.length, capturedAtMs, lastSuccessAtMs,
+      status, producerStatus, reasons, itemCount: truncated ? null : items.length, capturedAtMs, lastSuccessAtMs,
       attemptedAtMs: stamp(run?.started_at), finishedAtMs: stamp(run?.finished_at) };
   });
   const status = sources.some(s => s.status === 'error') ? 'error'
