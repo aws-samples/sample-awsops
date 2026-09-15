@@ -32,7 +32,11 @@ export type FlowKind = 'route53' | 'cloudfront' | 'alb' | 'nlb' | 'tg' | 'target
 export type Confidence = 'observed' | 'inferred';
 export interface FlowNode { id: string; kind: FlowKind; label: string; meta?: Record<string, unknown> }
 export interface FlowEdge { id: string; source: string; target: string; confidence: Confidence; label?: string }
-export interface FlowGraph { nodes: FlowNode[]; edges: FlowEdge[] }
+export interface FlowGraph {
+  nodes: FlowNode[]; edges: FlowEdge[];
+  /** Complete ordered membership by original target node ID; never persisted in node.meta. */
+  targetMembers?: Record<string, { id: string; pod?: string; namespace?: string }[]>;
+}
 
 export interface FlowInput {
   route53?: Row[]; cloudfront?: Row[]; alb?: Row[]; nlb?: Row[]; tg?: Row[]; waf?: Row[];
@@ -175,6 +179,7 @@ function lbArnFromListener(uri: string): string | null {
 export function buildFlowGraph(input: FlowInput): FlowGraph {
   const nodes: FlowNode[] = [];
   const edges: FlowEdge[] = [];
+  const targetMembers: NonNullable<FlowGraph['targetMembers']> = {};
   const ids = new Set<string>();
   const edgeIds = new Set<string>();
 
@@ -561,6 +566,9 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
       const aggHealth = total === healthy ? 'healthy' : g.members.some((m) => m.health === 'unhealthy') ? 'unhealthy' : (g.members.find((m) => m.health !== 'healthy')?.health || 'unknown');
       const single = total === 1;
       const nodeId = `target:${str(t.resource_id)}:${g.key}`;
+      targetMembers[nodeId] = g.members.map(({ id, pod, namespace }) => ({
+        id, ...(g.resolved === 'eks' ? { pod, namespace } : {}),
+      }));
       addNode(nodeId, 'target', single ? g.members[0].label : `${g.groupLabel} ×${total}`, {
         targetType: ttype,
         health: aggHealth,
@@ -584,7 +592,7 @@ export function buildFlowGraph(input: FlowInput): FlowGraph {
     }
   }
 
-  return { nodes, edges };
+  return { nodes, edges, targetMembers };
 }
 
 /**

@@ -96,3 +96,7 @@ The opt-in `/topology?view=e2e` page connects the full configuration graph, host
 Graph-generated labels use stable `labelKey` values; renderers translate those keys while preserving real source names. Display-truncated target membership is incomplete evidence, not a definitive missing match. Private implementation plans remain outside this public tree.
 
 Selection applies evidence/focus/query reachability before its default 350-node/700-edge bound. Explicit focus and query hits prioritize nearby complete observation groups before farther value-ranked groups. Shared context attaches once and never grants transit; incomplete residual explicit pins and other omissions remain disclosed.
+
+Complete target membership is carried by the in-memory `FlowGraph.targetMembers` sidecar, independently of capped display metadata. The persisted node projection does not gain that field. Missing or invalid full membership retains conservative uncertainty; a valid complete set permits exact exclusion of unrelated candidates and per-member Pod corroboration.
+
+Workload scope requires at least one compatible record attesting both account and region. Other explicit claims remain constraints; complementary partial records cannot manufacture a complete scope tuple.
