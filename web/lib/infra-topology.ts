@@ -57,7 +57,10 @@ export function buildInfraGraph(input: InfraInput): InfraGraph {
   for (const r of input.resources) {
     const d = (r.data ?? {}) as Record<string, unknown>;
     const vpcId = str(d.vpc_id);
-    const subnetIds = [...new Set([...idsFrom(d.subnet_id), ...idsFrom(d.subnet_ids), ...idsFrom(d.vpc_subnet_ids), ...idsFrom(d.subnets), ...idsFrom(d.availability_zones)])];
+    // Load balancers expose subnet IDs in AZ objects; Neptune's AZ names are not subnet IDs.
+    const lbSubnets = Array.isArray(d.availability_zones) ? d.availability_zones.flatMap(zone =>
+      zone && typeof zone === 'object' ? idsFrom(zone.SubnetId ?? zone.subnet_id) : []) : [];
+    const subnetIds = [...new Set([...idsFrom(d.subnet_id), ...idsFrom(d.subnet_ids), ...idsFrom(d.vpc_subnet_ids), ...idsFrom(d.subnets), ...lbSubnets])];
     const sgIds = [...new Set([...idsFrom(d.security_groups), ...idsFrom(d.security_group_ids), ...idsFrom(d.vpc_security_group_ids), ...idsFrom(d.vpc_security_groups)])];
     if (!vpcId && subnetIds.length === 0 && sgIds.length === 0) continue;
     const rid = `${str(r.resource_type)}:${str(r.resource_id)}`;

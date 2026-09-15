@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 699f51b0ddd7 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 10ba53719a19 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -258,7 +258,7 @@ CLI inputs and fixture prerequisites: `runtime-foundation.md#controller-cli-cont
 Catalog/per-type timeouts: `runtime-verifier-sessions.md#collection-effects-and-proof`.
 Checks: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
 
-Graph reads admit at most two requests per shared max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. Source-attempt metadata is supported before the separately gated inventory publisher is activated. See `graph-read-contract.md` for operator rollout and disposable tests; source integration does not establish deployment.
+Graph reads and rebuild/publication transactions share at most two admissions per max:3 pool. The two-second request deadline includes acquisition; admission remains reserved until a late checkout settles, and abandoned work never starts. Rebuilds retain the separate PostgreSQL four-second transaction timeout. Annotation normalization and serialization run after client release. SQL and HTTP collection projections share bounded scalar/source/reason fields and metadataTruncated disclosure. The implemented publisher in `web/lib/graph-store.ts` verifies source/account evidence before atomic replacement and retains last-good data on unproven collection. Execution still requires the default-off timer or an operator invocation. See `graph-read-contract.md` for budgets, CLI outcomes, rollout and disposable tests; source integration does not establish deployment.
 
 Changed HEAD image review uses the shared static-raster format table, source/render lineage
 and bounded decoding. All eight cells and chair must declare required coverage; explicit

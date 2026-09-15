@@ -286,7 +286,7 @@ not activation.
 
 Inventory accounts are ordered by their oldest actual attempt, with unattempted reads
 prioritized. One account failure does not prevent later accounts from progressing; the
-original exception is still returned after that bounded pass. Duplicate admission is per
+returned summary includes the unexpected-account-error `failed` count and first sanitized `failureCode`. Duplicate admission is per
 pool and graph class. Before the run budget is exhausted, a final bounded transaction
 records skipped source reads as unavailable with `sourceAttempted=false`; publication
 clocks and graph rows remain unchanged. Concurrent newer attempts win. If the database
