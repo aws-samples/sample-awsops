@@ -56,7 +56,7 @@ const services = {
 
 async function fixtures(page: Page, opts: {
   partial?: boolean; unavailable?: boolean; podsUnavailable?: 'empty' | 'failed'; foreignEcs?: boolean;
-  crowded?: boolean;
+  crowded?: boolean; grouped?: boolean;
 } = {}) {
   const calls: string[] = [];
   const data: typeof inventory = opts.foreignEcs ? {
@@ -68,7 +68,13 @@ async function fixtures(page: Page, opts: {
       ] }],
     } }],
     subnet: [{ resource_id: 'subnet-foreign', region: 'us-east-1', data: { vpc_id: 'vpc-peer' } }],
-  } : opts.crowded ? { ...inventory, alb: [...inventory.alb, ...Array.from({ length: 400 }, (_, i) => ({
+  } : opts.grouped ? { ...inventory, target_group: [{
+    ...inventory.target_group[0], data: { ...inventory.target_group[0].data,
+      target_health_descriptions: [1, 2].map(i => ({
+        Target: { Id: `10.0.${i}.10`, Port: 8080 }, TargetHealth: { State: 'healthy' },
+      })),
+    },
+  }] } : opts.crowded ? { ...inventory, alb: [...inventory.alb, ...Array.from({ length: 400 }, (_, i) => ({
     resource_id: `crowded-alb-${i}`, region: 'us-east-1',
     data: { arn: `${LB}-${i}`, dns_name: `crowded-${i}.example.test`, vpc_id: 'vpc-demo' },
   }))] } : inventory;
@@ -87,6 +93,15 @@ async function fixtures(page: Page, opts: {
     }
     if (url.pathname === '/api/eks') return json({ region: 'us-east-1', clusters: opts.foreignEcs ? [] : [{ name: 'demo', access: 'connected', region: 'us-east-1', vpcId: 'vpc-demo' }] });
     if (url.pathname === '/api/eks/demo/incluster') {
+      if (opts.grouped) {
+        const pods = ['frontend-a', 'frontend-b'].map((name, i) => ({
+          name, namespace: 'shop', podIP: `10.0.${i + 1}.10`, workload: 'frontend', status: 'Running',
+        }));
+        return json({ rows: url.searchParams.get('kind') === 'pods' ? pods : [{
+          name: 'frontend', namespace: 'shop', ips: pods.map(p => p.podIP),
+          targets: pods.map(p => ({ ip: p.podIP, pod: p.name })),
+        }] });
+      }
       if (url.searchParams.get('kind') === 'pods' && opts.podsUnavailable) {
         return json({ rows: [] }, opts.podsUnavailable === 'failed' ? 502 : 200);
       }
@@ -197,6 +212,22 @@ test('mobile: graph and controls remain readable when one destination category f
   await expect(page.locator('.react-flow')).toBeVisible();
   await expect(page.locator('.react-flow__minimap')).not.toBeVisible();
   await page.screenshot({ path: `${SHOTS}/mobile-partial-graph.png`, fullPage: true });
+});
+
+test('grouped targets show member evidence and qualify their capture time', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1050 });
+  await fixtures(page, { grouped: true });
+  await page.goto('/topology?view=e2e');
+  await expect(page.locator('[data-e2e-kind="target"]')).toHaveCount(1);
+  await page.getByRole('searchbox').fill('shop/frontend ×2');
+  await page.getByRole('button', { name: '선택: shop/frontend ×2', exact: true }).click();
+  const detail = page.getByRole('region', { name: '선택한 노드 상세' });
+  await expect(detail).toContainText('여러 타깃을 묶은 구성 기록입니다.');
+  await expect(detail.getByText('frontend-a', { exact: true })).toHaveCount(0);
+  await expect(detail).toContainText('10.0.1.10 · shop/frontend-a');
+  await expect(detail).toContainText('10.0.2.10 · shop/frontend-b');
+  await expect(detail).toContainText('소유권 확인 시각이 아닙니다.');
+  await page.screenshot({ path: `${SHOTS}/desktop-grouped-target.png`, fullPage: true });
 });
 
 test('large configuration cannot starve observations and search reaches nodes beyond the display cap', async ({ page }) => {
