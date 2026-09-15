@@ -65,7 +65,7 @@ export interface E2eView {
   /** Display-budget omissions after eligibility and focus/query reachability. */
   omittedNodes: number;
   omittedEdges: number;
-  /** Hidden connection observations by category after filters/caps, not endpoint or edge counts. */
+  /** Hidden or incomplete connection observations by category after filters/caps, not endpoint/edge counts. */
   omittedCategories: Record<string, number>;
   /** Eligible query hits before caps, or the selected node count without a query. */
   matchedNodes: number;

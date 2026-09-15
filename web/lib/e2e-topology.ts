@@ -457,6 +457,11 @@ export function mainE2eConnection(nodes: E2eNode[]): E2eNode | undefined {
   return best;
 }
 
+/** Stable complete ranking for consumers that need more than the primary observation. */
+export function rankE2eConnections(nodes: readonly E2eNode[]): E2eNode[] {
+  return nodes.filter(node => connectionMeasure(node) !== undefined).sort(compareConnections);
+}
+
 /** Enabled relations keep their endpoints, including cross-layer identity/context evidence. */
 export function filterE2eGraph(graph: E2eGraph, evidence?: E2eEvidence[]): Pick<E2eGraph, 'nodes' | 'edges'> {
   const present = new Set(graph.nodes.map(node => node.id));
@@ -587,28 +592,25 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
       ? compareConnections(byId.get(groupOf.get(a)!)!, byId.get(groupOf.get(b)!)!) : 0)
     || compareText(a, b));
   if (focusId) add(focusId);
-  if (new Set([...(focusId && selected.has(focusId) ? [focusId] : []), ...matches]).size <= maxNodes) {
-    // When all explicit hits fit, none may be displaced by a traversal neighbor.
-    for (const id of matches) add(id);
-    for (const edge of selectedEdges) {
-      if (edge.evidence === 'network' && visibleIds.has(edge.source) && visibleIds.has(edge.target)) {
-        reservedNetworkEdges.add(edge.id);
-      }
-    }
-  } else {
-    // An overfull query must still show complete matching observations before
-    // spending the budget on hundreds of matching configuration records.
-    for (const id of matches) {
-      const connection = groupOf.get(id);
-      if (connection) addGroup(connection);
-      add(id);
-    }
+  const explicitFits = new Set([...(focusId && selected.has(focusId) ? [focusId] : []), ...matches]).size <= maxNodes;
+  // Reserve fitting non-network hits, then complete matching observations before
+  // spending the budget on isolated connection glyphs.
+  if (explicitFits) for (const id of matches) if (!groupOf.has(id)) add(id);
+  if (focusId && groupOf.has(focusId)) addGroup(groupOf.get(focusId)!);
+  for (const id of matches) {
+    const connection = groupOf.get(id);
+    if (connection) addGroup(connection);
+    else add(id);
   }
+  // A tiny budget may only fit an explicit partial observation. Disclose it below.
+  if (explicitFits && !admittedGroups.size) for (const id of matches) add(id);
   const orderedGroups = [...groups.keys()].sort((a, b) => {
     const pinned = (id: string) => [...groups.get(id)!].some(member => visibleIds.has(member));
     return Number(pinned(b)) - Number(pinned(a)) || compareConnections(byId.get(a)!, byId.get(b)!);
   });
   for (const connection of orderedGroups) addGroup(connection);
+  // Remaining explicit hits outrank optional context but cannot displace reserved edges.
+  for (const id of matches) add(id);
   // Complete observation groups before optional identity neighbors consume the budget.
   for (const connection of orderedGroups) {
     if (!admittedGroups.has(connection)) continue;
@@ -621,11 +623,14 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
   const edgePriority: Record<E2eEvidence, number> = { network: 0, identity: 1, context: 2, service: 3, configuration: 4 };
   const visibleEdges = selectedEdges
     .filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target))
-    .sort((a, b) => edgePriority[a.evidence] - edgePriority[b.evidence])
+    .sort((a, b) => edgePriority[a.evidence] - edgePriority[b.evidence]
+      || Number(reservedNetworkEdges.has(b.id)) - Number(reservedNetworkEdges.has(a.id)))
     .slice(0, maxEdges);
+  const visibleEdgeIds = new Set(visibleEdges.map(edge => edge.id));
   const omittedCategories = new Map<string, number>();
-  for (const id of groups.keys()) {
-    if (visibleIds.has(id)) continue;
+  for (const [id, members] of groups) {
+    if ([...members].every(member => visibleIds.has(member))
+      && (groupEdges.get(id) ?? []).every(edge => visibleEdgeIds.has(edge.id))) continue;
     const node = byId.get(id)!;
     const category = (text(node.meta.category) || text(record(node.meta.flow).category)).trim() || 'UNKNOWN';
     omittedCategories.set(category, (omittedCategories.get(category) ?? 0) + 1);

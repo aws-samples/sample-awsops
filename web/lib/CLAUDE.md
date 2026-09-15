@@ -9,11 +9,13 @@ Domain-logic modules shared by API routes and components, mostly React-free (inc
   layout. Keep the existing scoped identity vetoes, cached/qualified context and per-source times.
   `mainE2eConnection(nodes)` chooses from eligible uncapped nodes: DATA_TRANSFERRED first,
   then deterministic metric/unit groups, descending valid nonnegative value within a group,
-  stable ID ties. Never compare raw magnitudes across metrics/units.
-  `selectE2eGraph` preserves explicit focus/query priority and reserves complete network
-  groups before optional neighbors. `omittedCategories` counts hidden connection observations
-  after filters/caps, not endpoints/edges or filtered-out data; missing categories use UNKNOWN.
-  Explicit hits may remain partial when their group cannot fit; node/edge omissions still apply.
+  stable ID ties. `rankE2eConnections` exposes the same complete ordering. Never compare raw
+  magnitudes across metrics/units. `selectE2eGraph` preserves focused and fitting non-network
+  hits, then admits complete matching network groups before residual explicit hits and optional
+  neighbors. Reserved network edges survive the edge cap. `omittedCategories` counts hidden
+  or incompletely displayed observations after filters/caps, not endpoint/edge totals or
+  filtered-out data; missing categories use UNKNOWN. A tiny-budget explicit hit may remain
+  partial; both its category and node/edge omissions are disclosed.
   No page/API/canvas is activated. Tests: `e2e-topology.test.ts`; reference: `docs/reference/observability-e2e.md`.
 - `topology-config.ts` — client-safe EKS pod/endpoint evidence for the runtime IP-target view; returns scoped candidates and explicit read/coverage failures.
 - `aws.ts` — `listClusterInventory` reports the configured EKS region and continuation state, with at most 25 descriptions. `listClusters` remains the array-only compatibility wrapper; this does not enumerate other regions or certify pod ownership.

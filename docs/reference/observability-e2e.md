@@ -41,16 +41,20 @@ The non-self composition guard is not an authorization boundary.
 the largest finite nonnegative value, with stable ID ties. Empty metadata unit falls
 back to the row unit. Invalid measurements are not a main flow. Values are not compared
 across metric/unit groups or normalized into a common time window.
+`rankE2eConnections(nodes)` exposes the same deterministic complete order without mutating
+the input.
 
-`selectE2eGraph` retains explicit focus/query priorities and fits complete network
-connection groups before optional identity/configuration neighbors. Explicit hits can
-remain partial if their whole group cannot fit. Context attaches once and never grants
-transit reachability. Defaults remain 350 nodes and 700 edges.
-`omittedCategories: Record<string, number>` counts connection observations hidden by
-those caps **after** eligibility/focus/query filtering. It excludes hidden endpoints,
-configuration nodes and filtered-out observations; missing category metadata uses
-`UNKNOWN`. A visible partial explicit hit is not an entirely omitted observation:
-`omittedNodes` and `omittedEdges` still disclose its missing display context.
+`selectE2eGraph` retains the focused node and fitting non-network query hits, then fits
+complete matching network groups before residual explicit hits and optional neighbors.
+Reserved group edges survive the edge cap. Tiny budgets may keep partial explicit hits.
+Context attaches once and never grants transit reachability. Defaults remain 350 nodes
+and 700 edges. `omittedCategories: Record<string, number>` counts observations hidden
+**or incompletely displayed** by those caps after eligibility/focus/query filtering.
+Each affected observation counts once, even when several endpoints/edges are omitted;
+configuration nodes and filtered-out observations are excluded. Missing category metadata
+uses `UNKNOWN`. Consumers must label this as display limitations, not entirely absent
+categories or source-collection loss. `omittedNodes` and `omittedEdges` retain their
+separate display counts.
 
 Regression coverage is in `web/lib/e2e-topology.test.ts`, including seven categories
 with 50 rows each, reversed input order, metric/unit selection, explicit priorities and
