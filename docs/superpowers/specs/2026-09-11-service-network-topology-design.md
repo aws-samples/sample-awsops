@@ -14,7 +14,7 @@ Combine the existing front-door topology, saved service observations and Network
 
 ## Data contract
 
-Reuse the current topology inventory loader, `/api/graph?class=trace`, `/api/nfm` and `/api/nfm/query`. No new API, AWS resource, permission, schema migration or dependency. Preserve original cached query windows and source collection/read quality.
+Reuse the current topology inventory loader, `/api/graph?class=trace`, `/api/nfm`, `/api/nfm/query` and authenticated `/api/accounts` for trusted host identity. No new API, AWS resource, permission, schema migration or dependency. Preserve original cached query windows and source collection/read quality.
 
 Namespace nodes by source. Separate configuration, service, network, identity and context edges. Preserve configuration/service direction; NFM local/remote observations do not establish request direction. Each connection node owns its aggregate metric, never a fabricated per-hop measurement.
 
@@ -23,6 +23,7 @@ Traversed constructs provide unordered context. NAT aliases are displayed, never
 ## Identity correlation
 
 - Combine observations only for the host `self` scope. Member/all-account views show configuration and disclose unsupported observation scope.
+- Pass actual configuration completeness and network read state into composition; missing state is unknown, and incomplete configuration vetoes every target kind. Resolve numeric trace account claims only against trusted host identity.
 - Always evaluate identity against the complete loaded account-scoped inventory. Default-view entry/cluster filters cannot remove competing or blocked candidates. E2E search/focus/evidence filters apply after correlation.
 - Require exact target IP/instance ID and corroborated region/VPC. Missing/conflicting scope or multiple candidates leave identities unlinked.
 - Never join application and Kubernetes services by name alone. Workload links require corroborated cluster/namespace/Pod tuples and compatible explicit service account/region claims.

@@ -85,3 +85,9 @@ documentation alone do not establish completion.
 ## Service/network graph status
 
 The pure correlator and shared value-aware display selection now exist as unwired prerequisites. The canvas and its tests remain with the UI integration. They preserve identity vetoes, disclose category/detail omissions and distinguish cached context from identity. Source orchestration and the opt-in topology page remain the next integration step; passing library fixtures does not establish live E2E coverage.
+
+### Graph source contract
+
+- `hostAccountId` is the trusted 12-digit ID from the authenticated account list's unique `isHost` entry. Never derive host authority from telemetry. It resolves the inventory `self` sentinel against numeric trace claims; missing or conflicting authority withholds numeric joins.
+- Only `configurationComplete === true` permits identity arbitration. Every target kind, including instances, receives a copied veto otherwise. The caller must pass actual load/coverage status; a bare `FlowGraph` cannot certify its own completeness.
+- `networkRead` carries idle/loading/complete/partial/failed/unknown/unsupported state, failed categories and unknown-window categories. Missing state stays unknown; complete state with failure/unknown-window evidence becomes partial. Non-host selection forces unsupported. Observation rows are positive evidence, never a successful-absence assertion by themselves.

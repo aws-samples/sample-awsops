@@ -144,7 +144,7 @@ application, without guaranteeing cancellation of a server query already started
 
 ### Unwired service/network graph composition
 
-`web/lib/e2e-topology.ts` is a pure graph-model prerequisite, not a new HTTP API or an enabled page. The planned integration uses the current full inventory-built configuration graph, the existing host trace snapshot and explicit NFM queries. `NetworkObservation` remains owned by the category loader and is re-exported as a type.
+`web/lib/e2e-topology.ts` is a pure graph-model prerequisite, not a new HTTP API or an enabled page. The planned integration uses the full inventory-built configuration graph, the host trace snapshot and explicit NFM queries; authenticated `/api/accounts` supplies trusted host identity. Caller configuration completeness and network read state are mandatory evidence for honest composition; see `reference/observability-e2e.md` §Graph source contract. `NetworkObservation` remains owned by the category loader and is re-exported as a type.
 
 Only the host `self` scope combines observations. Unique scoped record matches and corroborated workload tuples remain separate from ownership assertions; missing/conflicting evidence withholds identity. Persisted configuration-only records can supply cached context under the documented sole-reason exception, never identity. Counters count row/side observations. `selectE2eGraph` defaults to 350 nodes/700 edges, preserves complete admitted connections and reports omitted categories separately from source completeness. Rendering and source-panel orchestration belong to the UI integration.
 
