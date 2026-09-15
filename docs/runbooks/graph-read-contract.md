@@ -82,14 +82,7 @@ Oversized valid Tempo children keep a bounded structured OTLP projection and can
 
 The shared query normalizer carries collection status into Explore. Marked partial, unknown or failed empty responses show an uncertainty/failure note instead of an ordinary empty-result claim; useful rows remain visible with the same disclosure. Scalar format failures remain distinct from empty responses. Non-boolean truncation metadata is unverified, never silently interpreted as complete output.
 
-## Rebuild execution and capacity
-
-The default-off `GRAPH_REBUILD_INTERVAL_MINS` hook in `web/instrumentation.ts` and the manual
-`cd web && npx tsx ../scripts/v2/graph-rebuild.mjs` entrypoint attempt flow, infra and trace independently.
-A layer exception is logged safely and does not suppress later layers. Returned inventory summaries retain
-completed account outcomes plus an unexpected-account-error `failed` count and the first sanitized `failureCode`.
-The CLI exits 1 if any unexpected failure occurred, otherwise 2 for retained/skipped work, otherwise 0;
-the timer reports the same outcomes and always resets its overlap guard.
+## Rebuild capacity
 
 Flow input allows 8192 rows (8MiB / a nominal 1KiB row allowance) for record-granular DNS inventory;
 infra retains its 2000-row guard. The 64KiB-per-row and 8MiB projected-data/identifier limits still apply, as do the
@@ -125,6 +118,50 @@ These UI checks run from `web/` with mocked transport/state and require no Postg
 
 ```bash
 npx vitest run lib/graph-fetch.test.ts components/topology/GraphCollectionStatus.test.tsx
+```
+
+## Layer execution and diagnostics
+
+Run `cd web && npx tsx ../scripts/v2/graph-rebuild.mjs` only from an authorized
+VPC/Aurora context with the existing database configuration and `HOST_ACCOUNT_ID`.
+The existing web-task principal uses its provisioned Aurora IAM authentication and
+curated connector-read permissions; this change creates no principal or grant.
+Flow and infra execute sequentially. A flow exception does not block infra, but an
+infra execution failure skips trace collection and publication for that cycle and
+logs `trace skipped: infra execution failed`. Saved trace rows/clocks are untouched
+by that skipped stage; stale infra must not become fresh trace context after failure.
+
+Registry query errors normally do **not** throw from `loadGraphSources`. The loader
+returns a synthetic error source and `registryFailed=true`. Both entrypoints log the
+fixed `trace_sources: registry_read_failed` diagnostic and pass that source to the
+existing trace builder, preserving its non-publishing retention path. A missing
+schema or failed state write can still prevent recording; the log is not a receipt
+that a trace attempt was persisted. Unexpected loader exceptions also call the non-publishing
+`recordTraceSourceFailure` path before the sanitized diagnostic.
+
+`web/lib/graph-execution.ts` validates the current publishers' nonnegative safe-integer
+node/edge and published/degraded/retained/skipped counts, fixed reasons, optional failed-account
+count and account-limit flag. It projects only those fields and sanitized failure codes.
+Node/edge totals alone are not sufficient. Partial account progress remains visible alongside
+its unexpected failure; an infra failed-account result also skips dependent trace work.
+The dependency guard concerns execution failures; returned retained/skipped outcomes are
+reported as incomplete and keep the trace builder's existing source/infra read behavior.
+The CLI awaits pool closure and exits **1** for execution, registry or cleanup failure,
+otherwise **2** for any retained/skipped work, otherwise **0**. Degraded publications are
+explicitly counted; exit 0 does not prove complete collection. Inspect source metadata for quality.
+
+The timer remains off when `GRAPH_REBUILD_INTERVAL_MINS` is unset, invalid or nonpositive.
+Its Terraform input is `graph_rebuild_interval_mins` (default 0; enabled values are whole
+minutes 1–1440). When enabled, the timer retains its initial 60-second delay, process-local
+overlap guard and outer catch/finally recovery. Existing per-class advisory locks serialize
+writes across ECS tasks; they do not eliminate duplicate cross-task reads. This runs outside
+HTTP handlers in the web process, not an async worker. A future EventBridge/ECS worker
+path needs separate review if this work outgrows that process. Deploy/apply separately;
+source changes do not enable the timer. Offline tests from `web/` exercise the actual
+loader, publishers and coordinator with mocked SQL and connector IO:
+
+```bash
+npx vitest run lib/graph-rebuild-runner.test.ts lib/graph-sources.test.ts lib/instrumentation-runner.test.ts lib/graph-state.test.ts
 ```
 
 ## Verification commands
@@ -212,7 +249,7 @@ A source merge or automatic web CD result is not proof that these steps complete
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
 `web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`,
 `web/lib/graph-inventory.ts`, `web/lib/graph-store-postgres.test.ts`, `web/lib/fixtures/graph-fatal-child.mjs`,
-`scripts/v2/graph-rebuild.mjs`, `web/instrumentation.ts`, `web/lib/graph-rebuild-runner.test.ts`,
+`web/lib/graph-execution.ts`, `scripts/v2/graph-rebuild.mjs`, `web/instrumentation.ts`, `web/lib/graph-rebuild-runner.test.ts`, `web/lib/instrumentation-runner.test.ts`,
 `web/components/topology/GraphCollectionStatus.tsx`, `web/components/topology/GraphCollectionStatus.test.tsx`,
 `web/lib/graph-fetch.ts`, `web/lib/graph-fetch.test.ts`,
 `agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,

@@ -16,6 +16,8 @@ interface GraphQueryRow {
 export interface GraphSources {
   sources: TraceSource[];
   metricsSources: MetricsCallsSource[];
+  /** Query failure is also signaled to coordinators; the synthetic error source still drives retention. */
+  registryFailed?: true;
 }
 
 /** Load ready graph-source adapters across every registered datasource instance. Falls back to a
@@ -36,6 +38,7 @@ export async function loadGraphSources(pool: Pool): Promise<GraphSources> {
     rows = r.rows as GraphQueryRow[];
   } catch {
     return {
+      registryFailed: true,
       sources: [{
         available: async () => false,
         recentSpans: async (windowMins, _cap, endMs = Date.now()) => ({
