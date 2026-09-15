@@ -39,8 +39,8 @@ const inventory: Record<string, { resource_id: string; region: string; data: Rec
 const services = {
   class: 'trace', account: 'self', captured_at: END,
   nodes: [
-    { id: 'svc:frontend', kind: 'service', label: 'frontend', meta: { spanCount: 50 } },
-    { id: 'svc:orders', kind: 'service', label: 'orders', meta: { spanCount: 40 } },
+    { id: 'svc:frontend', kind: 'service', label: 'frontend', meta: { spanCount: 50, accountId: 'self', region: 'us-east-1' } },
+    { id: 'svc:orders', kind: 'service', label: 'orders', meta: { spanCount: 40, accountId: 'self', region: 'us-east-1' } },
     { id: 'db:orders', kind: 'db', label: 'postgres:orders', meta: { host: 'orders-db.internal', system: 'postgresql' } },
     ...['frontend', 'orders'].map((name) => ({
       id: `workload:${name}`, kind: 'workload', label: `shop/${name} @demo`,
@@ -157,6 +157,7 @@ test('desktop: combine traffic evidence, inspect a flow and change the applied m
   await expect(page.getByRole('region', { name: '적용된 네트워크 조회' })).toContainText('성공한 분류 7');
   await expect(page.locator('[data-e2e-kind="connection"]')).toHaveCount(3);
   await expect(page.locator('[data-e2e-kind="construct"]')).toHaveCount(2);
+  await expect(page.getByText('구성에서 확인된 Pod 식별자', { exact: true })).toHaveCount(4);
   await noOverflow(page);
   await page.screenshot({ path: `${SHOTS}/desktop-overview.png`, fullPage: true });
 

@@ -681,17 +681,17 @@ function ScopedTopologyPage({ activeAccount }: { activeAccount: string }) {
     </div>
   ) : undefined;
 
-  // Keep the same collection evidence in both views. Retained/in-flight inventory remains
-  // visible context, but must not promote an observed endpoint to a configured identity.
+  // Correlation must see every loaded candidate, including competitors hidden by a default
+  // view filter. Retained/in-flight inventory remains visible but cannot promote identity.
   const identityBlocked = busy || retained || !!err || syncIncomplete || readFailures.length > 0
     || cappedTypes.length > 0 || collectionIssues.length > 0;
   const correlationGraph = useMemo(() => identityBlocked ? {
-    ...scopedGraph, nodes: scopedGraph.nodes.map(node => node.kind === 'target'
+    ...full, nodes: full.nodes.map(node => node.kind === 'target'
       ? { ...node, meta: { ...node.meta, e2e_correlation_blocked: true } } : node),
-  } : scopedGraph, [scopedGraph, identityBlocked]);
+  } : full, [full, identityBlocked]);
   const inventoryEvidencePanel = <>
-        {e2e && (entryId || clusterFilter) && <p className="text-[12px] text-ink-600">
-          {tt('필터')}: {[full.nodes.find(node => node.id === entryId)?.label, clusterFilter].filter(Boolean).join(' · ')}
+        {e2e && <p className="text-[12px] text-ink-600">
+          {tt('선택 계정의 전체 구성으로 비교합니다. 진입점·클러스터 필터는 기본 화면에만 적용됩니다.')}
         </p>}
         {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
         {full.nodes.some(n => n.meta?.ambiguity === 'eks_not_enumerated') && <div role="status" className="text-[13px] text-warning">

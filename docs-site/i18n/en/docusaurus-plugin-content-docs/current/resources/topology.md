@@ -73,6 +73,8 @@ Service and Network Flow Monitor (NFM) observations are supported only for the *
 
 Configuration inventory keeps the existing **account-only** scope: region/global selectors do not filter these inventory reads. The inventory collection-evidence panel discloses that scope. EKS evidence covers only connected clusters in its configured region; it does not extend coverage to other regions.
 
+Identity correlation uses the complete inventory for the selected account scope. Default-view entry and cluster filters do not apply to the integrated view; search, focus and evidence filters apply after correlation. Hiding a competing candidate must never turn an ambiguous observation into a confirmed identity.
+
 ### Query network observations
 
 1. Check the separate configuration, saved service snapshot and NFM source panels. Loading a page reads source/status information; it does not start an NFM contributor query.

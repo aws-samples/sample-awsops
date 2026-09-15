@@ -7,6 +7,7 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  '선택 계정의 전체 구성으로 비교합니다. 진입점·클러스터 필터는 기본 화면에만 적용됩니다.': { en: 'Correlation uses the full configuration of the selected account scope. Entry and cluster filters apply only to the default view.', zh: '关联分析使用所选账户范围的完整配置。入口和集群筛选仅适用于默认视图。', ja: '相関判定には選択したアカウント範囲の全構成を使用します。入口とクラスターのフィルターは既定の画面にのみ適用されます。' },
   '로컬 엔드포인트': { en: 'Local endpoint', zh: '本地端点', ja: 'ローカルエンドポイント' },
   '원격 엔드포인트': { en: 'Remote endpoint', zh: '远程端点', ja: 'リモートエンドポイント' },
   '캐시된 구성 엔드포인트 기록': { en: 'Cached configured endpoint record', zh: '缓存的配置端点记录', ja: 'キャッシュされた設定エンドポイントの記録' },

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 토폴로지에 서비스 관측과 NFM 트래픽을 연결한 근거 기반 보기를 제공한다. / Deliver an evidence-aware service/network topology.
+**Goal:** Deliver an evidence-aware service/network topology.
 
 **Architecture:** Reuse existing configuration, materialized service, and NFM APIs. Compose a pure graph; keep data acquisition, identity matching, and React rendering separate.
 
@@ -19,7 +19,7 @@
 - Display limits: 350 nodes / 700 edges; search and focus operate before bounding.
 - User-facing strings use Korean literals through `tt`; components export default.
 - Browser fixtures must be reported as fixture validation, not live telemetry verification.
-- 구현 권한은 사용자의 통합 토폴로지 요청에서 이어진다. 배포·병합은 이 계획에 포함하지 않는다. / Implement the requested view; deployment and merge are separate actions.
+- Implementation is authorized by the feature request; PR finishing follows the current owner instructions.
 
 ### Task 1: Evidence graph and identity matching
 
