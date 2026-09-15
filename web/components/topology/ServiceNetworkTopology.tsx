@@ -10,9 +10,12 @@ import {
   type NetworkBatch, type NetworkFilters, type TopologyMonitor,
 } from '@/lib/topology-observations';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { GraphFetchError, type GraphFetchFailure } from '@/lib/graph-fetch';
 import PageHeader from '@/components/ui/PageHeader';
 import Button from '@/components/ui/Button';
 import E2eGraphCanvas from './E2eGraphCanvas';
+import GraphCollectionStatus from './GraphCollectionStatus';
+import GraphReadError from './GraphReadError';
 
 export interface ConfigurationStatus {
   loading: boolean;
@@ -30,7 +33,8 @@ interface Props {
 }
 
 interface MonitorStatus { monitors: TopologyMonitor[]; scopeCount: number }
-interface Source<T> { loading: boolean; data: T | null; error: string; checkedAt: string | null }
+interface Source<T> { loading: boolean; data: T | null; error: string; checkedAt: string | null; authReason?: GraphFetchFailure }
+interface ObservedServices extends ServiceSnapshot { collection?: unknown }
 interface QueryState {
   batch: NetworkBatch | null;
   loading: boolean;
@@ -45,22 +49,34 @@ const METRIC_LABELS: Record<NfmMetric, string> = {
   DATA_TRANSFERRED: '전송량', ROUND_TRIP_TIME: 'RTT', RETRANSMISSIONS: '재전송', TIMEOUTS: '타임아웃',
 };
 const RANGE_LABELS: Record<number, string> = { 900: '15분', 1800: '30분', 3600: '1시간' };
+const NETWORK_ERRORS: Record<string, string> = {
+  query_failed: '조회 실패', malformed_payload: '올바르지 않은 조회 응답',
+  malformed_rows: '올바르지 않은 관측 데이터', invalid_request: '조회 조건과 응답이 일치하지 않습니다.',
+};
 const SELECT_STYLE = 'h-9 w-full min-w-0 rounded-md border border-ink-100 bg-card px-2 text-[12px] text-ink-800 disabled:opacity-50';
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
 const validTime = (value: unknown): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const emptySource = <T,>(loading: boolean): Source<T> => ({ loading, data: null, error: '', checkedAt: null });
-const errorText = (error: unknown): string => error instanceof Error ? error.message : '소스를 불러오지 못했습니다.';
+class SourceReadError extends Error {}
+const errorText = (error: unknown): string => error instanceof SourceReadError ? error.message : '소스를 불러오지 못했습니다.';
+const failedSource = <T,>(error: unknown): Source<T> => ({
+  ...emptySource<T>(false), error: errorText(error),
+  ...(error instanceof GraphFetchError ? { authReason: error.reason } : {}),
+});
 
 async function readSource(url: string, signal: AbortSignal): Promise<Record<string, unknown>> {
   const response = await fetch(url, { signal });
+  if (response.status === 401 || (response.redirected && new URL(response.url).pathname === '/login')) {
+    throw new GraphFetchError('unauthenticated');
+  }
+  if (response.status === 403) throw new GraphFetchError('forbidden');
   const body: unknown = await response.json().catch(() => null);
-  const message = object(body) ? body.message ?? body.error : undefined;
-  if (!response.ok) throw new Error(`HTTP ${response.status}${nonempty(message) ? ` · ${message}` : ''}`);
-  if (!object(body)) throw new Error('올바르지 않은 소스 응답입니다.');
-  if (body.status === 'error' || 'error' in body) {
-    throw new Error(nonempty(message) ? message : '소스를 불러오지 못했습니다.');
+  if (!response.ok) throw new SourceReadError('소스를 불러오지 못했습니다.');
+  if (!object(body)) throw new SourceReadError('올바르지 않은 소스 응답입니다.');
+  if (body.status === 'error' || body.error != null) {
+    throw new SourceReadError('소스를 불러오지 못했습니다.');
   }
   return body;
 }
@@ -70,13 +86,13 @@ function readMonitors(body: Record<string, unknown>): MonitorStatus {
     object(monitor) && nonempty(monitor.name) && nonempty(monitor.status)
       && (monitor.cluster === null || typeof monitor.cluster === 'string'))
     || typeof body.scopeCount !== 'number' || !Number.isInteger(body.scopeCount) || body.scopeCount < 0) {
-    throw new Error('올바르지 않은 NFM 상태 응답입니다.');
+    throw new SourceReadError('올바르지 않은 NFM 상태 응답입니다.');
   }
   return { monitors: body.monitors as TopologyMonitor[], scopeCount: body.scopeCount };
 }
 
-function readServices(body: Record<string, unknown>): ServiceSnapshot {
-  if ((body.class !== undefined && body.class !== 'trace') || (body.account !== undefined && body.account !== 'self')
+function readServices(body: Record<string, unknown>): ObservedServices {
+  if (body.class !== 'trace' || body.account !== 'self'
     || !Array.isArray(body.nodes) || !body.nodes.every((node) =>
       object(node) && nonempty(node.id) && nonempty(node.kind) && typeof node.label === 'string'
         && (node.meta == null || object(node.meta)))
@@ -84,7 +100,7 @@ function readServices(body: Record<string, unknown>): ServiceSnapshot {
       object(edge) && nonempty(edge.source) && nonempty(edge.target) && nonempty(edge.rel)
         && (edge.confidence == null || typeof edge.confidence === 'string'))
     || (body.captured_at != null && !validTime(body.captured_at))) {
-    throw new Error('올바르지 않은 서비스 스냅샷 응답입니다.');
+    throw new SourceReadError('올바르지 않은 서비스 스냅샷 응답입니다.');
   }
   return {
     nodes: body.nodes.map((node) => ({ id: node.id, kind: node.kind, label: node.label, ...(node.meta ? { meta: node.meta } : {}) })),
@@ -93,6 +109,7 @@ function readServices(body: Record<string, unknown>): ServiceSnapshot {
       ...(edge.confidence != null ? { confidence: edge.confidence } : {}),
     })),
     captured_at: validTime(body.captured_at) ? body.captured_at : null,
+    collection: body.collection,
   };
 }
 
@@ -120,7 +137,7 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
   const { tt } = useI18n();
   const host = account === 'self';
   const [monitors, setMonitors] = useState<Source<MonitorStatus>>(() => emptySource(host));
-  const [services, setServices] = useState<Source<ServiceSnapshot>>(() => emptySource(host));
+  const [services, setServices] = useState<Source<ObservedServices>>(() => emptySource(host));
   const [filters, setFilters] = useState<NetworkFilters>(DEFAULT_FILTERS);
   const [sourceVersion, setSourceVersion] = useState(0);
   const [network, setNetwork] = useState<QueryState>(IDLE_QUERY);
@@ -146,12 +163,12 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
             ?? active.find((monitor) => monitor.name === 'nfm-vpc-all')?.name ?? active[0]?.name ?? '',
         }));
       }).catch((error: unknown) => {
-        if (!signal.aborted) setMonitors({ ...emptySource<MonitorStatus>(false), error: errorText(error) });
+        if (!signal.aborted) setMonitors(failedSource<MonitorStatus>(error));
       }),
       readSource('/api/graph?class=trace', signal).then(readServices).then((data) => {
         if (!signal.aborted) setServices({ loading: false, data, error: '', checkedAt: new Date().toISOString() });
       }).catch((error: unknown) => {
-        if (!signal.aborted) setServices({ ...emptySource<ServiceSnapshot>(false), error: errorText(error) });
+        if (!signal.aborted) setServices(failedSource<ObservedServices>(error));
       }),
     ]);
     return () => {
@@ -240,16 +257,19 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
             <h2 className="font-semibold text-ink-800">{tt('저장된 서비스 스냅샷')}</h2>
             {!host ? <p>{tt('이 계정에서 서비스 관측을 사용할 수 없습니다.')}</p>
               : services.loading ? <p>{tt('서비스 스냅샷을 불러오는 중…')}</p>
-                : services.error ? <p role="alert" className="text-negative">{tt(services.error)}</p>
-                  : !services.data?.nodes.length ? <p>{tt('저장된 서비스 스냅샷이 없습니다. 서비스 관측 데이터 이용 불가.')}</p>
+                : services.error ? services.authReason ? <GraphReadError reason={services.authReason} />
+                    : <p role="alert" className="text-negative">{tt(services.error)}</p>
+                  : !services.data?.nodes.length ? <p>{tt('저장된 서비스 스냅샷이 없습니다.')}</p>
                     : <><p>{tt('노드')} {services.data.nodes.length} · {tt('관계')} {services.data.edges.length}</p>
                       <p>{tt('스냅샷 시각')} · {time(services.data.captured_at)}</p></>}
+            {host && services.data && <GraphCollectionStatus collection={services.data.collection} />}
           </section>
           <section aria-label={tt('NFM 소스')} className="min-w-0 flex-1 basis-56 space-y-1 break-words">
             <h2 className="font-semibold text-ink-800">{tt('NFM · 호스트 기본 리전')}</h2>
             {!host ? <p>{tt('이 계정에서 네트워크 관측을 사용할 수 없습니다.')}</p>
               : monitors.loading ? <p>{tt('NFM 상태를 불러오는 중…')}</p>
-                : monitors.error ? <p role="alert" className="text-negative">{tt(monitors.error)}</p>
+                : monitors.error ? monitors.authReason ? <GraphReadError reason={monitors.authReason} />
+                    : <p role="alert" className="text-negative">{tt(monitors.error)}</p>
                   : !monitors.data?.monitors.length ? <p>{tt('설정된 NFM 모니터가 없습니다.')}</p>
                     : <><p>{activeMonitors.length ? `${tt('활성 모니터')} ${activeMonitors.length}` : tt('활성 NFM 모니터가 없습니다.')} · {tt('범위')} {monitors.data.scopeCount}</p>
                       <p>{tt('상태 확인 시각')} · {time(monitors.checkedAt)}</p></>}
@@ -301,10 +321,11 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
             <h2 className="break-words font-semibold text-ink-800">
               {tt('적용된 조회')} · {batch.filters.monitor} · {tt(METRIC_LABELS[batch.filters.metric])} · {batch.filters.category === 'ALL' ? tt('전체 분류') : batch.filters.category} · {tt(RANGE_LABELS[batch.filters.rangeSec])}
             </h2>
-            <p>{batch.failedCategories.length ? batch.observations.length ? tt('부분 성공') : tt('네트워크 조회 실패') : tt('조회 완료')} · {tt('성공한 분류')} {batch.observations.length} · {tt('상위 기여자')} {rows}</p>
+            <p>{batch.failedCategories.length && !batch.observations.length ? tt('네트워크 조회 실패')
+              : batch.status === 'partial' ? tt('부분 성공') : tt('조회 완료')} · {tt('성공한 분류')} {batch.observations.length} · {tt('상위 기여자')} {rows}</p>
             {batch.failedCategories.length > 0 && <div role="alert" className="text-negative">
               <p>{tt('실패한 분류는 트래픽 유무를 판단할 수 없습니다.')}</p>
-              <ul>{batch.failedCategories.map((category) => <li key={category} className="break-words">{category} · {tt(batch.errors[category] ?? '조회 실패')}</li>)}</ul>
+              <ul>{batch.failedCategories.map((category) => <li key={category} className="break-words">{category} · {tt(NETWORK_ERRORS[batch.errors[category] ?? 'query_failed'] ?? '조회 실패')}</li>)}</ul>
             </div>}
             {batch.cappedCategories.length > 0 && <p>{tt('상위 기여자 상한 도달:')} {batch.cappedCategories.join(', ')}</p>}
             {batch.observations.length > 0 && rows === 0 && <p>{tt('성공한 분류에서 조건에 맞는 상위 기여자가 없습니다. 전체 트래픽의 부재를 의미하지 않습니다.')}</p>}
@@ -331,7 +352,7 @@ function ScopedServiceNetworkTopology({ configured, account, configuration, onBa
             <p>{tt('NFM은 상위 기여자의 부분 관측입니다. 분류별 관측 구간은 서로 다를 수 있으며, 독립적인 관측을 하나의 추적된 요청이나 E2E 합계로 해석하지 않습니다.')}</p>
           </div>
         </details>
-        <E2eGraphCanvas key={`${sourceVersion}:${network.generation}:${batch ? 'result' : 'empty'}`} graph={graph} />
+        <E2eGraphCanvas graph={graph} />
       </div>
     </div>
   );

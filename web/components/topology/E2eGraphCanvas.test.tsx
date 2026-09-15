@@ -54,4 +54,59 @@ describe('E2eGraphCanvas', () => {
     expect(screen.getByTestId('e2e-network-edge-count').textContent).toBe('0');
     expect(graph.edges).toHaveLength(3);
   });
+
+  it('clears a hidden selection instead of stranding the enabled observation layers', async () => {
+    render(<E2eGraphCanvas graph={{ ...graph, nodes: [...graph.nodes,
+      { id: 'isolated', kind: 'service', layer: 'service', label: 'isolated-service', meta: {} }] }} />);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'isolated-service' } });
+    fireEvent.click(await screen.findByRole('button', { name: '선택: isolated-service' }));
+    expect(screen.getByRole('region', { name: '선택한 노드 상세' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('checkbox', { name: '서비스 관측' }));
+    expect(screen.queryByRole('region', { name: '선택한 노드 상세' })).toBeNull();
+    expect(screen.getByTestId('e2e-network-edge-count').textContent).toBe('2');
+    fireEvent.click(screen.getByRole('checkbox', { name: '서비스 관측' }));
+    expect(screen.queryByRole('region', { name: '선택한 노드 상세' })).toBeNull();
+  });
+
+  it('searches only eligible layers and tolerates cyclic source metadata', async () => {
+    const meta: Record<string, unknown> = { owner: 'cyclic-owner' };
+    meta.self = meta;
+    render(<E2eGraphCanvas graph={{ ...graph, nodes: [...graph.nodes,
+      { id: 'configuration-only', kind: 'alb', layer: 'configuration', label: 'config-only', meta }] }} />);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'cyclic-owner' } });
+    expect(await screen.findByRole('button', { name: '선택: config-only' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('checkbox', { name: '구성 관계' }));
+    expect(screen.queryByRole('button', { name: '선택: config-only' })).toBeNull();
+  });
+
+  it.each([NaN, Infinity, -1])('shows an unavailable metric instead of rendering invalid value %s', async value => {
+    const nodes = graph.nodes.map(node => node.id === 'f1'
+      ? { ...node, meta: { ...node.meta, flow: { ...(node.meta.flow as object), value } } } : node);
+    render(<E2eGraphCanvas graph={{ ...graph, nodes }} />);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'checkout-flow' } });
+    fireEvent.click(await screen.findByRole('button', { name: '선택: checkout-flow' }));
+    const detail = screen.getByRole('region', { name: '선택한 노드 상세' });
+    expect(within(detail).getByText('—')).toBeTruthy();
+    expect(detail.textContent).not.toMatch(/NaN|Infinity|-1 B/);
+  });
+
+  it('keeps traversed type context readable when an ID list is unavailable', async () => {
+    const nodes = graph.nodes.map(node => node.id === 'f1'
+      ? { ...node, meta: { ...node.meta, flow: { ...(node.meta.flow as object), traversedIds: undefined } } } : node);
+    render(<E2eGraphCanvas graph={{ ...graph, nodes }} />);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'checkout-flow' } });
+    fireEvent.click(await screen.findByRole('button', { name: '선택: checkout-flow' }));
+    expect(within(screen.getByRole('region', { name: '선택한 노드 상세' })).getByText('NAT')).toBeTruthy();
+  });
+
+  it('discloses inferred service relations in selected evidence', async () => {
+    render(<E2eGraphCanvas graph={{ ...graph,
+      nodes: [...graph.nodes, { id: 's2', kind: 'service', layer: 'service', label: 'downstream', meta: {} }],
+      edges: [...graph.edges, { id: 'inferred', source: 's1', target: 's2', relation: 'CALLS',
+        evidence: 'service', directed: true, meta: { confidence: 'inferred' } }],
+    }} />);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'checkout' } });
+    fireEvent.click(await screen.findByRole('button', { name: '선택: checkout' }));
+    expect(within(screen.getByRole('region', { name: '선택한 노드 상세' })).getByText('추정 관계')).toBeTruthy();
+  });
 });

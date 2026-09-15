@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { Activity, Box, Cloud, Database, GitBranch, Network, Search, Server, X } from 'lucide-react';
 import { Background, Controls, MarkerType, MiniMap, Position, type Edge, type Node, type ReactFlowInstance } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { selectE2eGraph } from '@/lib/e2e-topology';
+import { filterE2eGraph, matchesE2eQuery, selectE2eGraph } from '@/lib/e2e-topology';
 import type { E2eEvidence, E2eGraph, E2eNode } from '@/lib/e2e-topology-types';
 import type { NfmEndpoint, NfmFlowRow } from '@/lib/nfm';
 import { layoutFlow } from '@/lib/flow-layout';
@@ -30,6 +30,7 @@ const SOURCE_LABELS = { configuration: '구성', service: '서비스', network: 
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const display = (v: unknown): string => v == null || v === '' ? '—' : Array.isArray(v) ? v.join(', ') : String(v);
 function metricValue(value: number, unit: string): string {
+  if (!Number.isFinite(value) || value < 0) return '—';
   if (unit === 'Bytes') {
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
     let i = 0;
@@ -50,6 +51,13 @@ function flowOf(node: E2eNode): NfmFlowRow | null {
   const flow = node.meta.flow;
   return node.kind === 'connection' && object(flow) && object(flow.local) && object(flow.remote)
     && typeof flow.value === 'number' ? flow as unknown as NfmFlowRow : null;
+}
+function traversedItems(flow: NfmFlowRow): string[] {
+  const strings = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.length > 0) : [];
+  const ids = strings(flow.traversedIds);
+  const represented = new Set(ids.map(id => id.split(':')[0]));
+  return [...new Set([...ids, ...strings(flow.traversed).filter(kind => !represented.has(kind))])];
 }
 function IconForNode({ node }: { node: E2eNode }) {
   const Icon = node.kind === 'connection' ? Activity : node.kind === 'db' ? Database
@@ -74,15 +82,18 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
   const [overview, setOverview] = useState(false);
   const [evidence, setEvidence] = useState<E2eEvidence[]>(ALL_EVIDENCE);
   const instance = useRef<ReactFlowInstance | null>(null);
-  const selected = graph.nodes.find((n) => n.id === selectedId) ?? null;
+  const eligible = useMemo(() => filterE2eGraph(graph, evidence), [graph, evidence]);
+  const selected = eligible.nodes.find((n) => n.id === selectedId) ?? null;
+  useEffect(() => {
+    setSelectedId(current => current && !eligible.nodes.some(node => node.id === current) ? null : current);
+  }, [eligible.nodes]);
   const view = useMemo(() => selectE2eGraph(graph, {
     query, focusId: selected?.id, evidence,
   }), [graph, query, selected?.id, evidence]);
   const matches = useMemo(() => {
     const search = query.trim().toLowerCase();
-    return search ? graph.nodes.filter((n) =>
-      `${n.label} ${n.id} ${JSON.stringify(n.meta)}`.toLowerCase().includes(search)).slice(0, 10) : [];
-  }, [graph.nodes, query]);
+    return search ? eligible.nodes.filter(node => matchesE2eQuery(node, search)).slice(0, 10) : [];
+  }, [eligible.nodes, query]);
   const byId = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
   const viewport = useMemo(() => {
     const connections = view.nodes.filter((node) => node.kind === 'connection');
@@ -136,13 +147,15 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
       const style = EVIDENCE[e.evidence];
       const connection = byId.get(e.source)?.kind === 'connection' ? byId.get(e.source) : byId.get(e.target);
       const flow = connection ? flowOf(connection) : null;
-      const width = e.evidence === 'network' && flow && connection?.meta.metric === 'DATA_TRANSFERRED'
+      const width = e.evidence === 'network' && flow && Number.isFinite(flow.value) && flow.value >= 0
+        && connection?.meta.metric === 'DATA_TRANSFERRED'
         ? Math.min(4, 1.5 + Math.log10(1 + flow.value) / 4) : 1.5;
       return {
         id: e.id, source: e.source, target: e.target,
         type: 'smoothstep', label: e.label || (e.evidence === 'identity' ? tt('식별자 일치') : undefined),
         markerEnd: e.directed ? { type: MarkerType.ArrowClosed, color: style.color, width: 15, height: 15 } : undefined,
-        style: { stroke: style.color, strokeWidth: width, strokeDasharray: style.dash },
+        style: { stroke: style.color, strokeWidth: width,
+          strokeDasharray: e.meta?.confidence === 'inferred' ? '6 4' : style.dash },
         labelStyle: { fontSize: 10, fill: dark ? '#e3e9ee' : '#586773' },
         labelBgStyle: { fill: dark ? '#18232f' : '#ffffff', fillOpacity: 0.92 },
       };
@@ -150,10 +163,12 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
     return { nodes, edges };
   }, [view, selected?.id, dark, byId, tt]);
   useEffect(() => {
+    if (!view.nodes.length) { instance.current = null; return; }
     const frame = requestAnimationFrame(() => instance.current?.fitView({ ...fitOptions, duration: 200 }));
     return () => cancelAnimationFrame(frame);
-  }, [fitOptions]);
-  const selectedEdges = selected ? graph.edges.filter((e) => e.source === selected.id || e.target === selected.id) : [];
+  }, [fitOptions, view.nodes.length]);
+  useEffect(() => () => { instance.current = null; }, []);
+  const selectedEdges = selected ? view.edges.filter((e) => e.source === selected.id || e.target === selected.id) : [];
   const selectedFlow = selected ? flowOf(selected) : null;
   const selectNode = (id: string) => { setOverview(false); setQuery(''); setSelectedId(id); };
 
@@ -179,10 +194,10 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
           )}
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant={overview ? 'secondary' : 'primary'} size="sm" onClick={() => { setOverview(false); setSelectedId(null); setQuery(''); }}>
+          <Button variant={overview ? 'secondary' : 'primary'} size="sm" aria-pressed={!overview} onClick={() => { setOverview(false); setSelectedId(null); setQuery(''); }}>
             {tt('주요 흐름 확대')}
           </Button>
-          <Button variant="secondary" size="sm" onClick={() => { setOverview(true); setSelectedId(null); setQuery(''); }}>
+          <Button variant="secondary" size="sm" aria-pressed={overview} onClick={() => { setOverview(true); setSelectedId(null); setQuery(''); }}>
             {tt('전체 보기')}
           </Button>
         </div>
@@ -190,8 +205,10 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-ink-600" aria-label={tt('관계 유형')}>
         {ALL_EVIDENCE.map((key) => (
           <label key={key} className="inline-flex cursor-pointer items-center gap-1.5">
-            <input type="checkbox" checked={evidence.includes(key)} onChange={() => setEvidence((prev) =>
-              prev.includes(key) ? prev.filter((v) => v !== key) : [...prev, key])} />
+            <input type="checkbox" checked={evidence.includes(key)} onChange={() => {
+              setSelectedId(null);
+              setEvidence(prev => prev.includes(key) ? prev.filter(v => v !== key) : [...prev, key]);
+            }} />
             <span aria-hidden className="h-0.5 w-4" style={{ background: EVIDENCE[key].color }} />
             {tt(EVIDENCE[key].label)}
           </label>
@@ -210,7 +227,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
         <div className="relative min-h-[480px] min-w-0 overflow-hidden rounded-xl border border-ink-100 bg-card">
           {view.nodes.length === 0 ? (
             <div className="flex min-h-[480px] items-center justify-center p-6 text-center text-[13px] text-ink-400">
-              {tt('표시할 관계 데이터가 없습니다.')}
+              {tt(graph.nodes.length ? '검색 또는 관계 필터에 맞는 데이터가 없습니다.' : '표시할 관계 데이터가 없습니다.')}
             </div>
           ) : (
             <ReactFlow nodes={nodes} edges={edges} fitView minZoom={0.05} colorMode={dark ? 'dark' : 'light'}
@@ -248,14 +265,16 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                 </dl>
                 <div>
                   <p className="mb-2 font-medium">{tt('경유 구성요소')}</p>
-                  <ul className="space-y-1">{selectedFlow.traversedIds.map((item, i) => <li key={`${item}:${i}`} className="break-all rounded bg-ink-50 px-2 py-1 font-mono text-[10px]">{item}</li>)}</ul>
+                  <ul className="space-y-1">{traversedItems(selectedFlow).map(item => <li key={item} className="break-all rounded bg-ink-50 px-2 py-1 font-mono text-[10px]">{item}</li>)}</ul>
                   <p className="mt-2 text-[10px] text-ink-400">{tt('관측된 구성요소이며 패킷의 통과 순서를 보장하지 않습니다.')}</p>
                 </div>
                 <Link href="/network-flow" className="inline-block text-brand-600 hover:underline">{tt('네트워크 모니터 열기')}</Link>
               </div>
             ) : (
               <dl className="space-y-2">
-                <div><dt className="text-[10px] text-ink-400">ID</dt><dd className="break-all font-mono text-[10px]">{selected.id}</dd></div>
+                {selected.layer !== 'network' && typeof selected.meta.id === 'string' && (
+                  <div><dt className="text-[10px] text-ink-400">ID</dt><dd className="break-all font-mono text-[10px]">{selected.meta.id}</dd></div>
+                )}
                 {['cluster', 'namespace', 'deployment', 'podName', 'ip', 'vpcId', 'region', 'match', 'host', 'dbName', 'componentId', 'type'].map((key) => {
                   const nested = object(selected.meta.endpoint) ? selected.meta.endpoint[key] : undefined;
                   const value = selected.meta[key] ?? nested;
@@ -270,6 +289,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                   <span style={{ color: EVIDENCE[e.evidence].color }}>{tt(EVIDENCE[e.evidence].label)}</span>
                   <p className="text-ink-500">{byId.get(e.source)?.label} {e.directed ? '→' : '↔'} {byId.get(e.target)?.label}</p>
                   {e.meta?.match != null && <p className="font-mono text-[10px] text-ink-400">{String(e.meta.match)}</p>}
+                  {e.meta?.confidence === 'inferred' && <p>{tt('추정 관계')}</p>}
                 </li>
               ))}</ul>
             </div>

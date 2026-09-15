@@ -106,18 +106,70 @@ describe('ServiceNetworkTopology', () => {
   });
 
   it.each([
-    ['HTTP rejection', () => json({ status: 'error', message: 'unauthenticated' }, 401), /401.*unauthenticated/],
-    ['200 error envelope', () => json({ ...status, monitors: [], error: 'AccessDenied' }), /AccessDenied/],
+    ['HTTP rejection', () => json({ status: 'error', message: 'private-auth-detail' }, 401), /로그인|세션/],
+    ['200 error envelope', () => json({ ...status, monitors: [], error: 'private-role-arn' }), /소스를 불러오지 못했습니다/],
     ['malformed status', () => json({ monitors: 'broken', scopeCount: 0 }), /올바르지 않은/],
   ])('distinguishes %s from an unconfigured NFM source', async (_, nfm, error) => {
     const http = serve({ nfm });
     render(<ServiceNetworkTopology {...props} />);
     const source = screen.getByRole('region', { name: 'NFM 소스' });
     expect(await within(source).findByRole('alert')).toHaveProperty('textContent', expect.stringMatching(error));
+    expect(document.body.textContent).not.toMatch(/private-auth-detail|private-role-arn/);
     expect(within(source).queryByText(/모니터가 없습니다/)).toBeNull();
     expect(http.queries()).toHaveLength(0);
     search('checkout-service');
     expect(await screen.findByRole('button', { name: '선택: checkout-service' })).toBeTruthy();
+  });
+
+  it('accepts a null error field in an otherwise successful source response', async () => {
+    serve({ nfm: () => json({ ...status, error: null }) });
+    render(<ServiceNetworkTopology {...props} />);
+    await ready();
+    expect(within(screen.getByRole('region', { name: 'NFM 소스' })).queryByRole('alert')).toBeNull();
+  });
+
+  it.each(['class', 'account'])('rejects service snapshots with missing %s scope', async field => {
+    const missing = { ...snapshot } as Record<string, unknown>;
+    delete missing[field];
+    serve({ service: () => json(missing) });
+    render(<ServiceNetworkTopology {...props} />);
+    expect(await within(screen.getByRole('region', { name: '서비스 소스' })).findByRole('alert')).toBeTruthy();
+    await ready();
+  });
+
+  it('preserves partial, stale and retained collection evidence from the service snapshot', async () => {
+    serve({ service: () => json({ ...snapshot, collection: {
+      status: 'partial', stale: true, retainedPrevious: true,
+      captured_at: snapshot.captured_at,
+      sources: [{ sourceId: 'trace:tempo', status: 'error', itemCount: 0 }],
+    } }) });
+    render(<ServiceNetworkTopology {...props} />);
+    const source = screen.getByRole('region', { name: '서비스 소스' });
+    expect(await within(source).findByText(/부분 수집/)).toBeTruthy();
+    expect(within(source).getByText(/이전 그래프/)).toBeTruthy();
+    expect(within(source).getByText(/오래된 데이터/)).toBeTruthy();
+  });
+
+  it('keeps evidence preferences when a query replaces observation data', async () => {
+    serve();
+    render(<ServiceNetworkTopology {...props} />);
+    const button = await ready();
+    const configurationLayer = screen.getByRole('checkbox', { name: '구성 관계' });
+    fireEvent.click(configurationLayer);
+    expect((configurationLayer as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(button);
+    await screen.findByRole('region', { name: '적용된 네트워크 조회' });
+    expect((screen.getByRole('checkbox', { name: '구성 관계' }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('discloses incomplete observation windows even when category requests succeeded', async () => {
+    serve({ query: url => json(observation(url, { startTime: null, endTime: null, queriedAt: null })) });
+    render(<ServiceNetworkTopology {...props} />);
+    fireEvent.click(await ready());
+    const result = await screen.findByRole('region', { name: '적용된 네트워크 조회' });
+    expect(within(result).getByText(/부분 성공/)).toBeTruthy();
+    expect(within(result).queryByText(/^조회 완료/)).toBeNull();
+    expect(within(result).getAllByText(/관측 시각 알 수 없음/).length).toBeGreaterThan(0);
   });
 
   it('accepts empty source arrays as unavailable observations, never as proof of zero traffic', async () => {
@@ -166,7 +218,8 @@ describe('ServiceNetworkTopology', () => {
     await act(async () => { slow.resolve(json(observation(slowUrl))); });
     const applied = await screen.findByRole('region', { name: '적용된 네트워크 조회' });
     expect(within(applied).getByText(/부분 성공/)).toBeTruthy();
-    expect(within(applied).getByText(/INTER_AZ.*category unavailable/)).toBeTruthy();
+    expect(within(applied).getByText(/INTER_AZ.*조회 실패/)).toBeTruthy();
+    expect(applied.textContent).not.toContain('category unavailable');
     expect(within(applied).getByText(/상한.*INTRA_AZ/)).toBeTruthy();
     expect(applied.querySelector('time[datetime="2026-09-11T10:45:00Z"]')).not.toBeNull();
     expect(screen.getByText(/서비스 스냅샷과 NFM 관측 시각이 일치하지 않습니다/)).toBeTruthy();
