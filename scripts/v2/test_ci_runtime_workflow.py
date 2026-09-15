@@ -60,6 +60,16 @@ class RuntimeWorkflowTests(unittest.TestCase):
         self.assertEqual(steps[apply[0]]["env"]["CI_ASSETS_READY"], "true")
         self.assertNotIn("-auto-approve", steps[apply[0]]["run"])
 
+    def test_repo_fill_rate_is_read_only_by_the_plan_override_step(self):
+        workflow = self.workflow()
+        name = "CI_STEAMPIPE_AWS_FILL_RATE_DEV"
+        step = next(s for s in workflow["jobs"]["plan"]["steps"]
+                    if s.get("name") == "Configure development runtime profile")
+        self.assertEqual(step["env"].get(name), "${{ env.TARGET == 'dev' && vars." + name + " || '' }}")
+        self.assertEqual(str(workflow).count(name), 2)
+        self.assertNotIn(name, str(workflow["jobs"]["apply"]))
+        self.assertNotIn("ci_runtime_policy.py overrides", str(workflow["jobs"]["apply"]))
+
     def test_workflow_and_layer_guards_use_the_same_ready_contract(self):
         for name in ("plan", "apply"):
             step = next(s for s in self.workflow()["jobs"][name]["steps"]

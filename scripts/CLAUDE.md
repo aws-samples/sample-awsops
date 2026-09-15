@@ -72,6 +72,9 @@ secrets-manager) — installed by `make deps`.
   Operator collection writes application inventory, not AWS resources; this is not an ADR-005 exception.
   Tests: `v2/test_ci_verifier_sessions.py`; contract: `docs/runbooks/runtime-verifier-sessions.md`.
 - `v2/ci_runtime_policy.py` binds development/preview CI roles and STS accounts. The dev profile pins inventory/worker digests and enforces read-only flags even without a discovery rollout; direct dev host-only settings require that profile.
+  Plan's optional nonsecret `CI_STEAMPIPE_AWS_FILL_RATE_DEV` requires that verified dev profile;
+  empty preserves configuration. Apply replays the saved plan, not the current repository variable.
+  Canonical contract: [Steampipe refill override](../docs/runbooks/steampipe-quota-and-staleness.md#development-ci-refill-override).
 - Readiness is separate from the runtime profile: `CI_READINESS_ENABLED_DEV=true/false`
   explicitly overrides `ci_readiness_enabled` on dev; empty/unset preserves operator tfvars
   and default false. Enabled readiness is rejected outside dev. Applied readiness plus

@@ -56,6 +56,55 @@ defer DNS-changing applies. Follow [deployment runbook §5](dev-repo-setup.md#5-
 - Manual inventory and security refreshes are admin-only and enqueue the same async Lambda path;
   they do not bypass its reserved concurrency.
 
+## Development CI refill override
+
+`CI_STEAMPIPE_AWS_FILL_RATE_DEV` is an optional, nonsecret GitHub repository variable
+for the existing Terraform `steampipe_aws_fill_rate`. Only the Plan job's
+**Configure development runtime profile** step supplies it, and only for `TARGET=dev`.
+A nonempty value requires `CI_READONLY_RUNTIME_DEV=true`, the existing account/image
+validation, and a finite number from 0.1 through 20. Invalid values fail before an
+override file is written. Main and preview plans receive no value from this variable.
+
+Empty/unset means **no rate override**: explicit tfvars or the unchanged default of 2
+remain authoritative. Plan writes a numeric value to `ci-runtime.auto.tfvars.json`;
+Terraform captures that input in the saved plan. The existing authenticated plan and
+asset transport binds the reviewed bytes. Root tfvars are not added to the `.build`
+asset archive. Apply does not read the repository variable again or regenerate this
+override; changing the variable after planning cannot change that saved plan.
+This does not reconstruct or modify the private `TF_TFVARS_DEV` secret.
+
+### Size the cold query, not only the added column
+
+The [pinned AWS plugin](https://github.com/turbot/steampipe-plugin-aws/blob/v0.142.0/aws/table_aws_iam_role.go)
+uses `GetRole`, `ListInstanceProfilesForRole` and `ListAttachedRolePolicies` for the
+selected IAM-role columns. The two list hydrates explicitly wait on the shared
+limiter before each page. For 483 cold roles, they need at least `2 × 483 + 1 = 967`
+admissions including one `ListRoles` page, before extra pages, retries or competing
+queries. At refill 2 and burst 4, the 180-second budget supplies only 364 tokens.
+The token-only lower bound is 481.5 seconds; even refill 4 needs 240.75 seconds.
+The fallback removes attached policies but still selects instance profiles and
+`GetRole`-backed fields, so it is not a plain, hydrate-free `ListRoles` query.
+
+A refill value of **10 is a trial, not a guarantee**: the same lower bound becomes
+96.3 seconds, leaving room for other work without increasing concurrency. Latency,
+pagination, other queries and AWS throttling still matter. A warm-cache pass does not
+prove cold capacity or current AWS data. The shared
+[SDK limiter](https://github.com/turbot/steampipe-plugin-sdk/blob/v5.10.0/plugin/query_data_rate_limiters.go)
+does not allocate a separate refill budget to this query.
+
+After latest-head review/CI and merge, the deployment owner may set the variable
+and request a fresh full private plan. Review the actual Steampipe task revision
+and in-place service update. CORE still rejects service teardown/replacement, and
+the separate DNS guard still blocks the roll when DNS changes are prohibited.
+The override grants no exception to either guard.
+
+Apply only the exact reviewed plan outside active collector/runtime proof, then
+confirm service stability and the effective `steampipe_limiter_config` event.
+Preserve bucket 4, plugin/Lambda/collector concurrency 4, schedule, timeouts and IAM.
+Require all 43 baseline types and every current catalog type to complete with zero
+unknown attributes, plus authentication/DB, model and both owned worker proofs.
+Do not remove fields, accept fallback data as complete, or disable gates to pass.
+
 ## 2. 적용 전 검토 / Review before deployment
 
 공유 인프라는 saved plan으로만 적용하며 `-auto-approve`를 사용하지 않는다. 그러나 이
