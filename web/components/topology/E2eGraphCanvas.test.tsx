@@ -120,19 +120,19 @@ describe('E2eGraphCanvas', () => {
     localStorage.setItem('awsops-lang', lang);
     try {
       render(<LanguageProvider><E2eGraphCanvas graph={{ ...graph, nodes: [
-        { ...graph.nodes[1], label: '로컬 엔드포인트', meta: { endpoint: { podName: ' ' }, side: 'local' } },
-        { ...graph.nodes[0], label: '로컬 엔드포인트' },
+        { ...graph.nodes[1], label: 'local_endpoint', labelKey: 'local_endpoint', meta: { endpoint: { podName: ' ' }, side: 'local' } },
+        { ...graph.nodes[0], label: 'local_endpoint' },
         { ...graph.nodes[2], label: 'endpoint-resource-123', meta: { endpoint: {}, side: 'remote' } },
-        { ...graph.nodes[3], label: '네트워크 관측', meta: { ...graph.nodes[3].meta, metric: '' } },
-        { ...graph.nodes[1], id: 'service-endpoint', label: '로컬 엔드포인트',
+        { ...graph.nodes[3], label: 'network_observation', labelKey: 'network_observation', meta: { ...graph.nodes[3].meta, metric: '' } },
+        { ...graph.nodes[1], id: 'service-endpoint', label: 'local_endpoint', labelKey: 'local_endpoint',
           meta: { endpoint: { podName: ' ', serviceName: 'payments-service' }, side: 'local' } },
       ] }} /></LanguageProvider>);
       const search = screen.getByRole('searchbox');
       fireEvent.change(search, { target: { value: local } });
       fireEvent.click((await screen.findAllByRole('button', { name: new RegExp(local) }))[0]);
       expect(screen.getByRole('heading', { name: local })).toBeTruthy();
-      fireEvent.change(search, { target: { value: '로컬 엔드포인트' } });
-      expect(screen.getAllByRole('button', { name: /로컬 엔드포인트/ }).length).toBeGreaterThan(0);
+      fireEvent.change(search, { target: { value: 'local_endpoint' } });
+      expect(screen.getAllByRole('button', { name: /local_endpoint/ }).length).toBeGreaterThan(0);
       fireEvent.change(search, { target: { value: 'endpoint-resource-123' } });
       fireEvent.click(screen.getByRole('button', { name: /endpoint-resource-123/ }));
       expect(screen.getByRole('heading', { name: 'endpoint-resource-123' })).toBeTruthy();
@@ -298,7 +298,7 @@ describe('E2eGraphCanvas', () => {
     const captured = '2026-09-11T12:00:00Z';
     render(<E2eGraphCanvas graph={{ ...graph, edges: [{ id: 'cached', source: 'p1', target: 's1',
       relation: 'configured-endpoint-match', evidence: 'context', directed: false,
-      label: 'Cached configured endpoint record', meta: { confidence: 'observed', ownership: 'unverified',
+      label: 'cached_configured_endpoint_record', labelKey: 'cached_configured_endpoint_record', meta: { confidence: 'observed', ownership: 'unverified',
         ownership_evidence: 'cached_configuration', targetCapturedAt: captured } }] }} />);
     const detail = await select('shop/pod-a');
     expect(detail.getByText('캐시된 구성 엔드포인트 기록')).toBeTruthy();

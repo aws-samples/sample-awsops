@@ -34,9 +34,10 @@ const READ_LABELS = {
   unsupported: '이 계정에서 네트워크 관측을 사용할 수 없습니다.',
 };
 const GENERATED_LABELS: Record<string, string> = {
-  'Cached configured endpoint record': '캐시된 구성 엔드포인트 기록',
-  'Configured endpoint record': '구성 엔드포인트 기록',
-  'Configured pod identity': '구성에서 확인된 Pod 식별자',
+  cached_configured_endpoint_record: '캐시된 구성 엔드포인트 기록',
+  configured_endpoint_record: '구성 엔드포인트 기록',
+  configured_pod_identity: '구성에서 확인된 Pod 식별자',
+  network_observation: '네트워크 관측', local_endpoint: '로컬 엔드포인트', remote_endpoint: '원격 엔드포인트',
 };
 const CORRELATION: Record<string, string> = { correlated: '식별자 연결', unmatched: '미연결', ambiguous: '식별 보류' };
 const CORRELATION_REASONS: Record<E2eCorrelationReason, string> = {
@@ -95,20 +96,15 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
     nodes: inputGraph.nodes.map((node) => {
       const flow = flowOf(node);
       const endpoint = object(node.meta.endpoint) ? node.meta.endpoint : null;
-      const fallback = node.meta.side === 'local' ? '로컬 엔드포인트' : '원격 엔드포인트';
-      if (node.layer === 'network' && node.kind === 'endpoint' && endpoint
-        && node.label === fallback) {
-        return { ...node, label: endpointLabel(endpoint, tt(fallback)) };
-      }
-      if (node.kind === 'connection' && !text(node.meta.metric) && node.label === '네트워크 관측') {
-        return { ...node, label: tt('네트워크 관측') };
+      if (node.labelKey && Object.hasOwn(GENERATED_LABELS, node.labelKey)) {
+        const label = tt(GENERATED_LABELS[node.labelKey]);
+        return { ...node, label: node.kind === 'endpoint' && endpoint ? endpointLabel(endpoint, label) : label };
       }
       return flow && node.label === node.meta.metric
         ? { ...node, label: `${endpointLabel(flow.local, tt('식별 정보 없음'))} ↔ ${endpointLabel(flow.remote, tt('식별 정보 없음'))}` } : node;
     }),
-    edges: inputGraph.edges.map(edge => edge.label
-      && ['configured-endpoint-match', 'same-identity'].includes(edge.relation) && GENERATED_LABELS[edge.label]
-      ? { ...edge, label: tt(GENERATED_LABELS[edge.label]) } : edge),
+    edges: inputGraph.edges.map(edge => edge.labelKey && Object.hasOwn(GENERATED_LABELS, edge.labelKey)
+      ? { ...edge, label: tt(GENERATED_LABELS[edge.labelKey]) } : edge),
   }), [inputGraph, tt]);
   const readState = graph.summary.observationsUnsupported ? 'unsupported' : graph.summary.networkRead?.status ?? 'unknown';
   const dark = useTheme() === 'dark';
