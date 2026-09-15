@@ -115,6 +115,98 @@ def _search_metrics_valid(metrics):
     return True
 
 
+_TRACE_ATTRIBUTES = {
+    "service.name", "service.namespace", "service.version", "cloud.account.id", "cloud.region",
+    "deployment.environment.name", "deployment.environment", "k8s.namespace.name",
+    "k8s.cluster.name", "k8s.pod.name", "k8s.deployment.name", "db.system", "db.name",
+    "server.address", "server.port", "net.peer.name", "net.peer.port", "peer.service",
+    "messaging.system", "messaging.destination.name", "messaging.destination",
+}
+
+
+def _json_size(value):
+    return len(json.dumps(value, default=str, ensure_ascii=False).encode("utf-8"))
+
+
+def _trace_attributes(value):
+    if not isinstance(value, list):
+        return None
+    selected = {}
+    for entry in value:
+        if (not isinstance(entry, dict) or not isinstance(entry.get("key"), str)
+                or not entry["key"] or not isinstance(entry.get("value"), dict)):
+            return None
+        if entry["key"] in _TRACE_ATTRIBUTES:
+            selected[entry["key"]] = entry  # Preserve last-value identity semantics, never shorten IDs.
+    return list(selected.values())
+
+
+def _trace_projection(data):
+    """Over-budget only: retain scoped identities/timing in valid OTLP, never a fake empty."""
+    if (not isinstance(data, dict) or "error" in data or data.get("status") == "error"
+            or data.get("collectionStatus") == "error"):
+        return None
+    key = "batches" if "batches" in data else "resourceSpans"
+    batches = data.get(key)
+    if not isinstance(batches, list):
+        return None
+    out = {"truncated": True, "projection": "bounded_otlp",
+           "note": "Trace payload exceeded byte budget; bounded span projection", key: []}
+    used = _json_size(out)
+    for batch in batches:
+        if not isinstance(batch, dict) or not isinstance(batch.get("resource", {}), dict):
+            return None
+        resource_attrs = _trace_attributes(batch.get("resource", {}).get("attributes", []))
+        scopes = batch.get("scopeSpans", batch.get("instrumentationLibrarySpans"))
+        if resource_attrs is None or not isinstance(scopes, list):
+            return None
+        for scope in scopes:
+            if not isinstance(scope, dict) or not isinstance(scope.get("spans"), list):
+                return None
+            group = {"resource": {"attributes": resource_attrs}, "scopeSpans": [{"spans": []}]}
+            group_cost = _json_size(group) + 2
+            for span in scope["spans"]:
+                if not isinstance(span, dict):
+                    return None
+                projected = {field: span[field] for field in (
+                    "traceId", "spanId", "parentSpanId", "kind", "startTimeUnixNano", "endTimeUnixNano",
+                ) if field in span}
+                if "name" in span and _json_size(span["name"]) <= 1024:
+                    projected["name"] = span["name"]
+                if "status" in span:
+                    if not isinstance(span["status"], dict):
+                        return None
+                    projected["status"] = {k: v for k, v in span["status"].items() if k == "code"}
+                span_attrs = _trace_attributes(span.get("attributes", []))
+                if span_attrs is None:
+                    return None
+                projected["attributes"] = span_attrs
+                if "links" in span:
+                    if not isinstance(span["links"], list) or any(not isinstance(link, dict) for link in span["links"]):
+                        return None
+                    projected["links"] = [{k: v for k, v in link.items() if k in ("traceId", "spanId")}
+                                          for link in span["links"][:64]]
+                cost = _json_size(projected) + 2
+                if used + group_cost + cost > MAX_TOTAL_BYTES:
+                    # A no-fit marker must not hide an already malformed child.
+                    sid = projected.get("spanId")
+                    if not out[key] and not (isinstance(sid, str) and len(sid) == 16
+                            and _HEX.fullmatch(sid) and int(sid, 16)
+                            and all(_proto_integer(projected.get(k), 64)
+                                    for k in ("startTimeUnixNano", "endTimeUnixNano"))
+                            and int(projected["endTimeUnixNano"]) >= int(projected["startTimeUnixNano"])):
+                        return None
+                    return out if out[key] else {"truncated": True, "note": "payload omitted at byte limit",
+                                                "tracePayloadTruncated": True, "collectionStatus": "partial"}
+                if group_cost:
+                    out[key].append(group)
+                    used += group_cost
+                    group_cost = 0
+                group["scopeSpans"][0]["spans"].append(projected)
+                used += cost
+    return out if out[key] else None
+
+
 def tempo_search(args):
     query = (args.get("query") or "").strip()
     if not query:
@@ -170,27 +262,6 @@ def tempo_search(args):
     return ok({"truncated": truncated, **payload, **completion, "collectionStatus": state})
 
 
-def _trace_has_spans(data):
-    """Do not certify HTML/errors or an empty child as a byte-omitted trace."""
-    batches = data.get("batches") if isinstance(data, dict) else None
-    if batches is None and isinstance(data, dict):
-        batches = data.get("resourceSpans")
-    if not isinstance(batches, list):
-        return False
-    for batch in batches:
-        scopes = batch.get("scopeSpans") if isinstance(batch, dict) else None
-        if scopes is None and isinstance(batch, dict):
-            scopes = batch.get("instrumentationLibrarySpans")
-        if not isinstance(scopes, list):
-            continue
-        for scope in scopes:
-            spans = scope.get("spans") if isinstance(scope, dict) else None
-            if isinstance(spans, list) and any(isinstance(span, dict) and isinstance(span.get("spanId"), str)
-                    and span["spanId"] and "startTimeUnixNano" in span and "endTimeUnixNano" in span for span in spans):
-                return True
-    return False
-
-
 def tempo_get_trace(args):
     tid = (args.get("trace_id") or "").strip()
     if not tid or not _HEX.match(tid):
@@ -200,9 +271,12 @@ def tempo_get_trace(args):
             or any(data.get(key) not in (None, "") for key in ("error", "errorType", "exception"))):
         return err("Tempo trace fetch returned an error")
     payload, btr = _byte_bound(data if isinstance(data, dict) else {"trace": data})
-    bounded_trace = btr and _trace_has_spans(data)
-    return ok({**payload, "truncated": btr, "tracePayloadTruncated": bounded_trace,
-               **({"collectionStatus": "partial" if bounded_trace else "unknown"} if btr else {})})
+    if btr:
+        projected = _trace_projection(data)
+        return ok(projected if projected is not None else {**payload, "collectionStatus": "unknown"})
+    # Only the local projection can issue the explicit no-fit marker.
+    payload.pop("tracePayloadTruncated", None)
+    return ok({**payload, "truncated": False})
 
 
 def tempo_search_tags(args):

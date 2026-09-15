@@ -1,3 +1,4 @@
+import traceBudgetContract from '../../agent/fixtures/tempo-trace-budget-contract.json';
 import tempoContracts from '../../agent/fixtures/tempo-topology-contract.json';
 import queryContracts from '../../agent/fixtures/query-topology-contract.json';
 import childContracts from '../../agent/fixtures/tempo-child-contract.json';
@@ -927,6 +928,7 @@ describe('typed producer collection status', () => {
     invokeMcpLambdaTool.mockResolvedValue(fixture.body);
     const read = await new TempoTraceSource(7).recentSpans(30, 1000);
     expect(read.status).toBe(fixture.readStatus);
+    if ('completionReason' in fixture.body) expect(read.reasons).toContain('count_not_confirmed');
     expect(read.items).toEqual([]);
     expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(read)).not.toContain('private-token');
@@ -940,6 +942,7 @@ describe('typed producer collection status', () => {
         ? await new ClickHouseOtelTraceSource(7).recentSpans(30, 1000)
         : await new MetricsCallsSource(7, fixture.kind as 'prometheus' | 'mimir', 'fixture').calls(30);
       expect(read.status).toBe(fixture.readStatus);
+    if ('completionReason' in fixture.body) expect(read.reasons).toContain('count_not_confirmed');
       expect(read.items).toEqual([]);
       expect(invokeMcpLambdaTool).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(read)).not.toContain('private-token');
@@ -950,5 +953,22 @@ describe('typed producer collection status', () => {
       invokeMcpLambdaTool.mockResolvedValue({ resultType: 'vector', result: [], truncated: false, collectionStatus });
       expect((await new MetricsCallsSource(7, kind, 'fixture').calls(30)).status).toBe(expected);
     }
+  });
+});
+
+
+describe('oversized Tempo producer wire contract', () => {
+  it('keeps projected spans usable without claiming full trace coverage', async () => {
+    getDatasource.mockResolvedValue({ id: 7, kind: 'tempo' });
+    resolveConnConfig.mockResolvedValue({ endpoint: 'http://fixture' });
+    invokeMcpLambdaTool.mockReset()
+      .mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: traceBudgetContract.traceId }] })
+      .mockResolvedValueOnce(traceBudgetContract.expected);
+    const read = await new TempoTraceSource(7).recentSpans(30, 1000, traceBudgetContract.endMs);
+    expect(read).toMatchObject({ status: 'partial', reasons: ['payload_truncated'] });
+    expect(read.canSweep).toBeUndefined();
+    expect(read.items).toHaveLength(1);
+    expect(read.items[0]).toMatchObject({ service: 'bounded-api', accountId: '123456789012', environment: 'test',
+      spanId: '0000000000000001', startMs: traceBudgetContract.endMs - 1000 });
   });
 });

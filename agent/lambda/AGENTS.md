@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 5ed83183ba09 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 61678b6a6450 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -72,7 +72,7 @@ that's the source of truth for tool counts, not this doc.
 - Producers compute `collectionStatus`; only validated complete ok/empty certifies an empty query result.
   Tempo uses synchronous HTTP 200 proof with negative-signal vetoes, not mandatory job counters.
   A byte-omitted child is partial; an all-empty partial attempt retains the saved graph.
-- Prometheus/Mimir scalar/string results are explicitly unsupported; malformed records use
+- Prometheus/Mimir instant scalar/string results retain one bounded sample; malformed records use
   fixed markers, never raw passthrough. Output byte limits remain enforced.
 - Run the three completion suites in `agent/lambda/CLAUDE.md`. Shared fixtures bind actual
   mocked HTTP outputs to web adapters and PostgreSQL publication/retention tests. Lambda code

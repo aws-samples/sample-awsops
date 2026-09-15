@@ -8,6 +8,7 @@ import os
 import re
 import json
 import logging
+import math
 import time as _time
 import boto3
 from botocore.exceptions import ClientError
@@ -486,11 +487,7 @@ def _summarize_result(body):
     out = {}
     if not isinstance(body, dict):
         return out
-    if body.get("resultType") in ("scalar", "string"):
-        failed = body.get("collectionStatus") == "error"
-        return {"resultType": body["resultType"], "reason": "unsupported_result_type",
-                "collectionStatus": "error" if failed else "unknown",
-                **({"error": "source collection error"} if failed else {"incomplete": True})}
+    scalar_invalid = False
     # top-level list-bearing key (prom/loki `result`, tempo `traces`, clickhouse `rows`, generic `data`/`series`)
     for key in ("result", "traces", "rows", "data", "series"):
         v = body.get(key)
@@ -498,6 +495,14 @@ def _summarize_result(body):
             out["source"], out["count"] = key, len(v)
             if key == "result" and body.get("resultType") in ("vector", "matrix"):
                 out["count"] = sum(isinstance(item, dict) for item in v)
+            elif key == "result" and body.get("resultType") in ("scalar", "string"):
+                try:
+                    out["count"] = int(len(v) == 2 and type(v[0]) in (int, float)
+                                       and math.isfinite(v[0]) and isinstance(v[1], str)
+                                       and len(v[1].encode("utf-8")) <= 4096)
+                except (OverflowError, UnicodeError):
+                    out["count"] = 0
+                scalar_invalid = not out["count"]
             # non-PII metadata only: the union of metric LABEL NAMES (keys), NEVER their values
             names = set()
             for item in v[:50]:
@@ -521,9 +526,11 @@ def _summarize_result(body):
     # Explicit upstream incompleteness is evidence, not a healthy zero. Only bounded
     # status codes cross this boundary; raw errors/warnings can contain source data.
     status = body.get("collectionStatus")
+    if scalar_invalid and status != "error":
+        status = "unknown"
     if body.get("completionReason") == "search_response_unverified":
         out["completionReason"] = "search_response_unverified"
-    if "collectionStatus" in body:
+    if "collectionStatus" in body or scalar_invalid:
         out["collectionStatus"] = status if isinstance(status, str) and status in (
             "ok", "empty", "partial", "error", "unknown",
         ) else "unknown"

@@ -222,13 +222,13 @@ def test_partial_error_trace_count_remains_observed_evidence(monkeypatch):
     assert signal["summary"]["collectionStatus"] == "partial"
 
 
-@pytest.mark.parametrize("kind", ["scalar", "string"])
-def test_non_series_pairs_never_become_two_observed_records(kind):
-    summary = src._summarize_result({"resultType": kind, "result": [1, "PRIVATE"],
+@pytest.mark.parametrize("kind,value,valid", [("scalar", "7", True), ("string", "PRIVATE", True), ("string", "PRIVATE" * 1000, False)])
+def test_non_series_pairs_never_become_two_observed_records(kind, value, valid):
+    summary = src._summarize_result({"resultType": kind, "result": [1, value],
                                      "collectionStatus": "ok"})
-    assert summary["reason"] == "unsupported_result_type"
-    assert summary["incomplete"] is True
-    assert "count" not in summary and "observedCount" not in summary
+    assert summary.get("count") == (1 if valid else None)
+    assert summary.get("incomplete", False) is not valid
+    assert "observedCount" not in summary
     assert "PRIVATE" not in json.dumps(summary)
 
 
@@ -351,3 +351,12 @@ def test_no_signal_rows_falls_back_to_generic_planner(monkeypatch):
     conn.schemas = {5: {"metrics": ["http_requests_total"]}}
     src.collect_datasources(conn)
     assert fake.calls, "generic planner should run when no signals are materialized"
+
+
+@pytest.mark.parametrize("kind,value", [("scalar", "0"), ("string", "SYNTHETIC_PRIVATE_VALUE")])
+def test_scalar_summary_counts_one_sample_without_exposing_value(kind, value):
+    summary = src._summarize_result({"resultType": kind, "result": [1.5, value], "collectionStatus": "ok"})
+    assert summary["count"] == 1
+    assert summary["resultType"] == kind
+    assert "SYNTHETIC_PRIVATE_VALUE" not in json.dumps(summary)
+    assert "result" not in summary and "value" not in summary

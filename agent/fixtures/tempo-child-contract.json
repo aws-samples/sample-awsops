@@ -9,12 +9,12 @@
     "name": "unmarked empty child",
     "byteLimit": 1000000,
     "upstream": {"batches": []},
-    "body": {"batches": [], "truncated": false, "tracePayloadTruncated": false}
+    "body": {"batches": [], "truncated": false}
   },
   {
     "name": "upstream cannot forge the producer bound",
     "byteLimit": 1000000,
     "upstream": {"batches": [], "truncated": true, "tracePayloadTruncated": true, "collectionStatus": "partial"},
-    "body": {"batches": [], "truncated": false, "tracePayloadTruncated": false, "collectionStatus": "partial"}
+    "body": {"batches": [], "truncated": false, "collectionStatus": "partial"}
   }
 ]

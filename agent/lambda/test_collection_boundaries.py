@@ -51,14 +51,15 @@ def test_valid_rows_survive_beside_fixed_malformed_markers(kind):
 
 
 @pytest.mark.parametrize("kind", ["prometheus", "mimir"])
-@pytest.mark.parametrize("result_type,value", [("scalar", "42"), ("string", "PRIVATE" * 1000)])
-def test_non_series_results_are_explicitly_unsupported_without_fake_records(kind, result_type, value):
+@pytest.mark.parametrize("result_type,value", [("scalar", "42"), ("string", "valid"), ("string", "PRIVATE" * 1000)])
+def test_scalar_and_string_support_keeps_single_bounded_samples(kind, result_type, value):
     code, body, _ = invoke(kind, {"status": "success", "data": {
         "resultType": result_type, "result": [1, value]}})
-    assert code == 400
-    assert body["reason"] == "unsupported_result_type"
+    assert code == 200
     assert body["resultType"] == result_type
-    assert "result" not in body and "count" not in body
+    assert body["result"] == ([1, value] if len(value) <= 4096 else [])
+    assert body["collectionStatus"] == ("ok" if len(value) <= 4096 else "unknown")
+    assert "count" not in body
     assert "PRIVATE" not in json.dumps(body)
 
 

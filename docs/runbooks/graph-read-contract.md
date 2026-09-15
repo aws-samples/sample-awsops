@@ -37,8 +37,8 @@ disclosed by metadataTruncated in both HTTP and SQL projections.
 ## Source completeness and retained publication
 
 `empty_not_confirmed` is a soft reason for legacy unmarked empty results.
-Recognized producer `unknown` uses `incomplete_collection`, not a failed-query diagnosis.
-That reason also includes producer warnings/partial results and missing Tempo children;
+Recognized producer `unknown` uses soft incomplete evidence, not a failed-query diagnosis. Tempo exposes an unverified response (`completionReason: search_response_unverified`) as `count_not_confirmed` in HTTP/SQL source reasons. Missing protobuf default counters alone do not make a valid synchronous response unknown.
+Producer warnings/partial results and missing Tempo children use `incomplete_collection`;
 the child-fetch path sets `canSweep: false` for a missing, failed or unmarked-empty child.
 
 A failed or malformed source, an unconfirmed empty result, or missing-child evidence retains
@@ -62,6 +62,8 @@ complete empty replacement, and all-empty/mixed missing-child retention. Shared 
 `agent/fixtures/` bind real mocked producer bodies to adapter outcomes. See
 [source completion and rollout](source-sync-observability.md#producer-completion-and-rollout)
 for producer deployment; source merge alone is not live completion proof.
+
+Oversized valid Tempo children keep a bounded structured OTLP projection and can refresh a partial snapshot with their siblings. The byte budget is unchanged; a failed or structurally unusable child still cannot authorize replacement. The [Tempo completion contract](tempo-query-generation.md#search-completion-and-publication) distinguishes unverified shape, unfinished work and byte limits. The shared budget fixture proves the actual producer output is mappable and publishes through PostgreSQL.
 
 ## Verification commands
 
@@ -137,7 +139,8 @@ A source merge or automatic web CD result is not proof that these steps complete
 `web/components/topology/GraphCollectionStatus.tsx`,
 `agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,
 `agent/lambda/prometheus_mcp.py`, `agent/lambda/mimir_mcp.py`,
-`agent/lambda/test_collection_markers.py`, `agent/lambda/test_clickhouse_completion.py`,
+`agent/lambda/test_collection_markers.py`, `agent/lambda/test_clickhouse_completion.py`, `agent/lambda/test_tempo_trace_budget.py`,
+`agent/fixtures/tempo-trace-budget-contract.json`,
 `agent/lambda/test_graph_source_producer_contract.py`,
 `agent/fixtures/tempo-topology-contract.json`, `agent/fixtures/query-topology-contract.json`.
 ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-043 (graph reads;

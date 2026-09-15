@@ -1,7 +1,7 @@
 // Pure normalizer: connector-Lambda query bodies → a render-ready shape for the Explore page.
 // No I/O. Never throws — malformed input degrades to { shape: 'empty', note }.
 // Connector return contracts (unwrapped by invokeConnectorTool from { statusCode, body }):
-//   prometheus/mimir : { truncated?, resultType: 'matrix'|'vector', result: [...] }
+//   prometheus/mimir : { truncated?, resultType: 'matrix'|'vector'|'scalar'|'string', result: [...] }
 //   loki             : { truncated?, resultType: 'streams', result: [{ stream, values:[[ns,line]] }] }
 //   tempo            : { truncated?, traces: [{ traceID, rootServiceName, rootTraceName, durationMs }] }
 //   jaeger           : { truncated?, traces: [{ traceID, rootServiceName, rootTraceName, spanCount, durationMs }] }
@@ -46,6 +46,15 @@ function prom(body: Record<string, unknown>): NormalizedResult {
   const result = Array.isArray(body.result) ? body.result : [];
   const truncated = body.truncated === true;
   if (!result.length) return { shape: 'empty', truncated, note: '결과 없음' };
+
+  if (body.resultType === 'scalar' || body.resultType === 'string') {
+    if (result.length !== 2 || typeof result[0] !== 'number' || !Number.isFinite(result[0])
+        || typeof result[1] !== 'string') return { shape: 'empty', truncated, note: '응답 형식 오류' };
+    return { shape: 'table', truncated, columns: cols(['value', 'timestamp']), rows: [{
+      value: body.resultType === 'scalar' ? finiteOrNull(result[1]) : result[1],
+      timestamp: new Date(result[0] * 1000).toISOString(),
+    }] };
+  }
 
   if (body.resultType === 'matrix') {
     // v1 parity: up to 8 series merged on the timestamp axis → multi-line chart; all series →

@@ -120,7 +120,7 @@ def _bounded_result(payload):
     body = json.dumps(payload, default=str)
     if len(body.encode("utf-8")) > MAX_RESULT_BYTES:
         empty = {key: [] for key in ("result", "labels", "series") if key in payload}
-        if payload.get("resultType") in ("vector", "matrix"):
+        if payload.get("resultType") in ("vector", "matrix", "scalar", "string"):
             empty["resultType"] = payload["resultType"]
         state = payload.get("collectionStatus")
         empty.update(truncated=True, reason="payload_truncated",
@@ -160,12 +160,24 @@ def _bound(data):
 
 
 
-def _query_result(observed):
+def _query_result(observed, *, allow_scalar=False):
     data, state = observed
     kind = data.get("resultType") if isinstance(data, dict) else None
     if kind in ("scalar", "string"):
-        return {"statusCode": 400, "body": json.dumps({"error": "unsupported_result_type",
-                "reason": "unsupported_result_type", "resultType": kind, "collectionStatus": "unknown"})}
+        raw = data.get("result")
+        pair = isinstance(raw, list) and len(raw) == 2
+        oversized = False
+        try:
+            oversized = pair and isinstance(raw[1], str) and (
+                len(raw[1]) > 4096 or len(raw[1].encode("utf-8")) > 4096)
+            valid = (allow_scalar and pair and type(raw[0]) in (int, float)
+                     and math.isfinite(raw[0]) and isinstance(raw[1], str) and not oversized
+                     and (kind == "string" or _sample(raw)))
+        except (ValueError, OverflowError, UnicodeError):
+            valid = False
+        return _bounded_result({"resultType": kind, "result": raw if valid else [],
+                                "truncated": bool(oversized),
+                                "collectionStatus": state if valid or state == "error" else "unknown"})
     bounded, truncated = _bound(data)
     rows = bounded.get("result") if isinstance(bounded, dict) else None
     valid = kind in ("vector", "matrix") and isinstance(rows, list) and all(isinstance(row, dict) for row in rows)
@@ -199,7 +211,7 @@ def prometheus_query(args):
     timeout = _timeout_param(args.get("timeout"))
     if timeout:
         params["timeout"] = timeout
-    return _query_result(_get(_ds(), "/api/v1/query", params, with_status=True))
+    return _query_result(_get(_ds(), "/api/v1/query", params, with_status=True), allow_scalar=True)
 
 
 def prometheus_query_range(args):

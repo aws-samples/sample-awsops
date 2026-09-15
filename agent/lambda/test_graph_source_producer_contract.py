@@ -102,3 +102,4 @@ def test_tempo_http_final_shape_and_explicit_job_vetoes(metrics, expected, nonem
     assert body["collectionStatus"] == (("ok" if nonempty else "empty") if expected == "complete" else expected)
     assert body["traces"] == traces
     assert body["metrics"] == (None if metrics == "absent" else metrics)
+    assert body.get("completionReason") == ("search_response_unverified" if expected == "unknown" else None)

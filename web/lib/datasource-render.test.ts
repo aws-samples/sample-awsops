@@ -142,3 +142,23 @@ describe('year-boundary ordering (review: 30d windows crossing Jan 1)', () => {
     }
   });
 });
+
+
+describe('bounded instant scalar results', () => {
+  it.each(['prometheus', 'mimir'])('%s renders one scalar sample, including real zero', kind => {
+    const result = normalizeResult(kind, `${kind}_query`, { resultType: 'scalar', result: [1.5, '0'], collectionStatus: 'ok' });
+    expect(result.shape).toBe('table');
+    expect(result.rows).toEqual([{ value: 0, timestamp: '1970-01-01T00:00:01.500Z' }]);
+  });
+  it('preserves a string sample without interpreting it as two vector rows', () => {
+    const result = normalizeResult('prometheus', 'prometheus_query', { resultType: 'string', result: [1, 'value'], truncated: false });
+    expect(result.rows).toEqual([{ value: 'value', timestamp: '1970-01-01T00:00:01.000Z' }]);
+  });
+});
+
+
+it.each([1e20, -1e20])('scalar timestamps outside Date range stay non-throwing: %s', timestamp => {
+  expect(normalizeResult('prometheus', 'prometheus_query', {
+    resultType: 'scalar', result: [timestamp, '0'], collectionStatus: 'ok',
+  }).shape).toBe('empty');
+});

@@ -31,8 +31,9 @@ guard — see the section below.
 ClickHouse, Tempo and Prometheus/Mimir compute `collectionStatus` from validated HTTP
 responses, never copied upstream flags. Only complete ok/empty certifies empty. Tempo
 uses synchronous HTTP 200 response validation, not mandatory job counters; byte-omitted
-children are partial and cannot alone clear saved graphs. Prometheus/Mimir scalar/string
-results are explicitly unsupported; malformed records are fixed markers with bounded output.
+children retain structured spans or an explicit no-fit marker; an all-empty partial attempt
+cannot clear saved graphs. Prometheus/Mimir instant scalar/string results retain one bounded
+sample; malformed records are fixed markers with bounded output.
 Run `python3 -m pytest agent/lambda/test_collection_markers.py agent/lambda/test_collection_boundaries.py agent/lambda/test_graph_source_producer_contract.py -q` from the root.
 Deploy Lambda code separately from the updated `scripts/v2/agentcore/catalog.py` descriptions;
 see `docs/runbooks/source-sync-observability.md` for rollout and retention boundaries.
