@@ -14,6 +14,7 @@ import uuid
 
 LABEL = "io.awsops.review-codec.run"
 PREFIX = "awsops-review-codec"
+Timer = threading.Timer
 
 
 class SandboxError(Exception):
@@ -25,6 +26,11 @@ def docker():
     if not binary:
         raise SandboxError("image_sandbox_unavailable")
     return binary
+
+def client_env():
+    allowed = ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG",
+               "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY", "XDG_RUNTIME_DIR")
+    return {**{key: os.environ[key] for key in allowed if key in os.environ}, "LANG": "C", "LC_ALL": "C"}
 
 
 def validate_state(value):
@@ -42,7 +48,8 @@ def load_state(path):
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, "rb") as stream:
             info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size > 4096:
+            if (not stat.S_ISREG(info.st_mode) or info.st_size > 4096
+                    or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077):
                 raise SandboxError("image_sandbox_invalid_state")
             return validate_state(json.loads(stream.read(4097)))
     except (OSError, ValueError, TypeError):
@@ -53,25 +60,28 @@ def prepare(output):
     root = Path(__file__).resolve().parent
     run = uuid.uuid4().hex
     tag = f"{PREFIX}:{run}"
-    with tempfile.TemporaryDirectory(prefix="awsops-codec-build-") as temporary:
-        context = Path(temporary)
-        for source, target in [("codec.Dockerfile", "Dockerfile"),
-                               ("render_head_image.py", "render_head_image.py"),
-                               ("image-formats.json", "image-formats.json"),
-                               ("image-requirements.txt", "image-requirements.txt")]:
-            shutil.copyfile(root / source, context / target)
-        subprocess.run([docker(), "build", "--quiet", "--iidfile", str(context / "image.id"),
-                        "--tag", tag, str(context)], check=True, timeout=600)
-        value = validate_state({"schema": 1, "run": run, "tag": tag,
-                                "image": (context / "image.id").read_text().strip()})
     try:
+        with tempfile.TemporaryDirectory(prefix="awsops-codec-build-") as temporary:
+            context = Path(temporary)
+            for source, target in [("codec.Dockerfile", "Dockerfile"),
+                                   ("render_head_image.py", "render_head_image.py"),
+                                   ("image-formats.json", "image-formats.json"),
+                                   ("image-requirements.txt", "image-requirements.txt")]:
+                shutil.copyfile(root / source, context / target)
+            subprocess.run([docker(), "build", "--quiet", "--iidfile", str(context / "image.id"),
+                            "--tag", tag, str(context)], check=True, timeout=600, env=client_env())
+            value = validate_state({"schema": 1, "run": run, "tag": tag,
+                                    "image": (context / "image.id").read_text().strip()})
         descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(descriptor, "w") as stream:
             json.dump(value, stream)
             stream.write("\n")
-    except OSError:
-        subprocess.run([docker(), "image", "rm", tag], capture_output=True, timeout=15)
-        raise SandboxError("image_sandbox_state_write_failed") from None
+    except BaseException:
+        try:
+            subprocess.run([docker(), "image", "rm", tag], capture_output=True, timeout=15, env=client_env())
+        except (OSError, subprocess.SubprocessError, SandboxError):
+            pass
+        raise
     return value
 
 
@@ -81,6 +91,13 @@ def command(value, suffix, dimension, pixels, byte_limit):
             or any(type(n) is not int or n <= 0 for n in (dimension, pixels, byte_limit))
             or dimension > 8192 or pixels > 16777216 or byte_limit > 8388608):
         raise SandboxError("image_sandbox_invalid_input")
+    try:
+        actual = subprocess.check_output([docker(), "image", "inspect", "--format", "{{.Id}}", value["tag"]],
+                                         stderr=subprocess.DEVNULL, timeout=5, env=client_env()).decode().strip()
+    except (OSError, subprocess.SubprocessError):
+        raise SandboxError("image_sandbox_unavailable") from None
+    if actual != value["image"]:
+        raise SandboxError("image_sandbox_image_mismatch")
     name = f"{PREFIX}-{uuid.uuid4().hex}"
     return [docker(), "run", "--rm", "--interactive", "--name", name,
             "--label", f"{LABEL}={value['run']}", "--network", "none", "--read-only",
@@ -96,7 +113,7 @@ def remove_container(name):
     if not re.fullmatch(f"{PREFIX}-[0-9a-f]{{32}}", name):
         raise SandboxError("image_sandbox_invalid_container")
     try:
-        result = subprocess.run([docker(), "rm", "--force", name], capture_output=True, timeout=5)
+        result = subprocess.run([docker(), "rm", "--force", name], capture_output=True, timeout=5, env=client_env())
     except (OSError, subprocess.TimeoutExpired):
         raise SandboxError("image_sandbox_cleanup_failed") from None
     if result.returncode and b"No such container" not in result.stderr:
@@ -109,15 +126,19 @@ def decode(value, suffix, dimension, pixels, byte_limit, blob):
         raise SandboxError("image_sandbox_invalid_input")
     process = None
     timer = None
+    expired = threading.Event()
     try:
         # Create before starting the deadline. A timed-out client cannot leave a
         # late-created, already-running decoder behind an unsuccessful removal.
         create = [argv[0], "create", *[arg for arg in argv[2:] if arg != "--rm"]]
-        subprocess.run(create, check=True, capture_output=True, timeout=15)
+        subprocess.run(create, check=True, capture_output=True, timeout=15, env=client_env())
         process = subprocess.Popen([argv[0], "start", "--attach", "--interactive", name],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.DEVNULL)
-        timer = threading.Timer(25, process.kill)
+                                   stderr=subprocess.DEVNULL, env=client_env())
+        def kill():
+            expired.set()
+            process.kill()
+        timer = Timer(25, kill)
         timer.start()
         try:
             process.stdin.write(blob)
@@ -129,7 +150,11 @@ def decode(value, suffix, dimension, pixels, byte_limit, blob):
             process.kill()
             raise SandboxError("image_output_limit")
         status = process.wait()
-        if status in (125, 126, 127):
+        if expired.is_set():
+            raise SandboxError("image_decode_timeout")
+        if status in (137, 139, 152):
+            raise SandboxError("image_resource_limit")
+        if status in (125, 126, 127) or (status == 1 and not output):
             raise SandboxError("image_sandbox_unavailable")
         return status, output
     except (OSError, subprocess.SubprocessError):
@@ -152,13 +177,15 @@ def decode(value, suffix, dimension, pixels, byte_limit, blob):
 def cleanup(value):
     value = validate_state(value)
     result = subprocess.run([docker(), "ps", "--all", "--quiet", "--filter",
-                             f"label={LABEL}={value['run']}"], check=True, capture_output=True, timeout=15)
+                             f"label={LABEL}={value['run']}"], check=True, capture_output=True, timeout=15, env=client_env())
     ids = result.stdout.decode().split()
     if any(not re.fullmatch("[0-9a-f]{12,64}", item) for item in ids):
         raise SandboxError("image_sandbox_cleanup_failed")
     if ids:
-        subprocess.run([docker(), "rm", "--force", *ids], check=True, capture_output=True, timeout=15)
-    subprocess.run([docker(), "image", "rm", value["tag"]], check=True, capture_output=True, timeout=15)
+        subprocess.run([docker(), "rm", "--force", *ids], check=True, capture_output=True, timeout=15, env=client_env())
+    result = subprocess.run([docker(), "image", "rm", value["tag"]], capture_output=True, timeout=15, env=client_env())
+    if result.returncode and b"No such image" not in result.stderr:
+        raise SandboxError("image_sandbox_cleanup_failed")
 
 
 def main():

@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import resource
+import struct
 import sys
 import warnings
 
@@ -17,6 +18,7 @@ class Refused(Exception):
 
 
 def main():
+    bomb_errors = ()
     try:
         suffix, dimension, pixels, byte_limit = sys.argv[1:]
         dimension, pixels, byte_limit = int(dimension), int(pixels), int(byte_limit)
@@ -24,6 +26,7 @@ def main():
                 and 0 < byte_limit <= 8 * 1024 * 1024):
             raise Refused("image_dimension_limit")
         from PIL import Image, ImageOps, __version__
+        bomb_errors = (Image.DecompressionBombWarning, Image.DecompressionBombError)
         if __version__ != "12.3.0":
             raise Refused("image_codec_unavailable")
         Image.MAX_IMAGE_PIXELS = pixels
@@ -43,13 +46,35 @@ def main():
             if getattr(image, "n_frames", 1) != 1 or (image.format == "ICO" and len(image.ico.entry) != 1):
                 raise Refused("image_frame_limit")
             image.load()  # No first-frame fallback or truncated-image opt-in.
+            # ICO can replace its directory dimensions with the embedded rendition.
+            width, height = image.size
+            if max(width, height) > dimension or width * height > pixels:
+                raise Refused("image_dimension_limit")
             metadata = {"source_format": image.format, "source_width": width,
                         "source_height": height, "frames": 1, "decoder": "Pillow-12.3.0"}
             if image.format == "PNG":
-                rendered = data
+                offset = 8
+                while offset + 12 <= len(data):
+                    length, kind = struct.unpack(">I4s", data[offset:offset + 8])
+                    offset += length + 12
+                    if offset > len(data):
+                        raise Refused("image_decode_failed")
+                    if kind == b"IEND":
+                        if length:
+                            raise Refused("image_decode_failed")
+                        break
+                else:
+                    raise Refused("image_decode_failed")
+                rendered = data[:offset]
+                rendered_size = image.size
             else:
                 rgba = ImageOps.exif_transpose(image).convert("RGBA")
+                rendered_size = rgba.size
+                if max(rendered_size) > dimension or rendered_size[0] * rendered_size[1] > pixels:
+                    raise Refused("image_dimension_limit")
                 profile = image.info.get("icc_profile")
+                if profile is not None and (not isinstance(profile, bytes) or len(profile) > 65536):
+                    raise Refused("image_profile_limit")
                 rgba.info.clear()
 
                 class BoundedOutput(io.BytesIO):
@@ -61,12 +86,15 @@ def main():
                 output = BoundedOutput()
                 rgba.save(output, "PNG", icc_profile=profile)
                 rendered = output.getvalue()
+            metadata.update(rendered_width=rendered_size[0], rendered_height=rendered_size[1])
         sys.stdout.buffer.write(json.dumps(metadata).encode() + b"\n" + rendered)
         return 0
     except Refused as error:
         code = str(error)
     except ImportError:
         code = "image_codec_unavailable"
+    except bomb_errors:
+        code = "image_dimension_limit"
     except Exception:
         code = "image_decode_failed"
     sys.stdout.buffer.write(json.dumps({"error": code}).encode() + b"\n")

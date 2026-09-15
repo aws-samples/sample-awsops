@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import struct
 import subprocess
@@ -24,11 +25,11 @@ def state():
     return codec.load_state(path)
 
 
-def png():
+def png(width=2, height=2):
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress((b"\0" + b"\xff\0\0" * 2) * 2)) + chunk(b"IEND", b""))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress((b"\0" + b"\xff\0\0" * width) * height)) + chunk(b"IEND", b""))
 
 
 def test_png_transport_retains_exact_validated_bytes(state):
@@ -37,7 +38,31 @@ def test_png_transport_retains_exact_validated_bytes(state):
     header, rendered = output.split(b"\n", 1)
     assert status == 0 and rendered == data
     assert json.loads(header) == {"source_format": "PNG", "source_width": 2,
-                                  "source_height": 2, "frames": 1, "decoder": "Pillow-12.3.0"}
+                                  "source_height": 2, "frames": 1, "decoder": "Pillow-12.3.0",
+                                  "rendered_width": 2, "rendered_height": 2}
+
+@pytest.mark.parametrize("limit,expected", [(32, "image_dimension_limit"), (128, None)])
+def test_ico_checks_embedded_dimensions_after_load(state, limit, expected):
+    embedded = png(64, 2)
+    ico = struct.pack("<HHHBBBBHHII", 0, 1, 1, 16, 16, 0, 0, 1, 32, len(embedded), 22) + embedded
+    status, output = codec.decode(state, ".ico", limit, 16777216, 8388608, ico)
+    if expected:
+        assert status == 1 and json.loads(output)["error"] == expected
+    else:
+        header, _ = output.split(b"\n", 1)
+        assert status == 0
+        assert json.loads(header) == {
+            "source_format": "ICO", "source_width": 64, "source_height": 2, "frames": 1,
+            "decoder": "Pillow-12.3.0", "rendered_width": 64, "rendered_height": 2}
+
+def test_pixel_limit_has_a_fixed_dimension_reason(state):
+    status, output = codec.decode(state, ".png", 8192, 10, 8388608, png(8, 2))
+    assert status == 1 and json.loads(output)["error"] == "image_dimension_limit"
+
+def test_png_drops_trailing_non_image_bytes(state):
+    data = png()
+    status, output = codec.decode(state, ".png", 8192, 16777216, 8388608, data + b"PRIVATE_TRAILER")
+    assert status == 0 and output.split(b"\n", 1)[1] == data
 
 
 def test_malformed_image_is_a_bounded_decoder_error(state):
@@ -62,7 +87,7 @@ def test_state_rejects_mutable_image_or_foreign_cleanup_tag():
             codec.validate_state({**base, **change})
 
 def test_deadline_removes_the_created_decoder(state, monkeypatch):
-    original_command, original_timer = codec.command, codec.threading.Timer
+    original_command, original_timer = codec.command, codec.Timer
     names = []
 
     def sleeping(*args):
@@ -73,15 +98,15 @@ def test_deadline_removes_the_created_decoder(state, monkeypatch):
                                "-I", "-c", "import time; time.sleep(60)"], name
 
     monkeypatch.setattr(codec, "command", sleeping)
-    monkeypatch.setattr(codec.threading, "Timer", lambda _seconds, callback: original_timer(.2, callback))
-    status, _ = codec.decode(state, ".png", 8192, 16777216, 8388608, png())
-    assert status != 0
+    monkeypatch.setattr(codec, "Timer", lambda _seconds, callback: original_timer(.2, callback))
+    with pytest.raises(codec.SandboxError, match="image_decode_timeout"):
+        codec.decode(state, ".png", 8192, 16777216, 8388608, png())
     result = subprocess.run([codec.docker(), "inspect", names[0]], capture_output=True, timeout=5)
     assert result.returncode != 0 and b"No such" in result.stderr
 
 
 def test_actual_namespace_cannot_write_root_or_read_host_credentials(state, tmp_path):
-    marker = tmp_path / "host-private-marker"
+    marker = ROOT / f".codec-host-marker-{uuid.uuid4().hex}"
     marker.write_text("HOST_PRIVATE")
     argv, name = codec.command(state, ".png", 8192, 16777216, 8388608)
     index = argv.index(state["image"])
@@ -109,6 +134,7 @@ print(json.dumps({{
                          "host_marker_visible": False, "host_env_visible": False}
     finally:
         codec.remove_container(name)
+        marker.unlink()
 
 
 def test_cleanup_removes_only_its_own_run(state):
@@ -117,7 +143,8 @@ def test_cleanup_removes_only_its_own_run(state):
         for _ in range(2):
             nonce = uuid.uuid4().hex
             current = {**state, "run": nonce, "tag": f"{codec.PREFIX}:{nonce}"}
-            subprocess.run([codec.docker(), "tag", state["image"], current["tag"]], check=True)
+            subprocess.run([codec.docker(), "tag", state["image"], current["tag"]],
+                           check=True, capture_output=True, timeout=10)
             argv, name = codec.command(current, ".png", 8192, 16777216, 8388608)
             index = argv.index(current["image"])
             subprocess.run(argv[:2] + ["--detach"] + argv[2:index]
@@ -125,6 +152,7 @@ def test_cleanup_removes_only_its_own_run(state):
                            check=True, capture_output=True, timeout=15)
             owned.append((current, name))
         codec.cleanup(owned[0][0])
+        codec.cleanup(owned[0][0])  # An already-cleaned run is a benign no-op.
         absent = subprocess.run([codec.docker(), "inspect", owned[0][1]], capture_output=True)
         other = subprocess.check_output([codec.docker(), "inspect", "--format", "{{.State.Running}}", owned[1][1]], text=True)
         assert absent.returncode != 0 and other.strip() == "true"
@@ -132,3 +160,26 @@ def test_cleanup_removes_only_its_own_run(state):
     finally:
         for current, _ in owned:
             codec.cleanup(current)
+
+def test_state_permissions_and_tag_binding_are_verified(state, tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps(state))
+    path.chmod(0o644)
+    with pytest.raises(codec.SandboxError, match="invalid_state"):
+        codec.load_state(path)
+    path.chmod(0o600)
+    assert codec.load_state(path) == state
+    with pytest.raises(codec.SandboxError, match="image_mismatch"):
+        codec.command({**state, "image": "sha256:" + "f" * 64}, ".png", 8192, 16777216, 8388608)
+
+def test_docker_client_does_not_inherit_review_credentials(monkeypatch):
+    for key in ("GH_TOKEN", "GITHUB_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        monkeypatch.setenv(key, "PRIVATE_CANARY")
+    assert not any(key.startswith("AWS_") or "TOKEN" in key for key in codec.client_env())
+
+def test_fixed_codes_are_documented():
+    text = (ROOT / "docs/runbooks/review-codec-sandbox.md").read_text()
+    codes = set()
+    for path in ("codec_sandbox.py", "render_head_image.py"):
+        codes.update(re.findall(r'["\'](image_[a-z_]+)["\']', (ROOT / "scripts/pr-review" / path).read_text()))
+    assert codes and all(f"`{code}`" in text for code in codes)
