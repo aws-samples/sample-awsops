@@ -140,7 +140,8 @@ A source merge or automatic web CD result is not proof that these steps complete
 `agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,
 `agent/lambda/prometheus_mcp.py`, `agent/lambda/mimir_mcp.py`,
 `agent/lambda/test_collection_markers.py`, `agent/lambda/test_clickhouse_completion.py`, `agent/lambda/test_tempo_trace_budget.py`,
-`agent/fixtures/tempo-trace-budget-contract.json`,
+`agent/fixtures/tempo-trace-budget-contract.json`, `agent/fixtures/tempo-child-contract.json`,
+`agent/lambda/test_collection_boundaries.py`,
 `agent/lambda/test_graph_source_producer_contract.py`,
 `agent/fixtures/tempo-topology-contract.json`, `agent/fixtures/query-topology-contract.json`.
 ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-043 (graph reads;

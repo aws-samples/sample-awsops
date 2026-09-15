@@ -102,18 +102,24 @@ def _proto_integer(value, bits, signed=False):
             < (1 << (bits - int(signed))))
 
 
+_SEARCH_UINT32 = {"inspectedTraces", "totalBlocks", "completedJobs", "totalJobs"}
+_SEARCH_UINT64 = {"inspectedBytes", "totalBlockBytes", "inspectedSpans", "backendReads", "backendBytes"}
+_SEARCH_FIELDS = _SEARCH_UINT32 | _SEARCH_UINT64 | {"additionalMetrics"}
+
+
 def _search_metrics_valid(metrics):
-    """Validate SearchMetrics, not a heuristic that inspected stats imply completion."""
+    """Validate known counters; unknown version fields are neither errors nor proof."""
     if not isinstance(metrics, dict):
         return False
-    uint32 = {"inspectedTraces", "totalBlocks", "completedJobs", "totalJobs"}
-    uint64 = {"inspectedBytes", "totalBlockBytes", "inspectedSpans", "backendReads", "backendBytes"}
-    for key, value in metrics.items():
+    for key in _SEARCH_FIELDS:
+        if key not in metrics:
+            continue
+        value = metrics[key]
         if key == "additionalMetrics":
             if not isinstance(value, dict) or not all(
                     isinstance(k, str) and _proto_integer(v, 64, signed=True) for k, v in value.items()):
                 return False
-        elif key not in uint32 | uint64 or not _proto_integer(value, 32 if key in uint32 else 64):
+        elif not _proto_integer(value, 32 if key in _SEARCH_UINT32 else 64):
             return False
     return True
 
@@ -267,7 +273,8 @@ def tempo_search(args):
     # Tempo HTTPFinal returns 200 after finalization; jsonpb omits default/repeated fields.
     # Require a recognizable message. Bare {} is unverified, not universal API malformation.
     metrics = data.get("metrics") if isinstance(data, dict) else None
-    recognizable = isinstance(data, dict) and ("traces" in data or "metrics" in data) and "raw" not in data
+    known_metrics = isinstance(metrics, dict) and (not metrics or any(key in metrics for key in _SEARCH_FIELDS))
+    recognizable = isinstance(data, dict) and ("traces" in data or known_metrics) and "raw" not in data
     raw = data.get("traces", []) if recognizable else None
     traces = raw[:MAX_TRACES] if isinstance(raw, list) else []
     truncated = isinstance(raw, list) and len(raw) > MAX_TRACES
@@ -295,7 +302,9 @@ def tempo_search(args):
             elif completed < total and state in ("ok", "empty"):
                 state = "partial"
     completion = {"completionReason": "search_response_unverified"} if state == "unknown" else {}
-    payload, btr = _byte_bound({"traces": traces, "metrics": metrics})
+    # Do not echo unconsulted version fields or malformed counter payloads.
+    safe_metrics = {key: metrics[key] for key in _SEARCH_FIELDS if key in metrics} if _search_metrics_valid(metrics) else None
+    payload, btr = _byte_bound({"traces": traces, "metrics": safe_metrics})
     if btr:
         return ok({**payload, **completion, "collectionStatus": "unknown" if state == "unknown" else "partial"})
     return ok({"truncated": truncated, **payload, **completion, "collectionStatus": state})
@@ -309,13 +318,28 @@ def tempo_get_trace(args):
     if isinstance(data, dict) and (data.get("status") == "error"
             or any(data.get(key) not in (None, "") for key in ("error", "errorType", "exception"))):
         return err("Tempo trace fetch returned an error")
-    payload, btr = _byte_bound(data if isinstance(data, dict) else {"trace": data})
+    if not isinstance(data, dict) or "raw" in data:
+        return err("Tempo trace response is not a JSON object")
+    # These controls belong to this producer, never to the upstream JSON body.
+    upstream_truncated = data.get("truncated", False)
+    payload = {key: value for key, value in data.items() if key not in {
+        "truncated", "collectionStatus", "tracePayloadTruncated", "tracePayloadUnverified",
+        "projection", "completionReason", "collectionReason",
+    }}
+    payload["truncated"] = upstream_truncated is True
+    if type(upstream_truncated) is not bool:
+        payload["collectionStatus"] = "unknown"
+    elif upstream_truncated:
+        payload["collectionStatus"] = "partial"
+    clean = payload
+    payload, btr = _byte_bound(clean)
     if btr:
-        projected = _trace_projection(data, tid)
-        return ok(projected if projected is not None else {**payload, "collectionStatus": "unknown"})
-    # Only the local projection can issue the explicit no-fit marker.
-    payload = {key: value for key, value in payload.items() if key != "tracePayloadTruncated"}
-    return ok({"truncated": False, **payload})
+        projected = _trace_projection(clean, tid)
+        return ok(projected if projected is not None else {
+            "truncated": True, "tracePayloadUnverified": True, "collectionStatus": "unknown",
+            "note": "unverified trace omitted",
+        })
+    return ok(payload)
 
 
 def tempo_search_tags(args):

@@ -97,8 +97,9 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     expect((await pool.query("SELECT id FROM topology_nodes WHERE class='trace' ORDER BY id")).rows).toEqual(nodes);
   });
 
-  it.each(['alone', 'child', 'other-source', 'foreign-child'] as const)('handles real byte-bounded child output: %s', async mode => {
-    const mixed = mode === 'child' || mode === 'foreign-child';
+  it.each(['alone', 'child', 'other-source', 'foreign-child', 'forged-only', 'forged-child'] as const)('handles real byte-bounded child output: %s', async mode => {
+    const mixed = mode === 'child' || mode === 'foreign-child' || mode === 'forged-child';
+    const forged = mode.startsWith('forged');
     await rebuildTraceGraph(pool, [], undefined, [{ available: async () => true,
       calls: async (mins, endMs = Date.now()) => ({ sourceId: 'metrics:saved',
         items: [{ client: 'saved-api', server: 'saved-db', count: 1 }], status: 'ok', reasons: [],
@@ -112,7 +113,9 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
       endTimeUnixNano: String(BigInt(end - 500) * 1_000_000n) }] }] }] };
     producer.invoke.mockReset().mockResolvedValueOnce({ collectionStatus: 'ok',
       traces: mixed ? [{ traceID: 'a1' }, { traceID: 'b2' }] : [{ traceID: 'a1' }] })
-      .mockResolvedValueOnce(childContracts[mode === 'foreign-child' ? 3 : 0].body).mockResolvedValueOnce(child);
+      .mockResolvedValueOnce(childContracts.find(fixture => fixture.name === (forged
+        ? 'under-budget forged unknown trace shape' : mode === 'foreign-child'
+          ? 'foreign trace omitted at byte limit' : 'producer byte-bounded child'))!.body).mockResolvedValueOnce(child);
     const clock = vi.spyOn(Date, 'now').mockReturnValue(end);
     try { await rebuildTraceGraph(pool, [new TempoTraceSource(7)], undefined, mode === 'other-source' ? [{
       available: async () => true,
@@ -122,11 +125,12 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     }] : []); }
     finally { clock.mockRestore(); }
     const after = (await pool.query("SELECT * FROM topology_graph_state WHERE class='trace'")).rows[0];
-    expect(after.status).toBe('partial');
+    expect(after.status).toBe(mode === 'forged-only' ? 'error' : 'partial');
     expect(after.details.retainedPrevious).toBe(true);
     expect(after.captured_at).toEqual(previous.captured_at);
     expect(after.details.sources.map((source: { itemCount: number }) => source.itemCount))
       .toEqual(mode === 'other-source' ? [0, 1] : [mixed ? 1 : 0]);
+    if (forged) expect(after.details.sources[0].reasons).toContain('malformed_payload');
     const labels = (await pool.query("SELECT label FROM topology_nodes WHERE class='trace'")).rows.map(row => row.label);
     expect(labels).toHaveLength(2);
     expect(labels).toEqual(expect.arrayContaining(['saved-api', 'saved-db']));

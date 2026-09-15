@@ -87,7 +87,7 @@ def test_large_error_text_has_a_fixed_bounded_error(kind):
 
 
 @pytest.mark.parametrize("metrics,complete", [
-    (None, False), ({}, True), ({"inspectedBlocks": 10, "inspectedBytes": 500}, False),
+    (None, False), ({}, True), ({"inspectedBlocks": 10, "inspectedBytes": 500}, True),
     ({"completedJobs": 0, "totalJobs": 0}, True),
 ])
 @pytest.mark.parametrize("nonempty", [False, True])
@@ -98,6 +98,19 @@ def test_counterless_tempo_uses_the_valid_synchronous_response(metrics, complete
     if not complete:
         assert body["completionReason"] == "search_response_unverified"
     assert body["traces"] == traces
+
+
+@pytest.mark.parametrize("traces", [[], [{"traceID": "a1"}]])
+def test_unknown_metric_fields_do_not_invalidate_or_supply_completion_proof(traces):
+    metrics = {"inspectedBytes": "18446744073709551615", "inspectedBlocks": 10,
+               "futureCounter": {"not": "a consulted counter"}}
+    _, body, _ = invoke("tempo", {"traces": traces, "metrics": metrics})
+    assert body["collectionStatus"] == ("ok" if traces else "empty")
+    assert body["metrics"] == {"inspectedBytes": "18446744073709551615"}
+    _, unknown, _ = invoke("tempo", {"metrics": {"futureCounter": 9}})
+    assert unknown["collectionStatus"] == "unknown"
+    _, invalid, _ = invoke("tempo", {"traces": traces, "metrics": {**metrics, "completedJobs": True}})
+    assert invalid["collectionStatus"] == "unknown"
 
 
 @pytest.mark.parametrize("payload,http_status,expected", [

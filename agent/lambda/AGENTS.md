@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 6012a25cdf52 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3dd15b98fac4 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -71,13 +71,17 @@ that's the source of truth for tool counts, not this doc.
 ## External query completion
 - Producers compute `collectionStatus`; only validated complete ok/empty certifies an empty query result.
   Tempo uses synchronous HTTP 200 proof with negative-signal vetoes, not mandatory job counters.
+  Unknown metric fields are neither validation errors nor proof; known integer fields remain bounded.
+  Trace producers strip upstream copies of collection/projection/omission controls. Only local
+  unverified omission issues tracePayloadUnverified; upstream truncation remains negative evidence.
+  Deploy the sanitized producer before the marker-aware web adapter.
   A spanless no-fit child retains the saved graph even with useful siblings; only parsed
   structured spans support partial publication. Preserve upstream truncation without input mutation.
   Projection admission validates identity/timing and reported trace-ID agreement; encountered
   malformed spans leave the whole projection unknown. Unvisited rows remain unassessed.
 - Prometheus/Mimir instant scalar/string results retain one bounded sample; malformed records use
   fixed markers, never raw passthrough. Output byte limits remain enforced.
-- Run the three completion suites in `agent/lambda/CLAUDE.md`. Shared fixtures bind actual
+- Run the producer/completion/trace-bound suites in `agent/lambda/CLAUDE.md`. Shared fixtures bind actual
   mocked HTTP outputs to web adapters and PostgreSQL publication/retention tests. Lambda code
   and Gateway descriptions require separate deployment steps; no source merge activates them.
 

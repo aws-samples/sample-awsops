@@ -101,5 +101,8 @@ def test_tempo_http_final_shape_and_explicit_job_vetoes(metrics, expected, nonem
     body = json.loads(out["body"])
     assert body["collectionStatus"] == (("ok" if nonempty else "empty") if expected == "complete" else expected)
     assert body["traces"] == traces
-    assert body["metrics"] == (None if metrics == "absent" else metrics)
+    expected_metrics = None if metrics == "absent" else metrics
+    if isinstance(metrics, dict) and metrics.get("completedJobs") is True:
+        expected_metrics = None  # Malformed known counters are not echoed as raw metadata.
+    assert body["metrics"] == expected_metrics
     assert body.get("completionReason") == ("search_response_unverified" if expected == "unknown" else None)

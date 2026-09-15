@@ -59,29 +59,78 @@ Limited qualifiers such as `today`, `yesterday`, `last hour/day/week`, `오늘`,
 
 After deployment and refresh, regenerate “HTTP 500 응답 스팬” and verify that the draft uses observed HTTP attributes and types. An `&&` query can legitimately combine service and HTTP conditions on separate spans. A successful generation does not guarantee server acceptance; review the draft and inspect its execution result. If execution still returns 400, inspect the Tempo error and server version.
 
+### Search completion and publication
+
+`tempo_search` requests **20** traces by default and clamps supplied integer limits to
+**1–50**. Reaching the requested limit, HTTP 206, output truncation, warnings or an explicit
+partial signal remains incomplete. Search returns bounded first matches, not a deterministic
+latest/top or exhaustive set. Existing query windows remain fixed bounds.
+
+A recognizable, validated synchronous HTTP 200 `SearchResponse` establishes query completion
+when no negative signal is present. At pinned Tempo commit
+`f227ccdf89c1ef2b059520b678c1f639aef7cc09`,
+[HTTPFinal](https://github.com/grafana/tempo/blob/f227ccdf89c1ef2b059520b678c1f639aef7cc09/modules/frontend/combiner/common.go#L159-L190)
+checks errors and finalizes before returning 200. Its
+[JSON marshaler](https://github.com/grafana/tempo/blob/f227ccdf89c1ef2b059520b678c1f639aef7cc09/modules/frontend/combiner/common.go#L315-L343)
+can omit empty/default fields; the
+[empty-response test](https://github.com/grafana/tempo/blob/f227ccdf89c1ef2b059520b678c1f639aef7cc09/modules/frontend/combiner/search_test.go#L268-L281)
+reports completed jobs without a total. Therefore an explicit traces list can omit metrics,
+and recognized metrics can accompany omitted empty traces. Bare or unrecognized messages
+remain unknown. This is source evidence, not live acceptance of every Tempo deployment.
+
+Known [SearchMetrics counters](https://github.com/grafana/tempo/blob/f227ccdf89c1ef2b059520b678c1f639aef7cc09/pkg/tempopb/tempo.proto#L170-L184)
+retain bounded protobuf integer validation, including decimal-string 64-bit values.
+Unknown metric keys are ignored and omitted, not hard validation failures and never
+completion evidence. Unknown-only metrics without a traces list remain unverified.
+A positive `totalJobs` with fewer completed jobs is partial; contradictory or malformed
+known counters remain unknown. Inspected bytes/blocks and counter presence alone do not
+prove completion. No additional query is issued to manufacture that proof.
+
+Unknown searches carry `completionReason: search_response_unverified`; adapters retain
+the existing `count_not_confirmed` reason vocabulary for this broader unverified-response
+state. Explicit query errors remain errors. Only complete `ok`/`empty` query results can
+certify empty data; malformed children, missing children and unmarked empty children still
+retain prior graph data even alongside useful siblings.
+
+| Producer path | Bound and omission contract |
+|---|---|
+| Tempo search/trace payload | **1,000,000 serialized UTF-8 bytes** (`MAX_TOTAL_BYTES`), below the Lambda transport limit. No raw non-JSON fallback or truncated text preview is returned. |
+| Oversized `tempo_get_trace` | Structured OTLP projection retains IDs, timings, kinds, status codes and attributes in `_TRACE_ATTRIBUTES`; at most **64 links per span**, keeping link trace/span IDs. Events, status messages, link attributes, unrecognized attributes and optional span names over **1,024 serialized bytes** are omitted. Identity values are never shortened. |
+| Prometheus/Mimir query/discovery result | **1,000,000 serialized UTF-8 bytes** (`MAX_RESULT_BYTES`); fixed markers replace omitted/malformed result data. Query arrays retain at most **50 series**, **500 points per series** and **5,000 total samples**. A bounded result is not an absence claim. |
+
+Projection validates each encountered span's identity/timing, requested trace-ID agreement,
+and present parent/link/status fields before admitting it. Canonical hex, shortened trace
+hex and protobuf base64 IDs remain supported. Unvisited rows beyond the bound are unassessed.
+A validated span that cannot fit produces `tracePayloadTruncated: true`, `truncated: true`
+and `partial`. A locally omitted unverified projection instead carries the producer-owned
+`tracePayloadUnverified: true`, `truncated: true` and `unknown` marker. Both are spanless
+and retain previous data; foreign or malformed evidence never authorizes replacement.
+
+The producer strips upstream copies of its collection/projection/omission controls before
+forming a response. Explicit upstream `truncated: true` remains negative evidence and
+computes a partial response; malformed truncation values compute unknown status. An upstream
+`collectionStatus: unknown` cannot soften a malformed child. The adapter accepts the soft
+unknown-shape path only with the producer-owned omission marker; ordinary malformed JSON
+shapes retain their hard integrity reason. Valid projected spans remain usable partial
+evidence under the existing [publication contract](graph-read-contract.md#source-completeness-and-retained-publication).
+
 Local regression checks, from the repository root:
 
 ```bash
-(cd agent/lambda && python3 -m pytest test_tempo_mcp.py test_graph_source_producer_contract.py test_collection_boundaries.py test_tempo_trace_budget.py -q)
-(cd web && npx vitest run lib/tempo-schema.test.ts lib/datasource-schema.test.ts lib/datasource-querygen.test.ts app/api/datasources/generate/route.test.ts app/api/integrations/schema/route.test.ts)
+(cd agent/lambda && python3 -m pytest test_tempo_mcp.py test_prometheus_mcp.py test_mimir_mcp.py test_graph_source_producer_contract.py test_collection_markers.py test_collection_boundaries.py test_tempo_trace_budget.py -q)
+(cd web && npx vitest run lib/trace-source.test.ts lib/tempo-schema.test.ts lib/datasource-schema.test.ts lib/datasource-querygen.test.ts app/api/datasources/generate/route.test.ts app/api/integrations/schema/route.test.ts)
+# Add the disposable PostgreSQL suite using graph-read-contract.md; never use an application DB.
 python3 -m pytest scripts/v2/workers/test_datasource_index.py scripts/v2/workers/test_graph_catalog.py scripts/v2/workers/test_card_catalog.py scripts/v2/workers/diagnosis/test_signal_catalog.py -q
 ```
 
 ## 조치 / Action
 
-### Search completion and publication
-
-`tempo_search` explicitly requests **20** traces by default and clamps supplied integer limits to **1–50**. Reaching the requested limit, HTTP 206, output truncation, warnings or an explicit partial signal remains partial. Parallel search returns the first matches, not a deterministic latest/top or exhaustive selection. Existing query windows and limits are fixed bounds, not new recovery controls.
-
-A recognizable, validated synchronous HTTP 200 `SearchResponse` establishes query completion when no negative signal is present. Tempo's [HTTPFinal](https://github.com/grafana/tempo/blob/main/modules/frontend/combiner/common.go) checks errors and finalizes before returning 200. Its default JSON marshaler can omit repeated empty `traces` and zero-valued job fields; the [empty-response test](https://github.com/grafana/tempo/blob/main/modules/frontend/combiner/search_test.go) even reports completed jobs without a total. The wrapper therefore accepts omitted traces with valid metrics, or an explicit traces list with omitted metrics. It does not require a positive counter pair or infer completion from inspected bytes/blocks.
-
-An explicit positive `totalJobs` with fewer completed jobs is partial; contradictory or malformed metrics are unknown. Bare/unrecognized responses, null/non-list traces and null/malformed metrics carry `completionReason: search_response_unverified`, not a fabricated query error. Explicit errors remain errors. These source-backed semantics are not live acceptance evidence for any deployment. See the [Search API](https://grafana.com/docs/tempo/latest/api_docs/) and [protobuf response types](https://github.com/grafana/tempo/blob/main/pkg/tempopb/tempo.proto). No extra query is issued to manufacture completion.
-
-`tempo_get_trace` above the byte cap retains a bounded structured OTLP span projection (`projection: bounded_otlp`, `truncated: true`), preserving scoped resource identities, timing and bounded links. Before adding each projected span, the producer validates identity/timing, any reported trace ID against the request, and present parent/link/status fields. Canonical hex, shortened trace hex and protobuf base64 identities are supported.
-
-An encountered malformed span leaves the whole projection unknown; unvisited rows beyond the budget remain unassessed. If a validated span cannot fit, the producer can return `tracePayloadTruncated: true` with `partial`, which still supplies no attributable spans. Neither path returns a raw preview, and upstream flags cannot assert the no-fit marker.
-
-Structured projected spans remain usable partial evidence after normal parser checks. A spanless no-fit response is unverified child evidence and retains the prior graph even with useful siblings, as do missing, unmarked-empty or failed children. Under-byte responses preserve upstream truncation metadata without mutating the input; malformed truncation values remain unverified in consumers. See the [publication contract](graph-read-contract.md#source-completeness-and-retained-publication).
+Deploy the sanitized connector Lambda **before** the web adapters that trust its omission
+marker, using the existing approved v2 release procedure below. Then deploy the matching
+web/worker release and reconcile Gateway descriptions. This change introduces no new IAM
+action, endpoint, or activation flag; existing deployment permissions are still required.
+Do not deploy the marker-aware adapter alone against a legacy passthrough producer.
+Source changes and local tests are not evidence that this rollout has completed.
 
 확인된 빈 사용자 정의 속성 캐시는 **60초 TTL**을 사용한다. 만료 후 다음 생성 요청에서 백그라운드 재수집 대상이 되며, 60초마다 자동 조회하는 타이머는 아니다. 불완전한 빈 결과는 이 TTL을 기다리지 않고 재수집 대상이 된다. Tempo의 백그라운드 재수집은 동일 인스턴스당 1분의 재시도 간격을 적용해 요청마다 반복 호출하지 않으며, 정상적인 빈 관측의 짧은 TTL도 유지한다. 아래 관리자 POST는 즉시 재수집하므로 TTL 만료를 기다릴 필요가 없다.
 
@@ -207,9 +256,7 @@ If the recent window remains empty, repeated refreshes cannot recover historical
 - `agent/lambda/tempo_mcp.py`
 - `agent/lambda/test_tempo_trace_budget.py`
 - `agent/fixtures/tempo-trace-budget-contract.json`
-- `agent/lambda/test_tempo_trace_budget.py`
 - `agent/lambda/test_graph_source_producer_contract.py`
-- `agent/fixtures/tempo-trace-budget-contract.json`
 - `agent/fixtures/tempo-topology-contract.json`
 - `web/lib/tempo-schema.ts`
 - `web/lib/tempo-schema.test.ts`
@@ -225,6 +272,13 @@ If the recent window remains empty, repeated refreshes cannot recover historical
 - `scripts/v2/workers/graph_catalog.py`
 - `scripts/v2/workers/card_catalog.py`
 - `terraform/foundation/ai.tf`
+- `agent/fixtures/tempo-child-contract.json`
+- `agent/lambda/test_collection_boundaries.py`
+- `agent/lambda/test_collection_markers.py`
+- `web/lib/trace-source.ts`
+- `web/lib/trace-source.test.ts`
+- `web/lib/graph-read-postgres.test.ts`
+- `scripts/v2/workers/diagnosis/sources.py`
 
 관련 결정: **ADR-005는 AWS 리소스 변경과 자율 실행을 동결**한다. **ADR-007은 거버넌스를 따르는 외부 데이터 읽기·쓰기를 허용**하며, 이 절차의 Tempo 접근은 읽기 전용이다. 컨트롤러의 승인된 릴리스 배포는 제품의 자율 복구 기능을 활성화하지 않는다. ADR 본문은 비공개 upstream 저장소에서 관리한다.
 

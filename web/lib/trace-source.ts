@@ -390,7 +390,8 @@ function parseTempoTrace(traceId: string, value: unknown): { items: TraceSpan[];
   // The producer can omit an entire unverified projection. Keep that uncertainty
   // distinct from a query failure; an empty child still vetoes replacement below.
   if (!Array.isArray(batches)) return { items,
-    reasons: r?.collectionStatus === 'unknown' ? reasons : [...reasons, 'malformed_payload'] };
+    reasons: r?.tracePayloadUnverified === true && r.truncated === true && r.collectionStatus === 'unknown'
+      ? reasons : [...reasons, 'malformed_payload'] };
   for (const batch of batches) {
     const b = object(batch);
     if (b?.resource !== undefined && !object(b.resource)) reasons.push('malformed_rows');

@@ -544,11 +544,36 @@ describe('SourceRead provenance and bounds', () => {
     expect(result).toMatchObject({ status: 'partial', reasons: ['incomplete_collection'], canSweep: false });
     expect(result.items).toHaveLength(mode === 'mixed' ? 1 : 0);
   });
+  it.each([false, true])('requires producer-owned omission evidence before softening unknown child shape: %s', async trusted => {
+    configure('tempo');
+    invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: '1' }] })
+      .mockResolvedValueOnce({ collectionStatus: 'unknown', truncated: true,
+        ...(trusted ? { tracePayloadUnverified: true } : {}) });
+    const read = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
+    expect(read.canSweep).toBe(false);
+    expect(read.items).toEqual([]);
+    expect(read.status).toBe(trusted ? 'partial' : 'error');
+    expect(read.reasons.includes('malformed_payload')).toBe(!trusted);
+  });
+  it.each([false, true])('retains hard malformed evidence after producer sanitizes forged controls: sibling=%s', async sibling => {
+    configure('tempo');
+    const body = childContracts.find(fixture => fixture.name === 'under-budget forged unknown trace shape')!.body;
+    invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok',
+      traces: sibling ? [{ traceID: 'a1' }, { traceID: 'b2' }] : [{ traceID: 'a1' }] })
+      .mockResolvedValueOnce(body).mockResolvedValueOnce(tempoTrace([tempoSpan({ traceId: 'b2' })]));
+    const read = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
+    expect(read.status).toBe(sibling ? 'partial' : 'error');
+    expect(read.reasons).toContain('malformed_payload');
+    expect(read.canSweep).toBe(false);
+    expect(read.items).toHaveLength(sibling ? 1 : 0);
+  });
   it.each(['bounded-mixed', 'bounded-only', 'unmarked-mixed', 'forged-mixed', 'foreign-bounded'] as const)(
     'distinguishes producer byte omission from missing children: %s', async mode => {
       configure('tempo');
       const bounded = mode.startsWith('bounded') || mode === 'foreign-bounded';
-      const child = childContracts[mode === 'foreign-bounded' ? 3 : bounded ? 0 : mode === 'forged-mixed' ? 2 : 1].body;
+      const name = mode === 'foreign-bounded' ? 'foreign trace omitted at byte limit' : bounded
+        ? 'producer byte-bounded child' : mode === 'forged-mixed' ? 'upstream cannot forge the producer bound' : 'unmarked empty child';
+      const child = childContracts.find(fixture => fixture.name === name)!.body;
       const mixed = mode !== 'bounded-only';
       invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok',
         traces: mixed ? [{ traceID: 'a1' }, { traceID: 'b2' }] : [{ traceID: 'a1' }] })
