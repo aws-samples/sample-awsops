@@ -85,6 +85,45 @@ function workloadIndex(nodes: E2eNode[]): Map<string, Set<E2eNode>> {
   return index;
 }
 
+function targetWorkload(target: TargetIdentity | undefined, endpoint: Meta): { cluster: string; conflict: boolean } {
+  const meta = target?.node.meta;
+  if (!meta || meta.resolved !== 'eks') return { cluster: '', conflict: false };
+  let identity = meta;
+  if (Array.isArray(meta.members)) {
+    // Group metadata retains the first replica's pod. Only the exact shown member
+    // can validate another replica; absent member evidence permits a bare IP join only.
+    const members = list(meta.memberIdentities).map(record).filter(member => text(member.id) === target!.value);
+    if (!members.length) return { cluster: '', conflict: false };
+    const identities = new Set(members.map(member => key(text(member.pod), text(member.namespace))));
+    if (identities.size !== 1) return { cluster: '', conflict: true };
+    identity = members[0];
+  }
+  const pod = text(identity.pod), namespace = text(identity.namespace);
+  const conflict = Boolean(
+    (pod && text(endpoint.podName) && pod !== endpoint.podName)
+    || (namespace && text(endpoint.podNamespace) && namespace !== endpoint.podNamespace),
+  );
+  const completeMember = !Array.isArray(meta.members) || Boolean(pod && namespace);
+  return { cluster: completeMember ? text(meta.cluster) : '', conflict };
+}
+
+/** Fixed-field tuples are independent of object/row ordering and tolerate malformed metadata. */
+function observationIdentity(observation: Meta, flow: Meta): string {
+  const endpointIdentity = (endpoint: unknown) => {
+    const data = record(endpoint);
+    return ['ip', 'instanceId', 'subnetId', 'az', 'vpcId', 'region', 'podName', 'podNamespace', 'serviceName']
+      .map(field => text(data[field]));
+  };
+  const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+  return JSON.stringify([
+    ['monitor', 'metric', 'category', 'startTime', 'endTime', 'queriedAt'].map(field => text(observation[field])),
+    number(observation.rangeSec), endpointIdentity(flow.local), endpointIdentity(flow.remote),
+    number(flow.targetPort), text(flow.category), text(flow.snatIp), text(flow.dnatIp),
+    number(flow.value), text(flow.unit), text(observation.unit),
+    [...new Set(strings(flow.traversed))].sort(), [...new Set(strings(flow.traversedIds))].sort(),
+  ]);
+}
+
 /** Keep source records separate; identity edges express correlation, never a traced request. */
 export function buildE2eGraph(input: E2eInput): E2eGraph {
   const graph: E2eGraph = {
@@ -97,6 +136,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
   };
   const { nodes, edges, summary } = graph;
   const present = new Set<string>();
+  const edgeOccurrences = new Map<string, number>();
   const addNode = (node: E2eNode) => {
     if (present.has(node.id)) return;
     present.add(node.id);
@@ -104,7 +144,10 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
   };
   const addEdge = (edge: Omit<E2eEdge, 'id'>) => {
     if (present.has(edge.source) && present.has(edge.target)) {
-      edges.push({ ...edge, id: `edge:${key(input.account, String(edges.length))}` });
+      const identity = key(input.account, edge.source, edge.target, edge.evidence, edge.relation);
+      const occurrence = edgeOccurrences.get(identity) ?? 0;
+      edgeOccurrences.set(identity, occurrence + 1);
+      edges.push({ ...edge, id: `edge:${key(identity, String(occurrence))}` });
     }
   };
   for (const raw of list(input.configured?.nodes)) {
@@ -151,7 +194,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
   const targets = targetIndex(nodes, edges);
   const workloads = workloadIndex(nodes);
 
-  const correlate = (endpoint: E2eNode, monitorCluster: string, side: Side) => {
+  const correlate = (endpoint: E2eNode, side: Side) => {
     const data = record(endpoint.meta.endpoint);
     const region = text(data.region), vpcId = text(data.vpcId);
     const candidates = new Map<string, TargetIdentity>();
@@ -164,15 +207,13 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       }
     }
     const target = candidates.size === 1 ? [...candidates.values()][0] : undefined;
-    const targetCluster = target?.node.meta.resolved === 'eks' ? text(target.node.meta.cluster) : '';
-    const localCluster = side === 'local' ? monitorCluster : '';
-    const cluster = localCluster || targetCluster;
+    // A monitor's name-derived cluster is a display hint, never identity evidence.
+    const { cluster, conflict } = targetWorkload(target, data);
     const namespace = text(data.podNamespace), pod = text(data.podName);
     const matches = cluster && namespace && pod
       ? [...(workloads.get(key(cluster, namespace, pod)) ?? [])] : [];
     // Do not choose a winner among conflicting scopes, target records, or workload memberships.
-    const conflictingClusters = localCluster && targetCluster && localCluster !== targetCluster;
-    if (candidates.size > 1 || matches.length > 1 || conflictingClusters) {
+    if (candidates.size > 1 || matches.length > 1 || conflict) {
       endpoint.meta.correlation = 'ambiguous';
       summary.ambiguousEndpoints++;
       return;
@@ -192,9 +233,9 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
         source: endpoint.id, target: matches[0].id, relation: 'same-identity',
         evidence: 'identity', directed: false,
         meta: {
-          match: localCluster ? 'monitor-cluster' : 'configured-cluster',
+          match: 'configured-cluster',
           account: input.account, cluster, namespace, pod, side,
-          ...(!localCluster && target ? { viaTarget: target.node.id, region, vpcId } : {}),
+          viaTarget: target!.node.id, region, vpcId,
         },
       });
     }
@@ -203,12 +244,16 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     else summary.unmatchedEndpoints++;
   };
 
-  list(input.network).forEach((rawObservation, observationIndex) => {
+  const flowOccurrences = new Map<string, number>();
+  list(input.network).forEach(rawObservation => {
     const observation = record(rawObservation);
-    list(observation.rows).forEach((rawFlow, rowIndex) => {
+    list(observation.rows).forEach(rawFlow => {
       if (!rawFlow || typeof rawFlow !== 'object' || Array.isArray(rawFlow)) return;
       const flow = record(rawFlow);
-      const connectionId = nodeId('network', input.account, 'connection', String(observationIndex), String(rowIndex));
+      const identity = observationIdentity(observation, flow);
+      const occurrence = flowOccurrences.get(identity) ?? 0;
+      flowOccurrences.set(identity, occurrence + 1);
+      const connectionId = nodeId('network', input.account, 'connection', identity, String(occurrence));
       addNode({
         id: connectionId, kind: 'connection', label: text(observation.metric) || '네트워크 관측', layer: 'network',
         meta: {
@@ -224,7 +269,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       for (const side of ['local', 'remote'] as const) {
         const data = record(flow[side]);
         const endpoint: E2eNode = {
-          id: nodeId('network', input.account, 'endpoint', String(observationIndex), String(rowIndex), side),
+          id: nodeId('network', input.account, 'endpoint', identity, String(occurrence), side),
           kind: 'endpoint', layer: 'network',
           label: text(data.podName) || text(data.instanceId) || text(data.ip)
             || (side === 'local' ? '로컬 엔드포인트' : '원격 엔드포인트'),
@@ -235,7 +280,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
           source: endpoint.id, target: connectionId, relation: side,
           evidence: 'network', directed: false, meta: { side },
         });
-        correlate(endpoint, text(observation.cluster), side);
+        correlate(endpoint, side);
       }
 
       // The input list's order is retained in meta.flow for inspection, never as hop edges.
@@ -263,9 +308,18 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
   return graph;
 }
 
-/** Search metadata values as well as visible labels; malformed/cyclic metadata stays harmless. */
-function matchesQuery(node: E2eNode, query: string): boolean {
-  const pending: unknown[] = [node.id, node.label, node.kind, node.meta];
+/** Shared canvas/view search; empty queries match every eligible node. */
+export function matchesE2eQuery(node: E2eNode, query: string): boolean {
+  query = query.trim().toLowerCase();
+  if (!query) return true;
+  if (node.id.toLowerCase() === query) return true;
+  // Network IDs/link references encode an entire connection. Searching their
+  // internals would make a remote endpoint falsely match the local pod or metric.
+  const metadata = node.layer === 'network'
+    ? Object.entries(node.meta).filter(([field]) => field !== 'connectionId').map(([, value]) => value)
+    : node.meta;
+  const pending: unknown[] = [node.label, node.kind, node.layer, metadata];
+  if (node.layer !== 'network') pending.push(node.id);
   const seen = new Set<object>();
   while (pending.length) {
     const value = pending.pop();
@@ -273,7 +327,7 @@ function matchesQuery(node: E2eNode, query: string): boolean {
       if (String(value).toLowerCase().includes(query)) return true;
     } else if (value && typeof value === 'object' && !seen.has(value)) {
       seen.add(value);
-      pending.push(...Object.values(value));
+      for (const nested of Object.values(value)) pending.push(nested);
     }
   }
   return false;
@@ -282,6 +336,20 @@ function matchesQuery(node: E2eNode, query: string): boolean {
 const bound = (value: number | undefined, fallback: number): number =>
   value === undefined || !Number.isFinite(value) ? fallback : Math.max(0, Math.floor(value));
 
+/** Enabled relations keep their endpoints, including cross-layer identity/context evidence. */
+export function filterE2eGraph(graph: E2eGraph, evidence?: E2eEvidence[]): Pick<E2eGraph, 'nodes' | 'edges'> {
+  const present = new Set(graph.nodes.map(node => node.id));
+  const enabled = evidence === undefined ? null : new Set(evidence);
+  const edges = graph.edges.filter(edge => present.has(edge.source) && present.has(edge.target)
+    && (!enabled || enabled.has(edge.evidence)));
+  const incident = new Set(edges.flatMap(edge => [edge.source, edge.target]));
+  const nodes = graph.nodes.filter(node => {
+    const ownEvidence = node.layer === 'network' && node.kind === 'construct' ? 'context' : node.layer;
+    return !enabled || enabled.has(ownEvidence) || incident.has(node.id);
+  });
+  return { nodes, edges };
+}
+
 /**
  * Focus/search select connected evidence in both directions, preserving edge direction for display.
  * Context attaches once after traversal: a shared NAT/TGW never grants transit reachability.
@@ -289,15 +357,10 @@ const bound = (value: number | undefined, fallback: number): number =>
  * only, after evidence/focus/search filters.
  */
 export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eView {
-  const byId = new Map(graph.nodes.map(node => [node.id, node]));
-  const evidence = selection.evidence === undefined ? null : new Set(selection.evidence);
-  const edges = graph.edges.filter(edge => byId.has(edge.source) && byId.has(edge.target)
-    && (!evidence || evidence.has(edge.evidence)));
-  const incident = new Set(edges.flatMap(edge => [edge.source, edge.target]));
-  const eligible = new Set(graph.nodes.filter(node => {
-    const ownEvidence: E2eEvidence = node.layer === 'network' && node.kind === 'construct' ? 'context' : node.layer;
-    return !evidence || evidence.has(ownEvidence) || incident.has(node.id);
-  }).map(node => node.id));
+  const filtered = filterE2eGraph(graph, selection.evidence);
+  const byId = new Map(filtered.nodes.map(node => [node.id, node]));
+  const edges = filtered.edges;
+  const eligible = new Set(byId.keys());
   const adjacency = new Map<string, string[]>();
   for (const edge of edges) {
     if (edge.evidence === 'context') continue;
@@ -327,25 +390,100 @@ export function selectE2eGraph(graph: E2eGraph, selection: E2eSelection): E2eVie
     }
     return visited;
   };
-  let selected = selection.focusId
-    ? reachable([selection.focusId], eligible) : eligible;
+  const focusId = selection.focusId && eligible.has(selection.focusId) ? selection.focusId : null;
+  let selected = focusId ? reachable([focusId], eligible) : eligible;
   const query = selection.query?.trim().toLowerCase() ?? '';
   let matchedNodes = selected.size;
+  let matches: string[] = [];
   if (query) {
-    const matches = [...selected].filter(id => matchesQuery(byId.get(id)!, query));
+    matches = [...selected].filter(id => matchesE2eQuery(byId.get(id)!, query));
     matchedNodes = matches.length;
     selected = reachable(matches, selected);
-    // An explicit focus and all exact query hits take precedence over traversal neighbors.
-    if (selection.focusId && selected.has(selection.focusId)) {
-      selected = new Set([selection.focusId, ...selected]);
-    }
   }
   const selectedEdges = edges.filter(edge => selected.has(edge.source) && selected.has(edge.target));
-  const nodes = [...selected].slice(0, bound(selection.maxNodes, 350)).map(id => byId.get(id)!);
-  const visibleIds = new Set(nodes.map(node => node.id));
+  const maxNodes = bound(selection.maxNodes, 350);
+  const maxEdges = bound(selection.maxEdges, 700);
+  const visibleIds = new Set<string>();
+  const add = (id: string) => {
+    if (selected.has(id) && visibleIds.size < maxNodes) visibleIds.add(id);
+  };
+  const groups = new Map<string, Set<string>>();
+  const groupEdges = new Map<string, E2eEdge[]>();
+  const groupOf = new Map<string, string>();
+  const identityContext = new Map<string, Set<string>>();
+  for (const id of selected) {
+    if (byId.get(id)?.kind === 'connection' && byId.get(id)?.layer === 'network') {
+      groups.set(id, new Set([id]));
+      groupOf.set(id, id);
+    }
+  }
+  for (const edge of selectedEdges) {
+    if (edge.evidence === 'network') {
+      for (const [connection, endpoint] of [[edge.source, edge.target], [edge.target, edge.source]]) {
+        if (groups.has(connection) && byId.get(endpoint)?.kind === 'endpoint') {
+          groups.get(connection)!.add(endpoint);
+          groupOf.set(endpoint, connection);
+          const connections = groupEdges.get(connection) ?? [];
+          connections.push(edge);
+          groupEdges.set(connection, connections);
+        }
+      }
+    }
+    if (edge.evidence === 'identity') {
+      for (const [source, target] of [[edge.source, edge.target], [edge.target, edge.source]]) {
+        const context = identityContext.get(source) ?? new Set<string>();
+        context.add(target);
+        identityContext.set(source, context);
+      }
+    }
+  }
+  const reservedNetworkEdges = new Set<string>();
+  const addGroup = (connection: string) => {
+    const group = groups.get(connection)!;
+    const missing = [...group].filter(id => !visibleIds.has(id));
+    const requiredEdges = (groupEdges.get(connection) ?? []).filter(edge => !reservedNetworkEdges.has(edge.id));
+    if (missing.length > maxNodes - visibleIds.size
+      || requiredEdges.length > maxEdges - reservedNetworkEdges.size) return;
+    // Never spend the residual budget on half of an unselected connection.
+    for (const id of group) add(id);
+    for (const edge of requiredEdges) reservedNetworkEdges.add(edge.id);
+    for (const id of group) {
+      for (const context of [...(identityContext.get(id) ?? [])].sort()) add(context);
+    }
+  };
+  const networkRank = (id: string) => byId.get(id)?.kind === 'connection' ? 0 : groupOf.has(id) ? 1 : 2;
+  const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+  matches.sort((a, b) => networkRank(a) - networkRank(b) || compare(a, b));
+  if (focusId) add(focusId);
+  if (new Set([...(focusId && selected.has(focusId) ? [focusId] : []), ...matches]).size <= maxNodes) {
+    // When all explicit hits fit, none may be displaced by a traversal neighbor.
+    for (const id of matches) add(id);
+    for (const edge of selectedEdges) {
+      if (edge.evidence === 'network' && visibleIds.has(edge.source) && visibleIds.has(edge.target)) {
+        reservedNetworkEdges.add(edge.id);
+      }
+    }
+  } else {
+    // An overfull query must still show complete matching observations before
+    // spending the budget on hundreds of matching configuration records.
+    for (const id of matches) {
+      const connection = groupOf.get(id);
+      if (connection) addGroup(connection);
+      add(id);
+    }
+  }
+  const orderedGroups = [...groups.keys()].sort((a, b) => {
+    const pinned = (id: string) => [...groups.get(id)!].some(member => visibleIds.has(member));
+    return Number(pinned(b)) - Number(pinned(a)) || compare(a, b);
+  });
+  for (const connection of orderedGroups) addGroup(connection);
+  for (const id of selected) if (!groupOf.has(id)) add(id);
+  const nodes = [...visibleIds].map(id => byId.get(id)!);
+  const edgePriority: Record<E2eEvidence, number> = { network: 0, identity: 1, context: 2, service: 3, configuration: 4 };
   const visibleEdges = selectedEdges
     .filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target))
-    .slice(0, bound(selection.maxEdges, 700));
+    .sort((a, b) => edgePriority[a.evidence] - edgePriority[b.evidence])
+    .slice(0, maxEdges);
   return {
     nodes, edges: visibleEdges, matchedNodes,
     omittedNodes: selected.size - nodes.length,

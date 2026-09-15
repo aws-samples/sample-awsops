@@ -4,6 +4,7 @@ import type { NfmCategory, NfmFlowRow, NfmMetric } from './nfm';
 export type E2eEvidence = 'configuration' | 'service' | 'network' | 'identity' | 'context';
 export type E2eLayer = 'configuration' | 'service' | 'network';
 export interface E2eNode {
+  /** Stable source/content identity; network IDs are opaque to substring search. */
   id: string;
   kind: string;
   label: string;
@@ -27,6 +28,7 @@ export interface ServiceSnapshot {
 }
 export interface NetworkObservation {
   monitor: string;
+  /** Name-derived display hint only; never proof of endpoint/workload membership. */
   cluster: string | null;
   metric: NfmMetric;
   category: NfmCategory;
@@ -67,7 +69,9 @@ export interface E2eSelection {
 export interface E2eView {
   nodes: E2eNode[];
   edges: E2eEdge[];
+  /** Display-budget omissions after eligibility and focus/query reachability. */
   omittedNodes: number;
   omittedEdges: number;
+  /** Eligible query hits before caps, or the selected node count without a query. */
   matchedNodes: number;
 }
