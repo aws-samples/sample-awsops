@@ -97,6 +97,43 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
         reasons: [], windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }),
     }]);
 
+  it('retains trace rows while a legacy empty producer has no collection marker', async () => {
+    await trace();
+    const previous = await state('trace');
+    producer.invoke.mockResolvedValue({ traces: [] });
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + 1);
+    try {
+      expect(await rebuildTraceGraph(pool, [new TempoTraceSource(7)]))
+        .toMatchObject({ published: 0, retained: 1 });
+    } finally { clock.mockRestore(); }
+    expect(await state('trace')).toMatchObject({ status: 'partial', retainedPrevious: true,
+      captured_at: previous.captured_at });
+    expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
+  });
+
+  it.each(['flow', 'infra'])('%s discovers a first-empty member from real participation snapshots', async cls => {
+    const account = '111122223333';
+    await pool.query(`INSERT INTO accounts(account_id,alias,external_id,all_regions)
+      VALUES ($1,'fixture','fixture-only',true)`, [account]);
+    await pool.query(`INSERT INTO inventory_snapshots(account_id,captured_at,resource_type,resource_count)
+      SELECT $1,$2,t,0 FROM unnest($3::text[]) t`,
+    [account, recent, requiredTypes.filter(t => !HOST_ONLY_TREND_TYPES.has(t))]);
+    expect((await pool.query('SELECT * FROM inventory_resources')).rowCount).toBe(0);
+    await build(cls);
+    expect(await state(cls, account)).toMatchObject({ status: 'empty', retainedPrevious: false });
+    expect((await state(cls, account)).captured_at).not.toBeNull();
+  });
+
+  it('discovers an enabled member without inventing participation or empty proof', async () => {
+    const account = '111122223333';
+    await pool.query(`INSERT INTO accounts(account_id,alias,external_id,all_regions)
+      VALUES ($1,'fixture','fixture-only',true)`, [account]);
+    expect(await inventoryAccounts(pool, 'infra', INFRA_TYPES)).toContain(account);
+    await build('infra');
+    expect((await state('infra', account)).status).not.toBe('empty');
+    expect((await state('infra', account)).captured_at).toBeNull();
+  });
+
   it.each(tempoContracts)('Tempo producer $name preserves the graph unless empty is confirmed', async fixture => {
     await trace();
     const previous = await state('trace');
@@ -128,20 +165,29 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     }));
     expect((await pool.query("SELECT * FROM topology_nodes WHERE account_id='111122223333'")).rowCount).toBeGreaterThan(0);
   });
-  it.each([1, null])('publishes succeeded enumeration with unknown attributes %s after pruning', async unknown => {
-    await seed('infra');
-    await build('infra');
+  it.each([
+    ['flow', 1], ['flow', null], ['infra', 1], ['infra', null],
+  ] as const)('%s preserves nonempty partial publication but retains unknown-attribute zero %s', async (cls, unknown) => {
+    const type = cls === 'flow' ? 'alb' : 'vpc';
+    await seed(cls);
+    await build(cls);
     await pool.query("UPDATE inventory_resources SET resource_id='replacement'");
-    await pool.query("UPDATE inventory_sync_runs SET unknown_attribute_count=$1 WHERE resource_type='vpc'", [unknown]);
-    const result = await build('infra');
+    await pool.query('UPDATE inventory_sync_runs SET unknown_attribute_count=$1 WHERE resource_type=$2', [unknown, type]);
+    const result = await build(cls);
     expect(result).toMatchObject({ published: 1, retained: 0, degraded: 1 });
-    expect(await state('infra')).toMatchObject({ status: 'partial', retainedPrevious: false, stale: true });
-    expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows)
-      .toEqual([{ id: 'vpc:replacement' }]);
+    const previous = await state(cls);
+    expect(previous).toMatchObject({ status: 'partial', retainedPrevious: false, stale: true });
+    const nodes = (await pool.query('SELECT id FROM topology_nodes WHERE class=$1', [cls])).rows;
+    expect(nodes).toHaveLength(1);
     await pool.query('DELETE FROM inventory_resources; UPDATE inventory_sync_runs SET row_count=0');
-    await build('infra');
-    expect(await state('infra')).toMatchObject({ status: 'partial', retainedPrevious: false });
-    expect((await pool.query("SELECT * FROM topology_nodes WHERE class='infra'")).rows).toEqual([]);
+    expect((await pool.query('SELECT row_count FROM inventory_sync_runs WHERE resource_type=$1', [type])).rows[0].row_count).toBe(0);
+    expect(await build(cls)).toMatchObject({ published: 0, retained: 1 });
+    expect(await state(cls)).toMatchObject({ status: 'partial', retainedPrevious: true, captured_at: previous.captured_at });
+    expect((await pool.query('SELECT id FROM topology_nodes WHERE class=$1', [cls])).rows).toEqual(nodes);
+    await pool.query('UPDATE inventory_sync_runs SET unknown_attribute_count=0');
+    expect(await build(cls)).toMatchObject({ published: 1, retained: 0 });
+    expect(await state(cls)).toMatchObject({ status: 'empty', retainedPrevious: false });
+    expect((await pool.query('SELECT id FROM topology_nodes WHERE class=$1', [cls])).rows).toEqual([]);
   });
   it.each([2, null])('retains a prior graph when nonempty input cannot reconcile producer count %s', async count => {
     await seed('infra');
@@ -644,7 +690,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   it.each(['partial', 'running', 'missing', 'unknown_attributes'])('does not sweep an empty %s collection', async mode => {
     await seed('infra');
     await build('infra');
-    await pool.query('DELETE FROM inventory_resources');
+    await pool.query('DELETE FROM inventory_resources; UPDATE inventory_sync_runs SET row_count=0');
     if (mode === 'missing') await pool.query('DELETE FROM inventory_sync_runs');
     else if (mode === 'unknown_attributes') await pool.query('UPDATE inventory_sync_runs SET unknown_attribute_count=NULL');
     else await pool.query('UPDATE inventory_sync_runs SET status=$1', [mode]);

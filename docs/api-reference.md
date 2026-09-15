@@ -269,7 +269,7 @@ runtime payloads for compatibility with older or malformed responses.
 The UI supports the existing trace envelope and optional inventory/saved-source
 fields emitted by the bounded publication implementation in `web/lib/graph-store.ts`.
 Source integration does not establish successful producer rollout or migration. Source details are collapsed and height-bounded; their count
-includes saved-source entries. Runtime, Lambda and migration rollout remain separate
+includes distinct displayed saved-source entries. Identical latest/saved details are shown once, with the saved-source heading and a localized “Same displayed source evidence as above.” note; differing and saved-only evidence remains visible. Runtime, Lambda and migration rollout remain separate
 from source integration. See [collection semantics and rollout](runbooks/source-sync-observability.md).
 
 
