@@ -1,0 +1,83 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import AccountOnboarding from './AccountOnboarding';
+
+const config = {
+  hostAccountId: '111111111111', hostTaskRoleArn: 'arn:aws:iam::111111111111:role/awsops-dev-task',
+  region: 'ap-northeast-2', registrationEnabled: true,
+};
+const onRegistered = vi.fn().mockResolvedValue(undefined);
+
+beforeEach(() => {
+  onRegistered.mockClear();
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
+    url === '/api/accounts/onboarding' ? config : { ok: true, status: 'verified' },
+  ))));
+});
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+async function fillAccount() {
+  await screen.findByText('12자리 Account ID를 입력하면 계정에 맞는 AWS CLI 명령어가 표시됩니다.');
+  await waitFor(() => expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).not.toBe(''));
+  fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '222222222222' } });
+  fireEvent.change(screen.getByLabelText('계정 별칭'), { target: { value: 'Production' } });
+}
+
+describe('account onboarding flow', () => {
+  it('shows personalized commands after account entry and registers with the same ExternalId', async () => {
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    const externalId = (screen.getByLabelText('ExternalId') as HTMLInputElement).value;
+    expect(screen.getByText(config.hostTaskRoleArn)).toBeTruthy();
+    expect(screen.getByText(/set -euo pipefail/).textContent).toContain(`ExternalId=${externalId}`);
+    fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));
+    await screen.findByText('등록·검증 완료');
+    expect(fetch).toHaveBeenCalledWith('/api/accounts', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ accountId: '222222222222', alias: 'Production', region: 'ap-northeast-2', externalId, firstParty: false }),
+    }));
+    expect(onRegistered).toHaveBeenCalledOnce();
+    expect((screen.getByLabelText('ExternalId') as HTMLInputElement).value).toBe(externalId);
+  });
+  it('regenerates commands on edits and removes them for invalid or host account IDs', async () => {
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '333333333333' } });
+    expect(screen.getByText(/set -euo pipefail/).textContent).toContain("target_account='333333333333'");
+    fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '123' } });
+    expect(screen.queryByRole('button', { name: '스크립트 다운로드 (.sh)' })).toBeNull();
+    expect((screen.getByRole('button', { name: '연결 확인 및 등록' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: config.hostAccountId } });
+    expect(screen.getByText('호스트 계정은 이미 연결되어 있습니다.')).toBeTruthy();
+  });
+  it('makes host-only registration restrictions visible before any attempt', async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ ...config, registrationEnabled: false })));
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    expect(screen.getByText('현재 환경은 호스트 계정만 수집합니다.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '스크립트 다운로드 (.sh)' })).toBeTruthy();
+    const register = screen.getByRole('button', { name: '연결 확인 및 등록' });
+    expect((register as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(register);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it('preserves inputs after failed verification and permits retry', async () => {
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    await fillAccount();
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ message: 'AccessDenied' }), { status: 400 }));
+    fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));
+    await screen.findByText('연결 확인 실패: AccessDenied');
+    expect(onRegistered).not.toHaveBeenCalled();
+    expect((screen.getByLabelText('Account ID') as HTMLInputElement).value).toBe('222222222222');
+    fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));
+    await screen.findByText('등록·검증 완료');
+  });
+  it('shows configuration errors and retries without leaving a usable stale script', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('offline'));
+    render(<AccountOnboarding onRegistered={onRegistered} />);
+    fireEvent.click(await screen.findByRole('button', { name: '다시 시도' }));
+    await fillAccount();
+    expect(screen.getByRole('button', { name: '스크립트 다운로드 (.sh)' })).toBeTruthy();
+  });
+});
