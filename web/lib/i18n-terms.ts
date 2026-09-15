@@ -154,6 +154,9 @@ export const TERMS: Record<string, Pair> = {
   '관측에 경유 구성요소 정보가 없습니다.': { en: 'This observation has no traversed-component information.', zh: '此观测不含途经组件信息。', ja: 'この観測には経由コンポーネントの情報がありません。' },
   '추정 관계': { en: 'Inferred relationship', zh: '推断关系', ja: '推定関係' },
 
+  '수집 완료 여부 미확인 — 빈 결과를 확정할 수 없습니다.': { en: 'Collection completion is unverified — empty results are not confirmed.', zh: '尚未确认采集完成，无法确认结果为空。', ja: '収集完了が未確認のため、空の結果を確定できません。' },
+  '부분 결과 — 전체 범위를 확인할 수 없습니다.': { en: 'Partial results — full coverage is not confirmed.', zh: '结果不完整，尚未确认完整覆盖范围。', ja: '部分的な結果のため、全範囲の確認はできていません。' },
+  '응답 형식 오류': { en: 'Invalid response format', zh: '响应格式无效', ja: '応答形式が無効です' },
   'ExternalId 초안은 이 브라우저 세션에 보존됩니다. 계정을 바꾸거나 폼을 다시 열면 생략에 다시 동의해야 합니다. 새 세션에서는 기존 스크립트 또는 역할에서 값을 확인하세요.': { en: 'Draft ExternalIds are retained in this browser session. Switching accounts or reopening the form requires renewed omission consent. In a new session, retrieve the value from the original script or role.', zh: 'ExternalId 草稿保留在此浏览器会话中。切换账户或重新打开表单后，须重新同意省略。新会话中请从原脚本或角色获取该值。', ja: 'ExternalId の下書きはこのブラウザセッションに保存されます。アカウントの切り替えやフォームの再表示後は省略への再同意が必要です。新しいセッションでは元のスクリプトまたはロールで値を確認してください。' },
   '계정 목록을 불러오지 못했습니다. 페이지를 새로고침하세요.': { en: 'Could not load the account list. Reload the page.', zh: '无法加载账户列表，请刷新页面。', ja: 'アカウント一覧を読み込めませんでした。ページを再読み込みしてください。' },
   '등록된 계정 정보를 확인하는 중…': { en: 'Checking registered accounts…', zh: '正在检查已注册账户…', ja: '登録済みアカウントを確認中…' },

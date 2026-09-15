@@ -8,6 +8,8 @@ X-Scope-OrgID; trace_id is hex-validated then URL-quoted (path injection defense
 responses have NO envelope `status` field → success = HTTP 2xx. Trace payloads can be multi-MB →
 bound trace count + per-trace bytes (UTF-8) + ensure_ascii=False. Stdlib + boto3 only.
 """
+import base64
+import binascii
 import json
 import re
 import time
@@ -22,6 +24,7 @@ from datasource_http import (
 
 SLUG = "tempo"
 MAX_TRACES = 50
+DEFAULT_SEARCH_LIMIT = 20
 MAX_TOTAL_BYTES = 1_000_000  # cap serialized trace payload well under the 6 MB Lambda limit
 MAX_SCHEMA_TAGS = 200
 MAX_SCHEMA_BYTES = 64_000
@@ -73,14 +76,14 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params=None, *, timeout=None):
+def _get(creds, path, params=None, *, timeout=None, with_status=False):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
     request_options = {"timeout": timeout} if timeout is not None else {}
     status, data = http_json("GET", url, headers=_headers(creds), **request_options)
     if status >= 400:  # Tempo has no envelope status → HTTP 2xx is success
         detail = (data.get("raw") or data.get("error") or data) if isinstance(data, dict) else data
         raise _ApiError(f"Tempo HTTP {status}: {str(detail)[:300]}", status)
-    return data
+    return (data, status) if with_status else data
 
 
 def _byte_bound(obj):
@@ -88,8 +91,139 @@ def _byte_bound(obj):
     body = json.dumps(obj, default=str, ensure_ascii=False)
     if len(body.encode("utf-8")) <= MAX_TOTAL_BYTES:
         return obj, False
-    return {"truncated": True, "note": f"trace payload exceeded {MAX_TOTAL_BYTES} bytes; fetch fewer/narrower",
-            "preview": body[:2000]}, True
+    return {"truncated": True,
+            "note": f"trace payload exceeded {MAX_TOTAL_BYTES} bytes; fetch fewer/narrower"}, True
+
+
+def _proto_integer(value, bits, signed=False):
+    if isinstance(value, str) and len(value) <= 20 and re.fullmatch(r"-?(0|[1-9][0-9]*)", value):
+        value = int(value)
+    return (type(value) is int and (-(1 << (bits - 1)) if signed else 0) <= value
+            < (1 << (bits - int(signed))))
+
+def _trace_identity(value, size, allow_zero=False):
+    if not isinstance(value, str) or not value:
+        return None
+    if len(value) <= size * 2 and _HEX.fullmatch(value):
+        if size == 8 and len(value) != 16:
+            return None
+        decoded = bytes.fromhex(value.zfill(size * 2))
+    else:
+        if len(value) != ((size + 2) // 3) * 4:
+            return None
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except (ValueError, binascii.Error):
+            return None
+        if len(decoded) != size or base64.b64encode(decoded).decode() != value:
+            return None
+    return decoded if allow_zero or any(decoded) else None
+
+def _valid_trace_span(span, trace_id):
+    if (not isinstance(span, dict) or not _trace_identity(span.get("spanId"), 8)
+            or not all(_proto_integer(span.get(key), 64) for key in ("startTimeUnixNano", "endTimeUnixNano"))
+            or int(span["endTimeUnixNano"]) < int(span["startTimeUnixNano"])
+            or ("traceId" in span and _trace_identity(span["traceId"], 16) != trace_id)):
+        return False
+    if "parentSpanId" in span and span["parentSpanId"] != "" and _trace_identity(span["parentSpanId"], 8, True) is None:
+        return False
+    if "name" in span and not isinstance(span["name"], str):
+        return False
+    if "status" in span:
+        if not isinstance(span["status"], dict):
+            return False
+        code = span["status"].get("code", 0)
+        if (type(code) not in (int, str)
+                or str(code).upper().removeprefix("STATUS_CODE_") not in ("0", "1", "2", "UNSET", "OK", "ERROR")):
+            return False
+    if "links" in span and (not isinstance(span["links"], list) or any(
+            not isinstance(link, dict) or not _trace_identity(link.get("traceId"), 16)
+            or not _trace_identity(link.get("spanId"), 8) for link in span["links"])):
+        return False
+    return True
+
+_TRACE_ATTRIBUTES = {
+    "service.name", "service.namespace", "service.version", "cloud.account.id", "cloud.region",
+    "deployment.environment.name", "deployment.environment", "k8s.namespace.name",
+    "k8s.cluster.name", "k8s.pod.name", "k8s.deployment.name", "db.system", "db.name",
+    "server.address", "server.port", "net.peer.name", "net.peer.port", "peer.service",
+    "messaging.system", "messaging.destination.name", "messaging.destination",
+}
+
+def _json_size(value):
+    return len(json.dumps(value, default=str, ensure_ascii=False).encode("utf-8"))
+
+def _trace_attributes(value):
+    if not isinstance(value, list):
+        return None
+    selected = {}
+    for entry in value:
+        if (not isinstance(entry, dict) or not isinstance(entry.get("key"), str)
+                or not entry["key"] or not isinstance(entry.get("value"), dict)):
+            return None
+        if entry["key"] in _TRACE_ATTRIBUTES:
+            selected[entry["key"]] = entry  # Preserve last-value identity semantics, never shorten IDs.
+    return list(selected.values())
+
+def _trace_projection(data, requested_trace_id):
+    """Over-budget only: retain scoped identities/timing in valid OTLP, never a fake empty."""
+    if (not isinstance(data, dict) or "error" in data or data.get("status") == "error"
+            or data.get("collectionStatus") == "error"):
+        return None
+    key = "batches" if "batches" in data else "resourceSpans"
+    batches = data.get(key)
+    trace_id = _trace_identity(requested_trace_id, 16)
+    if not isinstance(batches, list) or trace_id is None:
+        return None
+    out = {"truncated": True, "projection": "bounded_otlp",
+           "note": "Trace payload exceeded byte budget; bounded span projection", key: []}
+    used = _json_size(out)
+    for batch in batches:
+        if not isinstance(batch, dict) or not isinstance(batch.get("resource", {}), dict):
+            return None
+        resource_attrs = _trace_attributes(batch.get("resource", {}).get("attributes", []))
+        scopes = batch.get("scopeSpans", batch.get("instrumentationLibrarySpans"))
+        if resource_attrs is None or not isinstance(scopes, list):
+            return None
+        for scope in scopes:
+            if not isinstance(scope, dict) or not isinstance(scope.get("spans"), list):
+                return None
+            group = {"resource": {"attributes": resource_attrs}, "scopeSpans": [{"spans": []}]}
+            group_cost = _json_size(group) + 2
+            for span in scope["spans"]:
+                # Validate before spending output budget. Never turn malformed
+                # fitting spans into apparently usable projected evidence.
+                if not _valid_trace_span(span, trace_id):
+                    return None
+                projected = {field: span[field] for field in (
+                    "traceId", "spanId", "parentSpanId", "kind", "startTimeUnixNano", "endTimeUnixNano",
+                ) if field in span}
+                if "name" in span and _json_size(span["name"]) <= 1024:
+                    projected["name"] = span["name"]
+                if "status" in span:
+                    if not isinstance(span["status"], dict):
+                        return None
+                    projected["status"] = {k: v for k, v in span["status"].items() if k == "code"}
+                span_attrs = _trace_attributes(span.get("attributes", []))
+                if span_attrs is None:
+                    return None
+                projected["attributes"] = span_attrs
+                if "links" in span:
+                    if not isinstance(span["links"], list) or any(not isinstance(link, dict) for link in span["links"]):
+                        return None
+                    projected["links"] = [{k: v for k, v in link.items() if k in ("traceId", "spanId")}
+                                          for link in span["links"][:64]]
+                cost = _json_size(projected) + 2
+                if used + group_cost + cost > MAX_TOTAL_BYTES:
+                    return out if out[key] else {"truncated": True, "note": "payload omitted at byte limit",
+                                                "tracePayloadTruncated": True, "collectionStatus": "partial"}
+                if group_cost:
+                    out[key].append(group)
+                    used += group_cost
+                    group_cost = 0
+                group["scopeSpans"][0]["spans"].append(projected)
+                used += cost
+    return out if out[key] else None
 
 
 def tempo_search(args):
@@ -97,15 +231,48 @@ def tempo_search(args):
     if not query:
         return err("query (TraceQL) required")
     params = {"q": query, "start": _parse_time_s(args.get("start"), 3600), "end": _parse_time_s(args.get("end"))}
-    if args.get("limit"):
-        params["limit"] = str(args["limit"])
-    data = _get(_ds(), "/api/search", params)
-    traces = data.get("traces", []) if isinstance(data, dict) else []
-    truncated = len(traces) > MAX_TRACES
-    payload, btr = _byte_bound({"traces": traces[:MAX_TRACES], "metrics": data.get("metrics") if isinstance(data, dict) else None})
+    params["limit"] = str(args.get("limit") or DEFAULT_SEARCH_LIMIT)
+    try:
+        requested = int(params["limit"])
+    except ValueError:
+        requested = 0
+    data, status = _get(_ds(), "/api/search", params, with_status=True)
+    if isinstance(data, dict) and (data.get("status") == "error"
+            or any(data.get(key) not in (None, "") for key in ("error", "errorType", "exception"))):
+        return err("Tempo search returned an error")
+    raw = data.get("traces") if isinstance(data, dict) else None
+    traces = raw[:MAX_TRACES] if isinstance(raw, list) else []
+    truncated = isinstance(raw, list) and len(raw) > MAX_TRACES
+    valid = (status in (200, 206) and requested > 0 and isinstance(raw, list)
+             and all(isinstance(t, dict) and isinstance(t.get("traceID"), str)
+                     and _HEX.fullmatch(t["traceID"]) for t in traces))
+    state = "unknown" if not valid else "partial" if status == 206 or truncated or len(raw) >= requested else "ok" if traces else "empty"
+    metrics = data.get("metrics") if isinstance(data, dict) else None
+    if isinstance(data, dict):
+        for key in ("warnings", "partial", "truncated"):
+            if key in data:
+                value = data[key]
+                if not (isinstance(value, list) and all(isinstance(item, str) for item in value)
+                        if key == "warnings" else type(value) is bool):
+                    state = "unknown"
+                elif value and state != "unknown":
+                    state = "partial"
+        if "metrics" in data and not isinstance(metrics, dict):
+            state = "unknown"
+    completed = metrics.get("completedJobs") if isinstance(metrics, dict) else None
+    total = metrics.get("totalJobs") if isinstance(metrics, dict) else None
+    has_job_counts = (type(completed) is int and type(total) is int
+                      and 0 <= completed <= total and total > 0)
+    proof = {"collectionReason": "count_not_confirmed"} if valid and not has_job_counts else {}
+    if state in ("ok", "empty"):
+        if not has_job_counts:
+            state = "unknown"  # Missing counters or zero jobs are not affirmative completion.
+        elif completed < total:
+            state = "partial"
+    payload, btr = _byte_bound({"traces": traces, "metrics": metrics})
     if btr:
-        return ok(payload)
-    return ok({"truncated": truncated, **payload})
+        return ok({**payload, "collectionStatus": "unknown" if state == "unknown" else "partial", **proof})
+    return ok({"truncated": truncated, **payload, "collectionStatus": state, **proof})
 
 
 def tempo_get_trace(args):
@@ -113,8 +280,16 @@ def tempo_get_trace(args):
     if not tid or not _HEX.match(tid):
         return err("trace_id must be a hex string")
     data = _get(_ds(), f"/api/traces/{quote(tid, safe='')}")
+    if isinstance(data, dict) and (data.get("status") == "error"
+            or any(data.get(key) not in (None, "") for key in ("error", "errorType", "exception"))):
+        return err("Tempo trace fetch returned an error")
     payload, btr = _byte_bound(data if isinstance(data, dict) else {"trace": data})
-    return ok({"truncated": btr, **(payload if isinstance(payload, dict) else {"trace": payload})}) if not btr else ok(payload)
+    if btr:
+        projected = _trace_projection(data, tid)
+        return ok(projected if projected is not None else {**payload, "collectionStatus": "unknown"})
+    # Only the local projection can issue the explicit no-fit marker.
+    payload = {key: value for key, value in payload.items() if key != "tracePayloadTruncated"}
+    return ok({"truncated": False, **payload})
 
 
 def tempo_search_tags(args):
@@ -358,4 +533,4 @@ def ok(body):
 
 
 def err(msg):
-    return {"statusCode": 400, "body": json.dumps({"error": msg})}
+    return {"statusCode": 400, "body": json.dumps({"error": msg, "collectionStatus": "error"})}
