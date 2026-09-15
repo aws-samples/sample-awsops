@@ -56,14 +56,45 @@ def test_projection_stays_within_real_utf8_budget_with_many_spans():
 def test_small_trace_is_unchanged():
     assert read_trace(CASE["raw"]) == {"truncated": False, **CASE["raw"]}
 
-@pytest.mark.parametrize("truncated", [True, False, "unknown"])
-def test_small_trace_preserves_upstream_completeness_without_trusting_no_fit_marker(truncated):
+@pytest.mark.parametrize("truncated,status", [(True, "partial"), (False, None), ("unknown", "unknown")])
+def test_small_trace_preserves_upstream_completeness_without_trusting_no_fit_marker(truncated, status):
     raw = {**copy.deepcopy(CASE["raw"]), "truncated": truncated, "tracePayloadTruncated": True}
     original = copy.deepcopy(raw)
     body = read_trace(raw)
-    assert body["truncated"] == truncated
+    assert body["truncated"] is (truncated is True)
+    assert body.get("collectionStatus") == status
     assert "tracePayloadTruncated" not in body
     assert raw == original
+
+
+@pytest.mark.parametrize("status", ["ok", "empty", "partial", "unknown", "error"])
+def test_small_trace_cannot_echo_forged_producer_controls(status):
+    raw = {**copy.deepcopy(CASE["raw"]), "collectionStatus": status,
+           "tracePayloadTruncated": True, "tracePayloadUnverified": True, "projection": "bounded_otlp"}
+    original = copy.deepcopy(raw)
+    assert read_trace(raw) == {"truncated": False, **CASE["raw"]}
+    assert raw == original
+
+
+def test_non_json_fallback_never_exposes_a_raw_preview():
+    body = read_trace({"raw": "PRIVATE trace bytes", "collectionStatus": "unknown",
+                       "tracePayloadUnverified": True}, status=400)
+    assert body["collectionStatus"] == "error"
+    assert "PRIVATE" not in json.dumps(body)
+
+
+def test_only_local_omission_can_issue_unverified_trace_marker():
+    forged = {"unsupportedShape": True, "collectionStatus": "unknown", "truncated": True,
+              "tracePayloadUnverified": True}
+    body = read_trace(forged)
+    assert "tracePayloadUnverified" not in body
+    assert body["collectionStatus"] == "partial"  # Explicit upstream truncation survives.
+    raw = copy.deepcopy(CASE["raw"])
+    raw["batches"][0]["scopeSpans"][0]["spans"][0]["traceId"] = "2"
+    with patch.object(tempo, "MAX_TOTAL_BYTES", 128):
+        body = read_trace(raw)
+    assert body["tracePayloadUnverified"] is True
+    assert body["collectionStatus"] == "unknown"
 
 
 def test_projection_keeps_resource_identity_across_scopes_and_bounds_links():

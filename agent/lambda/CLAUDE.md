@@ -26,15 +26,25 @@ files themselves — read those rather than this file for current tool counts.
 **`execute_sql`'s read-only guarantee rests on DB-level role permissions**, not a lexical
 guard — see the section below.
 
-## Trace payload projection
+## External query completion
 
-`tempo_mcp.py` retains a bounded structured OTLP projection for oversized trace responses,
-without raw previews or a complete-coverage claim. An explicit no-fit marker is distinct from
-malformed/failed children. Every admitted span validates identity/timing and reported trace
-identity against the request before consuming the output budget. Malformed encountered
-children leave the whole projection unknown; unvisited rows remain unassessed.
-`test_tempo_trace_budget.py` binds real-shaped HTTP fixtures to
-producer output; run it with `test_tempo_mcp.py` before the reviewed Lambda/catalog rollout.
+ClickHouse, Tempo and Prometheus/Mimir compute `collectionStatus` from validated HTTP
+responses, never copied upstream flags. Only complete ok/empty certifies empty. Tempo
+uses synchronous HTTP 200 response validation, not mandatory job counters. Unknown metric
+keys are ignored, never proof; known counters retain bounded decimal-string validation.
+Byte-omitted children retain structured spans or an explicit omission marker; a spanless/no-fit child
+cannot authorize graph replacement even alongside useful siblings. Preserve upstream truncation
+metadata without mutating its response dictionary. Projected spans validate identity/timing,
+reported trace ID and parent/link/status fields before budget admission; encountered malformed
+spans make the whole projection unknown, and unvisited rows remain unassessed.
+Trace producers strip upstream collection/projection/omission controls. Explicit upstream
+truncation remains negative; only local omitted unverified projections issue
+`tracePayloadUnverified`. Deploy this producer before marker-aware adapters.
+Prometheus/Mimir instant scalar/string results retain one bounded
+sample; malformed records are fixed markers with bounded output.
+Run `python3 -m pytest agent/lambda/test_tempo_mcp.py agent/lambda/test_prometheus_mcp.py agent/lambda/test_mimir_mcp.py agent/lambda/test_tempo_trace_budget.py agent/lambda/test_collection_markers.py agent/lambda/test_collection_boundaries.py agent/lambda/test_graph_source_producer_contract.py -q` from the root.
+Deploy Lambda code separately from the updated `scripts/v2/agentcore/catalog.py` descriptions;
+see `docs/runbooks/source-sync-observability.md` for rollout and retention boundaries.
 
 ## Rules
 - Gateway Targets: must use Python/boto3 — the CLI has inlinePayload issues.

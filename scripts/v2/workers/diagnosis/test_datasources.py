@@ -227,6 +227,24 @@ def test_partial_error_trace_count_remains_observed_evidence(monkeypatch):
     assert signal["summary"]["collectionStatus"] == "partial"
 
 
+@pytest.mark.parametrize("kind,value,valid", [("scalar", "7", True), ("string", "PRIVATE", True), ("string", "PRIVATE" * 1000, False)],
+                         ids=["scalar", "string", "oversized-string"])
+def test_non_series_pairs_never_become_two_observed_records(kind, value, valid):
+    summary = src._summarize_result({"resultType": kind, "result": [1, value],
+                                     "collectionStatus": "ok"})
+    assert summary.get("count") == (1 if valid else None)
+    assert summary.get("incomplete", False) is not valid
+    assert "observedCount" not in summary
+    assert "PRIVATE" not in json.dumps(summary)
+
+
+@pytest.mark.parametrize("rows,expected", [([None], None), ([None, {"metric": {}, "value": [1, "7"]}], 1)])
+def test_invalid_series_placeholders_do_not_count_as_observations(rows, expected):
+    summary = src._summarize_result({"resultType": "vector", "result": rows, "collectionStatus": "unknown"})
+    assert summary.get("observedCount") == expected
+    assert "count" not in summary
+
+
 @pytest.mark.parametrize("status,rows", [("empty", []), ("ok", [{"traceID": "abcdef"}])])
 def test_confirmed_connector_summaries_retain_counts(monkeypatch, status, rows):
     _patch_lambda(monkeypatch, FakeLambda(body={
@@ -385,3 +403,11 @@ def test_valid_unmarked_scalar_pair_is_one_sample_not_validation_loss():
     result = src._summarize_result({"resultType": "scalar", "result": [1, "0"]})
     assert result["count"] == 1
     assert "incomplete" not in result
+
+
+@pytest.mark.parametrize("value", [[10**1000, "0"], [1, "\ud800"], [1, "x" * 4097]])
+def test_invalid_summary_sample_bounds_remain_incomplete(value):
+    result = src._summarize_result({"resultType": "string", "result": value})
+    assert result["incomplete"] is True
+    assert result["collectionStatus"] == "partial"
+    assert "count" not in result and "observedCount" not in result

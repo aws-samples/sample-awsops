@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: a7788f531011 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b5dcef4dd3ff · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -69,12 +69,22 @@ that's the source of truth for tool counts, not this doc.
 - The ClickHouse connector has no equivalent DB-role boundary yet — there the lexical guard is
   still the primary defense.
 
-## Trace payload projection
-- Tempo oversized reads retain bounded OTLP evidence only after span identity/timing and
-  reported trace-ID checks. Encountered malformed children leave the projection unknown;
-  unvisited rows remain unassessed. No-fit markers never establish complete/empty coverage.
-- Run `test_tempo_trace_budget.py` plus `test_tempo_mcp.py`; Lambda and Gateway descriptions
-  deploy separately. Offline fixtures are not live acceptance evidence.
+## External query completion
+- Producers compute `collectionStatus`; only validated complete ok/empty certifies an empty query result.
+  Tempo uses synchronous HTTP 200 proof with negative-signal vetoes, not mandatory job counters.
+  Unknown metric fields are neither validation errors nor proof; known integer fields remain bounded.
+  Trace producers strip upstream copies of collection/projection/omission controls. Only local
+  unverified omission issues tracePayloadUnverified; upstream truncation remains negative evidence.
+  Deploy the sanitized producer before the marker-aware web adapter.
+  A spanless no-fit child retains the saved graph even with useful siblings; only parsed
+  structured spans support partial publication. Preserve upstream truncation without input mutation.
+  Projection admission validates identity/timing and reported trace-ID agreement; encountered
+  malformed spans leave the whole projection unknown. Unvisited rows remain unassessed.
+- Prometheus/Mimir instant scalar/string results retain one bounded sample; malformed records use
+  fixed markers, never raw passthrough. Output byte limits remain enforced.
+- Run the producer/completion/trace-bound suites in `agent/lambda/CLAUDE.md`. Shared fixtures bind actual
+  mocked HTTP outputs to web adapters and PostgreSQL publication/retention tests. Lambda code
+  and Gateway descriptions require separate deployment steps; no source merge activates them.
 
 ## Review checklist
 1. Any new `execute_sql`/`inventory-read` capability must go through the `sql_reader` view
