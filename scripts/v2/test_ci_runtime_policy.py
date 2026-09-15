@@ -101,6 +101,31 @@ class RuntimePolicyTests(unittest.TestCase):
                     self.assertIn("CI_STEAMPIPE_AWS_FILL_RATE_DEV", result.stderr)
                     self.assertNotIn("ci-runtime.auto.tfvars.json", result.files)
 
+    def test_rate_scope_uses_dispatch_inputs_without_inherited_sibling_environment(self):
+        from test_ci_deployment_workflows import DeploymentWorkflowTests, workflow_step, expression
+        step = workflow_step("terraform.yml", "plan", "Configure development runtime profile")
+        harness = DeploymentWorkflowTests()
+        cases = [("dev", {}, "10", 10), ("dev", {"plan_scope": "full"}, "10", 10)]
+        cases += [("dev", {"plan_scope": scope}, "invalid-unused", None)
+                  for scope in ("ecr-bootstrap", "runtime-ecr-bootstrap")]
+        cases += [(target, {"plan_scope": "full"}, "invalid-unused", None)
+                  for target in ("main", "atomoh", "ssminji", "whchoi")]
+        for target, inputs, rate, expected in cases:
+            with self.subTest(target=target, inputs=inputs):
+                context = {"github": {"event_name": "workflow_dispatch"},
+                           "inputs": {"runtime_rollout": False, **inputs},
+                           "env": {"TARGET": target}, "vars": {
+                               "CI_READONLY_RUNTIME_DEV": "true", "CI_STEAMPIPE_AWS_FILL_RATE_DEV": rate,
+                               "STEAMPIPE_IMAGE_DIGEST_DEV": DIGEST, "WORKER_IMAGE_DIGEST_DEV": DIGEST}}
+                # GitHub resolves the whole step env map against inherited context, not siblings.
+                resolved = {key: expression(value, context) for key, value in step["env"].items()}
+                self.assertEqual(resolved["CI_STEAMPIPE_AWS_FILL_RATE_DEV"], rate if expected else "")
+                result, calls = harness.run_step([step], TARGET=target, PLAN_SCOPE="", context=context)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(calls, [])
+                self.assertEqual(json.loads(result.files["ci-runtime.auto.tfvars.json"])
+                                 .get("steampipe_aws_fill_rate"), expected)
+
     def test_saved_plan_keeps_the_rate_when_later_configuration_changes(self):
         # Real provider-free Terraform input resolution: do not invent an asset format.
         for saved, rate, expected in ((None, "", 2), (3, "", 3), (3, "10", 10)):

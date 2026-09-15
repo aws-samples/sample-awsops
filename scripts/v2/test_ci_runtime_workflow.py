@@ -66,7 +66,7 @@ class RuntimeWorkflowTests(unittest.TestCase):
         step = next(s for s in workflow["jobs"]["plan"]["steps"]
                     if s.get("name") == "Configure development runtime profile")
         self.assertEqual(step["env"].get(name),
-                         "${{ env.TARGET == 'dev' && env.PLAN_SCOPE == 'full' && vars." + name + " || '' }}")
+                         "${{ env.TARGET == 'dev' && (inputs.plan_scope || 'full') == 'full' && vars." + name + " || '' }}")
         self.assertEqual(str(workflow).count(name), 2)
         self.assertNotIn(name, str(workflow["jobs"]["apply"]))
         self.assertNotIn("ci_runtime_policy.py overrides", str(workflow["jobs"]["apply"]))

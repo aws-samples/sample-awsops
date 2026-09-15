@@ -197,7 +197,7 @@ jobs:
         env:
           CI_READONLY_RUNTIME_DEV: ${{ vars.CI_READONLY_RUNTIME_DEV }}
           CI_READINESS_ENABLED_DEV: ${{ env.TARGET == 'dev' && vars.CI_READINESS_ENABLED_DEV || '' }}
-          CI_STEAMPIPE_AWS_FILL_RATE_DEV: ${{ env.TARGET == 'dev' && env.PLAN_SCOPE == 'full' && vars.CI_STEAMPIPE_AWS_FILL_RATE_DEV || '' }}
+          CI_STEAMPIPE_AWS_FILL_RATE_DEV: ${{ env.TARGET == 'dev' && (inputs.plan_scope || 'full') == 'full' && vars.CI_STEAMPIPE_AWS_FILL_RATE_DEV || '' }}
           STEAMPIPE_IMAGE_DIGEST_DEV: ${{ vars.STEAMPIPE_IMAGE_DIGEST_DEV }}
           WORKER_IMAGE_DIGEST_DEV: ${{ vars.WORKER_IMAGE_DIGEST_DEV }}
           RUNTIME_ROLLOUT: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_rollout }}
