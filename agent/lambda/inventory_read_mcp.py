@@ -77,6 +77,13 @@ TRACE_TOPOLOGY_NOTE = (
     "callers only within datasource/environment; the same ARN can have separate nodes in each scope."
 )
 
+MATERIALIZED_TOPOLOGY_NOTE = (
+    "Host-scoped saved topology. selection and truncation describe this bounded response; "
+    "collection describes source/publication evidence. Retained or zero-node graphs do not "
+    "establish successful collection or absent inventory. readOutcome and snapshotConsistent=false "
+    "disclose failed flow/infra verification; an absent consistency field is not a guarantee."
+)
+
 
 # ── Pure detection logic (fixture-testable; no DB) ───────────────────────────────────────────────
 def _states(tg):
@@ -190,22 +197,102 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
       nodes = [{id, kind, label, meta}]
       edges = [{source, target, rel, confidence, meta?}] (trace meta: spanCount/metricCount)
 
-    If resource_id is given, scopes to that node + its 1-hop neighbourhood (filtered in Python
-    after the full-graph fetch so we avoid RDS Data API array-binding complexity).
-    JSONB `meta` is returned as a dict by formatRecordsAs=JSON; _parse_meta handles the rare
-    string case defensively.
+    Resolve an exact canonical ID first, then an exact raw ID (everything after the first
+    colon). The sanitized reader view deliberately omits meta.resourceId. Ambiguous raw IDs
+    never select a graph. Select the root and its one-hop neighbours BEFORE limiting nodes.
+    Return (nodes, edges, selection/truncation metadata); collection evidence belongs to
+    the caller. Limits describe this response, not source collection completeness.
     """
+    limit = max(1, min(int(limit), 500))
+    edge_limit = 1000
+    selection = {"status": "all"}
+    truncation = {"nodes": False, "edges": False, "node_limit": limit, "edge_limit": edge_limit}
+    metadata = {"selection": selection, "truncation": truncation}
+    class_param = {"name": "cls", "value": {"stringValue": cls}}
+    root = None
+    if resource_id is not None:
+        selection.update(status="not_found", requested_id=resource_id, resolved_id=None)
+        resolve_params = [class_param, {"name": "rid", "value": {"stringValue": resource_id}}]
+        matches = _execute(
+            "SELECT id FROM topology_nodes WHERE account_id = 'self' AND class = :cls "
+            "AND id = :rid LIMIT :match_limit",
+            params=resolve_params + [{"name": "match_limit", "value": {"longValue": 1}}])
+        matched_by = "canonical"
+        if not matches:
+            matches = _execute(
+                "SELECT id FROM topology_nodes WHERE account_id = 'self' AND class = :cls "
+                "AND strpos(id, ':') > 0 AND substring(id FROM strpos(id, ':') + 1) = :rid "
+                "ORDER BY id LIMIT :match_limit",
+                params=resolve_params + [{"name": "match_limit", "value": {"longValue": 3}}])
+            matched_by = "raw"
+            if len(matches) > 1:
+                selection.update(status="ambiguous", candidate_ids=[r["id"] for r in matches[:2]],
+                                 candidates_truncated=len(matches) > 2)
+                return [], [], metadata
+        if not matches:
+            return [], [], metadata
+        root = matches[0]["id"]
+        selection.update(status="resolved", resolved_id=root, matched_by=matched_by)
+
+    node_params = [class_param, {"name": "node_limit", "value": {"longValue": limit + 1}}]
+    predicate, node_order = "", "id"
+    if root is not None:
+        node_params.append({"name": "root", "value": {"stringValue": root}})
+        predicate = (
+            " AND (n.id = :root OR EXISTS (SELECT 1 FROM topology_edges e "
+            "WHERE e.account_id = 'self' AND e.class = :cls "
+            "AND ((e.source = :root AND e.target = n.id) OR "
+            "(e.target = :root AND e.source = n.id))))"
+        )
+        node_order = "(n.id = :root) DESC, n.id"
     node_rows = _execute(
-        "SELECT id, kind, label, meta FROM topology_nodes "
-        "WHERE account_id = 'self' AND class = :cls LIMIT " + str(int(min(limit, 1000))),
-        params=[{"name": "cls", "value": {"stringValue": cls}}])
+        "SELECT id, kind, label, meta FROM topology_nodes n "
+        "WHERE account_id = 'self' AND class = :cls" + predicate
+        + " ORDER BY " + node_order + " LIMIT :node_limit", params=node_params)
+    truncation["nodes"] = len(node_rows) > limit
+    node_rows = node_rows[:limit]
+    node_ids = {r["id"] for r in node_rows if r.get("id")}
+
     # Row-to-JSON lookup also works against the pre-migration view, which has no meta column.
     edge_columns = "source, target, rel, confidence" + (
         ", to_jsonb(e)->'meta' AS meta" if cls == "trace" else "")
+    # A bounded JSON-encoded ID set lets both endpoint predicates share a scalar bind. Restrict
+    # BOTH endpoints in SQL, so a large graph never becomes an unbounded full-edge response.
+    edge_params = [class_param,
+                   {"name": "node_ids", "value": {"stringValue": json.dumps(sorted(node_ids))}},
+                   {"name": "edge_limit", "value": {"longValue": edge_limit + 1}}]
+    edge_order = "source, target, rel"
+    if root is not None:
+        edge_params.append({"name": "root", "value": {"stringValue": root}})
+        edge_order = "(source = :root OR target = :root) DESC, " + edge_order
     edge_rows = _execute(
         "SELECT " + edge_columns + " FROM topology_edges e "
-        "WHERE account_id = 'self' AND class = :cls",
-        params=[{"name": "cls", "value": {"stringValue": cls}}])
+        "WHERE account_id = 'self' AND class = :cls "
+        "AND source IN (SELECT jsonb_array_elements_text(CAST(:node_ids AS jsonb))) "
+        "AND target IN (SELECT jsonb_array_elements_text(CAST(:node_ids AS jsonb))) "
+        "ORDER BY " + edge_order + " LIMIT :edge_limit", params=edge_params)
+    truncation["edges"] = len(edge_rows) > edge_limit
+    edge_rows = edge_rows[:edge_limit]
+    if truncation["nodes"] and not truncation["edges"]:
+        # Count no rows: one existence result tells us whether the node cap omitted an
+        # applicable edge. Both endpoints must exist; dangling records are not graph edges.
+        omitted_params = edge_params[:2] + [
+            {"name": "omission_limit", "value": {"longValue": 1}}]
+        omitted_scope = ""
+        if root is not None:
+            omitted_scope = " AND (e.source = :root OR e.target = :root)"
+            omitted_params.append({"name": "root", "value": {"stringValue": root}})
+        omitted = _execute(
+            "SELECT EXISTS (SELECT 1 FROM topology_edges e "
+            "JOIN topology_nodes s ON s.account_id = e.account_id AND s.class = e.class AND s.id = e.source "
+            "JOIN topology_nodes t ON t.account_id = e.account_id AND t.class = e.class AND t.id = e.target "
+            "WHERE e.account_id = 'self' AND e.class = :cls" + omitted_scope
+            + " AND NOT (e.source IN (SELECT jsonb_array_elements_text(CAST(:node_ids AS jsonb))) "
+            "AND e.target IN (SELECT jsonb_array_elements_text(CAST(:node_ids AS jsonb)))) "
+            "LIMIT :omission_limit) AS omitted", params=omitted_params)
+        if len(omitted) != 1 or type(omitted[0].get("omitted")) is not bool:
+            raise RuntimeError("Topology edge coverage could not be verified")
+        truncation["edges"] = omitted[0]["omitted"]
 
     def _parse_meta(m):
         if isinstance(m, dict):
@@ -239,7 +326,7 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
             node["meta"] = meta
     edges = []
     for row in edge_rows:
-        if not row.get("source") or not row.get("target"):
+        if row.get("source") not in node_ids or row.get("target") not in node_ids:
             continue
         edge = {"source": row["source"], "target": row["target"], "rel": row["rel"],
                 "confidence": "unknown" if cls == "trace" else row["confidence"]}
@@ -255,26 +342,18 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
                 edge["confidence"] = "observed"
         edges.append(edge)
 
-    if resource_id:
-        neighbor_ids = {resource_id}
-        for e in edges:
-            if e["source"] == resource_id or e["target"] == resource_id:
-                neighbor_ids.add(e["source"])
-                neighbor_ids.add(e["target"])
-        nodes = [n for n in nodes if n["id"] in neighbor_ids]
-        edges = [e for e in edges if e["source"] in neighbor_ids and e["target"] in neighbor_ids]
-
-    return nodes, edges
+    return nodes, edges, metadata
 
 
-def _fetch_trace_collection():
-    """Mirror graph-state.ts's trace evidence/freshness contract through the sql_reader view.
+def _fetch_trace_collection(cls="trace"):
+    """Read graph-state evidence through the sanitized view; trace remains the default.
 
     DB/permission errors deliberately propagate, just like the topology reads. An absent relation
     or state row means unknown; a failed query must never certify a retained graph.
     """
     unknown = {"status": "unknown", "stale": True, "attempted_at": None,
-               "captured_at": None, "sources": []}
+               "captured_at": None, "sources": [],
+               **({"evidenceKind": "inventory"} if cls != "trace" else {})}
     # Probe the same search-path relation we actually read (the sql_reader view). Deployment may
     # precede either the state-table migration or its reader-view projection. No public fallback,
     # and no permission/connection error is caught or reclassified as an absent schema.
@@ -284,7 +363,7 @@ def _fetch_trace_collection():
     rows = _execute(
         "SELECT status, attempted_at, captured_at, details FROM topology_graph_state "
         "WHERE account_id = 'self' AND class = :cls LIMIT 1",
-        params=[{"name": "cls", "value": {"stringValue": "trace"}}],
+        params=[{"name": "cls", "value": {"stringValue": cls}}],
     )
     if not rows:
         return unknown
@@ -321,8 +400,42 @@ def _fetch_trace_collection():
         or status in ("unknown", "error", "unavailable") or details.get("retainedPrevious") is True
         or details.get("metadataTruncated") is True
     )
-    return {**details, "status": status, "stale": stale,
+    if cls != "trace":
+        details = {**details, "evidenceKind": "inventory"}
+        sources = details.get("publishedSources")
+        stale = stale or not isinstance(sources, list) or not sources
+        for source in sources if isinstance(sources, list) else []:
+            if not isinstance(source, dict):
+                stale = True
+                continue
+            if type(source.get("itemCount")) is not int or source["itemCount"] < 0:
+                stale = True
+                continue
+            clocks = [source.get("lastSuccessAtMs")]
+            if source["itemCount"] > 0 or source.get("capturedAtMs") is not None:
+                clocks.append(source.get("capturedAtMs"))
+            if ((source.get("status") == "empty" and source["itemCount"] != 0)
+                    or (source.get("status") == "ok" and source["itemCount"] == 0)
+                    or ("reasons" in source and
+                        (not isinstance(source["reasons"], list) or len(source["reasons"]) > 0))):
+                stale = True
+            stale = stale or source.get("producerStatus") != "succeeded" or source.get("status") not in ("ok", "empty") or any(
+                type(clock) not in (int, float) or not math.isfinite(clock) or clock <= 0
+                or clock > time.time() * 1000
+                or time.time() * 1000 - clock > _inventory_stale_after_minutes() * 60_000
+                for clock in clocks)
+    return {**details, "status": status, "stale": bool(stale),
             "attempted_at": row.get("attempted_at"), "captured_at": row.get("captured_at")}
+
+
+def _inventory_graph_collection(cls):
+    try:
+        return _fetch_trace_collection(cls)
+    except Exception:
+        # Preserve readable last-good rows without exposing SQL/provider/credential errors.
+        return {"status": "error", "stale": True, "attempted_at": None, "captured_at": None,
+                "sources": [], "evidenceKind": "inventory",
+                "readOutcome": "state_read_failed", "snapshotConsistent": False}
 
 
 # ── Aurora access via the RDS Data API (lazy + injectable; boto3 is in the Lambda runtime) ─────────
@@ -543,6 +656,13 @@ def lambda_handler(event, context):
 
     if tool_name == "get_topology":
         resource_id = arguments.get("resource_id") if isinstance(arguments, dict) else None
+        if resource_id is not None and (
+            not isinstance(resource_id, str) or not resource_id.strip() or len(resource_id) > 4096
+        ):
+            return {"statusCode": 400, "body": json.dumps(
+                {"error": "resource_id must be a nonempty string of at most 4096 characters"})}
+        if resource_id is not None:
+            resource_id = resource_id.strip()
         cls = (arguments.get("class") or "flow") if isinstance(arguments, dict) else "flow"
         if cls not in ("flow", "infra", "trace"):
             # Reject unknown class (400) — do NOT silently coerce to 'flow'. The /api/graph BFF returns
@@ -550,11 +670,23 @@ def lambda_handler(event, context):
             # (plan T7b: both read paths reject identically) (M4).
             return {"statusCode": 400, "body": json.dumps(
                 {"error": "invalid class: " + str(cls) + " (expected flow|infra|trace)"})}
-        collection = _fetch_trace_collection() if cls == "trace" else None
-        nodes, edges = _fetch_topology_graph(resource_id=resource_id, cls=cls)
-        result = {"class": cls, "nodes": nodes, "edges": edges,
+        collection = _fetch_trace_collection() if cls == "trace" else _inventory_graph_collection(cls)
+        nodes, edges, graph_metadata = _fetch_topology_graph(resource_id=resource_id, cls=cls)
+        if cls != "trace":
+            # Data API selections use multiple bounded reads. A publication between them cannot
+            # certify one coherent snapshot; disclose it without altering Task2 selection limits.
+            after = _inventory_graph_collection(cls)
+            changed = any(after.get(key) != collection.get(key) for key in (
+                "attempted_at", "captured_at", "status", "sources", "publishedSources", "failureReason"))
+            failed_read = any(value.get("readOutcome") == "state_read_failed"
+                              for value in (collection, after))
+            collection = after
+            if changed or failed_read:
+                collection = {**after, "stale": True, "snapshotConsistent": False,
+                              "readOutcome": "state_read_failed" if failed_read else "publication_changed"}
+        result = {"class": cls, "nodes": nodes, "edges": edges, **graph_metadata,
                   "node_count": len(nodes), "edge_count": len(edges),
-                  "note": TRACE_TOPOLOGY_NOTE if cls == "trace" else COVERAGE_NOTE}
+                  "note": TRACE_TOPOLOGY_NOTE if cls == "trace" else MATERIALIZED_TOPOLOGY_NOTE}
         if resource_id:
             result["from"] = resource_id
         if collection is not None:
@@ -562,12 +694,19 @@ def lambda_handler(event, context):
             result["captured_at"] = collection["captured_at"]
             if collection["stale"] or collection["status"] == "partial":
                 result["warning"] = (
-                    "Trace collection evidence is incomplete or stale; inspect collection before "
+                    ("Trace" if cls == "trace" else "Graph") + " collection evidence is incomplete or stale; inspect collection before "
                     "treating nodes or edges as current."
                 )
-        elif not nodes:
-            result["warning"] = ("Graph not materialized yet — run scripts/v2/graph-rebuild.mjs "
-                                 "(or the post-sync worker job) to populate topology_nodes/edges.")
+        selection_status = graph_metadata["selection"]["status"]
+        selection_warning = None
+        if selection_status == "ambiguous":
+            selection_warning = "Ambiguous resource_id; use a canonical node ID from selection.candidate_ids."
+        elif selection_status == "not_found":
+            selection_warning = "Requested resource_id was not found in this host's selected graph class."
+        elif any(graph_metadata["truncation"][key] for key in ("nodes", "edges")):
+            selection_warning = "Topology response is truncated; inspect truncation before inferring full coverage."
+        if selection_warning:
+            result["warning"] = " ".join(filter(None, [result.get("warning"), selection_warning]))
         return _ok(result)
 
     if tool_name == "query_inventory":

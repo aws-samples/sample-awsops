@@ -314,6 +314,104 @@ deployment does not ship that Lambda code. This document supplies no deployment 
 [source rollout list](source-sync-observability.md) and [SQL reader contract](agent-sql-reader.md).
 A source merge or automatic web CD result is not proof that these steps completed.
 
+## Model-facing topology reader
+
+`inventory_read_mcp.get_topology` reads the host (`self`) graph through the SQL-reader
+views. It shares node/edge and persisted collection fields with HTTP, but has its own
+bounded Data API response envelope. It does not inherit the HTTP route's single
+repeatable-read transaction.
+
+Omitted or null `resource_id` selects the whole class. A supplied string is trimmed
+before lookup and echo; empty, non-string or over-4096-character values return 400.
+Exact canonical IDs take precedence. The raw-ID fallback matches only the suffix
+after the first kind prefix, so use canonical IDs for composite/multi-segment nodes.
+The root and its incoming/outgoing one-hop neighbours are selected before the node cap.
+
+| Field | Reader meaning |
+|---|---|
+| `selection.status` | `all`, `resolved`, `not_found` or `ambiguous`; an unresolved ID is not an empty graph |
+| `requested_id`, `resolved_id`, `matched_by` | Normalized request, selected canonical ID and `canonical`/`raw` resolution |
+| `candidate_ids`, `candidates_truncated` | At most two canonical alternatives; the boolean discloses additional ambiguity |
+| `truncation.node_limit`, `edge_limit` | 500 nodes and 1000 edges per response |
+| `truncation.nodes` | More selected nodes existed than were returned |
+| `truncation.edges` | The edge limit or node cap omitted applicable valid edges; a capped isolated node alone does not imply an omitted edge |
+| `collection.readOutcome` | Reader-only `state_read_failed` or `publication_changed`; never a stored `failureReason` |
+| `collection.snapshotConsistent` | Only `false` is emitted, when flow/infra verification fails or observes a publication change; absence is not a consistency guarantee |
+
+Edges require both endpoints in the returned node set. When nodes are capped, a
+bounded `EXISTS` check detects applicable edge loss; dangling records are excluded.
+For a focused selection, this check considers edges incident to the selected root.
+Flow/infra collection metadata is read before and after graph selection. Two failed
+state reads remain unverified even when their fallback dictionaries are identical.
+The failure envelope keeps `evidenceKind: inventory`, `stale: true` and readable graph
+data. Trace retains its existing collection read and does not gain the flow/infra
+publication-change detector. Shared staleness fields do not imply identical read envelopes.
+
+Zero returned nodes/edges does not prove absent inventory, complete collection or a
+successful empty source: inspect selection, collection, published sources and truncation.
+The existing gated RCA consumer passes its failing entity as `resource_id`, traverses
+the resolved canonical ID and returns `topology` selection/truncation/collection/warning
+metadata. Missing client/response metadata is disclosed as unavailable or unknown coverage.
+The RCA flag remains default-off. These changes do not activate it or add permissions.
+
+### Reader PostgreSQL verification
+
+`TestTopologySelectionSQL` in `agent/lambda/test_inventory_read_mcp.py` executes the
+actual reader SQL under view-only grants on disposable PostgreSQL 17. It applies the
+current collection, queue-provenance and read-index migrations. It also verifies an
+RCA entity beyond the whole-graph page using the actual reader and SDK-shaped fixture
+response. The fixture creates/alters cluster roles, so use a dedicated disposable
+container, not merely a test database on a shared cluster.
+
+In the Python test environment, from the repository root, preload the official
+client image and create an isolated server. The fixture uses `--pull never` for its short-lived psql client:
+
+```bash
+(
+set -e
+python3 -m pip install -r scripts/v2/requirements-test.txt
+(cd web && npm ci)
+docker pull postgres:17-alpine
+reader_test_container=$(docker run -d --rm --network none \
+  --tmpfs /var/lib/postgresql/data \
+  -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=awsops postgres:17-alpine)
+trap 'docker rm -f "$reader_test_container" >/dev/null' EXIT
+for attempt in $(seq 1 30); do
+  docker exec "$reader_test_container" pg_isready -h 127.0.0.1 -U postgres -d awsops && break
+  sleep 1
+done
+docker exec "$reader_test_container" pg_isready -h 127.0.0.1 -U postgres -d awsops
+docker exec "$reader_test_container" psql -U postgres -d awsops \
+  -c "COMMENT ON DATABASE awsops IS 'awsops-disposable-graph-test'"
+export INVENTORY_TEST_POSTGRES_CONTAINER="$reader_test_container"
+unset GRAPH_TEST_POSTGRES_SOCKET
+(cd agent/lambda && python3 -m pytest test_inventory_read_mcp.py test_inventory_view_contract.py -q)
+(cd agent && python3 -m pytest rca/test_tools.py rca/test_orchestrator.py rca/test_controller.py rca/test_graph.py -q)
+)
+```
+
+Alternatively, `GRAPH_TEST_POSTGRES_SOCKET` may point at that disposable server's
+Unix-socket directory. This path requires `pg8000` (validated with 1.31.5); install it
+in the test environment with `python3 -m pip install pg8000==1.31.5`. The socket mode
+takes precedence when both variables are present. The server must carry the same
+sentinel and must be dedicated to these destructive fixtures.
+
+Without either variable the SQL suite explicitly skips; that is not SQL validation.
+Run this opt-in suite for reader selection/projection changes even when default unit
+CI is green. Default unit tests separately check null/normalized IDs, query binds,
+edge-loss disclosure and reader-error envelopes. Cross-runtime staleness cases also
+require the existing `web/node_modules/typescript` dependency (`cd web && npm ci`);
+run `cd web && npx vitest run lib/graph-reader-privacy.test.ts lib/graph-state.test.ts`
+for the writer-clock privacy/read projection assertions.
+
+The fixture's PREPARE/EXECUTE shim verifies SQL/view semantics; it is not a live RDS
+Data API call. Bind-shape unit tests separately verify that identifiers stay in SDK
+parameters. None of these checks establishes deployed AWS, Runtime or migration state.
+Deploy the matching inventory-reader Lambda through the existing Terraform operator
+flow and reconcile its catalog description through `make agentcore`; the RCA consumer
+change also requires the matching Runtime image. Source integration performs none of
+those rollout steps automatically.
+
 ## Related files and decisions
 
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,

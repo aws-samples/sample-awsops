@@ -69,10 +69,13 @@ def handle_rca(payload) -> dict:
     with ExitStack() as stack:
         clients = _open_clients(stack, ("ops", "monitoring"))
         tools = BoundedTools(clients)
-        edges = tools.topology_edges()
+        topology = tools.topology_edges(failing_entity)
+        selection = topology.get("selection") or {}
+        resolved = selection.get("resolved_id") if selection.get("status") == "resolved" else None
+        entity = resolved if isinstance(resolved, str) and resolved else failing_entity
         result = run_rca(
-            failing_entity,
-            edges,
+            entity,
+            topology["edges"],
             gather_evidence=tools.gather,
             label=lambda n, ev: label_node(n, ev, _bedrock_invoke),
         )
@@ -82,4 +85,5 @@ def handle_rca(payload) -> dict:
         "rca": result,
         "root_causes": result["root_causes"],
         "node_count": len(result["nodes"]),
+        "topology": {key: value for key, value in topology.items() if key != "edges"},
     }
