@@ -60,9 +60,14 @@ const services = {
 
 async function fixtures(page: Page, opts: {
   partial?: boolean; unavailable?: boolean; podsUnavailable?: 'empty' | 'failed'; foreignEcs?: boolean;
-  crowded?: boolean; grouped?: boolean;
+  crowded?: boolean; grouped?: boolean; groupedCount?: number;
 } = {}) {
   const calls: string[] = [];
+  const groupCount = opts.groupedCount ?? (opts.grouped ? 2 : 0);
+  const groupPods = Array.from({ length: groupCount }, (_, i) => ({
+    name: groupCount === 2 ? `frontend-${i ? 'b' : 'a'}` : `frontend-${i + 1}`,
+    namespace: 'shop', podIP: `10.0.${i + 1}.10`, workload: 'frontend', status: 'Running',
+  }));
   const data: typeof inventory = opts.foreignEcs ? {
     ...inventory,
     ecs_task: [{ resource_id: 'foreign-task', region: 'us-east-1', data: {
@@ -72,10 +77,10 @@ async function fixtures(page: Page, opts: {
       ] }],
     } }],
     subnet: [{ resource_id: 'subnet-foreign', region: 'us-east-1', data: { vpc_id: 'vpc-peer' } }],
-  } : opts.grouped ? { ...inventory, target_group: [{
+  } : groupCount ? { ...inventory, target_group: [{
     ...inventory.target_group[0], data: { ...inventory.target_group[0].data,
-      target_health_descriptions: [1, 2].map(i => ({
-        Target: { Id: `10.0.${i}.10`, Port: 8080 }, TargetHealth: { State: 'healthy' },
+      target_health_descriptions: groupPods.map(pod => ({
+        Target: { Id: pod.podIP, Port: 8080 }, TargetHealth: { State: 'healthy' },
       })),
     },
   }] } : opts.crowded ? { ...inventory, alb: [...inventory.alb, ...Array.from({ length: 400 }, (_, i) => ({
@@ -97,15 +102,10 @@ async function fixtures(page: Page, opts: {
     }
     if (url.pathname === '/api/eks') return json({ region: 'us-east-1', clusters: opts.foreignEcs ? [] : [{ name: 'demo', access: 'connected', region: 'us-east-1', vpcId: 'vpc-demo' }] });
     if (url.pathname === '/api/eks/demo/incluster') {
-      if (opts.grouped) {
-        const pods = ['frontend-a', 'frontend-b'].map((name, i) => ({
-          name, namespace: 'shop', podIP: `10.0.${i + 1}.10`, workload: 'frontend', status: 'Running',
-        }));
-        return json({ rows: url.searchParams.get('kind') === 'pods' ? pods : [{
-          name: 'frontend', namespace: 'shop', ips: pods.map(p => p.podIP),
-          targets: pods.map(p => ({ ip: p.podIP, pod: p.name })),
-        }] });
-      }
+      if (groupCount) return json({ rows: url.searchParams.get('kind') === 'pods' ? groupPods : [{
+        name: 'frontend', namespace: 'shop', ips: groupPods.map(p => p.podIP),
+        targets: groupPods.map(p => ({ ip: p.podIP, pod: p.name })),
+      }] });
       if (url.searchParams.get('kind') === 'pods' && opts.podsUnavailable) {
         return json({ rows: [] }, opts.podsUnavailable === 'failed' ? 502 : 200);
       }
@@ -113,7 +113,8 @@ async function fixtures(page: Page, opts: {
         ? { name: `${name}-a`, namespace: 'shop', podIP: `10.0.${index + 1}.10`, workload: name, status: 'Running' }
         : { name, namespace: 'shop', ips: [`10.0.${index + 1}.10`], targets: [{ ip: `10.0.${index + 1}.10`, pod: `${name}-a` }] }) });
     }
-    if (url.pathname === '/api/graph') return json(services);
+    if (url.pathname === '/api/graph') return json(groupCount ? { ...services, nodes: services.nodes.map(node =>
+      node.id === 'workload:frontend' ? { ...node, meta: { ...node.meta, pods: groupPods.map(p => p.name) } } : node) } : services);
     if (url.pathname === '/api/nfm') return json({
       monitors: opts.unavailable ? [] : [{ name: 'nfm-eks-demo', status: 'ACTIVE', cluster: 'demo' }],
       scopeCount: opts.unavailable ? 0 : 1, metrics: METRICS, categories: CATEGORIES,
@@ -122,7 +123,7 @@ async function fixtures(page: Page, opts: {
       const category = url.searchParams.get('category')!;
       const metric = url.searchParams.get('metric')!;
       if (opts.partial && category === 'INTER_REGION') return json({ message: 'fixture query unavailable' }, 502);
-      const local = { ip: '10.0.1.10', podName: 'frontend-a', podNamespace: 'shop', serviceName: 'frontend',
+      const local = { ip: groupPods.at(-1)?.podIP ?? '10.0.1.10', podName: groupPods.at(-1)?.name ?? 'frontend-a', podNamespace: 'shop', serviceName: 'frontend',
         region: 'us-east-1', vpcId: 'vpc-demo', az: 'us-east-1a' };
       const unit = metric === 'DATA_TRANSFERRED' ? 'Bytes' : metric === 'ROUND_TRIP_TIME' ? 'Milliseconds' : 'Count';
       const value = metric === 'DATA_TRANSFERRED' ? 8388608 : metric === 'ROUND_TRIP_TIME' ? 12.5 : 4;
@@ -357,4 +358,15 @@ test('the current account-only inventory contract remains disclosed after region
     return url.pathname === '/api/inventory/alb'
       && url.searchParams.get('accounts') === 'self' && !url.searchParams.has('regions');
   })).toBe(true);
+});
+
+test('the 25th grouped member can correlate without expanding the capped display list', async ({ page }) => {
+  await fixtures(page, { groupedCount: 25 });
+  await page.goto('/topology?view=e2e');
+  await page.getByRole('combobox', { name: '목적지 분류', exact: true }).selectOption('AMAZON_S3');
+  await page.getByRole('button', { name: '네트워크 조회', exact: true }).click();
+  await expect(page.getByText('구성에서 확인된 Pod 식별자', { exact: true })).toHaveCount(1);
+  await page.getByRole('searchbox').fill('frontend-25');
+  await page.getByRole('button', { name: '선택: frontend-25', exact: true }).click();
+  await expect(page.getByRole('region', { name: '선택한 노드 상세' })).toContainText('demo / shop / frontend-25');
 });
