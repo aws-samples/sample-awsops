@@ -31,8 +31,10 @@ def main():
         data = sys.stdin.buffer.read(byte_limit + 1)
         if len(data) > byte_limit:
             raise Refused("image_file_limit")
-        with Image.open(io.BytesIO(data)) as image:
-            expected = json.loads(Path(__file__).with_name("image-formats.json").read_text()).get(suffix)
+        expected = json.loads(Path(__file__).with_name("image-formats.json").read_text()).get(suffix)
+        if expected not in ("PNG", "WEBP", "ICO"):
+            raise Refused("image_format_mismatch")
+        with Image.open(io.BytesIO(data), formats=[expected]) as image:
             if image.format != expected:
                 raise Refused("image_format_mismatch")
             width, height = image.size

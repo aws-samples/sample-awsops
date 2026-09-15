@@ -229,11 +229,11 @@ from every panel cell and the chair; missing, failed or conflicting declarations
 review regardless of any later VERDICT: PASS. Unavailable/omitted entries force FAILED
 even if all listed files were inspected. With no required evidence, the marker is optional,
 but an explicit failure still blocks. Discuss example markers inside quotes or fences.
-This staging covers static PNG/JPEG/GIF/WebP/AVIF/BMP/TIFF and single-rendition ICO.
+This staging covers the repository's static PNG/WebP and single-rendition ICO.
 PNG bytes are preserved; other supported formats become lossless PNG evidence with
 original blob/hash and rendering lineage. No animation, page or icon rendition is
-silently dropped. The shared image-formats.json also detects HEIC/HEIF/JXL/SVGZ as
-unsupported: unavailable entries identify the file; convert it to reviewable PNG assets.
+silently dropped. Other registered formats have no approved decoder in this workflow:
+unavailable entries identify the file; replace unsupported assets with reviewable PNGs.
 Other formats and SVG/PDF/PPTX
 visual rendering is unsupported. Visible source diff can still be reviewed normally,
 but a needed unsupported visual inspection must be reported as a coverage failure.
@@ -272,19 +272,27 @@ def stage_images(repo, head, merge_base, output, limits=Limits()):
         raise CoverageError("unsafe_output")
     manifest = {"schema": 1, "status": "complete", "head": head, "merge_base": merge_base,
                 "limits": asdict(limits), "images": [], "deleted": [], "unavailable": [],
-                "omitted_entries": 0, "omitted_deletions": 0}
+                "omitted_entries": 0, "omitted_deletions": 0, "omission_reasons": []}
     blobs, total, rendered_total, attempts = [], 0, 0, 0
 
     def record(key, entry):
         manifest[key].append(entry)
-        while (sum(len(manifest[k]) for k in ("images", "deleted", "unavailable")) > RECORD_LIMIT
-               or len(json.dumps(manifest, ensure_ascii=True).encode()) > MANIFEST_LIMIT):
+        def exceeded():
+            return [name for name, over in (
+                ("manifest_record_limit", sum(len(manifest[k]) for k in ("images", "deleted", "unavailable")) > RECORD_LIMIT),
+                ("manifest_size_limit", len(json.dumps(manifest, ensure_ascii=True).encode()) > MANIFEST_LIMIT),
+                # Reserve space for final status, omission reasons and growing counters.
+                ("image_context_limit", len(context_text(manifest, output).encode()) > CONTEXT_LIMIT - 256),
+            ) if over]
+        while reasons := exceeded():
             if key != "deleted" and manifest["deleted"]:
                 manifest["deleted"].pop()
                 manifest["omitted_deletions"] += 1
                 continue
             manifest[key].pop()
             manifest["omitted_deletions" if key == "deleted" else "omitted_entries"] += 1
+            if key != "deleted":
+                manifest["omission_reasons"] = sorted(set(manifest["omission_reasons"]) | set(reasons))
             return False
         return True
 
@@ -304,6 +312,8 @@ def stage_images(repo, head, merge_base, output, limits=Limits()):
                         # A suffix-only rename must not hide the same binary pixels.
                         if mode not in ("100644", "100755"):
                             raise CoverageError("non_regular_image")
+                        if int(git_read(repo, ["cat-file", "-s", oid], 32)) > limits.file_bytes:
+                            raise CoverageError("image_file_limit")
                         body = git_read(repo, ["cat-file", "blob", oid], limits.file_bytes)
                         if b"\0" in body[:8000]:
                             raise CoverageError("unsupported_format")
@@ -399,6 +409,8 @@ def main():
         return 1
     print(f"HEAD PNG coverage {result['status']}: {len(result['images'])} staged, "
           f"{len(result['unavailable'])} unavailable, {result['omitted_entries']} omitted")
+    if result["omission_reasons"]:
+        print("HEAD evidence omitted: " + ", ".join(result["omission_reasons"]) + ". Split into smaller reviewable changes.")
     for entry in result["unavailable"]:
         label = re.sub(r"[^A-Za-z0-9._/-]", "?", entry["path"] or "(scope)")[:200]
         print(f"Unavailable HEAD visual: {label}: {entry['code']}. "

@@ -21,7 +21,7 @@ checks out HEAD or executes its scripts, filters, hooks, or image metadata.
 The current-run manifest records HEAD, merge-base, original and renamed paths, Git
 blob IDs, original `source_sha256`/size/geometry, rendered `sha256`/size/geometry,
 frame count and pinned decoder version. PNG bytes are retained after bounded decoding;
-static JPEG/GIF/WebP/AVIF/BMP/TIFF and single-rendition ICO become lossless RGBA PNGs under opaque generated
+static WebP and single-rendition ICO become lossless RGBA PNGs under opaque generated
 filenames. Conversion applies EXIF orientation and retains ICC color profiles; original
 blob/hash lineage remains authoritative even when rendered bytes differ.
 Prompts contain a shared safe summary:
@@ -102,28 +102,32 @@ limits, prompt propagation and missing-evidence failures.
 | Width or height / pixel count | 8,192 / 16,777,216 |
 | Git change listing | 5,000 entries and 2 MiB |
 | One Git subprocess / prompt context | 30 seconds / 32 KiB |
+| Context admission reserve | 256 bytes for final status, omission reasons and counters |
 | One decoder | 20 CPU seconds, 25 wall seconds, 512 MiB address space, 32 file descriptors |
 | Exact manifest data | 64 records and 24 KiB record budget; excess deletion names counted separately |
+| Manifest reader | 32 KiB maximum serialized input |
 | One report checked for image coverage | 1 MiB; larger reports are unusable review output |
 | Repository path | 512 UTF-8 bytes; no traversal or control characters |
 
-The observed repository has 95 PNGs, 23 WebPs and one single-rendition ICO, all static.
+The observed repository has 95 PNGs, 23 WebPs and one single-rendition ICO.
 Its largest PNG directory has 13 files; each of that directory and the 23-file WebP
 set separately fits 32, while a combined refresh would exceed the limit.
 The largest source is below 744 KiB and 8.2 million pixels. These are bounded inventory
 observations, not permission to truncate future assets or silently keep only frame one.
 
 The single trusted [format table](../../scripts/pr-review/image-formats.json) drives
-both detection and decoder selection. Regular PNG/JPEG/GIF/WebP/AVIF/BMP/TIFF/ICO
+both detection and decoder selection. Only regular PNG/WebP/ICO
 blobs are decoded. PNG structure/CRC checks remain, and an
 isolated Python process using hash-pinned Pillow 12.3.0 fully loads each image. The
 worker receives image bytes via stdin with a minimal environment, no credential variables,
 no shell invocation and no HEAD code execution. Animated/multiple-frame images and ICOs
 with multiple renditions fail as whole assets; no first-frame fallback is accepted.
 Symlinks, gitlinks, invalid inputs and exceeded bounds become unavailable evidence.
-HEIC/HEIF/JXL and compressed SVGZ are explicitly detected but have no approved codec;
+JPEG/GIF/AVIF/BMP/TIFF, HEIC/HEIF/JXL and compressed SVGZ are explicitly detected but have no approved codec;
 they block with `unsupported_format`, the affected safe filename and a conversion
-remedy. Provide supported PNG evidence for every required frame/page/rendition.
+remedy. Replace unsupported assets with reviewable PNGs covering every required
+frame/page/rendition; adding a PNG beside an unchanged unsupported asset does not waive it.
+This bounds the untrusted native decoder path to formats actually used by the project.
 Animated GIFs, multipage TIFFs and other multi-frame inputs remain explicitly outside
 the static contract; never silently convert only their first frame.
 Extension classification is not universal file-content discovery. Other extensions
@@ -152,6 +156,11 @@ runner loss can prevent that cleanup. It does not upload image artifacts.
 ## Action
 
 Ordinary unsupported/over-limit entries do not abort extraction or discard valid files.
+Record admission also measures the rendered prompt, including generated file paths,
+so a compact manifest cannot overflow the prompt later. Metadata/context exhaustion
+retains admitted evidence and reports `omitted_entries` with fixed `omission_reasons`.
+The reserved bytes cover final counters/status; this incomplete scope still blocks PASS.
+Renames check blob size before reading, preserving the offending path and later assets.
 Trust/IO faults still stop staging. After validated review context and diff acquisition,
 the gate/post steps run on preparation failure to publish a fixed incomplete-review
 message, replacing any stale verdict. They do not pretend skipped reviewers completed.

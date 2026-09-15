@@ -288,6 +288,8 @@ secrets-manager) — installed by `make deps`.
   `review_context.py` pins the trusted CI checkout and reviewed PR/base metadata.
   `image-formats.json` selects detected extensions and the approved codec for both staging
   and `render_head_image.py`; unknown-codec entries remain explicit coverage failures.
+  Admit records against both metadata and rendered-context budgets; preserve admitted images
+  and fixed omission reasons. Check renamed blob sizes before reading.
   `image-requirements.txt` pins the Python 3.12 binary dependency.
   `stage_head_pngs.py` stages bounded regular HEAD raster Git blobs as read-only data before
   review credentials; prompts use 200-character safe path labels, exact names stay in JSON data.
@@ -301,9 +303,9 @@ secrets-manager) — installed by `make deps`.
   Per-entry unavailable evidence preserves good files and publishes a deterministic FAIL.
   Preparation faults also reach a fixed failure comment after context/diff validation.
   The existing panel-prompt structure runner executes both pipeline and image fixture suites.
-  Static PNG/JPEG/GIF/WebP/AVIF/BMP/TIFF and single-rendition ICO use hash-pinned Pillow 12.3.0 on Python 3.12; isolated
+  Static PNG/WebP/single-rendition ICO use hash-pinned Pillow 12.3.0 on Python 3.12; isolated
   decode has CPU/memory/time/output bounds. Keep original blob/hash and render lineage.
-  32 attempts/files cover the observed assets; animations/renditions never silently truncate.
+  32 attempts/files bound each change batch; animations/renditions never silently truncate.
   Response presence stays counted on image failure. Normalize terminal controls, reserve
   declaration prefixes (decorated failures block), and diagnose unreadable reports separately.
   Only the accepted chair needs required coverage; discarded invalid output without a

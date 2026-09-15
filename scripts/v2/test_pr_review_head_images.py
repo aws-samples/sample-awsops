@@ -282,8 +282,9 @@ class HeadImageTests(unittest.TestCase):
         self.assertEqual(manifest["status"], "incomplete")
         self.assertEqual(manifest["images"], [])
 
-    def test_common_static_formats_decode_exact_source_pixels(self):
-        from PIL import Image, ImageOps
+    def test_unneeded_static_codecs_require_conversion_without_invoking_decoder(self):
+        from PIL import Image
+        from unittest.mock import patch
         import io
         originals = {}
         for suffix, codec in {".jpg": "JPEG", ".jpeg": "JPEG", ".gif": "GIF", ".bmp": "BMP",
@@ -293,15 +294,12 @@ class HeadImageTests(unittest.TestCase):
             path = f"docs/static{suffix}"
             originals[path] = buffer.getvalue()
             self.write(path, originals[path])
-        result = self.stage(self.head())
-        self.assertEqual(result["status"], "complete")
-        self.assertEqual(len(result["images"]), len(originals))
-        for entry in result["images"]:
-            with Image.open(io.BytesIO(originals[entry["path"]])) as source:
-                with Image.open(self.out / entry["file"]) as staged:
-                    self.assertEqual(staged.convert("RGBA").tobytes(),
-                                     ImageOps.exif_transpose(source).convert("RGBA").tobytes())
-            self.assertEqual(entry["source_sha256"], hashlib.sha256(originals[entry["path"]]).hexdigest())
+        with patch.object(self.tool, "render_blob", side_effect=AssertionError("unused codec invoked")):
+            result = self.stage(self.head())
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["images"], [])
+        self.assertEqual({e["path"] for e in result["unavailable"]}, set(originals))
+        self.assertEqual({e["code"] for e in result["unavailable"]}, {"unsupported_format"})
 
     def test_rename_to_source_only_format_records_removed_raster(self):
         from unittest.mock import patch
@@ -323,6 +321,37 @@ class HeadImageTests(unittest.TestCase):
         result = self.stage(self.head())
         self.assertEqual(result["status"], "incomplete")
         self.assertEqual(result["unavailable"][0]["code"], "unsupported_format")
+
+    def test_oversized_suffix_rename_keeps_path_and_later_valid_images(self):
+        self.write("docs/image.png", png() + b"\0" * 256)
+        self.git("add", ".")
+        self.git("commit", "-qm", "oversized source")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        self.git("mv", "docs/image.png", "docs/aaa-renamed.bin")
+        self.write("docs/zzz-valid.png", png())
+        result = self.stage(self.head(), file_bytes=128)
+        self.assertEqual(result["unavailable"], [{"path": "docs/aaa-renamed.bin", "code": "image_file_limit"}])
+        self.assertEqual([e["path"] for e in result["images"]], ["docs/zzz-valid.png"])
+
+    def test_context_budget_degrades_long_renames_without_losing_staged_evidence(self):
+        names = [f"docs/{i:02d}-{'a' * 180}.png" for i in range(32)]
+        for i, name in enumerate(names):
+            self.write(name, png(color=bytes([i, 10, 20])))
+        self.git("add", ".")
+        self.git("commit", "-qm", "source images")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        for i, name in enumerate(names):
+            self.git("mv", name, f"docs/{i:02d}-{'b' * 180}.png")
+        self.out = self.root / ("p" * 200) / ("q" * 200) / "evidence"
+        self.out.parent.mkdir(parents=True)
+        result = self.stage(self.head())
+        self.assertEqual(result["status"], "incomplete")
+        self.assertGreater(len(result["images"]), 0)
+        self.assertGreater(result["omitted_entries"], 0)
+        self.assertIn("image_context_limit", result["omission_reasons"])
+        self.assertLessEqual((self.out / "context.txt").stat().st_size, self.tool.CONTEXT_LIMIT)
+        for image in result["images"]:
+            self.assertEqual(hashlib.sha256((self.out / image["file"]).read_bytes()).hexdigest(), image["sha256"])
 
     def test_references_must_be_full_existing_commit_ids(self):
         for ref in ["HEAD", "--help", "a" * 40, self.base.decode() + "\n"]:
@@ -436,7 +465,7 @@ class HeadImageTests(unittest.TestCase):
         result = self.stage(self.head())
         self.assertEqual(result["status"], "incomplete")
         self.assertEqual(result["images"], [])
-        self.assertEqual({e["code"] for e in result["unavailable"]}, {"image_frame_limit"})
+        self.assertEqual({e["code"] for e in result["unavailable"]}, {"image_frame_limit", "unsupported_format"})
 
     def test_rendered_output_has_its_own_byte_bound(self):
         from PIL import Image

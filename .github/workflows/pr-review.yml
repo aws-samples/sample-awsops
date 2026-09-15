@@ -526,7 +526,7 @@ jobs:
           # known generated/export type), no lens saw that content — force BLOCKED regardless of the
           # chair's VERDICT, matching the pre-cap behaviour where the oversized line failed the job.
           if [ "$IMAGE_STAGE_OUTCOME" != "success" ]; then
-            printf '%s\n' "HEAD image evidence preparation failed (trust or IO error). Review incomplete; not an application finding." "IMAGE_COVERAGE: FAILED" "VERDICT: FAIL" > /tmp/review.md
+            printf '%s\n' "HEAD image evidence preparation failed; inspect the staging diagnostic. Review incomplete; not an application finding." "IMAGE_COVERAGE: FAILED" "VERDICT: FAIL" > /tmp/review.md
             echo "image_coverage_failed=1" >> "$GITHUB_ENV"
             echo "result=fail" >> "$GITHUB_OUTPUT"
             echo "reason=HEAD image evidence unavailable" >> "$GITHUB_OUTPUT"
