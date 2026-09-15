@@ -4,6 +4,7 @@
 Client components span `ui`, `shell`, `charts`, `chat`, `inventory` (including `metrics/`), `eks`, `diagnosis`, `datasources`, `dx`, `finops`, `graph`, `insights`, `nfm`, `overview`, and `topology`.
 
 ## Key Files
+- `topology/E2eGraphCanvas.tsx` — reusable, unwired evidence canvas for the pure E2E graph; preserves filter/search/focus state and distinguishes configuration, service, network, identity and context edges. No source fetching.
 - `ui/DataTable.tsx` + `ui/DetailPanel.tsx` — the default list+detail combo. DetailPanel renders the full data the row already holds (plus a handful of type-specific fetching sections: RDS metrics/trends/SG rules, EBS related, live metrics, S3 IAM access) — if the spec (`InvType`) has `sections`, it renders grouped sections; otherwise a flat key list (backward-compat). New inventory types must define `sections`.
 - `inventory/metrics/MetricTable.tsx` — a declarative `MetricCol` model (`{value, render?, danger?, facet?, facetValues?, type}`) gets you sort, global search, facet filters, and a "problems only" toggle for free. Per-service tables (Ec2/Rds/Alb/...) are written purely as column definitions. Opt-in props: `facetValues` (multi-value facet — an exact-match on the joined display string drops multi-value rows), `maxRender`+`capKeep` (render-stage row cap — a data-stage cut silently zeroes an exact search), `rowClass` (per-row class hook).
 - `inventory/metrics/guides.tsx` + `guides.{en,zh,ja}.tsx` — per-language diagnosis-guide bodies. i18n lockstep — update all four files together.
