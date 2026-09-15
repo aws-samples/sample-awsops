@@ -23,6 +23,15 @@ export async function register() {
     const { loadGraphSources } = await import('./lib/graph-sources');
     const { graphDiagnostic } = await import('./lib/graph-state');
     const pool = getPool();
+    const execute = async (stage: string, action: () => ReturnType<typeof rebuildGraph>) => {
+      try {
+        const result = await action();
+        console.log(`[graph-rebuild] ${stage}: ${JSON.stringify(result)}`);
+        if (result.failed) console.error(`[graph-rebuild] failed ${graphDiagnostic(stage, { code: result.failureCode })}`);
+      } catch (error) {
+        console.error(`[graph-rebuild] failed ${graphDiagnostic(stage, error)}`);
+      }
+    };
 
     // In-flight guard: the advisory lock in writeGraph() only serializes the WRITE section, not the
     // (possibly expensive) ClickHouse/inventory reads before it — without this, a rebuild slower than
@@ -33,24 +42,18 @@ export async function register() {
     const run = async () => {
       if (running) return;
       running = true;
-      let stage = 'flow';
       try {
-        const flow = await rebuildGraph(pool);
-        console.log(`[graph-rebuild] flow: ${JSON.stringify(flow)}`);
-        stage = 'infra';
-        const infra = await rebuildInfraGraph(pool);
-        console.log(`[graph-rebuild] infra: ${JSON.stringify(infra)}`);
+        await execute('flow', () => rebuildGraph(pool));
+        await execute('infra', () => rebuildInfraGraph(pool));
         // Registry-driven (2026-07-08): sources come from every registered datasource's pre-built
         // graph-query catalog (datasource_graph_queries), not one hardcoded default — see
         // docs/superpowers/specs/2026-07-08-registry-graph-sources-design.md.
-        stage = 'trace_sources';
-        const { sources, metricsSources } = await loadGraphSources(pool);
-        stage = 'trace';
-        const trace = await rebuildTraceGraph(pool, sources, undefined, metricsSources);
-        console.log(`[graph-rebuild] trace: ${JSON.stringify(trace)}`);
-      } catch (error) {
-        // Never crash the server over a background rebuild — log and retry next interval.
-        console.error(`[graph-rebuild] failed ${graphDiagnostic(stage, error)}`);
+        try {
+          const { sources, metricsSources } = await loadGraphSources(pool);
+          await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
+        } catch (error) {
+          console.error(`[graph-rebuild] failed ${graphDiagnostic('trace_sources', error)}`);
+        }
       } finally {
         running = false;
       }

@@ -18,22 +18,32 @@ import { graphDiagnostic } from '../../web/lib/graph-state.ts';
 
 // Exit 0: all layers published (including confirmed zero/degraded); 2: retained/skipped; 1: exception.
 const pool = getPool();
-let stage = 'flow';
+let failed = false, incomplete = false;
+const execute = async (stage, action) => {
+  try {
+    const result = await action();
+    console.log(`[graph-rebuild] ${stage}: ${JSON.stringify(result)}`);
+    incomplete ||= !!(result.retained || result.skipped);
+    if (result.failed) {
+      failed = true;
+      console.error(`[graph-rebuild] failed ${graphDiagnostic(stage, { code: result.failureCode })}`);
+    }
+  } catch (error) {
+    failed = true;
+    console.error(`[graph-rebuild] failed ${graphDiagnostic(stage, error)}`);
+  }
+};
 try {
-  const flow = await rebuildGraph(pool);
-  console.log(`[graph-rebuild] flow: ${JSON.stringify(flow)}`);
-  stage = 'infra';
-  const infra = await rebuildInfraGraph(pool);
-  console.log(`[graph-rebuild] infra: ${JSON.stringify(infra)}`);
-  stage = 'trace_sources';
-  const { sources, metricsSources } = await loadGraphSources(pool);
-  stage = 'trace';
-  const trace = await rebuildTraceGraph(pool, sources, undefined, metricsSources);
-  console.log(`[graph-rebuild] trace: ${JSON.stringify(trace)}`);
-  process.exitCode = [flow, infra, trace].some(result => result.retained || result.skipped) ? 2 : 0;
-} catch (error) {
-  console.error(`[graph-rebuild] failed ${graphDiagnostic(stage, error)}`);
-  process.exitCode = 1;
+  await execute('flow', () => rebuildGraph(pool));
+  await execute('infra', () => rebuildInfraGraph(pool));
+  try {
+    const { sources, metricsSources } = await loadGraphSources(pool);
+    await execute('trace', () => rebuildTraceGraph(pool, sources, undefined, metricsSources));
+  } catch (error) {
+    failed = true;
+    console.error(`[graph-rebuild] failed ${graphDiagnostic('trace_sources', error)}`);
+  }
+  process.exitCode = failed ? 1 : incomplete ? 2 : 0;
 } finally {
   await pool.end();
 }

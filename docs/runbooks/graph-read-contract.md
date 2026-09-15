@@ -81,6 +81,21 @@ Oversized valid Tempo children keep a bounded structured OTLP projection and can
 
 The shared query normalizer carries collection status into Explore. Marked partial, unknown or failed empty responses show an uncertainty/failure note instead of an ordinary empty-result claim; useful rows remain visible with the same disclosure. Scalar format failures remain distinct from empty responses.
 
+## Rebuild execution and capacity
+
+The default-off `GRAPH_REBUILD_INTERVAL_MINS` hook in `web/instrumentation.ts` and the manual
+`cd web && npx tsx ../scripts/v2/graph-rebuild.mjs` entrypoint attempt flow, infra and trace independently.
+A layer exception is logged safely and does not suppress later layers. Returned inventory summaries retain
+completed account outcomes plus an unexpected-account-error `failed` count and the first sanitized `failureCode`.
+The CLI exits 1 if any unexpected failure occurred, otherwise 2 for retained/skipped work, otherwise 0;
+the timer reports the same outcomes and always resets its overlap guard.
+
+Flow input allows 8192 rows (8MiB / a nominal 1KiB row allowance) for record-granular DNS inventory;
+infra retains its 2000-row guard. The 64KiB-per-row and 8MiB projected-data/identifier limits still apply, as do the
+4000-node/8000-edge/8MiB graph limits. A source-proof or capacity failure retains last-good data.
+All listed sources feed the builders: a failed/missing source cannot be dropped to authorize replacement,
+and elapsed retentions never authorize an unproven sweep. Larger generations need a separately reviewed capacity path.
+
 ## Verification commands
 
 Use browser developer tools on an already-authorized page to distinguish HTTP503/busy,
@@ -165,6 +180,7 @@ A source merge or automatic web CD result is not proof that these steps complete
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
 `web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`,
 `web/lib/graph-inventory.ts`, `web/lib/graph-store-postgres.test.ts`, `web/lib/fixtures/graph-fatal-child.mjs`,
+`scripts/v2/graph-rebuild.mjs`, `web/instrumentation.ts`, `web/lib/graph-rebuild-runner.test.ts`,
 `web/components/topology/GraphCollectionStatus.tsx`,
 `web/lib/graph-fetch.ts`, `web/lib/graph-fetch.test.ts`,
 `agent/lambda/clickhouse_mcp.py`, `agent/lambda/tempo_mcp.py`,
