@@ -42,8 +42,7 @@ zero returned nodes in this outcome do not mean an empty graph was published.
 
 `empty_not_confirmed` is a soft reason for legacy unmarked empty results.
 Recognized producer `unknown` uses soft incomplete evidence, not a failed-query diagnosis. Tempo exposes absent/invalid/zero job counts distinctly as `count_not_confirmed`, using the existing HTTP/SQL reason vocabulary.
-That reason also includes producer warnings/partial results and missing Tempo children;
-the child-fetch path separately sets `canSweep: false` when a child has no fetched spans.
+Producer warnings and partial results use `incomplete_collection`; an empty returned Tempo child also uses it. Failed or malformed children keep their specific failure reasons. The child-fetch path separately sets `canSweep: false` when a child has no fetched spans.
 
 A failed or malformed source, an unconfirmed empty result, or missing-child evidence retains
 the entire previous graph and capture clock even when a sibling has useful data. Current
@@ -66,6 +65,8 @@ complete empty replacement, and all-empty/mixed missing-child retention. Shared 
 for producer deployment; source merge alone is not live completion proof.
 
 Oversized valid Tempo children keep a bounded structured OTLP projection and can refresh a partial snapshot with their siblings. The byte budget is unchanged; a failed or structurally unusable child still cannot authorize replacement. The [Tempo response-capability table](tempo-query-generation.md#search-result-evidence) distinguishes count-proof absence, unfinished work and byte limits. The shared budget fixture proves the actual producer output is mappable and publishes through PostgreSQL.
+
+The shared query normalizer carries collection status into Explore. Marked partial, unknown or failed empty responses show an uncertainty/failure note instead of an ordinary empty-result claim; useful rows remain visible with the same disclosure. Scalar format failures remain distinct from empty responses.
 
 ## Verification commands
 
