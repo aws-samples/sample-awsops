@@ -29,11 +29,11 @@ connectors. No new telemetry backend or AWS-mutating tool.
    - Verify source paths, migration immutability, public boundaries, web/worker tests and build.
 
 2. **Evidence and identity / 근거와 식별자**
-   - `SourceRead<T>` carries items, status, source ID, reason codes, the exact time window, and optional `canSweep: false` for incomplete evidence. Such a source retains the whole saved trace graph even beside useful siblings; adapter items and bounded attempt diagnostics are distinct from published graph rows.
+   - `SourceRead<T>` carries items, status, source ID, reason codes, the exact time window, and optional `canSweep: false` for unproven empty or lost-child evidence. Useful bounded partial reads can publish; see the [graph contract](../runbooks/graph-read-contract.md#source-completeness-and-retained-publication).
    - Normalize cloud account/region, deployment environment, service namespace and Kubernetes scope.
    - Index spans by source, trace and span identity; preserve asynchronous span links.
    - Keep metric and sampled-span evidence distinguishable.
-   - Record graph collection attempts; keep the last successful graph when a source fails.
+   - Record graph collection attempts; keep the last successful graph when a source fails, loses a requested child, or yields an unproven empty read.
    - Expose partial/stale/unavailable states alongside graph data, including empty graphs.
    - Regressions: identical service names in different scopes, missing parents, span links, source
      failure versus successful empty, bounded/truncated reads, and malformed observations.

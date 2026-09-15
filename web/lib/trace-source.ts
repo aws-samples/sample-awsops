@@ -9,7 +9,7 @@ export interface SourceRead<T> {
   reasons: string[];
   windowStartMs: number;
   windowEndMs: number;
-  /** Incomplete source evidence cannot authorize deletion, even with useful siblings. */
+  /** Unproven empty reads and lost children cannot authorize replacement. */
   canSweep?: false;
 }
 
@@ -91,7 +91,7 @@ function readResult<T>(
   const unique = [...new Set(reasons)];
   return {
     items, sourceId, ...window, reasons: unique,
-    ...(unique.length || (status && status !== 'ok') ? { canSweep: false as const } : {}),
+    ...(items.length === 0 && (unique.length || (status && status !== 'ok')) ? { canSweep: false as const } : {}),
     status: status ?? (unique.length === 0 ? 'ok' :
       items.length > 0 || unique.every((r) => r === 'cap_reached' || r === 'incomplete_collection' || r === 'empty_not_confirmed') ? 'partial' : 'error'),
   };
@@ -103,7 +103,7 @@ function envelopeReasons(value: unknown): Reason[] {
   if (r?.truncated === true) reasons.push('payload_truncated');
   if (r && Object.prototype.hasOwnProperty.call(r, 'collectionStatus')) {
     if (r.collectionStatus === 'error') reasons.push('query_failed');
-    else if (r.collectionStatus === 'partial') reasons.push('incomplete_collection');
+    else if (r.collectionStatus === 'partial' || r.collectionStatus === 'unknown') reasons.push('incomplete_collection');
     else if (r.collectionStatus !== 'ok' && r.collectionStatus !== 'empty') reasons.push('malformed_payload');
   }
   return reasons;
@@ -465,14 +465,15 @@ export class TempoTraceSource implements TraceSource {
         });
         const parsed = parseTempoTrace(traceId, payload);
         reasons.push(...parsed.reasons);
-        if (!parsed.items.length && !parsed.reasons.length) {
+        if (!parsed.items.length) {
           missingChild = true;
-          reasons.push('incomplete_collection');
+          if (!parsed.reasons.length) reasons.push('incomplete_collection');
         }
         const selected = parsed.items.filter((s) => inWindow(s, window));
         if (selected.length > limit - items.length) reasons.push('cap_reached');
         items.push(...selected.slice(0, limit - items.length).map((s) => ({ ...s, sourceId })));
       } catch {
+        missingChild = true;
         reasons.push('trace_fetch_failed');
       }
     }
