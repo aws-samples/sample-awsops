@@ -84,7 +84,7 @@ documentation alone do not establish completion.
 
 ## Service/network graph status
 
-The pure correlator and shared value-aware display selection now exist as unwired prerequisites. The canvas and its tests remain with the UI integration. They preserve identity vetoes, disclose category/detail omissions and distinguish cached context from identity. Source orchestration and the opt-in topology page remain the next integration step; passing library fixtures does not establish live E2E coverage.
+The pure correlator, shared value-aware display selection and reusable evidence canvas exist as unwired prerequisites. They preserve identity vetoes, disclose category/detail omissions and distinguish cached context from identity. Source orchestration and the opt-in topology page remain the next integration step; passing library/component fixtures does not establish live E2E coverage.
 
 ### Graph source contract
 
@@ -101,3 +101,18 @@ Selection applies evidence/focus/query reachability before its default 350-node/
 Complete target membership is carried by the in-memory `FlowGraph.targetMembers` sidecar, independently of capped display metadata. The persisted node projection does not gain that field. Missing or invalid full membership retains conservative uncertainty; a valid complete set permits exact exclusion of unrelated candidates and per-member Pod corroboration. IPv6 spelling variants share one comparison key, retaining all competing records.
 
 Workload scope requires at least one compatible record attesting both account and region. Other explicit claims remain constraints; complementary partial records cannot manufacture a complete scope tuple.
+
+## Evidence canvas
+
+The reusable canvas uses the canonical read/completeness and ranking contracts. It
+keeps the primary observed flow and its related configuration/workload nodes visible,
+with a viewport-sized canvas and fit zoom that can accommodate the full neighborhood.
+Candidate context remains distinct from verified matches; group details retain at
+most 20 displayed entries with safe omission counts and member-specific identity.
+Target-group capture, node capture and legacy snapshot clocks remain distinct.
+
+The additive `omittedCategoryCounts` field counts hidden or incomplete observation
+groups after eligibility/focus/query filtering, alongside `omittedCategories`. This
+display budget is separate from source collection caps or missing telemetry.
+No source is fetched and no route activated by the standalone canvas; its integration
+retains the full service/network browser and multilingual-guide acceptance suite.

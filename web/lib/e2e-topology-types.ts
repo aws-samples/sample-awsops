@@ -91,6 +91,8 @@ export interface E2eView {
   omittedEdges: number;
   /** Sorted eligible categories with any dropped or incomplete connection group. */
   omittedCategories: string[];
+  /** Counts of hidden or incomplete observations after eligibility and display bounds. */
+  omittedCategoryCounts: Record<string, number>;
   /** Eligible query hits before caps, or the selected node count without a query. */
   matchedNodes: number;
 }

@@ -59,3 +59,7 @@ Domain-logic modules shared by API routes and components, mostly React-free (inc
 - New live-AWS-query layers should clone `nfm.ts`'s TTL-cache + in-flight-dedupe pattern.
 - Adding/changing a language starts at `SUPPORTED_LANGS` — TS consumers break at compile time, but the 5 lockstep sites above require manual updates.
 - DB access must go through `getPool()` — never create a new pool or use the master secret.
+
+`selectE2eGraph` additionally exposes `omittedCategoryCounts` alongside the existing
+sorted category array. Count only hidden or incompletely displayed observation groups
+after eligibility/focus/query filtering; UNKNOWN covers missing category labels.

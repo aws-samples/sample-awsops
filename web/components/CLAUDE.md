@@ -23,3 +23,12 @@ Client components span `ui`, `shell`, `charts`, `chat`, `inventory` (including `
 - Prefer reusing `ui/` primitives (Badge, StatePill, Card, PageHeader, StatTile, etc.) over adding new ones — don't proliferate primitives.
 - User-facing display strings are Korean literals passed through `tt()` (unregistered strings pass through safely, so this is zero-risk).
 - Tests are colocated with components as `*.test.tsx` (vitest).
+
+## Evidence canvas prerequisite
+
+`topology/E2eGraphCanvas.tsx` renders the merged correlation core without fetching or
+activating a page. Keep canonical source-read/service-completeness notices, source
+label preservation, source-specific clocks and bounded candidate/member details.
+The default viewport fits complete observed neighborhoods down to a 0.05 zoom;
+search/evidence filters still precede display caps. Missing observations never become
+zero unmatched counts. Four-language terms and tests are included; page wiring follows.
