@@ -21,8 +21,8 @@ interface MetricsCallsSourceLike {
 // Read/build per account with explicit budgets; only publication holds the class lock.
 // EKS pods remain live-only. No worker job or cloud-side scheduling is introduced here.
 
-// Exclude 'ipResolved' (a Record, not a Row[]) so input[key] narrows to Row[] for the push below.
-const TYPE_TO_KEY: Record<string, Exclude<keyof FlowInput, 'ipResolved'>> = {
+// Metadata inputs are not inventory arrays. Cached flow labels are configuration facts, not live ownership proof.
+const TYPE_TO_KEY: Record<string, Exclude<keyof FlowInput, 'ipResolved' | 'ownershipRead'>> = {
   route53: 'route53', cloudfront: 'cloudfront', alb: 'alb', nlb: 'nlb', target_group: 'tg',
   waf: 'waf', ec2: 'ec2', lambda: 'lambda', ecs_task: 'ecsTask', s3: 's3', subnet: 'subnet',
   // L7 origin resolution: API Gateway (→Lambda/VPC-Link→LB) + CloudFront VPC origins (→ALB/NLB).
@@ -185,10 +185,11 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
 
 export async function rebuildGraph(pool: Pool, runId: string = randomUUID()) {
   return rebuildInventory(pool, 'flow', FLOW_LOCK, runId, TYPES, rows => {
-    const input: FlowInput = {};
+    const input: FlowInput = { ownershipRead: { configurationOnly: true } };
     for (const row of rows) {
       const key = TYPE_TO_KEY[row.resource_type];
-      if (key) (input[key] ??= []).push({ ...(row.data as object ?? {}), resource_id: row.resource_id, region: row.region });
+      if (key) (input[key] ??= []).push({ ...(row.data as object ?? {}), resource_id: row.resource_id,
+        region: row.region, captured_at: row.captured_at });
     }
     const graph = buildFlowGraph(input);
     const kinds = new Map(graph.nodes.map(node => [node.id, node.kind]));
@@ -243,14 +244,15 @@ export async function rebuildTraceGraph(
     itemCount: read.items.length, windowStartMs: read.windowStartMs, windowEndMs: read.windowEndMs,
   }));
   const hasFailure = reads.some((read) => read.status === 'error' || read.status === 'unavailable');
-  const partial = reads.some((read) => read.status === 'partial');
+  const cannotSweep = reads.some((read) => read.canSweep === false);
+  const partial = cannotSweep || reads.some((read) => read.status === 'partial');
   const spans = spanReads.flatMap((read) => read.items.map((span) => ({ ...span, sourceId: span.sourceId ?? read.sourceId })));
   const calls = metricReads.flatMap((read) => read.items.map((call) => ({
     ...call,
     clientIdentity: { ...call.clientIdentity, sourceId: call.clientIdentity?.sourceId ?? read.sourceId },
     serverIdentity: { ...call.serverIdentity, sourceId: call.serverIdentity?.sourceId ?? read.sourceId },
   })));
-  if (!reads.length || hasFailure || (partial && !spans.length && !calls.length)) {
+  if (!reads.length || hasFailure || cannotSweep || (partial && !spans.length && !calls.length)) {
     const status = reads.some((read) => read.status === 'error') ? 'error'
       : partial ? 'partial' : 'unavailable';
     return writeGraph(pool, 'trace', TRACE_LOCK, 'self', [], [], runId, {

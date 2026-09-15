@@ -314,11 +314,19 @@ The origins case is the one worth re-running after any edit to that projection: 
 The current owner of `sql_reader.topology_nodes.meta` is
 [`01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`](../../terraform/foundation/migrations/01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql).
 It selects named JSON keys with type checks for telemetry fields and a trace-queue
-exception. Any unlisted key is excluded, including ownership/ambiguity/target-time
-fields if a future writer introduces them. Do not infer that such fields already
-exist in raw rows, or that a short example enumerates every excluded field. Exposing
-another key requires a reviewed additive migration; this document changes no projection
-or grant (ADR-004 §7, maintained in the private upstream repository).
+exception. The current materialized flow writer persists `ownership_evidence` and
+`targetCapturedAt` on **target nodes**, with VPC/subnet or ambiguity metadata where
+applicable. `targetCapturedAt` dates only the target-group inventory row; it does not
+date the independent task/subnet/pod evidence or establish current ownership. Host ECS
+snapshot target labels are cached configuration as well. `candidate` is page-only
+out-of-region context, not materializer output. The view excludes these fields along
+with `vpcId`, `subnetId`, `ambiguity` and `ownership_reason`. A `capturedAt` key,
+if supplied by another writer, is also unlisted.
+It can expose bare `region`, `cluster`, `ecsService` and `task` fields: these do not
+establish complete network scope or current ownership when the provenance fields are absent.
+Any other unlisted key remains excluded. Exposing another key requires a reviewed
+additive migration; this document changes no projection or grant (ADR-004 §7, maintained
+in the private upstream repository).
 
 The projection is not an ownership validator:
 

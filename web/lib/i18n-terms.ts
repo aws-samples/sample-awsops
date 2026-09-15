@@ -7,6 +7,12 @@ import type { Lang } from './i18n';
 type Pair = { en: string; zh: string; ja: string };
 
 export const TERMS: Record<string, Pair> = {
+  'EKS 조회 범위 밖의 대상은 소유권 미확인입니다. 조회 리전:': { en: 'Target ownership is unverified outside EKS coverage. Enumerated regions:', zh: 'EKS 覆盖范围外的目标归属未验证。已枚举区域：', ja: 'EKS の対象範囲外のターゲットは所有関係が未確認です。列挙済みリージョン:' },
+  '인벤토리 동기화가 완료되지 않아 IP 소유권을 확인할 수 없습니다.': { en: 'Inventory sync is incomplete; IP ownership cannot be verified.', zh: '清单同步尚未完整完成，无法验证 IP 归属。', ja: 'インベントリの同期が完了していないため、IP 所有者を確認できません。' },
+  '인벤토리 조회 실패 또는 행 수 제한으로 IP 소유권을 확인할 수 없습니다.': { en: 'Inventory reads failed or hit a row limit; IP ownership cannot be verified.', zh: '清单读取失败或达到行数上限，无法验证 IP 归属。', ja: 'インベントリの取得失敗または行数上限により、IP 所有者を確認できません。' },
+  'EKS 식별 상태': { en: 'EKS identity status', zh: 'EKS 身份状态', ja: 'EKS 識別状態' },
+  'EKS 조회 실패 또는 수집 범위 제한으로 IP 소유자를 확인할 수 없습니다.': { en: 'EKS reads failed or collection was limited; IP ownership cannot be verified.', zh: 'EKS 读取失败或收集范围受限，无法验证 IP 所有者。', ja: 'EKS の取得失敗または収集範囲の制限により、IP 所有者を確認できません。' },
+  '조회 실패로 이전 결과를 표시합니다.': { en: 'The refresh failed; showing previous results.', zh: '刷新失败；正在显示之前的结果。', ja: '更新に失敗したため、前回の結果を表示しています。' },
   '불변식 평가 범위': { en: 'Invariant assessment coverage', zh: '不变量评估覆盖范围', ja: '不変条件の評価範囲' },
   '불변식 통과': { en: 'Passed', zh: '通过', ja: '合格' },
   '불변식 평가 정보 없음': { en: 'Invariant assessment unavailable', zh: '不变量评估信息不可用', ja: '不変条件の評価情報なし' },

@@ -532,12 +532,25 @@ describe('SourceRead provenance and bounds', () => {
     ['mimir', () => new MetricsCallsSource(7, 'mimir', 'x[{window}m]').calls(30, END_MS), { resultType: 'vector', result: [] }],
   ] as const;
 
-  it('does not use a completed search to certify empty child trace fetches', async () => {
+  it.each(['all-empty', 'mixed'])('does not use a completed search to certify %s child trace fetches', async mode => {
+    configure('tempo');
+    invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: '1' }, { traceID: '2' }] })
+      .mockResolvedValueOnce({ batches: [] })
+      .mockResolvedValueOnce(mode === 'mixed' ? tempoTrace([tempoSpan({ traceId: '2' })]) : { batches: [] });
+    const result = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
+    expect(result).toMatchObject({ status: 'partial', reasons: ['incomplete_collection'], canSweep: false });
+    expect(result.items).toHaveLength(mode === 'mixed' ? 1 : 0);
+  });
+  it('distinguishes valid spans outside the requested window from empty child payloads', async () => {
     configure('tempo');
     invokeMcpLambdaTool.mockResolvedValueOnce({ collectionStatus: 'ok', traces: [{ traceID: '1' }] })
-      .mockResolvedValueOnce({ batches: [] });
-    expect(await new TempoTraceSource(7).recentSpans(30, 10, END_MS))
-      .toMatchObject({ items: [], status: 'partial', reasons: ['incomplete_collection'] });
+      .mockResolvedValueOnce(tempoTrace([tempoSpan({
+        startTimeUnixNano: String(BigInt(END_MS - 3_600_000) * 1_000_000n),
+        endTimeUnixNano: String(BigInt(END_MS - 3_599_000) * 1_000_000n),
+      })]));
+    const result = await new TempoTraceSource(7).recentSpans(30, 10, END_MS);
+    expect(result).toMatchObject({ items: [], status: 'ok', reasons: [] });
+    expect(result.canSweep).not.toBe(false);
   });
 
   it.each(factories)('%s returns ok with exact window for successful empty data', async (kind, read, payload) => {
