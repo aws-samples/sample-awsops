@@ -2,6 +2,66 @@ import { describe, it, expect } from 'vitest';
 import { normalizeResult } from './datasource-render';
 
 describe('normalizeResult', () => {
+  it.each(['prometheus', 'mimir', 'loki'])('%s keeps valid metric siblings beside omitted markers', kind => {
+    for (const resultType of ['vector', 'matrix']) {
+      const valid = { metric: { __name__: 'up' },
+        ...(resultType === 'vector' ? { value: [1700000000, '7'] } : { values: [[1700000000, '7']] }) };
+      const r = normalizeResult(kind, `${kind}_query`, {
+        resultType, result: [null, valid, null], collectionStatus: 'unknown',
+      });
+      expect(r.shape).toBe(resultType === 'vector' ? 'table' : 'series');
+      expect(r.rows).toHaveLength(1);
+      expect(r.droppedEntries).toBe(2);
+      expect(r.collectionStatus).toBe('unknown');
+      expect(r.collectionNote).toBeTruthy();
+      if (resultType === 'vector') expect(r.rows![0].value).toBe(7);
+      else expect(r.series![0][r.seriesKeys![0]]).toBe(7);
+      expect(r.note ?? '').not.toContain('결과 파싱 실패');
+    }
+  });
+  it('keeps valid log siblings while counting malformed streams and samples', () => {
+    const r = normalizeResult('loki', 'loki_query_range', {
+      resultType: 'streams', result: [null, { stream: { job: 'api' },
+        values: [null, ['1700000000000000000', 'kept'], ['bad-time', 'omitted']] }],
+      collectionStatus: 'ok',
+    });
+    expect(r.shape).toBe('logs');
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows![0].line).toBe('kept');
+    expect(r.droppedEntries).toBe(3);
+    expect(r.collectionStatus).toBe('unknown');
+  });
+  it.each(['vector', 'matrix'])('invalid %s timestamps cannot erase valid siblings or fabricate epoch zero', resultType => {
+    const valid = { metric: { __name__: 'up' }, ...(resultType === 'vector'
+      ? { value: [1, '0'] } : { values: [[1, '0'], null, [1e20, '1']] }) };
+    const invalid = { metric: { __name__: 'bad' }, ...(resultType === 'vector'
+      ? { value: [1e20, '1'] } : { values: null }) };
+    const r = normalizeResult('prometheus', 'prometheus_query', {
+      resultType, result: [valid, invalid], collectionStatus: 'ok',
+    });
+    expect(r.shape).toBe(resultType === 'vector' ? 'table' : 'series');
+    expect(r.rows).toHaveLength(1);
+    expect(r.droppedEntries).toBe(resultType === 'vector' ? 1 : 3);
+    expect(r.collectionStatus).toBe('unknown');
+  });
+  it('does not certify all-omitted markers as a successful empty response', () => {
+    const r = normalizeResult('mimir', 'mimir_query', {
+      resultType: 'vector', result: [null, null], collectionStatus: 'empty',
+    });
+    expect(r.shape).toBe('empty');
+    expect(r.droppedEntries).toBe(2);
+    expect(r.collectionStatus).toBe('unknown');
+    expect(r.note).not.toBe('결과 없음');
+  });
+  it('omits invalid label maps without echoing their values or dropping valid siblings', () => {
+    const r = normalizeResult('prometheus', 'prometheus_query', { resultType: 'vector',
+      result: [{ metric: { __name__: 'up' }, value: [1, '1'] },
+        { metric: { bad: { raw: 'PRIVATE' } }, value: [1, '2'] }], collectionStatus: 'ok' });
+    expect(r.rows).toHaveLength(1);
+    expect(r.droppedEntries).toBe(1);
+    expect(r.collectionStatus).toBe('unknown');
+    expect(JSON.stringify(r)).not.toContain('PRIVATE');
+  });
   it('prometheus matrix → series (first) + rows listing all series + truncated', () => {
     const body = {
       truncated: true,
@@ -58,6 +118,7 @@ describe('normalizeResult', () => {
     expect(r.shape).toBe('logs');
     expect(r.rows).toHaveLength(2);
     expect(r.rows![0].line).toBe('boom error');
+    expect(r.rows![1].timestamp).toBe('2023-11-14T22:13:21.000Z');
     expect(r.columns!.map((c) => c.key)).toEqual(['timestamp', 'line', 'labels']);
   });
 
@@ -157,7 +218,19 @@ describe('bounded instant scalar results', () => {
 });
 
 
+it.each([1e20, -1e20])('scalar timestamps outside Date range stay non-throwing: %s', timestamp => {
+  expect(normalizeResult('prometheus', 'prometheus_query', {
+    resultType: 'scalar', result: [timestamp, '0'], collectionStatus: 'ok',
+  }).shape).toBe('empty');
+});
+
 describe('collection evidence disclosure', () => {
+  it.each(['unknown', null, 0])('discloses malformed truncation metadata: %s', truncated => {
+    const result = normalizeResult('tempo', 'tempo_search', { traces: [], truncated });
+    expect(result.collectionStatus).toBe('unknown');
+    expect(result.note).toBe(result.collectionNote);
+    expect(result.collectionNote).toBeTruthy();
+  });
   it.each(['prometheus', 'mimir', 'tempo', 'clickhouse'])('%s never labels marked incomplete empty data as confirmed empty', kind => {
     for (const collectionStatus of ['partial', 'unknown', 'error'] as const) {
       const result = normalizeResult(kind, `${kind}_query`, { resultType: 'vector', result: [], traces: [], rows: [], collectionStatus });

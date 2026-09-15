@@ -130,7 +130,7 @@ class CollectionMarkers(unittest.TestCase):
             for kind in case["kinds"]:
                 with self.subTest(case=case["name"], kind=kind):
                     code, body, _ = invoke(kind, case["upstream"])
-                    self.assertEqual(code, 200)
+                    self.assertEqual(code, case.get("statusCode", 200))
                     self.assertEqual(body, case["body"])
 
     def test_existing_tempo_adapter_fixtures_are_bound_to_real_producer(self):
@@ -200,7 +200,7 @@ class CollectionMarkers(unittest.TestCase):
                 with self.subTest(kind=kind, row=row):
                     _, body, _ = invoke(kind, {"status": "success", "data": {
                         "resultType": "vector", "result": [row]}})
-                    self.assertEqual(body["result"], [row])
+                    self.assertEqual(body["result"], [None])
                     self.assertEqual(body.get("collectionStatus"), "unknown")
             _, body, _ = invoke(kind, {"status": "success", "warnings": [None],
                                       "data": {"resultType": "vector", "result": []}})
@@ -233,7 +233,7 @@ class CollectionMarkers(unittest.TestCase):
         trace = {"traceID": "0123456789abcdef"}
         for payload, expected in [
             ({"traces": [], "metrics": {"completedJobs": 2, "totalJobs": 2}}, "empty"),
-            ({"traces": [], "metrics": {"completedJobs": 0, "totalJobs": 0}}, "unknown"),
+            ({"traces": [], "metrics": {"completedJobs": 0, "totalJobs": 0}}, "empty"),
             ({"traces": [], "metrics": {"completedJobs": True, "totalJobs": 1}}, "unknown"),
             ({"traces": [], "metrics": {"completedJobs": 3, "totalJobs": 2}}, "unknown"),
             ({"traces": [], "metrics": None}, "unknown"),

@@ -48,7 +48,8 @@ re-introduce a hand-maintained table that goes stale again, read the actual sour
 
 ## Rules
 - Offline checks: `cd agent && python3 -m pytest test_agent.py test_readiness.py -q`.
-- `fixtures/*-topology-contract.json` is shared with `web/lib/trace-source.test.ts`.
+- `fixtures/*-contract.json` is shared with `web/lib/trace-source.test.ts` and
+  `web/lib/graph-read-postgres.test.ts` (Tempo publication/retention cases).
   Lambda completion tests bind mocked HTTP payloads to those exact producer bodies;
   preserve unknown/partial evidence and distinguish it from actual query errors.
 - Workload inventory reads go through MCP tools. Readiness directly checks only execution
