@@ -5,7 +5,8 @@ export class GraphReadBusy extends Error {}
 export class GraphReadDeadline extends Error {
   constructor(readonly phase: 'acquire' | 'transaction') { super('graph read deadline exceeded'); }
 }
-type ReadLease = { client?: PoolClient; expired: boolean; released: boolean };
+type ReadLease = { client?: PoolClient; expired: boolean; released: boolean;
+  acquired?: () => void; committing?: boolean };
 
 function admit(pool: Pool) {
   const active = activeGraphWork.get(pool) ?? 0;
@@ -18,29 +19,40 @@ function admit(pool: Pool) {
 }
 
 /** Reads and rebuilds share two slots. Keep admission until a late checkout settles. */
-export async function graphReadTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>) {
+export function graphReadTransaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>) {
+  return admittedTransaction(pool, true, fn, true);
+}
+
+export function graphTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: PoolClient) => Promise<T>) {
+  return admittedTransaction(pool, readOnly, fn, false);
+}
+
+async function admittedTransaction<T>(pool: Pool, readOnly: boolean,
+  fn: (client: PoolClient) => Promise<T>, requestBudget: boolean) {
   const release = admit(pool);
   const lease: ReadLease = { expired: false, released: false };
-  const operation = runTransaction(pool, true, fn, true, lease).finally(release);
+  const operation = runTransaction(pool, readOnly, fn, requestBudget, lease).finally(release);
   let timer: ReturnType<typeof setTimeout>;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
+    const expire = () => {
+      // Once a write COMMIT is sent, only its response/error can establish the outcome.
+      if (!readOnly && lease.committing) return;
       lease.expired = true;
       reject(new GraphReadDeadline(lease.client ? 'transaction' : 'acquire'));
       if (lease.client && !lease.released) {
         lease.released = true;
         try { lease.client.release(true); } catch { /* never replace the deadline */ }
       }
+    };
+    timer = setTimeout(() => {
+      if (requestBudget || !lease.client) expire();
     }, 2000);
+    // Leave two seconds beyond PG's 4s limit for abort/response handling, excluding checkout.
+    if (!requestBudget) lease.acquired = () => { watchdog = setTimeout(expire, 6000); };
   });
   try { return await Promise.race([operation, deadline]); }
-  finally { clearTimeout(timer!); }
-}
-
-export async function graphTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: PoolClient) => Promise<T>) {
-  const release = admit(pool);
-  try { return await runTransaction(pool, readOnly, fn, false); }
-  finally { release(); }
+  finally { clearTimeout(timer!); if (watchdog) clearTimeout(watchdog); }
 }
 
 /** One shared-pool slot for a short transaction. Bounded lock waits and no remote IO in the callback.
@@ -53,6 +65,7 @@ async function runTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: Poo
       lease.released = true; client.release();
       throw new GraphReadDeadline('acquire');
     }
+    lease.acquired?.();
   }
   // pg-pool removes its idle error listener while checked out. A fatal query response
   // can be followed by a separate error event while ROLLBACK is pending.
@@ -68,7 +81,10 @@ async function runTransaction<T>(pool: Pool, readOnly: boolean, fn: (client: Poo
     await client.query(requestBudget ? "SET LOCAL transaction_timeout = '2s'" : "SET LOCAL transaction_timeout = '4s'");
     const result = await fn(client);
     if (clientError) throw clientError;
-    await client.query('COMMIT');
+    if (lease?.expired) throw new GraphReadDeadline('transaction');
+    if (lease) lease.committing = true;
+    try { await client.query('COMMIT'); }
+    finally { if (lease) lease.committing = false; }
     return result;
   } catch (error) {
     // Preserve the original query/application error. Only pg's generic follow-on rejection

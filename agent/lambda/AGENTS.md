@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: b5dcef4dd3ff · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f56e60cfe7f8 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -42,6 +42,9 @@ that's the source of truth for tool counts, not this doc.
   explicit-column, read-only views in a dedicated `sql_reader` schema (never `SELECT *`).
   Adding a column or view here is a security-relevant change requiring review; never grant
   anything to `public`.
+- Raw provider rows remain sensitive. Web inventory/graph reads and new graph writes redact
+  recognized origin-header/OIDC secret fields, not arbitrary secrets; never expose raw `row`
+  through SQL-reader views. Old stored values are not automatically rewritten.
 - SQL-reader `topology_nodes.meta` is a named-key allowlist, currently owned by
   `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Materialized flow target nodes
   carry ownership_evidence/targetCapturedAt and applicable VPC/subnet/ambiguity data, excluded

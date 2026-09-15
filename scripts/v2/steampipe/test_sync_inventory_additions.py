@@ -94,7 +94,8 @@ class _PinnedSteampipe:
     """The v0.142.0 catalog has aws_sts_caller_identity, not aws_caller_identity."""
     def __init__(self, identity_rows):
         self.tables = dict.fromkeys(
-            ("aws_ebs_snapshot", "aws_wafv2_ip_set", "aws_wafv2_rule_group"), [])
+            ("aws_ebs_snapshot", "aws_wafv2_ip_set", "aws_wafv2_rule_group",
+             "aws_vpc", "aws_route53_record"), [])
         self.tables["aws_111111111111.aws_sts_caller_identity"] = identity_rows
         self.columns = []
         self.closed = False
@@ -138,7 +139,7 @@ def test_identity_probe_connection_errors_fail_closed(monkeypatch, phase):
     assert sync_lambda._account_reachable("111111111111") is False
 
 
-@pytest.mark.parametrize("resource_type", ["ebs_snapshot", "waf_ip_set", "waf_rule_group"])
+@pytest.mark.parametrize("resource_type", ["ebs_snapshot", "waf_ip_set", "waf_rule_group", "vpc", "route53"])
 @pytest.mark.parametrize("identity_rows, verified", [
     ([("111111111111",)], True), ([], False), ([("999999999999",)], False),
     (RuntimeError("plugin read failed"), False),
@@ -147,10 +148,13 @@ def test_empty_inventory_sync_uses_real_identity_probe(monkeypatch, resource_typ
     state = {"inventory": [("self", "us-east-1", "last-good")],
              "snapshot": 1, "last_success": ("earlier", 1)}
     connections = []
+    events = []
 
     class FakeAurora:
         def run(self, sql, **params):
             if "pg_try_advisory_lock" in sql or "RETURNING 1" in sql:
+                if "RETURNING 1" in sql:
+                    events.append("finalize")
                 if "last_success_at=now()" in sql:
                     state["last_success"] = ("now", params["n"])
                 return [(True,)]
@@ -162,6 +166,7 @@ def test_empty_inventory_sync_uses_real_identity_probe(monkeypatch, resource_typ
                 state["snapshot"] = None
             if sql.startswith("INSERT INTO inventory_snapshots"):
                 state["snapshot"] = params["n"]
+                events.append(("snapshot", params["a"], params["t"], params["n"]))
             return []
 
         def close(self):
@@ -178,10 +183,11 @@ def test_empty_inventory_sync_uses_real_identity_probe(monkeypatch, resource_typ
     result = sync_lambda.sync(resource_type)
     assert result["status"] == ("succeeded" if verified else "partial")
     assert result["row_count"] == result["unknown_attribute_count"] == 0
-    assert result.get("unreachable_account_count", 0) == (0 if verified else 1)
+    assert result["unreachable_account_count"] == (0 if verified else 1)
     assert state["inventory"] == ([] if verified else [("self", "us-east-1", "last-good")])
     assert state["snapshot"] == (0 if verified else 1)
     assert state["last_success"] == (("now", 0) if verified else ("earlier", 1))
+    assert events == ([("snapshot", "self", resource_type, 0), "finalize"] if verified else ["finalize"])
     assert len(connections) == 2 and all(conn.closed for conn in connections)
 
 

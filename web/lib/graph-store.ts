@@ -4,9 +4,10 @@ import { buildFlowGraph, type FlowInput, type FlowKind } from './flow-topology';
 import { buildInfraGraph, type Row } from './infra-topology';
 import type { TraceSource, TraceSpan, ServiceGraphCall, SourceRead } from './trace-source';
 import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
-import { graphDiagnostic, writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
+import { graphDiagnostic, inventorySourcesStale, writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
 import { currentAccountId } from './account';
-import { GraphReadBusy } from './graph-transaction';
+import { GraphReadBusy, GraphReadDeadline } from './graph-transaction';
+import { redactInventorySecrets } from './inventory-redaction';
 import { graphTransaction, inventoryAccounts, inventoryCounts, inventorySnapshot, inventoryAttempt, inventoryTypesForAccount, recordUnattempted, INFRA_TYPES, type InventoryRow } from './graph-inventory';
 export { resolveInfraRef } from './trace-graph';
 
@@ -61,9 +62,20 @@ export interface GraphRebuildResult {
   nodes: number; edges: number; published: number; retained: number; skipped: number;
   degraded: number; reasons: string[]; accountsTruncated?: boolean;
   failed?: number; failureCode?: string;
+  selfInfraComplete?: boolean;
+  selfInfraStatus?: typeof SELF_INFRA_STATES[number];
 }
+export const SELF_INFRA_STATES = ['complete', 'degraded', 'stale', 'retained', 'skipped', 'failed', 'unattempted'] as const;
+export const GRAPH_REBUILD_REASONS: ReadonlySet<string> = new Set(['publication_busy', 'superseded', 'rebuild_busy', 'state_schema_missing',
+  'account_limit', 'time_limit', 'skip_record_busy', 'skip_record_failed', 'snapshot_limit',
+  'graph_limit', 'account_failed', 'rebuild_deadline', 'collection_ok', 'collection_empty', 'collection_partial',
+  'collection_unavailable', 'collection_error']);
+
 const emptyResult = (): GraphRebuildResult =>
   ({ nodes: 0, edges: 0, published: 0, retained: 0, skipped: 0, degraded: 0, reasons: [] });
+
+const deferredReason = (error: unknown, busy: string) =>
+  error instanceof GraphReadDeadline ? 'rebuild_deadline' : error instanceof GraphReadBusy ? busy : null;
 
 // All classes share atomic state/row publication, bounded batches and nonwaiting locks.
 async function writeGraph(pool: Pool, cls: GraphClass, lockKey: number, accountId: string,
@@ -88,7 +100,8 @@ async function writeGraph(pool: Pool, cls: GraphClass, lockKey: number, accountI
   });
   try { return await publish(attempt); }
   catch (error) {
-    if (error instanceof GraphReadBusy) return { ...emptyResult(), skipped: 1, reasons: ['publication_busy'] };
+    const deferred = deferredReason(error, 'publication_busy');
+    if (deferred) return { ...emptyResult(), skipped: 1, reasons: [deferred] };
     // The failed transaction rolled back BOTH state and rows. Best-effort failure evidence
     // uses a fresh bounded transaction; a newer attempt still wins. Always propagate failure.
     await publish({ ...attempt, status: 'error', publish: false,
@@ -106,6 +119,23 @@ export function recordTraceSourceFailure(pool: Pool) {
   });
 }
 
+/** Dependency was not usable; no telemetry query or observation count is invented. */
+export async function recordTraceDependencySkip(pool: Pool) {
+  try {
+    const ready = await graphTransaction(pool, true, client =>
+      client.query(`SELECT to_regclass('public.topology_graph_state') IS NOT NULL AS ready`));
+    if (!ready.rows[0]?.ready) return { ...emptyResult(), skipped: 1, reasons: ['state_schema_missing'] };
+  } catch (error) {
+    const deferred = deferredReason(error, 'rebuild_busy');
+    if (deferred) return { ...emptyResult(), skipped: 1, reasons: [deferred] };
+    throw error;
+  }
+  return writeGraph(pool, 'trace', TRACE_LOCK, 'self', [], [], randomUUID(), {
+    status: 'unavailable', attemptedAt: new Date(Date.now()).toISOString(), publish: false,
+    details: { sources: [], sourceAttempted: false, failureReason: 'not_attempted' },
+  });
+}
+
 // Duplicate calls for the same class skip; distinct class locks may progress independently.
 const inventoryBusy = new WeakMap<Pool, Set<GraphClass>>();
 
@@ -118,7 +148,8 @@ async function replaceGraph(client: PoolClient, cls: GraphClass, account: string
       FROM jsonb_to_recordset($4::jsonb) AS n(id text,kind text,label text,meta jsonb)
       ON CONFLICT(account_id,id,class) DO UPDATE SET kind=EXCLUDED.kind,label=EXCLUDED.label,
         meta=EXCLUDED.meta,run_id=EXCLUDED.run_id,captured_at=now()`,
-    [account, cls, runId, JSON.stringify(nodes.slice(offset, offset + 200))]);
+    [account, cls, runId, JSON.stringify(nodes.slice(offset, offset + 200).map(node =>
+      ({ ...node, meta: redactInventorySecrets(node.meta) })))]);
   }
   const trace = cls === 'trace'; // Inventory preserves existing edge metadata and schema compatibility.
   for (let offset = 0; offset < edges.length; offset += 200) {
@@ -127,7 +158,8 @@ async function replaceGraph(client: PoolClient, cls: GraphClass, account: string
       FROM jsonb_to_recordset($4::jsonb) AS e(source text,target text,rel text,confidence text,meta jsonb)
       ON CONFLICT(account_id,source,target,rel,class) DO UPDATE SET confidence=EXCLUDED.confidence,
         run_id=EXCLUDED.run_id,captured_at=now()${trace ? ',meta=EXCLUDED.meta' : ''}`,
-    [account, cls, runId, JSON.stringify(edges.slice(offset, offset + 200))]);
+    [account, cls, runId, JSON.stringify(edges.slice(offset, offset + 200).map(edge =>
+      ({ ...edge, meta: redactInventorySecrets(edge.meta) })))]);
   }
   await client.query('DELETE FROM topology_edges WHERE account_id=$1 AND class=$2 AND run_id<>$3', [account, cls, runId]);
   await client.query('DELETE FROM topology_nodes WHERE account_id=$1 AND class=$2 AND run_id<>$3', [account, cls, runId]);
@@ -136,6 +168,7 @@ async function replaceGraph(client: PoolClient, cls: GraphClass, account: string
 async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId: string,
   types: string[], build: (rows: InventoryRow[]) => { nodes: GNode[]; edges: GEdge[] }): Promise<GraphRebuildResult> {
   const totals = emptyResult();
+  if (cls === 'infra') { totals.selfInfraComplete = false; totals.selfInfraStatus = 'unattempted'; }
   const reason = (value: string) => { if (!totals.reasons.includes(value)) totals.reasons.push(value); };
   const active = inventoryBusy.get(pool) ?? new Set<GraphClass>();
   if (active.has(cls)) return { ...totals, skipped: 1, reasons: ['rebuild_busy'] };
@@ -148,14 +181,15 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
     let accounts;
     try { accounts = await inventoryAccounts(pool, cls, types); }
     catch (error) {
-      if (error instanceof GraphReadBusy) return { ...totals, skipped: 1, reasons: ['rebuild_busy'] };
+      const deferred = deferredReason(error, 'rebuild_busy');
+      if (deferred) return { ...totals, skipped: 1, reasons: [deferred] };
       await writeGraph(pool, cls, lock, 'self', [], [], runId, { attemptedAt: runStartedAt, status: 'error', publish: false,
         details: { sources: [], retainedPrevious: true, failureReason: 'source_read_failed' } }).catch(() => {});
       throw error;
     }
     if (!accounts) return { ...totals, skipped: 1, reasons: ['state_schema_missing'] };
-    if (accounts.length > 100) { totals.skipped++; totals.accountsTruncated = true; reason('account_limit'); }
-    const selected = accounts.slice(0, 100);
+    if (accounts.truncated) { totals.skipped++; totals.accountsTruncated = true; reason('account_limit'); }
+    const selected = accounts.accounts;
     for (const [index, account] of selected.entries()) {
       // Reserve a bounded transaction for skip evidence instead of silently abandoning the tail.
       if (performance.now() >= deadline - 4_000) {
@@ -182,11 +216,18 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
         }
         publishing = true;
         const outcome = await writeGraph(pool, cls, lock, account, graph.nodes, graph.edges, runId, attempt);
+        if (cls === 'infra' && account === 'self') {
+          totals.selfInfraStatus = outcome.retained ? 'retained' : outcome.skipped ? 'skipped'
+            : outcome.degraded ? 'degraded' : inventorySourcesStale(attempt.details.sources) ? 'stale' : 'complete';
+          totals.selfInfraComplete = outcome.published === 1 && totals.selfInfraStatus === 'complete';
+        }
         for (const key of ['nodes', 'edges', 'published', 'retained', 'skipped', 'degraded'] as const) totals[key] += outcome[key];
         outcome.reasons.forEach(reason);
       } catch (error) {
-        if (error instanceof GraphReadBusy) {
-          totals.skipped++; reason('rebuild_busy');
+        const deferred = deferredReason(error, 'rebuild_busy');
+        if (cls === 'infra' && account === 'self') totals.selfInfraStatus = deferred ? 'skipped' : 'failed';
+        if (deferred) {
+          totals.skipped++; reason(deferred);
           await new Promise<void>(resolve => setImmediate(resolve)); continue;
         }
         if (!publishing) await writeGraph(pool, cls, lock, account, [], [], runId, { attemptedAt, status: 'error', publish: false,
@@ -241,13 +282,15 @@ export async function rebuildTraceGraph(
   sources: TraceSource[],
   runId: string = randomUUID(),
   metricsSources: MetricsCallsSourceLike[] = [],
+  infraQualification?: 'degraded' | 'stale',
 ): Promise<GraphRebuildResult> {
   let schema;
   try {
     schema = await graphTransaction(pool, true, client =>
       client.query(`SELECT to_regclass('public.topology_graph_state') IS NOT NULL AS ready`));
   } catch (error) {
-    if (error instanceof GraphReadBusy) return { ...emptyResult(), skipped: 1, reasons: ['rebuild_busy'] };
+    const deferred = deferredReason(error, 'rebuild_busy');
+    if (deferred) return { ...emptyResult(), skipped: 1, reasons: [deferred] };
     throw error;
   }
   if (schema.rows[0]?.ready !== true) return { ...emptyResult(), skipped: 1, reasons: ['state_schema_missing'] };
@@ -287,17 +330,25 @@ export async function rebuildTraceGraph(
       : partial ? 'partial' : 'unavailable';
     return writeGraph(pool, 'trace', TRACE_LOCK, 'self', [], [], runId, {
       status, attemptedAt: new Date(endMs).toISOString(), publish: false,
-      details: { sources: sourceDetails, retainedPrevious: true, windowStartMs: startMs, windowEndMs: endMs },
+      details: { sources: sourceDetails, retainedPrevious: true, windowStartMs: startMs, windowEndMs: endMs,
+        ...(infraQualification ? { infraUnavailable: true } : {}) },
+    });
+  }
+  if (infraQualification && !spans.length && !calls.length) {
+    return writeGraph(pool, 'trace', TRACE_LOCK, 'self', [], [], runId, {
+      status: 'partial', attemptedAt: new Date(endMs).toISOString(), publish: false,
+      details: { sources: sourceDetails, infraUnavailable: true, windowStartMs: startMs, windowEndMs: endMs },
     });
   }
   let infraNodes: InfraNodeLike[] = [];
-  let infraUnavailable = false;
-  try {
+  let infraUnavailable = !!infraQualification;
+  if (!infraQualification) try {
     const result = await graphTransaction(pool, true, client => client.query(
       `SELECT id, kind, meta FROM topology_nodes WHERE account_id = 'self' AND class = 'infra'`));
     infraNodes = result.rows as InfraNodeLike[];
   } catch (error) {
-    if (error instanceof GraphReadBusy) return { ...emptyResult(), skipped: 1, reasons: ['rebuild_busy'] };
+    const deferred = deferredReason(error, 'rebuild_busy');
+    if (deferred) return { ...emptyResult(), skipped: 1, reasons: [deferred] };
     infraUnavailable = true;
   }
   const graph = buildTraceGraph(spans, calls, infraNodes, currentAccountId());

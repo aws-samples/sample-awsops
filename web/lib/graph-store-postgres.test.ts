@@ -10,7 +10,7 @@ import * as graphStore from './graph-store';
 import { inventorySnapshot, inventoryAccounts, recordUnattempted, INFRA_TYPES } from './graph-inventory';
 import { HOST_ONLY_TREND_TYPES } from './trend-utils';
 import { readGraphState, writeGraphState } from './graph-state';
-import { graphTransaction, graphReadTransaction, GraphReadBusy } from './graph-transaction';
+import { graphTransaction, graphReadTransaction, GraphReadBusy, GraphReadDeadline } from './graph-transaction';
 import type { ServiceGraphCall, SourceRead } from './trace-source';
 const api = vi.hoisted(() => ({ pool: null as unknown }));
 const producer = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -19,6 +19,7 @@ vi.mock('@/lib/mcp-lambda-invoke', () => ({ invokeMcpLambdaTool: (...args: unkno
 vi.mock('@/lib/auth', () => ({ verifyUser: async () => ({ sub: 'fixture' }) }));
 vi.mock('@/lib/db', () => ({ getPool: () => api.pool }));
 import { GET } from '../app/api/graph/route';
+import { GET as inventoryGET } from '../app/api/inventory/[type]/route';
 
 // Opt-in, disposable PG17 server only. The Unix socket is mounted in a private task directory;
 // no host port, AWS endpoint, or product dependency is needed.
@@ -42,19 +43,19 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect((await admin.query('SHOW server_version')).rows[0].server_version).toMatch(/^17\./);
     if (!(await admin.query("SELECT 1 FROM pg_database WHERE datname='awsops_graph_task3'")).rowCount) {
       await admin.query('CREATE DATABASE awsops_graph_task3');
-      await admin.query("COMMENT ON DATABASE awsops_graph_task3 IS 'awsops-disposable-graph-test'");
+      await admin.query("COMMENT ON DATABASE awsops_graph_task3 IS 'awsops-disposable-graph-store-test'");
     }
     await admin.end();
     pool = new Pool({ host: socket, user: 'postgres', database: 'awsops_graph_task3' });
     const targetMarker = await pool.query("SELECT shobj_description(oid,'pg_database') AS marker FROM pg_database WHERE datname=current_database()");
-    if (targetMarker.rows[0]?.marker !== 'awsops-disposable-graph-test')
+    if (targetMarker.rows[0]?.marker !== 'awsops-disposable-graph-store-test')
       throw new Error('Refusing graph fixtures without target disposable database sentinel');
     api.pool = pool;
     await pool.query(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;
       CREATE SCHEMA IF NOT EXISTS sql_reader;
-      DO $$ BEGIN CREATE ROLE awsops_web; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-      DO $$ BEGIN CREATE ROLE awsops_worker; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-      DO $$ BEGIN CREATE ROLE awsops_sql_reader LOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+      DO $$ BEGIN CREATE ROLE awsops_web; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$;
+      DO $$ BEGIN CREATE ROLE awsops_worker; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$;
+      DO $$ BEGIN CREATE ROLE awsops_sql_reader LOGIN; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$;`);
     const schema = readFileSync(resolve('../terraform/foundation/data/schema.sql'), 'utf8');
     for (const table of ['inventory_resources', 'inventory_sync_runs', 'inventory_snapshots', 'account_regions'])
       await pool.query(schema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`))![0]);
@@ -75,8 +76,18 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await pool.query(`INSERT INTO inventory_sync_runs
       (resource_type, status, started_at, finished_at, last_success_at, row_count, unknown_attribute_count)
       SELECT t, 'succeeded', $2, $2, $2, 0, 0 FROM unnest($1::text[]) t`, [requiredTypes, recent]);
+    await hostParticipation();
   });
   afterAll(async () => { vi.restoreAllMocks(); await pool?.end(); });
+  // Explicitly finish the fixture producer's host snapshots; ledger rows alone are not proof.
+  async function hostParticipation() {
+    await pool.query(`DELETE FROM inventory_snapshots WHERE account_id='self';
+      INSERT INTO inventory_snapshots(account_id,resource_type,resource_count,captured_at)
+      SELECT 'self',r.resource_type,count(i.resource_id),r.finished_at FROM inventory_sync_runs r
+      LEFT JOIN inventory_resources i ON i.resource_type=r.resource_type AND i.account_id='self'
+      WHERE r.account_id='self' AND r.status='succeeded' AND r.finished_at IS NOT NULL
+      GROUP BY r.resource_type,r.finished_at`);
+  }
   async function seed(cls: string, captured = recent, account = 'self') {
     const type = cls === 'flow' ? 'alb' : 'vpc';
     await pool.query(`INSERT INTO inventory_resources(resource_type, account_id, resource_id, data, captured_at)
@@ -92,6 +103,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
         SELECT $1,$2,t,CASE WHEN t=$3 THEN 1 ELSE 0 END FROM unnest($4::text[]) t`,
       [account, recent, type, requiredTypes.filter(t => !HOST_ONLY_TREND_TYPES.has(t))]);
     }
+    await hostParticipation();
   }
   const build = (cls: string) => cls === 'flow' ? rebuildGraph(pool) : rebuildInfraGraph(pool);
   const state = (cls: string, account = 'self') => readGraphState(pool, account, cls as never);
@@ -134,10 +146,117 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     const account = '111122223333';
     await pool.query(`INSERT INTO accounts(account_id,alias,external_id,all_regions)
       VALUES ($1,'fixture','fixture-only',true)`, [account]);
-    expect(await inventoryAccounts(pool, 'infra', INFRA_TYPES)).toContain(account);
+    expect((await inventoryAccounts(pool, 'infra', INFRA_TYPES))?.accounts).toContain(account);
     await build('infra');
     expect((await state('infra', account)).status).not.toBe('empty');
     expect((await state('infra', account)).captured_at).toBeNull();
+  });
+  it('retains host publication when the aggregate ledger lacks host participation', async () => {
+    await seed('infra'); await build('infra');
+    const previous = await state('infra');
+    await pool.query("DELETE FROM inventory_snapshots WHERE account_id='self'");
+    expect(await build('infra')).toMatchObject({ published: 0, retained: 1 });
+    expect(await state('infra')).toMatchObject({ status: 'unavailable', captured_at: previous.captured_at });
+    expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
+  });
+  it('proves only the current self infra slice while retaining an unproven member', async () => {
+    const member = '111122223333';
+    await seed('infra'); await seed('infra', recent, member);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=2 WHERE resource_type='vpc'");
+    await build('infra');
+    await pool.query('DELETE FROM inventory_snapshots WHERE account_id=$1', [member]);
+    expect(await build('infra')).toMatchObject({ published: 1, retained: 1, selfInfraComplete: true });
+    expect(await state('infra', member)).toMatchObject({ retainedPrevious: true, status: 'unavailable' });
+    await pool.query("UPDATE inventory_resources SET captured_at=$1 WHERE account_id='self'", [old]);
+    expect(await build('infra')).toMatchObject({ selfInfraComplete: false });
+  });
+  it.each(['discover', 'publish', 'trace_context'])('a %s deadline skips without writing a false collection failure', async phase => {
+    await seed('infra'); await build('infra'); await trace();
+    const cls = phase === 'trace_context' ? 'trace' : 'infra';
+    const previous = await state(cls);
+    const query = Client.prototype.query;
+    vi.spyOn(Client.prototype, 'query').mockImplementation(function (sql, ...args) {
+      if ((phase === 'discover' && String(sql).includes('SELECT accounts.account_id'))
+        || (phase === 'publish' && String(sql).includes('INSERT INTO topology_nodes'))
+        || (phase === 'trace_context' && String(sql).includes("class = 'infra'")))
+        throw new GraphReadDeadline(phase === 'publish' ? 'transaction' : 'acquire');
+      return Reflect.apply(query, this, [sql, ...args]);
+    });
+    expect(await (phase === 'trace_context' ? trace() : build('infra')))
+      .toMatchObject({ published: 0, skipped: 1, reasons: ['rebuild_deadline'] });
+    expect(await state(cls)).toEqual(previous);
+  });
+  it('records an unattempted trace dependency without changing saved rows or capture', async () => {
+    await trace(); const previous = await state('trace');
+    expect(await graphStore.recordTraceDependencySkip(pool)).toMatchObject({ published: 0, retained: 1 });
+    expect(await state('trace')).toMatchObject({ status: 'unavailable', sourceAttempted: false,
+      failureReason: 'not_attempted', captured_at: previous.captured_at });
+    expect((await pool.query("SELECT id FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
+  });
+  it.each(['object', 'encoded', 'mixed_case', 'root_string'])('redacts stored graph secrets on full and subgraph reads (%s)', async shape => {
+    const secret = 'FIXTURE_ORIGIN_SECRET_DO_NOT_EXPOSE', oidcSecret = 'FIXTURE_OIDC_SECRET_DO_NOT_EXPOSE';
+    const origin = { Id: 'main', DomainName: 'origin.example.test',
+      [shape === 'mixed_case' ? 'custom_headers' : 'CustomHeaders']: { Items: [{ HeaderName: 'X-Origin', HeaderValue: secret }] } };
+    const action = { Type: 'authenticate-oidc', AuthenticateOidcConfig: {
+      ClientId: 'public-client', [shape === 'mixed_case' ? 'client_secret' : 'ClientSecret']: oidcSecret } };
+    const row = { domain_name: 'dist.example.test', origins: shape === 'encoded' ? JSON.stringify(JSON.stringify([origin])) : [origin],
+      actions: shape === 'encoded' ? JSON.stringify([action]) : [action] };
+    const meta = shape === 'root_string' ? JSON.stringify({ row }) : { row };
+    await pool.query(`INSERT INTO topology_nodes(account_id,id,kind,label,meta,run_id,class)
+      VALUES ('self','cf:legacy','cf','legacy',$1::jsonb,'old','flow')`, [JSON.stringify(meta)]);
+    for (const suffix of ['', '&from=cf:legacy']) {
+      const response = await GET(new Request(`http://localhost/api/graph?class=flow${suffix}`));
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).not.toContain(secret); expect(text).not.toContain(oidcSecret);
+      expect(text).toContain('origin.example.test'); expect(text).toContain('public-client');
+    }
+    expect(JSON.stringify((await pool.query("SELECT meta FROM topology_nodes WHERE id='cf:legacy'")).rows)).toContain(secret);
+  });
+  it('new graph writes omit origin/OIDC secrets while preserving routing fields', async () => {
+    await seed('flow');
+    const data = { id: 'dist-fixture', domain_name: 'dist.example.test', origins: [{ Id: 'main',
+      DomainName: 'web.example.test', CustomHeaders: { Items: [{ HeaderName: 'X-Origin', HeaderValue: 'FIXTURE_WRITE_SECRET' }] } }],
+      actions: [{ TargetGroupArn: 'tg-safe', AuthenticateOidcConfig: { ClientId: 'public-client', ClientSecret: 'FIXTURE_WRITE_OIDC' } }] };
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
+      VALUES ('cloudfront','dist-fixture',$1::jsonb,$2)`, [JSON.stringify(data), recent]);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=1 WHERE resource_type='cloudfront'");
+    await hostParticipation();
+    expect(await build('flow')).toMatchObject({ published: 1 });
+    const stored = JSON.stringify((await pool.query("SELECT meta FROM topology_nodes WHERE class='flow'")).rows);
+    expect(stored).not.toContain('FIXTURE_WRITE_SECRET'); expect(stored).not.toContain('FIXTURE_WRITE_OIDC');
+    expect(stored).toContain('web.example.test'); expect(stored).toContain('tg-safe');
+    expect((await pool.query("SELECT * FROM topology_edges WHERE class='flow'")).rowCount).toBeGreaterThan(0);
+  });
+  it('generic inventory reads redact existing CloudFront secrets without changing snapshot evidence', async () => {
+    const data = { domain_name: 'dist.example.test', origins: [{ DomainName: 'origin.example.test',
+      CustomHeaders: { Items: [{ HeaderName: 'X-Origin', HeaderValue: 'FIXTURE_INVENTORY_SECRET' }] } }] };
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
+      VALUES ('cloudfront','legacy-dist',$1::jsonb,$2)`, [JSON.stringify(data), recent]);
+    const response = await inventoryGET(new Request('http://localhost/api/inventory/cloudfront'), { params: { type: 'cloudfront' } });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.consistency).toBe('statement-snapshot');
+    expect(body.rows[0]).toMatchObject({ resource_id: 'legacy-dist', account_id: 'self' });
+    expect(JSON.stringify(body)).toContain('origin.example.test');
+    expect(JSON.stringify(body)).not.toContain('FIXTURE_INVENTORY_SECRET');
+    expect(JSON.stringify((await pool.query("SELECT data FROM inventory_resources WHERE resource_id='legacy-dist'")).rows))
+      .toContain('FIXTURE_INVENTORY_SECRET');
+  });
+  it.each(['root', 'items_wrapper'])('malformed JSON-looking strings cannot leak through either public read path (%s)', async shape => {
+    const malformed = '{"row":{"origins":[{"CustomHeaders":"FIXTURE_ROOT_SECRET"}]}, broken';
+    const payload = shape === 'root' ? malformed : { row: { origins: { Items: malformed } } };
+    await pool.query(`INSERT INTO topology_nodes(account_id,id,kind,label,meta,run_id,class)
+      VALUES ('self','cf:broken','cf','{ordinary label',$1::jsonb,'old','flow')`, [JSON.stringify(payload)]);
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
+      VALUES ('cloudfront','broken',$1::jsonb,$2)`, [JSON.stringify(payload), recent]);
+    for (const response of [
+      await GET(new Request('http://localhost/api/graph?class=flow')),
+      await inventoryGET(new Request('http://localhost/api/inventory/cloudfront'), { params: { type: 'cloudfront' } }),
+    ]) {
+      expect(response.status).toBe(500);
+      expect(await response.text()).not.toContain('FIXTURE_ROOT_SECRET');
+    }
   });
 
   it.each(tempoContracts)('Tempo producer $name preserves the graph unless empty is confirmed', async fixture => {
@@ -191,6 +310,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await state(cls)).toMatchObject({ status: 'partial', retainedPrevious: true, captured_at: previous.captured_at });
     expect((await pool.query('SELECT id FROM topology_nodes WHERE class=$1', [cls])).rows).toEqual(nodes);
     await pool.query('UPDATE inventory_sync_runs SET unknown_attribute_count=0');
+    await hostParticipation();
     expect(await build(cls)).toMatchObject({ published: 1, retained: 0 });
     expect(await state(cls)).toMatchObject({ status: 'empty', retainedPrevious: false });
     expect((await pool.query('SELECT id FROM topology_nodes WHERE class=$1', [cls])).rows).toEqual([]);
@@ -235,8 +355,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       const result = await state(cls, '111122223333');
       expect(result).toMatchObject({ stale: true, retainedPrevious: false, captured_at: null });
       expect(result.sources).toContainEqual(expect.objectContaining({
-        sourceId: 'inventory:lambda', scope: 'aggregate', producerStatus: status, itemCount: 0,
-        status: status === 'failed' ? 'error' : 'unavailable',
+        sourceId: 'inventory:lambda', scope: 'account', producerStatus: status, itemCount: 0,
+        status: status === 'failed' ? 'error' : 'partial',
       }));
       expect((await pool.query("SELECT * FROM topology_nodes WHERE account_id='111122223333'")).rowCount).toBe(0);
     });
@@ -284,8 +404,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   it('does not certify an omitted nonempty source as empty at the row cap', async () => {
     await seed('infra'); await build('infra');
     await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
-      SELECT 'ec2','i-'||n,'{}',$1 FROM generate_series(1,2001) n`, [recent]);
-    await pool.query("UPDATE inventory_sync_runs SET row_count=2001 WHERE resource_type='ec2'");
+      SELECT 'ec2','i-'||n,'{}',$1 FROM generate_series(1,8193) n`, [recent]);
+    await pool.query("UPDATE inventory_sync_runs SET row_count=8193 WHERE resource_type='ec2'");
     expect(await build('infra')).toMatchObject({ retained: 1, published: 0 });
     expect((await state('infra')).sources).toContainEqual(expect.objectContaining({
       sourceId: 'inventory:vpc', status: 'partial', itemCount: null,
@@ -300,7 +420,15 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
           'alias_target',jsonb_build_object('DNSName','web.example.test')),$1
       FROM generate_series(1,2500) n`, [recent]);
     await pool.query("UPDATE inventory_sync_runs SET row_count=2500 WHERE resource_type='route53'");
+    await hostParticipation();
+    const snapshot = await inventorySnapshot(pool, 'flow', 'self', flowTypes);
+    expect(snapshot.truncated).toBe(false);
+    expect(snapshot.rows).toHaveLength(2501);
+    expect(Buffer.byteLength(JSON.stringify(snapshot.rows))).toBeLessThan(8 * 1024 * 1024);
     expect(await build('flow')).toMatchObject({ published: 1, retained: 0, nodes: 2501, edges: 2500 });
+    expect((await state('flow')).sources).toContainEqual(expect.objectContaining({
+      sourceId: 'inventory:route53', status: 'ok', itemCount: 2500,
+    }));
     await pool.query("UPDATE inventory_sync_runs SET status='failed' WHERE resource_type='waf'");
     expect(await build('flow')).toMatchObject({ published: 0, retained: 1 });
     expect((await pool.query("SELECT count(*)::int AS n FROM topology_nodes WHERE class='flow'")).rows[0].n).toBe(2501);
@@ -308,10 +436,10 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   it('discovers eligible first-empty accounts without scanning historical snapshot keys', async () => {
     await pool.query("INSERT INTO accounts(account_id,alias,external_id,all_regions) VALUES ('111122223333','fixture','fixture',true)");
     await pool.query("INSERT INTO inventory_snapshots(account_id,resource_type,resource_count,captured_at) VALUES ('999000000000','vpc',0,$1)", [recent]);
-    expect(new Set(await inventoryAccounts(pool, 'infra', INFRA_TYPES))).toEqual(new Set(['self','111122223333']));
+    expect(new Set((await inventoryAccounts(pool, 'infra', INFRA_TYPES))?.accounts)).toEqual(new Set(['self','111122223333']));
     await pool.query(`INSERT INTO topology_nodes(account_id,id,kind,label,run_id,class)
       VALUES ('999000000000','vpc:kept','vpc','Kept','old','infra')`);
-    expect(await inventoryAccounts(pool, 'infra', INFRA_TYPES)).toContain('999000000000');
+    expect((await inventoryAccounts(pool, 'infra', INFRA_TYPES))?.accounts).toContain('999000000000');
   });
   it.each(['request','background','flow','infra','trace'])('reserves an auth connection while shedding excess %s work', async operation => {
     const limited = new Pool({ host: socket, user: 'postgres', database: 'awsops_graph_task3', max: 3 });
@@ -337,6 +465,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await seed('infra'); await build('infra');
     const previous = await state('infra');
     await pool.query("DELETE FROM inventory_resources; UPDATE inventory_sync_runs SET row_count=0");
+    await hostParticipation();
     const query = Client.prototype.query;
     let changed = false;
     vi.spyOn(Client.prototype, 'query').mockImplementation(function (sql, ...args) {
@@ -370,7 +499,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await seed('infra');
     await build('infra');
     await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
-      SELECT 'vpc', 'vpc-'||n, '{}', $1 FROM generate_series(1,2000) n`, [recent]);
+      SELECT 'vpc', 'vpc-'||n, '{}', $1 FROM generate_series(1,8192) n`, [recent]);
     expect(await build('infra')).toMatchObject({ published: 0, retained: 1, reasons: ['snapshot_limit'] });
     expect(await state('infra')).toMatchObject({ status: 'partial', retainedPrevious: true, inputTruncated: true });
     expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
@@ -454,6 +583,25 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await state('trace')).toMatchObject({ status: status === 'registry' ? 'error' : status,
       stale: true, retainedPrevious: true, captured_at: previous.captured_at });
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
+    if (status === 'registry') {
+      const projected = (await pool.query("SELECT status,captured_at,details FROM sql_reader.topology_graph_state WHERE class='trace' AND account_id='self'")).rows[0];
+      expect(projected).toMatchObject({ status: 'error', captured_at: previous.captured_at,
+        details: { retainedPrevious: true, failureReason: 'source_read_failed' } });
+      expect(projected.details.sources[0]).toMatchObject({ sourceId: 'trace:registry', reasons: ['registry_read_failed'] });
+      expect(projected.details.sources[0].itemCount == null).toBe(true);
+      const body = await (await GET(new Request('http://localhost/api/graph?class=trace'))).json();
+      expect(body.collection.status).toBe('error');
+      expect(body.nodes).toHaveLength(2);
+    }
+  });
+  it('records a first registry failure without inventing saved data or query evidence', async () => {
+    expect(await graphStore.recordTraceSourceFailure(pool)).toMatchObject({ published: 0, retained: 0, skipped: 1 });
+    const result = await state('trace');
+    expect(result).toMatchObject({ status: 'error', stale: true, captured_at: null,
+      retainedPrevious: false, failureReason: 'source_read_failed' });
+    expect(result.windowStartMs).toBeUndefined();
+    expect(result.sources[0].itemCount == null).toBe(true);
+    expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(0);
   });
   it('does not replace trace evidence when the infra-read admission is busy', async () => {
     await trace(); const previous = await state('trace');
@@ -465,15 +613,22 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     } } as Pool;
     expect(await trace([{ client: 'replacement', server: 'other', count: 1 }], 'ok', wrapped))
       .toMatchObject({ published: 0, skipped: 1, reasons: ['rebuild_busy'] });
+    expect(connects).toBe(2);
     expect(await state('trace')).toEqual(previous);
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace' ORDER BY id")).rows).toEqual(nodes);
   });
-  it('keeps nonempty inventory evidence distinct from an empty derived graph', async () => {
+  it.each([['infra', 'lambda'], ['infra', 'ec2'], ['flow', 'route53']])('keeps %s/%s evidence distinct from an empty derived graph', async (cls, type) => {
+    const data = cls === 'flow' ? { name: 'untracked.example.test', type: 'CNAME', records: ['external.example.test'], private_zone: false }
+      : { vpc_id: null, vpc_subnet_ids: [], vpc_security_group_ids: [] };
     await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,data,captured_at)
-      VALUES ('lambda','outside-vpc','{"vpc_id":null,"vpc_subnet_ids":[],"vpc_security_group_ids":[]}',$1)`, [recent]);
-    await pool.query("UPDATE inventory_sync_runs SET row_count=1 WHERE resource_type='lambda'");
-    expect(await build('infra')).toMatchObject({ published: 1, nodes: 0 });
-    expect(await state('infra')).toMatchObject({ status: 'ok' });
+      VALUES ($1,'outside-vpc',$2::jsonb,$3)`, [type, JSON.stringify(data), recent]);
+    await pool.query('UPDATE inventory_sync_runs SET row_count=1 WHERE resource_type=$1', [type]);
+    await hostParticipation();
+    expect(await build(cls)).toMatchObject({ published: 1, nodes: 0 });
+    expect((await state(cls)).sources).toContainEqual(expect.objectContaining({ sourceId: `inventory:${type}`, status: 'ok', itemCount: 1 }));
+    const body = await (await GET(new Request(`http://localhost/api/graph?class=${cls}`))).json();
+    expect(body.collection.status).toBe('ok');
+    expect(body.nodes).toHaveLength(0);
   });
   it('trace publishes degraded evidence and confirmed empty with distinct outcomes', async () => {
     expect(await trace(undefined, 'partial')).toMatchObject({ published: 1, degraded: 1, nodes: 2, edges: 1 });
@@ -554,17 +709,18 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await state('trace')).toEqual(previous);
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(2);
   });
-  it('refuses the standalone mutation fixture when its target database is unmarked', async () => {
+  it.each([false, true])('refuses a missing or generic-only target marker (generic=%s)', async generic => {
     await trace();
     const previous = await state('trace');
-    await pool.query('COMMENT ON DATABASE awsops_graph_task3 IS NULL');
+    await pool.query(generic ? "COMMENT ON DATABASE awsops_graph_task3 IS 'awsops-disposable-graph-test'"
+      : 'COMMENT ON DATABASE awsops_graph_task3 IS NULL');
     try {
       const child = spawnSync(process.execPath, ['--experimental-vm-modules', 'lib/fixtures/graph-fatal-child.mjs', 'helper'],
         { encoding: 'utf8', timeout: 15_000, env: process.env });
       expect(child.status).not.toBe(0);
       expect(child.stderr).toContain('disposable database');
       expect(await state('trace')).toEqual(previous);
-    } finally { await pool.query("COMMENT ON DATABASE awsops_graph_task3 IS 'awsops-disposable-graph-test'"); }
+    } finally { await pool.query("COMMENT ON DATABASE awsops_graph_task3 IS 'awsops-disposable-graph-store-test'"); }
   });
   it('sends neither oversized flow payloads nor oversized identifiers to the web process', async () => {
     await seed('flow');
@@ -610,9 +766,9 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   });
   it('continues a small account after skipping an oversized first collection', async () => {
     await pool.query(`INSERT INTO inventory_resources(resource_type,account_id,resource_id,data,captured_at)
-      SELECT 'vpc','self','vpc-'||n,'{}',$1 FROM generate_series(1,2001) n`, [recent]);
+      SELECT 'vpc','self','vpc-'||n,'{}',$1 FROM generate_series(1,8193) n`, [recent]);
     await seed('infra', recent, '111122223333');
-    await pool.query("UPDATE inventory_sync_runs SET row_count=2002 WHERE resource_type='vpc'");
+    await pool.query("UPDATE inventory_sync_runs SET row_count=8194 WHERE resource_type='vpc'");
     expect(await build('infra')).toMatchObject({ published: 1, retained: 0, skipped: 1, reasons: ['snapshot_limit'] });
     expect(await state('infra', '111122223333')).toMatchObject({ retainedPrevious: false, status: 'ok' });
   });
@@ -642,14 +798,17 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await seed('infra'); await seed('infra', recent, member);
     await pool.query(`INSERT INTO topology_graph_state(account_id,class,status,attempted_at,details)
       VALUES ('self','infra','ok',$1,'{}'),($2,'infra','unavailable',$1,'{"sourceAttempted":false}')`, [recent, member]);
-    expect((await inventoryAccounts(pool, 'infra', INFRA_TYPES))?.[0]).toBe(member);
+    expect((await inventoryAccounts(pool, 'infra', INFRA_TYPES))?.accounts.slice(0, 2)).toEqual(['self', member]);
+    await pool.query(`INSERT INTO topology_graph_state(account_id,class,status,attempted_at,details)
+      SELECT account_id,'flow',status,attempted_at,details FROM topology_graph_state WHERE class='infra'`);
+    expect((await inventoryAccounts(pool, 'flow', INFRA_TYPES))?.accounts[0]).toBe(member);
   });
   it.each(['flow', 'infra'])('rotates all accounts over repeated two-account %s passes', async cls => {
     const accounts = ['self', ...Array.from({ length: 6 }, (_, i) => `10000000000${i}`)];
     for (const account of accounts) await seed(cls, recent, account);
     await pool.query('UPDATE inventory_sync_runs SET row_count=$1 WHERE resource_type=$2',
       [accounts.length, cls === 'flow' ? 'alb' : 'vpc']);
-    for (let pass = 0; pass < 4; pass++) {
+    for (let pass = 0; pass < (cls === 'infra' ? 6 : 4); pass++) {
       let ticks = 0;
       const timer = vi.spyOn(performance, 'now').mockImplementation(() => ticks++ <= 2 ? 0 : 31_000);
       const clock = vi.spyOn(Date, 'now').mockReturnValue(now + pass * 1000);
@@ -728,7 +887,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       FROM accounts a CROSS JOIN unnest($2::text[]) t`,
     [recent, requiredTypes.filter(t => !HOST_ONLY_TREND_TYPES.has(t))]);
     const result = await build('infra');
-    expect(result).toMatchObject({ published: 100, skipped: 1, accountsTruncated: true, reasons: ['account_limit'] });
+    expect(result).toMatchObject({ published: 100, skipped: 1, accountsTruncated: true,
+      selfInfraComplete: true, reasons: ['account_limit'] });
     expect((await pool.query('SELECT count(*)::int AS n FROM topology_graph_state')).rows[0].n).toBe(100);
   });
   it('rolls back graph expansion beyond its budget and discloses the retained snapshot', async () => {
@@ -739,6 +899,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
         (SELECT jsonb_agg('sg-'||n||'-'||m) FROM generate_series(1,500) m)), $1
       FROM generate_series(1,9) n`, [recent]);
     await pool.query("UPDATE inventory_sync_runs SET row_count=9 WHERE resource_type='ec2'");
+    await hostParticipation();
     expect(await build('infra')).toMatchObject({ retained: 1, reasons: ['graph_limit'] });
     expect(await state('infra')).toMatchObject({ status: 'partial', retainedPrevious: true, graphTruncated: true });
     expect((await pool.query("SELECT id FROM topology_nodes WHERE class='infra'")).rows).toEqual([{ id: 'vpc:one' }]);
@@ -767,7 +928,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(result).toMatchObject({ status: 'ok', stale: true });
     expect(result.sources).toEqual(expect.arrayContaining([expect.objectContaining({
       sourceId: `inventory:${cls === 'flow' ? 'alb' : 'vpc'}`, capturedAtMs: Date.parse(old),
-      lastSuccessAtMs: Date.parse(recent), scope: 'aggregate',
+      lastSuccessAtMs: Date.parse(recent), scope: 'account',
     })]));
   });
   it.each(['flow', 'infra'])('%s retains graph and original publication evidence after collection failure', async cls => {
@@ -790,6 +951,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       (resource_type, status, started_at, finished_at, last_success_at, row_count, unknown_attribute_count)
       SELECT t, 'succeeded', $1, $1, $1, 1, 0 FROM unnest(ARRAY['vpc','subnet']) t
       ON CONFLICT(resource_type,account_id) DO UPDATE SET row_count=1`, [recent]);
+    await hostParticipation();
     await build('infra');
     clock.mockImplementation(() => new Date().getTime()); // PostgreSQL publication uses its real clock.
     const previous = await state('infra');
@@ -816,6 +978,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await pool.query(`INSERT INTO inventory_sync_runs
       (resource_type, status, started_at, finished_at, last_success_at, row_count, unknown_attribute_count)
       VALUES ('subnet', 'succeeded', $1, $1, $1, 0, 0)`, [recent]);
+    await hostParticipation();
     clock.mockReturnValue(now + 3_000);
     await build('infra');
     clock.mockImplementation(() => new Date().getTime());
@@ -832,6 +995,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await seed(cls);
     await build(cls);
     await pool.query(`DELETE FROM inventory_resources; UPDATE inventory_sync_runs SET row_count=0;`);
+    await hostParticipation();
     await build(cls);
     expect(await state(cls)).toMatchObject({ status: 'empty', stale: false, retainedPrevious: false });
     expect((await pool.query('SELECT * FROM topology_nodes WHERE class=$1', [cls])).rows).toEqual([]);
@@ -973,6 +1137,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
         const result = await query(sql, args);
         if (sql.includes('FROM topology_graph_state')) {
           await pool.query('DELETE FROM inventory_resources; UPDATE inventory_sync_runs SET row_count=0');
+          await hostParticipation();
           await build('infra');
         }
         return result;

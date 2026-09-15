@@ -42,9 +42,9 @@ describe.skipIf(!socket)('graph read contract on disposable PostgreSQL', () => {
     expect((await pool.query('SHOW server_version')).rows[0].server_version).toMatch(/^17\./);
     await pool.query(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;
       CREATE SCHEMA IF NOT EXISTS sql_reader;
-      DO $$ BEGIN CREATE ROLE awsops_web; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-      DO $$ BEGIN CREATE ROLE awsops_worker; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-      DO $$ BEGIN CREATE ROLE awsops_sql_reader LOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+      DO $$ BEGIN CREATE ROLE awsops_web; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$;
+      DO $$ BEGIN CREATE ROLE awsops_worker; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$;
+      DO $$ BEGIN CREATE ROLE awsops_sql_reader LOGIN; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$;`);
     const migrations = resolve('../terraform/foundation/migrations');
     // Bootstrap the existing reader-role prerequisite from its actual migration.
     const baseline = readFileSync(resolve(migrations, '01KYVY9J2E8AMF35WR4J7036A3_agent_sql_reader_role.sql'), 'utf8');

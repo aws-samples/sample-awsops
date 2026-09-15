@@ -24,8 +24,11 @@ function run(options: Record<string, unknown> = {}) {
       output[key].push(line);
     };
     const processSink = { env: input.env ?? { NEXT_RUNTIME: 'nodejs', GRAPH_REBUILD_INTERVAL_MINS: '1' } };
-    const context = vm.createContext({ process: processSink, Buffer, performance, setImmediate,
-      setTimeout: (fn, delay) => { ticks.push(fn); output.scheduled.push(['timeout', delay]); },
+    const context = vm.createContext({ process: processSink, Buffer, performance, setImmediate, clearTimeout,
+      setTimeout: (fn, delay) => {
+        if (delay < 60000) return setTimeout(fn, delay);
+        ticks.push(fn); output.scheduled.push(['timeout', delay]);
+      },
       setInterval: (fn, delay) => { ticks.push(fn); output.scheduled.push(['interval', delay]); },
       console: { log: report('logs'), error: report('errors'), warn: report('errors') } });
     const fail = () => { throw Object.assign(new Error('credential=database-secret'), { code: input.code ?? '23514' }); };
@@ -43,25 +46,35 @@ function run(options: Record<string, unknown> = {}) {
           windowStartMs: endMs - mins * 60000, windowEndMs: endMs };
       }
     }
+    const fixtureNow = Date.now();
     const query = async (sql, args) => {
         if (sql.includes('SELECT accounts.account_id')) {
           if (input.failure === stage) fail();
           return { rows: [{ account_id: 'self' },
-            ...(input.partialFailure === stage ? [{ account_id: '123456789012' }] : [])] };
+            ...(input.accountCap ? Array.from({ length: 100 }, (_, i) => ({ account_id: String(i).padStart(12, '0') }))
+              : input.partialFailure === stage || input.memberOnlyGap ? [{ account_id: '123456789012' }] : [])] };
         }
         if (sql.includes('FROM inventory_sync_runs')) {
-          const now = Date.now();
+          const now = fixtureNow - (stage === 'infra' && input.infraOutcome === 'stale' ? 3600000 : 0);
           return { rows: args[0].map(resource_type => ({ resource_type, account_id: 'self',
-            status: 'succeeded', row_count: 0, unknown_attribute_count: 0, version: '1',
+            status: stage === 'infra' && input.infraOutcome === 'retained' && resource_type === 'vpc' ? 'failed' : 'succeeded',
+            row_count: stage === 'infra' && input.infraOutcome === 'degraded' && resource_type === 'vpc' ? 1 : 0,
+            unknown_attribute_count: stage === 'infra' && input.infraOutcome === 'degraded' && resource_type === 'vpc' ? 1 : 0, version: '1',
             started_at: new Date(now - 2000).toISOString(),
             finished_at: new Date(now - 1000).toISOString(),
-            last_success_at: new Date(now - 1000).toISOString() })) };
+            last_success_at: new Date(now - 1000).toISOString() })).filter(row => !sql.includes("status='succeeded'") || row.status === 'succeeded') };
         }
         if (sql.includes('FROM inventory_resources')) {
+          if (stage === 'infra' && input.infraOutcome === 'degraded') return { rows: sql.includes('count(*)::int')
+            ? [{ resource_type: 'vpc', count: 1 }]
+            : [{ account_id: 'self', resource_type: 'vpc', resource_id: 'vpc-fixture', region: 'fixture', data: { vpc_id: 'vpc-fixture' }, captured_at: new Date(Date.now()-1000).toISOString() }] };
           if (input.partialFailure === stage && args?.[0] === '123456789012') fail();
           return { rows: [] };
         }
-        if (sql.includes('FROM inventory_snapshots')) return { rows: [] };
+        if (sql.includes('FROM inventory_snapshots')) return { rows: input.memberOnlyGap && args[0] !== 'self' ? [] : args[1].map(resource_type => ({
+          resource_type, captured_at: new Date(fixtureNow - 1000 - (stage === 'infra' && input.infraOutcome === 'stale' ? 3600000 : 0)).toISOString(),
+          resource_count: stage === 'infra' && input.infraOutcome === 'degraded' && resource_type === 'vpc' ? 1 : 0,
+        })) };
         if (sql.includes('FROM datasource_graph_queries')) {
           output.registryReads++;
           if (input.failure === 'registry') fail();
@@ -70,7 +83,7 @@ function run(options: Record<string, unknown> = {}) {
         }
         if (sql.includes('to_regclass')) return { rows: [{ ready: input.schema !== false }] };
         if (/class\s*=\s*'infra'/.test(sql)) { output.infraReads++; return { rows: [] }; }
-        if (sql.includes('pg_try_advisory_xact_lock')) return { rows: [{ acquired: input.skipStage !== stage }] };
+        if (sql.includes('pg_try_advisory_xact_lock')) return { rows: [{ acquired: input.skipStage !== stage && !(stage === 'infra' && input.infraOutcome === 'skipped') }] };
         if (sql.includes('AS retained')) return { rows: [{ retained: true }] };
         if (sql.includes('INSERT INTO topology_graph_state')) {
           if (args[5] === 'trace') {
@@ -122,7 +135,7 @@ function run(options: Record<string, unknown> = {}) {
         : load(resolve(input.root, 'lib', specifier.split('/').at(-1).replace(/\.ts$/, '') + '.ts'));
       if (specifier.includes('graph-store')) {
         const stages = { rebuildGraph: 'flow', rebuildInfraGraph: 'infra', rebuildTraceGraph: 'trace',
-          recordTraceSourceFailure: 'trace' };
+          recordTraceSourceFailure: 'trace', recordTraceDependencySkip: 'trace' };
         exports = Object.fromEntries(Object.entries(exports).map(([name, value]) => [name,
           stages[name] ? (...args) => { stage = stages[name]; return value(...args); } : value]));
       }
@@ -154,6 +167,8 @@ describe('graph execution and publication contract', () => {
     expect(result.logs).toHaveLength(cycles(timer) * 3);
     for (const line of result.logs) expect(JSON.parse(line.slice(line.indexOf(': ') + 2)))
       .toMatchObject({ published: 1, retained: 0, skipped: 0, degraded: 0 });
+    const infra = JSON.parse(result.logs.find((line: string) => line.startsWith('[graph-rebuild] infra:')).split(': ').slice(1).join(': '));
+    expect(infra).toMatchObject({ nodes: 0, published: 1, retained: 0, skipped: 0, degraded: 0 });
     expect(result.attempts).toHaveLength(cycles(timer));
     expect(result.attempts.every((a: { publish: boolean }) => a.publish)).toBe(true);
     expect(result.traceWrites).toBeGreaterThan(0);
@@ -173,11 +188,56 @@ describe('graph execution and publication contract', () => {
     expect(result.registryReads).toBe(0);
     expect(result.traceCollections).toBe(0);
     expect(result.infraReads).toBe(0);
-    expect(result.attempts).toEqual([]);
+    expect(result.attempts).toHaveLength(cycles(timer));
+    expect(result.attempts.every((a: { publish: boolean; details: Record<string, unknown> }) =>
+      !a.publish && a.details.sourceAttempted === false && a.details.failureReason === 'not_attempted')).toBe(true);
     expect(result.traceWrites).toBe(0);
     expect(result.traceDeletes).toBe(0);
     expect(result.savedCapture).toBe('previous');
     expect(result.errors).toContain('[graph-rebuild] trace skipped: infra execution failed');
+  });
+  it.each([false, true])('returned incomplete infra never refreshes trace (timer=%s)', timer => {
+    for (const infraOutcome of ['retained', 'skipped']) {
+      const result = run({ timer, infraOutcome });
+      expect(result.code).toBe(timer ? null : 2);
+      expect(result.registryReads).toBe(0);
+      expect(result.traceCollections).toBe(0);
+      expect(result.attempts).toHaveLength(cycles(timer));
+      expect(result.attempts.every((a: { publish: boolean; details: Record<string, unknown> }) =>
+        !a.publish && a.details.sourceAttempted === false && a.details.failureReason === 'not_attempted')).toBe(true);
+      expect(result.traceWrites).toBe(0);
+      expect(result.traceDeletes).toBe(0);
+      expect(result.savedCapture).toBe('previous');
+      expect(result.errors).toContain('[graph-rebuild] trace skipped: infra publication incomplete');
+    }
+  });
+  it.each([false, true].flatMap(timer => ['degraded', 'stale'].map(infraOutcome => ({ timer, infraOutcome }))))(
+    'published $infraOutcome self context permits only qualified partial telemetry (timer=$timer)', ({ timer, infraOutcome }) => {
+      const result = run({ timer, infraOutcome });
+      expect(result.code).toBe(timer ? null : 2);
+      expect(result.traceCollections).toBe(cycles(timer)); expect(result.infraReads).toBe(0);
+      expect(result.traceWrites).toBeGreaterThan(0);
+      expect(result.attempts.every((a: { publish: boolean; status: string; details: Record<string, unknown> }) =>
+        a.publish && a.status === 'partial' && a.details.infraUnavailable === true)).toBe(true);
+      const empty = run({ timer, infraOutcome, empty: true });
+      expect(empty.traceWrites).toBe(0); expect(empty.traceDeletes).toBe(0);
+      expect(empty.savedCapture).toBe('previous');
+      expect(empty.attempts.every((a: { publish: boolean }) => !a.publish)).toBe(true);
+    });
+  it.each([false, true])('member retention keeps fleet incomplete but does not poison clean self trace context (timer=%s)', timer => {
+    const result = run({ timer, memberOnlyGap: true });
+    expect(result.code).toBe(timer ? null : 2);
+    expect(result.logs.find((line: string) => line.startsWith('[graph-rebuild] infra:'))).toContain('"retained":1');
+    expect(result.traceCollections).toBe(cycles(timer));
+    expect(result.traceWrites).toBeGreaterThan(0);
+    expect(result.attempts.every((attempt: { publish: boolean }) => attempt.publish)).toBe(true);
+  });
+  it.each([false, true])('account truncation stays incomplete while a proved self slice can refresh trace (timer=%s)', timer => {
+    const result = run({ timer, accountCap: true });
+    expect(result.code).toBe(timer ? null : 2);
+    expect(result.logs.find((line: string) => line.startsWith('[graph-rebuild] infra:'))).toContain('"accountsTruncated":true');
+    expect(result.traceCollections).toBe(cycles(timer));
+    expect(result.traceWrites).toBeGreaterThan(0);
   });
   it.each([false, true])('the actual loader synthetic error retains trace and makes registry failure observable (timer=%s)', timer => {
     const result = run({ timer, failure: 'registry' });
@@ -185,7 +245,10 @@ describe('graph execution and publication contract', () => {
     expect(result.errors).toContain('[graph-rebuild] trace_sources: registry_read_failed');
     expect(result.attempts).toHaveLength(cycles(timer));
     for (const attempt of result.attempts) expect(attempt).toMatchObject({ status: 'error', publish: false,
-      details: { sources: [{ sourceId: 'graph-registry', reasons: ['registry_read_failed'] }] } });
+      details: { sources: [{ sourceId: 'trace:registry', reasons: ['registry_read_failed'] }] } });
+    expect(result.traceCollections).toBe(0);
+    expect(result.attempts[0].details.sources[0]).not.toHaveProperty('itemCount');
+    expect(result.attempts[0].details).not.toHaveProperty('windowStartMs');
     expect(result.traceWrites).toBe(0);
     expect(result.traceDeletes).toBe(0);
     expect(result.savedCapture).toBe('previous');
@@ -235,7 +298,7 @@ describe('graph execution and publication contract', () => {
       expect(JSON.parse(line.slice(line.indexOf(': ') + 2))).toMatchObject({
         published: 1, failed: 1, failureCode: '23514',
       });
-      expect(result.traceCollections).toBe(partialFailure === 'infra' ? 0 : cycles(timer));
+      expect(result.traceCollections).toBe(cycles(timer));
       expect(JSON.stringify(result)).not.toContain('credential');
     }
   });
@@ -245,7 +308,7 @@ describe('graph execution and publication contract', () => {
     expect(skipped.logs.at(-1)).toContain('"skipped":1');
     expect(skipped.traceDeletes).toBe(0);
     const degraded = run({ timer, sourceStatus: 'partial' });
-    expect(degraded.code).toBe(timer ? null : 0);
+    expect(degraded.code).toBe(timer ? null : 2);
     expect(degraded.logs.at(-1)).toContain('"degraded":1');
     expect(degraded.traceWrites).toBeGreaterThan(0);
   });
@@ -290,6 +353,18 @@ describe('graph execution and publication contract', () => {
 
 describe('publisher outcome projection', () => {
   const valid = { nodes: 1, edges: 0, published: 1, retained: 0, skipped: 0, degraded: 0, reasons: [] };
+  it.each([{ published: 0 }, { retained: 1 }, { skipped: 1 }, { degraded: 1 }, { accountsTruncated: true },
+    { reasons: ['account_limit'] }])('keeps valid incomplete outcomes distinct: %j', async override => {
+    const result = await executeGraphLayer('infra', async () => ({ ...valid, ...override }), () => {});
+    expect(result.incomplete).toBe(true);
+  });
+  it('keeps known account progress while sanitizing failure codes', async () => {
+    const lines: string[] = [];
+    const result = await executeGraphLayer('infra', async () => ({ ...valid, nodes: 3, failed: 1,
+      failureCode: 'credential=private', reasons: ['account_failed'] }), line => lines.push(line));
+    expect(result).toMatchObject({ failed: true, totals: { nodes: 3, published: 1, failed: 1, failureCode: 'unknown' } });
+    expect(lines.join('')).not.toContain('credential');
+  });
   it('normalizes stage and ignores unsupported result fields without logging them', async () => {
     const lines: string[] = [];
     const result = await executeGraphLayer('credential=stage-secret', async () => ({ nodes: 1, edges: 0,
@@ -303,7 +378,8 @@ describe('publisher outcome projection', () => {
   it.each([null, {}, { nodes: 1, edges: 0 }, { ...valid, nodes: -1 },
     { ...valid, edges: NaN }, { ...valid, edges: Number.MAX_SAFE_INTEGER + 1 },
     { ...valid, retained: 'future-field' }, { ...valid, failed: -1 },
-    { ...valid, reasons: ['credential=reason-secret'] }, { ...valid, accountsTruncated: 'PRIVATE_VALUE' }])(
+    { ...valid, reasons: ['credential=reason-secret'] }, { ...valid, accountsTruncated: 'PRIVATE_VALUE' },
+    { ...valid, selfInfraComplete: 'unverified' }, { ...valid, selfInfraComplete: true }])(
     'invalid required totals never become healthy zeros: %j', async value => {
       const lines: string[] = [];
       expect(await executeGraphLayer('flow', async () => value, line => lines.push(line))).toEqual({ failed: true });

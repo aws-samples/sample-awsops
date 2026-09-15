@@ -11,8 +11,9 @@ transaction. The shared helper bounds statements, lock waits and transaction
 duration, handles checked-out client errors, and discards failed connections. Reads and rebuild
 transactions share at most two admissions per pool, reserving one of the three pool slots for auth.
 Excess reads receive typed 503/busy and rebuilds report busy/skipped without queueing a checkout. Request
-statements/idle time are bounded to 1.5s, total transaction to 2s; publication helpers use 2s statements and a 4s total transaction budget, separately
-from the stricter request budget. Serialization happens after release. Reads cap nodes/raw edges at
+statements/idle time are bounded to 1.5s, total transaction to 2s; publication helpers have a 2s checkout deadline, 2s statements and a 4s PostgreSQL transaction
+budget. Their 6s watchdog starts after checkout, leaving response margin; an in-flight write
+COMMIT settles by its server/transport response, without forced release or a guessed skipped outcome. Serialization happens after release. Reads cap nodes/raw edges at
 4000/8000 plus a sentinel; returned edges reference visible nodes. Infra class reads rank
 VPC/subnet/SG container kinds first so resource IDs cannot alphabetically exclude all placement targets. Read limits and
 500/503 failures are disclosed separately from collector status.
@@ -35,10 +36,77 @@ are incomplete evidence. Recognized malformed or unknown-vocabulary metadata is
 disclosed by metadataTruncated in HTTP/SQL projections and the service-network client's
 normalization. This flag does not certify which upstream layer omitted or could not confirm a field.
 
-Publication versions must strictly advance under the class advisory lock. An equal
+Publication versions must strictly advance per account/class under the class advisory lock. An equal
 or older attempt keeps both graph and state unchanged. The trace rebuild reports
 `published: 0`, `skipped: 1`, `reasons: ['superseded']` and a fixed skip diagnostic;
 zero returned nodes in this outcome do not mean an empty graph was published.
+
+## Recognized provider-secret fields
+
+Graph full/subgraph responses and generic inventory pages share `inventory-redaction.ts`.
+It removes `CustomHeaders`/`OriginCustomHeaders` and `ClientSecret` keys, including case,
+underscore/hyphen variants and legacy JSON-string copies. New snapshot/publication projection also
+removes these fields. Old database rows need not be rewritten for HTTP masking to work;
+the default-off timer is not a prerequisite. Routing fields, public OIDC identifiers and
+snapshot/count/clock evidence remain. Omission does not prove a header or secret is absent.
+
+This is targeted structured-field projection, not a free-text or comprehensive secret detector.
+Malformed JSON-looking roots/known containers fail closed with fixed errors. The projection
+limits each encoded string to 262,144 UTF-16 code units. Each record/metadata projection
+allows 32 nested levels and 20,000 visited values. It refuses unsafe metadata instead of returning a truncated credential prefix. SQL-reader named-key views remain mandatory, and raw provider rows remain sensitive.
+
+## Bounded inventory-read primitives
+
+`web/lib/graph-inventory-read.ts` provides internal account discovery, count reconciliation,
+projected snapshots and an attempt-evidence calculation for flow/infra callers. Callers use the
+existing `self` host sentinel and the exported SDK host-only type filter. Every selected slice, including `self`, needs a current participation snapshot; members
+also require registration. Its `scope: account` and item count describe that slice, not
+the global producer ledger. Aggregate zero alone never proves slice participation. The real producer writes each proved host
+snapshot before finalizing success. A failed host data-path probe records `partial` and
+preserves the earlier snapshot; readers must not reinterpret that as confirmed empty.
+Repair legacy host registration/rendering through the existing onboarding contract rather
+than injecting snapshot rows. `test_empty_inventory_sync_uses_real_identity_probe` pins
+successful and failed empty VPC/Route53/other SQL paths and snapshot-before-finalize order.
+Count proof is reused only when the snapshot observes the identical ledger row version.
+The snapshot records its queried types; an attempt cannot narrow that set to hide a failed source.
+The helper returns source clocks/completeness, not a freshness or deployment verdict.
+Running/partial producer states report `incomplete_collection` before unresolved scope;
+confirmed empty additionally requires known-zero unknown attributes and matched counts.
+`inventoryAccounts` returns null if the state schema is unavailable; otherwise it returns
+at most 100 `accounts` plus `truncated`, detected with a 101st sentinel. Infra reserves
+one slot for `self`; up to 99 members rotate by actual attempt recency. Flow retains its
+unattempted/oldest-first ordering, with self/account-ID tie breaks. Callers must record
+actual attempts to advance this bounded selection. The publisher's `recordUnattempted`
+preserves the prior real attempt as `lastSourceAttemptedAtMs`; skip timestamps do not
+move previously attempted accounts ahead of accounts never read.
+
+Snapshots project consumed fields before SQL byte guards: both classes allow 8,192 rows
+plus a sentinel, within the existing 64KiB per-row and 8MiB projected data/identifier
+budgets (excluding the result envelope). Flow projection preserves listener/API-route labels and the placement/display fields
+consumed from `meta.row`. Target-health arrays retain every Id, Port and State in order while dropping
+unconsumed diagnostic fields. A row withheld by its own byte limit does not consume the
+later-row budget. `truncatedTypes` identifies incomplete payload types in the same snapshot;
+only those source item counts become unknown. Any truncation still withholds publication.
+A readable snapshot can exceed the caller's graph-size limit; these bounds do not promise
+an unlimited graph. Inspect the affected type's paginated Inventory view when a cap is hit. Request and background transaction
+helpers share two admissions per pool, reserving the third ordinary slot for authentication;
+Request limits stay 1.5s statements/2s total including checkout. Background checkout
+expires after 2s; an acquired transaction separately retains 2s statements and PG's 4s
+transaction limit. Its six-second watchdog starts after checkout; an in-flight write COMMIT
+awaits its response instead of forced cancellation. The transaction callback
+must perform only bounded SQL/local work. An expired checkout never starts abandoned
+work; its admission remains held until the late connection is returned.
+All helpers can reject with `GraphReadBusy`; callers classify it as skipped/busy, never
+successful empty collection. `GraphReadDeadline` identifies checkout or watchdog timeout and returns skipped work with
+`rebuild_deadline`; it does not overwrite saved state with a false collection failure. Do not nest these helpers
+inside an already-admitted transaction.
+
+These primitives do not write graph/state rows. The bounded publisher in `graph-store.ts`
+consumes their results; scheduling records stay in `graph-inventory.ts`. Existing timer/defaults and AWS permissions are unchanged. Callers
+must enforce their scope and interpret clocks before publication. Offline PG tests use the
+same private socket/admin marker below and a distinct `awsops_inventory_read_test` database
+marked `awsops-disposable-inventory-read-test` before any reset. Run from `web/`:
+`npx vitest run lib/graph-inventory-read-postgres.test.ts lib/graph-read-postgres.test.ts`.
 
 ## Source completeness and retained publication
 
@@ -85,8 +153,7 @@ The shared query normalizer carries collection status into Explore. Marked parti
 
 ## Rebuild capacity
 
-Flow input allows 8192 rows (8MiB / a nominal 1KiB row allowance) for record-granular DNS inventory;
-infra retains its 2000-row guard. The 64KiB-per-row and 8MiB projected-data/identifier limits still apply, as do the
+Flow and infra input allow 8192 rows within the same bounded read envelope. The 64KiB-per-row and 8MiB projected-data/identifier limits still apply, as do the
 4000-node/8000-edge/8MiB graph limits. A source-proof or capacity failure retains last-good data.
 All listed sources feed the builders: a failed/missing source cannot be dropped to authorize replacement,
 and elapsed retentions never authorize an unproven sweep. Larger generations need a separately reviewed capacity path.
@@ -132,29 +199,45 @@ Run `cd web && npx tsx ../scripts/v2/graph-rebuild.mjs` only from an authorized
 VPC/Aurora context with the existing database configuration and `HOST_ACCOUNT_ID`.
 The existing web-task principal uses its provisioned Aurora IAM authentication and
 curated connector-read permissions; this change creates no principal or grant.
-Flow and infra execute sequentially. A flow exception does not block infra, but an
-infra execution failure skips trace collection and publication for that cycle and
-logs `trace skipped: infra execution failed`. Saved trace rows/clocks are untouched
-by that skipped stage; stale infra must not become fresh trace context after failure.
+Flow and infra execute sequentially. Infra always selects `self` within the 100-account
+budget. `selfInfraStatus` describes that cycle's host publication: `complete` uses current
+infra context; **published** `degraded` or `stale` permits only telemetry-derived partial
+trace, with `infraUnavailable: true` and no infra rows/correlation. It never becomes fresh
+healthy evidence. Qualified empty/unproven telemetry retains the previous graph.
+Failed, retained, skipped or unattempted host infra still withholds trace collection.
+A clean confirmed-empty host publication is valid; zero nodes alone are not proof.
+Member-only gaps remain in fleet-wide counts/reasons and CLI exit 1/2. None of these
+presentation rules relaxes the strict 43-type, zero-unknown runtime release gate.
+
+| Exact diagnostic | Meaning and next check |
+|---|---|
+| `[graph-rebuild] trace skipped: infra execution failed` | No usable self proof after an execution failure. Inspect the infra result's sanitized failure code and host collection state. |
+| `[graph-rebuild] trace skipped: infra publication incomplete` | Self was unattempted, superseded, retained or skipped. Inspect `/api/graph?class=infra` and `selfInfraStatus`; member counters alone are not the dependency gate. |
+| `[graph-rebuild] trace qualified: self infra stale` / `degraded` | Published host infra is not trusted for correlation. Useful observed telemetry may refresh only as partial with unavailable infra; repair source freshness/drift before expecting healthy context. |
+| `rebuild_deadline` | Checkout or caller watchdog expired. Work is skipped; check DB connection/TLS latency and pool contention before retrying. It is not confirmed empty collection. |
+
+`recordTraceDependencySkip` records a non-publishing trace attempt with
+`sourceAttempted: false` and `failureReason: not_attempted`, retaining rows and the old
+capture clock. It invents no telemetry count/window. Missing schema, busy admission or
+storage failure can prevent that record; a log line alone is not a persistence receipt.
 
 Registry query errors normally do **not** throw from `loadGraphSources`. The loader
 returns a synthetic error source and `registryFailed=true`. Both entrypoints log the
-fixed `trace_sources: registry_read_failed` diagnostic and pass that source to the
-existing trace builder, preserving its non-publishing retention path. A missing
-schema or failed state write can still prevent recording; the log is not a receipt
-that a trace attempt was persisted. Unexpected loader exceptions also call the non-publishing
+fixed `trace_sources: registry_read_failed` diagnostic and use `recordTraceSourceFailure`
+instead of telemetry collection. Its `trace:registry` attempt invents no item count or query
+window. Missing schema, busy admission or a failed write may prevent recording; the log
+is not a persistence receipt. Unexpected loader exceptions also call the non-publishing
 `recordTraceSourceFailure` path before the sanitized diagnostic.
 
 `web/lib/graph-execution.ts` validates the current publishers' nonnegative safe-integer
 node/edge and published/degraded/retained/skipped counts, fixed reasons, optional failed-account
 count and account-limit flag. It projects only those fields and sanitized failure codes.
 Node/edge totals alone are not sufficient. Partial account progress remains visible alongside
-its unexpected failure; an infra failed-account result also skips dependent trace work.
-The dependency guard concerns execution failures; returned retained/skipped outcomes are
-reported as incomplete and keep the trace builder's existing source/infra read behavior.
-The CLI awaits pool closure and exits **1** for execution, registry or cleanup failure,
-otherwise **2** for any retained/skipped work, otherwise **0**. Degraded publications are
-explicitly counted; exit 0 does not prove complete collection. Inspect source metadata for quality.
+its unexpected failure. The validated `selfInfraStatus`/`selfInfraComplete` fields describe only the host slice;
+fleet truncation or member failure never becomes fleet success because trace can refresh.
+Qualified stale/degraded context remains incomplete, and other missing/invalid self proof withholds trace. The CLI awaits pool closure and exits **1** for failure,
+including registry or cleanup failure; otherwise **2** for incomplete publication and
+**0** for clean publication. These graph outcomes do not replace full runtime release proof.
 
 The timer remains off when `GRAPH_REBUILD_INTERVAL_MINS` is unset, invalid or nonpositive.
 Its Terraform input is `graph_rebuild_interval_mins` (default 0; enabled values are whole
@@ -218,13 +301,14 @@ docker exec "$graph_test_container" pg_isready -U postgres -d awsops
 docker exec "$graph_test_container" psql -U postgres -d awsops \
   -c "COMMENT ON DATABASE awsops IS 'awsops-disposable-graph-test'"
 cd web
-npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts \
+npx vitest run lib/trace-source.test.ts lib/graph-read-postgres.test.ts lib/graph-inventory-read-postgres.test.ts \
   lib/graph-store-postgres.test.ts app/api/graph/route.test.ts lib/graph-state.test.ts
 docker rm -f "$graph_test_container"
 ```
 
 The fixtures create and independently mark `awsops_graph_read_test` and
-`awsops_graph_task3`; an existing unmarked database is rejected before schema reset.
+`awsops_graph_task3`; the latter requires the distinct `awsops-disposable-graph-store-test`
+marker. Missing or generic-only target markers reject reset.
 The publication suite also invokes `lib/fixtures/graph-fatal-child.mjs`, which checks
 both server/target database markers before mutation. It covers atomic publication,
 retention, pool admission, truncation and fatal-connection recovery. Without the
@@ -350,7 +434,10 @@ those rollout steps automatically.
 
 ## Related files and decisions
 
+`web/lib/inventory-redaction.ts`, `web/lib/inventory-redaction.test.ts`, `web/lib/inventory.ts`,
+`web/app/api/inventory/[type]/route.ts`,
 `web/app/api/graph/route.ts`, `web/lib/graph-transaction.ts`, `web/lib/graph-state.ts`,
+`web/lib/graph-inventory-read.ts`, `web/lib/graph-inventory-read-postgres.test.ts`,
 `web/lib/trace-source.ts`, `web/lib/trace-source.test.ts`, `web/lib/graph-store.ts`, `web/lib/graph-read-postgres.test.ts`,
 `web/lib/graph-inventory.ts`, `web/lib/graph-store-postgres.test.ts`, `web/lib/fixtures/graph-fatal-child.mjs`,
 `web/lib/graph-execution.ts`, `scripts/v2/graph-rebuild.mjs`, `web/instrumentation.ts`, `web/lib/graph-rebuild-runner.test.ts`, `web/lib/instrumentation-runner.test.ts`,

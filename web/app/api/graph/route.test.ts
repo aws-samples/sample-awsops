@@ -12,7 +12,7 @@ vi.mock('@/lib/auth', () => ({ verifyUser: auth }));
 const sharedPool = vi.hoisted(() => ({ query, connect: async () => connection.current }));
 vi.mock('@/lib/db', () => ({ getPool: () => sharedPool }));
 import { GET } from './route';
-import { graphReadTransaction, GraphReadBusy, GraphReadDeadline } from '@/lib/graph-transaction';
+import { graphReadTransaction, graphTransaction, GraphReadBusy, GraphReadDeadline } from '@/lib/graph-transaction';
 import claimCases from '../../../lib/fixtures/trace-queue-claims.json';
 afterEach(() => vi.restoreAllMocks());
 
@@ -214,6 +214,59 @@ describe('queue attribution on retained snapshots', () => {
 
 
 describe('request acquisition deadline', () => {
+  it('leaves post-checkout margin for the original PostgreSQL abort response', async () => {
+    vi.useFakeTimers();
+    const original = Object.assign(new Error('fixture transaction timeout'), { code: '25P04' });
+    const client = Object.assign(new EventEmitter(), {
+      query: vi.fn((sql: string) => sql === 'work' ? new Promise((_, reject) => setTimeout(() => {
+        client.emit('error', original); reject(original);
+      }, 4200)) : Promise.resolve({ rows: [] })), release: vi.fn(),
+    });
+    let failure: unknown;
+    const pending = graphTransaction({ connect: () => new Promise(resolve => setTimeout(() => resolve(client), 1900)) } as never,
+      false, c => c.query('work')).catch(error => { failure = error; });
+    try { await vi.advanceTimersByTimeAsync(6100); expect(failure).toBe(original); }
+    finally { await pending; vi.useRealTimers(); }
+  });
+  it('does not destroy or misreport an in-flight write COMMIT at the watchdog boundary', async () => {
+    vi.useFakeTimers();
+    let commit!: (value: unknown) => void, result: unknown, failure: unknown;
+    const client = Object.assign(new EventEmitter(), {
+      query: vi.fn((sql: string) => sql === 'COMMIT' ? new Promise(resolve => { commit = resolve; }) : Promise.resolve({ rows: [] })),
+      release: vi.fn(),
+    });
+    const pending = graphTransaction({ connect: () => new Promise(resolve => setTimeout(() => resolve(client), 1900)) } as never,
+      false, async () => 42).then(value => { result = value; }, error => { failure = error; });
+    try {
+      await vi.advanceTimersByTimeAsync(7900);
+      expect(failure).toBeUndefined(); expect(result).toBeUndefined();
+      expect(client.release).not.toHaveBeenCalled();
+      commit({ rows: [] }); await pending;
+      expect(result).toBe(42); expect(client.release).toHaveBeenCalledTimes(1);
+    } finally { commit?.({ rows: [] }); await pending; vi.useRealTimers(); }
+  });
+  it('bounds a stalled background response while preserving the separate SQL budget', async () => {
+    vi.useFakeTimers();
+    let rejectQuery!: (error: Error) => void;
+    const client = Object.assign(new EventEmitter(), {
+      query: vi.fn((sql: string) => sql === 'stall' ? new Promise((_, reject) => { rejectQuery = reject; }) : Promise.resolve({ rows: [] })),
+      release: vi.fn(() => { rejectQuery?.(new Error('fixture connection closed')); }),
+    });
+    let failure: unknown;
+    const pending = graphTransaction({ connect: async () => client } as never, true, c => c.query('stall'))
+      .catch(error => { failure = error; });
+    try {
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(failure).toBeInstanceOf(GraphReadDeadline);
+      expect(failure).toMatchObject({ phase: 'transaction' });
+      expect(client.release).toHaveBeenCalledTimes(1);
+      expect(client.release).toHaveBeenCalledWith(true);
+      expect(client.listenerCount('error')).toBe(0);
+    } finally {
+      if (!client.release.mock.calls.length) client.release();
+      await pending; vi.useRealTimers();
+    }
+  });
   it('bounds a pending checkout without releasing admission or starting abandoned work', async () => {
     const waits: ((value: unknown) => void)[] = [];
     const pool = { connect: () => new Promise(resolve => { waits.push(resolve); }) };
