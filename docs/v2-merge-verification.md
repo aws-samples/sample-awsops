@@ -83,12 +83,14 @@ CI와 같은 범위의 검증에는 루트에서 네 명령을 모두 실행한�
 ```bash
 bash scripts/v2/merge-verify.sh
 node --test scripts/v2/ci/*.test.mjs
-node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs
+node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs
 bash scripts/v2/terraform-test.sh
 ```
 
 **Required PostgreSQL CI suites:** `scripts/v2/ci/migration.itest.mjs` (including initializer
-regressions) and `scripts/v2/ci/web-db-connection.itest.mjs` both fail hard, unlike the
+regressions), `scripts/v2/ci/web-db-connection.itest.mjs`, and
+`scripts/v2/ci/agent-tool-policy.itest.mjs` (restriction history, revocation and concurrent
+attachment/edit transactions) all fail hard, unlike the
 legacy optional `scripts/v2/*.itest.mjs` convention in root `CLAUDE.md`.
 They use bare `docker` on PATH, without the legacy `DOCKER`
 override/`sudo docker`; grant local daemon access before running. Missing Docker fails the
@@ -98,7 +100,7 @@ credentials/CA, binds a random loopback port and removes its own container/files
 Cache dependencies/images first for disconnected execution.
 
 **필수 PostgreSQL CI 테스트:** initializer를 포함한 `scripts/v2/ci/migration.itest.mjs`와
-`scripts/v2/ci/web-db-connection.itest.mjs`는 모두 루트 CLAUDE의 레거시 선택적 itest와 달리
+`scripts/v2/ci/web-db-connection.itest.mjs`, `scripts/v2/ci/agent-tool-policy.itest.mjs`는 모두 루트 CLAUDE의 레거시 선택적 itest와 달리
 실패 시 gate를 막는다. PATH의 `docker`를 직접
 사용하므로 실행 전 daemon 접근을 준비하고 `DOCKER`/`sudo docker` 자동 처리를 기대하지 않는다.
 Docker 부재는 skip이 아니다. `*.test.mjs`는 로컬 SDK transport로 AWS 없이 실행한다.
@@ -179,7 +181,7 @@ aggregate-run false failures.
 4. Install locked `scripts/v2` dependencies with `--ignore-scripts` and run
    `node --test scripts/v2/ci/*.test.mjs` (runtime/controller/workflow fixtures and mocked Terraform plans).
    The provisioner fixture imports boto3/botocore; install `agent/requirements.txt` for local runs too.
-5. Run `node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs`
+5. Run `node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs`
    against disposable PostgreSQL. Keep all migration cases:
    real initialization/ULIDs, rollback/retry/checksums, concurrent lock exclusion, actionable contention/retry, automatic SQL rejection, reader guards,
    permission denial, password rotation and TLS rejection. Also verify the web connection

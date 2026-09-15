@@ -25,6 +25,8 @@ Catalog writes require the Cognito admin group or the configured SSM admin allow
 5. Toggle new or edited items on in the **Agents / Skills** lists; saves start them disabled. Built-in rows cannot be toggled here.
 6. Save the account's **Agent Space** with the intended agents and integrations. A confirmed missing space preserves legacy global membership; after creating a space, only its selected custom agents qualify. Its skill selection is stored metadata, not a runtime permission control. Runtime instructions come from enabled, attached skills.
 
+Gateway choices are `network`, `container`, `iac`, `data`, `security`, `monitoring`, `cost`, and `ops`. **New Skill** also offers **agent types (targeting)** checkboxes. In **Agent Space**, edit the comma-separated **Tool allowlist (account cap)** and click **Save Agent Space**; each successful save increments its version. During loading or a failed policy read the form is disabled, previously loaded values remain visible, and **Retry policy load** must succeed before saving.
+
 ## Tool restrictions and revocation
 
 The account tool allowlist is a ceiling on custom-agent grants. An empty account list means no account cap; a **nonempty cap with no eligible intersection means deny-all**. Built-in agents are independent of custom policy.

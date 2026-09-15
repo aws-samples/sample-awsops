@@ -418,7 +418,7 @@ export async function POST(request: Request) {
     });
     return new Response(stream, { headers: SSE_HEADERS });
   }
-  // ADR-038: hybrid routing behind HYBRID_ROUTING_ENABLED. Flag off = exact legacy path.
+  // Hybrid classification is gated; explicit built-in pins bypass custom selection in both modes.
   const hybridOn = process.env.HYBRID_ROUTING_ENABLED === 'true';
   // ADR-038 §5: a chip-switch resend marks the previous answer as a misroute candidate.
   // Structured log → CloudWatch Logs (durable enough for the P4 semantic-routing corpus).

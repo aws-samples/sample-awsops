@@ -25,6 +25,8 @@ import Screenshot from '@site/src/components/Screenshot';
 5. 在 **Agents / Skills** 列表中启用新建或编辑后的项目。保存后默认禁用，内置项目不能在此切换。
 6. 在账户的 **Agent Space** 选择代理和集成并保存。成功确认不存在空间记录时，保留原有全局选择；创建记录后，仅所选自定义代理可用。技能选择属于存储的元数据，并非运行时权限控制。运行指令来自已启用且已绑定的技能。
 
+网关可选 `network`、`container`、`iac`、`data`、`security`、`monitoring`、`cost` 和 `ops`。**New Skill** 还提供目标 **agent types** 复选框。在 **Agent Space** 中编辑逗号分隔的 **Tool allowlist (account cap)**，再点击 **Save Agent Space**；每次成功保存都会增加版本号。加载中或策略读取失败时，表单禁用并保留之前的值。必须成功**重新加载策略**后才能保存。
+
 ## 工具限制与撤销
 
 账户工具允许列表是自定义权限的上限。空账户列表表示没有账户上限；但**非空上限与权限没有交集时，全部拒绝**。内置代理独立于自定义策略。

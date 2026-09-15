@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: d3b8e71a26a7 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: c7f7b354662e · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -80,6 +80,8 @@ HEAD image fixtures and the panel-prompt structure check (`bash tests/run-all.sh
 Python 3.12 on Linux ARM64/x86-64 and Pillow 12.3.0. Run separately:
 `python3 -m pip install --require-hashes --only-binary=:all: -r scripts/pr-review/image-requirements.txt`.
 Never combine this hash-locked file with unhashed requirements.
+
+The required PostgreSQL CI command is `node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs scripts/v2/ci/agent-tool-policy.itest.mjs`. All three require a reachable local Docker daemon, OpenSSL, locked web/scripts dependencies, and `postgres:17`; missing prerequisites fail rather than skip. `scripts/v2/ci/*.test.mjs` remains the offline companion glob. No live AWS credentials or calls.
 
 ## BANNED PATTERNS (enforce in review)
 - **AWS security:** no `0.0.0.0/0` ingress; no IAM `Principal:"*"`/wildcard-action without scoped condition; **no secrets in env/code/IaC** (Secrets Manager / SSM).

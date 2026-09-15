@@ -86,5 +86,5 @@ query/schema tools.
 - An **"AI generated" banner** on drafted queries; management-tab **KPI tiles and refresh**
 
 ## Related pages
-- [Custom Agents](../operations/custom-agents) - Connect datasources and register credentials
+- [Custom Agents](../operations/custom-agents) - Configure agent personas, skill bindings and account tool caps
 - [AI Assistant](../overview/assistant) - Conversational AI operations helper
