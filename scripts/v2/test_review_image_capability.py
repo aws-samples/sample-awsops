@@ -1,6 +1,8 @@
 """Offline capability diagnostic fixtures: every Claude call is a local fake."""
 import copy
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -44,10 +46,13 @@ class CapabilityTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="image-capability-test-")
         self.addCleanup(temporary.cleanup)
         self.parent = Path(temporary.name)
+        self.workspace = self.parent / "checkout"
+        self.workspace.mkdir()
         self.env = {
             "GITHUB_REPOSITORY": "aws-samples/sample-awsops",
             "GITHUB_REF": "refs/heads/dev", "GITHUB_EVENT_NAME": "workflow_dispatch",
             "GITHUB_SHA": "a" * 40, "RUNNER_TEMP": str(self.parent),
+            "GITHUB_WORKSPACE": str(self.workspace),
             "GITHUB_OUTPUT": str(self.parent / "output"),
         }
 
@@ -88,6 +93,7 @@ class CapabilityTests(unittest.TestCase):
         image = root / "evidence/image.png"
         self.assertEqual(image.stat().st_mode & 0o777, 0o400)
         self.assertEqual(image.parent.stat().st_mode & 0o777, 0o500)
+        self.assertEqual((root / "client/tmp").stat().st_mode & 0o777, 0o700)
         self.assertNotIn(state["answer"], self.module.prompt(image))
         self.assertNotIn("AWS_ACCESS_KEY_ID", self.env)
 
@@ -142,6 +148,7 @@ class CapabilityTests(unittest.TestCase):
         child = self.module.child_env(root, env, authenticated=True)
         self.assertEqual(child["AWS_SESSION_TOKEN"], "fake-session")
         self.assertEqual(child["ANTHROPIC_MODEL"], "us.anthropic.claude-fable-5")
+        self.assertEqual(child["TMPDIR"], str(root / "client/tmp"))
         for name in ("GITHUB_TOKEN", "GITHUB_OUTPUT", "ANTHROPIC_API_KEY", "AWS_PROFILE"):
             self.assertNotIn(name, child)
 
@@ -154,8 +161,9 @@ class CapabilityTests(unittest.TestCase):
             proof = self.module.run_probe(root, self.env)
         self.assertEqual(call.call_count, 1)
         args, cwd, env = call.call_args.args[:3]
-        self.assertEqual(cwd, root / "base")
-        self.assertNotIn(str(cwd), str(image))
+        self.assertEqual(cwd, self.workspace)
+        self.assertFalse(image.is_relative_to(cwd))
+        self.assertFalse(image.is_relative_to(Path(env["TMPDIR"])))
         for flag in ("--strict-mcp-config", "--tools", "--allowedTools", "--setting-sources",
                      "--no-session-persistence", "--verbose"):
             self.assertIn(flag, args)
@@ -163,11 +171,34 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(args[args.index("--allowedTools") + 1], "Read,Grep,Glob")
         self.assertEqual(args[args.index("--output-format") + 1], "stream-json")
         self.assertNotIn(state["answer"], " ".join(args))
+        self.assertNotIn(state["answer"], json.dumps(env))
         self.assertEqual(proof["status"], "passed")
         self.assertTrue(proof["read_exact_file"] and proof["answer_matches"])
+        self.assertTrue(proof["cwd_is_github_workspace"] and proof["outside_cli_temp"])
         self.assertEqual(proof["invoked_tools"], ["Read"])
         self.assertNotIn(state["answer"], json.dumps(proof))
         self.assertNotIn(str(root), json.dumps(proof))
+
+    def test_invalid_workspace_or_overlapping_temp_blocks_before_model_call(self):
+        root = self.prepare()
+        self.env.update(AWS_ACCESS_KEY_ID="fake", AWS_SECRET_ACCESS_KEY="fake", AWS_SESSION_TOKEN="fake")
+        file_path = self.parent / "not-a-directory"
+        file_path.write_text("fixture")
+        for workspace in ("", "relative", str(self.parent / "missing"), str(file_path),
+                          str(root), str(root / "evidence")):
+            with self.subTest(workspace=workspace), patch.object(self.module, "capture") as call:
+                with self.assertRaises(self.module.ProbeError) as raised:
+                    self.module.run_probe(root, {**self.env, "GITHUB_WORKSPACE": workspace})
+                self.assertEqual(raised.exception.code, "unsafe_path")
+                call.assert_not_called()
+        # An alias must not make the evidence implicitly available through CLI temp.
+        temp = root / "client/tmp"
+        temp.rmdir()
+        temp.symlink_to(root / "evidence", target_is_directory=True)
+        with patch.object(self.module, "capture") as call:
+            with self.assertRaises(self.module.ProbeError):
+                self.module.run_probe(root, self.env)
+            call.assert_not_called()
 
     def test_capture_bounds_nonzero_timeout_and_output_without_printing_raw(self):
         for command, seconds, limit, code in [
@@ -178,6 +209,7 @@ class CapabilityTests(unittest.TestCase):
             with self.subTest(code=code), self.assertRaises(self.module.ProbeError) as raised:
                 self.module.capture(command, self.parent, dict(os.environ), seconds, limit)
             self.assertEqual(raised.exception.code, code)
+            self.assertEqual(raised.exception.exit_code, 1 if code == "cli_failed" else None)
             self.assertNotIn("PRIVATE", str(raised.exception))
 
     def test_real_helper_process_with_fake_cli_publishes_only_safe_proof_and_cleans(self):
@@ -187,7 +219,11 @@ class CapabilityTests(unittest.TestCase):
         fake.write_text("""#!/usr/bin/python3
 import os, pathlib, sys
 base = pathlib.Path(__file__).parent
-assert os.getcwd().endswith('/base')
+assert pathlib.Path.cwd() == base.parent / 'checkout'
+temp = pathlib.Path(os.environ['TMPDIR'])
+assert temp == pathlib.Path(os.environ['CLAUDE_CONFIG_DIR']) / 'tmp' and temp.is_dir()
+image = pathlib.Path(sys.argv[sys.argv.index('-p') + 1].splitlines()[0].split(': ', 1)[1])
+assert not image.is_relative_to(pathlib.Path.cwd()) and not image.is_relative_to(temp)
 assert '--strict-mcp-config' in sys.argv and '--no-session-persistence' in sys.argv
 assert 'GITHUB_OUTPUT' not in os.environ and 'GITHUB_TOKEN' not in os.environ
 with (base / 'calls').open('a') as stream: stream.write('called\\n')
@@ -195,7 +231,8 @@ sys.stdout.buffer.write((base / 'response').read_bytes())
 sys.exit(int((base / 'exit').read_text()))
 """)
         fake.chmod(0o700)
-        for index, mode in enumerate(("valid", "other_tool", "cli_failure", "malformed"), 1):
+        for index, mode in enumerate(("valid", "other_tool", "cli_failure", "malformed",
+                                      "answer_mismatch", "repeat"), 1):
             with self.subTest(mode=mode):
                 root = self.prepare()
                 state = json.loads((root / "control.json").read_text())
@@ -203,19 +240,36 @@ sys.exit(int((base / 'exit').read_text()))
                 events[3]["message"]["content"].insert(0, {"type": "text", "text": "PRIVATE_RESPONSE_MARKER"})
                 if mode == "other_tool":
                     events[1]["message"]["content"][0]["name"] = "Bash"
+                if mode == "answer_mismatch":
+                    events[-1]["result"] = str((int(state["answer"][0]) + 1) % 10) + state["answer"][1:]
                 (binaries / "response").write_bytes(b"PRIVATE_RESPONSE_MARKER" if mode == "malformed" else encode(events))
                 (binaries / "exit").write_text("1" if mode == "cli_failure" else "0")
                 env = {**os.environ, **self.env, "PATH": f"{binaries}:{os.environ['PATH']}",
                        "AWS_ACCESS_KEY_ID": "fake", "AWS_SECRET_ACCESS_KEY": "fake",
                        "AWS_SESSION_TOKEN": "fake", "GITHUB_TOKEN": "PRIVATE_TOKEN"}
                 run = subprocess.run(["python3", str(HELPER), "run"], env=env, capture_output=True, text=True)
+                if mode == "repeat":
+                    self.assertEqual(run.returncode, 0)
+                    run = subprocess.run(["python3", str(HELPER), "run"], env=env, capture_output=True, text=True)
                 finish = subprocess.run(["python3", str(HELPER), "finish"], env=env, capture_output=True, text=True)
                 expected = 0 if mode == "valid" else 1
                 self.assertEqual((run.returncode, finish.returncode), (expected, expected))
                 proof = json.loads(finish.stdout)
                 self.assertEqual(proof["status"], "passed" if mode == "valid" else "failed")
-                if mode != "valid":
-                    self.assertIsNone(proof["invoked_tools"], "failed proof cannot claim no tools ran")
+                tools = {"valid": ["Read"], "other_tool": ["other"], "answer_mismatch": ["Read"]}
+                self.assertEqual(proof["invoked_tools"], tools.get(mode))
+                self.assertEqual(proof["cleanup_status"], "removed")
+                self.assertFalse(proof["residue_possible"])
+                if mode == "answer_mismatch":
+                    self.assertTrue(proof["read_exact_file"] and proof["outside_cwd"])
+                    self.assertTrue(proof["cwd_is_github_workspace"] and proof["outside_cli_temp"])
+                    self.assertFalse(proof["answer_matches"])
+                    self.assertEqual(proof["cli_exit_code"], 0)
+                if mode == "cli_failure":
+                    self.assertEqual(proof["cli_exit_code"], 1)
+                    self.assertIsNone(proof["read_exact_file"])
+                if mode == "repeat":
+                    self.assertEqual(proof["code"], "reused_root")
                 public = run.stdout + run.stderr + finish.stdout + finish.stderr
                 for private in ("PRIVATE_RESPONSE_MARKER", "PRIVATE_TOKEN", state["answer"], str(root)):
                     self.assertNotIn(private, public)
@@ -228,8 +282,61 @@ sys.exit(int((base / 'exit').read_text()))
         untouched.write_text("keep")
         proof = self.module.finish(self.env)
         self.assertEqual(proof["status"], "failed")
+        self.assertIsNone(proof["read_exact_file"])
         self.assertFalse(root.exists())
         self.assertEqual(untouched.read_text(), "keep")
+
+    def test_cleanup_failure_preserves_read_proof_but_fails_job(self):
+        root = self.prepare()
+        state = json.loads((root / "control.json").read_text())
+        self.env.update(AWS_ACCESS_KEY_ID="fake", AWS_SECRET_ACCESS_KEY="fake", AWS_SESSION_TOKEN="fake")
+        with patch.object(self.module, "capture", return_value=encode(
+                trace(root / "evidence/image.png", state["answer"]))):
+            result = self.module.run_probe(root, self.env)
+        self.module.private_write(root / "proof.json", json.dumps(result).encode())
+        output = io.StringIO()
+        with patch.object(self.module, "cleanup", side_effect=OSError("PRIVATE_PATH")), \
+                patch.dict(os.environ, self.env, clear=True), \
+                patch("sys.argv", [str(HELPER), "finish"]), \
+                patch.object(self.module.signal, "signal"), contextlib.redirect_stdout(output):
+            self.assertEqual(self.module.main(), 1)
+        proof = json.loads(output.getvalue())
+        self.assertEqual(proof["status"], "passed")
+        self.assertEqual(proof["code"], "read_verified")
+        self.assertTrue(proof["read_exact_file"] and proof["answer_matches"])
+        self.assertEqual(proof["cleanup_status"], "failed")
+        self.assertTrue(proof["residue_possible"])
+        self.assertNotIn("PRIVATE_PATH", output.getvalue())
+        self.assertNotIn(str(root), output.getvalue())
+        self.assertTrue(root.exists())
+
+    def test_missing_root_is_incomplete_without_fabricated_observations(self):
+        self.env["PROBE_ROOT"] = str(self.parent / (self.module.PREFIX + "missing"))
+        proof = self.module.finish(self.env)
+        self.assertEqual(proof["code"], "incomplete")
+        self.assertEqual(proof["cleanup_status"], "not_needed")
+        self.assertFalse(proof["residue_possible"])
+        self.assertIsNone(proof["read_exact_file"])
+
+    def test_malformed_control_is_typed_private_and_does_not_invoke_cli(self):
+        for state in ([], {"answer": 123456, "version": "2.1.270"},
+                      {"answer": "012345", "version": ["PRIVATE"]}):
+            with self.subTest(state=state):
+                root = self.prepare()
+                (root / "control.json").write_text(json.dumps(state))
+                with patch.object(self.module, "capture") as call:
+                    with self.assertRaises(self.module.ProbeError) as raised:
+                        self.module.run_probe(root, self.env)
+                    self.assertEqual(raised.exception.code, "invalid_state")
+                    call.assert_not_called()
+                run = subprocess.run(["python3", str(HELPER), "run"],
+                                     env={**os.environ, **self.env}, capture_output=True, text=True)
+                self.assertEqual(run.returncode, 1)
+                self.assertEqual(run.stdout + run.stderr, "")
+                proof = self.module.finish(self.env)
+                self.assertEqual(proof["code"], "invalid_state")
+                self.assertIsNone(proof["read_exact_file"])
+                self.assertIsNone(proof["cli_exit_code"])
 
     def test_finish_does_not_publish_malformed_or_extra_proof_fields(self):
         for value in ([], {"status": "passed", "private": "SECRET"}):

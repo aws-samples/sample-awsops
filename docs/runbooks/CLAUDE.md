@@ -2,6 +2,12 @@
 
 Operational playbooks organized by scenario. Each follows symptoms → diagnosis → action.
 
+`review-image-capability.md` documents the manual dev-only operator CI diagnostic under
+ADR-005, with existing OIDC role/environment and no mutation exception or gate replacement.
+Model cwd is the checked-out workspace; the image is outside it and CLI temp. JSON keeps
+observations/unknown values separate from cleanup; cleanup failure fails the job without
+erasing valid Read evidence. Source helper/tests and the role consumer catalog are linked.
+
 ## Index
 
 | Runbook | Topic |
