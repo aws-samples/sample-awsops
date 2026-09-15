@@ -21,6 +21,15 @@ const fixture: AccountConnectionDiagnostic = {
 const expected = { accountId: fixture.accountId, region: fixture.region, externalIdProvided: true };
 
 describe('client-safe connection diagnostic contract', () => {
+  it('keeps deployment STS region separate from requested region without inventing legacy metadata', () => {
+    expect(readAccountConnectionDiagnostic({ ...fixture, stsRegion: 'us-west-2' }, expected))
+      .toMatchObject({ region: fixture.region, stsRegion: 'us-west-2' });
+    expect(readAccountConnectionDiagnostic(fixture, expected)?.stsRegion).toBeUndefined();
+    const query = new URL(accountConnectionAiHref({ ...fixture, stsRegion: 'us-west-2' }), 'https://example.test').searchParams.get('q')!;
+    expect(query).toContain(`checkId=${fixture.checkId}`);
+    expect(query).toContain(`requestedRegion=${fixture.region}`);
+    expect(query).toContain('stsRegion=us-west-2');
+  });
   it('projects only the declared metadata and accepts an unknown host identity', () => {
     expect(readAccountConnectionDiagnostic({ ...fixture, message: 'PRIVATE_ERROR', externalId: 'PRIVATE_EXT' }, expected))
       .toEqual(fixture);
@@ -30,6 +39,7 @@ describe('client-safe connection diagnostic contract', () => {
   it.each([
     { code: 'raw: PRIVATE_ERROR' }, { stage: 'anything' }, { checkId: 'id\n/ops secret' },
     { checkedAt: 'not-a-date' }, { accountId: '333333333333' }, { region: 'us-east-1' },
+    { stsRegion: 'PRIVATE_INVALID_REGION' }, { stsRegion: 1 },
     { roleArn: 'arn:aws:iam::222222222222:role/Administrator' }, { hostTaskRoleArn: 'PRIVATE_EXT' },
     { awsRequestId: 'Authorization: PRIVATE_TOKEN' }, { durationMs: -1 }, { durationMs: Infinity },
     { externalIdProvided: false }, { registrationEnabled: 'true' }, { verified: true },

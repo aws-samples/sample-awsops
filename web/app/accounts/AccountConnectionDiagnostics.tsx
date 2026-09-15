@@ -16,7 +16,8 @@ export default function AccountConnectionDiagnostics({ diagnostic, registrationR
     ['확인 시각', diagnostic.checkedAt], ['확인 ID', diagnostic.checkId],
     ['확인 단계', diagnostic.stage], ['결과 코드', diagnostic.code],
     ['AWS 요청 ID', diagnostic.awsRequestId ?? unknown], ['소요 시간', `${diagnostic.durationMs} ms`],
-    ['대상 계정', diagnostic.accountId], ['AWS 리전', diagnostic.region],
+    ['대상 계정', diagnostic.accountId], ['등록 대상 리전', diagnostic.region],
+    ['STS 확인 리전', diagnostic.stsRegion ?? unknown],
     ['대상 역할', diagnostic.roleArn], ['호스트 웹 역할', diagnostic.hostTaskRoleArn ?? unknown],
     ['ExternalId 제공 여부', tt(diagnostic.externalIdProvided ? '제공됨' : '생략됨')],
   ];
@@ -39,6 +40,7 @@ export default function AccountConnectionDiagnostics({ diagnostic, registrationR
         ))}
       </dl>
       <p className="mt-3 text-[12px] text-ink-600">{tt('이 결과는 웹 역할의 연결 확인이며 인벤토리 수집 준비 완료를 의미하지 않습니다.')}</p>
+      <p className="mt-1 text-[12px] text-ink-600">{tt('등록 대상 리전의 활성화 여부는 별도로 확인하세요.')}</p>
       <Link href={accountConnectionAiHref(diagnostic, !registrationReason && diagnostic.registrationEnabled)}
         className="mt-3 inline-block rounded border border-ink-200 bg-card px-3 py-1.5 text-[12px] font-semibold text-brand-800 hover:bg-ink-100">
         {tt('AI 원인 분석 가이드')}

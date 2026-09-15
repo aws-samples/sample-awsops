@@ -75,14 +75,19 @@ describe('account onboarding flow', () => {
     fireEvent.click(register);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
-  it('preserves inputs after failed verification and permits retry', async () => {
+  it.each([false, true])('preserves failed registration inputs and gives available recovery (probeAllowed=%s)', async probeAllowed => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({
+      ...config, ...(probeAllowed ? { registrationTargetAccountIds: ['222222222222'] } : {}),
+    })));
     render(<AccountOnboarding onRegistered={onRegistered} />);
     await fillAccount();
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ message: 'PRIVATE_REGISTER_FAILURE' }), { status: 400 }));
     fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));
-    await screen.findByText('등록하지 못했습니다. 연결 확인으로 진단 결과를 확인하세요.');
+    await screen.findByText(probeAllowed ? '등록하지 못했습니다. 연결 확인으로 진단 결과를 확인하세요.'
+      : '등록하지 못했습니다. 읽기 전용 확인 명령으로 역할과 신뢰 설정을 확인하거나 운영자에게 연결 확인 범위를 요청하세요.');
     expect(document.body.textContent).not.toContain('PRIVATE_REGISTER_FAILURE');
-    expect(screen.getByRole('button', { name: '연결 원인 확인' })).toBeTruthy();
+    const check = screen.getByRole('button', { name: probeAllowed ? '연결 원인 확인' : '연결 확인', exact: true });
+    expect((check as HTMLButtonElement).disabled).toBe(!probeAllowed);
     expect(onRegistered).not.toHaveBeenCalled();
     expect((screen.getByLabelText('Account ID') as HTMLInputElement).value).toBe('222222222222');
     fireEvent.click(screen.getByRole('button', { name: '연결 확인 및 등록' }));

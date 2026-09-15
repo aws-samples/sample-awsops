@@ -25,9 +25,18 @@ beforeEach(() => {
     .mockResolvedValueOnce({ Credentials: credentials })
     .mockResolvedValueOnce({ Account: input.accountId, $metadata: { requestId } });
 });
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe('account connection verification', () => {
+  it.each(['ap-east-1', 'zz-unavailable-1'])('pins STS to the deployment region while retaining requested %s metadata', async region => {
+    vi.stubEnv('AWS_REGION', 'us-west-2');
+    vi.resetModules();
+    const { verifyAccountConnection: verify } = await import('./account-connection');
+    const result = await verify({ ...input, region }, settings);
+    expect(result).toMatchObject({ verified: true, region, stsRegion: 'us-west-2' });
+    expect(aws.configurations).toHaveLength(2);
+    for (const configuration of aws.configurations) expect(configuration).toMatchObject({ region: 'us-west-2' });
+  });
   it('verifies the real web role and target even while registration is host-only', async () => {
     const result = await verifyAccountConnection(input, settings);
     expect(result).toMatchObject({

@@ -93,6 +93,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
       checkRequest.current = null;
       setChecking(false);
       setDiagnostic(null);
+      setMessage('');
     }
     setRetryAfterSeconds(null);
     setRegistrationFailed(false);
@@ -222,6 +223,7 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
     setSuccess(false);
     setRegistrationFailed(false);
     setRetryAfterSeconds(null);
+    setDiagnostic(null);
     try {
       const response = await fetch('/api/accounts', {
         method: 'POST',
@@ -232,8 +234,9 @@ export default function AccountOnboarding({ onRegistered, accounts = [] }: {
         }),
       });
       if (!response.ok) {
-        setRegistrationFailed(response.status === 400);
-        setMessage(tt(accountRegistrationFailure(response.status)));
+        setRegistrationFailed(canCheck && response.status >= 400 && response.status < 500
+          && ![401, 403, 409, 429].includes(response.status));
+        setMessage(tt(accountRegistrationFailure(response.status, canCheck)));
         return;
       }
       setSuccess(true);

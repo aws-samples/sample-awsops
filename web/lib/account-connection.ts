@@ -10,6 +10,8 @@ interface ConnectionInput {
 }
 
 const REQUEST_ID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
+// Match the registration verifier's endpoint; the submitted region is inventory metadata.
+const STS_REGION = process.env.AWS_REGION || 'ap-northeast-2';
 function requestId(value: unknown): string | null {
   if (!value || typeof value !== 'object') return null;
   const metadata = (value as { $metadata?: { requestId?: unknown } }).$metadata;
@@ -44,7 +46,7 @@ export async function verifyAccountConnection(
   const started = Date.now();
   const result: AccountConnectionDiagnostic = {
     checkId: randomUUID(), checkedAt: new Date(started).toISOString(), accountId: input.accountId,
-    region: input.region, roleArn: `arn:aws:iam::${input.accountId}:role/AWSopsReadOnlyRole`,
+    region: input.region, stsRegion: STS_REGION, roleArn: `arn:aws:iam::${input.accountId}:role/AWSopsReadOnlyRole`,
     hostTaskRoleArn: null, externalIdProvided: Boolean(input.externalId), stage: 'host_identity',
     code: 'host_identity_unavailable', awsRequestId: null, durationMs: 0,
     verified: false, registrationEnabled: settings.registrationEnabled,
@@ -59,7 +61,7 @@ export async function verifyAccountConnection(
   });
   const bounded = <T>(request: Promise<T>) => Promise.race([request, timeout]);
   const options = { abortSignal: controller.signal };
-  const host = new STSClient({ region: input.region, maxAttempts: 2 });
+  const host = new STSClient({ region: STS_REGION, maxAttempts: 2 });
   let target: STSClient | undefined;
   try {
     const identity = await bounded(host.send(new GetCallerIdentityCommand({}), options));
@@ -79,7 +81,7 @@ export async function verifyAccountConnection(
       return result;
     }
     target = new STSClient({
-      region: input.region, maxAttempts: 2,
+      region: STS_REGION, maxAttempts: 2,
       credentials: {
         accessKeyId: credentials.AccessKeyId, secretAccessKey: credentials.SecretAccessKey,
         sessionToken: credentials.SessionToken,

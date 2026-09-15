@@ -8,6 +8,8 @@ export interface AccountConnectionDiagnostic {
   checkedAt: string;
   accountId: string;
   region: string;
+  /** Deployment STS endpoint region; absent on legacy diagnostic responses. */
+  stsRegion?: string;
   roleArn: string;
   hostTaskRoleArn: string | null;
   externalIdProvided: boolean;
@@ -38,14 +40,15 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/;
 const HOST_ROLE = /^arn:aws:iam::\d{12}:role\/[A-Za-z0-9_+=,.@/-]+$/;
 const validRegion = (value: string) => value.length <= 32 && REGION.test(value);
 
-export function accountRegistrationFailure(status: number): string {
+export function accountRegistrationFailure(status: number, canCheck = false): string {
   if (status === 401) return '로그인 후 계정 등록을 다시 시도하세요.';
   if (status === 403) return '계정 등록은 관리자만 사용할 수 있습니다.';
   if (status === 409) return '현재 등록 정책 또는 계정 상태로 등록할 수 없습니다. 등록 범위와 계정 목록을 확인하세요.';
   if (status === 429) return '등록 요청이 잠시 제한되었습니다. 잠시 후 다시 시도하세요.';
   if (status === 503) return '등록 설정을 확인할 수 없습니다. 운영자에게 배포 설정을 확인하세요.';
   if (status >= 500) return '서버에서 등록을 완료하지 못했습니다. 계정 목록을 확인하고 운영자에게 문의하세요.';
-  return '등록하지 못했습니다. 연결 확인으로 진단 결과를 확인하세요.';
+  return canCheck ? '등록하지 못했습니다. 연결 확인으로 진단 결과를 확인하세요.'
+    : '등록하지 못했습니다. 읽기 전용 확인 명령으로 역할과 신뢰 설정을 확인하거나 운영자에게 연결 확인 범위를 요청하세요.';
 }
 
 export function accountConnectionBoundaryFailure(status: number, code: unknown): string {
@@ -75,6 +78,7 @@ export function readAccountConnectionDiagnostic(value: unknown, expected: {
     || new Date(d.checkedAt).toISOString() !== d.checkedAt
     || typeof d.accountId !== 'string' || !ACCOUNT.test(d.accountId) || d.accountId !== expected.accountId
     || typeof d.region !== 'string' || !validRegion(d.region) || d.region !== expected.region
+    || (d.stsRegion !== undefined && (typeof d.stsRegion !== 'string' || !validRegion(d.stsRegion)))
     || d.roleArn !== `arn:aws:iam::${d.accountId}:role/AWSopsReadOnlyRole`
     || !(d.hostTaskRoleArn === null || (typeof d.hostTaskRoleArn === 'string'
       && d.hostTaskRoleArn.length <= 2048 && HOST_ROLE.test(d.hostTaskRoleArn)))
@@ -88,6 +92,7 @@ export function readAccountConnectionDiagnostic(value: unknown, expected: {
     || (d.verified && (d.stage !== 'get_caller_identity' || d.hostTaskRoleArn === null))) return null;
   return {
     checkId: d.checkId, checkedAt: d.checkedAt, accountId: d.accountId, region: d.region,
+    ...(d.stsRegion === undefined ? {} : { stsRegion: d.stsRegion }),
     roleArn: d.roleArn, hostTaskRoleArn: d.hostTaskRoleArn, externalIdProvided: d.externalIdProvided,
     stage: d.stage, code: d.code, awsRequestId: d.awsRequestId, durationMs: d.durationMs,
     verified: d.verified, registrationEnabled: d.registrationEnabled,
@@ -100,12 +105,16 @@ export function accountConnectionAiHref(diagnostic: AccountConnectionDiagnostic,
   if (!d) throw new Error('invalid_connection_diagnostic');
   let prompt = '/security Analyze this account connection check and suggest read-only checks. Do not change resources or claim registration/collection readiness.';
   const fields = [
-    `account=${d.accountId}`, `region=${d.region}`, `stage=${d.stage}`, `code=${d.code}`,
+    `checkId=${d.checkId}`, `account=${d.accountId}`, `requestedRegion=${d.region}`,
+    `stsRegion=${d.stsRegion ?? 'unavailable'}`, `stage=${d.stage}`, `code=${d.code}`,
     `registrationEnabled=${registrationEnabled}`, `externalIdProvided=${d.externalIdProvided}`,
-    `role=AWSopsReadOnlyRole`, `checkId=${d.checkId}`, `checkedAt=${d.checkedAt}`,
-    `awsRequestId=${d.awsRequestId ?? 'unavailable'}`, `durationMs=${d.durationMs}`,
+    `awsRequestId=${d.awsRequestId ?? 'unavailable'}`, `checkedAt=${d.checkedAt}`,
+    `role=AWSopsReadOnlyRole`, `durationMs=${d.durationMs}`,
   ];
-  for (const field of fields) if (prompt.length + field.length + 1 <= 500) prompt += ` ${field}`;
+  for (const field of fields) {
+    if (prompt.length + field.length + 1 > 500) break;
+    prompt += ` ${field}`;
+  }
   return `/assistant?q=${encodeURIComponent(prompt)}`;
 }
 

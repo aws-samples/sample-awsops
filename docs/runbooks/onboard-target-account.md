@@ -65,9 +65,12 @@ beside stale rows. When browser session
 storage is unavailable or a new session is used, restore the ExternalId from the original
 script or target role trust policy. Allow for IAM propagation after creation.
 For a combined registration failure, the page shows a fixed status-specific explanation.
-An assume/validation failure offers **Diagnose connection** (Korean: **연결 원인 확인**);
-select it explicitly to obtain the bounded diagnostic. The page does not automatically
-repeat STS requests. Editing only the alias or CLI profile preserves the previous diagnostic;
+When this target is eligible for a connection probe, an assume/validation failure offers
+**Diagnose connection** (Korean: **연결 원인 확인**). Without an applied probe allowlist,
+legacy registration failures instead point to the available read-only commands and
+operator scope configuration; they do not recommend the disabled control.
+Select an available check explicitly; the page does not automatically repeat STS requests.
+Editing only the alias or CLI profile preserves the previous diagnostic;
 changing account, region, ExternalId or first-party choice clears it.
 
 `AlreadyExists` can refer to the **stack name**, even when no role exists. In CloudFormation,
@@ -112,6 +115,10 @@ separate operator configuration step. AWSops itself never executes the generated
 The admin-only `POST /api/accounts/onboarding` validates the target ID, region and current
 ExternalId/first-party choice. Within one 15-second deadline, it verifies the actual host
 STS identity, assumes only `AWSopsReadOnlyRole`, then verifies the resulting target account.
+All STS stages use the deployment's `AWS_REGION` (default `ap-northeast-2`), matching
+registration. The submitted region remains registration/inventory metadata; it does not
+select the diagnostic endpoint or prove region activation. Responses disclose `stsRegion`
+separately; older responses leave that endpoint region unknown.
 Success establishes that web-role connection only; it neither registers the account nor
 certifies collection, worker or AgentCore access.
 
@@ -121,8 +128,8 @@ Probe admission follows the applied configuration:
 - A target must be in `INVENTORY_TARGET_ACCOUNT_IDS` **or** match an enabled, nonhost
   registry entry. An out-of-list registered target can be checked, but this does not
   permit a new registration or change collector/runtime scope.
-- Unregistered, unlisted targets return HTTP 409 with `code: target_not_configured`
-  before STS, including legacy multi-account mode. Missing allowlists do not authorize
+- After single-flight/cooldown admission, unregistered, unlisted targets return HTTP 409
+  with `code: target_not_configured` before STS, including legacy multi-account mode. Missing allowlists do not authorize
   arbitrary diagnostic targets. Invalid configuration or failed registry lookup returns 503.
 - Host-account and invalid-input checks remain in place.
 
