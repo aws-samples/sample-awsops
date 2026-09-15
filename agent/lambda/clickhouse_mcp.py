@@ -166,20 +166,22 @@ def _run_sql(sql, max_rows, trusted=False, max_execution_time=None):
         snippet = data.get("raw") or data.get("exception") or data
         return err(f"ClickHouse query failed ({status}): {str(snippet)[:300]}")
     raw = data.get("data") if isinstance(data, dict) else None
-    rows = raw if isinstance(raw, list) else []
     meta = data.get("meta") if isinstance(data, dict) else None
-    reported = data.get("rows") if isinstance(data, dict) else None
+    rows = raw if isinstance(raw, list) else []
     before_limit = data.get("rows_before_limit_at_least") if isinstance(data, dict) else None
-    observed = (isinstance(raw, list) and all(isinstance(row, dict) for row in rows)
-                and isinstance(meta, list) and bool(meta)
-                and all(isinstance(c, dict) and isinstance(c.get("name"), str)
-                        and isinstance(c.get("type"), str) for c in meta)
-                and type(reported) is int and reported == len(rows)
-                and (before_limit is None or (type(before_limit) is int and before_limit >= len(rows))))
     truncated = len(rows) >= max_rows or (type(before_limit) is int and before_limit > len(rows))
-    failed = isinstance(data, dict) and any(key in data for key in ("exception", "error"))
-    state = ("partial" if rows else "error") if failed else (
-        "unknown" if not observed else "partial" if truncated else "ok" if rows else "empty")
+    valid_meta = isinstance(meta, list) and bool(meta) and all(
+        isinstance(column, dict) and isinstance(column.get("name"), str)
+        and bool(column["name"]) and isinstance(column.get("type"), str)
+        and bool(column["type"]) for column in meta)
+    if isinstance(data, dict) and (data.get("exception") is not None or data.get("error") is not None):
+        state = "error"
+    elif not isinstance(raw, list) or not valid_meta:
+        state = "unknown"
+    elif truncated or not all(isinstance(row, dict) for row in rows):
+        state = "partial"
+    else:
+        state = "ok" if rows else "empty"
     return ok({"rowCount": len(rows[:max_rows]), "rows": rows[:max_rows],
                "meta": meta, "truncated": truncated, "collectionStatus": state})
 

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 49e09e7f8813 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f5ce7055f38f · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -43,9 +43,14 @@ that's the source of truth for tool counts, not this doc.
   Adding a column or view here is a security-relevant change requiring review; never grant
   anything to `public`.
 - SQL-reader `topology_nodes.meta` is a named-key allowlist, currently owned by
-  `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Unlisted keys, including
-  ownership/ambiguity/target-time fields a future writer might add, stay absent until a
-  reviewed additive migration exposes them. This does not assert current writers emit them.
+  `01M27B0000C6QWJ50NRJ8YAH9D_trace_queue_claim_provenance.sql`. Materialized flow target nodes
+  carry ownership_evidence/targetCapturedAt and applicable VPC/subnet/ambiguity data, excluded
+  by the view. Configuration-only IP targets also carry ownership_reason; other target kinds
+  need not. The targetCapturedAt field dates only the target-group row, not ownership evidence.
+  Candidate is page-only, not materializer output, and also excluded. Exposed
+  region/cluster/ecsService/task fields are not complete
+  scope or live-ownership proof. Host ECS snapshot target labels remain cached configuration.
+  Unlisted keys need a reviewed additive migration to be exposed.
 - Flow/infra labels are cached configuration, not live ownership. Trace account/region or
   Kubernetes metadata, when present, is telemetry attribution; database `infra_ref` is a
   host-name/prefix inference. Trace queues explicitly use `identityProvenance='telemetry_claim'`

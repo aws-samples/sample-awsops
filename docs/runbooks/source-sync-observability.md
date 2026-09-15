@@ -204,52 +204,74 @@ the regression uses the real graph-state reader with a database boundary fixture
 
 ## Topology evidence compatibility
 
-**Symptoms:** an IP target remains unresolved, a collection panel omits its query
-window, or source details do not explain a partial graph.
+**Symptoms:** an IP target stays unresolved, inventory shows a read/scope warning,
+Refresh retains the previous graph, or source details do not explain partial coverage.
 
-**Interpretation:** the configuration topology page requires independently corroborated
-region/VPC/subnet evidence from RUNNING ECS tasks and pod inventory for EKS. A repeated IP in another
-VPC or an Endpoints row without a corroborating pod cannot establish ownership. The
-page uses the hydrated account scope, cancels earlier loads and rejects late results.
-EKS failures, partial reads and scope-based opt-outs are explicit. Ordinary `entry-only`
-/ `no-entry` clusters are counted as not queried, not failed reads. The existing EKS API
-enumerates its configured region only; the panel names that region and declares other
-regions unassessed. Inventory reads apply account selection only. Host EKS ownership
-is not applied to all/mixed-account targets because their IP key does not establish
-account identity. Unknown per-account run health is one scope notice; normal running
-syncs are not failures. The self-keyed run ledger is an aggregate sweep across accounts:
-its failures/partial results remain visible under every scope, separately from HTTP read
-failures; a failed read does not itself add an unknown aggregate-health notice.
-Aggregate success does not prove member-account health, and member capture
-clocks never borrow its last-success time. Uncorroborated or shared hostNetwork pod IPs
-remain unresolved without making a successful EKS read partial.
-A failed subnet read or the 500-row response cap is disclosed even for an empty graph, alongside retained
-unresolved targets; raw IP labels are not proof that a workload is absent.
+**Interpretation:** inventory rows and the global per-type sweep ledger are read by one
+SQL statement through `pool.query`, so each page uses one PostgreSQL statement snapshot
+without holding a connection across application-managed transaction commands. Critical
+target-group/ECS-task/subnet pages require `consistency: "statement-snapshot"` and a stable
+succeeded ledger version across pages. The ledger is keyed under `self` for the whole
+account sweep; its count is neither the selected account's count nor this page's count.
+The collector marks that ledger running before mutating rows. This supports cross-page
+version rejection, not a claim that every page/type or live AWS resource is one snapshot.
+See the [single API contract](../api-reference.md#inventory-pagination-and-sweep-ledger).
 
-For current trace windows and partial-result causes, see [Trace collection rendering](#trace-collection-rendering).
-The browser-built configuration graph uses the currently fetched subnet inventory.
-Persisted service-map ECS labels change only after the next flow rebuild; a merge alone
-does not establish that it completed. Existing web CD may deploy the new image, and an
-already-configured graph timer can rebuild after boot. Record CD, migration and rebuild
-results separately; no timer configuration or rollout is performed by this source change.
+All inventory and enrichment requests share two browser request lanes. Critical types
+page sequentially within a lane, at most 20 × 500 rows; other display types stop at 500.
+The browser's shared 30-second deadline also covers EKS. A real remaining cap is disclosed
+with its configured limit (10,000 for critical types); an incomplete first page is not
+reported as reaching that full cap. Missing/changed metadata and unsuccessful reads
+withhold ownership. Authentication, scope checks and read-only policy remain unchanged.
 
-The bounded publication implementation in `web/lib/graph-store.ts` supplies optional inventory capture/sweep
-clocks, aggregate/account source scope, saved-source provenance and explicit truncation
-flags. The UI accepts those fields without claiming that the producer deployment or
-migration is already live. Missing metadata is unknown, not a failed-collector verdict.
-The accepted shape is documented in [the API contract](../api-reference.md#graph-collection-metadata).
+| Signal | Meaning and verification/action |
+|---|---|
+| `<type>: invalid inventory response` | Inspect that authenticated inventory request's status/envelope. A critical response needs the statement-snapshot marker and valid ledger fields. Missing/older markers may indicate mixed deployed versions; keep attribution withheld and retry after the reviewed web rollout completes. Do not bypass authentication or invent empty success. |
+| Running/partial/failed or changed ledger | The global sweep is incomplete or changed while paging. Inspect collection status and retry after it completes. Cached rows are display context, not exclusive ownership or per-account success. |
+| `cluster_not_connected` | The listed cluster was not queried because onboarding/access is incomplete. It is distinct from a transport failure, but its known network scope still blocks IP ownership, including unseen IPs. Check the EKS access/onboarding status and use the existing separately authorized procedure. |
+| `cluster_unreadable` / `cluster_limit_possible` | EKS reads, metadata or enumeration coverage are unavailable/incomplete. Known failed region/VPC scopes block matching IPs; unknown scope or truncated enumeration blocks the map. Check EKS status/permissions and the returned region/truncation metadata; do not assume missing clusters own no IPs. |
+| `eks_not_enumerated` / `ownership_reason` | Host EKS evidence is not joined to member/mixed/all-account inventory or unqueried regions. Use an appropriate host scope for host checks; cached configuration labels do not establish live ownership. |
+| Ambiguous IP | Only independently listed active pods or RUNNING tasks with complete scope can be candidates. Succeeded/Failed pods and STOPPED/DELETED tasks do not claim old IPs; unknown states/references remain unverified. The same IP in two clusters within one region/VPC stays withheld even if labels match; distinct addresses/scopes remain independent. |
+| Retained-data notice | A failed/incomplete refresh that would yield an empty graph keeps the prior nonempty graph only for the same account, including its original evidence. Current attempt errors are separate. Complete empty results replace it; account changes discard it. Retention does not establish current traffic. |
+| Old/unknown capture time | Refresh freshness comes from source capture/eligible host last-success time, never the new read's clock. Member clocks do not borrow the aggregate success timestamp. `targetCapturedAt` dates only the target-group row, not task/subnet/pod ownership evidence. |
+
+The hydrated account scope controls inventory reads; earlier loads are cancelled and
+late responses rejected. Aggregate run health is shown under every scope, separately
+from HTTP failures and unknown per-account health. Running syncs and ordinary ambiguous
+pod IPs are not failed collections. Raw IP labels are not evidence that a workload is absent.
+A manual Service endpoint without a pod reference cannot supply pod ownership or rename a
+pod across namespaces; unresolved explicit pod references still withhold attribution.
+
+For trace query windows and partial-result causes, see
+[Trace collection rendering](#trace-collection-rendering). Current/saved source reasons,
+assembly-loss counters and optional clocks remain bounded, explicit evidence. Optional
+metadata support does not claim that every producer emits it. The browser uses fetched
+configuration; persisted service-map labels change only after a flow rebuild, which this
+source integration does not trigger. SQL-reader projections omit ownership provenance;
+see [the agent contract](agent-sql-reader.md#current-topology-evidence-contract).
+
+The bounded publication implementation in `web/lib/graph-store.ts` supplies optional inventory capture/sweep clocks, aggregate/account source scope, saved-source provenance and explicit truncation flags. Missing metadata remains unknown; producer deployment and migration are separately verified. See [the API contract](../api-reference.md#graph-collection-metadata).
 
 **Local verification:** from `web/`, run:
 
 ```bash
-npx vitest run app/topology/page.test.tsx app/topology/subnet-input.test.tsx components/topology/GraphCollectionStatus.test.tsx lib/topology-config.test.ts lib/flow-topology.test.ts
+npx vitest run lib/inventory.test.ts app/topology/page.test.tsx app/topology/page-ownership.test.tsx app/topology/subnet-input.test.tsx components/topology/GraphCollectionStatus.test.tsx lib/topology-config.test.ts lib/flow-topology.test.ts
 ```
 
 These fixtures exercise real page/builder and graph-state-reader boundaries with local
-transport/database doubles. They do not establish deployed AWS, Runtime or migration
-state. Keep the existing separately authorized rollout procedure above (ADR-005,
-ADR-007) and distinguish source integration from activation.
+transport/database doubles.
 
+From the repository root, with locked web/scripts dependencies and local Docker:
+
+```bash
+node --test scripts/v2/ci/migration.itest.mjs scripts/v2/ci/web-db-connection.itest.mjs
+```
+
+The latter uses disposable PostgreSQL 17, including the connected-client ordering case,
+empty/ledger results, worst-first ordering, concurrent-writer consistency and pool reuse.
+These checks do not establish deployed AWS, Runtime or migration state. Keep the existing
+separately authorized rollout procedure above (ADR-005/ADR-007); source integration is
+not activation.
 
 ### Bounded rebuild scheduling
 
@@ -284,3 +306,9 @@ The shared `agent/fixtures/tempo-topology-contract.json` fixture binds actual pr
 The paired `prometheus_mcp`, `mimir_mcp`, `tempo_mcp` and `clickhouse_mcp` code computes `collectionStatus` from its own validated response, warnings, limits and completion evidence. It does not copy a datasource-supplied `collectionStatus`. `ok`/`empty` permit complete results; `partial`, `unknown` and `error` cannot certify an empty graph. Deploy the producer Lambda code before expecting confirmed-empty behavior; old unmarked empty/zero-only results intentionally remain unconfirmed during rollout. No connector activation or IAM change is implied.
 
 An observed zero sample remains a zero sample. It does not prove the entire query was complete when an old wrapper discarded upstream warnings or accepted missing success status. Paired metric producers preserve those conditions; complete zero-only responses remain `ok`, while incomplete responses preserve the zero data with a partial marker. Tempo search IDs followed by no fetched spans are incomplete regardless of the parent search marker. The source-only producer contract test exercises the shared fixture's upstream-to-body mapping; Runtime receipt-wire tests remain with the later Runtime/producer stages.
+
+Tempo child-fetch coverage is carried separately as `SourceRead.canSweep: false`: both all-empty and mixed missing-child results retain the saved graph while preserving fetched data. Valid spans outside the requested window are not missing children. ClickHouse completion is computed from observed data and column metadata; exceptions and row limits cannot certify empty collection.
+
+### Diagnosis signal completeness
+
+The diagnosis worker preserves connector `collectionStatus` and truncation before preparing model evidence. Explicit `unknown`, `error`, or `partial` results carry a fixed error signal; only nonempty observed counts remain as `observedCount`, never a complete zero. Known `ok`/`empty` results retain their counts. Raw rows, trace payloads, sample values and upstream error text are not copied into these summaries. Deploy the worker source update with the connector producer changes. Verify offline with `PYTHONPATH=scripts/v2/workers python3 -m pytest scripts/v2/workers/diagnosis/test_datasources.py -q`.
