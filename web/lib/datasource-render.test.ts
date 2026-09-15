@@ -155,3 +155,37 @@ describe('bounded instant scalar results', () => {
     expect(result.rows).toEqual([{ value: 'value', timestamp: '1970-01-01T00:00:01.000Z' }]);
   });
 });
+
+
+describe('collection evidence disclosure', () => {
+  it.each(['prometheus', 'mimir', 'tempo', 'clickhouse'])('%s never labels marked incomplete empty data as confirmed empty', kind => {
+    for (const collectionStatus of ['partial', 'unknown', 'error'] as const) {
+      const result = normalizeResult(kind, `${kind}_query`, { resultType: 'vector', result: [], traces: [], rows: [], collectionStatus });
+      expect(result.collectionStatus).toBe(collectionStatus);
+      expect(result.collectionNote).toBeTruthy();
+      expect(result.note).toBe(result.collectionNote);
+      expect(['결과 없음', '행 없음', '트레이스 없음']).not.toContain(result.note);
+    }
+  });
+  it('preserves confirmed empty and useful partial rows distinctly', () => {
+    const empty = normalizeResult('prometheus', 'prometheus_query', { resultType: 'vector', result: [], collectionStatus: 'empty' });
+    expect(empty.note).toBe('결과 없음');
+    expect(empty.collectionStatus).toBe('empty');
+    expect(empty.collectionNote).toBeUndefined();
+    const partial = normalizeResult('prometheus', 'prometheus_query', { resultType: 'vector', collectionStatus: 'partial', result: [{ metric: { __name__: 'up' }, value: [1, '0'] }] });
+    expect(partial.rows?.[0].value).toBe(0);
+    expect(partial.collectionNote).toBeTruthy();
+  });
+  it('preserves scalar format failure and surfaces unknown collection separately', () => {
+    const result = normalizeResult('mimir', 'mimir_query', { resultType: 'scalar', result: [], collectionStatus: 'unknown', truncated: true });
+    expect(result.note).toBe('응답 형식 오류');
+    expect(result.collectionStatus).toBe('unknown');
+    expect(result.collectionNote).toBeTruthy();
+    expect(result.truncated).toBe(true);
+  });
+  it('honors a legacy truncation marker without inventing completion', () => {
+    const result = normalizeResult('clickhouse', 'clickhouse_query', { rows: [], truncated: true });
+    expect(result.collectionStatus).toBe('partial');
+    expect(result.note).toBe(result.collectionNote);
+  });
+});

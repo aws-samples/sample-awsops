@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { normalizeResult } from '@/lib/datasource-render';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import ExplorePanel from './ExplorePanel';
@@ -245,5 +246,30 @@ describe('ExplorePanel example chips', () => {
     // The system.* block is clickhouse_mcp-specific — Datadog metric names legitimately start
     // with `system.` (avg:system.cpu.user{*}), so the guard must not be blanket-applied.
     for (const e of EXAMPLE_QUERIES.clickhouse) expect(/system\./i.test(e.expr), e.expr).toBe(false);
+  });
+});
+
+
+describe('Explore collection evidence', () => {
+  it.each(['partial', 'unknown', 'error'] as const)('discloses %s empty results in the actual query flow', async collectionStatus => {
+    const result = normalizeResult('prometheus', 'prometheus_query', { resultType: 'vector', result: [], collectionStatus });
+    global.fetch = mockFetch(url => url === '/api/datasources' ? { datasources: INSTANCES } : { result });
+    render(<ExplorePanel instanceId={1} />);
+    const query = await screen.findByPlaceholderText(/PromQL/);
+    fireEvent.change(query, { target: { value: 'up' } });
+    fireEvent.click(screen.getByRole('button', { name: '실행' }));
+    await waitFor(() => expect(screen.queryByText('결과 없음')).toBeNull());
+    expect(await screen.findByText(result.collectionNote!)).toBeTruthy();
+  });
+  it('keeps observed rows visible with a partial-evidence status note', async () => {
+    const result = normalizeResult('prometheus', 'prometheus_query', { resultType: 'vector', collectionStatus: 'partial', result: [{ metric: { __name__: 'up' }, value: [1, '1'] }] });
+    global.fetch = mockFetch(url => url === '/api/datasources' ? { datasources: INSTANCES } : { result });
+    render(<ExplorePanel instanceId={1} />);
+    const query = await screen.findByPlaceholderText(/PromQL/);
+    fireEvent.change(query, { target: { value: 'up' } });
+    fireEvent.click(screen.getByRole('button', { name: '실행' }));
+    const note = await screen.findByRole('status');
+    expect(note.textContent).toBe(result.collectionNote);
+    expect(screen.getAllByText('up').length).toBeGreaterThan(0);
   });
 });

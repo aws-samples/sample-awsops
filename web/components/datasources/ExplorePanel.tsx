@@ -304,6 +304,9 @@ function ResultView({ result, kind, execMs }: { result: NormalizedResult; kind?:
       {result.truncated && (
         <p className="text-[12px] text-amber-700">{tt('결과가 잘렸습니다(상한 도달) — 쿼리를 좁혀 다시 시도하세요.')}</p>
       )}
+      {result.collectionNote && (result.shape !== 'empty' || result.note !== result.collectionNote) && (
+        <p role="status" className="text-[12px] text-amber-700">{tt(result.collectionNote)}</p>
+      )}
       {result.shape === 'empty' && (
         <Card className="p-6 text-center text-[13px] text-ink-400">{result.note ? tt(result.note) : tt('결과 없음')}</Card>
       )}
