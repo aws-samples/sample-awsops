@@ -1,12 +1,17 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { ReactFlow, type ReactFlowProps } from '@xyflow/react';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
+import { ReactFlow, getNodesBounds, getViewportForBounds, type ReactFlowProps } from '@xyflow/react';
 import E2eGraphCanvas from './E2eGraphCanvas';
 import { LanguageProvider } from '@/components/shell/LanguageProvider';
 import { buildFlowGraph } from '@/lib/flow-topology';
-import { buildE2eGraph } from '@/lib/e2e-topology';
-import type { E2eGraph } from '@/lib/e2e-topology-types';
+import { buildE2eGraph, selectE2eGraph } from '@/lib/e2e-topology';
+import type { E2eGraph, E2eNode } from '@/lib/e2e-topology-types';
+import { applyTerms } from '@/lib/i18n-terms';
+
+const readSource = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
 // Observe our viewport contract while keeping React Flow and graph selection real.
 vi.mock('@xyflow/react', async importOriginal => {
@@ -35,8 +40,10 @@ const graph: E2eGraph = {
     { id: 'n1', source: 'p1', target: 'f1', evidence: 'network', relation: 'network', directed: false },
     { id: 'n2', source: 'f1', target: 'p2', evidence: 'network', relation: 'network', directed: false },
   ],
-  summary: { servicesComplete: true, configurationComplete: true, networkRead: { status: 'complete', failedCategories: [], unknownWindowCategories: [] }, configuredNodes: 0, serviceNodes: 1, networkFlows: 1, correlatedEndpoints: 1,
-    unmatchedEndpoints: 1, ambiguousEndpoints: 0, observationsUnsupported: false },
+  summary: { configuredNodes: 0, serviceNodes: 1, networkFlows: 1, correlatedEndpoints: 1,
+    unmatchedEndpoints: 1, ambiguousEndpoints: 0, observationsUnsupported: false,
+    configurationComplete: true, servicesComplete: true,
+    networkRead: { status: 'partial', failedCategories: ['INTER_VPC'], unknownWindowCategories: [] } },
 };
 
 function renderConnection(flow: Record<string, unknown>, meta: Record<string, unknown> = {}) {
@@ -52,11 +59,242 @@ async function select(label: string) {
 }
 
 describe('E2eGraphCanvas', () => {
+  it.each(['ko', 'en', 'zh', 'ja'] as const)('names the actual context control in the %s guide', lang => {
+    const label = applyTerms(lang, '참고 정보 (캐시된 구성·경유 구성요소)');
+    const path = lang === 'ko' ? '../../../docs-site/docs/resources/topology.md'
+      : `../../../docs-site/i18n/${lang}/docusaurus-plugin-content-docs/current/resources/topology.md`;
+    localStorage.setItem('awsops-lang', lang);
+    try {
+      render(<LanguageProvider><E2eGraphCanvas graph={graph} /></LanguageProvider>);
+      expect(screen.getByRole('checkbox', { name: label, exact: true })).toBeTruthy();
+      const guide = readSource(path);
+      expect(guide).toContain(`**${label}**`);
+      expect(guide.split(label).length - 1).toBeGreaterThanOrEqual(2);
+    } finally { localStorage.clear(); }
+  });
+  it('qualifies real builder endpoint labels and retains service-only identities', async () => {
+    const built = buildE2eGraph({
+      account: 'self', configured: { nodes: [], edges: [] }, services: null,
+      network: [{ metric: 'DATA_TRANSFERRED', unit: 'Bytes', category: 'INTER_AZ',
+        monitor: 'fixture', cluster: 'fixture', rangeSec: 60, rows:
+        ['shop', 'payments'].map(podNamespace => ({
+          local: { podNamespace, podName: 'web-1' }, remote: { serviceName: 'external-api' },
+          value: 1, unit: 'Bytes', category: 'INTER_AZ',
+        })) }],
+    });
+    render(<E2eGraphCanvas graph={built} />);
+    await screen.findByTitle('shop/web-1');
+    await screen.findByTitle('payments/web-1');
+    expect(await screen.findAllByTitle('external-api')).toHaveLength(2);
+  });
+  it.each([false, true])('discloses incomplete sources even without service nodes (hasServices=%s)', async hasServices => {
+    const configured = buildFlowGraph({ tg: [{ resource_id: 'tg-one', target_type: 'ip',
+      target_health_descriptions: [{ Target: { Id: '10.0.1.1', Port: 80 } }] }] });
+    const built = buildE2eGraph({ account: 'self', configured,
+      services: hasServices ? { nodes: [{ id: 'service', kind: 'service', label: 'service', meta: {} }], edges: [], captured_at: null } : null,
+      configurationComplete: false, servicesComplete: false, network: [],
+    });
+    render(<E2eGraphCanvas graph={built} />);
+    expect(screen.getByText('구성 근거를 확인할 수 없어 연결을 보류했습니다.')).toBeTruthy();
+    expect(screen.getByText('서비스 근거의 완전성·신선도를 확인할 수 없어 워크로드 식별을 보류했습니다.')).toBeTruthy();
+    await waitFor(() => {
+      const props = vi.mocked(ReactFlow).mock.lastCall?.[0];
+      const target = built.nodes.find(node => node.kind === 'target')!;
+      expect(props?.nodes.find(node => node.id === target.id)?.data.label).toBeTruthy();
+      expect(screen.getAllByText(/구성 · 식별 보류/).length).toBeGreaterThan(0);
+    });
+  });
+  it('keeps omittedCategories label-only and safely counts missing or prototype-like labels', () => {
+    const nodes = ['', '__proto__'].flatMap((category, i) => [
+      { ...graph.nodes[1], id: `local-${i}` }, { ...graph.nodes[2], id: `remote-${i}` },
+      { ...graph.nodes[3], id: `flow-${i}`, meta: { ...graph.nodes[3].meta, category } },
+    ]);
+    const edges = [0, 1].flatMap(i => ['local', 'remote'].map(side => ({
+      id: `${side}-${i}`, source: `${side}-${i}`, target: `flow-${i}`,
+      evidence: 'network' as const, relation: side, directed: false,
+    })));
+    const view = selectE2eGraph({ ...graph, nodes, edges }, { maxNodes: 1 });
+    expect(view.omittedCategories).toEqual(['__proto__']);
+    expect(view.omittedCategoryCounts['']).toBe(1);
+    expect(view.omittedCategoryCounts.__proto__).toBe(1);
+    expect(Object.getPrototypeOf(view.omittedCategoryCounts)).toBeNull();
+  });
+  it('keeps navigation controls without exposing the interaction unlock', async () => {
+    render(<E2eGraphCanvas graph={graph} />);
+    const controls = await screen.findByTestId('rf__controls');
+    expect(controls.querySelector('.react-flow__controls-zoomin')).not.toBeNull();
+    expect(controls.querySelector('.react-flow__controls-fitview')).not.toBeNull();
+    expect(controls.querySelector('.react-flow__controls-interactive')).toBeNull();
+  });
+  it('keeps a completed empty network read distinct from missing observations', () => {
+    render(<E2eGraphCanvas graph={{ ...graph, nodes: [], edges: [],
+      summary: { ...graph.summary, networkFlows: 0,
+        networkRead: { status: 'complete', failedCategories: [], unknownWindowCategories: [] } },
+    }} />);
+    expect(screen.getByText('표시할 네트워크 관측이 없습니다.')).toBeTruthy();
+    expect(screen.queryByText('네트워크 관측 데이터가 없어 연결 여부를 집계할 수 없습니다.')).toBeNull();
+  });
+  it('withholds correlation totals when the read is unsupported despite retained rows', () => {
+    render(<E2eGraphCanvas graph={{ ...graph, summary: { ...graph.summary,
+      networkRead: { status: 'unsupported', failedCategories: [], unknownWindowCategories: [] },
+    }}} />);
+    expect(screen.getByText('이 계정에서 네트워크 관측을 사용할 수 없습니다.')).toBeTruthy();
+    expect(screen.queryByText(/미연결 관측/)).toBeNull();
+  });
+  it.each(['ko', 'en', 'zh', 'ja'] as const)('covers every canvas prose literal and label catalog in %s', lang => {
+    const source = ts.createSourceFile('canvas.tsx',
+      readSource('./E2eGraphCanvas.tsx'),
+      ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const literals = new Set<string>();
+    const visit = (node: ts.Node) => {
+      if (ts.isStringLiteralLike(node) && /[가-힣]/.test(node.text)) literals.add(node.text);
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(literals.has('서비스 근거의 완전성·신선도를 확인할 수 없어 워크로드 식별을 보류했습니다.')).toBe(true);
+    for (const literal of literals) {
+      if (lang === 'ko') expect(applyTerms(lang, literal)).toBe(literal);
+      else expect(applyTerms(lang, literal), literal).not.toBe(literal);
+    }
+  });
+  it('fits the primary flow with both corroborated targets and workloads inside the actual canvas', async () => {
+    const region = 'us-east-1', vpcId = 'vpc-demo', account = '000000000000';
+    const names = ['frontend', 'orders'];
+    const endpoint = (i: number) => ({ ip: `10.0.${i + 1}.10`, region, vpcId,
+      podName: `${names[i]}-a`, podNamespace: 'shop' });
+    const configured = buildFlowGraph({
+      tg: names.map((name, i) => ({ resource_id: `tg-${name}`, region, account_id: account,
+        vpc_id: vpcId, target_type: 'ip', target_health_descriptions: [{ Target: { Id: endpoint(i).ip, Port: 8080 } }] })),
+      ipResolved: Object.fromEntries(names.map((name, i) => [`${region}|${vpcId}|${endpoint(i).ip}`, {
+        label: name, resolved: 'eks', meta: { cluster: 'demo', namespace: 'shop', pod: `${name}-a` },
+      }])),
+    });
+    const built = buildE2eGraph({
+      account: 'self', hostAccountId: account, configured, configurationComplete: true, servicesComplete: true,
+      services: { captured_at: '2026-09-11T12:00:00Z',
+        nodes: names.flatMap(name => [
+          { id: `svc:${name}`, kind: 'service', label: name, meta: { accountId: account, region } },
+          { id: `workload:${name}`, kind: 'workload', label: `shop/${name}`, meta: {
+            cluster: 'demo', namespace: 'shop', pods: [`${name}-a`], accountId: account, region,
+          } },
+        ]),
+        edges: [{ source: 'svc:frontend', target: 'svc:orders', rel: 'calls' },
+          ...names.map(name => ({ source: `svc:${name}`, target: `workload:${name}`, rel: 'runs_on' }))],
+      },
+      network: (['INTER_AZ', 'INTER_VPC', 'AMAZON_S3'] as const).map((category, i) => ({
+        monitor: 'nfm-demo', cluster: 'demo', metric: 'DATA_TRANSFERRED', unit: 'Bytes', category, rangeSec: 900, capped: false,
+        rows: [{ local: endpoint(0), remote: i ? { ip: `198.51.100.${i}`, region, vpcId: 'vpc-peer' } : endpoint(1),
+          value: i ? 8388608 : 16777216, unit: 'Bytes', category, traversed: [], traversedIds: [] }],
+      })),
+    });
+    expect(built.edges.filter(edge => edge.evidence === 'identity')).toHaveLength(8);
+    render(<E2eGraphCanvas graph={built} />);
+    await waitFor(() => expect(vi.mocked(ReactFlow).mock.lastCall?.[0].fitViewOptions?.nodes).toHaveLength(7));
+    const props = vi.mocked(ReactFlow).mock.lastCall![0], options = props.fitViewOptions!;
+    const ids = new Set(options.nodes!.map(node => node.id));
+    const fitted = props.nodes!.filter(node => ids.has(node.id)).map(node => ({ ...node, width: 232, height: 76 }));
+    expect(built.nodes.filter(node => ids.has(node.id) && node.kind === 'target')).toHaveLength(2);
+    expect(built.nodes.filter(node => ids.has(node.id) && node.kind === 'workload')).toHaveLength(2);
+    const bounds = getNodesBounds(fitted);
+    for (const [width, height] of [[1294, 900], [1294, 478], [900, 478]]) {
+      const viewport = getViewportForBounds(bounds, width, height, options.minZoom!, options.maxZoom!, options.padding);
+      if (height === 900) expect(viewport.zoom).toBeGreaterThanOrEqual(0.7);
+      expect(bounds.x * viewport.zoom + viewport.x).toBeGreaterThanOrEqual(0);
+      expect((bounds.x + bounds.width) * viewport.zoom + viewport.x).toBeLessThanOrEqual(width);
+      expect(bounds.y * viewport.zoom + viewport.y).toBeGreaterThanOrEqual(0);
+      expect((bounds.y + bounds.height) * viewport.zoom + viewport.y).toBeLessThanOrEqual(height);
+    }
+  });
+  it.each(['2026-09-10T08:00:00Z', null])('separates genuine service capture from the legacy snapshot clock: %j', async captured_at => {
+    const snapshot = '2026-09-11T10:00:00Z';
+    const built = buildE2eGraph({
+      account: 'self', configured: { nodes: [], edges: [] }, network: [],
+      services: {
+        nodes: [{ id: 'service', kind: 'svc', label: 'timed-service', captured_at },
+          { id: 'db', kind: 'db', label: 'timed-database' }],
+        edges: [{ source: 'service', target: 'db', rel: 'calls' }], captured_at: snapshot,
+      },
+    });
+    render(<E2eGraphCanvas graph={built} />);
+    const detail = await select('timed-service');
+    const capture = detail.getByText('노드 수집 시각').nextElementSibling;
+    expect(capture?.querySelector('time')?.dateTime ?? null).toBe(captured_at);
+    const clocks = detail.getAllByText('스냅샷 표시 시각');
+    expect(clocks).toHaveLength(2); // Node and service edge; neither fabricates edge capture.
+    expect(clocks[0].nextElementSibling?.querySelector('time')?.dateTime).toBe(snapshot);
+    expect(detail.getByText('스냅샷 표시 시각은 개별 노드·관계의 수집 시각이나 관측 구간이 아닙니다.')).toBeTruthy();
+    for (const time of screen.getByRole('region', { name: '선택한 노드 상세' }).querySelectorAll('time')) {
+      expect(time.textContent).toContain('UTC');
+    }
+    expect(built.summary.servicesComplete).toBe(false);
+  });
+  it('keeps an incomplete workload read visible on endpoint details', async () => {
+    render(<E2eGraphCanvas graph={{ ...graph, nodes: graph.nodes.map(node => node.id === 'p1'
+      ? { ...node, meta: { ...node.meta, workloadReadStatus: 'partial' } } : node) }} />);
+    const detail = await select('shop/pod-a');
+    expect(detail.getByText('workloadReadStatus').nextElementSibling?.textContent).toBe('partial');
+  });
+  it.each([false, true].flatMap(cached => ['2026-09-11T08:00:00Z', null].map(captured_at => ({ cached, captured_at }))))(
+    'preserves target-group time as configuration evidence: %j', async ({ cached, captured_at }) => {
+      const region = 'us-east-1', vpcId = 'vpc-app', ip = '10.0.1.10';
+      const configured = buildFlowGraph({
+        ownershipRead: { configurationOnly: cached },
+        tg: [{ resource_id: 'tg', region, vpc_id: vpcId, captured_at, target_type: 'ip',
+          target_health_descriptions: [{ Target: { Id: ip } }] }],
+        ipResolved: { [`${region}|${vpcId}|${ip}`]: {
+          label: 'configured-workload', resolved: 'eks', meta: { cluster: 'app' },
+        } },
+      });
+      const built = buildE2eGraph({ account: 'self', configurationComplete: true, configured, services: null, network: [{
+        monitor: 'monitor', cluster: null, metric: 'DATA_TRANSFERRED', category: 'INTER_AZ',
+        rangeSec: 900, unit: 'Bytes', capped: false, rows: [{
+          local: { ip, region, vpcId }, remote: {}, value: 1, unit: 'Bytes',
+          category: 'INTER_AZ', traversed: [], traversedIds: [],
+        }],
+      }] });
+      render(<E2eGraphCanvas graph={built} />);
+      const card = (await screen.findByTitle('configured-workload')).closest('[data-e2e-kind="target"]') as HTMLElement;
+      expect(within(card).queryByText('구성 · 식별 보류') !== null).toBe(cached);
+      expect(card.querySelector('.lucide-circle-question-mark') !== null).toBe(cached);
+      const detail = await select('configured-workload');
+      expect(detail.getAllByText('대상 그룹 수집 시각')).toHaveLength(2);
+      expect(detail.getByText('대상 그룹 구성의 시각이며 소유권 증거의 시각이 아닙니다.')).toBeTruthy();
+      expect(detail.queryByText('capturedAt')).toBeNull();
+      const regionEl = screen.getByRole('region', { name: '선택한 노드 상세' });
+      expect(regionEl.querySelectorAll('time')).toHaveLength(captured_at ? 2 : 0);
+      for (const time of regionEl.querySelectorAll('time')) {
+        expect(time.dateTime).toBe(captured_at);
+        expect(time.textContent).toContain('UTC');
+      }
+      if (cached) {
+        expect(built.edges.filter(e => e.evidence === 'identity')).toHaveLength(0);
+        expect(detail.getByText('eks_not_enumerated')).toBeTruthy();
+      }
+      fireEvent.click(screen.getByRole('checkbox', {
+        name: cached ? '참고 정보 (캐시된 구성·경유 구성요소)' : '식별자 연결',
+      }));
+      expect((await select('configured-workload')).getAllByText('대상 그룹 수집 시각')).toHaveLength(1);
+    });
+  it('keeps unverified candidates separate from target identity', async () => {
+    render(<E2eGraphCanvas graph={{ ...graph, nodes: [...graph.nodes, {
+      id: 'candidate-target', kind: 'target', layer: 'configuration', label: 'unresolved-target',
+      meta: { resolved: 'ambiguous', ownership_evidence: 'scope_unverified', ownership_reason: 'region_missing',
+        candidate: { label: 'possible-task', resolved: 'ecs',
+          meta: { task: 'task-candidate', region: 'us-east-1' } } },
+    }] }} />);
+    const detail = await select('unresolved-target');
+    expect(detail.getByText('scope_unverified')).toBeTruthy();
+    expect(detail.getByText('region_missing')).toBeTruthy();
+    const candidate = detail.getByRole('region', { name: '소유권 미확인 후보' });
+    expect(within(candidate).getByText('possible-task')).toBeTruthy();
+    expect(within(candidate).getByText('task-candidate')).toBeTruthy();
+    expect(detail.getByText('현재 관계 필터에서 연결 근거가 없습니다.')).toBeTruthy();
+  });
   it.each([false, true])('does not turn absent/unsupported observations into zero unmatched counts: %s', unsupported => {
     render(<E2eGraphCanvas graph={{ ...graph, nodes: [], edges: [],
       summary: { ...graph.summary, networkFlows: 0, unmatchedEndpoints: 0, observationsUnsupported: unsupported } }} />);
     expect(screen.queryByText('미연결 관측 0')).toBeNull();
-    expect(screen.getByText(unsupported ? '이 계정에서 네트워크 관측을 사용할 수 없습니다.' : '표시할 네트워크 관측이 없습니다.')).toBeTruthy();
+    expect(screen.getByText(unsupported ? '이 계정에서 네트워크 관측을 사용할 수 없습니다.' : '네트워크 관측 데이터가 없어 연결 여부를 집계할 수 없습니다.')).toBeTruthy();
   });
   it('exposes the configured and workload Pod evidence used by identity links', async () => {
     render(<E2eGraphCanvas graph={{ ...graph, nodes: [
@@ -90,8 +328,11 @@ describe('E2eGraphCanvas', () => {
     expect(detail.queryByText('shop')).toBeNull();
     for (const value of ['여러 타깃을 묶은 구성 기록입니다.', '10.0.1.1 · shop/web-1', '10.0.1.2 · payments/web-2',
       'ownership_evidence', 'cached_configuration', 'ownership_reason', 'eks_not_enumerated', 'ambiguity',
-      'ownership_unverified', 'e2e_correlation_blocked', 'true', 'targetCapturedAt', new Date(captured).toLocaleString(),
-      '타깃 그룹의 수집 시각이며 소유권 확인 시각이 아닙니다.']) expect(detail.getByText(value)).toBeTruthy();
+      'ownership_unverified', 'e2e_correlation_blocked', 'true', '대상 그룹 수집 시각',
+      '대상 그룹 구성의 시각이며 소유권 증거의 시각이 아닙니다.']) expect(detail.getByText(value)).toBeTruthy();
+    const capturedTime = detail.getByText('대상 그룹 수집 시각').nextElementSibling?.querySelector('time');
+    expect(capturedTime?.dateTime).toBe(captured);
+    expect(capturedTime?.textContent).toContain('UTC');
     expect(detail.getByText('count').nextElementSibling?.textContent).toBe(String(count));
     const identities = within(detail.getByText('memberIdentities').nextElementSibling as HTMLElement);
     expect(identities.getAllByRole('listitem')).toHaveLength(Math.min(count, 20));
@@ -117,7 +358,7 @@ describe('E2eGraphCanvas', () => {
     render(<E2eGraphCanvas graph={{ ...graph, nodes, edges, summary: { ...graph.summary, networkFlows: 121 } }} />);
     await waitFor(() => expect(vi.mocked(ReactFlow).mock.lastCall?.[0].fitViewOptions?.nodes)
       .toContainEqual({ id: 'z-peak' }));
-    expect(screen.getByText(/생략된 관측 분류:/).textContent).toContain('INTER_AZ');
+    expect(screen.getByText(/표시 한도로 제한된 관측 \(분류별\):/).textContent).toContain('INTER_AZ');
   });
   it.each([
     ['ko', '로컬 엔드포인트', '네트워크 관측'], ['en', 'Local endpoint', 'Network observations'],
@@ -127,7 +368,8 @@ describe('E2eGraphCanvas', () => {
     try {
       render(<LanguageProvider><E2eGraphCanvas graph={{ ...graph, nodes: [
         { ...graph.nodes[1], label: 'local_endpoint', labelKey: 'local_endpoint', meta: { endpoint: { podName: ' ' }, side: 'local' } },
-        { ...graph.nodes[0], label: 'local_endpoint' },
+        { ...graph.nodes[0], label: '로컬 엔드포인트' },
+        { ...graph.nodes[0], id: 'raw-source-name', label: 'local_endpoint' },
         { ...graph.nodes[2], label: 'endpoint-resource-123', meta: { endpoint: {}, side: 'remote' } },
         { ...graph.nodes[3], label: 'network_observation', labelKey: 'network_observation', meta: { ...graph.nodes[3].meta, metric: '' } },
         { ...graph.nodes[1], id: 'service-endpoint', label: 'local_endpoint', labelKey: 'local_endpoint',
@@ -137,6 +379,8 @@ describe('E2eGraphCanvas', () => {
       fireEvent.change(search, { target: { value: local } });
       fireEvent.click((await screen.findAllByRole('button', { name: new RegExp(local) }))[0]);
       expect(screen.getByRole('heading', { name: local })).toBeTruthy();
+      fireEvent.change(search, { target: { value: '로컬 엔드포인트' } });
+      expect(screen.getAllByRole('button', { name: /로컬 엔드포인트/ }).length).toBeGreaterThan(0);
       fireEvent.change(search, { target: { value: 'local_endpoint' } });
       expect(screen.getAllByRole('button', { name: /local_endpoint/ }).length).toBeGreaterThan(0);
       fireEvent.change(search, { target: { value: 'endpoint-resource-123' } });
@@ -202,7 +446,7 @@ describe('E2eGraphCanvas', () => {
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'checkout-flow' } });
     fireEvent.click(await screen.findByRole('button', { name: '선택: checkout-flow' }));
     const detail = screen.getByRole('region', { name: '선택한 노드 상세' });
-    expect(within(detail).getByText('—')).toBeTruthy();
+    expect(within(detail).getByTestId('e2e-selected-metric').textContent).toBe('—');
     expect(detail.textContent).not.toMatch(/NaN|Infinity|-1 B/);
   });
 
@@ -298,18 +542,105 @@ describe('E2eGraphCanvas', () => {
     const captured = '2026-09-11T12:00:00Z';
     render(<E2eGraphCanvas graph={{ ...graph, edges: [{ id: 'cached', source: 'p1', target: 's1',
       relation: 'configured-endpoint-match', evidence: 'context', directed: false,
-      label: 'cached_configured_endpoint_record', labelKey: 'cached_configured_endpoint_record', meta: { confidence: 'observed', ownership: 'unverified',
+      label: 'Cached configured endpoint record', meta: { confidence: 'observed', ownership: 'unverified',
         ownership_evidence: 'cached_configuration', targetCapturedAt: captured } }] }} />);
     const detail = await select('shop/pod-a');
     expect(detail.getByText('캐시된 구성 엔드포인트 기록')).toBeTruthy();
     expect(detail.getByText('confidence: observed')).toBeTruthy();
     for (const value of ['ownership: unverified', 'ownership_evidence: cached_configuration',
-      `targetCapturedAt: ${new Date(captured).toLocaleString()}`, '타깃 그룹의 수집 시각이며 소유권 확인 시각이 아닙니다.']) {
+      '대상 그룹 구성의 시각이며 소유권 증거의 시각이 아닙니다.']) {
       expect(detail.getByText(value)).toBeTruthy();
     }
-    fireEvent.click(screen.getByRole('checkbox', { name: '문맥 연결' }));
+    const time = screen.getByRole('region', { name: '선택한 노드 상세' }).querySelector('time');
+    expect(time?.dateTime).toBe(captured);
+    expect(time?.textContent).toContain('UTC');
+    fireEvent.click(screen.getByRole('checkbox', { name: '참고 정보 (캐시된 구성·경유 구성요소)' }));
     const filtered = await select('shop/pod-a');
     expect(filtered.queryByText('캐시된 구성 엔드포인트 기록')).toBeNull();
     expect(filtered.getByText('현재 관계 필터에서 연결 근거가 없습니다.')).toBeTruthy();
+  });
+  it.each([false, true])('does not report zero unlinked observations without usable network data (unsupported=%s)', unsupported => {
+    render(<E2eGraphCanvas graph={{ ...graph,
+      summary: { ...graph.summary, networkFlows: 0, unmatchedEndpoints: 0, observationsUnsupported: unsupported },
+    }} />);
+    expect(screen.queryByText('미연결 관측 0')).toBeNull();
+    expect(screen.queryByText('관측 행의 로컬·원격을 각각 집계하며 고유 엔드포인트 수가 아닙니다.')).toBeNull();
+    expect(screen.getByText(unsupported ? '이 계정에서 네트워크 관측을 사용할 수 없습니다.'
+      : '네트워크 관측 데이터가 없어 연결 여부를 집계할 수 없습니다.')).toBeTruthy();
+  });
+  it('shows the matched pod and grouped pod evidence in selected workload details', async () => {
+    render(<E2eGraphCanvas graph={{ ...graph, nodes: [...graph.nodes, {
+      id: 'workload', kind: 'workload', layer: 'service', label: 'pod-workload',
+      meta: { cluster: 'shop', namespace: 'default', pod: 'pod-a', pods: ['pod-a', 'pod-b'] },
+    }] }} />);
+    const detail = await select('pod-workload');
+    expect(detail.getByText('pod-a')).toBeTruthy();
+    expect(detail.getByText('pod-a, pod-b')).toBeTruthy();
+  });
+  it('keeps the largest flow before display caps and names omitted observation categories', async () => {
+    const observations = Array.from({ length: 120 }, (_, i) => {
+      const id = String(i).padStart(3, '0');
+      return {
+        nodes: [
+          { ...graph.nodes[1], id: `p${id}-local` },
+          { ...graph.nodes[2], id: `p${id}-remote` },
+          { ...graph.nodes[3], id: `f${id}`, label: `flow-${id}`, meta: {
+            ...graph.nodes[3].meta, category: i === 119 ? 'INTER_VPC' : 'INTER_AZ',
+            flow: { ...(graph.nodes[3].meta.flow as object), value: i === 119 ? 999999 : 1 },
+          } },
+        ],
+        edges: [
+          { ...graph.edges[1], id: `n${id}-local`, source: `p${id}-local`, target: `f${id}` },
+          { ...graph.edges[2], id: `n${id}-remote`, source: `f${id}`, target: `p${id}-remote` },
+        ],
+      };
+    });
+    render(<E2eGraphCanvas graph={{ ...graph, nodes: observations.flatMap(o => o.nodes),
+      edges: observations.flatMap(o => o.edges), summary: { ...graph.summary, networkFlows: 120 },
+    }} />);
+    await waitFor(() => {
+      const props = vi.mocked(ReactFlow).mock.lastCall?.[0];
+      expect(props?.fitViewOptions?.nodes).toEqual(expect.arrayContaining([{ id: 'f119' }]));
+      expect(props?.nodesDraggable).toBe(false);
+      expect(props?.nodesConnectable).toBe(false);
+    });
+    expect(screen.getByText('표시 한도로 제한된 관측 (분류별): INTER_AZ: 4')).toBeTruthy();
+  });
+
+  it('labels a still-visible partial observation as display-limited, not an absent category', async () => {
+    const configs: E2eNode[] = Array.from({ length: 349 }, (_, i) => ({
+      id: `config-${i}`, kind: 'origin', label: `needle-${i}`, layer: 'configuration', meta: {},
+    }));
+    render(<E2eGraphCanvas graph={{ ...graph,
+      nodes: [...configs, graph.nodes[1], graph.nodes[2], { ...graph.nodes[3], label: 'needle-flow' }],
+      edges: graph.edges.filter(edge => edge.evidence === 'network'),
+    }} />);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'needle' } });
+    await screen.findByText('표시 한도로 제한된 관측 (분류별): INTER_AZ: 1');
+    const props = vi.mocked(ReactFlow).mock.lastCall?.[0];
+    expect(props?.nodes.some(node => node.id === 'f1')).toBe(true);
+    expect(props?.edges).toHaveLength(0);
+  });
+
+  it.each([
+    { count: Infinity }, { count: Number.NaN }, { count: '25' }, { count: -1 }, { count: 25.5 },
+    { membersTruncated: Infinity }, { membersTruncated: '5' },
+    { membersTruncated: Number.MAX_SAFE_INTEGER },
+  ])('keeps grouped details while refusing an unsafe remaining-member count: %j', async invalid => {
+    render(<E2eGraphCanvas graph={{ ...graph, nodes: [...graph.nodes, {
+      id: 'invalid-count', kind: 'target', layer: 'configuration', label: 'grouped-count',
+      meta: { count: 25, membersTruncated: 5, pod: 'borrowed-pod', namespace: 'borrowed-namespace',
+        members: Array.from({ length: 20 }, (_, i) => `member-${i}`),
+        memberIdentities: Array.from({ length: 20 }, (_, i) => ({
+          id: `member-${i}`, namespace: 'ns', pod: `pod-${i}`,
+        })), ...invalid },
+    }] }} />);
+    const detail = await select('grouped-count');
+    expect(detail.queryByText('borrowed-pod')).toBeNull();
+    expect(detail.queryByText('borrowed-namespace')).toBeNull();
+    expect(detail.getAllByText('추가 멤버 수 미확인')).toHaveLength(2);
+    expect(detail.queryByText(/Infinity|NaN/)).toBeNull();
+    const identities = within(detail.getByText('memberIdentities').nextElementSibling as HTMLElement);
+    expect(identities.getAllByRole('listitem')).toHaveLength(20);
   });
 });
