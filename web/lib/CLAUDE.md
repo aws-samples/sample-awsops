@@ -10,8 +10,9 @@ Domain-logic modules shared by API routes and components, mostly React-free (inc
   `quality.configuration` must explicitly certify complete target-bearing reads (including
   instance targets), otherwise configuration uniqueness is withheld. Truncated/indeterminate
   target groups remain scoped unknown competitors, including hidden members. Normalize region/VPC
-  comparison padding. Under a complete census, validated full parent TG IDs can exclude only
-  a requested ID proven absent; missing/inconsistent rows keep the wildcard. Hidden members
+  comparison padding. Under a complete census, validated full parent TG IDs can exclude
+  an absent-ID wildcard or preserve that same group's already shown match and its vetoes.
+  Missing/inconsistent rows keep the wildcard. Hidden members
   are never promoted. Workload scope requires a complete compatible account/region tuple in
   one record; complementary partial claims cannot combine and all other conflicts still veto.
   Service uniqueness uses actual `collection.readStatus/readTruncated/metadataTruncated`,

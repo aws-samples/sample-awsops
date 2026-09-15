@@ -1627,6 +1627,15 @@ describe('complete scope tuples and uncapped parent membership', () => {
     (c.row as Record<string, unknown>).target_health_descriptions = JSON.stringify(c.row.target_health_descriptions);
     expect(identityEdges(c.compose())).toHaveLength(1);
   });
+  it.each(['ip', 'instance'] as const)('keeps a shown %s member when the complete parent validates its display group', type => {
+    const c = census(type);
+    expect(identityEdges(c.compose(c.id(1)))).toHaveLength(1);
+    c.group.meta!.resolved = 'ambiguous';
+    expect(identityEdges(c.compose(c.id(1)))).toEqual([]);
+    delete c.group.meta!.resolved;
+    delete (c.row as Record<string, unknown>).target_health_descriptions;
+    expect(identityEdges(c.compose(c.id(1)))).toEqual([]);
+  });
   it('keeps a padded parent that actually contains the requested hidden member', () => {
     const c = census('ip');
     c.row.region = ` ${REGION} `;

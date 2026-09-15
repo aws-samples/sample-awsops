@@ -68,6 +68,8 @@ not only the displayed list. Under a complete census, cached, validated full par
 `meta.row.target_health_descriptions` IDs can prove a requested ID absent from every
 parent and exclude only that wildcard competitor. Validation checks target type, identifiers,
 count and shown-member consistency; IPv6 spelling aliases compare canonically.
+A validated parent also keeps an already shown match from the same group from being
+replaced by its hidden-member placeholder; that shown record retains every ownership veto.
 Missing/malformed/inconsistent rows keep the conservative wildcard. This does not provide
 pod identity or promote a hidden member, and display limits remain unchanged. Other scope matches
 remain unverified even when another visible record looks unique. Known disjoint scopes

@@ -396,8 +396,12 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
         for (const candidate of [...(targets.get(key(type, value)) ?? []), ...(targets.get(key(type, '')) ?? [])]) {
           if ((candidate.region && candidate.region !== region) || (candidate.vpcId && candidate.vpcId !== vpcId)) continue;
           const member = !candidate.value && membershipId(type, value);
-          // Absence only: full TG rows never promote hidden members or supply pod identity.
+          // Full TG rows never promote hidden members or supply pod identity.
           if (member && candidate.parentMembers?.every(ids => !ids.has(member))) continue;
+          const shown = candidates.get(candidate.node.id);
+          // A validated full parent must not replace this same group's known
+          // displayed member with its unknown-member placeholder. Keep its vetoes.
+          if (!candidate.value && candidate.parentMembers && shown?.type === type && shown.value === value) continue;
           candidates.set(candidate.node.id, candidate);
         }
       }
