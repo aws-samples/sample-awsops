@@ -477,6 +477,38 @@ def _plan_queries(kind, schema):
     return plan[:_DS_MAX_QUERIES_PER_INSTANCE]
 
 
+def _summary_sample(value, *, string=False):
+    if (not isinstance(value, list) or len(value) != 2 or type(value[0]) not in (int, float)
+            or not math.isfinite(value[0]) or not isinstance(value[1], str)):
+        return False
+    try:
+        if not string:
+            float(value[1])
+        return True
+    except ValueError:
+        return False
+
+
+def _summary_record(row, key, shape):
+    if not isinstance(row, dict) or not row:
+        return False
+    if key == "traces":
+        identity = row.get("traceID")
+        return isinstance(identity, str) and bool(re.fullmatch(r"[0-9a-fA-F]{1,32}", identity)) and int(identity, 16) != 0
+    if key == "result" and shape in ("vector", "matrix"):
+        if not isinstance(row.get("metric"), dict):
+            return False
+        return (_summary_sample(row.get("value")) if shape == "vector" else
+                isinstance(row.get("values"), list) and any(_summary_sample(v) for v in row["values"]))
+    if key == "result" and shape == "streams":
+        return isinstance(row.get("stream"), dict) and isinstance(row.get("values"), list) and any(
+            isinstance(v, list) and len(v) == 2 and isinstance(v[0], str) and v[0].isdigit()
+            and isinstance(v[1], str) for v in row["values"])
+    if key == "result":
+        return False
+    return True  # Nonempty structured rows in generic/legacy aggregate envelopes.
+
+
 def _summarize_result(body):
     """Compact a connector result to NON-PII SIGNAL ONLY — count, result type, source key, and metric
     LABEL NAMES (keys, never values). Critically: NEVER emit raw samples. Loki `result` is raw log
@@ -491,10 +523,10 @@ def _summarize_result(body):
     for key in ("result", "traces", "rows", "data", "series"):
         v = body.get(key)
         if isinstance(v, list):
-            out["source"], out["count"] = key, len(v)
+            out["source"] = key
+            out["count"] = sum(bool(_summary_record(row, key, body.get("resultType"))) for row in v)
             if key == "result" and body.get("resultType") in ("scalar", "string"):
-                out["count"] = int(len(v) == 2 and type(v[0]) in (int, float)
-                                   and math.isfinite(v[0]) and isinstance(v[1], str))
+                out["count"] = int(_summary_sample(v, string=body["resultType"] == "string"))
             # non-PII metadata only: the union of metric LABEL NAMES (keys), NEVER their values
             names = set()
             for item in v[:50]:
@@ -510,7 +542,7 @@ def _summarize_result(body):
         if isinstance(res, dict):
             series = res.get("series") or res.get("rows") or res.get("data")
             if isinstance(series, list):
-                out["count"] = len(series)
+                out["count"] = sum(bool(_summary_record(row, "rows", None)) for row in series)
             if "shape" in res:
                 out["shape"] = res.get("shape")
     if "resultType" in body:
