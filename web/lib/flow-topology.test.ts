@@ -3,13 +3,13 @@ import { buildFlowGraph, filterFromEntry, TARGET_CAP, type FlowInput } from './f
 
 describe('ECS scope from synced attachment and subnet inventory', () => {
   const region = 'us-east-1', ip = '10.0.1.10';
-  const attachment = (subnetId: string) => ({ Type: 'ElasticNetworkInterface', Details: [
-    { Name: 'subnetId', Value: subnetId }, { Name: 'privateIPv4Address', Value: ip },
+  const attachment = (subnetId: string, address = ip) => ({ Type: 'ElasticNetworkInterface', Details: [
+    { Name: 'subnetId', Value: subnetId }, { Name: 'privateIPv4Address', Value: address },
   ] });
   const task = {
     resource_id: 'arn:aws:ecs:us-east-1:123456789012:task/cluster-b/task-b', region,
-    cluster_arn: 'arn:aws:ecs:us-east-1:123456789012:cluster/cluster-b', last_status: 'RUNNING', task_group: 'service:service-b',
-    attachments: [attachment('subnet-b')],
+    cluster_arn: 'arn:aws:ecs:us-east-1:123456789012:cluster/cluster-b', task_group: 'service:service-b',
+    last_status: 'RUNNING', attachments: [attachment('subnet-b')],
   };
   const subnet = { resource_id: 'subnet-b', region, vpc_id: 'vpc-b' };
   const tg = {
@@ -17,6 +17,91 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
     target_health_descriptions: [{ Target: { Id: ip, Port: 80 } }],
   };
   const target = (input: FlowInput) => buildFlowGraph(input).nodes.find(n => n.kind === 'target')!;
+
+  it('withholds exclusive ownership outside the enumerated EKS region', () => {
+    const configured = buildFlowGraph({ tg: [{ ...tg, vpc_id: 'vpc-b',
+      target_health_descriptions: [ip, '10.0.1.11'].map(Id => ({ Target: { Id } })) }],
+      ecsTask: [task, { ...task, resource_id: 'other', task_group: 'service:other', attachments: [attachment('subnet-b', '10.0.1.11')] }], subnet: [subnet],
+      ownershipRead: { eksRegions: ['ap-northeast-2'] } });
+    const nodes = configured.nodes.filter(n => n.kind === 'target');
+    expect(nodes.map(n => n.label)).toEqual(['service-b', 'other']);
+    for (const node of nodes) {
+      expect(node.meta).toMatchObject({ resolved: 'ambiguous', ambiguity: 'eks_not_enumerated',
+        ownership_evidence: 'scope_unverified', candidate: { resolved: 'ecs', meta: { cluster: 'cluster-b', region, vpcId: 'vpc-b' } } });
+      expect(node.meta?.cluster).toBeUndefined();
+    }
+  });
+  it('labels cached configuration without certifying exclusive ownership', () => {
+    const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task], subnet: [subnet],
+      ownershipRead: { configurationOnly: true } });
+    expect(node.meta).toMatchObject({ resolved: 'ecs', ownership_evidence: 'cached_configuration' });
+  });
+  it('discloses EKS not enumerated on configuration-only IP targets without importing host identities', () => {
+    const node = target({ tg: [tg], ownershipRead: { configurationOnly: true } });
+    expect(node.meta).toMatchObject({ ownership_reason: 'eks_not_enumerated', ownership_evidence: 'cached_configuration' });
+    expect(node.meta?.cluster).toBeUndefined();
+  });
+  it('labels host ECS snapshot evidence as cached despite a fresh target-group capture', () => {
+    const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b', captured_at: '2026-09-11T12:00:00Z' }],
+      ecsTask: [{ ...task, captured_at: '2020-01-01T00:00:00Z' }],
+      subnet: [{ ...subnet, captured_at: '2020-01-01T00:00:00Z' }] });
+    expect(node.meta).toMatchObject({ resolved: 'ecs', ownership_evidence: 'cached_configuration',
+      targetCapturedAt: '2026-09-11T12:00:00Z' });
+    expect(node.meta).not.toHaveProperty('capturedAt');
+  });
+  it.each(['ecs', 'eks'])('withholds %s attribution when target-group evidence is incomplete', source => {
+    const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ownershipRead: { targetGroup: 'failed' },
+      ecsTask: source === 'ecs' ? [task] : [], subnet: [subnet],
+      ipResolved: source === 'eks' ? { [`${region}|vpc-b|${ip}`]: { label: 'pod', resolved: 'eks' } } : undefined });
+    expect(node.meta).toMatchObject({ resolved: 'ambiguous', ambiguity: 'target_group_inventory_incomplete' });
+    expect(node.meta?.cluster).toBeUndefined();
+  });
+  it.each([
+    [undefined, null], ['invalid', null], [123, null], [new Date('invalid'), null],
+    ['2026-09-11T12:00:00Z', '2026-09-11T12:00:00Z'],
+    [new Date('2026-09-11T12:00:00Z'), '2026-09-11T12:00:00.000Z'],
+  ])('keeps only a valid target-group capture timestamp: %s', (captured_at, expected) => {
+    const node = target({ tg: [{ ...tg, captured_at }] });
+    expect(node.meta?.targetCapturedAt).toBe(expected);
+    expect(node.meta).not.toHaveProperty('capturedAt');
+  });
+  it.each(['failed', 'capped'] as const)('distinguishes inventory %s from ownership conflict', state => {
+    for (const type of ['ecsTask', 'subnet'] as const) {
+      const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], subnet: [subnet],
+        ecsTask: type === 'ecsTask' ? [] : [task], ownershipRead: { [type]: state },
+        ipResolved: type === 'ecsTask' ? { [`${region}|vpc-b|${ip}`]: { label: 'pod', resolved: 'eks' } } : undefined });
+      expect(node.meta).toMatchObject({ resolved: 'ambiguous', ambiguity: type === 'ecsTask'
+        ? 'ecs_task_inventory_incomplete' : 'subnet_inventory_incomplete' });
+    }
+  });
+  it.each(['vpc-b', 'vpc-other', 'unknown'])('honors unreadable EKS scopes with no enumerated IP: %s', scope => {
+    const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task], subnet: [subnet],
+      ownershipRead: { eksUnknown: scope === 'unknown', eksScopes: [`${region}|${scope}|`] } });
+    expect(node.meta?.resolved).toBe(scope === 'vpc-other' ? 'ecs' : 'ambiguous');
+    if (scope !== 'vpc-other') expect(node.meta?.ambiguity).toBe('eks_inventory_incomplete');
+  });
+
+  it.each(['eks', 'ecs'])('preserves duplicate %s claims when the other source has one owner', source => {
+    const pod = { label: 'shop/pod', resolved: 'eks' as const, meta: { region, vpcId: 'vpc-b' } };
+    const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], subnet: [subnet],
+      ecsTask: source === 'ecs' ? [task, { ...task, resource_id: 'other-task' }] : [task],
+      ipResolved: { [`${region}|vpc-b|${ip}`]: source === 'eks' ? null : pod } });
+    expect(node.meta?.resolved).toBe('ambiguous');
+  });
+
+  it.each(['vpc-b', 'vpc-other'])('does not choose EKS over a contradictory scoped ECS claim: %s', podVpc => {
+    const configured = buildFlowGraph({
+      tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task], subnet: [subnet],
+      ipResolved: { [`${region}|${podVpc}|${ip}`]: {
+        label: 'shop/pod', resolved: 'eks', meta: { cluster: 'eks-app', region, vpcId: podVpc },
+      } },
+    });
+    const node = configured.nodes.find(n => n.kind === 'target')!;
+    expect(node.meta?.resolved).toBe(podVpc === 'vpc-b' ? 'ambiguous' : 'ecs');
+    if (podVpc === 'vpc-b') {
+      expect(node.label).toBe(ip);
+    }
+  });
 
   it('does not attribute a VPC A target to the only same-IP task in VPC B', () => {
     const configured = buildFlowGraph({ tg: [tg], ecsTask: [task], subnet: [subnet] });
@@ -45,12 +130,12 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
     ['conflicting subnets in one attachment', { attachments: [{
       ...attachment('subnet-b'), Details: [...attachment('subnet-b').Details, { Name: 'subnetId', Value: 'subnet-c' }],
     }] }, [subnet, { resource_id: 'subnet-c', region, vpc_id: 'vpc-b' }]],
-  ])('leaves scope unresolved for %s', (_, override, subnets) => {
+  ])('leaves scope unresolved for %s', (name, override, subnets) => {
     const node = target({
       tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [{ ...task, ...override }], subnet: subnets,
     });
     expect(node.label).toBe(ip);
-    expect(node.meta?.resolved).toBeUndefined();
+    expect(node.meta?.resolved).toBe(name === 'different task region' ? undefined : 'ambiguous');
   });
 
   it.each([{ region: '' }, { vpc_id: '' }])('requires the target group scope too: %j', missing => {
@@ -74,36 +159,29 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
   it.each([false, true])('selects only the matching scope for reused IPs, reversed=%s', reversed => {
     const tasks = [task, {
       ...task, resource_id: 'task-a', cluster_arn: 'cluster/cluster-a',
-      last_status: 'RUNNING', task_group: 'service:service-a', attachments: [attachment('subnet-a')],
+      task_group: 'service:service-a', attachments: [attachment('subnet-a')],
     }];
     if (reversed) tasks.reverse();
     expect(target({ tg: [tg], ecsTask: tasks, subnet: [subnet, { resource_id: 'subnet-a', region, vpc_id: 'vpc-a' }] }))
       .toMatchObject({ label: 'service-a', meta: { resolved: 'ecs', cluster: 'cluster-a', vpcId: 'vpc-a' } });
   });
 
-  it('rejects competing tasks within the same proven scope', () => {
-    expect(target({
-      tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task, { ...task, resource_id: 'task-other' }], subnet: [subnet],
-    }).meta?.resolved).toBeUndefined();
+  it.each(['RUNNING', 'running', 'STOPPED', 'DELETED', 'PENDING', 'DEPROVISIONING', '', undefined, 'unknown'])('arbitrates task status %s before claiming a reused IP', status => {
+    for (const competitor of [false, true]) {
+      const claims = [{ ...task, last_status: status }, ...(competitor ? [{ ...task, resource_id: 'task-other' }] : [])];
+      const expected = ['STOPPED', 'DELETED'].includes(status ?? '') ? competitor ? 'ecs' : undefined
+        : status?.toUpperCase() === 'RUNNING' && !competitor ? 'ecs' : 'ambiguous';
+      for (const tasks of [claims, [...claims].reverse()]) {
+        expect(target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: tasks, subnet: [subnet] }).meta?.resolved).toBe(expected);
+      }
+    }
   });
 
   it('does not hide an unknown-scope same-IP competitor behind a known task', () => {
     expect(target({
       tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task, { ...task, resource_id: 'unknown-task', attachments: [attachment('unknown')] }],
       subnet: [subnet],
-    }).meta?.resolved).toBeUndefined();
-  });
-
-  it.each(['STOPPED', 'PENDING', 'DEPROVISIONING', '', undefined])('does not attribute an IP to a task with last_status=%s', last_status => {
-    expect(target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [{ ...task, last_status }], subnet: [subnet] })
-      .meta?.resolved).toBeUndefined();
-  });
-  it('a stopped task cannot make a running replacement with a reused IP ambiguous', () => {
-    const stopped = { ...task, resource_id: 'old-task', last_status: 'STOPPED' };
-    for (const tasks of [[stopped, task], [task, stopped]]) {
-      expect(target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: tasks, subnet: [subnet] }).meta)
-        .toMatchObject({ resolved: 'ecs', task: 'task-b' });
-    }
+    }).meta?.resolved).toBe('ambiguous');
   });
 
   it('accepts JSON-string attachments from inventory without losing scope proof', () => {
@@ -118,6 +196,12 @@ describe('scoped endpoint resolution for network correlation', () => {
     resource_id: 'tg-scope', target_type: 'ip', region: 'us-east-1', vpc_id: 'vpc-a',
     target_health_descriptions: [{ Target: { Id: '10.0.1.10', Port: 80 }, TargetHealth: { State: 'healthy' } }],
   };
+  it.each([{}, { region: 'us-east-1' }, { vpcId: 'vpc-a' }])('rejects legacy EKS ownership without complete scope: %j', meta => {
+    const graph = buildFlowGraph({ tg: [tg], ipResolved: {
+      '10.0.1.10': { label: 'unproven', resolved: 'eks', meta: { cluster: 'alpha', ...meta } },
+    } });
+    expect(graph.nodes.find(n => n.kind === 'target')?.meta?.resolved).toBeUndefined();
+  });
   it('uses region/VPC-qualified pod IPs so identical private addresses do not cross clusters', () => {
     const graph = buildFlowGraph({
       tg: [tg], ipResolved: {
@@ -140,13 +224,13 @@ describe('scoped endpoint resolution for network correlation', () => {
   it('leaves an ECS IP ambiguous when different tasks share it across network scopes', () => {
     const graph = buildFlowGraph({
       tg: [tg], ecsTask: [
-        { resource_id: 'task-a', cluster_arn: 'cluster/alpha', last_status: 'RUNNING', task_group: 'service:a', region: 'us-east-1',
+        { resource_id: 'task-a', last_status: 'RUNNING', cluster_arn: 'cluster/alpha', task_group: 'service:a', region: 'us-east-1',
           attachments: [{ Details: [{ Name: 'privateIPv4Address', Value: '10.0.1.10' }] }] },
-        { resource_id: 'task-b', cluster_arn: 'cluster/beta', last_status: 'RUNNING', task_group: 'service:b', region: 'us-east-1',
+        { resource_id: 'task-b', last_status: 'RUNNING', cluster_arn: 'cluster/beta', task_group: 'service:b', region: 'us-east-1',
           attachments: [{ Details: [{ Name: 'privateIPv4Address', Value: '10.0.1.10' }] }] },
       ],
     });
-    expect(graph.nodes.find((n) => n.kind === 'target')?.meta?.resolved).toBeUndefined();
+    expect(graph.nodes.find((n) => n.kind === 'target')?.meta?.resolved).toBe('ambiguous');
   });
 });
 
@@ -563,7 +647,7 @@ describe('buildFlowGraph — ALB→TG→target', () => {
 
   it('resolved replicas (same EKS workload) collapse into one node with the member IPs', () => {
     const tgEks = {
-      resource_id: 'arn:tg:eks', target_group_name: 'eks-tg', target_type: 'ip',
+      resource_id: 'arn:tg:eks', target_group_name: 'eks-tg', target_type: 'ip', region: 'us-east-1', vpc_id: 'vpc-a',
       target_health_descriptions: [
         { Target: { Id: '10.2.1.1', Port: 8080 }, TargetHealth: { State: 'healthy' } },
         { Target: { Id: '10.2.1.2', Port: 8080 }, TargetHealth: { State: 'healthy' } },
@@ -571,9 +655,9 @@ describe('buildFlowGraph — ALB→TG→target', () => {
       ],
     };
     const ipResolved = {
-      '10.2.1.1': { label: 'app/api', resolved: 'eks' as const, meta: { service: 'api', namespace: 'app' } },
-      '10.2.1.2': { label: 'app/api', resolved: 'eks' as const, meta: { service: 'api', namespace: 'app' } },
-      '10.2.1.3': { label: 'app/api', resolved: 'eks' as const, meta: { service: 'api', namespace: 'app' } },
+      '10.2.1.1': { label: 'app/api', resolved: 'eks' as const, meta: { service: 'api', namespace: 'app', region: 'us-east-1', vpcId: 'vpc-a' } },
+      '10.2.1.2': { label: 'app/api', resolved: 'eks' as const, meta: { service: 'api', namespace: 'app', region: 'us-east-1', vpcId: 'vpc-a' } },
+      '10.2.1.3': { label: 'app/api', resolved: 'eks' as const, meta: { service: 'api', namespace: 'app', region: 'us-east-1', vpcId: 'vpc-a' } },
     };
     const g = buildFlowGraph({ tg: [tgEks], ipResolved });
     const targets = g.nodes.filter((x) => x.kind === 'target' && x.id.startsWith('target:arn:tg:eks'));
@@ -613,7 +697,7 @@ describe('buildFlowGraph — backend resolution (instance/lambda)', () => {
   it('resolves an ip target to an ECS service via synced ecsTask (attachments PascalCase)', () => {
     const tgIp = { resource_id: 'arn:tg:ip', target_group_name: 'ip', target_type: 'ip', region: 'ap-northeast-2', vpc_id: 'vpc-1',
       target_health_descriptions: [{ Target: { Id: '10.20.11.244' }, TargetHealth: { State: 'healthy' } }] };
-    const task = { resource_id: 'arn:aws:ecs:ap-northeast-2:1:task/cl/abc', region: 'ap-northeast-2', cluster_arn: 'arn:aws:ecs:ap-northeast-2:1:cluster/prod', last_status: 'RUNNING', task_group: 'service:ai-trader-api',
+    const task = { resource_id: 'arn:aws:ecs:ap-northeast-2:1:task/cl/abc', last_status: 'RUNNING', region: 'ap-northeast-2', cluster_arn: 'arn:aws:ecs:ap-northeast-2:1:cluster/prod', task_group: 'service:ai-trader-api',
       attachments: [{ Type: 'ElasticNetworkInterface', Details: [
         { Name: 'privateIPv4Address', Value: '10.20.11.244' }, { Name: 'subnetId', Value: 'subnet-1' },
       ] }] };
@@ -625,9 +709,9 @@ describe('buildFlowGraph — backend resolution (instance/lambda)', () => {
   });
 
   it('resolves an ip target to an EKS workload via ipResolved', () => {
-    const tgIp = { resource_id: 'arn:tg:ip', target_group_name: 'ip', target_type: 'ip',
+    const tgIp = { resource_id: 'arn:tg:ip', target_group_name: 'ip', target_type: 'ip', region: 'us-east-1', vpc_id: 'vpc-a',
       target_health_descriptions: [{ Target: { Id: '10.0.1.9' }, TargetHealth: { State: 'healthy' } }] };
-    const g = buildFlowGraph({ tg: [tgIp], ipResolved: { '10.0.1.9': { label: 'prod/checkout', resolved: 'eks', meta: { pod: 'checkout-abc', cluster: 'fsi' } } } });
+    const g = buildFlowGraph({ tg: [tgIp], ipResolved: { '10.0.1.9': { label: 'prod/checkout', resolved: 'eks', meta: { pod: 'checkout-abc', cluster: 'fsi', region: 'us-east-1', vpcId: 'vpc-a' } } } });
     const t = g.nodes.find((n) => n.kind === 'target');
     expect(t?.label).toBe('prod/checkout');
     expect(t?.meta?.resolved).toBe('eks');
